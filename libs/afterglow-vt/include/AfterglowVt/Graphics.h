@@ -9,11 +9,18 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace AfterglowVt {
+
+/// Kitty's Unicode placeholder: text cells that show a slice of a virtual
+/// placement, so images survive multiplexers like tmux.
+inline constexpr char32_t PlaceholderCodepoint = 0x10EEEE;
+/// The number a placeholder row/column diacritic encodes, or -1.
+AFTERGLOWVT_EXPORT int placeholderDiacriticValue(char32_t cp);
 
 class ITerminalHost;
 class Screen;
@@ -110,6 +117,13 @@ public:
 
     /// Visible placements of the viewport, sorted by z then age.
     std::vector<VisiblePlacement> visible(const Screen& screen, int cellWidth, int cellHeight) const;
+
+    /// The slice of a virtual placement that the placeholder cell for grid
+    /// position (@p row, @p col) shows, drawn at (@p cellX, @p cellY).
+    /// @p placementId 0 takes any virtual placement of the image.
+    std::optional<VisiblePlacement> placeholderSlice(std::uint32_t imageId, std::uint32_t placementId, int row,
+                                                     int col, int cellX, int cellY, int cellWidth,
+                                                     int cellHeight) const;
 
     /// Advances running animations. Returns true if any frame changed.
     /// @p nextDeadlineMs receives the next time a frame is due (0 for none).

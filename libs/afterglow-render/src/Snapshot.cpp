@@ -41,6 +41,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     const Selection::Range range = hasSelection ? selection->range(scr) : Selection::Range{};
 
     const std::size_t top = scr.viewportTop();
+    const int cw = t.cellWidth();
+    const int ch = t.cellHeight();
+    images = t.graphics().visible(scr, cw, ch);
     // Matches overlapping the viewport, found once instead of per cell.
     std::vector<int> visibleMatches;
     if (search.matches) {
@@ -53,9 +56,20 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             }
         }
     }
+    // Unicode placeholders continue from the placeholder to their left.
+    auto colorId = [](Color c) -> std::uint32_t {
+        return c.kind() == Color::Kind::Rgb ? (std::uint32_t(c.r()) << 16) | (std::uint32_t(c.g()) << 8) | c.b()
+               : c.kind() == Color::Kind::Palette ? c.index()
+                                                  : 0;
+    };
     for (int y = 0; y < captureRows; ++y) {
         const Row& row = scr.absoluteRow(top + std::size_t(y));
         const std::uint64_t rowId = scr.rowsDropped() + top + std::size_t(y);
+        bool prevValid = false;
+        std::uint32_t prevImage = 0;
+        std::uint32_t prevPlacement = 0;
+        int prevRow = 0;
+        int prevCol = 0;
         for (int x = 0; x < cols; ++x) {
             const Cell& c = row.cells[std::size_t(x)];
             const Style& st = scr.styles().get(c.styleId());
@@ -109,6 +123,36 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
                 out.link = it->second;
             }
             out.grapheme = 0;
+            if (c.codepoint() == PlaceholderCodepoint && !c.isEmpty()) {
+                // An image slice, not a glyph.
+                const std::u32string_view extra = scr.graphemeExtra(row, x);
+                std::uint32_t imageId = colorId(st.fg);
+                const std::uint32_t placementId = colorId(st.underlineColor);
+                const int r = extra.size() > 0 ? placeholderDiacriticValue(extra[0]) : -1;
+                const int cIdx = extra.size() > 1 ? placeholderDiacriticValue(extra[1]) : -1;
+                const int high = extra.size() > 2 ? placeholderDiacriticValue(extra[2]) : -1;
+                const bool continues = prevValid && (imageId & 0xFFFFFF) == (prevImage & 0xFFFFFF)
+                    && placementId == prevPlacement;
+                if (high >= 0) {
+                    imageId |= std::uint32_t(high) << 24;
+                } else if (continues) {
+                    imageId = prevImage;
+                }
+                const int cellRow = r >= 0 ? r : (continues ? prevRow : 0);
+                const int cellCol = cIdx >= 0 ? cIdx : (continues ? prevCol + 1 : 0);
+                if (auto slice = t.graphics().placeholderSlice(imageId, placementId, cellRow, cellCol, x * cw, y * ch,
+                                                               cw, ch)) {
+                    images.push_back(std::move(*slice));
+                }
+                prevValid = true;
+                prevImage = imageId;
+                prevPlacement = placementId;
+                prevRow = cellRow;
+                prevCol = cellCol;
+                out.cp = 0;
+                continue;
+            }
+            prevValid = false;
             if (c.hasGrapheme()) {
                 const std::u32string_view extra = scr.graphemeExtra(row, x);
                 if (!extra.empty()) {

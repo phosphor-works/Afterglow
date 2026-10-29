@@ -254,3 +254,24 @@ TEST(Graphics, HugeRowCountDoesNotHang)
     t.t.feed(apc("a=p,i=14,r=2000000000,q=2"));
     EXPECT_EQ(t.t.screen().cursor.y, 9);
 }
+
+TEST(Graphics, UnicodePlaceholders)
+{
+    Term t(20, 10);
+    // A 40x40 image as a virtual placement of 4x2 cells (10x20 px cells).
+    t.t.feed(apc("a=t,f=32,s=40,v=40,i=3,q=2", b64(rgba(40, 40, 1, 2, 3))));
+    t.t.feed(apc("a=p,i=3,U=1,c=4,r=2,q=2"));
+    EXPECT_EQ(placeholderDiacriticValue(0x0305), 0);
+    EXPECT_EQ(placeholderDiacriticValue(0x030D), 1);
+    EXPECT_EQ(placeholderDiacriticValue(U'a'), -1);
+    // Cell (row 1, col 2): 40x40 fits a 40x40 grid exactly, so the slice is
+    // image pixels (20, 20)-(30, 40).
+    auto slice = t.g().placeholderSlice(3, 0, 1, 2, 0, 0, 10, 20);
+    ASSERT_TRUE(slice.has_value());
+    EXPECT_EQ(slice->srcX, 20);
+    EXPECT_EQ(slice->srcY, 20);
+    EXPECT_EQ(slice->srcW, 10);
+    EXPECT_EQ(slice->srcH, 20);
+    EXPECT_FALSE(t.g().placeholderSlice(3, 0, 2, 0, 0, 0, 10, 20).has_value()); // outside the grid
+    EXPECT_FALSE(t.g().placeholderSlice(99, 0, 0, 0, 0, 0, 10, 20).has_value());
+}

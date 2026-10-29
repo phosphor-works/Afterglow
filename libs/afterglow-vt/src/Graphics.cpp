@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cstdio>
 #include <filesystem>
+#include <cmath>
 #include <fstream>
 
 #include <fcntl.h>
@@ -20,6 +21,17 @@
 #include <unistd.h>
 
 namespace AfterglowVt {
+
+namespace {
+#include "PlaceholderDiacritics.inc"
+} // namespace
+
+int placeholderDiacriticValue(char32_t cp)
+{
+    const auto* end = std::end(PlaceholderDiacritics);
+    const auto* it = std::lower_bound(std::begin(PlaceholderDiacritics), end, cp);
+    return (it != end && *it == cp) ? int(it - std::begin(PlaceholderDiacritics)) : -1;
+}
 
 namespace {
 
@@ -910,6 +922,65 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
     }
     std::stable_sort(out.begin(), out.end(), [](const VisiblePlacement& a, const VisiblePlacement& b) { return a.z < b.z; });
     return out;
+}
+
+std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t imageId, std::uint32_t placementId,
+                                                                int row, int col, int cellX, int cellY, int cw,
+                                                                int ch) const
+{
+    if (cw <= 0 || ch <= 0) {
+        return std::nullopt;
+    }
+    const auto img = m_images.find(imageId);
+    if (img == m_images.end() || img->second.frames.empty()) {
+        return std::nullopt;
+    }
+    const Placement* pl = nullptr;
+    for (const Placement& p : m_placements) {
+        if (p.isVirtual && p.imageId == imageId && (placementId == 0 || p.placementId == placementId)) {
+            pl = &p;
+            break;
+        }
+    }
+    if (!pl) {
+        return std::nullopt;
+    }
+    const Image& image = img->second;
+    // The placement's grid, from its size in cells or the image's own size.
+    const int cols = pl->cols > 0 ? pl->cols : int((image.width + std::uint32_t(cw) - 1) / std::uint32_t(cw));
+    const int rows = pl->rows > 0 ? pl->rows : int((image.height + std::uint32_t(ch) - 1) / std::uint32_t(ch));
+    if (row < 0 || col < 0 || row >= rows || col >= cols) {
+        return std::nullopt;
+    }
+    // The image fits the grid with its aspect ratio kept, centred.
+    const double gridW = double(cols * cw);
+    const double gridH = double(rows * ch);
+    const double imgW = std::max(1.0, double(image.width));
+    const double imgH = std::max(1.0, double(image.height));
+    const double scale = (imgW * gridH > imgH * gridW) ? gridW / imgW : gridH / imgH;
+    const double offX = (gridW - imgW * scale) / 2;
+    const double offY = (gridH - imgH * scale) / 2;
+    // This cell's part of the grid, clipped to the image.
+    const double gx0 = std::max(double(col * cw), offX);
+    const double gy0 = std::max(double(row * ch), offY);
+    const double gx1 = std::min(double((col + 1) * cw), offX + imgW * scale);
+    const double gy1 = std::min(double((row + 1) * ch), offY + imgH * scale);
+    if (gx1 <= gx0 || gy1 <= gy0) {
+        return std::nullopt;
+    }
+    VisiblePlacement v;
+    v.frame = image.frames[std::min(image.currentFrame, image.frames.size() - 1)];
+    v.imageId = imageId;
+    v.x = cellX + int(std::lround(gx0 - col * cw));
+    v.y = cellY + int(std::lround(gy0 - row * ch));
+    v.width = int(std::lround(gx1 - gx0));
+    v.height = int(std::lround(gy1 - gy0));
+    v.srcX = int(std::lround((gx0 - offX) / scale));
+    v.srcY = int(std::lround((gy0 - offY) / scale));
+    v.srcW = std::max(1, int(std::lround((gx1 - gx0) / scale)));
+    v.srcH = std::max(1, int(std::lround((gy1 - gy0) / scale)));
+    v.z = pl->z;
+    return v;
 }
 
 void GraphicsStore::clearPlacements(const Screen& screen, bool includeHistory)
