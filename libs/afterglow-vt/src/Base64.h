@@ -5,13 +5,21 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace AfterglowVt::detail {
 
-/// Decodes base64, skipping padding and anything outside the alphabet.
-inline std::string base64Decode(std::string_view in)
+/// How much a decoder forgives.
+enum class Base64Check {
+    Lenient, ///< skips padding and anything outside the alphabet
+    PaddingOptional, ///< the alphabet only, trailing padding optional
+    Strict, ///< RFC 4648: the alphabet, length a multiple of four, correct padding
+};
+
+/// Decodes base64; nullopt when @p check rejects the input.
+inline std::optional<std::string> base64Decode(std::string_view in, Base64Check check)
 {
     static constexpr auto table = [] {
         std::array<std::int8_t, 256> t{};
@@ -22,6 +30,21 @@ inline std::string base64Decode(std::string_view in)
         }
         return t;
     }();
+    if (check == Base64Check::Strict) {
+        if (in.size() % 4 != 0) {
+            return std::nullopt;
+        }
+        // At most two padding characters, and only at the end.
+        const std::size_t padding = in.ends_with("==") ? 2 : in.ends_with('=') ? 1 : 0;
+        in.remove_suffix(padding);
+    } else if (check == Base64Check::PaddingOptional) {
+        while (!in.empty() && in.back() == '=') {
+            in.remove_suffix(1);
+        }
+        if (in.size() % 4 == 1) {
+            return std::nullopt; // six bits cannot end a byte
+        }
+    }
     std::string out;
     out.reserve(in.size() * 3 / 4);
     std::uint32_t acc = 0;
@@ -29,7 +52,10 @@ inline std::string base64Decode(std::string_view in)
     for (char ch : in) {
         const std::int8_t v = table[static_cast<unsigned char>(ch)];
         if (v < 0) {
-            continue;
+            if (check == Base64Check::Lenient) {
+                continue;
+            }
+            return std::nullopt;
         }
         acc = (acc << 6) | std::uint32_t(v);
         bits += 6;
@@ -39,6 +65,12 @@ inline std::string base64Decode(std::string_view in)
         }
     }
     return out;
+}
+
+/// Decodes base64, skipping padding and anything outside the alphabet.
+inline std::string base64Decode(std::string_view in)
+{
+    return *base64Decode(in, Base64Check::Lenient);
 }
 
 inline std::string base64Encode(std::string_view in)

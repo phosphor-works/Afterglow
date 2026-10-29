@@ -3,6 +3,8 @@
 
 #include <AfterglowVt/Notifications.h>
 
+#include "Base64.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -16,40 +18,6 @@ constexpr std::size_t MaxChunkEncoded = 4096;
 constexpr std::size_t MaxText = 64 * 1024; // title, body and buttons together
 constexpr std::size_t MaxIcon = 4 * 1024 * 1024;
 constexpr std::size_t MaxPending = 32;
-
-/// Standard base64; padding optional (the last chunk may lack it).
-std::optional<std::string> decodeBase64(std::string_view in)
-{
-    static constexpr auto table = [] {
-        std::array<std::int8_t, 256> t{};
-        t.fill(-1);
-        const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (int i = 0; i < 64; ++i) {
-            t[static_cast<unsigned char>(chars[i])] = std::int8_t(i);
-        }
-        return t;
-    }();
-    while (!in.empty() && in.back() == '=') {
-        in.remove_suffix(1);
-    }
-    std::string out;
-    out.reserve(in.size() * 3 / 4);
-    std::uint32_t acc = 0;
-    int bits = 0;
-    for (char ch : in) {
-        const std::int8_t v = table[static_cast<unsigned char>(ch)];
-        if (v < 0) {
-            return std::nullopt;
-        }
-        acc = (acc << 6) | std::uint32_t(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(char((acc >> bits) & 0xFF));
-        }
-    }
-    return out;
-}
 
 /// Escape-code safe UTF-8: valid, and no C0, DEL or C1 controls.
 bool isSafeText(std::string_view s)
@@ -212,7 +180,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
 
     // Metadata of every chunk applies; later values win.
     for (const auto& [key, value] : keys) {
-        auto decoded = [&value]() { return decodeBase64(value).value_or(std::string{}); };
+        auto decoded = [&value]() { return detail::base64Decode(value, detail::Base64Check::PaddingOptional).value_or(std::string{}); };
         switch (key) {
         case 'a': {
             std::size_t vpos = 0;
@@ -286,7 +254,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     // The chunk's payload.
     std::string text;
     if (encoded || type == "icon") {
-        auto decoded = decodeBase64(data);
+        auto decoded = detail::base64Decode(data, detail::Base64Check::PaddingOptional);
         if (!decoded) {
             m_pending.erase(it);
             return Result::Ignored;

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <AfterglowVt/Graphics.h>
+
+#include "Base64.h"
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -36,36 +38,6 @@ int placeholderDiacriticValue(char32_t cp)
 namespace {
 
 constexpr std::uint32_t MaxDimension = 10000;
-
-std::string base64Decode(std::string_view in)
-{
-    static constexpr auto table = [] {
-        std::array<std::int8_t, 256> t{};
-        t.fill(-1);
-        const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (int i = 0; i < 64; ++i) {
-            t[static_cast<unsigned char>(chars[i])] = std::int8_t(i);
-        }
-        return t;
-    }();
-    std::string out;
-    out.reserve(in.size() * 3 / 4);
-    std::uint32_t acc = 0;
-    int bits = 0;
-    for (char ch : in) {
-        const std::int8_t v = table[static_cast<unsigned char>(ch)];
-        if (v < 0) {
-            continue; // padding and stray bytes
-        }
-        acc = (acc << 6) | std::uint32_t(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(char((acc >> bits) & 0xFF));
-        }
-    }
-    return out;
-}
 
 bool inflateZlib(const std::string& in, std::string& out)
 {
@@ -282,7 +254,7 @@ void GraphicsStore::handle(std::string_view payload, Context& ctx)
 
     if (m_pending.active) {
         // Continuation chunks carry only m (and q); the first chunk's keys apply.
-        m_pending.data += base64Decode(data);
+        m_pending.data += detail::base64Decode(data);
         if (cmd.more == 1) {
             return;
         }
@@ -293,7 +265,7 @@ void GraphicsStore::handle(std::string_view payload, Context& ctx)
         return;
     }
 
-    std::string decoded = base64Decode(data);
+    std::string decoded = detail::base64Decode(data);
     if (cmd.more == 1 && (cmd.action == 't' || cmd.action == 'T' || cmd.action == 'q' || cmd.action == 'f')) {
         m_pending.controlData.assign(keys);
         m_pending.data = std::move(decoded);

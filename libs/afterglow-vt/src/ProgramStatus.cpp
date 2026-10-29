@@ -3,6 +3,8 @@
 
 #include <AfterglowVt/ProgramStatus.h>
 
+#include "Base64.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -34,43 +36,6 @@ std::string_view trim(std::string_view s)
         s.remove_suffix(1);
     }
     return s;
-}
-
-/// Standard base64, padding optional; anything else is an error.
-std::optional<std::string> decodeBase64(std::string_view in)
-{
-    static constexpr auto table = [] {
-        std::array<std::int8_t, 256> t{};
-        t.fill(-1);
-        const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for (int i = 0; i < 64; ++i) {
-            t[static_cast<unsigned char>(chars[i])] = std::int8_t(i);
-        }
-        return t;
-    }();
-    while (!in.empty() && in.back() == '=') {
-        in.remove_suffix(1);
-    }
-    if (in.size() % 4 == 1) {
-        return std::nullopt;
-    }
-    std::string out;
-    out.reserve(in.size() * 3 / 4);
-    std::uint32_t acc = 0;
-    int bits = 0;
-    for (char ch : in) {
-        const std::int8_t v = table[static_cast<unsigned char>(ch)];
-        if (v < 0) {
-            return std::nullopt;
-        }
-        acc = (acc << 6) | std::uint32_t(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(char((acc >> bits) & 0xFF));
-        }
-    }
-    return out;
 }
 
 /// Valid UTF-8 with no C0, DEL or C1 control characters (newlines and tabs
@@ -246,14 +211,14 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body)
         r.app = std::string(*app);
     }
     if (title) {
-        const auto decoded = title->size() <= MaxTitleEncoded ? decodeBase64(*title) : std::nullopt;
+        const auto decoded = title->size() <= MaxTitleEncoded ? detail::base64Decode(*title, detail::Base64Check::PaddingOptional) : std::nullopt;
         if (!decoded || decoded->size() > MaxTitleDecoded || !isCleanUtf8(*decoded)) {
             return Result::Ignored;
         }
         r.title = *decoded;
     }
     if (msg) {
-        const auto decoded = msg->size() <= MaxMsgEncoded ? decodeBase64(*msg) : std::nullopt;
+        const auto decoded = msg->size() <= MaxMsgEncoded ? detail::base64Decode(*msg, detail::Base64Check::PaddingOptional) : std::nullopt;
         if (!decoded || decoded->size() > MaxMsgDecoded || !isCleanUtf8(*decoded)) {
             return Result::Ignored;
         }

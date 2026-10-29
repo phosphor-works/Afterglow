@@ -3,6 +3,8 @@
 
 #include <AfterglowVt/Clipboard.h>
 
+#include "Base64.h"
+
 #include <AfterglowVt/Notifications.h>
 
 #include <array>
@@ -11,65 +13,6 @@
 namespace AfterglowVt {
 
 namespace {
-
-constexpr char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-std::string encodeBase64(std::string_view in)
-{
-    std::string out;
-    out.reserve((in.size() + 2) / 3 * 4);
-    for (std::size_t i = 0; i < in.size(); i += 3) {
-        std::uint32_t v = std::uint32_t(std::uint8_t(in[i])) << 16;
-        if (i + 1 < in.size()) {
-            v |= std::uint32_t(std::uint8_t(in[i + 1])) << 8;
-        }
-        if (i + 2 < in.size()) {
-            v |= std::uint8_t(in[i + 2]);
-        }
-        out += B64[(v >> 18) & 63];
-        out += B64[(v >> 12) & 63];
-        out += i + 1 < in.size() ? B64[(v >> 6) & 63] : '=';
-        out += i + 2 < in.size() ? B64[v & 63] : '=';
-    }
-    return out;
-}
-
-/// Strict RFC 4648: the standard alphabet, correct padding, nothing else.
-std::optional<std::string> decodeBase64Strict(std::string_view in)
-{
-    static constexpr auto table = [] {
-        std::array<std::int8_t, 256> t{};
-        t.fill(-1);
-        for (int i = 0; i < 64; ++i) {
-            t[static_cast<unsigned char>(B64[i])] = std::int8_t(i);
-        }
-        return t;
-    }();
-    if (in.size() % 4 != 0) {
-        return std::nullopt;
-    }
-    std::size_t padding = 0;
-    if (!in.empty() && in.back() == '=') {
-        padding = in.size() >= 2 && in[in.size() - 2] == '=' ? 2 : 1;
-    }
-    std::string out;
-    out.reserve(in.size() / 4 * 3);
-    std::uint32_t acc = 0;
-    int bits = 0;
-    for (std::size_t i = 0; i < in.size() - padding; ++i) {
-        const std::int8_t v = table[static_cast<unsigned char>(in[i])];
-        if (v < 0) {
-            return std::nullopt;
-        }
-        acc = (acc << 6) | std::uint32_t(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(char((acc >> bits) & 0xFF));
-        }
-    }
-    return out;
-}
 
 std::string header(std::string_view type, std::string_view status, std::string_view id)
 {
@@ -101,7 +44,7 @@ bool ClipboardAssembler::flush(std::string& reply)
     if (m_mime.empty()) {
         return true;
     }
-    auto decoded = decodeBase64Strict(m_encoded);
+    auto decoded = detail::base64Decode(m_encoded, detail::Base64Check::Strict);
     if (!decoded) {
         reply = writeStatus("EINVAL", m_write.id);
         return false;
@@ -134,7 +77,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             const std::string_view key = kv.substr(0, eq);
             const std::string_view value = kv.substr(eq + 1);
             auto decode = [&](std::string& target) {
-                if (auto d = decodeBase64Strict(value)) {
+                if (auto d = detail::base64Decode(value, detail::Base64Check::Strict)) {
                     target = std::move(*d);
                 } else {
                     badValue = true;
@@ -162,7 +105,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
 
     if (type == "read") {
         // A read has no way to report bad base64: it is ignored.
-        const auto list = decodeBase64Strict(data);
+        const auto list = detail::base64Decode(data, detail::Base64Check::Strict);
         if (badValue || !list) {
             return Result::Ignored;
         }
@@ -220,7 +163,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             return fail("EINVAL");
         }
         if (type == "walias") {
-            const auto aliases = decodeBase64Strict(data);
+            const auto aliases = detail::base64Decode(data, detail::Base64Check::Strict);
             if (mime.empty() || !aliases) {
                 return fail("EINVAL");
             }
@@ -277,7 +220,7 @@ std::string ClipboardAssembler::readStatus(std::string_view status, const Clipbo
         r += ":loc=primary";
     }
     if (!oneTimePassword.empty()) {
-        r += ":pw=" + encodeBase64(oneTimePassword);
+        r += ":pw=" + detail::base64Encode(oneTimePassword);
     }
     r += "\x1b\\";
     return r;
@@ -287,13 +230,13 @@ std::string ClipboardAssembler::readData(std::string_view mime, std::string_view
                                          std::string_view oneTimePassword)
 {
     std::string out;
-    const std::string prefix = header("read", "DATA", request.id) + ":mime=" + encodeBase64(mime)
-        + (oneTimePassword.empty() ? std::string{} : ":pw=" + encodeBase64(oneTimePassword)) + ';';
+    const std::string prefix = header("read", "DATA", request.id) + ":mime=" + detail::base64Encode(mime)
+        + (oneTimePassword.empty() ? std::string{} : ":pw=" + detail::base64Encode(oneTimePassword)) + ';';
     std::size_t pos = 0;
     do {
         const std::string_view chunk = bytes.substr(pos, ReadChunk);
         out += prefix;
-        out += encodeBase64(chunk);
+        out += detail::base64Encode(chunk);
         out += "\x1b\\";
         pos += ReadChunk;
     } while (pos < bytes.size());
@@ -310,7 +253,7 @@ std::string ClipboardRequest::osc52Reply(std::string_view text) const
     std::string r = "\x1b]52;";
     r += osc52Selection;
     r += ';';
-    r += encodeBase64(text);
+    r += detail::base64Encode(text);
     r += osc52Bel ? "\x07" : "\x1b\\";
     return r;
 }
