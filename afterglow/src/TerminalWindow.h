@@ -204,6 +204,8 @@ private:
     int rawRowAt(Pane* pane, const QPointF& pos) const;
     void updateSelectionDrag();
     void copySelection(bool toClipboard);
+    /// Copies @p pane's new selection where Terminal.copyOnSelect says.
+    void copyOnSelect(Pane* pane);
     bool sendMouse(Pane* pane, const QPointF& pos, int button, int action, Qt::KeyboardModifiers mods);
 
     AfterglowRender::GpuDevice& m_device;

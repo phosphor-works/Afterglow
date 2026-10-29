@@ -1305,9 +1305,7 @@ bool TerminalWindow::performAction(Action action)
     case Action::SelectAll:
         if (m_focused) {
             m_focused->selectAll();
-            if (m_settings.settings().copyOnSelect) {
-                copySelection(false);
-            }
+            copyOnSelect(m_focused);
             scheduleRender();
         }
         return true;
@@ -2259,6 +2257,22 @@ void TerminalWindow::sendKey(QKeyEvent* e)
     m_focused->sendInput(bytes);
 }
 
+void TerminalWindow::copyOnSelect(Pane* pane)
+{
+    const Settings::CopyOnSelect mode = m_settings.settings().copyOnSelect;
+    if (mode == Settings::CopyOnSelect::Off || !pane || !pane->hasSelection()) {
+        return;
+    }
+    const QString text = pane->selectedText();
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    if (clipboard->supportsSelection()) {
+        clipboard->setText(text, QClipboard::Selection);
+    }
+    if (mode == Settings::CopyOnSelect::Clipboard) {
+        clipboard->setText(text, QClipboard::Clipboard);
+    }
+}
+
 void TerminalWindow::copySelection(bool toClipboard)
 {
     if (!m_focused || !m_focused->hasSelection()) {
@@ -2608,9 +2622,7 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     if (e->button() == Qt::LeftButton && m_selectionPane) {
         m_autoScroll.stop();
         if (m_selectionPane->hasSelection()) {
-            if (m_settings.settings().copyOnSelect) {
-                QGuiApplication::clipboard()->setText(m_selectionPane->selectedText(), QClipboard::Selection);
-            }
+            copyOnSelect(m_selectionPane);
         } else {
             m_selectionPane->clearSelection();
             if (m_clickCount == 1 && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier))) {

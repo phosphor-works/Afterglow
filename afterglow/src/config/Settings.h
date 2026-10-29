@@ -71,7 +71,10 @@ struct Settings
     bool scripts = true; ///< run Luau scripts from the scripts directories
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
-    bool copyOnSelect = true;
+    /// Where a finished selection is copied: nowhere, the primary selection
+    /// (middle-click paste), or the clipboard too (Ctrl+V anywhere).
+    enum class CopyOnSelect { Off, Primary, Clipboard };
+    CopyOnSelect copyOnSelect = CopyOnSelect::Primary;
     enum class Bell { None, Attention, Visual, Both };
     Bell bell = Bell::Attention;
     bool notifications = true; ///< OSC 9 / 777 desktop notifications

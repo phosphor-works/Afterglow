@@ -130,7 +130,23 @@ PhosphorConfig::Schema buildSchema()
           {QStringLiteral("underline"), QStringLiteral("underline")},
           {QStringLiteral("bar"), QStringLiteral("bar")}}},
         {QStringLiteral("cursorBlink"), true, QMetaType::Bool, QStringLiteral("Blink the cursor")},
-        {QStringLiteral("copyOnSelect"), true, QMetaType::Bool, QStringLiteral("Copy selections to the primary selection")},
+        {QStringLiteral("copyOnSelect"), QStringLiteral("primary"), QMetaType::QString,
+         QStringLiteral("Copy a selection when it is made: primary (middle-click paste), clipboard (both), or off"),
+         [](const QVariant& v) {
+             // true and false from older configs: primary and off.
+             const QString s = v.typeId() == QMetaType::Bool ? (v.toBool() ? QStringLiteral("primary") : QStringLiteral("off"))
+                                                             : v.toString().toLower();
+             if (s == QLatin1String("clipboard")) {
+                 return QVariant(QStringLiteral("clipboard"));
+             }
+             if (s == QLatin1String("off") || s == QLatin1String("false") || s == QLatin1String("none")) {
+                 return QVariant(QStringLiteral("off"));
+             }
+             return QVariant(QStringLiteral("primary"));
+         },
+         {{QStringLiteral("primary"), QStringLiteral("primary")},
+          {QStringLiteral("clipboard"), QStringLiteral("clipboard")},
+          {QStringLiteral("off"), QStringLiteral("off")}}},
         {QStringLiteral("bell"), QStringLiteral("attention"), QMetaType::QString,
          QStringLiteral("none, attention (mark the window urgent), visual (flash the pane) or both"),
          [](const QVariant& v) {
@@ -343,7 +359,12 @@ Settings SettingsStore::read() const
     t.cursorBlink = st.read<bool>(Terminal, QStringLiteral("cursorBlink"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell"));
     s.term = st.read<QString>(Terminal, QStringLiteral("term"));
-    s.copyOnSelect = st.read<bool>(Terminal, QStringLiteral("copyOnSelect"));
+    {
+        const QString copy = st.read<QString>(Terminal, QStringLiteral("copyOnSelect"));
+        s.copyOnSelect = copy == QLatin1String("clipboard") ? Settings::CopyOnSelect::Clipboard
+            : copy == QLatin1String("off")                  ? Settings::CopyOnSelect::Off
+                                                            : Settings::CopyOnSelect::Primary;
+    }
     const QString bell = st.read<QString>(Terminal, QStringLiteral("bell"));
     s.bell = bell == QLatin1String("none")     ? Settings::Bell::None
              : bell == QLatin1String("visual") ? Settings::Bell::Visual
