@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Name=Afterglow
+GenericName=Terminal
+Comment=A GPU-accelerated terminal for Wayland
+Exec=afterglow
+Icon=io.github.fuddlesworth.Afterglow
+Terminal=false
+Categories=System;TerminalEmulator;Qt;
+Keywords=shell;prompt;command;commandline;cmd;terminal;console;
+StartupNotify=true
+StartupWMClass=io.github.fuddlesworth.Afterglow
+X-TerminalArgExec=-e
+X-TerminalArgDir=--working-directory
+Actions=new-window;quick-terminal;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=afterglow
+
+[Desktop Action quick-terminal]
+Name=Toggle Quick Terminal
+Exec=afterglow --quick-terminal

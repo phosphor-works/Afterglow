@@ -40,6 +40,13 @@ int main(int argc, char** argv)
 {
     // The quick terminal is a layer surface; this shell integration also gives
     // ordinary windows their usual xdg-shell role. Chosen before Qt starts.
+    // The plugin lives in afterglow's private directory when installed, in
+    // the build tree during development (which, added last, wins).
+#ifdef AFTERGLOW_INSTALLED_PLUGIN_DIR
+    if (QDir(QStringLiteral(AFTERGLOW_INSTALLED_PLUGIN_DIR)).exists()) {
+        QCoreApplication::addLibraryPath(QStringLiteral(AFTERGLOW_INSTALLED_PLUGIN_DIR));
+    }
+#endif
 #ifdef AFTERGLOW_BUILD_PLUGIN_DIR
     if (QDir(QStringLiteral(AFTERGLOW_BUILD_PLUGIN_DIR)).exists()) {
         QCoreApplication::addLibraryPath(QStringLiteral(AFTERGLOW_BUILD_PLUGIN_DIR));
@@ -63,6 +70,8 @@ int main(int argc, char** argv)
     const QCommandLineOption execOption({QStringLiteral("e"), QStringLiteral("execute")},
                                         QStringLiteral("Run the rest of the command line instead of the shell."));
     parser.addOptions({cwdOption, quickOption, execOption});
+    // Everything after the program -e runs is its own, options included.
+    parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
                                  QStringLiteral("[command...]"));
     parser.process(app);

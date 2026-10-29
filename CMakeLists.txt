@@ -30,6 +30,12 @@ endif()
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
 add_compile_definitions(QT_NO_KEYWORDS)
 
+# Installed layout: the executable in bin/; afterglow's libraries, its own
+# copies of the phosphor libraries and their layer-shell plugin in a private
+# lib/afterglow/, so a system install of phosphor is never touched.
+set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR};$ORIGIN;$ORIGIN/../..")
+
 include(cmake/AfterglowPhosphor.cmake)
 
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)

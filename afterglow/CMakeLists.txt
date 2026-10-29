@@ -62,6 +62,7 @@ pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
     AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
+    AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/afterglow/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
@@ -73,7 +74,38 @@ target_link_libraries(afterglow PRIVATE afterglow_shaders Afterglow::Render Afte
     Qt6::DBus KF6::WindowSystem)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# Private libraries: afterglow's own and the phosphor ones it was built with.
+install(TARGETS AfterglowVt AfterglowRender AfterglowPty
+                PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
+                PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
+        LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
+install(TARGETS phosphorwayland-qpa
+        LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
+
+# Desktop integration. The app id matches QGuiApplication::desktopFileName,
+# which Wayland uses to find the icon and group windows.
+set(AFTERGLOW_APP_ID io.github.fuddlesworth.Afterglow)
+install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+install(FILES ${PROJECT_SOURCE_DIR}/data/icons/${AFTERGLOW_APP_ID}.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+# Rendered sizes too: the glow uses SVG filters that not every icon loader draws.
+find_program(RSVG_CONVERT rsvg-convert)
+if(RSVG_CONVERT)
+    set(_icon_pngs)
+    foreach(size 16 22 24 32 48 64 128 256 512)
+        set(_png ${CMAKE_BINARY_DIR}/icons/${size}x${size}/${AFTERGLOW_APP_ID}.png)
+        add_custom_command(OUTPUT ${_png}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/icons/${size}x${size}
+            COMMAND ${RSVG_CONVERT} -w ${size} -h ${size} -o ${_png} ${PROJECT_SOURCE_DIR}/data/icons/${AFTERGLOW_APP_ID}.svg
+            DEPENDS ${PROJECT_SOURCE_DIR}/data/icons/${AFTERGLOW_APP_ID}.svg
+            COMMENT "Rendering the ${size}px icon")
+        list(APPEND _icon_pngs ${_png})
+        install(FILES ${_png} DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps)
+    endforeach()
+    add_custom_target(afterglow_icons ALL DEPENDS ${_icon_pngs})
+endif()
 
 # The afterglow terminfo entry, compiled into the build tree for development
 # runs and installed under share/terminfo.

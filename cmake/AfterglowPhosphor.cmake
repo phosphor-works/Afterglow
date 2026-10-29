@@ -17,9 +17,19 @@ if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-rendering/CMakeLists
         "Set -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs.")
 endif()
 
+# The phosphor libraries' install rules are for a system install of phosphor
+# (headers, CMake packages, the plugin in Qt's directory). Afterglow installs
+# the parts it uses privately instead, so they are skipped here.
+macro(install)
+    if(NOT AFTERGLOW_INSIDE_PHOSPHOR)
+        _install(${ARGN})
+    endif()
+endmacro()
+
 function(afterglow_add_phosphor_libs)
     # The phosphor libraries' own test suites are not part of this build.
     set(BUILD_TESTING OFF)
+    set(AFTERGLOW_INSIDE_PHOSPHOR ON)
     foreach(lib IN LISTS ARGN)
         add_subdirectory("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/${lib}"
                          "${CMAKE_BINARY_DIR}/phosphor/${lib}" EXCLUDE_FROM_ALL)
