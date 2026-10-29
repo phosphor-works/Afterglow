@@ -102,6 +102,12 @@ struct TerminalOptions
         {0x55, 0x55, 0x55}, {0xff, 0x55, 0x55}, {0x55, 0xff, 0x55}, {0xff, 0xff, 0x55},
         {0x55, 0x55, 0xff}, {0xff, 0x55, 0xff}, {0x55, 0xff, 0xff}, {0xff, 0xff, 0xff},
     }};
+    /// Cursor colour; unset follows the foreground.
+    std::optional<Rgb> cursorColor;
+    /// The cursor DECSCUSR 0 and a reset return to.
+    CursorShape cursorShape = CursorShape::Block;
+    bool cursorBlink = true;
+    bool operator==(const TerminalOptions&) const = default;
 };
 
 /// The terminal state machine: owns the primary and alternate screens and
@@ -116,6 +122,10 @@ public:
     Terminal& operator=(const Terminal&) = delete;
 
     void feed(std::string_view bytes);
+
+    /// Applies new defaults to a running terminal (live config reload).
+    /// Colours set by the application (OSC 4/10/11/12) are replaced.
+    void setOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.
     void resize(int cols, int rows, int cellWidth, int cellHeight);
@@ -146,7 +156,10 @@ public:
     Rgb defaultForeground() const noexcept { return m_defaultFg; }
     Rgb defaultBackground() const noexcept { return m_defaultBg; }
     /// Cursor colour set by OSC 12, if any.
-    const Rgb* cursorColor() const noexcept { return m_hasCursorColor ? &m_cursorColor : nullptr; }
+    const Rgb* cursorColor() const noexcept
+    {
+        return m_hasCursorColor ? &m_cursorColor : (m_options.cursorColor ? &*m_options.cursorColor : nullptr);
+    }
     Rgb resolve(Color color, bool foreground) const noexcept;
 
     /// Kitty graphics state of the active screen.

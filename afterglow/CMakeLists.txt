@@ -15,6 +15,10 @@ add_executable(afterglow
     src/KeyMapping.h
     src/XkbKeyboard.cpp
     src/XkbKeyboard.h
+    src/config/Keybinds.cpp
+    src/config/Keybinds.h
+    src/config/Settings.cpp
+    src/config/Settings.h
 )
 
 find_package(PkgConfig REQUIRED)
@@ -22,6 +26,6 @@ pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}")
 target_link_libraries(afterglow PRIVATE Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
-    PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
+    PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

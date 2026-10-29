@@ -353,6 +353,12 @@ void Screen::clearHistory()
     m_viewportOffset = 0;
 }
 
+void Screen::setMaxScrollback(std::size_t rows)
+{
+    m_maxScrollback = rows;
+    trimHistory();
+}
+
 void Screen::scrollViewport(long delta) noexcept
 {
     const long next = long(m_viewportOffset) + delta;

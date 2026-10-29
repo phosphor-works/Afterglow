@@ -27,6 +27,7 @@ struct FontStyleSpec
     float weight = 400;
     float width = 100;
     float slant = 0;
+    bool operator==(const FontStyleSpec&) const = default;
 };
 
 struct FontSpec
@@ -40,6 +41,7 @@ struct FontSpec
     /// calt carries Monaspace texture healing; ss01-ss08 are its coding ligature sets.
     std::vector<std::string> features{"calt", "liga", "ss01", "ss02", "ss03", "ss04",
                                       "ss05", "ss06", "ss07", "ss08"};
+    bool operator==(const FontSpec&) const = default;
 };
 
 enum class StyleSlot : std::uint8_t { Regular, Bold, Italic, BoldItalic };

@@ -107,6 +107,8 @@ public:
     void scrollDown(const Region& region, int n, std::uint32_t fillStyleId);
 
     void clearHistory();
+    /// Changes the history limit, trimming the oldest rows if needed.
+    void setMaxScrollback(std::size_t rows);
 
     /// Resizes the grid. With @p reflow, soft-wrapped lines are rewrapped to the
     /// new width and the cursor follows its character.

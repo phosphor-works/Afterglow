@@ -250,3 +250,22 @@ TEST(Terminal, KittyKeyboardStack)
     t.feed("\x1b[1;5H\x1b[s\x1b[2;1H\x1b[u");
     EXPECT_EQ(t.t.screen().cursor.x, 4);
 }
+
+TEST(Terminal, SetOptionsAppliesLive)
+{
+    Term t(10, 2);
+    t.feed("\x1b]11;#000000\x07\x1b[5 q");
+    TerminalOptions o;
+    o.defaultBackground = Rgb{1, 2, 3};
+    o.cursorShape = CursorShape::Bar;
+    o.cursorBlink = false;
+    o.maxScrollback = 1;
+    t.t.setOptions(o);
+    EXPECT_EQ(t.t.defaultBackground(), (Rgb{1, 2, 3}));
+    EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
+    t.feed("\x1b[2 q\x1b[0 q"); // DECSCUSR 0 returns to the configured cursor
+    EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
+    EXPECT_FALSE(t.t.modes().cursorBlink);
+    t.feed("a\r\nb\r\nc\r\nd");
+    EXPECT_EQ(t.t.screen().historySize(), 1u);
+}

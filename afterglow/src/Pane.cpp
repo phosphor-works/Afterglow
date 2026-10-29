@@ -27,9 +27,9 @@ constexpr qint64 SyncTimeoutMs = 1000;
 constexpr qint64 PromptRedrawTimeoutMs = 150;
 } // namespace
 
-Pane::Pane(QObject* parent)
+Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
     : QObject(parent)
-    , m_terminal(InitialCols, InitialRows, *this)
+    , m_terminal(InitialCols, InitialRows, *this, options)
 {
     m_animationTimer.setSingleShot(true);
     m_animationTimer.setTimerType(Qt::PreciseTimer);
@@ -42,8 +42,8 @@ Pane::~Pane()
     m_pty.reset();
 }
 
-bool Pane::start(const AfterglowPty::SpawnOptions& options, int cols, int rows, int cellWidth, int cellHeight,
-                 QString* error)
+bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term, int cols, int rows, int cellWidth,
+                 int cellHeight, QString* error)
 {
     // Size the terminal before the shell starts: programs run from the shell's
     // startup (fastfetch drawing its logo with kitty graphics) query the cell
@@ -57,7 +57,7 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, int cols, int rows, 
     opts.rows = rows;
     opts.pixelWidth = cols * cellWidth;
     opts.pixelHeight = rows * cellHeight;
-    opts.environment.emplace_back("TERM", "xterm-256color");
+    opts.environment.emplace_back("TERM", term.toStdString());
     opts.environment.emplace_back("COLORTERM", "truecolor");
     opts.environment.emplace_back("TERM_PROGRAM", "afterglow");
     opts.environment.emplace_back("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);
@@ -67,6 +67,12 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, int cols, int rows, 
         *error = QString::fromStdString(err);
     }
     return m_pty != nullptr;
+}
+
+void Pane::setOptions(const AfterglowVt::TerminalOptions& options)
+{
+    std::lock_guard lock(m_mutex);
+    m_terminal.setOptions(options);
 }
 
 void Pane::resize(int cols, int rows, int cellWidth, int cellHeight)

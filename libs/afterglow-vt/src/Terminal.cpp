@@ -119,6 +119,8 @@ Terminal::Terminal(int cols, int rows, ITerminalHost& host, const TerminalOption
     , m_defaultFg(options.defaultForeground)
     , m_defaultBg(options.defaultBackground)
 {
+    m_cursorShape = options.cursorShape;
+    m_modes.cursorBlink = options.cursorBlink;
     m_margins = Region{0, rows - 1, 0, cols - 1};
     m_tabStops.assign(std::size_t(cols), false);
     for (int x = 0; x < cols; x += 8) {
@@ -134,6 +136,22 @@ void Terminal::feed(std::string_view bytes)
         return;
     }
     m_parser.feed(bytes);
+    touch();
+}
+
+void Terminal::setOptions(const TerminalOptions& options)
+{
+    // The primary screen keeps history only if it had any; the alternate never does.
+    if (options.maxScrollback != m_options.maxScrollback) {
+        m_primary->setMaxScrollback(options.maxScrollback);
+    }
+    m_options = options;
+    m_palette = buildPalette(m_options.basePalette);
+    m_defaultFg = m_options.defaultForeground;
+    m_defaultBg = m_options.defaultBackground;
+    m_hasCursorColor = false;
+    m_cursorShape = m_options.cursorShape;
+    m_modes.cursorBlink = m_options.cursorBlink;
     touch();
 }
 
@@ -726,11 +744,12 @@ void Terminal::fullReset()
         setAltScreen(false, false, false);
     }
     m_modes = Modes{};
+    m_modes.cursorBlink = m_options.cursorBlink;
     m_kittyStack[0].clear();
     m_kittyStack[1].clear();
     m_graphics[0].clear();
     m_graphics[1].clear();
-    m_cursorShape = CursorShape::Block;
+    m_cursorShape = m_options.cursorShape;
     m_margins = Region{0, rows() - 1, 0, cols() - 1};
     std::fill(m_tabStops.begin(), m_tabStops.end(), false);
     for (std::size_t x = 0; x < m_tabStops.size(); x += 8) {
@@ -1087,7 +1106,10 @@ void Terminal::syncKittyFlags()
 void Terminal::setCursorStyle(int ps)
 {
     switch (ps) {
-    case 0:
+    case 0: // the user's configured cursor
+        m_cursorShape = m_options.cursorShape;
+        m_modes.cursorBlink = m_options.cursorBlink;
+        break;
     case 1:
         m_cursorShape = CursorShape::Block;
         m_modes.cursorBlink = true;

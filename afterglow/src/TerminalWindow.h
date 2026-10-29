@@ -4,6 +4,7 @@
 #pragma once
 
 #include "SplitTree.h"
+#include "config/Settings.h"
 
 #include <AfterglowRender/GridRenderer.h>
 
@@ -30,7 +31,7 @@ class TerminalWindow : public QWindow
     Q_OBJECT
 
 public:
-    explicit TerminalWindow(AfterglowRender::GpuDevice& device, const QString& workingDirectory = {});
+    TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, const QString& workingDirectory = {});
     ~TerminalWindow() override;
 
     static QList<TerminalWindow*> windows();
@@ -58,6 +59,8 @@ private:
     void renderNow();
     void relayout();
     bool handleShortcut(QKeyEvent* e);
+    bool performAction(Action action);
+    void applySettings(const Settings& previous);
     void sendKey(QKeyEvent* e);
     void paste(QClipboard::Mode mode);
     void updateTitle();
@@ -73,6 +76,7 @@ private:
     bool sendMouse(Pane* pane, const QPointF& pos, int button, int action, Qt::KeyboardModifiers mods);
 
     AfterglowRender::GpuDevice& m_device;
+    SettingsStore& m_settings;
     std::unique_ptr<AfterglowRender::WindowRenderer> m_renderer;
     std::unique_ptr<SplitTree> m_splits;
     QPointer<Pane> m_focused;

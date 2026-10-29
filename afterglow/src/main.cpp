@@ -3,6 +3,7 @@
 
 #include "TerminalWindow.h"
 #include "XkbKeyboard.h"
+#include "config/Settings.h"
 
 #include <AfterglowRender/GpuDevice.h>
 
@@ -26,8 +27,15 @@ int main(int argc, char** argv)
     int rc = 0;
     try {
         Afterglow::XkbKeyboard::instance(); // start following the compositor's keymap
-        AfterglowRender::GpuDevice device{AfterglowRender::FontSpec{}};
-        auto* window = new Afterglow::TerminalWindow(device);
+        Afterglow::SettingsStore settings;
+        AfterglowRender::GpuDevice device{settings.settings().font};
+        QObject::connect(&settings, &Afterglow::SettingsStore::changed, &device,
+                         [&settings, &device](const Afterglow::Settings& previous) {
+                             if (settings.settings().font != previous.font) {
+                                 device.setFontSpec(settings.settings().font);
+                             }
+                         });
+        auto* window = new Afterglow::TerminalWindow(device, settings);
         window->show();
         rc = app.exec();
         // Windows hold swapchains on the device: they go first.

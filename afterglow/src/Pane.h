@@ -27,12 +27,15 @@ class Pane : public QObject, private AfterglowVt::ITerminalHost, private Aftergl
     Q_OBJECT
 
 public:
-    explicit Pane(QObject* parent = nullptr);
+    explicit Pane(const AfterglowVt::TerminalOptions& options, QObject* parent = nullptr);
     ~Pane() override;
 
     /// Sizes the terminal and starts the shell on a pty of that size.
-    bool start(const AfterglowPty::SpawnOptions& options, int cols, int rows, int cellWidth, int cellHeight,
-               QString* error);
+    /// @p term is the TERM given to the shell.
+    bool start(const AfterglowPty::SpawnOptions& options, const QString& term, int cols, int rows, int cellWidth,
+               int cellHeight, QString* error);
+    /// Applies changed config to the running terminal.
+    void setOptions(const AfterglowVt::TerminalOptions& options);
 
     void resize(int cols, int rows, int cellWidth, int cellHeight);
     int cols() const;

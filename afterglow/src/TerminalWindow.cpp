@@ -11,6 +11,8 @@
 #include <AfterglowVt/Input.h>
 
 #include <QClipboard>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLoggingCategory>
@@ -29,13 +31,8 @@ using AfterglowVt::Terminal;
 namespace {
 QList<TerminalWindow*> s_windows;
 
-constexpr int PaddingLogical = 6;
-constexpr int InitialCols = 100;
-constexpr int InitialRows = 30;
 constexpr int BlinkIntervalMs = 530;
 constexpr int WheelLines = 3;
-constexpr std::uint32_t DividerColor = packRgba(0x3a, 0x3a, 0x42);
-constexpr std::uint32_t UnfocusedDim = packRgba(0, 0, 0, 48);
 
 int mouseButtonCode(Qt::MouseButton b)
 {
@@ -52,8 +49,10 @@ int mouseButtonCode(Qt::MouseButton b)
 }
 } // namespace
 
-TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, const QString& workingDirectory)
+TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings,
+                               const QString& workingDirectory)
     : m_device(device)
+    , m_settings(settings)
 {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(device.vulkanInstance());
@@ -62,8 +61,9 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, const QString
 
     const auto& m = m_renderer->fonts().fonts->metrics();
     const double dpr = devicePixelRatio();
-    const int pad = int(std::lround(PaddingLogical * dpr));
-    const QSize initial(InitialCols * m.cellWidth + 2 * pad, InitialRows * m.cellHeight + 2 * pad);
+    const WindowSettings& ws = m_settings.settings().window;
+    const int pad = int(std::lround(ws.padding * dpr));
+    const QSize initial(ws.initialColumns * m.cellWidth + 2 * pad, ws.initialRows * m.cellHeight + 2 * pad);
     resize(int(std::lround(initial.width() / dpr)), int(std::lround(initial.height() / dpr)));
 
     Pane* first = createPane(workingDirectory, QRect(QPoint(0, 0), initial));
@@ -71,6 +71,7 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, const QString
     setFocusedPane(first);
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
+    connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
 
     m_blinkTimer.setInterval(BlinkIntervalMs);
     connect(&m_blinkTimer, &QTimer::timeout, this, [this] {
@@ -101,7 +102,7 @@ QList<TerminalWindow*> TerminalWindow::windows()
 
 Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area)
 {
-    auto* pane = new Pane(this);
+    auto* pane = new Pane(m_settings.settings().terminal, this);
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::titleUpdated, this, [this, pane] {
         if (pane == m_focused) {
@@ -124,12 +125,15 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
 
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
+    if (const QString shell = m_settings.settings().shell; !shell.isEmpty()) {
+        opts.argv = {shell.toStdString()};
+    }
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
     const int cols = std::max(2, content.width() / m.cellWidth);
     const int rows = std::max(1, content.height() / m.cellHeight);
     QString error;
-    if (!pane->start(opts, cols, rows, m.cellWidth, m.cellHeight, &error)) {
+    if (!pane->start(opts, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error)) {
         qCCritical(lcWindow) << "failed to start the shell:" << error;
     }
     return pane;
@@ -225,7 +229,7 @@ void TerminalWindow::scheduleRender()
 
 QRect TerminalWindow::contentRect(const QRect& paneRect) const
 {
-    const int pad = int(std::lround(PaddingLogical * devicePixelRatio()));
+    const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
     return paneRect.adjusted(pad, pad, -pad, -pad);
 }
 
@@ -273,11 +277,11 @@ void TerminalWindow::renderNow()
         wp.params.cursorBlinkOn = m_blinkOn;
         panes.push_back(wp);
         if (multiple && p != m_focused) {
-            overlays.emplace_back(r, UnfocusedDim);
+            overlays.emplace_back(r, packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255))));
         }
     });
     for (const auto& d : m_splits->dividers()) {
-        overlays.emplace_back(d.rect, DividerColor);
+        overlays.emplace_back(d.rect, m_settings.settings().window.dividerColor);
     }
     const std::uint32_t clear = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
     m_renderer->render(panes, overlays, clear);
@@ -349,108 +353,112 @@ void TerminalWindow::focusOutEvent(QFocusEvent*)
 
 bool TerminalWindow::handleShortcut(QKeyEvent* e)
 {
-    const Qt::KeyboardModifiers mods = e->modifiers() & ~Qt::KeypadModifier;
-    const int key = e->key();
+    const Action action = m_settings.settings().keybinds.match(e);
+    if (action == Action::None) {
+        return false;
+    }
+    return performAction(action);
+}
 
-    if (mods == (Qt::ControlModifier | Qt::ShiftModifier)) {
-        switch (key) {
-        case Qt::Key_E:
-            splitFocused(SplitTree::Direction::Right);
-            return true;
-        case Qt::Key_O:
-            splitFocused(SplitTree::Direction::Down);
-            return true;
-        case Qt::Key_W:
-            if (m_focused) {
-                closePane(m_focused);
-            }
-            return true;
-        case Qt::Key_N: {
-            auto* w = new TerminalWindow(m_device, m_focused ? m_focused->workingDirectory() : QString());
-            w->show();
-            return true;
-        }
-        case Qt::Key_V:
-            paste(QClipboard::Clipboard);
-            return true;
-        case Qt::Key_C:
-            copySelection(true);
-            return true;
-        case Qt::Key_Left:
-        case Qt::Key_Right:
-        case Qt::Key_Up:
-        case Qt::Key_Down: {
-            if (!m_focused) {
-                return true;
-            }
-            const auto dir = key == Qt::Key_Left    ? SplitTree::Neighbour::Left
-                             : key == Qt::Key_Right ? SplitTree::Neighbour::Right
-                             : key == Qt::Key_Up    ? SplitTree::Neighbour::Up
-                                                    : SplitTree::Neighbour::Down;
+bool TerminalWindow::performAction(Action action)
+{
+    auto focus = [this](SplitTree::Neighbour dir) {
+        if (m_focused) {
             if (Pane* n = m_splits->neighbour(m_focused, dir)) {
                 setFocusedPane(n);
             }
-            return true;
         }
-        case Qt::Key_Plus:
-        case Qt::Key_Equal:
-            m_splits->equalize();
-            m_layoutSize = QSize();
-            scheduleRender();
-            return true;
-        default:
-            break;
-        }
-    }
-
-    if (mods == Qt::ControlModifier) {
-        switch (key) {
-        case Qt::Key_Equal:
-        case Qt::Key_Plus:
-            m_device.adjustFontSize(1.0f);
-            return true;
-        case Qt::Key_Minus:
-            m_device.adjustFontSize(-1.0f);
-            return true;
-        case Qt::Key_0: {
-            AfterglowRender::FontSpec spec = m_device.fontSpec();
-            spec.sizePoints = AfterglowRender::FontSpec{}.sizePoints;
-            m_device.setFontSpec(spec);
-            return true;
-        }
-        default:
-            break;
-        }
-    }
-
-    if (mods == Qt::ShiftModifier && m_focused) {
-        long delta = 0;
-        const int page = std::max(1, m_focused->rows() - 1);
-        switch (key) {
-        case Qt::Key_PageUp:
-            delta = page;
-            break;
-        case Qt::Key_PageDown:
-            delta = -page;
-            break;
-        case Qt::Key_Home:
-            delta = 1L << 30;
-            break;
-        case Qt::Key_End:
-            delta = -(1L << 30);
-            break;
-        default:
+        return true;
+    };
+    auto scroll = [this](long delta) {
+        if (!m_focused) {
             return false;
         }
-        const bool alt = m_focused->withTerminal([](Terminal& t) { return t.modes().altScreen; });
-        if (alt) {
-            return false; // full-screen programs get these keys
+        // Full-screen programs get these keys; there is no history to scroll.
+        if (m_focused->withTerminal([](Terminal& t) { return t.modes().altScreen; })) {
+            return false;
         }
         m_focused->withTerminal([delta](Terminal& t) { t.scrollViewport(delta); });
         scheduleRender();
         return true;
+    };
+    const long page = m_focused ? std::max(1, m_focused->rows() - 1) : 1;
+
+    switch (action) {
+    case Action::SplitRight:
+        splitFocused(SplitTree::Direction::Right);
+        return true;
+    case Action::SplitDown:
+        splitFocused(SplitTree::Direction::Down);
+        return true;
+    case Action::ClosePane:
+        if (m_focused) {
+            closePane(m_focused);
+        }
+        return true;
+    case Action::NewWindow: {
+        auto* w = new TerminalWindow(m_device, m_settings, m_focused ? m_focused->workingDirectory() : QString());
+        w->show();
+        return true;
     }
-    return false;
+    case Action::Copy:
+        copySelection(true);
+        return true;
+    case Action::Paste:
+        paste(QClipboard::Clipboard);
+        return true;
+    case Action::FocusLeft:
+        return focus(SplitTree::Neighbour::Left);
+    case Action::FocusRight:
+        return focus(SplitTree::Neighbour::Right);
+    case Action::FocusUp:
+        return focus(SplitTree::Neighbour::Up);
+    case Action::FocusDown:
+        return focus(SplitTree::Neighbour::Down);
+    case Action::EqualizeSplits:
+        m_splits->equalize();
+        m_layoutSize = QSize();
+        scheduleRender();
+        return true;
+    case Action::FontBigger:
+        m_device.adjustFontSize(1.0f);
+        return true;
+    case Action::FontSmaller:
+        m_device.adjustFontSize(-1.0f);
+        return true;
+    case Action::FontReset:
+        m_device.setFontSpec(m_settings.settings().font);
+        return true;
+    case Action::ScrollPageUp:
+        return scroll(page);
+    case Action::ScrollPageDown:
+        return scroll(-page);
+    case Action::ScrollTop:
+        return scroll(1L << 30);
+    case Action::ScrollBottom:
+        return scroll(-(1L << 30));
+    case Action::ReloadConfig:
+        m_settings.reload();
+        return true;
+    case Action::OpenConfig:
+        QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings.path()));
+        return true;
+    default:
+        // Bound to a feature this window does not provide: let the key through.
+        return false;
+    }
+}
+
+void TerminalWindow::applySettings(const Settings& previous)
+{
+    const Settings& now = m_settings.settings();
+    if (now.terminal != previous.terminal) {
+        for (Pane* p : findChildren<Pane*>()) {
+            p->setOptions(now.terminal);
+        }
+    }
+    m_layoutSize = QSize(); // padding may have changed
+    scheduleRender();
 }
 
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
@@ -650,7 +658,9 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     if (e->button() == Qt::LeftButton && m_selectionPane) {
         m_autoScroll.stop();
         if (m_selectionPane->hasSelection()) {
-            QGuiApplication::clipboard()->setText(m_selectionPane->selectedText(), QClipboard::Selection);
+            if (m_settings.settings().copyOnSelect) {
+                QGuiApplication::clipboard()->setText(m_selectionPane->selectedText(), QClipboard::Selection);
+            }
         } else {
             m_selectionPane->clearSelection();
             scheduleRender();
