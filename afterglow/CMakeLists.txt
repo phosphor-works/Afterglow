@@ -82,3 +82,7 @@ if(TIC_EXECUTABLE)
     add_dependencies(afterglow afterglow_terminfo)
     install(DIRECTORY ${AFTERGLOW_TERMINFO_BUILD_DIR}/ DESTINATION ${CMAKE_INSTALL_DATADIR}/terminfo)
 endif()
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

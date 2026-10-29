@@ -500,6 +500,22 @@ void TerminalWindow::renderNow()
                                   m_settings.settings().window.dividerColor);
         }
     });
+    // Split labels, in logical pixels for the chrome.
+    QVariantList titles;
+    if (multiple && m_settings.settings().window.paneTitles) {
+        const qreal dpr = devicePixelRatio();
+        std::size_t index = 0;
+        m_splits->forEachPane([&](Pane* p, const QRect&) {
+            const QRect r = panes[index++].params.rect;
+            titles.append(QVariantMap{{QStringLiteral("x"), r.x() / dpr},
+                                      {QStringLiteral("y"), r.y() / dpr},
+                                      {QStringLiteral("width"), r.width() / dpr},
+                                      {QStringLiteral("height"), r.height() / dpr},
+                                      {QStringLiteral("title"), p->title()},
+                                      {QStringLiteral("focused"), p == m_focused}});
+        });
+    }
+    m_controller->setPaneTitles(titles);
     const std::uint32_t clearRgb = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
     const std::uint32_t clear = (clearRgb & 0x00FFFFFFu) | (std::uint32_t(backgroundAlpha) << 24);
     QRhiTexture* chrome = nullptr;
@@ -561,7 +577,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
         }
     } else if (rectTarget != m.rectTarget) {
         m.rectTarget = rectTarget;
-        if (!anim.splits) {
+        if (!anim.splits || m_dividerDrag) {
             m.rect.start(rectTarget, rectTarget, rectSpec);
         } else if (m.rect.isAnimating()) {
             m.rect.retarget(rectTarget, RetargetPolicy::PreserveVelocity);
@@ -885,7 +901,7 @@ bool TerminalWindow::performAction(Action action)
 bool TerminalWindow::chromeVisible() const
 {
     return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen()
-        || m_controller->pasteConfirmOpen();
+        || m_controller->pasteConfirmOpen() || !m_controller->paneTitles().isEmpty();
 }
 
 void TerminalWindow::updateChrome()
@@ -1329,7 +1345,13 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     }
     m_pointer = e->position();
     updateLinkHover();
-    applyPointerShape();
+    if (e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)) {
+        const int tolerance = int(std::lround(4 * devicePixelRatio()));
+        if (auto divider = m_splits->dividerAt((e->position() * devicePixelRatio()).toPoint(), tolerance)) {
+            m_dividerDrag = divider;
+            return;
+        }
+    }
     if (e->button() == Qt::LeftButton && (e->modifiers() & Qt::ControlModifier) && !m_hover.url.isEmpty()) {
         QDesktopServices::openUrl(QUrl(m_hover.url));
         return;
@@ -1403,6 +1425,10 @@ void TerminalWindow::updateSelectionDrag()
 
 void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (m_dividerDrag && e->button() == Qt::LeftButton) {
+        m_dividerDrag.reset();
+        return;
+    }
     if (routePointerToChrome(e, e->position(), false, true)) {
         return;
     }
@@ -1430,7 +1456,22 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
+    const QPoint px = (e->position() * devicePixelRatio()).toPoint();
+    if (m_dividerDrag) {
+        const auto& m = m_renderer->fonts().fonts->metrics();
+        const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
+        m_splits->dragDivider(*m_dividerDrag, px, std::max(1, int(std::lround(devicePixelRatio()))),
+                              QSize(4 * m.cellWidth + 2 * pad, 2 * m.cellHeight + 2 * pad));
+        m_layoutSize = QSize();
+        scheduleRender();
+        return;
+    }
     updateLinkHover();
+    if (auto divider = m_splits->dividerAt(px, int(std::lround(4 * devicePixelRatio())))) {
+        setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
+    } else {
+        applyPointerShape();
+    }
     if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

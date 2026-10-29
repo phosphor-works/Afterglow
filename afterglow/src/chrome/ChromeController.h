@@ -25,6 +25,7 @@ class ChromeController : public QObject
     Q_PROPERTY(bool paletteOpen READ paletteOpen WRITE setPaletteOpen NOTIFY paletteOpenChanged)
     Q_PROPERTY(bool searchOpen READ searchOpen WRITE setSearchOpen NOTIFY searchOpenChanged)
     Q_PROPERTY(QString searchStatus READ searchStatus NOTIFY searchStatusChanged)
+    Q_PROPERTY(QVariantList paneTitles READ paneTitles NOTIFY paneTitlesChanged)
     Q_PROPERTY(bool pasteConfirmOpen READ pasteConfirmOpen NOTIFY pasteConfirmChanged)
     Q_PROPERTY(QString pastePreview READ pastePreview NOTIFY pasteConfirmChanged)
     Q_PROPERTY(int pasteLines READ pasteLines NOTIFY pasteConfirmChanged)
@@ -53,6 +54,10 @@ public:
     QString searchStatus() const { return m_searchStatus; }
     void setSearchStatus(const QString& status);
 
+    /// [{ x, y, width, height (logical pixels), title, focused }] per split.
+    QVariantList paneTitles() const { return m_paneTitles; }
+    void setPaneTitles(const QVariantList& titles);
+
     bool pasteConfirmOpen() const { return m_pasteConfirmOpen; }
     QString pastePreview() const { return m_pastePreview; }
     int pasteLines() const { return m_pasteLines; }
@@ -78,6 +83,7 @@ Q_SIGNALS:
     void searchOpenChanged();
     void searchStatusChanged();
     void pasteConfirmChanged();
+    void paneTitlesChanged();
     void pasteAnswered(bool paste);
 
     void activateTabRequested(int index);
@@ -97,6 +103,7 @@ private:
     bool m_paletteOpen = false;
     bool m_searchOpen = false;
     QString m_searchStatus;
+    QVariantList m_paneTitles;
     bool m_pasteConfirmOpen = false;
     QString m_pastePreview;
     int m_pasteLines = 0;

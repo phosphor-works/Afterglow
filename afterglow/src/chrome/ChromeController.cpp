@@ -71,6 +71,15 @@ void ChromeController::setSearchStatus(const QString& status)
     Q_EMIT searchStatusChanged();
 }
 
+void ChromeController::setPaneTitles(const QVariantList& titles)
+{
+    if (titles == m_paneTitles) {
+        return;
+    }
+    m_paneTitles = titles;
+    Q_EMIT paneTitlesChanged();
+}
+
 void ChromeController::askPaste(const QString& preview, int lines)
 {
     m_pasteConfirmOpen = true;

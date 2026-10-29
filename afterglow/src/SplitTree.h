@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace Afterglow {
@@ -24,6 +25,9 @@ public:
     struct Divider
     {
         QRect rect;
+        bool vertical = false; ///< separates top from bottom (a horizontal line)
+        QRect area; ///< the split's whole rectangle
+        const void* node = nullptr; ///< identifies the split for dragDivider()
     };
 
     explicit SplitTree(Pane* root);
@@ -45,6 +49,12 @@ public:
     const std::vector<Divider>& dividers() const noexcept { return m_dividers; }
     int paneCount() const;
     void equalize();
+
+    /// The divider within @p tolerance pixels of @p pos, if any.
+    std::optional<Divider> dividerAt(const QPoint& pos, int tolerance) const;
+    /// Moves a divider so it sits at @p pos, keeping both sides at least
+    /// @p minimum pixels. Takes effect on the next layout().
+    void dragDivider(const Divider& divider, const QPoint& pos, int dividerWidth, const QSize& minimum);
 
 private:
     struct Node

@@ -154,6 +154,8 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Opacity of the default background; text stays opaque")),
         {QStringLiteral("blur"), false, QMetaType::Bool,
          QStringLiteral("Blur what shows through a translucent background (KWin)")},
+        {QStringLiteral("paneTitles"), false, QMetaType::Bool,
+         QStringLiteral("Label each split with its title while a tab has several")},
     };
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), 0.4, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen")),
@@ -330,6 +332,7 @@ Settings SettingsStore::read() const
 
     s.window.backgroundOpacity = st.read<double>(Window, QStringLiteral("backgroundOpacity"));
     s.window.blur = st.read<bool>(Window, QStringLiteral("blur"));
+    s.window.paneTitles = st.read<bool>(Window, QStringLiteral("paneTitles"));
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
     s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));

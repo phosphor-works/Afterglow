@@ -31,6 +31,7 @@ struct WindowSettings
     double unfocusedDim = 0.19;
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
+    bool paneTitles = false; ///< label each split with its title
     bool operator==(const WindowSettings&) const = default;
 };
 

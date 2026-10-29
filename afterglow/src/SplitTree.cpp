@@ -88,7 +88,7 @@ void SplitTree::layoutNode(Node* node, const QRect& area, int dividerWidth)
         const QRect a(area.x(), area.y(), area.width(), h1);
         const QRect d(area.x(), area.y() + h1, area.width(), dividerWidth);
         const QRect b(area.x(), d.bottom() + 1, area.width(), avail - h1);
-        m_dividers.push_back({d});
+        m_dividers.push_back({d, true, area, node});
         layoutNode(node->first.get(), a, dividerWidth);
         layoutNode(node->second.get(), b, dividerWidth);
     } else {
@@ -97,10 +97,49 @@ void SplitTree::layoutNode(Node* node, const QRect& area, int dividerWidth)
         const QRect a(area.x(), area.y(), w1, area.height());
         const QRect d(area.x() + w1, area.y(), dividerWidth, area.height());
         const QRect b(d.right() + 1, area.y(), avail - w1, area.height());
-        m_dividers.push_back({d});
+        m_dividers.push_back({d, false, area, node});
         layoutNode(node->first.get(), a, dividerWidth);
         layoutNode(node->second.get(), b, dividerWidth);
     }
+}
+
+std::optional<SplitTree::Divider> SplitTree::dividerAt(const QPoint& pos, int tolerance) const
+{
+    for (const Divider& d : m_dividers) {
+        if (d.rect.adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(pos)) {
+            return d;
+        }
+    }
+    return std::nullopt;
+}
+
+void SplitTree::dragDivider(const Divider& divider, const QPoint& pos, int dividerWidth, const QSize& minimum)
+{
+    // The node may be gone if the tree changed during the drag.
+    std::function<Node*(Node*)> find = [&](Node* n) -> Node* {
+        if (!n || n->pane) {
+            return nullptr;
+        }
+        if (n == divider.node) {
+            return n;
+        }
+        if (Node* f = find(n->first.get())) {
+            return f;
+        }
+        return find(n->second.get());
+    };
+    Node* node = find(m_root.get());
+    if (!node) {
+        return;
+    }
+    const QRect& area = node->rect;
+    const int avail = (node->vertical ? area.height() : area.width()) - dividerWidth;
+    const int minSide = node->vertical ? minimum.height() : minimum.width();
+    if (avail <= 2 * minSide) {
+        return;
+    }
+    const int offset = node->vertical ? pos.y() - area.top() : pos.x() - area.left();
+    node->ratio = double(std::clamp(offset, minSide, avail - minSide)) / double(avail);
 }
 
 void SplitTree::visit(const Node* node, const std::function<void(const Node*)>& fn) const

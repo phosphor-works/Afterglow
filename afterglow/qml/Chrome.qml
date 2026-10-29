@@ -23,6 +23,35 @@ Item {
         return false
     }
 
+    // Split labels: a small title in each pane's top-right corner.
+    Repeater {
+        model: root.controller.paneTitles
+        delegate: Rectangle {
+            required property var modelData
+            x: modelData.x + modelData.width - width - 8
+            y: modelData.y + 6
+            width: Math.min(label.implicitWidth + 16, modelData.width * 0.5)
+            height: label.implicitHeight + 6
+            radius: height / 2
+            color: Qt.rgba(root.controller.background.r, root.controller.background.g,
+                           root.controller.background.b, 0.85)
+            border.color: modelData.focused ? root.controller.accent
+                                            : Qt.rgba(root.controller.foreground.r, root.controller.foreground.g,
+                                                      root.controller.foreground.b, 0.15)
+            Text {
+                id: label
+                anchors.centerIn: parent
+                width: parent.width - 16
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.modelData.title.length > 0 ? parent.modelData.title : "shell"
+                elide: Text.ElideMiddle
+                color: root.controller.foreground
+                opacity: parent.modelData.focused ? 0.95 : 0.6
+                font.pixelSize: 11
+            }
+        }
+    }
+
     TabBar {
         id: tabBar
         controller: root.controller

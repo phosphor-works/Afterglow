@@ -18,6 +18,7 @@
 #include <QWindow>
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -191,6 +192,7 @@ private:
         QString url;
     } m_hover;
     QByteArray m_pendingPaste;
+    std::optional<SplitTree::Divider> m_dividerDrag;
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;
