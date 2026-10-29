@@ -42,6 +42,7 @@
 #include <QPlatformSurfaceEvent>
 #include <QRegularExpression>
 #include <QScreen>
+#include <QSurfaceFormat>
 #include <QVariantMap>
 
 #include <utility>
@@ -125,6 +126,13 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     QQmlEngine& engine = m_engine;
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(device.vulkanInstance());
+    // Qt marks a surface without alpha in its format as opaque, and the
+    // compositor then stops drawing what is behind it: a translucent
+    // background shows stale pixels, which flash on repaints such as focus
+    // changes. Asking for alpha always also lets translucency change live.
+    QSurfaceFormat surfaceFormat = requestedFormat();
+    surfaceFormat.setAlphaBufferSize(8);
+    setFormat(surfaceFormat);
     setTitle(QStringLiteral("afterglow"));
     m_renderer = std::make_unique<AfterglowRender::WindowRenderer>(device, this);
 
