@@ -66,7 +66,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
     // rings spreading out. The cracks glow hot, cool to scars, then mend.
     float strikeAge = ghAge(0);
     if (strikeAge < 4.5) {
-        vec2 origin = vec2(iCurrentCursor.x, iResolution.y - iCurrentCursor.y + iCurrentCursor.w * 1.5);
+        // From the prompt the failure returned to.
+        vec2 origin = vec2(iCurrentCursor.x, iResolution.y - iCurrentCursor.y + iCurrentCursor.w * 0.5);
         vec2 d = p - origin;
         float r = length(d);
         float th = atan(d.y, d.x);
@@ -105,20 +106,20 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
         float dist = min(best, ringD);
         float inside = smoothstep(front + 2.0, front - 2.0, r);
         float mend = 1.0 - smoothstep(2.2, 4.5, strikeAge);
-        float heatOf = exp(-strikeAge / 0.35);
+        float heatOf = exp(-strikeAge / 0.8);
         // Each shard sits a little askew.
         float piece = sector * 3.0 + ring;
         float tilt = (ghHash(vec2(piece + 53.0, seed)) - 0.5) * 0.24 * inside * mend;
         c.rgb *= 1.0 + tilt * plain;
-        float line = (1.0 - smoothstep(0.3, 1.2, dist)) * inside * mend;
-        float halo = exp(-dist * dist / 8.0) * inside * mend;
+        float line = (1.0 - smoothstep(0.6, 1.8, dist)) * inside * mend;
+        float halo = exp(-dist * dist / 14.0) * inside * mend;
         float near = 0.55 + 0.45 * exp(-r / max(cy * 4.0, 1.0));
         vec3 rent = w.ink ? mix(w.keyline, w.sepia, 0.3) : mix(w.hot, vec3(1.0), 0.55);
         c = ghLightUp(w, c, rent, (line * 1.4 + halo * 0.45) * heatOf * near);
         // Cooled, the cracks stay as scars until the glass mends.
         vec3 scar = w.ink ? w.sepia : w.metalSky;
-        c.rgb = mix(c.rgb, scar * c.a, line * (1.0 - heatOf) * 0.55);
-        c.rgb *= 1.0 - 0.3 * halo * (1.0 - heatOf);
+        c.rgb = mix(c.rgb, scar * c.a, line * (1.0 - heatOf) * 0.85);
+        c.rgb *= 1.0 - 0.4 * halo * (1.0 - heatOf);
         // The alert calls through the glass and fades.
         float call = exp(-r / (cy * 3.0)) * (1.0 - smoothstep(0.0, 2.5, strikeAge));
         c.rgb = mix(c.rgb, w.alert * (w.ink ? 0.95 : 0.5) * c.a, call * (w.ink ? 0.2 : 0.35) * plain);

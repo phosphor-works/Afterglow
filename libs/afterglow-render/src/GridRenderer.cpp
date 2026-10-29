@@ -653,7 +653,11 @@ bool WindowRenderer::ensureSwapChain()
 
 void WindowRenderer::releaseSwapChain()
 {
-    m_post.reset();
+    // GPU resources only: the shader chains stay, and their textures and
+    // pipelines are made again on the next frame.
+    if (m_post) {
+        m_post->release();
+    }
     m_postPipelines = {};
     m_postPipelinePass = nullptr;
     m_swapPipelines = {};

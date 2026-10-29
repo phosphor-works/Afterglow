@@ -255,6 +255,18 @@ TEST_F(Render, LayerShadersSeeOnlyTheirLayer)
     EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 255));
 }
 
+TEST_F(Render, ShaderChainsSurviveTranslucencyChanges)
+{
+    // Toggling translucency releases the swapchain; the shaders must stay.
+    ShaderChains chains;
+    chains.text = {layerShader("red-text", "fragColor = vec4(c.a, 0.0, 0.0, c.a);")};
+    renderer->setShaderChains(std::move(chains));
+    render("");
+    renderer->releaseSwapChain();
+    const QImage img = render("\x1b[?25l\u2588");
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(255, 0, 0));
+}
+
 TEST_F(Render, BlockCursorLayerStaysUnderItsText)
 {
     // The cursor on a full block: its text takes the background colour and
