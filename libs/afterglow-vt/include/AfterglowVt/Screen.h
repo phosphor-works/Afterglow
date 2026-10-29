@@ -97,6 +97,19 @@ public:
     void eraseCells(Row& row, int x0, int x1, std::uint32_t fillStyleId);
     void eraseRow(Row& row, std::uint32_t fillStyleId);
 
+    // Multicell blocks (OSC 66 text sizing). Blocks live in visible rows;
+    // rows scrolled into history keep what reached them.
+    /// Writes a block anchored at visible (@p x, @p y); it must fit.
+    void writeMulticell(int y, int x, char32_t cp, std::u32string_view extra, std::uint32_t styleId,
+                        const MulticellParams& params);
+    /// Erases the whole block holding visible cell (@p x, @p y); with
+    /// @p spaces its cells become spaces instead of empty.
+    void eraseMulticell(int y, int x, bool spaces = false);
+    /// The parameters of the block a multicell cell belongs to.
+    const MulticellParams* multicellParams(const Row& row, int x) const;
+    /// Turns blocks into plain text at their top-left cell (before reflow).
+    void flattenMulticells();
+
     /// Inserts @p n blank cells at @p x, shifting [x, right] to the right.
     void insertCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId);
     /// Deletes @p n cells at @p x, shifting [x + n, right] to the left.
@@ -167,6 +180,11 @@ private:
     void breakWideAt(Row& row, int x, std::uint32_t fillStyleId);
     void moveCells(Row& dst, int dstX, Row& src, int srcX, int n);
     void copyRowSpan(Row& dst, const Row& src, int left, int right);
+    int visibleIndexOf(const Row& row) const noexcept;
+    /// Erases the block at @p x of @p row, wherever the row is.
+    void eraseMulticellAt(Row& row, int x);
+    /// Erases blocks in rows top..bottom that also reach outside the region.
+    void eraseMulticellsCrossing(int top, int bottom, int left, int right);
     void trimHistory();
     void resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked);
     void resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked);

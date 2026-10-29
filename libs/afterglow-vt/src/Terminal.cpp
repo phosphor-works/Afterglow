@@ -395,7 +395,30 @@ void Terminal::print(char32_t cp)
     }
     cur.pendingWrap = false;
 
-    const int right = (cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1;
+    const int right = lineRight((cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1);
+    // Text sizing: writing into a multicell block (kitty's rules). The top
+    // left cell erases it, the rest of its top row turns it into spaces, and
+    // in its lower rows the text goes after the block.
+    while (scr.row(cur.y).cells[std::size_t(cur.x)].isMulticell()) {
+        Row& row = scr.row(cur.y);
+        const Cell& c = row.cells[std::size_t(cur.x)];
+        if (c.multicellDy() == 0) {
+            scr.eraseMulticell(cur.y, cur.x, c.multicellDx() != 0);
+            break;
+        }
+        const MulticellParams* p = scr.multicellParams(row, cur.x);
+        const int next = cur.x - c.multicellDx() + (p ? p->columns() : 1);
+        if (next <= right) {
+            cur.x = next;
+        } else if (m_modes.autowrap) {
+            row.wrapped = true;
+            carriageReturn();
+            index();
+        } else {
+            scr.eraseMulticell(cur.y, cur.x);
+            break;
+        }
+    }
     if (width == 2 && cur.x == right) {
         if (right == 0) {
             width = 1;
@@ -448,8 +471,9 @@ void Terminal::printAscii(const char* text, std::size_t length)
     Cursor& cur = cursor();
     std::size_t i = 1;
     while (i < length) {
-        if (cur.pendingWrap) {
-            // Wrapping (or overwriting the last column) is the full path's job.
+        if (cur.pendingWrap || scr.row(cur.y).cells[std::size_t(cur.x)].isMulticell()
+            || scr.row(cur.y).lineSize != LineSize::Single) {
+            // Wrapping, multicell blocks and double-width lines are the full path's job.
             print(char32_t(static_cast<unsigned char>(text[i++])));
             continue;
         }
@@ -459,6 +483,9 @@ void Terminal::printAscii(const char* text, std::size_t length)
         while (i < length) {
             const auto ch = char32_t(static_cast<unsigned char>(text[i]));
             Cell& c = row.cells[std::size_t(cur.x)];
+            if (c.isMulticell()) {
+                break;
+            }
             if (c.width() != 1 || c.hasGrapheme() || c.isSpacerHead()) {
                 scr.writeCell(row, cur.x, ch, pen, 1); // breaks up a wide character
             } else {
@@ -562,6 +589,7 @@ void Terminal::index()
     } else if (cur.y < rows() - 1) {
         ++cur.y;
     }
+    clampToLine();
 }
 
 void Terminal::reverseIndex()
@@ -577,6 +605,7 @@ void Terminal::reverseIndex()
     } else if (cur.y > 0) {
         --cur.y;
     }
+    clampToLine();
 }
 
 void Terminal::backspace()
@@ -666,6 +695,212 @@ void Terminal::setCursor(int row, int col)
         cur.x = std::clamp(col, 0, cols() - 1);
     }
     cur.pendingWrap = false;
+    clampToLine();
+}
+
+int Terminal::lineRight(int right) const
+{
+    if (m_active->row(m_active->cursor.y).lineSize == LineSize::Single) {
+        return right;
+    }
+    return std::min(right, std::max(1, cols() / 2) - 1);
+}
+
+void Terminal::clampToLine()
+{
+    Cursor& cur = cursor();
+    cur.x = std::min(cur.x, lineRight(cols() - 1));
+}
+
+void Terminal::setLineSize(LineSize size)
+{
+    // DECDWL / DECDHL / DECSWL. Blocks on the line cannot be doubled.
+    Row& row = m_active->row(cursor().y);
+    if (row.multicell) {
+        for (int x = 0; x < cols(); ++x) {
+            if (row.cells[std::size_t(x)].isMulticell()) {
+                m_active->eraseMulticell(cursor().y, x);
+            }
+        }
+    }
+    row.lineSize = size;
+    clampToLine();
+}
+
+void Terminal::textSizing(std::string_view args)
+{
+    // kitty's OSC 66 ; metadata ; text.
+    const auto semi = args.find(';');
+    if (semi == std::string_view::npos) {
+        return;
+    }
+    const std::string_view metadata = args.substr(0, semi);
+    const std::string_view text = args.substr(semi + 1);
+    if (text.size() > 4096) {
+        return;
+    }
+    int s = 1, w = 0, n = 0, d = 0, v = 0, h = 0;
+    std::size_t pos = 0;
+    while (pos <= metadata.size()) {
+        const auto colon = metadata.find(':', pos);
+        std::string_view kv = metadata.substr(pos, colon == std::string_view::npos ? colon : colon - pos);
+        while (!kv.empty() && kv.front() == ' ') {
+            kv.remove_prefix(1);
+        }
+        while (!kv.empty() && kv.back() == ' ') {
+            kv.remove_suffix(1);
+        }
+        if (kv.size() >= 3 && kv[1] == '=') {
+            int value = -1;
+            std::from_chars(kv.data() + 2, kv.data() + kv.size(), value);
+            auto set = [&](int& target, int lo, int hi) {
+                if (value >= lo && value <= hi) {
+                    target = value;
+                }
+            };
+            switch (kv[0]) {
+            case 's': set(s, 1, 7); break;
+            case 'w': set(w, 0, 7); break;
+            case 'n': set(n, 0, 15); break;
+            case 'd': set(d, 0, 15); break;
+            case 'v': set(v, 0, 2); break;
+            case 'h': set(h, 0, 2); break;
+            default: break;
+            }
+        }
+        if (colon == std::string_view::npos) {
+            break;
+        }
+        pos = colon + 1;
+    }
+    if (d != 0 && n >= d) {
+        n = d = 0; // the fraction must be below one
+    }
+
+    // Decode the text; ill-formed sequences become U+FFFD, controls and NUL go.
+    std::u32string cps;
+    for (std::size_t i = 0; i < text.size();) {
+        const auto b = static_cast<unsigned char>(text[i]);
+        const int extra = b < 0x80 ? 0 : (b & 0xE0) == 0xC0 ? 1 : (b & 0xF0) == 0xE0 ? 2 : (b & 0xF8) == 0xF0 ? 3 : -1;
+        char32_t cp = Unicode::ReplacementCharacter;
+        int used = 1;
+        if (extra >= 0 && i + std::size_t(extra) < text.size() + (extra == 0 ? 1 : 0)) {
+            char32_t value = extra == 0 ? b : b & (0x3F >> extra);
+            bool ok = true;
+            for (int k = 1; k <= extra; ++k) {
+                if (i + std::size_t(k) >= text.size()) {
+                    ok = false;
+                    break;
+                }
+                const auto c = static_cast<unsigned char>(text[i + std::size_t(k)]);
+                if ((c & 0xC0) != 0x80) {
+                    ok = false;
+                    break;
+                }
+                value = (value << 6) | (c & 0x3F);
+            }
+            if (ok && value <= 0x10FFFF && !(value >= 0xD800 && value <= 0xDFFF)) {
+                cp = value;
+                used = extra + 1;
+            }
+        }
+        i += std::size_t(used);
+        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0x80 && cp < 0xA0)) {
+            cps.push_back(cp);
+        }
+    }
+    if (cps.empty()) {
+        cps.push_back(U' '); // "w=2;" with no text: a space in the block
+    }
+
+    if (s == 1 && w == 0 && d == 0) {
+        for (char32_t cp : cps) { // nothing to size: ordinary text
+            print(cp);
+        }
+        return;
+    }
+    MulticellParams params{std::uint8_t(s), 1, std::uint8_t(n), std::uint8_t(d), std::uint8_t(v), std::uint8_t(h)};
+    if (w > 0) {
+        // Everything in one block of s*w by s cells.
+        params.width = std::uint8_t(w);
+        placeMulticell(cps[0], std::u32string_view(cps).substr(1), params);
+    } else {
+        // Cell by cell: each grapheme cluster gets a block as wide as it is.
+        Unicode::GraphemeSegmenter seg;
+        std::size_t start = 0;
+        auto flush = [&](std::size_t end) {
+            if (end <= start) {
+                return;
+            }
+            const Unicode::Props props = Unicode::props(cps[start]);
+            int width = props.width;
+            const std::u32string_view cluster = std::u32string_view(cps).substr(start, end - start);
+            if (width == 1 && props.widensWithVs16 && cluster.find(Unicode::VariationSelector16) != std::u32string_view::npos) {
+                width = 2;
+            }
+            if (width > 0) {
+                params.width = std::uint8_t(width);
+                placeMulticell(cluster[0], cluster.substr(1), params);
+            }
+        };
+        for (std::size_t i = 0; i < cps.size(); ++i) {
+            if (seg.breaksBefore(Unicode::props(cps[i])) && i > start) {
+                flush(i);
+                start = i;
+            }
+        }
+        flush(cps.size());
+    }
+    m_lastX = -1;
+}
+
+void Terminal::placeMulticell(char32_t cp, std::u32string_view extra, const MulticellParams& params)
+{
+    Cursor& cur = cursor();
+    const int width = params.columns();
+    const int height = params.scale;
+    if (width > cols() || height > rows()) {
+        return; // never fits: discarded
+    }
+    if (cur.pendingWrap) {
+        if (m_modes.autowrap) {
+            m_active->row(cur.y).wrapped = true;
+            carriageReturn();
+            index();
+        }
+        cur.pendingWrap = false;
+    }
+    const int right = cur.x <= m_margins.right ? m_margins.right : cols() - 1;
+    const int left = cur.x >= m_margins.left ? m_margins.left : 0;
+    if (cur.x + width - 1 > right) {
+        if (m_modes.autowrap && right - left + 1 >= width) {
+            m_active->row(cur.y).wrapped = true;
+            carriageReturn();
+            index();
+        } else {
+            cur.x = std::max(0, right - width + 1); // back up until it fits
+        }
+    }
+    // Rows below the cursor for the block, scrolling if it would overhang.
+    const bool inRegion = cur.y >= m_margins.top && cur.y <= m_margins.bottom;
+    const int top = inRegion ? m_margins.top : 0;
+    const int bottom = inRegion ? m_margins.bottom : rows() - 1;
+    if (bottom - top + 1 < height) {
+        return;
+    }
+    while (cur.y + height - 1 > bottom) {
+        Region r = inRegion ? m_margins : Region{0, rows() - 1, 0, cols() - 1};
+        const std::uint32_t fill = acquireFill();
+        m_active->scrollUp(r, 1, fill, r.top == 0 && r.left == 0 && r.right == cols() - 1);
+        releaseFill(fill);
+        --cur.y;
+    }
+    m_active->writeMulticell(cur.y, cur.x, cp, extra, cur.penId, params);
+    cur.x += width;
+    if (cur.x > right) {
+        cur.x = right;
+        cur.pendingWrap = true;
+    }
 }
 
 void Terminal::moveCursorRelative(int dx, int dy)
@@ -683,6 +918,7 @@ void Terminal::moveCursorRelative(int dx, int dy)
         cur.x = std::clamp(cur.x + dx, left, right);
     }
     cur.pendingWrap = false;
+    clampToLine();
 }
 
 // --- erasing / editing -----------------------------------------------------
@@ -1220,6 +1456,7 @@ void Terminal::decaln()
             scr.writeCell(row, x, U'E', StyleTable::DefaultId, 1);
         }
         row.wrapped = false;
+        row.lineSize = LineSize::Single;
     }
     setCursor(0, 0);
 }
@@ -1251,6 +1488,11 @@ void Terminal::escDispatch(const Intermediates& inter, std::uint8_t final)
             }
         } else if (i == '#' && final == '8') {
             decaln();
+        } else if (i == '#' && final >= '3' && final <= '6') {
+            setLineSize(final == '3'   ? LineSize::DoubleTop
+                        : final == '4' ? LineSize::DoubleBottom
+                        : final == '6' ? LineSize::DoubleWidth
+                                       : LineSize::Single);
         }
         return;
     }
@@ -2469,6 +2711,9 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         } else if (!rest.empty()) {
             m_host.notify({}, rest);
         }
+        break;
+    case 66:
+        textSizing(rest);
         break;
     case 99: {
         NotificationRequest request;

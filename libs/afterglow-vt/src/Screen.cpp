@@ -74,6 +74,12 @@ void Screen::breakWideAt(Row& row, int x, std::uint32_t fillStyleId)
 
 void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int width)
 {
+    if (row.cells[std::size_t(x)].isMulticell()) {
+        eraseMulticellAt(row, x);
+    }
+    if (width == 2 && x + 1 < m_cols && row.cells[std::size_t(x + 1)].isMulticell()) {
+        eraseMulticellAt(row, x + 1);
+    }
     breakWideAt(row, x, StyleTable::DefaultId);
     if (width == 2) {
         breakWideAt(row, x + 1, StyleTable::DefaultId);
@@ -128,6 +134,14 @@ void Screen::eraseCells(Row& row, int x0, int x1, std::uint32_t fillStyleId)
     if (x0 >= x1) {
         return;
     }
+    if (row.multicell) {
+        // Any block the erase touches goes whole.
+        for (int x = x0; x < x1; ++x) {
+            if (row.cells[std::size_t(x)].isMulticell()) {
+                eraseMulticellAt(row, x);
+            }
+        }
+    }
     breakWideAt(row, x0, fillStyleId);
     if (x1 < m_cols && row.cells[std::size_t(x1)].isTail()) {
         clearCell(row, x1, fillStyleId);
@@ -158,8 +172,156 @@ void Screen::eraseRow(Row& row, std::uint32_t fillStyleId)
 {
     eraseCells(row, 0, m_cols, fillStyleId);
     row.graphemes.reset();
+    row.multicell.reset();
     row.wrapped = false;
     row.promptStart = false;
+    row.lineSize = LineSize::Single;
+}
+
+int Screen::visibleIndexOf(const Row& r) const noexcept
+{
+    for (int y = 0; y < m_rowCount; ++y) {
+        if (&row(y) == &r) {
+            return y;
+        }
+    }
+    return -1;
+}
+
+const MulticellParams* Screen::multicellParams(const Row& r, int x) const
+{
+    const Cell& c = r.at(x);
+    if (!c.isMulticell() || !r.multicell) {
+        return nullptr;
+    }
+    const auto it = r.multicell->find(std::uint16_t(x - c.multicellDx()));
+    return it == r.multicell->end() ? nullptr : &it->second;
+}
+
+void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra, std::uint32_t styleId,
+                            const MulticellParams& params)
+{
+    const int cols = params.columns();
+    for (int dy = 0; dy < params.scale; ++dy) {
+        Row& r = row(y + dy);
+        for (int dx = 0; dx < cols; ++dx) {
+            writeCell(r, x + dx, cp, styleId, 1); // erases blocks in the way
+        }
+    }
+    for (int dy = 0; dy < params.scale; ++dy) {
+        Row& r = row(y + dy);
+        for (int dx = 0; dx < cols; ++dx) {
+            r.cells[std::size_t(x + dx)].setMulticell(dx, dy);
+        }
+        // Every row of the block knows its text and parameters, so the part
+        // still on screen draws when the top has scrolled away.
+        if (!r.multicell) {
+            r.multicell = std::make_unique<MulticellMap>();
+        }
+        (*r.multicell)[std::uint16_t(x)] = params;
+        for (char32_t e : extra) {
+            appendGrapheme(r, x, e);
+        }
+    }
+}
+
+void Screen::eraseMulticell(int y, int x, bool spaces)
+{
+    Row& start = row(y);
+    const Cell c = start.cells[std::size_t(x)];
+    if (!c.isMulticell()) {
+        return;
+    }
+    const int left = x - c.multicellDx();
+    const int top = y - c.multicellDy();
+    const MulticellParams* p = multicellParams(start, x);
+    const MulticellParams params = p ? *p : MulticellParams{std::uint8_t(c.multicellDy() + 1), std::uint8_t(c.multicellDx() + 1)};
+    for (int dy = 0; dy < params.scale; ++dy) {
+        const int yy = top + dy;
+        if (yy < 0 || yy >= m_rowCount) {
+            continue;
+        }
+        Row& r = row(yy);
+        for (int dx = 0; dx < params.columns() && left + dx < m_cols; ++dx) {
+            Cell& cell = r.cells[std::size_t(left + dx)];
+            if (cell.isMulticell() && cell.multicellDx() == dx && cell.multicellDy() == dy) {
+                clearCell(r, left + dx, StyleTable::DefaultId);
+                if (spaces) {
+                    r.cells[std::size_t(left + dx)].setCodepoint(U' ');
+                }
+            }
+        }
+        if (r.multicell) {
+            r.multicell->erase(std::uint16_t(left));
+        }
+    }
+}
+
+void Screen::eraseMulticellAt(Row& r, int x)
+{
+    if (const int y = visibleIndexOf(r); y >= 0) {
+        eraseMulticell(y, x);
+        return;
+    }
+    // A history row: only its own part of the block is here.
+    const Cell c = r.cells[std::size_t(x)];
+    const int left = x - c.multicellDx();
+    const MulticellParams* p = multicellParams(r, x);
+    const int cols = p ? p->columns() : c.multicellDx() + 1;
+    for (int dx = 0; dx < cols && left + dx < int(r.cells.size()); ++dx) {
+        if (r.cells[std::size_t(left + dx)].isMulticell()) {
+            clearCell(r, left + dx, StyleTable::DefaultId);
+        }
+    }
+    if (r.multicell) {
+        r.multicell->erase(std::uint16_t(left));
+    }
+}
+
+void Screen::eraseMulticellsCrossing(int top, int bottom, int left, int right)
+{
+    std::vector<std::pair<int, int>> doomed;
+    for (int y = std::max(top, 0); y <= std::min(bottom, m_rowCount - 1); ++y) {
+        const Row& r = row(y);
+        if (!r.multicell) {
+            continue;
+        }
+        for (const auto& [col, params] : *r.multicell) {
+            const Cell& c = r.at(col);
+            const int blockTop = y - c.multicellDy();
+            const int blockBottom = blockTop + params.scale - 1;
+            const int blockRight = col + params.columns() - 1;
+            const bool inside = blockTop >= top && blockBottom <= bottom && col >= left && blockRight <= right;
+            const bool touches = blockRight >= left && col <= right;
+            if (touches && !inside) {
+                doomed.emplace_back(y, col);
+            }
+        }
+    }
+    for (const auto& [y, x] : doomed) {
+        eraseMulticell(y, x);
+    }
+}
+
+void Screen::flattenMulticells()
+{
+    for (Row& r : m_rows) {
+        if (!r.multicell) {
+            continue;
+        }
+        for (std::size_t x = 0; x < r.cells.size(); ++x) {
+            Cell& c = r.cells[x];
+            if (!c.isMulticell()) {
+                continue;
+            }
+            if (c.multicellDx() == 0 && c.multicellDy() == 0) {
+                c.setCodepoint(c.codepoint()); // the text stays, as one plain cell
+            } else {
+                clearCell(r, int(x), StyleTable::DefaultId);
+            }
+        }
+        r.multicell.reset();
+    }
 }
 
 namespace {
@@ -184,6 +346,13 @@ void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         return;
     }
     n = std::min(n, right - x + 1);
+    if (row.multicell) {
+        for (int i = x; i <= right; ++i) {
+            if (row.cells[std::size_t(i)].isMulticell()) {
+                eraseMulticellAt(row, i);
+            }
+        }
+    }
     breakWideAt(row, x, fillStyleId);
     breakWideAt(row, right, fillStyleId);
 
@@ -216,6 +385,13 @@ void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         return;
     }
     n = std::min(n, right - x + 1);
+    if (row.multicell) {
+        for (int i = x; i <= right; ++i) {
+            if (row.cells[std::size_t(i)].isMulticell()) {
+                eraseMulticellAt(row, i);
+            }
+        }
+    }
     breakWideAt(row, x, fillStyleId);
     if (x + n <= right) {
         breakWideAt(row, x + n, fillStyleId);
@@ -261,6 +437,19 @@ void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
                 dst.graphemes = std::make_unique<GraphemeMap>();
             }
             (*dst.graphemes)[std::uint16_t(x)] = std::u32string(extra);
+        }
+    }
+    if (dst.multicell) {
+        std::erase_if(*dst.multicell, [left, right](const auto& kv) { return kv.first >= left && kv.first <= right; });
+    }
+    if (src.multicell) {
+        for (const auto& [col, params] : *src.multicell) {
+            if (col >= left && col <= right) {
+                if (!dst.multicell) {
+                    dst.multicell = std::make_unique<MulticellMap>();
+                }
+                (*dst.multicell)[col] = params;
+            }
         }
     }
     if (dst.cells[std::size_t(left)].isTail()) {
@@ -329,8 +518,10 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
                 releaseRow(recycled);
                 recycled.cells.assign(std::size_t(m_cols), Cell{});
                 recycled.graphemes.reset();
+                recycled.multicell.reset();
                 recycled.wrapped = false;
                 recycled.promptStart = false;
+                recycled.lineSize = LineSize::Single;
                 freshPtr = &m_rows.emplace_back(std::move(recycled));
             } else {
                 freshPtr = &m_rows.emplace_back(m_cols);
@@ -352,6 +543,8 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
         return;
     }
 
+    // Blocks the region boundary cuts cannot move with it.
+    eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right);
     if (fullWidth) {
         auto first = m_rows.begin() + std::ptrdiff_t(historySize()) + r.top;
         std::rotate(first, first + n, first + height);
@@ -378,6 +571,7 @@ void Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
     }
     const bool fullWidth = r.left == 0 && r.right == m_cols - 1;
 
+    eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right);
     if (fullWidth) {
         auto first = m_rows.begin() + std::ptrdiff_t(historySize()) + r.top;
         std::rotate(first, first + (height - n), first + height);
@@ -437,6 +631,7 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
     }
     ++m_layoutEpoch;
     if (reflow && m_maxScrollback > 0 && cols != m_cols) {
+        flattenMulticells(); // blocks cannot reflow; their text can
         resizeReflow(cols, rows, promptStart, trackedRows);
     } else {
         resizeNoReflow(cols, rows, trackedRows);
@@ -451,6 +646,23 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
 void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked)
 {
     const std::uint64_t droppedBefore = m_rowsDropped;
+    if (cols < m_cols) {
+        // Blocks the new width or height would cut are erased.
+        std::vector<std::pair<int, int>> doomed;
+        for (int y = 0; y < m_rowCount; ++y) {
+            const Row& r = row(y);
+            if (r.multicell) {
+                for (const auto& [col, params] : *r.multicell) {
+                    if (col + params.columns() > cols) {
+                        doomed.emplace_back(y, col);
+                    }
+                }
+            }
+        }
+        for (const auto& [y, x] : doomed) {
+            eraseMulticell(y, x);
+        }
+    }
     if (cols != m_cols) {
         const std::size_t history = historySize();
         for (std::size_t i = 0; i < m_rows.size(); ++i) {

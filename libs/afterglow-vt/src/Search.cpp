@@ -48,7 +48,8 @@ std::vector<SearchMatch> findAll(const Screen& screen, std::u32string_view needl
             const Row& row = screen.absoluteRow(abs);
             for (int x = 0; x < screen.cols(); ++x) {
                 const Cell& c = row.at(x);
-                if (c.isTail() || c.isSpacerHead()) {
+                if (c.isTail() || c.isSpacerHead()
+                    || (c.isMulticell() && (c.multicellDx() != 0 || c.multicellDy() != 0))) {
                     continue;
                 }
                 const SelectionPoint at{base + abs, x};

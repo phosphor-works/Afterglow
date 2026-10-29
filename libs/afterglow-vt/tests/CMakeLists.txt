@@ -15,6 +15,7 @@ add_executable(afterglow_vt_tests
     SearchTest.cpp
     SelectionTest.cpp
     TerminalTest.cpp
+    TextSizingTest.cpp
     UnicodeTest.cpp
 )
 target_link_libraries(afterglow_vt_tests PRIVATE Afterglow::Vt GTest::gtest_main ZLIB::ZLIB)

@@ -281,6 +281,12 @@ private:
     void forwardIndex();
     void reportDeviceAttributes();
     void softReset();
+    void textSizing(std::string_view args);
+    void placeMulticell(char32_t cp, std::u32string_view extra, const MulticellParams& params);
+    void setLineSize(LineSize size);
+    /// Keeps the cursor in the left half of a double-width line.
+    void clampToLine();
+    int lineRight(int right) const;
     void vt52Dispatch(std::uint8_t final);
     void reverseWrapStep();
     void setColumnMode(bool wide);

@@ -189,7 +189,9 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
         std::string line;
         for (int x = c0; x <= c1; ++x) {
             const Cell& c = row.at(x);
-            if (c.isTail() || c.isSpacerHead()) {
+            // A multicell block's text belongs to its top-left cell only.
+            if (c.isTail() || c.isSpacerHead()
+                || (c.isMulticell() && (c.multicellDx() != 0 || c.multicellDy() != 0))) {
                 continue;
             }
             appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());

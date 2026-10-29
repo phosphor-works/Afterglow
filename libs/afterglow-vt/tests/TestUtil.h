@@ -55,6 +55,10 @@ inline std::string rowText(const Screen& screen, const Row& row)
         if (c.isTail()) {
             continue;
         }
+        if (c.isMulticell() && (c.multicellDx() != 0 || c.multicellDy() != 0)) {
+            out += ' '; // a multicell block's text is in its top-left cell
+            continue;
+        }
         appendUtf8(out, c.isEmpty() ? U' ' : c.codepoint());
         for (char32_t e : screen.graphemeExtra(row, x)) {
             appendUtf8(out, e);
