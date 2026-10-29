@@ -59,6 +59,20 @@ public:
     /// Switches to @p pane's tab, focuses it and raises the window.
     void revealPane(Pane* pane);
 
+    // For the control interface and scripts.
+    quint32 id() const noexcept { return m_id; }
+    /// Every pane, tab by tab.
+    QList<Pane*> panes() const;
+    int tabIndexOf(const Pane* pane) const { return tabOf(pane); }
+    Pane* focusedPane() const { return m_focused; }
+    /// Splits @p pane running @p command (empty: the shell); returns the new pane.
+    Pane* splitPane(Pane* pane, SplitTree::Direction direction, const QStringList& command);
+    /// Opens a tab running @p command; returns its pane.
+    Pane* openTab(const QString& workingDirectory, const QStringList& command);
+    void requestClosePane(Pane* pane) { closePane(pane); }
+    /// Runs a keybind action as if it were pressed in @p pane.
+    bool runAction(Pane* pane, Action action);
+
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
 
@@ -67,6 +81,8 @@ Q_SIGNALS:
     void tabsChanged();
     /// The new-window action, for the application to fulfil.
     void newWindowRequested(const QString& workingDirectory);
+    void paneCreated(Pane* pane);
+    void focusedPaneChanged(Pane* pane);
 
 protected:
     bool event(QEvent* e) override;
@@ -84,8 +100,8 @@ protected:
 private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {});
-    void splitFocused(SplitTree::Direction direction);
-    void newTab(const QString& workingDirectory, const QStringList& command = {});
+    void splitFocused(SplitTree::Direction direction, const QStringList& command = {});
+    Pane* newTab(const QString& workingDirectory, const QStringList& command = {});
     void switchTab(int index);
     void closeTab(int index);
     int tabOf(const Pane* pane) const;
@@ -198,6 +214,7 @@ private:
     // The current tab's tree and focused pane (focus is saved back on switch).
     SplitTree* m_splits = nullptr;
     QPointer<Pane> m_focused;
+    const quint32 m_id;
     QSize m_layoutSize;
     double m_layoutDpr = 0;
     std::uint64_t m_layoutFontEpoch = 0;

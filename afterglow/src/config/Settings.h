@@ -43,6 +43,13 @@ struct QuickTerminalSettings
     bool operator==(const QuickTerminalSettings&) const = default;
 };
 
+struct ControlSettings
+{
+    bool enabled = true; ///< the D-Bus control interface (afterglow ctl)
+    bool allowReadText = false; ///< let it read pane contents
+    bool operator==(const ControlSettings&) const = default;
+};
+
 struct AnimationSettings
 {
     bool cursor = true; ///< the cursor glides between cells
@@ -59,6 +66,8 @@ struct Settings
     WindowSettings window;
     AnimationSettings animation;
     QuickTerminalSettings quickTerminal;
+    ControlSettings control;
+    bool scripts = true; ///< run Luau scripts from the scripts directories
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     bool copyOnSelect = true;

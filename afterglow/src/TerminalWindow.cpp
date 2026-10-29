@@ -89,11 +89,16 @@ int mouseButtonCode(Qt::MouseButton b)
 }
 } // namespace
 
+namespace {
+quint32 s_nextWindowId = 1;
+}
+
 TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     : m_device(services.device)
     , m_settings(services.settings)
     , m_engine(services.engine)
     , m_shaders(services.shaders)
+    , m_id(s_nextWindowId++)
 {
     m_quick = options.quick;
     AfterglowRender::GpuDevice& device = m_device;
@@ -305,10 +310,11 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     if (!pane->start(opts, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error)) {
         qCCritical(lcWindow) << "failed to start the shell:" << error;
     }
+    Q_EMIT paneCreated(pane);
     return pane;
 }
 
-void TerminalWindow::splitFocused(SplitTree::Direction direction)
+void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringList& command)
 {
     if (!m_focused) {
         return;
@@ -321,7 +327,7 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction)
     } else {
         area.setHeight((area.height() - divider) / 2);
     }
-    Pane* added = createPane(m_focused->workingDirectory(), area);
+    Pane* added = createPane(m_focused->workingDirectory(), area, command);
     // The new pane grows out of the edge being split.
     const QRect old = m_splits->rectOf(m_focused);
     m_growFrom[added] = direction == SplitTree::Direction::Right
@@ -387,7 +393,7 @@ QRect TerminalWindow::paneArea() const
     return QRect(0, bar, px.width(), std::max(0, px.height() - bar));
 }
 
-void TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command)
+Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command)
 {
     auto tab = std::make_unique<Tab>();
     m_tabs.push_back(std::move(tab));
@@ -396,6 +402,42 @@ void TerminalWindow::newTab(const QString& workingDirectory, const QStringList& 
     m_tabs.back()->splits = std::make_unique<SplitTree>(first);
     m_tabs.back()->focused = first;
     switchTab(int(m_tabs.size()) - 1);
+    return first;
+}
+
+QList<Pane*> TerminalWindow::panes() const
+{
+    QList<Pane*> out;
+    for (const auto& tab : m_tabs) {
+        tab->splits->forEachPane([&out](Pane* p, const QRect&) { out.append(p); });
+    }
+    return out;
+}
+
+Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, const QStringList& command)
+{
+    if (tabOf(pane) < 0) {
+        return nullptr;
+    }
+    revealPane(pane);
+    splitFocused(direction, command);
+    return m_focused;
+}
+
+Pane* TerminalWindow::openTab(const QString& workingDirectory, const QStringList& command)
+{
+    return newTab(workingDirectory.isEmpty() && m_focused ? m_focused->workingDirectory() : workingDirectory, command);
+}
+
+bool TerminalWindow::runAction(Pane* pane, Action action)
+{
+    if (pane && tabOf(pane) >= 0) {
+        if (tabOf(pane) != m_currentTab) {
+            switchTab(tabOf(pane));
+        }
+        setFocusedPane(pane);
+    }
+    return performAction(action);
 }
 
 void TerminalWindow::switchTab(int index)
@@ -458,6 +500,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     updateTitle();
     restartBlink();
     acknowledgeStatus();
+    Q_EMIT focusedPaneChanged(pane);
 }
 
 void TerminalWindow::updateTitle()

@@ -33,8 +33,13 @@ constexpr qint64 SyncTimeoutMs = 1000;
 constexpr qint64 PromptRedrawTimeoutMs = 150;
 } // namespace
 
+namespace {
+std::atomic<quint32> s_nextPaneId{1};
+}
+
 Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
     : QObject(parent)
+    , m_id(s_nextPaneId++)
     , m_terminal(InitialCols, InitialRows, *this, options)
 {
     qRegisterMetaType<AfterglowVt::NotificationRequest>();
@@ -61,6 +66,8 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
     AfterglowPty::SpawnOptions opts = options;
+    // Lets `afterglow ctl` run in the pane act on that pane by default.
+    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
     opts.cols = cols;
     opts.rows = rows;
     opts.pixelWidth = cols * cellWidth;
@@ -395,7 +402,46 @@ bool Pane::jumpToPrompt(int direction)
 QString Pane::title() const
 {
     std::lock_guard lock(m_mutex);
-    return m_title;
+    return m_userTitle.isEmpty() ? m_title : m_userTitle;
+}
+
+void Pane::setUserTitle(const QString& title)
+{
+    QString shown;
+    {
+        std::lock_guard lock(m_mutex);
+        m_userTitle = title;
+        shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
+    }
+    Q_EMIT titleUpdated(shown);
+}
+
+QString Pane::text(AfterglowVt::Terminal::TextScope scope)
+{
+    std::lock_guard lock(m_mutex);
+    return QString::fromStdString(m_terminal.text(scope));
+}
+
+QString Pane::runningCommand() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_command;
+}
+
+void Pane::commandStarted(std::string_view command)
+{
+    // pty thread, terminal locked
+    m_command = QString::fromUtf8(command.data(), qsizetype(command.size()));
+    m_commandStart = std::chrono::steady_clock::now();
+    Q_EMIT commandBegan(m_command);
+}
+
+void Pane::commandFinished(int exitCode)
+{
+    const auto elapsed = std::chrono::steady_clock::now() - m_commandStart;
+    const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    const QString command = std::exchange(m_command, QString());
+    Q_EMIT commandEnded(command, exitCode, ms);
 }
 
 QString Pane::workingDirectory() const
@@ -413,7 +459,7 @@ void Pane::writeToPty(std::string_view bytes)
 void Pane::titleChanged(std::string_view title)
 {
     m_title = QString::fromUtf8(title.data(), qsizetype(title.size()));
-    Q_EMIT titleUpdated(m_title);
+    Q_EMIT titleUpdated(m_userTitle.isEmpty() ? m_title : m_userTitle);
 }
 
 void Pane::bell()

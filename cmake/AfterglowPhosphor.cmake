@@ -37,6 +37,8 @@ function(afterglow_add_phosphor_libs)
 endfunction()
 
 afterglow_add_phosphor_libs(
+    phosphor-dbus
+    phosphor-scripting
     phosphor-config
     phosphor-fsloader
     phosphor-registry

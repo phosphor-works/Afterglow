@@ -3,6 +3,7 @@
 
 #include "XkbKeyboard.h"
 #include "app/Application.h"
+#include "control/Ctl.h"
 
 #include <PhosphorWayland/LayerShellPluginLoader.h>
 
@@ -11,6 +12,8 @@
 #include <QDBusInterface>
 #include <QDBusReply>
 #include <QDir>
+
+#include <cstring>
 #include <QGuiApplication>
 #include <QQuickWindow>
 
@@ -38,6 +41,10 @@ bool forwardToRunningInstance(const QString& cwd, const QStringList& command, bo
 
 int main(int argc, char** argv)
 {
+    // afterglow ctl ...: a D-Bus client for a running afterglow, no GUI.
+    if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
+        return Afterglow::runCtl(argc - 1, argv + 1);
+    }
     // The quick terminal is a layer surface; this shell integration also gives
     // ordinary windows their usual xdg-shell role. Chosen before Qt starts.
     // The plugin lives in afterglow's private directory when installed, in

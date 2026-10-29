@@ -316,3 +316,28 @@ TEST(Terminal, NotificationsAndPointer)
     t.feed("\x1b]22;pointer\x1b\\");
     EXPECT_EQ(t.host.pointer, "pointer");
 }
+
+TEST(Terminal, ShellIntegrationCommands)
+{
+    struct CommandHost : RecordingHost
+    {
+        std::vector<std::string> started;
+        std::vector<int> finished;
+        void commandStarted(std::string_view c) override { started.emplace_back(c); }
+        void commandFinished(int code) override { finished.push_back(code); }
+    };
+    CommandHost host;
+    Terminal t(20, 6, host);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07make test\r\n\x1b]133;C\x07");
+    t.feed("ok 1\r\nok 2\r\n\x1b]133;D;2\x07");
+    ASSERT_EQ(host.started.size(), 1u);
+    EXPECT_EQ(host.started[0], "make test");
+    ASSERT_EQ(host.finished.size(), 1u);
+    EXPECT_EQ(host.finished[0], 2);
+    EXPECT_EQ(t.text(Terminal::TextScope::LastOutput), "ok 1\nok 2\n");
+    // A new prompt without D finishes the command with an unknown code.
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07sleep 9\r\n\x1b]133;C\x07\x1b]133;A\x07");
+    ASSERT_EQ(host.finished.size(), 2u);
+    EXPECT_EQ(host.finished[1], -1);
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
+}

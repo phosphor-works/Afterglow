@@ -32,6 +32,12 @@ add_executable(afterglow
     src/animation/PaneMotion.h
     src/app/Application.cpp
     src/app/NotificationCenter.cpp
+    src/control/Control.cpp
+    src/control/Control.h
+    src/control/ControlBus.cpp
+    src/control/ControlBus.h
+    src/control/Ctl.cpp
+    src/control/Ctl.h
     src/app/NotificationCenter.h
     src/app/Application.h
     src/app/Services.h
@@ -70,6 +76,7 @@ add_dependencies(afterglow phosphorwayland-qpa)
 target_link_libraries(afterglow PRIVATE afterglow_shaders Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Qml Qt6::Quick Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
+    PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
     Qt6::DBus KF6::WindowSystem)
 
@@ -78,6 +85,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS AfterglowVt AfterglowRender AfterglowPty
                 PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
                 PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
+                PhosphorDBus PhosphorScripting
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)

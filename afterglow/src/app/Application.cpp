@@ -23,6 +23,10 @@ const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 Application::Application()
     : m_device(m_settings.settings().font)
     , m_services{m_device, m_settings, m_engine, m_shaders}
+    , m_control(m_settings, [this](const QString& cwd, const QStringList& command) {
+        return newWindow({cwd, command, false});
+    })
+    , m_controlBus(m_control, m_settings)
 {
     connect(&m_settings, &SettingsStore::changed, this, [this](const Settings& previous) {
         if (m_settings.settings().font != previous.font) {
@@ -74,6 +78,7 @@ void Application::bindShortcuts()
 TerminalWindow* Application::newWindow(const WindowOptions& options)
 {
     auto* window = new TerminalWindow(m_services, options);
+    m_control.attachWindow(window);
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false}); });
     connect(window, &QObject::destroyed, this, &Application::quitWhenNoWindowsRemain, Qt::QueuedConnection);

@@ -117,6 +117,10 @@ public:
     virtual void programStatusChanged() { }
     /// OSC 555: flash the whole terminal.
     virtual void flash() { }
+    /// Shell integration (OSC 133): a command began running, as typed after
+    /// the prompt, and finished with an exit code (-1 when not reported).
+    virtual void commandStarted(std::string_view command) { }
+    virtual void commandFinished(int exitCode) { }
     /// A kitty desktop notification (OSC 99) to show, close or poll.
     virtual void desktopNotification(const NotificationRequest& request) { }
     /// What the host's OSC 99 support covers, as the query reply's key=value
@@ -222,6 +226,14 @@ public:
     void programExited();
     /// Whether the user can see the terminal (mode 2033 reports changes).
     void setVisible(bool visible);
+
+    enum class TextScope : std::uint8_t {
+        Screen, ///< the visible rows of the active screen
+        All, ///< the primary screen's history and visible rows
+        LastOutput, ///< what the last command printed (OSC 133 C to D)
+    };
+    /// Plain text; soft-wrapped rows join, trailing blanks are trimmed.
+    std::string text(TextScope scope) const;
     /// Selection colours set by OSC 17/19; unset ones invert the cell.
     const Rgb* selectionForeground() const noexcept { return m_hasSelectionFg ? &m_selectionFg : nullptr; }
     const Rgb* selectionBackground() const noexcept { return m_hasSelectionBg ? &m_selectionBg : nullptr; }
@@ -373,6 +385,21 @@ private:
     bool m_hasSelectionFg = false;
     bool m_hasSelectionBg = false;
     bool m_visible = true;
+
+    /// OSC 133 positions on the primary screen, as stable row ids.
+    struct Mark
+    {
+        std::uint64_t row = 0;
+        int col = 0;
+        bool valid = false;
+    };
+    Mark m_inputStart; ///< B: where the command is typed
+    Mark m_outputStart; ///< C
+    Mark m_outputEnd; ///< D
+    bool m_commandRunning = false;
+    Mark cursorMark() const;
+    std::string textBetween(const Mark& from, const Mark& to) const;
+    void finishCommand(int exitCode);
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;
 

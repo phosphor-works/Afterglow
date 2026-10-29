@@ -140,6 +140,25 @@ bool parseColorSpec(std::string_view spec, Rgb& out)
     return false;
 }
 
+void appendUtf8(std::string& out, char32_t cp)
+{
+    if (cp < 0x80) {
+        out.push_back(char(cp));
+    } else if (cp < 0x800) {
+        out.push_back(char(0xC0 | (cp >> 6)));
+        out.push_back(char(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(char(0xE0 | (cp >> 12)));
+        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(char(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(char(0xF0 | (cp >> 18)));
+        out.push_back(char(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(char(0x80 | (cp & 0x3F)));
+    }
+}
+
 std::string formatColorReply(std::string_view prefix, Rgb c, bool bel)
 {
     char buf[64];
@@ -1519,6 +1538,8 @@ void Terminal::fullReset()
     m_modes.cursorBlink = m_options.cursorBlink;
     m_conformance = 5;
     m_savedDecModes.clear();
+    m_inputStart = m_outputStart = m_outputEnd = {};
+    m_commandRunning = false;
     m_hasSelectionFg = m_hasSelectionBg = false;
     m_reportedDark = -1;
     m_colorStack.clear();
@@ -2863,6 +2884,112 @@ void Terminal::reportRectChecksum(const Params& p)
     reply(std::string_view(buf, std::size_t(n)));
 }
 
+Terminal::Mark Terminal::cursorMark() const
+{
+    const Screen& scr = *m_primary;
+    return Mark{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.cursor.y), scr.cursor.x, true};
+}
+
+void Terminal::finishCommand(int exitCode)
+{
+    m_commandRunning = false;
+    m_host.commandFinished(exitCode);
+}
+
+std::string Terminal::textBetween(const Mark& from, const Mark& to) const
+{
+    const Screen& scr = *m_primary;
+    const long long first = scr.absoluteIndexOf(from.row);
+    const long long last = scr.absoluteIndexOf(to.row);
+    if (last < 0) {
+        return {};
+    }
+    const long long start = first < 0 ? 0 : first; // the start scrolled out of history
+    const int startCol = first < 0 ? 0 : from.col;
+    std::string out;
+    for (long long i = start; i <= last; ++i) {
+        const Row& row = scr.absoluteRow(std::size_t(i));
+        const int c0 = i == start ? startCol : 0;
+        const int c1 = i == last ? to.col : scr.cols();
+        std::string line;
+        for (int x = c0; x < c1 && x < scr.cols(); ++x) {
+            const Cell& c = row.at(x);
+            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() || c.multicellDy()))) {
+                continue;
+            }
+            const char32_t cp = c.isEmpty() ? U' ' : c.codepoint();
+            appendUtf8(line, cp);
+            if (c.hasGrapheme()) {
+                for (char32_t e : scr.graphemeExtra(row, x)) {
+                    appendUtf8(line, e);
+                }
+            }
+        }
+        const bool continues = row.wrapped && i < last;
+        if (!continues) {
+            while (!line.empty() && line.back() == ' ') {
+                line.pop_back();
+            }
+        }
+        out += line;
+        if (!continues && i < last) {
+            out += '\n';
+        }
+    }
+    return out;
+}
+
+std::string Terminal::text(TextScope scope) const
+{
+    switch (scope) {
+    case TextScope::LastOutput:
+        if (!m_outputStart.valid) {
+            return {};
+        }
+        return textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark());
+    case TextScope::All: {
+        const Screen& scr = *m_primary;
+        const Mark top{scr.rowsDropped(), 0, true};
+        const Mark end{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.rows() - 1), scr.cols(), true};
+        std::string s = textBetween(top, end);
+        while (!s.empty() && s.back() == '\n') {
+            s.pop_back();
+        }
+        return s;
+    }
+    case TextScope::Screen:
+        break;
+    }
+    // The active screen's visible rows.
+    const Screen& scr = *m_active;
+    std::string out;
+    for (int y = 0; y < scr.rows(); ++y) {
+        const Row& row = scr.row(y);
+        std::string line;
+        for (int x = 0; x < scr.cols(); ++x) {
+            const Cell& c = row.at(x);
+            if (c.isTail() || c.isSpacerHead() || (c.isMulticell() && (c.multicellDx() || c.multicellDy()))) {
+                continue;
+            }
+            appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());
+            if (c.hasGrapheme()) {
+                for (char32_t e : scr.graphemeExtra(row, x)) {
+                    appendUtf8(line, e);
+                }
+            }
+        }
+        while (!line.empty() && line.back() == ' ') {
+            line.pop_back();
+        }
+        out += line;
+        out += '\n';
+    }
+    while (!out.empty() && out.back() == '\n') {
+        out.pop_back();
+    }
+    return out;
+}
+
 void Terminal::programExited()
 {
     if (m_programStatus.endActivity()) {
@@ -3267,6 +3394,10 @@ void Terminal::semanticPrompt(std::string_view args)
     switch (kind) {
     case 'A': // prompt start
     case 'N': // new command: prompt start after implicitly finishing the last one
+        if (m_commandRunning) {
+            m_outputEnd = cursorMark();
+            finishCommand(-1); // no D: the exit code is unknown
+        }
         // Back at the shell: whatever a program reported in flight is over.
         if (m_programStatus.endActivity()) {
             m_host.programStatusChanged();
@@ -3282,12 +3413,40 @@ void Terminal::semanticPrompt(std::string_view args)
     case 'B': // prompt end, user input begins
         m_semanticZone = SemanticZone::Input;
         m_promptRedrawPending = false;
+        if (!m_modes.altScreen) {
+            m_inputStart = cursorMark();
+        }
         break;
     case 'C': // command output begins
-    case 'D': // command finished
         m_semanticZone = SemanticZone::Output;
         m_promptRedrawPending = false;
+        if (!m_modes.altScreen) {
+            // The command is what was typed between B and here.
+            std::string command = m_inputStart.valid ? textBetween(m_inputStart, cursorMark()) : std::string{};
+            while (!command.empty() && (command.back() == '\n' || command.back() == ' ')) {
+                command.pop_back();
+            }
+            m_outputStart = cursorMark();
+            m_outputEnd = {};
+            m_commandRunning = true;
+            m_host.commandStarted(command);
+        }
         break;
+    case 'D': { // command finished, D ; exit-code
+        m_semanticZone = SemanticZone::Output;
+        m_promptRedrawPending = false;
+        int code = -1;
+        if (args.size() > 2 && args[1] == ';') {
+            const std::string_view rest = args.substr(2);
+            const auto end = rest.find(';');
+            std::from_chars(rest.data(), rest.data() + (end == std::string_view::npos ? rest.size() : end), code);
+        }
+        if (m_commandRunning && !m_modes.altScreen) {
+            m_outputEnd = cursorMark();
+            finishCommand(code);
+        }
+        break;
+    }
     default:
         break;
     }

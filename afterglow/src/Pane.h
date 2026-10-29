@@ -15,6 +15,7 @@
 #include <QString>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -73,8 +74,16 @@ public:
     bool refreshSnapshot(int extraRows = 0);
     const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
 
+    /// Unique for the life of the process; scripts and afterglow ctl use it.
+    quint32 id() const noexcept { return m_id; }
+    /// The program's title, or the one set through the control interface.
     QString title() const;
+    /// Overrides the title; empty returns to the program's.
+    void setUserTitle(const QString& title);
     QString workingDirectory() const;
+    QString text(AfterglowVt::Terminal::TextScope scope);
+    /// The command running now (OSC 133), empty at the prompt.
+    QString runningCommand() const;
 
     // Search (GUI thread).
     struct SearchResult
@@ -118,6 +127,9 @@ Q_SIGNALS:
     void statusChanged();
     /// OSC 555: flash the pane.
     void flashRequested();
+    /// Shell integration (OSC 133).
+    void commandBegan(const QString& command);
+    void commandEnded(const QString& command, int exitCode, qint64 durationMs);
     /// An OSC 99 desktop notification request (queued to the GUI thread).
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
     /// An OSC 5522 clipboard read or write (queued to the GUI thread).
@@ -134,6 +146,8 @@ private:
     void pointerShapeChanged(std::string_view shape) override;
     void programStatusChanged() override;
     void flash() override;
+    void commandStarted(std::string_view command) override;
+    void commandFinished(int exitCode) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
@@ -148,6 +162,10 @@ private:
     void ptyClosed(int status) override;
 
     mutable std::mutex m_mutex;
+    const quint32 m_id;
+    QString m_userTitle;
+    QString m_command; ///< guarded by m_mutex
+    std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
     QString m_title;
 
