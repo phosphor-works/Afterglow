@@ -7,6 +7,9 @@
 #include "chrome/ChromeController.h"
 
 #include <PhosphorAnimation/Spring.h>
+#include <PhosphorWayland/LayerSurface.h>
+
+#include <KWindowEffects>
 #include "chrome/ChromeLayer.h"
 #include "shaders/ShaderLibrary.h"
 #include "Pane.h"
@@ -22,6 +25,7 @@
 #include <QKeyEvent>
 #include <QLoggingCategory>
 #include <QPlatformSurfaceEvent>
+#include <QScreen>
 #include <QVariantMap>
 #include <QStyleHints>
 
@@ -71,13 +75,15 @@ int mouseButtonCode(Qt::MouseButton b)
 }
 } // namespace
 
-TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, QQmlEngine& engine,
-                               ShaderLibrary& shaders, const QString& workingDirectory)
-    : m_device(device)
-    , m_settings(settings)
-    , m_engine(engine)
-    , m_shaders(shaders)
+TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
+    : m_device(services.device)
+    , m_settings(services.settings)
+    , m_engine(services.engine)
+    , m_shaders(services.shaders)
 {
+    m_quick = options.quick;
+    AfterglowRender::GpuDevice& device = m_device;
+    QQmlEngine& engine = m_engine;
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(device.vulkanInstance());
     setTitle(QStringLiteral("afterglow"));
@@ -114,7 +120,12 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore
     connect(&m_shaders, &ShaderLibrary::changed, this, &TerminalWindow::applyShaders);
     applyShaders();
 
-    newTab(workingDirectory);
+    if (m_quick) {
+        setUpQuickTerminal();
+    }
+    applyWindowEffects();
+
+    newTab(options.workingDirectory, options.command);
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
@@ -149,7 +160,7 @@ QList<TerminalWindow*> TerminalWindow::windows()
 
 // --- panes -----------------------------------------------------------------
 
-Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area)
+Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command)
 {
     auto* pane = new Pane(m_settings.settings().terminal, this);
     connect(pane, &QObject::destroyed, this, [this, pane] {
@@ -179,7 +190,11 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
 
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
-    if (const QString shell = m_settings.settings().shell; !shell.isEmpty()) {
+    if (!command.isEmpty()) {
+        for (const QString& arg : command) {
+            opts.argv.push_back(arg.toStdString());
+        }
+    } else if (const QString shell = m_settings.settings().shell; !shell.isEmpty()) {
         opts.argv = {shell.toStdString()};
     }
     const auto& m = m_renderer->fonts().fonts->metrics();
@@ -272,12 +287,12 @@ QRect TerminalWindow::paneArea() const
     return QRect(0, bar, px.width(), std::max(0, px.height() - bar));
 }
 
-void TerminalWindow::newTab(const QString& workingDirectory)
+void TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command)
 {
     auto tab = std::make_unique<Tab>();
     m_tabs.push_back(std::move(tab));
     // Size the shell for the area it will get, with the tab bar if it now shows.
-    Pane* first = createPane(workingDirectory, paneArea());
+    Pane* first = createPane(workingDirectory, paneArea(), command);
     m_tabs.back()->splits = std::make_unique<SplitTree>(first);
     m_tabs.back()->focused = first;
     switchTab(int(m_tabs.size()) - 1);
@@ -393,6 +408,16 @@ void TerminalWindow::renderNow()
         return;
     }
     qCDebug(lcWindow) << "frame";
+    bool sliding = false;
+    if (m_quick && m_slide.isAnimating()) {
+        m_slide.advance();
+        PhosphorWayland::LayerSurface::get(this)->setMargins(QMargins(0, int(std::lround(m_slide.value())), 0, 0));
+        sliding = m_slide.isAnimating();
+        if (!sliding && !m_quickShown) {
+            hide();
+            return;
+        }
+    }
     if (m_renderer->pixelSize() != m_layoutSize || devicePixelRatio() != m_layoutDpr
         || m_device.fontEpoch() != m_layoutFontEpoch) {
         relayout();
@@ -406,12 +431,14 @@ void TerminalWindow::renderNow()
     const QRect area = paneArea();
     const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
     const std::uint32_t dim = packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255)));
+    const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.cursorBlinkOn = m_blinkOn;
+        wp.params.backgroundAlpha = backgroundAlpha;
         panes.push_back(wp);
         const QRect shown = wp.params.rect;
         if (multiple && p != m_focused) {
@@ -427,7 +454,8 @@ void TerminalWindow::renderNow()
                                   m_settings.settings().window.dividerColor);
         }
     });
-    const std::uint32_t clear = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
+    const std::uint32_t clearRgb = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
+    const std::uint32_t clear = (clearRgb & 0x00FFFFFFu) | (std::uint32_t(backgroundAlpha) << 24);
     QRhiTexture* chrome = nullptr;
     if (chromeVisible()) {
         updateChrome();
@@ -436,7 +464,7 @@ void TerminalWindow::renderNow()
         chrome = m_chrome->texture();
     }
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
-    if (animating || m_renderer->animating()) {
+    if (animating || sliding || m_renderer->animating()) {
         scheduleRender(); // something is moving: keep frames coming
     }
 
@@ -596,6 +624,10 @@ bool TerminalWindow::event(QEvent* e)
 
 void TerminalWindow::exposeEvent(QExposeEvent*)
 {
+    if (isExposed() && !m_effectsApplied) {
+        m_effectsApplied = true;
+        applyWindowEffects();
+    }
     if (isExposed()) {
         renderNow();
     }
@@ -670,12 +702,9 @@ bool TerminalWindow::performAction(Action action)
             closePane(m_focused);
         }
         return true;
-    case Action::NewWindow: {
-        auto* w = new TerminalWindow(m_device, m_settings, m_engine, m_shaders,
-                                     m_focused ? m_focused->workingDirectory() : QString());
-        w->show();
+    case Action::NewWindow:
+        Q_EMIT newWindowRequested(m_focused ? m_focused->workingDirectory() : QString());
         return true;
-    }
     case Action::NewTab:
         newTab(m_focused ? m_focused->workingDirectory() : QString());
         return true;
@@ -844,8 +873,71 @@ void TerminalWindow::applySettings(const Settings& previous)
             p->setOptions(now.terminal);
         }
     }
+    if (now.window.backgroundOpacity != previous.window.backgroundOpacity || now.window.blur != previous.window.blur) {
+        applyWindowEffects();
+    }
+    if (m_quick && now.quickTerminal.height != previous.quickTerminal.height) {
+        setUpQuickTerminal();
+    }
     m_layoutSize = QSize(); // padding may have changed
     updateChrome();
+    scheduleRender();
+}
+
+void TerminalWindow::applyWindowEffects()
+{
+    const WindowSettings& w = m_settings.settings().window;
+    const bool translucent = w.backgroundOpacity < 1.0;
+    m_renderer->setTranslucent(translucent);
+    // Blur needs the native window; before that, exposeEvent applies it.
+    if (handle()) {
+        KWindowEffects::enableBlurBehind(this, translucent && w.blur);
+    }
+    scheduleRender();
+}
+
+// --- quick terminal --------------------------------------------------------
+
+void TerminalWindow::setUpQuickTerminal()
+{
+    using PhosphorWayland::LayerSurface;
+    const QScreen* screen = QGuiApplication::primaryScreen();
+    const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1280, 800);
+    m_quickHeight = int(std::lround(avail.height() * m_settings.settings().quickTerminal.height));
+    LayerSurface* surface = LayerSurface::get(this);
+    surface->setLayer(LayerSurface::LayerTop);
+    surface->setAnchors(LayerSurface::Anchors(LayerSurface::AnchorTop | LayerSurface::AnchorLeft
+                                              | LayerSurface::AnchorRight));
+    surface->setKeyboardInteractivity(LayerSurface::KeyboardInteractivityOnDemand);
+    surface->setScope(QStringLiteral("afterglow-quick-terminal"));
+    surface->setExclusiveZone(0);
+    surface->setDesiredSize(QSize(0, m_quickHeight));
+    resize(avail.width(), m_quickHeight);
+}
+
+void TerminalWindow::toggleQuick()
+{
+    if (!m_quick) {
+        return;
+    }
+    const bool animate = m_settings.settings().quickTerminal.animate;
+    const auto spec = springSpec<qreal>(m_clock.get(), SplitSpeed);
+    const qreal hidden = -qreal(m_quickHeight);
+    m_quickShown = !m_quickShown;
+    if (m_quickShown) {
+        if (!isVisible()) {
+            PhosphorWayland::LayerSurface::get(this)->setMargins(QMargins(0, animate ? int(hidden) : 0, 0, 0));
+            show();
+        }
+        requestActivate();
+        m_slide.start(animate ? (m_slide.isAnimating() ? m_slide.value() : hidden) : 0.0, 0.0, spec);
+    } else {
+        if (!animate) {
+            hide();
+            return;
+        }
+        m_slide.start(m_slide.isAnimating() ? m_slide.value() : 0.0, hidden, spec);
+    }
     scheduleRender();
 }
 

@@ -35,4 +35,5 @@ afterglow_add_phosphor_libs(
     phosphor-wayland
     phosphor-layer
     phosphor-animation
+    phosphor-shortcuts
 )

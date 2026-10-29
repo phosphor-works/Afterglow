@@ -136,7 +136,8 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         out.push_back({x, y, w, h, 0, 0, 0, 0, color, std::uint32_t(InstanceKind::Solid)});
     };
 
-    solid(float(p.rect.x()), float(p.rect.y()), float(p.rect.width()), float(p.rect.height()), s.defaultBg);
+    solid(float(p.rect.x()), float(p.rect.y()), float(p.rect.width()), float(p.rect.height()),
+          (s.defaultBg & 0x00FFFFFFu) | (std::uint32_t(p.backgroundAlpha) << 24));
 
     const bool cursorInGrid = s.cursorX >= 0 && s.cursorX < s.cols && s.cursorY >= 0 && s.cursorY < s.rows;
     const bool drawCursor = s.cursorVisible && cursorInGrid && (!p.focused || !s.cursorBlink || p.cursorBlinkOn);
@@ -391,6 +392,14 @@ QColor toColor(std::uint32_t rgba)
     return QColor::fromRgb(int(rgba & 0xFF), int((rgba >> 8) & 0xFF), int((rgba >> 16) & 0xFF), int(rgba >> 24));
 }
 
+/// The clear colour premultiplied, as everything is drawn premultiplied.
+QColor premultipliedClear(std::uint32_t rgba)
+{
+    const int a = int(rgba >> 24);
+    return QColor::fromRgb(int(rgba & 0xFF) * a / 255, int((rgba >> 8) & 0xFF) * a / 255,
+                           int((rgba >> 16) & 0xFF) * a / 255, a);
+}
+
 } // namespace
 
 WindowRenderer::WindowRenderer(GpuDevice& device, QWindow* window)
@@ -421,6 +430,9 @@ bool WindowRenderer::ensureSwapChain()
     if (!m_swapChain) {
         m_swapChain.reset(rhi->newSwapChain());
         m_swapChain->setWindow(m_window);
+        if (m_translucent) {
+            m_swapChain->setFlags(QRhiSwapChain::SurfaceHasPreMulAlpha);
+        }
         m_renderPass.reset(m_swapChain->newCompatibleRenderPassDescriptor());
         m_swapChain->setRenderPassDescriptor(m_renderPass.get());
     }
@@ -451,6 +463,18 @@ void WindowRenderer::releaseSwapChain()
     m_renderPass.reset();
     m_hasSwapChain = false;
     m_boundTextureGeneration = 0;
+}
+
+void WindowRenderer::setTranslucent(bool translucent)
+{
+    if (translucent == m_translucent) {
+        return;
+    }
+    m_translucent = translucent;
+    // The flag only takes effect on a new swapchain.
+    if (m_swapChain) {
+        releaseSwapChain();
+    }
 }
 
 void WindowRenderer::setShaderChains(std::vector<ShaderProgramPtr> pane, std::vector<ShaderProgramPtr> window)
@@ -699,7 +723,7 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         gridPipelines->grid = makeGridPipeline(gridPass);
     }
 
-    const QColor clear = toColor(clearColor);
+    const QColor clear = premultipliedClear(clearColor);
     QRhiCommandBuffer* cb = m_swapChain->currentFrameCommandBuffer();
     const QRhiCommandBuffer::VertexInput input(m_instances.get(), 0);
     // QRhi scissors use a bottom-left origin.

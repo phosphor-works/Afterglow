@@ -32,6 +32,7 @@ const QString Window = QStringLiteral("Window");
 const QString Keys = QStringLiteral("Keybinds");
 const QString Shaders = QStringLiteral("Shaders");
 const QString Animation = QStringLiteral("Animation");
+const QString Quick = QStringLiteral("QuickTerminal");
 
 QVariant clampInt(const QVariant& v, int lo, int hi)
 {
@@ -133,6 +134,16 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("padding"), 6, 0, 200, QStringLiteral("Space around the grid in logical pixels")),
         intKey(QStringLiteral("initialColumns"), 100, 10, 1000, QStringLiteral("Columns of a new window")),
         intKey(QStringLiteral("initialRows"), 30, 4, 500, QStringLiteral("Rows of a new window")),
+        doubleKey(QStringLiteral("backgroundOpacity"), 1.0, 0.05, 1.0,
+                  QStringLiteral("Opacity of the default background; text stays opaque")),
+        {QStringLiteral("blur"), false, QMetaType::Bool,
+         QStringLiteral("Blur what shows through a translucent background (KWin)")},
+    };
+    schema.groups[Quick] = {
+        doubleKey(QStringLiteral("height"), 0.4, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen")),
+        stringKey(QStringLiteral("shortcut"), QStringLiteral("Meta+`"),
+                  QStringLiteral("Global shortcut that shows and hides it; empty for none")),
+        {QStringLiteral("animate"), true, QMetaType::Bool, QStringLiteral("Slide in and out")},
     };
     schema.groups[Animation] = {
         {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("The cursor glides between cells")},
@@ -293,6 +304,12 @@ Settings SettingsStore::read() const
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));
     s.window.initialColumns = st.read<int>(Window, QStringLiteral("initialColumns"));
     s.window.initialRows = st.read<int>(Window, QStringLiteral("initialRows"));
+
+    s.window.backgroundOpacity = st.read<double>(Window, QStringLiteral("backgroundOpacity"));
+    s.window.blur = st.read<bool>(Window, QStringLiteral("blur"));
+    s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
+    s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
+    s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));
 
     // Animation
     s.animation.cursor = st.read<bool>(Animation, QStringLiteral("cursor"));

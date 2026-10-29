@@ -29,7 +29,17 @@ struct WindowSettings
     int initialRows = 30;
     std::uint32_t dividerColor = 0xFF423A3A; ///< RGBA8 in memory order
     double unfocusedDim = 0.19;
+    double backgroundOpacity = 1.0; ///< of the default background
+    bool blur = false; ///< blur what shows through a translucent background (KWin)
     bool operator==(const WindowSettings&) const = default;
+};
+
+struct QuickTerminalSettings
+{
+    double height = 0.4; ///< fraction of the screen
+    QString shortcut = QStringLiteral("Meta+`"); ///< global shortcut; empty for none
+    bool animate = true; ///< slide in and out
+    bool operator==(const QuickTerminalSettings&) const = default;
 };
 
 struct AnimationSettings
@@ -47,6 +57,7 @@ struct Settings
     AfterglowVt::TerminalOptions terminal;
     WindowSettings window;
     AnimationSettings animation;
+    QuickTerminalSettings quickTerminal;
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     bool copyOnSelect = true;

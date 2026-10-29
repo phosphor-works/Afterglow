@@ -6,6 +6,7 @@
 #include "SplitTree.h"
 #include "animation/FrameClock.h"
 #include "animation/PaneMotion.h"
+#include "app/Services.h"
 #include "config/Settings.h"
 
 #include <AfterglowRender/GridRenderer.h>
@@ -28,6 +29,15 @@ class GpuDevice;
 
 namespace Afterglow {
 
+struct WindowOptions
+{
+    QString workingDirectory;
+    /// Program and arguments for the first pane; empty runs the shell.
+    QStringList command;
+    /// The quick terminal: a layer surface along the top of the screen.
+    bool quick = false;
+};
+
 class ChromeController;
 class ChromeLayer;
 class Pane;
@@ -40,15 +50,19 @@ class TerminalWindow : public QWindow
     Q_OBJECT
 
 public:
-    TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, QQmlEngine& engine,
-                   ShaderLibrary& shaders, const QString& workingDirectory = {});
+    TerminalWindow(Services& services, const WindowOptions& options);
     ~TerminalWindow() override;
 
     static QList<TerminalWindow*> windows();
 
+    /// Slides the quick terminal in or out (quick windows only).
+    void toggleQuick();
+
 Q_SIGNALS:
     /// The tab list, the current tab or a tab title changed.
     void tabsChanged();
+    /// The new-window action, for the application to fulfil.
+    void newWindowRequested(const QString& workingDirectory);
 
 protected:
     bool event(QEvent* e) override;
@@ -65,9 +79,9 @@ protected:
 
 private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
-    Pane* createPane(const QString& workingDirectory, const QRect& area);
+    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {});
     void splitFocused(SplitTree::Direction direction);
-    void newTab(const QString& workingDirectory);
+    void newTab(const QString& workingDirectory, const QStringList& command = {});
     void switchTab(int index);
     void closeTab(int index);
     int tabOf(const Pane* pane) const;
@@ -100,6 +114,8 @@ private:
                      bool& holding, bool& animating);
     void applySettings(const Settings& previous);
     void applyShaders();
+    void applyWindowEffects();
+    void setUpQuickTerminal();
     void sendKey(QKeyEvent* e);
     void paste(QClipboard::Mode mode);
     void updateTitle();
@@ -139,6 +155,11 @@ private:
     bool m_windowFocused = false;
 
     std::unique_ptr<FrameClock> m_clock;
+    bool m_quick = false;
+    bool m_effectsApplied = false;
+    bool m_quickShown = false;
+    int m_quickHeight = 0;
+    PhosphorAnimation::AnimatedValue<qreal> m_slide;
     std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
     /// Where a pane just created by a split grows from.
     std::unordered_map<const Pane*, QRectF> m_growFrom;

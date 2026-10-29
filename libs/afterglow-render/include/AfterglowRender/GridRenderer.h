@@ -82,6 +82,8 @@ public:
         std::optional<QPointF> cursorPosition;
         /// Content shift upwards in pixels, for scrolling by part of a row.
         float scrollShift = 0;
+        /// Opacity of the default background (window translucency).
+        std::uint8_t backgroundAlpha = 255;
     };
 
     /// Appends the pane's instances. Returns false if the glyph atlas
@@ -137,6 +139,10 @@ public:
 
     WindowRenderer(const WindowRenderer&) = delete;
     WindowRenderer& operator=(const WindowRenderer&) = delete;
+
+    /// Lets the compositor blend the window with what is behind it (the
+    /// swapchain carries premultiplied alpha). Recreates the swapchain.
+    void setTranslucent(bool translucent);
 
     /// Creates or resizes the swapchain for the window's current size.
     /// Returns false while the window has no usable surface.
@@ -230,6 +236,7 @@ private:
     std::uint64_t m_boundTextureGeneration = 0;
     std::uint64_t m_fontEpoch = 0;
     bool m_hasSwapChain = false;
+    bool m_translucent = false;
 
     FrameBuilder m_builder;
     std::vector<Instance> m_frame;
