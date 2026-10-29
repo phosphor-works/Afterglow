@@ -32,6 +32,7 @@ export type Pane = {
     cols: number,
     rows: number,
     focused: boolean,
+    context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
 }
 
 export type PaneEvent = { pane: Pane }
@@ -45,6 +46,8 @@ export type CommandFinishedEvent = {
 }
 export type StatusEvent = { pane: Pane, state: string, text: string }
 export type ActionEvent = { pane: Pane? } -- the focused pane, if any
+export type UserVarEvent = { pane: Pane, name: string, value: string } -- iTerm2 SetUserVar
+export type ContextEvent = { pane: Pane, context: string } -- OSC 3008 / RemoteHost; "" back home
 
 export type Effect = { kind: string }
 export type Effects = Effect | { Effect }
@@ -55,6 +58,7 @@ export type Effects = Effect | { Effect }
 --   on_title(ev: TitleEvent)              on_status(ev: StatusEvent)
 --   on_command_started(ev: CommandStartedEvent)
 --   on_command_finished(ev: CommandFinishedEvent)
+--   on_user_var(ev: UserVarEvent)            on_context(ev: ContextEvent)
 --   run_action(action: string, ev: ActionEvent)
 
 type PaneRef = Pane | number

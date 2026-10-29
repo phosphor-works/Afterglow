@@ -206,7 +206,7 @@ int runCtl(int argc, char** argv)
         Watcher watcher;
         QDBusConnection bus = QDBusConnection::sessionBus();
         for (const char* name : {"PaneCreated", "PaneClosed", "TitleChanged", "Bell", "CommandStarted",
-                                 "CommandFinished", "StatusChanged", "FocusChanged"}) {
+                                 "CommandFinished", "StatusChanged", "FocusChanged", "UserVarChanged", "ContextChanged"}) {
             bus.connect(Service, QLatin1String(ControlBus::ObjectPath), iface, QLatin1String(name), &watcher,
                         SLOT(onSignal(QDBusMessage)));
         }

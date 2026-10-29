@@ -11,6 +11,7 @@
 #include <AfterglowVt/Terminal.h>
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QObject>
 #include <QTimer>
 #include <QString>
@@ -87,6 +88,15 @@ public:
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;
 
+    /// Where the pane's shell runs when that is not here as you (OSC 3008,
+    /// iTerm2 RemoteHost): "root", "deploy@prod-1", a container's name.
+    /// Empty for a local shell as the local user.
+    QString contextLabel() const;
+    /// What kind of context the label is: elevated, remote, container, or empty.
+    QString contextKind() const;
+    /// Values programs set with iTerm2's SetUserVar.
+    QHash<QString, QString> userVars() const;
+
     /// Values for this pane's shaders (iSignal), set by scripts and the
     /// control interface. GUI thread.
     using Signals = std::array<AfterglowRender::FrameBuilder::PaneParams::Signal, 8>;
@@ -130,6 +140,8 @@ Q_SIGNALS:
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
     void titleUpdated(const QString& title);
+    void contextUpdated();
+    void userVarUpdated(const QString& name, const QString& value);
     void shaderSignalsChanged();
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
@@ -160,6 +172,10 @@ private:
     void flash() override;
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
+    void contextChanged() override;
+    void userVarChanged(std::string_view name, std::string_view value) override;
+    bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
+                     std::vector<std::uint8_t>& rgba) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
@@ -176,6 +192,9 @@ private:
     mutable std::mutex m_mutex;
     const quint32 m_id;
     QString m_userTitle;
+    QString m_contextLabel;
+    QString m_contextKind;
+    QHash<QString, QString> m_userVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;

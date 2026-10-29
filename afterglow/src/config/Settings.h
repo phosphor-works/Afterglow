@@ -76,6 +76,8 @@ struct Settings
     Bell bell = Bell::Attention;
     bool notifications = true; ///< OSC 9 / 777 desktop notifications
     bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
+    /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
+    QString clipboardRead = QStringLiteral("ask");
     Keybinds keybinds = Keybinds::defaults();
     /// Shader references (pack ids or file paths) for each chain, applied in order.
     ShaderLibrary::Refs shaders;

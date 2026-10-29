@@ -4,6 +4,8 @@
 add_library(AfterglowVt SHARED
     src/Clipboard.cpp
     src/Graphics.cpp
+    src/ITerm2.cpp
+    src/ShellContext.cpp
     src/Input.cpp
     src/Notifications.cpp
     src/ProgramStatus.cpp

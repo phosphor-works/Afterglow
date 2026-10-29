@@ -46,6 +46,13 @@ void Control::attachPane(TerminalWindow* window, Pane* pane)
     connect(pane, &QObject::destroyed, this, [this, id] { Q_EMIT paneClosed(id); });
     connect(pane, &Pane::titleUpdated, this, [this, id](const QString& t) { Q_EMIT titleChanged(id, t); });
     connect(pane, &Pane::bellRang, this, [this, id] { Q_EMIT bell(id); });
+    connect(pane, &Pane::userVarUpdated, this,
+            [this, id](const QString& name, const QString& value) { Q_EMIT userVarChanged(id, name, value); });
+    connect(pane, &Pane::contextUpdated, this, [this, id, guard = QPointer<Pane>(pane)] {
+        if (guard) {
+            Q_EMIT contextChanged(id, guard->contextLabel());
+        }
+    });
     connect(pane, &Pane::commandBegan, this, [this, id](const QString& c) { Q_EMIT commandStarted(id, c); });
     connect(pane, &Pane::commandEnded, this,
             [this, id](const QString& c, int code, qint64 ms) { Q_EMIT commandFinished(id, c, code, ms); });
@@ -98,7 +105,8 @@ QList<PaneInfo> Control::panes() const
         }
         for (Pane* p : w->panes()) {
             out.append(PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->workingDirectory(),
-                                p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p});
+                                p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p,
+                                p->contextLabel()});
         }
     }
     return out;

@@ -52,6 +52,9 @@ Q_SIGNALS:
     Q_SCRIPTABLE void CommandFinished(uint pane, const QString& command, int exitCode, qlonglong durationMs);
     Q_SCRIPTABLE void StatusChanged(uint pane, const QString& state, const QString& text);
     Q_SCRIPTABLE void FocusChanged(uint pane);
+    /// The value is empty unless Control.allowReadText.
+    Q_SCRIPTABLE void UserVarChanged(uint pane, const QString& name, const QString& value);
+    Q_SCRIPTABLE void ContextChanged(uint pane, const QString& context);
 
 private:
     void applySettings();

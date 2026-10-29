@@ -42,6 +42,11 @@ Rectangle {
 
     color: Qt.darker(controller.background, 1.3)
 
+    // The colour for a context kind: elevated, remote or container.
+    function contextColor(kind: string): color {
+        return kind === "elevated" ? controller.badColor : kind === "remote" ? controller.warnColor : controller.accent
+    }
+
     // Where tab @p i is drawn while another is being dragged.
     function slotOf(i: int): int {
         if (dragFrom < 0 || i === dragFrom)
@@ -175,12 +180,39 @@ Rectangle {
                     z: 10
                 }
 
-                Text {
+                // Where the tab's shell runs, when not here as you.
+                Rectangle {
+                    id: contextChip
+                    readonly property var context: bar.controller.tabContexts[tab.index] || ({})
+                    readonly property color tint: bar.contextColor(context.kind || "")
+                    visible: (context.label || "").length > 0
                     anchors.left: status.right
+                    anchors.leftMargin: visible ? (status.visible ? 6 : 10) : 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.verticalCenterOffset: 1
+                    width: visible ? Math.min(chipText.implicitWidth + 10, tab.width * 0.45) : 0
+                    height: 16
+                    radius: 4
+                    color: Qt.rgba(tint.r, tint.g, tint.b, 0.18)
+                    border.color: Qt.rgba(tint.r, tint.g, tint.b, 0.6)
+                    Text {
+                        id: chipText
+                        anchors.centerIn: parent
+                        width: Math.min(implicitWidth, parent.width - 8)
+                        text: contextChip.context.label || ""
+                        elide: Text.ElideMiddle
+                        color: contextChip.tint
+                        font.pixelSize: 10
+                        font.bold: true
+                    }
+                }
+
+                Text {
+                    anchors.left: contextChip.right
                     anchors.right: closeButton.left
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.verticalCenterOffset: 1
-                    anchors.leftMargin: status.visible ? 6 : 14
+                    anchors.leftMargin: contextChip.visible || status.visible ? 6 : 14
                     anchors.rightMargin: 4
                     text: tab.title.length > 0 ? tab.title : "afterglow"
                     elide: Text.ElideRight

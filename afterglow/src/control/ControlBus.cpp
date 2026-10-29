@@ -42,6 +42,10 @@ ControlBus::ControlBus(Control& control, SettingsStore& settings, QObject* paren
     connect(&control, &Control::titleChanged, this, &ControlBus::TitleChanged);
     connect(&control, &Control::bell, this, &ControlBus::Bell);
     connect(&control, &Control::focusChanged, this, &ControlBus::FocusChanged);
+    connect(&control, &Control::contextChanged, this, &ControlBus::ContextChanged);
+    connect(&control, &Control::userVarChanged, this, [this](quint32 pane, const QString& name, const QString& value) {
+        Q_EMIT UserVarChanged(pane, name, commandText(value));
+    });
     connect(&control, &Control::statusChanged, this, &ControlBus::StatusChanged);
     connect(&control, &Control::commandStarted, this,
             [this](quint32 pane, const QString& c) { Q_EMIT CommandStarted(pane, commandText(c)); });

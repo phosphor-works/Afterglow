@@ -93,6 +93,8 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
     void keyReleaseEvent(QKeyEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
+    /// At a prompt that asked for it, moves the shell's cursor to a click.
+    void moveCursorToClick(Pane* pane, const QPointF& pos);
     void mouseReleaseEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;

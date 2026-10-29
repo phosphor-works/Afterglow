@@ -29,6 +29,9 @@ struct PaneInfo
     int cols = 0;
     int rows = 0;
     bool focused = false; ///< the focused pane of the active window
+    /// Where the shell runs when not here as you ("root", "deploy@prod-1");
+    /// not part of the D-Bus pane structure.
+    QString context;
 };
 
 /// What afterglow lets other programs (D-Bus) and scripts (Luau) do: one
@@ -85,6 +88,10 @@ Q_SIGNALS:
     /// Program status (OSC 7501): the pane's most pressing state.
     void statusChanged(quint32 pane, const QString& state, const QString& text);
     void focusChanged(quint32 pane);
+    /// A program set an iTerm2 user variable (OSC 1337 SetUserVar).
+    void userVarChanged(quint32 pane, const QString& name, const QString& value);
+    /// Where the pane's shell runs changed (OSC 3008, RemoteHost).
+    void contextChanged(quint32 pane, const QString& context);
 
 private:
     void attachPane(TerminalWindow* window, Pane* pane);

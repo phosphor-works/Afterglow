@@ -11,12 +11,16 @@
 #include <QFile>
 #include <QStringList>
 #include <QImage>
+#include <QSysInfo>
 
 #include <algorithm>
 #include <chrono>
 #include <QLoggingCategory>
 
 #include <cstring>
+
+#include <pwd.h>
+#include <unistd.h>
 
 #include <sys/wait.h>
 
@@ -509,9 +513,10 @@ void Pane::clipboardWrite(std::string_view selection, std::string_view data)
     }
 }
 
-bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+namespace {
+
+bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    QImage img = QImage::fromData(reinterpret_cast<const uchar*>(png.data()), int(png.size()), "PNG");
     if (img.isNull()) {
         return false;
     }
@@ -523,6 +528,105 @@ bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& 
         std::memcpy(rgba.data() + std::size_t(y) * width * 4, img.constScanLine(y), std::size_t(width) * 4);
     }
     return true;
+}
+
+QString localUser()
+{
+    const passwd* pw = getpwuid(getuid());
+    return pw ? QString::fromLocal8Bit(pw->pw_name) : QString();
+}
+
+} // namespace
+
+bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+{
+    return toRgba(QImage::fromData(reinterpret_cast<const uchar*>(png.data()), int(png.size()), "PNG"), width, height, rgba);
+}
+
+bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+{
+    // Whatever Qt reads; an animation shows its first frame.
+    return toRgba(QImage::fromData(reinterpret_cast<const uchar*>(data.data()), int(data.size())), width, height, rgba);
+}
+
+void Pane::contextChanged()
+{
+    // pty thread, terminal locked. The innermost context says who and where.
+    static const QString hereHost = QSysInfo::machineHostName();
+    static const QString hereUser = localUser();
+    QString user;
+    QString host;
+    QString kind;
+    for (const AfterglowVt::ShellContext& c : m_terminal.contexts().stack()) {
+        auto str = [](const std::string& v) { return QString::fromStdString(v); };
+        if (!c.user.empty()) {
+            user = str(c.user);
+        }
+        if (!c.hostname.empty()) {
+            host = str(c.hostname);
+        }
+        if (c.type == "elevate" || c.type == "chpriv") {
+            user = c.targetUser.empty() ? QStringLiteral("root") : str(c.targetUser);
+        } else if (c.type == "remote" && !c.targetHost.empty()) {
+            host = str(c.targetHost);
+            if (!c.targetUser.empty()) {
+                user = str(c.targetUser);
+            }
+        } else if (c.type == "container" && !c.container.empty()) {
+            host = str(c.container);
+            kind = QStringLiteral("container");
+        } else if (c.type == "vm" && !c.vm.empty()) {
+            host = str(c.vm);
+            kind = QStringLiteral("container");
+        }
+    }
+    const bool otherUser = !user.isEmpty() && user != hereUser;
+    const bool otherHost = !host.isEmpty() && host != hereHost;
+    QString label;
+    if (otherUser && otherHost) {
+        label = user + QLatin1Char('@') + host;
+    } else if (otherHost) {
+        label = host;
+    } else if (otherUser) {
+        label = user;
+    }
+    if (kind.isEmpty() && !label.isEmpty()) {
+        kind = otherHost ? QStringLiteral("remote") : QStringLiteral("elevated");
+    }
+    if (label != m_contextLabel || kind != m_contextKind) {
+        m_contextLabel = label;
+        m_contextKind = label.isEmpty() ? QString() : kind;
+        Q_EMIT contextUpdated();
+    }
+}
+
+void Pane::userVarChanged(std::string_view name, std::string_view value)
+{
+    const QString n = QString::fromUtf8(name.data(), qsizetype(name.size()));
+    const QString v = QString::fromUtf8(value.data(), qsizetype(value.size()));
+    if (m_userVars.size() >= 256 && !m_userVars.contains(n)) {
+        return; // enough
+    }
+    m_userVars.insert(n, v);
+    Q_EMIT userVarUpdated(n, v);
+}
+
+QString Pane::contextLabel() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_contextLabel;
+}
+
+QString Pane::contextKind() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_contextKind;
+}
+
+QHash<QString, QString> Pane::userVars() const
+{
+    std::lock_guard lock(m_mutex);
+    return m_userVars;
 }
 
 void Pane::tickAnimations()

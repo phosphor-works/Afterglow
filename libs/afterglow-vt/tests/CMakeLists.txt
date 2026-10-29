@@ -6,6 +6,8 @@ find_package(GTest REQUIRED)
 add_executable(afterglow_vt_tests
     ClipboardTest.cpp
     ConformanceTest.cpp
+    ExtensionsTest.cpp
+    ../src/ITerm2.cpp # internal helpers under test
     GraphicsTest.cpp
     InputTest.cpp
     NotificationTest.cpp

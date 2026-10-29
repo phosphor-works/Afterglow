@@ -29,6 +29,14 @@ struct ClipboardRequest
     std::vector<std::pair<std::string, std::string>> data;
     /// Write: alias -> MIME type whose data it shares.
     std::vector<std::pair<std::string, std::string>> aliases;
+    /// An OSC 52 read ("?") rather than OSC 5522: answer as OSC 52 with the
+    /// text, for @ref osc52Selection, ending as the request did.
+    bool osc52 = false;
+    bool osc52Bel = false;
+    std::string osc52Selection;
+
+    /// The OSC 52 answer: @p text (raw bytes) for the selection asked about.
+    AFTERGLOWVT_EXPORT std::string osc52Reply(std::string_view text) const;
 };
 
 class AFTERGLOWVT_EXPORT ClipboardAssembler

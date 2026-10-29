@@ -18,6 +18,7 @@ class ChromeController : public QObject
     Q_OBJECT
     Q_PROPERTY(QStringList tabTitles READ tabTitles NOTIFY tabsChanged)
     Q_PROPERTY(QVariantList tabStatus READ tabStatus NOTIFY tabStatusChanged)
+    Q_PROPERTY(QVariantList tabContexts READ tabContexts NOTIFY tabContextsChanged)
     Q_PROPERTY(QVariantList urlHints READ urlHints NOTIFY urlHintsChanged)
     Q_PROPERTY(QVariantMap unicodeInput READ unicodeInput NOTIFY unicodeInputChanged)
     Q_PROPERTY(QColor goodColor READ goodColor NOTIFY themeChanged)
@@ -59,6 +60,15 @@ public:
     QVariantMap unicodeInput() const { return m_unicodeInput; }
     void setUnicodeInput(const QVariantMap& state);
     void setTabStatus(const QVariantList& status);
+    /// Per tab: { label, kind } of where its shell runs (see Pane::contextLabel).
+    QVariantList tabContexts() const { return m_tabContexts; }
+    void setTabContexts(const QVariantList& contexts)
+    {
+        if (contexts != m_tabContexts) {
+            m_tabContexts = contexts;
+            Q_EMIT tabContextsChanged();
+        }
+    }
 
     QColor background() const { return m_background; }
     QColor foreground() const { return m_foreground; }
@@ -138,6 +148,7 @@ public:
 Q_SIGNALS:
     void tabsChanged();
     void tabStatusChanged();
+    void tabContextsChanged();
     void urlHintsChanged();
     void unicodeInputChanged();
     void clipboardPromptChanged();
@@ -167,6 +178,7 @@ Q_SIGNALS:
 private:
     QStringList m_tabTitles;
     QVariantList m_tabStatus;
+    QVariantList m_tabContexts;
     QVariantList m_urlHints;
     QVariantMap m_unicodeInput;
     bool m_clipboardPromptOpen = false;

@@ -147,6 +147,15 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Show desktop notifications programs send (OSC 9, OSC 777)")},
         {QStringLiteral("confirmUnsafePaste"), true, QMetaType::Bool,
          QStringLiteral("Ask before pasting several lines into a program that would run them")},
+        {QStringLiteral("clipboardRead"), QStringLiteral("ask"), QMetaType::QString,
+         QStringLiteral("Programs reading the clipboard (OSC 52): ask, allow or deny"),
+         [](const QVariant& v) {
+             const QString s = v.toString();
+             return (s == QLatin1String("allow") || s == QLatin1String("deny")) ? QVariant(s) : QVariant(QStringLiteral("ask"));
+         },
+         {{QStringLiteral("ask"), QStringLiteral("ask")},
+          {QStringLiteral("allow"), QStringLiteral("allow")},
+          {QStringLiteral("deny"), QStringLiteral("deny")}}},
     };
     schema.groups[Window] = {
         intKey(QStringLiteral("padding"), 6, 0, 200, QStringLiteral("Space around the grid in logical pixels")),
@@ -342,6 +351,7 @@ Settings SettingsStore::read() const
                                                : Settings::Bell::Attention;
     s.notifications = st.read<bool>(Terminal, QStringLiteral("notifications"));
     s.confirmUnsafePaste = st.read<bool>(Terminal, QStringLiteral("confirmUnsafePaste"));
+    s.clipboardRead = st.read<QString>(Terminal, QStringLiteral("clipboardRead"));
 
     // Window
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));

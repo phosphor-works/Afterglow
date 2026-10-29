@@ -21,6 +21,7 @@ QVariantMap paneMap(const PaneInfo& p)
         {QStringLiteral("cols"), p.cols},
         {QStringLiteral("rows"), p.rows},
         {QStringLiteral("focused"), p.focused},
+        {QStringLiteral("context"), p.context},
     };
 }
 
@@ -103,6 +104,13 @@ void connectScriptEvents(ScriptHost& host, Control& control)
                       {{QStringLiteral("command"), command},
                        {QStringLiteral("exit_code"), exitCode},
                        {QStringLiteral("duration_ms"), durationMs}});
+    }, Queued);
+    QObject::connect(&control, &Control::userVarChanged, &host,
+                     [&host](quint32 pane, const QString& name, const QString& value) {
+        host.dispatch(QStringLiteral("on_user_var"), pane, {{QStringLiteral("name"), name}, {QStringLiteral("value"), value}});
+    }, Queued);
+    QObject::connect(&control, &Control::contextChanged, &host, [&host](quint32 pane, const QString& context) {
+        host.dispatch(QStringLiteral("on_context"), pane, {{QStringLiteral("context"), context}});
     }, Queued);
     QObject::connect(&control, &Control::statusChanged, &host,
                      [&host](quint32 pane, const QString& state, const QString& text) {

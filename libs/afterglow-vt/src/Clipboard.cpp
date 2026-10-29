@@ -305,4 +305,14 @@ std::string ClipboardAssembler::writeStatus(std::string_view status, std::string
     return header("write", status, id) + "\x1b\\";
 }
 
+std::string ClipboardRequest::osc52Reply(std::string_view text) const
+{
+    std::string r = "\x1b]52;";
+    r += osc52Selection;
+    r += ';';
+    r += encodeBase64(text);
+    r += osc52Bel ? "\x07" : "\x1b\\";
+    return r;
+}
+
 } // namespace AfterglowVt

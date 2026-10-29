@@ -32,7 +32,8 @@ Item {
             required property var modelData
             x: modelData.x + modelData.width - width - 8
             y: modelData.y + 6
-            width: Math.min(label.implicitWidth + 16 + (paneStatus.visible ? paneStatus.width + 6 : 0), modelData.width * 0.5)
+            width: Math.min(label.implicitWidth + 16 + (paneStatus.visible ? paneStatus.width + 6 : 0)
+                            + (paneContext.visible ? paneContext.width + 6 : 0), modelData.width * 0.5)
             height: label.implicitHeight + 6
             radius: height / 2
             color: Qt.rgba(root.controller.background.r, root.controller.background.g,
@@ -48,12 +49,34 @@ Item {
                 anchors.leftMargin: 6
                 anchors.verticalCenter: parent.verticalCenter
             }
+            Rectangle {
+                id: paneContext
+                readonly property string kind: parent.modelData.contextKind || ""
+                readonly property color tint: kind === "elevated" ? root.controller.badColor
+                                            : kind === "remote" ? root.controller.warnColor : root.controller.accent
+                visible: (parent.modelData.context || "").length > 0
+                anchors.left: paneStatus.visible ? paneStatus.right : parent.left
+                anchors.leftMargin: paneStatus.visible ? 4 : 6
+                anchors.verticalCenter: parent.verticalCenter
+                width: visible ? paneContextText.implicitWidth + 8 : 0
+                height: parent.height - 6
+                radius: 3
+                color: Qt.rgba(tint.r, tint.g, tint.b, 0.2)
+                Text {
+                    id: paneContextText
+                    anchors.centerIn: parent
+                    text: parent.parent.modelData.context || ""
+                    color: parent.tint
+                    font.pixelSize: 10
+                    font.bold: true
+                }
+            }
             Text {
                 id: label
-                anchors.left: paneStatus.visible ? paneStatus.right : parent.left
-                anchors.leftMargin: paneStatus.visible ? 4 : 8
+                anchors.left: paneContext.visible ? paneContext.right : paneStatus.visible ? paneStatus.right : parent.left
+                anchors.leftMargin: paneContext.visible || paneStatus.visible ? 4 : 8
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - 16 - (paneStatus.visible ? paneStatus.width + 2 : 0)
+                width: parent.width - 16 - (paneStatus.visible ? paneStatus.width + 2 : 0) - (paneContext.visible ? paneContext.width + 4 : 0)
                 horizontalAlignment: Text.AlignHCenter
                 text: parent.modelData.title.length > 0 ? parent.modelData.title : "shell"
                 elide: Text.ElideMiddle

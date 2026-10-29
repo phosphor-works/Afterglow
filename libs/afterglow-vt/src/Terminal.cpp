@@ -5,6 +5,9 @@
 #include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/Sixel.h>
 
+#include "Base64.h"
+#include "ITerm2.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -12,6 +15,28 @@
 #include <cstdio>
 
 namespace AfterglowVt {
+
+namespace {
+
+/// Undoes URL percent-encoding (OSC 133 cmdline_url).
+std::string percentDecode(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        int v = 0;
+        if (in[i] == '%' && i + 2 < in.size()
+            && std::from_chars(in.data() + i + 1, in.data() + i + 3, v, 16).ptr == in.data() + i + 3) {
+            out += char(v);
+            i += 2;
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
+} // namespace
 
 namespace {
 
@@ -3189,19 +3214,52 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     case 4:
         oscPalette(rest, bel);
         break;
+    case 1: // icon name: nothing shows one
+        break;
     case 7:
         m_cwd.assign(rest);
         m_host.workingDirectoryChanged(m_cwd);
+        break;
+    case 633:
+        vscodeShellIntegration(rest);
+        break;
+    case 1337:
+        iterm2(rest, bel);
+        break;
+    case 3008:
+        if (m_contexts.apply(rest)) {
+            m_host.contextChanged();
+        }
+        break;
+    case 113: // reset the pointer's foreground, background, and the
+    case 114: // Tektronix colours: afterglow has none of them to reset
+    case 115:
+    case 116:
+    case 118:
         break;
     case 10:
     case 11:
     case 12:
         oscColor(num, rest, bel);
         break;
-    case 9:
-        // iTerm2 notification. "9;4;st;pr" is ConEmu's progress report, which
-        // feeds program status until a program speaks OSC 7501.
-        if (rest.starts_with("4;") || rest == "4") {
+    case 9: {
+        // iTerm2 notification, or a ConEmu command when it starts with a
+        // number: "9;4;st;pr" is its progress report, which feeds program
+        // status until a program speaks OSC 7501, "9;9;path" its directory.
+        int conEmu = -1;
+        if (const auto digits = rest.find_first_not_of("0123456789");
+            digits != 0 && (digits == std::string_view::npos || rest[digits] == ';')) {
+            std::from_chars(rest.data(), rest.data() + std::min(rest.size(), digits), conEmu);
+        }
+        if (conEmu == 9) {
+            std::string_view path = rest.size() > 2 ? rest.substr(2) : std::string_view{};
+            if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+                path = path.substr(1, path.size() - 2);
+            }
+            setWorkingDirectory(path);
+        } else if (conEmu >= 0 && conEmu != 4) {
+            // Another ConEmu command: not a notification.
+        } else if (conEmu == 4) {
             int st = 0;
             int pr = 0;
             const std::string_view args = rest.size() > 2 ? rest.substr(2) : std::string_view{};
@@ -3217,6 +3275,7 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
             m_host.notify({}, rest);
         }
         break;
+    }
     case 66:
         textSizing(rest);
         break;
@@ -3315,11 +3374,24 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         if (s == std::string_view::npos) {
             break;
         }
+        const std::string_view selection = rest.substr(0, s);
         const std::string_view data = rest.substr(s + 1);
-        // Clipboard reads ("?") are not answered: a remote program must not
-        // be able to read the local clipboard.
         if (data != "?") {
-            m_host.clipboardWrite(rest.substr(0, s), data);
+            m_host.clipboardWrite(selection, data);
+            break;
+        }
+        // A read: the host asks the user (or follows its setting) before
+        // anything of the clipboard reaches the program.
+        ClipboardRequest request;
+        request.kind = ClipboardRequest::Kind::Read;
+        request.primary = !selection.empty() && selection.find('c') == std::string_view::npos
+            && (selection.find('p') != std::string_view::npos || selection.find('s') != std::string_view::npos);
+        request.mimes = {"text/plain"};
+        request.osc52 = true;
+        request.osc52Bel = bel;
+        request.osc52Selection = std::string(selection.empty() ? std::string_view("c") : selection.substr(0, 16));
+        if (!m_host.clipboardRequest(request)) {
+            reply(request.osc52Reply({}));
         }
         break;
     }
@@ -3398,6 +3470,7 @@ void Terminal::semanticPrompt(std::string_view args)
 {
     // OSC 133 ; <kind> [; key=value ...]
     const char kind = args.empty() ? '\0' : args[0];
+    bool clickEvents = false;
     std::size_t pos = args.find(';');
     while (pos != std::string_view::npos) {
         const auto next = args.find(';', pos + 1);
@@ -3406,6 +3479,12 @@ void Terminal::semanticPrompt(std::string_view args)
             m_shellRedrawsPrompt = false;
         } else if (opt == "redraw=1") {
             m_shellRedrawsPrompt = true;
+        } else if (opt == "click_events=1") {
+            clickEvents = true;
+        } else if (opt.starts_with("cmdline_url=")) {
+            m_explicitCommand = percentDecode(opt.substr(12));
+        } else if (opt.starts_with("cmdline=")) {
+            m_explicitCommand = std::string(opt.substr(8));
         }
         pos = next;
     }
@@ -3421,6 +3500,7 @@ void Terminal::semanticPrompt(std::string_view args)
             m_host.programStatusChanged();
         }
         m_semanticZone = SemanticZone::Prompt;
+        m_promptClickEvents = clickEvents;
         if (!m_modes.altScreen) {
             m_active->row(cursor().y).promptStart = true;
         }
@@ -3435,12 +3515,17 @@ void Terminal::semanticPrompt(std::string_view args)
             m_inputStart = cursorMark();
         }
         break;
-    case 'C': // command output begins
+    case 'C': { // command output begins
         m_semanticZone = SemanticZone::Output;
+        m_promptClickEvents = false;
         m_promptRedrawPending = false;
+        std::optional<std::string> reported = std::exchange(m_explicitCommand, std::nullopt);
         if (!m_modes.altScreen) {
-            // The command is what was typed between B and here.
-            std::string command = m_inputStart.valid ? textBetween(m_inputStart, cursorMark()) : std::string{};
+            // The command line the shell reported, else what was typed
+            // between B and here.
+            std::string command = reported ? std::move(*reported)
+                : m_inputStart.valid       ? textBetween(m_inputStart, cursorMark())
+                                           : std::string{};
             while (!command.empty() && (command.back() == '\n' || command.back() == ' ')) {
                 command.pop_back();
             }
@@ -3450,6 +3535,7 @@ void Terminal::semanticPrompt(std::string_view args)
             m_host.commandStarted(command);
         }
         break;
+    }
     case 'D': { // command finished, D ; exit-code
         m_semanticZone = SemanticZone::Output;
         m_promptRedrawPending = false;
@@ -3468,6 +3554,165 @@ void Terminal::semanticPrompt(std::string_view args)
     default:
         break;
     }
+}
+
+void Terminal::vscodeShellIntegration(std::string_view args)
+{
+    // VS Code's OSC 633: A to D as OSC 133, E the command line (escaped, then
+    // a nonce), P properties.
+    const char kind = args.empty() ? '\0' : args[0];
+    const std::string_view rest = args.size() > 2 ? args.substr(2) : std::string_view{};
+    auto unescape = [](std::string_view in) {
+        std::string out;
+        for (std::size_t i = 0; i < in.size(); ++i) {
+            if (in[i] == '\\' && i + 1 < in.size()) {
+                if (in[i + 1] == '\\') {
+                    out += '\\';
+                    ++i;
+                    continue;
+                }
+                int v = 0;
+                if (in[i + 1] == 'x' && i + 3 < in.size()
+                    && std::from_chars(in.data() + i + 2, in.data() + i + 4, v, 16).ptr == in.data() + i + 4) {
+                    out += char(v);
+                    i += 3;
+                    continue;
+                }
+            }
+            out += in[i];
+        }
+        return out;
+    };
+    switch (kind) {
+    case 'A':
+    case 'B':
+    case 'C':
+    case 'D':
+        semanticPrompt(args);
+        break;
+    case 'E':
+        m_explicitCommand = unescape(rest.substr(0, rest.find(';')));
+        break;
+    case 'P':
+        if (rest.starts_with("Cwd=")) {
+            setWorkingDirectory(unescape(rest.substr(4)));
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void Terminal::setWorkingDirectory(std::string_view path)
+{
+    m_cwd.assign(path.substr(0, 4096));
+    m_host.workingDirectoryChanged(m_cwd);
+}
+
+void Terminal::iterm2(std::string_view args, bool bel)
+{
+    // OSC 1337 ; Key=Value. https://iterm2.com/documentation-escape-codes.html
+    const auto eq = args.find('=');
+    const std::string_view key = args.substr(0, eq);
+    const std::string_view value = eq == std::string_view::npos ? std::string_view{} : args.substr(eq + 1);
+    constexpr std::size_t MaxFileBase64 = 96u * 1024 * 1024;
+    if (key == "File") {
+        const auto colon = value.find(':');
+        if (colon != std::string_view::npos) {
+            iterm2File(value.substr(0, colon), value.substr(colon + 1));
+        }
+    } else if (key == "MultipartFile") {
+        m_iterm2Receiving = true;
+        m_iterm2Args.assign(value.substr(0, 4096));
+        m_iterm2Data.clear();
+    } else if (key == "FilePart") {
+        if (m_iterm2Receiving) {
+            if (m_iterm2Data.size() + value.size() > MaxFileBase64) {
+                m_iterm2Receiving = false;
+                m_iterm2Data.clear();
+            } else {
+                m_iterm2Data.append(value);
+            }
+        }
+    } else if (key == "FileEnd") {
+        if (m_iterm2Receiving) {
+            m_iterm2Receiving = false;
+            iterm2File(m_iterm2Args, m_iterm2Data);
+            m_iterm2Data.clear();
+            m_iterm2Data.shrink_to_fit();
+        }
+    } else if (key == "SetUserVar") {
+        const auto eq2 = value.find('=');
+        if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= 128) {
+            m_host.userVarChanged(value.substr(0, eq2), detail::base64Decode(value.substr(eq2 + 1, 64 * 1024)));
+        }
+    } else if (key == "CurrentDir") {
+        setWorkingDirectory(value);
+    } else if (key == "ClearScrollback") {
+        m_primary->clearHistory();
+        touch();
+    } else if (key == "ReportCellSize") {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "\x1b]1337;ReportCellSize=%d.0;%d.0;1.0%s", m_cellHeight, m_cellWidth,
+                      bel ? "\x07" : "\x1b\\");
+        reply(buf);
+    } else if (key == "SetMark") {
+        if (!m_modes.altScreen) {
+            m_active->row(cursor().y).promptStart = true;
+        }
+    } else if (key == "RemoteHost") {
+        if (m_contexts.setRemoteHost(value)) {
+            m_host.contextChanged();
+        }
+    } else if (key == "Copy") {
+        // Copy=:<base64>, as an OSC 52 write.
+        m_host.clipboardWrite("c", value.starts_with(':') ? value.substr(1) : value);
+    } else if (key == "RequestAttention") {
+        if (value != "no") {
+            m_host.bell();
+        }
+    } else if (key == "CursorShape") {
+        // 0 block, 1 bar, 2 underline, as DECSCUSR's steady shapes.
+        setCursorStyle(value == "1" ? 6 : value == "2" ? 4 : 2);
+    }
+    // StealFocus, SetBadgeFormat, SetProfile, ShellIntegrationVersion and the
+    // rest are not for afterglow to act on.
+}
+
+void Terminal::iterm2File(std::string_view args, std::string_view base64)
+{
+    detail::ITerm2File file;
+    detail::parseITerm2Args(args, file);
+    if (!file.inlineImage || m_cellWidth <= 0 || m_cellHeight <= 0) {
+        return; // downloads are not offered
+    }
+    ImageFrame frame;
+    if (!m_host.decodeImage(detail::base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
+        || frame.height == 0 || frame.rgba.size() != std::size_t(frame.width) * frame.height * 4) {
+        return;
+    }
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    if (!detail::iterm2ImageSize(file, frame.width, frame.height, m_cellWidth, m_cellHeight, cols(), rows(), width, height)) {
+        return;
+    }
+    frame = detail::scaleFrame(frame, width, height);
+    Cursor& cur = cursor();
+    const int cellsWide = int((width + std::uint32_t(m_cellWidth) - 1) / std::uint32_t(m_cellWidth));
+    const int cellsHigh = int((height + std::uint32_t(m_cellHeight) - 1) / std::uint32_t(m_cellHeight));
+    const int col = cur.x;
+    const int row = cur.y;
+    m_graphics[m_modes.altScreen ? 1 : 0].addSixel(std::move(frame), *m_active, row, col, m_cellWidth, m_cellHeight);
+    if (file.doNotMoveCursor) {
+        return;
+    }
+    // To the last row the image covers (scrolling as needed), right of it.
+    for (int i = 0; i < std::min(cellsHigh - 1, rows() * 2); ++i) {
+        index();
+    }
+    cur.x = std::min(col + cellsWide, cols() - 1);
+    cur.pendingWrap = col + cellsWide >= cols();
+    touch();
 }
 
 std::optional<std::size_t> Terminal::redrawablePromptStart() const

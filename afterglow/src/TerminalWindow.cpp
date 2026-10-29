@@ -207,7 +207,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         }
         const AfterglowVt::ClipboardRequest& r = pending->request;
         if (answer == 0) {
-            pending->pane->sendInput(AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
+            pending->pane->sendInput(r.osc52 ? r.osc52Reply({}) : AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
             return;
         }
         if (answer == 2 && !r.password.empty() && !r.name.empty()) {
@@ -299,6 +299,13 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     });
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::shaderSignalsChanged, this, &TerminalWindow::scheduleRender);
+    connect(pane, &Pane::contextUpdated, this, [this, pane] {
+        if (pane == m_focused) {
+            updateTitle();
+        }
+        updateChrome();
+        scheduleRender();
+    });
     connect(pane, &Pane::commandEnded, this,
             [this, guard = QPointer<Pane>(pane)](const QString& command, int exitCode, qint64 ms) {
         if (!guard || !m_notifyOnFinish.remove(guard.data())) {
@@ -729,8 +736,15 @@ void TerminalWindow::setFocusedPane(Pane* pane)
 
 void TerminalWindow::updateTitle()
 {
-    const QString t = m_focused ? m_focused->title() : QString();
-    setTitle(t.isEmpty() ? QStringLiteral("afterglow") : t);
+    QString t = m_focused ? m_focused->title() : QString();
+    if (t.isEmpty()) {
+        t = QStringLiteral("afterglow");
+    }
+    // Where the shell runs, when it is not here as you: [root] or [deploy@prod-1].
+    if (const QString context = m_focused ? m_focused->contextLabel() : QString(); !context.isEmpty()) {
+        t = QLatin1Char('[') + context + QStringLiteral("] ") + t;
+    }
+    setTitle(t);
 }
 
 void TerminalWindow::restartBlink()
@@ -854,7 +868,9 @@ void TerminalWindow::renderNow()
                                       {QStringLiteral("height"), r.height() / dpr},
                                       {QStringLiteral("title"), p->title()},
                                       {QStringLiteral("focused"), p == m_focused},
-                                      {QStringLiteral("status"), statusSummary(p)}});
+                                      {QStringLiteral("status"), statusSummary(p)},
+                                      {QStringLiteral("context"), p->contextLabel()},
+                                      {QStringLiteral("contextKind"), p->contextKind()}});
         });
     }
     m_controller->setPaneTitles(titles);
@@ -1371,8 +1387,11 @@ void TerminalWindow::updateChrome()
 {
     QStringList titles;
     QVariantList tabStatus;
+    QVariantList tabContexts;
     for (const auto& tab : m_tabs) {
         titles.append(!tab->title.isEmpty() ? tab->title : tab->focused ? tab->focused->title() : QString());
+        tabContexts.append(QVariantMap{{QStringLiteral("label"), tab->focused ? tab->focused->contextLabel() : QString()},
+                                       {QStringLiteral("kind"), tab->focused ? tab->focused->contextKind() : QString()}});
         // The tab shows the most pressing status among its panes.
         QVariantMap best;
         tab->splits->forEachPane([&](Pane* p, const QRect&) {
@@ -1385,6 +1404,7 @@ void TerminalWindow::updateChrome()
     }
     m_controller->setTabs(titles, m_currentTab, m_tabs.size() > 1 ? TabBarLogicalHeight : 0);
     m_controller->setTabStatus(tabStatus);
+    m_controller->setTabContexts(tabContexts);
 
     if (m_focused) {
         const auto& snap = m_focused->snapshot();
@@ -2252,6 +2272,25 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
 {
     using AfterglowVt::ClipboardAssembler;
     QClipboard* clipboard = QGuiApplication::clipboard();
+    if (r.osc52) {
+        // An OSC 52 read: no name or password to remember a grant by, so
+        // the setting decides, or the user does each time.
+        const QString policy = m_settings.settings().clipboardRead;
+        if (policy == QLatin1String("deny") || (r.primary && !clipboard->supportsSelection()) || m_pendingClipboardRead) {
+            pane->sendInput(r.osc52Reply({}));
+        } else if (policy == QLatin1String("allow")) {
+            answerClipboardRead(pane, r);
+        } else {
+            m_pendingClipboardRead = PendingClipboardRead{pane, r};
+            const QString who = pane->title().isEmpty() ? tr("A program") : pane->title();
+            m_controller->askClipboard(
+                tr("%1 wants to read the %2.").arg(who, r.primary ? tr("primary selection") : tr("clipboard")), {});
+            if (pane != m_focused || !isActive()) {
+                revealPane(pane);
+            }
+        }
+        return;
+    }
     if (r.primary && !clipboard->supportsSelection()) {
         pane->sendInput(r.kind == AfterglowVt::ClipboardRequest::Kind::Read ? ClipboardAssembler::readStatus("ENOSYS", r)
                                                                              : ClipboardAssembler::writeStatus("ENOSYS", r.id));
@@ -2317,6 +2356,13 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
 void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& r, std::string_view oneTimePassword)
 {
     using AfterglowVt::ClipboardAssembler;
+    if (r.osc52) {
+        const QByteArray text = QGuiApplication::clipboard()->text(r.primary ? QClipboard::Selection : QClipboard::Clipboard)
+                                    .toUtf8()
+                                    .left(8 * 1024 * 1024);
+        pane->sendInput(r.osc52Reply(std::string_view(text.constData(), std::size_t(text.size()))));
+        return;
+    }
     const QMimeData* data = QGuiApplication::clipboard()->mimeData(r.primary ? QClipboard::Selection : QClipboard::Clipboard);
     std::string out = ClipboardAssembler::readStatus("OK", r, oneTimePassword);
     for (const std::string& mime : r.mimes) {
@@ -2567,9 +2613,49 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
             }
         } else {
             m_selectionPane->clearSelection();
+            if (m_clickCount == 1 && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier))) {
+                moveCursorToClick(m_selectionPane, e->position());
+            }
             scheduleRender();
         }
         m_selectionPane = nullptr;
+    }
+}
+
+void TerminalWindow::moveCursorToClick(Pane* pane, const QPointF& pos)
+{
+    // The shell asked (OSC 133 click_events) for clicks on its command line
+    // to move the cursor: as many arrow keys as cells between there and here.
+    const QPoint cell = cellAt(pane, pos);
+    const std::string keys = pane->withTerminal([&cell](Terminal& t) -> std::string {
+        if (!t.promptTakesClicks() || t.screen().viewportOffset() != 0
+            || t.modes().mouseTracking != AfterglowVt::MouseTracking::None) {
+            return {};
+        }
+        const auto& cur = t.screen().cursor;
+        // Only on the prompt's own lines: from where it starts to the bottom.
+        int promptRow = cur.y;
+        while (promptRow > 0 && !t.screen().row(promptRow).promptStart) {
+            --promptRow;
+        }
+        if (cell.y() < promptRow) {
+            return {};
+        }
+        const long delta = long(cell.y() - cur.y) * t.cols() + (cell.x() - cur.x);
+        if (delta == 0 || std::labs(delta) > long(t.cols()) * t.rows()) {
+            return {};
+        }
+        AfterglowVt::KeyEvent ev;
+        ev.key = delta < 0 ? AfterglowVt::Key::Left : AfterglowVt::Key::Right;
+        const std::string one = AfterglowVt::encodeKey(ev, t.modes());
+        std::string out;
+        for (long i = 0; i < std::labs(delta); ++i) {
+            out += one;
+        }
+        return out;
+    });
+    if (!keys.empty()) {
+        pane->sendInput(keys);
     }
 }
 

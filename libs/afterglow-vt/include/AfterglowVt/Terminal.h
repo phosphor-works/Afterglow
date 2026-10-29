@@ -9,6 +9,7 @@
 #include <AfterglowVt/ProgramStatus.h>
 #include <AfterglowVt/Parser.h>
 #include <AfterglowVt/Screen.h>
+#include <AfterglowVt/ShellContext.h>
 #include <AfterglowVt/Unicode.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
@@ -126,8 +127,13 @@ public:
     /// What the host's OSC 99 support covers, as the query reply's key=value
     /// list ("a=focus,report:c=1:p=title,body..."); empty for no support.
     virtual std::string notificationCapabilities() { return {}; }
+    /// The pane's contexts changed (OSC 3008, iTerm2 RemoteHost); read them
+    /// through Terminal::contexts().
+    virtual void contextChanged() { }
+    /// iTerm2's SetUserVar (OSC 1337): a named value for the host to keep.
+    virtual void userVarChanged(std::string_view name, std::string_view value) { }
     /// A kitty clipboard request (OSC 5522): a read to answer (with a prompt)
-    /// or a complete write. Replies go through ClipboardAssembler's encoders.
+    /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
     /// Returning false means the host has no such clipboard support.
     virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
@@ -142,6 +148,13 @@ public:
                            std::vector<std::uint8_t>& rgba)
     {
         return false;
+    }
+    /// Decodes an image in any format the host reads (iTerm2 inline images:
+    /// PNG, JPEG, GIF...) into RGBA8. Defaults to PNG only.
+    virtual bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
+                             std::vector<std::uint8_t>& rgba)
+    {
+        return decodePng(data, width, height, rgba);
     }
 };
 
@@ -205,6 +218,13 @@ public:
     /// not finished repainting it (OSC 133;B) yet. Renderers can keep showing
     /// the previous frame meanwhile instead of flashing an empty prompt.
     bool promptRedrawPending() const noexcept { return m_promptRedrawPending; }
+    /// The shell asked (OSC 133 click_events) for clicks on its command line
+    /// to move the cursor there, and the user is at that line now.
+    bool promptTakesClicks() const noexcept
+    {
+        return m_promptClickEvents && m_semanticZone == SemanticZone::Input && !m_modes.altScreen;
+    }
+    const ShellContexts& contexts() const noexcept { return m_contexts; }
 
     Rgb paletteColor(int index) const noexcept { return m_palette[std::size_t(index & 0xFF)]; }
     Rgb defaultForeground() const noexcept { return m_defaultFg; }
@@ -428,7 +448,20 @@ private:
     SemanticZone m_semanticZone = SemanticZone::Output;
     bool m_shellRedrawsPrompt = true;
     bool m_promptRedrawPending = false;
+    bool m_promptClickEvents = false;
+    /// The command line a shell reported (133 cmdline, 633 E) for the next C.
+    std::optional<std::string> m_explicitCommand;
+    ShellContexts m_contexts;
+    /// An iTerm2 MultipartFile under way: its arguments and data so far.
+    bool m_iterm2Receiving = false;
+    std::string m_iterm2Args;
+    std::string m_iterm2Data;
     void semanticPrompt(std::string_view args);
+    void vscodeShellIntegration(std::string_view args);
+    void iterm2(std::string_view args, bool bel);
+    /// Shows an iTerm2 file: @p args as given with File=, @p base64 its data.
+    void iterm2File(std::string_view args, std::string_view base64);
+    void setWorkingDirectory(std::string_view path);
     std::optional<std::size_t> redrawablePromptStart() const;
 
     std::string m_title;
