@@ -193,7 +193,7 @@ TEST(Terminal, Reports)
 {
     Term t(10, 5);
     t.feed("\x1b[3;4H\x1b[6n\x1b[c\x1b[>c\x1b[?2026$p\x1b[18t");
-    EXPECT_EQ(t.host.written, "\x1b[3;4R\x1b[?62;22c\x1b[>1;10;0c\x1b[?2026;2$y\x1b[8;5;10t");
+    EXPECT_EQ(t.host.written, "\x1b[3;4R\x1b[?65;6;22;28;52c\x1b[>1;10;0c\x1b[?2026;2$y\x1b[8;5;10t");
 }
 
 TEST(Terminal, OscTitleAndColors)

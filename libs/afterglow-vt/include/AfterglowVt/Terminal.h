@@ -15,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace AfterglowVt {
@@ -63,6 +64,16 @@ struct Modes
     bool synchronizedOutput = false; ///< 2026
     bool graphemeClustering = true; ///< 2027
     bool altScroll = false; ///< 1007
+    bool reverseWrap = false; ///< 45: backspace into the soft-wrapped line above
+    bool reverseWrapExtended = false; ///< 1045: backspace wraps across any line, top to bottom
+    bool moreFix = false; ///< 41: a tab in the pending-wrap position wraps first
+    bool allow132 = false; ///< 40: DECCOLM may switch the width
+    bool columns132 = false; ///< DECCOLM
+    bool noClearOnColumnChange = false; ///< DECNCSM (95)
+    bool backarrowSendsBs = false; ///< DECBKM (67)
+    bool smoothScroll = false; ///< DECSCLM (4); accepted, scrolling is never slowed
+    bool printFormFeed = false; ///< DECPFF (18); accepted, there is no printer
+    bool printExtent = false; ///< DECPEX (19); accepted, there is no printer
     MouseTracking mouseTracking = MouseTracking::None;
     MouseFormat mouseFormat = MouseFormat::X10;
     /// Kitty keyboard flags in effect on the active screen (top of its stack).
@@ -89,6 +100,9 @@ public:
     virtual void pointerShapeChanged(std::string_view shape) { }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
     /// has no image codecs of its own; return false if decoding fails.
+    /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
+    /// true to let the terminal take that size; the host then follows it.
+    virtual bool requestResize(int cols, int rows) { return false; }
     virtual bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba)
     {
@@ -209,8 +223,17 @@ private:
     void backTab(int count);
     void setCursor(int row, int col);
     void moveCursorRelative(int dx, int dy);
-    void eraseDisplay(int mode);
-    void eraseLine(int mode);
+    /// @p selective: DECSED/DECSEL, which spare DEC-protected cells.
+    void eraseDisplay(int mode, bool selective = false);
+    void eraseLine(int mode, bool selective = false);
+    void eraseSpan(Row& row, int x0, int x1, std::uint32_t fill, bool selective);
+    void eraseWholeRow(Row& row, std::uint32_t fill, bool selective);
+    bool spares(bool selective) const noexcept;
+    void setProtection(bool on, bool iso);
+    bool rectFromParams(const Params& params, int first, int& top, int& left, int& bottom, int& right) const;
+    void fillRect(const Params& params);
+    void eraseRect(const Params& params, bool selective);
+    void copyRect(const Params& params);
     void insertLines(int n);
     void deleteLines(int n);
     void insertChars(int n);
@@ -226,6 +249,16 @@ private:
     void setAltScreen(bool on, bool saveRestoreCursor, bool clear);
     void fullReset();
     void decaln();
+    void insertColumns(int n);
+    void deleteColumns(int n);
+    void backIndex();
+    void forwardIndex();
+    void reportDeviceAttributes();
+    void softReset();
+    void reverseWrapStep();
+    void setColumnMode(bool wide);
+    void saveDecModes(const Params& params);
+    void restoreDecModes(const Params& params);
 
     void selectGraphicRendition(const Params& params);
     void setMode(const Params& params, bool priv, bool on);
@@ -233,6 +266,7 @@ private:
     int decModeState(int mode) const;
     int ansiModeState(int mode) const;
     void reportMode(const Params& params, bool priv);
+    void reportRectChecksum(const Params& params);
     void deviceStatusReport(const Params& params, bool priv);
     void windowOp(const Params& params);
     void setCursorStyle(int ps);
@@ -251,6 +285,14 @@ private:
     Screen* m_active;
 
     Modes m_modes;
+    /// DECSCL conformance level, 1 (VT100) to 5 (VT500).
+    int m_conformance = 5;
+    /// Which erases honour protected cells: the last of DECSCA (DEC) and
+    /// SPA (ISO) to protect something decides.
+    enum class Protection : std::uint8_t { Off, Dec, Iso };
+    Protection m_protection = Protection::Off;
+    int m_attributeChangeExtent = 0; ///< DECSACE, reported only
+    std::unordered_map<int, bool> m_savedDecModes; ///< XTSAVE
     CursorShape m_cursorShape = CursorShape::Block;
     Region m_margins;
     std::vector<bool> m_tabStops;

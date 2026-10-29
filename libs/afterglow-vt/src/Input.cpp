@@ -178,8 +178,11 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
             return "\x1b[Z";
         }
         return withAlt("\t", m);
-    case Key::Backspace:
-        return withAlt((m & Mod::Ctrl) ? "\x08" : "\x7f", m);
+    case Key::Backspace: {
+        // DECBKM swaps which of BS and DEL the key and Ctrl+key send.
+        const bool bs = ((m & Mod::Ctrl) != 0) != modes.backarrowSendsBs;
+        return withAlt(bs ? "\x08" : "\x7f", m);
+    }
     case Key::Escape:
         return withAlt("\x1b", m);
     case Key::KeypadEnter:

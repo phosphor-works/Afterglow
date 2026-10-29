@@ -498,19 +498,54 @@ void Terminal::reverseIndex()
 void Terminal::backspace()
 {
     Cursor& cur = cursor();
+    const bool reverse = m_modes.autowrap && (m_modes.reverseWrap || m_modes.reverseWrapExtended);
     if (cur.pendingWrap) {
         cur.pendingWrap = false;
-        return;
+        if (reverse) {
+            return; // undoes the pending wrap, as xterm does
+        }
     }
     const int left = cur.x >= m_margins.left ? m_margins.left : 0;
     if (cur.x > left) {
         --cur.x;
+        return;
+    }
+    if (reverse) {
+        reverseWrapStep();
+    }
+}
+
+void Terminal::reverseWrapStep()
+{
+    Cursor& cur = cursor();
+    // Reverse wrap: to the right margin of the line above. Mode 45 only
+    // follows soft wraps (editing a long wrapped line); 1045 crosses any
+    // line and wraps from the top margin to the bottom one.
+    const int top = cur.y >= m_margins.top ? m_margins.top : 0;
+    const int bottom = cur.y <= m_margins.bottom ? m_margins.bottom : rows() - 1;
+    if (cur.y > top) {
+        if (m_modes.reverseWrapExtended || m_active->row(cur.y - 1).wrapped) {
+            --cur.y;
+            cur.x = m_margins.right;
+        }
+    } else if (m_modes.reverseWrapExtended) {
+        cur.y = bottom;
+        cur.x = m_margins.right;
     }
 }
 
 void Terminal::horizontalTab(int count)
 {
     Cursor& cur = cursor();
+    if (cur.pendingWrap) {
+        if (!m_modes.moreFix || !m_modes.autowrap) {
+            return; // the wrap stays pending (xterm)
+        }
+        // Mode 41: wrap first, so the tab lands on the next line.
+        m_active->row(cur.y).wrapped = true;
+        carriageReturn();
+        index();
+    }
     const int right = cur.x <= m_margins.right ? m_margins.right : cols() - 1;
     while (count-- > 0 && cur.x < right) {
         ++cur.x;
@@ -523,11 +558,11 @@ void Terminal::horizontalTab(int count)
 
 void Terminal::backTab(int count)
 {
+    // Unlike forward tabs, CBT is not bounded by the left margin (xterm).
     Cursor& cur = cursor();
-    const int left = cur.x >= m_margins.left ? m_margins.left : 0;
-    while (count-- > 0 && cur.x > left) {
+    while (count-- > 0 && cur.x > 0) {
         --cur.x;
-        while (cur.x > left && !m_tabStops[std::size_t(cur.x)]) {
+        while (cur.x > 0 && !m_tabStops[std::size_t(cur.x)]) {
             --cur.x;
         }
     }
@@ -568,28 +603,80 @@ void Terminal::moveCursorRelative(int dx, int dy)
 
 // --- erasing / editing -----------------------------------------------------
 
-void Terminal::eraseDisplay(int mode)
+bool Terminal::spares(bool selective) const noexcept
+{
+    // DEC protection only stops the selective erases; ISO protection only
+    // stops the ordinary ones.
+    return selective ? m_protection == Protection::Dec : m_protection == Protection::Iso;
+}
+
+void Terminal::eraseSpan(Row& row, int x0, int x1, std::uint32_t fill, bool selective)
+{
+    Screen& scr = *m_active;
+    if (!spares(selective)) {
+        scr.eraseCells(row, x0, x1, fill);
+        return;
+    }
+    // Erase the runs of unprotected cells between protected ones.
+    const StyleTable& styles = scr.styles();
+    x1 = std::min(x1, cols());
+    int x = std::max(x0, 0);
+    while (x < x1) {
+        while (x < x1 && styles.get(row.cells[std::size_t(x)].styleId()).has(Attr::Protected)) {
+            ++x;
+        }
+        const int start = x;
+        while (x < x1 && !styles.get(row.cells[std::size_t(x)].styleId()).has(Attr::Protected)) {
+            ++x;
+        }
+        if (x > start) {
+            scr.eraseCells(row, start, x, fill);
+        }
+    }
+}
+
+void Terminal::eraseWholeRow(Row& row, std::uint32_t fill, bool selective)
+{
+    // Clears the row's flags too (wrap, prompt marks) unless cells survive.
+    if (spares(selective)) {
+        eraseSpan(row, 0, cols(), fill, selective);
+    } else {
+        m_active->eraseRow(row, fill);
+    }
+}
+
+void Terminal::setProtection(bool on, bool iso)
+{
+    Style pen = cursor().pen;
+    pen.attrs = std::uint16_t(on ? (pen.attrs | Attr::Protected) : (pen.attrs & ~Attr::Protected));
+    m_active->setPen(pen);
+    if (on) {
+        m_protection = iso ? Protection::Iso : Protection::Dec;
+    }
+}
+
+void Terminal::eraseDisplay(int mode, bool selective)
 {
     Screen& scr = *m_active;
     Cursor& cur = cursor();
     const std::uint32_t fill = acquireFill();
     switch (mode) {
     case 0:
-        scr.eraseCells(scr.row(cur.y), cur.x, cols(), fill);
+        eraseSpan(scr.row(cur.y), cur.x, cols(), fill, selective);
         scr.row(cur.y).wrapped = false;
         for (int y = cur.y + 1; y < rows(); ++y) {
-            scr.eraseRow(scr.row(y), fill);
+            eraseWholeRow(scr.row(y), fill, selective);
         }
         break;
     case 1:
         for (int y = 0; y < cur.y; ++y) {
-            scr.eraseRow(scr.row(y), fill);
+            eraseWholeRow(scr.row(y), fill, selective);
         }
-        scr.eraseCells(scr.row(cur.y), 0, cur.x + 1, fill);
+        eraseSpan(scr.row(cur.y), 0, cur.x + 1, fill, selective);
         break;
     case 2:
         for (int y = 0; y < rows(); ++y) {
-            scr.eraseRow(scr.row(y), fill);
+            eraseWholeRow(scr.row(y), fill, selective);
         }
         m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, false);
         break;
@@ -604,7 +691,7 @@ void Terminal::eraseDisplay(int mode)
     cur.pendingWrap = false;
 }
 
-void Terminal::eraseLine(int mode)
+void Terminal::eraseLine(int mode, bool selective)
 {
     Screen& scr = *m_active;
     Cursor& cur = cursor();
@@ -612,14 +699,14 @@ void Terminal::eraseLine(int mode)
     const std::uint32_t fill = acquireFill();
     switch (mode) {
     case 0:
-        scr.eraseCells(row, cur.x, cols(), fill);
+        eraseSpan(row, cur.x, cols(), fill, selective);
         row.wrapped = false;
         break;
     case 1:
-        scr.eraseCells(row, 0, cur.x + 1, fill);
+        eraseSpan(row, 0, cur.x + 1, fill, selective);
         break;
     case 2:
-        scr.eraseCells(row, 0, cols(), fill);
+        eraseSpan(row, 0, cols(), fill, selective);
         row.wrapped = false;
         break;
     default:
@@ -683,13 +770,185 @@ void Terminal::deleteChars(int n)
     cur.pendingWrap = false;
 }
 
+void Terminal::insertColumns(int n)
+{
+    // DECIC: columns inserted at the cursor in every line of the scroll region.
+    Cursor& cur = cursor();
+    if (cur.x < m_margins.left || cur.x > m_margins.right || cur.y < m_margins.top || cur.y > m_margins.bottom) {
+        return;
+    }
+    const std::uint32_t fill = acquireFill();
+    for (int y = m_margins.top; y <= m_margins.bottom; ++y) {
+        m_active->insertCells(m_active->row(y), cur.x, m_margins.right, n, fill);
+    }
+    releaseFill(fill);
+    cur.pendingWrap = false;
+}
+
+void Terminal::deleteColumns(int n)
+{
+    // DECDC: columns deleted at the cursor in every line of the scroll region.
+    Cursor& cur = cursor();
+    if (cur.x < m_margins.left || cur.x > m_margins.right || cur.y < m_margins.top || cur.y > m_margins.bottom) {
+        return;
+    }
+    const std::uint32_t fill = acquireFill();
+    for (int y = m_margins.top; y <= m_margins.bottom; ++y) {
+        m_active->deleteCells(m_active->row(y), cur.x, m_margins.right, n, fill);
+    }
+    releaseFill(fill);
+    cur.pendingWrap = false;
+}
+
+void Terminal::backIndex()
+{
+    // DECBI: left one column; at the left margin the region scrolls right.
+    Cursor& cur = cursor();
+    cur.pendingWrap = false;
+    if (cur.x == m_margins.left && cur.y >= m_margins.top && cur.y <= m_margins.bottom) {
+        const std::uint32_t fill = acquireFill();
+        for (int y = m_margins.top; y <= m_margins.bottom; ++y) {
+            m_active->insertCells(m_active->row(y), m_margins.left, m_margins.right, 1, fill);
+        }
+        releaseFill(fill);
+    } else if (cur.x > 0) {
+        --cur.x;
+    }
+}
+
+void Terminal::forwardIndex()
+{
+    // DECFI: right one column; at the right margin the region scrolls left.
+    Cursor& cur = cursor();
+    cur.pendingWrap = false;
+    if (cur.x == m_margins.right && cur.y >= m_margins.top && cur.y <= m_margins.bottom) {
+        const std::uint32_t fill = acquireFill();
+        for (int y = m_margins.top; y <= m_margins.bottom; ++y) {
+            m_active->deleteCells(m_active->row(y), m_margins.left, m_margins.right, 1, fill);
+        }
+        releaseFill(fill);
+    } else if (cur.x < cols() - 1) {
+        ++cur.x;
+    }
+}
+
 void Terminal::eraseChars(int n)
 {
     Cursor& cur = cursor();
     const std::uint32_t fill = acquireFill();
-    m_active->eraseCells(m_active->row(cur.y), cur.x, std::min(cols(), cur.x + n), fill);
+    eraseSpan(m_active->row(cur.y), cur.x, std::min(cols(), cur.x + n), fill, false);
     releaseFill(fill);
     cur.pendingWrap = false;
+}
+
+bool Terminal::rectFromParams(const Params& p, int first, int& top, int& left, int& bottom, int& right) const
+{
+    // Pt ; Pl ; Pb ; Pr starting at @p first: 1-based, relative to the
+    // margins in origin mode, defaulting to the whole page, clipped to it.
+    const bool origin = m_modes.originMode;
+    const int top0 = origin ? m_margins.top : 0;
+    const int left0 = origin ? m_margins.left : 0;
+    const int bottomMax = origin ? m_margins.bottom : rows() - 1;
+    const int rightMax = origin ? m_margins.right : cols() - 1;
+    top = top0 + p.atOr(first, 1) - 1;
+    left = left0 + p.atOr(first + 1, 1) - 1;
+    bottom = p.at(first + 2) == 0 ? bottomMax : std::min(bottomMax, top0 + p.at(first + 2) - 1);
+    right = p.at(first + 3) == 0 ? rightMax : std::min(rightMax, left0 + p.at(first + 3) - 1);
+    return top <= bottom && left <= right && top <= bottomMax && left <= rightMax;
+}
+
+void Terminal::fillRect(const Params& p)
+{
+    // DECFRA: Pch ; Pt ; Pl ; Pb ; Pr $ x, in the current rendition.
+    const int ch = p.at(0);
+    if (!((ch >= 32 && ch <= 126) || (ch >= 160 && ch <= 255))) {
+        return;
+    }
+    int top, left, bottom, right;
+    if (!rectFromParams(p, 1, top, left, bottom, right)) {
+        return;
+    }
+    const std::uint32_t pen = cursor().penId;
+    for (int y = top; y <= bottom; ++y) {
+        Row& row = m_active->row(y);
+        for (int x = left; x <= right; ++x) {
+            m_active->writeCell(row, x, char32_t(ch), pen, 1);
+        }
+    }
+}
+
+void Terminal::eraseRect(const Params& p, bool selective)
+{
+    // DECERA / DECSERA: Pt ; Pl ; Pb ; Pr $ z / $ {
+    int top, left, bottom, right;
+    if (!rectFromParams(p, 0, top, left, bottom, right)) {
+        return;
+    }
+    const std::uint32_t fill = selective ? StyleTable::DefaultId : acquireFill();
+    for (int y = top; y <= bottom; ++y) {
+        eraseSpan(m_active->row(y), left, right + 1, fill, selective);
+    }
+    if (!selective) {
+        releaseFill(fill);
+    }
+}
+
+void Terminal::copyRect(const Params& p)
+{
+    // DECCRA: Pts ; Pls ; Pbs ; Prs ; Pps ; Ptd ; Pld ; Ppd $ v. One page,
+    // so the page numbers are ignored. Copied through a buffer, so source
+    // and destination may overlap.
+    int top, left, bottom, right;
+    if (!rectFromParams(p, 0, top, left, bottom, right)) {
+        return;
+    }
+    const bool origin = m_modes.originMode;
+    const int destTop = (origin ? m_margins.top : 0) + p.atOr(5, 1) - 1;
+    const int destLeft = (origin ? m_margins.left : 0) + p.atOr(6, 1) - 1;
+    const int bottomMax = origin ? m_margins.bottom : rows() - 1;
+    const int rightMax = origin ? m_margins.right : cols() - 1;
+
+    struct Copied
+    {
+        char32_t cp;
+        std::uint32_t style;
+        int width;
+        std::u32string extra;
+    };
+    const int w = right - left + 1;
+    const int h = bottom - top + 1;
+    std::vector<Copied> buffer;
+    buffer.reserve(std::size_t(w) * std::size_t(h));
+    StyleTable& styles = m_active->styles();
+    for (int y = top; y <= bottom; ++y) {
+        const Row& row = m_active->row(y);
+        for (int x = left; x <= right; ++x) {
+            const Cell& c = row.cells[std::size_t(x)];
+            Copied cell{c.codepoint(), c.styleId(), c.width(), std::u32string(m_active->graphemeExtra(row, x))};
+            // Halves of wide characters cut by the rectangle become blanks.
+            if (c.isTail() ? x == left : (c.width() == 2 && x == right)) {
+                cell = Copied{0, c.styleId(), 1, {}};
+            }
+            styles.retain(cell.style); // the source may be overwritten before we write
+            buffer.push_back(std::move(cell));
+        }
+    }
+    for (int dy = 0; dy < h; ++dy) {
+        const int y = destTop + dy;
+        for (int dx = 0; dx < w; ++dx) {
+            const int x = destLeft + dx;
+            const Copied& c = buffer[std::size_t(dy) * std::size_t(w) + std::size_t(dx)];
+            if (y <= bottomMax && x <= rightMax && c.width != 0) {
+                Row& row = m_active->row(y);
+                const int width = (c.width == 2 && x + 1 > rightMax) ? 1 : c.width;
+                m_active->writeCell(row, x, c.width == 2 && width == 1 ? char32_t(0) : c.cp, c.style, width);
+                for (char32_t e : c.extra) {
+                    m_active->appendGrapheme(row, x, e);
+                }
+            }
+            styles.release(c.style);
+        }
+    }
 }
 
 void Terminal::scrollUp(int n)
@@ -799,6 +1058,10 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         syncKittyFlags();
         if (saveRestoreCursor) {
             restoreCursor();
+        } else {
+            // Without 1049's save and restore the screens share one cursor.
+            m_primary->cursor.x = m_alternate->cursor.x;
+            m_primary->cursor.y = m_alternate->cursor.y;
         }
     }
     m_lastX = -1;
@@ -809,8 +1072,15 @@ void Terminal::fullReset()
     if (m_modes.altScreen) {
         setAltScreen(false, false, false);
     }
+    if (m_modes.columns132 && cols() != 80 && m_host.requestResize(80, rows())) {
+        resize(80, rows(), m_cellWidth, m_cellHeight);
+    }
     m_modes = Modes{};
     m_modes.cursorBlink = m_options.cursorBlink;
+    m_conformance = 5;
+    m_savedDecModes.clear();
+    m_protection = Protection::Off;
+    m_attributeChangeExtent = 0;
     m_kittyStack[0].clear();
     m_kittyStack[1].clear();
     m_graphics[0].clear();
@@ -878,11 +1148,26 @@ void Terminal::escDispatch(const Intermediates& inter, std::uint8_t final)
         return;
     }
     switch (final) {
+    case '6':
+        backIndex();
+        break;
     case '7':
         saveCursor();
         break;
     case '8':
         restoreCursor();
+        break;
+    case '9':
+        forwardIndex();
+        break;
+    case 'Z': // DECID
+        reportDeviceAttributes();
+        break;
+    case 'V': // SPA: start of ISO-protected area
+        setProtection(true, true);
+        break;
+    case 'W': // EPA
+        setProtection(false, true);
         break;
     case 'D':
         index();
@@ -941,7 +1226,14 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             moveCursorRelative(p.atOr(0, 1), 0);
             return;
         case 'D':
-            moveCursorRelative(-p.atOr(0, 1), 0);
+            if (m_modes.autowrap && (m_modes.reverseWrap || m_modes.reverseWrapExtended)) {
+                // With reverse wrap, CUB steps back like that many backspaces.
+                for (int n = p.atOr(0, 1); n > 0; --n) {
+                    backspace();
+                }
+            } else {
+                moveCursorRelative(-p.atOr(0, 1), 0);
+            }
             return;
         case 'E':
             moveCursorRelative(0, p.atOr(0, 1));
@@ -998,7 +1290,7 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             return;
         case 'c':
             if (p.at(0) == 0) {
-                reply("\x1b[?62;22c");
+                reportDeviceAttributes();
             }
             return;
         case 'd': {
@@ -1031,7 +1323,7 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             setTopBottomMargins(p.at(0), p.at(1));
             return;
         case 's':
-            if (m_modes.leftRightMargins) {
+            if (m_modes.leftRightMargins && m_conformance >= 4) {
                 setLeftRightMargins(p.at(0), p.at(1));
             } else {
                 saveCursor();
@@ -1065,13 +1357,56 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case 'n':
             deviceStatusReport(p, true);
             return;
+        case 's':
+            saveDecModes(p);
+            return;
+        case 'r':
+            restoreDecModes(p);
+            return;
         case 'J':
-            eraseDisplay(p.at(0));
+            eraseDisplay(p.at(0), true);
             return;
         case 'K':
-            eraseLine(p.at(0));
+            eraseLine(p.at(0), true);
             return;
         default:
+            return;
+        }
+    }
+
+    if (inter.count == 1 && inter.marker == 0) {
+        const char i = inter.bytes[0];
+        if (i == '"' && final == 'q') { // DECSCA
+            setProtection(p.at(0) == 1, false);
+            return;
+        }
+        if (i == '$') {
+            switch (final) {
+            case 'v':
+                copyRect(p);
+                return;
+            case 'x':
+                fillRect(p);
+                return;
+            case 'z':
+                eraseRect(p, false);
+                return;
+            case '{':
+                eraseRect(p, true);
+                return;
+            default:
+                break;
+            }
+        }
+        if (i == '*' && final == '|') { // DECSNLS: lines per screen
+            const int lines = p.at(0);
+            if (lines >= 1 && lines != rows() && m_host.requestResize(cols(), lines)) {
+                resize(cols(), lines, m_cellWidth, m_cellHeight);
+            }
+            return;
+        }
+        if (i == '*' && final == 'x') { // DECSACE
+            m_attributeChangeExtent = p.at(0) == 2 ? 2 : 0;
             return;
         }
     }
@@ -1094,24 +1429,100 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
     }
 
     if (inter.count == 1 && inter.bytes[0] == '$' && final == 'p') {
-        reportMode(p, priv);
+        if (m_conformance >= 3) { // DECRQM came with the VT300s
+            reportMode(p, priv);
+        }
+        return;
+    }
+
+    if (inter.count == 1 && inter.bytes[0] == '"' && inter.marker == 0 && final == 'p') {
+        // DECSCL: conformance level 61-65; a soft reset comes with it.
+        const int level = p.atOr(0, 65);
+        if (level >= 61 && level <= 65) {
+            softReset();
+            m_conformance = level - 60;
+        }
+        return;
+    }
+
+    if (inter.count == 1 && inter.bytes[0] == '\'' && inter.marker == 0 && (final == '}' || final == '~')) {
+        if (final == '}') {
+            insertColumns(p.atOr(0, 1));
+        } else {
+            deleteColumns(p.atOr(0, 1));
+        }
+        return;
+    }
+
+    if (inter.count == 1 && inter.bytes[0] == '*' && inter.marker == 0 && final == 'y') {
+        reportRectChecksum(p);
         return;
     }
 
     if (inter.count == 1 && inter.bytes[0] == '!' && inter.marker == 0 && final == 'p') {
-        // DECSTR soft reset.
-        m_modes.insert = false;
-        m_modes.originMode = false;
-        m_modes.autowrap = true;
-        m_modes.cursorVisible = true;
-        m_modes.cursorKeysApp = false;
-        m_modes.keypadApp = false;
-        m_margins = Region{0, rows() - 1, 0, cols() - 1};
-        std::fill(std::begin(m_charsets), std::end(m_charsets), Charset::Ascii);
-        m_gl = 0;
-        m_active->setPen(Style{});
-        m_active->hasSavedCursor = false;
+        softReset();
         return;
+    }
+}
+
+void Terminal::softReset()
+{
+    // DECSTR, plus what xterm also resets: reverse wrap and DECLRMM.
+    m_modes.insert = false;
+    m_modes.originMode = false;
+    m_modes.autowrap = true;
+    m_modes.cursorVisible = true;
+    m_modes.cursorKeysApp = false;
+    m_modes.keypadApp = false;
+    m_modes.reverseWrap = false;
+    m_modes.reverseWrapExtended = false;
+    m_modes.leftRightMargins = false;
+    m_margins = Region{0, rows() - 1, 0, cols() - 1};
+    std::fill(std::begin(m_charsets), std::end(m_charsets), Charset::Ascii);
+    m_gl = 0;
+    m_active->setPen(Style{}); // DECSCA protection off too
+    m_protection = Protection::Off;
+    m_active->hasSavedCursor = false;
+}
+
+void Terminal::setColumnMode(bool wide)
+{
+    // DECCOLM: 132 or 80 columns when allowed (mode 40). The page is cleared
+    // (unless DECNCSM at level 5), margins reset and the cursor homed.
+    if (!m_modes.allow132) {
+        return;
+    }
+    m_modes.columns132 = wide;
+    const int width = wide ? 132 : 80;
+    if (width != cols() && m_host.requestResize(width, rows())) {
+        resize(width, rows(), m_cellWidth, m_cellHeight);
+    }
+    m_margins = Region{0, rows() - 1, 0, cols() - 1};
+    m_modes.leftRightMargins = false;
+    if (!(m_modes.noClearOnColumnChange && m_conformance >= 5)) {
+        for (int y = 0; y < rows(); ++y) {
+            m_active->eraseRow(m_active->row(y), StyleTable::DefaultId);
+        }
+    }
+    setCursor(0, 0);
+}
+
+void Terminal::saveDecModes(const Params& p)
+{
+    for (int i = 0; i < p.count; ++i) {
+        const int state = decModeState(p.values[i]);
+        if (state == 1 || state == 2) {
+            m_savedDecModes[p.values[i]] = state == 1;
+        }
+    }
+}
+
+void Terminal::restoreDecModes(const Params& p)
+{
+    for (int i = 0; i < p.count; ++i) {
+        if (auto it = m_savedDecModes.find(p.values[i]); it != m_savedDecModes.end()) {
+            setDecMode(it->first, it->second);
+        }
     }
 }
 
@@ -1352,6 +1763,7 @@ void Terminal::selectGraphicRendition(const Params& p)
         }
     }
     s.link = link;
+    s.attrs = std::uint16_t((s.attrs & ~Attr::Protected) | (cursor().pen.attrs & Attr::Protected));
     m_active->setPen(s);
 }
 
@@ -1377,8 +1789,32 @@ void Terminal::setDecMode(int mode, bool on)
     case 1:
         m_modes.cursorKeysApp = on;
         break;
+    case 3:
+        setColumnMode(on);
+        break;
+    case 4:
+        m_modes.smoothScroll = on;
+        break;
     case 5:
         m_modes.reverseVideo = on;
+        break;
+    case 18:
+        m_modes.printFormFeed = on;
+        break;
+    case 19:
+        m_modes.printExtent = on;
+        break;
+    case 40:
+        m_modes.allow132 = on;
+        break;
+    case 41:
+        m_modes.moreFix = on;
+        break;
+    case 67:
+        m_modes.backarrowSendsBs = on;
+        break;
+    case 95:
+        m_modes.noClearOnColumnChange = on;
         break;
     case 6:
         m_modes.originMode = on;
@@ -1396,8 +1832,14 @@ void Terminal::setDecMode(int mode, bool on)
     case 25:
         m_modes.cursorVisible = on;
         break;
+    case 45:
+        m_modes.reverseWrap = on;
+        break;
     case 47:
         setAltScreen(on, false, false);
+        break;
+    case 66: // DECNKM
+        m_modes.keypadApp = on;
         break;
     case 69:
         m_modes.leftRightMargins = on;
@@ -1432,6 +1874,9 @@ void Terminal::setDecMode(int mode, bool on)
         break;
     case 1016:
         m_modes.mouseFormat = on ? MouseFormat::SgrPixels : MouseFormat::X10;
+        break;
+    case 1045:
+        m_modes.reverseWrapExtended = on;
         break;
     case 1047:
         setAltScreen(on, false, !on);
@@ -1478,12 +1923,39 @@ int Terminal::decModeState(int mode) const
         return b(m_modes.cursorBlink);
     case 25:
         return b(m_modes.cursorVisible);
+    case 45:
+        return b(m_modes.reverseWrap);
     case 47:
     case 1047:
     case 1049:
         return b(m_modes.altScreen);
+    case 66:
+        return b(m_modes.keypadApp);
     case 69:
         return b(m_modes.leftRightMargins);
+    case 1045:
+        return b(m_modes.reverseWrapExtended);
+    case 3:
+        return b(m_modes.columns132);
+    case 4:
+        return b(m_modes.smoothScroll);
+    case 18:
+        return b(m_modes.printFormFeed);
+    case 19:
+        return b(m_modes.printExtent);
+    case 40:
+        return b(m_modes.allow132);
+    case 41:
+        return b(m_modes.moreFix);
+    case 67:
+        return b(m_modes.backarrowSendsBs);
+    case 95:
+        return b(m_modes.noClearOnColumnChange);
+    case 35: // DECHEBM: no Hebrew keyboard mapping
+    case 42: // DECNRCM: no national replacement sets
+        return 2;
+    case 60: // DECHCCM
+        return 4;
     case 1000:
         return b(m_modes.mouseTracking == MouseTracking::Normal);
     case 1002:
@@ -1520,6 +1992,22 @@ int Terminal::ansiModeState(int mode) const
         return m_modes.insert ? 1 : 2;
     case 20:
         return m_modes.newline ? 1 : 2;
+    case 2: // KAM: the keyboard is never locked
+    case 12: // SRM: no local echo
+        return 2;
+    case 1: // GATM
+    case 5: // SRTM
+    case 7: // VEM
+    case 10: // HEM
+    case 11: // PUM
+    case 13: // FEAM
+    case 14: // FETM
+    case 15: // MATM
+    case 16: // TTM
+    case 17: // SATM
+    case 18: // TSM
+    case 19: // EBM
+        return 4; // permanently reset
     default:
         return 0;
     }
@@ -1534,9 +2022,83 @@ void Terminal::reportMode(const Params& p, bool priv)
     reply(std::string_view(buf, std::size_t(n)));
 }
 
+void Terminal::reportRectChecksum(const Params& p)
+{
+    // DECRQCRA: CSI Pid ; Pp ; Pt ; Pl ; Pb ; Pr * y. Coordinates follow
+    // origin mode. The checksum is the 16-bit sum of the characters, blanks
+    // counting as spaces, as modern xterm reports it (test suites read the
+    // screen one cell at a time through this).
+    const bool origin = m_modes.originMode;
+    const int top0 = origin ? m_margins.top : 0;
+    const int left0 = origin ? m_margins.left : 0;
+    const int bottomMax = origin ? m_margins.bottom : rows() - 1;
+    const int rightMax = origin ? m_margins.right : cols() - 1;
+    const int top = top0 + p.atOr(2, 1) - 1;
+    const int left = left0 + p.atOr(3, 1) - 1;
+    const int bottom = std::min(bottomMax, top0 + p.atOr(4, std::uint16_t(bottomMax - top0 + 1)) - 1);
+    const int right = std::min(rightMax, left0 + p.atOr(5, std::uint16_t(rightMax - left0 + 1)) - 1);
+    std::uint32_t sum = 0;
+    for (int y = top; y <= bottom; ++y) {
+        const Row& row = m_active->row(y);
+        for (int x = left; x <= right; ++x) {
+            const Cell& c = row.at(x);
+            if (c.isTail()) {
+                continue;
+            }
+            sum += c.codepoint() == 0 ? U' ' : c.codepoint();
+        }
+    }
+    char buf[32];
+    const int n = std::snprintf(buf, sizeof buf, "\x1bP%d!~%04X\x1b\\", int(p.at(0)), unsigned(sum & 0xFFFF));
+    reply(std::string_view(buf, std::size_t(n)));
+}
+
+void Terminal::reportDeviceAttributes()
+{
+    // VT500 level with what afterglow implements: selective erase (6),
+    // colour (22), rectangular editing (28) and clipboard access (52).
+    reply("\x1b[?65;6;22;28;52c");
+}
+
 void Terminal::deviceStatusReport(const Params& p, bool priv)
 {
     char buf[48];
+    if (priv) {
+        // DEC status reports for hardware afterglow does not have.
+        switch (p.at(0)) {
+        case 15: // printer: none
+            reply("\x1b[?13n");
+            return;
+        case 25: // user-defined keys: locked
+            reply("\x1b[?21n");
+            return;
+        case 26: // keyboard: North American, ready, LK401 (the last two from level 4)
+            reply(m_conformance >= 4 ? "\x1b[?27;1;0;1n" : m_conformance == 3 ? "\x1b[?27;1;0n" : "\x1b[?27;1n");
+            return;
+        case 55: // locator: none
+            reply("\x1b[?50n");
+            return;
+        case 56: // locator type: unknown
+            reply("\x1b[?57;0n");
+            return;
+        case 62: // DECMSR: no macro space
+            reply("\x1b[0*{");
+            return;
+        case 63: { // DECCKSR: macro memory checksum
+            const int n = std::snprintf(buf, sizeof buf, "\x1bP%d!~0000\x1b\\", int(p.at(1)));
+            reply(std::string_view(buf, std::size_t(n)));
+            return;
+        }
+        case 75: // data integrity: no errors
+            reply("\x1b[?70n");
+            return;
+        case 85: // multiple sessions: not supported
+            reply("\x1b[?83n");
+            return;
+        default:
+            break;
+        }
+    }
     switch (p.at(0)) {
     case 5:
         if (!priv) {
@@ -1561,6 +2123,14 @@ void Terminal::windowOp(const Params& p)
     char buf[64];
     int n = 0;
     switch (p.at(0)) {
+    case 8: { // resize to rows;cols, 0 or omitted keeping the current value
+        const int r = p.at(1) == 0 ? rows() : p.at(1);
+        const int c = p.at(2) == 0 ? cols() : p.at(2);
+        if ((r != rows() || c != cols()) && m_host.requestResize(c, r)) {
+            resize(c, r, m_cellWidth, m_cellHeight);
+        }
+        return;
+    }
     case 14:
         n = std::snprintf(buf, sizeof buf, "\x1b[4;%d;%dt", rows() * m_cellHeight, cols() * m_cellWidth);
         break;
@@ -1583,6 +2153,10 @@ void Terminal::windowOp(const Params& p)
         }
         return;
     default:
+        // DECSLPP: 24 or more sets the lines per page.
+        if (p.at(0) >= 24 && p.at(0) != rows() && m_host.requestResize(cols(), p.at(0))) {
+            resize(cols(), p.at(0), m_cellWidth, m_cellHeight);
+        }
         return;
     }
     reply(std::string_view(buf, std::size_t(n)));
@@ -1973,6 +2547,20 @@ void Terminal::dcsDispatch(const Params&, const Intermediates& inter, std::uint8
             value = std::to_string(m_margins.top + 1) + ';' + std::to_string(m_margins.bottom + 1) + 'r';
         } else if (data == "s") {
             value = std::to_string(m_margins.left + 1) + ';' + std::to_string(m_margins.right + 1) + 's';
+        } else if (data == "\"q") {
+            value = cursor().pen.has(Attr::Protected) && m_protection == Protection::Dec ? "1\"q" : "0\"q";
+        } else if (data == "\"p") {
+            value = std::to_string(60 + m_conformance) + ";1\"p";
+        } else if (data == "*x") {
+            value = std::to_string(m_attributeChangeExtent) + "*x";
+        } else if (data == "$}") {
+            value = "0$}"; // the main display is active
+        } else if (data == "$~") {
+            value = "0$~"; // no status line
+        } else if (data == "t") {
+            value = std::to_string(rows()) + 't';
+        } else if (data == "*|") {
+            value = std::to_string(rows()) + "*|";
         } else if (data == " q") {
             const int base = m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5;
             value = std::to_string(base + (m_modes.cursorBlink ? 0 : 1)) + " q";

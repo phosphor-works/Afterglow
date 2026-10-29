@@ -59,6 +59,9 @@ inline constexpr std::uint16_t Inverse = 1 << 4;
 inline constexpr std::uint16_t Invisible = 1 << 5;
 inline constexpr std::uint16_t Strikethrough = 1 << 6;
 inline constexpr std::uint16_t Overline = 1 << 7;
+/// Protected from selective erase (DECSCA) or from all erases (ISO SPA),
+/// depending on the terminal's protection mode. Not a rendition: SGR keeps it.
+inline constexpr std::uint16_t Protected = 1 << 8;
 } // namespace Attr
 
 struct Style
