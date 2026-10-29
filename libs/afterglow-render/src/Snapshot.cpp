@@ -110,6 +110,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     cursorBlink = modes.cursorBlink;
     cursorColor = t.cursorColor() ? packRgba(*t.cursorColor()) : defaultFg;
     generation = t.generation();
+    for (int i = 0; i < 256; ++i) {
+        palette[std::size_t(i)] = packRgba(t.paletteColor(i));
+    }
     images = t.graphics().visible(scr, t.cellWidth(), t.cellHeight());
 }
 

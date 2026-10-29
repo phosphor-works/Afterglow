@@ -4,6 +4,7 @@
 #include "TerminalWindow.h"
 #include "XkbKeyboard.h"
 #include "config/Settings.h"
+#include "shaders/ShaderLibrary.h"
 
 #include <AfterglowRender/GpuDevice.h>
 
@@ -40,7 +41,8 @@ int main(int argc, char** argv)
         // The chrome's Qt Quick scenes render on afterglow's Vulkan device.
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
         QQmlEngine engine;
-        auto* window = new Afterglow::TerminalWindow(device, settings, engine);
+        Afterglow::ShaderLibrary shaders;
+        auto* window = new Afterglow::TerminalWindow(device, settings, engine, shaders);
         window->show();
         rc = app.exec();
         // Windows hold swapchains on the device: they go first.

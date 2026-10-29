@@ -30,6 +30,7 @@ const QString Colors = QStringLiteral("Colors");
 const QString Terminal = QStringLiteral("Terminal");
 const QString Window = QStringLiteral("Window");
 const QString Keys = QStringLiteral("Keybinds");
+const QString Shaders = QStringLiteral("Shaders");
 
 QVariant clampInt(const QVariant& v, int lo, int hi)
 {
@@ -131,6 +132,14 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("padding"), 6, 0, 200, QStringLiteral("Space around the grid in logical pixels")),
         intKey(QStringLiteral("initialColumns"), 100, 10, 1000, QStringLiteral("Columns of a new window")),
         intKey(QStringLiteral("initialRows"), 30, 4, 500, QStringLiteral("Rows of a new window")),
+    };
+    schema.groups[Shaders] = {
+        {QStringLiteral("pane"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Shaders run over each pane: pack ids (cursor-trail, bloom) or paths to Ghostty shader files")},
+        {QStringLiteral("window"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Shaders run over the whole window, across splits, after the pane shaders")},
+        {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
+         QStringLiteral("Per shader parameter values, e.g. { \"bloom\": { \"strength\": 0.5 } }")},
     };
     schema.groups[Keys] = {
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
@@ -278,6 +287,15 @@ Settings SettingsStore::read() const
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));
     s.window.initialColumns = st.read<int>(Window, QStringLiteral("initialColumns"));
     s.window.initialRows = st.read<int>(Window, QStringLiteral("initialRows"));
+
+    // Shaders
+    for (const QVariant& v : st.read<QVariantList>(Shaders, QStringLiteral("pane"))) {
+        s.paneShaders << v.toString();
+    }
+    for (const QVariant& v : st.read<QVariantList>(Shaders, QStringLiteral("window"))) {
+        s.windowShaders << v.toString();
+    }
+    s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
     // Keybinds
     QStringList errors;

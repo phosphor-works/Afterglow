@@ -3,9 +3,14 @@
 
 #pragma once
 
+#include <AfterglowRender/ShaderProgram.h>
 #include <AfterglowRender/afterglowrender_export.h>
 
+#include <QElapsedTimer>
+#include <QPointF>
 #include <QRect>
+#include <QRectF>
+#include <QColor>
 #include <QSize>
 
 #include <cstdint>
@@ -19,6 +24,7 @@ class QRhiGraphicsPipeline;
 class QRhiRenderPassDescriptor;
 class QRhiShaderResourceBindings;
 class QRhiTexture;
+class QColor;
 class QRhiSwapChain;
 class QWindow;
 typedef struct hb_buffer_t hb_buffer_t;
@@ -134,6 +140,13 @@ public:
 
     FontResources& fonts();
 
+    /// Post-processing shaders run over each pane and over the whole window.
+    void setShaderChains(std::vector<ShaderProgramPtr> pane, std::vector<ShaderProgramPtr> window);
+    /// A shader animates over time: the host keeps scheduling frames.
+    bool animating() const;
+    /// The pointer, in framebuffer pixels, for shaders' iMouse.
+    void setMousePosition(const QPointF& px) { m_mouse = px; }
+
     /// Renders one frame. @p overlays are solid rectangles drawn last
     /// (split dividers, focus dimming).
     /// @p overlayTexture, if given, is a premultiplied full-window texture
@@ -143,8 +156,16 @@ public:
                 std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
 
 private:
-    void createPipeline(FontResources& res);
+    struct PipelineSet
+    {
+        std::unique_ptr<QRhiGraphicsPipeline> grid;
+        std::unique_ptr<QRhiGraphicsPipeline> image;
+    };
+    void initResources(FontResources& res);
     void ensureBindings(FontResources& res);
+    std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass);
+    std::unique_ptr<QRhiGraphicsPipeline> makeImagePipeline(QRhiRenderPassDescriptor* pass,
+                                                            QRhiShaderResourceBindings* layout);
 
     struct ImageDraw
     {
@@ -160,18 +181,37 @@ private:
         QRect scissor;
         std::vector<ImageDraw> images;
     };
-    void createImagePipeline(QRhiShaderResourceBindings* layout);
     QRhiShaderResourceBindings* imageBindings(QRhiTexture* texture, std::uint64_t serial);
 
     GpuDevice& m_device;
     QWindow* m_window;
     std::unique_ptr<QRhiSwapChain> m_swapChain;
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
-    std::unique_ptr<QRhiGraphicsPipeline> m_pipeline;
+    PipelineSet m_swapPipelines;
+    PipelineSet m_postPipelines;
+    QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
+    std::unique_ptr<class PostChain> m_post;
+    QPointF m_mouse;
+    QElapsedTimer m_clock;
+    float m_lastFrameTime = 0;
+    int m_shaderFrame = 0;
+    struct CursorTrack
+    {
+        QRectF cursor;
+        QRectF previous;
+        QColor color;
+        QColor previousColor;
+        int style = 0;
+        int previousStyle = 0;
+        float changeTime = 0;
+        bool focused = false;
+        float focusTime = 0;
+        std::uint64_t seenFrame = 0;
+    };
+    std::unordered_map<const PaneSnapshot*, CursorTrack> m_cursorTracks;
     std::unique_ptr<QRhiShaderResourceBindings> m_bindings;
     std::unique_ptr<QRhiBuffer> m_uniforms;
     std::unique_ptr<QRhiBuffer> m_instances;
-    std::unique_ptr<QRhiGraphicsPipeline> m_imagePipeline;
     struct ImageBinding
     {
         std::unique_ptr<QRhiShaderResourceBindings> srb;

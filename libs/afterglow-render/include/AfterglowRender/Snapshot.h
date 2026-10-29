@@ -9,6 +9,7 @@
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -67,6 +68,9 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::uint32_t cursorColor = 0;
 
     std::uint64_t generation = 0;
+
+    /// The 256-colour palette, for shaders.
+    std::array<std::uint32_t, 256> palette{};
 
     /// Kitty graphics placements in the viewport, in pixels from cell (0, 0).
     std::vector<AfterglowVt::VisiblePlacement> images;

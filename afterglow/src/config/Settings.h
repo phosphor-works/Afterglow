@@ -42,6 +42,11 @@ struct Settings
     QString term = QStringLiteral("xterm-256color");
     bool copyOnSelect = true;
     Keybinds keybinds = Keybinds::defaults();
+    /// Shader references (pack ids or file paths), applied in order.
+    QStringList paneShaders;
+    QStringList windowShaders;
+    /// Reference -> { parameter: value }.
+    QVariantMap shaderParams;
 };
 
 /// The config file (~/.config/afterglow/config.json) on phosphor-config,

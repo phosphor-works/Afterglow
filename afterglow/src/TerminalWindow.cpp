@@ -6,6 +6,7 @@
 #include "KeyMapping.h"
 #include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
+#include "shaders/ShaderLibrary.h"
 #include "Pane.h"
 
 #include <AfterglowRender/FontSet.h>
@@ -54,10 +55,11 @@ int mouseButtonCode(Qt::MouseButton b)
 } // namespace
 
 TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, QQmlEngine& engine,
-                               const QString& workingDirectory)
+                               ShaderLibrary& shaders, const QString& workingDirectory)
     : m_device(device)
     , m_settings(settings)
     , m_engine(engine)
+    , m_shaders(shaders)
 {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(device.vulkanInstance());
@@ -89,6 +91,9 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore
     });
     connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
     connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::updateChrome);
+
+    connect(&m_shaders, &ShaderLibrary::changed, this, &TerminalWindow::applyShaders);
+    applyShaders();
 
     newTab(workingDirectory);
 
@@ -396,6 +401,9 @@ void TerminalWindow::renderNow()
         chrome = m_chrome->texture();
     }
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
+    if (m_renderer->animating()) {
+        scheduleRender(); // a shader animates over time: keep frames coming
+    }
 
     if (holding) {
         // A pane is holding its previous frame; look again once the hold may
@@ -508,7 +516,7 @@ bool TerminalWindow::performAction(Action action)
         }
         return true;
     case Action::NewWindow: {
-        auto* w = new TerminalWindow(m_device, m_settings, m_engine,
+        auto* w = new TerminalWindow(m_device, m_settings, m_engine, m_shaders,
                                      m_focused ? m_focused->workingDirectory() : QString());
         w->show();
         return true;
@@ -661,9 +669,21 @@ bool TerminalWindow::routePointerToChrome(QEvent* e, const QPointF& pos, bool pr
     return false;
 }
 
+void TerminalWindow::applyShaders()
+{
+    const Settings& s = m_settings.settings();
+    ShaderLibrary::Chains chains = m_shaders.build(s.paneShaders, s.windowShaders, s.shaderParams);
+    m_renderer->setShaderChains(std::move(chains.pane), std::move(chains.window));
+    scheduleRender();
+}
+
 void TerminalWindow::applySettings(const Settings& previous)
 {
     const Settings& now = m_settings.settings();
+    if (now.paneShaders != previous.paneShaders || now.windowShaders != previous.windowShaders
+        || now.shaderParams != previous.shaderParams) {
+        applyShaders();
+    }
     if (now.terminal != previous.terminal) {
         for (Pane* p : findChildren<Pane*>()) {
             p->setOptions(now.terminal);
@@ -904,6 +924,7 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 
 void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
+    m_renderer->setMousePosition(e->position() * devicePixelRatio());
     if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

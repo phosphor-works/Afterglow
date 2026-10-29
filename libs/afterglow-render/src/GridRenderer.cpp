@@ -6,6 +6,7 @@
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowRender/GlyphCache.h>
 #include <AfterglowRender/GpuDevice.h>
+#include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/Snapshot.h>
 
 #include "Sprites.h"
@@ -350,10 +351,44 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
 
 // --- WindowRenderer --------------------------------------------------------
 
+namespace {
+
+QRhiGraphicsPipeline::TargetBlend premultipliedBlend()
+{
+    QRhiGraphicsPipeline::TargetBlend blend;
+    blend.enable = true;
+    blend.srcColor = QRhiGraphicsPipeline::One;
+    blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+    blend.srcAlpha = QRhiGraphicsPipeline::One;
+    blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
+    return blend;
+}
+
+QRhiVertexInputLayout instanceLayout()
+{
+    QRhiVertexInputLayout layout;
+    layout.setBindings({{sizeof(Instance), QRhiVertexInputBinding::PerInstance}});
+    layout.setAttributes({
+        {0, 0, QRhiVertexInputAttribute::Float4, offsetof(Instance, x)},
+        {0, 1, QRhiVertexInputAttribute::Float4, offsetof(Instance, u0)},
+        {0, 2, QRhiVertexInputAttribute::UNormByte4, offsetof(Instance, color)},
+        {0, 3, QRhiVertexInputAttribute::UInt, offsetof(Instance, kind)},
+    });
+    return layout;
+}
+
+QColor toColor(std::uint32_t rgba)
+{
+    return QColor::fromRgb(int(rgba & 0xFF), int((rgba >> 8) & 0xFF), int((rgba >> 16) & 0xFF), int(rgba >> 24));
+}
+
+} // namespace
+
 WindowRenderer::WindowRenderer(GpuDevice& device, QWindow* window)
     : m_device(device)
     , m_window(window)
 {
+    m_clock.start();
 }
 
 WindowRenderer::~WindowRenderer()
@@ -392,9 +427,11 @@ bool WindowRenderer::ensureSwapChain()
 
 void WindowRenderer::releaseSwapChain()
 {
-    m_imagePipeline.reset();
+    m_post.reset();
+    m_postPipelines = {};
+    m_postPipelinePass = nullptr;
+    m_swapPipelines = {};
     m_imageBindings.clear();
-    m_pipeline.reset();
     m_bindings.reset();
     m_uniforms.reset();
     m_instances.reset();
@@ -405,6 +442,25 @@ void WindowRenderer::releaseSwapChain()
     m_renderPass.reset();
     m_hasSwapChain = false;
     m_boundTextureGeneration = 0;
+}
+
+void WindowRenderer::setShaderChains(std::vector<ShaderProgramPtr> pane, std::vector<ShaderProgramPtr> window)
+{
+    if (pane.empty() && window.empty()) {
+        m_post.reset();
+        m_postPipelines = {};
+        m_postPipelinePass = nullptr;
+        return;
+    }
+    if (!m_post) {
+        m_post = std::make_unique<PostChain>(m_device);
+    }
+    m_post->setChains(std::move(pane), std::move(window));
+}
+
+bool WindowRenderer::animating() const
+{
+    return m_post && m_post->animated();
 }
 
 void WindowRenderer::ensureBindings(FontResources& res)
@@ -428,13 +484,13 @@ void WindowRenderer::ensureBindings(FontResources& res)
     if (fresh) {
         m_bindings->create();
     } else {
-        // Same layout, new textures: the pipeline stays valid.
+        // Same layout, new textures: the pipelines stay valid.
         m_bindings->updateResources();
     }
     m_boundTextureGeneration = res.textureGeneration;
 }
 
-void WindowRenderer::createPipeline(FontResources& res)
+void WindowRenderer::initResources(FontResources& res)
 {
     QRhi* rhi = m_device.rhi();
     m_uniforms.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 32));
@@ -442,35 +498,63 @@ void WindowRenderer::createPipeline(FontResources& res)
     m_instances.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, sizeof(Instance) * 8192));
     m_instances->create();
     ensureBindings(res);
+}
 
-    m_pipeline.reset(rhi->newGraphicsPipeline());
-    QRhiGraphicsPipeline::TargetBlend blend;
-    blend.enable = true;
-    blend.srcColor = QRhiGraphicsPipeline::One;
-    blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    blend.srcAlpha = QRhiGraphicsPipeline::One;
-    blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    m_pipeline->setTargetBlends({blend});
-    m_pipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
-    m_pipeline->setFlags(QRhiGraphicsPipeline::UsesScissor);
-    m_pipeline->setShaderStages({
+std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeGridPipeline(QRhiRenderPassDescriptor* pass)
+{
+    std::unique_ptr<QRhiGraphicsPipeline> p(m_device.rhi()->newGraphicsPipeline());
+    p->setTargetBlends({premultipliedBlend()});
+    p->setTopology(QRhiGraphicsPipeline::TriangleStrip);
+    p->setFlags(QRhiGraphicsPipeline::UsesScissor);
+    p->setShaderStages({
         {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/afterglow/shaders/grid.vert.qsb"))},
         {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/afterglow/shaders/grid.frag.qsb"))},
     });
-    QRhiVertexInputLayout layout;
-    layout.setBindings({{sizeof(Instance), QRhiVertexInputBinding::PerInstance}});
-    layout.setAttributes({
-        {0, 0, QRhiVertexInputAttribute::Float4, offsetof(Instance, x)},
-        {0, 1, QRhiVertexInputAttribute::Float4, offsetof(Instance, u0)},
-        {0, 2, QRhiVertexInputAttribute::UNormByte4, offsetof(Instance, color)},
-        {0, 3, QRhiVertexInputAttribute::UInt, offsetof(Instance, kind)},
-    });
-    m_pipeline->setVertexInputLayout(layout);
-    m_pipeline->setShaderResourceBindings(m_bindings.get());
-    m_pipeline->setRenderPassDescriptor(m_renderPass.get());
-    if (!m_pipeline->create()) {
+    p->setVertexInputLayout(instanceLayout());
+    p->setShaderResourceBindings(m_bindings.get());
+    p->setRenderPassDescriptor(pass);
+    if (!p->create()) {
         throw std::runtime_error("failed to create the grid pipeline");
     }
+    return p;
+}
+
+std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeImagePipeline(QRhiRenderPassDescriptor* pass,
+                                                                        QRhiShaderResourceBindings* layout)
+{
+    std::unique_ptr<QRhiGraphicsPipeline> p(m_device.rhi()->newGraphicsPipeline());
+    p->setTargetBlends({premultipliedBlend()});
+    p->setTopology(QRhiGraphicsPipeline::TriangleStrip);
+    p->setFlags(QRhiGraphicsPipeline::UsesScissor);
+    p->setShaderStages({
+        {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/afterglow/shaders/grid.vert.qsb"))},
+        {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/afterglow/shaders/image.frag.qsb"))},
+    });
+    p->setVertexInputLayout(instanceLayout());
+    // Any image binding set has the same layout, so the first one serves.
+    p->setShaderResourceBindings(layout);
+    p->setRenderPassDescriptor(pass);
+    if (!p->create()) {
+        throw std::runtime_error("failed to create the image pipeline");
+    }
+    return p;
+}
+
+QRhiShaderResourceBindings* WindowRenderer::imageBindings(QRhiTexture* texture, std::uint64_t serial)
+{
+    ImageBinding& b = m_imageBindings[serial];
+    if (!b.srb) {
+        b.srb.reset(m_device.rhi()->newShaderResourceBindings());
+        b.srb->setBindings({
+            QRhiShaderResourceBinding::uniformBuffer(
+                0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, m_uniforms.get()),
+            QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture,
+                                                      m_device.imageSampler()),
+        });
+        b.srb->create();
+    }
+    b.lastUsed = m_frameCounter;
+    return b.srb.get();
 }
 
 void WindowRenderer::render(const std::vector<Pane>& panes,
@@ -527,7 +611,7 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         m_frame.push_back({float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 0, 0, 0, 0,
                            color, std::uint32_t(InstanceKind::Solid)});
     }
-
+    const auto overlayEnd = std::uint32_t(m_frame.size());
     // The chrome quad goes last; it is drawn with the image pipeline.
     std::uint32_t chromeInstance = 0;
     if (overlayTexture) {
@@ -561,8 +645,8 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
             }
         }
     }
-    if (!m_pipeline) {
-        createPipeline(res);
+    if (!m_uniforms) {
+        initResources(res);
     }
     ensureBindings(res);
 
@@ -588,20 +672,37 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         updates->updateDynamicBuffer(m_instances.get(), 0, bytes, m_frame.data());
     }
 
-    const QColor clear = QColor::fromRgb(int(clearColor & 0xFF), int((clearColor >> 8) & 0xFF),
-                                         int((clearColor >> 16) & 0xFF), int(clearColor >> 24));
-    QRhiCommandBuffer* cb = m_swapChain->currentFrameCommandBuffer();
-    cb->beginPass(m_swapChain->currentFrameRenderTarget(), clear, {1.0f, 0}, updates);
-    cb->setGraphicsPipeline(m_pipeline.get());
-    cb->setViewport({0, 0, float(px.width()), float(px.height())});
-    cb->setShaderResources(m_bindings.get());
-    const QRhiCommandBuffer::VertexInput input(m_instances.get(), 0);
-    cb->setVertexInput(0, 1, &input);
+    // With shaders, the grid goes to an offscreen texture first.
+    const bool post = m_post && m_post->active();
+    QRhiRenderTarget* gridTarget = m_swapChain->currentFrameRenderTarget();
+    QRhiRenderPassDescriptor* gridPass = m_renderPass.get();
+    PipelineSet* gridPipelines = &m_swapPipelines;
+    if (post) {
+        gridTarget = m_post->prepare(px);
+        gridPass = m_post->renderPass();
+        if (m_postPipelinePass != gridPass) {
+            m_postPipelines = {};
+            m_postPipelinePass = gridPass;
+        }
+        gridPipelines = &m_postPipelines;
+    }
+    if (!gridPipelines->grid) {
+        gridPipelines->grid = makeGridPipeline(gridPass);
+    }
 
+    const QColor clear = toColor(clearColor);
+    QRhiCommandBuffer* cb = m_swapChain->currentFrameCommandBuffer();
+    const QRhiCommandBuffer::VertexInput input(m_instances.get(), 0);
     // QRhi scissors use a bottom-left origin.
     auto scissor = [&px](const QRect& rc) {
         const QRect c = rc.intersected(QRect(QPoint(0, 0), px));
         return QRhiScissor(c.x(), px.height() - (c.y() + c.height()), c.width(), c.height());
+    };
+    auto bindGrid = [&] {
+        cb->setGraphicsPipeline(gridPipelines->grid.get());
+        cb->setViewport({0, 0, float(px.width()), float(px.height())});
+        cb->setShaderResources(m_bindings.get());
+        cb->setVertexInput(0, 1, &input);
     };
     auto drawImages = [&](const DrawRange& range, bool below) {
         bool bound = false;
@@ -614,10 +715,10 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
                 continue;
             }
             QRhiShaderResourceBindings* srb = imageBindings(it->second.first, it->second.second);
-            if (!m_imagePipeline) {
-                createImagePipeline(srb);
+            if (!gridPipelines->image) {
+                gridPipelines->image = makeImagePipeline(gridPass, srb);
             }
-            cb->setGraphicsPipeline(m_imagePipeline.get());
+            cb->setGraphicsPipeline(gridPipelines->image.get());
             cb->setViewport({0, 0, float(px.width()), float(px.height())});
             cb->setScissor(scissor(range.scissor));
             cb->setShaderResources(srb);
@@ -626,12 +727,29 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
             bound = true;
         }
         if (bound) {
-            cb->setGraphicsPipeline(m_pipeline.get());
-            cb->setViewport({0, 0, float(px.width()), float(px.height())});
-            cb->setShaderResources(m_bindings.get());
-            cb->setVertexInput(0, 1, &input);
+            bindGrid();
         }
     };
+    auto drawChrome = [&] {
+        if (!overlayTexture) {
+            return;
+        }
+        // High bit keeps chrome serials apart from image texture serials.
+        QRhiShaderResourceBindings* srb = imageBindings(overlayTexture, overlaySerial | (1ull << 63));
+        if (!m_swapPipelines.image) {
+            m_swapPipelines.image = makeImagePipeline(m_renderPass.get(), srb);
+        }
+        cb->setGraphicsPipeline(m_swapPipelines.image.get());
+        cb->setViewport({0, 0, float(px.width()), float(px.height())});
+        cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
+        cb->setShaderResources(srb);
+        cb->setVertexInput(0, 1, &input);
+        cb->draw(4, 1, 0, chromeInstance);
+    };
+
+    // Grid pass: backgrounds, images below the text, text, images above.
+    cb->beginPass(gridTarget, clear, {1.0f, 0}, updates);
+    bindGrid();
     for (const DrawRange& range : m_ranges) {
         if (range.scissor.isEmpty()) {
             continue;
@@ -647,80 +765,88 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         }
         drawImages(range, false);
     }
-    const auto overlayCount = (overlayTexture ? chromeInstance : std::uint32_t(m_frame.size())) - overlayFirst;
-    if (overlayCount > 0) {
+    if (overlayEnd > overlayFirst) {
         cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
-        cb->draw(4, overlayCount, 0, overlayFirst);
+        cb->draw(4, overlayEnd - overlayFirst, 0, overlayFirst);
     }
-    if (overlayTexture) {
-        // High bit keeps chrome serials apart from image texture serials.
-        QRhiShaderResourceBindings* srb = imageBindings(overlayTexture, overlaySerial | (1ull << 63));
-        if (!m_imagePipeline) {
-            createImagePipeline(srb);
+
+    if (post) {
+        cb->endPass();
+        // Shader inputs: per pane, and the focused pane's view for the window.
+        const float now = float(m_clock.nsecsElapsed()) / 1e9f;
+        const ShaderFrameTime time{now, m_lastFrameTime > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
+        m_lastFrameTime = now;
+        const FontMetrics& m = res.fonts->metrics();
+        std::vector<ShaderRegionState> regions;
+        ShaderRegionState windowState;
+        windowState.rect = QRect(QPoint(0, 0), px);
+        for (const Pane& pane : panes) {
+            const PaneSnapshot& snap = *pane.snapshot;
+            ShaderRegionState st;
+            st.rect = pane.params.rect;
+            st.snapshot = &snap;
+            st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
+            st.mouse = m_mouse;
+            const int span = (snap.cursorX < snap.cols && snap.cursorY < snap.rows
+                              && snap.at(snap.cursorX, snap.cursorY).width == 2)
+                ? 2
+                : 1;
+            QRectF cursor(pane.params.contentOrigin.x() + snap.cursorX * m.cellWidth,
+                          pane.params.contentOrigin.y() + snap.cursorY * m.cellHeight, span * m.cellWidth,
+                          m.cellHeight);
+            const int style = !pane.params.focused                                         ? 1
+                              : snap.cursorShape == AfterglowVt::CursorShape::Bar          ? 2
+                              : snap.cursorShape == AfterglowVt::CursorShape::Underline    ? 3
+                                                                                           : 0;
+            CursorTrack& track = m_cursorTracks[&snap];
+            const QColor color = toColor(snap.cursorColor);
+            if (track.seenFrame == 0) {
+                track.cursor = track.previous = cursor;
+                track.color = track.previousColor = color;
+                track.style = track.previousStyle = style;
+                track.focused = pane.params.focused;
+            }
+            if (cursor != track.cursor || color != track.color) {
+                track.previous = track.cursor;
+                track.previousColor = track.color;
+                track.previousStyle = track.style;
+                track.cursor = cursor;
+                track.color = color;
+                track.changeTime = now;
+            }
+            track.style = style;
+            if (pane.params.focused != track.focused) {
+                track.focused = pane.params.focused;
+                track.focusTime = now;
+            }
+            track.seenFrame = m_frameCounter;
+            st.cursor = track.cursor;
+            st.previousCursor = track.previous;
+            st.cursorColor = track.color;
+            st.previousCursorColor = track.previousColor;
+            st.cursorStyle = track.style;
+            st.previousCursorStyle = track.previousStyle;
+            st.cursorVisible = snap.cursorVisible;
+            st.cursorChangeTime = track.changeTime;
+            st.focused = track.focused;
+            st.focusChangeTime = track.focusTime;
+            regions.push_back(st);
+            if (pane.params.focused || windowState.snapshot == nullptr) {
+                const QRect whole = windowState.rect;
+                windowState = st;
+                windowState.rect = whole;
+            }
         }
-        cb->setGraphicsPipeline(m_imagePipeline.get());
-        cb->setViewport({0, 0, float(px.width()), float(px.height())});
-        cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
-        cb->setShaderResources(srb);
-        cb->setVertexInput(0, 1, &input);
-        cb->draw(4, 1, 0, chromeInstance);
+        std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+        m_post->record(cb, regions, windowState, time, m_swapChain->currentFrameRenderTarget(), m_renderPass.get());
     }
+    drawChrome();
     cb->endPass();
     rhi->endFrame(m_swapChain.get());
 
     // Bindings of textures not drawn for a while (deleted or scrolled away).
     std::erase_if(m_imageBindings, [this](const auto& kv) { return kv.second.lastUsed + 120 < m_frameCounter; });
     m_device.pruneImageTextures();
-}
-
-QRhiShaderResourceBindings* WindowRenderer::imageBindings(QRhiTexture* texture, std::uint64_t serial)
-{
-    ImageBinding& b = m_imageBindings[serial];
-    if (!b.srb) {
-        b.srb.reset(m_device.rhi()->newShaderResourceBindings());
-        b.srb->setBindings({
-            QRhiShaderResourceBinding::uniformBuffer(
-                0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, m_uniforms.get()),
-            QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture,
-                                                      m_device.imageSampler()),
-        });
-        b.srb->create();
-    }
-    b.lastUsed = m_frameCounter;
-    return b.srb.get();
-}
-
-void WindowRenderer::createImagePipeline(QRhiShaderResourceBindings* layout)
-{
-    m_imagePipeline.reset(m_device.rhi()->newGraphicsPipeline());
-    QRhiGraphicsPipeline::TargetBlend blend;
-    blend.enable = true;
-    blend.srcColor = QRhiGraphicsPipeline::One;
-    blend.dstColor = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    blend.srcAlpha = QRhiGraphicsPipeline::One;
-    blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
-    m_imagePipeline->setTargetBlends({blend});
-    m_imagePipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
-    m_imagePipeline->setFlags(QRhiGraphicsPipeline::UsesScissor);
-    m_imagePipeline->setShaderStages({
-        {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/afterglow/shaders/grid.vert.qsb"))},
-        {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/afterglow/shaders/image.frag.qsb"))},
-    });
-    QRhiVertexInputLayout input;
-    input.setBindings({{sizeof(Instance), QRhiVertexInputBinding::PerInstance}});
-    input.setAttributes({
-        {0, 0, QRhiVertexInputAttribute::Float4, offsetof(Instance, x)},
-        {0, 1, QRhiVertexInputAttribute::Float4, offsetof(Instance, u0)},
-        {0, 2, QRhiVertexInputAttribute::UNormByte4, offsetof(Instance, color)},
-        {0, 3, QRhiVertexInputAttribute::UInt, offsetof(Instance, kind)},
-    });
-    m_imagePipeline->setVertexInputLayout(input);
-    // Any image binding set has the same layout, so the first one serves.
-    m_imagePipeline->setShaderResourceBindings(layout);
-    m_imagePipeline->setRenderPassDescriptor(m_renderPass.get());
-    if (!m_imagePipeline->create()) {
-        throw std::runtime_error("failed to create the image pipeline");
-    }
 }
 
 } // namespace AfterglowRender

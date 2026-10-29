@@ -28,6 +28,7 @@ namespace Afterglow {
 class ChromeController;
 class ChromeLayer;
 class Pane;
+class ShaderLibrary;
 
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
@@ -37,7 +38,7 @@ class TerminalWindow : public QWindow
 
 public:
     TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, QQmlEngine& engine,
-                   const QString& workingDirectory = {});
+                   ShaderLibrary& shaders, const QString& workingDirectory = {});
     ~TerminalWindow() override;
 
     static QList<TerminalWindow*> windows();
@@ -85,6 +86,7 @@ private:
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
     void applySettings(const Settings& previous);
+    void applyShaders();
     void sendKey(QKeyEvent* e);
     void paste(QClipboard::Mode mode);
     void updateTitle();
@@ -102,6 +104,7 @@ private:
     AfterglowRender::GpuDevice& m_device;
     SettingsStore& m_settings;
     QQmlEngine& m_engine;
+    ShaderLibrary& m_shaders;
     ChromeController* m_controller = nullptr;
     ChromeLayer* m_chrome = nullptr;
     bool m_chromeGrab = false;
