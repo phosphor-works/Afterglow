@@ -1780,6 +1780,13 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             }
             return;
         }
+        if (i == '$' && final == '|') { // DECSCPP: 80 or 132 columns per page
+            const int width = p.at(0) == 132 ? 132 : 80;
+            if (width != cols() && m_host.requestResize(width, rows())) {
+                resize(width, rows(), m_cellWidth, m_cellHeight);
+            }
+            return;
+        }
         if (i == '*' && final == '|') { // DECSNLS: lines per screen
             const int lines = p.at(0);
             if (lines >= 1 && lines != rows() && m_host.requestResize(cols(), lines)) {
@@ -2407,7 +2414,48 @@ int Terminal::decModeState(int mode) const
         return b(m_modes.noClearOnColumnChange);
     case 35: // DECHEBM: no Hebrew keyboard mapping
     case 42: // DECNRCM: no national replacement sets
+    case 1048: // save/restore cursor: an action, not a state
         return 2;
+    case 1036: // Alt always sends ESC
+    case 1046: // switching to the alternate screen is always allowed
+        return 3; // permanently set
+    // Modes afterglow knows but does not have: hardware features of DEC
+    // terminals and xterm's own window options.
+    case 8: // DECARM: auto-repeat is the compositor's
+    case 10: // DECEDM / xterm toolbar
+    case 11: // DECLTM
+    case 13: // DECSCFDM / xterm blink option
+    case 14: // DECTEM / xterm XOR blink
+    case 16: // DECEKEM
+    case 30: // xterm scrollbar
+    case 38: // DECTEK
+    case 43: // DECGEPM
+    case 44: // DECGPCM / xterm margin bell
+    case 46: // DECGPBM / xterm logging
+    case 53: // DEC131TM
+    case 59: // DECKKDM
+    case 61: // DECVCCM
+    case 64: // DECPCCM
+    case 68: // DECKBUM
+    case 73: // DECXRLM
+    case 80: // DECSDM: no sixel
+    case 81: // DECKPM
+    case 1010: // scroll on output
+    case 1011: // scroll on key
+    case 1014: // fast scroll
+    case 1034: // 8-bit input
+    case 1035: // num lock modifiers
+    case 1037: // Delete sends DEL
+    case 1040: // keep selection
+    case 1041: // select to clipboard
+    case 1042: // bell urgency
+    case 1043: // raise on bell
+    case 2001: // readline mouse modes
+    case 2002:
+    case 2003:
+    case 2005:
+    case 2006:
+        return 4; // permanently reset
     case 60: // DECHCCM
         return 4;
     case 1000:
@@ -3286,6 +3334,8 @@ void Terminal::dcsDispatch(const Params&, const Intermediates& inter, std::uint8
             value = std::to_string(rows()) + 't';
         } else if (data == "*|") {
             value = std::to_string(rows()) + "*|";
+        } else if (data == "$|") {
+            value = std::to_string(cols()) + "$|";
         } else if (data == " q") {
             const int base = m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5;
             value = std::to_string(base + (m_modes.cursorBlink ? 0 : 1)) + " q";
