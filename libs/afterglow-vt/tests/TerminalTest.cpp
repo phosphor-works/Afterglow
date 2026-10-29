@@ -375,3 +375,42 @@ TEST(Terminal, RepeatLastCharacterRuns)
     t.feed("\x1b[2J\x1b[Hzz\x1b[H\x1b[4hk\x1b[2b\x1b[4l");
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "kkkzz");
 }
+
+TEST(Terminal, BatchedPrintingMatchesBytewise)
+{
+    // Fed whole, text takes the batched fast paths (ASCII runs, decoded
+    // UTF-8 runs, simple characters); fed a byte at a time it takes the
+    // state machine and print(). The screens must come out the same.
+    const std::string inputs[] = {
+        "plain ascii that wraps past the edge of this narrow terminal\r\n",
+        "Ελληνικά кириллица 日本語の文字 한국어 \xed\x95\x9c\xea\xb8\x80 wide at the edge: 中中中中中中中中中中中\r\n",
+        "e\xcc\x81 n\xcc\x83 a\xcc\x8a\xcc\x8a combining after simple letters\r\n",
+        "flags \xf0\x9f\x87\xaf\xf0\x9f\x87\xb5\xf0\x9f\x87\xba\xf0\x9f\x87\xb8 zwj \xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9 vs16 \xe2\x9d\xa4\xef\xb8\x8f\r\n",
+        "prepend \xd8\x80" "a then devanagari \xe0\xa4\x95\xe0\xa5\x8d\xe0\xa4\xb7 hangul \xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8\r\n",
+        "\x1b[31mred \xc3\xa9t\xc3\xa9\x1b[0m \x1b[1mbold \xce\xb1\xce\xb2\x1b[m\r\n",
+        "bad \xc3 \xe2\x82 \xed\xa0\x80 \xc0\xaf \xf4\x90\x80\x80 \xff end\r\n",
+        "\x1b[4h insert \xc3\xa9\xc3\xa9 \x1b[4l \x1b(0lqqk\x1b(B mixed\r\n",
+    };
+    for (const std::string& input : inputs) {
+        RecordingHost hostA;
+        RecordingHost hostB;
+        Terminal whole(17, 6, hostA);
+        Terminal bytewise(17, 6, hostB);
+        whole.feed(input);
+        for (char c : input) {
+            bytewise.feed(std::string_view(&c, 1));
+        }
+        ASSERT_EQ(whole.text(Terminal::TextScope::All), bytewise.text(Terminal::TextScope::All)) << input;
+        for (int y = 0; y < whole.rows(); ++y) {
+            for (int x = 0; x < whole.cols(); ++x) {
+                const Cell& a = whole.screen().row(y).cells[std::size_t(x)];
+                const Cell& b = bytewise.screen().row(y).cells[std::size_t(x)];
+                ASSERT_EQ(a.codepoint(), b.codepoint()) << input << " at " << x << "," << y;
+                ASSERT_EQ(a.width(), b.width()) << input << " at " << x << "," << y;
+                ASSERT_EQ(a.hasGrapheme(), b.hasGrapheme()) << input << " at " << x << "," << y;
+            }
+        }
+        EXPECT_EQ(whole.screen().cursor.x, bytewise.screen().cursor.x) << input;
+        EXPECT_EQ(whole.screen().cursor.y, bytewise.screen().cursor.y) << input;
+    }
+}

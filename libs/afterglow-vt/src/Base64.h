@@ -18,8 +18,9 @@ enum class Base64Check {
     Strict, ///< RFC 4648: the alphabet, length a multiple of four, correct padding
 };
 
-/// Decodes base64; nullopt when @p check rejects the input.
-inline std::optional<std::string> base64Decode(std::string_view in, Base64Check check)
+/// Decodes base64 onto the end of @p out; false (with @p out as it was)
+/// when @p check rejects the input.
+inline bool base64DecodeAppend(std::string& out, std::string_view in, Base64Check check)
 {
     static constexpr auto table = [] {
         std::array<std::int8_t, 256> t{};
@@ -32,7 +33,7 @@ inline std::optional<std::string> base64Decode(std::string_view in, Base64Check 
     }();
     if (check == Base64Check::Strict) {
         if (in.size() % 4 != 0) {
-            return std::nullopt;
+            return false;
         }
         // At most two padding characters, and only at the end.
         const std::size_t padding = in.ends_with("==") ? 2 : in.ends_with('=') ? 1 : 0;
@@ -42,27 +43,65 @@ inline std::optional<std::string> base64Decode(std::string_view in, Base64Check 
             in.remove_suffix(1);
         }
         if (in.size() % 4 == 1) {
-            return std::nullopt; // six bits cannot end a byte
+            return false; // six bits cannot end a byte
         }
     }
-    std::string out;
-    out.reserve(in.size() * 3 / 4);
+    const std::size_t start = out.size();
+    out.resize(start + in.size() / 4 * 3 + 3);
+    auto* dst = reinterpret_cast<unsigned char*>(out.data() + start);
+    const auto* src = reinterpret_cast<const unsigned char*>(in.data());
+    const auto* end = src + in.size();
+    // Four characters at a time while they are all in the alphabet.
+    while (end - src >= 4) {
+        const std::int8_t a = table[src[0]];
+        const std::int8_t b = table[src[1]];
+        const std::int8_t c = table[src[2]];
+        const std::int8_t d = table[src[3]];
+        if ((a | b | c | d) < 0) {
+            break;
+        }
+        const std::uint32_t n = (std::uint32_t(a) << 18) | (std::uint32_t(b) << 12) | (std::uint32_t(c) << 6) | std::uint32_t(d);
+        dst[0] = static_cast<unsigned char>(n >> 16);
+        dst[1] = static_cast<unsigned char>(n >> 8);
+        dst[2] = static_cast<unsigned char>(n);
+        dst += 3;
+        src += 4;
+    }
+    // The rest a character at a time: the tail, padding, stray bytes.
     std::uint32_t acc = 0;
     int bits = 0;
-    for (char ch : in) {
-        const std::int8_t v = table[static_cast<unsigned char>(ch)];
+    for (; src < end; ++src) {
+        const std::int8_t v = table[*src];
         if (v < 0) {
             if (check == Base64Check::Lenient) {
                 continue;
             }
-            return std::nullopt;
+            out.resize(start);
+            return false;
         }
         acc = (acc << 6) | std::uint32_t(v);
         bits += 6;
         if (bits >= 8) {
             bits -= 8;
-            out.push_back(char((acc >> bits) & 0xFF));
+            if (dst == reinterpret_cast<unsigned char*>(out.data() + out.size())) {
+                // Stray characters made the estimate short (lenient only).
+                const std::size_t at = out.size();
+                out.resize(at + 64);
+                dst = reinterpret_cast<unsigned char*>(out.data() + at);
+            }
+            *dst++ = static_cast<unsigned char>((acc >> bits) & 0xFF);
         }
+    }
+    out.resize(std::size_t(reinterpret_cast<char*>(dst) - out.data()));
+    return true;
+}
+
+/// Decodes base64; nullopt when @p check rejects the input.
+inline std::optional<std::string> base64Decode(std::string_view in, Base64Check check)
+{
+    std::string out;
+    if (!base64DecodeAppend(out, in, check)) {
+        return std::nullopt;
     }
     return out;
 }

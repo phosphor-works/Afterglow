@@ -254,7 +254,7 @@ void GraphicsStore::handle(std::string_view payload, Context& ctx)
 
     if (m_pending.active) {
         // Continuation chunks carry only m (and q); the first chunk's keys apply.
-        m_pending.data += detail::base64Decode(data);
+        detail::base64DecodeAppend(m_pending.data, data, detail::Base64Check::Lenient);
         if (cmd.more == 1) {
             return;
         }

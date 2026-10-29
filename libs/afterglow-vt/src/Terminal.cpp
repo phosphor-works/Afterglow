@@ -692,6 +692,60 @@ void Terminal::printAscii(const char* text, std::size_t length)
     }
 }
 
+void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
+{
+    // Charsets and insert mode change what printing does: take the full path.
+    if (m_singleShift != 0 || m_modes.insert || m_vt52Address > 0 || m_charsets[m_gl] != Charset::Ascii) {
+        for (std::size_t i = 0; i < n; ++i) {
+            print(cps[i]);
+        }
+        return;
+    }
+    Screen& scr = *m_active;
+    Cursor& cur = cursor();
+    Row* line = nullptr;
+    int lineY = -1;
+    for (std::size_t i = 0; i < n; ++i) {
+        const char32_t cp = cps[i];
+        const Unicode::Props props = (cp >= 0x20 && cp < 0x7F) ? Unicode::Props{} : Unicode::props(cp);
+        // A simple character (class Other, no emoji or conjunct rules) that
+        // cannot join the cluster before it goes straight into the row;
+        // everything else, and any wrapping, is the full path's.
+        const bool simple = props.graphemeBreak == Unicode::GraphemeBreak::Other && !props.extendedPictographic
+            && props.conjunctBreak == Unicode::ConjunctBreak::None && props.width != 0;
+        if (!simple || cur.pendingWrap || (m_lastX >= 0 && m_modes.graphemeClustering && m_segmenter.joinsAscii())) {
+            print(cp);
+            line = nullptr;
+            continue;
+        }
+        if (lineY != cur.y || !line) {
+            line = &scr.row(cur.y);
+            lineY = cur.y;
+        }
+        const int right = (cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1;
+        const int width = props.width;
+        if (line->lineSize != LineSize::Single || line->cells[std::size_t(cur.x)].isMulticell()
+            || (width == 2 && cur.x >= right)) {
+            print(cp);
+            line = nullptr;
+            continue;
+        }
+        if (m_modes.graphemeClustering) {
+            m_segmenter.breaksBeforeSimple();
+        }
+        scr.writeCell(*line, cur.x, cp, cur.penId, width);
+        m_lastPrinted = cp;
+        m_lastX = cur.x;
+        m_lastY = cur.y;
+        if (cur.x + width > right) {
+            cur.x = right;
+            cur.pendingWrap = true;
+        } else {
+            cur.x += width;
+        }
+    }
+}
+
 void Terminal::repeatLast(int n)
 {
     if (m_lastPrinted == 0) {

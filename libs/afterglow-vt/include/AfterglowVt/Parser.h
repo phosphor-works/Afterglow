@@ -53,6 +53,7 @@ struct Intermediates
 /// Handler requirements:
 ///   void print(char32_t cp);
 ///   void printAscii(const char* text, std::size_t length); // printable ASCII only
+///   void printCodepoints(const char32_t* cps, std::size_t n); // optional: decoded runs
 ///   void execute(std::uint8_t c);
 ///   void escDispatch(const Intermediates&, std::uint8_t final);
 ///   void csiDispatch(const Params&, const Intermediates&, std::uint8_t final);
@@ -76,7 +77,21 @@ public:
         const auto* p = reinterpret_cast<const std::uint8_t*>(bytes.data());
         const auto* end = p + bytes.size();
         while (p < end) {
-            if (m_state == State::Ground && m_utf8Needed == 0) {
+            if (inStringPayload()) {
+                // Fast path: inside an OSC, DCS or APC string every byte from
+                // 0x20 up (but DEL) is payload; only control bytes can end or
+                // otherwise affect the string. Append those in bulk.
+                const auto* run = p;
+                while (p < end && *p >= 0x20 && *p != 0x7F) {
+                    ++p;
+                }
+                if (p != run) {
+                    appendString(reinterpret_cast<const char*>(run), std::size_t(p - run));
+                }
+                if (p == end) {
+                    break;
+                }
+            } else if (m_state == State::Ground && m_utf8Needed == 0) {
                 // Fast path: printable ASCII runs go to the handler whole.
                 const auto* run = p;
                 while (p < end && *p >= 0x20 && *p < 0x7F) {
@@ -87,6 +102,23 @@ public:
                 }
                 if (p == end) {
                     break;
+                }
+                // Fast path: well-formed UTF-8, decoded a run at a time.
+                // Anything partial or invalid goes through the state machine.
+                if (*p >= 0xC2) {
+                    char32_t cps[256];
+                    std::size_t n = 0;
+                    p = decodeUtf8Run(p, end, cps, n);
+                    if (n != 0) {
+                        if constexpr (requires { m_handler.printCodepoints(cps, n); }) {
+                            m_handler.printCodepoints(cps, n);
+                        } else {
+                            for (std::size_t i = 0; i < n; ++i) {
+                                m_handler.print(cps[i]);
+                            }
+                        }
+                        continue;
+                    }
                 }
             }
             advance(*p++);
@@ -385,6 +417,58 @@ private:
         m_dcsFinal = final;
         m_string.clear();
         m_state = m_inter.overflow ? State::DcsIgnore : State::DcsPassthrough;
+    }
+
+    /// Decodes well-formed UTF-8 (and printable ASCII among it) from @p p,
+    /// up to 256 codepoints. Stops before control bytes, invalid or overlong
+    /// sequences, surrogates and a sequence cut off by @p end; returns where.
+    static const std::uint8_t* decodeUtf8Run(const std::uint8_t* p, const std::uint8_t* end, char32_t* out,
+                                             std::size_t& n)
+    {
+        while (p < end && n < 256) {
+            const std::uint8_t b0 = *p;
+            if (b0 < 0x80) {
+                if (b0 < 0x20 || b0 == 0x7F) {
+                    break;
+                }
+                out[n++] = b0;
+                ++p;
+                continue;
+            }
+            const int len = b0 >= 0xF5 ? 0 : b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : b0 >= 0xC2 ? 2 : 0;
+            if (len == 0 || end - p < len) {
+                break;
+            }
+            char32_t cp = b0 & (0x7F >> len);
+            bool ok = true;
+            for (int k = 1; k < len; ++k) {
+                ok &= (p[k] & 0xC0) == 0x80;
+                cp = (cp << 6) | (p[k] & 0x3F);
+            }
+            if (!ok || (len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)))
+                || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF))) {
+                break;
+            }
+            out[n++] = cp;
+            p += len;
+        }
+        return p;
+    }
+
+    /// In a string whose payload is kept (OSC, DCS passthrough, APC).
+    bool inStringPayload() const noexcept
+    {
+        return m_state == State::OscString || m_state == State::DcsPassthrough
+            || (m_state == State::SosPmApcString && m_stringIsApc);
+    }
+
+    void appendString(const char* bytes, std::size_t length)
+    {
+        const std::size_t room = MaxStringPayload - std::min(MaxStringPayload, m_string.size());
+        m_string.append(bytes, std::min(length, room));
+        if (length > room) {
+            m_stringOverflow = true;
+        }
     }
 
     void appendString(std::uint8_t b)
