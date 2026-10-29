@@ -56,6 +56,9 @@ afterglow = {
     action = function(pane, name)
         return { kind = "action", pane = paneId(pane), name = tostring(name) }
     end,
+    signal = function(pane, channel, value)
+        return { kind = "signal", pane = paneId(pane), channel = channel, value = value or 1 }
+    end,
     log = function(message)
         return { kind = "log", message = tostring(message) }
     end,

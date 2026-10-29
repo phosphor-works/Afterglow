@@ -66,6 +66,11 @@ or phosphor shader packs, listed in five chains under `Shaders`:
 The tab bar and other chrome are drawn after every chain. With no layer
 shaders, the layers are never split apart and cost nothing.
 
+Shaders can also react to what happens in the terminal: `iSignal[0..7]`
+hold a value and the time it was set, per pane, set by scripts
+(`afterglow.signal`), `afterglow ctl signal` or D-Bus. `data/examples/glasshouse`
+uses all of this to dress afterglow for the Glasshouse desktop.
+
 ## Control and scripting
 
 Other programs drive afterglow over D-Bus (`io.github.fuddlesworth.Afterglow.Control`

@@ -47,6 +47,7 @@ layout(std140, binding = 0) uniform Globals {
     vec4  customParams[8];
     vec4  customColors[16];
     float iBackgroundOpacity;
+    vec4  iSignal[8];
 };
 
 #define CURSORSTYLE_BLOCK        0

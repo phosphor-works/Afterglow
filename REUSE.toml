@@ -21,3 +21,9 @@ SPDX-License-Identifier = "LGPL-2.1-or-later"
 path = [".gitignore", "CMakePresets.json", "data/*.desktop", "tools/conformance/esctest-expected-failures.txt"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+path = ["data/examples/glasshouse/**/*.json", "data/examples/glasshouse/preview.webp"]
+SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+# Glasshouse palettes after Dsaquel/dots.

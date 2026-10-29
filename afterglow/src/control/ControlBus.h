@@ -38,6 +38,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE void Focus(uint pane);
     Q_SCRIPTABLE void Close(uint pane);
     Q_SCRIPTABLE void SetTitle(uint pane, const QString& title);
+    Q_SCRIPTABLE void Signal(uint pane, int channel, double value);
     Q_SCRIPTABLE void Notify(uint pane, const QString& title, const QString& body);
     Q_SCRIPTABLE void RunAction(uint pane, const QString& action);
 

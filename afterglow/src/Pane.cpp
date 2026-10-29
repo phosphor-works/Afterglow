@@ -405,6 +405,15 @@ QString Pane::title() const
     return m_userTitle.isEmpty() ? m_title : m_userTitle;
 }
 
+void Pane::setSignal(int channel, float value)
+{
+    if (channel < 0 || channel >= SignalCount) {
+        return;
+    }
+    m_signals[std::size_t(channel)] = {value, std::chrono::steady_clock::now()};
+    Q_EMIT shaderSignalsChanged();
+}
+
 void Pane::setUserTitle(const QString& title)
 {
     QString shown;

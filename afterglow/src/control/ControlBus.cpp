@@ -171,6 +171,11 @@ void ControlBus::SetTitle(uint pane, const QString& title)
     fail(m_control.setTitle(pane, title));
 }
 
+void ControlBus::Signal(uint pane, int channel, double value)
+{
+    fail(m_control.signal(pane, channel, value));
+}
+
 void ControlBus::Notify(uint pane, const QString& title, const QString& body)
 {
     fail(m_control.notify(pane, title, body));

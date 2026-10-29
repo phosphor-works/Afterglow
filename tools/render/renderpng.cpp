@@ -9,6 +9,7 @@
 // Shaders: --shader REF (window chain), --pane-shader REF and the layer
 // chains --background-shader, --text-shader and --cursor-shader, repeatable;
 // --param REF:ID=VALUE overrides a pack parameter. --time sets iTime, and
+// --signal CH=VALUE@AGE sets iSignal[CH] as if set AGE seconds earlier.
 // --wake-from COL,ROW renders a frame with the cursor there --wake-age
 // seconds earlier, so cursor effects show a jump.
 
@@ -75,6 +76,9 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("time"), QStringLiteral("Shader time in seconds."), QStringLiteral("s"),
                       QStringLiteral("10")});
     parser.addOption({QStringLiteral("wake-from"), QStringLiteral("Previous cursor cell."), QStringLiteral("col,row")});
+    parser.addOption({QStringLiteral("split"), QStringLiteral("Show the terminal twice, side by side; the left pane focused.")});
+    parser.addOption({QStringLiteral("signal"), QStringLiteral("Shader signal set AGE seconds ago (repeatable)."),
+                      QStringLiteral("ch=value[@age]")});
     parser.addOption({QStringLiteral("wake-age"), QStringLiteral("Seconds since the cursor moved."),
                       QStringLiteral("s"), QStringLiteral("0.1")});
     parser.addOption({QStringLiteral("opacity"), QStringLiteral("Background opacity."), QStringLiteral("f"),
@@ -160,6 +164,19 @@ int main(int argc, char** argv)
     pane.params.contentOrigin = QPoint(0, 0);
     pane.params.focused = !parser.isSet(QStringLiteral("unfocused"));
     pane.params.backgroundAlpha = alpha;
+    for (const QString& spec : parser.values(QStringLiteral("signal"))) {
+        const QStringList kv = spec.split(QLatin1Char('='));
+        const QStringList va = kv.value(1).split(QLatin1Char('@'));
+        const int channel = kv.value(0).toInt();
+        if (kv.size() != 2 || channel < 0 || channel >= int(pane.params.signals.size())) {
+            std::fprintf(stderr, "bad --signal %s\n", qPrintable(spec));
+            return 1;
+        }
+        const auto age = std::chrono::duration<float>(va.value(1, QStringLiteral("0")).toFloat());
+        pane.params.signals[std::size_t(channel)] = {
+            va.value(0).toFloat(),
+            std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::steady_clock::duration>(age)};
+    }
     const std::uint32_t clear = (snapshot.defaultBg & 0x00FFFFFFu) | (std::uint32_t(alpha) << 24);
     const float time = parser.value(QStringLiteral("time")).toFloat();
     if (parser.isSet(QStringLiteral("wake-from"))) {
@@ -175,7 +192,23 @@ int main(int argc, char** argv)
         ++snapshot.version;
     }
     renderer.setClockOverride(time);
-    const QImage image = renderer.renderToImage(size, {pane}, {}, clear);
+    std::vector<AfterglowRender::WindowRenderer::Pane> panes{pane};
+    std::vector<std::pair<QRect, std::uint32_t>> overlays;
+    QSize frameSize = size;
+    AfterglowRender::PaneSnapshot twin = snapshot;
+    if (parser.isSet(QStringLiteral("split"))) {
+        // Two panes with a divider between, as a split window shows them.
+        const int divider = 2;
+        frameSize = QSize(size.width() * 2 + divider, size.height());
+        AfterglowRender::WindowRenderer::Pane right = pane;
+        right.snapshot = &twin;
+        right.params.rect = QRect(QPoint(size.width() + divider, 0), size);
+        right.params.contentOrigin = right.params.rect.topLeft();
+        right.params.focused = false;
+        panes.push_back(right);
+        overlays.push_back({QRect(size.width(), 0, divider, size.height()), 0xFF0E0706u});
+    }
+    const QImage image = renderer.renderToImage(frameSize, panes, overlays, clear);
     if (image.isNull() || !image.save(args[1])) {
         std::fprintf(stderr, "rendering failed\n");
         return 1;

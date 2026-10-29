@@ -14,6 +14,8 @@
 #include <QGuiApplication>
 #include <QUrl>
 
+#include <cmath>
+
 namespace Afterglow {
 
 Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent)
@@ -224,6 +226,22 @@ QString Control::setTitle(quint32 id, const QString& title)
         return noPane(id);
     }
     p->setUserTitle(title.left(256));
+    return {};
+}
+
+QString Control::signal(quint32 id, int channel, double value)
+{
+    Pane* p = find(id);
+    if (!p) {
+        return noPane(id);
+    }
+    if (channel < 0 || channel >= Pane::SignalCount) {
+        return QStringLiteral("signal channels are 0 to %1").arg(Pane::SignalCount - 1);
+    }
+    if (!std::isfinite(value)) {
+        return QStringLiteral("a signal value must be a finite number");
+    }
+    p->setSignal(channel, float(value));
     return {};
 }
 

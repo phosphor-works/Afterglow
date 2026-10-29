@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# glasshouse-afterglow install       copy the shaders and script into place and
+#                                    merge the Glasshouse settings (dark world)
+# glasshouse-afterglow world dark|light
+#                                    switch afterglow's colours to a world; open
+#                                    windows follow at once (the config reloads live)
+#
+# Settings are merged into ~/.config/afterglow/config.json with jq; what you
+# have set elsewhere stays. The file is replaced atomically, and left alone
+# if anything fails.
+set -Eeuo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/afterglow"
+config="$conf/config.json"
+
+merge() {
+    command -v jq >/dev/null || { echo "glasshouse-afterglow: needs jq" >&2; exit 1; }
+    mkdir -p "$conf"
+    [ -s "$config" ] || echo '{}' > "$config"
+    local tmp
+    tmp="$(mktemp "$config.XXXXXX")"
+    trap 'rm -f "$tmp"' RETURN
+    jq -s 'reduce .[] as $part ({}; . * $part)' "$config" "$@" > "$tmp"
+    mv "$tmp" "$config"
+}
+
+case "${1:-}" in
+install)
+    mkdir -p "$conf/shaders" "$conf/scripts"
+    for pack in "$here"/shaders/*/; do
+        rm -rf "$conf/shaders/$(basename "$pack")"
+        cp -r "$pack" "$conf/shaders/"
+    done
+    cp "$here/scripts/glasshouse.luau" "$conf/scripts/"
+    merge "$here/config/glasshouse.json" "$here/config/world-dark.json"
+    echo "Glasshouse installed into $conf"
+    ;;
+world)
+    case "${2:-}" in
+    dark | light) merge "$here/config/world-$2.json" ;;
+    *) echo "usage: $0 world dark|light" >&2; exit 2 ;;
+    esac
+    ;;
+*)
+    sed -n '4,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

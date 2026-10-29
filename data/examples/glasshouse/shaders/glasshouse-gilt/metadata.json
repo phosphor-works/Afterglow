@@ -1,0 +1,38 @@
+{
+    "id": "glasshouse-gilt",
+    "name": "Glasshouse Gilt",
+    "category": "Text",
+    "description": "For the text layer: in the dark world the lamp glows softly behind the letters; light sweeps over them now and then, and with a long command's glaze. The light world inks the sweep in gold leaf.",
+    "author": "afterglow, after Dsaquel's Glasshouse",
+    "version": "2.0",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        {
+            "id": "glow",
+            "name": "Glow",
+            "group": "Text",
+            "type": "float",
+            "default": 0.3,
+            "min": 0.0,
+            "max": 1.0
+        },
+        {
+            "id": "glint",
+            "name": "Glint",
+            "group": "Text",
+            "type": "float",
+            "default": 0.35,
+            "min": 0.0,
+            "max": 1.0
+        },
+        {
+            "id": "glintEvery",
+            "name": "Glint Every (seconds)",
+            "group": "Text",
+            "type": "float",
+            "default": 14.0,
+            "min": 3.0,
+            "max": 60.0
+        }
+    ]
+}

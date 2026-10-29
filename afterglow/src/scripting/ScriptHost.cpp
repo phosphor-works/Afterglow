@@ -74,6 +74,7 @@ struct EffectKind
     bool structural;
     std::initializer_list<const char*> strings;
     bool command;
+    std::initializer_list<const char*> numbers = {};
 };
 
 const EffectKind Kinds[] = {
@@ -89,6 +90,7 @@ const EffectKind Kinds[] = {
     {"open_url", false, false, {"url"}, false},
     {"action", true, false, {"name"}, false},
     {"log", false, false, {"message"}, false},
+    {"signal", true, false, {}, false, {"channel", "value"}},
 };
 
 } // namespace
@@ -419,7 +421,19 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         if (info->command) {
             effect.insert(QStringLiteral("command"), command(raw.value(QStringLiteral("command"))));
         }
-        if (info->pane && effect.value(QStringLiteral("pane")).toUInt() == 0) {
+        QString badNumber;
+        for (const char* key : info->numbers) {
+            const QVariant v = raw.value(QLatin1String(key));
+            const bool numeric = !v.isValid() || v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int
+                || v.typeId() == QMetaType::LongLong;
+            if (!numeric) {
+                badNumber = QLatin1String(key);
+            }
+            effect.insert(QLatin1String(key), v.toDouble());
+        }
+        if (!badNumber.isEmpty()) {
+            error = QStringLiteral("%1: %2 must be a number").arg(kind, badNumber);
+        } else if (info->pane && effect.value(QStringLiteral("pane")).toUInt() == 0) {
             error = QStringLiteral("%1 needs a pane").arg(kind);
         } else if (kind == QLatin1String("split") && effect.value(QStringLiteral("direction")) != QLatin1String("right")
                    && effect.value(QStringLiteral("direction")) != QLatin1String("down")) {

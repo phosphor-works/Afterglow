@@ -15,6 +15,8 @@
 #include <QColor>
 #include <QSize>
 
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -99,6 +101,13 @@ public:
         int hoverRow = -1;
         int hoverColStart = 0;
         int hoverColEnd = -1; ///< inclusive
+        /// Script signals for shaders (iSignal); unset when @c at is empty.
+        struct Signal
+        {
+            float value = 0;
+            std::optional<std::chrono::steady_clock::time_point> at;
+        };
+        std::array<Signal, 8> signals{};
     };
 
     /// Where each layer's instances start, relative to the pane's first:

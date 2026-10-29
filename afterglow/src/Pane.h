@@ -4,6 +4,7 @@
 #pragma once
 
 #include <AfterglowPty/Pty.h>
+#include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
@@ -85,6 +86,13 @@ public:
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;
 
+    /// Values for this pane's shaders (iSignal), set by scripts and the
+    /// control interface. GUI thread.
+    using Signals = std::array<AfterglowRender::FrameBuilder::PaneParams::Signal, 8>;
+    static constexpr int SignalCount = 8;
+    void setSignal(int channel, float value);
+    const Signals& shaderSignals() const noexcept { return m_signals; }
+
     // Search (GUI thread).
     struct SearchResult
     {
@@ -119,6 +127,7 @@ Q_SIGNALS:
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
     void titleUpdated(const QString& title);
+    void shaderSignalsChanged();
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
     void notificationRequested(const QString& title, const QString& body);
@@ -164,6 +173,7 @@ private:
     mutable std::mutex m_mutex;
     const quint32 m_id;
     QString m_userTitle;
+    Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;

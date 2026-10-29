@@ -1,0 +1,18 @@
+{
+    "Font": {
+        "family": "Monaspace Argon Var",
+        "features": ["calt", "liga", "ss01", "ss02", "ss03", "ss04", "ss09"]
+    },
+    "Window": {
+        "padding": 18
+    },
+    "Terminal": {
+        "cursorShape": "block"
+    },
+    "Shaders": {
+        "background": ["glasshouse-glass"],
+        "text": ["glasshouse-gilt"],
+        "cursor": ["glasshouse-ember"],
+        "pane": ["glasshouse-mullion"]
+    }
+}

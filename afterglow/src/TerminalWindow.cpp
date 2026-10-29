@@ -250,6 +250,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         }
     });
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
+    connect(pane, &Pane::shaderSignalsChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::titleUpdated, this, [this, pane] {
         if (pane == m_focused) {
             updateTitle();
@@ -784,6 +785,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     params.contentOrigin = contentRect(shown).topLeft();
     params.cursorPosition = m.cursor.value();
     params.scrollShift = shift;
+    params.signals = pane->shaderSignals();
 }
 
 void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)

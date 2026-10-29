@@ -17,5 +17,6 @@ gtest_discover_tests(afterglow_app_tests)
 add_executable(afterglow_scripting_tests ScriptHostTest.cpp)
 target_link_libraries(afterglow_scripting_tests PRIVATE afterglow_scripting GTest::gtest)
 target_compile_definitions(afterglow_scripting_tests PRIVATE
-    AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/scripts")
+    AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/scripts"
+    AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/glasshouse/scripts")
 gtest_discover_tests(afterglow_scripting_tests)

@@ -69,6 +69,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         if (kind == QLatin1String("open_url")) {
             return control.openUrl(s("url"));
         }
+        if (kind == QLatin1String("signal")) {
+            return control.signal(pane, e.value(QStringLiteral("channel")).toInt(),
+                                  e.value(QStringLiteral("value")).toDouble());
+        }
         if (kind == QLatin1String("action")) {
             return control.runAction(pane, s("name"));
         }

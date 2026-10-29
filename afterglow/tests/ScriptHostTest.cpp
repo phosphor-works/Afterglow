@@ -252,6 +252,69 @@ TEST_F(ScriptHostTest, ExamplesLoad)
     EXPECT_EQ(host->scriptIds().size(), QDir(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS)).entryList({QStringLiteral("*.luau")}).size());
 }
 
+TEST_F(ScriptHostTest, SignalEffects)
+{
+    write(user, QStringLiteral("s.luau"), R"(
+return {
+    on_bell = function(ev)
+        return { afterglow.signal(ev.pane, 3, 0.5), afterglow.signal(nil, 2), { kind = "signal", channel = "x" } }
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 2);
+    ASSERT_EQ(rec.results.size(), 3);
+    EXPECT_FALSE(rec.results[2].second.isEmpty()); // channel "x"
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("pane")).toUInt(), 7u);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), 3);
+    EXPECT_DOUBLE_EQ(rec.applied[0].value(QStringLiteral("value")).toDouble(), 0.5);
+    EXPECT_DOUBLE_EQ(rec.applied[1].value(QStringLiteral("value")).toDouble(), 1.0); // the default
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("pane")).toUInt(), 7u); // the event's pane
+}
+
+TEST_F(ScriptHostTest, GlasshouseMapsShellEventsToSignals)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_GLASSHOUSE_SCRIPTS)});
+    host->setEnabled(true);
+    ASSERT_EQ(host->scriptIds(), QStringList{QStringLiteral("glasshouse")});
+    auto signalsSent = [this] {
+        QList<QPair<int, double>> out;
+        for (const QVariantMap& e : std::as_const(rec.applied)) {
+            if (e.value(QStringLiteral("kind")) == QStringLiteral("signal")) {
+                out.append({e.value(QStringLiteral("channel")).toInt(), e.value(QStringLiteral("value")).toDouble()});
+            }
+        }
+        rec.applied.clear();
+        return out;
+    };
+    auto finished = [this](int code, int ms) {
+        host->dispatch(QStringLiteral("on_command_finished"), 7,
+                       {{QStringLiteral("command"), QStringLiteral("make")}, {QStringLiteral("exit_code"), code},
+                        {QStringLiteral("duration_ms"), ms}});
+    };
+    using Sent = QList<QPair<int, double>>;
+    host->dispatch(QStringLiteral("on_command_started"), 7, {{QStringLiteral("command"), QStringLiteral("make")}});
+    EXPECT_EQ(signalsSent(), (Sent{{2, 1.0}}));
+    finished(2, 300);
+    EXPECT_EQ(signalsSent(), (Sent{{2, 0.0}, {0, 2.0}})); // cools, strikes
+    finished(130, 300);
+    EXPECT_EQ(signalsSent(), (Sent{{2, 0.0}})); // Ctrl+C is not a failure
+    finished(0, 300);
+    EXPECT_EQ(signalsSent(), (Sent{{2, 0.0}}));
+    finished(0, 8000);
+    EXPECT_EQ(signalsSent(), (Sent{{2, 0.0}, {1, 8.0}})); // glazed
+    host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("blocked")}, {QStringLiteral("text"), QString()}});
+    EXPECT_EQ(signalsSent(), (Sent{{4, 2.0}}));
+    host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("done")}, {QStringLiteral("text"), QString()}});
+    EXPECT_EQ(signalsSent(), (Sent{{4, 0.0}, {1, 1.0}}));
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    EXPECT_EQ(signalsSent(), (Sent{{3, 1.0}}));
+    EXPECT_EQ(host->actions().size(), 4);
+    ASSERT_TRUE(host->runAction(QStringLiteral("glasshouse.strike"), 7));
+    EXPECT_EQ(signalsSent(), (Sent{{0, 1.0}}));
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);

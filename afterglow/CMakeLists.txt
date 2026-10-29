@@ -105,6 +105,8 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTAL
 # Scripting: types for editors and examples to copy; neither loads on its own.
 install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/glasshouse
+        USE_SOURCE_PERMISSIONS)
 
 # Desktop integration. The app id matches QGuiApplication::desktopFileName,
 # which Wayland uses to find the icon and group windows.

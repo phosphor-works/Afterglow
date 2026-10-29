@@ -1142,6 +1142,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             st.cursorChangeTime = track.changeTime;
             st.focused = track.focused;
             st.focusChangeTime = track.focusTime;
+            const auto wall = std::chrono::steady_clock::now();
+            for (std::size_t i = 0; i < st.signals.size(); ++i) {
+                const FrameBuilder::PaneParams::Signal& sig = pane.params.signals[i];
+                const float age = sig.at ? std::chrono::duration<float>(wall - *sig.at).count() : 1e6f;
+                st.signals[i] = {sig.value, now - age};
+            }
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;

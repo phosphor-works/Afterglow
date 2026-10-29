@@ -38,6 +38,7 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   new-window [--cwd DIR] [-- CMD...]  open a window; prints its pane
   focus | close                       focus or close the pane
   set-title TITLE                     set the pane's title ("" to clear)
+  signal CHANNEL VALUE                set a shader signal (iSignal[CHANNEL], 0-7)
   notify TITLE [BODY]                 desktop notification from the pane
   action NAME                         run a keybind action (split_right, new_tab...)
                                       or a script action (script:ID.ACTION)
@@ -271,6 +272,16 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("set-title")) {
         return call(QStringLiteral("SetTitle"), {*pane, args.value(0)}, reply) ? 0 : 1;
+    }
+    if (command == QLatin1String("signal")) {
+        bool okChannel = false;
+        bool okValue = false;
+        const int channel = args.value(0).toInt(&okChannel);
+        const double value = args.value(1).toDouble(&okValue);
+        if (!okChannel || !okValue) {
+            return fail(QStringLiteral("signal needs a channel and a number"));
+        }
+        return call(QStringLiteral("Signal"), {*pane, channel, value}, reply) ? 0 : 1;
     }
     if (command == QLatin1String("notify")) {
         if (args.isEmpty()) {

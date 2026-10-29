@@ -395,6 +395,10 @@ void PostChain::fill(TerminalShaderUniforms& u, const ShaderRegionState& s, cons
     std::memcpy(u.customParams, program.params().data(), sizeof u.customParams);
     u.iBackgroundOpacity = s.backgroundOpacity;
     std::memcpy(u.customColors, program.colors().data(), sizeof u.customColors);
+    for (std::size_t i = 0; i < s.signals.size(); ++i) {
+        u.iSignal[i][0] = s.signals[i][0];
+        u.iSignal[i][1] = s.signals[i][1];
+    }
 }
 
 void PostChain::record(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes,

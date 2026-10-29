@@ -1,0 +1,15 @@
+{
+    "Colors": {
+        "background": "#0f1226",
+        "foreground": "#e7e4f5",
+        "cursor": "#ffc978",
+        "divider": "#06070e",
+        "palette": [
+            "#1a1e3a", "#e0668a", "#7cc9a0", "#f2b35e", "#5fb0e0", "#a88ae8", "#5fd0d0", "#c6c2dc",
+            "#555b8a", "#f07fa0", "#95dcb5", "#ffc978", "#7ec4ee", "#bea2f2", "#82e0e0", "#f4f2fb"
+        ]
+    },
+    "Window": {
+        "backgroundOpacity": 0.92
+    }
+}

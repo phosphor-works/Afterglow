@@ -58,6 +58,9 @@ struct alignas(16) TerminalShaderUniforms
     float customColors[16][4];
     float iBackgroundOpacity; ///< alpha of the default background (window translucency)
     float _pad0[3];
+    /// Values scripts set on the pane: (value, iTime when set, 0, 0); unset
+    /// channels are (0, -1e6).
+    float iSignal[8][4];
 };
 static_assert(offsetof(TerminalShaderUniforms, iMouse) == 160);
 static_assert(offsetof(TerminalShaderUniforms, iCurrentCursor) == 208);
@@ -67,7 +70,8 @@ static_assert(offsetof(TerminalShaderUniforms, iBackgroundColor) == 4400);
 static_assert(offsetof(TerminalShaderUniforms, iRegion) == 4496);
 static_assert(offsetof(TerminalShaderUniforms, customParams) == 4528);
 static_assert(offsetof(TerminalShaderUniforms, iBackgroundOpacity) == 4912);
-static_assert(sizeof(TerminalShaderUniforms) == 4928);
+static_assert(offsetof(TerminalShaderUniforms, iSignal) == 4928);
+static_assert(sizeof(TerminalShaderUniforms) == 5056);
 
 /// What a shader is built from: user code defining
 /// `void mainImage(out vec4 fragColor, in vec2 fragCoord)` with includes

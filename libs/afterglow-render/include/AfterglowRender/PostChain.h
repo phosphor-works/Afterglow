@@ -50,6 +50,8 @@ struct ShaderRegionState
     QSizeF cellSize;
     QPointF mouse;
     float backgroundOpacity = 1.0f;
+    /// Script signals: value and shader time when set.
+    std::array<std::array<float, 2>, 8> signals{};
 };
 
 struct ShaderFrameTime

@@ -72,5 +72,7 @@ declare afterglow: {
     copy: (text: string) -> Effect,
     open_url: (url: string) -> Effect, -- http, https and mailto
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
+    -- sets iSignal[channel] (0-7) on the pane's shaders to (value, iTime now)
+    signal: (pane: PaneRef, channel: number, value: number?) -> Effect,
     log: (message: string) -> Effect,
 }
