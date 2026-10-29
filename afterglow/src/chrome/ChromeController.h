@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QObject>
+#include <QPointF>
 #include <QStringList>
 #include <QVariantList>
 
@@ -38,6 +39,7 @@ class ChromeController : public QObject
     Q_PROPERTY(bool clipboardPromptOpen READ clipboardPromptOpen NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QString clipboardPromptText READ clipboardPromptText NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QString clipboardPromptName READ clipboardPromptName NOTIFY clipboardPromptChanged)
+    Q_PROPERTY(QVariantMap contextMenu READ contextMenu NOTIFY contextMenuChanged)
 
 public:
     using QObject::QObject;
@@ -94,7 +96,19 @@ public:
     QString clipboardPromptName() const { return m_clipboardPromptName; }
     /// Asks whether a program may read the clipboard.
     void askClipboard(const QString& text, const QString& name);
-    bool wantsKeyboard() const { return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen; }
+    /// The context menu: { open, x, y (logical pixels, where it was asked
+    /// for), items: [{ id, title, shortcut, enabled } or { separator: true }] }.
+    QVariantMap contextMenu() const { return m_contextMenu; }
+    bool contextMenuOpen() const { return m_contextMenu.value(QStringLiteral("open")).toBool(); }
+    void openContextMenu(const QPointF& at, const QVariantList& items);
+    Q_INVOKABLE void closeContextMenu();
+    /// Runs a menu item and closes the menu.
+    Q_INVOKABLE void activateMenuItem(int id);
+
+    bool wantsKeyboard() const
+    {
+        return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen || contextMenuOpen();
+    }
 
     Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
     Q_INVOKABLE void closeTab(int index) { Q_EMIT closeTabRequested(index); }
@@ -121,6 +135,8 @@ Q_SIGNALS:
     void pasteConfirmChanged();
     void paneTitlesChanged();
     void pasteAnswered(bool paste);
+    void contextMenuChanged();
+    void menuItemActivated(int id);
 
     void activateTabRequested(int index);
     void closeTabRequested(int index);
@@ -152,6 +168,7 @@ private:
     bool m_pasteConfirmOpen = false;
     QString m_pastePreview;
     int m_pasteLines = 0;
+    QVariantMap m_contextMenu;
 };
 
 } // namespace Afterglow

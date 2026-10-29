@@ -46,6 +46,7 @@ enum class Action {
     UrlsOpen,
     UrlsCopy,
     UnicodeInput,
+    SelectAll,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

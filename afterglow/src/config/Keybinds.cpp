@@ -33,6 +33,7 @@ const ActionInfo Actions[] = {
     {Action::PreviousTab, "previous_tab", "Previous Tab", {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
     {Action::Copy, "copy", "Copy", {"Ctrl+Shift+C"}},
     {Action::Paste, "paste", "Paste", {"Ctrl+Shift+V"}},
+    {Action::SelectAll, "select_all", "Select All", {"Ctrl+Shift+A"}},
     {Action::FocusLeft, "focus_left", "Focus Split Left", {"Ctrl+Shift+Left"}},
     {Action::FocusRight, "focus_right", "Focus Split Right", {"Ctrl+Shift+Right"}},
     {Action::FocusUp, "focus_up", "Focus Split Above", {"Ctrl+Shift+Up"}},

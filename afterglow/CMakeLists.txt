@@ -69,6 +69,7 @@ qt_add_qml_module(afterglow
         qml/Chrome.qml
         qml/ClipboardPrompt.qml
         qml/CommandPalette.qml
+        qml/ContextMenu.qml
         qml/PasteConfirm.qml
         qml/SearchBar.qml
         qml/StatusIndicator.qml

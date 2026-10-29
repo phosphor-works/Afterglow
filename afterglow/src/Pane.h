@@ -120,6 +120,8 @@ public:
     void startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
     void extendSelection(AfterglowVt::SelectionPoint head);
     void clearSelection();
+    /// Selects all the history and the screen down to the cursor's row.
+    void selectAll();
     bool hasSelection() const;
     QString selectedText() const;
 

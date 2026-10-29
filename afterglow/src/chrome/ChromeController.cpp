@@ -160,4 +160,28 @@ void ChromeController::runAction(int id)
     Q_EMIT actionRequested(id);
 }
 
+void ChromeController::openContextMenu(const QPointF& at, const QVariantList& items)
+{
+    m_contextMenu = {{QStringLiteral("open"), true},
+                     {QStringLiteral("x"), at.x()},
+                     {QStringLiteral("y"), at.y()},
+                     {QStringLiteral("items"), items}};
+    Q_EMIT contextMenuChanged();
+}
+
+void ChromeController::closeContextMenu()
+{
+    if (!contextMenuOpen()) {
+        return;
+    }
+    m_contextMenu.insert(QStringLiteral("open"), false);
+    Q_EMIT contextMenuChanged();
+}
+
+void ChromeController::activateMenuItem(int id)
+{
+    closeContextMenu();
+    Q_EMIT menuItemActivated(id);
+}
+
 } // namespace Afterglow

@@ -51,6 +51,9 @@ Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
 namespace {
 /// Command palette ids from here on are script actions.
 constexpr int ScriptActionBase = 10000;
+/// Context menu items that are not actions.
+constexpr int MenuOpenLink = 20000;
+constexpr int MenuCopyLink = 20001;
 } // namespace
 
 namespace Afterglow {
@@ -150,6 +153,16 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         scheduleRender();
     });
     connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::contextMenuChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::menuItemActivated, this, [this](int id) {
+        if (id == MenuOpenLink) {
+            QDesktopServices::openUrl(QUrl(m_menuLink));
+        } else if (id == MenuCopyLink) {
+            QGuiApplication::clipboard()->setText(m_menuLink);
+        } else {
+            performAction(Action(id));
+        }
+    });
     connect(m_controller, &ChromeController::pasteConfirmChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::clipboardPromptChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::clipboardAnswered, this, [this](int answer) {
@@ -924,6 +937,7 @@ void TerminalWindow::focusInEvent(QFocusEvent*)
 
 void TerminalWindow::focusOutEvent(QFocusEvent*)
 {
+    m_controller->closeContextMenu();
     m_windowFocused = false;
     m_blinkTimer.stop();
     m_blinkOn = true;
@@ -1006,6 +1020,15 @@ bool TerminalWindow::performAction(Action action)
     case Action::Paste:
         paste(QClipboard::Clipboard);
         return true;
+    case Action::SelectAll:
+        if (m_focused) {
+            m_focused->selectAll();
+            if (m_settings.settings().copyOnSelect) {
+                copySelection(false);
+            }
+            scheduleRender();
+        }
+        return true;
     case Action::FocusLeft:
         return focus(SplitTree::Neighbour::Left);
     case Action::FocusRight:
@@ -1072,7 +1095,7 @@ bool TerminalWindow::performAction(Action action)
 
 bool TerminalWindow::chromeVisible() const
 {
-    return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen()
+    return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen() || m_controller->contextMenuOpen()
         || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || !m_controller->paneTitles().isEmpty()
         || m_urlMode.active || m_unicodeInput.has_value();
 }
@@ -1433,35 +1456,79 @@ void TerminalWindow::applyPointerShape()
     }
 }
 
-void TerminalWindow::updateLinkHover()
+TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos) const
 {
     LinkHover found;
-    const bool ctrl = QGuiApplication::queryKeyboardModifiers() & Qt::ControlModifier;
-    Pane* pane = ctrl ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
-    if (pane) {
-        const QPoint cell = cellAt(pane, m_pointer);
-        const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
-        if (cell.x() < snap.cols && cell.y() < snap.rows) {
-            const AfterglowRender::SnapshotCell& c = snap.at(cell.x(), cell.y());
-            if (c.link != 0 && c.link <= snap.links.size()) {
-                found.pane = pane;
-                found.link = c.link;
-                found.url = QString::fromStdString(snap.links[c.link - 1]);
-            } else {
-                // A plain-text URL on this row.
-                for (const UrlSpan& span : findUrls(snap, cell.y())) {
-                    if (span.link == 0 && cell.x() >= span.colStart && cell.x() <= span.colEnd) {
-                        found.pane = pane;
-                        found.row = cell.y();
-                        found.colStart = span.colStart;
-                        found.colEnd = span.colEnd;
-                        found.url = span.url;
-                        break;
-                    }
+    if (!pane) {
+        return found;
+    }
+    const QPoint cell = cellAt(pane, pos);
+    const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
+    if (cell.x() < snap.cols && cell.y() < snap.rows) {
+        const AfterglowRender::SnapshotCell& c = snap.at(cell.x(), cell.y());
+        if (c.link != 0 && c.link <= snap.links.size()) {
+            found.pane = pane;
+            found.link = c.link;
+            found.url = QString::fromStdString(snap.links[c.link - 1]);
+        } else {
+            // A plain-text URL on this row.
+            for (const UrlSpan& span : findUrls(snap, cell.y())) {
+                if (span.link == 0 && cell.x() >= span.colStart && cell.x() <= span.colEnd) {
+                    found.pane = pane;
+                    found.row = cell.y();
+                    found.colStart = span.colStart;
+                    found.colEnd = span.colEnd;
+                    found.url = span.url;
+                    break;
                 }
             }
         }
     }
+    return found;
+}
+
+void TerminalWindow::openContextMenu(const QPointF& pos)
+{
+    const Keybinds& kb = m_settings.settings().keybinds;
+    QVariantList items;
+    auto item = [&](int id, const QString& title, const QString& shortcut, bool enabled) {
+        items.append(QVariantMap{{QStringLiteral("id"), id},
+                                 {QStringLiteral("title"), title},
+                                 {QStringLiteral("shortcut"), shortcut},
+                                 {QStringLiteral("enabled"), enabled}});
+    };
+    auto action = [&](Action a, bool enabled = true) {
+        item(int(a), Keybinds::title(a), kb.bindingsOf(a).value(0), enabled);
+    };
+    auto separator = [&] { items.append(QVariantMap{{QStringLiteral("separator"), true}}); };
+
+    m_menuLink = linkAt(m_focused, pos).url;
+    if (!m_menuLink.isEmpty()) {
+        item(MenuOpenLink, QStringLiteral("Open Link"), {}, true);
+        item(MenuCopyLink, QStringLiteral("Copy Link Address"), {}, true);
+        separator();
+    }
+    action(Action::Copy, m_focused && m_focused->hasSelection());
+    action(Action::Paste, !QGuiApplication::clipboard()->text().isEmpty());
+    action(Action::SelectAll, m_focused != nullptr);
+    separator();
+    action(Action::SplitRight);
+    action(Action::SplitDown);
+    action(Action::NewTab);
+    separator();
+    action(Action::Search);
+    action(Action::CommandPalette);
+    action(Action::OpenConfig);
+    separator();
+    action(Action::ClosePane, m_focused != nullptr);
+    m_controller->openContextMenu(pos, items);
+}
+
+void TerminalWindow::updateLinkHover()
+{
+    const bool ctrl = QGuiApplication::queryKeyboardModifiers() & Qt::ControlModifier;
+    Pane* pane = ctrl ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
     m_hover = found;
@@ -2109,6 +2176,10 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
 
     if (e->button() == Qt::MiddleButton) {
         paste(QClipboard::Selection);
+        return;
+    }
+    if (e->button() == Qt::RightButton) {
+        openContextMenu(e->position());
         return;
     }
     if (e->button() != Qt::LeftButton) {

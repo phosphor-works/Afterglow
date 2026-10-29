@@ -12,6 +12,8 @@ Item {
 
     // Called by the host for every pointer event: true if the chrome takes it.
     function wantsPointer(x: real, y: real): bool {
+        if (contextMenu.visible)
+            return true
         if (tabBar.visible && y < tabBar.height)
             return true
         if (commandPalette.visible || pasteConfirm.visible)
@@ -152,5 +154,12 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.paletteOpen
+    }
+
+    ContextMenu {
+        id: contextMenu
+        controller: root.controller
+        anchors.fill: root
+        visible: root.controller.contextMenu.open === true
     }
 }

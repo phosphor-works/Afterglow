@@ -196,6 +196,20 @@ AfterglowVt::SelectionPoint Pane::selectionPointAt(int col, int row) const
             std::clamp(col, 0, scr.cols() - 1)};
 }
 
+void Pane::selectAll()
+{
+    AfterglowVt::SelectionPoint first;
+    AfterglowVt::SelectionPoint last;
+    {
+        std::lock_guard lock(m_mutex);
+        const AfterglowVt::Screen& scr = m_terminal.screen();
+        first = {scr.rowsDropped(), 0};
+        last = {scr.rowsDropped() + scr.historySize() + std::size_t(std::max(0, scr.cursor.y)), scr.cols() - 1};
+    }
+    startSelection(first, AfterglowVt::SelectionMode::Normal, true);
+    extendSelection(last);
+}
+
 void Pane::startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow)
 {
     std::lock_guard lock(m_mutex);

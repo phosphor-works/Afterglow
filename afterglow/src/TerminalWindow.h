@@ -290,6 +290,11 @@ private:
         int colEnd = -1;
         QString url;
     } m_hover;
+    /// The link (OSC 8 or a URL in the text) under @p pos in @p pane, if any.
+    LinkHover linkAt(Pane* pane, const QPointF& pos) const;
+    /// The right-click menu, at @p pos (logical pixels).
+    void openContextMenu(const QPointF& pos);
+    QString m_menuLink; ///< the link the menu was opened on
     QByteArray m_pendingPaste;
     std::optional<SplitTree::Divider> m_dividerDrag;
 
