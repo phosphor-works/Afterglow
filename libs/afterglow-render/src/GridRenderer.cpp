@@ -422,7 +422,7 @@ WindowRenderer::~WindowRenderer()
 
 FontResources& WindowRenderer::fonts()
 {
-    return m_device.fontResources(m_window->devicePixelRatio());
+    return m_device.fontResources(m_window ? m_window->devicePixelRatio() : m_devicePixelRatio);
 }
 
 QSize WindowRenderer::pixelSize() const
@@ -604,6 +604,73 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         return;
     }
     QRhi* rhi = m_device.rhi();
+    Target target;
+    target.size = m_swapChain->currentPixelSize();
+    target.begin = [this, rhi]() -> QRhiCommandBuffer* {
+        QRhi::FrameOpResult r = rhi->beginFrame(m_swapChain.get());
+        if (r == QRhi::FrameOpSwapChainOutOfDate) {
+            if (!ensureSwapChain()) {
+                return nullptr;
+            }
+            r = rhi->beginFrame(m_swapChain.get());
+        }
+        return r == QRhi::FrameOpSuccess ? m_swapChain->currentFrameCommandBuffer() : nullptr;
+    };
+    target.renderTarget = [this] { return m_swapChain->currentFrameRenderTarget(); };
+    target.renderPass = m_renderPass.get();
+    target.pipelines = &m_swapPipelines;
+    target.end = [this, rhi] { rhi->endFrame(m_swapChain.get()); };
+    renderTo(target, panes, overlays, clearColor, overlayTexture, overlaySerial);
+}
+
+QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>& panes,
+                                     const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
+                                     std::uint32_t clearColor)
+{
+    QRhi* rhi = m_device.rhi(m_window);
+    if (!m_offscreenTexture || m_offscreenTexture->pixelSize() != size) {
+        m_offscreenPipelines = {};
+        m_offscreenTarget.reset();
+        m_offscreenPass.reset();
+        m_offscreenTexture.reset(
+            rhi->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
+        m_offscreenTexture->create();
+        m_offscreenTarget.reset(rhi->newTextureRenderTarget({m_offscreenTexture.get()}));
+        m_offscreenPass.reset(m_offscreenTarget->newCompatibleRenderPassDescriptor());
+        m_offscreenTarget->setRenderPassDescriptor(m_offscreenPass.get());
+        m_offscreenTarget->create();
+    }
+    QRhiReadbackResult readback;
+    QRhiCommandBuffer* cb = nullptr;
+    Target target;
+    target.size = size;
+    target.begin = [rhi, &cb]() -> QRhiCommandBuffer* {
+        return rhi->beginOffscreenFrame(&cb) == QRhi::FrameOpSuccess ? cb : nullptr;
+    };
+    target.renderTarget = [this] { return m_offscreenTarget.get(); };
+    target.renderPass = m_offscreenPass.get();
+    target.pipelines = &m_offscreenPipelines;
+    target.finalUpdates = [this, rhi, &readback] {
+        QRhiResourceUpdateBatch* u = rhi->nextResourceUpdateBatch();
+        u->readBackTexture(QRhiReadbackDescription(m_offscreenTexture.get()), &readback);
+        return u;
+    };
+    // An offscreen frame completes, readbacks included, when it ends.
+    target.end = [rhi] { rhi->endOffscreenFrame(); };
+    renderTo(target, panes, overlays, clearColor, nullptr, 0);
+    if (readback.data.isEmpty()) {
+        return {};
+    }
+    return QImage(reinterpret_cast<const uchar*>(readback.data.constData()), readback.pixelSize.width(),
+                  readback.pixelSize.height(), QImage::Format_RGBA8888_Premultiplied)
+        .copy();
+}
+
+void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& panes,
+                              const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
+                              QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
+{
+    QRhi* rhi = m_device.rhi();
     FontResources& res = fonts();
     if (m_fontEpoch != m_device.fontEpoch()) {
         m_builder.clearShapeCache();
@@ -676,7 +743,7 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         }
     }
     const auto overlayFirst = std::uint32_t(m_frame.size());
-    const QSize framePx = m_swapChain->currentPixelSize();
+    const QSize framePx = target.size;
     for (const auto& [rect, color] : overlays) {
         m_frame.push_back({float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 0, 0, 0, 0,
                            color, std::uint32_t(InstanceKind::Solid)});
@@ -690,14 +757,8 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
                            1u});
     }
 
-    QRhi::FrameOpResult r = rhi->beginFrame(m_swapChain.get());
-    if (r == QRhi::FrameOpSwapChainOutOfDate) {
-        if (!ensureSwapChain()) {
-            return;
-        }
-        r = rhi->beginFrame(m_swapChain.get());
-    }
-    if (r != QRhi::FrameOpSuccess) {
+    QRhiCommandBuffer* cb = target.begin();
+    if (!cb) {
         return;
     }
 
@@ -718,9 +779,10 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
     if (!m_uniforms) {
         initResources(res);
     }
+
     ensureBindings(res);
 
-    const QSize px = m_swapChain->currentPixelSize();
+    const QSize px = target.size;
     const float uniforms[8] = {
         float(px.width()),
         float(px.height()),
@@ -744,9 +806,9 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
 
     // With shaders, the grid goes to an offscreen texture first.
     const bool post = m_post && m_post->active();
-    QRhiRenderTarget* gridTarget = m_swapChain->currentFrameRenderTarget();
-    QRhiRenderPassDescriptor* gridPass = m_renderPass.get();
-    PipelineSet* gridPipelines = &m_swapPipelines;
+    QRhiRenderTarget* gridTarget = target.renderTarget();
+    QRhiRenderPassDescriptor* gridPass = target.renderPass;
+    PipelineSet* gridPipelines = target.pipelines;
     if (post) {
         gridTarget = m_post->prepare(px);
         gridPass = m_post->renderPass();
@@ -761,7 +823,6 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
     }
 
     const QColor clear = premultipliedClear(clearColor);
-    QRhiCommandBuffer* cb = m_swapChain->currentFrameCommandBuffer();
     const QRhiCommandBuffer::VertexInput input(m_instances.get(), 0);
     // QRhi scissors use a bottom-left origin.
     auto scissor = [&px](const QRect& rc) {
@@ -806,10 +867,10 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         }
         // High bit keeps chrome serials apart from image texture serials.
         QRhiShaderResourceBindings* srb = imageBindings(overlayTexture, overlaySerial | (1ull << 63));
-        if (!m_swapPipelines.image) {
-            m_swapPipelines.image = makeImagePipeline(m_renderPass.get(), srb);
+        if (!target.pipelines->image) {
+            target.pipelines->image = makeImagePipeline(target.renderPass, srb);
         }
-        cb->setGraphicsPipeline(m_swapPipelines.image.get());
+        cb->setGraphicsPipeline(target.pipelines->image.get());
         cb->setViewport({0, 0, float(px.width()), float(px.height())});
         cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
         cb->setShaderResources(srb);
@@ -908,11 +969,11 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
             }
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
-        m_post->record(cb, regions, windowState, time, m_swapChain->currentFrameRenderTarget(), m_renderPass.get());
+        m_post->record(cb, regions, windowState, time, target.renderTarget(), target.renderPass);
     }
     drawChrome();
-    cb->endPass();
-    rhi->endFrame(m_swapChain.get());
+    cb->endPass(target.finalUpdates ? target.finalUpdates() : nullptr);
+    target.end();
 
     // Panes not drawn this frame (closed, or in another tab) drop their cache.
     std::erase_if(m_paneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });

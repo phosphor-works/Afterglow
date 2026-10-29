@@ -33,8 +33,9 @@ target_include_directories(AfterglowRender PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
 target_compile_definitions(AfterglowRender PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(AfterglowRender
-    PUBLIC Afterglow::Vt Qt6::Core Qt6::Gui
-    PRIVATE Qt6::GuiPrivate Qt6::ShaderToolsPrivate PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG)
+    # Public headers include the QRhi headers (rhi/qrhi.h).
+    PUBLIC Afterglow::Vt Qt6::Core Qt6::Gui Qt6::GuiPrivate
+    PRIVATE Qt6::ShaderToolsPrivate PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG)
 set_target_properties(AfterglowRender PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR})
@@ -49,3 +50,7 @@ qt_add_shaders(AfterglowRender "afterglow_grid_shaders"
         shaders/image.frag
         shaders/post.vert
 )
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

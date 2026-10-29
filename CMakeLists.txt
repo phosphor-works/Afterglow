@@ -40,6 +40,7 @@ add_subdirectory(afterglow)             # the application
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools (benchmarks)" OFF)
 if(AFTERGLOW_BUILD_TOOLS)
     add_subdirectory(tools/bench)
+    add_subdirectory(tools/render)
 endif()
 option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer target for the terminal core (clang)" OFF)
 if(AFTERGLOW_BUILD_FUZZERS)

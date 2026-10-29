@@ -7,6 +7,7 @@
 #include <AfterglowRender/afterglowrender_export.h>
 
 #include <QElapsedTimer>
+#include <QImage>
 #include <QPointF>
 #include <QRect>
 #include <QRectF>
@@ -14,6 +15,7 @@
 #include <QSize>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -25,6 +27,10 @@ class QRhiGraphicsPipeline;
 class QRhiRenderPassDescriptor;
 class QRhiShaderResourceBindings;
 class QRhiTexture;
+class QRhiTextureRenderTarget;
+class QRhiCommandBuffer;
+class QRhiRenderTarget;
+class QRhiResourceUpdateBatch;
 class QColor;
 class QRhiSwapChain;
 class QWindow;
@@ -140,7 +146,10 @@ public:
         FrameBuilder::PaneParams params;
     };
 
+    /// @p window may be null for a renderer that only renders to images;
+    /// then setDevicePixelRatio() chooses the font scale.
     WindowRenderer(GpuDevice& device, QWindow* window);
+    void setDevicePixelRatio(qreal dpr) { m_devicePixelRatio = dpr; }
     ~WindowRenderer();
 
     WindowRenderer(const WindowRenderer&) = delete;
@@ -173,12 +182,32 @@ public:
     void render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
                 std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
 
+    /// Renders the panes into an image instead of the window, through the
+    /// same passes and post-processing. For tests and visual checks.
+    QImage renderToImage(const QSize& size, const std::vector<Pane>& panes,
+                         const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor);
+
 private:
     struct PipelineSet
     {
         std::unique_ptr<QRhiGraphicsPipeline> grid;
         std::unique_ptr<QRhiGraphicsPipeline> image;
     };
+    /// Where a frame goes: the swapchain or an offscreen texture.
+    struct Target
+    {
+        QSize size;
+        std::function<QRhiCommandBuffer*()> begin;
+        std::function<QRhiRenderTarget*()> renderTarget; ///< valid after begin
+        QRhiRenderPassDescriptor* renderPass = nullptr;
+        PipelineSet* pipelines = nullptr;
+        /// Recorded at the end of the last pass (an image readback).
+        std::function<QRhiResourceUpdateBatch*()> finalUpdates;
+        std::function<void()> end;
+    };
+    void renderTo(const Target& target, const std::vector<Pane>& panes,
+                  const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
+                  QRhiTexture* overlayTexture, std::uint64_t overlaySerial);
     void initResources(FontResources& res);
     void ensureBindings(FontResources& res);
     std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass);
@@ -206,6 +235,11 @@ private:
     std::unique_ptr<QRhiSwapChain> m_swapChain;
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
     PipelineSet m_swapPipelines;
+    PipelineSet m_offscreenPipelines;
+    std::unique_ptr<QRhiTexture> m_offscreenTexture;
+    std::unique_ptr<QRhiTextureRenderTarget> m_offscreenTarget;
+    std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenPass;
+    qreal m_devicePixelRatio = 1.0;
     PipelineSet m_postPipelines;
     QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
     std::unique_ptr<class PostChain> m_post;
