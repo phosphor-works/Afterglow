@@ -1,0 +1,675 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#include <AfterglowVt/Screen.h>
+
+#include <algorithm>
+#include <unordered_map>
+#include <vector>
+
+namespace AfterglowVt {
+
+namespace {
+constexpr std::size_t MaxGraphemeExtra = 32;
+
+bool isBlank(const Cell& c)
+{
+    return c.isEmpty() && c.styleId() == StyleTable::DefaultId && !c.hasGrapheme() && c.width() == 1;
+}
+
+bool rowIsBlank(const Row& row)
+{
+    return std::all_of(row.cells.begin(), row.cells.end(), isBlank);
+}
+} // namespace
+
+Screen::Screen(int cols, int rows, std::size_t maxScrollback)
+    : m_cols(cols)
+    , m_rowCount(rows)
+    , m_maxScrollback(maxScrollback)
+{
+    for (int y = 0; y < rows; ++y) {
+        m_rows.emplace_back(cols);
+    }
+}
+
+Screen::~Screen() = default;
+
+void Screen::setPen(const Style& style)
+{
+    const std::uint32_t id = m_styles.acquire(style);
+    m_styles.release(cursor.penId);
+    cursor.pen = style;
+    cursor.penId = id;
+}
+
+// --- cell primitives -------------------------------------------------------
+
+void Screen::clearCell(Row& row, int x, std::uint32_t fillStyleId)
+{
+    Cell& c = row.cells[std::size_t(x)];
+    if (c.hasGrapheme() && row.graphemes) {
+        row.graphemes->erase(std::uint16_t(x));
+    }
+    m_styles.release(c.styleId());
+    c = Cell{};
+    c.setStyleId(fillStyleId);
+    m_styles.retain(fillStyleId);
+}
+
+void Screen::breakWideAt(Row& row, int x, std::uint32_t fillStyleId)
+{
+    if (x < 0 || x >= m_cols) {
+        return;
+    }
+    const Cell& c = row.cells[std::size_t(x)];
+    if (c.isTail() && x > 0) {
+        clearCell(row, x - 1, fillStyleId);
+        clearCell(row, x, fillStyleId);
+    } else if (c.width() == 2 && x + 1 < m_cols) {
+        clearCell(row, x + 1, fillStyleId);
+        clearCell(row, x, fillStyleId);
+    }
+}
+
+void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int width)
+{
+    breakWideAt(row, x, StyleTable::DefaultId);
+    if (width == 2) {
+        breakWideAt(row, x + 1, StyleTable::DefaultId);
+    }
+
+    Cell& c = row.cells[std::size_t(x)];
+    if (c.hasGrapheme() && row.graphemes) {
+        row.graphemes->erase(std::uint16_t(x));
+    }
+    m_styles.release(c.styleId());
+    c = Cell{};
+    c.setCodepoint(cp);
+    c.setStyleId(styleId);
+    c.setWidth(width);
+    m_styles.retain(styleId);
+
+    if (width == 2 && x + 1 < m_cols) {
+        Cell& tail = row.cells[std::size_t(x + 1)];
+        m_styles.release(tail.styleId());
+        tail = Cell{};
+        tail.setStyleId(styleId);
+        tail.setWidth(0);
+        m_styles.retain(styleId);
+    }
+}
+
+void Screen::appendGrapheme(Row& row, int x, char32_t cp)
+{
+    if (!row.graphemes) {
+        row.graphemes = std::make_unique<GraphemeMap>();
+    }
+    std::u32string& extra = (*row.graphemes)[std::uint16_t(x)];
+    if (extra.size() < MaxGraphemeExtra) {
+        extra.push_back(cp);
+    }
+    row.cells[std::size_t(x)].setHasGrapheme(true);
+}
+
+std::u32string_view Screen::graphemeExtra(const Row& row, int x) const
+{
+    if (!row.cells[std::size_t(x)].hasGrapheme() || !row.graphemes) {
+        return {};
+    }
+    auto it = row.graphemes->find(std::uint16_t(x));
+    return it == row.graphemes->end() ? std::u32string_view{} : std::u32string_view(it->second);
+}
+
+void Screen::eraseCells(Row& row, int x0, int x1, std::uint32_t fillStyleId)
+{
+    x0 = std::clamp(x0, 0, m_cols);
+    x1 = std::clamp(x1, 0, m_cols);
+    if (x0 >= x1) {
+        return;
+    }
+    breakWideAt(row, x0, fillStyleId);
+    if (x1 < m_cols && row.cells[std::size_t(x1)].isTail()) {
+        clearCell(row, x1, fillStyleId);
+    }
+    for (int x = x0; x < x1; ++x) {
+        clearCell(row, x, fillStyleId);
+    }
+}
+
+void Screen::eraseRow(Row& row, std::uint32_t fillStyleId)
+{
+    eraseCells(row, 0, m_cols, fillStyleId);
+    row.graphemes.reset();
+    row.wrapped = false;
+    row.promptStart = false;
+}
+
+namespace {
+void moveGrapheme(Row& row, int from, int to)
+{
+    if (!row.graphemes) {
+        return;
+    }
+    row.graphemes->erase(std::uint16_t(to));
+    auto node = row.graphemes->extract(std::uint16_t(from));
+    if (!node.empty()) {
+        node.key() = std::uint16_t(to);
+        row.graphemes->insert(std::move(node));
+    }
+}
+} // namespace
+
+void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
+{
+    right = std::min(right, m_cols - 1);
+    if (x > right || n <= 0) {
+        return;
+    }
+    n = std::min(n, right - x + 1);
+    breakWideAt(row, x, fillStyleId);
+    breakWideAt(row, right, fillStyleId);
+
+    for (int i = right - n + 1; i <= right; ++i) {
+        clearCell(row, i, StyleTable::DefaultId);
+    }
+    for (int i = right; i >= x + n; --i) {
+        m_styles.release(row.cells[std::size_t(i)].styleId());
+        row.cells[std::size_t(i)] = row.cells[std::size_t(i - n)];
+        m_styles.retain(row.cells[std::size_t(i)].styleId());
+        moveGrapheme(row, i - n, i);
+    }
+    for (int i = x; i < x + n; ++i) {
+        Cell& c = row.cells[std::size_t(i)];
+        m_styles.release(c.styleId());
+        c = Cell{};
+        c.setStyleId(fillStyleId);
+        m_styles.retain(fillStyleId);
+    }
+    // A head shifted onto the margin lost its tail.
+    if (row.cells[std::size_t(right)].width() == 2) {
+        clearCell(row, right, fillStyleId);
+    }
+}
+
+void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId)
+{
+    right = std::min(right, m_cols - 1);
+    if (x > right || n <= 0) {
+        return;
+    }
+    n = std::min(n, right - x + 1);
+    breakWideAt(row, x, fillStyleId);
+    if (x + n <= right) {
+        breakWideAt(row, x + n, fillStyleId);
+    }
+    breakWideAt(row, right + 1, fillStyleId);
+
+    for (int i = x; i < x + n; ++i) {
+        clearCell(row, i, StyleTable::DefaultId);
+    }
+    for (int i = x; i + n <= right; ++i) {
+        m_styles.release(row.cells[std::size_t(i)].styleId());
+        row.cells[std::size_t(i)] = row.cells[std::size_t(i + n)];
+        m_styles.retain(row.cells[std::size_t(i)].styleId());
+        moveGrapheme(row, i + n, i);
+    }
+    for (int i = right - n + 1; i <= right; ++i) {
+        Cell& c = row.cells[std::size_t(i)];
+        if (c.hasGrapheme() && row.graphemes) {
+            row.graphemes->erase(std::uint16_t(i));
+        }
+        m_styles.release(c.styleId());
+        c = Cell{};
+        c.setStyleId(fillStyleId);
+        m_styles.retain(fillStyleId);
+    }
+}
+
+void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
+{
+    breakWideAt(dst, left, StyleTable::DefaultId);
+    breakWideAt(dst, right, StyleTable::DefaultId);
+    for (int x = left; x <= right; ++x) {
+        Cell& d = dst.cells[std::size_t(x)];
+        if (d.hasGrapheme() && dst.graphemes) {
+            dst.graphemes->erase(std::uint16_t(x));
+        }
+        m_styles.release(d.styleId());
+        d = src.cells[std::size_t(x)];
+        m_styles.retain(d.styleId());
+        if (d.hasGrapheme()) {
+            const std::u32string_view extra = graphemeExtra(src, x);
+            if (!dst.graphemes) {
+                dst.graphemes = std::make_unique<GraphemeMap>();
+            }
+            (*dst.graphemes)[std::uint16_t(x)] = std::u32string(extra);
+        }
+    }
+    if (dst.cells[std::size_t(left)].isTail()) {
+        clearCell(dst, left, StyleTable::DefaultId);
+    }
+    if (dst.cells[std::size_t(right)].width() == 2 && right + 1 <= m_cols - 1
+        && !dst.cells[std::size_t(right + 1)].isTail()) {
+        clearCell(dst, right, StyleTable::DefaultId);
+    }
+}
+
+void Screen::releaseRow(Row& row) noexcept
+{
+    for (const Cell& c : row.cells) {
+        m_styles.release(c.styleId());
+    }
+}
+
+// --- scrolling -------------------------------------------------------------
+
+void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool intoHistory)
+{
+    const int height = r.bottom - r.top + 1;
+    n = std::clamp(n, 0, height);
+    if (n == 0) {
+        return;
+    }
+    const bool fullWidth = r.left == 0 && r.right == m_cols - 1;
+
+    if (intoHistory && fullWidth && r.top == 0 && r.bottom == m_rowCount - 1 && m_maxScrollback > 0) {
+        for (int k = 0; k < n; ++k) {
+            Row& fresh = m_rows.emplace_back(m_cols);
+            if (fillStyleId != StyleTable::DefaultId) {
+                for (Cell& c : fresh.cells) {
+                    c.setStyleId(fillStyleId);
+                    m_styles.retain(fillStyleId);
+                }
+            }
+        }
+        if (m_viewportOffset > 0) {
+            m_viewportOffset += std::size_t(n);
+        }
+        trimHistory();
+        return;
+    }
+
+    if (fullWidth) {
+        auto first = m_rows.begin() + std::ptrdiff_t(historySize()) + r.top;
+        std::rotate(first, first + n, first + height);
+        for (int y = r.bottom - n + 1; y <= r.bottom; ++y) {
+            eraseRow(row(y), fillStyleId);
+        }
+        return;
+    }
+
+    for (int y = r.top; y + n <= r.bottom; ++y) {
+        copyRowSpan(row(y), row(y + n), r.left, r.right);
+    }
+    for (int y = r.bottom - n + 1; y <= r.bottom; ++y) {
+        eraseCells(row(y), r.left, r.right + 1, fillStyleId);
+    }
+}
+
+void Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
+{
+    const int height = r.bottom - r.top + 1;
+    n = std::clamp(n, 0, height);
+    if (n == 0) {
+        return;
+    }
+    const bool fullWidth = r.left == 0 && r.right == m_cols - 1;
+
+    if (fullWidth) {
+        auto first = m_rows.begin() + std::ptrdiff_t(historySize()) + r.top;
+        std::rotate(first, first + (height - n), first + height);
+        for (int y = r.top; y < r.top + n; ++y) {
+            eraseRow(row(y), fillStyleId);
+        }
+        return;
+    }
+
+    for (int y = r.bottom; y - n >= r.top; --y) {
+        copyRowSpan(row(y), row(y - n), r.left, r.right);
+    }
+    for (int y = r.top; y < r.top + n; ++y) {
+        eraseCells(row(y), r.left, r.right + 1, fillStyleId);
+    }
+}
+
+void Screen::trimHistory()
+{
+    while (historySize() > m_maxScrollback) {
+        releaseRow(m_rows.front());
+        m_rows.pop_front();
+        ++m_rowsDropped;
+    }
+    m_viewportOffset = std::min(m_viewportOffset, historySize());
+}
+
+void Screen::clearHistory()
+{
+    while (historySize() > 0) {
+        releaseRow(m_rows.front());
+        m_rows.pop_front();
+        ++m_rowsDropped;
+    }
+    m_viewportOffset = 0;
+}
+
+void Screen::scrollViewport(long delta) noexcept
+{
+    const long next = long(m_viewportOffset) + delta;
+    m_viewportOffset = std::size_t(std::clamp(next, 0L, long(historySize())));
+}
+
+// --- resize ----------------------------------------------------------------
+
+void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart,
+                    std::vector<std::size_t>* trackedRows)
+{
+    if (cols == m_cols && rows == m_rowCount) {
+        return;
+    }
+    ++m_layoutEpoch;
+    if (reflow && m_maxScrollback > 0 && cols != m_cols) {
+        resizeReflow(cols, rows, promptStart, trackedRows);
+    } else {
+        resizeNoReflow(cols, rows, trackedRows);
+    }
+    cursor.x = std::clamp(cursor.x, 0, m_cols - 1);
+    cursor.y = std::clamp(cursor.y, 0, m_rowCount - 1);
+    cursor.pendingWrap = false;
+    savedCursor.x = std::clamp(savedCursor.x, 0, m_cols - 1);
+    savedCursor.y = std::clamp(savedCursor.y, 0, m_rowCount - 1);
+}
+
+void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked)
+{
+    const std::uint64_t droppedBefore = m_rowsDropped;
+    if (cols != m_cols) {
+        for (Row& r : m_rows) {
+            if (cols < m_cols) {
+                for (int x = cols; x < m_cols; ++x) {
+                    m_styles.release(r.cells[std::size_t(x)].styleId());
+                    if (r.graphemes) {
+                        r.graphemes->erase(std::uint16_t(x));
+                    }
+                }
+                r.cells.resize(std::size_t(cols));
+                Cell& last = r.cells.back();
+                if (last.width() == 2) {
+                    if (r.graphemes) {
+                        r.graphemes->erase(std::uint16_t(cols - 1));
+                    }
+                    m_styles.release(last.styleId());
+                    last = Cell{};
+                }
+            } else {
+                r.cells.resize(std::size_t(cols));
+            }
+        }
+        m_cols = cols;
+    }
+
+    if (rows < m_rowCount) {
+        int excess = m_rowCount - rows;
+        // Drop blank rows below the cursor first, then push rows into history.
+        while (excess > 0 && m_rowCount - 1 > cursor.y && rowIsBlank(m_rows.back())) {
+            m_rows.pop_back();
+            --m_rowCount;
+            --excess;
+        }
+        m_rowCount -= excess;
+        cursor.y -= excess;
+        savedCursor.y -= excess;
+    } else if (rows > m_rowCount) {
+        const int grow = rows - m_rowCount;
+        const int pulled = int(std::min<std::size_t>(std::size_t(grow), historySize()));
+        m_rowCount += pulled;
+        cursor.y += pulled;
+        savedCursor.y += pulled;
+        while (m_rowCount < rows) {
+            m_rows.emplace_back(m_cols);
+            ++m_rowCount;
+        }
+    }
+    trimHistory();
+    if (tracked) {
+        const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
+        for (std::size_t& t : *tracked) {
+            t = (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone : t - dropped;
+        }
+    }
+}
+
+void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked)
+{
+    struct Line
+    {
+        std::vector<Cell> cells;
+        std::unordered_map<std::uint32_t, std::u32string> graphemes;
+        bool promptStart = false;
+    };
+
+    const std::size_t cursorAbs = historySize() + std::size_t(cursor.y);
+    // With a redrawable prompt, only the rows above it reflow; the prompt rows
+    // themselves are replaced by blank rows below.
+    const bool keepPrompt = promptStart && *promptStart <= cursorAbs;
+    const std::size_t reflowEnd = keepPrompt ? *promptStart : m_rows.size();
+    const std::size_t promptRows = keepPrompt ? cursorAbs - *promptStart + 1 : 0;
+    const bool trackCursor = !keepPrompt;
+    std::size_t cursorLine = 0;
+    std::size_t cursorOffset = 0;
+
+    // Tracked rows are remembered as (line, cell offset within the line) and
+    // mapped back to rows after rewrapping.
+    struct TrackedPos
+    {
+        enum Kind : std::uint8_t { Gone, InLine, InPrompt } kind = Gone;
+        std::size_t line = 0;
+        std::size_t offset = 0;
+    };
+    std::vector<TrackedPos> trackedPos(tracked ? tracked->size() : 0);
+    std::vector<std::pair<std::size_t, std::size_t>> trackedOrder; // (abs row, index)
+    if (tracked) {
+        for (std::size_t k = 0; k < tracked->size(); ++k) {
+            const std::size_t t = (*tracked)[k];
+            if (t == TrackedRowGone || t >= m_rows.size()) {
+                continue;
+            }
+            if (t >= reflowEnd) {
+                trackedPos[k] = {TrackedPos::InPrompt, 0, t - reflowEnd};
+            } else {
+                trackedOrder.emplace_back(t, k);
+            }
+        }
+        std::sort(trackedOrder.begin(), trackedOrder.end());
+    }
+    std::size_t trackedNext = 0;
+    std::size_t rowInLine = 0;
+
+    // 1. Unwrap rows into logical lines.
+    std::vector<Line> lines;
+    Line current;
+    for (std::size_t i = reflowEnd; i < m_rows.size(); ++i) {
+        releaseRow(m_rows[i]);
+    }
+    for (std::size_t i = 0; i < reflowEnd; ++i) {
+        Row& r = m_rows[i];
+        const bool lineEnds = !r.wrapped || i + 1 == reflowEnd;
+        while (trackedNext < trackedOrder.size() && trackedOrder[trackedNext].first == i) {
+            trackedPos[trackedOrder[trackedNext].second] = {TrackedPos::InLine, lines.size(), rowInLine * std::size_t(m_cols)};
+            ++trackedNext;
+        }
+        if (current.cells.empty()) {
+            current.promptStart = r.promptStart;
+        }
+        int keep = m_cols;
+        if (lineEnds) {
+            while (keep > 0 && isBlank(r.cells[std::size_t(keep - 1)])) {
+                --keep;
+            }
+        }
+        if (trackCursor && i == cursorAbs) {
+            cursorLine = lines.size();
+            cursorOffset = current.cells.size() + std::size_t(cursor.x);
+        }
+        for (int x = 0; x < m_cols; ++x) {
+            Cell& c = r.cells[std::size_t(x)];
+            if (x >= keep || c.isSpacerHead()) {
+                m_styles.release(c.styleId());
+                continue;
+            }
+            if (c.hasGrapheme() && r.graphemes) {
+                auto it = r.graphemes->find(std::uint16_t(x));
+                if (it != r.graphemes->end()) {
+                    current.graphemes.emplace(std::uint32_t(current.cells.size()), std::move(it->second));
+                }
+            }
+            current.cells.push_back(c);
+        }
+        if (lineEnds) {
+            lines.push_back(std::move(current));
+            current = Line{};
+            rowInLine = 0;
+        } else {
+            ++rowInLine;
+        }
+    }
+    if (!current.cells.empty()) {
+        lines.push_back(std::move(current));
+    }
+
+    // 2. Rewrap every line to the new width.
+    std::deque<Row> out;
+    std::vector<std::size_t> lineFirstRow;
+    std::size_t cursorRow = 0;
+    int cursorCol = 0;
+    for (std::size_t li = 0; li < lines.size(); ++li) {
+        Line& line = lines[li];
+        lineFirstRow.push_back(out.size());
+        out.emplace_back(cols).promptStart = line.promptStart;
+        int col = 0;
+        bool cursorPlaced = false;
+        auto placeCursorIfHere = [&](std::size_t offset) {
+            if (trackCursor && li == cursorLine && !cursorPlaced && offset == cursorOffset) {
+                cursorRow = out.size() - 1;
+                cursorCol = col;
+                cursorPlaced = true;
+            }
+        };
+        for (std::size_t off = 0; off < line.cells.size(); ++off) {
+            const Cell& c = line.cells[off];
+            if (c.isTail()) {
+                placeCursorIfHere(off);
+                continue; // re-emitted with its head
+            }
+            const int w = std::max(1, c.width());
+            if (col + w > cols) {
+                if (w == 2 && col < cols) {
+                    out.back().cells[std::size_t(col)].setSpacerHead(true);
+                }
+                out.back().wrapped = true;
+                out.emplace_back(cols);
+                col = 0;
+            }
+            placeCursorIfHere(off);
+            Row& dst = out.back();
+            dst.cells[std::size_t(col)] = c;
+            if (c.hasGrapheme()) {
+                auto it = line.graphemes.find(std::uint32_t(off));
+                if (it != line.graphemes.end()) {
+                    if (!dst.graphemes) {
+                        dst.graphemes = std::make_unique<GraphemeMap>();
+                    }
+                    (*dst.graphemes)[std::uint16_t(col)] = std::move(it->second);
+                }
+            }
+            if (w == 2) {
+                const bool hasTail = off + 1 < line.cells.size() && line.cells[off + 1].isTail();
+                if (hasTail) {
+                    dst.cells[std::size_t(col + 1)] = line.cells[off + 1];
+                } else {
+                    dst.cells[std::size_t(col + 1)].setWidth(0);
+                    dst.cells[std::size_t(col + 1)].setStyleId(c.styleId());
+                    m_styles.retain(c.styleId());
+                }
+            }
+            col += w;
+        }
+        if (trackCursor && li == cursorLine && !cursorPlaced) {
+            // Cursor past the end of the content: advance virtually.
+            std::size_t extra = cursorOffset - std::min(cursorOffset, line.cells.size());
+            std::size_t r = out.size() - 1;
+            std::size_t c = std::size_t(col) + extra;
+            if (c == std::size_t(cols)) {
+                // Right after content that exactly fills the row: stay on it.
+                c = std::size_t(cols) - 1;
+            }
+            while (c >= std::size_t(cols)) {
+                c -= std::size_t(cols);
+                ++r;
+            }
+            while (out.size() <= r) {
+                out.back().wrapped = true;
+                out.emplace_back(cols);
+            }
+            cursorRow = r;
+            cursorCol = int(c);
+        }
+    }
+    const std::size_t linesEnd = out.size();
+    const std::size_t promptRegionStart = out.size();
+    if (keepPrompt) {
+        // The blanked prompt region, same height as before, cursor on its last row.
+        for (std::size_t k = 0; k < promptRows; ++k) {
+            out.emplace_back(cols).promptStart = k == 0;
+        }
+        cursorRow = out.size() - 1;
+        cursorCol = std::min(cursor.x, cols - 1);
+    }
+    if (out.empty()) {
+        out.emplace_back(cols);
+    }
+
+    std::vector<std::size_t> trackedNew(trackedPos.size(), TrackedRowGone);
+    for (std::size_t k = 0; k < trackedPos.size(); ++k) {
+        const TrackedPos& tp = trackedPos[k];
+        if (tp.kind == TrackedPos::InLine && tp.line < lineFirstRow.size()) {
+            const std::size_t first = lineFirstRow[tp.line];
+            const std::size_t end = tp.line + 1 < lineFirstRow.size() ? lineFirstRow[tp.line + 1] : linesEnd;
+            trackedNew[k] = std::min(first + tp.offset / std::size_t(cols), end - 1);
+        } else if (tp.kind == TrackedPos::InPrompt && keepPrompt && tp.offset < promptRows) {
+            trackedNew[k] = promptRegionStart + tp.offset;
+        }
+    }
+
+    // 3. Trim blank rows below the cursor, pad to the screen height.
+    while (out.size() > cursorRow + 1 && rowIsBlank(out.back()) && !out[out.size() - 2].wrapped) {
+        out.pop_back();
+    }
+    while (out.size() < std::size_t(rows)) {
+        out.emplace_back(cols);
+    }
+    // Keep the cursor inside the active area.
+    while (out.size() - std::size_t(rows) > cursorRow && out.size() > std::size_t(rows)) {
+        releaseRow(out.back());
+        out.pop_back();
+    }
+
+    m_rows = std::move(out);
+    m_cols = cols;
+    m_rowCount = rows;
+    cursor.y = int(cursorRow - (m_rows.size() - std::size_t(rows)));
+    cursor.x = std::min(cursorCol, cols - 1);
+    m_viewportOffset = 0;
+    const std::uint64_t droppedBefore = m_rowsDropped;
+    trimHistory();
+    if (tracked) {
+        const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
+        for (std::size_t k = 0; k < trackedNew.size(); ++k) {
+            const std::size_t t = trackedNew[k];
+            (*tracked)[k] = (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone
+                                                                                                : t - dropped;
+        }
+    }
+}
+
+} // namespace AfterglowVt
