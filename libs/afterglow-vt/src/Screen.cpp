@@ -132,8 +132,25 @@ void Screen::eraseCells(Row& row, int x0, int x1, std::uint32_t fillStyleId)
     if (x1 < m_cols && row.cells[std::size_t(x1)].isTail()) {
         clearCell(row, x1, fillStyleId);
     }
+    // Bulk: release what was there, then take the fill style once for the run.
+    Cell blank;
+    blank.setStyleId(fillStyleId);
     for (int x = x0; x < x1; ++x) {
-        clearCell(row, x, fillStyleId);
+        Cell& c = row.cells[std::size_t(x)];
+        if (c.styleId() != StyleTable::DefaultId) {
+            m_styles.release(c.styleId());
+        }
+        c = blank;
+    }
+    m_styles.retain(fillStyleId, std::uint32_t(x1 - x0));
+    if (row.graphemes) {
+        if (x0 == 0 && x1 == m_cols) {
+            row.graphemes.reset();
+        } else {
+            for (int x = x0; x < x1; ++x) {
+                row.graphemes->erase(std::uint16_t(x));
+            }
+        }
     }
 }
 
@@ -275,7 +292,22 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
 
     if (intoHistory && fullWidth && r.top == 0 && r.bottom == m_rowCount - 1 && m_maxScrollback > 0) {
         for (int k = 0; k < n; ++k) {
-            Row& fresh = m_rows.emplace_back(m_cols);
+            Row* freshPtr;
+            if (historySize() >= m_maxScrollback) {
+                // History is full: the oldest row's storage becomes the new line.
+                Row recycled = std::move(m_rows.front());
+                m_rows.pop_front();
+                ++m_rowsDropped;
+                releaseRow(recycled);
+                std::fill(recycled.cells.begin(), recycled.cells.end(), Cell{});
+                recycled.graphemes.reset();
+                recycled.wrapped = false;
+                recycled.promptStart = false;
+                freshPtr = &m_rows.emplace_back(std::move(recycled));
+            } else {
+                freshPtr = &m_rows.emplace_back(m_cols);
+            }
+            Row& fresh = *freshPtr;
             if (fillStyleId != StyleTable::DefaultId) {
                 for (Cell& c : fresh.cells) {
                     c.setStyleId(fillStyleId);

@@ -50,6 +50,7 @@ struct Intermediates
 ///
 /// Handler requirements:
 ///   void print(char32_t cp);
+///   void printAscii(const char* text, std::size_t length); // printable ASCII only
 ///   void execute(std::uint8_t c);
 ///   void escDispatch(const Intermediates&, std::uint8_t final);
 ///   void csiDispatch(const Params&, const Intermediates&, std::uint8_t final);
@@ -73,10 +74,13 @@ public:
         const auto* end = p + bytes.size();
         while (p < end) {
             if (m_state == State::Ground && m_utf8Needed == 0) {
-                // Fast path: printable ASCII runs.
+                // Fast path: printable ASCII runs go to the handler whole.
+                const auto* run = p;
                 while (p < end && *p >= 0x20 && *p < 0x7F) {
-                    m_handler.print(char32_t(*p));
                     ++p;
+                }
+                if (p != run) {
+                    m_handler.printAscii(reinterpret_cast<const char*>(run), std::size_t(p - run));
                 }
                 if (p == end) {
                     break;

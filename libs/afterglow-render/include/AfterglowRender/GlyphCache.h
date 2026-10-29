@@ -85,6 +85,8 @@ public:
     const GlyphEntry* sprite(FontSet& fonts, char32_t cp);
 
     void reset();
+    /// Bumped by reset(): glyph entries from before are gone.
+    std::uint64_t epoch() const noexcept { return m_epoch; }
 
     AtlasPage& grayPage() noexcept { return m_gray; }
     AtlasPage& colorPage() noexcept { return m_color; }
@@ -95,6 +97,7 @@ private:
     AtlasPage m_gray;
     AtlasPage m_color;
     std::unordered_map<std::uint64_t, GlyphEntry> m_entries;
+    std::uint64_t m_epoch = 1;
 };
 
 } // namespace AfterglowRender

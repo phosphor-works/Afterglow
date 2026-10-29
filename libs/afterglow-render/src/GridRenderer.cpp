@@ -617,12 +617,43 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         bool ok = true;
         for (const Pane& pane : panes) {
             const auto first = std::uint32_t(m_frame.size());
-            std::size_t textStart = 0;
-            if (!m_builder.buildPane(*pane.snapshot, pane.params, *res.fonts, res.glyphs, m_frame, textStart)) {
-                ok = false;
-                break;
+            const FrameBuilder::PaneParams& pp = pane.params;
+            PaneCache& cache = m_paneCache[pane.snapshot];
+            const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
+                && cache.glyphEpoch == res.glyphs.epoch() && cache.fonts == res.fonts.get() && cache.rect == pp.rect
+                && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn
+                && cache.cursorPosition == pp.cursorPosition && cache.scrollShift == pp.scrollShift
+                && cache.backgroundAlpha == pp.backgroundAlpha && cache.hoveredLink == pp.hoveredLink
+                && cache.hoverRow == pp.hoverRow && cache.hoverColStart == pp.hoverColStart
+                && cache.hoverColEnd == pp.hoverColEnd;
+            if (!reusable) {
+                m_scratch.clear();
+                std::size_t textStart = 0;
+                if (!m_builder.buildPane(*pane.snapshot, pp, *res.fonts, res.glyphs, m_scratch, textStart)) {
+                    ok = false;
+                    break;
+                }
+                cache.instances.swap(m_scratch);
+                cache.textStart = textStart;
+                cache.snapshotVersion = pane.snapshot->version;
+                cache.fontEpoch = m_fontEpoch;
+                cache.glyphEpoch = res.glyphs.epoch();
+                cache.fonts = res.fonts.get();
+                cache.rect = pp.rect;
+                cache.origin = pp.contentOrigin;
+                cache.focused = pp.focused;
+                cache.blinkOn = pp.cursorBlinkOn;
+                cache.cursorPosition = pp.cursorPosition;
+                cache.scrollShift = pp.scrollShift;
+                cache.backgroundAlpha = pp.backgroundAlpha;
+                cache.hoveredLink = pp.hoveredLink;
+                cache.hoverRow = pp.hoverRow;
+                cache.hoverColStart = pp.hoverColStart;
+                cache.hoverColEnd = pp.hoverColEnd;
             }
-            m_ranges.push_back({first, std::uint32_t(textStart), std::uint32_t(m_frame.size()), pane.params.rect, {}});
+            cache.seenFrame = m_frameCounter + 1;
+            m_frame.insert(m_frame.end(), cache.instances.begin(), cache.instances.end());
+            m_ranges.push_back({first, first + std::uint32_t(cache.textStart), std::uint32_t(m_frame.size()), pp.rect, {}});
         }
         if (ok) {
             break;
@@ -883,6 +914,8 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
     cb->endPass();
     rhi->endFrame(m_swapChain.get());
 
+    // Panes not drawn this frame (closed, or in another tab) drop their cache.
+    std::erase_if(m_paneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
     // Bindings of textures not drawn for a while (deleted or scrolled away).
     std::erase_if(m_imageBindings, [this](const auto& kv) { return kv.second.lastUsed + 120 < m_frameCounter; });
     m_device.pruneImageTextures();

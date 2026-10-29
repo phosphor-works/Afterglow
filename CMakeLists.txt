@@ -36,3 +36,8 @@ add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, scree
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
 add_subdirectory(afterglow)             # the application
+
+option(AFTERGLOW_BUILD_TOOLS "Build developer tools (benchmarks)" OFF)
+if(AFTERGLOW_BUILD_TOOLS)
+    add_subdirectory(tools/bench)
+endif()

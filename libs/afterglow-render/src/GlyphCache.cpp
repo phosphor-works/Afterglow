@@ -107,6 +107,7 @@ GlyphCache::GlyphCache()
 
 void GlyphCache::reset()
 {
+    ++m_epoch;
     m_entries.clear();
     m_gray.reset();
     m_color.reset();

@@ -186,6 +186,7 @@ private:
 
     // Parser handler interface.
     void print(char32_t cp);
+    void printAscii(const char* text, std::size_t length);
     void execute(std::uint8_t c);
     void escDispatch(const Intermediates& inter, std::uint8_t final);
     void csiDispatch(const Params& params, const Intermediates& inter, std::uint8_t final);

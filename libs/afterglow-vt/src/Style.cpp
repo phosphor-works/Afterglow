@@ -41,18 +41,8 @@ std::uint32_t StyleTable::acquire(const Style& style)
     return id;
 }
 
-void StyleTable::retain(std::uint32_t id) noexcept
+void StyleTable::releaseCounted(std::uint32_t id) noexcept
 {
-    if (id != DefaultId) {
-        ++m_refs[id];
-    }
-}
-
-void StyleTable::release(std::uint32_t id) noexcept
-{
-    if (id == DefaultId) {
-        return;
-    }
     if (--m_refs[id] == 0) {
         releaseLink(m_styles[id].link);
         m_lookup.erase(m_styles[id]);

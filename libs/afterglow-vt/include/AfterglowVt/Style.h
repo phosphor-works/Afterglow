@@ -100,8 +100,26 @@ public:
 
     /// Interns @p style and takes one reference to it.
     std::uint32_t acquire(const Style& style);
-    void retain(std::uint32_t id) noexcept;
-    void release(std::uint32_t id) noexcept;
+    // The default style is never counted; checking for it inline keeps the
+    // per-cell paths free of calls for the common case.
+    void retain(std::uint32_t id) noexcept
+    {
+        if (id != DefaultId) {
+            ++m_refs[id];
+        }
+    }
+    void retain(std::uint32_t id, std::uint32_t count) noexcept
+    {
+        if (id != DefaultId) {
+            m_refs[id] += count;
+        }
+    }
+    void release(std::uint32_t id) noexcept
+    {
+        if (id != DefaultId) {
+            releaseCounted(id);
+        }
+    }
 
     const Style& get(std::uint32_t id) const noexcept { return m_styles[id]; }
     std::size_t liveCount() const noexcept { return m_lookup.size() + 1; }
@@ -120,6 +138,7 @@ private:
         std::string id;
         std::uint32_t refs = 0;
     };
+    void releaseCounted(std::uint32_t id) noexcept;
     void retainLink(std::uint32_t link) noexcept;
     void releaseLink(std::uint32_t link) noexcept;
 

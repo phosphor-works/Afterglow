@@ -17,6 +17,12 @@ struct Recorder
     std::vector<std::string> events;
 
     void print(char32_t cp) { printed.push_back(cp); }
+    void printAscii(const char* text, std::size_t n)
+    {
+        for (std::size_t i = 0; i < n; ++i) {
+            printed.push_back(char32_t(text[i]));
+        }
+    }
     void execute(std::uint8_t c) { events.push_back("exec " + std::to_string(c)); }
     void escDispatch(const Intermediates& i, std::uint8_t f)
     {

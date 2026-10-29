@@ -72,6 +72,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::uint32_t cursorColor = 0;
 
     std::uint64_t generation = 0;
+    /// Bumped by every capture, so renderers can reuse work for unchanged snapshots.
+    std::uint64_t version = 0;
 
     /// The 256-colour palette, for shaders.
     std::array<std::uint32_t, 256> palette{};

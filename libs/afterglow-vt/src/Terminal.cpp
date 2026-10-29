@@ -346,6 +346,63 @@ void Terminal::print(char32_t cp)
     }
 }
 
+void Terminal::printAscii(const char* text, std::size_t length)
+{
+    // Charsets and insert mode change what printing does: take the full path.
+    if (m_charsets[m_gl] != Charset::Ascii || m_modes.insert) {
+        for (std::size_t i = 0; i < length; ++i) {
+            print(char32_t(static_cast<unsigned char>(text[i])));
+        }
+        return;
+    }
+    // The first character might join the previous cluster (after a Prepend,
+    // say). An ASCII character after an ASCII one never joins anything, so
+    // the rest skip segmentation and go straight into the row.
+    print(char32_t(static_cast<unsigned char>(text[0])));
+    Screen& scr = *m_active;
+    StyleTable& styles = scr.styles();
+    Cursor& cur = cursor();
+    std::size_t i = 1;
+    while (i < length) {
+        if (cur.pendingWrap) {
+            // Wrapping (or overwriting the last column) is the full path's job.
+            print(char32_t(static_cast<unsigned char>(text[i++])));
+            continue;
+        }
+        const int right = (cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1;
+        Row& row = scr.row(cur.y);
+        const std::uint32_t pen = cur.penId;
+        while (i < length) {
+            const auto ch = char32_t(static_cast<unsigned char>(text[i]));
+            Cell& c = row.cells[std::size_t(cur.x)];
+            if (c.width() != 1 || c.hasGrapheme() || c.isSpacerHead()) {
+                scr.writeCell(row, cur.x, ch, pen, 1); // breaks up a wide character
+            } else {
+                if (c.styleId() != pen) {
+                    styles.release(c.styleId());
+                    styles.retain(pen);
+                    c.setStyleId(pen);
+                }
+                c.setCodepoint(ch);
+            }
+            m_lastX = cur.x;
+            m_lastY = cur.y;
+            ++i;
+            if (cur.x >= right) {
+                cur.pendingWrap = true;
+                break;
+            }
+            ++cur.x;
+        }
+    }
+    const auto last = char32_t(static_cast<unsigned char>(text[length - 1]));
+    m_lastPrinted = last;
+    if (length > 1 && m_modes.graphemeClustering) {
+        m_segmenter.reset();
+        m_segmenter.breaksBefore(Unicode::props(last));
+    }
+}
+
 void Terminal::repeatLast(int n)
 {
     if (m_lastPrinted == 0) {

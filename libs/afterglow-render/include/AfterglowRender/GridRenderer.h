@@ -247,6 +247,31 @@ private:
     FrameBuilder m_builder;
     std::vector<Instance> m_frame;
     std::vector<DrawRange> m_ranges;
+
+    /// Each pane's built instances, reused while nothing that shapes them changed.
+    struct PaneCache
+    {
+        std::uint64_t snapshotVersion = 0;
+        std::uint64_t fontEpoch = 0;
+        std::uint64_t glyphEpoch = 0;
+        const FontSet* fonts = nullptr;
+        QRect rect;
+        QPoint origin;
+        bool focused = false;
+        bool blinkOn = false;
+        std::optional<QPointF> cursorPosition;
+        float scrollShift = 0;
+        std::uint8_t backgroundAlpha = 0;
+        std::uint32_t hoveredLink = 0;
+        int hoverRow = -1;
+        int hoverColStart = 0;
+        int hoverColEnd = -1;
+        std::vector<Instance> instances;
+        std::size_t textStart = 0;
+        std::uint64_t seenFrame = 0;
+    };
+    std::unordered_map<const PaneSnapshot*, PaneCache> m_paneCache;
+    std::vector<Instance> m_scratch;
 };
 
 } // namespace AfterglowRender
