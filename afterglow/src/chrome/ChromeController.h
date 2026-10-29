@@ -16,6 +16,10 @@ class ChromeController : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QStringList tabTitles READ tabTitles NOTIFY tabsChanged)
+    Q_PROPERTY(QVariantList tabStatus READ tabStatus NOTIFY tabStatusChanged)
+    Q_PROPERTY(QColor goodColor READ goodColor NOTIFY themeChanged)
+    Q_PROPERTY(QColor warnColor READ warnColor NOTIFY themeChanged)
+    Q_PROPERTY(QColor badColor READ badColor NOTIFY themeChanged)
     Q_PROPERTY(int currentTab READ currentTab NOTIFY tabsChanged)
     Q_PROPERTY(int tabBarHeight READ tabBarHeight NOTIFY tabsChanged)
     Q_PROPERTY(QColor background READ background NOTIFY themeChanged)
@@ -37,11 +41,19 @@ public:
     int currentTab() const { return m_currentTab; }
     int tabBarHeight() const { return m_tabBarHeight; }
     void setTabs(const QStringList& titles, int current, int barHeight);
+    /// Per tab: { state, progress, text } of its most pressing program status,
+    /// or an empty map.
+    QVariantList tabStatus() const { return m_tabStatus; }
+    void setTabStatus(const QVariantList& status);
 
     QColor background() const { return m_background; }
     QColor foreground() const { return m_foreground; }
     QColor accent() const { return m_accent; }
     void setTheme(const QColor& background, const QColor& foreground, const QColor& accent);
+    QColor goodColor() const { return m_goodColor; }
+    QColor warnColor() const { return m_warnColor; }
+    QColor badColor() const { return m_badColor; }
+    void setStatusColors(const QColor& good, const QColor& warn, const QColor& bad);
 
     /// [{ id: int, title: string, shortcut: string }]
     QVariantList actions() const { return m_actions; }
@@ -77,6 +89,7 @@ public:
 
 Q_SIGNALS:
     void tabsChanged();
+    void tabStatusChanged();
     void themeChanged();
     void actionsChanged();
     void paletteOpenChanged();
@@ -94,6 +107,10 @@ Q_SIGNALS:
 
 private:
     QStringList m_tabTitles;
+    QVariantList m_tabStatus;
+    QColor m_goodColor{Qt::green};
+    QColor m_warnColor{Qt::yellow};
+    QColor m_badColor{Qt::red};
     int m_currentTab = 0;
     int m_tabBarHeight = 0;
     QColor m_background{0x1c, 0x1c, 0x1c};

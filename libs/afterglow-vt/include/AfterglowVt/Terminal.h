@@ -4,6 +4,7 @@
 #pragma once
 
 #include <AfterglowVt/Graphics.h>
+#include <AfterglowVt/ProgramStatus.h>
 #include <AfterglowVt/Parser.h>
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Unicode.h>
@@ -99,6 +100,9 @@ public:
     /// The pointer shape the program asks for (OSC 22), a CSS cursor name;
     /// empty restores the default.
     virtual void pointerShapeChanged(std::string_view shape) { }
+    /// Program status records (OSC 7501, or legacy OSC 9;4) changed; read
+    /// them through Terminal::programStatus().
+    virtual void programStatusChanged() { }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
     /// has no image codecs of its own; return false if decoding fails.
     /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
@@ -187,6 +191,12 @@ public:
 
     /// Kitty graphics state of the active screen.
     const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }
+
+    /// What programs report doing (OSC 7501). Records belong to the terminal,
+    /// not a screen.
+    const ProgramStatus& programStatus() const noexcept { return m_programStatus; }
+    /// The program attached to the terminal exited: in-flight status ends.
+    void programExited();
     /// Advances image animations. Returns the next time (steady clock, ms) a
     /// frame is due, or 0 when nothing is animating.
     std::uint64_t advanceAnimations(std::uint64_t nowMs);
@@ -338,6 +348,8 @@ private:
 
     // Kitty graphics, one store per screen.
     GraphicsStore m_graphics[2];
+
+    ProgramStatus m_programStatus;
 
     // Kitty keyboard flag stacks, one per screen as the protocol requires.
     std::vector<std::uint8_t> m_kittyStack[2];

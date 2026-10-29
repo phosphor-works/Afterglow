@@ -30,7 +30,7 @@ Item {
             required property var modelData
             x: modelData.x + modelData.width - width - 8
             y: modelData.y + 6
-            width: Math.min(label.implicitWidth + 16, modelData.width * 0.5)
+            width: Math.min(label.implicitWidth + 16 + (paneStatus.visible ? paneStatus.width + 6 : 0), modelData.width * 0.5)
             height: label.implicitHeight + 6
             radius: height / 2
             color: Qt.rgba(root.controller.background.r, root.controller.background.g,
@@ -38,10 +38,20 @@ Item {
             border.color: modelData.focused ? root.controller.accent
                                             : Qt.rgba(root.controller.foreground.r, root.controller.foreground.g,
                                                       root.controller.foreground.b, 0.15)
+            StatusIndicator {
+                id: paneStatus
+                controller: root.controller
+                status: parent.modelData.status || ({})
+                anchors.left: parent.left
+                anchors.leftMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+            }
             Text {
                 id: label
-                anchors.centerIn: parent
-                width: parent.width - 16
+                anchors.left: paneStatus.visible ? paneStatus.right : parent.left
+                anchors.leftMargin: paneStatus.visible ? 4 : 8
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - 16 - (paneStatus.visible ? paneStatus.width + 2 : 0)
                 horizontalAlignment: Text.AlignHCenter
                 text: parent.modelData.title.length > 0 ? parent.modelData.title : "shell"
                 elide: Text.ElideMiddle

@@ -25,6 +25,7 @@
 #include <QKeyEvent>
 #include <QLoggingCategory>
 #include <QDBusConnection>
+#include <QDateTime>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
 #include <QInputMethod>
@@ -185,6 +186,14 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     connect(pane, &QObject::destroyed, this, [this, pane] {
         m_motion.erase(pane);
         m_growFrom.erase(pane);
+        if (m_statusViews.erase(pane) > 0) {
+            publishLauncherStatus();
+        }
+    });
+    connect(pane, &Pane::statusChanged, this, [this, guard = QPointer<Pane>(pane)] {
+        if (guard) {
+            paneStatusChanged(guard);
+        }
     });
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::titleUpdated, this, [this, pane] {
@@ -387,6 +396,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     }
     updateTitle();
     restartBlink();
+    acknowledgeStatus();
 }
 
 void TerminalWindow::updateTitle()
@@ -512,7 +522,8 @@ void TerminalWindow::renderNow()
                                       {QStringLiteral("width"), r.width() / dpr},
                                       {QStringLiteral("height"), r.height() / dpr},
                                       {QStringLiteral("title"), p->title()},
-                                      {QStringLiteral("focused"), p == m_focused}});
+                                      {QStringLiteral("focused"), p == m_focused},
+                                      {QStringLiteral("status"), statusSummary(p)}});
         });
     }
     m_controller->setPaneTitles(titles);
@@ -765,6 +776,7 @@ void TerminalWindow::focusInEvent(QFocusEvent*)
         m_focused->sendInput(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
     }
     restartBlink();
+    acknowledgeStatus();
 }
 
 void TerminalWindow::focusOutEvent(QFocusEvent*)
@@ -912,10 +924,21 @@ bool TerminalWindow::chromeVisible() const
 void TerminalWindow::updateChrome()
 {
     QStringList titles;
+    QVariantList tabStatus;
     for (const auto& tab : m_tabs) {
         titles.append(tab->focused ? tab->focused->title() : QString());
+        // The tab shows the most pressing status among its panes.
+        QVariantMap best;
+        tab->splits->forEachPane([&](Pane* p, const QRect&) {
+            const QVariantMap s = statusSummary(p);
+            if (s.value(QStringLiteral("priority")).toInt() > best.value(QStringLiteral("priority")).toInt()) {
+                best = s;
+            }
+        });
+        tabStatus.append(best);
     }
     m_controller->setTabs(titles, m_currentTab, m_tabs.size() > 1 ? TabBarLogicalHeight : 0);
+    m_controller->setTabStatus(tabStatus);
 
     if (m_focused) {
         const auto& snap = m_focused->snapshot();
@@ -923,6 +946,10 @@ void TerminalWindow::updateChrome()
         if (snap.cols > 0) {
             const AfterglowVt::Rgb accent = m_settings.settings().terminal.basePalette[12];
             m_controller->setTheme(color(snap.defaultBg), color(snap.defaultFg), QColor(accent.r, accent.g, accent.b));
+            // Status colours from the palette's bright green, yellow and red.
+            const auto& pal = m_settings.settings().terminal.basePalette;
+            m_controller->setStatusColors(QColor(pal[10].r, pal[10].g, pal[10].b), QColor(pal[11].r, pal[11].g, pal[11].b),
+                                          QColor(pal[9].r, pal[9].g, pal[9].b));
         }
     }
 
@@ -992,6 +1019,221 @@ void TerminalWindow::sendNotification(const QString& title, const QString& body)
         << body << QStringList() << QVariantMap{{QStringLiteral("desktop-entry"), QStringLiteral("io.github.fuddlesworth.Afterglow")}}
         << int(-1);
     QDBusConnection::sessionBus().asyncCall(msg);
+}
+
+namespace {
+
+int statusPriority(const PaneStatusRecord& r, quint64 acknowledged)
+{
+    using AfterglowVt::StatusState;
+    switch (r.state) {
+    case StatusState::Blocked:
+        return 4;
+    case StatusState::Error:
+        return r.serial > acknowledged ? 3 : 0;
+    case StatusState::Working:
+        return 2;
+    case StatusState::Done:
+        return r.serial > acknowledged ? 1 : 0;
+    case StatusState::Idle:
+        return 0; // at rest: nothing to show
+    }
+    return 0;
+}
+
+QString statusStateName(AfterglowVt::StatusState s)
+{
+    using AfterglowVt::StatusState;
+    switch (s) {
+    case StatusState::Working:
+        return QStringLiteral("working");
+    case StatusState::Blocked:
+        return QStringLiteral("blocked");
+    case StatusState::Done:
+        return QStringLiteral("done");
+    case StatusState::Error:
+        return QStringLiteral("error");
+    case StatusState::Idle:
+        break;
+    }
+    return QStringLiteral("idle");
+}
+
+/// Program-supplied text shown outside the grid: drop bidirectional
+/// overrides and invisible formatting, which could disguise it.
+QString sanitizedStatusText(const QString& s)
+{
+    QString out;
+    out.reserve(s.size());
+    for (const QChar c : s) {
+        const char16_t u = c.unicode();
+        const bool invisible = (u >= 0x200B && u <= 0x200F) || (u >= 0x202A && u <= 0x202E)
+            || (u >= 0x2060 && u <= 0x2069) || u == 0xFEFF || u == 0x061C || u == 0x00AD;
+        if (!invisible) {
+            out.append(c);
+        }
+    }
+    return out.left(300);
+}
+
+QString statusDescription(const PaneStatusRecord& r)
+{
+    using AfterglowVt::BlockKind;
+    using AfterglowVt::StatusState;
+    QString what;
+    switch (r.state) {
+    case StatusState::Blocked:
+        what = r.kind == BlockKind::Permission ? QObject::tr("Needs permission")
+            : r.kind == BlockKind::Question    ? QObject::tr("Has a question")
+            : r.kind == BlockKind::Auth        ? QObject::tr("Needs authentication")
+                                               : QObject::tr("Waiting for you");
+        break;
+    case StatusState::Working:
+        what = r.progress >= 0 ? QObject::tr("Working, %1%").arg(r.progress) : QObject::tr("Working");
+        break;
+    case StatusState::Done:
+        what = QObject::tr("Done");
+        break;
+    case StatusState::Error:
+        what = QObject::tr("Failed");
+        break;
+    case StatusState::Idle:
+        what = QObject::tr("Idle");
+        break;
+    }
+    if (!r.message.isEmpty()) {
+        what += QStringLiteral(": ") + sanitizedStatusText(r.message);
+    }
+    return what;
+}
+
+QString statusSource(const PaneStatusRecord& r)
+{
+    const QString app = sanitizedStatusText(r.app);
+    const QString title = sanitizedStatusText(r.title);
+    if (!app.isEmpty() && !title.isEmpty()) {
+        return app + QStringLiteral(" \u00B7 ") + title;
+    }
+    return app.isEmpty() ? title : app;
+}
+
+} // namespace
+
+void TerminalWindow::paneStatusChanged(Pane* pane)
+{
+    StatusView& view = m_statusViews[pane];
+    view.records = pane->status();
+
+    // A record entering blocked, done or error is worth telling the user
+    // about; the most pressing one if several change at once.
+    QHash<QString, int> states;
+    const PaneStatusRecord* attention = nullptr;
+    for (const PaneStatusRecord& r : view.records) {
+        states.insert(r.id, int(r.state));
+        using AfterglowVt::StatusState;
+        const bool notable = r.state == StatusState::Blocked || r.state == StatusState::Done || r.state == StatusState::Error;
+        if (notable && view.lastStates.value(r.id, -1) != int(r.state)
+            && (!attention || statusPriority(r, 0) > statusPriority(*attention, 0))) {
+            attention = &r;
+        }
+    }
+    view.lastStates = std::move(states);
+
+    const bool watching = m_windowFocused && pane == m_focused;
+    if (attention && !watching) {
+        if (attention->state == AfterglowVt::StatusState::Blocked && !isActive()) {
+            alert(0);
+        }
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (m_settings.settings().notifications && now - view.lastNotification >= 3000) {
+            view.lastNotification = now;
+            const QString source = statusSource(*attention);
+            sendNotification(source.isEmpty() ? pane->title() : source, statusDescription(*attention));
+        }
+    }
+    acknowledgeStatus();
+    updateChrome();
+    scheduleRender();
+    publishLauncherStatus();
+}
+
+void TerminalWindow::acknowledgeStatus()
+{
+    if (!m_windowFocused || !m_focused) {
+        return;
+    }
+    const auto it = m_statusViews.find(m_focused);
+    if (it == m_statusViews.end()) {
+        return;
+    }
+    quint64 latest = 0;
+    for (const PaneStatusRecord& r : it->second.records) {
+        latest = std::max(latest, r.serial);
+    }
+    if (latest > it->second.acknowledged) {
+        it->second.acknowledged = latest;
+        updateChrome();
+        scheduleRender();
+    }
+}
+
+QVariantMap TerminalWindow::statusSummary(const Pane* pane) const
+{
+    const auto it = m_statusViews.find(pane);
+    if (it == m_statusViews.end()) {
+        return {};
+    }
+    const PaneStatusRecord* pick = nullptr;
+    int best = 0;
+    for (const PaneStatusRecord& r : it->second.records) {
+        const int priority = statusPriority(r, it->second.acknowledged);
+        if (priority > best || (priority == best && priority > 0 && r.serial > pick->serial)) {
+            best = priority;
+            pick = &r;
+        }
+    }
+    if (!pick) {
+        return {};
+    }
+    const QString source = statusSource(*pick);
+    const QString description = statusDescription(*pick);
+    return {{QStringLiteral("state"), statusStateName(pick->state)},
+            {QStringLiteral("progress"), pick->progress},
+            {QStringLiteral("priority"), best},
+            {QStringLiteral("text"), source.isEmpty() ? description : source + QStringLiteral(" \u2014 ") + description}};
+}
+
+void TerminalWindow::publishLauncherStatus()
+{
+    // The Unity LauncherEntry API, which Plasma's task manager reads:
+    // progress from working records, urgency while anything is blocked.
+    bool urgent = false;
+    int progress = -1;
+    for (TerminalWindow* w : windows()) {
+        for (const auto& [pane, view] : w->m_statusViews) {
+            for (const PaneStatusRecord& r : view.records) {
+                urgent |= r.state == AfterglowVt::StatusState::Blocked;
+                if (r.state == AfterglowVt::StatusState::Working && r.progress >= 0) {
+                    progress = std::max(progress, r.progress);
+                }
+            }
+        }
+    }
+    static int lastProgress = -2;
+    static bool lastUrgent = false;
+    if (progress == lastProgress && urgent == lastUrgent) {
+        return;
+    }
+    lastProgress = progress;
+    lastUrgent = urgent;
+    QDBusMessage signal = QDBusMessage::createSignal(QStringLiteral("/io/github/fuddlesworth/Afterglow"),
+                                                     QStringLiteral("com.canonical.Unity.LauncherEntry"),
+                                                     QStringLiteral("Update"));
+    signal << QStringLiteral("application://io.github.fuddlesworth.Afterglow.desktop")
+           << QVariantMap{{QStringLiteral("progress"), progress >= 0 ? progress / 100.0 : 0.0},
+                          {QStringLiteral("progress-visible"), progress >= 0},
+                          {QStringLiteral("urgent"), urgent}};
+    QDBusConnection::sessionBus().send(signal);
 }
 
 void TerminalWindow::applyPointerShape()

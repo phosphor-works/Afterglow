@@ -50,6 +50,7 @@ qt_add_qml_module(afterglow
         qml/CommandPalette.qml
         qml/PasteConfirm.qml
         qml/SearchBar.qml
+        qml/StatusIndicator.qml
         qml/TabBar.qml
 )
 

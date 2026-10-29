@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "Pane.h"
 #include "SplitTree.h"
 #include "animation/FrameClock.h"
 #include "animation/PaneMotion.h"
@@ -112,6 +113,25 @@ private:
     QRectF m_reportedImeRect;
     void sendNotification(const QString& title, const QString& body);
     void ringBell(Pane* pane);
+
+    // Program status (OSC 7501)
+    struct StatusView
+    {
+        QList<PaneStatusRecord> records; ///< cached, so drawing never locks the pane
+        quint64 acknowledged = 0; ///< done and error records up to this serial were seen
+        QHash<QString, int> lastStates; ///< id -> state, to notice changes worth a notification
+        qint64 lastNotification = 0;
+    };
+    std::unordered_map<const Pane*, StatusView> m_statusViews;
+    void paneStatusChanged(Pane* pane);
+    /// The focused pane of an active window has been seen: its done and
+    /// error records stop showing.
+    void acknowledgeStatus();
+    /// The most pressing record of @p pane: { state, progress, text }, or
+    /// an empty map when nothing is worth showing.
+    QVariantMap statusSummary(const Pane* pane) const;
+    /// Taskbar progress and urgency across all windows.
+    static void publishLauncherStatus();
     void pasteText(Pane* pane, const QByteArray& text);
 
     // Animation

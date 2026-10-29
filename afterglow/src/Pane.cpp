@@ -479,6 +479,25 @@ void Pane::pointerShapeChanged(std::string_view shape)
     Q_EMIT pointerShapeRequested(QString::fromUtf8(shape.data(), qsizetype(shape.size())));
 }
 
+void Pane::programStatusChanged()
+{
+    Q_EMIT statusChanged(); // queued to the GUI thread, which reads status()
+}
+
+QList<PaneStatusRecord> Pane::status() const
+{
+    std::lock_guard lock(m_mutex);
+    const AfterglowVt::ProgramStatus& ps = m_terminal.programStatus();
+    QList<PaneStatusRecord> out;
+    out.reserve(qsizetype(ps.records().size()));
+    auto str = [](std::string_view s) { return QString::fromUtf8(s.data(), qsizetype(s.size())); };
+    for (const AfterglowVt::StatusRecord& r : ps.records()) {
+        out.append(PaneStatusRecord{str(r.id), r.state, r.kind, r.progress, str(ps.effectiveApp(r)), str(r.title),
+                                    str(r.msg), r.serial});
+    }
+    return out;
+}
+
 void Pane::ptyData(std::string_view bytes)
 {
     {
@@ -508,6 +527,10 @@ void Pane::ptyClosed(int status)
         qCWarning(lcPane) << "shell killed by signal" << WTERMSIG(status) << (WCOREDUMP(status) ? "(core dumped)" : "");
     } else {
         qCInfo(lcPane) << "shell exited with status" << WEXITSTATUS(status);
+    }
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.programExited();
     }
     Q_EMIT closed();
 }

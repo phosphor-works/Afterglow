@@ -1168,6 +1168,12 @@ void Terminal::fullReset()
     m_attributeChangeExtent = 0;
     m_kittyStack[0].clear();
     m_kittyStack[1].clear();
+    if (!m_programStatus.records().empty()) {
+        m_programStatus.reset();
+        m_host.programStatusChanged();
+    } else {
+        m_programStatus.reset();
+    }
     m_graphics[0].clear();
     m_graphics[1].clear();
     m_cursorShape = m_options.cursorShape;
@@ -2241,6 +2247,13 @@ void Terminal::reportRectChecksum(const Params& p)
     reply(std::string_view(buf, std::size_t(n)));
 }
 
+void Terminal::programExited()
+{
+    if (m_programStatus.endActivity()) {
+        m_host.programStatusChanged();
+    }
+}
+
 void Terminal::reportDeviceAttributes()
 {
     // VT500 level with what afterglow implements: selective erase (6),
@@ -2419,9 +2432,38 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         oscColor(num, rest, bel);
         break;
     case 9:
-        // iTerm2 notification. "9;4;..." is ConEmu's progress report, not a message.
-        if (!rest.starts_with("4;") && !rest.empty()) {
+        // iTerm2 notification. "9;4;st;pr" is ConEmu's progress report, which
+        // feeds program status until a program speaks OSC 7501.
+        if (rest.starts_with("4;") || rest == "4") {
+            int st = 0;
+            int pr = 0;
+            const std::string_view args = rest.size() > 2 ? rest.substr(2) : std::string_view{};
+            const auto semi2 = args.find(';');
+            std::from_chars(args.data(), args.data() + (semi2 == std::string_view::npos ? args.size() : semi2), st);
+            if (semi2 != std::string_view::npos) {
+                std::from_chars(args.data() + semi2 + 1, args.data() + args.size(), pr);
+            }
+            if (m_programStatus.applyLegacyProgress(st, pr)) {
+                m_host.programStatusChanged();
+            }
+        } else if (!rest.empty()) {
             m_host.notify({}, rest);
+        }
+        break;
+    case 7501:
+        switch (m_programStatus.apply(rest)) {
+        case ProgramStatus::Result::Changed:
+            m_host.programStatusChanged();
+            break;
+        case ProgramStatus::Result::Query: {
+            std::string r = "\x1b]7501;";
+            r += ProgramStatus::queryReply();
+            r += bel ? "\x07" : "\x1b\\";
+            reply(r);
+            break;
+        }
+        case ProgramStatus::Result::Ignored:
+            break;
         }
         break;
     case 777: {
@@ -2531,6 +2573,10 @@ void Terminal::semanticPrompt(std::string_view args)
     switch (kind) {
     case 'A': // prompt start
     case 'N': // new command: prompt start after implicitly finishing the last one
+        // Back at the shell: whatever a program reported in flight is over.
+        if (m_programStatus.endActivity()) {
+            m_host.programStatusChanged();
+        }
         m_semanticZone = SemanticZone::Prompt;
         if (!m_modes.altScreen) {
             m_active->row(cursor().y).promptStart = true;

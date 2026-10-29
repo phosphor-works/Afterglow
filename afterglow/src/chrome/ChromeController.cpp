@@ -16,6 +16,26 @@ void ChromeController::setTabs(const QStringList& titles, int current, int barHe
     Q_EMIT tabsChanged();
 }
 
+void ChromeController::setTabStatus(const QVariantList& status)
+{
+    if (status == m_tabStatus) {
+        return;
+    }
+    m_tabStatus = status;
+    Q_EMIT tabStatusChanged();
+}
+
+void ChromeController::setStatusColors(const QColor& good, const QColor& warn, const QColor& bad)
+{
+    if (good == m_goodColor && warn == m_warnColor && bad == m_badColor) {
+        return;
+    }
+    m_goodColor = good;
+    m_warnColor = warn;
+    m_badColor = bad;
+    Q_EMIT themeChanged();
+}
+
 void ChromeController::setTheme(const QColor& background, const QColor& foreground, const QColor& accent)
 {
     if (background == m_background && foreground == m_foreground && accent == m_accent) {

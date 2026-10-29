@@ -41,11 +41,21 @@ Rectangle {
                     color: bar.controller.accent
                 }
 
-                Text {
+                StatusIndicator {
+                    id: status
+                    controller: bar.controller
+                    status: bar.controller.tabStatus[tab.index] || ({})
                     anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: visible ? 10 : 0
+                    z: 10
+                }
+
+                Text {
+                    anchors.left: status.right
                     anchors.right: closeButton.left
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: 12
+                    anchors.leftMargin: status.visible ? 6 : 12
                     anchors.rightMargin: 4
                     text: tab.modelData.length > 0 ? tab.modelData : "afterglow"
                     elide: Text.ElideRight

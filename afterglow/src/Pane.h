@@ -20,6 +20,19 @@
 
 namespace Afterglow {
 
+/// A program status record (OSC 7501) as the GUI uses it.
+struct PaneStatusRecord
+{
+    QString id;
+    AfterglowVt::StatusState state = AfterglowVt::StatusState::Idle;
+    AfterglowVt::BlockKind kind = AfterglowVt::BlockKind::None;
+    int progress = -1;
+    QString app; ///< inherited from ancestors when the record has none
+    QString title;
+    QString message;
+    quint64 serial = 0;
+};
+
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
 /// m_mutex; everything else runs on the GUI thread.
@@ -78,6 +91,9 @@ public:
     /// cursor until it is committed. @p cursor is its caret, in characters.
     void setPreedit(const QString& text, int cursor);
 
+    /// Program status records, copied (GUI thread).
+    QList<PaneStatusRecord> status() const;
+
     /// Scrolls to the previous (@p direction < 0) or next shell prompt.
     /// Returns false when there is none that way.
     bool jumpToPrompt(int direction);
@@ -98,6 +114,8 @@ Q_SIGNALS:
     void clipboardWriteRequested(const QString& text, bool primarySelection);
     void notificationRequested(const QString& title, const QString& body);
     void pointerShapeRequested(const QString& shape);
+    /// Program status records changed; read them with status().
+    void statusChanged();
     void closed();
 
 private:
@@ -108,6 +126,7 @@ private:
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void notify(std::string_view title, std::string_view body) override;
     void pointerShapeChanged(std::string_view shape) override;
+    void programStatusChanged() override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
 
