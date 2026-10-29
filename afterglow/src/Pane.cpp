@@ -141,7 +141,14 @@ bool Pane::refreshSnapshot()
     }
     if (m_terminal.generation() != m_snapshotGeneration || m_selectionSerial != m_snapshotSelectionSerial) {
         const bool selectionHere = m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen;
-        m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr);
+        AfterglowRender::SearchHighlight highlight;
+        if (m_searchActive) {
+            highlight.matches = &m_searchMatches;
+            highlight.current = m_searchCurrent;
+            highlight.matchColor = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
+            highlight.currentColor = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
+        }
+        m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight);
         m_snapshotSelectionSerial = m_selectionSerial;
         qCDebug(lcPane) << "snapshot generation" << m_terminal.generation() << "images" << m_snapshot.images.size();
         m_snapshotGeneration = m_terminal.generation();
@@ -206,6 +213,93 @@ QString Pane::selectedText() const
         return {};
     }
     return QString::fromStdString(m_selection.text(m_terminal.screen()));
+}
+
+namespace {
+/// Scrolls so absolute row @p abs is shown, near the middle when it was off screen.
+void revealRow(AfterglowVt::Terminal& t, std::size_t abs)
+{
+    const AfterglowVt::Screen& scr = t.screen();
+    const std::size_t top = scr.viewportTop();
+    if (abs >= top && abs < top + std::size_t(scr.rows())) {
+        return;
+    }
+    const long desiredTop = std::max(0L, long(abs) - scr.rows() / 2);
+    t.scrollViewport(long(top) - desiredTop);
+}
+} // namespace
+
+Pane::SearchResult Pane::search(const QString& query, int direction)
+{
+    std::lock_guard lock(m_mutex);
+    const std::u32string needle = query.toStdU32String();
+    const AfterglowVt::Screen& scr = m_terminal.screen();
+    if (direction == 0 || needle != m_searchQuery || !m_searchActive) {
+        m_searchQuery = needle;
+        m_searchMatches = AfterglowVt::findAll(scr, needle);
+        m_searchActive = true;
+        // Start from the newest match at or above the bottom of the viewport.
+        const std::uint64_t bottom = scr.rowsDropped() + scr.viewportTop() + std::size_t(scr.rows()) - 1;
+        m_searchCurrent = -1;
+        for (int i = int(m_searchMatches.size()) - 1; i >= 0; --i) {
+            if (m_searchMatches[std::size_t(i)].start.row <= bottom) {
+                m_searchCurrent = i;
+                break;
+            }
+        }
+        if (m_searchCurrent < 0 && !m_searchMatches.empty()) {
+            m_searchCurrent = int(m_searchMatches.size()) - 1;
+        }
+    } else if (!m_searchMatches.empty()) {
+        const int n = int(m_searchMatches.size());
+        m_searchCurrent = ((m_searchCurrent + direction) % n + n) % n;
+    }
+    if (m_searchCurrent >= 0) {
+        const long long abs = scr.absoluteIndexOf(m_searchMatches[std::size_t(m_searchCurrent)].start.row);
+        if (abs >= 0) {
+            revealRow(m_terminal, std::size_t(abs));
+        }
+    }
+    ++m_selectionSerial; // highlights changed: recapture
+    return {m_searchCurrent, int(m_searchMatches.size())};
+}
+
+void Pane::clearSearch()
+{
+    std::lock_guard lock(m_mutex);
+    if (!m_searchActive) {
+        return;
+    }
+    m_searchActive = false;
+    m_searchMatches.clear();
+    m_searchQuery.clear();
+    m_searchCurrent = -1;
+    ++m_selectionSerial;
+}
+
+bool Pane::jumpToPrompt(int direction)
+{
+    std::lock_guard lock(m_mutex);
+    const AfterglowVt::Screen& scr = m_terminal.screen();
+    const std::size_t top = scr.viewportTop();
+    if (direction < 0) {
+        for (std::size_t abs = top; abs-- > 0;) {
+            if (scr.absoluteRow(abs).promptStart) {
+                m_terminal.scrollViewport(long(top) - long(abs));
+                return true;
+            }
+        }
+        return false;
+    }
+    for (std::size_t abs = top + 1; abs < scr.totalRows(); ++abs) {
+        if (scr.absoluteRow(abs).promptStart) {
+            // Past the live screen's top is the live screen itself.
+            const long target = std::min<long>(long(abs), long(scr.historySize()));
+            m_terminal.scrollViewport(long(top) - target);
+            return true;
+        }
+    }
+    return false;
 }
 
 QString Pane::title() const

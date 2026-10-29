@@ -8,6 +8,7 @@ add_executable(afterglow_vt_tests
     InputTest.cpp
     ParserTest.cpp
     ScreenTest.cpp
+    SearchTest.cpp
     SelectionTest.cpp
     TerminalTest.cpp
     UnicodeTest.cpp

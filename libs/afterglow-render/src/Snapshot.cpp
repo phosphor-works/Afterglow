@@ -9,7 +9,7 @@ namespace AfterglowRender {
 
 using namespace AfterglowVt;
 
-void PaneSnapshot::capture(const Terminal& t, const Selection* selection)
+void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search)
 {
     const Screen& scr = t.screen();
     const Modes& modes = t.modes();
@@ -34,6 +34,18 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection)
     const Selection::Range range = hasSelection ? selection->range(scr) : Selection::Range{};
 
     const std::size_t top = scr.viewportTop();
+    // Matches overlapping the viewport, found once instead of per cell.
+    std::vector<int> visibleMatches;
+    if (search.matches) {
+        const std::uint64_t first = scr.rowsDropped() + top;
+        const std::uint64_t last = first + std::uint64_t(rows) - 1;
+        for (int i = 0; i < int(search.matches->size()); ++i) {
+            const SearchMatch& m = (*search.matches)[std::size_t(i)];
+            if (m.end.row >= first && m.start.row <= last) {
+                visibleMatches.push_back(i);
+            }
+        }
+    }
     for (int y = 0; y < rows; ++y) {
         const Row& row = scr.absoluteRow(top + std::size_t(y));
         const std::uint64_t rowId = scr.rowsDropped() + top + std::size_t(y);
@@ -48,6 +60,13 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection)
             if (st.has(Attr::Inverse)) {
                 std::swap(fg, bg);
                 bgDefault = false;
+            }
+            std::uint32_t highlight = 0;
+            for (int i : visibleMatches) {
+                if (contains((*search.matches)[std::size_t(i)], rowId, x)) {
+                    highlight = i == search.current ? search.currentColor : search.matchColor;
+                    break;
+                }
             }
             if (hasSelection && range.contains(rowId, x)) {
                 std::swap(fg, bg);
@@ -64,6 +83,11 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection)
             out.cp = c.isEmpty() ? 0 : c.codepoint();
             out.fg = packRgba(fg, fgAlpha);
             out.bg = bgDefault ? 0 : packRgba(bg);
+            if (highlight != 0) {
+                // Matches read as dark text on the highlight colour.
+                out.bg = highlight;
+                out.fg = packRgba(0x10, 0x10, 0x10);
+            }
             out.underlineColor = st.underlineColor.isDefault() ? out.fg : packRgba(resolve(st.underlineColor, fg));
             out.attrs = st.attrs;
             out.underline = st.underline;

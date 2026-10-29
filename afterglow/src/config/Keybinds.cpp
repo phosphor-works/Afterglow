@@ -16,38 +16,39 @@ struct ActionInfo
 {
     Action action;
     const char* token;
+    const char* title;
     std::initializer_list<const char*> defaults;
 };
 
 const ActionInfo Actions[] = {
-    {Action::SplitRight, "split_right", {"Ctrl+Shift+E"}},
-    {Action::SplitDown, "split_down", {"Ctrl+Shift+O"}},
-    {Action::ClosePane, "close_pane", {"Ctrl+Shift+W"}},
-    {Action::NewWindow, "new_window", {"Ctrl+Shift+N"}},
-    {Action::NewTab, "new_tab", {"Ctrl+Shift+T"}},
-    {Action::CloseTab, "close_tab", {"Ctrl+Shift+Q"}},
-    {Action::NextTab, "next_tab", {"Ctrl+Tab", "Ctrl+PgDown"}},
-    {Action::PreviousTab, "previous_tab", {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
-    {Action::Copy, "copy", {"Ctrl+Shift+C"}},
-    {Action::Paste, "paste", {"Ctrl+Shift+V"}},
-    {Action::FocusLeft, "focus_left", {"Ctrl+Shift+Left"}},
-    {Action::FocusRight, "focus_right", {"Ctrl+Shift+Right"}},
-    {Action::FocusUp, "focus_up", {"Ctrl+Shift+Up"}},
-    {Action::FocusDown, "focus_down", {"Ctrl+Shift+Down"}},
-    {Action::EqualizeSplits, "equalize_splits", {"Ctrl+Shift+="}},
-    {Action::FontBigger, "font_bigger", {"Ctrl+=", "Ctrl++"}},
-    {Action::FontSmaller, "font_smaller", {"Ctrl+-"}},
-    {Action::FontReset, "font_reset", {"Ctrl+0"}},
-    {Action::ScrollPageUp, "scroll_page_up", {"Shift+PgUp"}},
-    {Action::ScrollPageDown, "scroll_page_down", {"Shift+PgDown"}},
-    {Action::ScrollTop, "scroll_top", {"Shift+Home"}},
-    {Action::ScrollBottom, "scroll_bottom", {"Shift+End"}},
-    {Action::JumpPromptUp, "jump_prompt_up", {"Ctrl+Shift+Z"}},
-    {Action::JumpPromptDown, "jump_prompt_down", {"Ctrl+Shift+X"}},
-    {Action::Search, "search", {"Ctrl+Shift+F"}},
-    {Action::CommandPalette, "command_palette", {"Ctrl+Shift+P"}},
-    {Action::ReloadConfig, "reload_config", {"Ctrl+Shift+R"}},
-    {Action::OpenConfig, "open_config", {"Ctrl+Shift+,"}},
+    {Action::SplitRight, "split_right", "Split Right", {"Ctrl+Shift+E"}},
+    {Action::SplitDown, "split_down", "Split Down", {"Ctrl+Shift+O"}},
+    {Action::ClosePane, "close_pane", "Close Pane", {"Ctrl+Shift+W"}},
+    {Action::NewWindow, "new_window", "New Window", {"Ctrl+Shift+N"}},
+    {Action::NewTab, "new_tab", "New Tab", {"Ctrl+Shift+T"}},
+    {Action::CloseTab, "close_tab", "Close Tab", {"Ctrl+Shift+Q"}},
+    {Action::NextTab, "next_tab", "Next Tab", {"Ctrl+Tab", "Ctrl+PgDown"}},
+    {Action::PreviousTab, "previous_tab", "Previous Tab", {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
+    {Action::Copy, "copy", "Copy", {"Ctrl+Shift+C"}},
+    {Action::Paste, "paste", "Paste", {"Ctrl+Shift+V"}},
+    {Action::FocusLeft, "focus_left", "Focus Split Left", {"Ctrl+Shift+Left"}},
+    {Action::FocusRight, "focus_right", "Focus Split Right", {"Ctrl+Shift+Right"}},
+    {Action::FocusUp, "focus_up", "Focus Split Above", {"Ctrl+Shift+Up"}},
+    {Action::FocusDown, "focus_down", "Focus Split Below", {"Ctrl+Shift+Down"}},
+    {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", {"Ctrl+Shift+="}},
+    {Action::FontBigger, "font_bigger", "Increase Font Size", {"Ctrl+=", "Ctrl++"}},
+    {Action::FontSmaller, "font_smaller", "Decrease Font Size", {"Ctrl+-"}},
+    {Action::FontReset, "font_reset", "Reset Font Size", {"Ctrl+0"}},
+    {Action::ScrollPageUp, "scroll_page_up", "Scroll Page Up", {"Shift+PgUp"}},
+    {Action::ScrollPageDown, "scroll_page_down", "Scroll Page Down", {"Shift+PgDown"}},
+    {Action::ScrollTop, "scroll_top", "Scroll to Top", {"Shift+Home"}},
+    {Action::ScrollBottom, "scroll_bottom", "Scroll to Bottom", {"Shift+End"}},
+    {Action::JumpPromptUp, "jump_prompt_up", "Jump to Previous Prompt", {"Ctrl+Shift+Z"}},
+    {Action::JumpPromptDown, "jump_prompt_down", "Jump to Next Prompt", {"Ctrl+Shift+X"}},
+    {Action::Search, "search", "Search", {"Ctrl+Shift+F"}},
+    {Action::CommandPalette, "command_palette", "Command Palette", {"Ctrl+Shift+P"}},
+    {Action::ReloadConfig, "reload_config", "Reload Config", {"Ctrl+Shift+R"}},
+    {Action::OpenConfig, "open_config", "Open Config File", {"Ctrl+Shift+,"}},
 };
 
 constexpr Qt::KeyboardModifiers RelevantMods =
@@ -60,6 +61,16 @@ QString Keybinds::token(Action action)
     for (const ActionInfo& a : Actions) {
         if (a.action == action) {
             return QLatin1String(a.token);
+        }
+    }
+    return {};
+}
+
+QString Keybinds::title(Action action)
+{
+    for (const ActionInfo& a : Actions) {
+        if (a.action == action) {
+            return QString::fromUtf8(a.title);
         }
     }
     return {};

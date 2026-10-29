@@ -136,8 +136,11 @@ public:
 
     /// Renders one frame. @p overlays are solid rectangles drawn last
     /// (split dividers, focus dimming).
+    /// @p overlayTexture, if given, is a premultiplied full-window texture
+    /// (the chrome) drawn over everything; @p overlaySerial changes whenever
+    /// that texture object is replaced.
     void render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
-                std::uint32_t clearColor);
+                std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
 
 private:
     void createPipeline(FontResources& res);

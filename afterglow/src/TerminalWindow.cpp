@@ -4,6 +4,8 @@
 #include "TerminalWindow.h"
 
 #include "KeyMapping.h"
+#include "chrome/ChromeController.h"
+#include "chrome/ChromeLayer.h"
 #include "Pane.h"
 
 #include <AfterglowRender/FontSet.h>
@@ -17,6 +19,7 @@
 #include <QKeyEvent>
 #include <QLoggingCategory>
 #include <QPlatformSurfaceEvent>
+#include <QVariantMap>
 #include <QStyleHints>
 
 #include <cmath>
@@ -33,6 +36,7 @@ QList<TerminalWindow*> s_windows;
 
 constexpr int BlinkIntervalMs = 530;
 constexpr int WheelLines = 3;
+constexpr int TabBarLogicalHeight = 30;
 
 int mouseButtonCode(Qt::MouseButton b)
 {
@@ -49,10 +53,11 @@ int mouseButtonCode(Qt::MouseButton b)
 }
 } // namespace
 
-TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings,
+TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, QQmlEngine& engine,
                                const QString& workingDirectory)
     : m_device(device)
     , m_settings(settings)
+    , m_engine(engine)
 {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(device.vulkanInstance());
@@ -66,9 +71,26 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore
     const QSize initial(ws.initialColumns * m.cellWidth + 2 * pad, ws.initialRows * m.cellHeight + 2 * pad);
     resize(int(std::lround(initial.width() / dpr)), int(std::lround(initial.height() / dpr)));
 
-    Pane* first = createPane(workingDirectory, QRect(QPoint(0, 0), initial));
-    m_splits = std::make_unique<SplitTree>(first);
-    setFocusedPane(first);
+    m_controller = new ChromeController(this);
+    m_chrome = new ChromeLayer(device, this, engine, m_controller);
+    connect(m_chrome, &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::activateTabRequested, this, &TerminalWindow::switchTab);
+    connect(m_controller, &ChromeController::closeTabRequested, this, &TerminalWindow::closeTab);
+    connect(m_controller, &ChromeController::newTabRequested, this,
+            [this] { newTab(m_focused ? m_focused->workingDirectory() : QString()); });
+    connect(m_controller, &ChromeController::actionRequested, this, [this](int id) { performAction(Action(id)); });
+    connect(m_controller, &ChromeController::searchRequested, this, &TerminalWindow::runSearch);
+    connect(m_controller, &ChromeController::searchOpenChanged, this, [this] {
+        if (!m_controller->searchOpen() && m_focused) {
+            m_focused->clearSearch();
+            m_controller->setSearchStatus({});
+        }
+        scheduleRender();
+    });
+    connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
+    connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::updateChrome);
+
+    newTab(workingDirectory);
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
@@ -90,6 +112,9 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore
 TerminalWindow::~TerminalWindow()
 {
     s_windows.removeAll(this);
+    // The chrome renders on the device through this window; it goes first.
+    delete m_chrome;
+    m_chrome = nullptr;
     m_renderer.reset();
 }
 
@@ -108,6 +133,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         if (pane == m_focused) {
             updateTitle();
         }
+        Q_EMIT tabsChanged();
     });
     connect(pane, &Pane::closed, this, [this, guard = QPointer<Pane>(pane)] {
         if (guard) {
@@ -161,28 +187,106 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction)
 
 void TerminalWindow::closePane(Pane* pane)
 {
-    if (!m_splits->contains(pane)) {
+    const int index = tabOf(pane);
+    if (index < 0) {
         return;
     }
-    if (!m_splits->remove(pane)) {
-        // The last pane: the window goes with it.
-        qCInfo(lcWindow) << "last pane closed, closing the window";
-        pane->deleteLater();
-        close();
+    Tab& tab = *m_tabs[std::size_t(index)];
+    if (!tab.splits->remove(pane)) {
+        closeTab(index); // the tab's last pane
         return;
     }
-    if (m_focused == pane) {
+    if (tab.focused == pane || (index == m_currentTab && m_focused == pane)) {
         Pane* next = nullptr;
-        m_splits->forEachPane([&next](Pane* p, const QRect&) {
+        tab.splits->forEachPane([&next](Pane* p, const QRect&) {
             if (!next) {
                 next = p;
             }
         });
-        setFocusedPane(next);
+        tab.focused = next;
+        if (index == m_currentTab) {
+            setFocusedPane(next);
+        }
     }
     pane->deleteLater();
     m_layoutSize = QSize();
     scheduleRender();
+}
+
+// --- tabs ------------------------------------------------------------------
+
+int TerminalWindow::tabOf(const Pane* pane) const
+{
+    for (std::size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i]->splits->contains(pane)) {
+            return int(i);
+        }
+    }
+    return -1;
+}
+
+int TerminalWindow::tabBarHeight() const
+{
+    return m_tabs.size() > 1 ? int(std::lround(TabBarLogicalHeight * devicePixelRatio())) : 0;
+}
+
+QRect TerminalWindow::paneArea() const
+{
+    const QSize px = m_renderer->pixelSize().isEmpty()
+        ? (size() * devicePixelRatio())
+        : m_renderer->pixelSize();
+    const int bar = tabBarHeight();
+    return QRect(0, bar, px.width(), std::max(0, px.height() - bar));
+}
+
+void TerminalWindow::newTab(const QString& workingDirectory)
+{
+    auto tab = std::make_unique<Tab>();
+    m_tabs.push_back(std::move(tab));
+    // Size the shell for the area it will get, with the tab bar if it now shows.
+    Pane* first = createPane(workingDirectory, paneArea());
+    m_tabs.back()->splits = std::make_unique<SplitTree>(first);
+    m_tabs.back()->focused = first;
+    switchTab(int(m_tabs.size()) - 1);
+}
+
+void TerminalWindow::switchTab(int index)
+{
+    if (index < 0 || index >= int(m_tabs.size())) {
+        return;
+    }
+    if (m_splits && m_currentTab < int(m_tabs.size())) {
+        m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
+    }
+    m_currentTab = index;
+    Tab& tab = *m_tabs[std::size_t(index)];
+    m_splits = tab.splits.get();
+    m_selectionPane = nullptr;
+    setFocusedPane(tab.focused);
+    m_layoutSize = QSize();
+    Q_EMIT tabsChanged();
+    scheduleRender();
+}
+
+void TerminalWindow::closeTab(int index)
+{
+    if (index < 0 || index >= int(m_tabs.size())) {
+        return;
+    }
+    if (m_tabs.size() == 1) {
+        qCInfo(lcWindow) << "last pane closed, closing the window";
+        m_tabs[0]->splits->forEachPane([](Pane* p, const QRect&) { p->deleteLater(); });
+        close();
+        return;
+    }
+    m_tabs[std::size_t(index)]->splits->forEachPane([](Pane* p, const QRect&) { p->deleteLater(); });
+    m_tabs.erase(m_tabs.begin() + index);
+    if (m_currentTab >= index && m_currentTab > 0) {
+        --m_currentTab;
+    }
+    m_splits = nullptr; // the old pointer may be gone; switchTab must not save into it
+    m_focused = nullptr;
+    switchTab(std::min(m_currentTab, int(m_tabs.size()) - 1));
 }
 
 void TerminalWindow::setFocusedPane(Pane* pane)
@@ -237,7 +341,7 @@ void TerminalWindow::relayout()
 {
     const QSize px = m_renderer->pixelSize();
     const double dpr = devicePixelRatio();
-    m_splits->layout(QRect(QPoint(0, 0), px), std::max(1, int(std::lround(dpr))));
+    m_splits->layout(paneArea(), std::max(1, int(std::lround(dpr))));
     const auto& m = m_renderer->fonts().fonts->metrics();
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         const QRect content = contentRect(r);
@@ -284,7 +388,14 @@ void TerminalWindow::renderNow()
         overlays.emplace_back(d.rect, m_settings.settings().window.dividerColor);
     }
     const std::uint32_t clear = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
-    m_renderer->render(panes, overlays, clear);
+    QRhiTexture* chrome = nullptr;
+    if (chromeVisible()) {
+        updateChrome();
+        // Qt Quick records its own offscreen frame, so this precedes ours.
+        m_chrome->renderIfNeeded(m_renderer->pixelSize());
+        chrome = m_chrome->texture();
+    }
+    m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
 
     if (holding) {
         // A pane is holding its previous frame; look again once the hold may
@@ -397,10 +508,29 @@ bool TerminalWindow::performAction(Action action)
         }
         return true;
     case Action::NewWindow: {
-        auto* w = new TerminalWindow(m_device, m_settings, m_focused ? m_focused->workingDirectory() : QString());
+        auto* w = new TerminalWindow(m_device, m_settings, m_engine,
+                                     m_focused ? m_focused->workingDirectory() : QString());
         w->show();
         return true;
     }
+    case Action::NewTab:
+        newTab(m_focused ? m_focused->workingDirectory() : QString());
+        return true;
+    case Action::CloseTab:
+        closeTab(m_currentTab);
+        return true;
+    case Action::NextTab:
+        if (m_tabs.size() < 2) {
+            return false;
+        }
+        switchTab((m_currentTab + 1) % int(m_tabs.size()));
+        return true;
+    case Action::PreviousTab:
+        if (m_tabs.size() < 2) {
+            return false;
+        }
+        switchTab((m_currentTab + int(m_tabs.size()) - 1) % int(m_tabs.size()));
+        return true;
     case Action::Copy:
         copySelection(true);
         return true;
@@ -437,6 +567,18 @@ bool TerminalWindow::performAction(Action action)
         return scroll(1L << 30);
     case Action::ScrollBottom:
         return scroll(-(1L << 30));
+    case Action::CommandPalette:
+        m_controller->setPaletteOpen(!m_controller->paletteOpen());
+        return true;
+    case Action::Search:
+        m_controller->setSearchOpen(true);
+        return true;
+    case Action::JumpPromptUp:
+    case Action::JumpPromptDown:
+        if (m_focused && m_focused->jumpToPrompt(action == Action::JumpPromptUp ? -1 : 1)) {
+            scheduleRender();
+        }
+        return true;
     case Action::ReloadConfig:
         m_settings.reload();
         return true;
@@ -449,6 +591,76 @@ bool TerminalWindow::performAction(Action action)
     }
 }
 
+bool TerminalWindow::chromeVisible() const
+{
+    return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen();
+}
+
+void TerminalWindow::updateChrome()
+{
+    QStringList titles;
+    for (const auto& tab : m_tabs) {
+        titles.append(tab->focused ? tab->focused->title() : QString());
+    }
+    m_controller->setTabs(titles, m_currentTab, m_tabs.size() > 1 ? TabBarLogicalHeight : 0);
+
+    if (m_focused) {
+        const auto& snap = m_focused->snapshot();
+        auto color = [](std::uint32_t c) { return QColor(int(c & 0xFF), int((c >> 8) & 0xFF), int((c >> 16) & 0xFF)); };
+        if (snap.cols > 0) {
+            const AfterglowVt::Rgb accent = m_settings.settings().terminal.basePalette[12];
+            m_controller->setTheme(color(snap.defaultBg), color(snap.defaultFg), QColor(accent.r, accent.g, accent.b));
+        }
+    }
+
+    QVariantList actions;
+    const Keybinds& kb = m_settings.settings().keybinds;
+    for (Action a : Keybinds::allActions()) {
+        if (a == Action::CommandPalette) {
+            continue;
+        }
+        actions.append(QVariantMap{{QStringLiteral("id"), int(a)},
+                                   {QStringLiteral("title"), Keybinds::title(a)},
+                                   {QStringLiteral("shortcut"), kb.bindingsOf(a).join(QStringLiteral("  "))}});
+    }
+    m_controller->setActions(actions);
+}
+
+void TerminalWindow::runSearch(const QString& query, int direction)
+{
+    if (!m_focused) {
+        return;
+    }
+    if (query.isEmpty()) {
+        m_focused->clearSearch();
+        m_controller->setSearchStatus({});
+        scheduleRender();
+        return;
+    }
+    const Pane::SearchResult r = m_focused->search(query, direction);
+    m_controller->setSearchStatus(r.count == 0 ? QStringLiteral("No matches")
+                                               : QStringLiteral("%1 of %2").arg(r.current + 1).arg(r.count));
+    scheduleRender();
+}
+
+bool TerminalWindow::routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release)
+{
+    if (!chromeVisible()) {
+        m_chromeGrab = false;
+        return false;
+    }
+    if (m_chromeGrab || m_chrome->wantsPointer(pos)) {
+        m_chrome->deliver(e);
+        if (press) {
+            m_chromeGrab = true;
+        } else if (release) {
+            m_chromeGrab = false;
+        }
+        return true;
+    }
+    return false;
+}
+
 void TerminalWindow::applySettings(const Settings& previous)
 {
     const Settings& now = m_settings.settings();
@@ -458,11 +670,22 @@ void TerminalWindow::applySettings(const Settings& previous)
         }
     }
     m_layoutSize = QSize(); // padding may have changed
+    updateChrome();
     scheduleRender();
 }
 
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
+    if (m_controller->wantsKeyboard()) {
+        // The palette and search keybinds still toggle while the chrome has the keyboard.
+        const Action a = m_settings.settings().keybinds.match(e);
+        if (a == Action::CommandPalette || a == Action::Search) {
+            performAction(a);
+            return;
+        }
+        m_chrome->deliver(e);
+        return;
+    }
     if (handleShortcut(e)) {
         return;
     }
@@ -471,6 +694,10 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
 
 void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
 {
+    if (m_controller->wantsKeyboard()) {
+        m_chrome->deliver(e);
+        return;
+    }
     // Auto-repeat comes as release/press pairs; only the press carries it.
     if (!e->isAutoRepeat()) {
         sendKey(e);
@@ -573,6 +800,9 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 
 void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
+    if (routePointerToChrome(e, e->position(), true, false)) {
+        return;
+    }
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
     if (p && p != m_focused) {
         setFocusedPane(p);
@@ -649,6 +879,9 @@ void TerminalWindow::updateSelectionDrag()
 
 void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (routePointerToChrome(e, e->position(), false, true)) {
+        return;
+    }
     if (m_reportedButtons & e->button()) {
         m_reportedButtons &= ~e->button();
         const int code = mouseButtonCode(e->button());
@@ -671,6 +904,14 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 
 void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
+    if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {
+        return;
+    }
+    if (chromeVisible()) {
+        // Keep hover state in the chrome current as the pointer leaves it.
+        QMouseEvent outside(e->type(), QPointF(-1, -1), QPointF(-1, -1), e->button(), e->buttons(), e->modifiers());
+        m_chrome->deliver(&outside);
+    }
     if (m_selectionPane && (e->buttons() & Qt::LeftButton)) {
         m_dragPos = e->position();
         updateSelectionDrag();
@@ -692,6 +933,9 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 
 void TerminalWindow::wheelEvent(QWheelEvent* e)
 {
+    if (routePointerToChrome(e, e->position(), false, false)) {
+        return;
+    }
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
     if (!p) {
         p = m_focused;

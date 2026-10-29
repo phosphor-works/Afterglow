@@ -5,6 +5,7 @@
 
 #include <AfterglowPty/Pty.h>
 #include <AfterglowRender/Snapshot.h>
+#include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -61,6 +62,21 @@ public:
     QString title() const;
     QString workingDirectory() const;
 
+    // Search (GUI thread).
+    struct SearchResult
+    {
+        int current = -1; ///< 0-based, -1 for no match
+        int count = 0;
+    };
+    /// Runs or steps a search and scrolls the match into view. @p direction:
+    /// 0 searches afresh from the bottom of the viewport, 1 next, -1 previous.
+    SearchResult search(const QString& query, int direction);
+    void clearSearch();
+
+    /// Scrolls to the previous (@p direction < 0) or next shell prompt.
+    /// Returns false when there is none that way.
+    bool jumpToPrompt(int direction);
+
     // Selection (GUI thread). Points are cells in the current viewport.
     AfterglowVt::SelectionPoint selectionPointAt(int col, int row) const;
     void startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
@@ -100,6 +116,11 @@ private:
     AfterglowVt::Selection m_selection;
     bool m_selectionOnAltScreen = false;
     std::uint64_t m_selectionSerial = 0;
+
+    std::vector<AfterglowVt::SearchMatch> m_searchMatches;
+    std::u32string m_searchQuery;
+    int m_searchCurrent = -1;
+    bool m_searchActive = false;
 
     AfterglowRender::PaneSnapshot m_snapshot;
     std::uint64_t m_snapshotGeneration = ~0ull;

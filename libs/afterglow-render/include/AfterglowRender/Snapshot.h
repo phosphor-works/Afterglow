@@ -5,6 +5,7 @@
 
 #include <AfterglowRender/afterglowrender_export.h>
 
+#include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -37,6 +38,15 @@ struct SnapshotCell
     std::uint8_t width = 1; ///< 0 for the tail of a wide character
 };
 
+/// Search matches to highlight, with the current one drawn differently.
+struct SearchHighlight
+{
+    const std::vector<AfterglowVt::SearchMatch>* matches = nullptr;
+    int current = -1;
+    std::uint32_t matchColor = 0;
+    std::uint32_t currentColor = 0;
+};
+
 /// What the renderer needs from one terminal, copied under the terminal lock
 /// so shaping and drawing run without holding it. Colours are resolved.
 struct AFTERGLOWRENDER_EXPORT PaneSnapshot
@@ -64,7 +74,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     const SnapshotCell& at(int x, int y) const { return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)]; }
 
     /// @param selection drawn with inverted colours when valid for the active screen.
-    void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr);
+    void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,
+                 const SearchHighlight& search = {});
 };
 
 } // namespace AfterglowRender

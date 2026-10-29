@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #version 440
 
-// Kitty graphics images: straight-alpha RGBA, drawn with grid.vert.
+// Textured quads drawn with grid.vert: kitty images (straight alpha, kind 0)
+// and the chrome layer (premultiplied, kind 1).
 layout(location = 0) in vec2 vUv;
 layout(location = 1) in vec4 vColor;
 // Declared to match grid.vert's outputs; unused here.
@@ -18,6 +19,11 @@ layout(binding = 1) uniform sampler2D image;
 void main()
 {
     vec4 c = texture(image, vUv);
+    if (vKind == 1u) {
+        // Already premultiplied (Qt Quick output).
+        fragColor = c * vColor.a;
+        return;
+    }
     float a = c.a * vColor.a;
     fragColor = vec4(c.rgb * a, a);
 }

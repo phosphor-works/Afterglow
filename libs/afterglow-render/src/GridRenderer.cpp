@@ -474,7 +474,8 @@ void WindowRenderer::createPipeline(FontResources& res)
 }
 
 void WindowRenderer::render(const std::vector<Pane>& panes,
-                            const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor)
+                            const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
+                            QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
     if (!m_hasSwapChain) {
         return;
@@ -521,9 +522,18 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         }
     }
     const auto overlayFirst = std::uint32_t(m_frame.size());
+    const QSize framePx = m_swapChain->currentPixelSize();
     for (const auto& [rect, color] : overlays) {
         m_frame.push_back({float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 0, 0, 0, 0,
                            color, std::uint32_t(InstanceKind::Solid)});
+    }
+
+    // The chrome quad goes last; it is drawn with the image pipeline.
+    std::uint32_t chromeInstance = 0;
+    if (overlayTexture) {
+        chromeInstance = std::uint32_t(m_frame.size());
+        m_frame.push_back({0, 0, float(framePx.width()), float(framePx.height()), 0, 0, 1, 1, packRgba(255, 255, 255),
+                           1u});
     }
 
     QRhi::FrameOpResult r = rhi->beginFrame(m_swapChain.get());
@@ -637,10 +647,23 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
         }
         drawImages(range, false);
     }
-    const auto overlayCount = std::uint32_t(m_frame.size()) - overlayFirst;
+    const auto overlayCount = (overlayTexture ? chromeInstance : std::uint32_t(m_frame.size())) - overlayFirst;
     if (overlayCount > 0) {
         cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
         cb->draw(4, overlayCount, 0, overlayFirst);
+    }
+    if (overlayTexture) {
+        // High bit keeps chrome serials apart from image texture serials.
+        QRhiShaderResourceBindings* srb = imageBindings(overlayTexture, overlaySerial | (1ull << 63));
+        if (!m_imagePipeline) {
+            createImagePipeline(srb);
+        }
+        cb->setGraphicsPipeline(m_imagePipeline.get());
+        cb->setViewport({0, 0, float(px.width()), float(px.height())});
+        cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
+        cb->setShaderResources(srb);
+        cb->setVertexInput(0, 1, &input);
+        cb->draw(4, 1, 0, chromeInstance);
     }
     cb->endPass();
     rhi->endFrame(m_swapChain.get());

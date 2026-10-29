@@ -57,6 +57,8 @@ public:
     static Keybinds fromMap(const QVariantMap& map, QStringList* errors = nullptr);
 
     static QString token(Action action);
+    /// Display name of an action, for the command palette.
+    static QString title(Action action);
     static QList<Action> allActions();
 
     /// The action bound to a key press, or Action::None.

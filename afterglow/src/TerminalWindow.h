@@ -15,6 +15,9 @@
 #include <QWindow>
 
 #include <memory>
+#include <vector>
+
+class QQmlEngine;
 
 namespace AfterglowRender {
 class GpuDevice;
@@ -22,6 +25,8 @@ class GpuDevice;
 
 namespace Afterglow {
 
+class ChromeController;
+class ChromeLayer;
 class Pane;
 
 /// A top-level terminal window: a split tree of panes drawn in one render
@@ -31,10 +36,15 @@ class TerminalWindow : public QWindow
     Q_OBJECT
 
 public:
-    TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, const QString& workingDirectory = {});
+    TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore& settings, QQmlEngine& engine,
+                   const QString& workingDirectory = {});
     ~TerminalWindow() override;
 
     static QList<TerminalWindow*> windows();
+
+Q_SIGNALS:
+    /// The tab list, the current tab or a tab title changed.
+    void tabsChanged();
 
 protected:
     bool event(QEvent* e) override;
@@ -53,6 +63,14 @@ private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area);
     void splitFocused(SplitTree::Direction direction);
+    void newTab(const QString& workingDirectory);
+    void switchTab(int index);
+    void closeTab(int index);
+    int tabOf(const Pane* pane) const;
+    /// Height of the tab bar in pixels; 0 while there is a single tab.
+    int tabBarHeight() const;
+    /// Where the current tab's panes are laid out, in pixels.
+    QRect paneArea() const;
     void closePane(Pane* pane);
     void setFocusedPane(Pane* pane);
     void scheduleRender();
@@ -60,6 +78,12 @@ private:
     void relayout();
     bool handleShortcut(QKeyEvent* e);
     bool performAction(Action action);
+    void updateChrome();
+    bool chromeVisible() const;
+    /// Routes a pointer event to the chrome when it is over it (or the chrome
+    /// holds a press). Returns true if the chrome took it.
+    bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
+    void runSearch(const QString& query, int direction);
     void applySettings(const Settings& previous);
     void sendKey(QKeyEvent* e);
     void paste(QClipboard::Mode mode);
@@ -77,8 +101,20 @@ private:
 
     AfterglowRender::GpuDevice& m_device;
     SettingsStore& m_settings;
+    QQmlEngine& m_engine;
+    ChromeController* m_controller = nullptr;
+    ChromeLayer* m_chrome = nullptr;
+    bool m_chromeGrab = false;
     std::unique_ptr<AfterglowRender::WindowRenderer> m_renderer;
-    std::unique_ptr<SplitTree> m_splits;
+    struct Tab
+    {
+        std::unique_ptr<SplitTree> splits;
+        QPointer<Pane> focused;
+    };
+    std::vector<std::unique_ptr<Tab>> m_tabs;
+    int m_currentTab = 0;
+    // The current tab's tree and focused pane (focus is saved back on switch).
+    SplitTree* m_splits = nullptr;
     QPointer<Pane> m_focused;
     QSize m_layoutSize;
     double m_layoutDpr = 0;

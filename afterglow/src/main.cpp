@@ -8,6 +8,8 @@
 #include <AfterglowRender/GpuDevice.h>
 
 #include <QGuiApplication>
+#include <QQmlEngine>
+#include <QQuickWindow>
 #include <QLoggingCategory>
 
 #include <exception>
@@ -35,7 +37,10 @@ int main(int argc, char** argv)
                                  device.setFontSpec(settings.settings().font);
                              }
                          });
-        auto* window = new Afterglow::TerminalWindow(device, settings);
+        // The chrome's Qt Quick scenes render on afterglow's Vulkan device.
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+        QQmlEngine engine;
+        auto* window = new Afterglow::TerminalWindow(device, settings, engine);
         window->show();
         rc = app.exec();
         // Windows hold swapchains on the device: they go first.
