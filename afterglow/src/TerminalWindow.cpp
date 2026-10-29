@@ -24,10 +24,15 @@
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLoggingCategory>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCall>
 #include <QPlatformSurfaceEvent>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QVariantMap>
+
+#include <utility>
 #include <QStyleHints>
 
 #include <cmath>
@@ -116,6 +121,16 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         scheduleRender();
     });
     connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::pasteConfirmChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::pasteAnswered, this, [this](bool paste) {
+        const QByteArray text = std::exchange(m_pendingPaste, {});
+        if (paste && m_focused) {
+            const std::string bytes = m_focused->withTerminal([&text](Terminal& t) {
+                return AfterglowVt::encodePaste(std::string_view(text.constData(), std::size_t(text.size())), t.modes());
+            });
+            m_focused->sendInput(bytes);
+        }
+    });
     connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::updateChrome);
 
     connect(&m_shaders, &ShaderLibrary::changed, this, &TerminalWindow::applyShaders);
@@ -183,9 +198,21 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     connect(pane, &Pane::clipboardWriteRequested, this, [](const QString& text, bool primary) {
         QGuiApplication::clipboard()->setText(text, primary ? QClipboard::Selection : QClipboard::Clipboard);
     });
-    connect(pane, &Pane::bellRang, this, [this] {
-        if (!isActive()) {
-            alert(0);
+    connect(pane, &Pane::bellRang, this, [this, guard = QPointer<Pane>(pane)] {
+        if (guard) {
+            ringBell(guard);
+        }
+    });
+    connect(pane, &Pane::notificationRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& title, const QString& body) {
+        // Only when the user is not looking at that pane already.
+        if (guard && m_settings.settings().notifications && (!isActive() || guard != m_focused)) {
+            sendNotification(title, body);
+        }
+    });
+    connect(pane, &Pane::pointerShapeRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& shape) {
+        if (guard) {
+            motion(guard).pointerShape = shape;
+            applyPointerShape();
         }
     });
 
@@ -450,6 +477,11 @@ void TerminalWindow::renderNow()
         const QRect shown = wp.params.rect;
         if (multiple && p != m_focused) {
             overlays.emplace_back(shown, dim);
+        }
+        if (PaneMotion& pm = motion(p); pm.bell.isAnimating()) {
+            pm.bell.advance();
+            overlays.emplace_back(shown, packRgba(255, 255, 255, std::uint8_t(std::clamp(pm.bell.value(), 0.0, 1.0) * 46)));
+            animating |= pm.bell.isAnimating();
         }
         // Dividers follow the drawn edges, so they move with split animations.
         if (shown.right() < area.right()) {
@@ -792,7 +824,8 @@ bool TerminalWindow::performAction(Action action)
 
 bool TerminalWindow::chromeVisible() const
 {
-    return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen();
+    return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen()
+        || m_controller->pasteConfirmOpen();
 }
 
 void TerminalWindow::updateChrome()
@@ -840,6 +873,60 @@ void TerminalWindow::runSearch(const QString& query, int direction)
     m_controller->setSearchStatus(r.count == 0 ? QStringLiteral("No matches")
                                                : QStringLiteral("%1 of %2").arg(r.current + 1).arg(r.count));
     scheduleRender();
+}
+
+void TerminalWindow::ringBell(Pane* pane)
+{
+    const Settings::Bell bell = m_settings.settings().bell;
+    if ((bell == Settings::Bell::Attention || bell == Settings::Bell::Both) && !isActive()) {
+        alert(0);
+    }
+    if (bell == Settings::Bell::Visual || bell == Settings::Bell::Both) {
+        motion(pane).bell.start(1.0, 0.0, springSpec<qreal>(m_clock.get(), 14.0));
+        scheduleRender();
+    }
+}
+
+void TerminalWindow::sendNotification(const QString& title, const QString& body)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.Notifications"),
+                                                      QStringLiteral("/org/freedesktop/Notifications"),
+                                                      QStringLiteral("org.freedesktop.Notifications"),
+                                                      QStringLiteral("Notify"));
+    const QString summary = title.isEmpty() ? (m_focused ? m_focused->title() : QStringLiteral("afterglow")) : title;
+    msg << QStringLiteral("afterglow") << uint(0) << QStringLiteral("io.github.fuddlesworth.Afterglow") << summary
+        << body << QStringList() << QVariantMap{{QStringLiteral("desktop-entry"), QStringLiteral("io.github.fuddlesworth.Afterglow")}}
+        << int(-1);
+    QDBusConnection::sessionBus().asyncCall(msg);
+}
+
+void TerminalWindow::applyPointerShape()
+{
+    if (!m_hover.url.isEmpty()) {
+        setCursor(Qt::PointingHandCursor);
+        return;
+    }
+    Pane* pane = m_splits ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    const QString shape = pane ? motion(pane).pointerShape : QString();
+    static const QHash<QString, Qt::CursorShape> Shapes = {
+        {QStringLiteral("default"), Qt::ArrowCursor},     {QStringLiteral("text"), Qt::IBeamCursor},
+        {QStringLiteral("pointer"), Qt::PointingHandCursor}, {QStringLiteral("wait"), Qt::WaitCursor},
+        {QStringLiteral("progress"), Qt::BusyCursor},     {QStringLiteral("crosshair"), Qt::CrossCursor},
+        {QStringLiteral("move"), Qt::SizeAllCursor},      {QStringLiteral("not-allowed"), Qt::ForbiddenCursor},
+        {QStringLiteral("grab"), Qt::OpenHandCursor},     {QStringLiteral("grabbing"), Qt::ClosedHandCursor},
+        {QStringLiteral("help"), Qt::WhatsThisCursor},    {QStringLiteral("ew-resize"), Qt::SizeHorCursor},
+        {QStringLiteral("e-resize"), Qt::SizeHorCursor},  {QStringLiteral("w-resize"), Qt::SizeHorCursor},
+        {QStringLiteral("ns-resize"), Qt::SizeVerCursor}, {QStringLiteral("n-resize"), Qt::SizeVerCursor},
+        {QStringLiteral("s-resize"), Qt::SizeVerCursor},  {QStringLiteral("col-resize"), Qt::SplitHCursor},
+        {QStringLiteral("row-resize"), Qt::SplitVCursor}, {QStringLiteral("nesw-resize"), Qt::SizeBDiagCursor},
+        {QStringLiteral("nwse-resize"), Qt::SizeFDiagCursor},
+    };
+    if (const auto it = Shapes.constFind(shape); it != Shapes.constEnd()) {
+        setCursor(*it);
+    } else {
+        // The terminal's own pointer: a text beam over the grid.
+        setCursor(Qt::IBeamCursor);
+    }
 }
 
 void TerminalWindow::updateLinkHover()
@@ -902,11 +989,7 @@ void TerminalWindow::updateLinkHover()
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
     m_hover = found;
     if (changed) {
-        if (m_hover.url.isEmpty()) {
-            unsetCursor();
-        } else {
-            setCursor(Qt::PointingHandCursor);
-        }
+        applyPointerShape();
         scheduleRender();
     }
 }
@@ -1043,7 +1126,7 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
     if (e->key() == Qt::Key_Control) {
         // queryKeyboardModifiers() still reports Ctrl during its own release.
         m_hover = {};
-        unsetCursor();
+        applyPointerShape();
         scheduleRender();
     }
     if (m_controller->wantsKeyboard()) {
@@ -1090,6 +1173,15 @@ void TerminalWindow::paste(QClipboard::Mode mode)
     }
     const QByteArray text = QGuiApplication::clipboard()->text(mode).toUtf8();
     if (text.isEmpty()) {
+        return;
+    }
+    // Several lines into a program without bracketed paste run one by one.
+    const bool bracketed = m_focused->withTerminal([](Terminal& t) { return t.modes().bracketedPaste; });
+    const QByteArray trimmed = text.trimmed();
+    if (m_settings.settings().confirmUnsafePaste && !bracketed && trimmed.contains('\n')) {
+        m_pendingPaste = text;
+        const QString preview = QString::fromUtf8(trimmed.left(4000));
+        m_controller->askPaste(preview, int(trimmed.count('\n')) + 1);
         return;
     }
     const std::string bytes = m_focused->withTerminal([&text](Terminal& t) {
@@ -1164,6 +1256,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     }
     m_pointer = e->position();
     updateLinkHover();
+    applyPointerShape();
     if (e->button() == Qt::LeftButton && (e->modifiers() & Qt::ControlModifier) && !m_hover.url.isEmpty()) {
         QDesktopServices::openUrl(QUrl(m_hover.url));
         return;

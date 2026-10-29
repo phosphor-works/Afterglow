@@ -14,7 +14,7 @@ Item {
     function wantsPointer(x: real, y: real): bool {
         if (tabBar.visible && y < tabBar.height)
             return true
-        if (commandPalette.visible)
+        if (commandPalette.visible || pasteConfirm.visible)
             return true
         if (searchBar.visible) {
             const p = searchBar.mapFromItem(root, x, y)
@@ -38,6 +38,13 @@ Item {
         anchors.right: root.right
         anchors.margins: 8
         visible: root.controller.searchOpen
+    }
+
+    PasteConfirm {
+        id: pasteConfirm
+        controller: root.controller
+        anchors.fill: root
+        visible: root.controller.pasteConfirmOpen
     }
 
     CommandPalette {

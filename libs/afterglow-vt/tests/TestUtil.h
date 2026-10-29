@@ -18,6 +18,13 @@ struct RecordingHost : ITerminalHost
     void writeToPty(std::string_view bytes) override { written.append(bytes); }
     void titleChanged(std::string_view t) override { title.assign(t); }
     void bell() override { ++bells; }
+    std::string notified;
+    std::string pointer;
+    void notify(std::string_view title, std::string_view body) override
+    {
+        notified = std::string(title) + "|" + std::string(body);
+    }
+    void pointerShapeChanged(std::string_view shape) override { pointer = shape; }
 };
 
 inline void appendUtf8(std::string& out, char32_t cp)

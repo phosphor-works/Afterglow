@@ -82,6 +82,11 @@ public:
     virtual void bell() { }
     /// OSC 52 write. @p selection is the target list ("c", "p", "s"...).
     virtual void clipboardWrite(std::string_view selection, std::string_view data) { }
+    /// A desktop notification (OSC 9 or OSC 777;notify). @p title may be empty.
+    virtual void notify(std::string_view title, std::string_view body) { }
+    /// The pointer shape the program asks for (OSC 22), a CSS cursor name;
+    /// empty restores the default.
+    virtual void pointerShapeChanged(std::string_view shape) { }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
     /// has no image codecs of its own; return false if decoding fails.
     virtual bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,

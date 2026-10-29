@@ -61,6 +61,10 @@ struct Settings
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     bool copyOnSelect = true;
+    enum class Bell { None, Attention, Visual, Both };
+    Bell bell = Bell::Attention;
+    bool notifications = true; ///< OSC 9 / 777 desktop notifications
+    bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
     Keybinds keybinds = Keybinds::defaults();
     /// Shader references (pack ids or file paths), applied in order.
     QStringList paneShaders;

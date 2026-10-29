@@ -71,6 +71,24 @@ void ChromeController::setSearchStatus(const QString& status)
     Q_EMIT searchStatusChanged();
 }
 
+void ChromeController::askPaste(const QString& preview, int lines)
+{
+    m_pasteConfirmOpen = true;
+    m_pastePreview = preview;
+    m_pasteLines = lines;
+    Q_EMIT pasteConfirmChanged();
+}
+
+void ChromeController::answerPaste(bool paste)
+{
+    if (!m_pasteConfirmOpen) {
+        return;
+    }
+    m_pasteConfirmOpen = false;
+    Q_EMIT pasteConfirmChanged();
+    Q_EMIT pasteAnswered(paste);
+}
+
 void ChromeController::runAction(int id)
 {
     setPaletteOpen(false);

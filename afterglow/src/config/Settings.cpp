@@ -129,6 +129,22 @@ PhosphorConfig::Schema buildSchema()
           {QStringLiteral("bar"), QStringLiteral("bar")}}},
         {QStringLiteral("cursorBlink"), true, QMetaType::Bool, QStringLiteral("Blink the cursor")},
         {QStringLiteral("copyOnSelect"), true, QMetaType::Bool, QStringLiteral("Copy selections to the primary selection")},
+        {QStringLiteral("bell"), QStringLiteral("attention"), QMetaType::QString,
+         QStringLiteral("none, attention (mark the window urgent), visual (flash the pane) or both"),
+         [](const QVariant& v) {
+             const QString s = v.toString();
+             return (s == QLatin1String("none") || s == QLatin1String("visual") || s == QLatin1String("both"))
+                 ? QVariant(s)
+                 : QVariant(QStringLiteral("attention"));
+         },
+         {{QStringLiteral("none"), QStringLiteral("none")},
+          {QStringLiteral("attention"), QStringLiteral("attention")},
+          {QStringLiteral("visual"), QStringLiteral("visual")},
+          {QStringLiteral("both"), QStringLiteral("both")}}},
+        {QStringLiteral("notifications"), true, QMetaType::Bool,
+         QStringLiteral("Show desktop notifications programs send (OSC 9, OSC 777)")},
+        {QStringLiteral("confirmUnsafePaste"), true, QMetaType::Bool,
+         QStringLiteral("Ask before pasting several lines into a program that would run them")},
     };
     schema.groups[Window] = {
         intKey(QStringLiteral("padding"), 6, 0, 200, QStringLiteral("Space around the grid in logical pixels")),
@@ -299,6 +315,13 @@ Settings SettingsStore::read() const
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell"));
     s.term = st.read<QString>(Terminal, QStringLiteral("term"));
     s.copyOnSelect = st.read<bool>(Terminal, QStringLiteral("copyOnSelect"));
+    const QString bell = st.read<QString>(Terminal, QStringLiteral("bell"));
+    s.bell = bell == QLatin1String("none")     ? Settings::Bell::None
+             : bell == QLatin1String("visual") ? Settings::Bell::Visual
+             : bell == QLatin1String("both")   ? Settings::Bell::Both
+                                               : Settings::Bell::Attention;
+    s.notifications = st.read<bool>(Terminal, QStringLiteral("notifications"));
+    s.confirmUnsafePaste = st.read<bool>(Terminal, QStringLiteral("confirmUnsafePaste"));
 
     // Window
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));

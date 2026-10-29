@@ -43,6 +43,7 @@ qt_add_qml_module(afterglow
     QML_FILES
         qml/Chrome.qml
         qml/CommandPalette.qml
+        qml/PasteConfirm.qml
         qml/SearchBar.qml
         qml/TabBar.qml
 )

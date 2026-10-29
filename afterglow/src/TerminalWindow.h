@@ -104,6 +104,11 @@ private:
     void runSearch(const QString& query, int direction);
     /// Finds the link under the pointer while Ctrl is held and underlines it.
     void updateLinkHover();
+    /// The pointer for where it is: a link hand, the program's shape, or the default.
+    void applyPointerShape();
+    void sendNotification(const QString& title, const QString& body);
+    void ringBell(Pane* pane);
+    void pasteText(Pane* pane, const QByteArray& text);
 
     // Animation
     PaneMotion& motion(const Pane* pane);
@@ -182,6 +187,7 @@ private:
         int colEnd = -1;
         QString url;
     } m_hover;
+    QByteArray m_pendingPaste;
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;

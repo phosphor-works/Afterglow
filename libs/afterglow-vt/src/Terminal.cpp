@@ -1562,6 +1562,24 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     case 12:
         oscColor(num, rest, bel);
         break;
+    case 9:
+        // iTerm2 notification. "9;4;..." is ConEmu's progress report, not a message.
+        if (!rest.starts_with("4;") && !rest.empty()) {
+            m_host.notify({}, rest);
+        }
+        break;
+    case 777: {
+        // urxvt: 777;notify;title;body
+        if (rest.starts_with("notify;")) {
+            const std::string_view args = rest.substr(7);
+            const auto semi2 = args.find(';');
+            m_host.notify(args.substr(0, semi2), semi2 == std::string_view::npos ? std::string_view{} : args.substr(semi2 + 1));
+        }
+        break;
+    }
+    case 22:
+        m_host.pointerShapeChanged(rest);
+        break;
     case 8: {
         // OSC 8 ; params ; URI. An empty URI ends the link.
         const auto semi2 = rest.find(';');

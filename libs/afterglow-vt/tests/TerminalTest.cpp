@@ -303,3 +303,16 @@ TEST(Terminal, Decrqss)
     t.feed("\x1b[2;3r\x1bP$qr\x1b\\\x1b[6 q\x1bP$q q\x1b\\\x1bP$qx\x1b\\");
     EXPECT_EQ(t.host.written, "\x1bP1$r2;3r\x1b\\\x1bP1$r6 q\x1b\\\x1bP0$r\x1b\\");
 }
+
+TEST(Terminal, NotificationsAndPointer)
+{
+    Term t(10, 2);
+    t.feed("\x1b]9;build done\x07");
+    EXPECT_EQ(t.host.notified, "|build done");
+    t.feed("\x1b]9;4;1;50\x07"); // progress, not a message
+    EXPECT_EQ(t.host.notified, "|build done");
+    t.feed("\x1b]777;notify;Tests;all passed\x1b\\");
+    EXPECT_EQ(t.host.notified, "Tests|all passed");
+    t.feed("\x1b]22;pointer\x1b\\");
+    EXPECT_EQ(t.host.pointer, "pointer");
+}

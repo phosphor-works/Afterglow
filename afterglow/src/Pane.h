@@ -92,6 +92,8 @@ Q_SIGNALS:
     void titleUpdated(const QString& title);
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
+    void notificationRequested(const QString& title, const QString& body);
+    void pointerShapeRequested(const QString& shape);
     void closed();
 
 private:
@@ -100,6 +102,8 @@ private:
     void titleChanged(std::string_view title) override;
     void bell() override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
+    void notify(std::string_view title, std::string_view body) override;
+    void pointerShapeChanged(std::string_view shape) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
 

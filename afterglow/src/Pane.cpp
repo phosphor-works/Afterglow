@@ -400,6 +400,17 @@ void Pane::tickAnimations()
     }
 }
 
+void Pane::notify(std::string_view title, std::string_view body)
+{
+    Q_EMIT notificationRequested(QString::fromUtf8(title.data(), qsizetype(title.size())),
+                                 QString::fromUtf8(body.data(), qsizetype(body.size())));
+}
+
+void Pane::pointerShapeChanged(std::string_view shape)
+{
+    Q_EMIT pointerShapeRequested(QString::fromUtf8(shape.data(), qsizetype(shape.size())));
+}
+
 void Pane::ptyData(std::string_view bytes)
 {
     {

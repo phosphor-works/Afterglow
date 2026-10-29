@@ -25,6 +25,9 @@ class ChromeController : public QObject
     Q_PROPERTY(bool paletteOpen READ paletteOpen WRITE setPaletteOpen NOTIFY paletteOpenChanged)
     Q_PROPERTY(bool searchOpen READ searchOpen WRITE setSearchOpen NOTIFY searchOpenChanged)
     Q_PROPERTY(QString searchStatus READ searchStatus NOTIFY searchStatusChanged)
+    Q_PROPERTY(bool pasteConfirmOpen READ pasteConfirmOpen NOTIFY pasteConfirmChanged)
+    Q_PROPERTY(QString pastePreview READ pastePreview NOTIFY pasteConfirmChanged)
+    Q_PROPERTY(int pasteLines READ pasteLines NOTIFY pasteConfirmChanged)
 
 public:
     using QObject::QObject;
@@ -50,8 +53,14 @@ public:
     QString searchStatus() const { return m_searchStatus; }
     void setSearchStatus(const QString& status);
 
+    bool pasteConfirmOpen() const { return m_pasteConfirmOpen; }
+    QString pastePreview() const { return m_pastePreview; }
+    int pasteLines() const { return m_pasteLines; }
+    /// Asks whether to paste text a shell would run line by line.
+    void askPaste(const QString& preview, int lines);
+
     /// True while the chrome takes keyboard input instead of the terminal.
-    bool wantsKeyboard() const { return m_paletteOpen || m_searchOpen; }
+    bool wantsKeyboard() const { return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen; }
 
     Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
     Q_INVOKABLE void closeTab(int index) { Q_EMIT closeTabRequested(index); }
@@ -59,6 +68,7 @@ public:
     Q_INVOKABLE void runAction(int id);
     /// @p direction: 0 to search again from the current match, 1 next, -1 previous.
     Q_INVOKABLE void search(const QString& query, int direction) { Q_EMIT searchRequested(query, direction); }
+    Q_INVOKABLE void answerPaste(bool paste);
 
 Q_SIGNALS:
     void tabsChanged();
@@ -67,6 +77,8 @@ Q_SIGNALS:
     void paletteOpenChanged();
     void searchOpenChanged();
     void searchStatusChanged();
+    void pasteConfirmChanged();
+    void pasteAnswered(bool paste);
 
     void activateTabRequested(int index);
     void closeTabRequested(int index);
@@ -85,6 +97,9 @@ private:
     bool m_paletteOpen = false;
     bool m_searchOpen = false;
     QString m_searchStatus;
+    bool m_pasteConfirmOpen = false;
+    QString m_pastePreview;
+    int m_pasteLines = 0;
 };
 
 } // namespace Afterglow

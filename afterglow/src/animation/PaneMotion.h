@@ -7,6 +7,7 @@
 
 #include <QPointF>
 #include <QRectF>
+#include <QString>
 
 namespace Afterglow {
 
@@ -17,6 +18,7 @@ struct PaneMotion
     PhosphorAnimation::AnimatedValue<QRectF> rect;
     PhosphorAnimation::AnimatedValue<QPointF> cursor;
     PhosphorAnimation::AnimatedValue<qreal> scroll;
+    PhosphorAnimation::AnimatedValue<qreal> bell; ///< visual bell flash, 1 fading to 0
 
     bool rectKnown = false;
     QRectF rectTarget;
@@ -28,6 +30,8 @@ struct PaneMotion
     /// The viewport offset this pane last gave its terminal, to notice when
     /// the terminal moved it on its own (output pinning, input reset).
     std::size_t appliedOffset = 0;
+    /// The pointer the program asked for (OSC 22); empty for the default.
+    QString pointerShape;
 };
 
 } // namespace Afterglow
