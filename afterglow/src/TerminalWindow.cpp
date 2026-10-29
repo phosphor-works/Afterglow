@@ -3,6 +3,8 @@
 
 #include "TerminalWindow.h"
 
+#include "app/NotificationCenter.h"
+
 #include "KeyMapping.h"
 #include "chrome/ChromeController.h"
 
@@ -218,9 +220,30 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     connect(pane, &Pane::notificationRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& title, const QString& body) {
         // Only when the user is not looking at that pane already.
         if (guard && m_settings.settings().notifications && (!isActive() || guard != m_focused)) {
-            sendNotification(title, body);
+            NotificationCenter::instance().showSimple(guard, this, title.isEmpty() ? guard->title() : title, body);
         }
     });
+    connect(pane, &Pane::desktopNotificationRequested, this,
+            [this, guard = QPointer<Pane>(pane)](const AfterglowVt::NotificationRequest& request) {
+                if (!guard) {
+                    return;
+                }
+                using Kind = AfterglowVt::NotificationRequest::Kind;
+                using Occasion = AfterglowVt::NotificationRequest::Occasion;
+                if (request.kind == Kind::Show) {
+                    if (!m_settings.settings().notifications) {
+                        return;
+                    }
+                    // The program's occasion: when the user is not on the pane, or cannot see it.
+                    const bool focused = isActive() && guard == m_focused;
+                    const bool visible = isExposed() && windowState() != Qt::WindowMinimized && tabOf(guard) == m_currentTab;
+                    if ((request.occasion == Occasion::Unfocused && focused)
+                        || (request.occasion == Occasion::Invisible && visible)) {
+                        return;
+                    }
+                }
+                NotificationCenter::instance().handle(guard, this, request);
+            });
     connect(pane, &Pane::pointerShapeRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& shape) {
         if (guard) {
             motion(guard).pointerShape = shape;
@@ -1008,17 +1031,20 @@ void TerminalWindow::ringBell(Pane* pane)
     }
 }
 
-void TerminalWindow::sendNotification(const QString& title, const QString& body)
+void TerminalWindow::revealPane(Pane* pane)
 {
-    QDBusMessage msg = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.Notifications"),
-                                                      QStringLiteral("/org/freedesktop/Notifications"),
-                                                      QStringLiteral("org.freedesktop.Notifications"),
-                                                      QStringLiteral("Notify"));
-    const QString summary = title.isEmpty() ? (m_focused ? m_focused->title() : QStringLiteral("afterglow")) : title;
-    msg << QStringLiteral("afterglow") << uint(0) << QStringLiteral("io.github.fuddlesworth.Afterglow") << summary
-        << body << QStringList() << QVariantMap{{QStringLiteral("desktop-entry"), QStringLiteral("io.github.fuddlesworth.Afterglow")}}
-        << int(-1);
-    QDBusConnection::sessionBus().asyncCall(msg);
+    const int tab = tabOf(pane);
+    if (tab < 0) {
+        return;
+    }
+    if (tab != m_currentTab) {
+        switchTab(tab);
+    }
+    setFocusedPane(pane);
+    show();
+    raise();
+    requestActivate();
+    scheduleRender();
 }
 
 namespace {
@@ -1148,7 +1174,9 @@ void TerminalWindow::paneStatusChanged(Pane* pane)
         if (m_settings.settings().notifications && now - view.lastNotification >= 3000) {
             view.lastNotification = now;
             const QString source = statusSource(*attention);
-            sendNotification(source.isEmpty() ? pane->title() : source, statusDescription(*attention));
+            NotificationCenter::instance().showSimple(pane, this, source.isEmpty() ? pane->title() : source,
+                                                      statusDescription(*attention),
+                                                      attention->state == AfterglowVt::StatusState::Blocked ? 2 : 1);
         }
     }
     acknowledgeStatus();

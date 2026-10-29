@@ -116,6 +116,8 @@ Q_SIGNALS:
     void pointerShapeRequested(const QString& shape);
     /// Program status records changed; read them with status().
     void statusChanged();
+    /// An OSC 99 desktop notification request (queued to the GUI thread).
+    void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
     void closed();
 
 private:
@@ -127,6 +129,8 @@ private:
     void notify(std::string_view title, std::string_view body) override;
     void pointerShapeChanged(std::string_view shape) override;
     void programStatusChanged() override;
+    void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
+    std::string notificationCapabilities() override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
 
@@ -167,3 +171,5 @@ private:
 };
 
 } // namespace Afterglow
+
+Q_DECLARE_METATYPE(AfterglowVt::NotificationRequest)

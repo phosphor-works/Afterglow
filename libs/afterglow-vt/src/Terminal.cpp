@@ -1163,11 +1163,13 @@ void Terminal::fullReset()
     m_modes.cursorBlink = m_options.cursorBlink;
     m_conformance = 5;
     m_savedDecModes.clear();
+    m_colorStack.clear();
     m_vt52Address = 0;
     m_protection = Protection::Off;
     m_attributeChangeExtent = 0;
     m_kittyStack[0].clear();
     m_kittyStack[1].clear();
+    m_notifications.reset();
     if (!m_programStatus.records().empty()) {
         m_programStatus.reset();
         m_host.programStatusChanged();
@@ -1522,6 +1524,18 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             default:
                 break;
             }
+        }
+        if (i == '#' && (final == 'P' || final == 'Q' || final == 'R')) {
+            if (final == 'P') { // XTPUSHCOLORS: push, or store in slot 1-10
+                pushColors(p.at(0));
+            } else if (final == 'Q') { // XTPOPCOLORS: pop, or restore slot 1-10
+                popColors(p.at(0));
+            } else { // XTREPORTCOLORS: current level and how many are stored
+                char buf[32];
+                const int n = std::snprintf(buf, sizeof buf, "\x1b[%zu;%zu#Q", m_colorStack.size(), m_colorStack.size());
+                reply(std::string_view(buf, std::size_t(n)));
+            }
+            return;
         }
         if (i == '*' && final == '|') { // DECSNLS: lines per screen
             const int lines = p.at(0);
@@ -2450,6 +2464,23 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
             m_host.notify({}, rest);
         }
         break;
+    case 99: {
+        NotificationRequest request;
+        switch (m_notifications.feed(rest, request)) {
+        case NotificationAssembler::Result::Ready:
+            m_host.desktopNotification(request);
+            break;
+        case NotificationAssembler::Result::Query:
+            if (const std::string caps = m_host.notificationCapabilities(); !caps.empty()) {
+                reply(NotificationAssembler::queryReply(request.id, caps));
+            }
+            break;
+        case NotificationAssembler::Result::Pending:
+        case NotificationAssembler::Result::Ignored:
+            break;
+        }
+        break;
+    }
     case 7501:
         switch (m_programStatus.apply(rest)) {
         case ProgramStatus::Result::Changed:
@@ -2541,6 +2572,15 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
             }
         }
         break;
+    case 21:
+        oscColorControl(rest, bel);
+        break;
+    case 30001: // kitty: push colours
+        pushColors(0);
+        break;
+    case 30101: // kitty: pop colours
+        popColors(0);
+        break;
     case 110:
         m_defaultFg = m_options.defaultForeground;
         break;
@@ -2613,6 +2653,149 @@ std::optional<std::size_t> Terminal::redrawablePromptStart() const
         }
     }
     return std::nullopt;
+}
+
+void Terminal::pushColors(int slot)
+{
+    const SavedColors saved{m_palette, m_defaultFg, m_defaultBg, m_cursorColor, m_hasCursorColor};
+    if (slot <= 0) {
+        if (m_colorStack.size() < MaxColorStack) {
+            m_colorStack.push_back(saved);
+        }
+    } else if (std::size_t(slot) <= MaxColorStack) {
+        if (m_colorStack.size() < std::size_t(slot)) {
+            m_colorStack.resize(std::size_t(slot), saved);
+        }
+        m_colorStack[std::size_t(slot) - 1] = saved;
+    }
+}
+
+void Terminal::popColors(int slot)
+{
+    const SavedColors* from = nullptr;
+    if (slot <= 0) {
+        from = m_colorStack.empty() ? nullptr : &m_colorStack.back();
+    } else if (std::size_t(slot) <= m_colorStack.size()) {
+        from = &m_colorStack[std::size_t(slot) - 1];
+    }
+    if (!from) {
+        return;
+    }
+    m_palette = from->palette;
+    m_defaultFg = from->foreground;
+    m_defaultBg = from->background;
+    m_cursorColor = from->cursor;
+    m_hasCursorColor = from->hasCursor;
+    if (slot <= 0) {
+        m_colorStack.pop_back();
+    }
+}
+
+void Terminal::oscColorControl(std::string_view args, bool bel)
+{
+    // kitty OSC 21: key=value pairs separated by ';'. "key=?" queries,
+    // "key=spec" sets, "key=" makes the colour dynamic and a bare "key"
+    // restores the default. Keys: 0-255 and named colours.
+    std::string reply21;
+    auto append = [&reply21](std::string_view key, const Rgb* c) {
+        reply21 += ';';
+        reply21 += key;
+        reply21 += '=';
+        if (c) {
+            char buf[32];
+            const int n = std::snprintf(buf, sizeof buf, "rgb:%02x/%02x/%02x", c->r, c->g, c->b);
+            reply21.append(buf, std::size_t(n));
+        }
+    };
+    const std::array<Rgb, 256> defaults = buildPalette(m_options.basePalette);
+    std::size_t pos = 0;
+    while (pos <= args.size()) {
+        const auto next = args.find(';', pos);
+        const std::string_view item = args.substr(pos, next == std::string_view::npos ? next : next - pos);
+        pos = next == std::string_view::npos ? args.size() + 1 : next + 1;
+        if (item.empty()) {
+            continue;
+        }
+        const auto eq = item.find('=');
+        const std::string_view key = item.substr(0, eq);
+        const bool bare = eq == std::string_view::npos;
+        std::string_view value = bare ? std::string_view{} : item.substr(eq + 1);
+        if (const auto at = value.find('@'); at != std::string_view::npos) {
+            value = value.substr(0, at); // per-colour alpha is not supported
+        }
+        const bool query = value == "?";
+
+        int index = -1;
+        Rgb* target = nullptr;
+        Rgb fallback{};
+        bool known = true;
+        if (std::from_chars(key.data(), key.data() + key.size(), index).ec == std::errc{} && index >= 0 && index < 256) {
+            target = &m_palette[std::size_t(index)];
+            fallback = defaults[std::size_t(index)];
+        } else if (key == "foreground") {
+            target = &m_defaultFg;
+            fallback = m_options.defaultForeground;
+        } else if (key == "background") {
+            target = &m_defaultBg;
+            fallback = m_options.defaultBackground;
+        } else if (key == "cursor") {
+            if (query) {
+                append(key, m_hasCursorColor ? &m_cursorColor : nullptr); // empty: follows the text
+            } else if (bare || value.empty()) {
+                m_hasCursorColor = false;
+            } else if (Rgb c; parseColorSpec(value, c)) {
+                m_cursorColor = c;
+                m_hasCursorColor = true;
+            }
+            continue;
+        } else if (key == "selection_background" || key == "selection_foreground" || key == "cursor_text"
+                   || key == "visual_bell" || key.starts_with("transparent_background_color")) {
+            // Derived from the other colours in afterglow: always dynamic.
+            if (query) {
+                append(key, nullptr);
+            }
+            continue;
+        } else {
+            known = false;
+        }
+        if (!known) {
+            if (query) {
+                // Unknown keys come back as unknown=<base64 of the key, unpadded>.
+                static constexpr char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                std::string enc;
+                const std::string_view k = key.substr(0, 64);
+                for (std::size_t j = 0; j < k.size(); j += 3) {
+                    std::uint32_t v = std::uint32_t(std::uint8_t(k[j])) << 16;
+                    if (j + 1 < k.size()) {
+                        v |= std::uint32_t(std::uint8_t(k[j + 1])) << 8;
+                    }
+                    if (j + 2 < k.size()) {
+                        v |= std::uint8_t(k[j + 2]);
+                    }
+                    enc += B64[(v >> 18) & 63];
+                    enc += B64[(v >> 12) & 63];
+                    if (j + 1 < k.size()) {
+                        enc += B64[(v >> 6) & 63];
+                    }
+                    if (j + 2 < k.size()) {
+                        enc += B64[v & 63];
+                    }
+                }
+                reply21 += ";unknown=" + enc;
+            }
+            continue;
+        }
+        if (query) {
+            append(key, target);
+        } else if (bare || value.empty()) {
+            *target = fallback;
+        } else if (Rgb c; parseColorSpec(value, c)) {
+            *target = c;
+        }
+    }
+    if (!reply21.empty()) {
+        reply("\x1b]21" + reply21 + (bel ? "\x07" : "\x1b\\"));
+    }
 }
 
 void Terminal::oscColor(int which, std::string_view spec, bool bel)

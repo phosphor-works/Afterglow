@@ -4,6 +4,7 @@
 add_library(AfterglowVt SHARED
     src/Graphics.cpp
     src/Input.cpp
+    src/Notifications.cpp
     src/ProgramStatus.cpp
     src/Screen.cpp
     src/Search.cpp

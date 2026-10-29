@@ -249,3 +249,28 @@ TEST(Conformance, Vt52Mode)
     t.feed("\x1b<\x1b[?2$p"); // back to ANSI; DECRQM works again
     EXPECT_EQ(t.take(), "\x1b[?2;1$y");
 }
+
+TEST(Conformance, ColorStack)
+{
+    Term t(10, 2);
+    t.feed("\x1b]4;1;rgb:11/22/33\x1b\\\x1b]10;rgb:aa/bb/cc\x1b\\");
+    t.feed("\x1b[#P"); // XTPUSHCOLORS
+    t.feed("\x1b]4;1;rgb:44/55/66\x1b\\\x1b]10;rgb:00/00/00\x1b\\");
+    t.feed("\x1b[#R");
+    EXPECT_EQ(t.take(), "\x1b[1;1#Q");
+    t.feed("\x1b[#Q\x1b]4;1;?\x1b\\\x1b]10;?\x1b\\"); // XTPOPCOLORS restores both
+    EXPECT_EQ(t.take(), "\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\");
+    t.feed("\x1b]30001\x1b\\\x1b]4;1;rgb:99/99/99\x1b\\\x1b]30101\x1b\\\x1b]4;1;?\x1b\\"); // kitty's push/pop
+    EXPECT_EQ(t.take(), "\x1b]4;1;rgb:1111/2222/3333\x1b\\");
+}
+
+TEST(Conformance, KittyColorControl)
+{
+    Term t(10, 2);
+    t.feed("\x1b]21;foreground=#102030;7=rgb:ff/00/00\x1b\\");
+    t.feed("\x1b]21;foreground=?;7=?;cursor=?;selection_background=?;bogus=?\x1b\\");
+    EXPECT_EQ(t.take(), "\x1b]21;foreground=rgb:10/20/30;7=rgb:ff/00/00;cursor=;selection_background=;unknown=Ym9ndXM\x1b\\");
+    t.feed("\x1b]21;foreground;cursor=#abcdef\x07\x1b]21;cursor=?\x07"); // bare key resets
+    EXPECT_EQ(t.take(), "\x1b]21;cursor=rgb:ab/cd/ef\x07");
+    EXPECT_EQ(t.t.defaultForeground(), TerminalOptions{}.defaultForeground);
+}

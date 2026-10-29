@@ -3,6 +3,8 @@
 
 #include "Pane.h"
 
+#include "app/NotificationCenter.h"
+
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
@@ -35,6 +37,7 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
     : QObject(parent)
     , m_terminal(InitialCols, InitialRows, *this, options)
 {
+    qRegisterMetaType<AfterglowVt::NotificationRequest>();
     m_animationTimer.setSingleShot(true);
     m_animationTimer.setTimerType(Qt::PreciseTimer);
     connect(&m_animationTimer, &QTimer::timeout, this, &Pane::tickAnimations);
@@ -477,6 +480,16 @@ void Pane::notify(std::string_view title, std::string_view body)
 void Pane::pointerShapeChanged(std::string_view shape)
 {
     Q_EMIT pointerShapeRequested(QString::fromUtf8(shape.data(), qsizetype(shape.size())));
+}
+
+void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
+{
+    Q_EMIT desktopNotificationRequested(request);
+}
+
+std::string Pane::notificationCapabilities()
+{
+    return NotificationCenter::capabilities();
 }
 
 void Pane::programStatusChanged()

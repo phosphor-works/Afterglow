@@ -7,6 +7,7 @@ add_executable(afterglow_vt_tests
     ConformanceTest.cpp
     GraphicsTest.cpp
     InputTest.cpp
+    NotificationTest.cpp
     ParserTest.cpp
     ProgramStatusTest.cpp
     ScreenTest.cpp

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <AfterglowVt/Graphics.h>
+#include <AfterglowVt/Notifications.h>
 #include <AfterglowVt/ProgramStatus.h>
 #include <AfterglowVt/Parser.h>
 #include <AfterglowVt/Screen.h>
@@ -103,6 +104,11 @@ public:
     /// Program status records (OSC 7501, or legacy OSC 9;4) changed; read
     /// them through Terminal::programStatus().
     virtual void programStatusChanged() { }
+    /// A kitty desktop notification (OSC 99) to show, close or poll.
+    virtual void desktopNotification(const NotificationRequest& request) { }
+    /// What the host's OSC 99 support covers, as the query reply's key=value
+    /// list ("a=focus,report:c=1:p=title,body..."); empty for no support.
+    virtual std::string notificationCapabilities() { return {}; }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
     /// has no image codecs of its own; return false if decoding fails.
     /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
@@ -287,6 +293,9 @@ private:
     void setCursorStyle(int ps);
 
     void oscColor(int which, std::string_view spec, bool bel);
+    void oscColorControl(std::string_view args, bool bel);
+    void pushColors(int slot);
+    void popColors(int slot);
     void oscPalette(std::string_view args, bool bel);
     void reply(std::string_view bytes);
     void touch() noexcept { ++m_generation; }
@@ -324,6 +333,18 @@ private:
     Rgb m_cursorColor;
     bool m_hasCursorColor = false;
 
+    /// XTPUSHCOLORS / kitty's OSC 30001: saved palettes and dynamic colours.
+    struct SavedColors
+    {
+        std::array<Rgb, 256> palette;
+        Rgb foreground;
+        Rgb background;
+        Rgb cursor;
+        bool hasCursor;
+    };
+    static constexpr std::size_t MaxColorStack = 10;
+    std::vector<SavedColors> m_colorStack;
+
     /// Shell integration (OSC 133): what the cursor is in, and whether the
     /// shell repaints its prompt after a resize (redraw=0 opts out).
     enum class SemanticZone : std::uint8_t { Output, Prompt, Input };
@@ -350,6 +371,7 @@ private:
     GraphicsStore m_graphics[2];
 
     ProgramStatus m_programStatus;
+    NotificationAssembler m_notifications;
 
     // Kitty keyboard flag stacks, one per screen as the protocol requires.
     std::vector<std::uint8_t> m_kittyStack[2];

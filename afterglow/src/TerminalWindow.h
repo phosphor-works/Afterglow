@@ -56,6 +56,8 @@ public:
     ~TerminalWindow() override;
 
     static QList<TerminalWindow*> windows();
+    /// Switches to @p pane's tab, focuses it and raises the window.
+    void revealPane(Pane* pane);
 
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
@@ -111,7 +113,6 @@ private:
     /// The cursor cell in window coordinates, for the input method's popup.
     QRectF inputMethodCursorRect() const;
     QRectF m_reportedImeRect;
-    void sendNotification(const QString& title, const QString& body);
     void ringBell(Pane* pane);
 
     // Program status (OSC 7501)

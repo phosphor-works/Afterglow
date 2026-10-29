@@ -31,6 +31,8 @@ add_executable(afterglow
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
     src/app/Application.cpp
+    src/app/NotificationCenter.cpp
+    src/app/NotificationCenter.h
     src/app/Application.h
     src/app/Services.h
 )
