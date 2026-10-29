@@ -27,6 +27,9 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
+#include <QInputMethod>
+#include <QInputMethodEvent>
+#include <QInputMethodQueryEvent>
 #include <QPlatformSurfaceEvent>
 #include <QRegularExpression>
 #include <QScreen>
@@ -374,6 +377,10 @@ void TerminalWindow::setFocusedPane(Pane* pane)
         Pane* old = m_focused;
         old->sendInput(old->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
     }
+    if (m_focused) {
+        m_focused->setPreedit({}, 0);
+    }
+    QGuiApplication::inputMethod()->reset();
     m_focused = pane;
     if (pane && m_windowFocused) {
         pane->sendInput(pane->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
@@ -503,6 +510,10 @@ void TerminalWindow::renderNow()
         chrome = m_chrome->texture();
     }
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
+    if (const QRectF imeRect = inputMethodCursorRect(); imeRect != m_reportedImeRect && isActive()) {
+        m_reportedImeRect = imeRect;
+        QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
+    }
     if (animating || sliding || m_renderer->animating()) {
         scheduleRender(); // something is moving: keep frames coming
     }
@@ -643,6 +654,55 @@ bool TerminalWindow::event(QEvent* e)
     case QEvent::UpdateRequest:
         renderNow();
         return true;
+    case QEvent::InputMethodQuery: {
+        // The window is its own focus object; tell the input method about the terminal.
+        auto* q = static_cast<QInputMethodQueryEvent*>(e);
+        const Qt::InputMethodQueries queries = q->queries();
+        if (queries & Qt::ImEnabled) {
+            q->setValue(Qt::ImEnabled, !m_controller->wantsKeyboard());
+        }
+        if (queries & Qt::ImCursorRectangle) {
+            q->setValue(Qt::ImCursorRectangle, inputMethodCursorRect());
+        }
+        if (queries & Qt::ImHints) {
+            q->setValue(Qt::ImHints, int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase | Qt::ImhPreferLatin));
+        }
+        // No surrounding text: a terminal cannot let the input method edit it.
+        if (queries & Qt::ImSurroundingText) {
+            q->setValue(Qt::ImSurroundingText, QString());
+        }
+        if (queries & Qt::ImCursorPosition) {
+            q->setValue(Qt::ImCursorPosition, 0);
+        }
+        if (queries & Qt::ImAnchorPosition) {
+            q->setValue(Qt::ImAnchorPosition, 0);
+        }
+        q->accept();
+        return true;
+    }
+    case QEvent::InputMethod: {
+        auto* ime = static_cast<QInputMethodEvent*>(e);
+        if (m_controller->wantsKeyboard()) {
+            m_chrome->deliver(e);
+            return true;
+        }
+        if (m_focused) {
+            if (!ime->commitString().isEmpty()) {
+                m_focused->clearSelection();
+                m_focused->sendInput(ime->commitString().toUtf8().toStdString());
+            }
+            int caret = int(ime->preeditString().size());
+            for (const QInputMethodEvent::Attribute& a : ime->attributes()) {
+                if (a.type == QInputMethodEvent::Cursor) {
+                    caret = a.start;
+                }
+            }
+            m_focused->setPreedit(ime->preeditString(), caret);
+            scheduleRender();
+        }
+        ime->accept();
+        return true;
+    }
     case QEvent::PlatformSurface:
         if (static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType()
             == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
@@ -873,6 +933,19 @@ void TerminalWindow::runSearch(const QString& query, int direction)
     m_controller->setSearchStatus(r.count == 0 ? QStringLiteral("No matches")
                                                : QStringLiteral("%1 of %2").arg(r.current + 1).arg(r.count));
     scheduleRender();
+}
+
+QRectF TerminalWindow::inputMethodCursorRect() const
+{
+    if (!m_focused || !m_splits) {
+        return {};
+    }
+    const auto& m = const_cast<TerminalWindow*>(this)->m_renderer->fonts().fonts->metrics();
+    const auto& snap = m_focused->snapshot();
+    const QPoint origin = contentRect(m_splits->rectOf(m_focused)).topLeft();
+    const qreal dpr = devicePixelRatio();
+    return QRectF((origin.x() + snap.cursorX * m.cellWidth) / dpr, (origin.y() + snap.cursorY * m.cellHeight) / dpr,
+                  m.cellWidth / dpr, m.cellHeight / dpr);
 }
 
 void TerminalWindow::ringBell(Pane* pane)

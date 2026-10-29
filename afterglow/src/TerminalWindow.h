@@ -106,6 +106,9 @@ private:
     void updateLinkHover();
     /// The pointer for where it is: a link hand, the program's shape, or the default.
     void applyPointerShape();
+    /// The cursor cell in window coordinates, for the input method's popup.
+    QRectF inputMethodCursorRect() const;
+    QRectF m_reportedImeRect;
     void sendNotification(const QString& title, const QString& body);
     void ringBell(Pane* pane);
     void pasteText(Pane* pane, const QByteArray& text);

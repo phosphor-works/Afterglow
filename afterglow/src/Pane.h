@@ -74,6 +74,10 @@ public:
     SearchResult search(const QString& query, int direction);
     void clearSearch();
 
+    /// Text being composed by an input method, drawn over the grid at the
+    /// cursor until it is committed. @p cursor is its caret, in characters.
+    void setPreedit(const QString& text, int cursor);
+
     /// Scrolls to the previous (@p direction < 0) or next shell prompt.
     /// Returns false when there is none that way.
     bool jumpToPrompt(int direction);
@@ -126,6 +130,9 @@ private:
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
+    std::u32string m_preedit;
+    int m_preeditCursor = 0;
+    void applyPreedit();
 
     AfterglowRender::PaneSnapshot m_snapshot;
     std::uint64_t m_snapshotGeneration = ~0ull;

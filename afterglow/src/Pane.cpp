@@ -3,6 +3,8 @@
 
 #include "Pane.h"
 
+#include <AfterglowVt/Unicode.h>
+
 #include <QByteArray>
 #include <QFile>
 #include <QStringList>
@@ -166,6 +168,7 @@ bool Pane::refreshSnapshot(int extraRows)
             highlight.currentColor = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
         }
         m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight, extraRows);
+        applyPreedit();
         m_snapshotSelectionSerial = m_selectionSerial;
         m_snapshotExtraRows = extraRows;
         qCDebug(lcPane) << "snapshot generation" << m_terminal.generation() << "images" << m_snapshot.images.size();
@@ -293,6 +296,71 @@ void Pane::clearSearch()
     m_searchQuery.clear();
     m_searchCurrent = -1;
     ++m_selectionSerial;
+}
+
+void Pane::setPreedit(const QString& text, int cursor)
+{
+    std::lock_guard lock(m_mutex);
+    const std::u32string preedit = text.toStdU32String();
+    if (preedit == m_preedit && cursor == m_preeditCursor) {
+        return;
+    }
+    m_preedit = preedit;
+    m_preeditCursor = cursor;
+    ++m_selectionSerial; // recapture with the new overlay
+}
+
+void Pane::applyPreedit()
+{
+    // As foot does: the composition replaces the cells at the cursor,
+    // underlined, shifted left if it would run past the edge, with the
+    // cursor drawn as a bar at the input method's caret.
+    AfterglowRender::PaneSnapshot& s = m_snapshot;
+    if (m_preedit.empty() || !s.cursorVisible || s.cursorY >= s.rows) {
+        return;
+    }
+    std::vector<std::pair<char32_t, int>> cells;
+    int total = 0;
+    int caretCol = -1;
+    for (std::size_t i = 0; i < m_preedit.size(); ++i) {
+        if (int(i) == m_preeditCursor) {
+            caretCol = total;
+        }
+        const int w = AfterglowVt::Unicode::width(m_preedit[i]);
+        if (w == 0) {
+            continue;
+        }
+        cells.emplace_back(m_preedit[i], w);
+        total += w;
+    }
+    if (caretCol < 0) {
+        caretCol = total;
+    }
+    const int start = std::max(0, std::min(s.cursorX, s.cols - std::min(total + 1, s.cols)));
+    int x = start;
+    for (const auto& [cp, w] : cells) {
+        if (x + w > s.cols) {
+            break;
+        }
+        AfterglowRender::SnapshotCell& c = s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(x)];
+        c.cp = cp;
+        c.width = std::uint8_t(w);
+        c.fg = s.defaultFg;
+        c.bg = s.defaultBg;
+        c.underline = AfterglowVt::UnderlineStyle::Single;
+        c.underlineColor = s.defaultFg;
+        c.grapheme = 0;
+        c.link = 0;
+        if (w == 2 && x + 1 < s.cols) {
+            AfterglowRender::SnapshotCell& tail = s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(x + 1)];
+            tail = c;
+            tail.cp = 0;
+            tail.width = 0;
+        }
+        x += w;
+    }
+    s.cursorX = std::min(start + caretCol, s.cols - 1);
+    s.cursorShape = AfterglowVt::CursorShape::Bar;
 }
 
 bool Pane::jumpToPrompt(int direction)
