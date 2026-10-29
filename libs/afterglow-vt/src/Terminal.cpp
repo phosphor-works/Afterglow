@@ -296,8 +296,48 @@ void Terminal::print(char32_t cp)
     Cursor& cur = cursor();
     Screen& scr = *m_active;
 
-    if (cp >= 0x5F && cp <= 0x7E && m_charsets[m_gl] == Charset::DecSpecialGraphics) {
-        cp = DecSpecialGraphics[cp - 0x5F];
+    if (m_vt52Address > 0) {
+        // VT52 ESC Y: row, then column, each offset by 32. A coordinate
+        // off the screen leaves that one unchanged (xterm).
+        if (m_vt52Address-- == 2) {
+            m_vt52Row = int(cp) - 32;
+        } else {
+            const int col = int(cp) - 32;
+            if (m_vt52Row >= 0 && m_vt52Row < rows()) {
+                cur.y = m_vt52Row;
+            }
+            if (col >= 0 && col < cols()) {
+                cur.x = col;
+            }
+            cur.pendingWrap = false;
+        }
+        return;
+    }
+
+    if (cp < 0x80) {
+        const Charset set = m_charsets[m_singleShift ? m_singleShift : m_gl];
+        m_singleShift = 0;
+        switch (set) {
+        case Charset::DecSpecialGraphics:
+            if (cp >= 0x5F && cp <= 0x7E) {
+                cp = DecSpecialGraphics[cp - 0x5F];
+            }
+            break;
+        case Charset::British:
+            if (cp == '#') {
+                cp = U'\u00A3';
+            }
+            break;
+        case Charset::Latin1Supplemental:
+            if (cp >= 0x20) {
+                cp += 0x80;
+            }
+            break;
+        case Charset::Ascii:
+            break;
+        }
+    } else {
+        m_singleShift = 0;
     }
 
     const Unicode::Props props = Unicode::props(cp);
@@ -393,7 +433,7 @@ void Terminal::print(char32_t cp)
 void Terminal::printAscii(const char* text, std::size_t length)
 {
     // Charsets and insert mode change what printing does: take the full path.
-    if (m_charsets[m_gl] != Charset::Ascii || m_modes.insert) {
+    if (m_charsets[m_gl] != Charset::Ascii || m_singleShift != 0 || m_modes.insert || m_vt52Address > 0) {
         for (std::size_t i = 0; i < length; ++i) {
             print(char32_t(static_cast<unsigned char>(text[i])));
         }
@@ -1123,6 +1163,7 @@ void Terminal::fullReset()
     m_modes.cursorBlink = m_options.cursorBlink;
     m_conformance = 5;
     m_savedDecModes.clear();
+    m_vt52Address = 0;
     m_protection = Protection::Off;
     m_attributeChangeExtent = 0;
     m_kittyStack[0].clear();
@@ -1137,6 +1178,7 @@ void Terminal::fullReset()
     }
     std::fill(std::begin(m_charsets), std::end(m_charsets), Charset::Ascii);
     m_gl = 0;
+    m_singleShift = 0;
     m_palette = buildPalette(m_options.basePalette);
     m_defaultFg = m_options.defaultForeground;
     m_defaultBg = m_options.defaultBackground;
@@ -1178,11 +1220,26 @@ void Terminal::decaln()
 void Terminal::escDispatch(const Intermediates& inter, std::uint8_t final)
 {
     m_lastX = -1;
+    if (m_modes.vt52) {
+        if (inter.count == 0) {
+            vt52Dispatch(final);
+        }
+        return;
+    }
     if (inter.count == 1) {
         const char i = inter.bytes[0];
         if (i == '(' || i == ')' || i == '*' || i == '+') {
+            // 94-character sets into G0-G3.
             const int slot = i == '(' ? 0 : i == ')' ? 1 : i == '*' ? 2 : 3;
-            m_charsets[slot] = final == '0' ? Charset::DecSpecialGraphics : Charset::Ascii;
+            m_charsets[slot] = final == '0' ? Charset::DecSpecialGraphics
+                : final == 'A'              ? Charset::British
+                                            : Charset::Ascii;
+        } else if (i == '-' || i == '.' || i == '/') {
+            // 96-character sets into G1-G3; ISO Latin-1 is the one there is.
+            const int slot = i == '-' ? 1 : i == '.' ? 2 : 3;
+            if (final == 'A') {
+                m_charsets[slot] = Charset::Latin1Supplemental;
+            }
         } else if (i == '#' && final == '8') {
             decaln();
         }
@@ -1234,6 +1291,12 @@ void Terminal::escDispatch(const Intermediates& inter, std::uint8_t final)
         break;
     case '>':
         m_modes.keypadApp = false;
+        break;
+    case 'N': // SS2
+        m_singleShift = 2;
+        break;
+    case 'O': // SS3
+        m_singleShift = 3;
         break;
     case 'n':
         m_gl = 2;
@@ -1376,12 +1439,24 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case 't':
             windowOp(p);
             return;
+        case 'x': // DECREQTPARM: no parity, 8 bits, 38400 baud, clock 1
+            if (p.at(0) <= 1) {
+                char buf[32];
+                const int n = std::snprintf(buf, sizeof buf, "\x1b[%d;1;1;128;128;1;0x", p.at(0) + 2);
+                reply(std::string_view(buf, std::size_t(n)));
+            }
+            return;
         case 'u':
             restoreCursor();
             return;
         default:
             return;
         }
+    }
+
+    if (inter.marker == '=' && inter.count == 0 && final == 'c' && p.at(0) == 0) {
+        reply("\x1bP!|00000000\x1b\\"); // DA3: unit ID
+        return;
     }
 
     if (final == 'u' && inter.count == 0 && (inter.marker == '?' || inter.marker == '>' || inter.marker == '<'
@@ -1509,6 +1584,65 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
     }
 }
 
+void Terminal::vt52Dispatch(std::uint8_t final)
+{
+    Cursor& cur = cursor();
+    switch (final) {
+    case 'A':
+        cur.y = std::max(cur.y - 1, 0);
+        cur.pendingWrap = false;
+        break;
+    case 'B':
+        cur.y = std::min(cur.y + 1, rows() - 1);
+        cur.pendingWrap = false;
+        break;
+    case 'C':
+        cur.x = std::min(cur.x + 1, cols() - 1);
+        cur.pendingWrap = false;
+        break;
+    case 'D':
+        cur.x = std::max(cur.x - 1, 0);
+        cur.pendingWrap = false;
+        break;
+    case 'F': // graphics character set
+        m_charsets[m_gl] = Charset::DecSpecialGraphics;
+        break;
+    case 'G':
+        m_charsets[m_gl] = Charset::Ascii;
+        break;
+    case 'H':
+        setCursor(0, 0);
+        break;
+    case 'I':
+        reverseIndex();
+        break;
+    case 'J':
+        eraseDisplay(0);
+        break;
+    case 'K':
+        eraseLine(0);
+        break;
+    case 'Y':
+        m_vt52Address = 2;
+        break;
+    case 'Z':
+        reply("\x1b/Z");
+        break;
+    case '=':
+        m_modes.keypadApp = true;
+        break;
+    case '>':
+        m_modes.keypadApp = false;
+        break;
+    case '<': // back to ANSI mode
+        m_modes.vt52 = false;
+        m_vt52Address = 0;
+        break;
+    default:
+        break;
+    }
+}
+
 void Terminal::softReset()
 {
     // DECSTR, plus what xterm also resets: reverse wrap and DECLRMM.
@@ -1524,6 +1658,7 @@ void Terminal::softReset()
     m_margins = Region{0, rows() - 1, 0, cols() - 1};
     std::fill(std::begin(m_charsets), std::end(m_charsets), Charset::Ascii);
     m_gl = 0;
+    m_singleShift = 0;
     m_active->setPen(Style{}); // DECSCA protection off too
     m_protection = Protection::Off;
     m_active->hasSavedCursor = false;
@@ -1833,6 +1968,13 @@ void Terminal::setDecMode(int mode, bool on)
     case 1:
         m_modes.cursorKeysApp = on;
         break;
+    case 2: // DECANM: reset enters VT52 mode; ESC < leaves it
+        if (!on) {
+            m_modes.vt52 = true;
+            m_charsets[0] = m_charsets[1] = Charset::Ascii;
+            m_gl = 0;
+        }
+        break;
     case 3:
         setColumnMode(on);
         break;
@@ -1979,6 +2121,8 @@ int Terminal::decModeState(int mode) const
         return b(m_modes.leftRightMargins);
     case 1045:
         return b(m_modes.reverseWrapExtended);
+    case 2:
+        return b(!m_modes.vt52);
     case 3:
         return b(m_modes.columns132);
     case 4:

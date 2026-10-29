@@ -31,6 +31,9 @@ int modParam(std::uint8_t mods)
 
 std::string cursorKey(char final, std::uint8_t mods, const Modes& modes)
 {
+    if (modes.vt52) {
+        return std::string("\x1b") + final;
+    }
     if (mods == 0) {
         return std::string(modes.cursorKeysApp ? "\x1bO" : "\x1b[") + final;
     }

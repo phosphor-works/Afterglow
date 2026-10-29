@@ -16,7 +16,9 @@
 
 namespace AfterglowVt {
 
-enum class Charset : std::uint8_t { Ascii, DecSpecialGraphics };
+/// Character sets for G0-G3. British replaces # with the pound sign; Latin-1
+/// Supplemental is the 96-character upper half of ISO 8859-1, in GL.
+enum class Charset : std::uint8_t { Ascii, DecSpecialGraphics, British, Latin1Supplemental };
 
 struct Cursor
 {

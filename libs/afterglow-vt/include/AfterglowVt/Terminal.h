@@ -67,6 +67,7 @@ struct Modes
     bool reverseWrap = false; ///< 45: backspace into the soft-wrapped line above
     bool reverseWrapExtended = false; ///< 1045: backspace wraps across any line, top to bottom
     bool moreFix = false; ///< 41: a tab in the pending-wrap position wraps first
+    bool vt52 = false; ///< DECANM reset: VT52 compatibility mode
     bool allow132 = false; ///< 40: DECCOLM may switch the width
     bool columns132 = false; ///< DECCOLM
     bool noClearOnColumnChange = false; ///< DECNCSM (95)
@@ -258,6 +259,7 @@ private:
     void forwardIndex();
     void reportDeviceAttributes();
     void softReset();
+    void vt52Dispatch(std::uint8_t final);
     void reverseWrapStep();
     void setColumnMode(bool wide);
     void saveDecModes(const Params& params);
@@ -301,6 +303,10 @@ private:
     std::vector<bool> m_tabStops;
     Charset m_charsets[4] = {};
     int m_gl = 0;
+    int m_singleShift = 0; ///< SS2/SS3: G2 or G3 for the next character only
+    /// VT52 ESC Y: the row and column bytes still to come (2, 1, 0).
+    int m_vt52Address = 0;
+    int m_vt52Row = 0;
 
     std::array<Rgb, 256> m_palette{};
     Rgb m_defaultFg;

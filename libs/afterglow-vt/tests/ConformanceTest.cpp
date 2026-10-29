@@ -216,3 +216,36 @@ TEST(Conformance, ColorSpecsFollowXParseColor)
     t.feed("\x1b]4;1;rgbi:1/0/0.5\x1b\\\x1b]4;1;?\x1b\\");
     EXPECT_EQ(t.take(), "\x1b]4;1;rgb:ffff/0000/8080\x1b\\");
 }
+
+TEST(Conformance, CharacterSetsAndSingleShifts)
+{
+    Term t(20, 2);
+    t.feed("\x1b(A#\x1b(B#"); // British, then ASCII
+    EXPECT_EQ(rowText(t.t, 0), "£#");
+    t.feed("\r\n\x1b.A\x1bNAB\x1bOC"); // Latin-1 in G2, SS2 for one character; G3 stays ASCII
+    EXPECT_EQ(rowText(t.t, 1), "ÁBC");
+}
+
+TEST(Conformance, TertiaryAttributesAndTerminalParameters)
+{
+    Term t(10, 2);
+    t.feed("\x1b[=c\x1b[x\x1b[1x");
+    EXPECT_EQ(t.take(), "\x1bP!|00000000\x1b\\\x1b[2;1;1;128;128;1;0x\x1b[3;1;1;128;128;1;0x");
+}
+
+TEST(Conformance, Vt52Mode)
+{
+    Term t(20, 5);
+    t.feed("\x1b[?2l"); // into VT52 mode
+    t.feed("\x1bY\"%ab\x1b" "D\x1b" "DX"); // row 2, column 5; back twice
+    EXPECT_EQ(rowText(t.t, 2), "     Xb");
+    t.feed("\x1bY~#"); // row off the screen: only the column moves
+    EXPECT_EQ(t.t.screen().cursor.y, 2);
+    EXPECT_EQ(t.t.screen().cursor.x, 3);
+    t.feed("\x1bZ");
+    EXPECT_EQ(t.take(), "\x1b/Z");
+    t.feed("\x1bH\x1b" "Fa\x1bGa"); // graphics character set on and off
+    EXPECT_EQ(rowText(t.t, 0), "\u2592a");
+    t.feed("\x1b<\x1b[?2$p"); // back to ANSI; DECRQM works again
+    EXPECT_EQ(t.take(), "\x1b[?2;1$y");
+}
