@@ -4,6 +4,8 @@
 #pragma once
 
 #include "SplitTree.h"
+#include "animation/FrameClock.h"
+#include "animation/PaneMotion.h"
 #include "config/Settings.h"
 
 #include <AfterglowRender/GridRenderer.h>
@@ -15,6 +17,7 @@
 #include <QWindow>
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class QQmlEngine;
@@ -85,6 +88,16 @@ private:
     /// holds a press). Returns true if the chrome took it.
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
+
+    // Animation
+    PaneMotion& motion(const Pane* pane);
+    /// Scrolls a pane's view by @p rows (positive is back in history),
+    /// eased when @p animate and scroll animation is on.
+    void scrollPane(Pane* pane, double rows, bool animate = true);
+    /// Advances a pane's motion and returns how to draw it; refreshes its
+    /// snapshot. Sets @p animating when something is still moving.
+    void preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,
+                     bool& holding, bool& animating);
     void applySettings(const Settings& previous);
     void applyShaders();
     void sendKey(QKeyEvent* e);
@@ -124,6 +137,11 @@ private:
     std::uint64_t m_layoutFontEpoch = 0;
     QPoint m_lastMouseCell{-1, -1};
     bool m_windowFocused = false;
+
+    std::unique_ptr<FrameClock> m_clock;
+    std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
+    /// Where a pane just created by a split grows from.
+    std::unordered_map<const Pane*, QRectF> m_growFrom;
 
     QTimer m_blinkTimer;
     bool m_blinkOn = true;

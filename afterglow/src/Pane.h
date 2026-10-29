@@ -56,7 +56,8 @@ public:
     /// Refreshes the snapshot if the terminal changed. Returns false while the
     /// previous frame is held: synchronized output (mode 2026), or a resized
     /// prompt the shell has not repainted yet.
-    bool refreshSnapshot();
+    /// @p extraRows below the viewport are captured for fractional scrolling.
+    bool refreshSnapshot(int extraRows = 0);
     const AfterglowRender::PaneSnapshot& snapshot() const noexcept { return m_snapshot; }
 
     QString title() const;
@@ -125,6 +126,7 @@ private:
     AfterglowRender::PaneSnapshot m_snapshot;
     std::uint64_t m_snapshotGeneration = ~0ull;
     std::uint64_t m_snapshotSelectionSerial = ~0ull;
+    int m_snapshotExtraRows = 0;
     QElapsedTimer m_syncTimer;
     QElapsedTimer m_promptTimer;
 

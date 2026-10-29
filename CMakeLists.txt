@@ -26,6 +26,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()
 
+# Qt's signals/slots/emit keywords collide with ordinary identifiers (the
+# phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
+add_compile_definitions(QT_NO_KEYWORDS)
+
 include(cmake/AfterglowPhosphor.cmake)
 
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)

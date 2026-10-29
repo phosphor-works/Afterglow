@@ -114,7 +114,7 @@ void Pane::sendInput(std::string_view bytes)
     m_pty->write(bytes);
 }
 
-bool Pane::refreshSnapshot()
+bool Pane::refreshSnapshot(int extraRows)
 {
     std::lock_guard lock(m_mutex);
     if (m_terminal.modes().synchronizedOutput && m_snapshotGeneration != ~0ull) {
@@ -139,7 +139,8 @@ bool Pane::refreshSnapshot()
     } else {
         m_promptTimer.invalidate();
     }
-    if (m_terminal.generation() != m_snapshotGeneration || m_selectionSerial != m_snapshotSelectionSerial) {
+    if (m_terminal.generation() != m_snapshotGeneration || m_selectionSerial != m_snapshotSelectionSerial
+        || extraRows != m_snapshotExtraRows) {
         const bool selectionHere = m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen;
         AfterglowRender::SearchHighlight highlight;
         if (m_searchActive) {
@@ -148,8 +149,9 @@ bool Pane::refreshSnapshot()
             highlight.matchColor = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
             highlight.currentColor = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
         }
-        m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight);
+        m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight, extraRows);
         m_snapshotSelectionSerial = m_selectionSerial;
+        m_snapshotExtraRows = extraRows;
         qCDebug(lcPane) << "snapshot generation" << m_terminal.generation() << "images" << m_snapshot.images.size();
         m_snapshotGeneration = m_terminal.generation();
     }

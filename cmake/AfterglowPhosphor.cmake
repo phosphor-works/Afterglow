@@ -32,4 +32,7 @@ afterglow_add_phosphor_libs(
     phosphor-registry
     phosphor-shaders
     phosphor-rendering
+    phosphor-wayland
+    phosphor-layer
+    phosphor-animation
 )

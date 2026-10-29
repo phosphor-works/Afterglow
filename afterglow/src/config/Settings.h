@@ -32,12 +32,21 @@ struct WindowSettings
     bool operator==(const WindowSettings&) const = default;
 };
 
+struct AnimationSettings
+{
+    bool cursor = true; ///< the cursor glides between cells
+    bool scroll = true; ///< scrolling eases instead of jumping by rows
+    bool splits = true; ///< splits open, close and resize smoothly
+    bool operator==(const AnimationSettings&) const = default;
+};
+
 /// Everything afterglow reads from its config file.
 struct Settings
 {
     AfterglowRender::FontSpec font;
     AfterglowVt::TerminalOptions terminal;
     WindowSettings window;
+    AnimationSettings animation;
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     bool copyOnSelect = true;

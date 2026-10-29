@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -76,6 +77,11 @@ public:
         QPoint contentOrigin; ///< top-left of cell (0, 0)
         bool focused = false;
         bool cursorBlinkOn = true;
+        /// Where the cursor is drawn, in pixels from cell (0, 0), while it
+        /// glides between cells. Unset draws it at its cell.
+        std::optional<QPointF> cursorPosition;
+        /// Content shift upwards in pixels, for scrolling by part of a row.
+        float scrollShift = 0;
     };
 
     /// Appends the pane's instances. Returns false if the glyph atlas

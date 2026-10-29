@@ -204,6 +204,15 @@ void Terminal::scrollViewport(long rows)
     touch();
 }
 
+void Terminal::setViewportOffset(std::size_t rows)
+{
+    const long delta = long(rows) - long(m_active->viewportOffset());
+    if (delta != 0) {
+        m_active->scrollViewport(delta);
+        touch();
+    }
+}
+
 void Terminal::resetViewport()
 {
     if (m_active->viewportOffset() != 0) {

@@ -128,7 +128,8 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     const int cw = m.cellWidth;
     const int ch = m.cellHeight;
     const float ox = float(p.contentOrigin.x());
-    const float oy = float(p.contentOrigin.y());
+    const float oy = float(p.contentOrigin.y()) - p.scrollShift;
+    const int drawRows = s.rows + s.extraRows;
     const float dpr = float(fonts.devicePixelRatio());
 
     auto solid = [&out](float x, float y, float w, float h, std::uint32_t color) {
@@ -141,9 +142,17 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     const bool drawCursor = s.cursorVisible && cursorInGrid && (!p.focused || !s.cursorBlink || p.cursorBlinkOn);
     const int cursorSpan = drawCursor && s.at(s.cursorX, s.cursorY).width == 2 ? 2 : 1;
     const bool blockCursor = drawCursor && p.focused && s.cursorShape == AfterglowVt::CursorShape::Block;
+    // Where the cursor is drawn: its cell, or a point on its glide there.
+    const QPointF cellPos(s.cursorX * cw, s.cursorY * ch);
+    const QPointF cursorPos = p.cursorPosition.value_or(cellPos);
+    const float cursorX = ox + float(cursorPos.x());
+    const float cursorY = oy + float(cursorPos.y());
+    // Text under a block cursor takes the background colour once it has arrived.
+    const bool cursorSettled = (cursorPos - cellPos).manhattanLength() < 0.5;
+    const bool recolorUnderCursor = blockCursor && cursorSettled;
 
     // Backgrounds, merged into horizontal runs.
-    for (int y = 0; y < s.rows; ++y) {
+    for (int y = 0; y < drawRows; ++y) {
         const float rowTop = oy + float(y * ch);
         int x = 0;
         while (x < s.cols) {
@@ -161,12 +170,12 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
     }
     if (blockCursor) {
-        solid(ox + float(s.cursorX * cw), oy + float(s.cursorY * ch), float(cursorSpan * cw), float(ch), s.cursorColor);
+        solid(cursorX, cursorY, float(cursorSpan * cw), float(ch), s.cursorColor);
     }
     textStart = out.size();
 
     // Text, after every background so overhangs are not covered.
-    for (int y = 0; y < s.rows; ++y) {
+    for (int y = 0; y < drawRows; ++y) {
         const float baseline = oy + float(y * ch + m.baseline);
         int x = 0;
         while (x < s.cols) {
@@ -183,7 +192,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     }
                     if (!e->empty) {
                         std::uint32_t color = c.fg;
-                        if (blockCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan) {
+                        if (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan) {
                             color = s.defaultBg;
                         }
                         const float sx = ox + float(x * cw);
@@ -240,7 +249,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 if (alphaOf(color) == 0) {
                     continue;
                 }
-                if (blockCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan) {
+                if (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan) {
                     color = s.defaultBg;
                 }
                 const GlyphEntry* e = glyphs.glyph(fonts, face, g.glyphId, std::max<int>(1, cell.width));
@@ -269,7 +278,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
 
     // Decorations.
     const float th = float(m.underlineThickness);
-    for (int y = 0; y < s.rows; ++y) {
+    for (int y = 0; y < drawRows; ++y) {
         const float rowTop = oy + float(y * ch);
         int x = 0;
         while (x < s.cols) {
@@ -330,8 +339,8 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
 
     // Non-block cursors draw over the text.
     if (drawCursor && !blockCursor) {
-        const float x0 = ox + float(s.cursorX * cw);
-        const float y0 = oy + float(s.cursorY * ch);
+        const float x0 = cursorX;
+        const float y0 = cursorY;
         const float w = float(cursorSpan * cw);
         const float t = std::max(1.0f, std::round(dpr));
         if (!p.focused) {

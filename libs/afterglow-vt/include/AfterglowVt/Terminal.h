@@ -172,6 +172,8 @@ public:
 
     /// Scrolls the viewport through history. Positive scrolls back.
     void scrollViewport(long rows);
+    /// Sets the viewport to @p rows back from the bottom (clamped to history).
+    void setViewportOffset(std::size_t rows);
     void resetViewport();
 
 private:

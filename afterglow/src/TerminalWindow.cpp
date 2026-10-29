@@ -5,6 +5,8 @@
 
 #include "KeyMapping.h"
 #include "chrome/ChromeController.h"
+
+#include <PhosphorAnimation/Spring.h>
 #include "chrome/ChromeLayer.h"
 #include "shaders/ShaderLibrary.h"
 #include "Pane.h"
@@ -39,6 +41,21 @@ constexpr int BlinkIntervalMs = 530;
 constexpr int WheelLines = 3;
 constexpr int TabBarLogicalHeight = 30;
 
+/// A critically damped spring: fast, with no overshoot. @p omega sets the speed.
+template<typename T>
+PhosphorAnimation::MotionSpec<T> springSpec(PhosphorAnimation::IMotionClock* clock, qreal omega)
+{
+    PhosphorAnimation::MotionSpec<T> spec;
+    spec.clock = clock;
+    spec.profile.curve = std::make_shared<PhosphorAnimation::Spring>(omega, 1.0);
+    spec.retargetPolicy = PhosphorAnimation::RetargetPolicy::PreserveVelocity;
+    return spec;
+}
+
+constexpr qreal CursorSpeed = 34.0;
+constexpr qreal SplitSpeed = 22.0;
+constexpr qreal ScrollSpeed = 26.0;
+
 int mouseButtonCode(Qt::MouseButton b)
 {
     switch (b) {
@@ -72,6 +89,8 @@ TerminalWindow::TerminalWindow(AfterglowRender::GpuDevice& device, SettingsStore
     const int pad = int(std::lround(ws.padding * dpr));
     const QSize initial(ws.initialColumns * m.cellWidth + 2 * pad, ws.initialRows * m.cellHeight + 2 * pad);
     resize(int(std::lround(initial.width() / dpr)), int(std::lround(initial.height() / dpr)));
+
+    m_clock = std::make_unique<FrameClock>(this);
 
     m_controller = new ChromeController(this);
     m_chrome = new ChromeLayer(device, this, engine, m_controller);
@@ -133,6 +152,10 @@ QList<TerminalWindow*> TerminalWindow::windows()
 Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area)
 {
     auto* pane = new Pane(m_settings.settings().terminal, this);
+    connect(pane, &QObject::destroyed, this, [this, pane] {
+        m_motion.erase(pane);
+        m_growFrom.erase(pane);
+    });
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::titleUpdated, this, [this, pane] {
         if (pane == m_focused) {
@@ -184,6 +207,11 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction)
         area.setHeight((area.height() - divider) / 2);
     }
     Pane* added = createPane(m_focused->workingDirectory(), area);
+    // The new pane grows out of the edge being split.
+    const QRect old = m_splits->rectOf(m_focused);
+    m_growFrom[added] = direction == SplitTree::Direction::Right
+        ? QRectF(old.right() + 1, old.top(), 0, old.height())
+        : QRectF(old.left(), old.bottom() + 1, old.width(), 0);
     m_splits->split(m_focused, added, direction);
     setFocusedPane(added);
     m_layoutSize = QSize();
@@ -374,24 +402,31 @@ void TerminalWindow::renderNow()
     std::vector<std::pair<QRect, std::uint32_t>> overlays;
     const bool multiple = m_splits->paneCount() > 1;
     bool holding = false;
+    bool animating = false;
+    const QRect area = paneArea();
+    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
+    const std::uint32_t dim = packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255)));
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
-        if (!p->refreshSnapshot()) {
-            holding = true;
-        }
         AfterglowRender::WindowRenderer::Pane wp;
+        preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
-        wp.params.rect = r;
-        wp.params.contentOrigin = contentRect(r).topLeft();
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.cursorBlinkOn = m_blinkOn;
         panes.push_back(wp);
+        const QRect shown = wp.params.rect;
         if (multiple && p != m_focused) {
-            overlays.emplace_back(r, packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255))));
+            overlays.emplace_back(shown, dim);
+        }
+        // Dividers follow the drawn edges, so they move with split animations.
+        if (shown.right() < area.right()) {
+            overlays.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()),
+                                  m_settings.settings().window.dividerColor);
+        }
+        if (shown.bottom() < area.bottom()) {
+            overlays.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), dividerWidth),
+                                  m_settings.settings().window.dividerColor);
         }
     });
-    for (const auto& d : m_splits->dividers()) {
-        overlays.emplace_back(d.rect, m_settings.settings().window.dividerColor);
-    }
     const std::uint32_t clear = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
     QRhiTexture* chrome = nullptr;
     if (chromeVisible()) {
@@ -401,8 +436,8 @@ void TerminalWindow::renderNow()
         chrome = m_chrome->texture();
     }
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
-    if (m_renderer->animating()) {
-        scheduleRender(); // a shader animates over time: keep frames coming
+    if (animating || m_renderer->animating()) {
+        scheduleRender(); // something is moving: keep frames coming
     }
 
     if (holding) {
@@ -410,6 +445,127 @@ void TerminalWindow::renderNow()
         // have timed out. New output re-renders sooner on its own.
         QTimer::singleShot(50, this, &TerminalWindow::scheduleRender);
     }
+}
+
+// --- animation -------------------------------------------------------------
+
+PaneMotion& TerminalWindow::motion(const Pane* pane)
+{
+    auto& slot = m_motion[pane];
+    if (!slot) {
+        slot = std::make_unique<PaneMotion>();
+    }
+    return *slot;
+}
+
+void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,
+                                 bool& holding, bool& animating)
+{
+    using PhosphorAnimation::RetargetPolicy;
+    PaneMotion& m = motion(pane);
+    const AnimationSettings& anim = m_settings.settings().animation;
+    const auto& metrics = m_renderer->fonts().fonts->metrics();
+
+    // Where the pane is drawn: its layout rectangle, or on the way there.
+    const QRectF rectTarget(layoutRect);
+    const auto rectSpec = springSpec<QRectF>(m_clock.get(), SplitSpeed);
+    if (!m.rectKnown) {
+        m.rectKnown = true;
+        m.rectTarget = rectTarget;
+        const auto grow = m_growFrom.find(pane);
+        if (anim.splits && grow != m_growFrom.end()) {
+            m.rect.start(grow->second, rectTarget, rectSpec);
+        } else {
+            m.rect.start(rectTarget, rectTarget, rectSpec);
+        }
+        if (grow != m_growFrom.end()) {
+            m_growFrom.erase(grow);
+        }
+    } else if (rectTarget != m.rectTarget) {
+        m.rectTarget = rectTarget;
+        if (!anim.splits) {
+            m.rect.start(rectTarget, rectTarget, rectSpec);
+        } else if (m.rect.isAnimating()) {
+            m.rect.retarget(rectTarget, RetargetPolicy::PreserveVelocity);
+        } else {
+            m.rect.start(m.rect.value(), rectTarget, rectSpec);
+        }
+    }
+    m.rect.advance();
+    animating |= m.rect.isAnimating();
+    const QRect shown = m.rect.value().toRect();
+
+    // Scrolling: the terminal shows whole rows; the rest is a pixel shift.
+    const std::size_t offset = pane->withTerminal([](Terminal& t) { return t.screen().viewportOffset(); });
+    if (offset != m.appliedOffset) {
+        // Moved by something else (typing, output, a prompt jump): follow it.
+        m.scroll.cancel();
+        m.scrollValue = qreal(offset);
+        m.scrollTarget = qreal(offset);
+        m.appliedOffset = offset;
+    }
+    if (m.scroll.isAnimating()) {
+        m.scroll.advance();
+        m.scrollValue = m.scroll.value();
+        animating |= m.scroll.isAnimating();
+    }
+    const auto rowsBack = std::size_t(std::ceil(std::max<qreal>(0, m.scrollValue - 1e-3)));
+    if (rowsBack != offset) {
+        m.appliedOffset = pane->withTerminal([rowsBack](Terminal& t) {
+            t.setViewportOffset(rowsBack);
+            return t.screen().viewportOffset();
+        });
+    }
+    const float shift = float((qreal(m.appliedOffset) - m.scrollValue) * metrics.cellHeight);
+    if (!pane->refreshSnapshot(shift > 0.5f ? 1 : 0)) {
+        holding = true;
+    }
+
+    // The cursor glides from cell to cell.
+    const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
+    const QPointF cellTarget(snap.cursorX * metrics.cellWidth, snap.cursorY * metrics.cellHeight);
+    const auto cursorSpec = springSpec<QPointF>(m_clock.get(), CursorSpeed);
+    const bool glide = anim.cursor && snap.cursorVisible;
+    if (!m.cursorKnown || !glide) {
+        m.cursorKnown = true;
+        m.cursorTarget = cellTarget;
+        m.cursor.start(cellTarget, cellTarget, cursorSpec);
+    } else if (cellTarget != m.cursorTarget) {
+        m.cursorTarget = cellTarget;
+        if (m.cursor.isAnimating()) {
+            m.cursor.retarget(cellTarget, RetargetPolicy::PreserveVelocity);
+        } else {
+            m.cursor.start(m.cursor.value(), cellTarget, cursorSpec);
+        }
+    }
+    m.cursor.advance();
+    animating |= m.cursor.isAnimating();
+
+    params.rect = shown;
+    params.contentOrigin = contentRect(shown).topLeft();
+    params.cursorPosition = m.cursor.value();
+    params.scrollShift = shift;
+}
+
+void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
+{
+    if (!pane) {
+        return;
+    }
+    PaneMotion& m = motion(pane);
+    const auto history = double(pane->withTerminal([](Terminal& t) { return t.screen().historySize(); }));
+    const double base = m.scroll.isAnimating() ? m.scrollTarget : m.scrollValue;
+    const double target = std::clamp(base + rows, 0.0, history);
+    m.scrollTarget = target;
+    if (!animate || !m_settings.settings().animation.scroll) {
+        m.scroll.cancel();
+        m.scrollValue = target;
+    } else if (m.scroll.isAnimating()) {
+        m.scroll.retarget(target, PhosphorAnimation::RetargetPolicy::PreserveVelocity);
+    } else {
+        m.scroll.start(m.scrollValue, target, springSpec<qreal>(m_clock.get(), ScrollSpeed));
+    }
+    scheduleRender();
 }
 
 // --- events ----------------------------------------------------------------
@@ -497,8 +653,7 @@ bool TerminalWindow::performAction(Action action)
         if (m_focused->withTerminal([](Terminal& t) { return t.modes().altScreen; })) {
             return false;
         }
-        m_focused->withTerminal([delta](Terminal& t) { t.scrollViewport(delta); });
-        scheduleRender();
+        scrollPane(m_focused, double(delta));
         return true;
     };
     const long page = m_focused ? std::max(1, m_focused->rows() - 1) : 1;
@@ -964,6 +1119,15 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     if (!p) {
         return;
     }
+    // Trackpads report pixels: scroll the history by exactly that much.
+    if (!e->pixelDelta().isNull()) {
+        const AfterglowVt::Modes modes = p->withTerminal([](Terminal& t) { return t.modes(); });
+        if (modes.mouseTracking == AfterglowVt::MouseTracking::None && !modes.altScreen) {
+            const double cell = m_renderer->fonts().fonts->metrics().cellHeight;
+            scrollPane(p, e->pixelDelta().y() * devicePixelRatio() / cell, false);
+            return;
+        }
+    }
     m_wheelAccumulator += e->angleDelta().y() / 120.0;
     const int steps = int(m_wheelAccumulator);
     if (steps == 0) {
@@ -989,8 +1153,7 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         p->sendInput(bytes);
         return;
     }
-    p->withTerminal([steps](Terminal& t) { t.scrollViewport(long(steps) * WheelLines); });
-    scheduleRender();
+    scrollPane(p, double(steps) * WheelLines);
 }
 
 } // namespace Afterglow

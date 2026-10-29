@@ -54,6 +54,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 {
     int cols = 0;
     int rows = 0;
+    /// Rows captured below the viewport, drawn while scrolling by a fraction of a row.
+    int extraRows = 0;
     std::vector<SnapshotCell> cells;
     std::vector<std::u32string> graphemes;
 
@@ -79,7 +81,7 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     /// @param selection drawn with inverted colours when valid for the active screen.
     void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,
-                 const SearchHighlight& search = {});
+                 const SearchHighlight& search = {}, int extraRows = 0);
 };
 
 } // namespace AfterglowRender

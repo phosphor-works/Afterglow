@@ -3,19 +3,23 @@
 
 #include <AfterglowRender/Snapshot.h>
 
+#include <algorithm>
 #include <utility>
 
 namespace AfterglowRender {
 
 using namespace AfterglowVt;
 
-void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search)
+void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra)
 {
     const Screen& scr = t.screen();
     const Modes& modes = t.modes();
     cols = scr.cols();
     rows = scr.rows();
-    cells.resize(std::size_t(cols) * std::size_t(rows));
+    // Extra rows come from below the viewport, so only exist while scrolled back.
+    extraRows = std::clamp(extra, 0, int(scr.viewportOffset()));
+    const int captureRows = rows + extraRows;
+    cells.resize(std::size_t(cols) * std::size_t(captureRows));
     graphemes.clear();
 
     Rgb defFg = t.defaultForeground();
@@ -38,7 +42,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     std::vector<int> visibleMatches;
     if (search.matches) {
         const std::uint64_t first = scr.rowsDropped() + top;
-        const std::uint64_t last = first + std::uint64_t(rows) - 1;
+        const std::uint64_t last = first + std::uint64_t(captureRows) - 1;
         for (int i = 0; i < int(search.matches->size()); ++i) {
             const SearchMatch& m = (*search.matches)[std::size_t(i)];
             if (m.end.row >= first && m.start.row <= last) {
@@ -46,7 +50,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             }
         }
     }
-    for (int y = 0; y < rows; ++y) {
+    for (int y = 0; y < captureRows; ++y) {
         const Row& row = scr.absoluteRow(top + std::size_t(y));
         const std::uint64_t rowId = scr.rowsDropped() + top + std::size_t(y);
         for (int x = 0; x < cols; ++x) {

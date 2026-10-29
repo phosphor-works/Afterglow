@@ -31,6 +31,7 @@ const QString Terminal = QStringLiteral("Terminal");
 const QString Window = QStringLiteral("Window");
 const QString Keys = QStringLiteral("Keybinds");
 const QString Shaders = QStringLiteral("Shaders");
+const QString Animation = QStringLiteral("Animation");
 
 QVariant clampInt(const QVariant& v, int lo, int hi)
 {
@@ -132,6 +133,11 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("padding"), 6, 0, 200, QStringLiteral("Space around the grid in logical pixels")),
         intKey(QStringLiteral("initialColumns"), 100, 10, 1000, QStringLiteral("Columns of a new window")),
         intKey(QStringLiteral("initialRows"), 30, 4, 500, QStringLiteral("Rows of a new window")),
+    };
+    schema.groups[Animation] = {
+        {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("The cursor glides between cells")},
+        {QStringLiteral("scroll"), true, QMetaType::Bool, QStringLiteral("Scrolling eases instead of jumping by rows")},
+        {QStringLiteral("splits"), true, QMetaType::Bool, QStringLiteral("Splits open, close and resize smoothly")},
     };
     schema.groups[Shaders] = {
         {QStringLiteral("pane"), QVariantList{}, QMetaType::QVariantList,
@@ -287,6 +293,11 @@ Settings SettingsStore::read() const
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));
     s.window.initialColumns = st.read<int>(Window, QStringLiteral("initialColumns"));
     s.window.initialRows = st.read<int>(Window, QStringLiteral("initialRows"));
+
+    // Animation
+    s.animation.cursor = st.read<bool>(Animation, QStringLiteral("cursor"));
+    s.animation.scroll = st.read<bool>(Animation, QStringLiteral("scroll"));
+    s.animation.splits = st.read<bool>(Animation, QStringLiteral("splits"));
 
     // Shaders
     for (const QVariant& v : st.read<QVariantList>(Shaders, QStringLiteral("pane"))) {
