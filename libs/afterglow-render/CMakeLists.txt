@@ -48,6 +48,7 @@ qt_add_shaders(AfterglowRender "afterglow_grid_shaders"
         shaders/grid.vert
         shaders/grid.frag
         shaders/image.frag
+        shaders/layers.frag
         shaders/post.vert
 )
 

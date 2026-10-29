@@ -105,20 +105,21 @@ PhosphorShaders::ShaderRegistry::ShaderInfo findPack(const PhosphorShaders::Shad
 }
 } // namespace
 
-ShaderLibrary::Chains ShaderLibrary::build(const QStringList& pane, const QStringList& window,
-                                           const QVariantMap& params)
+AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVariantMap& params)
 {
-    Chains chains;
-    for (const QString& ref : pane) {
-        if (auto p = load(ref, params.value(ref).toMap())) {
-            chains.pane.push_back(std::move(p));
+    AfterglowRender::ShaderChains chains;
+    auto add = [&](const QStringList& from, std::vector<AfterglowRender::ShaderProgramPtr>& to) {
+        for (const QString& ref : from) {
+            if (auto p = load(ref, params.value(ref).toMap())) {
+                to.push_back(std::move(p));
+            }
         }
-    }
-    for (const QString& ref : window) {
-        if (auto p = load(ref, params.value(ref).toMap())) {
-            chains.window.push_back(std::move(p));
-        }
-    }
+    };
+    add(refs.background, chains.background);
+    add(refs.text, chains.text);
+    add(refs.cursor, chains.cursor);
+    add(refs.pane, chains.pane);
+    add(refs.window, chains.window);
     return chains;
 }
 

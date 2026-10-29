@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Keybinds.h"
+#include "../shaders/ShaderLibrary.h"
 
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowVt/Terminal.h>
@@ -76,9 +77,8 @@ struct Settings
     bool notifications = true; ///< OSC 9 / 777 desktop notifications
     bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
     Keybinds keybinds = Keybinds::defaults();
-    /// Shader references (pack ids or file paths), applied in order.
-    QStringList paneShaders;
-    QStringList windowShaders;
+    /// Shader references (pack ids or file paths) for each chain, applied in order.
+    ShaderLibrary::Refs shaders;
     /// Reference -> { parameter: value }.
     QVariantMap shaderParams;
 };

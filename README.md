@@ -50,6 +50,22 @@ system install of phosphor (from PlasmaZones) is left alone.
 `~/.config/afterglow/config.json`, reloaded live. Shader packs come from the
 installed `share/afterglow/shaders` and `~/.config/afterglow/shaders`.
 
+## Shaders
+
+Shaders are Ghostty-style GLSL (`mainImage`, `iChannel0`, the cursor uniforms)
+or phosphor shader packs, listed in five chains under `Shaders`:
+
+- `background`, `text` and `cursor` each run per pane on that layer alone,
+  before the layers are put together. Backgrounds include images under the
+  text; text includes decorations and images over it. A layer's input is
+  premultiplied and transparent where the layer has nothing, and the shader
+  must return premultiplied colour too.
+- `pane` runs per pane on the finished pane.
+- `window` runs once over the whole window.
+
+The tab bar and other chrome are drawn after every chain. With no layer
+shaders, the layers are never split apart and cost nothing.
+
 ## Control and scripting
 
 Other programs drive afterglow over D-Bus (`io.github.fuddlesworth.Afterglow.Control`

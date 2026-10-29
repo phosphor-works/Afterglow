@@ -6,7 +6,8 @@
 //
 //   afterglow_renderpng [--cols N] [--rows N] [--dpr F] [--size PT] input|- output.png
 //
-// Shaders: --shader REF (window chain) and --pane-shader REF, repeatable;
+// Shaders: --shader REF (window chain), --pane-shader REF and the layer
+// chains --background-shader, --text-shader and --cursor-shader, repeatable;
 // --param REF:ID=VALUE overrides a pack parameter. --time sets iTime, and
 // --wake-from COL,ROW renders a frame with the cursor there --wake-age
 // seconds earlier, so cursor effects show a jump.
@@ -65,6 +66,11 @@ int main(int argc, char** argv)
                       QStringLiteral("11")});
     parser.addOption({QStringLiteral("shader"), QStringLiteral("Window shader (repeatable)."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("pane-shader"), QStringLiteral("Pane shader (repeatable)."), QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("background-shader"), QStringLiteral("Background layer shader (repeatable)."),
+                      QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("text-shader"), QStringLiteral("Text layer shader (repeatable)."), QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("cursor-shader"), QStringLiteral("Cursor layer shader (repeatable)."),
+                      QStringLiteral("ref")});
     parser.addOption({QStringLiteral("param"), QStringLiteral("Shader parameter."), QStringLiteral("ref:id=value")});
     parser.addOption({QStringLiteral("time"), QStringLiteral("Shader time in seconds."), QStringLiteral("s"),
                       QStringLiteral("10")});
@@ -126,17 +132,22 @@ int main(int argc, char** argv)
                                                                   : QVariant(value));
         params.insert(ref, overrides);
     }
-    const QStringList paneShaders = parser.values(QStringLiteral("pane-shader"));
-    const QStringList windowShaders = parser.values(QStringLiteral("shader"));
-    if (!paneShaders.isEmpty() || !windowShaders.isEmpty()) {
+    const Afterglow::ShaderLibrary::Refs refs{
+        parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
+        parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
+        parser.values(QStringLiteral("shader"))};
+    const auto wanted = refs.background.size() + refs.text.size() + refs.cursor.size() + refs.pane.size()
+        + refs.window.size();
+    if (wanted > 0) {
         Afterglow::ShaderLibrary library;
-        auto chains = library.build(paneShaders, windowShaders, params);
-        if (chains.pane.size() != std::size_t(paneShaders.size())
-            || chains.window.size() != std::size_t(windowShaders.size())) {
+        AfterglowRender::ShaderChains chains = library.build(refs, params);
+        const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
+            + chains.window.size();
+        if (got != std::size_t(wanted)) {
             std::fprintf(stderr, "a shader failed to load\n");
             return 1;
         }
-        renderer.setShaderChains(std::move(chains.pane), std::move(chains.window));
+        renderer.setShaderChains(std::move(chains));
     }
 
     AfterglowRender::PaneSnapshot snapshot;

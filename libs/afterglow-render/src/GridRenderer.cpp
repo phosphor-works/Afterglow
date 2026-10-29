@@ -123,7 +123,7 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
 }
 
 bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet& fonts, GlyphCache& glyphs,
-                             std::vector<Instance>& out, std::size_t& textStart)
+                             std::vector<Instance>& out, Ranges& ranges)
 {
     const FontMetrics& m = fonts.metrics();
     const int cw = m.cellWidth;
@@ -281,10 +281,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             x = end;
         }
     }
-    if (blockCursor) {
-        solid(curX, curY, curW, curH, s.cursorColor);
-    }
-    textStart = out.size();
+    ranges.textStart = out.size();
 
     // Text, after every background so overhangs are not covered.
     for (int y = 0; y < drawRows; ++y) {
@@ -541,7 +538,11 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
     }
 
-    // Non-block cursors draw over the text.
+    ranges.cursorStart = out.size();
+    ranges.cursorBelowText = blockCursor;
+    if (blockCursor) {
+        solid(curX, curY, curW, curH, s.cursorColor);
+    }
     if (drawCursor && !blockCursor) {
         const float x0 = curX;
         const float y0 = curY;
@@ -681,9 +682,9 @@ void WindowRenderer::setTranslucent(bool translucent)
     }
 }
 
-void WindowRenderer::setShaderChains(std::vector<ShaderProgramPtr> pane, std::vector<ShaderProgramPtr> window)
+void WindowRenderer::setShaderChains(ShaderChains chains)
 {
-    if (pane.empty() && window.empty()) {
+    if (chains.empty()) {
         m_post.reset();
         m_postPipelines = {};
         m_postPipelinePass = nullptr;
@@ -692,7 +693,7 @@ void WindowRenderer::setShaderChains(std::vector<ShaderProgramPtr> pane, std::ve
     if (!m_post) {
         m_post = std::make_unique<PostChain>(m_device);
     }
-    m_post->setChains(std::move(pane), std::move(window));
+    m_post->setChains(std::move(chains));
 }
 
 bool WindowRenderer::animating() const
@@ -893,13 +894,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 && cache.hoverColEnd == pp.hoverColEnd;
             if (!reusable) {
                 m_scratch.clear();
-                std::size_t textStart = 0;
-                if (!m_builder.buildPane(*pane.snapshot, pp, *res.fonts, res.glyphs, m_scratch, textStart)) {
+                FrameBuilder::Ranges ranges;
+                if (!m_builder.buildPane(*pane.snapshot, pp, *res.fonts, res.glyphs, m_scratch, ranges)) {
                     ok = false;
                     break;
                 }
                 cache.instances.swap(m_scratch);
-                cache.textStart = textStart;
+                cache.ranges = ranges;
                 cache.snapshotVersion = pane.snapshot->version;
                 cache.fontEpoch = m_fontEpoch;
                 cache.glyphEpoch = res.glyphs.epoch();
@@ -919,7 +920,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
             cache.seenFrame = m_frameCounter + 1;
             m_frame.insert(m_frame.end(), cache.instances.begin(), cache.instances.end());
-            m_ranges.push_back({first, first + std::uint32_t(cache.textStart), std::uint32_t(m_frame.size()), pp.rect, {}});
+            m_ranges.push_back({first, first + std::uint32_t(cache.ranges.textStart),
+                                first + std::uint32_t(cache.ranges.cursorStart), std::uint32_t(m_frame.size()),
+                                cache.ranges.cursorBelowText, pp.rect, {}});
         }
         if (ok) {
             break;
@@ -1078,45 +1081,16 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         cb->draw(4, 1, 0, chromeInstance);
     };
 
-    // Grid pass: backgrounds, images below the text, text, images above.
-    cb->beginPass(gridTarget, clear, {1.0f, 0}, updates);
-    bindGrid();
-    for (const DrawRange& range : m_ranges) {
-        if (range.scissor.isEmpty()) {
-            continue;
-        }
-        cb->setScissor(scissor(range.scissor));
-        // The pane's default background comes first and replaces what is
-        // under it: blended over the translucent clear colour, its alpha
-        // would compound (0.9 over 0.9 is 0.99).
-        cb->setGraphicsPipeline(gridPipelines->fill.get());
-        cb->draw(4, 1, 0, range.first);
-        cb->setGraphicsPipeline(gridPipelines->grid.get());
-        if (range.textStart > range.first + 1) {
-            cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
-        }
-        drawImages(range, true);
-        cb->setScissor(scissor(range.scissor));
-        if (range.end > range.textStart) {
-            cb->draw(4, range.end - range.textStart, 0, range.textStart);
-        }
-        drawImages(range, false);
-    }
-    if (overlayEnd > overlayFirst) {
-        cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
-        cb->draw(4, overlayEnd - overlayFirst, 0, overlayFirst);
-    }
-
+    // Shader inputs: per pane, and the focused pane's view for the window.
+    ShaderFrameTime time;
+    std::vector<ShaderRegionState> regions;
+    ShaderRegionState windowState;
     if (post) {
-        cb->endPass();
-        // Shader inputs: per pane, and the focused pane's view for the window.
         const float now = m_clockOverride.value_or(float(m_clock.nsecsElapsed()) / 1e9f);
-        const ShaderFrameTime time{now, m_lastFrameTime > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
+        time = ShaderFrameTime{now, m_lastFrameTime > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
         m_lastFrameTime = now;
         const FontMetrics& m = res.fonts->metrics();
-        std::vector<ShaderRegionState> regions;
-        ShaderRegionState windowState;
-        windowState.rect = QRect(QPoint(0, 0), px);
+                windowState.rect = QRect(QPoint(0, 0), px);
         for (const Pane& pane : panes) {
             const PaneSnapshot& snap = *pane.snapshot;
             ShaderRegionState st;
@@ -1176,6 +1150,100 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+    }
+
+    auto drawBackgrounds = [&](const DrawRange& range) {
+        // The pane's default background comes first and replaces what is
+        // under it: blended over the translucent clear colour, its alpha
+        // would compound (0.9 over 0.9 is 0.99).
+        cb->setGraphicsPipeline(gridPipelines->fill.get());
+        cb->draw(4, 1, 0, range.first);
+        cb->setGraphicsPipeline(gridPipelines->grid.get());
+        if (range.textStart > range.first + 1) {
+            cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
+        }
+    };
+    auto drawSpan = [&](std::uint32_t from, std::uint32_t to) {
+        if (to > from) {
+            cb->draw(4, to - from, 0, from);
+        }
+    };
+    auto drawOverlays = [&] {
+        if (overlayEnd > overlayFirst) {
+            cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
+            cb->draw(4, overlayEnd - overlayFirst, 0, overlayFirst);
+        }
+    };
+
+    if (post && m_post->layered()) {
+        // Each layer into its own texture; the layer chains then run on them
+        // and the composite puts them together in the grid target.
+        const struct
+        {
+            PostChain::Layer layer;
+            std::function<void(const DrawRange&)> draw;
+        } layers[] = {
+            {PostChain::Layer::Background,
+             [&](const DrawRange& range) {
+                 drawBackgrounds(range);
+                 drawImages(range, true);
+             }},
+            {PostChain::Layer::Text,
+             [&](const DrawRange& range) {
+                 drawSpan(range.textStart, range.cursorStart);
+                 drawImages(range, false);
+             }},
+            {PostChain::Layer::Cursor, [&](const DrawRange& range) { drawSpan(range.cursorStart, range.end); }},
+        };
+        bool first = true;
+        for (const auto& [layer, draw] : layers) {
+            cb->beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, first ? updates : nullptr);
+            first = false;
+            bindGrid();
+            for (const DrawRange& range : m_ranges) {
+                if (!range.scissor.isEmpty()) {
+                    cb->setScissor(scissor(range.scissor));
+                    draw(range);
+                }
+            }
+            cb->endPass();
+        }
+        std::vector<bool> cursorBelowText;
+        for (const DrawRange& range : m_ranges) {
+            cursorBelowText.push_back(range.cursorBelowText);
+        }
+        m_post->composite(cb, regions, cursorBelowText, time, clear);
+        bindGrid();
+        drawOverlays();
+        cb->endPass();
+    } else {
+        // One pass: backgrounds, a block cursor, images below the text, text,
+        // other cursors, images above.
+        cb->beginPass(gridTarget, clear, {1.0f, 0}, updates);
+        bindGrid();
+        for (const DrawRange& range : m_ranges) {
+            if (range.scissor.isEmpty()) {
+                continue;
+            }
+            cb->setScissor(scissor(range.scissor));
+            drawBackgrounds(range);
+            if (range.cursorBelowText) {
+                drawSpan(range.cursorStart, range.end);
+            }
+            drawImages(range, true);
+            cb->setScissor(scissor(range.scissor));
+            drawSpan(range.textStart, range.cursorStart);
+            if (!range.cursorBelowText) {
+                drawSpan(range.cursorStart, range.end);
+            }
+            drawImages(range, false);
+        }
+        drawOverlays();
+        if (post) {
+            cb->endPass();
+        }
+    }
+    if (post) {
         m_post->record(cb, regions, windowState, time, target.renderTarget(), target.renderPass);
     }
     drawChrome();

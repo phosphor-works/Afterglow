@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/ShaderProgram.h>
 #include <AfterglowRender/afterglowrender_export.h>
 
@@ -100,12 +101,21 @@ public:
         int hoverColEnd = -1; ///< inclusive
     };
 
+    /// Where each layer's instances start, relative to the pane's first:
+    /// backgrounds (the default background first), then text and
+    /// decorations, then the cursor.
+    struct Ranges
+    {
+        std::size_t textStart = 0;
+        std::size_t cursorStart = 0;
+        /// A block cursor goes under the text; other shapes go over it.
+        bool cursorBelowText = false;
+    };
+
     /// Appends the pane's instances. Returns false if the glyph atlas
     /// overflowed; the caller resets the glyph cache and rebuilds the frame.
-    /// @p textStart receives the index where the text layer begins (after the
-    /// backgrounds and a block cursor), so images can be drawn in between.
     bool buildPane(const PaneSnapshot& snap, const PaneParams& params, FontSet& fonts, GlyphCache& glyphs,
-                   std::vector<Instance>& out, std::size_t& textStart);
+                   std::vector<Instance>& out, Ranges& ranges);
 
     void clearShapeCache() { m_shapeCache.clear(); }
 
@@ -170,8 +180,8 @@ public:
 
     FontResources& fonts();
 
-    /// Post-processing shaders run over each pane and over the whole window.
-    void setShaderChains(std::vector<ShaderProgramPtr> pane, std::vector<ShaderProgramPtr> window);
+    /// Post-processing shaders: over each layer, each pane and the whole window.
+    void setShaderChains(ShaderChains chains);
     /// A shader animates over time: the host keeps scheduling frames.
     bool animating() const;
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
@@ -231,7 +241,9 @@ private:
     {
         std::uint32_t first;
         std::uint32_t textStart;
+        std::uint32_t cursorStart;
         std::uint32_t end;
+        bool cursorBelowText;
         QRect scissor;
         std::vector<ImageDraw> images;
     };
@@ -310,7 +322,7 @@ private:
         int hoverColStart = 0;
         int hoverColEnd = -1;
         std::vector<Instance> instances;
-        std::size_t textStart = 0;
+        FrameBuilder::Ranges ranges;
         std::uint64_t seenFrame = 0;
     };
     std::unordered_map<const PaneSnapshot*, PaneCache> m_paneCache;

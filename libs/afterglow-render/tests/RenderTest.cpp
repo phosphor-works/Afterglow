@@ -197,6 +197,80 @@ TEST_F(Render, KittyImageIsTopDown)
 
 } // namespace
 
+namespace {
+ShaderProgramPtr layerShader(const char* id, const char* body)
+{
+    ShaderProgramSource src;
+    src.id = QString::fromLatin1(id);
+    src.code = QByteArray("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec4 c = texture(iChannel0, fragCoord / iResolution.xy);\n")
+        + body + "\n}\n";
+    QString error;
+    auto program = ShaderProgram::compile(src, &error);
+    EXPECT_TRUE(program) << error.toStdString();
+    return program;
+}
+} // namespace
+
+TEST_F(Render, IdentityLayerShadersChangeNothing)
+{
+    // Coloured cells, an underline, translucency and a block cursor on a letter.
+    const std::string content = "\x1b[2 q\x1b[42m bg \x1b[0m \x1b[4mul\x1b[0m █x\x1b[1D";
+    const QImage plain = render(content, true, 200);
+    ShaderChains chains;
+    chains.background = {ShaderProgram::passthrough()};
+    chains.text = {ShaderProgram::passthrough()};
+    chains.cursor = {ShaderProgram::passthrough(), ShaderProgram::passthrough()};
+    renderer->setShaderChains(std::move(chains));
+    const QImage layered = render("", true, 200);
+    ASSERT_EQ(plain.size(), layered.size());
+    int worst = 0;
+    for (int y = 0; y < plain.height(); ++y) {
+        for (int x = 0; x < plain.width(); ++x) {
+            const QRgb a = plain.pixel(x, y);
+            const QRgb b = layered.pixel(x, y);
+            worst = std::max({worst, std::abs(qRed(a) - qRed(b)), std::abs(qGreen(a) - qGreen(b)),
+                              std::abs(qBlue(a) - qBlue(b)), std::abs(qAlpha(a) - qAlpha(b))});
+        }
+    }
+    EXPECT_LE(worst, 1);
+}
+
+TEST_F(Render, LayerShadersSeeOnlyTheirLayer)
+{
+    // A full block (text) at 0, a blank cell at 1.
+    const std::string content = "\x1b[?25l█";
+    const QImage plain = render(content);
+    ShaderChains chains;
+    chains.text = {layerShader("red-text", "fragColor = vec4(c.a, 0.0, 0.0, c.a);")};
+    renderer->setShaderChains(std::move(chains));
+    QImage img = render("");
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(255, 0, 0));
+    EXPECT_PIXEL(img, cellCenter(1, 0), plain.pixel(cellCenter(1, 0)));
+
+    chains = {};
+    chains.background = {layerShader("blue-bg", "fragColor = vec4(0.0, 0.0, c.a, c.a);")};
+    renderer->setShaderChains(std::move(chains));
+    img = render("");
+    EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultFg));
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 255));
+}
+
+TEST_F(Render, BlockCursorLayerStaysUnderItsText)
+{
+    // The cursor on a full block: its text takes the background colour and
+    // must stay over the (now green) cursor.
+    const std::string content = "\x1b[2 q█ \x1b[2D";
+    ShaderChains chains;
+    chains.cursor = {layerShader("green-cursor", "fragColor = vec4(0.0, c.a, 0.0, c.a);")};
+    renderer->setShaderChains(std::move(chains));
+    const QImage img = render(content);
+    EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+
+    // A bar cursor goes over the text instead.
+    const QImage bar = render("\x1b[6 q");
+    EXPECT_PIXEL(bar, QPoint(0, ch / 2), qRgb(0, 255, 0));
+}
+
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);

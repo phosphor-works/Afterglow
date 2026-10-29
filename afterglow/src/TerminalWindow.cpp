@@ -1714,16 +1714,14 @@ bool TerminalWindow::routePointerToChrome(QEvent* e, const QPointF& pos, bool pr
 void TerminalWindow::applyShaders()
 {
     const Settings& s = m_settings.settings();
-    ShaderLibrary::Chains chains = m_shaders.build(s.paneShaders, s.windowShaders, s.shaderParams);
-    m_renderer->setShaderChains(std::move(chains.pane), std::move(chains.window));
+    m_renderer->setShaderChains(m_shaders.build(s.shaders, s.shaderParams));
     scheduleRender();
 }
 
 void TerminalWindow::applySettings(const Settings& previous)
 {
     const Settings& now = m_settings.settings();
-    if (now.paneShaders != previous.paneShaders || now.windowShaders != previous.windowShaders
-        || now.shaderParams != previous.shaderParams) {
+    if (now.shaders != previous.shaders || now.shaderParams != previous.shaderParams) {
         applyShaders();
     }
     if (now.terminal != previous.terminal) {

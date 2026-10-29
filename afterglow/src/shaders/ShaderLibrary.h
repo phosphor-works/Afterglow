@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/ShaderProgram.h>
 
 #include <QFileSystemWatcher>
@@ -33,14 +34,19 @@ public:
     explicit ShaderLibrary(QObject* parent = nullptr);
     ~ShaderLibrary() override;
 
-    struct Chains
+    /// Shader references for each chain (see AfterglowRender::ShaderChains).
+    struct Refs
     {
-        std::vector<AfterglowRender::ShaderProgramPtr> pane;
-        std::vector<AfterglowRender::ShaderProgramPtr> window;
+        QStringList background;
+        QStringList text;
+        QStringList cursor;
+        QStringList pane;
+        QStringList window;
+        bool operator==(const Refs&) const = default;
     };
     /// Compiles the configured chains. Shaders that fail are logged and skipped.
     /// @p params maps a reference to its parameter overrides.
-    Chains build(const QStringList& pane, const QStringList& window, const QVariantMap& params);
+    AfterglowRender::ShaderChains build(const Refs& refs, const QVariantMap& params);
 
     QStringList packIds() const;
 

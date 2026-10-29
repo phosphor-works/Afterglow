@@ -181,6 +181,12 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("splits"), true, QMetaType::Bool, QStringLiteral("Splits open, close and resize smoothly")},
     };
     schema.groups[Shaders] = {
+        {QStringLiteral("background"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Shaders run over each pane's background layer alone: cell backgrounds and images under the text")},
+        {QStringLiteral("text"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Shaders run over each pane's text layer alone: glyphs, decorations and images over the text")},
+        {QStringLiteral("cursor"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Shaders run over each pane's cursor layer alone")},
         {QStringLiteral("pane"), QVariantList{}, QMetaType::QVariantList,
          QStringLiteral("Shaders run over each pane: pack ids (cursor-trail, bloom) or paths to Ghostty shader files")},
         {QStringLiteral("window"), QVariantList{}, QMetaType::QVariantList,
@@ -358,12 +364,15 @@ Settings SettingsStore::read() const
     s.animation.splits = st.read<bool>(Animation, QStringLiteral("splits"));
 
     // Shaders
-    for (const QVariant& v : st.read<QVariantList>(Shaders, QStringLiteral("pane"))) {
-        s.paneShaders << v.toString();
-    }
-    for (const QVariant& v : st.read<QVariantList>(Shaders, QStringLiteral("window"))) {
-        s.windowShaders << v.toString();
-    }
+    auto shaderList = [&st](const char* key) {
+        QStringList refs;
+        for (const QVariant& v : st.read<QVariantList>(Shaders, QLatin1String(key))) {
+            refs << v.toString();
+        }
+        return refs;
+    };
+    s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
+                 shaderList("window")};
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
     // Keybinds

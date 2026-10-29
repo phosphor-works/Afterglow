@@ -12,6 +12,7 @@
 #include <QRectF>
 #include <QSize>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <vector>
@@ -58,29 +59,66 @@ struct ShaderFrameTime
     int frame = 0;
 };
 
+/// The shader chains of a window, each run in order.
+struct ShaderChains
+{
+    /// Layer chains: per pane, over that layer alone (premultiplied, the rest
+    /// of the layer transparent), before the layers are put together.
+    std::vector<ShaderProgramPtr> background; ///< default and cell backgrounds, images under the text
+    std::vector<ShaderProgramPtr> text; ///< glyphs, decorations, images over the text
+    std::vector<ShaderProgramPtr> cursor;
+    /// Per pane, over the whole pane.
+    std::vector<ShaderProgramPtr> pane;
+    /// Once, over the whole window.
+    std::vector<ShaderProgramPtr> window;
+
+    bool layered() const noexcept { return !background.empty() || !text.empty() || !cursor.empty(); }
+    bool empty() const noexcept { return !layered() && pane.empty() && window.empty(); }
+};
+
 /// Post-processing for one window: the grid renders into an offscreen
 /// texture, pane shaders run over each pane's region, window shaders over the
 /// whole window, and the last pass writes to the swapchain. All on the shared
 /// GpuDevice.
+///
+/// With layer chains the grid instead renders each layer into its own
+/// texture; their chains run, and the layers are put together into the grid
+/// texture before the pane and window chains.
 class AFTERGLOWRENDER_EXPORT PostChain
 {
 public:
+    enum class Layer { Background, Text, Cursor };
+    static constexpr int LayerCount = 3;
+
     explicit PostChain(GpuDevice& device);
     ~PostChain();
 
     PostChain(const PostChain&) = delete;
     PostChain& operator=(const PostChain&) = delete;
 
-    void setChains(std::vector<ShaderProgramPtr> pane, std::vector<ShaderProgramPtr> window);
-    bool active() const noexcept { return !m_pane.empty() || !m_window.empty(); }
+    void setChains(ShaderChains chains);
+    bool active() const noexcept { return !m_chains.empty(); }
+    bool layered() const noexcept { return m_chains.layered(); }
     /// Some shader reads iTime: the window renders every frame.
     bool animated() const noexcept;
 
     /// Makes sure the offscreen textures match @p size and returns the target
     /// the grid pass renders into.
     QRhiTextureRenderTarget* prepare(const QSize& size);
-    /// The render pass the grid's target uses (for its pipelines).
+    /// The render pass the grid's target uses (for its pipelines). Layer
+    /// targets use a compatible one.
     QRhiRenderPassDescriptor* renderPass() const noexcept { return m_gridPass.get(); }
+
+    /// After prepare(), with layer chains: the target @p layer renders into,
+    /// cleared to transparent.
+    QRhiTextureRenderTarget* layerTarget(Layer layer);
+    /// Runs the layer chains, then begins a pass on the grid target and
+    /// composites the layers into it: @p clear outside the panes, and inside
+    /// each pane background, cursor and text, with the cursor over the text
+    /// unless @p cursorBelowText says otherwise for that pane. Returns with
+    /// the pass open, so the caller can draw overlays before ending it.
+    void composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes,
+                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear);
 
     /// Records the shader passes after the grid pass. Returns with the final
     /// pass on @p swapTarget begun and drawn, so the caller can add the
@@ -91,25 +129,34 @@ public:
     void release();
 
 private:
-    struct Pipelines
-    {
-        std::unique_ptr<QRhiGraphicsPipeline> offscreen;
-        std::unique_ptr<QRhiGraphicsPipeline> swapchain;
-    };
-    QRhiGraphicsPipeline* pipeline(const ShaderProgram& program, QRhiRenderPassDescriptor* pass, bool toSwapchain);
+    QRhiGraphicsPipeline* pipeline(const ShaderProgram& program, QRhiRenderPassDescriptor* pass);
     QRhiShaderResourceBindings* bindings(int ubo, int texture);
+    QRhiShaderResourceBindings* compositeBindings(int ubo, int background, int text, int cursor);
+    QRhiGraphicsPipeline* compositePipeline();
+    /// Runs @p chain over each pane region of the layer in texture @p input,
+    /// writing to free layer textures; returns the texture with the result.
+    int runLayerChain(QRhiCommandBuffer* cb, const std::vector<ShaderProgramPtr>& chain, int input,
+                      const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo);
     QRhiBuffer* uniformBuffer(int index);
     void fill(TerminalShaderUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
               const ShaderProgram& program) const;
 
     GpuDevice& m_device;
-    std::vector<ShaderProgramPtr> m_pane;
-    std::vector<ShaderProgramPtr> m_window;
-    std::map<const ShaderProgram*, Pipelines> m_pipelines;
+    ShaderChains m_chains;
+    std::map<std::pair<const ShaderProgram*, const QRhiRenderPassDescriptor*>, std::unique_ptr<QRhiGraphicsPipeline>>
+        m_pipelines;
     QShader m_vertex;
+    QShader m_compositeShader;
+    std::unique_ptr<QRhiGraphicsPipeline> m_composite;
 
     QSize m_size;
-    std::unique_ptr<QRhiTexture> m_textures[2];
+    // 0 and 1: the ping-pong pair of the pane and window chains. From
+    // FirstLayerTexture: one per layer and a spare, for the layer chains.
+    static constexpr int FirstLayerTexture = 2;
+    static constexpr int TextureCount = FirstLayerTexture + LayerCount + 1;
+    std::unique_ptr<QRhiTexture> m_textures[TextureCount];
+    std::unique_ptr<QRhiTextureRenderTarget> m_layerTargets[LayerCount + 1]; ///< clearing, by texture - FirstLayerTexture
+    int m_layerTexture[LayerCount] = {}; ///< which texture holds each layer this frame
     // The grid clears its target; shader passes preserve theirs (pane passes
     // only redraw pane regions over a copy of their input).
     std::unique_ptr<QRhiTextureRenderTarget> m_gridTarget;
@@ -119,6 +166,11 @@ private:
     std::unique_ptr<QRhiSampler> m_sampler;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
     std::map<std::pair<int, int>, std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
+    std::map<std::array<int, 4>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;
+    std::vector<std::unique_ptr<QRhiBuffer>> m_compositeUbos;
+    /// Uniform buffers used so far this frame: a dynamic buffer holds one
+    /// value per frame, so every pass takes its own.
+    int m_nextUbo = 0;
 };
 
 } // namespace AfterglowRender
