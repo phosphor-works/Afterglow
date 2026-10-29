@@ -4,6 +4,7 @@
 find_package(GTest REQUIRED)
 
 add_executable(afterglow_vt_tests
+    ConformanceTest.cpp
     GraphicsTest.cpp
     InputTest.cpp
     ParserTest.cpp
