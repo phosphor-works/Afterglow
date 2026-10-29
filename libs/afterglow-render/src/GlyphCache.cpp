@@ -128,6 +128,82 @@ const GlyphEntry* GlyphCache::glyph(FontSet& fonts, int face, std::uint32_t glyp
     return &m_entries.emplace(key, entry).first->second;
 }
 
+const GlyphEntry* GlyphCache::icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan)
+{
+    // The span's top bit (no text cluster is 128 cells wide) keeps icons
+    // apart from text glyphs.
+    const std::uint64_t key = (std::uint64_t(face & 0xFFFF) << 40) | (std::uint64_t((cellSpan & 0x7F) | 0x80) << 32) | glyphId;
+    if (auto it = m_entries.find(key); it != m_entries.end()) {
+        return &it->second;
+    }
+    GlyphEntry entry;
+    if (!rasterizeIcon(fonts, face, glyphId, cellSpan, entry)) {
+        return nullptr;
+    }
+    return &m_entries.emplace(key, entry).first->second;
+}
+
+bool GlyphCache::rasterizeIcon(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, GlyphEntry& out)
+{
+    const Face& face = fonts.face(faceIdx);
+    if (!face.scalable || face.color) {
+        return rasterize(fonts, faceIdx, glyphId, cellSpan, 16, out);
+    }
+    FT_Face ft = face.ft;
+    const FontMetrics& m = fonts.metrics();
+    if (FT_Load_Glyph(ft, glyphId, FT_LOAD_NO_HINTING) != 0) {
+        return true; // missing glyph: draw nothing
+    }
+    const float gw = float(ft->glyph->metrics.width) / 64.0f;
+    const float gh = float(ft->glyph->metrics.height) / 64.0f;
+    if (gw <= 0 || gh <= 0) {
+        return true;
+    }
+    // The icon font's line maps onto our cell, so icons keep their sizes
+    // relative to each other whichever Nerd Font supplies them; only one too
+    // wide for its cells shrinks further.
+    const float line = float(ft->size->metrics.ascender - ft->size->metrics.descender) / 64.0f;
+    const float boxW = float(m.cellWidth * std::max(1, cellSpan));
+    const float boxH = float(m.cellHeight);
+    const float pad = std::max(1.0f, float(m.cellWidth) * 0.1f);
+    float scale = line > 0 ? boxH * 0.9f / line : 1.0f;
+    scale = std::min({scale, (boxW - pad) / gw, boxH * 0.95f / gh});
+    const float base = fonts.pixelSize();
+    FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(base * scale * 64.0f)), 72, 72);
+    bool ok = true;
+    if (FT_Load_Glyph(ft, glyphId, FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT) == 0
+        && FT_Render_Glyph(ft->glyph, FT_RENDER_MODE_LIGHT) == 0) {
+        const FT_Bitmap& bm = ft->glyph->bitmap;
+        if (bm.width > 0 && bm.rows > 0 && bm.pixel_mode == FT_PIXEL_MODE_GRAY) {
+            const int w = int(bm.width);
+            const int h = int(bm.rows);
+            const int left = int(std::lround((boxW - float(w)) / 2.0f));
+            const int top = m.baseline - int(std::lround((boxH - float(h)) / 2.0f));
+            ok = storeGray(bm.buffer, w, h, bm.pitch, left, top, out);
+        }
+    }
+    FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(base * 64.0f)), 72, 72);
+    return ok;
+}
+
+bool GlyphCache::storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top,
+                           GlyphEntry& out)
+{
+    int x = 0;
+    int y = 0;
+    if (!m_gray.allocate(width, height, x, y)) {
+        return false;
+    }
+    QImage& img = m_gray.image();
+    for (int row = 0; row < height; ++row) {
+        std::memcpy(img.scanLine(y + row) + x, pixels + std::ptrdiff_t(row) * pitch, std::size_t(width));
+    }
+    m_gray.markDirty(QRect(x, y, width, height));
+    out = GlyphEntry{false, false, std::int16_t(left), std::int16_t(top), std::uint16_t(width), std::uint16_t(height),
+                     std::uint16_t(x), std::uint16_t(y)};
+    return true;
+}
+
 const GlyphEntry* GlyphCache::sprite(FontSet& fonts, char32_t cp, int sx, int sy)
 {
     constexpr std::uint64_t SpriteFace = 0xFFFF;

@@ -82,6 +82,12 @@ public:
     /// for scaled text (OSC 66, double-size lines).
     const GlyphEntry* glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16 = 16);
 
+    /// An icon (a Nerd Font symbol in the Private Use Area) fitted to
+    /// @p cellSpan cells: sized to the line, shrunk if too wide, and centred.
+    /// The entry's left is from the start of its cells and its top from the
+    /// baseline, as for other glyphs.
+    const GlyphEntry* icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan);
+
     /// A procedurally drawn cell (see Sprites.h), or nullptr if the atlas is full.
     /// The entry's top is the baseline, so it lands on the cell's top edge.
     /// A procedurally drawn character, @p sx by @p sy cells large.
@@ -96,6 +102,9 @@ public:
 
 private:
     bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, GlyphEntry& out);
+    bool rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, GlyphEntry& out);
+    /// Copies an 8-bit coverage bitmap into the gray atlas.
+    bool storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top, GlyphEntry& out);
 
     AtlasPage m_gray;
     AtlasPage m_color;

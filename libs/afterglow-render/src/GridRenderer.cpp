@@ -122,6 +122,18 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
     return m_shapeCache.emplace(std::move(key), std::move(glyphs)).first->second;
 }
 
+namespace {
+
+/// A symbol from a Private Use Area (Nerd Font icons), other than the
+/// powerline and box shapes drawn as sprites.
+bool isIcon(char32_t cp)
+{
+    const bool pua = (cp >= 0xE000 && cp <= 0xF8FF) || (cp >= 0xF0000 && cp <= 0xFFFFD) || (cp >= 0x100000 && cp <= 0x10FFFD);
+    return pua && !Sprites::isSprite(cp);
+}
+
+} // namespace
+
 bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet& fonts, GlyphCache& glyphs,
                              std::vector<Instance>& out, Ranges& ranges)
 {
@@ -437,7 +449,18 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 if (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan) {
                     color = s.defaultBg;
                 }
-                const GlyphEntry* e = glyphs.glyph(fonts, face, g.glyphId, std::max<int>(1, cell.width));
+                // Icons (Nerd Font symbols) are fitted to the grid: two cells
+                // when the next one is blank, as prompts expect, else one.
+                const bool icon = cell.grapheme == 0 && isIcon(cell.cp);
+                int span = std::max<int>(1, cell.width);
+                if (icon && span == 1 && col + 1 < s.cols) {
+                    const SnapshotCell& next = s.at(col + 1, y);
+                    if ((next.cp == 0 || next.cp == U' ') && next.width == 1 && next.mcScale == 0) {
+                        span = 2;
+                    }
+                }
+                const GlyphEntry* e = icon ? glyphs.icon(fonts, face, g.glyphId, span)
+                                           : glyphs.glyph(fonts, face, g.glyphId, span);
                 if (!e) {
                     return false;
                 }
@@ -445,7 +468,11 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     continue;
                 }
                 const float cellX = ox + float(col * cw);
-                if (e->color) {
+                if (icon && !e->color) {
+                    out.push_back({std::round(cellX + float(e->left)), std::round(baseline - float(e->top)), float(e->width),
+                                   float(e->height), float(e->u), float(e->v), float(e->u + e->width),
+                                   float(e->v + e->height), color, std::uint32_t(InstanceKind::GrayGlyph)});
+                } else if (e->color) {
                     out.push_back({cellX + float(e->left), baseline - float(e->top), float(e->width), float(e->height),
                                    float(e->u), float(e->v), float(e->u + e->width), float(e->v + e->height),
                                    withAlpha(0xFFFFFFu, alphaOf(color)), std::uint32_t(InstanceKind::ColorGlyph)});

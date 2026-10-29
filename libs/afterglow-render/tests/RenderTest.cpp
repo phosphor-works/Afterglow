@@ -255,6 +255,34 @@ TEST_F(Render, LayerShadersSeeOnlyTheirLayer)
     EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 255));
 }
 
+TEST_F(Render, IconsTakeTwoCellsBeforeABlank)
+{
+    // A Nerd Font icon followed by a blank is fitted to two cells and
+    // centred, as prompts expect; one followed by text keeps to its cell.
+    auto inkIn = [&](const QImage& img, int col) {
+        int ink = 0;
+        for (int y = 0; y < ch; ++y) {
+            for (int x = col * cw; x < (col + 1) * cw; ++x) {
+                ink += img.pixel(x, y) != rgb(snapshot.defaultBg);
+            }
+        }
+        return ink;
+    };
+    const QImage spaced = render("\x1b[?25l\uf015 ");
+    if (inkIn(spaced, 0) == 0) {
+        GTEST_SKIP() << "no font with Nerd Font icons";
+    }
+    EXPECT_GT(inkIn(spaced, 1), 0);
+    // Centred over both cells: about as much ink in each.
+    const double ratio = double(inkIn(spaced, 0)) / std::max(1, inkIn(spaced, 1));
+    EXPECT_GT(ratio, 0.6);
+    EXPECT_LT(ratio, 1.6);
+    terminal->feed("\x1b[2J\x1b[H");
+    const QImage tight = render("\uf015\uf015\uf015");
+    EXPECT_GT(inkIn(tight, 0), 0);
+    EXPECT_GT(inkIn(tight, 1), 0);
+}
+
 TEST_F(Render, ShaderChainsSurviveTranslucencyChanges)
 {
     // Toggling translucency releases the swapchain; the shaders must stay.
