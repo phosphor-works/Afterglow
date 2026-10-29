@@ -65,7 +65,7 @@ PhosphorAnimation::MotionSpec<T> springSpec(PhosphorAnimation::IMotionClock* clo
     return spec;
 }
 
-constexpr qreal CursorSpeed = 34.0;
+constexpr qreal CursorSpeed = 48.0;
 constexpr qreal SplitSpeed = 22.0;
 constexpr qreal ScrollSpeed = 26.0;
 
@@ -620,7 +620,12 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     const QPointF cellTarget(snap.cursorX * metrics.cellWidth, snap.cursorY * metrics.cellHeight);
     const auto cursorSpec = springSpec<QPointF>(m_clock.get(), CursorSpeed);
     const bool glide = anim.cursor && snap.cursorVisible;
-    if (!m.cursorKnown || !glide) {
+    // Typing and deleting move the cursor a cell at a time: those moves are
+    // immediate, or the cursor would trail behind fast keystrokes. Only
+    // jumps (another row, or further along it) glide.
+    const QPointF step = cellTarget - m.cursorTarget;
+    const bool smallMove = std::abs(step.y()) < 0.5 && std::abs(step.x()) <= 2.0 * metrics.cellWidth;
+    if (!m.cursorKnown || !glide || smallMove) {
         m.cursorKnown = true;
         m.cursorTarget = cellTarget;
         m.cursor.start(cellTarget, cellTarget, cursorSpec);
