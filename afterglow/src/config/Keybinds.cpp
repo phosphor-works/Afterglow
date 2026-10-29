@@ -178,6 +178,23 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
             }
             known = true;
         }
+        if (!known && it.key().startsWith(QLatin1String(TextPrefix))) {
+            const QByteArray bytes = unescape(it.key().mid(int(qstrlen(TextPrefix))));
+            if (bytes.isEmpty()) {
+                if (errors) {
+                    errors->append(QStringLiteral("\"%1\" sends nothing; check its escapes").arg(it.key()));
+                }
+            } else {
+                const QVariant v = it.value();
+                const QStringList seqs = v.typeId() == QMetaType::QString ? QStringList{v.toString()} : v.toStringList();
+                for (const QString& s : seqs) {
+                    if (const auto combo = parse(s, it.key(), errors)) {
+                        kb.m_textByKey.insert(*combo, bytes);
+                    }
+                }
+            }
+            known = true;
+        }
         if (!known && errors) {
             errors->append(QStringLiteral("unknown action \"%1\"").arg(it.key()));
         }
@@ -229,6 +246,69 @@ QString Keybinds::matchScript(const QKeyEvent* event) const
 {
     const QString* s = lookup(m_scriptByKey, event);
     return s ? *s : QString();
+}
+
+QByteArray Keybinds::matchText(const QKeyEvent* event) const
+{
+    const QByteArray* b = lookup(m_textByKey, event);
+    return b ? *b : QByteArray();
+}
+
+QByteArray Keybinds::unescape(const QString& text)
+{
+    QByteArray out;
+    for (qsizetype i = 0; i < text.size(); ++i) {
+        if (text[i] != QLatin1Char('\\')) {
+            out += QString(text[i]).toUtf8();
+            continue;
+        }
+        if (++i >= text.size()) {
+            return {};
+        }
+        auto hex = [&](int digits) -> std::optional<char32_t> {
+            bool ok = false;
+            const uint v = text.mid(i + 1, digits).toUInt(&ok, 16);
+            if (!ok || text.mid(i + 1, digits).size() != digits) {
+                return std::nullopt;
+            }
+            i += digits;
+            return char32_t(v);
+        };
+        switch (text[i].unicode()) {
+        case 'e':
+            out += '\x1b';
+            break;
+        case 'r':
+            out += '\r';
+            break;
+        case 'n':
+            out += '\n';
+            break;
+        case 't':
+            out += '\t';
+            break;
+        case '\\':
+            out += '\\';
+            break;
+        case 'x':
+            if (const auto v = hex(2)) {
+                out += char(*v);
+            } else {
+                return {};
+            }
+            break;
+        case 'u':
+            if (const auto v = hex(4)) {
+                out += QString::fromUcs4(&*v, 1).toUtf8();
+            } else {
+                return {};
+            }
+            break;
+        default:
+            return {};
+        }
+    }
+    return out;
 }
 
 QStringList Keybinds::bindingsOfScript(const QString& action) const

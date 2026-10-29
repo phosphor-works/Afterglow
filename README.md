@@ -58,6 +58,15 @@ Themes come from `~/.config/afterglow/themes`, then the installed
 can be afterglow JSON (the `Colors` keys), Ghostty themes or kitty themes, so
 collections such as iTerm2-Color-Schemes drop straight in. To follow the
 desktop's light or dark preference, write `"light:afterglow-light,dark:nord"`.
+A path works too, so a theme another tool generates stays in step.
+
+### Keybinds
+
+`Keybinds.bindings` maps an action to a key or a list of keys; an empty
+string unbinds it. Besides the built-in actions, `"text:<bytes>"` sends bytes
+to the terminal (`\e \r \n \t \\ \xHH \uHHHH`), for example
+`"text:\\x1b\\r": "Shift+Return"`, and `"script:<id>.<action>"` runs a script
+action.
 
 ## Shaders
 

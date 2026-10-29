@@ -1276,6 +1276,15 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     if (action != Action::None) {
         return performAction(action);
     }
+    if (const QByteArray text = kb.matchText(e); !text.isEmpty()) {
+        if (!m_focused) {
+            return false;
+        }
+        m_focused->clearSelection();
+        restartBlink();
+        m_focused->sendInput(std::string_view(text.constData(), std::size_t(text.size())));
+        return true;
+    }
     const QString script = kb.matchScript(e);
     return !script.isEmpty() && m_scripts.runAction(script, m_focused ? m_focused->id() : 0);
 }

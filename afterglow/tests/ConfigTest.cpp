@@ -7,6 +7,7 @@
 #include <AfterglowRender/Snapshot.h>
 
 #include <QDir>
+#include <QKeyEvent>
 #include <QFile>
 #include <QTemporaryDir>
 
@@ -200,4 +201,21 @@ TEST_F(ConfigTest, ReadsTheNewerSettings)
     EXPECT_EQ(s.window.startMode, WindowSettings::StartMode::Maximized);
     EXPECT_FALSE(s.window.decorations);
     EXPECT_EQ(s.window.tabBar, WindowSettings::TabBar::Auto); // not a choice: the default
+}
+
+TEST(Keybinds, TextBindingsSendTheirBytes)
+{
+    EXPECT_EQ(Keybinds::unescape(QStringLiteral("\\x1b\\r")), QByteArray("\x1b\r"));
+    EXPECT_EQ(Keybinds::unescape(QStringLiteral("a\\e[A\\t\\\\\\u00e9")), QByteArray("a\x1b[A\t\\\xc3\xa9"));
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\q")).isEmpty());
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\x1")).isEmpty());
+
+    QStringList errors;
+    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("text:\\x1b\\r"), QStringLiteral("Shift+Return")},
+                                           {QStringLiteral("text:\\z"), QStringLiteral("Ctrl+Return")}},
+                                          &errors);
+    EXPECT_EQ(errors.size(), 1); // the malformed one
+    const QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::ShiftModifier);
+    EXPECT_EQ(kb.matchText(&press), QByteArray("\x1b\r"));
+    EXPECT_EQ(kb.match(&press), Action::None);
 }

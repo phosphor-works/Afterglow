@@ -76,6 +76,9 @@ class Keybinds
 {
 public:
     static constexpr const char* ScriptPrefix = "script:";
+    /// "text:<bytes>" sends the bytes to the terminal, with C escapes:
+    /// \e \r \n \t \\ \xHH \uHHHH. { "text:\\x1b\\r": "Shift+Return" }
+    static constexpr const char* TextPrefix = "text:";
 
     static Keybinds defaults();
     /// Default bindings in config form, for the schema default.
@@ -93,6 +96,10 @@ public:
     Action match(const QKeyEvent* event) const;
     /// The script action ("<script id>.<action id>") bound to a key press, or empty.
     QString matchScript(const QKeyEvent* event) const;
+    /// The bytes a "text:" binding sends for a key press, or empty.
+    QByteArray matchText(const QKeyEvent* event) const;
+    /// A "text:" binding's escapes turned into bytes; empty if malformed.
+    static QByteArray unescape(const QString& text);
     /// Human-readable bindings of @p action, for menus and the command palette.
     QStringList bindingsOf(Action action) const;
     QStringList bindingsOfScript(const QString& action) const;
@@ -105,6 +112,7 @@ private:
 
     QHash<int, Action> m_byKey; // QKeyCombination::toCombined()
     QHash<int, QString> m_scriptByKey;
+    QHash<int, QByteArray> m_textByKey;
 };
 
 } // namespace Afterglow
