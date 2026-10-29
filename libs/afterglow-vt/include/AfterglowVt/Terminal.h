@@ -103,6 +103,9 @@ public:
     /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
     /// true to let the terminal take that size; the host then follows it.
     virtual bool requestResize(int cols, int rows) { return false; }
+    /// Size of the display the terminal is on, in pixels, for XTWINOPS
+    /// reports and maximum sizes. Return false if unknown.
+    virtual bool screenSize(int& width, int& height) { return false; }
     virtual bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba)
     {

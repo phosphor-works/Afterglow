@@ -1,0 +1,87 @@
+# esctest2 tests afterglow is expected to fail, one per line, with the reason
+# in the section comment. tools/conformance/esctest.sh fails on anything else.
+
+# Identity: DA reports only what afterglow supports; DA2 says VT220 like kitty, foot and Ghostty, which apps rely on; the keyboard report follows DA2.
+test_DA2_0
+test_DA2_NoParameter
+test_DA_0
+test_DA_NoParameter
+test_DECDSR_DSRKeyboard
+
+# Modes afterglow does not implement, reported as reset: keyboard lock, local echo, Hebrew keyboard, national replacement sets.
+test_DECRQM_ANSI_KAM
+test_DECRQM_ANSI_SRM
+test_DECRQM_DEC_DECHEBM
+test_DECRQM_DEC_DECNRCM
+
+# Xcms device-independent colour spaces (CIE*, TekHVC) and xterm's display-gamma rgbi results.
+test_ChangeColor_CIELab
+test_ChangeColor_CIELuv
+test_ChangeColor_CIEXYZ
+test_ChangeColor_CIEuvY
+test_ChangeColor_CIExyY
+test_ChangeColor_RGBI
+test_ChangeColor_TekHVC
+test_ChangeDynamicColor_CIELab
+test_ChangeDynamicColor_CIELuv
+test_ChangeDynamicColor_CIEXYZ
+test_ChangeDynamicColor_CIEuvY
+test_ChangeDynamicColor_CIExyY
+test_ChangeDynamicColor_RGBI
+test_ChangeDynamicColor_TekHVC
+test_ChangeSpecialColor_CIELab
+test_ChangeSpecialColor_CIELuv
+test_ChangeSpecialColor_CIEXYZ
+test_ChangeSpecialColor_CIEuvY
+test_ChangeSpecialColor_CIExyY
+test_ChangeSpecialColor_RGBI
+test_ChangeSpecialColor_TekHVC
+
+# OSC 5/105 special colours (bold/underline/blink colouring), which afterglow does not use.
+test_ChangeSpecialColor_CIELab
+test_ChangeSpecialColor_CIELuv
+test_ChangeSpecialColor_CIEXYZ
+test_ChangeSpecialColor_CIEuvY
+test_ChangeSpecialColor_CIExyY
+test_ChangeSpecialColor_Hash12
+test_ChangeSpecialColor_Hash3
+test_ChangeSpecialColor_Hash6
+test_ChangeSpecialColor_Hash9
+test_ChangeSpecialColor_Multiple
+test_ChangeSpecialColor_Multiple2
+test_ChangeSpecialColor_RGB
+test_ChangeSpecialColor_RGBI
+test_ChangeSpecialColor_TekHVC
+test_ResetSpecialColor_Dynamic
+test_ResetSpecialColor_Multiple
+test_ResetSpecialColor_Multiple2
+test_ResetSpecialColor_Single
+test_ResetSpecialColor_Single2
+
+# Title and icon reporting (CSI 20/21 t) stays off: reporting titles lets output inject input.
+test_RIS_ResetTitleMode
+test_XtermWinops_PushIconAndWindow_PopIcon
+test_XtermWinops_PushIconAndWindow_PopIconAndWindow
+test_XtermWinops_PushIconAndWindow_PopWindow
+test_XtermWinops_PushIconThenWindowThenPopBoth
+test_XtermWinops_PushIcon_PopIcon
+test_XtermWinops_PushMultiplePopMultiple_Icon
+test_XtermWinops_PushMultiplePopMultiple_Window
+test_XtermWinops_PushWindow_PopWindow
+test_XtermWinops_ReportIconLabel
+test_XtermWinops_ReportWindowLabel
+
+# Window manager operations a Wayland client cannot perform or observe: move, iconify, maximize, fullscreen.
+test_XtermWinops_Fullscreen
+test_XtermWinops_IconifyDeiconfiy
+test_XtermWinops_MaximizeWindow_Horizontally
+test_XtermWinops_MaximizeWindow_HorizontallyAndVertically
+test_XtermWinops_MaximizeWindow_Vertically
+test_XtermWinops_MoveToXY
+test_XtermWinops_MoveToXY_Defaults
+
+# Tests that expect xterm's known bugs (ISO protection in selective erase, DECNCSM option); afterglow follows the spec.
+test_DECRQM_DEC_DECNCSM
+test_DECSED_doesNotRespectISOProtect
+test_DECSEL_doesNotRespectISOProtect
+test_DECSET_DECNCSM

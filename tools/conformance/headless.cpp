@@ -59,6 +59,14 @@ public:
         return true;
     }
 
+    // A 1920x1080 display, so maximum sizes and screen reports have answers.
+    bool screenSize(int& width, int& height) override
+    {
+        width = 1920;
+        height = 1080;
+        return true;
+    }
+
     static constexpr int CellWidth = 10;
     static constexpr int CellHeight = 20;
 

@@ -20,6 +20,7 @@ struct Params
 
     std::uint16_t values[Max] = {};
     std::uint32_t subMask = 0; ///< bit i set: values[i] is a sub-parameter of values[i - 1]
+    std::uint32_t givenMask = 0; ///< bit i set: values[i] had digits (an explicit 0 is not omitted)
     int count = 0;
 
     std::uint16_t at(int i, std::uint16_t fallback = 0) const { return i < count ? values[i] : fallback; }
@@ -29,6 +30,7 @@ struct Params
         return (i < count && values[i] != 0) ? values[i] : fallback;
     }
     bool isSub(int i) const { return i > 0 && i < count && ((subMask >> i) & 1); }
+    bool given(int i) const { return i < count && ((givenMask >> i) & 1); }
 };
 
 /// Up to two intermediate bytes plus an optional private marker ('?', '>', '<', '=').
@@ -349,6 +351,9 @@ private:
         if (m_params.count < Params::Max) {
             if (m_nextIsSub) {
                 m_params.subMask |= 1u << m_params.count;
+            }
+            if (m_paramActive) {
+                m_params.givenMask |= 1u << m_params.count;
             }
             m_params.values[m_params.count++] = m_current;
         }

@@ -5,6 +5,8 @@
 #include <AfterglowVt/Terminal.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <charconv>
 #include <cstdio>
 
@@ -70,9 +72,51 @@ bool parseHexComponent(std::string_view s, std::uint8_t& out)
     return true;
 }
 
-/// X11 colour spec: "rgb:r/g/b" or "#rgb" / "#rrggbb" / "#rrrgggbbb" / "#rrrrggggbbbb".
+/// One "#" component: per XParseColor its digits are the high-order bits,
+/// so "#fff" is f0/f0/f0, not white.
+bool parseHashComponent(std::string_view s, std::uint8_t& out)
+{
+    unsigned v = 0;
+    for (char c : s) {
+        const int d = hexDigit(c);
+        if (d < 0) {
+            return false;
+        }
+        v = v * 16 + unsigned(d);
+    }
+    const int bits = 4 * int(s.size());
+    out = std::uint8_t(bits >= 8 ? v >> (bits - 8) : v << (8 - bits));
+    return true;
+}
+
+/// An "rgbi:" intensity in [0, 1].
+bool parseIntensity(std::string_view s, std::uint8_t& out)
+{
+    const std::string text(s);
+    char* end = nullptr;
+    const double v = std::strtod(text.c_str(), &end);
+    if (text.empty() || end != text.c_str() + text.size() || !(v >= 0.0 && v <= 1.0)) {
+        return false;
+    }
+    out = std::uint8_t(std::lround(v * 255.0));
+    return true;
+}
+
+/// X11 colour spec: "rgb:r/g/b", "rgbi:r/g/b" or "#rgb" / "#rrggbb" /
+/// "#rrrgggbbb" / "#rrrrggggbbbb". (The device-independent CIE and TekHVC
+/// spaces of Xcms are not supported.)
 bool parseColorSpec(std::string_view spec, Rgb& out)
 {
+    if (spec.starts_with("rgbi:")) {
+        spec.remove_prefix(5);
+        const auto s1 = spec.find('/');
+        const auto s2 = s1 == std::string_view::npos ? s1 : spec.find('/', s1 + 1);
+        if (s2 == std::string_view::npos) {
+            return false;
+        }
+        return parseIntensity(spec.substr(0, s1), out.r) && parseIntensity(spec.substr(s1 + 1, s2 - s1 - 1), out.g)
+            && parseIntensity(spec.substr(s2 + 1), out.b);
+    }
     if (spec.starts_with("rgb:")) {
         spec.remove_prefix(4);
         const auto s1 = spec.find('/');
@@ -89,8 +133,8 @@ bool parseColorSpec(std::string_view spec, Rgb& out)
             return false;
         }
         const std::size_t n = spec.size() / 3;
-        return parseHexComponent(spec.substr(0, n), out.r) && parseHexComponent(spec.substr(n, n), out.g)
-            && parseHexComponent(spec.substr(2 * n, n), out.b);
+        return parseHashComponent(spec.substr(0, n), out.r) && parseHashComponent(spec.substr(n, n), out.g)
+            && parseHashComponent(spec.substr(2 * n, n), out.b);
     }
     return false;
 }
@@ -2123,13 +2167,50 @@ void Terminal::windowOp(const Params& p)
     char buf[64];
     int n = 0;
     switch (p.at(0)) {
-    case 8: { // resize to rows;cols, 0 or omitted keeping the current value
-        const int r = p.at(1) == 0 ? rows() : p.at(1);
-        const int c = p.at(2) == 0 ? cols() : p.at(2);
+    case 4: // resize to height;width in pixels
+    case 8: { // resize to rows;cols
+        // Omitted keeps the current size; 0 means as large as the display.
+        int screenW = 0;
+        int screenH = 0;
+        const bool known = m_host.screenSize(screenW, screenH) && m_cellWidth > 0 && m_cellHeight > 0;
+        auto cells = [&](int index, int current, int screenPx, int cellPx) {
+            if (!p.given(index)) {
+                return current;
+            }
+            const int value = p.at(index);
+            if (value == 0) {
+                return known ? screenPx / cellPx : current;
+            }
+            return p.at(0) == 4 ? (cellPx > 0 ? value / cellPx : current) : value;
+        };
+        const int r = std::max(1, cells(1, rows(), screenH, m_cellHeight));
+        const int c = std::max(2, cells(2, cols(), screenW, m_cellWidth));
         if ((r != rows() || c != cols()) && m_host.requestResize(c, r)) {
             resize(c, r, m_cellWidth, m_cellHeight);
         }
         return;
+    }
+    case 11: // window state: never iconified as far as programs can tell
+        n = std::snprintf(buf, sizeof buf, "\x1b[1t");
+        break;
+    case 13: // window position: unknown on Wayland
+        n = std::snprintf(buf, sizeof buf, "\x1b[3;0;0t");
+        break;
+    case 15:
+    case 19: {
+        int w = 0;
+        int h = 0;
+        if (!m_host.screenSize(w, h)) {
+            return;
+        }
+        if (p.at(0) == 15) {
+            n = std::snprintf(buf, sizeof buf, "\x1b[5;%d;%dt", h, w);
+        } else if (m_cellWidth > 0 && m_cellHeight > 0) {
+            n = std::snprintf(buf, sizeof buf, "\x1b[9;%d;%dt", h / m_cellHeight, w / m_cellWidth);
+        } else {
+            return;
+        }
+        break;
     }
     case 14:
         n = std::snprintf(buf, sizeof buf, "\x1b[4;%d;%dt", rows() * m_cellHeight, cols() * m_cellWidth);
