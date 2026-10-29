@@ -208,7 +208,26 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
     }
     }
 
-    // Plain text keys.
+    // Plain text keys. With modifyOtherKeys, modified keys that have no
+    // legacy encoding (level 1), or any modified key (level 2), are sent as
+    // CSI 27 ; mods ; code ~ (xterm's format, as foot does it).
+    if (modes.modifyOtherKeys != 0 && (m & (Mod::Shift | Mod::Alt | Mod::Ctrl | Mod::Super)) != 0) {
+        char32_t ch = (m & Mod::Shift) && e.shifted ? e.shifted : e.unshifted;
+        if (ch == 0 && !e.text.empty()) {
+            ch = char32_t(static_cast<unsigned char>(e.text[0]));
+        }
+        const bool ctrl = (m & Mod::Ctrl) != 0;
+        const char32_t base = e.unshifted ? e.unshifted : ch;
+        const bool legacyCtrl = ctrl && ctrlCode(base) >= 0;
+        bool level2 = false;
+        if (modes.modifyOtherKeys == 2) {
+            // Anything beyond Shift, or Shift on a letter, is encoded.
+            level2 = (m & ~Mod::Shift) != 0 || (base >= U'a' && base <= U'z');
+        }
+        if (ch != 0 && (level2 || (ctrl && !legacyCtrl))) {
+            return "\x1b[27;" + std::to_string(modParam(m)) + ";" + std::to_string(std::uint32_t(ch)) + "~";
+        }
+    }
     if (m & Mod::Ctrl) {
         char32_t base = e.unshifted;
         if (base == 0 && e.text.size() == 1) {

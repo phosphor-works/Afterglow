@@ -358,3 +358,15 @@ TEST(Conformance, LegacySynchronizedUpdatesAndFlash)
     t.feed("\x1b]555\x1b\\");
     EXPECT_EQ(host.flashes, 1);
 }
+
+TEST(Conformance, ModifyOtherKeysControl)
+{
+    Term t(10, 2);
+    t.feed("\x1b[>4;2m\x1b[?4m");
+    EXPECT_EQ(t.take(), "\x1b[>4;2m");
+    EXPECT_EQ(t.t.modes().modifyOtherKeys, 2);
+    t.feed("\x1bP$q>4m\x1b\\");
+    EXPECT_EQ(t.take(), "\x1bP1$r>4;2m\x1b\\");
+    t.feed("\x1b[>4n");
+    EXPECT_EQ(t.t.modes().modifyOtherKeys, 0);
+}

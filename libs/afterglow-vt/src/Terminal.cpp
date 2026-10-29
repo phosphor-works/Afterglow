@@ -1851,6 +1851,16 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case 's':
             saveDecModes(p);
             return;
+        case 'm': { // XTQMODKEYS
+            const int resource = p.at(0);
+            const int value = resource == 4 ? m_modes.modifyOtherKeys : resource == 0 ? 0 : 2;
+            if (resource <= 2 || resource == 4) {
+                char buf[32];
+                const int n = std::snprintf(buf, sizeof buf, "\x1b[>%d;%dm", resource, value);
+                reply(std::string_view(buf, std::size_t(n)));
+            }
+            return;
+        }
         case 'r':
             restoreDecModes(p);
             return;
@@ -1941,6 +1951,15 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         }
     }
 
+    if (inter.marker == '>' && inter.count == 0 && (final == 'm' || final == 'n')) {
+        // XTMODKEYS (CSI > 4 ; Pv m) and its reset (CSI > 4 n); only
+        // modifyOtherKeys is settable, cursor and function keys always carry
+        // their modifiers.
+        if (p.at(0) == 4) {
+            m_modes.modifyOtherKeys = final == 'm' ? std::uint8_t(std::min<int>(p.at(1), 2)) : 0;
+        }
+        return;
+    }
     if (inter.marker == '>' && inter.count == 0) {
         if (final == 'c' && p.at(0) == 0) {
             reply("\x1b[>1;10;0c");
@@ -3601,6 +3620,10 @@ void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std
             value = std::to_string(rows()) + "*|";
         } else if (data == "$|") {
             value = std::to_string(cols()) + "$|";
+        } else if (data == ">0m" || data == ">1m" || data == ">2m" || data == ">4m") {
+            const int resource = data[1] - '0';
+            const int level = resource == 4 ? m_modes.modifyOtherKeys : resource == 0 ? 0 : 2;
+            value = ">" + std::to_string(resource) + ";" + std::to_string(level) + "m";
         } else if (data == " q") {
             const int base = m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5;
             value = std::to_string(base + (m_modes.cursorBlink ? 0 : 1)) + " q";

@@ -131,3 +131,27 @@ TEST(Input, KittyReportAllKeysWithText)
     EXPECT_EQ(encodeKey(key(Key::LeftShift, Mod::Shift), m), "\x1b[57441;2u");
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::CapsLock, "A", U'a'), m), "\x1b[97;65;65u");
 }
+
+TEST(Input, ModifyOtherKeys)
+{
+    Modes m;
+    // Off: legacy bytes.
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "1", U'1'), m), "1");
+    m.modifyOtherKeys = 1;
+    // Level 1: Ctrl+a still has its control code; Ctrl+1 and Ctrl+; get sequences.
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "a", U'a'), m), "\x01");
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "1", U'1'), m), "\x1b[27;5;49~");
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, ";", U';'), m), "\x1b[27;5;59~");
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Alt, "x", U'x'), m), "\x1bx");
+    m.modifyOtherKeys = 2;
+    // Level 2: every modified key except Shift with a non-letter.
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "a", U'a'), m), "\x1b[27;5;97~");
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Alt, "x", U'x'), m), "\x1b[27;3;120~");
+    KeyEvent shiftA = key(Key::Text, Mod::Shift, "A", U'a');
+    shiftA.shifted = U'A';
+    EXPECT_EQ(encodeKey(shiftA, m), "\x1b[27;2;65~");
+    KeyEvent shiftComma = key(Key::Text, Mod::Shift, "<", U',');
+    shiftComma.shifted = U'<';
+    EXPECT_EQ(encodeKey(shiftComma, m), "<");
+    EXPECT_EQ(encodeKey(key(Key::Text, 0, "a", U'a'), m), "a");
+}

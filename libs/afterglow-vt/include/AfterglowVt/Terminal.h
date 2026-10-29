@@ -75,6 +75,9 @@ struct Modes
     bool themeReports = false; ///< 2031: report dark/light changes
     bool visibilityReports = false; ///< 2033: report visibility changes
     bool sizeReports = false; ///< 2048: report resizes in band
+    /// xterm modifyOtherKeys: 0 off, 1 keys without a legacy encoding,
+    /// 2 every modified key (except Shift with non-letters).
+    std::uint8_t modifyOtherKeys = 0;
     bool allow132 = false; ///< 40: DECCOLM may switch the width
     bool columns132 = false; ///< DECCOLM
     bool noClearOnColumnChange = false; ///< DECNCSM (95)
