@@ -197,7 +197,7 @@ Item {
                         required property int index
                         required property var modelData
                         readonly property bool separator: modelData.separator === true
-                        readonly property bool enabled: !separator && modelData.enabled !== false
+                        readonly property bool usable: !separator && modelData.enabled !== false
                         readonly property bool submenu: !separator && modelData.items !== undefined
                         readonly property bool current: menu.currents[panel.level] === index
 
@@ -217,10 +217,10 @@ Item {
                             visible: !entry.separator
                             anchors.fill: parent
                             radius: 5
-                            color: entry.current && entry.enabled
+                            color: entry.current && entry.usable
                                    ? Qt.rgba(menu.controller.accent.r, menu.controller.accent.g, menu.controller.accent.b, 0.25)
                                    : "transparent"
-                            opacity: entry.enabled ? 1.0 : 0.38
+                            opacity: entry.usable ? 1.0 : 0.38
 
                             // The icon column: a check for toggles that are on, else the icon.
                             Text {
@@ -271,7 +271,7 @@ Item {
                             hoverEnabled: true
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             onEntered: {
-                                menu.setCurrent(panel.level, entry.enabled ? entry.index : -1)
+                                menu.setCurrent(panel.level, entry.usable ? entry.index : -1)
                                 hoverTimer.level = panel.level
                                 hoverTimer.index = entry.index
                                 hoverTimer.restart()

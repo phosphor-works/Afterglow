@@ -55,6 +55,17 @@ enum class Action {
     RenameTab,
     CloseWindow,
     NotifyOnFinish,
+    MoveTabLeft,
+    MoveTabRight,
+    GotoTab1,
+    GotoTab2,
+    GotoTab3,
+    GotoTab4,
+    GotoTab5,
+    GotoTab6,
+    GotoTab7,
+    GotoTab8,
+    GotoTab9,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

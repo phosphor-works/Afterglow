@@ -55,6 +55,14 @@ constexpr int ScriptActionBase = 10000;
 constexpr int MenuOpenLink = 20000;
 constexpr int MenuCopyLink = 20001;
 constexpr int MenuScriptBase = 30000;
+/// Tab menu items.
+constexpr int TabMenuRename = 40000;
+constexpr int TabMenuNew = 40001;
+constexpr int TabMenuMoveLeft = 40002;
+constexpr int TabMenuMoveRight = 40003;
+constexpr int TabMenuClose = 40004;
+constexpr int TabMenuCloseOthers = 40005;
+constexpr int TabMenuCloseRight = 40006;
 } // namespace
 
 namespace Afterglow {
@@ -133,6 +141,9 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(m_chrome, &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::activateTabRequested, this, &TerminalWindow::switchTab);
     connect(m_controller, &ChromeController::closeTabRequested, this, &TerminalWindow::closeTab);
+    connect(m_controller, &ChromeController::moveTabRequested, this, &TerminalWindow::moveTab);
+    connect(m_controller, &ChromeController::renameTabRequested, this, &TerminalWindow::renameTab);
+    connect(m_controller, &ChromeController::tabMenuRequested, this, &TerminalWindow::openTabMenu);
     connect(m_controller, &ChromeController::newTabRequested, this,
             [this] { newTab(m_focused ? m_focused->workingDirectory() : QString()); });
     connect(m_controller, &ChromeController::actionRequested, this, [this](int id) {
@@ -177,6 +188,8 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
             QDesktopServices::openUrl(QUrl(m_menuLink));
         } else if (id == MenuCopyLink) {
             QGuiApplication::clipboard()->setText(m_menuLink);
+        } else if (id >= TabMenuRename) {
+            runTabMenuItem(id);
         } else if (id >= MenuScriptBase) {
             if (id - MenuScriptBase < m_menuScriptActions.size()) {
                 m_scripts.runAction(m_menuScriptActions[id - MenuScriptBase], m_focused ? m_focused->id() : 0);
@@ -471,13 +484,19 @@ QRect TerminalWindow::paneArea() const
 
 Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command)
 {
-    auto tab = std::make_unique<Tab>();
-    m_tabs.push_back(std::move(tab));
+    // A new tab opens beside the current one.
+    const int at = m_tabs.empty() ? 0 : m_currentTab + 1;
+    if (m_splits && m_currentTab < int(m_tabs.size())) {
+        m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
+    }
+    m_tabs.insert(m_tabs.begin() + at, std::make_unique<Tab>());
+    Tab& tab = *m_tabs[std::size_t(at)];
     // Size the shell for the area it will get, with the tab bar if it now shows.
     Pane* first = createPane(workingDirectory, paneArea(), command);
-    m_tabs.back()->splits = std::make_unique<SplitTree>(first);
-    m_tabs.back()->focused = first;
-    switchTab(int(m_tabs.size()) - 1);
+    tab.splits = std::make_unique<SplitTree>(first);
+    tab.focused = first;
+    m_splits = nullptr; // the current tab's index moved; nothing to save
+    switchTab(at);
     return first;
 }
 
@@ -527,6 +546,13 @@ void TerminalWindow::switchTab(int index)
     m_currentTab = index;
     Tab& tab = *m_tabs[std::size_t(index)];
     m_splits = tab.splits.get();
+    // Panes appear where they are: no easing from where they were when the
+    // tab was last shown (the window may have changed size since).
+    m_splits->forEachPane([this](Pane* p, const QRect&) {
+        PaneMotion& m = motion(p);
+        m.rectKnown = false;
+        m.cursorKnown = false;
+    });
     QTimer::singleShot(0, this, &TerminalWindow::updatePaneVisibility);
     m_selectionPane = nullptr;
     setFocusedPane(tab.focused);
@@ -546,14 +572,136 @@ void TerminalWindow::closeTab(int index)
         close();
         return;
     }
+    const Tab* closing = m_tabs[std::size_t(index)].get();
+    if (m_titleTab == closing) {
+        m_controller->cancelTitle();
+        m_titleTab = nullptr;
+    }
+    if (m_menuTab == closing) {
+        m_menuTab = nullptr;
+    }
     m_tabs[std::size_t(index)]->splits->forEachPane([](Pane* p, const QRect&) { p->deleteLater(); });
     m_tabs.erase(m_tabs.begin() + index);
-    if (m_currentTab >= index && m_currentTab > 0) {
-        --m_currentTab;
+    if (index != m_currentTab) {
+        // A tab in the background: the current one is untouched.
+        if (index < m_currentTab) {
+            --m_currentTab;
+        }
+        m_layoutSize = QSize(); // the tab bar may have gone
+        Q_EMIT tabsChanged();
+        scheduleRender();
+        return;
     }
-    m_splits = nullptr; // the old pointer may be gone; switchTab must not save into it
+    // The tab that slides into its place, or the new last one.
+    m_splits = nullptr; // gone; switchTab must not save into it
     m_focused = nullptr;
-    switchTab(std::min(m_currentTab, int(m_tabs.size()) - 1));
+    switchTab(std::min(index, int(m_tabs.size()) - 1));
+}
+
+void TerminalWindow::moveTab(int from, int to)
+{
+    const int count = int(m_tabs.size());
+    if (from < 0 || from >= count || to < 0 || to >= count || from == to) {
+        return;
+    }
+    const Tab* current = m_tabs[std::size_t(m_currentTab)].get();
+    auto moved = std::move(m_tabs[std::size_t(from)]);
+    m_tabs.erase(m_tabs.begin() + from);
+    m_tabs.insert(m_tabs.begin() + to, std::move(moved));
+    for (int i = 0; i < count; ++i) {
+        if (m_tabs[std::size_t(i)].get() == current) {
+            m_currentTab = i;
+        }
+    }
+    Q_EMIT tabsChanged();
+    scheduleRender();
+}
+
+void TerminalWindow::renameTab(int index)
+{
+    if (index < 0 || index >= int(m_tabs.size())) {
+        return;
+    }
+    m_titlePane = nullptr;
+    m_titleTab = m_tabs[std::size_t(index)].get();
+    m_controller->askTitle(QStringLiteral("Tab title"), m_titleTab->title);
+}
+
+void TerminalWindow::runTabMenuItem(int id)
+{
+    int index = -1;
+    for (std::size_t i = 0; i < m_tabs.size(); ++i) {
+        if (m_tabs[i].get() == m_menuTab) {
+            index = int(i);
+        }
+    }
+    m_menuTab = nullptr;
+    if (index < 0) {
+        return; // the tab closed while its menu was open
+    }
+    switch (id) {
+    case TabMenuRename:
+        renameTab(index);
+        break;
+    case TabMenuNew:
+        switchTab(index);
+        newTab(m_focused ? m_focused->workingDirectory() : QString());
+        break;
+    case TabMenuMoveLeft:
+        moveTab(index, index - 1);
+        break;
+    case TabMenuMoveRight:
+        moveTab(index, index + 1);
+        break;
+    case TabMenuClose:
+        closeTab(index);
+        break;
+    case TabMenuCloseOthers:
+        for (int i = int(m_tabs.size()) - 1; i >= 0; --i) {
+            if (i != index) {
+                closeTab(i);
+                if (i < index) {
+                    --index;
+                }
+            }
+        }
+        break;
+    case TabMenuCloseRight:
+        for (int i = int(m_tabs.size()) - 1; i > index; --i) {
+            closeTab(i);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void TerminalWindow::openTabMenu(int index, const QPointF& pos)
+{
+    if (index < 0 || index >= int(m_tabs.size())) {
+        return;
+    }
+    m_menuTab = m_tabs[std::size_t(index)].get();
+    const int count = int(m_tabs.size());
+    auto entry = [](int id, const QString& title, const char* icon, bool enabled = true) {
+        return QVariant(QVariantMap{{QStringLiteral("id"), id},
+                                    {QStringLiteral("title"), title},
+                                    {QStringLiteral("icon"), QString::fromLatin1(icon)},
+                                    {QStringLiteral("enabled"), enabled}});
+    };
+    const QVariant separator = QVariantMap{{QStringLiteral("separator"), true}};
+    const QVariantList items{
+        entry(TabMenuRename, QStringLiteral("Change Tab Title\u2026"), "document-edit"),
+        entry(TabMenuNew, QStringLiteral("New Tab"), "tab-new"),
+        separator,
+        entry(TabMenuMoveLeft, QStringLiteral("Move Left"), "go-previous", index > 0),
+        entry(TabMenuMoveRight, QStringLiteral("Move Right"), "go-next", index < count - 1),
+        separator,
+        entry(TabMenuClose, QStringLiteral("Close Tab"), "tab-close"),
+        entry(TabMenuCloseOthers, QStringLiteral("Close Other Tabs"), "tab-close-other", count > 1),
+        entry(TabMenuCloseRight, QStringLiteral("Close Tabs to the Right"), "tab-close-other", index < count - 1),
+    };
+    m_controller->openContextMenu(pos, items);
 }
 
 void TerminalWindow::setFocusedPane(Pane* pane)
@@ -1069,9 +1217,32 @@ bool TerminalWindow::performAction(Action action)
         }
         return true;
     case Action::RenameTab:
-        m_titlePane = nullptr;
-        m_titleTab = m_tabs[std::size_t(m_currentTab)].get();
-        m_controller->askTitle(QStringLiteral("Tab title"), m_titleTab->title);
+        renameTab(m_currentTab);
+        return true;
+    case Action::MoveTabLeft:
+        moveTab(m_currentTab, m_currentTab - 1);
+        return true;
+    case Action::MoveTabRight:
+        moveTab(m_currentTab, m_currentTab + 1);
+        return true;
+    case Action::GotoTab1:
+    case Action::GotoTab2:
+    case Action::GotoTab3:
+    case Action::GotoTab4:
+    case Action::GotoTab5:
+    case Action::GotoTab6:
+    case Action::GotoTab7:
+    case Action::GotoTab8:
+        if (m_tabs.size() < 2) {
+            return false; // the key goes to the program
+        }
+        switchTab(int(action) - int(Action::GotoTab1));
+        return true;
+    case Action::GotoTab9:
+        if (m_tabs.size() < 2) {
+            return false;
+        }
+        switchTab(int(m_tabs.size()) - 1);
         return true;
     case Action::CloseWindow:
         close();
@@ -1525,6 +1696,10 @@ void TerminalWindow::publishLauncherStatus()
 
 void TerminalWindow::applyPointerShape()
 {
+    if (chromeVisible() && m_chrome->wantsPointer(m_pointer)) {
+        setCursor(m_chrome->cursorAt(m_pointer));
+        return;
+    }
     if (!m_hover.url.isEmpty()) {
         setCursor(Qt::PointingHandCursor);
         return;
@@ -2413,18 +2588,20 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         return;
     }
     updateLinkHover();
-    if (auto divider = m_splits->dividerAt(px, int(std::lround(4 * devicePixelRatio())))) {
-        setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
-    } else {
-        applyPointerShape();
-    }
     if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {
+        setCursor(m_chrome->cursorAt(m_pointer));
         return;
     }
     if (chromeVisible()) {
         // Keep hover state in the chrome current as the pointer leaves it.
         QMouseEvent outside(e->type(), QPointF(-1, -1), QPointF(-1, -1), e->button(), e->buttons(), e->modifiers());
         m_chrome->deliver(&outside);
+    }
+    // After the chrome has seen the pointer leave, which may reset the cursor.
+    if (auto divider = m_splits->dividerAt(px, int(std::lround(4 * devicePixelRatio())))) {
+        setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
+    } else {
+        applyPointerShape();
     }
     if (m_selectionPane && (e->buttons() & Qt::LeftButton)) {
         m_dragPos = e->position();

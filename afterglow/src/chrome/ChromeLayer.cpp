@@ -15,6 +15,8 @@
 #include <QQuickGraphicsDevice>
 #include <QQuickItem>
 #include <QQuickRenderControl>
+
+#include <algorithm>
 #include <QQuickRenderTarget>
 #include <QQuickWindow>
 #include <rhi/qrhi.h>
@@ -165,6 +167,47 @@ void ChromeLayer::deliver(QEvent* event)
     if (m_window) {
         QCoreApplication::sendEvent(m_window.get(), event);
     }
+}
+
+namespace {
+
+/// Finds the cursor at @p scenePos under @p item, topmost first. An enabled
+/// mouse area without a cursor of its own (a backdrop) hides what is below.
+bool cursorUnder(const QQuickItem* item, const QPointF& scenePos, QCursor& out)
+{
+    if (!item->isVisible() || item->opacity() <= 0.0) {
+        return false;
+    }
+    QList<QQuickItem*> children = item->childItems();
+    std::stable_sort(children.begin(), children.end(), [](const QQuickItem* a, const QQuickItem* b) { return a->z() < b->z(); });
+    for (auto it = children.crbegin(); it != children.crend(); ++it) {
+        if (cursorUnder(*it, scenePos, out)) {
+            return true;
+        }
+    }
+    if (!item->contains(item->mapFromScene(scenePos))) {
+        return false;
+    }
+    if (item->cursor().shape() != Qt::ArrowCursor) {
+        out = item->cursor();
+        return true;
+    }
+    if (item->isEnabled() && item->inherits("QQuickMouseArea")) {
+        out = QCursor(Qt::ArrowCursor);
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+QCursor ChromeLayer::cursorAt(const QPointF& pos) const
+{
+    QCursor cursor(Qt::ArrowCursor);
+    if (m_root) {
+        cursorUnder(m_root, pos, cursor);
+    }
+    return cursor;
 }
 
 void ChromeLayer::releaseResources()

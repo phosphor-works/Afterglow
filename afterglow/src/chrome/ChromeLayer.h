@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <QCursor>
 #include <QObject>
 #include <QSize>
 
@@ -51,6 +52,9 @@ public:
     bool wantsPointer(const QPointF& pos) const;
     /// Sends an input event to the QML scene.
     void deliver(QEvent* event);
+    /// The pointer the chrome asks for at @p pos (logical pixels): the
+    /// cursor of the topmost item there that sets one, an arrow otherwise.
+    QCursor cursorAt(const QPointF& pos) const;
     /// Releases GPU resources before the window's surface goes away.
     void releaseResources();
 

@@ -106,6 +106,12 @@ private:
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {});
     void switchTab(int index);
     void closeTab(int index);
+    /// Moves the tab at @p from to @p to; the current tab stays current.
+    void moveTab(int from, int to);
+    void renameTab(int index);
+    /// The menu of the tab at @p index, at @p pos (logical pixels).
+    void openTabMenu(int index, const QPointF& pos);
+    void runTabMenuItem(int id);
     int tabOf(const Pane* pane) const;
     /// Height of the tab bar in pixels; 0 while there is a single tab.
     int tabBarHeight() const;
@@ -298,6 +304,7 @@ private:
     void openContextMenu(const QPointF& pos);
     QString m_menuLink; ///< the link the menu was opened on
     QStringList m_menuScriptActions; ///< menu id MenuScriptBase + i runs entry i
+    const Tab* m_menuTab = nullptr; ///< the tab a tab menu was opened on
     /// What the open title prompt renames: a pane, or (pane null) a tab.
     QPointer<Pane> m_titlePane;
     const Tab* m_titleTab = nullptr;
