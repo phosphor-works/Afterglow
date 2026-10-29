@@ -281,6 +281,7 @@ private:
     void forwardIndex();
     void reportDeviceAttributes();
     void softReset();
+    void reportPresentationState(int which);
     void textSizing(std::string_view args);
     void placeMulticell(char32_t cp, std::u32string_view extra, const MulticellParams& params);
     void setLineSize(LineSize size);

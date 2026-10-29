@@ -274,3 +274,14 @@ TEST(Conformance, KittyColorControl)
     EXPECT_EQ(t.take(), "\x1b]21;cursor=rgb:ab/cd/ef\x07");
     EXPECT_EQ(t.t.defaultForeground(), TerminalOptions{}.defaultForeground);
 }
+
+TEST(Conformance, PresentationStateReports)
+{
+    Term t(20, 5);
+    t.feed("\x1b[3;4H\x1b[1;7m\x1b(0\x1b[1$w");
+    EXPECT_EQ(t.take(), "\x1bP1$u3;4;1;I;@;@;0;2;@;0BBB\x1b\\"); // bold+inverse = 0x49 'I'
+    t.feed("\x1b[3g\x1b[1;3H\x1bH\x1b[1;11H\x1bH\x1b[2$w"); // stops at columns 3 and 11
+    EXPECT_EQ(t.take(), "\x1bP2$u3/11\x1b\\");
+    t.feed("\x1b[\"v\x1b[&u");
+    EXPECT_EQ(t.take(), "\x1b[5;20;1;1;1\"w\x1bP1!uA\x1b\\");
+}

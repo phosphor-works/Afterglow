@@ -1780,6 +1780,20 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             }
             return;
         }
+        if (i == '$' && final == 'w') { // DECRQPSR: cursor information or tab stops
+            reportPresentationState(p.at(0));
+            return;
+        }
+        if (i == '"' && final == 'v') { // DECRQDE: the displayed extent of the page
+            char buf[48];
+            const int n = std::snprintf(buf, sizeof buf, "\x1b[%d;%d;1;1;1\"w", rows(), cols());
+            reply(std::string_view(buf, std::size_t(n)));
+            return;
+        }
+        if (i == '&' && final == 'u') { // DECRQUPSS: the user-preferred supplemental set is ISO Latin-1
+            reply("\x1bP1!uA\x1b\\");
+            return;
+        }
         if (i == '$' && final == '|') { // DECSCPP: 80 or 132 columns per page
             const int width = p.at(0) == 132 ? 132 : 80;
             if (width != cols() && m_host.requestResize(width, rows())) {
@@ -1911,6 +1925,59 @@ void Terminal::vt52Dispatch(std::uint8_t final)
     default:
         break;
     }
+}
+
+void Terminal::reportPresentationState(int which)
+{
+    const Cursor& cur = cursor();
+    std::string r;
+    if (which == 1) {
+        // DECCIR: DCS 1 $ u Pr;Pc;Pp;Srend;Satt;Sflag;Pgl;Pgr;Scss;Sdesig ST
+        const Style& pen = cur.pen;
+        const char rend = char(0x40 | (pen.has(Attr::Bold) ? 1 : 0) | (pen.underline != UnderlineStyle::None ? 2 : 0)
+                               | (pen.has(Attr::Blink) ? 4 : 0) | (pen.has(Attr::Inverse) ? 8 : 0));
+        const char att = char(0x40 | (pen.has(Attr::Protected) && m_protection == Protection::Dec ? 1 : 0));
+        const char flag = char(0x40 | (m_modes.originMode ? 1 : 0) | (m_singleShift == 2 ? 2 : 0)
+                               | (m_singleShift == 3 ? 4 : 0) | (cur.pendingWrap ? 8 : 0));
+        int sizes = 0;
+        std::string designators;
+        for (int g = 0; g < 4; ++g) {
+            switch (m_charsets[g]) {
+            case Charset::DecSpecialGraphics:
+                designators += '0';
+                break;
+            case Charset::British:
+                designators += 'A';
+                break;
+            case Charset::Latin1Supplemental:
+                designators += 'A';
+                sizes |= 1 << g; // a 96-character set
+                break;
+            case Charset::Ascii:
+                designators += 'B';
+                break;
+            }
+        }
+        r = "\x1bP1$u" + std::to_string(cur.y + 1) + ';' + std::to_string(cur.x + 1) + ";1;" + rend + ';' + att + ';'
+            + flag + ';' + std::to_string(m_gl) + ";2;" + char(0x40 | sizes) + ';' + designators + "\x1b\\";
+    } else if (which == 2) {
+        // DECTABSR: DCS 2 $ u Pt/Pt/... ST, 1-based columns.
+        r = "\x1bP2$u";
+        bool first = true;
+        for (std::size_t x = 0; x < m_tabStops.size(); ++x) {
+            if (m_tabStops[x]) {
+                if (!first) {
+                    r += '/';
+                }
+                r += std::to_string(x + 1);
+                first = false;
+            }
+        }
+        r += "\x1b\\";
+    } else {
+        return;
+    }
+    reply(r);
 }
 
 void Terminal::softReset()
