@@ -50,6 +50,24 @@ system install of phosphor (from PlasmaZones) is left alone.
 `~/.config/afterglow/config.json`, reloaded live. Shader packs come from the
 installed `share/afterglow/shaders` and `~/.config/afterglow/shaders`.
 
+## Control and scripting
+
+Other programs drive afterglow over D-Bus (`io.github.fuddlesworth.Afterglow.Control`
+at `/Afterglow/Control`), or with `afterglow ctl`: list panes, send text, split,
+open tabs and windows, set titles, notify, run actions, and `watch` events as
+JSON lines. Run `afterglow ctl --help` for the full list. Reading a pane's text
+needs `"Control": { "allowReadText": true }`; `"Control": { "enabled": false }`
+turns the interface off.
+
+Luau scripts in `~/.config/afterglow/scripts/` react to events (commands
+finishing, bells, titles, focus) and add actions to the command palette, which
+bind in `Keybinds` as `"script:<id>.<action>"`. Scripts run sandboxed, with
+no file or process access and a short time limit. They return effects, which
+afterglow rate limits and carries out. Types for editors are installed to
+`share/afterglow/api/afterglow.d.luau`, and examples to
+`share/afterglow/examples/scripts`. `"Scripts": { "enabled": false }` turns
+scripting off.
+
 ## Licence
 
 The application is GPL-3.0-or-later; the libraries under `libs/` are

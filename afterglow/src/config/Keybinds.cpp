@@ -8,6 +8,8 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 
+#include <optional>
+
 namespace Afterglow {
 
 namespace {
@@ -110,23 +112,29 @@ Keybinds Keybinds::defaults()
     return fromMap(defaultMap());
 }
 
-void Keybinds::bind(Action action, const QString& sequence, QStringList* errors)
+std::optional<int> Keybinds::parse(const QString& sequence, const QString& target, QStringList* errors)
 {
     if (sequence.trimmed().isEmpty()) {
-        return;
+        return std::nullopt;
     }
     const QKeySequence seq = QKeySequence::fromString(sequence, QKeySequence::PortableText);
     if (seq.isEmpty() || seq[0].key() == Qt::Key_unknown) {
         if (errors) {
-            errors->append(QStringLiteral("cannot parse key \"%1\" for %2").arg(sequence, token(action)));
+            errors->append(QStringLiteral("cannot parse key \"%1\" for %2").arg(sequence, target));
         }
-        return;
+        return std::nullopt;
     }
     if (seq.count() > 1 && errors) {
         errors->append(QStringLiteral("\"%1\": only single key combinations are supported").arg(sequence));
     }
-    const QKeyCombination combo(seq[0].keyboardModifiers() & RelevantMods, seq[0].key());
-    m_byKey.insert(combo.toCombined(), action);
+    return QKeyCombination(seq[0].keyboardModifiers() & RelevantMods, seq[0].key()).toCombined();
+}
+
+void Keybinds::bind(Action action, const QString& sequence, QStringList* errors)
+{
+    if (const auto combo = parse(sequence, token(action), errors)) {
+        m_byKey.insert(*combo, action);
+    }
 }
 
 Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
@@ -138,6 +146,16 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
             if (it.key() == QLatin1String(a.token)) {
                 known = true;
             }
+        }
+        if (!known && it.key().startsWith(QLatin1String(ScriptPrefix))) {
+            const QVariant v = it.value();
+            const QStringList seqs = v.typeId() == QMetaType::QString ? QStringList{v.toString()} : v.toStringList();
+            for (const QString& s : seqs) {
+                if (const auto combo = parse(s, it.key(), errors)) {
+                    kb.m_scriptByKey.insert(*combo, it.key().mid(int(qstrlen(ScriptPrefix))));
+                }
+            }
+            known = true;
         }
         if (!known && errors) {
             errors->append(QStringLiteral("unknown action \"%1\"").arg(it.key()));
@@ -160,24 +178,48 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     return kb;
 }
 
-Action Keybinds::match(const QKeyEvent* event) const
+template<typename T>
+static const T* lookup(const QHash<int, T>& map, const QKeyEvent* event)
 {
     const Qt::KeyboardModifiers mods = event->modifiers() & RelevantMods;
     const int key = event->key();
-    if (auto it = m_byKey.constFind(QKeyCombination(mods, Qt::Key(key)).toCombined()); it != m_byKey.constEnd()) {
-        return *it;
+    if (auto it = map.constFind(QKeyCombination(mods, Qt::Key(key)).toCombined()); it != map.constEnd()) {
+        return &*it;
     }
     // Shift changes the reported key on punctuation (Shift+= reports '+'), so
     // also try the key's unshifted character from the layout.
     const char32_t base = XkbKeyboard::instance().unshiftedCodepoint(event->nativeScanCode());
     if (base >= 0x20 && base < 0x7F) {
         const int baseKey = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
-        if (auto it = m_byKey.constFind(QKeyCombination(mods, Qt::Key(baseKey)).toCombined());
-            it != m_byKey.constEnd()) {
-            return *it;
+        if (auto it = map.constFind(QKeyCombination(mods, Qt::Key(baseKey)).toCombined()); it != map.constEnd()) {
+            return &*it;
         }
     }
-    return Action::None;
+    return nullptr;
+}
+
+Action Keybinds::match(const QKeyEvent* event) const
+{
+    const Action* a = lookup(m_byKey, event);
+    return a ? *a : Action::None;
+}
+
+QString Keybinds::matchScript(const QKeyEvent* event) const
+{
+    const QString* s = lookup(m_scriptByKey, event);
+    return s ? *s : QString();
+}
+
+QStringList Keybinds::bindingsOfScript(const QString& action) const
+{
+    QStringList out;
+    for (auto it = m_scriptByKey.constBegin(); it != m_scriptByKey.constEnd(); ++it) {
+        if (it.value() == action) {
+            out.append(QKeySequence(QKeyCombination::fromCombined(it.key())).toString(QKeySequence::NativeText));
+        }
+    }
+    out.sort();
+    return out;
 }
 
 QStringList Keybinds::bindingsOf(Action action) const

@@ -41,11 +41,14 @@ class Control : public QObject
 public:
     enum class TextScope { Screen, Scrollback, Selection, LastOutput };
     using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command)>;
+    /// Runs a script action ("<script id>.<action id>"); false if there is none.
+    using ScriptActionRunner = std::function<bool(const QString& action, quint32 pane)>;
 
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
+    void setScriptActionRunner(ScriptActionRunner runner) { m_scriptActions = std::move(runner); }
 
     QList<PaneInfo> panes() const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
@@ -63,7 +66,8 @@ public:
     QString copy(const QString& text);
     /// http, https and mailto only.
     QString openUrl(const QString& url);
-    /// A keybind action by its config name (split_right, new_tab...).
+    /// A keybind action by its config name (split_right, new_tab...), or a
+    /// script action as "script:<script id>.<action id>".
     QString runAction(quint32 pane, const QString& action);
 
     static QString scopeName(TextScope scope);
@@ -86,6 +90,7 @@ private:
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
+    ScriptActionRunner m_scriptActions;
     QList<QPointer<TerminalWindow>> m_windows;
 };
 

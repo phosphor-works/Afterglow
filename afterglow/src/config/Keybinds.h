@@ -7,6 +7,8 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <optional>
+
 class QKeyEvent;
 
 namespace Afterglow {
@@ -48,10 +50,12 @@ enum class Action {
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",
 /// "font_bigger": ["Ctrl+=", "Ctrl++"], "copy": "" } where an empty string
-/// unbinds the action.
+/// unbinds the action. Script actions bind as "script:<script id>.<action id>".
 class Keybinds
 {
 public:
+    static constexpr const char* ScriptPrefix = "script:";
+
     static Keybinds defaults();
     /// Default bindings in config form, for the schema default.
     static QVariantMap defaultMap();
@@ -66,15 +70,20 @@ public:
 
     /// The action bound to a key press, or Action::None.
     Action match(const QKeyEvent* event) const;
+    /// The script action ("<script id>.<action id>") bound to a key press, or empty.
+    QString matchScript(const QKeyEvent* event) const;
     /// Human-readable bindings of @p action, for menus and the command palette.
     QStringList bindingsOf(Action action) const;
+    QStringList bindingsOfScript(const QString& action) const;
 
     bool operator==(const Keybinds&) const = default;
 
 private:
+    static std::optional<int> parse(const QString& sequence, const QString& target, QStringList* errors);
     void bind(Action action, const QString& sequence, QStringList* errors);
 
     QHash<int, Action> m_byKey; // QKeyCombination::toCombined()
+    QHash<int, QString> m_scriptByKey;
 };
 
 } // namespace Afterglow

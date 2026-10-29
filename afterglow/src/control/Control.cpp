@@ -262,6 +262,10 @@ QString Control::runAction(quint32 id, const QString& action)
     if (!p) {
         return noPane(id);
     }
+    if (action.startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
+        const QString script = action.mid(int(qstrlen(Keybinds::ScriptPrefix)));
+        return m_scriptActions && m_scriptActions(script, id) ? QString() : QStringLiteral("no script action %1").arg(script);
+    }
     for (Action a : Keybinds::allActions()) {
         if (Keybinds::token(a) == action) {
             w->runAction(p, a);

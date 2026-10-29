@@ -1,0 +1,108 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#pragma once
+
+#include <QElapsedTimer>
+#include <QFileSystemWatcher>
+#include <QObject>
+#include <QStringList>
+#include <QTimer>
+#include <QVariantMap>
+
+#include <functional>
+#include <memory>
+#include <vector>
+
+namespace PhosphorScripting {
+class LuauEngine;
+class LuauWatchdog;
+} // namespace PhosphorScripting
+
+namespace Afterglow {
+
+/// Luau scripts that react to terminal events and add actions. Each script
+/// runs in its own sandboxed engine with a heap cap and a time limit per
+/// call. Handlers do not touch the terminal: they return effects, which the
+/// host checks, rate limits and hands to @ref Callbacks::apply.
+///
+/// Scripts load from the search path, lowest priority first; a script with
+/// the same id in a later directory replaces the earlier one. Files ending in
+/// .d.luau are type definitions and are skipped. Edits reload on the fly.
+class ScriptHost : public QObject
+{
+    Q_OBJECT
+
+public:
+    struct Callbacks
+    {
+        /// The pane as scripts see it, empty if there is no such pane.
+        std::function<QVariantMap(quint32 pane)> paneInfo;
+        /// Carries out a checked effect; returns an error, empty on success.
+        std::function<QString(const QVariantMap& effect)> apply;
+    };
+
+    struct ScriptAction
+    {
+        QString token; ///< "<script id>.<action id>"
+        QString title;
+    };
+
+    static constexpr int EventTimeoutMs = 20;
+    static constexpr int ActionTimeoutMs = 100;
+    static constexpr int MaxFailures = 5; ///< in a row, before a script is disabled
+    static constexpr int MaxEffectsPerSecond = 20;
+    static constexpr int MaxStructuralPer10s = 3; ///< splits, tabs, windows and closes
+    static constexpr std::size_t MemoryCapBytes = 16u * 1024 * 1024;
+
+    explicit ScriptHost(Callbacks callbacks, QObject* parent = nullptr);
+    ~ScriptHost() override;
+
+    /// The system data directories, then ~/.config/afterglow/scripts.
+    static QStringList defaultSearchPaths();
+    void setSearchPaths(const QStringList& dirs);
+    void setEnabled(bool enabled);
+    bool isEnabled() const { return m_enabled; }
+    void reload();
+
+    QStringList scriptIds() const;
+    /// Whether a script stopped running after repeated failures.
+    bool isDisabled(const QString& id) const;
+    QList<ScriptAction> actions() const;
+
+    /// Runs a script action with @p pane (0 for none) as its event's pane.
+    /// False if there is no such action.
+    bool runAction(const QString& token, quint32 pane);
+    /// Calls @p handler (on_command_finished...) in every script that has it.
+    /// The event's "pane" is filled in from @p pane.
+    void dispatch(const QString& handler, quint32 pane, QVariantMap event = {});
+
+Q_SIGNALS:
+    void actionsChanged();
+    /// After every effect, with the error if it was refused or failed.
+    void effectApplied(const QString& script, const QVariantMap& effect, const QString& error);
+
+private:
+    struct Script;
+    using ScriptPtr = std::shared_ptr<Script>;
+
+    ScriptPtr load(const QString& path, const QByteArray& source) const;
+    void call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
+              quint32 eventPane);
+    void applyResult(const ScriptPtr& script, const QVariant& result, quint32 eventPane);
+    void applyEffect(const ScriptPtr& script, const QVariantMap& effect, quint32 eventPane);
+    bool withinBudget(Script& script, bool structural);
+    void watch();
+
+    Callbacks m_callbacks;
+    std::shared_ptr<PhosphorScripting::LuauWatchdog> m_watchdog;
+    QByteArray m_prelude;
+    QStringList m_searchPaths;
+    bool m_enabled = false;
+    std::vector<ScriptPtr> m_scripts;
+    QFileSystemWatcher m_watcher;
+    QTimer m_reloadTimer;
+    QElapsedTimer m_clock;
+};
+
+} // namespace Afterglow

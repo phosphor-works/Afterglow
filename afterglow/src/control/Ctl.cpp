@@ -40,6 +40,7 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   set-title TITLE                     set the pane's title ("" to clear)
   notify TITLE [BODY]                 desktop notification from the pane
   action NAME                         run a keybind action (split_right, new_tab...)
+                                      or a script action (script:ID.ACTION)
   watch                               print events as JSON lines until interrupted
 )";
 

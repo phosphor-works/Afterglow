@@ -38,6 +38,8 @@ add_executable(afterglow
     src/control/ControlBus.h
     src/control/Ctl.cpp
     src/control/Ctl.h
+    src/scripting/ScriptControl.cpp
+    src/scripting/ScriptControl.h
     src/app/NotificationCenter.h
     src/app/Application.h
     src/app/Services.h
@@ -49,6 +51,16 @@ target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
 target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders Qt6::Core)
+
+# The script host, shared with its tests. The Control binding lives in the app.
+add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h)
+target_include_directories(afterglow_scripting PUBLIC src)
+target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
+target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting Qt6::Core)
+qt_add_resources(afterglow_scripting afterglow_scripting_prelude
+    PREFIX /afterglow/scripting
+    BASE src/scripting
+    FILES src/scripting/afterglow.luau)
 
 qt_add_qml_module(afterglow
     URI Afterglow.Chrome
@@ -73,7 +85,7 @@ target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VER
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
-target_link_libraries(afterglow PRIVATE afterglow_shaders Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow PRIVATE afterglow_shaders afterglow_scripting Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Qml Qt6::Quick Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
@@ -90,6 +102,9 @@ install(TARGETS AfterglowVt AfterglowRender AfterglowPty
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
+# Scripting: types for editors and examples to copy; neither loads on its own.
+install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)
 
 # Desktop integration. The app id matches QGuiApplication::desktopFileName,
 # which Wayland uses to find the icon and group windows.

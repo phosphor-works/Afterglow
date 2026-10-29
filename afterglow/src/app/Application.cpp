@@ -3,6 +3,8 @@
 
 #include "Application.h"
 
+#include "../scripting/ScriptControl.h"
+
 #include <PhosphorShortcuts/Factory.h>
 #include <PhosphorShortcuts/IBackend.h>
 #include <PhosphorShortcuts/Registry.h>
@@ -22,12 +24,17 @@ const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 
 Application::Application()
     : m_device(m_settings.settings().font)
-    , m_services{m_device, m_settings, m_engine, m_shaders}
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command) {
         return newWindow({cwd, command, false});
     })
     , m_controlBus(m_control, m_settings)
+    , m_scripts(scriptCallbacks(m_control))
+    , m_services{m_device, m_settings, m_engine, m_shaders, m_scripts}
 {
+    connectScriptEvents(m_scripts, m_control);
+    m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
+    m_scripts.setEnabled(m_settings.settings().scripts);
+
     connect(&m_settings, &SettingsStore::changed, this, [this](const Settings& previous) {
         if (m_settings.settings().font != previous.font) {
             m_device.setFontSpec(m_settings.settings().font);
@@ -35,6 +42,7 @@ Application::Application()
         if (m_settings.settings().quickTerminal.shortcut != previous.quickTerminal.shortcut) {
             bindShortcuts();
         }
+        m_scripts.setEnabled(m_settings.settings().scripts);
     });
 
     // Hidden windows (a tucked-away quick terminal) still count as open.

@@ -7,6 +7,7 @@
 #include "../control/Control.h"
 #include "../control/ControlBus.h"
 #include "../config/Settings.h"
+#include "../scripting/ScriptHost.h"
 #include "../shaders/ShaderLibrary.h"
 #include "Services.h"
 
@@ -54,13 +55,15 @@ private:
     AfterglowRender::GpuDevice m_device;
     QQmlEngine m_engine;
     ShaderLibrary m_shaders;
+    // Before the services, which hand the script host to windows.
+    Control m_control;
+    ControlBus m_controlBus;
+    ScriptHost m_scripts;
     Services m_services;
 
     QPointer<TerminalWindow> m_quick;
     std::unique_ptr<PhosphorShortcuts::IBackend> m_shortcutBackend;
     std::unique_ptr<PhosphorShortcuts::Registry> m_shortcuts;
-    Control m_control;
-    ControlBus m_controlBus;
     QString m_boundQuickShortcut;
 };
 

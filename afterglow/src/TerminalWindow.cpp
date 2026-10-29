@@ -13,6 +13,7 @@
 
 #include <KWindowEffects>
 #include "chrome/ChromeLayer.h"
+#include "scripting/ScriptHost.h"
 #include "shaders/ShaderLibrary.h"
 #include "Pane.h"
 
@@ -46,6 +47,11 @@
 #include <cmath>
 
 Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
+
+namespace {
+/// Command palette ids from here on are script actions.
+constexpr int ScriptActionBase = 10000;
+} // namespace
 
 namespace Afterglow {
 
@@ -98,6 +104,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     , m_settings(services.settings)
     , m_engine(services.engine)
     , m_shaders(services.shaders)
+    , m_scripts(services.scripts)
     , m_id(s_nextWindowId++)
 {
     m_quick = options.quick;
@@ -124,7 +131,16 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(m_controller, &ChromeController::closeTabRequested, this, &TerminalWindow::closeTab);
     connect(m_controller, &ChromeController::newTabRequested, this,
             [this] { newTab(m_focused ? m_focused->workingDirectory() : QString()); });
-    connect(m_controller, &ChromeController::actionRequested, this, [this](int id) { performAction(Action(id)); });
+    connect(m_controller, &ChromeController::actionRequested, this, [this](int id) {
+        if (id >= ScriptActionBase) {
+            if (id - ScriptActionBase < m_paletteScriptActions.size()) {
+                m_scripts.runAction(m_paletteScriptActions[id - ScriptActionBase], m_focused ? m_focused->id() : 0);
+            }
+            return;
+        }
+        performAction(Action(id));
+    });
+    connect(&m_scripts, &ScriptHost::actionsChanged, this, &TerminalWindow::updateChrome);
     connect(m_controller, &ChromeController::searchRequested, this, &TerminalWindow::runSearch);
     connect(m_controller, &ChromeController::searchOpenChanged, this, [this] {
         if (!m_controller->searchOpen() && m_focused) {
@@ -917,11 +933,13 @@ void TerminalWindow::focusOutEvent(QFocusEvent*)
 
 bool TerminalWindow::handleShortcut(QKeyEvent* e)
 {
-    const Action action = m_settings.settings().keybinds.match(e);
-    if (action == Action::None) {
-        return false;
+    const Keybinds& kb = m_settings.settings().keybinds;
+    const Action action = kb.match(e);
+    if (action != Action::None) {
+        return performAction(action);
     }
-    return performAction(action);
+    const QString script = kb.matchScript(e);
+    return !script.isEmpty() && m_scripts.runAction(script, m_focused ? m_focused->id() : 0);
 }
 
 bool TerminalWindow::performAction(Action action)
@@ -1098,6 +1116,13 @@ void TerminalWindow::updateChrome()
         actions.append(QVariantMap{{QStringLiteral("id"), int(a)},
                                    {QStringLiteral("title"), Keybinds::title(a)},
                                    {QStringLiteral("shortcut"), kb.bindingsOf(a).join(QStringLiteral("  "))}});
+    }
+    m_paletteScriptActions.clear();
+    for (const ScriptHost::ScriptAction& a : m_scripts.actions()) {
+        actions.append(QVariantMap{{QStringLiteral("id"), ScriptActionBase + int(m_paletteScriptActions.size())},
+                                   {QStringLiteral("title"), a.title},
+                                   {QStringLiteral("shortcut"), kb.bindingsOfScript(a.token).join(QStringLiteral("  "))}});
+        m_paletteScriptActions.append(a.token);
     }
     m_controller->setActions(actions);
 }

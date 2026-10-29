@@ -43,6 +43,7 @@ struct WindowOptions
 class ChromeController;
 class ChromeLayer;
 class Pane;
+class ScriptHost;
 class ShaderLibrary;
 
 /// A top-level terminal window: a split tree of panes drawn in one render
@@ -200,6 +201,8 @@ private:
     SettingsStore& m_settings;
     QQmlEngine& m_engine;
     ShaderLibrary& m_shaders;
+    ScriptHost& m_scripts;
+    QStringList m_paletteScriptActions; ///< palette id ScriptActionBase + i runs entry i
     ChromeController* m_controller = nullptr;
     ChromeLayer* m_chrome = nullptr;
     bool m_chromeGrab = false;
