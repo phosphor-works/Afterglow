@@ -285,3 +285,21 @@ TEST(Terminal, Osc8Hyperlinks)
     t.feed("\x1b[2J");
     EXPECT_EQ(s.styles().liveLinks(), 0u);
 }
+
+TEST(Terminal, Xtgettcap)
+{
+    Term t(10, 2);
+    // "TN" = 544E, "Tc" = 5463, "zz" = 7A7A
+    t.feed("\x1bP+q544E;5463;7A7A\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP1+r544E=6166746572676C6F77\x1b\\\x1bP1+r5463\x1b\\\x1bP0+r7A7A\x1b\\");
+}
+
+TEST(Terminal, Decrqss)
+{
+    Term t(10, 4);
+    t.feed("\x1b[1;4:3;31;48;2;1;2;3m\x1bP$qm\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP1$r0;1;4:3;31;48:2::1:2:3m\x1b\\");
+    t.host.written.clear();
+    t.feed("\x1b[2;3r\x1bP$qr\x1b\\\x1b[6 q\x1bP$q q\x1b\\\x1bP$qx\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP1$r2;3r\x1b\\\x1bP1$r6 q\x1b\\\x1bP0$r\x1b\\");
+}

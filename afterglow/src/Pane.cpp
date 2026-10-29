@@ -4,6 +4,8 @@
 #include "Pane.h"
 
 #include <QByteArray>
+#include <QFile>
+#include <QStringList>
 #include <QImage>
 
 #include <algorithm>
@@ -58,6 +60,20 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     opts.pixelWidth = cols * cellWidth;
     opts.pixelHeight = rows * cellHeight;
     opts.environment.emplace_back("TERM", term.toStdString());
+    if (term == QLatin1String("afterglow")) {
+        // Our own entry: point ncurses at it, ahead of the system databases
+        // (the trailing ':' keeps the defaults).
+        QStringList dirs;
+        for (const char* d : {AFTERGLOW_BUILD_TERMINFO_DIR, AFTERGLOW_INSTALLED_TERMINFO_DIR}) {
+            if (QFile::exists(QString::fromUtf8(d) + QStringLiteral("/a/afterglow"))) {
+                dirs << QString::fromUtf8(d);
+            }
+        }
+        if (const QByteArray existing = qgetenv("TERMINFO_DIRS"); !existing.isEmpty()) {
+            dirs << QString::fromLocal8Bit(existing);
+        }
+        opts.environment.emplace_back("TERMINFO_DIRS", (dirs.join(QLatin1Char(':')) + QLatin1Char(':')).toStdString());
+    }
     opts.environment.emplace_back("COLORTERM", "truecolor");
     opts.environment.emplace_back("TERM_PROGRAM", "afterglow");
     opts.environment.emplace_back("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);

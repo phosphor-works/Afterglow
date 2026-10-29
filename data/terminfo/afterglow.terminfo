@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# afterglow's terminfo entry: xterm-256color plus the extensions afterglow
+# implements. Compiled with `tic -x`; select it with Terminal.term = "afterglow".
+afterglow|afterglow terminal emulator,
+	use=xterm-256color,
+	Tc, Su, XT, AX,
+	Smulx=\E[4:%p1%dm,
+	Setulc=\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m,
+	Ss=\E[%p1%d q, Se=\E[2 q,
+	Ms=\E]52;%p1%s;%p2%s\E\\,
+	Sync=\E[?2026%?%p1%{1}%-%tl%eh%;,
+	BE=\E[?2004h, BD=\E[?2004l, PS=\E[200~, PE=\E[201~,
+	fe=\E[?1004h, fd=\E[?1004l, kxIN=\E[I, kxOUT=\E[O,
+	setrgbf=\E[38:2::%p1%d:%p2%d:%p3%dm, setrgbb=\E[48:2::%p1%d:%p2%d:%p3%dm,

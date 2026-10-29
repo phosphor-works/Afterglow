@@ -1750,9 +1750,160 @@ void Terminal::oscPalette(std::string_view args, bool bel)
     }
 }
 
-void Terminal::dcsDispatch(const Params&, const Intermediates&, std::uint8_t, std::string_view)
+namespace {
+
+std::string toHex(std::string_view s)
+{
+    static constexpr char Digits[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (unsigned char c : s) {
+        out.push_back(Digits[c >> 4]);
+        out.push_back(Digits[c & 15]);
+    }
+    return out;
+}
+
+std::string fromHex(std::string_view s)
+{
+    std::string out;
+    for (std::size_t i = 0; i + 1 < s.size(); i += 2) {
+        const int hi = hexDigit(s[i]);
+        const int lo = hexDigit(s[i + 1]);
+        if (hi < 0 || lo < 0) {
+            return {};
+        }
+        out.push_back(char(hi * 16 + lo));
+    }
+    return out;
+}
+
+/// Capabilities answered by XTGETTCAP, as terminfo would hold them (ESC as
+/// a byte). An empty value marks a boolean capability.
+const std::pair<std::string_view, std::string_view>* findCapability(std::string_view name)
+{
+    static const std::pair<std::string_view, std::string_view> Caps[] = {
+        {"TN", "afterglow"},
+        {"name", "afterglow"},
+        {"Co", "256"},
+        {"colors", "256"},
+        {"RGB", "8/8/8"},
+        {"Tc", ""},
+        {"Su", ""},
+        {"XT", ""},
+        {"Smulx", "\x1b[4:%p1%dm"},
+        {"Setulc", "\x1b[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m"},
+        {"Ss", "\x1b[%p1%d q"},
+        {"Se", "\x1b[2 q"},
+        {"Ms", "\x1b]52;%p1%s;%p2%s\x1b\\"},
+        {"Sync", "\x1b[?2026%?%p1%{1}%-%tl%eh%;"},
+        {"BE", "\x1b[?2004h"},
+        {"BD", "\x1b[?2004l"},
+        {"PS", "\x1b[200~"},
+        {"PE", "\x1b[201~"},
+        {"fe", "\x1b[?1004h"},
+        {"fd", "\x1b[?1004l"},
+        {"kxIN", "\x1b[I"},
+        {"kxOUT", "\x1b[O"},
+        {"setrgbf", "\x1b[38:2::%p1%d:%p2%d:%p3%dm"},
+        {"setrgbb", "\x1b[48:2::%p1%d:%p2%d:%p3%dm"},
+    };
+    for (const auto& cap : Caps) {
+        if (cap.first == name) {
+            return &cap;
+        }
+    }
+    return nullptr;
+}
+
+void appendColor(std::string& out, AfterglowVt::Color c, int base, int extended)
+{
+    using Kind = AfterglowVt::Color::Kind;
+    switch (c.kind()) {
+    case Kind::Default:
+        return;
+    case Kind::Palette:
+        if (base != 0 && c.index() < 8) {
+            out += ';' + std::to_string(base + c.index());
+        } else if (base != 0 && c.index() < 16) {
+            out += ';' + std::to_string(base + 60 + c.index() - 8);
+        } else {
+            out += ';' + std::to_string(extended) + ":5:" + std::to_string(c.index());
+        }
+        return;
+    case Kind::Rgb:
+        out += ';' + std::to_string(extended) + ":2::" + std::to_string(c.r()) + ':' + std::to_string(c.g()) + ':'
+            + std::to_string(c.b());
+        return;
+    }
+}
+
+} // namespace
+
+void Terminal::dcsDispatch(const Params&, const Intermediates& inter, std::uint8_t final, std::string_view data)
 {
     m_lastX = -1;
+    if (inter.count != 1 || final != 'q') {
+        return;
+    }
+    if (inter.bytes[0] == '+') {
+        // XTGETTCAP: each requested name gets its own reply.
+        std::size_t pos = 0;
+        while (pos <= data.size()) {
+            const auto semi = data.find(';', pos);
+            const std::string_view hexName = data.substr(pos, semi == std::string_view::npos ? semi : semi - pos);
+            const auto* cap = findCapability(fromHex(hexName));
+            std::string r;
+            if (cap) {
+                r = "\x1bP1+r" + std::string(hexName);
+                if (!cap->second.empty()) {
+                    r += '=' + toHex(cap->second);
+                }
+            } else {
+                r = "\x1bP0+r" + std::string(hexName);
+            }
+            r += "\x1b\\";
+            reply(r);
+            if (semi == std::string_view::npos) {
+                break;
+            }
+            pos = semi + 1;
+        }
+        return;
+    }
+    if (inter.bytes[0] == '$') {
+        // DECRQSS: report a setting as the sequence that would set it.
+        std::string value;
+        if (data == "m") {
+            const Style& st = cursor().pen;
+            value = "0";
+            static constexpr std::pair<std::uint16_t, int> Flags[] = {
+                {Attr::Bold, 1}, {Attr::Faint, 2}, {Attr::Italic, 3}, {Attr::Blink, 5},
+                {Attr::Inverse, 7}, {Attr::Invisible, 8}, {Attr::Strikethrough, 9}, {Attr::Overline, 53},
+            };
+            for (const auto& [flag, code] : Flags) {
+                if (st.has(flag)) {
+                    value += ';' + std::to_string(code);
+                }
+            }
+            if (st.underline != UnderlineStyle::None) {
+                value += st.underline == UnderlineStyle::Single ? std::string(";4")
+                                                                : ";4:" + std::to_string(int(st.underline));
+            }
+            appendColor(value, st.fg, 30, 38);
+            appendColor(value, st.bg, 40, 48);
+            appendColor(value, st.underlineColor, 0, 58);
+            value += 'm';
+        } else if (data == "r") {
+            value = std::to_string(m_margins.top + 1) + ';' + std::to_string(m_margins.bottom + 1) + 'r';
+        } else if (data == "s") {
+            value = std::to_string(m_margins.left + 1) + ';' + std::to_string(m_margins.right + 1) + 's';
+        } else if (data == " q") {
+            const int base = m_cursorShape == CursorShape::Block ? 1 : m_cursorShape == CursorShape::Underline ? 3 : 5;
+            value = std::to_string(base + (m_modes.cursorBlink ? 0 : 1)) + " q";
+        }
+        reply(value.empty() ? std::string("\x1bP0$r\x1b\\") : "\x1bP1$r" + value + "\x1b\\");
+    }
 }
 
 void Terminal::apcDispatch(std::string_view payload)
