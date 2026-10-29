@@ -77,6 +77,10 @@ int main(int argc, char** argv)
                       QStringLiteral("10")});
     parser.addOption({QStringLiteral("wake-from"), QStringLiteral("Previous cursor cell."), QStringLiteral("col,row")});
     parser.addOption({QStringLiteral("split"), QStringLiteral("Show the terminal twice, side by side; the left pane focused.")});
+    parser.addOption({QStringLiteral("family"), QStringLiteral("Font family."), QStringLiteral("name")});
+    parser.addOption({QStringLiteral("weight"), QStringLiteral("Font weight (variable fonts)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("feature"), QStringLiteral("OpenType feature, replacing the defaults (repeatable; \"none\" for none)."),
+                      QStringLiteral("tag")});
     parser.addOption({QStringLiteral("signal"), QStringLiteral("Shader signal set AGE seconds ago (repeatable)."),
                       QStringLiteral("ch=value[@age]")});
     parser.addOption({QStringLiteral("wake-age"), QStringLiteral("Seconds since the cursor moved."),
@@ -103,6 +107,21 @@ int main(int argc, char** argv)
 
     AfterglowRender::FontSpec spec;
     spec.sizePoints = parser.value(QStringLiteral("size")).toFloat();
+    if (parser.isSet(QStringLiteral("family"))) {
+        spec.regular.family = parser.value(QStringLiteral("family")).toStdString();
+        spec.bold.family = spec.italic.family = spec.boldItalic.family = spec.regular.family;
+    }
+    if (parser.isSet(QStringLiteral("weight"))) {
+        spec.regular.weight = parser.value(QStringLiteral("weight")).toDouble();
+    }
+    if (parser.isSet(QStringLiteral("feature"))) {
+        spec.features.clear();
+        for (const QString& f : parser.values(QStringLiteral("feature"))) {
+            if (f != QLatin1String("none")) {
+                spec.features.push_back(f.toStdString());
+            }
+        }
+    }
     AfterglowRender::GpuDevice device(spec);
     device.rhi(nullptr);
     AfterglowRender::WindowRenderer renderer(device, nullptr);

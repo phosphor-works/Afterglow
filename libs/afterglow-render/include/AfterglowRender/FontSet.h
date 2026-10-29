@@ -38,9 +38,9 @@ struct FontSpec
     FontStyleSpec italic{"Monaspace Neon Var", 400, 100, -11};
     FontStyleSpec boldItalic{"Monaspace Neon Var", 700, 100, -11};
     /// OpenType features in HarfBuzz syntax: "calt", "liga", "ss01", "cv01=2", "-liga".
-    /// calt carries Monaspace texture healing; ss01-ss08 are its coding ligature sets.
-    std::vector<std::string> features{"calt", "liga", "ss01", "ss02", "ss03", "ss04",
-                                      "ss05", "ss06", "ss07", "ss08"};
+    /// calt carries Monaspace texture healing; ss01-ss10 are its coding ligature sets.
+    std::vector<std::string> features{"calt", "liga", "ss01", "ss02", "ss03", "ss04", "ss05",
+                                      "ss06", "ss07", "ss08", "ss09", "ss10"};
     bool operator==(const FontSpec&) const = default;
 };
 
