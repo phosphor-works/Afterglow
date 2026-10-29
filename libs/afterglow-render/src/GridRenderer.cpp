@@ -115,7 +115,7 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
             clusterPen = pen;
         }
         glyphs.push_back({info[i].codepoint, info[i].cluster, pen - clusterPen + float(pos[i].x_offset) / 64.0f,
-                          float(pos[i].y_offset) / 64.0f});
+                          float(pos[i].y_offset) / 64.0f, pen + float(pos[i].x_offset) / 64.0f});
         pen += float(pos[i].x_advance) / 64.0f;
     }
     return m_shapeCache.emplace(std::move(key), std::move(glyphs)).first->second;
@@ -150,11 +150,119 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     const float cursorY = oy + float(cursorPos.y());
     // Text under a block cursor takes the background colour once it has arrived.
     const bool cursorSettled = (cursorPos - cellPos).manhattanLength() < 0.5;
-    const bool recolorUnderCursor = blockCursor && cursorSettled;
+    bool recolorUnderCursor = blockCursor && cursorSettled;
+    // The cursor box: a cell, a doubled cell on a double-size line, or the
+    // whole of a multicell block.
+    float curX = cursorX;
+    float curY = cursorY;
+    float curW = float(cursorSpan * cw);
+    float curH = float(ch);
+    if (cursorInGrid) {
+        const SnapshotCell& cc = s.at(s.cursorX, s.cursorY);
+        if (s.lineSize(s.cursorY) != AfterglowVt::LineSize::Single) {
+            curX = ox + float(2 * s.cursorX * cw);
+            curW *= 2;
+            recolorUnderCursor = false;
+        } else if (cc.mcScale != 0) {
+            curX = ox + float((s.cursorX - cc.mcDx) * cw);
+            curY = oy + float((s.cursorY - cc.mcDy) * ch);
+            curW = float(cc.mcScale * cc.mcWidth * cw);
+            curH = float(cc.mcScale * ch);
+            recolorUnderCursor = false;
+        }
+    }
+
+    // Pushes a glyph quad clipped vertically to [top, bottom), its texture
+    // coordinates cut to match (double-height halves).
+    auto pushClipped = [&out](Instance inst, float top, float bottom) {
+        if (inst.h <= 0 || inst.y >= bottom || inst.y + inst.h <= top) {
+            return;
+        }
+        const float v0 = inst.v0;
+        const float span = inst.v1 - inst.v0;
+        const float y0 = inst.y;
+        const float h0 = inst.h;
+        if (inst.y < top) {
+            inst.v0 = v0 + span * (top - y0) / h0;
+            inst.h -= top - inst.y;
+            inst.y = top;
+        }
+        if (inst.y + inst.h > bottom) {
+            inst.v1 = v0 + span * (bottom - y0) / h0;
+            inst.h = bottom - inst.y;
+        }
+        out.push_back(inst);
+    };
+    constexpr float NoClip = 1e9f;
+
+    auto isColorText = [&s](const SnapshotCell& cell, int width) {
+        bool color = width == 2 && AfterglowVt::Unicode::props(cell.cp).extendedPictographic;
+        if (!color && cell.grapheme) {
+            const std::u32string& extra = s.graphemes[cell.grapheme - 1];
+            color = extra.find(AfterglowVt::Unicode::VariationSelector16) != std::u32string::npos;
+        }
+        return color;
+    };
+    auto cellText = [&s](const SnapshotCell& cell) {
+        std::u32string text(1, cell.cp);
+        if (cell.grapheme) {
+            text += s.graphemes[cell.grapheme - 1];
+        }
+        return text;
+    };
+    // Draws text at @p scale16 sixteenths of the base size with its pen at
+    // (@p x, @p baseline), squashed vertically by @p vstretch and clipped.
+    auto drawScaled = [&](int face, StyleSlot slot, const std::u32string& text, float x, float baseline, int scale16,
+                          float vstretch, std::uint32_t color, int cellSpan, float clipTop, float clipBottom) -> bool {
+        if (alphaOf(color) == 0) {
+            return true;
+        }
+        const float f = float(scale16) / 16.0f;
+        const auto& shaped = shape(fonts, face, int(slot), text);
+        for (const ShapedGlyph& g : shaped) {
+            const GlyphEntry* e = glyphs.glyph(fonts, face, g.glyphId, cellSpan, scale16);
+            if (!e) {
+                return false;
+            }
+            if (e->empty) {
+                continue;
+            }
+            Instance inst{};
+            inst.u0 = float(e->u);
+            inst.v0 = float(e->v);
+            inst.u1 = float(e->u + e->width);
+            inst.v1 = float(e->v + e->height);
+            inst.w = float(e->width);
+            inst.h = float(e->height) * vstretch;
+            if (e->color) {
+                inst.x = x + float(e->left);
+                inst.y = baseline - float(e->top) * vstretch;
+                inst.color = withAlpha(0xFFFFFFu, alphaOf(color));
+                inst.kind = std::uint32_t(InstanceKind::ColorGlyph);
+            } else {
+                inst.x = std::round(x + g.penX * f + float(e->left));
+                inst.y = std::round(baseline - (float(e->top) + g.yOffset * f) * vstretch);
+                inst.color = color;
+                inst.kind = std::uint32_t(InstanceKind::GrayGlyph);
+            }
+            pushClipped(inst, clipTop, clipBottom);
+        }
+        return true;
+    };
 
     // Backgrounds, merged into horizontal runs.
     for (int y = 0; y < drawRows; ++y) {
         const float rowTop = oy + float(y * ch);
+        if (s.lineSize(y) != AfterglowVt::LineSize::Single) {
+            // Double-size line: the left half of the cells, twice as wide.
+            for (int x = 0; x < s.cols / 2; ++x) {
+                const std::uint32_t bg = s.at(x, y).bg;
+                if (alphaOf(bg) != 0) {
+                    solid(ox + float(2 * x * cw), rowTop, float(2 * cw), float(ch), bg);
+                }
+            }
+            continue;
+        }
         int x = 0;
         while (x < s.cols) {
             const std::uint32_t bg = s.at(x, y).bg;
@@ -171,17 +279,93 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
     }
     if (blockCursor) {
-        solid(cursorX, cursorY, float(cursorSpan * cw), float(ch), s.cursorColor);
+        solid(curX, curY, curW, curH, s.cursorColor);
     }
     textStart = out.size();
 
     // Text, after every background so overhangs are not covered.
     for (int y = 0; y < drawRows; ++y) {
         const float baseline = oy + float(y * ch + m.baseline);
+        const float rowTop = oy + float(y * ch);
+        const AfterglowVt::LineSize lineSize = s.lineSize(y);
+        if (lineSize != AfterglowVt::LineSize::Single) {
+            // DECDWL/DECDHL: each cell twice as wide; double height shows
+            // the top or bottom half of characters twice as tall.
+            const bool tall = lineSize != AfterglowVt::LineSize::DoubleWidth;
+            const float bandTop = lineSize == AfterglowVt::LineSize::DoubleBottom ? rowTop - float(ch) : rowTop;
+            for (int x = 0; x < s.cols / 2; ++x) {
+                const SnapshotCell& c = s.at(x, y);
+                if (c.width == 0 || c.cp == 0 || alphaOf(c.fg) == 0) {
+                    continue;
+                }
+                const float cx = ox + float(2 * x * cw);
+                if (c.grapheme == 0 && Sprites::isSprite(c.cp)) {
+                    const GlyphEntry* e = glyphs.sprite(fonts, c.cp, 2, tall ? 2 : 1);
+                    if (!e) {
+                        return false;
+                    }
+                    if (!e->empty) {
+                        pushClipped({cx, tall ? bandTop : rowTop, float(e->width), float(e->height), float(e->u),
+                                     float(e->v), float(e->u + e->width), float(e->v + e->height), c.fg,
+                                     std::uint32_t(InstanceKind::GrayGlyph)},
+                                    rowTop, rowTop + float(ch));
+                    }
+                    continue;
+                }
+                const StyleSlot slot = slotFor(c.attrs);
+                const int face = fonts.faceFor(c.cp, slot, isColorText(c, c.width));
+                const float lineBaseline = tall ? bandTop + float(2 * m.baseline) : baseline;
+                if (!drawScaled(face, slot, cellText(c), cx, lineBaseline, 32, tall ? 1.0f : 0.5f, c.fg,
+                                std::max<int>(1, c.width), rowTop, rowTop + float(ch))) {
+                    return false;
+                }
+            }
+            continue;
+        }
         int x = 0;
         while (x < s.cols) {
             const SnapshotCell& c = s.at(x, y);
             if (c.width == 0 || c.cp == 0) {
+                ++x;
+                continue;
+            }
+            if (c.mcScale != 0) {
+                // A multicell block draws once: from its top-left cell, or
+                // from its first visible row when the top has scrolled off.
+                if (c.mcDx == 0 && (c.mcDy == 0 || y == 0)) {
+                    const int num = c.mcFraction >> 4;
+                    const int den = c.mcFraction & 0xF;
+                    const float frac = den > num && num > 0 ? float(num) / float(den) : 1.0f;
+                    const float f = float(c.mcScale) * frac;
+                    const float bx = ox + float(x * cw);
+                    const float by = rowTop - float(c.mcDy * ch);
+                    const float bw = float(c.mcScale * c.mcWidth * cw);
+                    const float bh = float(c.mcScale * ch);
+                    const float aw = bw * frac;
+                    const float ah = bh * frac;
+                    const int halign = c.mcAlign & 3;
+                    const int valign = c.mcAlign >> 2;
+                    const float ax = bx + (halign == 1 ? bw - aw : halign == 2 ? (bw - aw) / 2 : 0.0f);
+                    const float ay = by + (valign == 1 ? bh - ah : valign == 2 ? (bh - ah) / 2 : 0.0f);
+                    const StyleSlot slot = slotFor(c.attrs);
+                    const bool color = isColorText(c, c.mcWidth >= 2 ? 2 : 1);
+                    const int face = fonts.faceFor(c.cp, slot, color);
+                    const int scale16 = std::max(1, int(std::lround(f * 16.0f)));
+                    if (c.grapheme == 0 && Sprites::isSprite(c.cp) && frac == 1.0f) {
+                        const GlyphEntry* e = glyphs.sprite(fonts, c.cp, c.mcScale * c.mcWidth, c.mcScale);
+                        if (!e) {
+                            return false;
+                        }
+                        if (!e->empty && alphaOf(c.fg) != 0) {
+                            out.push_back({bx, by, float(e->width), float(e->height), float(e->u), float(e->v),
+                                           float(e->u + e->width), float(e->v + e->height), c.fg,
+                                           std::uint32_t(InstanceKind::GrayGlyph)});
+                        }
+                    } else if (!drawScaled(face, slot, cellText(c), ax, ay + float(m.baseline) * f, scale16, 1.0f, c.fg,
+                                           c.mcWidth, -NoClip, NoClip)) {
+                        return false;
+                    }
+                }
                 ++x;
                 continue;
             }
@@ -227,7 +411,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     ++end;
                     continue;
                 }
-                if (n.cp == 0 || slotFor(n.attrs) != slot || (n.grapheme == 0 && Sprites::isSprite(n.cp))
+                if (n.cp == 0 || n.mcScale != 0 || slotFor(n.attrs) != slot || (n.grapheme == 0 && Sprites::isSprite(n.cp))
                     || (end != x && faceOf(n) != face)) {
                     break;
                 }
@@ -281,20 +465,27 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     const float th = float(m.underlineThickness);
     for (int y = 0; y < drawRows; ++y) {
         const float rowTop = oy + float(y * ch);
+        const AfterglowVt::LineSize lineSize = s.lineSize(y);
+        if (lineSize == AfterglowVt::LineSize::DoubleTop) {
+            continue; // decorations belong to the bottom half
+        }
+        const int xs = lineSize == AfterglowVt::LineSize::Single ? 1 : 2;
+        const int cols = lineSize == AfterglowVt::LineSize::Single ? s.cols : s.cols / 2;
         int x = 0;
-        while (x < s.cols) {
+        while (x < cols) {
             const SnapshotCell& c = s.at(x, y);
-            const UnderlineStyle ul = c.underline;
+            const UnderlineStyle ul = c.mcScale != 0 ? UnderlineStyle::None : c.underline;
             if (ul == UnderlineStyle::None) {
                 ++x;
                 continue;
             }
             int end = x + 1;
-            while (end < s.cols && s.at(end, y).underline == ul && s.at(end, y).underlineColor == c.underlineColor) {
+            while (end < cols && s.at(end, y).mcScale == 0 && s.at(end, y).underline == ul
+                   && s.at(end, y).underlineColor == c.underlineColor) {
                 ++end;
             }
-            const float rx = ox + float(x * cw);
-            const float rw = float((end - x) * cw);
+            const float rx = ox + float(x * xs * cw);
+            const float rw = float((end - x) * xs * cw);
             const float uy = rowTop + float(m.underlinePosition);
             const std::uint32_t color = c.underlineColor;
             switch (ul) {
@@ -326,8 +517,11 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             }
             x = end;
         }
-        for (int cx = 0; cx < s.cols; ++cx) {
+        for (int cx = 0; cx < cols && xs == 1; ++cx) {
             const SnapshotCell& c = s.at(cx, y);
+            if (c.mcScale != 0) {
+                continue;
+            }
             const bool hovered = (p.hoveredLink != 0 && c.link == p.hoveredLink)
                 || (y == p.hoverRow && cx >= p.hoverColStart && cx <= p.hoverColEnd);
             if (hovered && c.underline == UnderlineStyle::None) {
@@ -346,20 +540,21 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
 
     // Non-block cursors draw over the text.
     if (drawCursor && !blockCursor) {
-        const float x0 = cursorX;
-        const float y0 = cursorY;
-        const float w = float(cursorSpan * cw);
+        const float x0 = curX;
+        const float y0 = curY;
+        const float w = curW;
+        const float hh = curH;
         const float t = std::max(1.0f, std::round(dpr));
         if (!p.focused) {
             solid(x0, y0, w, t, s.cursorColor);
-            solid(x0, y0 + float(ch) - t, w, t, s.cursorColor);
-            solid(x0, y0, t, float(ch), s.cursorColor);
-            solid(x0 + w - t, y0, t, float(ch), s.cursorColor);
+            solid(x0, y0 + hh - t, w, t, s.cursorColor);
+            solid(x0, y0, t, hh, s.cursorColor);
+            solid(x0 + w - t, y0, t, hh, s.cursorColor);
         } else if (s.cursorShape == AfterglowVt::CursorShape::Bar) {
-            solid(x0, y0, std::max(t, std::round(float(cw) * 0.12f)), float(ch), s.cursorColor);
+            solid(x0, y0, std::max(t, std::round(float(cw) * 0.12f)), hh, s.cursorColor);
         } else {
             const float h = std::max(t, std::round(float(ch) * 0.08f));
-            solid(x0, y0 + float(ch) - h, w, h, s.cursorColor);
+            solid(x0, y0 + hh - h, w, h, s.cursorColor);
         }
     }
     return true;

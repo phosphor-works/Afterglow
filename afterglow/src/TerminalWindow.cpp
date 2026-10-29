@@ -1706,6 +1706,10 @@ QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
     const QPointF px = pos * devicePixelRatio() - QPointF(origin);
     const int col = std::clamp(int(std::floor(px.x() / m.cellWidth)), 0, std::max(0, pane->cols() - 1));
     const int row = std::clamp(int(std::floor(px.y() / m.cellHeight)), 0, std::max(0, pane->rows() - 1));
+    // On a double-size line each cell is drawn twice as wide.
+    if (pane->snapshot().lineSize(row) != AfterglowVt::LineSize::Single) {
+        return QPoint(col / 2, row);
+    }
     return QPoint(col, row);
 }
 

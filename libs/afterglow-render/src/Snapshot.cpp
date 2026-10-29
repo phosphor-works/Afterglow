@@ -21,6 +21,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     extraRows = std::clamp(extra, 0, int(scr.viewportOffset()));
     const int captureRows = rows + extraRows;
     cells.resize(std::size_t(cols) * std::size_t(captureRows));
+    lineSizes.assign(std::size_t(captureRows), AfterglowVt::LineSize::Single);
     graphemes.clear();
     links.clear();
     std::unordered_map<std::uint32_t, std::uint32_t> linkIndex; // style table link -> snapshot index
@@ -64,6 +65,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     };
     for (int y = 0; y < captureRows; ++y) {
         const Row& row = scr.absoluteRow(top + std::size_t(y));
+        lineSizes[std::size_t(y)] = row.lineSize;
         const std::uint64_t rowId = scr.rowsDropped() + top + std::size_t(y);
         bool prevValid = false;
         std::uint32_t prevImage = 0;
@@ -113,6 +115,17 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             out.attrs = st.attrs;
             out.underline = st.underline;
             out.width = std::uint8_t(c.width());
+            out.mcScale = 0;
+            if (c.isMulticell()) {
+                if (const MulticellParams* p = scr.multicellParams(row, x)) {
+                    out.mcScale = p->scale;
+                    out.mcWidth = p->width;
+                    out.mcFraction = std::uint8_t((p->num << 4) | p->den);
+                    out.mcAlign = std::uint8_t((p->valign << 2) | p->halign);
+                    out.mcDx = std::uint8_t(c.multicellDx());
+                    out.mcDy = std::uint8_t(c.multicellDy());
+                }
+            }
             out.link = 0;
             if (st.link != 0) {
                 auto [it, fresh] = linkIndex.try_emplace(st.link, 0);

@@ -78,11 +78,14 @@ public:
     /// Looks up or rasterises a glyph. @p cellSpan is the cluster's width in
     /// cells, used to fit colour bitmaps. Returns nullptr if both atlases are
     /// full; the caller must then call reset() and rebuild its frame.
-    const GlyphEntry* glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan);
+    /// @p scale16 is the size in sixteenths of the base size (16 is 1:1),
+    /// for scaled text (OSC 66, double-size lines).
+    const GlyphEntry* glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16 = 16);
 
     /// A procedurally drawn cell (see Sprites.h), or nullptr if the atlas is full.
     /// The entry's top is the baseline, so it lands on the cell's top edge.
-    const GlyphEntry* sprite(FontSet& fonts, char32_t cp);
+    /// A procedurally drawn character, @p sx by @p sy cells large.
+    const GlyphEntry* sprite(FontSet& fonts, char32_t cp, int sx = 1, int sy = 1);
 
     void reset();
     /// Bumped by reset(): glyph entries from before are gone.
@@ -92,7 +95,7 @@ public:
     AtlasPage& colorPage() noexcept { return m_color; }
 
 private:
-    bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, GlyphEntry& out);
+    bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, GlyphEntry& out);
 
     AtlasPage m_gray;
     AtlasPage m_color;

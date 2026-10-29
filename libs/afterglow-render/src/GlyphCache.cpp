@@ -113,29 +113,33 @@ void GlyphCache::reset()
     m_color.reset();
 }
 
-const GlyphEntry* GlyphCache::glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan)
+const GlyphEntry* GlyphCache::glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16)
 {
-    const std::uint64_t key = (std::uint64_t(face & 0xFFFF) << 40) | (std::uint64_t(cellSpan & 0xFF) << 32) | glyphId;
+    scale16 = std::clamp(scale16, 1, 255);
+    const std::uint64_t key = (std::uint64_t(scale16 == 16 ? 0 : scale16) << 56) | (std::uint64_t(face & 0xFFFF) << 40)
+        | (std::uint64_t(cellSpan & 0xFF) << 32) | glyphId;
     if (auto it = m_entries.find(key); it != m_entries.end()) {
         return &it->second;
     }
     GlyphEntry entry;
-    if (!rasterize(fonts, face, glyphId, cellSpan, entry)) {
+    if (!rasterize(fonts, face, glyphId, cellSpan, scale16, entry)) {
         return nullptr;
     }
     return &m_entries.emplace(key, entry).first->second;
 }
 
-const GlyphEntry* GlyphCache::sprite(FontSet& fonts, char32_t cp)
+const GlyphEntry* GlyphCache::sprite(FontSet& fonts, char32_t cp, int sx, int sy)
 {
     constexpr std::uint64_t SpriteFace = 0xFFFF;
-    const std::uint64_t key = (SpriteFace << 40) | std::uint64_t(cp);
+    sx = std::clamp(sx, 1, 7);
+    sy = std::clamp(sy, 1, 7);
+    const std::uint64_t key = (std::uint64_t((sx - 1) * 8 + (sy - 1)) << 56) | (SpriteFace << 40) | std::uint64_t(cp);
     if (auto it = m_entries.find(key); it != m_entries.end()) {
         return &it->second;
     }
     const FontMetrics& m = fonts.metrics();
-    QImage canvas(m.cellWidth, m.cellHeight, QImage::Format_Alpha8);
-    if (!Sprites::draw(cp, canvas, m.underlineThickness)) {
+    QImage canvas(m.cellWidth * sx, m.cellHeight * sy, QImage::Format_Alpha8);
+    if (!Sprites::draw(cp, canvas, m.underlineThickness * std::min(sx, sy))) {
         return &m_entries.emplace(key, GlyphEntry{}).first->second;
     }
     int x = 0;
@@ -148,15 +152,33 @@ const GlyphEntry* GlyphCache::sprite(FontSet& fonts, char32_t cp)
         std::memcpy(img.scanLine(y + row) + x, canvas.constScanLine(row), std::size_t(canvas.width()));
     }
     m_gray.markDirty(QRect(x, y, canvas.width(), canvas.height()));
-    const GlyphEntry entry{false, false, 0, std::int16_t(m.baseline), std::uint16_t(canvas.width()),
+    const GlyphEntry entry{false, false, 0, std::int16_t(m.baseline * sy), std::uint16_t(canvas.width()),
                            std::uint16_t(canvas.height()), std::uint16_t(x), std::uint16_t(y)};
     return &m_entries.emplace(key, entry).first->second;
 }
 
-bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, GlyphEntry& out)
+bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, int scale16, GlyphEntry& out)
 {
     const Face& face = fonts.face(faceIdx);
     FT_Face ft = face.ft;
+    // Scaled text: rasterise at the larger size, then back to the base size
+    // (HarfBuzz reads advances from the face at its current size).
+    struct SizeGuard
+    {
+        FT_Face ft;
+        float base;
+        bool active;
+        ~SizeGuard()
+        {
+            if (active) {
+                FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(base * 64.0f)), 72, 72);
+            }
+        }
+    } guard{ft, fonts.pixelSize(), scale16 != 16 && face.scalable};
+    if (guard.active) {
+        FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(fonts.pixelSize() * float(scale16) / 16.0f * 64.0f)), 72, 72);
+    }
+    const float scale = float(scale16) / 16.0f;
     FT_Int32 flags = FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT;
     if (face.color) {
         flags |= FT_LOAD_COLOR;
@@ -179,13 +201,13 @@ bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, i
         QImage src(bm.buffer, int(bm.width), int(bm.rows), bm.pitch, QImage::Format_ARGB32_Premultiplied);
         int left = slot->bitmap_left;
         int top = slot->bitmap_top;
-        const int boxW = m.cellWidth * std::max(1, cellSpan);
-        const int boxH = m.cellHeight;
+        const int boxW = int(std::lround(float(m.cellWidth * std::max(1, cellSpan)) * scale));
+        const int boxH = int(std::lround(float(m.cellHeight) * scale));
         QImage img = src;
         if (!face.scalable || src.width() > boxW || src.height() > boxH) {
             img = src.scaled(boxW, boxH, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             left = (boxW - img.width()) / 2;
-            top = m.baseline - (boxH - img.height()) / 2;
+            top = int(std::lround(float(m.baseline) * scale)) - (boxH - img.height()) / 2;
         } else {
             img = src.copy();
         }

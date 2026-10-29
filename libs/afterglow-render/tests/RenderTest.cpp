@@ -137,6 +137,34 @@ TEST_F(Render, FocusedBlockCursorFillsItsCell)
     EXPECT_PIXEL(img, cellCenter(3, 1), rgb(snapshot.defaultBg));
 }
 
+TEST_F(Render, ScaledBlockFillsItsCells)
+{
+    // OSC 66 s=2 with a full block: 2x2 cells of foreground.
+    const QImage img = render("\x1b[?25l\x1b[38;2;250;120;20m\x1b]66;s=2;\u2588\x07");
+    const QRgb fg = qRgb(250, 120, 20);
+    EXPECT_PIXEL(img, cellCenter(0, 0), fg);
+    EXPECT_PIXEL(img, cellCenter(1, 1), fg);
+    EXPECT_PIXEL(img, QPoint(2 * cw - 1, 2 * ch - 1), fg);
+    EXPECT_PIXEL(img, cellCenter(2, 0), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, cellCenter(0, 2), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, DoubleSizeLines)
+{
+    const QRgb fg = qRgb(30, 200, 240);
+    // Double width: one cell's block covers two cells of one row.
+    QImage img = render("\x1b[?25l\x1b[38;2;30;200;240m\x1b#6\u2588");
+    EXPECT_PIXEL(img, cellCenter(0, 0), fg);
+    EXPECT_PIXEL(img, cellCenter(1, 0), fg);
+    EXPECT_PIXEL(img, cellCenter(2, 0), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, cellCenter(0, 1), rgb(snapshot.defaultBg));
+    // Double height: top and bottom halves make a 2x2 block across two rows.
+    img = render("\x1b[2J\x1b[H\x1b#3\u2588\r\n\x1b#4\u2588");
+    EXPECT_PIXEL(img, cellCenter(1, 0), fg);
+    EXPECT_PIXEL(img, cellCenter(0, 1), fg);
+    EXPECT_PIXEL(img, cellCenter(2, 1), rgb(snapshot.defaultBg));
+}
+
 TEST_F(Render, KittyImageIsTopDown)
 {
     // A 2x2 image: red, green / blue, white, scaled over 2x2 cells. Its first

@@ -38,6 +38,13 @@ struct SnapshotCell
     std::uint16_t attrs = 0;
     AfterglowVt::UnderlineStyle underline = AfterglowVt::UnderlineStyle::None;
     std::uint8_t width = 1; ///< 0 for the tail of a wide character
+    // Multicell blocks (OSC 66): scale 0 when the cell is not in one.
+    std::uint8_t mcScale = 0;
+    std::uint8_t mcWidth = 0; ///< cells per scale step
+    std::uint8_t mcFraction = 0; ///< numerator << 4 | denominator
+    std::uint8_t mcAlign = 0; ///< vertical << 2 | horizontal
+    std::uint8_t mcDx = 0; ///< offset from the block's top-left cell
+    std::uint8_t mcDy = 0;
 };
 
 /// Search matches to highlight, with the current one drawn differently.
@@ -81,7 +88,14 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// Kitty graphics placements in the viewport, in pixels from cell (0, 0).
     std::vector<AfterglowVt::VisiblePlacement> images;
 
+    /// DEC line size per captured row.
+    std::vector<AfterglowVt::LineSize> lineSizes;
+
     const SnapshotCell& at(int x, int y) const { return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)]; }
+    AfterglowVt::LineSize lineSize(int y) const
+    {
+        return std::size_t(y) < lineSizes.size() ? lineSizes[std::size_t(y)] : AfterglowVt::LineSize::Single;
+    }
 
     /// @param selection drawn with inverted colours when valid for the active screen.
     void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,

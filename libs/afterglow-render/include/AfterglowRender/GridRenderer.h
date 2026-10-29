@@ -114,6 +114,7 @@ private:
         std::uint32_t cluster;
         float xOffset; ///< from the start of its cluster
         float yOffset;
+        float penX; ///< from the start of the run, offset included
     };
     struct ShapeKey
     {
