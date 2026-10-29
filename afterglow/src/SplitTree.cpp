@@ -34,14 +34,16 @@ void SplitTree::split(Pane* target, Pane* added, Direction direction)
     if (!leaf || !leaf->pane) {
         return;
     }
+    // Left and up put the new pane first.
+    const bool before = direction == Direction::Left || direction == Direction::Up;
     auto first = std::make_unique<Node>();
-    first->pane = leaf->pane;
+    first->pane = before ? added : leaf->pane;
     first->parent = leaf;
     auto second = std::make_unique<Node>();
-    second->pane = added;
+    second->pane = before ? leaf->pane : added;
     second->parent = leaf;
     leaf->pane = nullptr;
-    leaf->vertical = direction == Direction::Down;
+    leaf->vertical = direction == Direction::Down || direction == Direction::Up;
     leaf->ratio = 0.5;
     leaf->first = std::move(first);
     leaf->second = std::move(second);

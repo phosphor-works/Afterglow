@@ -47,6 +47,14 @@ enum class Action {
     UrlsCopy,
     UnicodeInput,
     SelectAll,
+    SplitLeft,
+    SplitUp,
+    ClearScreen,
+    ResetTerminal,
+    RenamePane,
+    RenameTab,
+    CloseWindow,
+    NotifyOnFinish,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

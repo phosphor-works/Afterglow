@@ -81,6 +81,7 @@ public:
     QString title() const;
     /// Overrides the title; empty returns to the program's.
     void setUserTitle(const QString& title);
+    QString userTitle() const;
     QString workingDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// The command running now (OSC 133), empty at the prompt.

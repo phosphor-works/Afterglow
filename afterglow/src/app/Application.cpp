@@ -3,6 +3,7 @@
 
 #include "Application.h"
 
+#include "../chrome/IconProvider.h"
 #include "../scripting/ScriptControl.h"
 
 #include <PhosphorShortcuts/Factory.h>
@@ -31,6 +32,7 @@ Application::Application()
     , m_scripts(scriptCallbacks(m_control))
     , m_services{m_device, m_settings, m_engine, m_shaders, m_scripts}
 {
+    m_engine.addImageProvider(QStringLiteral("icon"), new IconProvider); // the engine owns it
     connectScriptEvents(m_scripts, m_control);
     m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
     m_scripts.setEnabled(m_settings.settings().scripts);

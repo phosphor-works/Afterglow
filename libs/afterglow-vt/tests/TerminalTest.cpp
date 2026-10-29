@@ -341,3 +341,20 @@ TEST(Terminal, ShellIntegrationCommands)
     EXPECT_EQ(host.finished[1], -1);
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
 }
+
+TEST(Terminal, ClearScreenAndHistory)
+{
+    RecordingHost host;
+    Terminal t(10, 3, host);
+    t.feed("one\r\ntwo\r\nthree\r\nfour\r\n$ ");
+    ASSERT_GT(t.screen().historySize(), 0u);
+    t.clearScreenAndHistory();
+    EXPECT_EQ(t.screen().historySize(), 0u);
+    EXPECT_EQ(t.text(Terminal::TextScope::All), "");
+    // A full-screen program keeps its screen; only the main history goes.
+    t.feed("a\r\nb\r\nc\r\nd\r\n\x1b[?1049hTUI");
+    t.clearScreenAndHistory();
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "\n\nTUI"); // untouched
+    t.feed("\x1b[?1049l");
+    EXPECT_EQ(t.screen().historySize(), 0u);
+}

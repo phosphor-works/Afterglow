@@ -15,6 +15,7 @@
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QPointer>
+#include <QSet>
 #include <QTimer>
 #include <QWindow>
 
@@ -211,6 +212,7 @@ private:
     {
         std::unique_ptr<SplitTree> splits;
         QPointer<Pane> focused;
+        QString title; ///< set by the user; empty follows the focused pane
     };
     std::vector<std::unique_ptr<Tab>> m_tabs;
     int m_currentTab = 0;
@@ -295,6 +297,12 @@ private:
     /// The right-click menu, at @p pos (logical pixels).
     void openContextMenu(const QPointF& pos);
     QString m_menuLink; ///< the link the menu was opened on
+    QStringList m_menuScriptActions; ///< menu id MenuScriptBase + i runs entry i
+    /// What the open title prompt renames: a pane, or (pane null) a tab.
+    QPointer<Pane> m_titlePane;
+    const Tab* m_titleTab = nullptr;
+    /// Panes that notify when their next command finishes.
+    QSet<const Pane*> m_notifyOnFinish;
     QByteArray m_pendingPaste;
     std::optional<SplitTree::Divider> m_dividerDrag;
 

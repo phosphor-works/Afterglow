@@ -184,4 +184,29 @@ void ChromeController::activateMenuItem(int id)
     Q_EMIT menuItemActivated(id);
 }
 
+void ChromeController::askTitle(const QString& heading, const QString& current)
+{
+    m_titlePrompt = {{QStringLiteral("open"), true}, {QStringLiteral("heading"), heading}, {QStringLiteral("text"), current}};
+    Q_EMIT titlePromptChanged();
+}
+
+void ChromeController::answerTitle(const QString& title)
+{
+    if (!titlePromptOpen()) {
+        return;
+    }
+    m_titlePrompt.insert(QStringLiteral("open"), false);
+    Q_EMIT titlePromptChanged();
+    Q_EMIT titleAnswered(title.trimmed());
+}
+
+void ChromeController::cancelTitle()
+{
+    if (!titlePromptOpen()) {
+        return;
+    }
+    m_titlePrompt.insert(QStringLiteral("open"), false);
+    Q_EMIT titlePromptChanged();
+}
+
 } // namespace Afterglow

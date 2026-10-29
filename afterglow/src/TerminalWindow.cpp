@@ -54,6 +54,7 @@ constexpr int ScriptActionBase = 10000;
 /// Context menu items that are not actions.
 constexpr int MenuOpenLink = 20000;
 constexpr int MenuCopyLink = 20001;
+constexpr int MenuScriptBase = 30000;
 } // namespace
 
 namespace Afterglow {
@@ -154,11 +155,32 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     });
     connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::contextMenuChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::titlePromptChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::titleAnswered, this, [this](const QString& title) {
+        if (m_titlePane) {
+            m_titlePane->setUserTitle(title);
+        } else {
+            // The tab may have closed while the prompt was open.
+            for (auto& tab : m_tabs) {
+                if (tab.get() == m_titleTab) {
+                    tab->title = title;
+                    updateChrome();
+                    Q_EMIT tabsChanged();
+                }
+            }
+        }
+        m_titlePane = nullptr;
+        m_titleTab = nullptr;
+    });
     connect(m_controller, &ChromeController::menuItemActivated, this, [this](int id) {
         if (id == MenuOpenLink) {
             QDesktopServices::openUrl(QUrl(m_menuLink));
         } else if (id == MenuCopyLink) {
             QGuiApplication::clipboard()->setText(m_menuLink);
+        } else if (id >= MenuScriptBase) {
+            if (id - MenuScriptBase < m_menuScriptActions.size()) {
+                m_scripts.runAction(m_menuScriptActions[id - MenuScriptBase], m_focused ? m_focused->id() : 0);
+            }
         } else {
             performAction(Action(id));
         }
@@ -264,6 +286,18 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     });
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::shaderSignalsChanged, this, &TerminalWindow::scheduleRender);
+    connect(pane, &Pane::commandEnded, this,
+            [this, guard = QPointer<Pane>(pane)](const QString& command, int exitCode, qint64 ms) {
+        if (!guard || !m_notifyOnFinish.remove(guard.data())) {
+            return;
+        }
+        const QString what = command.isEmpty() ? QStringLiteral("The command") : command;
+        const QString outcome = exitCode == 0 ? QStringLiteral("finished")
+            : exitCode < 0                    ? QStringLiteral("ended")
+                                              : QStringLiteral("failed (exit %1)").arg(exitCode);
+        NotificationCenter::instance().showSimple(guard, this, what, QStringLiteral("%1 after %2 s").arg(outcome).arg(ms / 1000));
+    });
+    connect(pane, &QObject::destroyed, this, [this, pane] { m_notifyOnFinish.remove(pane); });
     connect(pane, &Pane::titleUpdated, this, [this, pane] {
         if (pane == m_focused) {
             updateTitle();
@@ -352,7 +386,8 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringL
     // Start the new shell at the size its half of the split will have.
     QRect area = m_splits->rectOf(m_focused);
     const int divider = std::max(1, int(std::lround(devicePixelRatio())));
-    if (direction == SplitTree::Direction::Right) {
+    const bool sideways = direction == SplitTree::Direction::Right || direction == SplitTree::Direction::Left;
+    if (sideways) {
         area.setWidth((area.width() - divider) / 2);
     } else {
         area.setHeight((area.height() - divider) / 2);
@@ -360,9 +395,20 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringL
     Pane* added = createPane(m_focused->workingDirectory(), area, command);
     // The new pane grows out of the edge being split.
     const QRect old = m_splits->rectOf(m_focused);
-    m_growFrom[added] = direction == SplitTree::Direction::Right
-        ? QRectF(old.right() + 1, old.top(), 0, old.height())
-        : QRectF(old.left(), old.bottom() + 1, old.width(), 0);
+    switch (direction) {
+    case SplitTree::Direction::Right:
+        m_growFrom[added] = QRectF(old.right() + 1, old.top(), 0, old.height());
+        break;
+    case SplitTree::Direction::Left:
+        m_growFrom[added] = QRectF(old.left(), old.top(), 0, old.height());
+        break;
+    case SplitTree::Direction::Down:
+        m_growFrom[added] = QRectF(old.left(), old.bottom() + 1, old.width(), 0);
+        break;
+    case SplitTree::Direction::Up:
+        m_growFrom[added] = QRectF(old.left(), old.top(), old.width(), 0);
+        break;
+    }
     m_splits->split(m_focused, added, direction);
     setFocusedPane(added);
     m_layoutSize = QSize();
@@ -988,6 +1034,55 @@ bool TerminalWindow::performAction(Action action)
     case Action::SplitDown:
         splitFocused(SplitTree::Direction::Down);
         return true;
+    case Action::SplitLeft:
+        splitFocused(SplitTree::Direction::Left);
+        return true;
+    case Action::SplitUp:
+        splitFocused(SplitTree::Direction::Up);
+        return true;
+    case Action::ClearScreen:
+        if (m_focused) {
+            m_focused->clearSelection();
+            // At a prompt the shell redraws it on the cleared screen.
+            const bool atPrompt = m_focused->withTerminal([](Terminal& t) {
+                t.clearScreenAndHistory();
+                return t.atShellPrompt() && !t.modes().altScreen;
+            });
+            if (atPrompt) {
+                m_focused->sendInput("\x0c");
+            }
+            scheduleRender();
+        }
+        return true;
+    case Action::ResetTerminal:
+        if (m_focused) {
+            m_focused->clearSelection();
+            m_focused->withTerminal([](Terminal& t) { t.reset(); });
+            scheduleRender();
+        }
+        return true;
+    case Action::RenamePane:
+        if (m_focused) {
+            m_titlePane = m_focused;
+            m_titleTab = nullptr;
+            m_controller->askTitle(QStringLiteral("Split title"), m_focused->userTitle());
+        }
+        return true;
+    case Action::RenameTab:
+        m_titlePane = nullptr;
+        m_titleTab = m_tabs[std::size_t(m_currentTab)].get();
+        m_controller->askTitle(QStringLiteral("Tab title"), m_titleTab->title);
+        return true;
+    case Action::CloseWindow:
+        close();
+        return true;
+    case Action::NotifyOnFinish:
+        if (m_focused) {
+            if (!m_notifyOnFinish.remove(m_focused.data())) {
+                m_notifyOnFinish.insert(m_focused.data());
+            }
+        }
+        return true;
     case Action::ClosePane:
         if (m_focused) {
             closePane(m_focused);
@@ -1096,6 +1191,7 @@ bool TerminalWindow::performAction(Action action)
 bool TerminalWindow::chromeVisible() const
 {
     return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen() || m_controller->contextMenuOpen()
+        || m_controller->titlePromptOpen()
         || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || !m_controller->paneTitles().isEmpty()
         || m_urlMode.active || m_unicodeInput.has_value();
 }
@@ -1105,7 +1201,7 @@ void TerminalWindow::updateChrome()
     QStringList titles;
     QVariantList tabStatus;
     for (const auto& tab : m_tabs) {
-        titles.append(tab->focused ? tab->focused->title() : QString());
+        titles.append(!tab->title.isEmpty() ? tab->title : tab->focused ? tab->focused->title() : QString());
         // The tab shows the most pressing status among its panes.
         QVariantMap best;
         tab->splits->forEachPane([&](Pane* p, const QRect&) {
@@ -1490,37 +1586,71 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
 void TerminalWindow::openContextMenu(const QPointF& pos)
 {
     const Keybinds& kb = m_settings.settings().keybinds;
-    QVariantList items;
-    auto item = [&](int id, const QString& title, const QString& shortcut, bool enabled) {
-        items.append(QVariantMap{{QStringLiteral("id"), id},
-                                 {QStringLiteral("title"), title},
-                                 {QStringLiteral("shortcut"), shortcut},
-                                 {QStringLiteral("enabled"), enabled}});
+    auto entry = [](int id, const QString& title, const char* icon, const QString& shortcut = {}, bool enabled = true) {
+        return QVariant(QVariantMap{{QStringLiteral("id"), id},
+                                    {QStringLiteral("title"), title},
+                                    {QStringLiteral("icon"), QString::fromLatin1(icon)},
+                                    {QStringLiteral("shortcut"), shortcut},
+                                    {QStringLiteral("enabled"), enabled}});
     };
-    auto action = [&](Action a, bool enabled = true) {
-        item(int(a), Keybinds::title(a), kb.bindingsOf(a).value(0), enabled);
+    auto action = [&](Action a, const QString& title, const char* icon, bool enabled = true) {
+        return entry(int(a), title, icon, kb.bindingsOf(a).value(0), enabled);
     };
-    auto separator = [&] { items.append(QVariantMap{{QStringLiteral("separator"), true}}); };
+    auto submenu = [](const QString& title, const char* icon, const QVariantList& items) {
+        return QVariant(QVariantMap{{QStringLiteral("title"), title},
+                                    {QStringLiteral("icon"), QString::fromLatin1(icon)},
+                                    {QStringLiteral("items"), items}});
+    };
+    const QVariant separator = QVariantMap{{QStringLiteral("separator"), true}};
+    const bool pane = m_focused != nullptr;
 
+    QVariantList items;
     m_menuLink = linkAt(m_focused, pos).url;
     if (!m_menuLink.isEmpty()) {
-        item(MenuOpenLink, QStringLiteral("Open Link"), {}, true);
-        item(MenuCopyLink, QStringLiteral("Copy Link Address"), {}, true);
-        separator();
+        items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
+              << entry(MenuCopyLink, QStringLiteral("Copy Link Address"), "insert-link") << separator;
     }
-    action(Action::Copy, m_focused && m_focused->hasSelection());
-    action(Action::Paste, !QGuiApplication::clipboard()->text().isEmpty());
-    action(Action::SelectAll, m_focused != nullptr);
-    separator();
-    action(Action::SplitRight);
-    action(Action::SplitDown);
-    action(Action::NewTab);
-    separator();
-    action(Action::Search);
-    action(Action::CommandPalette);
-    action(Action::OpenConfig);
-    separator();
-    action(Action::ClosePane, m_focused != nullptr);
+    QVariantMap notify = action(Action::NotifyOnFinish, QStringLiteral("Notify on Next Command Finish"),
+                                "preferences-desktop-notification-bell", pane)
+                             .toMap();
+    notify.insert(QStringLiteral("checked"), pane && m_notifyOnFinish.contains(m_focused.data()));
+    items << action(Action::Copy, QStringLiteral("Copy"), "edit-copy", pane && m_focused->hasSelection())
+          << action(Action::Paste, QStringLiteral("Paste"), "edit-paste", !QGuiApplication::clipboard()->text().isEmpty())
+          << action(Action::SelectAll, QStringLiteral("Select All"), "edit-select-all", pane)
+          << action(Action::Search, QStringLiteral("Find\u2026"), "edit-find") << notify
+          << action(Action::CommandPalette, QStringLiteral("Command Palette\u2026"), "system-run") << separator
+          << action(Action::ClearScreen, QStringLiteral("Clear"), "edit-clear-all", pane)
+          << action(Action::ResetTerminal, QStringLiteral("Reset"), "view-refresh", pane) << separator;
+    items << submenu(QStringLiteral("Split"), "view-split-left-right",
+                     {action(Action::RenamePane, QStringLiteral("Change Title\u2026"), "document-edit", pane), separator,
+                      action(Action::SplitRight, QStringLiteral("Split Right"), "view-split-left-right"),
+                      action(Action::SplitDown, QStringLiteral("Split Down"), "view-split-top-bottom"),
+                      action(Action::SplitLeft, QStringLiteral("Split Left"), "view-split-left-right"),
+                      action(Action::SplitUp, QStringLiteral("Split Up"), "view-split-top-bottom"), separator,
+                      action(Action::EqualizeSplits, QStringLiteral("Equalize Splits"), "distribute-horizontal-equal",
+                             m_splits && m_splits->paneCount() > 1),
+                      action(Action::ClosePane, QStringLiteral("Close Split"), "view-close", pane)});
+    items << submenu(QStringLiteral("Tab"), "tab-new",
+                     {action(Action::RenameTab, QStringLiteral("Change Tab Title\u2026"), "document-edit"),
+                      action(Action::NewTab, QStringLiteral("New Tab"), "tab-new"),
+                      action(Action::CloseTab, QStringLiteral("Close Tab"), "tab-close")});
+    items << submenu(QStringLiteral("Window"), "window-new",
+                     {action(Action::NewWindow, QStringLiteral("New Window"), "window-new"),
+                      action(Action::CloseWindow, QStringLiteral("Close Window"), "window-close")});
+    m_menuScriptActions.clear();
+    QVariantList scripts;
+    for (const ScriptHost::ScriptAction& a : m_scripts.actions()) {
+        scripts << entry(MenuScriptBase + int(m_menuScriptActions.size()), a.title, "",
+                         kb.bindingsOfScript(a.token).value(0));
+        m_menuScriptActions.append(a.token);
+    }
+    if (!scripts.isEmpty()) {
+        items << submenu(QStringLiteral("Scripts"), "dialog-scripts", scripts);
+    }
+    items << separator
+          << submenu(QStringLiteral("Config"), "configure",
+                     {action(Action::OpenConfig, QStringLiteral("Open Config"), "document-open"),
+                      action(Action::ReloadConfig, QStringLiteral("Reload Config"), "view-refresh")});
     m_controller->openContextMenu(pos, items);
 }
 

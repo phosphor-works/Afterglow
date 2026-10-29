@@ -1526,6 +1526,24 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
     m_lastX = -1;
 }
 
+void Terminal::reset()
+{
+    fullReset();
+    touch();
+}
+
+void Terminal::clearScreenAndHistory()
+{
+    if (m_modes.altScreen) {
+        m_primary->clearHistory();
+    } else {
+        eraseDisplay(3);
+        eraseDisplay(2);
+        setCursor(0, 0);
+    }
+    touch();
+}
+
 void Terminal::fullReset()
 {
     if (m_modes.altScreen) {

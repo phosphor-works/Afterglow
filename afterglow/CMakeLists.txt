@@ -27,6 +27,8 @@ add_executable(afterglow
     src/chrome/ChromeController.h
     src/chrome/ChromeLayer.cpp
     src/chrome/ChromeLayer.h
+    src/chrome/IconProvider.cpp
+    src/chrome/IconProvider.h
     src/animation/FrameClock.cpp
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
@@ -73,6 +75,7 @@ qt_add_qml_module(afterglow
         qml/PasteConfirm.qml
         qml/SearchBar.qml
         qml/StatusIndicator.qml
+        qml/TitlePrompt.qml
         qml/TabBar.qml
 )
 

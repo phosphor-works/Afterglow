@@ -249,6 +249,13 @@ public:
     void setViewportOffset(std::size_t rows);
     void resetViewport();
 
+    /// The user's reset: back to the initial state, as RIS.
+    void reset();
+    /// The user's clear: the screen and its history emptied, the cursor home.
+    /// While a full-screen program has the alternate screen, only the main
+    /// screen's history goes, as the program owns what is shown.
+    void clearScreenAndHistory();
+
 private:
     friend class Parser<Terminal>;
 

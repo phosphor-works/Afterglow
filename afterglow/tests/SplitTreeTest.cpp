@@ -71,3 +71,19 @@ TEST(SplitTree, NeighbourAndEqualize)
     EXPECT_EQ(t.rectOf(fake(4)).width(), 100);
     EXPECT_EQ(t.rectOf(fake(2)).width(), 100);
 }
+
+TEST(SplitTree, SplitLeftAndUpPutTheNewPaneFirst)
+{
+    Pane* a = fake(1);
+    Pane* b = fake(2);
+    Pane* c = fake(3);
+    SplitTree t(a);
+    t.split(a, b, SplitTree::Direction::Left);
+    t.layout(QRect(0, 0, 201, 100), 1);
+    EXPECT_LT(t.rectOf(b).x(), t.rectOf(a).x());
+    EXPECT_EQ(t.rectOf(a).y(), t.rectOf(b).y());
+    t.split(a, c, SplitTree::Direction::Up);
+    t.layout(QRect(0, 0, 201, 101), 1);
+    EXPECT_LT(t.rectOf(c).y(), t.rectOf(a).y());
+    EXPECT_EQ(t.rectOf(c).x(), t.rectOf(a).x());
+}

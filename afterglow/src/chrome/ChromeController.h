@@ -40,6 +40,7 @@ class ChromeController : public QObject
     Q_PROPERTY(QString clipboardPromptText READ clipboardPromptText NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QString clipboardPromptName READ clipboardPromptName NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QVariantMap contextMenu READ contextMenu NOTIFY contextMenuChanged)
+    Q_PROPERTY(QVariantMap titlePrompt READ titlePrompt NOTIFY titlePromptChanged)
 
 public:
     using QObject::QObject;
@@ -105,9 +106,18 @@ public:
     /// Runs a menu item and closes the menu.
     Q_INVOKABLE void activateMenuItem(int id);
 
+    /// Asks for a title: { open, heading, text (the current one) }.
+    QVariantMap titlePrompt() const { return m_titlePrompt; }
+    bool titlePromptOpen() const { return m_titlePrompt.value(QStringLiteral("open")).toBool(); }
+    void askTitle(const QString& heading, const QString& current);
+    /// Empty returns to the program's title.
+    Q_INVOKABLE void answerTitle(const QString& title);
+    Q_INVOKABLE void cancelTitle();
+
     bool wantsKeyboard() const
     {
-        return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen || contextMenuOpen();
+        return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen || contextMenuOpen()
+            || titlePromptOpen();
     }
 
     Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
@@ -136,6 +146,8 @@ Q_SIGNALS:
     void paneTitlesChanged();
     void pasteAnswered(bool paste);
     void contextMenuChanged();
+    void titlePromptChanged();
+    void titleAnswered(const QString& title);
     void menuItemActivated(int id);
 
     void activateTabRequested(int index);
@@ -169,6 +181,7 @@ private:
     QString m_pastePreview;
     int m_pasteLines = 0;
     QVariantMap m_contextMenu;
+    QVariantMap m_titlePrompt;
 };
 
 } // namespace Afterglow
