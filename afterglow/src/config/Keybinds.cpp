@@ -45,6 +45,7 @@ const ActionInfo Actions[] = {
     {Action::GotoTab8, "goto_tab_8", "Go to Tab 8", {"Alt+8"}},
     {Action::GotoTab9, "goto_tab_9", "Go to the Last Tab", {"Alt+9"}},
     {Action::CloseWindow, "close_window", "Close Window", {}},
+    {Action::ToggleFullscreen, "toggle_fullscreen", "Toggle Fullscreen", {"F11"}},
     {Action::NextTab, "next_tab", "Next Tab", {"Ctrl+Tab", "Ctrl+PgDown"}},
     {Action::PreviousTab, "previous_tab", "Previous Tab", {"Ctrl+Shift+Tab", "Ctrl+PgUp"}},
     {Action::Copy, "copy", "Copy", {"Ctrl+Shift+C"}},

@@ -9,6 +9,7 @@
 #include <AfterglowVt/ProgramStatus.h>
 #include <AfterglowVt/Parser.h>
 #include <AfterglowVt/Screen.h>
+#include <AfterglowVt/Selection.h>
 #include <AfterglowVt/ShellContext.h>
 #include <AfterglowVt/Unicode.h>
 #include <AfterglowVt/afterglowvt_export.h>
@@ -171,6 +172,18 @@ struct TerminalOptions
     }};
     /// Cursor colour; unset follows the foreground.
     std::optional<Rgb> cursorColor;
+    /// Text under a block cursor; unset takes the background.
+    std::optional<Rgb> cursorTextColor;
+    /// Selection colours; unset ones invert the cell. OSC 17/19 override them.
+    std::optional<Rgb> selectionForeground;
+    std::optional<Rgb> selectionBackground;
+    /// Bold text in colours 0-7 draws in their bright versions, 8-15.
+    bool boldIsBright = false;
+    /// Lowest contrast ratio (1-21) between text and its background; text
+    /// below it is lightened or darkened when drawn. 1 leaves colours alone.
+    double minimumContrast = 1.0;
+    /// Characters that end a word for double-click selection, besides spaces.
+    std::u32string wordBoundaries{DefaultWordBoundaries};
     /// The cursor DECSCUSR 0 and a reset return to.
     CursorShape cursorShape = CursorShape::Block;
     bool cursorBlink = true;
@@ -234,7 +247,13 @@ public:
     {
         return m_hasCursorColor ? &m_cursorColor : (m_options.cursorColor ? &*m_options.cursorColor : nullptr);
     }
+    /// Text colour under a block cursor, if configured.
+    const Rgb* cursorTextColor() const noexcept
+    {
+        return m_options.cursorTextColor ? &*m_options.cursorTextColor : nullptr;
+    }
     Rgb resolve(Color color, bool foreground) const noexcept;
+    const TerminalOptions& options() const noexcept { return m_options; }
 
     /// Kitty graphics state of the active screen.
     const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }
@@ -254,9 +273,17 @@ public:
     };
     /// Plain text; soft-wrapped rows join, trailing blanks are trimmed.
     std::string text(TextScope scope) const;
-    /// Selection colours set by OSC 17/19; unset ones invert the cell.
-    const Rgb* selectionForeground() const noexcept { return m_hasSelectionFg ? &m_selectionFg : nullptr; }
-    const Rgb* selectionBackground() const noexcept { return m_hasSelectionBg ? &m_selectionBg : nullptr; }
+    /// Selection colours: set by OSC 17/19, else configured; unset ones invert the cell.
+    const Rgb* selectionForeground() const noexcept
+    {
+        return m_hasSelectionFg ? &m_selectionFg
+                                : (m_options.selectionForeground ? &*m_options.selectionForeground : nullptr);
+    }
+    const Rgb* selectionBackground() const noexcept
+    {
+        return m_hasSelectionBg ? &m_selectionBg
+                                : (m_options.selectionBackground ? &*m_options.selectionBackground : nullptr);
+    }
     /// Advances image animations. Returns the next time (steady clock, ms) a
     /// frame is due, or 0 when nothing is animating.
     std::uint64_t advanceAnimations(std::uint64_t nowMs);

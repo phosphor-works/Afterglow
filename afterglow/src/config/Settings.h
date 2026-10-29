@@ -33,6 +33,15 @@ struct WindowSettings
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
     bool paneTitles = false; ///< label each split with its title
+    /// Where new tabs, splits and windows start: "inherit" (the focused
+    /// pane's directory, or the launcher's), "home", or a path.
+    QString workingDirectory = QStringLiteral("inherit");
+    enum class StartMode { Normal, Maximized, Fullscreen };
+    StartMode startMode = StartMode::Normal;
+    bool decorations = true; ///< the compositor's title bar and borders
+    /// The tab bar: shown while there are several tabs, always, or never.
+    enum class TabBar { Auto, Always, Never };
+    TabBar tabBar = TabBar::Auto;
     bool operator==(const WindowSettings&) const = default;
 };
 
@@ -79,6 +88,13 @@ struct Settings
     Bell bell = Bell::Attention;
     bool notifications = true; ///< OSC 9 / 777 desktop notifications
     bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
+    bool confirmClose = true; ///< ask before closing where a program is running
+    bool hideMouseWhileTyping = false;
+    int scrollLines = 3; ///< lines per mouse wheel notch
+    /// Variables added to the shell's environment.
+    std::vector<std::pair<std::string, std::string>> environment;
+    /// The theme file the colours came from; empty when none is set or found.
+    QString themePath;
     /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString clipboardRead = QStringLiteral("ask");
     Keybinds keybinds = Keybinds::defaults();
@@ -114,6 +130,8 @@ Q_SIGNALS:
 private:
     void watch();
     Settings read() const;
+    /// The desktop prefers dark colours (for "light:a,dark:b" themes).
+    bool darkScheme() const;
 
     QString m_path;
     std::unique_ptr<PhosphorConfig::JsonBackend> m_backend;

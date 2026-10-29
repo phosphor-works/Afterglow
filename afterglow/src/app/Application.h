@@ -44,7 +44,9 @@ public:
     TerminalWindow* newWindow(const WindowOptions& options);
 
 public Q_SLOTS:
-    Q_SCRIPTABLE void NewWindow(const QString& workingDirectory, const QStringList& command);
+    /// A window for another launch of afterglow, started from @p workingDirectory
+    /// (or, with @p directoryGiven, in it: afterglow -d).
+    Q_SCRIPTABLE void NewWindow(const QString& workingDirectory, const QStringList& command, bool directoryGiven);
     Q_SCRIPTABLE void ToggleQuickTerminal();
 
 private:

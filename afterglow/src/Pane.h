@@ -87,6 +87,11 @@ public:
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;
+    /// The program closing the pane would end: the shell's foreground job, or
+    /// the program the pane was opened for. Empty while a shell sits idle.
+    QString foregroundJob() const;
+    /// Names the program the pane was opened to run (afterglow -e), instead of a shell.
+    void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
 
     /// Where the pane's shell runs when that is not here as you (OSC 3008,
     /// iTerm2 RemoteHost): "root", "deploy@prod-1", a container's name.
@@ -192,6 +197,7 @@ private:
     mutable std::mutex m_mutex;
     const quint32 m_id;
     QString m_userTitle;
+    QString m_launchedProgram;
     QString m_contextLabel;
     QString m_contextKind;
     QHash<QString, QString> m_userVars;

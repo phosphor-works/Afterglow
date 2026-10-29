@@ -209,4 +209,23 @@ void ChromeController::cancelTitle()
     Q_EMIT titlePromptChanged();
 }
 
+void ChromeController::askConfirm(const QString& heading, const QString& body, const QString& accept)
+{
+    m_confirmPrompt = {{QStringLiteral("open"), true},
+                       {QStringLiteral("heading"), heading},
+                       {QStringLiteral("body"), body},
+                       {QStringLiteral("accept"), accept}};
+    Q_EMIT confirmPromptChanged();
+}
+
+void ChromeController::answerConfirm(bool accepted)
+{
+    if (!confirmPromptOpen()) {
+        return;
+    }
+    m_confirmPrompt.insert(QStringLiteral("open"), false);
+    Q_EMIT confirmPromptChanged();
+    Q_EMIT confirmAnswered(accepted);
+}
+
 } // namespace Afterglow

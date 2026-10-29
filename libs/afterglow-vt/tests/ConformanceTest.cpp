@@ -301,6 +301,24 @@ TEST(Conformance, SelectionColours)
     EXPECT_EQ(t.t.selectionForeground(), nullptr);
 }
 
+TEST(Conformance, ConfiguredSelectionAndCursorTextColours)
+{
+    Term t(10, 2);
+    TerminalOptions o;
+    o.selectionBackground = Rgb{0x20, 0x40, 0x60};
+    o.cursorTextColor = Rgb{0x01, 0x02, 0x03};
+    t.t.setOptions(o);
+    t.feed("\x1b]17;?\x07\x1b]21;selection_background=?;cursor_text=?\x07");
+    EXPECT_EQ(t.take(), "\x1b]17;rgb:2020/4040/6060\x07\x1b]21;selection_background=rgb:20/40/60;cursor_text=rgb:01/02/03\x07");
+    // Programs override the configured colour, and resetting returns to it.
+    t.feed("\x1b]17;#ffffff\x07");
+    EXPECT_EQ(t.t.selectionBackground()->r, 0xff);
+    t.feed("\x1b]117\x07");
+    ASSERT_NE(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(t.t.selectionBackground()->r, 0x20);
+    EXPECT_EQ(t.t.selectionForeground(), nullptr);
+}
+
 TEST(Conformance, RectangleAttributes)
 {
     Term t(10, 3);

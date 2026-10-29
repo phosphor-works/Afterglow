@@ -61,6 +61,9 @@ public:
     pid_t pid() const noexcept { return m_pid; }
     /// The child's current working directory, read from /proc.
     std::string currentWorkingDirectory() const;
+    /// The name of the job in the foreground when it is not the child itself
+    /// (a program the shell is running); empty while the shell has the terminal.
+    std::string foregroundProcess() const;
 
 private:
     Pty(int masterFd, pid_t pid, IPtyListener& listener);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Settings.h"
+#include "Theme.h"
 
 #include <AfterglowRender/Snapshot.h>
 
@@ -13,6 +14,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
+#include <QStyleHints>
 #include <QJsonDocument>
 #include <QLoggingCategory>
 #include <QStandardPaths>
@@ -68,6 +71,19 @@ KeyDef stringKey(const QString& key, const QString& def, const QString& descript
     return {key, def, QMetaType::QString, description};
 }
 
+/// A string limited to @p choices; anything else becomes @p def.
+KeyDef enumKey(const QString& key, const QString& def, const QString& description, const QStringList& choices)
+{
+    KeyDef k{key, def, QMetaType::QString, description, [def, choices](const QVariant& v) {
+                 const QString s = v.toString().toLower();
+                 return QVariant(choices.contains(s) ? s : def);
+             }};
+    for (const QString& c : choices) {
+        k.choices.append({c, c});
+    }
+    return k;
+}
+
 KeyDef colorKey(const QString& key, const QString& def, const QString& description)
 {
     return {key, def, QMetaType::QString, description, [def](const QVariant& v) { return validColor(v, def); }};
@@ -91,6 +107,8 @@ PhosphorConfig::Schema buildSchema()
         features.append(QString::fromStdString(f));
     }
 
+    const QString wordSeparators = QString::fromStdU32String(std::u32string(AfterglowVt::DefaultWordBoundaries));
+
     PhosphorConfig::Schema schema;
     schema.version = 1;
     schema.groups[Font] = {
@@ -105,17 +123,34 @@ PhosphorConfig::Schema buildSchema()
         doubleKey(QStringLiteral("italicSlant"), -11, -90, 90, QStringLiteral("Slant of italic text (variable fonts)")),
         {QStringLiteral("features"), features, QMetaType::QVariantList,
          QStringLiteral("OpenType features in HarfBuzz syntax: calt, liga, ss01, cv01=2, -liga")},
+        {QStringLiteral("fallbackFamilies"), QVariantList{}, QMetaType::QVariantList,
+         QStringLiteral("Families tried, in order, for characters the font lacks (symbols, CJK), before the system's choice")},
+        doubleKey(QStringLiteral("cellHeight"), 1.0, 0.5, 3.0,
+                  QStringLiteral("Row height against the font's own: 1.2 adds a fifth of a line between rows")),
+        doubleKey(QStringLiteral("cellWidth"), 1.0, 0.5, 3.0, QStringLiteral("Column width against the font's own")),
     };
     AfterglowVt::TerminalOptions term;
     const auto hex = [](AfterglowVt::Rgb c) { return QColor(c.r, c.g, c.b).name(); };
     schema.groups[Colors] = {
+        stringKey(QStringLiteral("theme"), {},
+                  QStringLiteral("A theme from ~/.config/afterglow/themes or the bundled ones (afterglow-dark, afterglow-light), "
+                                 "or light:NAME,dark:NAME to follow the desktop. Its colours replace the ones below. "
+                                 "Reads afterglow JSON, Ghostty and kitty theme files")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text colour")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background colour")),
         colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor colour; empty follows the foreground")),
+        colorKey(QStringLiteral("cursorText"), {}, QStringLiteral("Text under a block cursor; empty uses the background")),
+        colorKey(QStringLiteral("selectionForeground"), {}, QStringLiteral("Selected text; empty inverts the cell")),
+        colorKey(QStringLiteral("selectionBackground"), {}, QStringLiteral("Selection background; empty inverts the cell")),
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colours, black to bright white")},
         colorKey(QStringLiteral("divider"), QStringLiteral("#3a3a42"), QStringLiteral("Split divider colour")),
         doubleKey(QStringLiteral("unfocusedDim"), 0.19, 0, 1, QStringLiteral("Darkening over unfocused splits")),
+        {QStringLiteral("boldIsBright"), false, QMetaType::Bool,
+         QStringLiteral("Bold text in colours 0-7 uses their bright versions, 8-15")},
+        doubleKey(QStringLiteral("minimumContrast"), 1.0, 1.0, 21.0,
+                  QStringLiteral("Lowest contrast ratio between text and its background; text below it is lightened or "
+                                 "darkened. 1 leaves colours alone, 4.5 is WCAG AA")),
     };
     schema.groups[Terminal] = {
         intKey(QStringLiteral("scrollback"), 10000, 0, 1000000, QStringLiteral("Lines of history per pane")),
@@ -161,6 +196,15 @@ PhosphorConfig::Schema buildSchema()
           {QStringLiteral("both"), QStringLiteral("both")}}},
         {QStringLiteral("notifications"), true, QMetaType::Bool,
          QStringLiteral("Show desktop notifications programs send (OSC 9, OSC 777)")},
+        {QStringLiteral("confirmClose"), true, QMetaType::Bool,
+         QStringLiteral("Ask before closing a split, tab or window where a program is running")},
+        {QStringLiteral("hideMouseWhileTyping"), false, QMetaType::Bool,
+         QStringLiteral("Hide the mouse pointer while typing; moving it shows it again")},
+        intKey(QStringLiteral("scrollLines"), 3, 1, 50, QStringLiteral("Lines a mouse wheel notch scrolls")),
+        stringKey(QStringLiteral("wordSeparators"), wordSeparators,
+                  QStringLiteral("Characters that end a word for double-click selection, besides spaces")),
+        {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
+         QStringLiteral("Variables added to the shell's environment, e.g. { \"EDITOR\": \"nvim\" }")},
         {QStringLiteral("confirmUnsafePaste"), true, QMetaType::Bool,
          QStringLiteral("Ask before pasting several lines into a program that would run them")},
         {QStringLiteral("clipboardRead"), QStringLiteral("ask"), QMetaType::QString,
@@ -183,6 +227,16 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Blur what shows through a translucent background (KWin)")},
         {QStringLiteral("paneTitles"), false, QMetaType::Bool,
          QStringLiteral("Label each split with its title while a tab has several")},
+        stringKey(QStringLiteral("workingDirectory"), QStringLiteral("inherit"),
+                  QStringLiteral("Where new tabs, splits and windows start: inherit (the focused pane's directory, or "
+                                 "the launcher's), home, or a path. afterglow -d overrides it")),
+        enumKey(QStringLiteral("startMode"), QStringLiteral("normal"), QStringLiteral("How new windows open: normal, maximized or fullscreen"),
+                {QStringLiteral("normal"), QStringLiteral("maximized"), QStringLiteral("fullscreen")}),
+        {QStringLiteral("decorations"), true, QMetaType::Bool,
+         QStringLiteral("The compositor's title bar and borders (new windows)")},
+        enumKey(QStringLiteral("tabBar"), QStringLiteral("auto"),
+                QStringLiteral("Show the tab bar: auto (while there are several tabs), always or never"),
+                {QStringLiteral("auto"), QStringLiteral("always"), QStringLiteral("never")}),
     };
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), 0.4, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen")),
@@ -269,10 +323,20 @@ SettingsStore::SettingsStore(const QString& path, QObject* parent)
     connect(&m_debounce, &QTimer::timeout, this, &SettingsStore::reload);
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, [this] { m_debounce.start(); });
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_debounce.start(); });
+    if (qGuiApp) {
+        // "light:a,dark:b" themes follow the desktop.
+        connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this] { m_debounce.start(); });
+    }
     watch();
 }
 
 SettingsStore::~SettingsStore() = default;
+
+bool SettingsStore::darkScheme() const
+{
+    // Unknown (no desktop preference) counts as dark, afterglow's own default.
+    return !qGuiApp || QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
+}
 
 void SettingsStore::watch()
 {
@@ -284,6 +348,15 @@ void SettingsStore::watch()
     }
     if (QFile::exists(m_path) && !m_watcher.files().contains(m_path)) {
         m_watcher.addPath(m_path);
+    }
+    // The theme in use, and the user's themes folder for themes added later.
+    const QString themes = Themes::searchDirs().constFirst();
+    if (QFileInfo(themes).isDir() && !m_watcher.directories().contains(themes)) {
+        m_watcher.addPath(themes);
+    }
+    const QString theme = m_settings.themePath;
+    if (!theme.isEmpty() && QFile::exists(theme) && !m_watcher.files().contains(theme)) {
+        m_watcher.addPath(theme);
     }
 }
 
@@ -303,6 +376,7 @@ void SettingsStore::reload()
     m_backend->reparseConfiguration();
     const Settings previous = m_settings;
     m_settings = read();
+    watch(); // the theme file may have changed
     qCInfo(lcConfig).noquote() << "reloaded" << m_path;
     Q_EMIT changed(previous);
 }
@@ -333,6 +407,13 @@ Settings SettingsStore::read() const
     for (const QVariant& v : st.read<QVariantList>(Font, QStringLiteral("features"))) {
         f.features.push_back(v.toString().toStdString());
     }
+    for (const QVariant& v : st.read<QVariantList>(Font, QStringLiteral("fallbackFamilies"))) {
+        if (const QString family = v.toString().trimmed(); !family.isEmpty()) {
+            f.fallbackFamilies.push_back(family.toStdString());
+        }
+    }
+    f.cellHeightScale = float(st.read<double>(Font, QStringLiteral("cellHeight")));
+    f.cellWidthScale = float(st.read<double>(Font, QStringLiteral("cellWidth")));
 
     // Colours
     auto& t = s.terminal;
@@ -346,9 +427,65 @@ Settings SettingsStore::read() const
     for (int i = 0; i < 16 && i < palette.size(); ++i) {
         t.basePalette[std::size_t(i)] = toRgb(palette[i].toString(), t.basePalette[std::size_t(i)]);
     }
-    const AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), {0x3a, 0x3a, 0x42});
+    auto optionalColor = [&st](const char* key) -> std::optional<AfterglowVt::Rgb> {
+        const QString name = st.read<QString>(Colors, QLatin1String(key));
+        if (name.isEmpty()) {
+            return std::nullopt;
+        }
+        return toRgb(name, {});
+    };
+    t.cursorTextColor = optionalColor("cursorText");
+    t.selectionForeground = optionalColor("selectionForeground");
+    t.selectionBackground = optionalColor("selectionBackground");
+    AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), {0x3a, 0x3a, 0x42});
+
+    // A theme's colours replace the ones above.
+    if (const QString spec = st.read<QString>(Colors, QStringLiteral("theme")).trimmed(); !spec.isEmpty()) {
+        const QString name = Themes::pick(spec, darkScheme());
+        const QString path = Themes::locate(name, Themes::searchDirs());
+        QFile file(path);
+        QString error;
+        std::optional<Theme> theme;
+        if (path.isEmpty()) {
+            error = QStringLiteral("not found in %1").arg(Themes::searchDirs().join(QStringLiteral(", ")));
+        } else if (!file.open(QIODevice::ReadOnly)) {
+            error = file.errorString();
+        } else {
+            theme = Themes::parse(file.readAll(), &error);
+        }
+        if (!theme) {
+            qCWarning(lcConfig).noquote() << "theme" << name << "-" << error;
+        } else {
+            s.themePath = path;
+            t.defaultForeground = theme->foreground.value_or(t.defaultForeground);
+            t.defaultBackground = theme->background.value_or(t.defaultBackground);
+            for (std::size_t i = 0; i < 16; ++i) {
+                t.basePalette[i] = theme->palette[i].value_or(t.basePalette[i]);
+            }
+            if (theme->cursor) {
+                t.cursorColor = theme->cursor;
+            }
+            if (theme->cursorText) {
+                t.cursorTextColor = theme->cursorText;
+            }
+            if (theme->selectionForeground) {
+                t.selectionForeground = theme->selectionForeground;
+            }
+            if (theme->selectionBackground) {
+                t.selectionBackground = theme->selectionBackground;
+            }
+            // Themes from other terminals have no divider: a fifth of the way
+            // from the background to the text suits light and dark alike.
+            auto mix = [](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) / 5); };
+            const AfterglowVt::Rgb& bg = t.defaultBackground;
+            const AfterglowVt::Rgb& fg = t.defaultForeground;
+            divider = theme->divider.value_or(AfterglowVt::Rgb{mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b)});
+        }
+    }
     s.window.dividerColor = AfterglowRender::packRgba(divider);
     s.window.unfocusedDim = st.read<double>(Colors, QStringLiteral("unfocusedDim"));
+    t.boldIsBright = st.read<bool>(Colors, QStringLiteral("boldIsBright"));
+    t.minimumContrast = st.read<double>(Colors, QStringLiteral("minimumContrast"));
 
     // Terminal
     t.maxScrollback = std::size_t(st.read<int>(Terminal, QStringLiteral("scrollback")));
@@ -372,6 +509,16 @@ Settings SettingsStore::read() const
                                                : Settings::Bell::Attention;
     s.notifications = st.read<bool>(Terminal, QStringLiteral("notifications"));
     s.confirmUnsafePaste = st.read<bool>(Terminal, QStringLiteral("confirmUnsafePaste"));
+    s.confirmClose = st.read<bool>(Terminal, QStringLiteral("confirmClose"));
+    s.hideMouseWhileTyping = st.read<bool>(Terminal, QStringLiteral("hideMouseWhileTyping"));
+    s.scrollLines = st.read<int>(Terminal, QStringLiteral("scrollLines"));
+    t.wordBoundaries = st.read<QString>(Terminal, QStringLiteral("wordSeparators")).toStdU32String();
+    const QVariantMap env = st.read<QVariantMap>(Terminal, QStringLiteral("env"));
+    for (auto it = env.cbegin(); it != env.cend(); ++it) {
+        if (!it.key().isEmpty() && !it.key().contains(QLatin1Char('='))) {
+            s.environment.emplace_back(it.key().toStdString(), it.value().toString().toStdString());
+        }
+    }
     s.clipboardRead = st.read<QString>(Terminal, QStringLiteral("clipboardRead"));
 
     // Window
@@ -382,6 +529,16 @@ Settings SettingsStore::read() const
     s.window.backgroundOpacity = st.read<double>(Window, QStringLiteral("backgroundOpacity"));
     s.window.blur = st.read<bool>(Window, QStringLiteral("blur"));
     s.window.paneTitles = st.read<bool>(Window, QStringLiteral("paneTitles"));
+    s.window.workingDirectory = st.read<QString>(Window, QStringLiteral("workingDirectory")).trimmed();
+    const QString startMode = st.read<QString>(Window, QStringLiteral("startMode"));
+    s.window.startMode = startMode == QLatin1String("maximized")    ? WindowSettings::StartMode::Maximized
+                         : startMode == QLatin1String("fullscreen") ? WindowSettings::StartMode::Fullscreen
+                                                                    : WindowSettings::StartMode::Normal;
+    s.window.decorations = st.read<bool>(Window, QStringLiteral("decorations"));
+    const QString tabBar = st.read<QString>(Window, QStringLiteral("tabBar"));
+    s.window.tabBar = tabBar == QLatin1String("always") ? WindowSettings::TabBar::Always
+                      : tabBar == QLatin1String("never") ? WindowSettings::TabBar::Never
+                                                         : WindowSettings::TabBar::Auto;
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
     s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));

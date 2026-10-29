@@ -262,7 +262,7 @@ QString Pane::selectedText() const
     if (!m_selection.active || m_selectionOnAltScreen != m_terminal.modes().altScreen) {
         return {};
     }
-    return QString::fromStdString(m_selection.text(m_terminal.screen()));
+    return QString::fromStdString(m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries));
 }
 
 namespace {
@@ -475,6 +475,17 @@ void Pane::commandFinished(int exitCode)
     const qint64 ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     const QString command = std::exchange(m_command, QString());
     Q_EMIT commandEnded(command, exitCode, ms);
+}
+
+QString Pane::foregroundJob() const
+{
+    if (!m_pty) {
+        return {};
+    }
+    if (const std::string job = m_pty->foregroundProcess(); !job.empty()) {
+        return QString::fromStdString(job);
+    }
+    return m_launchedProgram;
 }
 
 QString Pane::workingDirectory() const

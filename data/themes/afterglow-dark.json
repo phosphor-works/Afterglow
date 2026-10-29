@@ -1,0 +1,9 @@
+{
+    "foreground": "#d8d8d8",
+    "background": "#1c1c1c",
+    "divider": "#3a3a42",
+    "palette": [
+        "#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc",
+        "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"
+    ]
+}

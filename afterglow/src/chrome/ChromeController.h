@@ -42,6 +42,7 @@ class ChromeController : public QObject
     Q_PROPERTY(QString clipboardPromptName READ clipboardPromptName NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QVariantMap contextMenu READ contextMenu NOTIFY contextMenuChanged)
     Q_PROPERTY(QVariantMap titlePrompt READ titlePrompt NOTIFY titlePromptChanged)
+    Q_PROPERTY(QVariantMap confirmPrompt READ confirmPrompt NOTIFY confirmPromptChanged)
 
 public:
     using QObject::QObject;
@@ -124,10 +125,16 @@ public:
     Q_INVOKABLE void answerTitle(const QString& title);
     Q_INVOKABLE void cancelTitle();
 
+    /// Asks to go ahead with something: { open, heading, body, accept (the button's words) }.
+    QVariantMap confirmPrompt() const { return m_confirmPrompt; }
+    bool confirmPromptOpen() const { return m_confirmPrompt.value(QStringLiteral("open")).toBool(); }
+    void askConfirm(const QString& heading, const QString& body, const QString& accept);
+    Q_INVOKABLE void answerConfirm(bool accepted);
+
     bool wantsKeyboard() const
     {
         return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen || contextMenuOpen()
-            || titlePromptOpen();
+            || titlePromptOpen() || confirmPromptOpen();
     }
 
     Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
@@ -164,6 +171,8 @@ Q_SIGNALS:
     void contextMenuChanged();
     void titlePromptChanged();
     void titleAnswered(const QString& title);
+    void confirmPromptChanged();
+    void confirmAnswered(bool accepted);
     void menuItemActivated(int id);
 
     void activateTabRequested(int index);
@@ -202,6 +211,7 @@ private:
     int m_pasteLines = 0;
     QVariantMap m_contextMenu;
     QVariantMap m_titlePrompt;
+    QVariantMap m_confirmPrompt;
 };
 
 } // namespace Afterglow

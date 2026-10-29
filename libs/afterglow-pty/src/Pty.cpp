@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -184,6 +185,18 @@ std::string Pty::currentWorkingDirectory() const
     }
     const auto own = std::filesystem::read_symlink("/proc/" + std::to_string(m_pid) + "/cwd", ec);
     return ec ? std::string() : own.string();
+}
+
+std::string Pty::foregroundProcess() const
+{
+    const pid_t group = tcgetpgrp(m_master);
+    if (group <= 0 || group == m_pid) {
+        return {};
+    }
+    std::ifstream comm("/proc/" + std::to_string(group) + "/comm");
+    std::string name;
+    std::getline(comm, name);
+    return name.empty() ? std::string("a program") : name;
 }
 
 void Pty::wake()

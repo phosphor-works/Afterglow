@@ -79,6 +79,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     /// Some visible text has SGR 5: the window runs a blink timer.
     bool hasBlinkingText = false;
     std::uint32_t cursorColor = 0;
+    /// Text under a block cursor once it has arrived.
+    std::uint32_t cursorTextColor = 0;
 
     std::uint64_t generation = 0;
     /// Bumped by every capture, so renderers can reuse work for unchanged snapshots.

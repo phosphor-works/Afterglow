@@ -66,6 +66,7 @@ enum class Action {
     GotoTab7,
     GotoTab8,
     GotoTab9,
+    ToggleFullscreen,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

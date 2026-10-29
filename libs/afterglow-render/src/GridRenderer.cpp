@@ -255,7 +255,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 inst.color = withAlpha(0xFFFFFFu, alphaOf(color));
                 inst.kind = std::uint32_t(InstanceKind::ColorGlyph);
             } else {
-                inst.x = std::round(x + g.penX * f + float(e->left));
+                inst.x = std::round(x + (g.penX + float(m.glyphOffsetX)) * f + float(e->left));
                 inst.y = std::round(baseline - (float(e->top) + g.yOffset * f) * vstretch);
                 inst.color = color;
                 inst.kind = std::uint32_t(InstanceKind::GrayGlyph);
@@ -390,7 +390,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     if (!e->empty) {
                         std::uint32_t color = c.fg;
                         if (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan) {
-                            color = s.defaultBg;
+                            color = s.cursorTextColor;
                         }
                         const float sx = ox + float(x * cw);
                         out.push_back({sx, baseline - float(e->top), float(e->width), float(e->height), float(e->u),
@@ -447,7 +447,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     continue;
                 }
                 if (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan) {
-                    color = s.defaultBg;
+                    color = s.cursorTextColor;
                 }
                 // Icons (Nerd Font symbols) are fitted to the grid: two cells
                 // when the next one is blank, as prompts expect, else one.
@@ -477,7 +477,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                                    float(e->u), float(e->v), float(e->u + e->width), float(e->v + e->height),
                                    withAlpha(0xFFFFFFu, alphaOf(color)), std::uint32_t(InstanceKind::ColorGlyph)});
                 } else {
-                    const float gx = std::round(cellX + g.xOffset + float(e->left));
+                    const float gx = std::round(cellX + float(m.glyphOffsetX) + g.xOffset + float(e->left));
                     const float gy = std::round(baseline - float(e->top) - g.yOffset);
                     out.push_back({gx, gy, float(e->width), float(e->height), float(e->u), float(e->v),
                                    float(e->u + e->width), float(e->v + e->height), color,

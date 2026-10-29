@@ -24,7 +24,7 @@ namespace {
 /// Hands the request to an afterglow already running in this session, so
 /// every window lives in one process on one GPU device. Returns true if
 /// another instance took it.
-bool forwardToRunningInstance(const QString& cwd, const QStringList& command, bool quick)
+bool forwardToRunningInstance(const QString& cwd, bool cwdGiven, const QStringList& command, bool quick)
 {
     QDBusInterface remote(QLatin1String(Afterglow::Application::ServiceName),
                           QLatin1String(Afterglow::Application::ObjectPath),
@@ -33,7 +33,7 @@ bool forwardToRunningInstance(const QString& cwd, const QStringList& command, bo
         return false;
     }
     const QDBusMessage reply = quick ? remote.call(QStringLiteral("ToggleQuickTerminal"))
-                                     : remote.call(QStringLiteral("NewWindow"), cwd, command);
+                                     : remote.call(QStringLiteral("NewWindow"), cwd, command, cwdGiven);
     return reply.type() != QDBusMessage::ErrorMessage;
 }
 
@@ -88,13 +88,14 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const QString cwd = parser.isSet(cwdOption) ? QDir(parser.value(cwdOption)).absolutePath() : QDir::currentPath();
+    const bool cwdGiven = parser.isSet(cwdOption);
+    const QString cwd = cwdGiven ? QDir(parser.value(cwdOption)).absolutePath() : QDir::currentPath();
     const QStringList command = parser.isSet(execOption) ? parser.positionalArguments() : QStringList{};
     const bool quick = parser.isSet(quickOption);
 
     // One process per session: if afterglow already runs, it opens the window.
     if (!QDBusConnection::sessionBus().registerService(QLatin1String(Afterglow::Application::ServiceName))) {
-        if (forwardToRunningInstance(cwd, command, quick)) {
+        if (forwardToRunningInstance(cwd, cwdGiven, command, quick)) {
             return 0;
         }
         qWarning("afterglow: another instance owns the session name but did not answer; starting anyway");
@@ -108,7 +109,7 @@ int main(int argc, char** argv)
         if (quick) {
             application.ToggleQuickTerminal();
         } else {
-            application.newWindow({cwd, command, false});
+            application.newWindow({cwd, command, false, cwdGiven});
         }
         return app.exec();
     } catch (const std::exception& e) {

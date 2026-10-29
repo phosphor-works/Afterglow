@@ -17,12 +17,6 @@ add_executable(afterglow
     src/TerminalWindow.h
     src/KeyMapping.cpp
     src/KeyMapping.h
-    src/XkbKeyboard.cpp
-    src/XkbKeyboard.h
-    src/config/Keybinds.cpp
-    src/config/Keybinds.h
-    src/config/Settings.cpp
-    src/config/Settings.h
     src/chrome/ChromeController.cpp
     src/chrome/ChromeController.h
     src/chrome/ChromeLayer.cpp
@@ -54,6 +48,26 @@ target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
 target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders Qt6::Core)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
+
+# Settings, keybinds and themes, shared with their tests.
+add_library(afterglow_config STATIC
+    src/config/Keybinds.cpp
+    src/config/Keybinds.h
+    src/config/Settings.cpp
+    src/config/Settings.h
+    src/config/Theme.cpp
+    src/config/Theme.h
+    src/XkbKeyboard.cpp
+    src/XkbKeyboard.h)
+target_include_directories(afterglow_config PUBLIC src)
+target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
+    AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
+target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
+    PhosphorConfig::PhosphorConfig Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
+
 # The script host, shared with its tests. The Control binding lives in the app.
 add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h)
 target_include_directories(afterglow_scripting PUBLIC src)
@@ -71,6 +85,7 @@ qt_add_qml_module(afterglow
         qml/Chrome.qml
         qml/ClipboardPrompt.qml
         qml/CommandPalette.qml
+        qml/ConfirmPrompt.qml
         qml/ContextMenu.qml
         qml/PasteConfirm.qml
         qml/SearchBar.qml
@@ -79,9 +94,6 @@ qt_add_qml_module(afterglow
         qml/TabBar.qml
 )
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
-pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
     AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
     AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/afterglow/plugins"
@@ -89,7 +101,7 @@ target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VER
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
-target_link_libraries(afterglow PRIVATE afterglow_shaders afterglow_scripting Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow PRIVATE afterglow_config afterglow_shaders afterglow_scripting Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Qml Qt6::Quick Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
@@ -106,6 +118,7 @@ install(TARGETS AfterglowVt AfterglowRender AfterglowPty
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
 # Scripting: types for editors and examples to copy; neither loads on its own.
 install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)

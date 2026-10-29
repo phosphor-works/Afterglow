@@ -20,3 +20,8 @@ target_compile_definitions(afterglow_scripting_tests PRIVATE
     AFTERGLOW_EXAMPLE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/scripts"
     AFTERGLOW_GLASSHOUSE_SCRIPTS="${PROJECT_SOURCE_DIR}/data/examples/glasshouse/scripts")
 gtest_discover_tests(afterglow_scripting_tests)
+
+add_executable(afterglow_config_tests ConfigTest.cpp)
+target_link_libraries(afterglow_config_tests PRIVATE afterglow_config GTest::gtest_main)
+target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
+gtest_discover_tests(afterglow_config_tests)

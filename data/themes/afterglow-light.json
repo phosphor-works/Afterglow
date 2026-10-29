@@ -1,0 +1,12 @@
+{
+    "foreground": "#2b2b2f",
+    "background": "#f6f5f2",
+    "cursor": "#2b2b2f",
+    "selectionBackground": "#c9d6ee",
+    "selectionForeground": "#1d1d21",
+    "divider": "#d6d3cc",
+    "palette": [
+        "#2b2b2f", "#b3363b", "#3d7a30", "#876800", "#2f5fae", "#8e3fa0", "#21767d", "#bdbab3",
+        "#6c6b68", "#cc4348", "#4b9140", "#a17c00", "#4074c9", "#a64fba", "#2a8d95", "#e8e6e1"
+    ]
+}

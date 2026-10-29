@@ -23,6 +23,8 @@
 
 #include <QClipboard>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
 #include <QUrl>
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -74,7 +76,6 @@ namespace {
 QList<TerminalWindow*> s_windows;
 
 constexpr int BlinkIntervalMs = 530;
-constexpr int WheelLines = 3;
 constexpr int TabBarLogicalHeight = 30;
 
 /// A critically damped spring: fast, with no overshoot. @p omega sets the speed.
@@ -140,12 +141,18 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     m_chrome = new ChromeLayer(device, this, engine, m_controller);
     connect(m_chrome, &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::activateTabRequested, this, &TerminalWindow::switchTab);
-    connect(m_controller, &ChromeController::closeTabRequested, this, &TerminalWindow::closeTab);
+    connect(m_controller, &ChromeController::closeTabRequested, this, [this](int index) { requestCloseTabs({index}); });
+    connect(m_controller, &ChromeController::confirmPromptChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::confirmAnswered, this, [this](bool accepted) {
+        const std::function<void()> close = std::exchange(m_pendingConfirm, {});
+        if (accepted && close) {
+            close();
+        }
+    });
     connect(m_controller, &ChromeController::moveTabRequested, this, &TerminalWindow::moveTab);
     connect(m_controller, &ChromeController::renameTabRequested, this, &TerminalWindow::renameTab);
     connect(m_controller, &ChromeController::tabMenuRequested, this, &TerminalWindow::openTabMenu);
-    connect(m_controller, &ChromeController::newTabRequested, this,
-            [this] { newTab(m_focused ? m_focused->workingDirectory() : QString()); });
+    connect(m_controller, &ChromeController::newTabRequested, this, [this] { newTab(startDirectory(focusedDirectory())); });
     connect(m_controller, &ChromeController::actionRequested, this, [this](int id) {
         if (id >= ScriptActionBase) {
             if (id - ScriptActionBase < m_paletteScriptActions.size()) {
@@ -234,7 +241,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     }
     applyWindowEffects();
 
-    newTab(options.workingDirectory, options.command);
+    newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command);
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
@@ -379,7 +386,9 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
 
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
+    opts.environment = m_settings.settings().environment;
     if (!command.isEmpty()) {
+        pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
         for (const QString& arg : command) {
             opts.argv.push_back(arg.toStdString());
         }
@@ -412,7 +421,7 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringL
     } else {
         area.setHeight((area.height() - divider) / 2);
     }
-    Pane* added = createPane(m_focused->workingDirectory(), area, command);
+    Pane* added = createPane(startDirectory(m_focused->workingDirectory()), area, command);
     // The new pane grows out of the edge being split.
     const QRect old = m_splits->rectOf(m_focused);
     switch (direction) {
@@ -477,7 +486,16 @@ int TerminalWindow::tabOf(const Pane* pane) const
 
 int TerminalWindow::tabBarHeight() const
 {
-    return m_tabs.size() > 1 ? int(std::lround(TabBarLogicalHeight * devicePixelRatio())) : 0;
+    const int height = int(std::lround(TabBarLogicalHeight * devicePixelRatio()));
+    switch (m_settings.settings().window.tabBar) {
+    case WindowSettings::TabBar::Always:
+        return height;
+    case WindowSettings::TabBar::Never:
+        return 0;
+    case WindowSettings::TabBar::Auto:
+        break;
+    }
+    return m_tabs.size() > 1 ? height : 0;
 }
 
 QRect TerminalWindow::paneArea() const
@@ -528,7 +546,86 @@ Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, cons
 
 Pane* TerminalWindow::openTab(const QString& workingDirectory, const QStringList& command)
 {
-    return newTab(workingDirectory.isEmpty() && m_focused ? m_focused->workingDirectory() : workingDirectory, command);
+    return newTab(workingDirectory.isEmpty() ? startDirectory(focusedDirectory()) : workingDirectory, command);
+}
+
+QString TerminalWindow::focusedDirectory() const
+{
+    return m_focused ? m_focused->workingDirectory() : QString();
+}
+
+QString TerminalWindow::startDirectory(const QString& inherited) const
+{
+    const QString setting = m_settings.settings().window.workingDirectory;
+    if (setting.isEmpty() || setting == QLatin1String("inherit")) {
+        return inherited;
+    }
+    if (setting == QLatin1String("home")) {
+        return QDir::homePath();
+    }
+    const QString path = setting == QLatin1String("~") || setting.startsWith(QLatin1String("~/"))
+        ? QDir::homePath() + setting.mid(1)
+        : setting;
+    if (QFileInfo(path).isDir()) {
+        return path;
+    }
+    qCWarning(lcWindow).noquote() << "workingDirectory" << setting << "is not a directory";
+    return inherited;
+}
+
+void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close)
+{
+    QStringList jobs;
+    if (m_settings.settings().confirmClose) {
+        for (Pane* p : panes) {
+            if (const QString job = p->foregroundJob(); !job.isEmpty() && !jobs.contains(job)) {
+                jobs << job;
+            }
+        }
+    }
+    if (jobs.isEmpty()) {
+        close();
+        return;
+    }
+    QString names = jobs.constLast();
+    if (jobs.size() > 1) {
+        names = jobs.mid(0, jobs.size() - 1).join(QStringLiteral(", ")) + QStringLiteral(" and ") + names;
+    }
+    m_pendingConfirm = std::move(close);
+    m_controller->askConfirm(QStringLiteral("Close %1?").arg(what),
+                             QStringLiteral("%1 %2 still running, and closing ends %3.")
+                                 .arg(names, jobs.size() == 1 ? QStringLiteral("is") : QStringLiteral("are"),
+                                      jobs.size() == 1 ? QStringLiteral("it") : QStringLiteral("them")),
+                             QStringLiteral("Close"));
+}
+
+void TerminalWindow::requestCloseTabs(const QList<int>& indices)
+{
+    QList<Pane*> panes;
+    QList<const Tab*> tabs;
+    for (int i : indices) {
+        if (i >= 0 && i < int(m_tabs.size())) {
+            tabs << m_tabs[std::size_t(i)].get();
+            m_tabs[std::size_t(i)]->splits->forEachPane([&panes](Pane* p, const QRect&) { panes << p; });
+        }
+    }
+    if (tabs.isEmpty()) {
+        return;
+    }
+    const QString what = tabs.size() > 1           ? QStringLiteral("%1 tabs").arg(tabs.size())
+                         : int(m_tabs.size()) == 1 ? QStringLiteral("this window")
+                                                   : QStringLiteral("this tab");
+    // By tab, not index: tabs may move or close while the prompt is open.
+    confirmClose(panes, what, [this, tabs] {
+        for (const Tab* tab : tabs) {
+            for (std::size_t i = 0; i < m_tabs.size(); ++i) {
+                if (m_tabs[i].get() == tab) {
+                    closeTab(int(i));
+                    break;
+                }
+            }
+        }
+    });
 }
 
 bool TerminalWindow::runAction(Pane* pane, Action action)
@@ -576,6 +673,7 @@ void TerminalWindow::closeTab(int index)
     if (m_tabs.size() == 1) {
         qCInfo(lcWindow) << "last pane closed, closing the window";
         m_tabs[0]->splits->forEachPane([](Pane* p, const QRect&) { p->deleteLater(); });
+        m_closeConfirmed = true; // asked already, or its program ended
         close();
         return;
     }
@@ -652,7 +750,7 @@ void TerminalWindow::runTabMenuItem(int id)
         break;
     case TabMenuNew:
         switchTab(index);
-        newTab(m_focused ? m_focused->workingDirectory() : QString());
+        newTab(startDirectory(focusedDirectory()));
         break;
     case TabMenuMoveLeft:
         moveTab(index, index - 1);
@@ -661,23 +759,26 @@ void TerminalWindow::runTabMenuItem(int id)
         moveTab(index, index + 1);
         break;
     case TabMenuClose:
-        closeTab(index);
+        requestCloseTabs({index});
         break;
-    case TabMenuCloseOthers:
-        for (int i = int(m_tabs.size()) - 1; i >= 0; --i) {
+    case TabMenuCloseOthers: {
+        QList<int> others;
+        for (int i = 0; i < int(m_tabs.size()); ++i) {
             if (i != index) {
-                closeTab(i);
-                if (i < index) {
-                    --index;
-                }
+                others << i;
             }
         }
+        requestCloseTabs(others);
         break;
-    case TabMenuCloseRight:
-        for (int i = int(m_tabs.size()) - 1; i > index; --i) {
-            closeTab(i);
+    }
+    case TabMenuCloseRight: {
+        QList<int> right;
+        for (int i = index + 1; i < int(m_tabs.size()); ++i) {
+            right << i;
         }
+        requestCloseTabs(right);
         break;
+    }
     default:
         break;
     }
@@ -1096,6 +1197,17 @@ bool TerminalWindow::event(QEvent* e)
         }
         break;
     case QEvent::Close: {
+        if (!m_closeConfirmed && m_settings.settings().confirmClose) {
+            const QList<Pane*> all = panes();
+            if (std::any_of(all.cbegin(), all.cend(), [](Pane* p) { return !p->foregroundJob().isEmpty(); })) {
+                e->ignore();
+                confirmClose(all, QStringLiteral("this window"), [this] {
+                    m_closeConfirmed = true;
+                    close();
+                });
+                return true;
+            }
+        }
         qCInfo(lcWindow) << "window close requested";
         const bool handled = QWindow::event(e);
         deleteLater();
@@ -1272,17 +1384,32 @@ bool TerminalWindow::performAction(Action action)
         return true;
     case Action::ClosePane:
         if (m_focused) {
-            closePane(m_focused);
+            const QPointer<Pane> pane = m_focused.data();
+            const bool alone = tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))]->splits->paneCount() == 1;
+            const QString what = !alone ? QStringLiteral("this split")
+                : m_tabs.size() == 1    ? QStringLiteral("this window")
+                                        : QStringLiteral("this tab");
+            confirmClose({pane}, what, [this, pane] {
+                if (pane) {
+                    closePane(pane);
+                }
+            });
         }
         return true;
     case Action::NewWindow:
-        Q_EMIT newWindowRequested(m_focused ? m_focused->workingDirectory() : QString());
+        Q_EMIT newWindowRequested(focusedDirectory());
         return true;
     case Action::NewTab:
-        newTab(m_focused ? m_focused->workingDirectory() : QString());
+        newTab(startDirectory(focusedDirectory()));
         return true;
     case Action::CloseTab:
-        closeTab(m_currentTab);
+        requestCloseTabs({m_currentTab});
+        return true;
+    case Action::ToggleFullscreen:
+        if (m_quick) {
+            return false;
+        }
+        setWindowStates(windowStates() ^ Qt::WindowFullScreen);
         return true;
     case Action::NextTab:
         if (m_tabs.size() < 2) {
@@ -1375,8 +1502,8 @@ bool TerminalWindow::performAction(Action action)
 
 bool TerminalWindow::chromeVisible() const
 {
-    return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen() || m_controller->contextMenuOpen()
-        || m_controller->titlePromptOpen()
+    return tabBarHeight() > 0 || m_controller->paletteOpen() || m_controller->searchOpen() || m_controller->contextMenuOpen()
+        || m_controller->titlePromptOpen() || m_controller->confirmPromptOpen()
         || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || !m_controller->paneTitles().isEmpty()
         || m_urlMode.active || m_unicodeInput.has_value();
 }
@@ -1400,7 +1527,7 @@ void TerminalWindow::updateChrome()
         });
         tabStatus.append(best);
     }
-    m_controller->setTabs(titles, m_currentTab, m_tabs.size() > 1 ? TabBarLogicalHeight : 0);
+    m_controller->setTabs(titles, m_currentTab, tabBarHeight() > 0 ? TabBarLogicalHeight : 0);
     m_controller->setTabStatus(tabStatus);
     m_controller->setTabContexts(tabContexts);
 
@@ -1714,6 +1841,10 @@ void TerminalWindow::publishLauncherStatus()
 
 void TerminalWindow::applyPointerShape()
 {
+    if (m_pointerHidden) {
+        setCursor(Qt::BlankCursor);
+        return;
+    }
     if (chromeVisible() && m_chrome->wantsPointer(m_pointer)) {
         setCursor(m_chrome->cursorAt(m_pointer));
         return;
@@ -2253,6 +2384,10 @@ void TerminalWindow::sendKey(QKeyEvent* e)
     if (ev.action != AfterglowVt::KeyAction::Release) {
         m_focused->clearSelection();
         restartBlink();
+        if (m_settings.settings().hideMouseWhileTyping && !m_pointerHidden) {
+            m_pointerHidden = true;
+            setCursor(Qt::BlankCursor);
+        }
     }
     m_focused->sendInput(bytes);
 }
@@ -2510,6 +2645,10 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 
 void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
+    if (m_pointerHidden) {
+        m_pointerHidden = false;
+        applyPointerShape();
+    }
     if (routePointerToChrome(e, e->position(), true, false)) {
         return;
     }
@@ -2673,6 +2812,7 @@ void TerminalWindow::moveCursorToClick(Pane* pane, const QPointF& pos)
 
 void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
+    m_pointerHidden = false;
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
     const QPoint px = (e->position() * devicePixelRatio()).toPoint();
@@ -2760,13 +2900,13 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         AfterglowVt::KeyEvent key;
         key.key = steps > 0 ? AfterglowVt::Key::Up : AfterglowVt::Key::Down;
         std::string bytes;
-        for (int i = 0; i < std::abs(steps) * WheelLines; ++i) {
+        for (int i = 0; i < std::abs(steps) * m_settings.settings().scrollLines; ++i) {
             bytes += AfterglowVt::encodeKey(key, modes);
         }
         p->sendInput(bytes);
         return;
     }
-    scrollPane(p, double(steps) * WheelLines);
+    scrollPane(p, double(steps) * m_settings.settings().scrollLines);
 }
 
 } // namespace Afterglow

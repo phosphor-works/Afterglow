@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QWindow>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -39,6 +40,9 @@ struct WindowOptions
     QStringList command;
     /// The quick terminal: a layer surface along the top of the screen.
     bool quick = false;
+    /// @p workingDirectory was asked for (afterglow -d); otherwise it is only
+    /// where the request came from, and the workingDirectory setting decides.
+    bool directoryGiven = false;
 };
 
 class ChromeController;
@@ -108,6 +112,15 @@ private:
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {});
     void switchTab(int index);
     void closeTab(int index);
+    /// Closes tabs from the tab bar, menus and keys: asks first where a program runs.
+    void requestCloseTabs(const QList<int>& indices);
+    /// Runs @p close, first asking when confirmClose is on and a program
+    /// runs in one of @p panes. @p what names what closes: "this tab".
+    void confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close);
+    /// Where a new tab, split or window starts, given the directory it
+    /// would inherit (the workingDirectory setting).
+    QString startDirectory(const QString& inherited) const;
+    QString focusedDirectory() const;
     /// Moves the tab at @p from to @p to; the current tab stays current.
     void moveTab(int from, int to);
     void renameTab(int index);
@@ -315,6 +328,9 @@ private:
     /// Panes that notify when their next command finishes.
     QSet<const Pane*> m_notifyOnFinish;
     QByteArray m_pendingPaste;
+    std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with
+    bool m_closeConfirmed = false; ///< the window may close without asking
+    bool m_pointerHidden = false; ///< hidden while typing
     std::optional<SplitTree::Divider> m_dividerDrag;
 
     // Selection dragging.

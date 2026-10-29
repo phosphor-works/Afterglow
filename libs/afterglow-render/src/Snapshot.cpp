@@ -4,12 +4,54 @@
 #include <AfterglowRender/Snapshot.h>
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <utility>
 
 namespace AfterglowRender {
 
 using namespace AfterglowVt;
+
+namespace {
+
+/// WCAG relative luminance.
+double luminance(Rgb c)
+{
+    auto channel = [](std::uint8_t v) {
+        const double s = v / 255.0;
+        return s <= 0.04045 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b);
+}
+
+double contrast(double a, double b)
+{
+    return (std::max(a, b) + 0.05) / (std::min(a, b) + 0.05);
+}
+
+/// @p fg moved towards white or black, whichever stands out more from
+/// @p bg, just far enough to reach @p minimum.
+Rgb withContrast(Rgb fg, Rgb bg, double minimum)
+{
+    const double lb = luminance(bg);
+    if (contrast(luminance(fg), lb) >= minimum) {
+        return fg;
+    }
+    const Rgb target = contrast(1.0, lb) >= contrast(0.0, lb) ? Rgb{255, 255, 255} : Rgb{0, 0, 0};
+    auto mix = [&](double t) {
+        auto ch = [t](std::uint8_t a, std::uint8_t b) { return std::uint8_t(std::lround(a + (b - a) * t)); };
+        return Rgb{ch(fg.r, target.r), ch(fg.g, target.g), ch(fg.b, target.b)};
+    };
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int i = 0; i < 10; ++i) {
+        const double mid = (lo + hi) / 2;
+        (contrast(luminance(mix(mid)), lb) >= minimum ? hi : lo) = mid;
+    }
+    return mix(hi);
+}
+
+} // namespace
 
 void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra)
 {
@@ -40,7 +82,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     };
 
     const bool hasSelection = selection && selection->validFor(scr);
-    const Selection::Range range = hasSelection ? selection->range(scr) : Selection::Range{};
+    const TerminalOptions& options = t.options();
+    const Selection::Range range = hasSelection ? selection->range(scr, options.wordBoundaries) : Selection::Range{};
+    const bool adjustContrast = options.minimumContrast > 1.0;
 
     const std::size_t top = scr.viewportTop();
     const int cw = t.cellWidth();
@@ -79,6 +123,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             SnapshotCell& out = cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)];
 
             Rgb fg = resolve(st.fg, defFg);
+            if (options.boldIsBright && st.has(Attr::Bold) && st.fg.kind() == Color::Kind::Palette && st.fg.index() < 8) {
+                fg = t.paletteColor(st.fg.index() + 8);
+            }
             Rgb bg = resolve(st.bg, defBg);
             bool bgDefault = st.bg.isDefault();
             if (st.has(Attr::Inverse)) {
@@ -101,6 +148,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
                 fg = selFg ? *selFg : invFg;
                 bg = selBg ? *selBg : invBg;
                 bgDefault = false;
+            }
+            if (adjustContrast) {
+                fg = withContrast(fg, bg, options.minimumContrast);
             }
             hasBlinkingText |= st.has(Attr::Blink) && !c.isEmpty();
             std::uint8_t fgAlpha = 255;
@@ -190,6 +240,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     cursorShape = t.cursorShape();
     cursorBlink = modes.cursorBlink;
     cursorColor = t.cursorColor() ? packRgba(*t.cursorColor()) : defaultFg;
+    cursorTextColor = t.cursorTextColor() ? packRgba(*t.cursorTextColor()) : defaultBg;
     generation = t.generation();
     ++version;
     for (int i = 0; i < 256; ++i) {

@@ -41,6 +41,12 @@ struct FontSpec
     /// calt carries Monaspace texture healing; ss01-ss10 are its coding ligature sets.
     std::vector<std::string> features{"calt", "liga", "ss01", "ss02", "ss03", "ss04", "ss05",
                                       "ss06", "ss07", "ss08", "ss09", "ss10"};
+    /// Families tried, in order, for characters the style's own font lacks,
+    /// before fontconfig's choice.
+    std::vector<std::string> fallbackFamilies;
+    /// Cell size against the font's own: 1.2 adds a fifth of a line between rows.
+    float cellWidthScale = 1.0f;
+    float cellHeightScale = 1.0f;
     bool operator==(const FontSpec&) const = default;
 };
 
@@ -54,6 +60,8 @@ struct FontMetrics
     int underlinePosition = 0; ///< from the cell top, centre of the line
     int underlineThickness = 1;
     int strikethroughPosition = 0;
+    /// Added to text glyphs' x so they stay centred in widened (or narrowed) cells.
+    int glyphOffsetX = 0;
 };
 
 struct Face
@@ -106,6 +114,7 @@ private:
     std::vector<std::unique_ptr<Face>> m_faces;
     std::unordered_map<std::string, int> m_faceByPath;
     std::unordered_map<std::uint64_t, int> m_fallbackCache;
+    std::vector<int> m_fallbackFaces; ///< the spec's fallback families, loaded
     std::vector<hb_feature_t> m_features;
     FontMetrics m_metrics;
 };

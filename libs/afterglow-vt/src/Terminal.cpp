@@ -3509,8 +3509,9 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         Rgb& target = num == 17 ? m_selectionBg : m_selectionFg;
         bool& has = num == 17 ? m_hasSelectionBg : m_hasSelectionFg;
         if (rest == "?") {
-            // Unset: the inverse of the default colours, as drawn.
-            const Rgb value = has ? target : (num == 17 ? m_defaultFg : m_defaultBg);
+            // Unset: the configured colour, else the inverse of the defaults, as drawn.
+            const Rgb* current = num == 17 ? selectionBackground() : selectionForeground();
+            const Rgb value = current ? *current : (num == 17 ? m_defaultFg : m_defaultBg);
             reply(formatColorReply(num == 17 ? "17;" : "19;", value, bel));
         } else if (Rgb c; parseColorSpec(rest, c)) {
             target = c;
@@ -3909,7 +3910,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             Rgb& sel = key == "selection_background" ? m_selectionBg : m_selectionFg;
             bool& has = key == "selection_background" ? m_hasSelectionBg : m_hasSelectionFg;
             if (query) {
-                append(key, has ? &sel : nullptr);
+                append(key, key == "selection_background" ? selectionBackground() : selectionForeground());
             } else if (bare || value.empty()) {
                 has = false;
             } else if (Rgb c; parseColorSpec(value, c)) {
@@ -3917,7 +3918,13 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
                 has = true;
             }
             continue;
-        } else if (key == "cursor_text" || key == "visual_bell" || key.starts_with("transparent_background_color")) {
+        } else if (key == "cursor_text") {
+            // Configured only; programs cannot change it.
+            if (query) {
+                append(key, cursorTextColor());
+            }
+            continue;
+        } else if (key == "visual_bell" || key.starts_with("transparent_background_color")) {
             // Derived from the other colours in afterglow: always dynamic.
             if (query) {
                 append(key, nullptr);

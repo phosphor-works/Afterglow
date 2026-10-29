@@ -27,13 +27,17 @@ struct FcMatch
 {
     std::string path;
     int index = 0;
+    std::string family; ///< the matched font's first family name
+    bool exact = false; ///< the font has the family asked for; otherwise fontconfig substituted
 };
 
-FcMatch matchFamily(const FontStyleSpec& spec)
+FcMatch matchFamily(const std::string& family, bool mono)
 {
     FcPattern* pat = FcPatternCreate();
-    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(spec.family.c_str()));
-    FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
+    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(family.c_str()));
+    if (mono) {
+        FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
+    }
     FcConfigSubstitute(nullptr, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
     FcResult result;
@@ -45,10 +49,30 @@ FcMatch matchFamily(const FontStyleSpec& spec)
             out.path = reinterpret_cast<const char*>(file);
         }
         FcPatternGetInteger(match, FC_INDEX, 0, &out.index);
+        FcChar8* name = nullptr;
+        for (int i = 0; FcPatternGetString(match, FC_FAMILY, i, &name) == FcResultMatch; ++i) {
+            if (i == 0) {
+                out.family = reinterpret_cast<const char*>(name);
+            }
+            if (FcStrCmpIgnoreCase(name, reinterpret_cast<const FcChar8*>(family.c_str())) == 0) {
+                out.exact = true;
+            }
+        }
         FcPatternDestroy(match);
     }
     FcPatternDestroy(pat);
     return out;
+}
+
+/// fontconfig's aliases, which never name a font themselves.
+bool isGenericFamily(const std::string& family)
+{
+    for (const char* g : {"monospace", "mono", "sans-serif", "sans", "serif", "emoji", "system-ui"}) {
+        if (FcStrCmpIgnoreCase(reinterpret_cast<const FcChar8*>(family.c_str()), reinterpret_cast<const FcChar8*>(g)) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void applyAxes(FT_Library lib, FT_Face face, const FontStyleSpec& spec)
@@ -99,9 +123,12 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
     const FontStyleSpec* styleSpecs[4] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
     for (int slot = 0; slot < 4; ++slot) {
         const FontStyleSpec* s = styleSpecs[slot];
-        const FcMatch m = matchFamily(*s);
+        const FcMatch m = matchFamily(s->family, true);
         if (m.path.empty()) {
             throw std::runtime_error("no font found for family " + s->family);
+        }
+        if (!m.exact && !isGenericFamily(s->family)) {
+            qCWarning(lcFont) << "font family" << s->family.c_str() << "is not installed; using" << m.family.c_str();
         }
         // Each slot gets its own FT_Face so variable axes stay independent.
         const int idx = loadFace(m.path, m.index, s);
@@ -109,6 +136,24 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
             throw std::runtime_error("failed to load font " + m.path);
         }
         qCInfo(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
+    }
+
+    for (const std::string& family : m_spec.fallbackFamilies) {
+        const FcMatch m = matchFamily(family, false);
+        if (!m.exact) {
+            qCWarning(lcFont) << "fallback font family" << family.c_str() << "is not installed";
+            continue;
+        }
+        const std::string key = m.path + '#' + std::to_string(m.index);
+        int idx = -1;
+        if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) {
+            idx = it->second;
+        } else if ((idx = loadFace(m.path, m.index, &m_spec.regular)) >= 0) {
+            m_faceByPath.emplace(key, idx);
+        }
+        if (idx >= 0) {
+            m_fallbackFaces.push_back(idx);
+        }
     }
 
     for (const std::string& f : m_spec.features) {
@@ -188,11 +233,15 @@ void FontSet::computeMetrics()
     const double descender = double(sm.descender) / 64.0;
     const double height = double(sm.height) / 64.0;
 
-    m_metrics.cellWidth = std::max(1, advance);
-    m_metrics.cellHeight = std::max(1, int(std::lround(height)));
-    // Split any line gap evenly above and below the glyph box.
+    const int naturalWidth = std::max(1, advance);
+    const int naturalHeight = std::max(1, int(std::lround(height)));
+    m_metrics.cellWidth = std::max(1, int(std::lround(naturalWidth * m_spec.cellWidthScale)));
+    m_metrics.cellHeight = std::max(1, int(std::lround(height * m_spec.cellHeightScale)));
+    m_metrics.glyphOffsetX = (m_metrics.cellWidth - naturalWidth) / 2;
+    // Split any line gap, and the room a taller cell adds, evenly above and
+    // below the glyph box.
     const double gap = height - (ascender - descender);
-    m_metrics.baseline = int(std::lround(ascender + gap / 2.0));
+    m_metrics.baseline = int(std::lround(ascender + gap / 2.0)) + (m_metrics.cellHeight - naturalHeight) / 2;
 
     const double yScale = double(sm.y_scale) / 65536.0 / 64.0;
     const double ulPos = -double(ft->underline_position) * yScale;
@@ -234,6 +283,12 @@ int FontSet::faceFor(char32_t cp, StyleSlot slot, bool preferColor)
 
 int FontSet::findFallback(char32_t cp, bool color)
 {
+    for (int idx : m_fallbackFaces) {
+        const Face& f = *m_faces[std::size_t(idx)];
+        if ((!color || f.color) && FT_Get_Char_Index(f.ft, cp) != 0) {
+            return idx;
+        }
+    }
     FcPattern* pat = FcPatternCreate();
     FcCharSet* cs = FcCharSetCreate();
     FcCharSetAddChar(cs, cp);

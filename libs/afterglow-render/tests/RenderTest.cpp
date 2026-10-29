@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <memory>
 #include <string>
 
@@ -83,6 +84,124 @@ protected:
             << "at " << (point).x() << "," << (point).y() << ": got " << std::hex << _got << " want " << _want; \
     } while (0)
 #define EXPECT_PIXEL(image, point, expected) EXPECT_PIXEL_NEAR(image, point, expected, 6)
+
+namespace {
+
+struct Captured
+{
+    NullHost host;
+    AfterglowVt::Terminal terminal;
+    PaneSnapshot snapshot;
+
+    explicit Captured(const AfterglowVt::TerminalOptions& options)
+        : terminal(20, 2, host, options)
+    {
+    }
+    const SnapshotCell& capture(const std::string& bytes, const AfterglowVt::Selection* selection = nullptr)
+    {
+        terminal.feed(bytes);
+        snapshot.capture(terminal, selection);
+        return snapshot.at(0, 0);
+    }
+    AfterglowVt::Selection word(int col)
+    {
+        const AfterglowVt::Screen& s = terminal.screen();
+        AfterglowVt::Selection sel;
+        sel.anchor = sel.head = {s.rowsDropped() + s.historySize(), col};
+        sel.mode = AfterglowVt::SelectionMode::Word;
+        sel.layoutEpoch = s.layoutEpoch();
+        sel.active = true;
+        return sel;
+    }
+};
+
+double contrastRatio(std::uint32_t a, std::uint32_t b)
+{
+    auto lum = [](std::uint32_t c) {
+        auto ch = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+        return 0.2126 * ch((c & 0xFF) / 255.0) + 0.7152 * ch(((c >> 8) & 0xFF) / 255.0)
+            + 0.0722 * ch(((c >> 16) & 0xFF) / 255.0);
+    };
+    const double la = lum(a);
+    const double lb = lum(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+} // namespace
+
+TEST(Snapshot, BoldIsBrightUsesTheBrightColours)
+{
+    AfterglowVt::TerminalOptions o;
+    EXPECT_EQ(Captured(o).capture("\x1b[1;31mA").fg, packRgba(o.basePalette[1]));
+    o.boldIsBright = true;
+    EXPECT_EQ(Captured(o).capture("\x1b[1;31mA").fg, packRgba(o.basePalette[9]));
+    EXPECT_EQ(Captured(o).capture("\x1b[31mA").fg, packRgba(o.basePalette[1])); // not bold
+    EXPECT_EQ(Captured(o).capture("\x1b[1;91mA").fg, packRgba(o.basePalette[9])); // already bright
+}
+
+TEST(Snapshot, MinimumContrastLiftsFaintColours)
+{
+    AfterglowVt::TerminalOptions o;
+    const std::string dim = "\x1b[38;2;40;40;40mA";
+    const SnapshotCell plain = Captured(o).capture(dim);
+    EXPECT_EQ(plain.fg, packRgba(40, 40, 40));
+    o.minimumContrast = 4.5;
+    Captured lifted(o);
+    const SnapshotCell cell = lifted.capture(dim);
+    EXPECT_GE(contrastRatio(cell.fg, lifted.snapshot.defaultBg), 4.5);
+    EXPECT_LT(contrastRatio(cell.fg, lifted.snapshot.defaultBg), 5.0); // only as far as needed
+    // Colours that already stand out stay as they are.
+    EXPECT_EQ(Captured(o).capture("\x1b[38;2;250;250;250mA").fg, packRgba(250, 250, 250));
+}
+
+TEST(Snapshot, ConfiguredSelectionAndCursorTextColours)
+{
+    AfterglowVt::TerminalOptions o;
+    Captured plain(o);
+    plain.capture("x");
+    EXPECT_EQ(plain.snapshot.cursorTextColor, plain.snapshot.defaultBg);
+    o.selectionBackground = AfterglowVt::Rgb{0x20, 0x40, 0x60};
+    o.cursorTextColor = AfterglowVt::Rgb{1, 2, 3};
+    Captured c(o);
+    c.capture("word");
+    const AfterglowVt::Selection sel = c.word(0);
+    EXPECT_EQ(c.capture("", &sel).bg, packRgba(0x20, 0x40, 0x60));
+    EXPECT_EQ(c.snapshot.cursorTextColor, packRgba(1, 2, 3));
+}
+
+TEST(Snapshot, WordSeparatorsShapeWordSelections)
+{
+    AfterglowVt::TerminalOptions o;
+    Captured standard(o);
+    standard.capture("foo:bar");
+    AfterglowVt::Selection sel = standard.word(0);
+    standard.capture("", &sel);
+    EXPECT_NE(standard.snapshot.at(2, 0).bg, 0u);
+    EXPECT_EQ(standard.snapshot.at(4, 0).bg, 0u); // ':' ends the word
+    o.wordBoundaries = U" ";
+    Captured custom(o);
+    custom.capture("foo:bar");
+    sel = custom.word(0);
+    custom.capture("", &sel);
+    EXPECT_NE(custom.snapshot.at(6, 0).bg, 0u);
+}
+
+TEST(Fonts, CellScaleGrowsCellsAndCentresText)
+{
+    FontSpec spec;
+    FontSet natural(spec, 1.0);
+    spec.cellHeightScale = 1.5f;
+    spec.cellWidthScale = 1.5f;
+    FontSet scaled(spec, 1.0);
+    const FontMetrics& a = natural.metrics();
+    const FontMetrics& b = scaled.metrics();
+    EXPECT_NEAR(b.cellHeight, a.cellHeight * 1.5, 1.0);
+    EXPECT_NEAR(b.cellWidth, a.cellWidth * 1.5, 1.0);
+    EXPECT_EQ(a.glyphOffsetX, 0);
+    EXPECT_NEAR(b.glyphOffsetX, (b.cellWidth - a.cellWidth) / 2, 1);
+    // The extra height splits evenly above and below the text.
+    EXPECT_NEAR(b.baseline - a.baseline, (b.cellHeight - a.cellHeight) / 2, 1);
+}
 
 TEST_F(Render, EmptyScreenIsBackground)
 {

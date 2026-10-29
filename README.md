@@ -50,6 +50,15 @@ system install of phosphor (from PlasmaZones) is left alone.
 `~/.config/afterglow/config.json`, reloaded live. Shader packs come from the
 installed `share/afterglow/shaders` and `~/.config/afterglow/shaders`.
 
+### Themes
+
+`Colors.theme` names a theme; its colours replace the ones in `Colors`.
+Themes come from `~/.config/afterglow/themes`, then the installed
+`share/afterglow/themes` (`afterglow-dark` and `afterglow-light`). Theme files
+can be afterglow JSON (the `Colors` keys), Ghostty themes or kitty themes, so
+collections such as iTerm2-Color-Schemes drop straight in. To follow the
+desktop's light or dark preference, write `"light:afterglow-light,dark:nord"`.
+
 ## Shaders
 
 Shaders are Ghostty-style GLSL (`mainImage`, `iChannel0`, the cursor uniforms)
