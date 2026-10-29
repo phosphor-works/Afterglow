@@ -11,14 +11,16 @@
 #include <PhosphorConfig/Store.h>
 
 #include <QColor>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QStyleHints>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QLoggingCategory>
 #include <QStandardPaths>
+#include <QStyleHints>
 
 Q_LOGGING_CATEGORY(lcConfig, "afterglow.config", QtInfoMsg)
 
@@ -38,6 +40,36 @@ const QString Animation = QStringLiteral("Animation");
 const QString Quick = QStringLiteral("QuickTerminal");
 const QString ControlGroup = QStringLiteral("Control");
 const QString ScriptsGroup = QStringLiteral("Scripts");
+const QString MouseGroup = QStringLiteral("Mouse");
+const QString LinksGroup = QStringLiteral("Links");
+
+/// "U+E000-U+F8FF,U+2500" as inclusive ranges; nullopt if any part is malformed.
+std::optional<std::vector<std::pair<char32_t, char32_t>>> parseCodepointRanges(const QString& spec)
+{
+    std::vector<std::pair<char32_t, char32_t>> out;
+    auto codepoint = [](QString s) -> std::optional<char32_t> {
+        s = s.trimmed();
+        if (s.startsWith(QLatin1String("U+"), Qt::CaseInsensitive)) {
+            s = s.mid(2);
+        }
+        bool ok = false;
+        const uint v = s.toUInt(&ok, 16);
+        return ok && v < 0x110000 ? std::optional<char32_t>(char32_t(v)) : std::nullopt;
+    };
+    for (const QString& part : spec.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QStringList ends = part.split(QLatin1Char('-'));
+        const auto first = codepoint(ends.value(0));
+        const auto last = ends.size() == 2 ? codepoint(ends[1]) : first;
+        if (!first || !last || ends.size() > 2 || *last < *first) {
+            return std::nullopt;
+        }
+        out.emplace_back(*first, *last);
+    }
+    if (out.empty()) {
+        return std::nullopt;
+    }
+    return out;
+}
 
 QVariant clampInt(const QVariant& v, int lo, int hi)
 {
@@ -128,6 +160,12 @@ PhosphorConfig::Schema buildSchema()
         doubleKey(QStringLiteral("cellHeight"), 1.0, 0.5, 3.0,
                   QStringLiteral("Row height against the font's own: 1.2 adds a fifth of a line between rows")),
         doubleKey(QStringLiteral("cellWidth"), 1.0, 0.5, 3.0, QStringLiteral("Column width against the font's own")),
+        {QStringLiteral("symbolMap"), QVariantMap{}, QMetaType::QVariantMap,
+         QStringLiteral("Codepoint ranges drawn from a given family first, e.g. { \"U+E000-U+F8FF,U+F0000-U+FFFFD\": "
+                        "\"Symbols Nerd Font Mono\" }. Box drawing and powerline shapes are drawn by afterglow itself")},
+        enumKey(QStringLiteral("hinting"), QStringLiteral("light"),
+                QStringLiteral("Glyph hinting: none (as designed), light (vertical only, the default) or full (crispest)"),
+                {QStringLiteral("none"), QStringLiteral("light"), QStringLiteral("full")}),
     };
     AfterglowVt::TerminalOptions term;
     const auto hex = [](AfterglowVt::Rgb c) { return QColor(c.r, c.g, c.b).name(); };
@@ -201,6 +239,14 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("hideMouseWhileTyping"), false, QMetaType::Bool,
          QStringLiteral("Hide the mouse pointer while typing; moving it shows it again")},
         intKey(QStringLiteral("scrollLines"), 3, 1, 50, QStringLiteral("Lines a mouse wheel notch scrolls")),
+        intKey(QStringLiteral("cursorBlinkInterval"), 530, 100, 5000, QStringLiteral("Milliseconds the blinking cursor stays on, and off")),
+        {QStringLiteral("scrollOnOutput"), false, QMetaType::Bool,
+         QStringLiteral("New output jumps a pane scrolled back through history to the bottom")},
+        {QStringLiteral("scrollOnInput"), true, QMetaType::Bool, QStringLiteral("Typing and pasting jump to the bottom")},
+        {QStringLiteral("ambiguousWide"), false, QMetaType::Bool,
+         QStringLiteral("East Asian Ambiguous characters (Greek, Cyrillic, some symbols) take two cells, for CJK setups")},
+        stringKey(QStringLiteral("bellSound"), {},
+                  QStringLiteral("Sound for the bell: empty for none, default for the desktop's bell, or a sound file")),
         stringKey(QStringLiteral("wordSeparators"), wordSeparators,
                   QStringLiteral("Characters that end a word for double-click selection, besides spaces")),
         {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
@@ -234,9 +280,28 @@ PhosphorConfig::Schema buildSchema()
                 {QStringLiteral("normal"), QStringLiteral("maximized"), QStringLiteral("fullscreen")}),
         {QStringLiteral("decorations"), true, QMetaType::Bool,
          QStringLiteral("The compositor's title bar and borders (new windows)")},
+        {QStringLiteral("balancePadding"), false, QMetaType::Bool,
+         QStringLiteral("Share the space left over by whole cells between opposite edges, instead of leaving it right and below")},
         enumKey(QStringLiteral("tabBar"), QStringLiteral("auto"),
                 QStringLiteral("Show the tab bar: auto (while there are several tabs), always or never"),
                 {QStringLiteral("auto"), QStringLiteral("always"), QStringLiteral("never")}),
+    };
+    schema.groups[MouseGroup] = {
+        enumKey(QStringLiteral("rightClick"), QStringLiteral("menu"),
+                QStringLiteral("Right-click: menu, paste, copy-or-paste (copy a selection, else paste) or extend (the selection)"),
+                {QStringLiteral("menu"), QStringLiteral("paste"), QStringLiteral("copy-or-paste"), QStringLiteral("extend")}),
+        enumKey(QStringLiteral("middleClick"), QStringLiteral("primary"),
+                QStringLiteral("Middle-click pastes: primary (the last selection), clipboard, or none"),
+                {QStringLiteral("primary"), QStringLiteral("clipboard"), QStringLiteral("none")}),
+    };
+    schema.groups[LinksGroup] = {
+        {QStringLiteral("detectUrls"), true, QMetaType::Bool,
+         QStringLiteral("Find URLs in plain text, besides the links programs mark (OSC 8)")},
+        stringKey(QStringLiteral("openWith"), {},
+                  QStringLiteral("Command to open links with, the URL added at the end; empty uses the desktop's browser")),
+        enumKey(QStringLiteral("modifier"), QStringLiteral("ctrl"),
+                QStringLiteral("Key held to hover and open links: ctrl, shift, alt, or none (a plain click opens them)"),
+                {QStringLiteral("ctrl"), QStringLiteral("shift"), QStringLiteral("alt"), QStringLiteral("none")}),
     };
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), 0.4, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen")),
@@ -301,21 +366,33 @@ SettingsStore::SettingsStore(QObject* parent)
 }
 
 SettingsStore::SettingsStore(const QString& path, QObject* parent)
+    : SettingsStore(path, QJsonObject{}, parent)
+{
+}
+
+SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, QObject* parent)
     : QObject(parent)
     , m_path(path)
+    , m_overrides(overrides)
 {
     QDir().mkpath(QFileInfo(path).absolutePath());
-    m_backend = std::make_unique<PhosphorConfig::JsonBackend>(path);
+    if (!m_overrides.isEmpty()) {
+        const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        m_mergedPath = (runtime.isEmpty() ? QDir::tempPath() : runtime)
+            + QStringLiteral("/afterglow-config-%1.json").arg(QCoreApplication::applicationPid());
+    }
+    m_backend = std::make_unique<PhosphorConfig::JsonBackend>(m_mergedPath.isEmpty() ? path : m_mergedPath);
     m_store = std::make_unique<PhosphorConfig::Store>(m_backend.get(), buildSchema());
 
     if (!QFile::exists(path)) {
         // A complete file with every default, so all options are discoverable.
-        if (PhosphorConfig::JsonBackend::writeJsonAtomically(path, m_store->defaultsToJson())) {
-            m_backend->reparseConfiguration();
-        } else {
+        if (!PhosphorConfig::JsonBackend::writeJsonAtomically(path, m_store->defaultsToJson())) {
             qCWarning(lcConfig).noquote() << "cannot write" << path << "- running with defaults";
         }
     }
+    writeMerged();
+    m_backend->reparseConfiguration();
+    dropMerged();
     m_settings = read();
 
     m_debounce.setSingleShot(true);
@@ -331,6 +408,67 @@ SettingsStore::SettingsStore(const QString& path, QObject* parent)
 }
 
 SettingsStore::~SettingsStore() = default;
+
+void SettingsStore::dropMerged() const
+{
+    // The backend has read it; nothing else should, and a killed process
+    // must not leave it behind.
+    if (!m_mergedPath.isEmpty()) {
+        QFile::remove(m_mergedPath);
+    }
+}
+
+namespace {
+
+/// @p over laid onto @p base, objects merging key by key.
+QJsonObject merged(QJsonObject base, const QJsonObject& over)
+{
+    for (auto it = over.begin(); it != over.end(); ++it) {
+        if (it.value().isObject() && base.value(it.key()).isObject()) {
+            base.insert(it.key(), merged(base.value(it.key()).toObject(), it.value().toObject()));
+        } else {
+            base.insert(it.key(), it.value());
+        }
+    }
+    return base;
+}
+
+} // namespace
+
+void SettingsStore::writeMerged() const
+{
+    if (m_mergedPath.isEmpty()) {
+        return;
+    }
+    QJsonObject root;
+    QFile f(m_path);
+    if (f.open(QIODevice::ReadOnly)) {
+        root = QJsonDocument::fromJson(f.readAll()).object();
+    }
+    QFile out(m_mergedPath);
+    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        out.write(QJsonDocument(merged(root, m_overrides)).toJson());
+    }
+}
+
+bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignment)
+{
+    const qsizetype eq = assignment.indexOf(QLatin1Char('='));
+    const QString path = assignment.left(eq).trimmed();
+    const qsizetype dot = path.indexOf(QLatin1Char('.'));
+    if (eq < 0 || dot <= 0 || dot == path.size() - 1) {
+        return false;
+    }
+    const QString raw = assignment.mid(eq + 1);
+    // JSON when it parses as a value (numbers, booleans, lists, objects), else a string.
+    const QJsonDocument doc = QJsonDocument::fromJson(QStringLiteral("[%1]").arg(raw).toUtf8());
+    const QJsonValue value = doc.isArray() && doc.array().size() == 1 ? doc.array().first() : QJsonValue(raw);
+    QJsonObject group = overrides.value(path.left(dot)).toObject();
+    group.insert(path.mid(dot + 1), value);
+    overrides.insert(path.left(dot), group);
+    return true;
+}
 
 bool SettingsStore::darkScheme() const
 {
@@ -373,7 +511,9 @@ void SettingsStore::reload()
             return;
         }
     }
+    writeMerged();
     m_backend->reparseConfiguration();
+    dropMerged();
     const Settings previous = m_settings;
     m_settings = read();
     watch(); // the theme file may have changed
@@ -412,6 +552,22 @@ Settings SettingsStore::read() const
             f.fallbackFamilies.push_back(family.toStdString());
         }
     }
+    const QVariantMap symbolMap = st.read<QVariantMap>(Font, QStringLiteral("symbolMap"));
+    for (auto it = symbolMap.cbegin(); it != symbolMap.cend(); ++it) {
+        const QString family = it.value().toString().trimmed();
+        const auto ranges = parseCodepointRanges(it.key());
+        if (!ranges || family.isEmpty()) {
+            qCWarning(lcConfig).noquote() << "symbolMap: ignoring" << it.key() << "- expected U+XXXX or U+XXXX-U+YYYY ranges and a family";
+            continue;
+        }
+        for (const auto& [first, last] : *ranges) {
+            f.symbolMap.push_back({first, last, family.toStdString()});
+        }
+    }
+    const QString hinting = st.read<QString>(Font, QStringLiteral("hinting"));
+    f.hinting = hinting == QLatin1String("none")   ? AfterglowRender::Hinting::None
+                : hinting == QLatin1String("full") ? AfterglowRender::Hinting::Full
+                                                   : AfterglowRender::Hinting::Light;
     f.cellHeightScale = float(st.read<double>(Font, QStringLiteral("cellHeight")));
     f.cellWidthScale = float(st.read<double>(Font, QStringLiteral("cellWidth")));
 
@@ -512,6 +668,11 @@ Settings SettingsStore::read() const
     s.confirmClose = st.read<bool>(Terminal, QStringLiteral("confirmClose"));
     s.hideMouseWhileTyping = st.read<bool>(Terminal, QStringLiteral("hideMouseWhileTyping"));
     s.scrollLines = st.read<int>(Terminal, QStringLiteral("scrollLines"));
+    s.cursorBlinkInterval = st.read<int>(Terminal, QStringLiteral("cursorBlinkInterval"));
+    s.scrollOnOutput = st.read<bool>(Terminal, QStringLiteral("scrollOnOutput"));
+    s.scrollOnInput = st.read<bool>(Terminal, QStringLiteral("scrollOnInput"));
+    t.ambiguousWide = st.read<bool>(Terminal, QStringLiteral("ambiguousWide"));
+    s.bellSound = st.read<QString>(Terminal, QStringLiteral("bellSound")).trimmed();
     t.wordBoundaries = st.read<QString>(Terminal, QStringLiteral("wordSeparators")).toStdU32String();
     const QVariantMap env = st.read<QVariantMap>(Terminal, QStringLiteral("env"));
     for (auto it = env.cbegin(); it != env.cend(); ++it) {
@@ -535,6 +696,23 @@ Settings SettingsStore::read() const
                          : startMode == QLatin1String("fullscreen") ? WindowSettings::StartMode::Fullscreen
                                                                     : WindowSettings::StartMode::Normal;
     s.window.decorations = st.read<bool>(Window, QStringLiteral("decorations"));
+    s.window.balancePadding = st.read<bool>(Window, QStringLiteral("balancePadding"));
+    const QString right = st.read<QString>(MouseGroup, QStringLiteral("rightClick"));
+    s.mouse.rightClick = right == QLatin1String("paste")           ? MouseSettings::RightClick::Paste
+                         : right == QLatin1String("copy-or-paste") ? MouseSettings::RightClick::CopyOrPaste
+                         : right == QLatin1String("extend")        ? MouseSettings::RightClick::Extend
+                                                                   : MouseSettings::RightClick::Menu;
+    const QString middle = st.read<QString>(MouseGroup, QStringLiteral("middleClick"));
+    s.mouse.middleClick = middle == QLatin1String("clipboard") ? MouseSettings::MiddleClick::Clipboard
+                          : middle == QLatin1String("none")    ? MouseSettings::MiddleClick::None
+                                                               : MouseSettings::MiddleClick::Primary;
+    s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
+    s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
+    const QString modifier = st.read<QString>(LinksGroup, QStringLiteral("modifier"));
+    s.links.modifier = modifier == QLatin1String("shift") ? Qt::ShiftModifier
+                       : modifier == QLatin1String("alt") ? Qt::AltModifier
+                       : modifier == QLatin1String("none") ? Qt::NoModifier
+                                                           : Qt::ControlModifier;
     const QString tabBar = st.read<QString>(Window, QStringLiteral("tabBar"));
     s.window.tabBar = tabBar == QLatin1String("always") ? WindowSettings::TabBar::Always
                       : tabBar == QLatin1String("never") ? WindowSettings::TabBar::Never

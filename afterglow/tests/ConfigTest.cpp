@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QKeyEvent>
 #include <QFile>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 #include <gtest/gtest.h>
@@ -218,4 +219,73 @@ TEST(Keybinds, TextBindingsSendTheirBytes)
     const QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::ShiftModifier);
     EXPECT_EQ(kb.matchText(&press), QByteArray("\x1b\r"));
     EXPECT_EQ(kb.match(&press), Action::None);
+}
+
+TEST_F(ConfigTest, ReadsTheTierTwoSettings)
+{
+    const QString config = write(QStringLiteral("config.json"), R"({
+        "Font": {"symbolMap": {"U+E000-U+F8FF,U+2500": "Symbols Nerd Font Mono", "U+zz": "Broken", "U+41": ""},
+                 "hinting": "full"},
+        "Terminal": {"cursorBlinkInterval": 20, "scrollOnOutput": true, "scrollOnInput": false,
+                     "ambiguousWide": true, "bellSound": " default "},
+        "Window": {"balancePadding": true},
+        "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard"},
+        "Links": {"detectUrls": false, "openWith": "firefox --new-tab", "modifier": "none"}
+    })");
+    SettingsStore store(config);
+    const Settings& s = store.settings();
+    ASSERT_EQ(s.font.symbolMap.size(), 2u); // the broken and empty entries are skipped
+    EXPECT_EQ(s.font.symbolMap[0].first, 0xE000u);
+    EXPECT_EQ(s.font.symbolMap[0].last, 0xF8FFu);
+    EXPECT_EQ(s.font.symbolMap[1].first, 0x2500u);
+    EXPECT_EQ(s.font.symbolMap[1].last, 0x2500u);
+    EXPECT_EQ(s.font.symbolMap[1].family, "Symbols Nerd Font Mono");
+    EXPECT_EQ(s.font.hinting, AfterglowRender::Hinting::Full);
+    EXPECT_EQ(s.cursorBlinkInterval, 100); // clamped
+    EXPECT_TRUE(s.scrollOnOutput);
+    EXPECT_FALSE(s.scrollOnInput);
+    EXPECT_TRUE(s.terminal.ambiguousWide);
+    EXPECT_EQ(s.bellSound, QStringLiteral("default"));
+    EXPECT_TRUE(s.window.balancePadding);
+    EXPECT_EQ(s.mouse.rightClick, MouseSettings::RightClick::CopyOrPaste);
+    EXPECT_EQ(s.mouse.middleClick, MouseSettings::MiddleClick::Clipboard);
+    EXPECT_FALSE(s.links.detectUrls);
+    EXPECT_EQ(s.links.openWith, QStringLiteral("firefox --new-tab"));
+    EXPECT_EQ(s.links.modifier, Qt::KeyboardModifiers(Qt::NoModifier));
+}
+
+TEST(Overrides, ParseAssignments)
+{
+    QJsonObject o;
+    EXPECT_TRUE(SettingsStore::addOverride(o, QStringLiteral("Font.size=14")));
+    EXPECT_TRUE(SettingsStore::addOverride(o, QStringLiteral("Font.family=Monaspace Radon Var")));
+    EXPECT_TRUE(SettingsStore::addOverride(o, QStringLiteral("Window.decorations=false")));
+    EXPECT_TRUE(SettingsStore::addOverride(o, QStringLiteral("Font.features=[\"calt\"]")));
+    EXPECT_TRUE(SettingsStore::addOverride(o, QStringLiteral("Colors.theme=light:a,dark:b")));
+    EXPECT_FALSE(SettingsStore::addOverride(o, QStringLiteral("size=14")));
+    EXPECT_FALSE(SettingsStore::addOverride(o, QStringLiteral("Font.size")));
+    EXPECT_FALSE(SettingsStore::addOverride(o, QStringLiteral(".size=1")));
+    const QJsonObject font = o.value(QStringLiteral("Font")).toObject();
+    EXPECT_EQ(font.value(QStringLiteral("size")).toDouble(), 14.0);
+    EXPECT_EQ(font.value(QStringLiteral("family")).toString(), QStringLiteral("Monaspace Radon Var"));
+    EXPECT_TRUE(font.value(QStringLiteral("features")).isArray());
+    EXPECT_EQ(o.value(QStringLiteral("Window")).toObject().value(QStringLiteral("decorations")), QJsonValue(false));
+    EXPECT_EQ(o.value(QStringLiteral("Colors")).toObject().value(QStringLiteral("theme")).toString(),
+              QStringLiteral("light:a,dark:b"));
+}
+
+TEST_F(ConfigTest, OverridesWinOverTheFileAndLeaveItAlone)
+{
+    const QByteArray original = R"({"Font": {"size": 11, "family": "Monaspace Krypton Var"}})";
+    const QString config = write(QStringLiteral("config.json"), original);
+    QJsonObject o;
+    SettingsStore::addOverride(o, QStringLiteral("Font.size=14"));
+    {
+        SettingsStore store(config, o);
+        EXPECT_FLOAT_EQ(store.settings().font.sizePoints, 14.0f);
+        EXPECT_EQ(store.settings().font.regular.family, "Monaspace Krypton Var"); // the rest from the file
+    }
+    QFile f(config);
+    ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+    EXPECT_EQ(f.readAll(), original);
 }

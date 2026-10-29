@@ -32,6 +32,7 @@
 #include <QDBusConnection>
 #include <QDateTime>
 #include <QMimeData>
+#include <QProcess>
 #include <QUuid>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
@@ -75,7 +76,6 @@ using AfterglowVt::Terminal;
 namespace {
 QList<TerminalWindow*> s_windows;
 
-constexpr int BlinkIntervalMs = 530;
 constexpr int TabBarLogicalHeight = 30;
 
 /// A critically damped spring: fast, with no overshoot. @p omega sets the speed.
@@ -192,7 +192,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     });
     connect(m_controller, &ChromeController::menuItemActivated, this, [this](int id) {
         if (id == MenuOpenLink) {
-            QDesktopServices::openUrl(QUrl(m_menuLink));
+            openLink(m_menuLink);
         } else if (id == MenuCopyLink) {
             QGuiApplication::clipboard()->setText(m_menuLink);
         } else if (id >= TabMenuRename) {
@@ -241,7 +241,10 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     }
     applyWindowEffects();
 
+    m_fixedTitle = options.title;
+    m_holdNextPane = options.hold;
     newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command);
+    updateTitle();
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
@@ -252,7 +255,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         scheduleRender();
     });
     connect(this, &QWindow::windowStateChanged, this, [this] { updatePaneVisibility(); });
-    m_blinkTimer.setInterval(BlinkIntervalMs);
+    m_blinkTimer.setInterval(m_settings.settings().cursorBlinkInterval);
     connect(&m_blinkTimer, &QTimer::timeout, this, [this] {
         m_blinkOn = !m_blinkOn;
         if (m_focused && m_focused->snapshot().cursorBlink && m_focused->snapshot().cursorVisible) {
@@ -387,6 +390,9 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
     opts.environment = m_settings.settings().environment;
+    pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
+    // Before the program starts: a quick one may exit at once.
+    pane->setHold(std::exchange(m_holdNextPane, false));
     if (!command.isEmpty()) {
         pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
         for (const QString& arg : command) {
@@ -837,6 +843,10 @@ void TerminalWindow::setFocusedPane(Pane* pane)
 
 void TerminalWindow::updateTitle()
 {
+    if (!m_fixedTitle.isEmpty()) {
+        setTitle(m_fixedTitle);
+        return;
+    }
     QString t = m_focused ? m_focused->title() : QString();
     if (t.isEmpty()) {
         t = QStringLiteral("afterglow");
@@ -869,8 +879,17 @@ void TerminalWindow::scheduleRender()
 
 QRect TerminalWindow::contentRect(const QRect& paneRect) const
 {
-    const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
-    return paneRect.adjusted(pad, pad, -pad, -pad);
+    const WindowSettings& ws = m_settings.settings().window;
+    const int pad = int(std::lround(ws.padding * devicePixelRatio()));
+    QRect r = paneRect.adjusted(pad, pad, -pad, -pad);
+    if (ws.balancePadding) {
+        // The part of a cell the grid cannot use, split between both sides.
+        const auto& m = m_renderer->fonts().fonts->metrics();
+        const int spareX = std::max(0, r.width()) % m.cellWidth;
+        const int spareY = std::max(0, r.height()) % m.cellHeight;
+        r.adjust(spareX / 2, spareY / 2, -(spareX - spareX / 2), -(spareY - spareY / 2));
+    }
+    return r;
 }
 
 void TerminalWindow::relayout()
@@ -1174,6 +1193,11 @@ bool TerminalWindow::event(QEvent* e)
             return true;
         }
         if (m_focused) {
+            if (!ime->commitString().isEmpty() && m_focused->isHeld()) {
+                closePane(m_focused);
+                ime->accept();
+                return true;
+            }
             if (!ime->commitString().isEmpty()) {
                 m_focused->clearSelection();
                 m_focused->sendInput(ime->commitString().toUtf8().toStdString());
@@ -1613,6 +1637,48 @@ void TerminalWindow::ringBell(Pane* pane)
         motion(pane).bell.start(1.0, 0.0, springSpec<qreal>(m_clock.get(), 14.0));
         scheduleRender();
     }
+    if (bell != Settings::Bell::None) {
+        playBellSound();
+    }
+}
+
+void TerminalWindow::playBellSound()
+{
+    const QString sound = m_settings.settings().bellSound;
+    if (sound.isEmpty() || (m_lastBellSound.isValid() && m_lastBellSound.elapsed() < 250)) {
+        return;
+    }
+    m_lastBellSound.start();
+    if (sound == QLatin1String("default")) {
+        // The desktop sound theme's bell (freedesktop sound naming).
+        QProcess::startDetached(QStringLiteral("canberra-gtk-play"),
+                                {QStringLiteral("--id=bell"), QStringLiteral("--description=afterglow bell")});
+        return;
+    }
+    const QString path = sound.startsWith(QLatin1String("~/")) ? QDir::homePath() + sound.mid(1) : sound;
+    if (!QProcess::startDetached(QStringLiteral("pw-play"), {path})) {
+        QProcess::startDetached(QStringLiteral("paplay"), {path});
+    }
+}
+
+void TerminalWindow::openLink(const QString& url)
+{
+    QStringList command = QProcess::splitCommand(m_settings.settings().links.openWith);
+    if (command.isEmpty()) {
+        QDesktopServices::openUrl(QUrl(url));
+        return;
+    }
+    const QString program = command.takeFirst();
+    command << url;
+    if (!QProcess::startDetached(program, command)) {
+        qCWarning(lcWindow).noquote() << "could not run" << program << "to open" << url;
+    }
+}
+
+bool TerminalWindow::linkModifierHeld() const
+{
+    const Qt::KeyboardModifiers modifier = m_settings.settings().links.modifier;
+    return modifier == Qt::NoModifier || (QGuiApplication::queryKeyboardModifiers() & modifier);
 }
 
 void TerminalWindow::revealPane(Pane* pane)
@@ -1899,7 +1965,7 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
             found.pane = pane;
             found.link = c.link;
             found.url = QString::fromStdString(snap.links[c.link - 1]);
-        } else {
+        } else if (m_settings.settings().links.detectUrls) {
             // A plain-text URL on this row.
             for (const UrlSpan& span : findUrls(snap, cell.y())) {
                 if (span.link == 0 && cell.x() >= span.colStart && cell.x() <= span.colEnd) {
@@ -1989,8 +2055,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
 
 void TerminalWindow::updateLinkHover()
 {
-    const bool ctrl = QGuiApplication::queryKeyboardModifiers() & Qt::ControlModifier;
-    Pane* pane = ctrl ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    Pane* pane = linkModifierHeld() ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
@@ -2162,7 +2227,7 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
         if (copy) {
             QGuiApplication::clipboard()->setText(url);
         } else {
-            QDesktopServices::openUrl(QUrl(url));
+            openLink(url);
         }
         return;
     }
@@ -2261,6 +2326,12 @@ void TerminalWindow::applySettings(const Settings& previous)
             p->setOptions(now.terminal);
         }
     }
+    if (now.scrollOnOutput != previous.scrollOnOutput || now.scrollOnInput != previous.scrollOnInput) {
+        for (Pane* p : findChildren<Pane*>()) {
+            p->setScrollPolicy(now.scrollOnOutput, now.scrollOnInput);
+        }
+    }
+    m_blinkTimer.setInterval(now.cursorBlinkInterval);
     if (now.window.backgroundOpacity != previous.window.backgroundOpacity || now.window.blur != previous.window.blur) {
         applyWindowEffects();
     }
@@ -2339,7 +2410,7 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         unicodeInputKey(e);
         return;
     }
-    if (e->key() == Qt::Key_Control) {
+    if (e->key() == Qt::Key_Control || e->key() == Qt::Key_Shift || e->key() == Qt::Key_Alt) {
         updateLinkHover();
     }
     if (m_controller->wantsKeyboard()) {
@@ -2363,8 +2434,11 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
     if (m_urlMode.active || m_unicodeInput) {
         return; // the mode took the press
     }
-    if (e->key() == Qt::Key_Control) {
-        // queryKeyboardModifiers() still reports Ctrl during its own release.
+    const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
+    if ((e->key() == Qt::Key_Control && linkModifier == Qt::ControlModifier)
+        || (e->key() == Qt::Key_Shift && linkModifier == Qt::ShiftModifier)
+        || (e->key() == Qt::Key_Alt && linkModifier == Qt::AltModifier)) {
+        // queryKeyboardModifiers() still reports the key during its own release.
         m_hover = {};
         applyPointerShape();
         scheduleRender();
@@ -2388,6 +2462,10 @@ void TerminalWindow::sendKey(QKeyEvent* e)
     const AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
     const std::string bytes = m_focused->withTerminal([&ev](Terminal& t) { return AfterglowVt::encodeKey(ev, t.modes()); });
     if (bytes.empty()) {
+        return;
+    }
+    if (ev.action != AfterglowVt::KeyAction::Release && m_focused->isHeld()) {
+        closePane(m_focused); // --hold: its program has ended; any key closes it
         return;
     }
     if (ev.action != AfterglowVt::KeyAction::Release) {
@@ -2677,8 +2755,10 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
             return;
         }
     }
-    if (e->button() == Qt::LeftButton && (e->modifiers() & Qt::ControlModifier) && !m_hover.url.isEmpty()) {
-        QDesktopServices::openUrl(QUrl(m_hover.url));
+    const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
+    if (e->button() == Qt::LeftButton && linkModifier != Qt::NoModifier && (e->modifiers() & linkModifier)
+        && !m_hover.url.isEmpty()) {
+        openLink(m_hover.url);
         return;
     }
     const int code = mouseButtonCode(e->button());
@@ -2687,12 +2767,39 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         return;
     }
 
+    const MouseSettings& mouse = m_settings.settings().mouse;
     if (e->button() == Qt::MiddleButton) {
-        paste(QClipboard::Selection);
+        if (mouse.middleClick != MouseSettings::MiddleClick::None) {
+            paste(mouse.middleClick == MouseSettings::MiddleClick::Clipboard ? QClipboard::Clipboard : QClipboard::Selection);
+        }
         return;
     }
     if (e->button() == Qt::RightButton) {
-        openContextMenu(e->position());
+        switch (mouse.rightClick) {
+        case MouseSettings::RightClick::Menu:
+            openContextMenu(e->position());
+            break;
+        case MouseSettings::RightClick::Paste:
+            paste(QClipboard::Clipboard);
+            break;
+        case MouseSettings::RightClick::CopyOrPaste:
+            if (m_focused->hasSelection()) {
+                copySelection(true);
+                m_focused->clearSelection();
+                scheduleRender();
+            } else {
+                paste(QClipboard::Clipboard);
+            }
+            break;
+        case MouseSettings::RightClick::Extend:
+            if (m_focused->hasSelection()) {
+                const QPoint cell = cellAt(m_focused, e->position());
+                m_focused->extendSelection(m_focused->selectionPointAt(cell.x(), cell.y()));
+                copyOnSelect(m_focused);
+                scheduleRender();
+            }
+            break;
+        }
         return;
     }
     if (e->button() != Qt::LeftButton) {
@@ -2773,7 +2880,11 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
             copyOnSelect(m_selectionPane);
         } else {
             m_selectionPane->clearSelection();
-            if (m_clickCount == 1 && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier))) {
+            const bool plain = !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier));
+            if (m_clickCount == 1 && plain && m_settings.settings().links.modifier == Qt::NoModifier
+                && !m_hover.url.isEmpty()) {
+                openLink(m_hover.url); // links open with a plain click
+            } else if (m_clickCount == 1 && plain) {
                 moveCursorToClick(m_selectionPane, e->position());
             }
             scheduleRender();

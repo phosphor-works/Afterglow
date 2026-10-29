@@ -10,6 +10,7 @@
 #include <AfterglowVt/Terminal.h>
 
 #include <QFileSystemWatcher>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -39,10 +40,32 @@ struct WindowSettings
     enum class StartMode { Normal, Maximized, Fullscreen };
     StartMode startMode = StartMode::Normal;
     bool decorations = true; ///< the compositor's title bar and borders
+    bool balancePadding = false; ///< share the space a grid leaves over between opposite edges
     /// The tab bar: shown while there are several tabs, always, or never.
     enum class TabBar { Auto, Always, Never };
     TabBar tabBar = TabBar::Auto;
     bool operator==(const WindowSettings&) const = default;
+};
+
+struct MouseSettings
+{
+    /// Right-click: the context menu, paste, copy a selection (or paste
+    /// without one), or extend the selection to the click.
+    enum class RightClick { Menu, Paste, CopyOrPaste, Extend };
+    RightClick rightClick = RightClick::Menu;
+    /// Middle-click pastes the primary selection, the clipboard, or nothing.
+    enum class MiddleClick { Primary, Clipboard, None };
+    MiddleClick middleClick = MiddleClick::Primary;
+    bool operator==(const MouseSettings&) const = default;
+};
+
+struct LinkSettings
+{
+    bool detectUrls = true; ///< plain-text URLs, besides OSC 8 links
+    QString openWith; ///< command the URL is appended to; empty for the desktop's choice
+    /// Held to hover and click links; none opens them with a plain click.
+    Qt::KeyboardModifiers modifier = Qt::ControlModifier;
+    bool operator==(const LinkSettings&) const = default;
 };
 
 struct QuickTerminalSettings
@@ -77,6 +100,8 @@ struct Settings
     AnimationSettings animation;
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
+    MouseSettings mouse;
+    LinkSettings links;
     bool scripts = true; ///< run Luau scripts from the scripts directories
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
@@ -91,6 +116,12 @@ struct Settings
     bool confirmClose = true; ///< ask before closing where a program is running
     bool hideMouseWhileTyping = false;
     int scrollLines = 3; ///< lines per mouse wheel notch
+    int cursorBlinkInterval = 530; ///< milliseconds per blink phase
+    bool scrollOnOutput = false; ///< new output jumps a scrolled-back pane to the bottom
+    bool scrollOnInput = true; ///< typing and pasting jump to the bottom
+    /// The bell's sound: empty for none, "default" for the desktop sound
+    /// theme's, or a sound file.
+    QString bellSound;
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     /// The theme file the colours came from; empty when none is set or found.
@@ -113,6 +144,9 @@ class SettingsStore : public QObject
 public:
     explicit SettingsStore(QObject* parent = nullptr);
     SettingsStore(const QString& path, QObject* parent = nullptr);
+    /// @p overrides ({ "Font": { "size": 14 } }) win over the file, which
+    /// is still watched (afterglow -o Font.size=14).
+    SettingsStore(const QString& path, const QJsonObject& overrides, QObject* parent = nullptr);
     ~SettingsStore() override;
 
     static QString defaultPath();
@@ -123,6 +157,10 @@ public:
     /// Re-reads the file. A file that does not parse keeps the current settings.
     void reload();
 
+    /// "Group.key=value" as an override; the value is JSON when it parses
+    /// (14, true, ["calt"]), else a string. Returns false if malformed.
+    static bool addOverride(QJsonObject& overrides, const QString& assignment);
+
 Q_SIGNALS:
     /// Emitted after a reload changed anything; settings() holds the new values.
     void changed(const Settings& previous);
@@ -130,10 +168,15 @@ Q_SIGNALS:
 private:
     void watch();
     Settings read() const;
+    /// With overrides: writes the file merged with them where the backend reads.
+    void writeMerged() const;
+    void dropMerged() const;
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
 
     QString m_path;
+    QJsonObject m_overrides;
+    QString m_mergedPath; ///< what the backend reads when there are overrides
     std::unique_ptr<PhosphorConfig::JsonBackend> m_backend;
     std::unique_ptr<PhosphorConfig::Store> m_store;
     Settings m_settings;

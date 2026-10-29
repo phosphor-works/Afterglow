@@ -92,6 +92,17 @@ public:
     QString foregroundJob() const;
     /// Names the program the pane was opened to run (afterglow -e), instead of a shell.
     void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
+    /// Keeps the pane open when its program exits, until a key is pressed
+    /// (afterglow --hold).
+    void setHold(bool hold) { m_hold = hold; }
+    /// The program exited and the pane is held open: a key press closes it.
+    bool isHeld() const { return m_held.load(); }
+    /// Whether output and input jump a scrolled-back pane to the bottom.
+    void setScrollPolicy(bool onOutput, bool onInput)
+    {
+        m_scrollOnOutput.store(onOutput);
+        m_scrollOnInput = onInput;
+    }
 
     /// Where the pane's shell runs when that is not here as you (OSC 3008,
     /// iTerm2 RemoteHost): "root", "deploy@prod-1", a container's name.
@@ -198,6 +209,10 @@ private:
     const quint32 m_id;
     QString m_userTitle;
     QString m_launchedProgram;
+    std::atomic<bool> m_scrollOnOutput{false}; ///< read on the pty thread
+    std::atomic<bool> m_hold{false};
+    std::atomic<bool> m_held{false}; ///< exited and held open
+    bool m_scrollOnInput = true;
     QString m_contextLabel;
     QString m_contextKind;
     QHash<QString, QString> m_userVars;

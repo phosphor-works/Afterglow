@@ -120,11 +120,14 @@ def main():
         else:
             w = width(cp)
         vs16 = 1 if (emoji[cp] and not emoji_pres[cp]) else 0
+        # East Asian Ambiguous: one cell normally, two where CJK text expects it.
+        ambiguous = 1 if (eaw[cp] == "A" and w == 1) else 0
         packed[cp] = (gcb[cp]
                       | (int(ext_pict[cp]) << 4)
                       | (incb[cp] << 5)
                       | (w << 7)
-                      | (vs16 << 9))
+                      | (vs16 << 9)
+                      | (ambiguous << 10))
 
     values = sorted(set(packed))
     value_index = {v: i for i, v in enumerate(values)}

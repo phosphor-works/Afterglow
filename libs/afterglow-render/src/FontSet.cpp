@@ -138,6 +138,19 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
         qCInfo(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
     }
 
+    for (const SymbolMapEntry& entry : m_spec.symbolMap) {
+        int idx = -1;
+        const FcMatch m = matchFamily(entry.family, false);
+        if (!m.exact) {
+            qCWarning(lcFont) << "symbol map font family" << entry.family.c_str() << "is not installed";
+        } else if (auto it = m_faceByPath.find(m.path + '#' + std::to_string(m.index)); it != m_faceByPath.end()) {
+            idx = it->second;
+        } else if ((idx = loadFace(m.path, m.index, &m_spec.regular)) >= 0) {
+            m_faceByPath.emplace(m.path + '#' + std::to_string(m.index), idx);
+        }
+        m_symbolFaces.push_back(idx);
+    }
+
     for (const std::string& family : m_spec.fallbackFamilies) {
         const FcMatch m = matchFamily(family, false);
         if (!m.exact) {
@@ -210,7 +223,7 @@ int FontSet::loadFace(const std::string& path, int index, const FontStyleSpec* a
         FT_Select_Size(ft, best);
     }
     face->hb = hb_ft_font_create_referenced(ft);
-    hb_ft_font_set_load_flags(face->hb, FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT);
+    hb_ft_font_set_load_flags(face->hb, loadFlags());
 
     m_faces.push_back(std::move(face));
     return int(m_faces.size()) - 1;
@@ -222,7 +235,7 @@ void FontSet::computeMetrics()
     const FT_Size_Metrics& sm = ft->size->metrics;
 
     int advance = 0;
-    if (FT_Load_Char(ft, 'M', FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT) == 0) {
+    if (FT_Load_Char(ft, 'M', loadFlags()) == 0) {
         advance = int(std::lround(double(ft->glyph->advance.x) / 64.0));
     }
     if (advance <= 0) {
@@ -257,11 +270,37 @@ void FontSet::computeMetrics()
     m_metrics.strikethroughPosition = strikePos;
 }
 
+std::int32_t FontSet::loadFlags() const noexcept
+{
+    switch (m_spec.hinting) {
+    case Hinting::None:
+        return FT_LOAD_NO_HINTING;
+    case Hinting::Full:
+        return FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL;
+    case Hinting::Light:
+        break;
+    }
+    return FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT;
+}
+
+int FontSet::renderMode() const noexcept
+{
+    return m_spec.hinting == Hinting::Light ? FT_RENDER_MODE_LIGHT : FT_RENDER_MODE_NORMAL;
+}
+
 int FontSet::faceFor(char32_t cp, StyleSlot slot, bool preferColor)
 {
     const int primaryIdx = int(slot);
     if (cp == 0 || cp == U' ') {
         return primaryIdx;
+    }
+    for (std::size_t i = 0; i < m_symbolFaces.size(); ++i) {
+        const SymbolMapEntry& entry = m_spec.symbolMap[i];
+        const int idx = m_symbolFaces[i];
+        if (cp >= entry.first && cp <= entry.last && idx >= 0
+            && FT_Get_Char_Index(m_faces[std::size_t(idx)]->ft, cp) != 0) {
+            return idx;
+        }
     }
     if (!preferColor && FT_Get_Char_Index(m_faces[std::size_t(primaryIdx)]->ft, cp) != 0) {
         return primaryIdx;

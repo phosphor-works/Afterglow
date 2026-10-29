@@ -23,10 +23,11 @@ namespace {
 const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 }
 
-Application::Application()
-    : m_device(m_settings.settings().font)
+Application::Application(const QString& configPath, const QJsonObject& overrides)
+    : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
+    , m_device(m_settings.settings().font)
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command) {
-        return newWindow({cwd, command, false, !cwd.isEmpty()});
+        return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false});
     })
     , m_controlBus(m_control, m_settings)
     , m_scripts(scriptCallbacks(m_control))
@@ -90,7 +91,7 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     auto* window = new TerminalWindow(m_services, options);
     m_control.attachWindow(window);
     connect(window, &TerminalWindow::newWindowRequested, this,
-            [this](const QString& cwd) { newWindow({cwd, {}, false, false}); });
+            [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });
     connect(window, &QObject::destroyed, this, &Application::quitWhenNoWindowsRemain, Qt::QueuedConnection);
     if (!options.quick) {
         const WindowSettings& ws = m_settings.settings().window;
@@ -110,16 +111,18 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     return window;
 }
 
-void Application::NewWindow(const QString& workingDirectory, const QStringList& command, bool directoryGiven)
+void Application::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
-    TerminalWindow* w = newWindow({workingDirectory, command, false, directoryGiven});
+    TerminalWindow* w = newWindow({workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
+                                   options.value(QStringLiteral("title")).toString(),
+                                   options.value(QStringLiteral("hold")).toBool()});
     w->requestActivate();
 }
 
 void Application::ToggleQuickTerminal()
 {
     if (!m_quick) {
-        m_quick = newWindow({{}, {}, true});
+        m_quick = newWindow({{}, {}, true, false, {}, false});
     }
     m_quick->toggleQuick();
 }

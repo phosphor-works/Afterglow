@@ -30,6 +30,22 @@ struct FontStyleSpec
     bool operator==(const FontStyleSpec&) const = default;
 };
 
+/// Characters in [first, last] drawn from @p family, when it has them.
+struct SymbolMapEntry
+{
+    char32_t first = 0;
+    char32_t last = 0;
+    std::string family;
+    bool operator==(const SymbolMapEntry&) const = default;
+};
+
+/// How glyph outlines snap to the pixel grid.
+enum class Hinting : std::uint8_t {
+    None, ///< the outline as designed: smoothest, softest
+    Light, ///< vertical snapping only, keeping the font's widths
+    Full, ///< the font's or FreeType's full hinting: crispest, least faithful
+};
+
 struct FontSpec
 {
     float sizePoints = 11.0f;
@@ -44,6 +60,9 @@ struct FontSpec
     /// Families tried, in order, for characters the style's own font lacks,
     /// before fontconfig's choice.
     std::vector<std::string> fallbackFamilies;
+    /// Ranges pinned to a family ahead of the style's own font (kitty's symbol_map).
+    std::vector<SymbolMapEntry> symbolMap;
+    Hinting hinting = Hinting::Light;
     /// Cell size against the font's own: 1.2 adds a fifth of a line between rows.
     float cellWidthScale = 1.0f;
     float cellHeightScale = 1.0f;
@@ -102,6 +121,10 @@ public:
 
     const std::vector<hb_feature_t>& features() const noexcept { return m_features; }
 
+    /// FreeType load flags and render mode for the configured hinting.
+    std::int32_t loadFlags() const noexcept;
+    int renderMode() const noexcept;
+
 private:
     int loadFace(const std::string& path, int index, const FontStyleSpec* axes);
     int findFallback(char32_t cp, bool color);
@@ -115,6 +138,7 @@ private:
     std::unordered_map<std::string, int> m_faceByPath;
     std::unordered_map<std::uint64_t, int> m_fallbackCache;
     std::vector<int> m_fallbackFaces; ///< the spec's fallback families, loaded
+    std::vector<int> m_symbolFaces; ///< per symbol map entry; -1 when not installed
     std::vector<hb_feature_t> m_features;
     FontMetrics m_metrics;
 };

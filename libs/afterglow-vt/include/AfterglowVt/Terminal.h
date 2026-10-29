@@ -184,6 +184,9 @@ struct TerminalOptions
     double minimumContrast = 1.0;
     /// Characters that end a word for double-click selection, besides spaces.
     std::u32string wordBoundaries{DefaultWordBoundaries};
+    /// East Asian Ambiguous characters (Greek, Cyrillic, box drawing, some
+    /// symbols) take two cells, as CJK fonts and programs expect.
+    bool ambiguousWide = false;
     /// The cursor DECSCUSR 0 and a reset return to.
     CursorShape cursorShape = CursorShape::Block;
     bool cursorBlink = true;
@@ -254,6 +257,11 @@ public:
     }
     Rgb resolve(Color color, bool foreground) const noexcept;
     const TerminalOptions& options() const noexcept { return m_options; }
+    /// Cells a character with @p props takes under these options.
+    int charWidth(const Unicode::Props& props) const noexcept
+    {
+        return props.width == 1 && props.ambiguous && m_options.ambiguousWide ? 2 : props.width;
+    }
 
     /// Kitty graphics state of the active screen.
     const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }

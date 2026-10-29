@@ -171,8 +171,8 @@ bool GlyphCache::rasterizeIcon(FontSet& fonts, int faceIdx, std::uint32_t glyphI
     const float base = fonts.pixelSize();
     FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(base * scale * 64.0f)), 72, 72);
     bool ok = true;
-    if (FT_Load_Glyph(ft, glyphId, FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT) == 0
-        && FT_Render_Glyph(ft->glyph, FT_RENDER_MODE_LIGHT) == 0) {
+    if (FT_Load_Glyph(ft, glyphId, fonts.loadFlags()) == 0
+        && FT_Render_Glyph(ft->glyph, FT_Render_Mode(fonts.renderMode())) == 0) {
         const FT_Bitmap& bm = ft->glyph->bitmap;
         if (bm.width > 0 && bm.rows > 0 && bm.pixel_mode == FT_PIXEL_MODE_GRAY) {
             const int w = int(bm.width);
@@ -255,7 +255,7 @@ bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, i
         FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(fonts.pixelSize() * float(scale16) / 16.0f * 64.0f)), 72, 72);
     }
     const float scale = float(scale16) / 16.0f;
-    FT_Int32 flags = FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT;
+    FT_Int32 flags = fonts.loadFlags();
     if (face.color) {
         flags |= FT_LOAD_COLOR;
     }
@@ -263,7 +263,7 @@ bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, i
         return true; // missing glyph: draw nothing
     }
     FT_GlyphSlot slot = ft->glyph;
-    if (slot->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(slot, FT_RENDER_MODE_LIGHT) != 0) {
+    if (slot->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(slot, FT_Render_Mode(fonts.renderMode())) != 0) {
         return true;
     }
     const FT_Bitmap& bm = slot->bitmap;

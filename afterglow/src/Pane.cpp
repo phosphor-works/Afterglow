@@ -137,10 +137,10 @@ int Pane::rows() const
 
 void Pane::sendInput(std::string_view bytes)
 {
-    if (bytes.empty() || !m_pty) {
+    if (bytes.empty() || !m_pty || m_held.load()) {
         return;
     }
-    {
+    if (m_scrollOnInput) {
         std::lock_guard lock(m_mutex);
         m_terminal.resetViewport();
     }
@@ -355,7 +355,7 @@ void Pane::applyPreedit()
         if (int(i) == m_preeditCursor) {
             caretCol = total;
         }
-        const int w = AfterglowVt::Unicode::width(m_preedit[i]);
+        const int w = m_terminal.charWidth(AfterglowVt::Unicode::props(m_preedit[i]));
         if (w == 0) {
             continue;
         }
@@ -479,7 +479,7 @@ void Pane::commandFinished(int exitCode)
 
 QString Pane::foregroundJob() const
 {
-    if (!m_pty) {
+    if (!m_pty || m_held.load()) {
         return {};
     }
     if (const std::string job = m_pty->foregroundProcess(); !job.empty()) {
@@ -718,6 +718,9 @@ void Pane::ptyData(std::string_view bytes)
     {
         std::lock_guard lock(m_mutex);
         m_terminal.feed(bytes);
+        if (m_scrollOnOutput.load(std::memory_order_relaxed)) {
+            m_terminal.resetViewport();
+        }
     }
     // One queued notification at a time. The flag is cleared on the GUI thread
     // when the notification is delivered, so output arriving after that point
@@ -746,6 +749,17 @@ void Pane::ptyClosed(int status)
     {
         std::lock_guard lock(m_mutex);
         m_terminal.programExited();
+        if (m_hold.load()) {
+            const int code = status == -1 ? 0 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
+            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(code)
+                + "; press any key to close]\x1b[0m\x1b[?25l";
+            m_terminal.feed(note);
+            m_held.store(true);
+        }
+    }
+    if (m_held.load()) {
+        QMetaObject::invokeMethod(this, [this] { Q_EMIT contentChanged(); }, Qt::QueuedConnection);
+        return;
     }
     Q_EMIT closed();
 }

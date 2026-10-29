@@ -539,7 +539,7 @@ void Terminal::print(char32_t cp)
         m_segmenter.breaksBefore(props);
     }
 
-    int width = props.width;
+    int width = charWidth(props);
     if (width == 0) {
         // A combining mark with no cluster to join: attach to the cell before the cursor.
         const int x = cur.pendingWrap ? cur.x : cur.x - 1;
@@ -723,7 +723,7 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
             lineY = cur.y;
         }
         const int right = (cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1;
-        const int width = props.width;
+        const int width = charWidth(props);
         if (line->lineSize != LineSize::Single || line->cells[std::size_t(cur.x)].isMulticell()
             || (width == 2 && cur.x >= right)) {
             print(cp);
@@ -1078,7 +1078,7 @@ void Terminal::textSizing(std::string_view args)
                 return;
             }
             const Unicode::Props props = Unicode::props(cps[start]);
-            int width = props.width;
+            int width = charWidth(props);
             const std::u32string_view cluster = std::u32string_view(cps).substr(start, end - start);
             if (width == 1 && props.widensWithVs16 && cluster.find(Unicode::VariationSelector16) != std::u32string_view::npos) {
                 width = 2;

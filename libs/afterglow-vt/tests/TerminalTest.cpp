@@ -414,3 +414,19 @@ TEST(Terminal, BatchedPrintingMatchesBytewise)
         EXPECT_EQ(whole.screen().cursor.y, bytewise.screen().cursor.y) << input;
     }
 }
+
+TEST(Terminal, AmbiguousWidthFollowsTheOption)
+{
+    Term narrow(10, 2);
+    narrow.t.feed("\xce\xb1\xce\xb2x"); // αβx
+    EXPECT_EQ(narrow.t.screen().cursor.x, 3);
+
+    Term wide(10, 2);
+    TerminalOptions o;
+    o.ambiguousWide = true;
+    wide.t.setOptions(o);
+    wide.t.feed("\xce\xb1\xce\xb2x");
+    EXPECT_EQ(wide.t.screen().cursor.x, 5);
+    EXPECT_EQ(wide.t.screen().row(0).at(0).width(), 2);
+    EXPECT_EQ(wide.t.screen().row(0).at(2).codepoint(), U'\u03b2');
+}

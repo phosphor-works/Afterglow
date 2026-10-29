@@ -44,6 +44,8 @@ struct Props
     bool widensWithVs16 = false;
     /// Terminal cell width: 0, 1 or 2.
     std::uint8_t width = 1;
+    /// East Asian Ambiguous: width 1, but 2 for terminals set up for CJK text.
+    bool ambiguous = false;
 };
 
 inline constexpr char32_t VariationSelector16 = 0xFE0F;

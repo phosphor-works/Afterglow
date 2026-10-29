@@ -39,6 +39,17 @@ TEST(Unicode, Widths)
     EXPECT_STREQ(ucdVersion(), "17.0.0");
 }
 
+TEST(Unicode, EastAsianAmbiguous)
+{
+    EXPECT_TRUE(props(U'α').ambiguous); // Greek
+    EXPECT_TRUE(props(U'─').ambiguous); // box drawing
+    EXPECT_TRUE(props(U'±').ambiguous);
+    EXPECT_EQ(props(U'α').width, 1); // narrow unless the terminal says otherwise
+    EXPECT_FALSE(props(U'a').ambiguous);
+    EXPECT_FALSE(props(U'中').ambiguous); // already wide
+    EXPECT_FALSE(props(U'́').ambiguous); // combining marks stay zero width
+}
+
 TEST(Unicode, CombiningMarkJoinsBase)
 {
     auto g = segment(U"éx");

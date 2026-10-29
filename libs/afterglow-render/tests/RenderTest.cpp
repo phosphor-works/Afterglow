@@ -203,6 +203,33 @@ TEST(Fonts, CellScaleGrowsCellsAndCentresText)
     EXPECT_NEAR(b.baseline - a.baseline, (b.cellHeight - a.cellHeight) / 2, 1);
 }
 
+TEST(Fonts, SymbolMapPinsRangesToAFamily)
+{
+    FontSpec spec;
+    spec.symbolMap = {{U'A', U'C', "DejaVu Sans"}};
+    FontSet fonts(spec, 1.0);
+    const int mapped = fonts.faceFor(U'B', StyleSlot::Regular, false);
+    if (fonts.face(mapped).path.find("DejaVu") == std::string::npos) {
+        GTEST_SKIP() << "DejaVu Sans is not installed";
+    }
+    EXPECT_NE(mapped, fonts.primary(StyleSlot::Regular));
+    EXPECT_EQ(fonts.faceFor(U'D', StyleSlot::Regular, false), fonts.primary(StyleSlot::Regular)); // outside the range
+}
+
+TEST(Fonts, HintingChoosesLoadFlags)
+{
+    FontSpec spec;
+    spec.hinting = Hinting::None;
+    const auto none = FontSet(spec, 1.0).loadFlags();
+    spec.hinting = Hinting::Full;
+    const auto full = FontSet(spec, 1.0).loadFlags();
+    spec.hinting = Hinting::Light;
+    const auto light = FontSet(spec, 1.0).loadFlags();
+    EXPECT_NE(none, full);
+    EXPECT_NE(full, light);
+    EXPECT_NE(none, light);
+}
+
 TEST_F(Render, EmptyScreenIsBackground)
 {
     const QImage img = render("\x1b[?25l");

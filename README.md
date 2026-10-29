@@ -50,6 +50,14 @@ system install of phosphor (from PlasmaZones) is left alone.
 `~/.config/afterglow/config.json`, reloaded live. Shader packs come from the
 installed `share/afterglow/shaders` and `~/.config/afterglow/shaders`.
 
+On the command line, `-o Group.key=value` overrides a setting for one launch
+(`afterglow -o Font.size=14 -o Colors.theme=afterglow-light`), `--config`
+reads another file and `--class` sets the Wayland app id for window rules.
+Those three change the whole process, so such a launch runs on its own
+instead of opening its window in the afterglow already running. `--title`
+fixes the window title and `--hold` keeps the window open after an `-e`
+program exits.
+
 ### Themes
 
 `Colors.theme` names a theme; its colours replace the ones in `Colors`.

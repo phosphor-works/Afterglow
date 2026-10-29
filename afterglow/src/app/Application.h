@@ -13,6 +13,7 @@
 
 #include <AfterglowRender/GpuDevice.h>
 
+#include <QJsonObject>
 #include <QObject>
 #include <QPointer>
 #include <QQmlEngine>
@@ -38,15 +39,18 @@ public:
     static constexpr const char* ServiceName = "io.github.fuddlesworth.Afterglow";
     static constexpr const char* ObjectPath = "/Afterglow";
 
-    Application();
+    /// @p configPath (empty for the usual one) and @p overrides (afterglow -o)
+    /// set up the settings.
+    explicit Application(const QString& configPath = {}, const QJsonObject& overrides = {});
     ~Application() override;
 
     TerminalWindow* newWindow(const WindowOptions& options);
 
 public Q_SLOTS:
-    /// A window for another launch of afterglow, started from @p workingDirectory
-    /// (or, with @p directoryGiven, in it: afterglow -d).
-    Q_SCRIPTABLE void NewWindow(const QString& workingDirectory, const QStringList& command, bool directoryGiven);
+    /// A window for another launch of afterglow, started from @p workingDirectory.
+    /// @p options: directoryGiven (afterglow -d: start in it, whatever the
+    /// workingDirectory setting), title, hold.
+    Q_SCRIPTABLE void NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
     Q_SCRIPTABLE void ToggleQuickTerminal();
 
 private:

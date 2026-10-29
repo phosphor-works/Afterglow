@@ -43,6 +43,10 @@ struct WindowOptions
     /// @p workingDirectory was asked for (afterglow -d); otherwise it is only
     /// where the request came from, and the workingDirectory setting decides.
     bool directoryGiven = false;
+    /// A fixed window title, instead of the programs' (afterglow --title).
+    QString title;
+    /// Keep the first pane open after its program exits (afterglow --hold).
+    bool hold = false;
 };
 
 class ChromeController;
@@ -153,6 +157,8 @@ private:
     QRectF inputMethodCursorRect() const;
     QRectF m_reportedImeRect;
     void ringBell(Pane* pane);
+    /// Plays Terminal.bellSound, at most a few times a second.
+    void playBellSound();
 
     // Program status (OSC 7501)
     struct StatusView
@@ -319,6 +325,10 @@ private:
     LinkHover linkAt(Pane* pane, const QPointF& pos) const;
     /// The right-click menu, at @p pos (logical pixels).
     void openContextMenu(const QPointF& pos);
+    /// Opens @p url with Links.openWith, or the desktop's handler.
+    void openLink(const QString& url);
+    /// The link modifier (Links.modifier) is held, or none is needed.
+    bool linkModifierHeld() const;
     QString m_menuLink; ///< the link the menu was opened on
     QStringList m_menuScriptActions; ///< menu id MenuScriptBase + i runs entry i
     const Tab* m_menuTab = nullptr; ///< the tab a tab menu was opened on
@@ -328,9 +338,12 @@ private:
     /// Panes that notify when their next command finishes.
     QSet<const Pane*> m_notifyOnFinish;
     QByteArray m_pendingPaste;
+    QString m_fixedTitle; ///< afterglow --title
+    bool m_holdNextPane = false; ///< afterglow --hold, for the first pane
     std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with
     bool m_closeConfirmed = false; ///< the window may close without asking
     bool m_pointerHidden = false; ///< hidden while typing
+    QElapsedTimer m_lastBellSound;
     std::optional<SplitTree::Divider> m_dividerDrag;
 
     // Selection dragging.
