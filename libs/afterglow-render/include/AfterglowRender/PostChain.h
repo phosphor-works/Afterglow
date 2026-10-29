@@ -48,6 +48,7 @@ struct ShaderRegionState
     float focusChangeTime = 0;
     QSizeF cellSize;
     QPointF mouse;
+    float backgroundOpacity = 1.0f;
 };
 
 struct ShaderFrameTime

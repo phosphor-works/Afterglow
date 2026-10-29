@@ -47,7 +47,7 @@ protected:
         terminal->resize(Cols, Rows, cw, ch);
     }
 
-    QImage render(const std::string& bytes, bool focused = true)
+    QImage render(const std::string& bytes, bool focused = true, std::uint8_t backgroundAlpha = 255)
     {
         terminal->feed(bytes);
         snapshot.capture(*terminal);
@@ -56,7 +56,9 @@ protected:
         pane.snapshot = &snapshot;
         pane.params.rect = QRect(QPoint(0, 0), size);
         pane.params.focused = focused;
-        return renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg | 0xFF000000u);
+        pane.params.backgroundAlpha = backgroundAlpha;
+        const std::uint32_t clear = (snapshot.defaultBg & 0x00FFFFFFu) | (std::uint32_t(backgroundAlpha) << 24);
+        return renderer->renderToImage(size, {pane}, {}, clear);
     }
 
     // Packed 0xAARRGGBB as the snapshot stores colours, alpha ignored.
@@ -89,6 +91,15 @@ TEST_F(Render, EmptyScreenIsBackground)
     EXPECT_EQ(img.size(), QSize(Cols * cw, Rows * ch));
     EXPECT_PIXEL(img, QPoint(0, 0), rgb(snapshot.defaultBg));
     EXPECT_PIXEL(img, cellCenter(Cols - 1, Rows - 1), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, TranslucentBackgroundKeepsItsAlpha)
+{
+    // The pane background over the translucent clear colour must not
+    // compound: 0.9 stays 0.9, not 0.99. Text stays opaque.
+    const QImage img = render("\x1b[?25l\u2588", true, 230);
+    EXPECT_NEAR(qAlpha(img.pixel(cellCenter(5, 2))), 230, 2);
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(0, 0))), 255);
 }
 
 TEST_F(Render, TruecolorBackgroundFillsCells)

@@ -27,8 +27,6 @@ add_executable(afterglow
     src/chrome/ChromeController.h
     src/chrome/ChromeLayer.cpp
     src/chrome/ChromeLayer.h
-    src/shaders/ShaderLibrary.cpp
-    src/shaders/ShaderLibrary.h
     src/animation/FrameClock.cpp
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
@@ -36,6 +34,13 @@ add_executable(afterglow
     src/app/Application.h
     src/app/Services.h
 )
+
+# Shader pack loading, shared with the developer render tool.
+add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h)
+target_include_directories(afterglow_shaders PUBLIC src)
+target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
+    AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
+target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders Qt6::Core)
 
 qt_add_qml_module(afterglow
     URI Afterglow.Chrome
@@ -52,13 +57,12 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
-    AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders"
     AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
-target_link_libraries(afterglow PRIVATE Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow PRIVATE afterglow_shaders Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Qml Qt6::Quick Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland

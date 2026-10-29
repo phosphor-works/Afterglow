@@ -539,10 +539,10 @@ void WindowRenderer::initResources(FontResources& res)
     ensureBindings(res);
 }
 
-std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeGridPipeline(QRhiRenderPassDescriptor* pass)
+std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeGridPipeline(QRhiRenderPassDescriptor* pass, bool blend)
 {
     std::unique_ptr<QRhiGraphicsPipeline> p(m_device.rhi()->newGraphicsPipeline());
-    p->setTargetBlends({premultipliedBlend()});
+    p->setTargetBlends({blend ? premultipliedBlend() : QRhiGraphicsPipeline::TargetBlend{}});
     p->setTopology(QRhiGraphicsPipeline::TriangleStrip);
     p->setFlags(QRhiGraphicsPipeline::UsesScissor);
     p->setShaderStages({
@@ -819,7 +819,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         gridPipelines = &m_postPipelines;
     }
     if (!gridPipelines->grid) {
-        gridPipelines->grid = makeGridPipeline(gridPass);
+        gridPipelines->grid = makeGridPipeline(gridPass, true);
+        gridPipelines->fill = makeGridPipeline(gridPass, false);
     }
 
     const QColor clear = premultipliedClear(clearColor);
@@ -886,8 +887,14 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             continue;
         }
         cb->setScissor(scissor(range.scissor));
-        if (range.textStart > range.first) {
-            cb->draw(4, range.textStart - range.first, 0, range.first);
+        // The pane's default background comes first and replaces what is
+        // under it: blended over the translucent clear colour, its alpha
+        // would compound (0.9 over 0.9 is 0.99).
+        cb->setGraphicsPipeline(gridPipelines->fill.get());
+        cb->draw(4, 1, 0, range.first);
+        cb->setGraphicsPipeline(gridPipelines->grid.get());
+        if (range.textStart > range.first + 1) {
+            cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
         }
         drawImages(range, true);
         cb->setScissor(scissor(range.scissor));
@@ -904,7 +911,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     if (post) {
         cb->endPass();
         // Shader inputs: per pane, and the focused pane's view for the window.
-        const float now = float(m_clock.nsecsElapsed()) / 1e9f;
+        const float now = m_clockOverride.value_or(float(m_clock.nsecsElapsed()) / 1e9f);
         const ShaderFrameTime time{now, m_lastFrameTime > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
         m_lastFrameTime = now;
         const FontMetrics& m = res.fonts->metrics();
@@ -917,6 +924,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             st.rect = pane.params.rect;
             st.snapshot = &snap;
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
+            st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
             st.mouse = m_mouse;
             const int span = (snap.cursorX < snap.cols && snap.cursorY < snap.rows
                               && snap.at(snap.cursorX, snap.cursorY).width == 2)

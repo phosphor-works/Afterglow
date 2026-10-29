@@ -238,6 +238,7 @@ void PostChain::fill(TerminalShaderUniforms& u, const ShaderRegionState& s, cons
     u.iCellSize[0] = float(s.cellSize.width());
     u.iCellSize[1] = float(s.cellSize.height());
     std::memcpy(u.customParams, program.params().data(), sizeof u.customParams);
+    u.iBackgroundOpacity = s.backgroundOpacity;
     std::memcpy(u.customColors, program.colors().data(), sizeof u.customColors);
 }
 

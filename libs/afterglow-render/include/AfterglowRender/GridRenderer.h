@@ -184,6 +184,9 @@ public:
 
     /// Renders the panes into an image instead of the window, through the
     /// same passes and post-processing. For tests and visual checks.
+    /// Shader time for the following frames instead of the wall clock, for
+    /// reproducible renders; unset returns to the clock.
+    void setClockOverride(std::optional<float> seconds) { m_clockOverride = seconds; }
     QImage renderToImage(const QSize& size, const std::vector<Pane>& panes,
                          const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor);
 
@@ -191,6 +194,7 @@ private:
     struct PipelineSet
     {
         std::unique_ptr<QRhiGraphicsPipeline> grid;
+        std::unique_ptr<QRhiGraphicsPipeline> fill; ///< grid without blending, for pane backgrounds
         std::unique_ptr<QRhiGraphicsPipeline> image;
     };
     /// Where a frame goes: the swapchain or an offscreen texture.
@@ -210,7 +214,7 @@ private:
                   QRhiTexture* overlayTexture, std::uint64_t overlaySerial);
     void initResources(FontResources& res);
     void ensureBindings(FontResources& res);
-    std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass);
+    std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass, bool blend);
     std::unique_ptr<QRhiGraphicsPipeline> makeImagePipeline(QRhiRenderPassDescriptor* pass,
                                                             QRhiShaderResourceBindings* layout);
 
@@ -240,6 +244,7 @@ private:
     std::unique_ptr<QRhiTextureRenderTarget> m_offscreenTarget;
     std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenPass;
     qreal m_devicePixelRatio = 1.0;
+    std::optional<float> m_clockOverride;
     PipelineSet m_postPipelines;
     QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
     std::unique_ptr<class PostChain> m_post;
