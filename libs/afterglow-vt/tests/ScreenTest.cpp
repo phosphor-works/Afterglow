@@ -3,6 +3,9 @@
 
 #include "TestUtil.h"
 
+#include <AfterglowVt/Search.h>
+#include <AfterglowVt/Selection.h>
+
 #include <gtest/gtest.h>
 
 using namespace AfterglowVt;
@@ -162,4 +165,35 @@ TEST(Reflow, PromptRedrawPendingUntilShellRepaints)
     EXPECT_TRUE(t.t.promptRedrawPending());
     t.t.feed("\x1b]133;B\x1b\\");
     EXPECT_FALSE(t.t.promptRedrawPending());
+}
+
+TEST(History, RowsAreCompactedAndStillReadable)
+{
+    RecordingHost host;
+    Terminal t(80, 4, host);
+    for (int i = 0; i < 50; ++i) {
+        t.feed("line " + std::to_string(i) + "\r\n");
+    }
+    const Screen& s = t.screen();
+    ASSERT_EQ(s.historySize(), 47u);
+    // "line NN" needs at most 7 cells of the 80 stored for a full row.
+    EXPECT_LE(s.historyCells(), s.historySize() * 7);
+    EXPECT_EQ(rowText(s, s.absoluteRow(10)), "line 10");
+
+    // Search and selection read compacted rows.
+    EXPECT_EQ(findAll(s, U"line 1").size(), 11u); // 1, 10-19
+    Selection sel;
+    sel.anchor = {s.rowsDropped() + 3, 0};
+    sel.head = {s.rowsDropped() + 4, 79};
+    sel.layoutEpoch = s.layoutEpoch();
+    sel.active = true;
+    EXPECT_EQ(sel.text(s), "line 3\nline 4");
+
+    // Reflow and growing the screen bring history rows back at full width.
+    t.resize(40, 4, 8, 16);
+    EXPECT_EQ(rowText(t.screen(), t.screen().absoluteRow(10)), "line 10");
+    t.resize(40, 20, 8, 16);
+    for (int y = 0; y < t.rows(); ++y) {
+        EXPECT_EQ(t.screen().row(y).cells.size(), 40u);
+    }
 }

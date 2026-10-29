@@ -68,6 +68,14 @@ struct Row
         : cells(std::size_t(cols))
     {
     }
+
+    /// The cell at @p x. History rows drop their trailing blank cells to
+    /// save memory, so cells past the stored ones read as blank.
+    const Cell& at(int x) const noexcept
+    {
+        static const Cell Blank;
+        return std::size_t(x) < cells.size() ? cells[std::size_t(x)] : Blank;
+    }
 };
 
 } // namespace AfterglowVt

@@ -114,7 +114,7 @@ void Screen::appendGrapheme(Row& row, int x, char32_t cp)
 
 std::u32string_view Screen::graphemeExtra(const Row& row, int x) const
 {
-    if (!row.cells[std::size_t(x)].hasGrapheme() || !row.graphemes) {
+    if (!row.at(x).hasGrapheme() || !row.graphemes) {
         return {};
     }
     auto it = row.graphemes->find(std::uint16_t(x));
@@ -272,6 +272,34 @@ void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
     }
 }
 
+void Screen::compact(Row& row)
+{
+    std::size_t keep = row.cells.size();
+    while (keep > 0 && isBlank(row.cells[keep - 1])) {
+        --keep;
+    }
+    if (keep < row.cells.size()) {
+        row.cells.resize(keep);
+        row.cells.shrink_to_fit();
+    }
+}
+
+void Screen::expand(Row& row)
+{
+    if (row.cells.size() < std::size_t(m_cols)) {
+        row.cells.resize(std::size_t(m_cols));
+    }
+}
+
+std::size_t Screen::historyCells() const noexcept
+{
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < historySize(); ++i) {
+        n += m_rows[i].cells.size();
+    }
+    return n;
+}
+
 void Screen::releaseRow(Row& row) noexcept
 {
     for (const Cell& c : row.cells) {
@@ -299,7 +327,7 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
                 m_rows.pop_front();
                 ++m_rowsDropped;
                 releaseRow(recycled);
-                std::fill(recycled.cells.begin(), recycled.cells.end(), Cell{});
+                recycled.cells.assign(std::size_t(m_cols), Cell{});
                 recycled.graphemes.reset();
                 recycled.wrapped = false;
                 recycled.promptStart = false;
@@ -314,6 +342,8 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
                     m_styles.retain(fillStyleId);
                 }
             }
+            // The row that just left the top of the screen is history now.
+            compact(m_rows[historySize() - 1]);
         }
         if (m_viewportOffset > 0) {
             m_viewportOffset += std::size_t(n);
@@ -422,10 +452,12 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
 {
     const std::uint64_t droppedBefore = m_rowsDropped;
     if (cols != m_cols) {
-        for (Row& r : m_rows) {
-            if (cols < m_cols) {
-                for (int x = cols; x < m_cols; ++x) {
-                    m_styles.release(r.cells[std::size_t(x)].styleId());
+        const std::size_t history = historySize();
+        for (std::size_t i = 0; i < m_rows.size(); ++i) {
+            Row& r = m_rows[i];
+            if (r.cells.size() > std::size_t(cols)) {
+                for (std::size_t x = std::size_t(cols); x < r.cells.size(); ++x) {
+                    m_styles.release(r.cells[x].styleId());
                     if (r.graphemes) {
                         r.graphemes->erase(std::uint16_t(x));
                     }
@@ -439,8 +471,9 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
                     m_styles.release(last.styleId());
                     last = Cell{};
                 }
-            } else {
-                r.cells.resize(std::size_t(cols));
+            }
+            if (i >= history) {
+                r.cells.resize(std::size_t(cols)); // the active area is always full width
             }
         }
         m_cols = cols;
@@ -454,12 +487,18 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
             --m_rowCount;
             --excess;
         }
+        for (int k = 0; k < excess; ++k) {
+            compact(m_rows[historySize() + std::size_t(k)]); // top rows become history
+        }
         m_rowCount -= excess;
         cursor.y -= excess;
         savedCursor.y -= excess;
     } else if (rows > m_rowCount) {
         const int grow = rows - m_rowCount;
         const int pulled = int(std::min<std::size_t>(std::size_t(grow), historySize()));
+        for (int k = 1; k <= pulled; ++k) {
+            expand(m_rows[historySize() - std::size_t(k)]); // history rows return to the screen
+        }
         m_rowCount += pulled;
         cursor.y += pulled;
         savedCursor.y += pulled;
@@ -541,10 +580,11 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         }
         int keep = m_cols;
         if (lineEnds) {
-            while (keep > 0 && isBlank(r.cells[std::size_t(keep - 1)])) {
+            while (keep > 0 && isBlank(r.at(keep - 1))) {
                 --keep;
             }
         }
+        expand(r); // reading every column below
         if (trackCursor && i == cursorAbs) {
             cursorLine = lines.size();
             cursorOffset = current.cells.size() + std::size_t(cursor.x);
@@ -700,6 +740,9 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     m_viewportOffset = 0;
     const std::uint64_t droppedBefore = m_rowsDropped;
     trimHistory();
+    for (std::size_t i = 0; i < historySize(); ++i) {
+        compact(m_rows[i]);
+    }
     if (tracked) {
         const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
         for (std::size_t k = 0; k < trackedNew.size(); ++k) {

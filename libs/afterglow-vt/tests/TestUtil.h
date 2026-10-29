@@ -51,7 +51,7 @@ inline std::string rowText(const Screen& screen, const Row& row)
 {
     std::string out;
     for (int x = 0; x < screen.cols(); ++x) {
-        const Cell& c = row.cells[std::size_t(x)];
+        const Cell& c = row.at(x);
         if (c.isTail()) {
             continue;
         }

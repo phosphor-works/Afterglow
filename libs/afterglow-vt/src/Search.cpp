@@ -47,7 +47,7 @@ std::vector<SearchMatch> findAll(const Screen& screen, std::u32string_view needl
         for (;;) {
             const Row& row = screen.absoluteRow(abs);
             for (int x = 0; x < screen.cols(); ++x) {
-                const Cell& c = row.cells[std::size_t(x)];
+                const Cell& c = row.at(x);
                 if (c.isTail() || c.isSpacerHead()) {
                     continue;
                 }
@@ -71,7 +71,7 @@ std::vector<SearchMatch> findAll(const Screen& screen, std::u32string_view needl
             // Cover a trailing wide character's tail.
             const long long a = screen.absoluteIndexOf(m.end.row);
             if (a >= 0 && m.end.col + 1 < screen.cols()
-                && screen.absoluteRow(std::size_t(a)).cells[std::size_t(m.end.col + 1)].isTail()) {
+                && screen.absoluteRow(std::size_t(a)).at(m.end.col + 1).isTail()) {
                 ++m.end.col;
             }
             out.push_back(m);

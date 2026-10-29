@@ -71,7 +71,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
         int prevRow = 0;
         int prevCol = 0;
         for (int x = 0; x < cols; ++x) {
-            const Cell& c = row.cells[std::size_t(x)];
+            const Cell& c = row.at(x);
             const Style& st = scr.styles().get(c.styleId());
             SnapshotCell& out = cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)];
 

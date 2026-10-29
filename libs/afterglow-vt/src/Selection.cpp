@@ -40,7 +40,7 @@ struct CellWalker
     const Row& row() const { return scr->absoluteRow(std::size_t(abs)); }
     char32_t cp() const
     {
-        const Cell& c = row().cells[std::size_t(col)];
+        const Cell& c = row().at(col);
         return c.isTail() ? 0xFFFFFFFF : c.codepoint();
     }
     bool prev()
@@ -154,7 +154,7 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     }
     // A wide character is selected whole.
     if (const long long a = screen.absoluteIndexOf(r.end.row); a >= 0 && r.end.col + 1 <= lastCol) {
-        if (screen.absoluteRow(std::size_t(a)).cells[std::size_t(r.end.col + 1)].isTail()) {
+        if (screen.absoluteRow(std::size_t(a)).at(r.end.col + 1).isTail()) {
             ++r.end.col;
         }
     }
@@ -188,7 +188,7 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
         }
         std::string line;
         for (int x = c0; x <= c1; ++x) {
-            const Cell& c = row.cells[std::size_t(x)];
+            const Cell& c = row.at(x);
             if (c.isTail() || c.isSpacerHead()) {
                 continue;
             }

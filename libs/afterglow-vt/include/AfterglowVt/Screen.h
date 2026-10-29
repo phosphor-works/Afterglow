@@ -134,6 +134,8 @@ public:
     void resetViewport() noexcept { m_viewportOffset = 0; }
     /// Absolute index of the first row shown in the viewport.
     std::size_t viewportTop() const noexcept { return historySize() - m_viewportOffset; }
+    /// Cells stored for history rows (trailing blanks are not), for memory statistics.
+    std::size_t historyCells() const noexcept;
 
     // Stable row ids ---------------------------------------------------------
 
@@ -155,6 +157,10 @@ public:
 
 private:
     void releaseRow(Row& row) noexcept;
+    /// Drops a history row's trailing blank cells and returns the memory.
+    static void compact(Row& row);
+    /// Gives a row its full width again (leaving history).
+    void expand(Row& row);
     void clearCell(Row& row, int x, std::uint32_t fillStyleId);
     void breakWideAt(Row& row, int x, std::uint32_t fillStyleId);
     void moveCells(Row& dst, int dstX, Row& src, int srcX, int n);
