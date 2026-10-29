@@ -62,6 +62,9 @@ public:
     bool breaksBefore(char32_t cp) noexcept;
     bool breaksBefore(const Props& p) noexcept;
     void reset() noexcept;
+    /// Whether printable ASCII (grapheme class Other) fed next would join the
+    /// current cluster: only after a Prepend (GB9b).
+    bool joinsAscii() const noexcept { return m_started && m_prev == GraphemeBreak::Prepend; }
 
 private:
     enum class EmojiState : std::uint8_t { None, Pictographic, PictographicZwj };

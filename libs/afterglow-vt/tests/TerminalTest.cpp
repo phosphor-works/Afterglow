@@ -358,3 +358,20 @@ TEST(Terminal, ClearScreenAndHistory)
     t.feed("\x1b[?1049l");
     EXPECT_EQ(t.screen().historySize(), 0u);
 }
+
+TEST(Terminal, RepeatLastCharacterRuns)
+{
+    RecordingHost host;
+    Terminal t(6, 3, host);
+    t.feed("ab\x1b[3b");
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "abbbb");
+    // Across the end of the line, wrapping as printing would.
+    t.feed("\x1b[2J\x1b[Hxy\x1b[6b");
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "xyyyyy\nyy");
+    // A DEC line-drawing character repeats as drawn.
+    t.feed("\x1b[2J\x1b[H\x1b(0q\x1b[2b\x1b(B");
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "───");
+    // Insert mode pushes the rest of the line along.
+    t.feed("\x1b[2J\x1b[Hzz\x1b[H\x1b[4hk\x1b[2b\x1b[4l");
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "kkkzz");
+}

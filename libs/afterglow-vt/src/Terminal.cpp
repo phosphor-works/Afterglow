@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <charconv>
 #include <cstdio>
+#include <cstring>
 
 namespace AfterglowVt {
 
@@ -504,7 +505,8 @@ void Terminal::print(char32_t cp)
         m_singleShift = 0;
     }
 
-    const Unicode::Props props = Unicode::props(cp);
+    // Printable ASCII has the default properties; skip the table lookup.
+    const Unicode::Props props = (cp >= 0x20 && cp < 0x7F) ? Unicode::Props{} : Unicode::props(cp);
 
     // Join the previous cell's cluster when no grapheme boundary falls here.
     if (m_lastX >= 0) {
@@ -559,25 +561,31 @@ void Terminal::print(char32_t cp)
     }
     cur.pendingWrap = false;
 
-    const int right = lineRight((cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1);
+    // The cursor's row, looked up once and again only where the cursor
+    // moves to another line.
+    Row* line = &scr.row(cur.y);
+    int right = (cur.x <= m_margins.right) ? m_margins.right : scr.cols() - 1;
+    if (line->lineSize != LineSize::Single) {
+        right = std::min(right, std::max(1, cols() / 2) - 1); // as lineRight()
+    }
     // Text sizing: writing into a multicell block (kitty's rules). The top
     // left cell erases it, the rest of its top row turns it into spaces, and
     // in its lower rows the text goes after the block.
-    while (scr.row(cur.y).cells[std::size_t(cur.x)].isMulticell()) {
-        Row& row = scr.row(cur.y);
-        const Cell& c = row.cells[std::size_t(cur.x)];
+    while (line->cells[std::size_t(cur.x)].isMulticell()) {
+        const Cell& c = line->cells[std::size_t(cur.x)];
         if (c.multicellDy() == 0) {
             scr.eraseMulticell(cur.y, cur.x, c.multicellDx() != 0);
             break;
         }
-        const MulticellParams* p = scr.multicellParams(row, cur.x);
+        const MulticellParams* p = scr.multicellParams(*line, cur.x);
         const int next = cur.x - c.multicellDx() + (p ? p->columns() : 1);
         if (next <= right) {
             cur.x = next;
         } else if (m_modes.autowrap) {
-            row.wrapped = true;
+            line->wrapped = true;
             carriageReturn();
             index();
+            line = &scr.row(cur.y);
         } else {
             scr.eraseMulticell(cur.y, cur.x);
             break;
@@ -587,19 +595,19 @@ void Terminal::print(char32_t cp)
         if (right == 0) {
             width = 1;
         } else if (m_modes.autowrap) {
-            Row& row = scr.row(cur.y);
-            scr.eraseCells(row, cur.x, cur.x + 1, StyleTable::DefaultId);
-            row.cells[std::size_t(cur.x)].setSpacerHead(true);
-            row.wrapped = true;
+            scr.eraseCells(*line, cur.x, cur.x + 1, StyleTable::DefaultId);
+            line->cells[std::size_t(cur.x)].setSpacerHead(true);
+            line->wrapped = true;
             carriageReturn();
             index();
+            line = &scr.row(cur.y);
         } else {
             width = 1;
             cp = Unicode::ReplacementCharacter;
         }
     }
 
-    Row& row = scr.row(cur.y);
+    Row& row = *line;
     if (m_modes.insert) {
         const std::uint32_t fill = StyleTable::DefaultId;
         scr.insertCells(row, cur.x, right, width, fill);
@@ -626,14 +634,19 @@ void Terminal::printAscii(const char* text, std::size_t length)
         }
         return;
     }
-    // The first character might join the previous cluster (after a Prepend,
-    // say). An ASCII character after an ASCII one never joins anything, so
-    // the rest skip segmentation and go straight into the row.
-    print(char32_t(static_cast<unsigned char>(text[0])));
+    // The first character joins the previous cluster only after a Prepend
+    // (GB9b), which the full path handles. An ASCII character never joins
+    // anything else, so the rest skip segmentation and go straight into the
+    // row. Most runs are short (between escape sequences), so the first
+    // character matters.
+    std::size_t i = 0;
+    if (m_lastX >= 0 && m_modes.graphemeClustering && m_segmenter.joinsAscii()) {
+        print(char32_t(static_cast<unsigned char>(text[0])));
+        i = 1;
+    }
     Screen& scr = *m_active;
     StyleTable& styles = scr.styles();
     Cursor& cur = cursor();
-    std::size_t i = 1;
     while (i < length) {
         if (cur.pendingWrap || scr.row(cur.y).cells[std::size_t(cur.x)].isMulticell()
             || scr.row(cur.y).lineSize != LineSize::Single) {
@@ -672,9 +685,10 @@ void Terminal::printAscii(const char* text, std::size_t length)
     }
     const auto last = char32_t(static_cast<unsigned char>(text[length - 1]));
     m_lastPrinted = last;
-    if (length > 1 && m_modes.graphemeClustering) {
+    if (m_modes.graphemeClustering && (length > 1 || i == length)) {
+        // The cluster now ends in this ASCII character.
         m_segmenter.reset();
-        m_segmenter.breaksBefore(Unicode::props(last));
+        m_segmenter.breaksBefore(Unicode::Props{});
     }
 }
 
@@ -685,6 +699,19 @@ void Terminal::repeatLast(int n)
     }
     const char32_t cp = m_lastPrinted;
     n = std::min(n, 65535);
+    if (cp >= 0x20 && cp < 0x7F) {
+        // Printable ASCII: through the run fast path, a chunk at a time.
+        // Each repetition starts its own cluster, as below.
+        char chunk[256];
+        std::memset(chunk, int(cp), sizeof chunk);
+        m_lastX = -1;
+        while (n > 0) {
+            const int count = std::min(n, int(sizeof chunk));
+            printAscii(chunk, std::size_t(count));
+            n -= count;
+        }
+        return;
+    }
     for (int i = 0; i < n; ++i) {
         m_lastX = -1;
         print(cp);

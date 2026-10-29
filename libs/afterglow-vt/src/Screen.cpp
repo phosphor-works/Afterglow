@@ -543,6 +543,20 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
         return;
     }
 
+    if (fullWidth && r.top == 0 && r.bottom == m_rowCount - 1 && historySize() == 0) {
+        // The whole screen with no history (the alternate screen): the top
+        // rows leave and come back cleared at the bottom, rather than every
+        // row moving up one. Nothing can cross the screen's own edges, and
+        // the row ids stay with their content, so images scroll with it.
+        for (int k = 0; k < n; ++k) {
+            m_rows.push_back(std::move(m_rows.front()));
+            m_rows.pop_front();
+            ++m_rowsDropped;
+            eraseRow(m_rows.back(), fillStyleId);
+        }
+        return;
+    }
+
     // Blocks the region boundary cuts cannot move with it.
     eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right);
     if (fullWidth) {
