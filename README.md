@@ -23,6 +23,8 @@ The phosphor libraries are built from source alongside afterglow. By default
 the build expects a PlasmaZones checkout next to this one:
 
 ```sh
+git clone https://github.com/phosphor-works/afterglow
+cd afterglow
 git clone https://github.com/fuddlesworth/PlasmaZones ../PlasmaZones
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
@@ -47,3 +49,9 @@ system install of phosphor (from PlasmaZones) is left alone.
 
 `~/.config/afterglow/config.json`, reloaded live. Shader packs come from the
 installed `share/afterglow/shaders` and `~/.config/afterglow/shaders`.
+
+## Licence
+
+The application is GPL-3.0-or-later; the libraries under `libs/` are
+LGPL-2.1-or-later; the icon is CC-BY-SA-4.0. Each file names its licence;
+the texts are in `LICENSES/`.

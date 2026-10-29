@@ -23,7 +23,9 @@
       <li>Program status, shell integration, hyperlinks and keyboard-driven URL opening</li>
     </ul>
   </description>
-  <url type="homepage">https://phosphor-works.github.io</url>
+  <url type="homepage">https://github.com/phosphor-works/afterglow</url>
+  <url type="bugtracker">https://github.com/phosphor-works/afterglow/issues</url>
+  <url type="vcs-browser">https://github.com/phosphor-works/afterglow</url>
   <launchable type="desktop-id">io.github.fuddlesworth.Afterglow.desktop</launchable>
   <provides>
     <binary>afterglow</binary>
