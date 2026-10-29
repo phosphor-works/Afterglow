@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -66,6 +68,8 @@ struct Style
     Color underlineColor;
     std::uint16_t attrs = 0;
     UnderlineStyle underline = UnderlineStyle::None;
+    /// OSC 8 hyperlink, an index into the StyleTable's links; 0 for none.
+    std::uint32_t link = 0;
 
     bool has(std::uint16_t attr) const { return (attrs & attr) != 0; }
     bool operator==(const Style&) const = default;
@@ -79,6 +83,7 @@ struct StyleHash
         h = h * 0x9E3779B97F4A7C15ull ^ s.bg.bits();
         h = h * 0x9E3779B97F4A7C15ull ^ s.underlineColor.bits();
         h = h * 0x9E3779B97F4A7C15ull ^ ((std::uint64_t(s.attrs) << 8) | std::uint64_t(s.underline));
+        h = h * 0x9E3779B97F4A7C15ull ^ s.link;
         return static_cast<std::size_t>(h ^ (h >> 29));
     }
 };
@@ -101,7 +106,27 @@ public:
     const Style& get(std::uint32_t id) const noexcept { return m_styles[id]; }
     std::size_t liveCount() const noexcept { return m_lookup.size() + 1; }
 
+    /// Interns an OSC 8 hyperlink for use in a Style. A link lives as long as
+    /// some live style refers to it. Links with the same id and URI share an
+    /// entry, so a link split across lines stays one link.
+    std::uint32_t internLink(std::string_view uri, std::string_view id);
+    std::string_view linkUri(std::uint32_t link) const noexcept;
+    std::size_t liveLinks() const noexcept { return m_linkLookup.size(); }
+
 private:
+    struct Link
+    {
+        std::string uri;
+        std::string id;
+        std::uint32_t refs = 0;
+    };
+    void retainLink(std::uint32_t link) noexcept;
+    void releaseLink(std::uint32_t link) noexcept;
+
+    std::vector<Link> m_links{Link{}}; // index 0 is "no link"
+    std::vector<std::uint32_t> m_freeLinks;
+    std::unordered_map<std::string, std::uint32_t> m_linkLookup;
+
     std::vector<Style> m_styles;
     std::vector<std::uint32_t> m_refs;
     std::vector<std::uint32_t> m_free;

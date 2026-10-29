@@ -84,6 +84,12 @@ public:
         float scrollShift = 0;
         /// Opacity of the default background (window translucency).
         std::uint8_t backgroundAlpha = 255;
+        /// A link under the pointer, underlined: cells of this snapshot link
+        /// index, or a detected URL as a run of cells on one row.
+        std::uint32_t hoveredLink = 0;
+        int hoverRow = -1;
+        int hoverColStart = 0;
+        int hoverColEnd = -1; ///< inclusive
     };
 
     /// Appends the pane's instances. Returns false if the glyph atlas

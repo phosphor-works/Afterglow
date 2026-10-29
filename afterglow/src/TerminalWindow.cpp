@@ -25,6 +25,7 @@
 #include <QKeyEvent>
 #include <QLoggingCategory>
 #include <QPlatformSurfaceEvent>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QVariantMap>
 #include <QStyleHints>
@@ -439,6 +440,12 @@ void TerminalWindow::renderNow()
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.backgroundAlpha = backgroundAlpha;
+        if (m_hover.pane == p) {
+            wp.params.hoveredLink = m_hover.link;
+            wp.params.hoverRow = m_hover.row;
+            wp.params.hoverColStart = m_hover.colStart;
+            wp.params.hoverColEnd = m_hover.colEnd;
+        }
         panes.push_back(wp);
         const QRect shown = wp.params.rect;
         if (multiple && p != m_focused) {
@@ -835,6 +842,75 @@ void TerminalWindow::runSearch(const QString& query, int direction)
     scheduleRender();
 }
 
+void TerminalWindow::updateLinkHover()
+{
+    LinkHover found;
+    const bool ctrl = QGuiApplication::queryKeyboardModifiers() & Qt::ControlModifier;
+    Pane* pane = ctrl ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    if (pane) {
+        const QPoint cell = cellAt(pane, m_pointer);
+        const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
+        if (cell.x() < snap.cols && cell.y() < snap.rows) {
+            const AfterglowRender::SnapshotCell& c = snap.at(cell.x(), cell.y());
+            if (c.link != 0 && c.link <= snap.links.size()) {
+                found.pane = pane;
+                found.link = c.link;
+                found.url = QString::fromStdString(snap.links[c.link - 1]);
+            } else {
+                // A plain-text URL on this row.
+                QString text;
+                std::vector<int> columns;
+                for (int x = 0; x < snap.cols; ++x) {
+                    const AfterglowRender::SnapshotCell& rc = snap.at(x, cell.y());
+                    if (rc.width == 0) {
+                        continue;
+                    }
+                    const char32_t cp = rc.cp ? rc.cp : U' ';
+                    text += QString::fromUcs4(&cp, 1);
+                    while (columns.size() < std::size_t(text.size())) {
+                        columns.push_back(x);
+                    }
+                }
+                static const QRegularExpression url(
+                    QStringLiteral(R"((?:https?|ftp|file)://[^\s<>"'`]+|mailto:[^\s<>"'`]+|www\.[^\s<>"'`]+\.[^\s<>"'`]+)"));
+                for (auto it = url.globalMatch(text); it.hasNext();) {
+                    const QRegularExpressionMatch m = it.next();
+                    QString candidate = m.captured();
+                    // Trailing punctuation usually belongs to the sentence, not the URL.
+                    while (!candidate.isEmpty() && QStringLiteral(".,;:!?'\")]}").contains(candidate.back())) {
+                        if (candidate.back() == QLatin1Char(')') && candidate.count(QLatin1Char('(')) >= candidate.count(QLatin1Char(')'))) {
+                            break;
+                        }
+                        candidate.chop(1);
+                    }
+                    const int first = columns[std::size_t(m.capturedStart())];
+                    const int last = columns[std::size_t(m.capturedStart() + candidate.size() - 1)];
+                    if (cell.x() >= first && cell.x() <= last) {
+                        found.pane = pane;
+                        found.row = cell.y();
+                        found.colStart = first;
+                        found.colEnd = last;
+                        found.url = candidate.startsWith(QLatin1String("www.")) ? QStringLiteral("https://") + candidate
+                                                                                : candidate;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
+        || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
+    m_hover = found;
+    if (changed) {
+        if (m_hover.url.isEmpty()) {
+            unsetCursor();
+        } else {
+            setCursor(Qt::PointingHandCursor);
+        }
+        scheduleRender();
+    }
+}
+
 bool TerminalWindow::routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release)
 {
     if (!chromeVisible()) {
@@ -943,6 +1019,9 @@ void TerminalWindow::toggleQuick()
 
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
+    if (e->key() == Qt::Key_Control) {
+        updateLinkHover();
+    }
     if (m_controller->wantsKeyboard()) {
         // The palette and search keybinds still toggle while the chrome has the keyboard.
         const Action a = m_settings.settings().keybinds.match(e);
@@ -961,6 +1040,12 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
 
 void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
 {
+    if (e->key() == Qt::Key_Control) {
+        // queryKeyboardModifiers() still reports Ctrl during its own release.
+        m_hover = {};
+        unsetCursor();
+        scheduleRender();
+    }
     if (m_controller->wantsKeyboard()) {
         m_chrome->deliver(e);
         return;
@@ -1077,6 +1162,12 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (!m_focused) {
         return;
     }
+    m_pointer = e->position();
+    updateLinkHover();
+    if (e->button() == Qt::LeftButton && (e->modifiers() & Qt::ControlModifier) && !m_hover.url.isEmpty()) {
+        QDesktopServices::openUrl(QUrl(m_hover.url));
+        return;
+    }
     const int code = mouseButtonCode(e->button());
     if (code >= 0 && sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Press), e->modifiers())) {
         m_reportedButtons |= e->button();
@@ -1172,6 +1263,8 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
+    m_pointer = e->position();
+    updateLinkHover();
     if (!m_selectionPane && routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

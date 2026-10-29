@@ -1153,6 +1153,8 @@ void Terminal::setCursorStyle(int ps)
 void Terminal::selectGraphicRendition(const Params& p)
 {
     Style s = cursor().pen;
+    // A hyperlink is not a graphic rendition: SGR resets leave it in place.
+    const std::uint32_t link = s.link;
     if (p.count == 0) {
         s = Style{};
     }
@@ -1292,6 +1294,7 @@ void Terminal::selectGraphicRendition(const Params& p)
             ++i;
         }
     }
+    s.link = link;
     m_active->setPen(s);
 }
 
@@ -1559,6 +1562,31 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     case 12:
         oscColor(num, rest, bel);
         break;
+    case 8: {
+        // OSC 8 ; params ; URI. An empty URI ends the link.
+        const auto semi2 = rest.find(';');
+        if (semi2 == std::string_view::npos) {
+            break;
+        }
+        const std::string_view params = rest.substr(0, semi2);
+        const std::string_view uri = rest.substr(semi2 + 1);
+        std::string_view id;
+        for (std::size_t pos = 0; pos <= params.size();) {
+            const auto colon = params.find(':', pos);
+            const std::string_view kv = params.substr(pos, colon == std::string_view::npos ? colon : colon - pos);
+            if (kv.starts_with("id=")) {
+                id = kv.substr(3);
+            }
+            if (colon == std::string_view::npos) {
+                break;
+            }
+            pos = colon + 1;
+        }
+        Style pen = cursor().pen;
+        pen.link = uri.empty() ? 0 : m_active->styles().internLink(uri, id);
+        m_active->setPen(pen);
+        break;
+    }
     case 52: {
         const auto s = rest.find(';');
         if (s == std::string_view::npos) {

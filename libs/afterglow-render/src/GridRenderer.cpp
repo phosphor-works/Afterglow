@@ -328,6 +328,12 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
         for (int cx = 0; cx < s.cols; ++cx) {
             const SnapshotCell& c = s.at(cx, y);
+            const bool hovered = (p.hoveredLink != 0 && c.link == p.hoveredLink)
+                || (y == p.hoverRow && cx >= p.hoverColStart && cx <= p.hoverColEnd);
+            if (hovered && c.underline == UnderlineStyle::None) {
+                solid(ox + float(cx * cw), std::round(rowTop + float(m.underlinePosition) - th / 2), float(cw), th,
+                      c.fg);
+            }
             if ((c.attrs & Strikethrough) && alphaOf(c.fg) != 0) {
                 solid(ox + float(cx * cw), std::round(rowTop + float(m.strikethroughPosition) - th / 2), float(cw), th,
                       c.fg);

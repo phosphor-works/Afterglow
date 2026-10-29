@@ -269,3 +269,19 @@ TEST(Terminal, SetOptionsAppliesLive)
     t.feed("a\r\nb\r\nc\r\nd");
     EXPECT_EQ(t.t.screen().historySize(), 1u);
 }
+
+TEST(Terminal, Osc8Hyperlinks)
+{
+    Term t(20, 2);
+    t.feed("\x1b]8;id=a;https://example.com\x1b\\link\x1b[1mbold\x1b[0m\x1b]8;;\x1b\\ plain");
+    const Screen& s = t.t.screen();
+    const auto linkAt = [&](int x) { return s.styles().get(s.row(0).cells[std::size_t(x)].styleId()).link; };
+    ASSERT_NE(linkAt(0), 0u);
+    EXPECT_EQ(s.styles().linkUri(linkAt(0)), "https://example.com");
+    EXPECT_EQ(linkAt(5), linkAt(0)); // SGR changes keep the link
+    EXPECT_EQ(linkAt(9), 0u);
+    EXPECT_EQ(linkAt(10), 0u);
+    // Overwriting the linked cells frees the link.
+    t.feed("\x1b[2J");
+    EXPECT_EQ(s.styles().liveLinks(), 0u);
+}

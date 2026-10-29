@@ -102,6 +102,8 @@ private:
     /// holds a press). Returns true if the chrome took it.
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
+    /// Finds the link under the pointer while Ctrl is held and underlines it.
+    void updateLinkHover();
 
     // Animation
     PaneMotion& motion(const Pane* pane);
@@ -168,6 +170,18 @@ private:
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;
     Qt::MouseButtons m_reportedButtons;
+
+    // Links under the pointer (Ctrl held).
+    QPointF m_pointer;
+    struct LinkHover
+    {
+        QPointer<Pane> pane;
+        std::uint32_t link = 0; ///< snapshot link index (OSC 8)
+        int row = -1; ///< a detected URL's cells
+        int colStart = 0;
+        int colEnd = -1;
+        QString url;
+    } m_hover;
 
     // Selection dragging.
     QPointer<Pane> m_selectionPane;

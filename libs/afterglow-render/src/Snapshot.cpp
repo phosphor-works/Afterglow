@@ -4,6 +4,7 @@
 #include <AfterglowRender/Snapshot.h>
 
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 
 namespace AfterglowRender {
@@ -21,6 +22,8 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     const int captureRows = rows + extraRows;
     cells.resize(std::size_t(cols) * std::size_t(captureRows));
     graphemes.clear();
+    links.clear();
+    std::unordered_map<std::uint32_t, std::uint32_t> linkIndex; // style table link -> snapshot index
 
     Rgb defFg = t.defaultForeground();
     Rgb defBg = t.defaultBackground();
@@ -96,6 +99,15 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             out.attrs = st.attrs;
             out.underline = st.underline;
             out.width = std::uint8_t(c.width());
+            out.link = 0;
+            if (st.link != 0) {
+                auto [it, fresh] = linkIndex.try_emplace(st.link, 0);
+                if (fresh) {
+                    links.emplace_back(scr.styles().linkUri(st.link));
+                    it->second = std::uint32_t(links.size());
+                }
+                out.link = it->second;
+            }
             out.grapheme = 0;
             if (c.hasGrapheme()) {
                 const std::u32string_view extra = scr.graphemeExtra(row, x);

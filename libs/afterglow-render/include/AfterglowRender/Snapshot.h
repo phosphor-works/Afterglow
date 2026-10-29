@@ -34,6 +34,7 @@ struct SnapshotCell
     std::uint32_t bg = 0; ///< alpha 0: default background, nothing to draw
     std::uint32_t underlineColor = 0;
     std::uint32_t grapheme = 0; ///< 1-based index into PaneSnapshot::graphemes, 0 for none
+    std::uint32_t link = 0; ///< 1-based index into PaneSnapshot::links, 0 for none
     std::uint16_t attrs = 0;
     AfterglowVt::UnderlineStyle underline = AfterglowVt::UnderlineStyle::None;
     std::uint8_t width = 1; ///< 0 for the tail of a wide character
@@ -58,6 +59,7 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     int extraRows = 0;
     std::vector<SnapshotCell> cells;
     std::vector<std::u32string> graphemes;
+    std::vector<std::string> links; ///< OSC 8 URIs of the captured cells
 
     std::uint32_t defaultFg = 0;
     std::uint32_t defaultBg = 0;
