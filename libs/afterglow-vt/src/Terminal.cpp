@@ -1170,6 +1170,7 @@ void Terminal::fullReset()
     m_kittyStack[0].clear();
     m_kittyStack[1].clear();
     m_notifications.reset();
+    m_clipboard.reset();
     if (!m_programStatus.records().empty()) {
         m_programStatus.reset();
         m_host.programStatusChanged();
@@ -2103,6 +2104,9 @@ void Terminal::setDecMode(int mode, bool on)
     case 2026:
         m_modes.synchronizedOutput = on;
         break;
+    case 5522:
+        m_modes.pasteEvents = on;
+        break;
     case 2027:
         m_modes.graphemeClustering = on;
         break;
@@ -2186,6 +2190,8 @@ int Terminal::decModeState(int mode) const
         return b(m_modes.bracketedPaste);
     case 2026:
         return b(m_modes.synchronizedOutput);
+    case 5522:
+        return b(m_modes.pasteEvents);
     case 2027:
         return b(m_modes.graphemeClustering);
     default:
@@ -2477,6 +2483,26 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
             break;
         case NotificationAssembler::Result::Pending:
         case NotificationAssembler::Result::Ignored:
+            break;
+        }
+        break;
+    }
+    case 5522: {
+        ClipboardRequest request;
+        std::string error;
+        switch (m_clipboard.feed(rest, request, error)) {
+        case ClipboardAssembler::Result::Ready:
+            if (!m_host.clipboardRequest(request)) {
+                reply(request.kind == ClipboardRequest::Kind::Read
+                          ? ClipboardAssembler::readStatus("ENOSYS", request)
+                          : ClipboardAssembler::writeStatus("ENOSYS", request.id));
+            }
+            break;
+        case ClipboardAssembler::Result::Error:
+            reply(error);
+            break;
+        case ClipboardAssembler::Result::Pending:
+        case ClipboardAssembler::Result::Ignored:
             break;
         }
         break;

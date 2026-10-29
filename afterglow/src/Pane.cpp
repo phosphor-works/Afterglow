@@ -38,6 +38,7 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
     , m_terminal(InitialCols, InitialRows, *this, options)
 {
     qRegisterMetaType<AfterglowVt::NotificationRequest>();
+    qRegisterMetaType<AfterglowVt::ClipboardRequest>();
     m_animationTimer.setSingleShot(true);
     m_animationTimer.setTimerType(Qt::PreciseTimer);
     connect(&m_animationTimer, &QTimer::timeout, this, &Pane::tickAnimations);
@@ -485,6 +486,12 @@ void Pane::pointerShapeChanged(std::string_view shape)
 void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
 {
     Q_EMIT desktopNotificationRequested(request);
+}
+
+bool Pane::clipboardRequest(const AfterglowVt::ClipboardRequest& request)
+{
+    Q_EMIT clipboardRequested(request);
+    return true;
 }
 
 std::string Pane::notificationCapabilities()

@@ -79,6 +79,12 @@ Item {
         visible: root.controller.searchOpen
     }
 
+    ClipboardPrompt {
+        controller: root.controller
+        anchors.fill: root
+        visible: root.controller.clipboardPromptOpen
+    }
+
     PasteConfirm {
         id: pasteConfirm
         controller: root.controller

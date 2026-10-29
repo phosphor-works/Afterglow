@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <AfterglowVt/Clipboard.h>
 #include <AfterglowVt/Graphics.h>
 #include <AfterglowVt/Notifications.h>
 #include <AfterglowVt/ProgramStatus.h>
@@ -70,6 +71,7 @@ struct Modes
     bool reverseWrapExtended = false; ///< 1045: backspace wraps across any line, top to bottom
     bool moreFix = false; ///< 41: a tab in the pending-wrap position wraps first
     bool vt52 = false; ///< DECANM reset: VT52 compatibility mode
+    bool pasteEvents = false; ///< 5522: pastes arrive as OSC 5522 MIME lists
     bool allow132 = false; ///< 40: DECCOLM may switch the width
     bool columns132 = false; ///< DECCOLM
     bool noClearOnColumnChange = false; ///< DECNCSM (95)
@@ -109,6 +111,10 @@ public:
     /// What the host's OSC 99 support covers, as the query reply's key=value
     /// list ("a=focus,report:c=1:p=title,body..."); empty for no support.
     virtual std::string notificationCapabilities() { return {}; }
+    /// A kitty clipboard request (OSC 5522): a read to answer (with a prompt)
+    /// or a complete write. Replies go through ClipboardAssembler's encoders.
+    /// Returning false means the host has no such clipboard support.
+    virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
     /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
     /// has no image codecs of its own; return false if decoding fails.
     /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
@@ -372,6 +378,7 @@ private:
 
     ProgramStatus m_programStatus;
     NotificationAssembler m_notifications;
+    ClipboardAssembler m_clipboard;
 
     // Kitty keyboard flag stacks, one per screen as the protocol requires.
     std::vector<std::uint8_t> m_kittyStack[2];

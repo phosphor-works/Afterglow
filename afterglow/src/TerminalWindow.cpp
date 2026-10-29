@@ -28,6 +28,8 @@
 #include <QLoggingCategory>
 #include <QDBusConnection>
 #include <QDateTime>
+#include <QMimeData>
+#include <QUuid>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
 #include <QInputMethod>
@@ -128,6 +130,22 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     });
     connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::pasteConfirmChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::clipboardPromptChanged, this, &TerminalWindow::scheduleRender);
+    connect(m_controller, &ChromeController::clipboardAnswered, this, [this](int answer) {
+        auto pending = std::exchange(m_pendingClipboardRead, std::nullopt);
+        if (!pending || !pending->pane) {
+            return;
+        }
+        const AfterglowVt::ClipboardRequest& r = pending->request;
+        if (answer == 0) {
+            pending->pane->sendInput(AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
+            return;
+        }
+        if (answer == 2 && !r.password.empty() && !r.name.empty()) {
+            m_clipboardGrants[pending->pane][QByteArray::fromStdString(r.password)] = ClipboardGrant{false};
+        }
+        answerClipboardRead(pending->pane, r);
+    });
     connect(m_controller, &ChromeController::pasteAnswered, this, [this](bool paste) {
         const QByteArray text = std::exchange(m_pendingPaste, {});
         if (paste && m_focused) {
@@ -188,6 +206,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     connect(pane, &QObject::destroyed, this, [this, pane] {
         m_motion.erase(pane);
         m_growFrom.erase(pane);
+        m_clipboardGrants.erase(pane);
         if (m_statusViews.erase(pane) > 0) {
             publishLauncherStatus();
         }
@@ -223,6 +242,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
             NotificationCenter::instance().showSimple(guard, this, title.isEmpty() ? guard->title() : title, body);
         }
     });
+    connect(pane, &Pane::clipboardRequested, this,
+            [this, guard = QPointer<Pane>(pane)](const AfterglowVt::ClipboardRequest& request) {
+                if (guard) {
+                    clipboardRequest(guard, request);
+                }
+            });
     connect(pane, &Pane::desktopNotificationRequested, this,
             [this, guard = QPointer<Pane>(pane)](const AfterglowVt::NotificationRequest& request) {
                 if (!guard) {
@@ -941,7 +966,7 @@ bool TerminalWindow::performAction(Action action)
 bool TerminalWindow::chromeVisible() const
 {
     return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen()
-        || m_controller->pasteConfirmOpen() || !m_controller->paneTitles().isEmpty();
+        || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || !m_controller->paneTitles().isEmpty();
 }
 
 void TerminalWindow::updateChrome()
@@ -1530,9 +1555,129 @@ void TerminalWindow::copySelection(bool toClipboard)
                                           toClipboard ? QClipboard::Clipboard : QClipboard::Selection);
 }
 
+void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& r)
+{
+    using AfterglowVt::ClipboardAssembler;
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    if (r.primary && !clipboard->supportsSelection()) {
+        pane->sendInput(r.kind == AfterglowVt::ClipboardRequest::Kind::Read ? ClipboardAssembler::readStatus("ENOSYS", r)
+                                                                             : ClipboardAssembler::writeStatus("ENOSYS", r.id));
+        return;
+    }
+    if (r.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
+        // Writes are allowed, as OSC 52 writes are.
+        auto* data = new QMimeData;
+        QHash<QString, QByteArray> byType;
+        for (const auto& [mime, bytes] : r.data) {
+            byType.insert(QString::fromStdString(mime), QByteArray::fromStdString(bytes));
+        }
+        for (const auto& [alias, target] : r.aliases) {
+            if (const auto it = byType.constFind(QString::fromStdString(target)); it != byType.cend()) {
+                byType.insert(QString::fromStdString(alias), *it);
+            }
+        }
+        for (auto it = byType.cbegin(); it != byType.cend(); ++it) {
+            data->setData(it.key(), it.value());
+        }
+        clipboard->setMimeData(data, r.primary ? QClipboard::Selection : QClipboard::Clipboard);
+        pane->sendInput(ClipboardAssembler::writeStatus("DONE", r.id));
+        return;
+    }
+
+    // Listing the types needs no permission.
+    if (r.mimes.size() == 1 && r.mimes[0] == ".") {
+        answerClipboardRead(pane, r);
+        return;
+    }
+    auto& grants = m_clipboardGrants[pane];
+    const QByteArray password = QByteArray::fromStdString(r.password);
+    if (!password.isEmpty()) {
+        if (const auto it = grants.find(password); it != grants.end()) {
+            if (it->oneTime) {
+                grants.erase(it);
+            }
+            answerClipboardRead(pane, r);
+            return;
+        }
+    }
+    if (m_pendingClipboardRead) {
+        pane->sendInput(ClipboardAssembler::readStatus("EBUSY", r));
+        return;
+    }
+    // Ask. The name, when the program gave one with a password, can be remembered.
+    QStringList types;
+    for (const std::string& m : r.mimes) {
+        types.append(QString::fromStdString(m));
+    }
+    const QString name = r.password.empty() ? QString() : QString::fromStdString(r.name).left(80);
+    const QString who = name.isEmpty() ? (pane->title().isEmpty() ? tr("A program") : pane->title()) : name;
+    m_pendingClipboardRead = PendingClipboardRead{pane, r};
+    m_controller->askClipboard(tr("%1 wants to read the %2 (%3).")
+                                   .arg(who, r.primary ? tr("primary selection") : tr("clipboard"),
+                                        types.join(QStringLiteral(", ")).left(200)),
+                               name);
+    if (pane != m_focused || !isActive()) {
+        revealPane(pane);
+    }
+}
+
+void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& r, std::string_view oneTimePassword)
+{
+    using AfterglowVt::ClipboardAssembler;
+    const QMimeData* data = QGuiApplication::clipboard()->mimeData(r.primary ? QClipboard::Selection : QClipboard::Clipboard);
+    std::string out = ClipboardAssembler::readStatus("OK", r, oneTimePassword);
+    for (const std::string& mime : r.mimes) {
+        if (mime == ".") {
+            std::string list;
+            if (data) {
+                list = data->formats().join(QLatin1Char(' ')).toStdString();
+                if (!list.empty()) {
+                    list += '\n';
+                }
+            }
+            out += ClipboardAssembler::readData(".", list, r, oneTimePassword);
+            continue;
+        }
+        if (!data) {
+            continue;
+        }
+        const QString type = QString::fromStdString(mime);
+        QByteArray bytes;
+        if (data->hasFormat(type)) {
+            bytes = data->data(type);
+        } else if (type.startsWith(QLatin1String("text/plain")) && data->hasText()) {
+            bytes = data->text().toUtf8();
+        } else {
+            continue;
+        }
+        out += ClipboardAssembler::readData(mime, std::string_view(bytes.constData(), std::size_t(bytes.size())), r,
+                                            oneTimePassword);
+    }
+    out += ClipboardAssembler::readStatus("DONE", r, oneTimePassword);
+    pane->sendInput(out);
+}
+
+bool TerminalWindow::sendPasteEvent(QClipboard::Mode mode)
+{
+    if (!m_focused || !m_focused->withTerminal([](Terminal& t) { return t.modes().pasteEvents; })) {
+        return false;
+    }
+    // The program gets the list of types and a one-time password to read them.
+    const QByteArray password = QUuid::createUuid().toByteArray(QUuid::WithoutBraces);
+    m_clipboardGrants[m_focused][password] = ClipboardGrant{true};
+    AfterglowVt::ClipboardRequest listing;
+    listing.primary = mode == QClipboard::Selection;
+    listing.mimes = {"."};
+    answerClipboardRead(m_focused, listing, std::string_view(password.constData(), std::size_t(password.size())));
+    return true;
+}
+
 void TerminalWindow::paste(QClipboard::Mode mode)
 {
     if (!m_focused) {
+        return;
+    }
+    if (sendPasteEvent(mode)) {
         return;
     }
     const QByteArray text = QGuiApplication::clipboard()->text(mode).toUtf8();

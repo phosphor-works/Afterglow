@@ -108,6 +108,24 @@ void ChromeController::askPaste(const QString& preview, int lines)
     Q_EMIT pasteConfirmChanged();
 }
 
+void ChromeController::askClipboard(const QString& text, const QString& name)
+{
+    m_clipboardPromptOpen = true;
+    m_clipboardPromptText = text;
+    m_clipboardPromptName = name;
+    Q_EMIT clipboardPromptChanged();
+}
+
+void ChromeController::answerClipboard(int answer)
+{
+    if (!m_clipboardPromptOpen) {
+        return;
+    }
+    m_clipboardPromptOpen = false;
+    Q_EMIT clipboardPromptChanged();
+    Q_EMIT clipboardAnswered(answer);
+}
+
 void ChromeController::answerPaste(bool paste)
 {
     if (!m_pasteConfirmOpen) {

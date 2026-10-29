@@ -150,6 +150,24 @@ private:
     void setUpQuickTerminal();
     void sendKey(QKeyEvent* e);
     void paste(QClipboard::Mode mode);
+
+    // Clipboard protocol (OSC 5522)
+    void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
+    void answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& request, std::string_view oneTimePassword = {});
+    /// Pastes as OSC 5522 when the program asked for paste events.
+    bool sendPasteEvent(QClipboard::Mode mode);
+    struct ClipboardGrant
+    {
+        bool oneTime = false;
+    };
+    /// Per pane: passwords the user allowed to read the clipboard.
+    std::unordered_map<const Pane*, QHash<QByteArray, ClipboardGrant>> m_clipboardGrants;
+    struct PendingClipboardRead
+    {
+        QPointer<Pane> pane;
+        AfterglowVt::ClipboardRequest request;
+    };
+    std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
     void restartBlink();
 

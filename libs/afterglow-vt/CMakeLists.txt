@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 add_library(AfterglowVt SHARED
+    src/Clipboard.cpp
     src/Graphics.cpp
     src/Input.cpp
     src/Notifications.cpp

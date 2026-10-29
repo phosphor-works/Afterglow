@@ -118,6 +118,8 @@ Q_SIGNALS:
     void statusChanged();
     /// An OSC 99 desktop notification request (queued to the GUI thread).
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
+    /// An OSC 5522 clipboard read or write (queued to the GUI thread).
+    void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
     void closed();
 
 private:
@@ -131,6 +133,7 @@ private:
     void programStatusChanged() override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
+    bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override;
 
@@ -173,3 +176,4 @@ private:
 } // namespace Afterglow
 
 Q_DECLARE_METATYPE(AfterglowVt::NotificationRequest)
+Q_DECLARE_METATYPE(AfterglowVt::ClipboardRequest)

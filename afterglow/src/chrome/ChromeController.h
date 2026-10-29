@@ -33,6 +33,9 @@ class ChromeController : public QObject
     Q_PROPERTY(bool pasteConfirmOpen READ pasteConfirmOpen NOTIFY pasteConfirmChanged)
     Q_PROPERTY(QString pastePreview READ pastePreview NOTIFY pasteConfirmChanged)
     Q_PROPERTY(int pasteLines READ pasteLines NOTIFY pasteConfirmChanged)
+    Q_PROPERTY(bool clipboardPromptOpen READ clipboardPromptOpen NOTIFY clipboardPromptChanged)
+    Q_PROPERTY(QString clipboardPromptText READ clipboardPromptText NOTIFY clipboardPromptChanged)
+    Q_PROPERTY(QString clipboardPromptName READ clipboardPromptName NOTIFY clipboardPromptChanged)
 
 public:
     using QObject::QObject;
@@ -77,7 +80,13 @@ public:
     void askPaste(const QString& preview, int lines);
 
     /// True while the chrome takes keyboard input instead of the terminal.
-    bool wantsKeyboard() const { return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen; }
+    bool clipboardPromptOpen() const { return m_clipboardPromptOpen; }
+    QString clipboardPromptText() const { return m_clipboardPromptText; }
+    /// The program's name when it can be remembered, else empty.
+    QString clipboardPromptName() const { return m_clipboardPromptName; }
+    /// Asks whether a program may read the clipboard.
+    void askClipboard(const QString& text, const QString& name);
+    bool wantsKeyboard() const { return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen; }
 
     Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
     Q_INVOKABLE void closeTab(int index) { Q_EMIT closeTabRequested(index); }
@@ -86,10 +95,14 @@ public:
     /// @p direction: 0 to search again from the current match, 1 next, -1 previous.
     Q_INVOKABLE void search(const QString& query, int direction) { Q_EMIT searchRequested(query, direction); }
     Q_INVOKABLE void answerPaste(bool paste);
+    /// 0 deny, 1 allow once, 2 always allow this program.
+    Q_INVOKABLE void answerClipboard(int answer);
 
 Q_SIGNALS:
     void tabsChanged();
     void tabStatusChanged();
+    void clipboardPromptChanged();
+    void clipboardAnswered(int answer);
     void themeChanged();
     void actionsChanged();
     void paletteOpenChanged();
@@ -108,6 +121,9 @@ Q_SIGNALS:
 private:
     QStringList m_tabTitles;
     QVariantList m_tabStatus;
+    bool m_clipboardPromptOpen = false;
+    QString m_clipboardPromptText;
+    QString m_clipboardPromptName;
     QColor m_goodColor{Qt::green};
     QColor m_warnColor{Qt::yellow};
     QColor m_badColor{Qt::red};

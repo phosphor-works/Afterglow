@@ -1,0 +1,308 @@
+// SPDX-FileCopyrightText: 2026 fuddlesworth
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#include <AfterglowVt/Clipboard.h>
+
+#include <AfterglowVt/Notifications.h>
+
+#include <array>
+#include <optional>
+
+namespace AfterglowVt {
+
+namespace {
+
+constexpr char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string encodeBase64(std::string_view in)
+{
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    for (std::size_t i = 0; i < in.size(); i += 3) {
+        std::uint32_t v = std::uint32_t(std::uint8_t(in[i])) << 16;
+        if (i + 1 < in.size()) {
+            v |= std::uint32_t(std::uint8_t(in[i + 1])) << 8;
+        }
+        if (i + 2 < in.size()) {
+            v |= std::uint8_t(in[i + 2]);
+        }
+        out += B64[(v >> 18) & 63];
+        out += B64[(v >> 12) & 63];
+        out += i + 1 < in.size() ? B64[(v >> 6) & 63] : '=';
+        out += i + 2 < in.size() ? B64[v & 63] : '=';
+    }
+    return out;
+}
+
+/// Strict RFC 4648: the standard alphabet, correct padding, nothing else.
+std::optional<std::string> decodeBase64Strict(std::string_view in)
+{
+    static constexpr auto table = [] {
+        std::array<std::int8_t, 256> t{};
+        t.fill(-1);
+        for (int i = 0; i < 64; ++i) {
+            t[static_cast<unsigned char>(B64[i])] = std::int8_t(i);
+        }
+        return t;
+    }();
+    if (in.size() % 4 != 0) {
+        return std::nullopt;
+    }
+    std::size_t padding = 0;
+    if (!in.empty() && in.back() == '=') {
+        padding = in.size() >= 2 && in[in.size() - 2] == '=' ? 2 : 1;
+    }
+    std::string out;
+    out.reserve(in.size() / 4 * 3);
+    std::uint32_t acc = 0;
+    int bits = 0;
+    for (std::size_t i = 0; i < in.size() - padding; ++i) {
+        const std::int8_t v = table[static_cast<unsigned char>(in[i])];
+        if (v < 0) {
+            return std::nullopt;
+        }
+        acc = (acc << 6) | std::uint32_t(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(char((acc >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+std::string header(std::string_view type, std::string_view status, std::string_view id)
+{
+    std::string r = "\x1b]5522;type=";
+    r += type;
+    r += ":status=";
+    r += status;
+    if (!id.empty()) {
+        r += ":id=";
+        r += id;
+    }
+    return r;
+}
+
+} // namespace
+
+void ClipboardAssembler::reset()
+{
+    m_writing = false;
+    m_failed = false;
+    m_write = {};
+    m_mime.clear();
+    m_encoded.clear();
+    m_total = 0;
+}
+
+bool ClipboardAssembler::flush(std::string& reply)
+{
+    if (m_mime.empty()) {
+        return true;
+    }
+    auto decoded = decodeBase64Strict(m_encoded);
+    if (!decoded) {
+        reply = writeStatus("EINVAL", m_write.id);
+        return false;
+    }
+    m_write.data.emplace_back(std::move(m_mime), std::move(*decoded));
+    m_mime.clear();
+    m_encoded.clear();
+    return true;
+}
+
+ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, ClipboardRequest& out, std::string& reply)
+{
+    const auto semi = payload.find(';');
+    const std::string_view metadata = payload.substr(0, semi);
+    const std::string_view data = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
+
+    std::string_view type;
+    std::string mime;
+    std::string id;
+    std::string password;
+    std::string name;
+    bool primary = false;
+    bool badValue = false;
+    std::size_t pos = 0;
+    while (pos <= metadata.size()) {
+        const auto colon = metadata.find(':', pos);
+        const std::string_view kv = metadata.substr(pos, colon == std::string_view::npos ? colon : colon - pos);
+        const auto eq = kv.find('=');
+        if (eq != std::string_view::npos) {
+            const std::string_view key = kv.substr(0, eq);
+            const std::string_view value = kv.substr(eq + 1);
+            auto decode = [&](std::string& target) {
+                if (auto d = decodeBase64Strict(value)) {
+                    target = std::move(*d);
+                } else {
+                    badValue = true;
+                }
+            };
+            if (key == "type") {
+                type = value;
+            } else if (key == "mime") {
+                decode(mime);
+            } else if (key == "pw") {
+                decode(password);
+            } else if (key == "name") {
+                decode(name);
+            } else if (key == "loc") {
+                primary = value == "primary";
+            } else if (key == "id") {
+                id = NotificationAssembler::sanitizeId(value);
+            }
+        }
+        if (colon == std::string_view::npos) {
+            break;
+        }
+        pos = colon + 1;
+    }
+
+    if (type == "read") {
+        // A read has no way to report bad base64: it is ignored.
+        const auto list = decodeBase64Strict(data);
+        if (badValue || !list) {
+            return Result::Ignored;
+        }
+        out = ClipboardRequest{};
+        out.kind = ClipboardRequest::Kind::Read;
+        out.primary = primary;
+        out.id = id;
+        out.password = password;
+        out.name = password.empty() ? std::string{} : name;
+        std::string_view types = *list;
+        std::size_t tpos = 0;
+        while (tpos < types.size()) {
+            const auto space = types.find_first_of(" \n", tpos);
+            const std::string_view t = types.substr(tpos, space == std::string_view::npos ? space : space - tpos);
+            if (!t.empty() && out.mimes.size() < 64) {
+                out.mimes.emplace_back(t);
+            }
+            if (space == std::string_view::npos) {
+                break;
+            }
+            tpos = space + 1;
+        }
+        if (out.mimes.empty()) {
+            return Result::Ignored;
+        }
+        return Result::Ready;
+    }
+
+    if (type == "write") {
+        reset();
+        m_writing = true;
+        m_write.kind = ClipboardRequest::Kind::Write;
+        m_write.primary = primary;
+        m_write.id = id;
+        m_write.password = password;
+        m_write.name = password.empty() ? std::string{} : name;
+        if (badValue) {
+            m_failed = true;
+            reply = writeStatus("EINVAL", id);
+            return Result::Error;
+        }
+        return Result::Pending;
+    }
+
+    if (type == "wdata" || type == "walias") {
+        if (!m_writing || m_failed) {
+            return Result::Ignored;
+        }
+        auto fail = [&](std::string_view status) {
+            m_failed = true;
+            reply = writeStatus(status, m_write.id);
+            return Result::Error;
+        };
+        if (badValue) {
+            return fail("EINVAL");
+        }
+        if (type == "walias") {
+            const auto aliases = decodeBase64Strict(data);
+            if (mime.empty() || !aliases) {
+                return fail("EINVAL");
+            }
+            std::string_view list = *aliases;
+            std::size_t apos = 0;
+            while (apos < list.size()) {
+                const auto space = list.find(' ', apos);
+                const std::string_view alias = list.substr(apos, space == std::string_view::npos ? space : space - apos);
+                if (!alias.empty() && m_write.aliases.size() < 64) {
+                    m_write.aliases.emplace_back(alias, mime);
+                }
+                if (space == std::string_view::npos) {
+                    break;
+                }
+                apos = space + 1;
+            }
+            return Result::Pending;
+        }
+        if (mime.empty() && data.empty()) {
+            // The end of the transmission.
+            if (!flush(reply)) {
+                m_failed = true;
+                return Result::Error;
+            }
+            out = std::move(m_write);
+            reset();
+            return Result::Ready;
+        }
+        if (mime.empty()) {
+            return fail("EINVAL");
+        }
+        if (mime != m_mime) {
+            if (!flush(reply)) {
+                m_failed = true;
+                return Result::Error;
+            }
+            m_mime = mime;
+        }
+        m_total += data.size() / 4 * 3;
+        if (m_total > MaxWrite) {
+            return fail("EFBIG");
+        }
+        m_encoded += data;
+        return Result::Pending;
+    }
+    return Result::Ignored;
+}
+
+std::string ClipboardAssembler::readStatus(std::string_view status, const ClipboardRequest& request,
+                                           std::string_view oneTimePassword)
+{
+    std::string r = header("read", status, request.id);
+    if (status == "OK" && request.primary) {
+        r += ":loc=primary";
+    }
+    if (!oneTimePassword.empty()) {
+        r += ":pw=" + encodeBase64(oneTimePassword);
+    }
+    r += "\x1b\\";
+    return r;
+}
+
+std::string ClipboardAssembler::readData(std::string_view mime, std::string_view bytes, const ClipboardRequest& request,
+                                         std::string_view oneTimePassword)
+{
+    std::string out;
+    const std::string prefix = header("read", "DATA", request.id) + ":mime=" + encodeBase64(mime)
+        + (oneTimePassword.empty() ? std::string{} : ":pw=" + encodeBase64(oneTimePassword)) + ';';
+    std::size_t pos = 0;
+    do {
+        const std::string_view chunk = bytes.substr(pos, ReadChunk);
+        out += prefix;
+        out += encodeBase64(chunk);
+        out += "\x1b\\";
+        pos += ReadChunk;
+    } while (pos < bytes.size());
+    return out;
+}
+
+std::string ClipboardAssembler::writeStatus(std::string_view status, std::string_view id)
+{
+    return header("write", status, id) + "\x1b\\";
+}
+
+} // namespace AfterglowVt
