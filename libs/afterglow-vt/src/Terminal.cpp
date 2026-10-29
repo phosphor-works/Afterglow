@@ -3,6 +3,7 @@
 
 #include <AfterglowVt/Input.h>
 #include <AfterglowVt/Terminal.h>
+#include <AfterglowVt/Sixel.h>
 
 #include <algorithm>
 #include <cmath>
@@ -1851,6 +1852,20 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case 's':
             saveDecModes(p);
             return;
+        case 'S': { // XTSMGRAPHICS: Pi (1 colours, 2 sixel geometry) ; Pa (1 read, 2 reset, 3 set, 4 max)
+            char buf[48];
+            int n = 0;
+            if (p.at(0) == 1) {
+                n = std::snprintf(buf, sizeof buf, "\x1b[?1;0;1024S");
+            } else if (p.at(0) == 2) {
+                n = std::snprintf(buf, sizeof buf, "\x1b[?2;0;%d;%dS", std::max(1, cols() * m_cellWidth),
+                                  std::max(1, rows() * m_cellHeight));
+            } else {
+                n = std::snprintf(buf, sizeof buf, "\x1b[?%d;1;0S", int(p.at(0))); // ReGIS: not supported
+            }
+            reply(std::string_view(buf, std::size_t(n)));
+            return;
+        }
         case 'm': { // XTQMODKEYS
             const int resource = p.at(0);
             const int value = resource == 4 ? m_modes.modifyOtherKeys : resource == 0 ? 0 : 2;
@@ -2124,6 +2139,46 @@ void Terminal::reportPresentationState(int which)
         return;
     }
     reply(r);
+}
+
+void Terminal::sixel(const Params& p, std::string_view data)
+{
+    // DCS P1 ; P2 ; P3 q <sixel data> ST. P2 = 1 keeps unpainted pixels clear.
+    SixelPalette fresh;
+    SixelPalette* palette = &fresh;
+    if (m_modes.sixelPrivateColors) {
+        fresh = defaultSixelPalette();
+    } else {
+        if (!m_sixelPaletteReady) {
+            m_sixelPalette = defaultSixelPalette();
+            m_sixelPaletteReady = true;
+        }
+        palette = &m_sixelPalette;
+    }
+    ImageFrame frame;
+    const std::uint32_t background = (std::uint32_t(m_defaultBg.r) << 16) | (std::uint32_t(m_defaultBg.g) << 8) | m_defaultBg.b;
+    if (!decodeSixel(data, p.at(1), background, *palette, frame) || m_cellWidth <= 0 || m_cellHeight <= 0) {
+        return;
+    }
+    Cursor& cur = cursor();
+    GraphicsStore& store = m_graphics[m_modes.altScreen ? 1 : 0];
+    const int cellsWide = int((frame.width + std::uint32_t(m_cellWidth) - 1) / std::uint32_t(m_cellWidth));
+    const int cellsHigh = int((frame.height + std::uint32_t(m_cellHeight) - 1) / std::uint32_t(m_cellHeight));
+    if (m_modes.sixelDisplay) {
+        // DECSDM: at the top left of the page; nothing scrolls, the cursor stays.
+        store.addSixel(std::move(frame), *m_active, 0, 0, m_cellWidth, m_cellHeight);
+        return;
+    }
+    const int col = cur.x;
+    store.addSixel(std::move(frame), *m_active, cur.y, col, m_cellWidth, m_cellHeight);
+    // As foot: down to the last row the image touches (scrolling as needed,
+    // bounded), at its left column or right of it with mode 8452.
+    const int feeds = std::min(cellsHigh - 1, rows() * 2);
+    for (int i = 0; i < feeds; ++i) {
+        index();
+    }
+    cur.pendingWrap = false;
+    cur.x = m_modes.sixelCursorRight ? std::min(col + cellsWide, cols() - 1) : col;
 }
 
 void Terminal::softReset()
@@ -2581,6 +2636,15 @@ void Terminal::setDecMode(int mode, bool on)
             reportVisibility();
         }
         break;
+    case 80:
+        m_modes.sixelDisplay = on;
+        break;
+    case 1070:
+        m_modes.sixelPrivateColors = on;
+        break;
+    case 8452:
+        m_modes.sixelCursorRight = on;
+        break;
     case 2048:
         m_modes.sizeReports = on;
         if (on) {
@@ -2669,7 +2733,6 @@ int Terminal::decModeState(int mode) const
     case 64: // DECPCCM
     case 68: // DECKBUM
     case 73: // DECXRLM
-    case 80: // DECSDM: no sixel
     case 81: // DECKPM
     case 1010: // scroll on output
     case 1011: // scroll on key
@@ -2719,6 +2782,12 @@ int Terminal::decModeState(int mode) const
         return b(m_modes.visibilityReports);
     case 2048:
         return b(m_modes.sizeReports);
+    case 80:
+        return b(m_modes.sixelDisplay);
+    case 1070:
+        return b(m_modes.sixelPrivateColors);
+    case 8452:
+        return b(m_modes.sixelCursorRight);
     case 2027:
         return b(m_modes.graphemeClustering);
     default:
@@ -2803,9 +2872,9 @@ void Terminal::programExited()
 
 void Terminal::reportDeviceAttributes()
 {
-    // VT500 level with what afterglow implements: selective erase (6),
-    // colour (22), rectangular editing (28) and clipboard access (52).
-    reply("\x1b[?65;6;22;28;52c");
+    // VT500 level with what afterglow implements: sixel (4), selective erase
+    // (6), colour (22), rectangular editing (28) and clipboard access (52).
+    reply("\x1b[?65;4;6;22;28;52c");
 }
 
 void Terminal::deviceStatusReport(const Params& p, bool priv)
@@ -3542,6 +3611,10 @@ void appendColor(std::string& out, AfterglowVt::Color c, int base, int extended)
 void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std::uint8_t final, std::string_view data)
 {
     m_lastX = -1;
+    if (inter.marker == 0 && inter.count == 0 && final == 'q') {
+        sixel(params, data);
+        return;
+    }
     if (inter.marker == '=' && inter.count == 0 && final == 's') {
         // The older form of synchronized updates: 1 begins, 2 ends.
         if (params.at(0) == 1 || params.at(0) == 2) {

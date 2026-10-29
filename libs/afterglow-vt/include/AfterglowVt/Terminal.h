@@ -78,6 +78,9 @@ struct Modes
     /// xterm modifyOtherKeys: 0 off, 1 keys without a legacy encoding,
     /// 2 every modified key (except Shift with non-letters).
     std::uint8_t modifyOtherKeys = 0;
+    bool sixelDisplay = false; ///< DECSDM (80): images at the top left, no scrolling
+    bool sixelPrivateColors = true; ///< 1070: each image starts from the default palette
+    bool sixelCursorRight = false; ///< 8452: the cursor ends right of an image
     bool allow132 = false; ///< 40: DECCOLM may switch the width
     bool columns132 = false; ///< DECCOLM
     bool noClearOnColumnChange = false; ///< DECNCSM (95)
@@ -296,6 +299,7 @@ private:
     void forwardIndex();
     void reportDeviceAttributes();
     void softReset();
+    void sixel(const Params& params, std::string_view data);
     void reportPresentationState(int which);
     void changeRectAttributes(const Params& params, bool reverse);
     void reportTheme(bool force);
@@ -410,6 +414,8 @@ private:
     GraphicsStore m_graphics[2];
 
     ProgramStatus m_programStatus;
+    std::array<std::uint32_t, 1024> m_sixelPalette{}; ///< shared registers while mode 1070 is off
+    bool m_sixelPaletteReady = false;
     NotificationAssembler m_notifications;
     ClipboardAssembler m_clipboard;
 

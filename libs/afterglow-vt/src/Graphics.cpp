@@ -596,6 +596,60 @@ void GraphicsStore::place(const Command& cmd, Context& ctx)
     respond(cmd, ctx, "OK", false);
 }
 
+void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight)
+{
+    if (cellWidth <= 0 || cellHeight <= 0) {
+        return;
+    }
+    const int cellsWide = int((frame.width + std::uint32_t(cellWidth) - 1) / std::uint32_t(cellWidth));
+    const int cellsHigh = int((frame.height + std::uint32_t(cellHeight) - 1) / std::uint32_t(cellHeight));
+    const std::uint64_t topRow = screen.rowsDropped() + screen.historySize() + std::uint64_t(std::max(0, row));
+
+    // A new image over an older one replaces it where it covers it whole.
+    std::vector<std::uint32_t> covered;
+    std::erase_if(m_placements, [&](const Placement& p) {
+        if (!isSixelId(p.imageId)) {
+            return false;
+        }
+        const auto it = m_images.find(p.imageId);
+        if (it == m_images.end()) {
+            return false;
+        }
+        const int w = int((it->second.width + std::uint32_t(cellWidth) - 1) / std::uint32_t(cellWidth));
+        const int h = int((it->second.height + std::uint32_t(cellHeight) - 1) / std::uint32_t(cellHeight));
+        const bool inside = p.row >= topRow && p.row + std::uint64_t(h) <= topRow + std::uint64_t(cellsHigh)
+            && p.col >= col && p.col + w <= col + cellsWide;
+        if (inside) {
+            covered.push_back(p.imageId);
+        }
+        return inside;
+    });
+    for (std::uint32_t id : covered) {
+        dropUnusedImage(id);
+    }
+
+    Image img;
+    img.id = m_nextSixelId++;
+    if (m_nextSixelId >= (1u << 31)) {
+        m_nextSixelId = 3u << 29;
+    }
+    img.width = frame.width;
+    img.height = frame.height;
+    img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
+    img.sequence = ++m_sequence;
+    const std::uint32_t id = img.id;
+    m_images[id] = std::move(img);
+
+    Placement pl;
+    pl.imageId = id;
+    pl.placementId = 1;
+    pl.row = topRow;
+    pl.col = col;
+    pl.z = -1; // under text, over cell backgrounds: text written on it stays readable
+    m_placements.push_back(pl);
+    enforceQuota();
+}
+
 void GraphicsStore::remove(const Command& cmd, Context& ctx)
 {
     const Screen& scr = ctx.screen;

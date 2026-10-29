@@ -143,6 +143,10 @@ public:
     void clear();
     void setQuota(std::size_t bytes) { m_quota = bytes; }
 
+    /// Stores a decoded Sixel image placed with its top-left at visible cell
+    /// (@p col, @p row). Earlier sixel images it covers entirely are dropped.
+    void addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight);
+
     const std::map<std::uint32_t, Image>& images() const noexcept { return m_images; }
     const std::vector<Placement>& placements() const noexcept { return m_placements; }
     std::size_t totalBytes() const;
@@ -175,6 +179,8 @@ private:
     Pending m_pending;
     std::uint32_t m_nextAutoId = 1u << 31;
     std::uint32_t m_nextPlacementId = 1u << 31;
+    std::uint32_t m_nextSixelId = 3u << 29; ///< sixel images, apart from kitty's automatic ids
+    static bool isSixelId(std::uint32_t id) { return id >= (3u << 29) && id < (1u << 31); }
     std::uint64_t m_sequence = 0;
     std::size_t m_quota = DefaultQuota;
 };

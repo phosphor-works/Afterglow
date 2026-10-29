@@ -63,7 +63,8 @@ template<typename Handler>
 class Parser
 {
 public:
-    static constexpr std::size_t MaxStringPayload = std::size_t(1) << 22;
+    // Room for full-screen sixel images.
+    static constexpr std::size_t MaxStringPayload = std::size_t(64) << 20;
 
     explicit Parser(Handler& handler)
         : m_handler(handler)
