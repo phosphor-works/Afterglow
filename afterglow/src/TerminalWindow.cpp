@@ -991,6 +991,16 @@ bool TerminalWindow::performAction(Action action)
     case Action::OpenConfig:
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings.path()));
         return true;
+    case Action::UrlsOpen:
+    case Action::UrlsCopy:
+        startUrlMode(action == Action::UrlsCopy);
+        return true;
+    case Action::UnicodeInput:
+        if (m_focused) {
+            m_unicodeInput = QString();
+            showUnicodeInput();
+        }
+        return true;
     default:
         // Bound to a feature this window does not provide: let the key through.
         return false;
@@ -1000,7 +1010,8 @@ bool TerminalWindow::performAction(Action action)
 bool TerminalWindow::chromeVisible() const
 {
     return m_tabs.size() > 1 || m_controller->paletteOpen() || m_controller->searchOpen()
-        || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || !m_controller->paneTitles().isEmpty();
+        || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || !m_controller->paneTitles().isEmpty()
+        || m_urlMode.active || m_unicodeInput.has_value();
 }
 
 void TerminalWindow::updateChrome()
@@ -1368,40 +1379,13 @@ void TerminalWindow::updateLinkHover()
                 found.url = QString::fromStdString(snap.links[c.link - 1]);
             } else {
                 // A plain-text URL on this row.
-                QString text;
-                std::vector<int> columns;
-                for (int x = 0; x < snap.cols; ++x) {
-                    const AfterglowRender::SnapshotCell& rc = snap.at(x, cell.y());
-                    if (rc.width == 0) {
-                        continue;
-                    }
-                    const char32_t cp = rc.cp ? rc.cp : U' ';
-                    text += QString::fromUcs4(&cp, 1);
-                    while (columns.size() < std::size_t(text.size())) {
-                        columns.push_back(x);
-                    }
-                }
-                static const QRegularExpression url(
-                    QStringLiteral(R"((?:https?|ftp|file)://[^\s<>"'`]+|mailto:[^\s<>"'`]+|www\.[^\s<>"'`]+\.[^\s<>"'`]+)"));
-                for (auto it = url.globalMatch(text); it.hasNext();) {
-                    const QRegularExpressionMatch m = it.next();
-                    QString candidate = m.captured();
-                    // Trailing punctuation usually belongs to the sentence, not the URL.
-                    while (!candidate.isEmpty() && QStringLiteral(".,;:!?'\")]}").contains(candidate.back())) {
-                        if (candidate.back() == QLatin1Char(')') && candidate.count(QLatin1Char('(')) >= candidate.count(QLatin1Char(')'))) {
-                            break;
-                        }
-                        candidate.chop(1);
-                    }
-                    const int first = columns[std::size_t(m.capturedStart())];
-                    const int last = columns[std::size_t(m.capturedStart() + candidate.size() - 1)];
-                    if (cell.x() >= first && cell.x() <= last) {
+                for (const UrlSpan& span : findUrls(snap, cell.y())) {
+                    if (span.link == 0 && cell.x() >= span.colStart && cell.x() <= span.colEnd) {
                         found.pane = pane;
                         found.row = cell.y();
-                        found.colStart = first;
-                        found.colEnd = last;
-                        found.url = candidate.startsWith(QLatin1String("www.")) ? QStringLiteral("https://") + candidate
-                                                                                : candidate;
+                        found.colStart = span.colStart;
+                        found.colEnd = span.colEnd;
+                        found.url = span.url;
                         break;
                     }
                 }
@@ -1414,6 +1398,230 @@ void TerminalWindow::updateLinkHover()
     if (changed) {
         applyPointerShape();
         scheduleRender();
+    }
+}
+
+std::vector<TerminalWindow::UrlSpan> TerminalWindow::findUrls(const AfterglowRender::PaneSnapshot& snap, int row)
+{
+    std::vector<UrlSpan> spans;
+    // OSC 8 hyperlinks: runs of cells with the same link.
+    for (int x = 0; x < snap.cols;) {
+        const std::uint32_t link = snap.at(x, row).link;
+        if (link == 0 || link > snap.links.size()) {
+            ++x;
+            continue;
+        }
+        int end = x;
+        while (end + 1 < snap.cols && snap.at(end + 1, row).link == link) {
+            ++end;
+        }
+        spans.push_back({x, end, link, QString::fromStdString(snap.links[link - 1])});
+        x = end + 1;
+    }
+    // URLs in the text.
+    QString text;
+    std::vector<int> columns;
+    for (int x = 0; x < snap.cols; ++x) {
+        const AfterglowRender::SnapshotCell& rc = snap.at(x, row);
+        if (rc.width == 0) {
+            continue;
+        }
+        const char32_t cp = rc.cp ? rc.cp : U' ';
+        text += QString::fromUcs4(&cp, 1);
+        while (columns.size() < std::size_t(text.size())) {
+            columns.push_back(x);
+        }
+    }
+    static const QRegularExpression url(
+        QStringLiteral(R"((?:https?|ftp|file)://[^\s<>"'`]+|mailto:[^\s<>"'`]+|www\.[^\s<>"'`]+\.[^\s<>"'`]+)"));
+    for (auto it = url.globalMatch(text); it.hasNext();) {
+        const QRegularExpressionMatch m = it.next();
+        QString candidate = m.captured();
+        // Trailing punctuation usually belongs to the sentence, not the URL.
+        while (!candidate.isEmpty() && QStringLiteral(".,;:!?'\")]}").contains(candidate.back())) {
+            if (candidate.back() == QLatin1Char(')') && candidate.count(QLatin1Char('(')) >= candidate.count(QLatin1Char(')'))) {
+                break;
+            }
+            candidate.chop(1);
+        }
+        if (candidate.isEmpty()) {
+            continue;
+        }
+        const int first = columns[std::size_t(m.capturedStart())];
+        const int last = columns[std::size_t(m.capturedStart() + candidate.size() - 1)];
+        const bool insideLink = std::any_of(spans.begin(), spans.end(), [&](const UrlSpan& s) {
+            return s.link != 0 && first <= s.colEnd && last >= s.colStart;
+        });
+        if (!insideLink) {
+            spans.push_back({first, last, 0,
+                             candidate.startsWith(QLatin1String("www.")) ? QStringLiteral("https://") + candidate : candidate});
+        }
+    }
+    return spans;
+}
+
+void TerminalWindow::startUrlMode(bool copy)
+{
+    if (!m_focused) {
+        return;
+    }
+    const AfterglowRender::PaneSnapshot& snap = m_focused->snapshot();
+    std::vector<UrlHint> hints;
+    for (int y = 0; y < snap.rows; ++y) {
+        for (const UrlSpan& s : findUrls(snap, y)) {
+            hints.push_back({QString(), s.url, y, s.colStart});
+        }
+    }
+    if (hints.empty()) {
+        return;
+    }
+    // Labels from the home row first, all the same length so none is a
+    // prefix of another.
+    static const QString Alphabet = QStringLiteral("asdfjklghqweruiopzxcvbnmty");
+    const int k = int(Alphabet.size());
+    int length = 1;
+    for (long long capacity = k; capacity < (long long)hints.size(); capacity *= k) {
+        ++length;
+    }
+    for (std::size_t i = 0; i < hints.size(); ++i) {
+        QString label;
+        std::size_t n = i;
+        for (int d = 0; d < length; ++d) {
+            label.prepend(Alphabet[int(n % std::size_t(k))]);
+            n /= std::size_t(k);
+        }
+        hints[i].label = label;
+    }
+    m_urlMode = UrlMode{true, copy, m_focused, std::move(hints), QString()};
+    showUrlHints();
+}
+
+void TerminalWindow::stopUrlMode()
+{
+    m_urlMode = UrlMode{};
+    m_controller->setUrlHints({});
+    scheduleRender();
+}
+
+void TerminalWindow::showUrlHints()
+{
+    if (!m_urlMode.pane || !m_splits || tabOf(m_urlMode.pane) != m_currentTab) {
+        stopUrlMode();
+        return;
+    }
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QPoint origin = contentRect(m_splits->rectOf(m_urlMode.pane)).topLeft();
+    const qreal dpr = devicePixelRatio();
+    QVariantList list;
+    for (const UrlHint& h : m_urlMode.hints) {
+        if (!h.label.startsWith(m_urlMode.typed)) {
+            continue;
+        }
+        list.append(QVariantMap{{QStringLiteral("x"), (origin.x() + h.col * m.cellWidth) / dpr},
+                                {QStringLiteral("y"), (origin.y() + h.row * m.cellHeight) / dpr},
+                                {QStringLiteral("label"), h.label},
+                                {QStringLiteral("typed"), int(m_urlMode.typed.size())}});
+    }
+    m_controller->setUrlHints(list);
+    scheduleRender();
+}
+
+void TerminalWindow::urlModeKey(QKeyEvent* e)
+{
+    if (e->key() == Qt::Key_Escape) {
+        stopUrlMode();
+        return;
+    }
+    if (e->key() == Qt::Key_Backspace) {
+        m_urlMode.typed.chop(1);
+        showUrlHints();
+        return;
+    }
+    const QString text = e->text().toLower();
+    if (text.size() != 1 || !text[0].isLetter()) {
+        return;
+    }
+    const QString typed = m_urlMode.typed + text;
+    const UrlHint* exact = nullptr;
+    bool any = false;
+    for (const UrlHint& h : m_urlMode.hints) {
+        if (h.label.startsWith(typed)) {
+            any = true;
+            if (h.label == typed) {
+                exact = &h;
+            }
+        }
+    }
+    if (!any) {
+        return; // a key no label continues with
+    }
+    if (exact) {
+        const QString url = exact->url;
+        const bool copy = m_urlMode.copy;
+        stopUrlMode();
+        if (copy) {
+            QGuiApplication::clipboard()->setText(url);
+        } else {
+            QDesktopServices::openUrl(QUrl(url));
+        }
+        return;
+    }
+    m_urlMode.typed = typed;
+    showUrlHints();
+}
+
+void TerminalWindow::showUnicodeInput()
+{
+    if (!m_unicodeInput) {
+        m_controller->setUnicodeInput({});
+        scheduleRender();
+        return;
+    }
+    bool ok = false;
+    const uint cp = m_unicodeInput->toUInt(&ok, 16);
+    const bool valid = ok && cp > 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
+    const char32_t c = char32_t(cp);
+    const QRectF cursor = inputMethodCursorRect();
+    m_controller->setUnicodeInput({{QStringLiteral("active"), true},
+                                   {QStringLiteral("text"), m_unicodeInput->toUpper()},
+                                   {QStringLiteral("preview"), valid ? QString::fromUcs4(&c, 1) : QString()},
+                                   {QStringLiteral("x"), cursor.x()},
+                                   {QStringLiteral("y"), cursor.bottom()}});
+    scheduleRender();
+}
+
+void TerminalWindow::unicodeInputKey(QKeyEvent* e)
+{
+    switch (e->key()) {
+    case Qt::Key_Escape:
+        m_unicodeInput.reset();
+        showUnicodeInput();
+        return;
+    case Qt::Key_Backspace:
+        m_unicodeInput->chop(1);
+        showUnicodeInput();
+        return;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+    case Qt::Key_Space: {
+        bool ok = false;
+        const uint cp = m_unicodeInput->toUInt(&ok, 16);
+        m_unicodeInput.reset();
+        showUnicodeInput();
+        if (ok && cp > 0 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF) && m_focused) {
+            const char32_t c = char32_t(cp);
+            m_focused->sendInput(QString::fromUcs4(&c, 1).toStdString());
+        }
+        return;
+    }
+    default:
+        break;
+    }
+    const QString text = e->text();
+    if (text.size() == 1 && text[0].isLetterOrNumber() && QStringLiteral("0123456789abcdefABCDEF").contains(text[0])
+        && m_unicodeInput->size() < 6) {
+        *m_unicodeInput += text.toLower();
+        showUnicodeInput();
     }
 }
 
@@ -1525,6 +1733,14 @@ void TerminalWindow::toggleQuick()
 
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
+    if (m_urlMode.active) {
+        urlModeKey(e);
+        return;
+    }
+    if (m_unicodeInput) {
+        unicodeInputKey(e);
+        return;
+    }
     if (e->key() == Qt::Key_Control) {
         updateLinkHover();
     }
@@ -1546,6 +1762,9 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
 
 void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
 {
+    if (m_urlMode.active || m_unicodeInput) {
+        return; // the mode took the press
+    }
     if (e->key() == Qt::Key_Control) {
         // queryKeyboardModifiers() still reports Ctrl during its own release.
         m_hover = {};

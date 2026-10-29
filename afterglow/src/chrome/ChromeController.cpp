@@ -16,6 +16,24 @@ void ChromeController::setTabs(const QStringList& titles, int current, int barHe
     Q_EMIT tabsChanged();
 }
 
+void ChromeController::setUrlHints(const QVariantList& hints)
+{
+    if (hints == m_urlHints) {
+        return;
+    }
+    m_urlHints = hints;
+    Q_EMIT urlHintsChanged();
+}
+
+void ChromeController::setUnicodeInput(const QVariantMap& state)
+{
+    if (state == m_unicodeInput) {
+        return;
+    }
+    m_unicodeInput = state;
+    Q_EMIT unicodeInputChanged();
+}
+
 void ChromeController::setTabStatus(const QVariantList& status)
 {
     if (status == m_tabStatus) {

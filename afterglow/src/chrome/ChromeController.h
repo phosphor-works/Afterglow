@@ -17,6 +17,8 @@ class ChromeController : public QObject
     Q_OBJECT
     Q_PROPERTY(QStringList tabTitles READ tabTitles NOTIFY tabsChanged)
     Q_PROPERTY(QVariantList tabStatus READ tabStatus NOTIFY tabStatusChanged)
+    Q_PROPERTY(QVariantList urlHints READ urlHints NOTIFY urlHintsChanged)
+    Q_PROPERTY(QVariantMap unicodeInput READ unicodeInput NOTIFY unicodeInputChanged)
     Q_PROPERTY(QColor goodColor READ goodColor NOTIFY themeChanged)
     Q_PROPERTY(QColor warnColor READ warnColor NOTIFY themeChanged)
     Q_PROPERTY(QColor badColor READ badColor NOTIFY themeChanged)
@@ -47,6 +49,12 @@ public:
     /// Per tab: { state, progress, text } of its most pressing program status,
     /// or an empty map.
     QVariantList tabStatus() const { return m_tabStatus; }
+    /// URL mode: [{ x, y (logical pixels), label, typed (characters matched) }].
+    QVariantList urlHints() const { return m_urlHints; }
+    void setUrlHints(const QVariantList& hints);
+    /// Unicode input: { active, text (hex typed), preview, x, y }.
+    QVariantMap unicodeInput() const { return m_unicodeInput; }
+    void setUnicodeInput(const QVariantMap& state);
     void setTabStatus(const QVariantList& status);
 
     QColor background() const { return m_background; }
@@ -101,6 +109,8 @@ public:
 Q_SIGNALS:
     void tabsChanged();
     void tabStatusChanged();
+    void urlHintsChanged();
+    void unicodeInputChanged();
     void clipboardPromptChanged();
     void clipboardAnswered(int answer);
     void themeChanged();
@@ -121,6 +131,8 @@ Q_SIGNALS:
 private:
     QStringList m_tabTitles;
     QVariantList m_tabStatus;
+    QVariantList m_urlHints;
+    QVariantMap m_unicodeInput;
     bool m_clipboardPromptOpen = false;
     QString m_clipboardPromptText;
     QString m_clipboardPromptName;

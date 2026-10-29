@@ -41,6 +41,9 @@ enum class Action {
     CommandPalette,
     ReloadConfig,
     OpenConfig,
+    UrlsOpen,
+    UrlsCopy,
+    UnicodeInput,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

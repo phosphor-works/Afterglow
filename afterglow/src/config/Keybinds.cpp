@@ -49,6 +49,9 @@ const ActionInfo Actions[] = {
     {Action::CommandPalette, "command_palette", "Command Palette", {"Ctrl+Shift+P"}},
     {Action::ReloadConfig, "reload_config", "Reload Config", {"Ctrl+Shift+R"}},
     {Action::OpenConfig, "open_config", "Open Config File", {"Ctrl+Shift+,"}},
+    {Action::UrlsOpen, "show_urls_open", "Open a URL on Screen", {"Ctrl+Shift+G"}},
+    {Action::UrlsCopy, "show_urls_copy", "Copy a URL on Screen", {"Ctrl+Shift+Y"}},
+    {Action::UnicodeInput, "unicode_input", "Insert Unicode Character", {"Ctrl+Shift+U"}},
 };
 
 constexpr Qt::KeyboardModifiers RelevantMods =

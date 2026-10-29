@@ -225,6 +225,42 @@ private:
 
     // Links under the pointer (Ctrl held).
     QPointF m_pointer;
+    /// A link on one row: an OSC 8 hyperlink run or a URL in the text.
+    struct UrlSpan
+    {
+        int colStart = 0;
+        int colEnd = -1; ///< inclusive
+        std::uint32_t link = 0; ///< snapshot link index, 0 for detected text
+        QString url;
+    };
+    static std::vector<UrlSpan> findUrls(const AfterglowRender::PaneSnapshot& snap, int row);
+
+    // URL mode: every link on screen gets a label to type.
+    struct UrlHint
+    {
+        QString label;
+        QString url;
+        int row = 0;
+        int col = 0;
+    };
+    struct UrlMode
+    {
+        bool active = false;
+        bool copy = false;
+        QPointer<Pane> pane;
+        std::vector<UrlHint> hints;
+        QString typed;
+    } m_urlMode;
+    void startUrlMode(bool copy);
+    void stopUrlMode();
+    void showUrlHints();
+    void urlModeKey(QKeyEvent* e);
+
+    // Unicode input: a codepoint typed in hex.
+    std::optional<QString> m_unicodeInput;
+    void showUnicodeInput();
+    void unicodeInputKey(QKeyEvent* e);
+
     struct LinkHover
     {
         QPointer<Pane> pane;

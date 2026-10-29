@@ -79,6 +79,61 @@ Item {
         visible: root.controller.searchOpen
     }
 
+    // URL mode: a label to type over each link.
+    Repeater {
+        model: root.controller.urlHints
+        delegate: Rectangle {
+            required property var modelData
+            x: modelData.x
+            y: modelData.y
+            z: 50
+            width: hintText.implicitWidth + 8
+            height: hintText.implicitHeight + 2
+            radius: 3
+            color: root.controller.warnColor
+            Text {
+                id: hintText
+                anchors.centerIn: parent
+                textFormat: Text.StyledText
+                // Typed letters dimmed, the rest bold.
+                text: "<span style='color:#80000000'>" + parent.modelData.label.substring(0, parent.modelData.typed)
+                      + "</span><b>" + parent.modelData.label.substring(parent.modelData.typed) + "</b>"
+                color: "#000000"
+                font.family: "monospace"
+                font.pixelSize: 12
+            }
+        }
+    }
+
+    // Unicode input: the code being typed and what it makes.
+    Rectangle {
+        visible: root.controller.unicodeInput.active === true
+        z: 60
+        x: root.controller.unicodeInput.x || 0
+        y: (root.controller.unicodeInput.y || 0) + 4
+        width: unicodeRow.implicitWidth + 16
+        height: unicodeRow.implicitHeight + 10
+        radius: 6
+        color: Qt.lighter(root.controller.background, 1.2)
+        border.color: root.controller.accent
+        Row {
+            id: unicodeRow
+            anchors.centerIn: parent
+            spacing: 10
+            Text {
+                text: "U+" + (root.controller.unicodeInput.text || "")
+                color: root.controller.foreground
+                font.family: "monospace"
+                font.pixelSize: 14
+            }
+            Text {
+                text: root.controller.unicodeInput.preview || "\u2026"
+                color: root.controller.foreground
+                font.pixelSize: 18
+            }
+        }
+    }
+
     ClipboardPrompt {
         controller: root.controller
         anchors.fill: root
