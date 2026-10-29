@@ -285,3 +285,76 @@ TEST(Conformance, PresentationStateReports)
     t.feed("\x1b[\"v\x1b[&u");
     EXPECT_EQ(t.take(), "\x1b[5;20;1;1;1\"w\x1bP1!uA\x1b\\");
 }
+
+TEST(Conformance, SelectionColours)
+{
+    Term t(10, 2);
+    t.feed("\x1b]17;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]17;rgb:d8d8/d8d8/d8d8\x07"); // unset: the inverse of the defaults
+    t.feed("\x1b]17;#204060\x07\x1b]19;rgb:ff/ff/00\x07");
+    ASSERT_NE(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(t.t.selectionBackground()->g, 0x40);
+    t.feed("\x1b]21;selection_foreground=?\x07");
+    EXPECT_EQ(t.take(), "\x1b]21;selection_foreground=rgb:ff/ff/00\x07");
+    t.feed("\x1b]117\x07\x1b]119\x07");
+    EXPECT_EQ(t.t.selectionBackground(), nullptr);
+    EXPECT_EQ(t.t.selectionForeground(), nullptr);
+}
+
+TEST(Conformance, RectangleAttributes)
+{
+    Term t(10, 3);
+    t.feed("abcdefghij\r\nabcdefghij\r\nabcdefghij");
+    auto styleAt = [&](int x, int y) { return t.t.screen().styles().get(t.t.screen().row(y).at(x).styleId()); };
+    t.feed("\x1b[2*x\x1b[1;2;2;3;1;4$r"); // rectangle: bold and underline on rows 1-2, columns 2-3
+    EXPECT_TRUE(styleAt(1, 0).has(Attr::Bold));
+    EXPECT_EQ(styleAt(2, 1).underline, UnderlineStyle::Single);
+    EXPECT_FALSE(styleAt(3, 0).has(Attr::Bold));
+    EXPECT_FALSE(styleAt(1, 2).has(Attr::Bold));
+    t.feed("\x1b[1;2;2;3;1$t"); // DECRARA toggles bold back off
+    EXPECT_FALSE(styleAt(1, 0).has(Attr::Bold));
+    t.feed("\x1b[0*x\x1b[1;9;2;2;7$r"); // stream: from (1,9) to (2,2) wraps across the line end
+    EXPECT_TRUE(styleAt(9, 0).has(Attr::Inverse));
+    EXPECT_TRUE(styleAt(0, 1).has(Attr::Inverse));
+    EXPECT_FALSE(styleAt(2, 1).has(Attr::Inverse));
+}
+
+TEST(Conformance, ThemeVisibilityAndSizeReports)
+{
+    Term t(10, 3);
+    t.feed("\x1b[?996n");
+    EXPECT_EQ(t.take(), "\x1b[?997;1n"); // the default background is dark
+    t.feed("\x1b[?2031h");
+    EXPECT_EQ(t.take(), "");
+    t.feed("\x1b]11;#f0f0f0\x07"); // light now: reported
+    EXPECT_EQ(t.take(), "\x1b[?997;2n");
+    t.feed("\x1b]11;#ffffff\x07"); // still light: nothing
+    EXPECT_EQ(t.take(), "");
+
+    t.feed("\x1b[?2033h");
+    EXPECT_EQ(t.take(), "\x1b[?999;1n");
+    t.t.setVisible(false);
+    EXPECT_EQ(t.take(), "\x1b[?999;2n");
+
+    t.feed("\x1b[?2048h");
+    EXPECT_EQ(t.take(), "\x1b[48;3;10;60;100t");
+    t.t.resize(12, 4, 10, 20);
+    EXPECT_EQ(t.take(), "\x1b[48;4;12;80;120t");
+}
+
+TEST(Conformance, LegacySynchronizedUpdatesAndFlash)
+{
+    struct FlashHost : RecordingHost
+    {
+        int flashes = 0;
+        void flash() override { ++flashes; }
+    };
+    FlashHost host;
+    Terminal t(10, 2, host);
+    t.feed("\x1bP=1s\x1b\\");
+    EXPECT_TRUE(t.modes().synchronizedOutput);
+    t.feed("\x1bP=2s\x1b\\");
+    EXPECT_FALSE(t.modes().synchronizedOutput);
+    t.feed("\x1b]555\x1b\\");
+    EXPECT_EQ(host.flashes, 1);
+}

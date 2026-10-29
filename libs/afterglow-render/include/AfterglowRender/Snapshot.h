@@ -76,6 +76,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     int cursorY = 0;
     AfterglowVt::CursorShape cursorShape = AfterglowVt::CursorShape::Block;
     bool cursorBlink = false;
+    /// Some visible text has SGR 5: the window runs a blink timer.
+    bool hasBlinkingText = false;
     std::uint32_t cursorColor = 0;
 
     std::uint64_t generation = 0;

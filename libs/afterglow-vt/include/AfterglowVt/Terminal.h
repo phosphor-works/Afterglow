@@ -72,6 +72,9 @@ struct Modes
     bool moreFix = false; ///< 41: a tab in the pending-wrap position wraps first
     bool vt52 = false; ///< DECANM reset: VT52 compatibility mode
     bool pasteEvents = false; ///< 5522: pastes arrive as OSC 5522 MIME lists
+    bool themeReports = false; ///< 2031: report dark/light changes
+    bool visibilityReports = false; ///< 2033: report visibility changes
+    bool sizeReports = false; ///< 2048: report resizes in band
     bool allow132 = false; ///< 40: DECCOLM may switch the width
     bool columns132 = false; ///< DECCOLM
     bool noClearOnColumnChange = false; ///< DECNCSM (95)
@@ -106,6 +109,8 @@ public:
     /// Program status records (OSC 7501, or legacy OSC 9;4) changed; read
     /// them through Terminal::programStatus().
     virtual void programStatusChanged() { }
+    /// OSC 555: flash the whole terminal.
+    virtual void flash() { }
     /// A kitty desktop notification (OSC 99) to show, close or poll.
     virtual void desktopNotification(const NotificationRequest& request) { }
     /// What the host's OSC 99 support covers, as the query reply's key=value
@@ -209,6 +214,11 @@ public:
     const ProgramStatus& programStatus() const noexcept { return m_programStatus; }
     /// The program attached to the terminal exited: in-flight status ends.
     void programExited();
+    /// Whether the user can see the terminal (mode 2033 reports changes).
+    void setVisible(bool visible);
+    /// Selection colours set by OSC 17/19; unset ones invert the cell.
+    const Rgb* selectionForeground() const noexcept { return m_hasSelectionFg ? &m_selectionFg : nullptr; }
+    const Rgb* selectionBackground() const noexcept { return m_hasSelectionBg ? &m_selectionBg : nullptr; }
     /// Advances image animations. Returns the next time (steady clock, ms) a
     /// frame is due, or 0 when nothing is animating.
     std::uint64_t advanceAnimations(std::uint64_t nowMs);
@@ -256,7 +266,9 @@ private:
     void eraseWholeRow(Row& row, std::uint32_t fill, bool selective);
     bool spares(bool selective) const noexcept;
     void setProtection(bool on, bool iso);
-    bool rectFromParams(const Params& params, int first, int& top, int& left, int& bottom, int& right) const;
+    /// @p stream: a stream extent (DECSACE), whose start column may lie right of its end.
+    bool rectFromParams(const Params& params, int first, int& top, int& left, int& bottom, int& right,
+                        bool stream = false) const;
     void fillRect(const Params& params);
     void eraseRect(const Params& params, bool selective);
     void copyRect(const Params& params);
@@ -282,6 +294,11 @@ private:
     void reportDeviceAttributes();
     void softReset();
     void reportPresentationState(int which);
+    void changeRectAttributes(const Params& params, bool reverse);
+    void reportTheme(bool force);
+    void reportVisibility();
+    void reportSize();
+    bool backgroundIsDark() const noexcept;
     void textSizing(std::string_view args);
     void placeMulticell(char32_t cp, std::u32string_view extra, const MulticellParams& params);
     void setLineSize(LineSize size);
@@ -344,6 +361,12 @@ private:
     Rgb m_defaultFg;
     Rgb m_defaultBg;
     Rgb m_cursorColor;
+    Rgb m_selectionFg;
+    Rgb m_selectionBg;
+    bool m_hasSelectionFg = false;
+    bool m_hasSelectionBg = false;
+    bool m_visible = true;
+    int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;
 
     /// XTPUSHCOLORS / kitty's OSC 30001: saved palettes and dynamic colours.

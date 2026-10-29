@@ -215,6 +215,10 @@ private:
     std::unordered_map<const Pane*, QRectF> m_growFrom;
 
     QTimer m_blinkTimer;
+    QTimer m_textBlinkTimer; ///< SGR 5 blinking, running only while some shows
+    bool m_textBlinkOn = true;
+    /// Tells each pane whether it can be seen (mode 2033 reports).
+    void updatePaneVisibility();
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;
     Qt::MouseButtons m_reportedButtons;

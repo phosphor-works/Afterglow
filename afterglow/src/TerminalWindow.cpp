@@ -170,6 +170,12 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
 
+    m_textBlinkTimer.setInterval(500);
+    connect(&m_textBlinkTimer, &QTimer::timeout, this, [this] {
+        m_textBlinkOn = !m_textBlinkOn;
+        scheduleRender();
+    });
+    connect(this, &QWindow::windowStateChanged, this, [this] { updatePaneVisibility(); });
     m_blinkTimer.setInterval(BlinkIntervalMs);
     connect(&m_blinkTimer, &QTimer::timeout, this, [this] {
         m_blinkOn = !m_blinkOn;
@@ -209,6 +215,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         m_clipboardGrants.erase(pane);
         if (m_statusViews.erase(pane) > 0) {
             publishLauncherStatus();
+        }
+    });
+    connect(pane, &Pane::flashRequested, this, [this, guard = QPointer<Pane>(pane)] {
+        if (guard) {
+            motion(guard).bell.start(1.0, 0.0, springSpec<qreal>(m_clock.get(), 14.0));
+            scheduleRender();
         }
     });
     connect(pane, &Pane::statusChanged, this, [this, guard = QPointer<Pane>(pane)] {
@@ -397,6 +409,7 @@ void TerminalWindow::switchTab(int index)
     m_currentTab = index;
     Tab& tab = *m_tabs[std::size_t(index)];
     m_splits = tab.splits.get();
+    QTimer::singleShot(0, this, &TerminalWindow::updatePaneVisibility);
     m_selectionPane = nullptr;
     setFocusedPane(tab.focused);
     m_layoutSize = QSize();
@@ -525,12 +538,15 @@ void TerminalWindow::renderNow()
     const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
     const std::uint32_t dim = packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255)));
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
+    bool anyBlinkingText = false;
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.cursorBlinkOn = m_blinkOn;
+        wp.params.textBlinkOn = m_textBlinkOn;
+        anyBlinkingText |= p->snapshot().hasBlinkingText;
         wp.params.backgroundAlpha = backgroundAlpha;
         if (m_hover.pane == p) {
             wp.params.hoveredLink = m_hover.link;
@@ -585,6 +601,12 @@ void TerminalWindow::renderNow()
         chrome = m_chrome->texture();
     }
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
+    if (anyBlinkingText && !m_textBlinkTimer.isActive()) {
+        m_textBlinkTimer.start();
+    } else if (!anyBlinkingText && m_textBlinkTimer.isActive()) {
+        m_textBlinkTimer.stop();
+        m_textBlinkOn = true;
+    }
     if (const QRectF imeRect = inputMethodCursorRect(); imeRect != m_reportedImeRect && isActive()) {
         m_reportedImeRect = imeRect;
         QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
@@ -809,6 +831,18 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
     }
     if (isExposed()) {
         renderNow();
+    }
+    updatePaneVisibility();
+}
+
+void TerminalWindow::updatePaneVisibility()
+{
+    const bool shown = isExposed() && windowState() != Qt::WindowMinimized;
+    for (std::size_t i = 0; i < m_tabs.size(); ++i) {
+        const bool visible = shown && int(i) == m_currentTab;
+        m_tabs[i]->splits->forEachPane([visible](Pane* p, const QRect&) {
+            p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+        });
     }
 }
 

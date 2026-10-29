@@ -116,6 +116,8 @@ Q_SIGNALS:
     void pointerShapeRequested(const QString& shape);
     /// Program status records changed; read them with status().
     void statusChanged();
+    /// OSC 555: flash the pane.
+    void flashRequested();
     /// An OSC 99 desktop notification request (queued to the GUI thread).
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
     /// An OSC 5522 clipboard read or write (queued to the GUI thread).
@@ -131,6 +133,7 @@ private:
     void notify(std::string_view title, std::string_view body) override;
     void pointerShapeChanged(std::string_view shape) override;
     void programStatusChanged() override;
+    void flash() override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;
     std::string notificationCapabilities() override;
     bool clipboardRequest(const AfterglowVt::ClipboardRequest& request) override;

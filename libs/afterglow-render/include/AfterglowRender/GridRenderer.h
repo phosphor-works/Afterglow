@@ -83,6 +83,8 @@ public:
         QPoint contentOrigin; ///< top-left of cell (0, 0)
         bool focused = false;
         bool cursorBlinkOn = true;
+        /// The visible phase of blinking text (SGR 5).
+        bool textBlinkOn = true;
         /// Where the cursor is drawn, in pixels from cell (0, 0), while it
         /// glides between cells. Unset draws it at its cell.
         std::optional<QPointF> cursorPosition;
@@ -299,6 +301,7 @@ private:
         QPoint origin;
         bool focused = false;
         bool blinkOn = false;
+        bool textBlinkOn = true;
         std::optional<QPointF> cursorPosition;
         float scrollShift = 0;
         std::uint8_t backgroundAlpha = 0;

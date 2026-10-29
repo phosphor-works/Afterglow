@@ -499,6 +499,11 @@ std::string Pane::notificationCapabilities()
     return NotificationCenter::capabilities();
 }
 
+void Pane::flash()
+{
+    Q_EMIT flashRequested();
+}
+
 void Pane::programStatusChanged()
 {
     Q_EMIT statusChanged(); // queued to the GUI thread, which reads status()

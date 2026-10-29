@@ -22,6 +22,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     const int captureRows = rows + extraRows;
     cells.resize(std::size_t(cols) * std::size_t(captureRows));
     lineSizes.assign(std::size_t(captureRows), AfterglowVt::LineSize::Single);
+    hasBlinkingText = false;
     graphemes.clear();
     links.clear();
     std::unordered_map<std::uint32_t, std::uint32_t> linkIndex; // style table link -> snapshot index
@@ -92,9 +93,16 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
                 }
             }
             if (hasSelection && range.contains(rowId, x)) {
-                std::swap(fg, bg);
+                // OSC 17/19 colours when set; otherwise the cell inverted.
+                const Rgb* selFg = t.selectionForeground();
+                const Rgb* selBg = t.selectionBackground();
+                const Rgb invFg = bg;
+                const Rgb invBg = fg;
+                fg = selFg ? *selFg : invFg;
+                bg = selBg ? *selBg : invBg;
                 bgDefault = false;
             }
+            hasBlinkingText |= st.has(Attr::Blink) && !c.isEmpty();
             std::uint8_t fgAlpha = 255;
             if (st.has(Attr::Faint)) {
                 fgAlpha = 128;

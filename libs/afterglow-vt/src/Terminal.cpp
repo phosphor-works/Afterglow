@@ -181,6 +181,119 @@ void Terminal::feed(std::string_view bytes)
     }
     m_parser.feed(bytes);
     touch();
+    if (m_modes.themeReports) {
+        reportTheme(false); // OSC 11 and friends may have changed the background
+    }
+}
+
+bool Terminal::backgroundIsDark() const noexcept
+{
+    const double luma = 0.2126 * m_defaultBg.r + 0.7152 * m_defaultBg.g + 0.0722 * m_defaultBg.b;
+    return luma < 128.0;
+}
+
+void Terminal::reportTheme(bool force)
+{
+    // CSI ? 997 ; 1 (dark) | 2 (light) n, judged by the default background.
+    const int dark = backgroundIsDark() ? 1 : 0;
+    if (!force && dark == m_reportedDark) {
+        return;
+    }
+    m_reportedDark = dark;
+    reply(dark ? "\x1b[?997;1n" : "\x1b[?997;2n");
+}
+
+void Terminal::reportVisibility()
+{
+    reply(m_visible ? "\x1b[?999;1n" : "\x1b[?999;2n");
+}
+
+void Terminal::setVisible(bool visible)
+{
+    if (visible == m_visible) {
+        return;
+    }
+    m_visible = visible;
+    if (m_modes.visibilityReports) {
+        reportVisibility();
+    }
+}
+
+void Terminal::reportSize()
+{
+    char buf[64];
+    const int n = std::snprintf(buf, sizeof buf, "\x1b[48;%d;%d;%d;%dt", rows(), cols(), rows() * m_cellHeight,
+                                cols() * m_cellWidth);
+    reply(std::string_view(buf, std::size_t(n)));
+}
+
+void Terminal::changeRectAttributes(const Params& p, bool reverse)
+{
+    // DECCARA (set) / DECRARA (toggle): Pt;Pl;Pb;Pr;Ps... over a rectangle,
+    // or with DECSACE in stream mode, the text from (Pt,Pl) to (Pb,Pr).
+    int top, left, bottom, right;
+    if (!rectFromParams(p, 0, top, left, bottom, right, m_attributeChangeExtent != 2)) {
+        return;
+    }
+    std::uint16_t setAttrs = 0;
+    std::uint16_t clearAttrs = 0;
+    bool setUnderline = false;
+    bool clearUnderline = false;
+    for (int i = 4; i < std::max(p.count, 5); ++i) {
+        switch (p.at(i)) {
+        case 0:
+            if (reverse) {
+                setAttrs |= Attr::Bold | Attr::Blink | Attr::Inverse;
+                setUnderline = true;
+            } else {
+                clearAttrs |= Attr::Bold | Attr::Blink | Attr::Inverse;
+                clearUnderline = true;
+            }
+            break;
+        case 1: setAttrs |= Attr::Bold; break;
+        case 4: setUnderline = true; break;
+        case 5: setAttrs |= Attr::Blink; break;
+        case 7: setAttrs |= Attr::Inverse; break;
+        case 22: if (!reverse) clearAttrs |= Attr::Bold; break;
+        case 24: if (!reverse) clearUnderline = true; break;
+        case 25: if (!reverse) clearAttrs |= Attr::Blink; break;
+        case 27: if (!reverse) clearAttrs |= Attr::Inverse; break;
+        default: break;
+        }
+    }
+    StyleTable& styles = m_active->styles();
+    auto apply = [&](int y, int x) {
+        Cell& c = m_active->row(y).cells[std::size_t(x)];
+        Style st = styles.get(c.styleId());
+        if (reverse) {
+            st.attrs ^= setAttrs;
+            if (setUnderline) {
+                st.underline = st.underline == UnderlineStyle::None ? UnderlineStyle::Single : UnderlineStyle::None;
+            }
+        } else {
+            st.attrs = std::uint16_t((st.attrs | setAttrs) & ~clearAttrs);
+            if (setUnderline) {
+                st.underline = UnderlineStyle::Single;
+            }
+            if (clearUnderline) {
+                st.underline = UnderlineStyle::None;
+            }
+        }
+        const std::uint32_t id = styles.acquire(st);
+        styles.release(c.styleId());
+        c.setStyleId(id);
+    };
+    for (int y = top; y <= bottom; ++y) {
+        int x0 = left;
+        int x1 = right;
+        if (m_attributeChangeExtent != 2) { // stream: whole lines in between
+            x0 = y == top ? left : 0;
+            x1 = y == bottom ? right : cols() - 1;
+        }
+        for (int x = x0; x <= x1; ++x) {
+            apply(y, x);
+        }
+    }
 }
 
 void Terminal::setOptions(const TerminalOptions& options)
@@ -197,6 +310,9 @@ void Terminal::setOptions(const TerminalOptions& options)
     m_cursorShape = m_options.cursorShape;
     m_modes.cursorBlink = m_options.cursorBlink;
     touch();
+    if (m_modes.themeReports) {
+        reportTheme(false);
+    }
 }
 
 void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
@@ -227,6 +343,9 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     }
     m_lastX = m_lastY = -1;
     touch();
+    if (m_modes.sizeReports) {
+        reportSize();
+    }
 }
 
 Rgb Terminal::resolve(Color color, bool foreground) const noexcept
@@ -1161,7 +1280,7 @@ void Terminal::eraseChars(int n)
     cur.pendingWrap = false;
 }
 
-bool Terminal::rectFromParams(const Params& p, int first, int& top, int& left, int& bottom, int& right) const
+bool Terminal::rectFromParams(const Params& p, int first, int& top, int& left, int& bottom, int& right, bool stream) const
 {
     // Pt ; Pl ; Pb ; Pr starting at @p first: 1-based, relative to the
     // margins in origin mode, defaulting to the whole page, clipped to it.
@@ -1174,7 +1293,7 @@ bool Terminal::rectFromParams(const Params& p, int first, int& top, int& left, i
     left = left0 + p.atOr(first + 1, 1) - 1;
     bottom = p.at(first + 2) == 0 ? bottomMax : std::min(bottomMax, top0 + p.at(first + 2) - 1);
     right = p.at(first + 3) == 0 ? rightMax : std::min(rightMax, left0 + p.at(first + 3) - 1);
-    return top <= bottom && left <= right && top <= bottomMax && left <= rightMax;
+    return top <= bottom && (left <= right || (stream && top < bottom)) && top <= bottomMax && left <= rightMax;
 }
 
 void Terminal::fillRect(const Params& p)
@@ -1399,6 +1518,8 @@ void Terminal::fullReset()
     m_modes.cursorBlink = m_options.cursorBlink;
     m_conformance = 5;
     m_savedDecModes.clear();
+    m_hasSelectionFg = m_hasSelectionBg = false;
+    m_reportedDark = -1;
     m_colorStack.clear();
     m_vt52Address = 0;
     m_protection = Protection::Off;
@@ -1754,6 +1875,12 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             switch (final) {
             case 'v':
                 copyRect(p);
+                return;
+            case 'r':
+                changeRectAttributes(p, false);
+                return;
+            case 't':
+                changeRectAttributes(p, true);
                 return;
             case 'x':
                 fillRect(p);
@@ -2423,6 +2550,24 @@ void Terminal::setDecMode(int mode, bool on)
     case 5522:
         m_modes.pasteEvents = on;
         break;
+    case 2031:
+        m_modes.themeReports = on;
+        if (on) {
+            m_reportedDark = backgroundIsDark() ? 1 : 0; // later changes are reported
+        }
+        break;
+    case 2033:
+        m_modes.visibilityReports = on;
+        if (on) {
+            reportVisibility();
+        }
+        break;
+    case 2048:
+        m_modes.sizeReports = on;
+        if (on) {
+            reportSize();
+        }
+        break;
     case 2027:
         m_modes.graphemeClustering = on;
         break;
@@ -2549,6 +2694,12 @@ int Terminal::decModeState(int mode) const
         return b(m_modes.synchronizedOutput);
     case 5522:
         return b(m_modes.pasteEvents);
+    case 2031:
+        return b(m_modes.themeReports);
+    case 2033:
+        return b(m_modes.visibilityReports);
+    case 2048:
+        return b(m_modes.sizeReports);
     case 2027:
         return b(m_modes.graphemeClustering);
     default:
@@ -2672,6 +2823,12 @@ void Terminal::deviceStatusReport(const Params& p, bool priv)
             return;
         case 85: // multiple sessions: not supported
             reply("\x1b[?83n");
+            return;
+        case 996: // the colour theme: dark or light
+            reportTheme(true);
+            return;
+        case 998: // visibility
+            reportVisibility();
             return;
         default:
             break;
@@ -2961,6 +3118,29 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     case 21:
         oscColorControl(rest, bel);
         break;
+    case 17: // selection background
+    case 19: { // selection foreground
+        Rgb& target = num == 17 ? m_selectionBg : m_selectionFg;
+        bool& has = num == 17 ? m_hasSelectionBg : m_hasSelectionFg;
+        if (rest == "?") {
+            // Unset: the inverse of the default colours, as drawn.
+            const Rgb value = has ? target : (num == 17 ? m_defaultFg : m_defaultBg);
+            reply(formatColorReply(num == 17 ? "17;" : "19;", value, bel));
+        } else if (Rgb c; parseColorSpec(rest, c)) {
+            target = c;
+            has = true;
+        }
+        break;
+    }
+    case 117:
+        m_hasSelectionBg = false;
+        break;
+    case 119:
+        m_hasSelectionFg = false;
+        break;
+    case 555:
+        m_host.flash();
+        break;
     case 30001: // kitty: push colours
         pushColors(0);
         break;
@@ -3134,8 +3314,19 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
                 m_hasCursorColor = true;
             }
             continue;
-        } else if (key == "selection_background" || key == "selection_foreground" || key == "cursor_text"
-                   || key == "visual_bell" || key.starts_with("transparent_background_color")) {
+        } else if (key == "selection_background" || key == "selection_foreground") {
+            Rgb& sel = key == "selection_background" ? m_selectionBg : m_selectionFg;
+            bool& has = key == "selection_background" ? m_hasSelectionBg : m_hasSelectionFg;
+            if (query) {
+                append(key, has ? &sel : nullptr);
+            } else if (bare || value.empty()) {
+                has = false;
+            } else if (Rgb c; parseColorSpec(value, c)) {
+                sel = c;
+                has = true;
+            }
+            continue;
+        } else if (key == "cursor_text" || key == "visual_bell" || key.starts_with("transparent_background_color")) {
             // Derived from the other colours in afterglow: always dynamic.
             if (query) {
                 append(key, nullptr);
@@ -3329,9 +3520,16 @@ void appendColor(std::string& out, AfterglowVt::Color c, int base, int extended)
 
 } // namespace
 
-void Terminal::dcsDispatch(const Params&, const Intermediates& inter, std::uint8_t final, std::string_view data)
+void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std::uint8_t final, std::string_view data)
 {
     m_lastX = -1;
+    if (inter.marker == '=' && inter.count == 0 && final == 's') {
+        // The older form of synchronized updates: 1 begins, 2 ends.
+        if (params.at(0) == 1 || params.at(0) == 2) {
+            m_modes.synchronizedOutput = params.at(0) == 1;
+        }
+        return;
+    }
     if (inter.count != 1 || final != 'q') {
         return;
     }

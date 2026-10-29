@@ -30,6 +30,7 @@ using AfterglowVt::Attr::Bold;
 using AfterglowVt::Attr::Italic;
 using AfterglowVt::Attr::Overline;
 using AfterglowVt::Attr::Strikethrough;
+constexpr std::uint16_t BlinkAttr = AfterglowVt::Attr::Blink;
 using AfterglowVt::UnderlineStyle;
 
 namespace {
@@ -139,6 +140,8 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     solid(float(p.rect.x()), float(p.rect.y()), float(p.rect.width()), float(p.rect.height()),
           (s.defaultBg & 0x00FFFFFFu) | (std::uint32_t(p.backgroundAlpha) << 24));
 
+    // Blinking text (SGR 5) disappears in the off phase; its background stays.
+    const bool hideBlinking = !p.textBlinkOn && s.hasBlinkingText;
     const bool cursorInGrid = s.cursorX >= 0 && s.cursorX < s.cols && s.cursorY >= 0 && s.cursorY < s.rows;
     const bool drawCursor = s.cursorVisible && cursorInGrid && (!p.focused || !s.cursorBlink || p.cursorBlinkOn);
     const int cursorSpan = drawCursor && s.at(s.cursorX, s.cursorY).width == 2 ? 2 : 1;
@@ -295,7 +298,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             const float bandTop = lineSize == AfterglowVt::LineSize::DoubleBottom ? rowTop - float(ch) : rowTop;
             for (int x = 0; x < s.cols / 2; ++x) {
                 const SnapshotCell& c = s.at(x, y);
-                if (c.width == 0 || c.cp == 0 || alphaOf(c.fg) == 0) {
+                if (c.width == 0 || c.cp == 0 || alphaOf(c.fg) == 0 || (hideBlinking && (c.attrs & BlinkAttr))) {
                     continue;
                 }
                 const float cx = ox + float(2 * x * cw);
@@ -325,7 +328,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         int x = 0;
         while (x < s.cols) {
             const SnapshotCell& c = s.at(x, y);
-            if (c.width == 0 || c.cp == 0) {
+            if (c.width == 0 || c.cp == 0 || (hideBlinking && (c.attrs & BlinkAttr))) {
                 ++x;
                 continue;
             }
@@ -411,7 +414,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     ++end;
                     continue;
                 }
-                if (n.cp == 0 || n.mcScale != 0 || slotFor(n.attrs) != slot || (n.grapheme == 0 && Sprites::isSprite(n.cp))
+                if (n.cp == 0 || n.mcScale != 0 || (hideBlinking && (n.attrs & BlinkAttr)) || slotFor(n.attrs) != slot || (n.grapheme == 0 && Sprites::isSprite(n.cp))
                     || (end != x && faceOf(n) != face)) {
                     break;
                 }
@@ -883,7 +886,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             PaneCache& cache = m_paneCache[pane.snapshot];
             const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
                 && cache.glyphEpoch == res.glyphs.epoch() && cache.fonts == res.fonts.get() && cache.rect == pp.rect
-                && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn
+                && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
                 && cache.cursorPosition == pp.cursorPosition && cache.scrollShift == pp.scrollShift
                 && cache.backgroundAlpha == pp.backgroundAlpha && cache.hoveredLink == pp.hoveredLink
                 && cache.hoverRow == pp.hoverRow && cache.hoverColStart == pp.hoverColStart
@@ -905,6 +908,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 cache.origin = pp.contentOrigin;
                 cache.focused = pp.focused;
                 cache.blinkOn = pp.cursorBlinkOn;
+                cache.textBlinkOn = pp.textBlinkOn;
                 cache.cursorPosition = pp.cursorPosition;
                 cache.scrollShift = pp.scrollShift;
                 cache.backgroundAlpha = pp.backgroundAlpha;
