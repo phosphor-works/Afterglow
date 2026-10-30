@@ -123,11 +123,13 @@ captures are not shipped assets; the scripts and summarized JSON are committed.
 
 ## Remaining limits
 
-The terminal buffer adapter supports one buffer per effect, clamp sampling,
-RGBA8/RGBA16F and scales 0.125–1. It rejects unsupported multiple buffers,
-custom vertex/depth passes and non-clamp wrapping. Its documented 256 MiB pixel
-budget excludes ordinary terminal targets and driver overhead. Display HDR,
-color-managed output and universal Qt Quick pack compatibility are not claimed.
+The measurements above describe the original single-buffer adapter. The
+completion audit subsequently added up to eight buffers, repeat/mirror wrapping,
+image parameters, custom vertex hooks and auxiliary depth attachments. The
+recorded Phosphor timings have not been reinterpreted as measurements of those
+new stages. Buffer pixels retain a 256 MiB per-window budget; region-local
+inputs and uploaded images have a separate 256 MiB cache budget. Driver and
+in-flight allocations are additional.
 See the [buffer contract](../../shaders/feedback-glow/README.md).
 
 Luau summaries are cached for 100 ms; contextual exposure samples once a second.

@@ -15,8 +15,14 @@ Target platform: Linux on Wayland with a Vulkan driver. Native desktop acceptanc
 - Support queried multiple-cursor shapes and positions, with correct mixed block/beam layering and cursor shader processing.
 - Add a user guide, complete schema-generated configuration reference, Luau API index, compatibility examples and a headless `--config-reference` command.
 
-Known limits: accessibility exposes the viewport rather than the entire history; rectangular selections report an encompassing range. IME replacement edits and full bidi ordering remain unsupported. Multiple-cursor custom color operations are not advertised. Downloads are capped at 8 MiB and one pending request. Relative parent chains are capped at 32. Layered rendering uses one additional frame texture for mixed cursor order; see the [compatibility reference](docs/COMPATIBILITY.md) for memory costs and precise semantics.
+- Add opt-in primary-screen bidi layout with logical copy and mapped pointer, cursor, accessibility and IME geometry.
+- Complete Luau launch options, bounded semantic-region/selection reads and lifecycle diagnostics.
+- Support up to eight shader buffers, four image parameters, auxiliary depth output, custom vertex hooks and sampler modes; include executable depth-trails and semantic-region examples.
+- Harden PTY startup/backpressure, parser resets and bounds, graphics decoding, script file reads, reload ownership and shader allocation recovery.
+- Exercise native split creation, chrome keyboard routing, paste confirmation, IME commits and compositor-delivered drag/drop in an isolated KWin desktop.
 
-Validation: [353 regression tests and native AT-SPI/download acceptance](docs/VALIDATION.md).
+Known limits: accessibility exposes the viewport rather than the entire history; rectangular selections report an encompassing range. IME replacement edits remain unsupported. Bidi is opt-in and preserves application-controlled grids; see [the bidi policy](docs/BIDI.md). Multiple-cursor custom text/fill colors are supported. Downloads are capped at 8 MiB and one pending request. Relative parent chains are capped at 32. Layered rendering uses one additional frame texture for mixed cursor order; see the [compatibility reference](docs/COMPATIBILITY.md) for memory costs and precise semantics.
+
+Validation: [Regression and native desktop acceptance](docs/VALIDATION.md).
 
 See [migration guidance](docs/MIGRATION.md) for behavior changes, [desktop workflows](docs/DESKTOP.md), and [protocol acceptance](docs/COMPATIBILITY.md). Packaging, clean-machine installation and package/build CI remain deferred at the user's request.

@@ -15,7 +15,7 @@ See [release notes](CHANGELOG.md) and [migration guidance](docs/MIGRATION.md) wh
 - Qt 6.8 or later (Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, ShaderTools, and the GuiPrivate,
   WaylandClientPrivate and QuickPrivate headers)
 - A Vulkan driver
-- FreeType, HarfBuzz, fontconfig, xkbcommon, wayland-client, zlib, PCRE2 (32-bit library)
+- FreeType, HarfBuzz, FriBidi, fontconfig, xkbcommon, wayland-client, zlib, PCRE2 (32-bit library)
 - KF6 WindowSystem
 - The phosphor libraries from a PlasmaZones checkout (see below)
 - Optional: `rsvg-convert` (renders the icon sizes), `tic` (compiles the
@@ -389,11 +389,13 @@ its radiance before the final output. Phosphor does this in its background
 lens pass, before compositing text. HDR doubles intermediate texture memory;
 ordinary shader chains retain their existing format.
 
-Packs can also declare one persistent buffer using Phosphor's `bufferShaders`,
-`bufferFeedback`, scale, format and filter metadata. The terminal adapter adds
-`iBuffer` and explicit sRGB/linear conversion helpers. See
-[Feedback glow and the buffer contract](data/shaders/feedback-glow/README.md)
-for an installable example, reset rules, supported options and memory limits.
+Packs can declare up to eight persistent buffers with Phosphor's metadata,
+per-buffer clamp/repeat/mirror wrapping and linear/nearest filtering. The
+terminal adapter provides live image parameters, auxiliary depth attachments,
+and a custom vertex hook alongside explicit sRGB/linear conversion helpers.
+See [Feedback glow and the buffer contract](data/shaders/feedback-glow/README.md)
+for ordering, reset rules and memory limits, and [Depth trails](data/shaders/depth-trails/README.md)
+for a runnable two-buffer, depth, vertex and image-parameter example.
 
 ## Control and scripting
 
@@ -522,8 +524,8 @@ The top-level active IDs are zero when no Afterglow window has keyboard focus.
 
 Pane, tab and window IDs last for the process lifetime. `pane.tab_id` is stable
 across tab reordering; the existing `pane.tab` and D-Bus tab field remain
-zero-based positions. IDs do not persist across restart. A closed pane can
-appear as only `{ id = ... }` in a queued event and is absent from the snapshot.
+zero-based positions. IDs do not persist across restart. Closed-pane events
+retain `id`, `tab_id` and `window`; the closed pane is absent from the live snapshot.
 
 `afterglow.panes(ev.terminal, scope, anchor)` filters a snapshot. Scope is
 `"all"` (the default), `"pane"`, `"tab"` or `"window"`. The anchor is a pane
@@ -544,7 +546,8 @@ Unchanged source retains its instance; a broken edit keeps the last working
 instance. Successful replacement, removal, disable, or repeated handler failure
 cancels its tasks and clears its UI contributions. Unload runs with the normal
 handler time limit; returned effects are ignored because resources are being
-retired. No durable state or module loader is provided yet.
+retired. Packages can use declared modules and revisioned durable state; see the
+package lifecycle below.
 
 All task names are local to a script instance (1–64 characters), with 16 active
 tasks per script and 128 globally. Reusing an active name reports `busy`.
@@ -672,7 +675,9 @@ activity in background tabs does not charge the visible tab's scene.
 `shader`, `layer`, `parameters` (IDs, types, defaults, ranges, units and a
 `supported` flag), and the effective `values` for that pane. Repeated uses of
 one pack have distinct instance IDs. Raw shaders without metadata are listed
-with no editable parameters. Image parameters are not supported by this API.
+with no editable parameters. Image parameters accept absolute local file paths;
+an empty string clears the texture. Pack defaults resolve relative to the pack directory. Image updates
+are validated and decoded before applying the entire parameter update.
 
 `afterglow.shader_parameters(pane, instance, values, scope?)` replaces this
 script's overrides for the selected instance and target panes. Scope defaults
@@ -708,15 +713,15 @@ Writes replace the owner's previous table, so omitted parameters are released.
 Shader/configuration rebuilds clear overrides and expire instance IDs; query
 again after a stale-ID error. Moving a pane to another window drops its source
 window's parameter overrides. Closing panes releases their overrides. Values
-are transient and uniform-only: they neither edit configuration nor recompile
+are transient uniforms and image bindings: they neither edit configuration nor recompile
 shader programs. Pass an optional fifth argument `{duration_ms=650, curve="ease-in-out"}` to
 animate toward the new values with Phosphor's host animation runtime. Supported
 curves are `linear`, `ease-in-out` and a critically damped `spring`; duration is
 0–60000 ms (0 applies immediately), and is a hard lifetime ceiling for springs.
 Retargeting preserves the currently visible position and starts a new duration.
 Float parameters interpolate within their endpoints; colors interpolate in
-linear-light sRGB through Phosphor and return encoded color uniforms. Integer
-and boolean parameters switch at completion. Omitted parameters and empty-table
+linear-light sRGB through Phosphor and return encoded color uniforms. Integer,
+boolean and image parameters switch at completion. Omitted parameters and empty-table
 resets release overrides immediately. Unload, rebuild, pane closure and transfer
 cancel owned transitions. Completion results acknowledge acceptance, not the
 end of the animation. Hidden windows catch up when rendered again.

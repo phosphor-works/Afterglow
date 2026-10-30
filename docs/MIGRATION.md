@@ -15,6 +15,16 @@ Behavior changes:
 - Kitty relative placement keys are now interpreted; invalid parents and cycles receive protocol errors. Applications should use `q=2` when they do not consume replies.
 - Extra cursor support is discoverable with `CSI > SPACE q`. Clients must use the returned operation list rather than assume optional color operations.
 
+## Completion audit update
+
+`Terminal.bidi` defaults to `off`; choose `auto`, `ltr` or `rtl` to enable primary-screen paragraph ordering. Copy and script queries retain logical text. Application grids use the documented [bidi fallback policy](BIDI.md).
+
+`Scripts.allowReadText` defaults to `true` and controls terminal text, selection and semantic-region reads. Set it to `false` to deny these reads to scripts. Existing scripts keep their prior text access unless this setting is disabled.
+
+Launch options now apply consistently to tabs, windows and all split directions. Failed executable launches return an error and do not retain an empty split. Environment values of `false` remove inherited variables. See [scripting](SCRIPTING.md) for signatures and examples.
+
+Shader packs may now use multiple buffers, image parameters, auxiliary depth and custom vertex hooks. Existing one-buffer packs retain their behavior. Live images switch at transition completion; reset restores the configured image. Memory limits reject an entire live parameter update without replacing its current values.
+
 ## Earlier delivery milestones
 
 `Terminal.copyOnSelect` accepts `primary`, `clipboard` and `off`; legacy booleans map to `primary` and `off`. Prefer the named values in new configs.

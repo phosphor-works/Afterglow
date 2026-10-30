@@ -112,6 +112,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices fall back 
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `allowReadText` | `true` |  | Allow local Luau scripts to query pane text, selections and semantic regions |
 | `enabled` | `true` |  | Run Luau scripts from ~/.config/afterglow/scripts |
 
 ## Shaders
@@ -132,6 +133,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices fall back 
 | `ambiguousWide` | `false` |  | East Asian Ambiguous characters (Greek, Cyrillic, some symbols) take two cells, for CJK setups |
 | `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | none, attention (mark the window urgent), visual (flash the pane) or both |
 | `bellSound` | `""` |  | Sound for the bell: empty for none, default for the desktop's bell, or a sound file |
+| `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional paragraph layout: off, auto, ltr or rtl; application grids keep logical order |
 | `clipboardRead` | `"ask"` | `"ask"`, `"allow"`, `"deny"` | Programs reading the clipboard (OSC 52): ask, allow or deny |
 | `confirmClose` | `true` |  | Ask before closing a split, tab or window where a program is running |
 | `confirmUnsafePaste` | `true` |  | Ask before pasting several lines into a program that would run them |
