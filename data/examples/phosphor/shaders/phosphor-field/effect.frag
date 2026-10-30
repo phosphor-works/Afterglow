@@ -183,7 +183,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
             q.x += sin(p.y*5.0+t)*(0.8+mids*0.65);
             float gyroid = dot(sin(q+vec3(t*0.7,0,t*0.3)),cos(q.yzx));
             float filament = exp(-abs(gyroid)*16.0);
-            float envelope = smoothstep(0.91,0.75,r)*smoothstep(0.15,0.5,r);
+            float envelope = (1.0-smoothstep(0.75,0.91,r))*smoothstep(0.15,0.5,r);
             float density = filament*envelope;
             float hot = exp(-r*r*14.0);
             vec3 plasma = mix(energy,vec3(0.52,0.2,1.0),smoothstep(-0.4,0.5,p.y)*0.45);

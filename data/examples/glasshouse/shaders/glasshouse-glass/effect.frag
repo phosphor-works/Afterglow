@@ -104,7 +104,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
             ring += step(R, r);
         }
         float dist = min(best, ringD);
-        float inside = smoothstep(front + 2.0, front - 2.0, r);
+        float inside = (1.0 - smoothstep(front - 2.0, front + 2.0, r));
         float mend = 1.0 - smoothstep(2.2, 4.5, strikeAge);
         float heatOf = exp(-strikeAge / 0.8);
         // Each shard sits a little askew.

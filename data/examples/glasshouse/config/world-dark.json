@@ -1,5 +1,6 @@
 {
     "Colors": {
+        "theme": "",
         "background": "#0f1226",
         "foreground": "#e7e4f5",
         "cursor": "#ffc978",

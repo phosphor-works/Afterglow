@@ -17,16 +17,16 @@ here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/afterglow"
 config="$conf/config.json"
 
-merge() {
+merge() (
     command -v jq >/dev/null || { echo "glasshouse-afterglow: needs jq" >&2; exit 1; }
     mkdir -p "$conf"
     [ -s "$config" ] || echo '{}' > "$config"
     local tmp
     tmp="$(mktemp "$config.XXXXXX")"
-    trap 'rm -f "$tmp"' RETURN
+    trap 'rm -f "$tmp"' EXIT
     jq -s 'reduce .[] as $part ({}; . * $part)' "$config" "$@" > "$tmp"
     mv "$tmp" "$config"
-}
+)
 
 case "${1:-}" in
 install)
