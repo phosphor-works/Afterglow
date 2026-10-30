@@ -24,12 +24,12 @@ bool rowIsBlank(const Row& row)
 } // namespace
 
 Screen::Screen(int cols, int rows, std::size_t maxScrollback)
-    : m_cols(cols)
-    , m_rowCount(rows)
+    : m_cols(std::clamp(cols, 2, 4096))
+    , m_rowCount(std::clamp(rows, 1, 1048576 / m_cols))
     , m_maxScrollback(maxScrollback)
 {
-    for (int y = 0; y < rows; ++y) {
-        m_rows.emplace_back(cols);
+    for (int y = 0; y < m_rowCount; ++y) {
+        m_rows.emplace_back(m_cols);
     }
 }
 
@@ -219,8 +219,10 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
             r.multicell = std::make_unique<MulticellMap>();
         }
         (*r.multicell)[std::uint16_t(x)] = params;
-        for (char32_t e : extra) {
-            appendGrapheme(r, x, e);
+        if (!extra.empty()) {
+            if (!r.graphemes) r.graphemes = std::make_unique<GraphemeMap>();
+            (*r.graphemes)[std::uint16_t(x)] = std::u32string(extra.substr(0, 4095));
+            r.cells[std::size_t(x)].setHasGrapheme(true);
         }
     }
 }
@@ -638,17 +640,20 @@ void Screen::scrollViewport(long delta) noexcept
 // --- resize ----------------------------------------------------------------
 
 void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart,
-                    std::vector<std::size_t>* trackedRows)
+                    std::vector<std::size_t>* trackedRows, std::vector<int>* trackedColumns)
 {
+    cols = std::clamp(cols, 2, 4096);
+    rows = std::clamp(rows, 1, 1048576 / cols);
+    if (trackedColumns && (!trackedRows || trackedColumns->size() != trackedRows->size())) trackedColumns = nullptr;
     if (cols == m_cols && rows == m_rowCount) {
         return;
     }
     ++m_layoutEpoch;
     if (reflow && m_maxScrollback > 0 && cols != m_cols) {
         flattenMulticells(); // blocks cannot reflow; their text can
-        resizeReflow(cols, rows, promptStart, trackedRows);
+        resizeReflow(cols, rows, promptStart, trackedRows, trackedColumns);
     } else {
-        resizeNoReflow(cols, rows, trackedRows);
+        resizeNoReflow(cols, rows, trackedRows, trackedColumns);
     }
     cursor.x = std::clamp(cursor.x, 0, m_cols - 1);
     cursor.y = std::clamp(cursor.y, 0, m_rowCount - 1);
@@ -672,7 +677,7 @@ void Screen::truncateRow(Row& row, int cols)
     }
 }
 
-void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked)
+void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns)
 {
     const std::uint64_t droppedBefore = m_rowsDropped;
     if (cols < m_cols) {
@@ -733,6 +738,7 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         }
     }
     trimHistory();
+    if (trackedColumns) for (auto& col : *trackedColumns) col = std::clamp(col, 0, cols);
     if (tracked) {
         const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
         for (std::size_t& t : *tracked) {
@@ -741,7 +747,7 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
     }
 }
 
-void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked)
+void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns)
 {
     struct Line
     {
@@ -786,7 +792,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         std::sort(trackedOrder.begin(), trackedOrder.end());
     }
     std::size_t trackedNext = 0;
-    std::size_t rowInLine = 0;
+
 
     // 1. Unwrap rows into logical lines.
     std::vector<Line> lines;
@@ -798,7 +804,11 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         Row& r = m_rows[i];
         const bool lineEnds = !r.wrapped || i + 1 == reflowEnd;
         while (trackedNext < trackedOrder.size() && trackedOrder[trackedNext].first == i) {
-            trackedPos[trackedOrder[trackedNext].second] = {TrackedPos::InLine, lines.size(), rowInLine * std::size_t(m_cols)};
+            const auto index = trackedOrder[trackedNext].second;
+            const int col = trackedColumns ? std::clamp((*trackedColumns)[index], 0, m_cols) : 0;
+            std::size_t offset = current.cells.size();
+            for (int x = 0; x < col; ++x) if (!r.at(x).isSpacerHead()) ++offset;
+            trackedPos[index] = {TrackedPos::InLine, lines.size(), offset};
             ++trackedNext;
         }
         if (current.cells.empty()) {
@@ -832,9 +842,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         if (lineEnds) {
             lines.push_back(std::move(current));
             current = Line{};
-            rowInLine = 0;
-        } else {
-            ++rowInLine;
+
         }
     }
     if (!current.cells.empty()) {
@@ -844,6 +852,13 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     // 2. Rewrap every line to the new width.
     std::deque<Row> out;
     std::vector<std::size_t> lineFirstRow;
+    std::vector<std::size_t> trackedNew(trackedPos.size(), TrackedRowGone);
+    std::vector<int> mappedColumns(trackedPos.size(), 0);
+    std::vector<std::vector<std::pair<std::size_t, std::size_t>>> lineMarks(lines.size());
+    for (std::size_t k = 0; k < trackedPos.size(); ++k)
+        if (trackedPos[k].kind == TrackedPos::InLine && trackedPos[k].line < lines.size())
+            lineMarks[trackedPos[k].line].emplace_back(trackedPos[k].offset, k);
+    for (auto& marks : lineMarks) std::sort(marks.begin(), marks.end());
     std::size_t cursorRow = 0;
     int cursorCol = 0;
     for (std::size_t li = 0; li < lines.size(); ++li) {
@@ -852,7 +867,13 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         out.emplace_back(cols).promptStart = line.promptStart;
         int col = 0;
         bool cursorPlaced = false;
+        std::size_t nextMark = 0;
         auto placeCursorIfHere = [&](std::size_t offset) {
+            while (nextMark < lineMarks[li].size() && lineMarks[li][nextMark].first <= offset) {
+                const auto index = lineMarks[li][nextMark++].second;
+                trackedNew[index] = out.size() - 1;
+                mappedColumns[index] = col;
+            }
             if (trackCursor && li == cursorLine && !cursorPlaced && offset == cursorOffset) {
                 cursorRow = out.size() - 1;
                 cursorCol = col;
@@ -898,6 +919,12 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             }
             col += w;
         }
+        placeCursorIfHere(line.cells.size());
+        while (nextMark < lineMarks[li].size()) {
+            const auto index = lineMarks[li][nextMark++].second;
+            trackedNew[index] = out.size() - 1;
+            mappedColumns[index] = std::min(cols, col + int(trackedPos[index].offset - line.cells.size()));
+        }
         if (trackCursor && li == cursorLine && !cursorPlaced) {
             // Cursor past the end of the content: advance virtually.
             std::size_t extra = cursorOffset - std::min(cursorOffset, line.cells.size());
@@ -919,7 +946,6 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             cursorCol = int(c);
         }
     }
-    const std::size_t linesEnd = out.size();
     const std::size_t promptRegionStart = out.size();
     if (keepPrompt) {
         // Preserve row positions so the shell's cursor-up repaint still lands
@@ -939,17 +965,14 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         out.emplace_back(cols);
     }
 
-    std::vector<std::size_t> trackedNew(trackedPos.size(), TrackedRowGone);
     for (std::size_t k = 0; k < trackedPos.size(); ++k) {
-        const TrackedPos& tp = trackedPos[k];
-        if (tp.kind == TrackedPos::InLine && tp.line < lineFirstRow.size()) {
-            const std::size_t first = lineFirstRow[tp.line];
-            const std::size_t end = tp.line + 1 < lineFirstRow.size() ? lineFirstRow[tp.line + 1] : linesEnd;
-            trackedNew[k] = std::min(first + tp.offset / std::size_t(cols), end - 1);
-        } else if (tp.kind == TrackedPos::InPrompt && keepPrompt && tp.offset < promptRows) {
+        const auto& tp = trackedPos[k];
+        if (tp.kind == TrackedPos::InPrompt && keepPrompt && tp.offset < promptRows) {
             trackedNew[k] = promptRegionStart + tp.offset;
+            mappedColumns[k] = trackedColumns ? std::clamp((*trackedColumns)[k], 0, cols) : 0;
         }
     }
+    if (trackedColumns) *trackedColumns = std::move(mappedColumns);
 
     // 3. Trim blank rows below the cursor, pad to the screen height.
     while (out.size() > cursorRow + 1 && rowIsBlank(out.back()) && !out[out.size() - 2].wrapped) {

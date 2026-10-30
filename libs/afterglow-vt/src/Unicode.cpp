@@ -26,7 +26,9 @@ constexpr std::uint16_t packedFor(char32_t cp) noexcept
 Props props(char32_t cp) noexcept
 {
     if (cp >= 0x20 && cp < 0x7F) {
-        return Props{}; // printable ASCII: width 1, no grapheme properties
+        Props p;
+        p.widensWithVs16 = cp == U'#' || cp == U'*' || (cp >= U'0' && cp <= U'9');
+        return p;
     }
     const std::uint16_t v = packedFor(cp);
     Props p;

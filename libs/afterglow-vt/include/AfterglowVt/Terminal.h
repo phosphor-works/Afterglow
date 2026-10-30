@@ -33,6 +33,25 @@ struct Rgb
     bool operator==(const Rgb&) const = default;
 };
 
+enum class SemanticZoneKind { Prompt, Input, Output };
+struct SemanticPosition { std::uint64_t row = 0; int col = 0; };
+struct SemanticRegion {
+    std::uint64_t id = 0;
+    SemanticZoneKind kind = SemanticZoneKind::Prompt;
+    SemanticPosition start, end;
+    bool open = false;
+    bool startTrimmed = false;
+    bool available = true;
+    std::optional<int> exitCode;
+};
+
+struct ExtraCursorColor {
+    enum class Mode : std::uint8_t { Main = 0, Reverse = 1, Rgb = 2, Palette = 5 };
+    Mode mode = Mode::Main;
+    Color color;
+    bool operator==(const ExtraCursorColor&) const = default;
+};
+
 enum class BidiMode : std::uint8_t { Off, Auto, LeftToRight, RightToLeft };
 
 enum class CursorShape : std::uint8_t { Block, Underline, Bar };
@@ -139,23 +158,23 @@ public:
     /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
     /// Returning false means the host has no such clipboard support.
     virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
-    /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
-    /// has no image codecs of its own; return false if decoding fails.
     /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
     /// true to let the terminal take that size; the host then follows it.
     virtual bool requestResize(int cols, int rows) { return false; }
     /// Size of the display the terminal is on, in pixels, for XTWINOPS
     /// reports and maximum sizes. Return false if unknown.
     virtual bool screenSize(int& width, int& height) { return false; }
+    /// Decodes PNG data for the kitty graphics protocol into RGBA8. The core
+    /// has no image codecs of its own; return false if decoding fails.
     virtual bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                            std::vector<std::uint8_t>& rgba)
     {
         return false;
     }
-    /// Decodes an image in any format the host reads (iTerm2 inline images:
-    /// PNG, JPEG, GIF...) into RGBA8. Defaults to PNG only.
     /// Complete bounded OSC 1337 download. The host must ask before writing.
     virtual void downloadFile(std::string_view name, std::string_view data) {}
+    /// Decodes an image in any format the host reads (iTerm2 inline images:
+    /// PNG, JPEG, GIF...) into RGBA8. Defaults to PNG only.
     virtual bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                              std::vector<std::uint8_t>& rgba)
     {
@@ -226,6 +245,8 @@ public:
     const Screen& primaryScreen() const noexcept { return *m_primary; }
 
     const Modes& modes() const noexcept { return m_modes; }
+    const ExtraCursorColor& extraCursorColor() const { return m_extraCursorColor; }
+    const ExtraCursorColor& extraCursorTextColor() const { return m_extraCursorTextColor; }
     const std::map<std::pair<int, int>, int>& extraCursors() const { return m_extraCursors; }
     CursorShape cursorShape() const noexcept { return m_cursorShape; }
 
@@ -235,6 +256,9 @@ public:
     const std::string& title() const noexcept { return m_title; }
     const std::string& workingDirectory() const noexcept { return m_cwd; }
     /// True while the cursor is in a shell prompt or its input (OSC 133 A/B, before C).
+    std::vector<SemanticRegion> semanticRegions() const;
+    std::optional<std::string> semanticRegionText(std::uint64_t id, std::size_t maxBytes = 1024 * 1024,
+                                                  bool* truncated = nullptr) const;
     bool atShellPrompt() const noexcept { return m_semanticZone != SemanticZone::Output; }
     /// A resize kept the prompt's previous layout for the shell to repaint,
     /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
@@ -437,6 +461,7 @@ private:
     int m_attributeChangeExtent = 0; ///< DECSACE, reported only
     std::unordered_map<int, bool> m_savedDecModes; ///< XTSAVE
     void setExtraCursors(const Params&);
+    ExtraCursorColor m_extraCursorColor, m_extraCursorTextColor;
     std::map<std::pair<int, int>, int> m_extraCursors; ///< (row, column), protocol shape
     CursorShape m_cursorShape = CursorShape::Block;
     Region m_margins;
@@ -465,6 +490,10 @@ private:
         int col = 0;
         bool valid = false;
     };
+    std::vector<SemanticRegion> m_semanticRegions;
+    std::uint64_t m_nextSemanticId = 1;
+    void beginSemanticRegion(SemanticZoneKind kind);
+    void closeSemanticRegion(std::optional<int> exitCode = {});
     Mark m_inputStart; ///< B: where the command is typed
     Mark m_outputStart; ///< C
     Mark m_outputEnd; ///< D

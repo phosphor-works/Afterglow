@@ -8,6 +8,7 @@
 #include <compare>
 #include <cstdint>
 #include <string>
+#include <limits>
 #include <string_view>
 
 namespace AfterglowVt {
@@ -62,7 +63,8 @@ struct AFTERGLOWVT_EXPORT Selection
     Range range(const Screen& screen, std::u32string_view wordBoundaries = DefaultWordBoundaries) const;
     /// The selected text, UTF-8. Soft-wrapped rows join without a newline and
     /// trailing blanks of each line are dropped.
-    std::string text(const Screen& screen, std::u32string_view wordBoundaries = DefaultWordBoundaries) const;
+    std::string text(const Screen& screen, std::u32string_view wordBoundaries = DefaultWordBoundaries,
+                     std::size_t maxBytes = std::numeric_limits<std::size_t>::max(), bool* truncated = nullptr) const;
 };
 
 } // namespace AfterglowVt

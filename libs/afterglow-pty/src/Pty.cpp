@@ -37,6 +37,13 @@ std::string Pty::defaultShell()
 
 namespace {
 
+pid_t waitChild(pid_t child, int* status, int flags)
+{
+    pid_t result;
+    do { result = waitpid(child, status, flags); } while (result < 0 && errno == EINTR);
+    return result;
+}
+
 winsize makeWinsize(int cols, int rows, int pw, int ph)
 {
     winsize ws{};
@@ -88,6 +95,26 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     }
     envp.push_back(nullptr);
 
+    // execvpe would search the parent's PATH rather than the supplied envp.
+    // Prepare candidates before fork; relative entries resolve after child chdir.
+    std::vector<std::string> executables;
+    if (args.front().find('/') != std::string::npos) executables.push_back(args.front());
+    else {
+        std::string path = "/bin:/usr/bin";
+        for (const auto& entry : envStore) if (entry.starts_with("PATH=")) path = entry.substr(5);
+        std::size_t start = 0;
+        do {
+            const auto end = path.find(':', start);
+            const auto directory = path.substr(start, end == std::string::npos ? end : end - start);
+            executables.push_back((directory.empty() ? "." : directory) + '/' + args.front());
+            if (end == std::string::npos) break;
+            start = end + 1;
+        } while (start <= path.size());
+    }
+    std::vector<char*> shellArgv{const_cast<char*>("/bin/sh"), nullptr};
+    for (std::size_t i = 1; i < args.size(); ++i) shellArgv.push_back(args[i].data());
+    shellArgv.push_back(nullptr);
+
     const std::string cwd = options.workingDirectory;
     winsize ws = makeWinsize(options.cols, options.rows, options.pixelWidth, options.pixelHeight);
 
@@ -96,11 +123,31 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
         if (error) *error = std::string("eventfd failed: ") + std::strerror(errno);
         return nullptr;
     }
+    int execPipe[2];
+    if (pipe2(execPipe, O_CLOEXEC) != 0) {
+        if (error) *error = std::string("exec pipe failed: ") + std::strerror(errno);
+        close(wakeFd);
+        return nullptr;
+    }
+    for (int& descriptor : execPipe) {
+        if (descriptor >= 3) continue;
+        const int moved = fcntl(descriptor, F_DUPFD_CLOEXEC, 3);
+        if (moved < 0) {
+            const int code = errno;
+            close(execPipe[0]); close(execPipe[1]); close(wakeFd);
+            if (error) *error = std::string("exec pipe setup failed: ") + std::strerror(code);
+            return nullptr;
+        }
+        close(descriptor);
+        descriptor = moved;
+    }
     int master = -1;
     const pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid < 0) {
         const int forkError = errno;
         close(wakeFd);
+        close(execPipe[0]);
+        close(execPipe[1]);
         errno = forkError;
         if (error) {
             *error = std::string("forkpty failed: ") + std::strerror(errno);
@@ -116,17 +163,42 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
         for (int sig : {SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGALRM, SIGPIPE}) {
             signal(sig, SIG_DFL);
         }
-        close_range(3, ~0U, 0);
-        if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
-            // Fall through: the shell starts in the inherited directory.
+        close(execPipe[0]);
+        if (execPipe[1] > 3) close_range(3, unsigned(execPipe[1] - 1), 0);
+        close_range(unsigned(execPipe[1] + 1), ~0U, 0);
+        auto failed = [&] {
+            const int code = errno;
+            ssize_t sent;
+            do { sent = ::write(execPipe[1], &code, sizeof code); } while (sent < 0 && errno == EINTR);
+            _exit(127);
+        };
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) failed();
+        bool denied = false;
+        for (auto& executable : executables) {
+            execve(executable.c_str(), argv.data(), envp.data());
+            if (errno == ENOEXEC) {
+                shellArgv[1] = executable.data();
+                execve("/bin/sh", shellArgv.data(), envp.data());
+                failed();
+            }
+            if (errno == EACCES) denied = true;
+            else if (errno != ENOENT && errno != ENOTDIR) failed();
         }
-        execvpe(argv[0], argv.data(), envp.data());
-        const char msg[] = "afterglow: failed to start the shell\r\n";
-        ::write(STDERR_FILENO, msg, sizeof msg - 1);
-        _exit(127);
+        if (denied) errno = EACCES;
+        failed();
     }
 
+    close(execPipe[1]);
+    int execError = 0;
+    ssize_t received;
+    do { received = ::read(execPipe[0], &execError, sizeof execError); } while (received < 0 && errno == EINTR);
+    const int readError = errno;
+    close(execPipe[0]);
     auto result = std::unique_ptr<Pty>(new Pty(master, wakeFd, pid, listener));
+    if (received != 0) {
+        if (error) *error = std::string("failed to start process: ") + std::strerror(received > 0 ? execError : readError);
+        return nullptr;
+    }
     const int flags = fcntl(master, F_GETFL);
     if (flags < 0 || fcntl(master, F_SETFL, flags | O_NONBLOCK) < 0 || fcntl(master, F_SETFD, FD_CLOEXEC) < 0) {
         if (error) *error = std::string("pty setup failed: ") + std::strerror(errno);
@@ -175,17 +247,17 @@ Pty::~Pty()
     const pid_t child = m_pid.load();
     if (child > 0) {
         int status = 0;
-        if (waitpid(child, &status, WNOHANG) == 0) {
+        if (waitChild(child, &status, WNOHANG) == 0) {
             kill(child, SIGHUP);
             // Give the child a moment to leave on SIGHUP before forcing it.
             for (int i = 0; i < 20; ++i) {
-                if (waitpid(child, &status, WNOHANG) != 0) {
+                if (waitChild(child, &status, WNOHANG) != 0) {
                     break;
                 }
                 usleep(5000);
                 if (i == 19) {
                     kill(child, SIGKILL);
-                    waitpid(child, &status, 0);
+                    waitChild(child, &status, 0);
                 }
             }
         }
@@ -302,7 +374,7 @@ void Pty::run()
             m_accepting.store(false);
             int status = 0;
             const pid_t child = m_pid.load();
-            const pid_t reaped = waitpid(child, &status, WNOHANG);
+            const pid_t reaped = waitChild(child, &status, WNOHANG);
             if (reaped == child || (reaped < 0 && errno == ECHILD)) {
                 m_pid = -1;
                 m_listener.ptyClosed(reaped == child ? status : -1);

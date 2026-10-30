@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cerrno>
 #include <cstdio>
 #include <filesystem>
 #include <cmath>
@@ -38,6 +39,8 @@ int placeholderDiacriticValue(char32_t cp)
 namespace {
 
 constexpr std::uint32_t MaxDimension = 10000;
+constexpr std::size_t MaxPayload = GraphicsStore::DefaultQuota;
+constexpr std::size_t MaxControl = 4096;
 
 bool inflateZlib(const std::string& in, std::string& out)
 {
@@ -53,10 +56,9 @@ bool inflateZlib(const std::string& in, std::string& out)
         zs.next_out = reinterpret_cast<Bytef*>(buf);
         zs.avail_out = sizeof buf;
         rc = inflate(&zs, Z_NO_FLUSH);
-        out.append(buf, sizeof buf - zs.avail_out);
-        if (out.size() > (std::size_t(MaxDimension) * MaxDimension * 4)) {
-            rc = Z_DATA_ERROR;
-        }
+        const auto produced = sizeof buf - zs.avail_out;
+        if (produced > MaxPayload - out.size()) { rc = Z_DATA_ERROR; break; }
+        out.append(buf, produced);
     }
     inflateEnd(&zs);
     return rc == Z_STREAM_END;
@@ -84,27 +86,18 @@ void blendOver(std::uint8_t* dst, const std::uint8_t* src)
 /// Copies a rectangle of @p src into @p dst at (dx, dy), clipped.
 void blit(ImageFrame& dst, const ImageFrame& src, int sx, int sy, int w, int h, int dx, int dy, bool overwrite)
 {
-    w = w > 0 ? w : int(src.width) - sx;
-    h = h > 0 ? h : int(src.height) - sy;
-    for (int row = 0; row < h; ++row) {
-        const int syy = sy + row;
-        const int dyy = dy + row;
-        if (syy < 0 || syy >= int(src.height) || dyy < 0 || dyy >= int(dst.height)) {
-            continue;
-        }
-        for (int col = 0; col < w; ++col) {
-            const int sxx = sx + col;
-            const int dxx = dx + col;
-            if (sxx < 0 || sxx >= int(src.width) || dxx < 0 || dxx >= int(dst.width)) {
-                continue;
-            }
-            const std::uint8_t* sp = &src.rgba[(std::size_t(syy) * src.width + std::size_t(sxx)) * 4];
-            std::uint8_t* dp = &dst.rgba[(std::size_t(dyy) * dst.width + std::size_t(dxx)) * 4];
-            if (overwrite) {
-                std::copy_n(sp, 4, dp);
-            } else {
-                blendOver(dp, sp);
-            }
+    const auto width = w > 0 ? std::int64_t(w) : std::int64_t(src.width) - sx;
+    const auto height = h > 0 ? std::int64_t(h) : std::int64_t(src.height) - sy;
+    const auto firstRow = std::max({std::int64_t(0), -std::int64_t(sy), -std::int64_t(dy)});
+    const auto lastRow = std::min({height, std::int64_t(src.height) - sy, std::int64_t(dst.height) - dy});
+    const auto firstCol = std::max({std::int64_t(0), -std::int64_t(sx), -std::int64_t(dx)});
+    const auto lastCol = std::min({width, std::int64_t(src.width) - sx, std::int64_t(dst.width) - dx});
+    for (auto row = firstRow; row < lastRow; ++row) {
+        for (auto col = firstCol; col < lastCol; ++col) {
+            const auto* sp = &src.rgba[(std::size_t(sy + row) * src.width + std::size_t(sx + col)) * 4];
+            auto* dp = &dst.rgba[(std::size_t(dy + row) * dst.width + std::size_t(dx + col)) * 4];
+            if (overwrite) std::copy_n(sp, 4, dp);
+            else blendOver(dp, sp);
         }
     }
 }
@@ -117,36 +110,55 @@ struct DisplaySize
 
 DisplaySize displaySize(const Placement& pl, const Image& img, int cw, int ch)
 {
-    const int srcW = pl.srcW > 0 ? pl.srcW : std::max(0, int(img.width) - pl.srcX);
-    const int srcH = pl.srcH > 0 ? pl.srcH : std::max(0, int(img.height) - pl.srcY);
-    if (pl.cols > 0 && pl.rows > 0) {
-        return {pl.cols * cw, pl.rows * ch};
-    }
-    if (pl.cols > 0) {
-        const int w = pl.cols * cw;
-        return {w, srcW > 0 ? srcH * w / srcW : 0};
-    }
-    if (pl.rows > 0) {
-        const int h = pl.rows * ch;
-        return {srcH > 0 ? srcW * h / srcH : 0, h};
-    }
-    return {srcW, srcH};
+    const auto srcW = pl.srcW > 0 ? std::int64_t(pl.srcW) : std::max<std::int64_t>(0, std::int64_t(img.width) - pl.srcX);
+    const auto srcH = pl.srcH > 0 ? std::int64_t(pl.srcH) : std::max<std::int64_t>(0, std::int64_t(img.height) - pl.srcY);
+    constexpr auto limit = std::int64_t(1) << 28;
+    std::int64_t w = srcW, h = srcH;
+    if (pl.cols > 0) w = std::int64_t(pl.cols) * cw;
+    if (pl.rows > 0) h = std::int64_t(pl.rows) * ch;
+    if (pl.cols > 0 && pl.rows <= 0) h = srcW > 0 ? std::int64_t(std::clamp(double(srcH) * double(w) / double(srcW), 0.0, double(limit))) : 0;
+    if (pl.rows > 0 && pl.cols <= 0) w = srcH > 0 ? std::int64_t(std::clamp(double(srcW) * double(h) / double(srcH), 0.0, double(limit))) : 0;
+    return {int(std::clamp(w, std::int64_t(0), limit)), int(std::clamp(h, std::int64_t(0), limit))};
 }
 
-bool pathAllowed(const std::string& path)
+bool forbiddenFile(const std::filesystem::path& path)
 {
-    std::error_code ec;
-    const auto canonical = std::filesystem::weakly_canonical(path, ec).string();
-    if (ec) {
+    const std::string name = path.string();
+    for (const char* deny : {"/proc", "/sys", "/dev"}) {
+        if (name == deny || name.starts_with(std::string(deny) + '/')) return true;
+    }
+    return false;
+}
+
+bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::string& data, std::string& error)
+{
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0
+        || std::uint64_t(offset) > std::uint64_t(st.st_size)) {
+        error = "EBADF:invalid image file extent";
         return false;
     }
-    for (const char* deny : {"/proc/", "/sys/", "/dev/"}) {
-        if (canonical.starts_with(deny)) {
-            return false;
-        }
+    const std::uint64_t remaining = std::uint64_t(st.st_size) - offset;
+    const std::uint64_t want = size ? std::min<std::uint64_t>(size, remaining) : remaining;
+    if (want > MaxPayload || size > MaxPayload) { error = "EFBIG:image payload too large"; return false; }
+    data.resize(std::size_t(want));
+    std::size_t done = 0;
+    while (done < data.size()) {
+        const ssize_t n = pread(fd, data.data() + done, std::min<std::size_t>(65536, data.size() - done), off_t(offset) + off_t(done));
+        if (n > 0) done += std::size_t(n);
+        else if (n < 0 && errno == EINTR) continue;
+        else if (n == 0) { data.resize(done); break; }
+        else { error = "EBADF:cannot read image payload"; data.clear(); return false; }
     }
-    struct stat st{};
-    return ::stat(canonical.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    return true;
+}
+
+bool insideDirectory(const std::filesystem::path& path, const std::filesystem::path& directory)
+{
+    auto p = path.begin();
+    for (auto d = directory.begin(); d != directory.end(); ++d, ++p)
+        if (p == path.end() || *p != *d) return false;
+    return p != path.end();
 }
 
 } // namespace
@@ -259,20 +271,44 @@ void GraphicsStore::handle(std::string_view payload, Context& ctx)
     const Command cmd = Command::parse(keys);
 
     if (m_pending.active) {
-        // Continuation chunks carry only m (and q); the first chunk's keys apply.
-        detail::base64DecodeAppend(m_pending.data, data, detail::Base64Check::Lenient);
-        if (cmd.more == 1) {
-            return;
+        // Reject the entire transmission, including tails after an oversized chunk.
+        if (!m_pending.failed) {
+            if (data.size() > ((MaxPayload - m_pending.data.size() + 2) / 3) * 4) {
+                m_pending.failed = true;
+                m_pending.data.clear();
+                respond(Command::parse(m_pending.controlData), ctx, "EFBIG:image payload too large", true);
+            } else {
+                detail::base64DecodeAppend(m_pending.data, data, detail::Base64Check::Lenient);
+                if (m_pending.data.size() > MaxPayload) {
+                    m_pending.failed = true;
+                    m_pending.data.clear();
+                    respond(Command::parse(m_pending.controlData), ctx, "EFBIG:image payload too large", true);
+                }
+            }
         }
+        if (cmd.more == 1) return;
         Command first = Command::parse(m_pending.controlData);
         std::string all = std::move(m_pending.data);
+        const bool failed = m_pending.failed;
         m_pending = Pending{};
-        execute(first, std::move(all), ctx);
+        if (!failed) execute(first, std::move(all), ctx);
         return;
     }
 
+    const bool chunked = cmd.more == 1 && (cmd.action == 't' || cmd.action == 'T' || cmd.action == 'q' || cmd.action == 'f');
+    const bool oversized = keys.size() > MaxControl || data.size() > ((MaxPayload + 2) / 3) * 4;
+    if (oversized) {
+        respond(cmd, ctx, "EFBIG:image payload too large", true);
+        if (chunked) { m_pending.active = true; m_pending.failed = true; }
+        return;
+    }
     std::string decoded = detail::base64Decode(data);
-    if (cmd.more == 1 && (cmd.action == 't' || cmd.action == 'T' || cmd.action == 'q' || cmd.action == 'f')) {
+    if (decoded.size() > MaxPayload) {
+        respond(cmd, ctx, "EFBIG:image payload too large", true);
+        if (chunked) { m_pending.active = true; m_pending.failed = true; }
+        return;
+    }
+    if (chunked) {
         m_pending.controlData.assign(keys);
         m_pending.data = std::move(decoded);
         m_pending.active = true;
@@ -345,55 +381,51 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
         break;
     case 'f':
     case 't': {
-        const std::string path = data;
-        if (!pathAllowed(path)) {
-            error = "EBADF:not a readable regular file";
-            return false;
+        if (data.size() > 4096 || data.find('\0') != std::string::npos) {
+            error = "EBADF:not a readable regular file"; return false;
         }
-        std::ifstream in(path, std::ios::binary);
-        if (!in) {
-            error = "EBADF:cannot open file";
-            return false;
+        std::error_code ec;
+        const auto canonical = std::filesystem::canonical(data, ec);
+        if (ec || forbiddenFile(canonical)) { error = "EBADF:not a readable regular file"; return false; }
+        // Pin the parent directory and validate the actual opened file. O_NONBLOCK
+        // prevents a replaced FIFO from hanging before fstat can reject it.
+        const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (parent < 0) { error = "EBADF:cannot open file"; return false; }
+        const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
+        if (ec || forbiddenFile(actualParent)) { close(parent); error = "EBADF:not a readable regular file"; return false; }
+        const auto name = canonical.filename();
+        const int fd = openat(parent, name.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+        struct stat opened{};
+        if (fd < 0 || fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode)) {
+            if (fd >= 0) close(fd);
+            close(parent); error = "EBADF:not a readable regular file"; return false;
         }
-        in.seekg(std::streamoff(cmd.offset));
-        if (cmd.size > 0) {
-            data.resize(cmd.size);
-            in.read(data.data(), std::streamsize(cmd.size));
-            data.resize(std::size_t(in.gcount()));
-        } else {
-            data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        const bool success = readPayload(fd, cmd.offset, cmd.size, data, error);
+        const auto actual = actualParent / name;
+        const auto temporary = std::filesystem::temp_directory_path(ec);
+        const bool temporaryParent = insideDirectory(actual, "/tmp") || (!ec && insideDirectory(actual, temporary));
+        if (success && cmd.medium == 't' && name.string().find("tty-graphics-protocol") != std::string::npos && temporaryParent) {
+            struct stat current{};
+            if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) == 0
+                && current.st_dev == opened.st_dev && current.st_ino == opened.st_ino)
+                unlinkat(parent, name.c_str(), 0);
         }
-        // Temporary files are deleted after reading, but only ones that are
-        // clearly meant for this protocol.
-        if (cmd.medium == 't' && path.find("tty-graphics-protocol") != std::string::npos) {
-            const std::string tmp = std::filesystem::temp_directory_path().string();
-            if (path.starts_with(tmp) || path.starts_with("/tmp/") || path.starts_with("/dev/shm/")) {
-                std::error_code ec;
-                std::filesystem::remove(path, ec);
-            }
-        }
+        close(fd);
+        close(parent);
+        if (!success) return false;
         break;
     }
     case 's': {
         const std::string name = data;
-        const int fd = shm_open(name.c_str(), O_RDONLY, 0);
-        if (fd < 0) {
-            error = "EBADF:cannot open shared memory";
-            return false;
-        }
-        struct stat st{};
-        fstat(fd, &st);
-        const std::size_t total = std::size_t(st.st_size);
-        const std::size_t want = cmd.size ? std::min<std::size_t>(cmd.size, total - std::min<std::size_t>(cmd.offset, total)) : total;
-        void* map = total ? mmap(nullptr, total, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
+        if (name.size() > 4096 || name.find('\0') != std::string::npos) { error = "EBADF:invalid shared memory name"; return false; }
+        const int fd = shm_open(name.c_str(), O_RDONLY | O_CLOEXEC, 0);
+        if (fd < 0) { error = "EBADF:cannot open shared memory"; return false; }
+        // pread is safe if the sender truncates the object concurrently; mmap
+        // would instead deliver SIGBUS to the terminal process.
+        const bool success = readPayload(fd, cmd.offset, cmd.size, data, error);
         close(fd);
-        shm_unlink(name.c_str());
-        if (map == MAP_FAILED) {
-            error = "EBADF:cannot map shared memory";
-            return false;
-        }
-        data.assign(static_cast<const char*>(map) + std::min<std::size_t>(cmd.offset, total), want);
-        munmap(map, total);
+        if (success) shm_unlink(name.c_str());
+        if (!success) return false;
         break;
     }
     default:
@@ -429,6 +461,7 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
             return false;
         }
         const std::size_t expected = std::size_t(cmd.s) * cmd.v * bpp;
+        if (std::size_t(cmd.s) * cmd.v * 4 > MaxPayload) { error = "EFBIG:image payload too large"; return false; }
         if (data.size() < expected) {
             error = "ENODATA:insufficient image data";
             return false;
@@ -454,12 +487,18 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         error = "EINVAL:invalid image dimensions";
         return false;
     }
+    const auto expectedBytes = std::size_t(out.width) * out.height * 4;
+    if (expectedBytes > MaxPayload || out.rgba.size() != expectedBytes) {
+        error = "EINVAL:invalid decoded image extent";
+        return false;
+    }
     return true;
 }
 
 void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ctx)
 {
     Command cmd = cmdIn;
+    if (cmd.action != 'q' && !m_images.contains(cmd.id) && m_images.size() >= 4096) { respond(cmd, ctx, "ENOSPC:too many images", true); return; }
     ImageFrame frame;
     std::string error;
     if (!decodePixels(cmd, std::move(data), ctx, frame, error)) {
@@ -573,8 +612,8 @@ void GraphicsStore::place(const Command& cmd, Context& ctx)
     });
     pl.row = scr.rowsDropped() + scr.historySize() + std::size_t(scr.cursor.y);
     pl.col = scr.cursor.x;
-    pl.offsetX = std::max(0, cmd.X);
-    pl.offsetY = std::max(0, int(cmd.Y));
+    pl.offsetX = std::clamp(cmd.X, 0, 1 << 28);
+    pl.offsetY = std::clamp(int(cmd.Y), 0, 1 << 28);
     pl.srcX = std::max(0, cmd.x);
     pl.srcY = std::max(0, cmd.y);
     pl.srcW = std::max(0, cmd.w);
@@ -583,6 +622,7 @@ void GraphicsStore::place(const Command& cmd, Context& ctx)
     pl.rows = std::max(0, cmd.r);
     pl.z = cmd.z;
     pl.isVirtual = cmd.U == 1;
+    if (m_placements.size() >= 4096) { respond(cmd, ctx, "ENOSPC:too many placements", true); return; }
     m_placements.push_back(pl);
 
     if (!pl.isVirtual && !pl.parentImage && cmd.C == 0 && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
@@ -655,6 +695,7 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
     pl.row = topRow;
     pl.col = col;
     pl.z = -1; // under text, over cell backgrounds: text written on it stays readable
+    if (m_placements.size() >= 4096) m_placements.erase(m_placements.begin());
     m_placements.push_back(pl);
     enforceQuota();
 }
@@ -816,6 +857,9 @@ void GraphicsStore::frame(const Command& cmd, std::string data, Context& ctx)
         return;
     }
 
+    if (!(cmd.r > 0 && std::size_t(cmd.r) <= img->frames.size()) && img->frames.size() >= 1024) {
+        respond(cmd, ctx, "ENOSPC:too many image frames", true); return;
+    }
     auto canvas = std::make_shared<ImageFrame>();
     if (cmd.r > 0 && std::size_t(cmd.r) <= img->frames.size()) {
         *canvas = *img->frames[std::size_t(cmd.r - 1)];
@@ -969,12 +1013,12 @@ void GraphicsStore::pruneOrphans()
     }
 }
 
-std::optional<std::pair<long long, long long>> GraphicsStore::origin(const Placement& p, const Screen& s, int depth) const
+std::optional<std::pair<long long, long long>> GraphicsStore::origin(const Placement& p, const Screen& s, int depth, int extraRows) const
 {
     if (depth > 32) return std::nullopt;
     if (p.parentImage) {
         const auto* parent = parentOf(p);
-        auto at = parent ? origin(*parent, s, depth + 1) : std::nullopt;
+        auto at = parent ? origin(*parent, s, depth + 1, extraRows) : std::nullopt;
         if (at) { at->first += p.relativeX; at->second += p.relativeY; }
         return at;
     }
@@ -990,7 +1034,7 @@ std::optional<std::pair<long long, long long>> GraphicsStore::origin(const Place
         return c.kind() == Color::Kind::Rgb ? (std::uint32_t(c.r()) << 16) | (std::uint32_t(c.g()) << 8) | c.b()
             : c.kind() == Color::Kind::Palette ? c.index() : 0;
     };
-    for (auto y = s.viewportTop(); y < s.viewportTop() + std::size_t(s.rows()); ++y) {
+    for (auto y = s.viewportTop(); y < std::min(s.historySize() + std::size_t(s.rows()), s.viewportTop() + std::size_t(s.rows() + std::clamp(extraRows, 0, s.rows()))); ++y) {
         const auto& row = s.absoluteRow(y);
         bool previous = false;
         std::uint32_t prevImage = 0, prevPlacement = 0;
@@ -1021,14 +1065,14 @@ std::optional<std::pair<long long, long long>> GraphicsStore::origin(const Place
     return at;
 }
 
-std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int cw, int ch) const
+std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int cw, int ch, int extraRows) const
 {
     std::vector<VisiblePlacement> out;
     if (cw <= 0 || ch <= 0) {
         return out;
     }
     const long long top = (long long)screen.viewportTop();
-    const int viewH = screen.rows() * ch;
+    const long long viewH = static_cast<long long>(screen.rows() + std::clamp(extraRows, 0, screen.rows())) * ch;
     for (const Placement& p : m_placements) {
         if (p.isVirtual) {
             continue;
@@ -1037,7 +1081,7 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         if (it == m_images.end() || it->second.frames.empty()) {
             continue;
         }
-        const auto position = origin(p, screen);
+        const auto position = origin(p, screen, 0, extraRows);
         if (!position) continue;
         const auto [col, abs] = *position;
         const Image& img = it->second;
@@ -1050,7 +1094,7 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         v.y = int(py);
         v.width = size.width;
         v.height = size.height;
-        if (v.y + v.height <= 0 || v.y >= viewH || v.width <= 0 || v.height <= 0) {
+        if (static_cast<long long>(v.y) + v.height <= 0 || v.y >= viewH || v.width <= 0 || v.height <= 0) {
             continue;
         }
         v.frame = img.frames[std::min(img.currentFrame, img.frames.size() - 1)];
@@ -1095,26 +1139,26 @@ std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t im
         return std::nullopt;
     }
     // The image fits the grid with its aspect ratio kept, centred.
-    const double gridW = double(cols * cw);
-    const double gridH = double(rows * ch);
+    const double gridW = double(cols) * cw;
+    const double gridH = double(rows) * ch;
     const double imgW = std::max(1.0, double(image.width));
     const double imgH = std::max(1.0, double(image.height));
     const double scale = (imgW * gridH > imgH * gridW) ? gridW / imgW : gridH / imgH;
     const double offX = (gridW - imgW * scale) / 2;
     const double offY = (gridH - imgH * scale) / 2;
     // This cell's part of the grid, clipped to the image.
-    const double gx0 = std::max(double(col * cw), offX);
-    const double gy0 = std::max(double(row * ch), offY);
-    const double gx1 = std::min(double((col + 1) * cw), offX + imgW * scale);
-    const double gy1 = std::min(double((row + 1) * ch), offY + imgH * scale);
+    const double gx0 = std::max(double(col) * cw, offX);
+    const double gy0 = std::max(double(row) * ch, offY);
+    const double gx1 = std::min((double(col) + 1) * cw, offX + imgW * scale);
+    const double gy1 = std::min((double(row) + 1) * ch, offY + imgH * scale);
     if (gx1 <= gx0 || gy1 <= gy0) {
         return std::nullopt;
     }
     VisiblePlacement v;
     v.frame = image.frames[std::min(image.currentFrame, image.frames.size() - 1)];
     v.imageId = imageId;
-    v.x = cellX + int(std::lround(gx0 - col * cw));
-    v.y = cellY + int(std::lround(gy0 - row * ch));
+    v.x = cellX + int(std::lround(gx0 - double(col) * cw));
+    v.y = cellY + int(std::lround(gy0 - double(row) * ch));
     v.width = int(std::lround(gx1 - gx0));
     v.height = int(std::lround(gy1 - gy0));
     v.srcX = int(std::lround((gx0 - offX) / scale));
@@ -1179,7 +1223,7 @@ std::size_t GraphicsStore::totalBytes() const
 void GraphicsStore::enforceQuota()
 {
     std::size_t total = totalBytes();
-    while (total > m_quota && !m_images.empty()) {
+    while ((total > m_quota || m_images.size() > 4096) && !m_images.empty()) {
         // Oldest image without placements first, then the oldest overall.
         auto victim = m_images.end();
         bool victimUnused = false;

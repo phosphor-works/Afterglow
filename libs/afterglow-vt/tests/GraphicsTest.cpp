@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <zlib.h>
 
@@ -336,4 +340,60 @@ TEST(Graphics, TransmitAndPlaceReportsInvalidRelativeParent)
     EXPECT_NE(t.host.written.find("ENOPARENT"), std::string::npos);
     EXPECT_EQ(t.host.written.find("OK"), std::string::npos);
     EXPECT_TRUE(t.g().placements().empty());
+}
+
+TEST(Graphics, SharedMemoryOffsetWithoutSizeReadsRemainingBytes)
+{
+    const std::string name = "/afterglow-graphics-test-" + std::to_string(getpid());
+    const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(write(fd, "skipRGBA", 8), 8);
+    close(fd);
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=s,f=32,s=1,v=1,O=4,i=7", b64(name)));
+    ASSERT_EQ(t.g().images().count(7), 1u);
+    EXPECT_EQ(t.g().images().at(7).frames[0]->rgba[0], 'R');
+    EXPECT_EQ(shm_open(name.c_str(), O_RDONLY, 0), -1);
+    shm_unlink(name.c_str());
+}
+
+TEST(Graphics, FilePayloadRejectsSparseOversizeAndNonRegularFiles)
+{
+    char name[] = "/tmp/afterglow-graphics-test-XXXXXX";
+    const int fd = mkstemp(name);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(ftruncate(fd, GraphicsStore::DefaultQuota + 1), 0);
+    close(fd);
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=f,f=32,s=1,v=1,i=7", b64(name)));
+    EXPECT_TRUE(t.g().images().empty());
+    EXPECT_NE(t.host.written.find("EFBIG"), std::string::npos);
+    unlink(name);
+    ASSERT_EQ(mkfifo(name, 0600), 0);
+    t.host.written.clear();
+    t.t.feed(apc("a=t,t=f,f=32,s=1,v=1,i=8", b64(name)));
+    EXPECT_TRUE(t.g().images().empty());
+    EXPECT_NE(t.host.written.find("EBADF"), std::string::npos);
+    unlink(name);
+}
+
+TEST(Graphics, ExtendedViewportIncludesImageBelowVisibleRows)
+{
+    Term t(20, 3);
+    t.t.feed("\n\n\n");
+    t.t.feed(apc("a=T,f=32,s=1,v=1,i=8,C=1,q=2", b64(rgba(1, 1, 0, 0, 0))));
+    t.t.screen().scrollViewport(1);
+    EXPECT_TRUE(t.g().visible(t.t.screen(), 10, 20).empty());
+    EXPECT_EQ(t.g().visible(t.t.screen(), 10, 20, 1).size(), 1u);
+}
+
+TEST(Graphics, PlacementMetadataAndHostileGeometryAreBounded)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=1,q=2", b64(rgba(1, 1, 0, 0, 0))));
+    for (int i = 1; i <= 4100; ++i) t.t.feed(apc("a=p,i=1,C=1,q=2,p=" + std::to_string(i)));
+    EXPECT_EQ(t.g().placements().size(), 4096u);
+    t.t.feed(apc("a=p,i=1,p=1,c=2147483647,r=2147483647,X=2147483647,Y=2147483647,C=1,q=2"));
+    t.g().visible(t.t.screen(), 65535, 65535);
+    t.t.feed(apc("a=d,d=x,x=1"));
 }

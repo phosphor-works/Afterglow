@@ -175,3 +175,14 @@ TEST(LineSize, DoubleHeightAndResets)
     t.feed("\x1b#6\x1b#8"); // DECALN
     EXPECT_EQ(t.t.screen().row(0).lineSize, LineSize::Single);
 }
+
+TEST(TextSizing, ExplicitBlockPreservesLongTextAndRejectsOverlongUtf8)
+{
+    Term t(20, 3);
+    const std::string text(200, 'a');
+    t.feed("\x1b]66;w=2;" + text + "\a");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), text);
+    t.t.reset();
+    t.feed("\x1b]66;w=2;\xc1\xa1\a");
+    EXPECT_EQ(t.at(0, 0).codepoint(), Unicode::ReplacementCharacter);
+}

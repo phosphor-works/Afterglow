@@ -93,6 +93,7 @@ bool ShellContexts::setRemoteHost(std::string_view userAtHost)
     if (userAtHost.empty()) {
         return m_stack.size() != before;
     }
+    if (m_stack.size() >= MaxDepth) return m_stack.size() != before;
     ShellContext c;
     c.id = std::string(RemoteHostId);
     c.type = "remote";

@@ -268,7 +268,7 @@ TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
 {
     RecordingHost host; Terminal t(10, 5, host);
     t.feed("\x1b[> q\x1b[c");
-    EXPECT_TRUE(host.written.starts_with("\x1b[>1;2;3;29;100 q\x1b[?"));
+    EXPECT_TRUE(host.written.starts_with("\x1b[>1;2;3;29;30;40;100;101 q\x1b[?"));
     t.feed("\x1b[>1;2:2:3:99:99:4 q");
     ASSERT_EQ(t.extraCursors().size(), 1u);
     EXPECT_EQ(t.extraCursors().at({1, 2}), 1);
@@ -282,4 +282,34 @@ TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
     t.feed("\x1b[>29;0 q\x1b[?1049h"); EXPECT_TRUE(t.extraCursors().empty());
     t.feed("\x1b[>1;0 q\x1b[2J"); EXPECT_TRUE(t.extraCursors().empty());
     t.feed("\x1b[>1;0 q\x1b" "c"); EXPECT_TRUE(t.extraCursors().empty());
+}
+
+TEST(Extensions, ExtraCursorColorsRoundTripAndReset)
+{
+    RecordingHost host;
+    Terminal t(20, 10, host);
+    t.feed("\x1b[>30;2:12:34:56 q\x1b[>40;5:123 q\x1b[>101 q");
+    EXPECT_EQ(host.written, "\x1b[>101;30:2:12:34:56;40:5:123 q");
+    EXPECT_EQ(t.extraCursorColor().color, Color::palette(123));
+    t.feed("\x1b[>40;2:256:0:0 q");
+    EXPECT_EQ(t.extraCursorColor().color, Color::palette(123));
+    t.feed("\x1b[>1;0 q\x1b" "c");
+    EXPECT_TRUE(t.extraCursors().empty());
+    EXPECT_EQ(t.extraCursorColor().mode, ExtraCursorColor::Mode::Main);
+    EXPECT_EQ(t.extraCursorTextColor().mode, ExtraCursorColor::Mode::Main);
+}
+
+TEST(Extensions, MultipleCursorLongListsAndOverflowAreAtomic)
+{
+    RecordingHost host;
+    Terminal t(100, 10, host);
+    std::string command = "\x1b[>1;2";
+    for (int i = 1; i <= 100; ++i) command += ":1:" + std::to_string(i);
+    t.feed(command + " q");
+    EXPECT_EQ(t.extraCursors().size(), 100u);
+    t.feed("\x1b[>0;4 q");
+    command = "\x1b[>1;2";
+    for (int i = 0; i < 3000; ++i) command += ":1:1";
+    t.feed(command + " q");
+    EXPECT_TRUE(t.extraCursors().empty());
 }

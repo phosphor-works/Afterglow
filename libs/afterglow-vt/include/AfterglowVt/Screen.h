@@ -37,6 +37,7 @@ struct SavedCursor
     int y = 0;
     bool pendingWrap = false;
     bool originMode = false;
+    std::uint32_t penId = StyleTable::DefaultId; ///< owns a reference while saved
     Style pen;
     Charset charsets[4] = {};
     int gl = 0;
@@ -138,7 +139,7 @@ public:
     /// to rows (image placements). They are rewritten to where those rows end
     /// up, or to TrackedRowGone if the row no longer exists.
     void resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart = std::nullopt,
-                std::vector<std::size_t>* trackedRows = nullptr);
+                std::vector<std::size_t>* trackedRows = nullptr, std::vector<int>* trackedColumns = nullptr);
     static constexpr std::size_t TrackedRowGone = std::size_t(-1);
 
     // Viewport -------------------------------------------------------------
@@ -187,8 +188,8 @@ private:
     void eraseMulticellsCrossing(int top, int bottom, int left, int right);
     void trimHistory();
     void truncateRow(Row& row, int cols);
-    void resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked);
-    void resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked);
+    void resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns);
+    void resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns);
 
     std::deque<Row> m_rows;
     int m_cols;

@@ -183,3 +183,36 @@ TEST(Pty, RemovesInheritedEnvironmentAndExplicitValuesWin)
     EXPECT_TRUE(output.wait("HOME=unset PATH=/test/explicit DONE")) << output.take();
     pty->stop();
 }
+
+TEST(Pty, SpawnReportsExecAndWorkingDirectoryFailuresSynchronously)
+{
+    Output output;
+    SpawnOptions options;
+    options.argv = {"/nonexistent/afterglow-test-program"};
+    std::string error;
+    EXPECT_EQ(Pty::spawn(options, output, &error), nullptr);
+    EXPECT_FALSE(error.empty());
+    options.argv = {"/bin/sh"};
+    options.workingDirectory = "/nonexistent/afterglow-test-directory";
+    EXPECT_EQ(Pty::spawn(options, output, &error), nullptr);
+}
+
+TEST(Pty, ExecutableSearchUsesChildPathAndWorkingDirectory)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    file(directory.filePath("custom-helper"), "printf 'CUSTOM_PATH_DONE'\n");
+    ASSERT_TRUE(QFile::setPermissions(directory.filePath("custom-helper"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    Output output;
+    SpawnOptions options;
+    options.argv = {"custom-helper"};
+    options.workingDirectory = directory.path().toStdString();
+    options.environment = {{"PATH", "."}};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, output);
+    ASSERT_NE(pty, nullptr);
+    output.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    EXPECT_TRUE(output.wait("CUSTOM_PATH_DONE"));
+    pty->stop();
+}

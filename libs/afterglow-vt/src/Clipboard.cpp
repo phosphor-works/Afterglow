@@ -36,7 +36,7 @@ void ClipboardAssembler::reset()
     m_write = {};
     m_mime.clear();
     m_encoded.clear();
-    m_total = 0;
+    m_total = m_decoded = 0;
 }
 
 bool ClipboardAssembler::flush(std::string& reply)
@@ -47,8 +47,15 @@ bool ClipboardAssembler::flush(std::string& reply)
     auto decoded = detail::base64Decode(m_encoded, detail::Base64Check::Strict);
     if (!decoded) {
         reply = writeStatus("EINVAL", m_write.id);
+        reset(); m_writing = m_failed = true;
         return false;
     }
+    if (decoded->size() > MaxWrite - m_decoded || m_write.data.size() >= 64) {
+        reply = writeStatus("EFBIG", m_write.id);
+        reset(); m_writing = m_failed = true;
+        return false;
+    }
+    m_decoded += decoded->size();
     m_write.data.emplace_back(std::move(m_mime), std::move(*decoded));
     m_mime.clear();
     m_encoded.clear();
@@ -61,6 +68,11 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
     const std::string_view metadata = payload.substr(0, semi);
     const std::string_view data = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
 
+    if (metadata.size() > 16384) {
+        reply = writeStatus("EFBIG", m_write.id);
+        reset(); m_writing = m_failed = true;
+        return Result::Error;
+    }
     std::string_view type;
     std::string mime;
     std::string id;
@@ -77,6 +89,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             const std::string_view key = kv.substr(0, eq);
             const std::string_view value = kv.substr(eq + 1);
             auto decode = [&](std::string& target) {
+                if (value.size() > 4096) { badValue = true; return; }
                 if (auto d = detail::base64Decode(value, detail::Base64Check::Strict)) {
                     target = std::move(*d);
                 } else {
@@ -105,6 +118,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
 
     if (type == "read") {
         // A read has no way to report bad base64: it is ignored.
+        if (data.size() > 65536) return Result::Ignored;
         const auto list = detail::base64Decode(data, detail::Base64Check::Strict);
         if (badValue || !list) {
             return Result::Ignored;
@@ -155,14 +169,15 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             return Result::Ignored;
         }
         auto fail = [&](std::string_view status) {
-            m_failed = true;
             reply = writeStatus(status, m_write.id);
+            reset(); m_writing = m_failed = true;
             return Result::Error;
         };
         if (badValue) {
             return fail("EINVAL");
         }
         if (type == "walias") {
+            if (data.size() > 65536) return fail("EFBIG");
             const auto aliases = detail::base64Decode(data, detail::Base64Check::Strict);
             if (mime.empty() || !aliases) {
                 return fail("EINVAL");
@@ -202,10 +217,10 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             }
             m_mime = mime;
         }
-        m_total += data.size() / 4 * 3;
-        if (m_total > MaxWrite) {
+        if (data.size() > ((MaxWrite + 2) / 3) * 4 - m_total) {
             return fail("EFBIG");
         }
+        m_total += data.size();
         m_encoded += data;
         return Result::Pending;
     }

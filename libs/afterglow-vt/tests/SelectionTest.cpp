@@ -102,3 +102,16 @@ TEST(Selection, ResizeInvalidates)
     t.t.resize(8, 2, 8, 16);
     EXPECT_FALSE(sel.validFor(t.t.screen()));
 }
+
+TEST(Selection, WideTailStartAndBoundedUtf8)
+{
+    Term t(10, 3);
+    t.t.feed("界abc");
+    auto selection = t.select(0, 1, 0, 4);
+    EXPECT_EQ(selection.text(t.t.screen()), "界abc");
+    bool truncated = false;
+    EXPECT_EQ(selection.text(t.t.screen(), DefaultWordBoundaries, 4, &truncated), "界a");
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(selection.text(t.t.screen(), DefaultWordBoundaries, 2, &truncated), "");
+    EXPECT_TRUE(truncated);
+}

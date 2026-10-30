@@ -66,7 +66,8 @@ private:
     ClipboardRequest m_write;
     std::string m_mime; ///< the type being received
     std::string m_encoded; ///< its base64 so far, decoded when the type changes
-    std::size_t m_total = 0;
+    std::size_t m_total = 0; ///< cumulative encoded bytes
+    std::size_t m_decoded = 0;
 
     bool flush(std::string& reply);
 };

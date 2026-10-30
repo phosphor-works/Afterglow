@@ -367,7 +367,7 @@ TEST(Terminal, RepeatLastCharacterRuns)
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "abbbb");
     // Across the end of the line, wrapping as printing would.
     t.feed("\x1b[2J\x1b[Hxy\x1b[6b");
-    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "xyyyyy\nyy");
+    EXPECT_EQ(t.text(Terminal::TextScope::Screen), "xyyyyyyy");
     // A DEC line-drawing character repeats as drawn.
     t.feed("\x1b[2J\x1b[H\x1b(0q\x1b[2b\x1b(B");
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "───");
@@ -448,4 +448,56 @@ TEST(Terminal, BidiControlsAreRetainedAndCopiedOnlyForBidiShellContent)
         terminal.feed("\x1b[?1049l\x1b[2J\x1b[H\x1b[?1000h" + control + "y");
         EXPECT_EQ(terminal.screen().row(0).at(0).codepoint(), U'y');
     }
+}
+
+TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
+{
+    Term t(10, 5);
+    t.feed("\x1b]133;A\a$ \x1b]133;B\aprint abc\x1b]133;C\a\r\nabcdefghijklmno\x1b]133;D;0\a");
+    auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 3u);
+    EXPECT_EQ(t.t.semanticRegionText(regions[0].id), "$" );
+    EXPECT_EQ(t.t.semanticRegionText(regions[1].id), "print abc");
+    EXPECT_EQ(t.t.semanticRegionText(regions[2].id), "\nabcdefghijklmno");
+    t.t.resize(6, 5, 10, 20);
+    EXPECT_EQ(t.t.semanticRegionText(regions[1].id), "print abc");
+    EXPECT_EQ(t.t.semanticRegionText(regions[2].id), "\nabcdefghijklmno");
+    EXPECT_EQ(t.t.semanticRegions().back().exitCode, 0);
+    bool truncated = false;
+    EXPECT_EQ(t.t.semanticRegionText(regions[2].id, 4, &truncated), "\nabc");
+    EXPECT_TRUE(truncated);
+    t.t.reset();
+    t.feed("\x1b]133;A\a");
+    EXPECT_GT(t.t.semanticRegions().front().id, regions.back().id);
+}
+
+TEST(Terminal, SavedCursorRetainsHyperlinkAndAltScreenReinternsIt)
+{
+    Term t(20, 4);
+    t.feed("\x1b]8;id=one;https://one.example\a\x1b" "7\x1b]8;;\a");
+    t.feed("\x1b]8;id=two;https://two.example\aX\x1b]8;;\a\x1b" "8A");
+    const auto& screen = t.t.screen();
+    EXPECT_EQ(screen.styles().linkUri(screen.styles().get(screen.row(0).at(0).styleId()).link), "https://one.example");
+    t.feed("\x1b[?1049hB");
+    const auto& alt = t.t.screen();
+    EXPECT_EQ(alt.styles().linkUri(alt.styles().get(alt.row(0).at(1).styleId()).link), "https://one.example");
+}
+
+TEST(Terminal, ScreenTextJoinsSoftWrapsAndKeepsWrappedSpaces)
+{
+    Term t(5, 3);
+    t.feed("abc  def");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::Screen), "abc  def");
+}
+
+TEST(Terminal, KeycapWidensAndSemanticEndIncludesRightmostCell)
+{
+    Term t(5, 3);
+    t.feed("1\xef\xb8\x8f\xe2\x83\xa3");
+    EXPECT_EQ(t.t.screen().row(0).at(0).width(), 2);
+    t.t.reset();
+    t.feed("\x1b]133;C\a12345\x1b]133;D;0\a");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "12345");
+    t.t.resize(3, 3, 10, 20);
+    EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "12345");
 }

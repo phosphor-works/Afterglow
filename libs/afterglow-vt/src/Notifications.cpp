@@ -271,7 +271,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         }
         r.iconData += text;
     } else {
-        if (!isSafeText(text) || p.bytes > MaxText + MaxIcon) {
+        if (!isSafeText(text) || r.title.size() + r.body.size() + p.buttons.size() + text.size() > MaxText) {
             m_pending.erase(it);
             return Result::Ignored;
         }

@@ -168,9 +168,8 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body)
     if (id && !validId(*id)) {
         return Result::Ignored; // must not fall through to the root record
     }
-    m_nativeReports = true;
-
     if (*state == "clear") {
+        m_nativeReports = true;
         clear(id.value_or(std::string_view{}), !id);
         return Result::Changed;
     }
@@ -224,6 +223,7 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body)
         }
         r.msg = *decoded;
     }
+    m_nativeReports = true;
     upsert(std::move(r));
     return Result::Changed;
 }
@@ -313,9 +313,9 @@ void ProgramStatus::upsert(StatusRecord record)
         // Full: the least recently updated record makes room.
         const auto oldest = std::min_element(m_records.begin(), m_records.end(),
                                              [](const StatusRecord& a, const StatusRecord& b) { return a.serial < b.serial; });
-        const bool before = oldest < it;
+        const auto offset = (it - m_records.begin()) - (oldest < it ? 1 : 0);
         m_records.erase(oldest);
-        m_records.insert(before ? it - 1 : it, std::move(record));
+        m_records.insert(m_records.begin() + offset, std::move(record));
         return;
     }
     m_records.insert(it, std::move(record));

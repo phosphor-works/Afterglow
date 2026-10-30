@@ -209,6 +209,8 @@ Terminal::Terminal(int cols, int rows, ITerminalHost& host, const TerminalOption
     , m_defaultFg(options.defaultForeground)
     , m_defaultBg(options.defaultBackground)
 {
+    cols = m_primary->cols();
+    rows = m_primary->rows();
     m_cursorShape = options.cursorShape;
     m_modes.cursorBlink = options.cursorBlink;
     m_margins = Region{0, rows - 1, 0, cols - 1};
@@ -344,7 +346,7 @@ void Terminal::changeRectAttributes(const Params& p, bool reverse)
 
 void Terminal::setOptions(const TerminalOptions& options)
 {
-    // The primary screen keeps history only if it had any; the alternate never does.
+    // Only the primary screen retains scrollback.
     if (options.maxScrollback != m_options.maxScrollback) {
         m_primary->setMaxScrollback(options.maxScrollback);
     }
@@ -364,11 +366,15 @@ void Terminal::setOptions(const TerminalOptions& options)
 void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
     std::erase_if(m_extraCursors, [&](const auto& c) { return c.first.first >= rows || c.first.second >= cols; });
-    cols = std::max(cols, 2);
-    rows = std::max(rows, 1);
+    cols = std::clamp(cols, 2, 4096);
+    rows = std::clamp(rows, 1, 1048576 / cols);
+    cellWidth = std::clamp(cellWidth, 0, 65535);
+    cellHeight = std::clamp(cellHeight, 0, 65535);
+    const bool metricsChanged = m_cellWidth != cellWidth || m_cellHeight != cellHeight;
     m_cellWidth = cellWidth;
     m_cellHeight = cellHeight;
     if (cols == this->cols() && rows == this->rows()) {
+        if (metricsChanged) { touch(); if (m_modes.sizeReports) reportSize(); }
         return;
     }
     const std::optional<std::size_t> prompt = m_modes.altScreen ? std::nullopt : redrawablePromptStart();
@@ -378,7 +384,31 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     }
     // Reflow renumbers rows; images follow the rows they are anchored to.
     std::vector<std::size_t> anchors = m_graphics[0].anchorRows(*m_primary);
-    m_primary->resize(cols, rows, true, prompt, &anchors);
+    const auto imageAnchors = anchors.size();
+    std::vector<int> columns(anchors.size(), 0);
+    std::vector<SemanticPosition> positions;
+    for (const auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) positions.push_back({mark->row, mark->col});
+    for (const auto& region : m_semanticRegions) { positions.push_back(region.start); positions.push_back(region.end); }
+    for (const auto& point : positions) {
+        const auto index = m_primary->absoluteIndexOf(point.row);
+        anchors.push_back(index < 0 ? Screen::TrackedRowGone : std::size_t(index));
+        columns.push_back(point.col);
+    }
+    m_primary->resize(cols, rows, true, prompt, &anchors, &columns);
+    for (std::size_t i = 0; i < positions.size(); ++i) {
+        const auto mapped = anchors[imageAnchors + i];
+        if (mapped != Screen::TrackedRowGone)
+            positions[i] = {m_primary->rowsDropped() + mapped, columns[imageAnchors + i]};
+        else if (positions[i].row >= m_primary->rowsDropped())
+            positions[i].row = m_primary->rowsDropped() ? m_primary->rowsDropped() - 1 : UINT64_MAX;
+    }
+    std::size_t index = 0;
+    for (auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
+        const auto point = positions[index++];
+        mark->row = point.row; mark->col = point.col;
+    }
+    for (auto& region : m_semanticRegions) { region.start = positions[index++]; region.end = positions[index++]; }
+    anchors.resize(imageAnchors);
     m_graphics[0].retarget(*m_primary, anchors);
     m_alternate->resize(cols, rows, false);
     m_margins = Region{0, rows - 1, 0, cols - 1};
@@ -1053,7 +1083,8 @@ void Terminal::textSizing(std::string_view args)
                 }
                 value = (value << 6) | (c & 0x3F);
             }
-            if (ok && value <= 0x10FFFF && !(value >= 0xD800 && value <= 0xDFFF)) {
+            static constexpr char32_t minimum[] = {0, 0x80, 0x800, 0x10000};
+            if (ok && value >= minimum[extra] && value <= 0x10FFFF && !(value >= 0xD800 && value <= 0xDFFF)) {
                 cp = value;
                 used = extra + 1;
             }
@@ -1575,6 +1606,9 @@ void Terminal::saveCursor()
     s.y = cur.y;
     s.pendingWrap = cur.pendingWrap;
     s.originMode = m_modes.originMode;
+    const auto penId = m_active->styles().acquire(cur.pen);
+    m_active->styles().release(s.penId);
+    s.penId = penId;
     s.pen = cur.pen;
     std::copy(std::begin(m_charsets), std::end(m_charsets), std::begin(s.charsets));
     s.gl = m_gl;
@@ -1615,7 +1649,12 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         m_extraCursors.clear();
         m_modes.altScreen = true;
         syncKittyFlags();
-        m_alternate->setPen(primaryCursor.pen);
+        auto alternatePen = primaryCursor.pen;
+        if (alternatePen.link) {
+            const auto& source = m_primary->styles();
+            alternatePen.link = m_alternate->styles().internLink(source.linkUri(alternatePen.link), source.linkId(alternatePen.link));
+        }
+        m_alternate->setPen(alternatePen);
         m_alternate->cursor.x = primaryCursor.x;
         m_alternate->cursor.y = primaryCursor.y;
         if (clear) {
@@ -1646,6 +1685,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
 
 void Terminal::reset()
 {
+    m_parser.reset();
     m_extraCursors.clear();
     fullReset();
     touch();
@@ -1665,6 +1705,14 @@ void Terminal::clearScreenAndHistory()
 
 void Terminal::fullReset()
 {
+    m_extraCursors.clear();
+    m_extraCursorColor = m_extraCursorTextColor = {};
+    m_iterm2Receiving = false;
+    m_iterm2Args.clear(); m_iterm2Data.clear();
+    m_explicitCommand.reset();
+    m_promptClickEvents = false;
+    m_sixelPaletteReady = false;
+    if (!m_contexts.stack().empty()) { m_contexts.clear(); m_host.contextChanged(); }
     if (m_modes.altScreen) {
         setAltScreen(false, false, false);
     }
@@ -1676,6 +1724,7 @@ void Terminal::fullReset()
     m_conformance = 5;
     m_savedDecModes.clear();
     m_inputStart = m_outputStart = m_outputEnd = {};
+    m_semanticRegions.clear();
     m_commandRunning = false;
     m_hasSelectionFg = m_hasSelectionBg = false;
     m_reportedDark = -1;
@@ -1720,6 +1769,8 @@ void Terminal::fullReset()
         scr->clearHistory();
         scr->cursor.x = scr->cursor.y = 0;
         scr->cursor.pendingWrap = false;
+        scr->styles().release(scr->savedCursor.penId);
+        scr->savedCursor.penId = StyleTable::DefaultId;
         scr->hasSavedCursor = false;
     }
     m_lastPrinted = 0;
@@ -2362,6 +2413,8 @@ void Terminal::softReset()
     m_singleShift = 0;
     m_active->setPen(Style{}); // DECSCA protection off too
     m_protection = Protection::Off;
+    m_active->styles().release(m_active->savedCursor.penId);
+    m_active->savedCursor.penId = StyleTable::DefaultId;
     m_active->hasSavedCursor = false;
 }
 
@@ -3029,7 +3082,7 @@ void Terminal::reportRectChecksum(const Params& p)
 Terminal::Mark Terminal::cursorMark() const
 {
     const Screen& scr = *m_primary;
-    return Mark{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.cursor.y), scr.cursor.x, true};
+    return Mark{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.cursor.y), scr.cursor.x + (scr.cursor.pendingWrap ? 1 : 0), true};
 }
 
 void Terminal::finishCommand(int exitCode)
@@ -3116,7 +3169,7 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
     const Screen& scr = *m_active;
     std::string out;
     for (int y = 0; y < scr.rows(); ++y) {
-        const Row& row = scr.row(y);
+        const Row& row = scr.absoluteRow(scr.viewportTop() + std::size_t(y));
         std::string line;
         for (int x = 0; x < scr.cols(); ++x) {
             const Cell& c = row.at(x);
@@ -3130,7 +3183,8 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
                 }
             }
         }
-        while (!line.empty() && line.back() == ' ') {
+        const bool continues = row.wrapped && y + 1 < scr.rows();
+        while (!continues && !line.empty() && line.back() == ' ') {
             line.pop_back();
         }
         if (out.size() + line.size() > maxBytes) {
@@ -3141,8 +3195,10 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
             return out;
         }
         out += line;
-        if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
-        out += '\n';
+        if (!continues && y + 1 < scr.rows()) {
+            if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
+            out += '\n';
+        }
     }
     while (!out.empty() && out.back() == '\n') {
         out.pop_back();
@@ -3321,6 +3377,11 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     if (std::from_chars(numStr.data(), numStr.data() + numStr.size(), num).ec != std::errc{}) {
         return;
     }
+
+    const std::size_t fieldLimit = num == 0 || num == 1 || num == 2 ? 4096
+        : num == 7 || num == 8 ? 8192
+        : num == 133 || num == 633 || num == 3008 ? 65536 : 0;
+    if (fieldLimit && rest.size() > fieldLimit) return;
 
     switch (num) {
     case 0:
@@ -3584,6 +3645,55 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
     }
 }
 
+void Terminal::closeSemanticRegion(std::optional<int> exitCode)
+{
+    if (m_semanticRegions.empty() || !m_semanticRegions.back().open) return;
+    auto& region = m_semanticRegions.back();
+    const auto mark = cursorMark();
+    region.end = {mark.row, mark.col};
+    region.open = false;
+    region.exitCode = exitCode;
+}
+
+void Terminal::beginSemanticRegion(SemanticZoneKind kind)
+{
+    if (m_modes.altScreen) return;
+    closeSemanticRegion();
+    const auto mark = cursorMark();
+    SemanticRegion region;
+    region.id = m_nextSemanticId++;
+    region.kind = kind;
+    region.start = region.end = {mark.row, mark.col};
+    region.open = true;
+    if (m_semanticRegions.size() == 1024) m_semanticRegions.erase(m_semanticRegions.begin());
+    m_semanticRegions.push_back(region);
+}
+
+std::vector<SemanticRegion> Terminal::semanticRegions() const
+{
+    auto result = m_semanticRegions;
+    for (auto& region : result) {
+        if (region.open) {
+            const auto mark = cursorMark();
+            region.end = {mark.row, mark.col};
+        }
+        region.startTrimmed = m_primary->absoluteIndexOf(region.start.row) < 0;
+        region.available = m_primary->absoluteIndexOf(region.end.row) >= 0;
+    }
+    return result;
+}
+
+std::optional<std::string> Terminal::semanticRegionText(std::uint64_t id, std::size_t maxBytes, bool* truncated) const
+{
+    if (truncated) *truncated = false;
+    for (const auto& region : semanticRegions()) {
+        if (region.id != id) continue;
+        if (!region.available) return std::nullopt;
+        return textBetween({region.start.row, region.start.col, true}, {region.end.row, region.end.col, true}, maxBytes, truncated);
+    }
+    return std::nullopt;
+}
+
 void Terminal::semanticPrompt(std::string_view args)
 {
     // OSC 133 ; <kind> [; key=value ...]
@@ -3617,6 +3727,7 @@ void Terminal::semanticPrompt(std::string_view args)
         if (m_programStatus.endActivity()) {
             m_host.programStatusChanged();
         }
+        beginSemanticRegion(SemanticZoneKind::Prompt);
         m_semanticZone = SemanticZone::Prompt;
         m_promptClickEvents = clickEvents;
         if (!m_modes.altScreen) {
@@ -3624,9 +3735,11 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         break;
     case 'P': // continuation prompt line
+        beginSemanticRegion(SemanticZoneKind::Prompt);
         m_semanticZone = SemanticZone::Prompt;
         break;
     case 'B': // prompt end, user input begins
+        beginSemanticRegion(SemanticZoneKind::Input);
         m_semanticZone = SemanticZone::Input;
         m_promptRedrawPending = false;
         if (!m_modes.altScreen) {
@@ -3634,6 +3747,7 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         break;
     case 'C': { // command output begins
+        beginSemanticRegion(SemanticZoneKind::Output);
         m_semanticZone = SemanticZone::Output;
         m_promptClickEvents = false;
         m_promptRedrawPending = false;
@@ -3665,6 +3779,7 @@ void Terminal::semanticPrompt(std::string_view args)
         }
         if (m_commandRunning && !m_modes.altScreen) {
             m_outputEnd = cursorMark();
+            closeSemanticRegion(code >= 0 ? std::optional<int>(code) : std::nullopt);
             finishCommand(code);
         }
         break;
@@ -3733,6 +3848,7 @@ void Terminal::iterm2(std::string_view args, bool bel)
     const auto eq = args.find('=');
     const std::string_view key = args.substr(0, eq);
     const std::string_view value = eq == std::string_view::npos ? std::string_view{} : args.substr(eq + 1);
+    if (key != "File" && key != "FilePart" && value.size() > 65536) return;
     constexpr std::size_t MaxFileBase64 = 96u * 1024 * 1024;
     if (key == "File") {
         const auto colon = value.find(':');
@@ -4289,8 +4405,37 @@ std::uint64_t Terminal::advanceAnimations(std::uint64_t nowMs)
 namespace AfterglowVt {
 void Terminal::setExtraCursors(const Params& p)
 {
-    if (!p.given(0)) { reply("\x1b[>1;2;3;29;100 q"); return; }
+    if (!p.given(0)) { reply("\x1b[>1;2;3;29;30;40;100;101 q"); return; }
     const int shape = p.at(0);
+    if (shape == 30 || shape == 40) {
+        if (!p.given(1) || p.isSub(1)) return;
+        ExtraCursorColor value;
+        const int space = p.at(1);
+        if ((space == 0 || space == 1) && p.count == 2) {
+            value.mode = space ? ExtraCursorColor::Mode::Reverse : ExtraCursorColor::Mode::Main;
+        } else if (space == 2 && p.count == 5 && p.isSub(2) && p.isSub(3) && p.isSub(4)
+                   && p.given(2) && p.given(3) && p.given(4) && p.at(2) <= 255 && p.at(3) <= 255 && p.at(4) <= 255) {
+            value.mode = ExtraCursorColor::Mode::Rgb;
+            value.color = Color::rgb(p.at(2), p.at(3), p.at(4));
+        } else if (space == 5 && p.count == 3 && p.isSub(2) && p.given(2) && p.at(2) <= 255) {
+            value.mode = ExtraCursorColor::Mode::Palette;
+            value.color = Color::palette(p.at(2));
+        } else return;
+        (shape == 30 ? m_extraCursorTextColor : m_extraCursorColor) = value;
+        touch();
+        return;
+    }
+    if (shape == 101) {
+        auto encoded = [](const ExtraCursorColor& value) {
+            std::string result = std::to_string(int(value.mode));
+            if (value.mode == ExtraCursorColor::Mode::Rgb)
+                result += ":" + std::to_string(value.color.r()) + ":" + std::to_string(value.color.g()) + ":" + std::to_string(value.color.b());
+            else if (value.mode == ExtraCursorColor::Mode::Palette) result += ":" + std::to_string(value.color.index());
+            return result;
+        };
+        reply("\x1b[>101;30:" + encoded(m_extraCursorTextColor) + ";40:" + encoded(m_extraCursorColor) + " q");
+        return;
+    }
     if (shape == 100) {
         std::string response = "\x1b[>100";
         for (const auto& [point, value] : m_extraCursors)

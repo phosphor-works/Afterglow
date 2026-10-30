@@ -132,6 +132,7 @@ public:
     /// entry, so a link split across lines stays one link.
     std::uint32_t internLink(std::string_view uri, std::string_view id);
     std::string_view linkUri(std::uint32_t link) const noexcept;
+    std::string_view linkId(std::uint32_t link) const noexcept { return link < m_links.size() ? m_links[link].id : std::string_view{}; }
     std::size_t liveLinks() const noexcept { return m_linkLookup.size(); }
 
 private:

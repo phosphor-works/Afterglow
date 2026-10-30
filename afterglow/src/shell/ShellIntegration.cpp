@@ -13,6 +13,7 @@ std::optional<std::string> env(const AfterglowPty::SpawnOptions& o, const std::s
 {
     for (auto it = o.environment.rbegin(); it != o.environment.rend(); ++it)
         if (it->first == name) return it->second;
+    if (std::find(o.unsetEnvironment.begin(), o.unsetEnvironment.end(), name) != o.unsetEnvironment.end()) return {};
     if (const char* value = std::getenv(name.c_str())) return value;
     return {};
 }

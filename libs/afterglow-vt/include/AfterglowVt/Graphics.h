@@ -118,7 +118,7 @@ public:
     void handle(std::string_view payload, Context& ctx);
 
     /// Visible placements of the viewport, sorted by z then age.
-    std::vector<VisiblePlacement> visible(const Screen& screen, int cellWidth, int cellHeight) const;
+    std::vector<VisiblePlacement> visible(const Screen& screen, int cellWidth, int cellHeight, int extraRows = 0) const;
 
     /// The slice of a virtual placement that the placeholder cell for grid
     /// position (@p row, @p col) shows, drawn at (@p cellX, @p cellY).
@@ -160,6 +160,7 @@ private:
         std::string controlData; ///< the first chunk's keys
         std::string data;
         bool active = false;
+        bool failed = false;
     };
 
     void execute(const Command& cmd, std::string data, Context& ctx);
@@ -174,7 +175,7 @@ private:
     void respond(const Command& cmd, Context& ctx, std::string_view status, bool isError);
     Image* findImage(const Command& cmd);
     const Placement* parentOf(const Placement&) const;
-    std::optional<std::pair<long long, long long>> origin(const Placement&, const Screen&, int depth = 0) const;
+    std::optional<std::pair<long long, long long>> origin(const Placement&, const Screen&, int depth = 0, int extraRows = 0) const;
     void pruneOrphans();
     void enforceQuota();
     void dropUnusedImage(std::uint32_t id);

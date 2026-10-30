@@ -167,3 +167,14 @@ TEST(ProgramStatus, RecordCapEvictsTheLeastRecentlyUpdated)
     EXPECT_TRUE(std::is_sorted(t.records().begin(), t.records().end(),
                                [](const auto& a, const auto& b) { return a.id < b.id; }));
 }
+
+TEST(ProgramStatus, InvalidNativeReportDoesNotDisableLegacy)
+{
+    ProgramStatus status;
+    EXPECT_EQ(status.apply("state=bogus"), ProgramStatus::Result::Ignored);
+    EXPECT_TRUE(status.applyLegacyProgress(1, 40));
+    EXPECT_EQ(status.apply("state=working:msg=invalid!"), ProgramStatus::Result::Ignored);
+    EXPECT_TRUE(status.applyLegacyProgress(1, 50));
+    for (int i = 0; i < 300; ++i) status.apply("state=working:id=" + std::to_string(i));
+    EXPECT_EQ(status.records().size(), ProgramStatus::MaxRecords);
+}

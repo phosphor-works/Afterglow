@@ -114,14 +114,16 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     r.end = std::max(anchor, head);
     const std::uint64_t base = screen.rowsDropped();
     const int lastCol = screen.cols() - 1;
+    r.start.col = std::clamp(r.start.col, 0, lastCol);
+    r.end.col = std::clamp(r.end.col, 0, lastCol);
 
     switch (mode) {
     case SelectionMode::Normal:
         break;
     case SelectionMode::Block:
         r.block = true;
-        r.blockLeft = std::min(anchor.col, head.col);
-        r.blockRight = std::max(anchor.col, head.col);
+        r.blockLeft = std::clamp(std::min(anchor.col, head.col), 0, lastCol);
+        r.blockRight = std::clamp(std::max(anchor.col, head.col), 0, lastCol);
         break;
     case SelectionMode::Word: {
         CellWalker s{&screen, screen.absoluteIndexOf(r.start.row), r.start.col};
@@ -153,6 +155,9 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     }
     }
     // A wide character is selected whole.
+    if (const long long a = screen.absoluteIndexOf(r.start.row); a >= 0 && r.start.col > 0) {
+        if (screen.absoluteRow(std::size_t(a)).at(r.start.col).isTail()) --r.start.col;
+    }
     if (const long long a = screen.absoluteIndexOf(r.end.row); a >= 0 && r.end.col + 1 <= lastCol) {
         if (screen.absoluteRow(std::size_t(a)).at(r.end.col + 1).isTail()) {
             ++r.end.col;
@@ -161,8 +166,9 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     return r;
 }
 
-std::string Selection::text(const Screen& screen, std::u32string_view boundaries) const
+std::string Selection::text(const Screen& screen, std::u32string_view boundaries, std::size_t maxBytes, bool* truncated) const
 {
+    if (truncated) *truncated = false;
     if (!validFor(screen)) {
         return {};
     }
@@ -186,6 +192,7 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
                 c1 = r.end.col;
             }
         }
+        if (c0 > 0 && row.at(c0).isTail()) --c0;
         std::string line;
         for (int x = c0; x <= c1; ++x) {
             const Cell& c = row.at(x);
@@ -205,8 +212,16 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
                 line.pop_back();
             }
         }
+        if (line.size() > maxBytes - out.size()) {
+            auto bytes = maxBytes - out.size();
+            while (bytes && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80) --bytes;
+            out.append(line, 0, bytes);
+            if (truncated) *truncated = true;
+            return out;
+        }
         out += line;
         if (a < last && !joinsNext) {
+            if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
             out += '\n';
         }
     }

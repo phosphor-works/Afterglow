@@ -6,6 +6,7 @@
 #include <AfterglowVt/Unicode.h>
 
 #include <cstddef>
+#include <bitset>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -16,12 +17,13 @@ namespace AfterglowVt {
 /// sub-parameter of the one before it (SGR 4:3, 38:2::r:g:b).
 struct Params
 {
-    static constexpr int Max = 32;
+    static constexpr int Max = 4096;
 
     std::uint16_t values[Max] = {};
-    std::uint32_t subMask = 0; ///< bit i set: values[i] is a sub-parameter of values[i - 1]
-    std::uint32_t givenMask = 0; ///< bit i set: values[i] had digits (an explicit 0 is not omitted)
+    std::bitset<Max> subMask; ///< bit i set: values[i] is a sub-parameter of values[i - 1]
+    std::bitset<Max> givenMask; ///< bit i set: values[i] had digits (an explicit 0 is not omitted)
     int count = 0;
+    bool overflow = false;
 
     std::uint16_t at(int i, std::uint16_t fallback = 0) const { return i < count ? values[i] : fallback; }
     /// Value at @p i where 0 or absent means @p fallback (the usual "default 1").
@@ -29,8 +31,8 @@ struct Params
     {
         return (i < count && values[i] != 0) ? values[i] : fallback;
     }
-    bool isSub(int i) const { return i > 0 && i < count && ((subMask >> i) & 1); }
-    bool given(int i) const { return i < count && ((givenMask >> i) & 1); }
+    bool isSub(int i) const { return i > 0 && i < count && subMask[std::size_t(i)]; }
+    bool given(int i) const { return i < count && givenMask[std::size_t(i)]; }
 };
 
 /// Up to two intermediate bytes plus an optional private marker ('?', '>', '<', '=').
@@ -383,13 +385,13 @@ private:
     {
         if (m_params.count < Params::Max) {
             if (m_nextIsSub) {
-                m_params.subMask |= 1u << m_params.count;
+                m_params.subMask.set(std::size_t(m_params.count));
             }
             if (m_paramActive) {
-                m_params.givenMask |= 1u << m_params.count;
+                m_params.givenMask.set(std::size_t(m_params.count));
             }
             m_params.values[m_params.count++] = m_current;
-        }
+        } else { m_params.overflow = true; }
         m_current = 0;
         m_paramActive = false;
         m_sawSeparator = true;
@@ -405,7 +407,7 @@ private:
     void dispatchCsi(std::uint8_t final)
     {
         finishParams();
-        if (!m_inter.overflow) {
+        if (!m_inter.overflow && !m_params.overflow) {
             m_handler.csiDispatch(m_params, m_inter, final);
         }
         m_state = State::Ground;
@@ -491,7 +493,7 @@ private:
             }
             break;
         case State::DcsPassthrough:
-            if (!overflow) {
+            if (!overflow && !m_params.overflow) {
                 m_handler.dcsDispatch(m_params, m_inter, m_dcsFinal, m_string);
             }
             break;
