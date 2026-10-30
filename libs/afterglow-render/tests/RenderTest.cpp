@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <memory>
+#include <limits>
 #include <string>
 
 using namespace AfterglowRender;
@@ -128,6 +129,30 @@ double contrastRatio(std::uint32_t a, std::uint32_t b)
 }
 
 } // namespace
+
+TEST(Snapshot, ScrollbackCountsRetainedPrimaryRows)
+{
+    AfterglowVt::TerminalOptions options;
+    options.maxScrollback = 4;
+    Captured pane(options);
+    pane.capture("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\n");
+    EXPECT_EQ(pane.snapshot.scrollbackLines, 4u); // capped; dropped rows do not count
+    pane.terminal.setViewportOffset(2);
+    pane.capture("");
+    EXPECT_EQ(pane.snapshot.scrollbackLines, 4u); // independent of viewport position
+    pane.capture("\x1b[?1049hfull-screen app\r\n\r\n\r\n");
+    ASSERT_EQ(pane.terminal.screen().historySize(), 0u);
+    EXPECT_EQ(pane.snapshot.scrollbackLines, 4u);
+    options.maxScrollback = 2;
+    pane.terminal.setOptions(options);
+    pane.capture("");
+    EXPECT_EQ(pane.snapshot.scrollbackLines, 2u);
+    pane.terminal.clearScreenAndHistory();
+    pane.capture("");
+    EXPECT_EQ(pane.snapshot.scrollbackLines, 0u);
+    pane.capture("\x1b[?1049l");
+    EXPECT_EQ(pane.snapshot.scrollbackLines, 0u);
+}
 
 TEST(Snapshot, BoldIsBrightUsesTheBrightColours)
 {
@@ -344,11 +369,12 @@ TEST_F(Render, KittyImageIsTopDown)
 } // namespace
 
 namespace {
-ShaderProgramPtr layerShader(const char* id, const char* body)
+ShaderProgramPtr layerShader(const char* id, const char* body, bool hdr = false)
 {
     ShaderProgramSource src;
     src.id = QString::fromLatin1(id);
-    src.code = QByteArray("void mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec4 c = texture(iChannel0, fragCoord / iResolution.xy);\n")
+    src.code = QByteArray(hdr ? "#define AFTERGLOW_HDR 1\n" : "")
+        + "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec4 c = texture(iChannel0, fragCoord / iResolution.xy);\n"
         + body + "\n}\n";
     QString error;
     auto program = ShaderProgram::compile(src, &error);
@@ -399,6 +425,290 @@ TEST_F(Render, LayerShadersSeeOnlyTheirLayer)
     img = render("");
     EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultFg));
     EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 255));
+}
+
+TEST_F(Render, AudioSpectrumIsSharedAcrossPanesAndClearsOnStop)
+{
+    ShaderProgramSource source;
+    source.id = QStringLiteral("audio");
+    source.code = R"(
+#define AFTERGLOW_AUDIO 1
+void mainImage(out vec4 c, in vec2 p) {
+    c = vec4(getBass(), getMids(), getTreble(), 1.0);
+    if (p.x > iResolution.x * 0.5)
+        c = vec4(audioBar(0), audioBarSmooth(0.5), audioBar(63), 1.0);
+})";
+    QString error;
+    auto shader = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(shader) << error.toStdString();
+    EXPECT_TRUE(shader->requiresAudio());
+    EXPECT_FALSE(shader->animated()); // Spectrum updates, not a busy render loop.
+    ShaderChains chains;
+    chains.pane = {shader};
+    EXPECT_TRUE(chains.audioReactive());
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane left{&snapshot, {}}, right{&snapshot, {}};
+    left.params.rect = QRect(QPoint(0, 0), size);
+    right.params.rect = QRect(QPoint(size.width(), 0), size);
+    right.params.contentOrigin = right.params.rect.topLeft();
+    auto draw = [&] { return renderer->renderToImage(QSize(size.width()*2, size.height()), {left, right}, {}, 0xFF000000u); };
+    std::array<float, GpuDevice::AudioBars> spectrum;
+    std::fill(spectrum.begin(), spectrum.begin()+20, 0.25f);
+    std::fill(spectrum.begin()+20, spectrum.begin()+48, 0.5f);
+    std::fill(spectrum.begin()+48, spectrum.end(), 0.75f);
+    s_device->setAudioSpectrum(spectrum);
+    QImage img = draw();
+    for (const QPoint offset : {QPoint(), QPoint(size.width(), 0)}) {
+        EXPECT_PIXEL(img, cellCenter(1, 0) + offset, qRgb(64, 128, 191));
+        EXPECT_PIXEL(img, cellCenter(15, 0) + offset, qRgb(64, 128, 191));
+    }
+    s_device->setAudioSpectrum({});
+    img = draw();
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 0));
+    EXPECT_PIXEL(img, cellCenter(15, 0) + QPoint(size.width(), 0), qRgb(0, 0, 0));
+    // Non-audio shaders see zeros even while another window uses capture.
+    s_device->setAudioSpectrum(spectrum);
+    source.code.replace("#define AFTERGLOW_AUDIO 1", "#define AFTERGLOW_AUDIO 0");
+    auto disabled = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(disabled);
+    ASSERT_FALSE(disabled->requiresAudio());
+    chains.pane = {disabled};
+    renderer->setShaderChains(chains);
+    img = draw();
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 0));
+    EXPECT_PIXEL(img, cellCenter(15, 0), qRgb(0, 0, 0));
+    // Same-size reload must replace the fallback sampler with spectrum data.
+    chains.pane = {shader};
+    renderer->setShaderChains(chains);
+    EXPECT_PIXEL(draw(), cellCenter(15, 0), qRgb(64, 128, 191));
+    s_device->setAudioSpectrum({});
+}
+
+TEST_F(Render, AudioInputSanitizesInvalidAndPartialFrames)
+{
+    std::array<float, GpuDevice::AudioBars> spectrum;
+    spectrum.fill(1.0f);
+    spectrum[0] = std::numeric_limits<float>::quiet_NaN();
+    spectrum[1] = std::numeric_limits<float>::infinity();
+    spectrum[2] = -1.0f;
+    spectrum[3] = 9.0f;
+    s_device->setAudioSpectrum(spectrum);
+    EXPECT_EQ(s_device->audioSpectrumSize(), 64);
+    EXPECT_NEAR(s_device->audioLevels()[0], std::sqrt(17.0f/20.0f), 0.0001f);
+    EXPECT_FLOAT_EQ(s_device->audioLevels()[1], 1.0f);
+    s_device->setAudioSpectrum(std::span<const float>(spectrum.data(), 12));
+    EXPECT_EQ(s_device->audioSpectrumSize(), 0);
+    for (float value : s_device->audioLevels()) EXPECT_EQ(value, 0);
+}
+
+TEST_F(Render, ScrollbackCombinesOnlyTheCurrentTabsPanes)
+{
+    ShaderChains chains;
+    chains.pane = {layerShader("scrollback", "fragColor = vec4(iScrollback.xyz / 20.0, 1.0);")};
+    chains.window = {layerShader("scrollback-window", "fragColor = vec4(c.r, iScrollback.yz / 20.0, 1.0);")};
+    ASSERT_TRUE(chains.readsScrollback());
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l" + std::string(11, '\n'));
+    snapshot.capture(*terminal);
+    ASSERT_EQ(snapshot.scrollbackLines, 8u);
+    AfterglowVt::Terminal other(Cols, Rows, host);
+    other.feed("\x1b[?25l" + std::string(7, '\n'));
+    PaneSnapshot rightSnapshot;
+    rightSnapshot.capture(other);
+    ASSERT_EQ(rightSnapshot.scrollbackLines, 4u);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane left{&snapshot, {}}, right{&rightSnapshot, {}};
+    left.params.rect = QRect(QPoint(0, 0), size);
+    right.params.rect = QRect(QPoint(size.width(), 0), size);
+    right.params.contentOrigin = right.params.rect.topLeft();
+    const QSize frame(size.width()*2, size.height());
+    auto draw = [&](float time, const std::vector<WindowRenderer::Pane>& panes) {
+        renderer->setClockOverride(time);
+        return renderer->renderToImage(frame, panes, {}, 0xFF000000u);
+    };
+    auto img = draw(0, {left, right});
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(102, 153, 153));
+    EXPECT_PIXEL(img, cellCenter(1, 0) + QPoint(size.width(), 0), qRgb(51, 153, 153));
+    EXPECT_FALSE(renderer->animating());
+
+    // Output on a background tab is not among the renderer's supplied panes.
+    AfterglowVt::Terminal background(Cols, Rows, host);
+    background.feed("\x1b[?25l" + std::string(5, '\n'));
+    PaneSnapshot backgroundSnapshot;
+    backgroundSnapshot.capture(background);
+    ASSERT_EQ(backgroundSnapshot.scrollbackLines, 2u);
+    img = draw(0.1f, {left, right});
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(102, 153, 153));
+    EXPECT_FALSE(renderer->animating());
+
+    // Selecting that tab replaces the raw total immediately and eases the look.
+    left.snapshot = &backgroundSnapshot;
+    img = draw(0.2f, {left});
+    QRgb pixel = img.pixel(cellCenter(1, 0));
+    EXPECT_NEAR(qRed(pixel), 26, 1);
+    EXPECT_NEAR(qGreen(pixel), 26, 1);
+    EXPECT_GT(qBlue(pixel), 26);
+    EXPECT_LT(qBlue(pixel), 153);
+    EXPECT_TRUE(renderer->animating());
+    for (int i = 3; i <= 100; ++i) img = draw(float(i)*0.1f, {left});
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(26, 26, 26));
+    EXPECT_FALSE(renderer->animating());
+
+    background.clearScreenAndHistory();
+    backgroundSnapshot.capture(background);
+    img = draw(10.1f, {left});
+    pixel = img.pixel(cellCenter(1, 0));
+    EXPECT_EQ(qGreen(pixel), 0);
+    EXPECT_GT(qBlue(pixel), 0);
+    EXPECT_TRUE(renderer->animating());
+    for (int i = 102; i <= 150; ++i) img = draw(float(i)*0.1f, {left});
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(0, 0, 0));
+    EXPECT_FALSE(renderer->animating());
+}
+
+TEST_F(Render, ScrollbackHandlesPaneRemovalAndClockReset)
+{
+    ShaderChains chains;
+    chains.background = {layerShader("scrollback", "fragColor = vec4(iScrollback.xyz / 20.0, 1.0);")};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l" + std::string(7, '\n'));
+    snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane left{&snapshot, {}}, right{&other, {}};
+    left.params.rect = QRect(QPoint(0, 0), size);
+    right.params.rect = QRect(QPoint(size.width(), 0), size);
+    right.params.contentOrigin = right.params.rect.topLeft();
+    renderer->setClockOverride(10);
+    renderer->renderToImage(size*2, {left, right}, {}, 0xFF000000u);
+    renderer->setClockOverride(10.1f);
+    auto img = renderer->renderToImage(size, {left}, {}, 0xFF000000u);
+    EXPECT_NEAR(qGreen(img.pixel(cellCenter(1, 0))), 51, 1);
+    EXPECT_GT(qBlue(img.pixel(cellCenter(1, 0))), 51);
+    EXPECT_TRUE(renderer->animating());
+    renderer->setClockOverride(0);
+    img = renderer->renderToImage(size, {left}, {}, 0xFF000000u);
+    EXPECT_PIXEL(img, cellCenter(1, 0), qRgb(51, 51, 51));
+    EXPECT_FALSE(renderer->animating());
+    renderer->setScrollbackLinesOverride(20);
+    renderer->setClockOverride(0.1f);
+    renderer->renderToImage(size, {left}, {}, 0xFF000000u);
+    EXPECT_TRUE(renderer->animating());
+    renderer->setShaderChains({});
+    EXPECT_FALSE(renderer->animating());
+}
+
+TEST_F(Render, HdrHighlightsSurviveLayersAndIntermediatePasses)
+{
+    const QImage plain = render("\x1b[?25l");
+    ShaderChains chains;
+    chains.background = {layerShader("hdr-light", "fragColor = vec4(4.0, 2.0, 0.5, 1.0);", true)};
+    ASSERT_TRUE(chains.background[0]->requiresHdr());
+    chains.pane = {ShaderProgram::passthrough()};
+    chains.window = {ShaderProgram::passthrough(), layerShader("expose", "fragColor = vec4(c.rgb / 4.0, c.a);")};
+    renderer->setShaderChains(chains);
+    EXPECT_PIXEL(render(""), cellCenter(1, 0), qRgb(255, 128, 32));
+    // Changing formats with an unchanged framebuffer size rebuilds compatible
+    // targets and pipelines. Repeated toggles catch descriptor address reuse.
+    for (int i = 0; i < 3; ++i) {
+        ShaderChains ldr;
+        ldr.background = {ShaderProgram::passthrough()};
+        renderer->setShaderChains(ldr);
+        EXPECT_PIXEL(render(""), cellCenter(1, 0), plain.pixel(cellCenter(1, 0)));
+        renderer->setShaderChains(chains);
+        EXPECT_PIXEL(render(""), cellCenter(1, 0), qRgb(255, 128, 32));
+    }
+    renderer->releaseSwapChain();
+    EXPECT_PIXEL(render(""), cellCenter(1, 0), qRgb(255, 128, 32));
+}
+
+TEST_F(Render, HdrTextHistoryPreservesRadiance)
+{
+    ShaderChains chains;
+    chains.text = {layerShader("hdr-history", R"(
+        fragColor = max(vec4(c.rgb * 4.0, c.a), texture(iPreviousText, fragCoord / iResolution.xy) * 0.5);
+    )", true)};
+    chains.window = {layerShader("expose", "fragColor = vec4(c.rgb / 4.0, c.a);")};
+    renderer->setShaderChains(chains);
+    const std::string content = "\x1b[?25l\x1b]11;#000000\x1b\\\x1b[38;2;255;0;0m█";
+    EXPECT_PIXEL(render(content), cellCenter(0, 0), qRgb(255, 0, 0));
+    EXPECT_PIXEL(render("\x1b[2J"), cellCenter(0, 0), qRgb(128, 0, 0));
+    EXPECT_PIXEL(render(""), cellCenter(0, 0), qRgb(64, 0, 0));
+}
+
+TEST_F(Render, TextHistoryDecaysAndResets)
+{
+    ShaderChains chains;
+    chains.text = {layerShader("history", R"(
+        vec4 previous = texture(iPreviousText, fragCoord / iResolution.xy);
+        fragColor = max(c, previous * 0.5);
+    )")};
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(renderer->animating());
+    renderer->setClockOverride(1.0f);
+    // A red block makes the previous frame unambiguous at the cell centre.
+    const QImage first = render("\x1b[?25l\x1b]11;#000000\x1b\\\x1b[38;2;255;0;0m█");
+    EXPECT_PIXEL(first, cellCenter(0, 0), qRgb(255, 0, 0));
+    renderer->setClockOverride(1.1f);
+    const QImage second = render("\x1b[2J\x1b[H");
+    EXPECT_PIXEL(second, cellCenter(0, 0), qRgb(128, 0, 0));
+    EXPECT_PIXEL(second, cellCenter(1, 0), qRgb(0, 0, 0));
+    renderer->setClockOverride(1.2f);
+    EXPECT_PIXEL(render(""), cellCenter(0, 0), qRgb(64, 0, 0));
+    renderer->setShaderChains(chains);
+    EXPECT_PIXEL(render(""), cellCenter(0, 0), qRgb(0, 0, 0));
+
+    render("█");
+    // A theme switch must not resurrect the old text.
+    EXPECT_PIXEL(render("\x1b[2J\x1b]11;#000020\x1b\\"), cellCenter(0, 0), qRgb(0, 0, 32));
+    render("\x1b[H█");
+    renderer->setClockOverride(0.5f);
+    EXPECT_PIXEL(render("\x1b[2J"), cellCenter(0, 0), qRgb(0, 0, 32));
+    renderer->setShaderChains({});
+    EXPECT_FALSE(renderer->animating());
+    EXPECT_PIXEL(render(""), cellCenter(0, 0), qRgb(0, 0, 32));
+}
+
+TEST_F(Render, TextHistoryDoesNotLeakAcrossPanesOrLayouts)
+{
+    ShaderChains chains;
+    chains.text = {layerShader("history", "fragColor = max(c, texture(iPreviousText, fragCoord / iResolution.xy) * 0.5);")};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l\x1b]11;#000000\x1b\\\x1b[38;2;255;0;0m█");
+    snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane left{&snapshot, {}}, right{&other, {}};
+    left.params.rect = QRect(QPoint(0, 0), size);
+    right.params.rect = QRect(QPoint(size.width(), 0), size);
+    right.params.contentOrigin = right.params.rect.topLeft();
+    const QSize frame(size.width() * 2, size.height());
+    renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    terminal->feed("\x1b[2J");
+    snapshot.capture(*terminal);
+    other = snapshot;
+    QImage img = renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(128, 0, 0));
+    EXPECT_PIXEL(img, cellCenter(0, 0) + QPoint(size.width(), 0), qRgb(128, 0, 0));
+    // Same framebuffer, changed split geometry: both histories are cleared.
+    left.params.rect.setWidth(size.width() - cw);
+    right.params.rect.setLeft(size.width() - cw);
+    img = renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(0, 0, 0));
+    EXPECT_PIXEL(img, cellCenter(0, 0) + QPoint(size.width(), 0), qRgb(0, 0, 0));
+    terminal->feed("\x1b[H█");
+    snapshot.capture(*terminal);
+    renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    PaneSnapshot newTab = other;
+    left.snapshot = &newTab;
+    img = renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(0, 0, 0));
+    // Resize reallocates and clears the history texture.
+    img = renderer->renderToImage(frame + QSize(cw, ch), {left, right}, {}, 0xFF000000u);
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(0, 0, 0));
 }
 
 TEST_F(Render, IconsTakeTwoCellsBeforeABlank)

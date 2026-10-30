@@ -1,0 +1,19 @@
+{
+    "id": "phosphor-cursor",
+    "name": "Phosphor Cursor",
+    "category": "Cursor",
+    "description": "A tapered filament follows cursor movement.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        {
+            "id": "wake",
+            "name": "Filament strength",
+            "type": "float",
+            "default": 0.36,
+            "min": 0,
+            "max": 1
+        }
+    ]
+}

@@ -8,6 +8,7 @@
 #include <QWindow>
 #include <rhi/qrhi.h>
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -40,10 +41,53 @@ GpuDevice::~GpuDevice()
         delete entry.texture;
     }
     m_imageTextures.clear();
+    delete m_audioTexture;
     delete m_imageSampler;
     delete m_sampler;
     m_rhi.reset();
     s_instance = nullptr;
+}
+
+void GpuDevice::setAudioSpectrum(std::span<const float> spectrum)
+{
+    std::array<float, AudioBars> next{};
+    const int size = spectrum.size() == AudioBars ? AudioBars : 0;
+    for (int i = 0; i < size; ++i) {
+        next[i] = std::isfinite(spectrum[i]) ? std::clamp(spectrum[i], 0.0f, 1.0f) : 0.0f;
+    }
+    if (next == m_audioSpectrum && size == m_audioSize) {
+        return;
+    }
+    m_audioSpectrum = next;
+    m_audioSize = size;
+    // RMS bands preserve narrow transients without a single-bin peak flicker.
+    const auto rms = [&next](int begin, int end) {
+        float energy = 0;
+        for (int i = begin; i < end; ++i) {
+            energy += next[i] * next[i];
+        }
+        return std::sqrt(energy / float(end - begin));
+    };
+    m_audioLevels = {rms(0, 20), rms(20, 48), rms(48, 64), rms(0, 64)};
+    m_audioDirty = true;
+    Q_EMIT audioChanged();
+}
+
+void GpuDevice::prepareAudio(QRhiResourceUpdateBatch* updates)
+{
+    if (!m_audioTexture) {
+        m_audioTexture = m_rhi->newTexture(QRhiTexture::R32F, QSize(AudioBars, 1));
+        if (!m_audioTexture->create()) {
+            throw std::runtime_error("failed to create the audio spectrum texture");
+        }
+        m_audioDirty = true;
+    }
+    if (m_audioDirty) {
+        const QByteArray bytes(reinterpret_cast<const char*>(m_audioSpectrum.data()), sizeof(m_audioSpectrum));
+        updates->uploadTexture(m_audioTexture, QRhiTextureUploadDescription({
+            QRhiTextureUploadEntry(0, 0, QRhiTextureSubresourceUploadDescription(bytes))}));
+        m_audioDirty = false;
+    }
 }
 
 GpuDevice* GpuDevice::instance()

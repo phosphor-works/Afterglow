@@ -31,8 +31,12 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
     })
     , m_controlBus(m_control, m_settings)
     , m_scripts(scriptCallbacks(m_control))
-    , m_services{m_device, m_settings, m_engine, m_shaders, m_scripts}
+    , m_services{m_device, m_settings, m_engine, m_shaders, m_scripts, m_audio}
 {
+    connect(&m_audio, &AudioController::spectrumChanged, &m_device, [this](const QVector<float>& spectrum) {
+        m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
+    });
+    m_audio.configure(m_settings.settings().audio);
     m_engine.addImageProvider(QStringLiteral("icon"), new IconProvider); // the engine owns it
     connectScriptEvents(m_scripts, m_control);
     m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
@@ -46,6 +50,9 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
             bindShortcuts();
         }
         m_scripts.setEnabled(m_settings.settings().scripts);
+        if (m_settings.settings().audio != previous.audio) {
+            m_audio.configure(m_settings.settings().audio);
+        }
     });
 
     // Hidden windows (a tucked-away quick terminal) still count as open.

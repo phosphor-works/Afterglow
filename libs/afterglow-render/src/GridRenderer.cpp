@@ -715,10 +715,16 @@ void WindowRenderer::setTranslucent(bool translucent)
 
 void WindowRenderer::setShaderChains(ShaderChains chains)
 {
+    // Chains may opt into a different offscreen format. Do not rely on the
+    // descriptor address changing: an allocator can reuse the same address.
+    m_postPipelines = {};
+    m_postPipelinePass = nullptr;
+    if (!chains.readsScrollback()) {
+        m_scrollbackInitialized = false;
+        m_scrollbackSettling = false;
+    }
     if (chains.empty()) {
         m_post.reset();
-        m_postPipelines = {};
-        m_postPipelinePass = nullptr;
         return;
     }
     if (!m_post) {
@@ -729,7 +735,7 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
 
 bool WindowRenderer::animating() const
 {
-    return m_post && m_post->animated();
+    return m_post && (m_post->animated() || m_scrollbackSettling);
 }
 
 void WindowRenderer::ensureBindings(FontResources& res)
@@ -997,6 +1003,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
 
     QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
     m_device.prepareAtlases(res, updates);
+    if (m_post && m_post->audioReactive()) {
+        m_device.prepareAudio(updates);
+    }
     // Image textures upload in this frame's batch, before the pass begins.
     ++m_frameCounter;
     m_pendingImages.clear();
@@ -1118,15 +1127,37 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     ShaderRegionState windowState;
     if (post) {
         const float now = m_clockOverride.value_or(float(m_clock.nsecsElapsed()) / 1e9f);
-        time = ShaderFrameTime{now, m_lastFrameTime > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
+        time = ShaderFrameTime{now, m_shaderFrame > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
         m_lastFrameTime = now;
         const FontMetrics& m = res.fonts->metrics();
-                windowState.rect = QRect(QPoint(0, 0), px);
+        double combinedLines = 0;
+        if (m_post->readsScrollback()) {
+            if (m_scrollbackLinesOverride) {
+                combinedLines = double(*m_scrollbackLinesOverride);
+            } else {
+                for (const Pane& pane : panes) {
+                    combinedLines += double(pane.snapshot->scrollbackLines);
+                }
+            }
+            if (!m_scrollbackInitialized || time.delta < 0) {
+                m_easedScrollbackLines = combinedLines;
+                m_scrollbackInitialized = true;
+            } else {
+                // A burst of logs or a history clear eases over 1.25 seconds.
+                // Limit the step after a hidden window returns, avoiding a jump.
+                const double blend = -std::expm1(-std::clamp(double(time.delta), 0.0, 0.1) / 1.25);
+                m_easedScrollbackLines += (combinedLines - m_easedScrollbackLines) * blend;
+            }
+            m_scrollbackSettling = std::abs(combinedLines - m_easedScrollbackLines) > 0.5;
+            if (!m_scrollbackSettling) m_easedScrollbackLines = combinedLines;
+        }
+        windowState.rect = QRect(QPoint(0, 0), px);
         for (const Pane& pane : panes) {
             const PaneSnapshot& snap = *pane.snapshot;
             ShaderRegionState st;
             st.rect = pane.params.rect;
             st.snapshot = &snap;
+            st.scrollback = {float(snap.scrollbackLines), float(combinedLines), float(m_easedScrollbackLines)};
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
             st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
             st.mouse = m_mouse;
@@ -1285,6 +1316,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     }
     drawChrome();
     cb->endPass(target.finalUpdates ? target.finalUpdates() : nullptr);
+    if (post) {
+        m_post->finishFrame(cb);
+    }
     target.end();
 
     // Panes not drawn this frame (closed, or in another tab) drop their cache.

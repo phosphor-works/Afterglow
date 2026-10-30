@@ -289,3 +289,15 @@ TEST_F(ConfigTest, OverridesWinOverTheFileAndLeaveItAlone)
     ASSERT_TRUE(f.open(QIODevice::ReadOnly));
     EXPECT_EQ(f.readAll(), original);
 }
+
+TEST_F(ConfigTest, AudioDefaultsAndOverrides)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().audio, AudioSettings{});
+    SettingsStore custom(write(QStringLiteral("audio.json"), R"({"Audio": {
+        "enabled": false, "inputMethod": "pulse", "inputSource": "speakers.monitor"
+    }})"));
+    EXPECT_FALSE(custom.settings().audio.enabled);
+    EXPECT_EQ(custom.settings().audio.inputMethod, QStringLiteral("pulse"));
+    EXPECT_EQ(custom.settings().audio.inputSource, QStringLiteral("speakers.monitor"));
+}

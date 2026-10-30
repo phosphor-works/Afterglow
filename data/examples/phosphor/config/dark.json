@@ -1,0 +1,28 @@
+{
+    "Colors": {
+        "background": "#080e1c",
+        "foreground": "#dce5f5",
+        "cursor": "#64e4f2",
+        "divider": "#17243c",
+        "selectionBackground": "#284165",
+        "selectionForeground": "#ffffff",
+        "palette": [
+            "#142036",
+            "#f76f88",
+            "#83dba8",
+            "#e8c478",
+            "#70abf7",
+            "#b694ef",
+            "#64dce8",
+            "#dce5f5",
+            "#526581",
+            "#ff95a8",
+            "#a6edc1",
+            "#f6dda5",
+            "#9ac5ff",
+            "#d1b8ff",
+            "#9aebf3",
+            "#f5f8ff"
+        ]
+    }
+}

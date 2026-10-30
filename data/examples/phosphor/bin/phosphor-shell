@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The app uses isolated settings; programs launched from a pane retain the
+# user's normal XDG configuration location.
+if [[ -n ${PHOSPHOR_ORIGINAL_XDG_CONFIG_HOME:-} ]]; then
+    export XDG_CONFIG_HOME="$PHOSPHOR_ORIGINAL_XDG_CONFIG_HOME"
+else
+    unset XDG_CONFIG_HOME
+fi
+exec bash --noprofile --rcfile "$PHOSPHOR_DEMO_ROOT/bin/shell.bash" -i

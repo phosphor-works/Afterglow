@@ -232,6 +232,8 @@ private:
     QQmlEngine& m_engine;
     ShaderLibrary& m_shaders;
     ScriptHost& m_scripts;
+    AudioController& m_audio;
+    bool m_audioReactive = false;
     QStringList m_paletteScriptActions; ///< palette id ScriptActionBase + i runs entry i
     ChromeController* m_controller = nullptr;
     ChromeLayer* m_chrome = nullptr;

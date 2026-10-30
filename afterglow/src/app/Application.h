@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../TerminalWindow.h"
+#include "../audio/AudioController.h"
 #include "../control/Control.h"
 #include "../control/ControlBus.h"
 #include "../config/Settings.h"
@@ -65,6 +66,7 @@ private:
     Control m_control;
     ControlBus m_controlBus;
     ScriptHost m_scripts;
+    AudioController m_audio;
     Services m_services;
 
     QPointer<TerminalWindow> m_quick;

@@ -1,0 +1,13 @@
+{
+    "id": "phosphor-lens",
+    "name": "Phosphor Lens",
+    "category": "Background",
+    "description": "HDR highlight bloom at three scales, anamorphic scatter, filmic highlight rolloff and fine dithering. Use immediately after Phosphor Field.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        { "id": "bloom", "name": "Bloom", "type": "float", "default": 0.65, "min": 0, "max": 2 },
+        { "id": "streak", "name": "Anamorphic scatter", "type": "float", "default": 0.18, "min": 0, "max": 1 }
+    ]
+}

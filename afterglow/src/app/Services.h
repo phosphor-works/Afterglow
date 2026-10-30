@@ -11,6 +11,7 @@ class GpuDevice;
 
 namespace Afterglow {
 
+class AudioController;
 class ScriptHost;
 class SettingsStore;
 class ShaderLibrary;
@@ -24,6 +25,7 @@ struct Services
     QQmlEngine& engine;
     ShaderLibrary& shaders;
     ScriptHost& scripts;
+    AudioController& audio;
 };
 
 } // namespace Afterglow

@@ -48,6 +48,9 @@ layout(std140, binding = 0) uniform Globals {
     vec4  customColors[16];
     float iBackgroundOpacity;
     vec4  iSignal[8];
+    vec4  iAudioLevels;
+    int   iAudioSpectrumSize;
+    vec4  iScrollback;
 };
 
 #define CURSORSTYLE_BLOCK        0
@@ -57,7 +60,28 @@ layout(std140, binding = 0) uniform Globals {
 #define CURSORSTYLE_LOCK         4
 
 layout(binding = 1) uniform sampler2D iChannel0;
+// Previous frame's processed text layer, in the same region coordinates.
+// Transparent on first use and after layout, theme or shader changes.
+layout(binding = 2) uniform sampler2D iPreviousText;
+layout(binding = 3) uniform sampler2D uAudioSpectrum;
 layout(location = 0) out vec4 _afterglowFragColor;
+
+// Spectrum coordinates are independent of pane and framebuffer coordinates.
+float audioBar(int index)
+{
+    if (index < 0 || index >= iAudioSpectrumSize) return 0.0;
+    return texelFetch(uAudioSpectrum, ivec2(index, 0), 0).r;
+}
+float audioBarSmooth(float position)
+{
+    float index = clamp(position, 0.0, 1.0) * float(max(iAudioSpectrumSize - 1, 0));
+    int lo = int(floor(index));
+    return mix(audioBar(lo), audioBar(min(lo + 1, iAudioSpectrumSize - 1)), fract(index));
+}
+float getBass() { return iAudioLevels.x; }
+float getMids() { return iAudioLevels.y; }
+float getTreble() { return iAudioLevels.z; }
+float getOverall() { return iAudioLevels.w; }
 
 #define texture2D texture
 
@@ -110,7 +134,18 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     program->m_shader = std::move(shader);
     program->m_id = source.id;
     static const QRegularExpression usesTime(QStringLiteral("\\biTime\\b"));
-    program->m_animated = QString::fromUtf8(source.code).contains(usesTime);
+    static const QRegularExpression usesHistory(QStringLiteral("\\biPreviousText\\b"));
+    static const QRegularExpression usesHdr(QStringLiteral("^[ \\t]*#[ \\t]*define[ \\t]+AFTERGLOW_HDR[ \\t]+1[ \\t]*(?://[^\\r\\n]*)?\\r?$"),
+                                            QRegularExpression::MultilineOption);
+    static const QRegularExpression usesAudio(QStringLiteral("^[ \t]*#[ \t]*define[ \t]+AFTERGLOW_AUDIO[ \t]+1[ \t]*(?://[^\r\n]*)?\r?$"),
+                                              QRegularExpression::MultilineOption);
+    static const QRegularExpression usesScrollback(QStringLiteral("\\biScrollback\\b"));
+    const QString code = QString::fromUtf8(source.code);
+    program->m_readsPreviousText = code.contains(usesHistory);
+    program->m_requiresHdr = code.contains(usesHdr);
+    program->m_requiresAudio = code.contains(usesAudio);
+    program->m_readsScrollback = code.contains(usesScrollback);
+    program->m_animated = code.contains(usesTime) || program->m_readsPreviousText;
     program->m_params = source.params;
     program->m_colors = source.colors;
     return program;

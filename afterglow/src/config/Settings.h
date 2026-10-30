@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Keybinds.h"
+#include "../audio/AudioSettings.h"
 #include "../shaders/ShaderLibrary.h"
 
 #include <AfterglowRender/FontSet.h>
@@ -98,6 +99,7 @@ struct Settings
     AfterglowVt::TerminalOptions terminal;
     WindowSettings window;
     AnimationSettings animation;
+    AudioSettings audio;
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
     MouseSettings mouse;

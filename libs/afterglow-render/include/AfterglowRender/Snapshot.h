@@ -62,6 +62,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 {
     int cols = 0;
     int rows = 0;
+    /// Retained primary-screen history, even while an alternate screen is active.
+    std::uint64_t scrollbackLines = 0;
     /// Rows captured below the viewport, drawn while scrolling by a fraction of a row.
     int extraRows = 0;
     std::vector<SnapshotCell> cells;

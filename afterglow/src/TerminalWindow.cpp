@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "TerminalWindow.h"
+#include "audio/AudioController.h"
 
 #include "app/NotificationCenter.h"
 
@@ -119,8 +120,15 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     , m_engine(services.engine)
     , m_shaders(services.shaders)
     , m_scripts(services.scripts)
+    , m_audio(services.audio)
     , m_id(s_nextWindowId++)
 {
+    connect(&m_device, &AfterglowRender::GpuDevice::audioChanged, this, [this] {
+        if (m_audioReactive && isExposed()) scheduleRender();
+    });
+    connect(this, &QWindow::visibilityChanged, this, [this] {
+        m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
+    });
     m_quick = options.quick;
     AfterglowRender::GpuDevice& device = m_device;
     QQmlEngine& engine = m_engine;
@@ -1253,6 +1261,7 @@ bool TerminalWindow::event(QEvent* e)
 
 void TerminalWindow::exposeEvent(QExposeEvent*)
 {
+    m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
     if (isExposed() && !m_effectsApplied) {
         m_effectsApplied = true;
         applyWindowEffects();
@@ -2319,7 +2328,10 @@ bool TerminalWindow::routePointerToChrome(QEvent* e, const QPointF& pos, bool pr
 void TerminalWindow::applyShaders()
 {
     const Settings& s = m_settings.settings();
-    m_renderer->setShaderChains(m_shaders.build(s.shaders, s.shaderParams));
+    auto chains = m_shaders.build(s.shaders, s.shaderParams);
+    m_audioReactive = chains.audioReactive();
+    m_renderer->setShaderChains(std::move(chains));
+    m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
     scheduleRender();
 }
 

@@ -1,0 +1,19 @@
+{
+    "id": "phosphor-frame",
+    "name": "Phosphor Frame",
+    "category": "Pane",
+    "description": "Command heat, failure pulses and completion sweeps around the pane.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        {
+            "id": "intensity",
+            "name": "Frame light",
+            "type": "float",
+            "default": 0.85,
+            "min": 0,
+            "max": 1.5
+        }
+    ]
+}

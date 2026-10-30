@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Launch an isolated Phosphor demo, or control its scene from its own shell."""
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def scene(mode):
+    config_name = os.environ.get('PHOSPHOR_DEMO_CONFIG')
+    if not config_name:
+        raise RuntimeError('run this command inside the Phosphor demo')
+    path = Path(config_name)
+    config = json.loads(path.read_text())
+    config.update(json.loads((ROOT / 'config' / (mode + '.json')).read_text()))
+    # Atomic replacement is observed by the normal live configuration reload.
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as out:
+        temp = Path(out.name)
+        json.dump(config, out, indent=4)
+        out.write('\n')
+    try:
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def write(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def effect(name):
+    payload = base64.b64encode(name.encode()).decode()
+    write('\033]1337;SetUserVar=phosphor=' + payload + '\007')
+
+
+def show():
+    if not os.environ.get('PHOSPHOR_DEMO_CONFIG') or not sys.stdout.isatty():
+        raise RuntimeError('run `phosphor show` in the demo terminal')
+    _, height = shutil.get_terminal_size()
+    def caption(number, label, detail):
+        write(f'\033[{max(8, height-5)};4H\033[0K\033[36m{number}  /  {label}\033[0m'
+              f'\033[{max(9, height-3)};4H\033[0K\033[2m{detail}\033[0m')
+    write('\033[?1049h\033[?25l\033[2J\033[3;4H\033[36mP H O S P H O R\033[0m'
+          '\033[5;4H\033[2mCONTAINMENT STUDY\033[0m')
+    try:
+        effect('cool')
+        caption('01', 'IDLE', 'A shared scene behind live terminal content.')
+        time.sleep(2.5)
+        effect('heat')
+        caption('02', 'CHARGE', 'The field wakes. Light spills into the chamber.')
+        time.sleep(3.5)
+        effect('strike')
+        caption('03', 'FRACTURE', 'Containment opens. Energy fills the space.')
+        time.sleep(3.2)
+        effect('complete')
+        caption('04', 'RECALL', 'Every fragment finds its place.')
+        time.sleep(2.2)
+        effect('ring')
+        caption('05', 'IMPULSE', 'A pressure wave passes through the glass.')
+        time.sleep(2.2)
+        effect('cool')
+        caption('06', 'AFTERGLOW', 'Move the pointer. Split a pane. Run it again.')
+        time.sleep(2.5)
+    finally:
+        effect('cool')
+        write('\033[0m\033[?25h\033[?1049l')
+
+
+def launch(binary, mode, autoplay):
+    executable = shutil.which(binary)
+    if not executable:
+        raise RuntimeError(f'cannot find {binary!r}; pass --binary /path/to/afterglow')
+    with tempfile.TemporaryDirectory(prefix='afterglow-phosphor-') as temp:
+        config_home = Path(temp)
+        app_home = config_home / 'afterglow'
+        app_home.mkdir()
+        shutil.copytree(ROOT / 'shaders', app_home / 'shaders')
+        shutil.copytree(ROOT / 'scripts', app_home / 'scripts')
+        config = json.loads((ROOT / 'config/phosphor.json').read_text())
+        config.update(json.loads((ROOT / 'config' / (mode + '.json')).read_text()))
+        config['Terminal']['shell'] = str(ROOT / 'bin/phosphor-shell')
+        config_path = app_home / 'config.json'
+        config_path.write_text(json.dumps(config, indent=4) + '\n')
+        env = os.environ.copy()
+        env['PHOSPHOR_ORIGINAL_XDG_CONFIG_HOME'] = env.get('XDG_CONFIG_HOME', '')
+        env['XDG_CONFIG_HOME'] = str(config_home)
+        env['PHOSPHOR_DEMO_CONFIG'] = str(config_path)
+        env['PHOSPHOR_DEMO_ROOT'] = str(ROOT)
+        env['PHOSPHOR_AUTOPLAY'] = '1' if autoplay else '0'
+        # --config starts a separate process; normal windows are untouched.
+        return subprocess.call([executable, '--config', str(config_path), '--title', 'Phosphor / Afterglow'], env=env)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    start = sub.add_parser('launch', help='open a temporary demo session')
+    start.add_argument('--binary', default='afterglow')
+    start.add_argument('--light', action='store_true')
+    start.add_argument('--show', action='store_true', help='play the showcase on launch')
+    sub.add_parser('show', help='play the visual sequence inside the demo')
+    world = sub.add_parser('scene', help='change the running demo palette')
+    world.add_argument('mode', choices=['dark', 'light'])
+    args = parser.parse_args()
+    try:
+        if args.command == 'launch':
+            return launch(args.binary, 'light' if args.light else 'dark', args.show)
+        if args.command == 'scene':
+            scene(args.mode)
+        else:
+            show()
+    except KeyboardInterrupt:
+        write('\033[0m\033]133;D;130\007\r\n')
+        return 130
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f'phosphor-afterglow: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

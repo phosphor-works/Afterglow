@@ -193,6 +193,8 @@ public:
     void setShaderChains(ShaderChains chains);
     /// A shader animates over time: the host keeps scheduling frames.
     bool animating() const;
+    /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
+    void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
     void setMousePosition(const QPointF& px) { m_mouse = px; }
 
@@ -269,6 +271,10 @@ private:
     std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenPass;
     qreal m_devicePixelRatio = 1.0;
     std::optional<float> m_clockOverride;
+    std::optional<std::uint64_t> m_scrollbackLinesOverride;
+    double m_easedScrollbackLines = 0;
+    bool m_scrollbackInitialized = false;
+    bool m_scrollbackSettling = false;
     PipelineSet m_postPipelines;
     QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
     std::unique_ptr<class PostChain> m_post;

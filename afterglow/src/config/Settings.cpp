@@ -39,6 +39,7 @@ const QString Shaders = QStringLiteral("Shaders");
 const QString Animation = QStringLiteral("Animation");
 const QString Quick = QStringLiteral("QuickTerminal");
 const QString ControlGroup = QStringLiteral("Control");
+const QString AudioGroup = QStringLiteral("Audio");
 const QString ScriptsGroup = QStringLiteral("Scripts");
 const QString MouseGroup = QStringLiteral("Mouse");
 const QString LinksGroup = QStringLiteral("Links");
@@ -318,6 +319,14 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("enabled"), true, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from ~/.config/afterglow/scripts")},
+    };
+    schema.groups[AudioGroup] = {
+        {QStringLiteral("enabled"), true, QMetaType::Bool,
+         QStringLiteral("Analyze system playback while a visible shader opts into audio (requires cava)")},
+        enumKey(QStringLiteral("inputMethod"), QStringLiteral("auto"), QStringLiteral("Audio capture backend"),
+                {QStringLiteral("auto"), QStringLiteral("pipewire"), QStringLiteral("pulse")}),
+        stringKey(QStringLiteral("inputSource"), QStringLiteral("auto"),
+                  QStringLiteral("Playback source for the capture backend; auto follows the default output")),
     };
     schema.groups[Animation] = {
         {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("The cursor glides between cells")},
@@ -723,6 +732,10 @@ Settings SettingsStore::read() const
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
+
+    s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
+    s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
+    s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource"));
 
     // Animation
     s.animation.cursor = st.read<bool>(Animation, QStringLiteral("cursor"));

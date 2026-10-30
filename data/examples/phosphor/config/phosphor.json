@@ -1,0 +1,41 @@
+{
+    "Font": {
+        "size": 12
+    },
+    "Window": {
+        "padding": 22,
+        "backgroundOpacity": 1
+    },
+    "Terminal": {
+        "cursorShape": "bar"
+    },
+    "Shaders": {
+        "background": [
+            "phosphor-field",
+            "phosphor-lens"
+        ],
+        "text": [
+            "phosphor-emission"
+        ],
+        "cursor": [
+            "phosphor-cursor"
+        ],
+        "pane": [
+            "phosphor-frame"
+        ],
+        "window": []
+    },
+    "Keybinds": {
+        "bindings": {
+            "script:phosphor.strike": "Ctrl+Alt+1",
+            "script:phosphor.complete": "Ctrl+Alt+2",
+            "script:phosphor.ring": "Ctrl+Alt+3",
+            "script:phosphor.heat": "Ctrl+Alt+4"
+        }
+    },
+    "Audio": {
+        "enabled": true,
+        "inputMethod": "auto",
+        "inputSource": "auto"
+    }
+}

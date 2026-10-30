@@ -59,6 +59,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     const Modes& modes = t.modes();
     cols = scr.cols();
     rows = scr.rows();
+    scrollbackLines = t.primaryScreen().historySize();
     // Extra rows come from below the viewport, so only exist while scrolled back.
     extraRows = std::clamp(extra, 0, int(scr.viewportOffset()));
     const int captureRows = rows + extraRows;

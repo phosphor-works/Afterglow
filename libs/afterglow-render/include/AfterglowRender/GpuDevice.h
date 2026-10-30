@@ -12,6 +12,8 @@
 #include <QObject>
 #include <QVulkanInstance>
 
+#include <array>
+#include <span>
 #include <map>
 #include <memory>
 #include <unordered_map>
@@ -76,12 +78,26 @@ public:
     void setFontSpec(const FontSpec& spec);
     void adjustFontSize(float deltaPoints);
 
+    /// Mono, low-to-high logarithmic spectrum (50 Hz–10 kHz), 64 bars.
+    static constexpr int AudioBars = 64;
+    void setAudioSpectrum(std::span<const float> spectrum);
+    void prepareAudio(QRhiResourceUpdateBatch* updates);
+    QRhiTexture* audioTexture() const noexcept { return m_audioTexture; }
+    const std::array<float, 4>& audioLevels() const noexcept { return m_audioLevels; }
+    int audioSpectrumSize() const noexcept { return m_audioSize; }
+
 Q_SIGNALS:
+    void audioChanged();
     void fontsChanged();
 
 private:
     void releaseFontResources();
 
+    std::array<float, AudioBars> m_audioSpectrum{};
+    std::array<float, 4> m_audioLevels{};
+    int m_audioSize = 0;
+    bool m_audioDirty = true;
+    QRhiTexture* m_audioTexture = nullptr;
     FontSpec m_fontSpec;
     QVulkanInstance m_vulkan;
     std::unique_ptr<QRhi> m_rhi;

@@ -1,0 +1,75 @@
+{
+    "id": "phosphor-field",
+    "name": "Phosphor Field",
+    "category": "Background",
+    "description": "Audio-reactive bevelled armor, volumetric plasma and a reflective chamber that gains energy as combined terminal scrollback grows.",
+    "author": "afterglow",
+    "version": "2.2",
+    "fragmentShader": "effect.frag",
+    "parameters": [
+        {
+            "id": "intensity",
+            "name": "Exposure",
+            "type": "float",
+            "default": 1.05,
+            "min": 0,
+            "max": 3
+        },
+        {
+            "id": "speed",
+            "name": "Scene speed",
+            "type": "float",
+            "default": 0.65,
+            "min": 0,
+            "max": 2
+        },
+        {
+            "id": "parallax",
+            "name": "Pointer parallax",
+            "type": "float",
+            "default": 0.38,
+            "min": 0,
+            "max": 1.5
+        },
+        {
+            "id": "quality",
+            "name": "Antialiasing (0: 1 ray, 1: 2 rays, 2: 4 rays)",
+            "type": "float",
+            "default": 1,
+            "min": 0,
+            "max": 2
+        },
+        {
+            "id": "shutter",
+            "name": "Motion shutter",
+            "type": "float",
+            "default": 0.5,
+            "min": 0,
+            "max": 1
+        },
+        {
+            "id": "audioStrength",
+            "name": "Audio response",
+            "type": "float",
+            "default": 1.0,
+            "min": 0,
+            "max": 2
+        },
+        {
+            "id": "historyStrength",
+            "name": "Scrollback influence",
+            "type": "float",
+            "default": 1,
+            "min": 0,
+            "max": 2
+        },
+        {
+            "id": "historyScale",
+            "name": "Scrollback response scale (lines)",
+            "type": "float",
+            "default": 4000,
+            "min": 100,
+            "max": 50000
+        }
+    ]
+}

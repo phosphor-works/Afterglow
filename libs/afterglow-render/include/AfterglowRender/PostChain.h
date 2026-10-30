@@ -15,6 +15,7 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 class QRhiBuffer;
@@ -50,6 +51,7 @@ struct ShaderRegionState
     QSizeF cellSize;
     QPointF mouse;
     float backgroundOpacity = 1.0f;
+    std::array<float, 3> scrollback{}; ///< pane rows, current-tab rows, eased current-tab rows
     /// Script signals: value and shader time when set.
     std::array<std::array<float, 2>, 8> signals{};
 };
@@ -74,7 +76,50 @@ struct ShaderChains
     /// Once, over the whole window.
     std::vector<ShaderProgramPtr> window;
 
-    bool layered() const noexcept { return !background.empty() || !text.empty() || !cursor.empty(); }
+    bool readsScrollback() const noexcept
+    {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+            for (const auto& program : *chain) {
+                if (program->readsScrollback()) return true;
+            }
+        }
+        return false;
+    }
+
+    bool audioReactive() const noexcept
+    {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+            for (const auto& program : *chain) {
+                if (program->requiresAudio()) return true;
+            }
+        }
+        return false;
+    }
+
+    bool highDynamicRange() const noexcept
+    {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+            for (const auto& program : *chain) {
+                if (program->requiresHdr()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool textHistory() const noexcept
+    {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+            for (const auto& program : *chain) {
+                if (program->readsPreviousText()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    bool layered() const noexcept { return !background.empty() || !text.empty() || !cursor.empty() || textHistory(); }
     bool empty() const noexcept { return !layered() && pane.empty() && window.empty(); }
 };
 
@@ -99,6 +144,8 @@ public:
     PostChain& operator=(const PostChain&) = delete;
 
     void setChains(ShaderChains chains);
+    bool audioReactive() const noexcept { return m_chains.audioReactive(); }
+    bool readsScrollback() const noexcept { return m_chains.readsScrollback(); }
     bool active() const noexcept { return !m_chains.empty(); }
     bool layered() const noexcept { return m_chains.layered(); }
     /// Some shader reads iTime: the window renders every frame.
@@ -127,6 +174,10 @@ public:
     /// chrome before ending it.
     void record(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
                 const ShaderFrameTime& time, QRhiRenderTarget* swapTarget, QRhiRenderPassDescriptor* swapPass);
+
+    /// After the final pass ends, retain the processed text for iPreviousText.
+    /// Allocated and copied only when a shader reads that sampler.
+    void finishFrame(QRhiCommandBuffer* cb);
 
     void release();
 
@@ -166,6 +217,12 @@ private:
     std::unique_ptr<QRhiTextureRenderTarget> m_targets[2];
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
     std::unique_ptr<QRhiSampler> m_sampler;
+    std::unique_ptr<QRhiTexture> m_previousText;
+    std::unique_ptr<QRhiTextureRenderTarget> m_historyTarget;
+    using HistoryRegion = std::tuple<const PaneSnapshot*, QRect, std::uint32_t, std::uint32_t, QSizeF>;
+    std::vector<HistoryRegion> m_historyRegions;
+    bool m_historyValid = false;
+    float m_historyTime = 0;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
     std::map<std::pair<int, int>, std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
     std::map<std::array<int, 4>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;

@@ -61,6 +61,11 @@ struct alignas(16) TerminalShaderUniforms
     /// Values scripts set on the pane: (value, iTime when set, 0, 0); unset
     /// channels are (0, -1e6).
     float iSignal[8][4];
+    float iAudioLevels[4]; ///< bass, mids, treble and overall RMS, 0..1
+    std::int32_t iAudioSpectrumSize; ///< 64 while receiving, otherwise 0
+    float audioPad[3];
+    /// Pane rows, combined current-tab rows, eased current-tab rows, reserved (0).
+    float iScrollback[4];
 };
 static_assert(offsetof(TerminalShaderUniforms, iMouse) == 160);
 static_assert(offsetof(TerminalShaderUniforms, iCurrentCursor) == 208);
@@ -71,7 +76,9 @@ static_assert(offsetof(TerminalShaderUniforms, iRegion) == 4496);
 static_assert(offsetof(TerminalShaderUniforms, customParams) == 4528);
 static_assert(offsetof(TerminalShaderUniforms, iBackgroundOpacity) == 4912);
 static_assert(offsetof(TerminalShaderUniforms, iSignal) == 4928);
-static_assert(sizeof(TerminalShaderUniforms) == 5056);
+static_assert(offsetof(TerminalShaderUniforms, iAudioLevels) == 5056);
+static_assert(offsetof(TerminalShaderUniforms, iScrollback) == 5088);
+static_assert(sizeof(TerminalShaderUniforms) == 5104);
 
 /// What a shader is built from: user code defining
 /// `void mainImage(out vec4 fragColor, in vec2 fragCoord)` with includes
@@ -102,6 +109,12 @@ public:
     const QString& id() const noexcept { return m_id; }
     /// The shader reads iTime, so the window must keep rendering frames.
     bool animated() const noexcept { return m_animated; }
+    bool readsScrollback() const noexcept { return m_readsScrollback; }
+    bool readsPreviousText() const noexcept { return m_readsPreviousText; }
+    /// Opt-in `#define AFTERGLOW_HDR 1`: retain highlights above 1 between passes.
+    bool requiresHdr() const noexcept { return m_requiresHdr; }
+    /// Opt-in `#define AFTERGLOW_AUDIO 1`: capture system playback while visible.
+    bool requiresAudio() const noexcept { return m_requiresAudio; }
     const std::array<float, 32>& params() const noexcept { return m_params; }
     const std::array<float, 64>& colors() const noexcept { return m_colors; }
 
@@ -109,6 +122,10 @@ private:
     QShader m_shader;
     QString m_id;
     bool m_animated = false;
+    bool m_readsPreviousText = false;
+    bool m_readsScrollback = false;
+    bool m_requiresHdr = false;
+    bool m_requiresAudio = false;
     std::array<float, 32> m_params{};
     std::array<float, 64> m_colors{};
 };

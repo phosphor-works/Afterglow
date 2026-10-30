@@ -7,7 +7,7 @@ find_package(Qt6GuiPrivate CONFIG REQUIRED) # rhi/qrhi.h for the chrome render t
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 
-add_executable(afterglow
+qt_add_executable(afterglow
     src/main.cpp
     src/Pane.cpp
     src/Pane.h
@@ -42,7 +42,7 @@ add_executable(afterglow
 )
 
 # Shader pack loading, shared with the developer render tool.
-add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h)
+qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h)
 target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
@@ -53,7 +53,7 @@ pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 
 # Settings, keybinds and themes, shared with their tests.
-add_library(afterglow_config STATIC
+qt_add_library(afterglow_config STATIC
     src/config/Keybinds.cpp
     src/config/Keybinds.h
     src/config/Settings.cpp
@@ -68,8 +68,15 @@ target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
 target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
     PhosphorConfig::PhosphorConfig Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 
+# A single lazy system-playback analyzer, shared with its lifecycle tests.
+qt_add_library(afterglow_audio STATIC
+    src/audio/AudioController.cpp src/audio/AudioController.h src/audio/AudioSettings.h)
+target_include_directories(afterglow_audio PUBLIC src)
+target_compile_definitions(afterglow_audio PRIVATE QT_NO_CAST_FROM_ASCII)
+target_link_libraries(afterglow_audio PUBLIC PhosphorAudio::PhosphorAudio Qt6::Core)
+
 # The script host, shared with its tests. The Control binding lives in the app.
-add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h)
+qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting Qt6::Core)
@@ -101,7 +108,7 @@ target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VER
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
-target_link_libraries(afterglow PRIVATE afterglow_config afterglow_shaders afterglow_scripting Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow PRIVATE afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Qml Qt6::Quick Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
@@ -113,7 +120,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS AfterglowVt AfterglowRender AfterglowPty
                 PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
                 PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-                PhosphorDBus PhosphorScripting
+                PhosphorDBus PhosphorScripting PhosphorAudio
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
@@ -123,6 +130,8 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL
 install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/glasshouse
+        USE_SOURCE_PERMISSIONS)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/phosphor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/phosphor
         USE_SOURCE_PERMISSIONS)
 
 # Desktop integration. The app id matches QGuiApplication::desktopFileName,

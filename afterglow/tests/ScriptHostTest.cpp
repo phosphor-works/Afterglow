@@ -28,10 +28,10 @@ protected:
         ASSERT_TRUE(system.isValid() && user.isValid());
         ScriptHost::Callbacks c;
         c.paneInfo = [](quint32 pane) {
-            if (pane != 7) {
+            if (pane < 7 || pane > 9) {
                 return QVariantMap{};
             }
-            return QVariantMap{{QStringLiteral("id"), 7u}, {QStringLiteral("focused"), false},
+            return QVariantMap{{QStringLiteral("id"), pane}, {QStringLiteral("window"), pane == 9 ? 2 : 1}, {QStringLiteral("focused"), false},
                                {QStringLiteral("title"), QStringLiteral("fish")}};
         };
         c.apply = [this](const QVariantMap& e) {
@@ -313,6 +313,104 @@ TEST_F(ScriptHostTest, GlasshouseMapsShellEventsToSignals)
     EXPECT_EQ(host->actions().size(), 4);
     ASSERT_TRUE(host->runAction(QStringLiteral("glasshouse.strike"), 7));
     EXPECT_EQ(signalsSent(), (Sent{{0, 1.0}}));
+}
+
+TEST_F(ScriptHostTest, PhosphorReactsToCommandsAndDemoActions)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
+    host->setEnabled(true);
+    ASSERT_EQ(host->scriptIds(), QStringList{QStringLiteral("phosphor")});
+    auto takeSignals = [this] {
+        QList<QPair<int, double>> sent;
+        for (const auto& e : std::as_const(rec.applied)) {
+            if (e.value(QStringLiteral("kind")) == QStringLiteral("signal")) {
+                sent.append({e.value(QStringLiteral("channel")).toInt(), e.value(QStringLiteral("value")).toDouble()});
+                EXPECT_EQ(e.value(QStringLiteral("pane")).toUInt(), 7u);
+            }
+        }
+        rec.applied.clear();
+        return sent;
+    };
+    auto finished = [this](int code, int ms) {
+        host->dispatch(QStringLiteral("on_command_finished"), 7,
+                       {{QStringLiteral("exit_code"), code}, {QStringLiteral("duration_ms"), ms}});
+    };
+    using Sent = QList<QPair<int, double>>;
+    host->dispatch(QStringLiteral("on_command_started"), 7);
+    EXPECT_EQ(takeSignals(), (Sent{{2, 1.0}}));
+    finished(1, 2000);
+    EXPECT_EQ(takeSignals(), (Sent{{2, 0.0}, {4, 0.0}, {0, 1.0}}));
+    finished(0, 2000);
+    EXPECT_EQ(takeSignals(), (Sent{{2, 0.0}, {4, 0.0}, {1, 2.0}}));
+    finished(130, 2000);
+    EXPECT_EQ(takeSignals(), (Sent{{2, 0.0}, {4, 0.0}}));
+    finished(-1, 2000);
+    EXPECT_EQ(takeSignals(), (Sent{{2, 0.0}, {4, 0.0}}));
+    finished(0, 100);
+    EXPECT_EQ(takeSignals(), (Sent{{2, 0.0}, {4, 0.0}}));
+    host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("blocked")}});
+    EXPECT_EQ(takeSignals(), (Sent{{4, 2.0}}));
+    host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("done")}});
+    EXPECT_EQ(takeSignals(), (Sent{{4, 0.0}, {1, 1.0}}));
+}
+
+TEST_F(ScriptHostTest, PhosphorDemoActionsAndStatus)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
+    host->setEnabled(true);
+    for (const auto& [action, channel] : std::initializer_list<std::pair<const char*, int>>{
+             {"strike", 0}, {"complete", 1}, {"ring", 3}, {"heat", 2}}) {
+        ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.") + QString::fromLatin1(action), 7));
+        ASSERT_EQ(rec.applied.size(), 1);
+        EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), channel);
+        EXPECT_DOUBLE_EQ(rec.applied[0].value(QStringLiteral("value")).toDouble(), 1.0);
+        rec.applied.clear();
+    }
+    host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("error")}});
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), 4);
+    EXPECT_DOUBLE_EQ(rec.applied[0].value(QStringLiteral("value")).toDouble(), 3.0);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("channel")).toInt(), 0);
+}
+
+TEST_F(ScriptHostTest, PhosphorBroadcastsWithinTheWindow)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
+    host->setEnabled(true);
+    for (quint32 id : {7u, 8u, 9u}) host->dispatch(QStringLiteral("on_pane_created"), id);
+    rec.applied.clear();
+    host->dispatch(QStringLiteral("on_user_var"), 7,
+                   {{QStringLiteral("name"), QStringLiteral("phosphor")}, {QStringLiteral("value"), QStringLiteral("strike")}});
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("pane")).toUInt(), 7u);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("pane")).toUInt(), 8u);
+    for (const auto& effect : rec.applied) EXPECT_EQ(effect.value(QStringLiteral("channel")).toInt(), 0);
+    rec.applied.clear();
+    host->dispatch(QStringLiteral("on_pane_closed"), 8);
+    rec.applied.clear();
+    ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.complete"), 7));
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("pane")).toUInt(), 7u);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), 1);
+}
+
+TEST_F(ScriptHostTest, PhosphorStaysChargedWhileAnotherPaneIsRunning)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_command_started"), 7);
+    host->dispatch(QStringLiteral("on_command_started"), 8);
+    rec.applied.clear();
+    host->dispatch(QStringLiteral("on_command_finished"), 7,
+                   {{QStringLiteral("exit_code"), 0}, {QStringLiteral("duration_ms"), 100}});
+    int charges = 0;
+    for (const auto& e : rec.applied) {
+        if (e.value(QStringLiteral("channel")).toInt() == 2) {
+            ++charges;
+            EXPECT_DOUBLE_EQ(e.value(QStringLiteral("value")).toDouble(), 1.0);
+        }
+    }
+    EXPECT_EQ(charges, 2);
 }
 
 int main(int argc, char** argv)

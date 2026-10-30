@@ -91,8 +91,13 @@ bool PostChain::animated() const noexcept
 
 void PostChain::setChains(ShaderChains chains)
 {
+    if (chains.highDynamicRange() != m_chains.highDynamicRange()) {
+        release(); // Texture formats and render-pass compatibility changed.
+    }
     m_pipelines.clear();
+    m_bindings.clear(); // Audio opt-in may change the texture at binding 3.
     m_chains = std::move(chains);
+    m_historyValid = false;
 }
 
 void PostChain::release()
@@ -103,6 +108,10 @@ void PostChain::release()
     m_compositeBindings.clear();
     m_ubos.clear();
     m_compositeUbos.clear();
+    m_historyTarget.reset();
+    m_previousText.reset();
+    m_historyRegions.clear();
+    m_historyValid = false;
     for (auto& t : m_layerTargets) {
         t.reset();
     }
@@ -122,15 +131,20 @@ void PostChain::release()
 QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
 {
     QRhi* rhi = m_device.rhi();
+    const auto format = m_chains.highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
     // Layer textures come and go with the layer chains.
     const bool layersReady = layered() == bool(m_textures[FirstLayerTexture]);
-    if (size == m_size && m_textures[0] && layersReady) {
+    const bool historyReady = m_chains.textHistory() == bool(m_previousText);
+    if (size == m_size && m_textures[0] && layersReady && historyReady) {
         return m_gridTarget.get();
     }
     m_bindings.clear();
     m_compositeBindings.clear();
     m_pipelines.clear();
     m_composite.reset();
+    m_historyTarget.reset();
+    m_previousText.reset();
+    m_historyValid = false;
     for (auto& t : m_layerTargets) {
         t.reset();
     }
@@ -149,7 +163,7 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
         m_sampler->create();
     }
     for (int i = 0; i < 2; ++i) {
-        m_textures[i].reset(rhi->newTexture(QRhiTexture::RGBA8, size, 1,
+        m_textures[i].reset(rhi->newTexture(format, size, 1,
                                             QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
         m_textures[i]->create();
         // Pane passes only redraw pane regions; the rest is the copied input.
@@ -169,12 +183,20 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
         // Cleared like the grid target, so the grid's pipelines draw into them.
         for (int i = 0; i <= LayerCount; ++i) {
             auto& tex = m_textures[FirstLayerTexture + i];
-            tex.reset(rhi->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget));
+            tex.reset(rhi->newTexture(format, size, 1,
+                                     QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
             tex->create();
             m_layerTargets[i].reset(rhi->newTextureRenderTarget({tex.get()}));
             m_layerTargets[i]->setRenderPassDescriptor(m_gridPass.get());
             m_layerTargets[i]->create();
         }
+    }
+    if (m_chains.textHistory()) {
+        m_previousText.reset(rhi->newTexture(format, size, 1, QRhiTexture::RenderTarget));
+        m_previousText->create();
+        m_historyTarget.reset(rhi->newTextureRenderTarget({m_previousText.get()}));
+        m_historyTarget->setRenderPassDescriptor(m_gridPass.get());
+        m_historyTarget->create();
     }
     m_size = size;
     return m_gridTarget.get();
@@ -200,6 +222,12 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture)
             QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::FragmentStage, uniformBuffer(ubo)),
             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
                                                       m_textures[texture].get(), m_sampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
+                                                      m_previousText ? m_previousText.get() : m_textures[texture].get(),
+                                                      m_sampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(3, QRhiShaderResourceBinding::FragmentStage,
+                                                      m_chains.audioReactive() ? m_device.audioTexture() : m_textures[texture].get(),
+                                                      m_device.atlasSampler()),
         });
         slot->create();
     }
@@ -314,6 +342,21 @@ int PostChain::runLayerChain(QRhiCommandBuffer* cb, const std::vector<ShaderProg
 void PostChain::composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes,
                           const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear)
 {
+    if (m_previousText) {
+        std::vector<HistoryRegion> regions;
+        for (const auto& pane : panes) {
+            regions.emplace_back(pane.snapshot, pane.rect, pane.snapshot ? pane.snapshot->defaultBg : 0,
+                                 pane.snapshot ? pane.snapshot->defaultFg : 0, pane.cellSize);
+        }
+        // Never carry another tab's text, or text in its old position, into
+        // newly exposed panes. Clock resets also start a fresh history.
+        if (!m_historyValid || regions != m_historyRegions || time.time < m_historyTime) {
+            cb->beginPass(m_historyTarget.get(), Qt::transparent, {1.0f, 0});
+            cb->endPass();
+        }
+        m_historyRegions = std::move(regions);
+        m_historyTime = time.time;
+    }
     int ubo = m_nextUbo;
     const int background = runLayerChain(cb, m_chains.background, m_layerTexture[0], panes, time, ubo);
     const int text = runLayerChain(cb, m_chains.text, m_layerTexture[1], panes, time, ubo);
@@ -334,6 +377,16 @@ void PostChain::composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionS
         cb->setScissor(scissorFor(panes[i].rect, m_size));
         cb->setShaderResources(compositeBindings(int(i), background, text, cursor));
         cb->draw(3);
+    }
+}
+
+void PostChain::finishFrame(QRhiCommandBuffer* cb)
+{
+    if (m_previousText) {
+        auto* updates = m_device.rhi()->nextResourceUpdateBatch();
+        updates->copyTexture(m_previousText.get(), m_textures[m_layerTexture[int(Layer::Text)]].get());
+        cb->resourceUpdate(updates);
+        m_historyValid = true;
     }
 }
 
@@ -394,6 +447,11 @@ void PostChain::fill(TerminalShaderUniforms& u, const ShaderRegionState& s, cons
     u.iCellSize[1] = float(s.cellSize.height());
     std::memcpy(u.customParams, program.params().data(), sizeof u.customParams);
     u.iBackgroundOpacity = s.backgroundOpacity;
+    std::copy(s.scrollback.begin(), s.scrollback.end(), u.iScrollback);
+    if (program.requiresAudio()) {
+        std::copy(m_device.audioLevels().begin(), m_device.audioLevels().end(), u.iAudioLevels);
+        u.iAudioSpectrumSize = m_device.audioSpectrumSize();
+    }
     std::memcpy(u.customColors, program.colors().data(), sizeof u.customColors);
     for (std::size_t i = 0; i < s.signals.size(); ++i) {
         u.iSignal[i][0] = s.signals[i][0];
