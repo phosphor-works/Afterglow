@@ -27,7 +27,7 @@ After installation:
 Adjust the prefix if installed somewhere other than `/usr`. Requires Python 3,
 Bash, Wayland, Vulkan, and an Afterglow build with `iPreviousText`, `AFTERGLOW_HDR`
 and `AFTERGLOW_AUDIO` support, the `iScrollback` uniform, and the version 1 Luau
-terminal snapshots and `afterglow.signals` batch API. Install `cava` for the audio response.
+terminal snapshots, live shader parameters/transitions and scene preset APIs. Install `cava` for the audio response.
 Add `--light` to start in the light palette.
 
 The launcher creates a temporary configuration, shader packs and Luau script,
@@ -49,6 +49,27 @@ replays it: idle, charge, fracture, recall, impulse, then afterglow. The sequenc
 uses the alternate screen and restores your prompt on completion or Ctrl+C.
 It drives the real Luau actions via OSC 1337 user variables. Ordinary commands
 also charge the core, fracture it on failure and recall its pieces on success.
+
+## Scene controls
+
+The launcher includes the **Edit scene parameters and presets** palette action.
+Choose `background: phosphor-field` to apply Quiet, Balanced or Cinematic, edit
+quality/intensity, save current values, or reset this editor's overrides. Saved
+presets in this isolated demo last until its temporary directory is removed;
+install [scene-controls](../packages/scene-controls/README.md) in your normal
+configuration for durable presets.
+
+**Toggle contextual Phosphor exposure** optionally lets the packaged Luau script
+choose an intensity target from bounded audio/history summaries once per second.
+The host interpolates it. Toggle it off to release its overrides. Audio and
+history still drive the shader directly whether this optional policy is enabled
+or not. Phosphor's command heat uses host transitions; timestamped impulses
+remain in the shader.
+
+See [validation and measured quality tiers](VALIDATION.md) before choosing a
+preset for 4K. A quality tier describes sampling quality, not a frame-rate promise.
+The text effect adds a dark glyph outline to preserve readability over hot
+highlights; `phosphor-emission.readability` controls it (0–1, default 0.9).
 
 ## Audio response
 

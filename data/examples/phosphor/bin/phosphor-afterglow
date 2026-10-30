@@ -87,6 +87,8 @@ def launch(binary, mode, autoplay):
         app_home.mkdir()
         shutil.copytree(ROOT / 'shaders', app_home / 'shaders')
         shutil.copytree(ROOT / 'scripts', app_home / 'scripts')
+        for package in ('scene-controls', 'contextual-scene'):
+            shutil.copytree(ROOT.parent / 'packages' / package, app_home / 'scripts' / package)
         config = json.loads((ROOT / 'config/phosphor.json').read_text())
         config.update(json.loads((ROOT / 'config' / (mode + '.json')).read_text()))
         config['Terminal']['shell'] = str(ROOT / 'bin/phosphor-shell')

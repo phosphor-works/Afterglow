@@ -50,9 +50,9 @@ function script.on_pane_closed(ev)
     return effects
 end
 
-function script.on_focus(ev)
-    return broadcast(ev.pane, { { 2, heat(ev.terminal, ev.pane) } })
-end
+-- Focus does not change a tab material. Command and pane lifecycle events
+-- already update their owning tab, including background tabs. Re-sending on
+-- every focus event wastes the bounded effect budget and restarts transitions.
 
 function script.on_command_started(ev)
     return broadcast(ev.pane, { { 2, 1 } })

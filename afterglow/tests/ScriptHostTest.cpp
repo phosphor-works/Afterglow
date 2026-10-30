@@ -358,6 +358,37 @@ TEST_F(ScriptHostTest, GlasshouseMapsShellEventsToSignals)
     EXPECT_EQ(signalsSent(), (Sent{{0, 1.0}}));
 }
 
+TEST_F(ScriptHostTest, ContextualSceneSamplesTransitionsAndCleansUp)
+{
+    installPackage("contextual-scene");
+    applyHook=[](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if(e.value("kind")=="scene_state") return {{}, {{"scene",QVariantMap{{"tab_id",10},{"history_normalized",.5},{"audio_available",true},{"overall",.75}}}}, {}};
+        if(e.value("kind")=="shaders") return {{}, {{"shaders",QVariantList{QVariantMap{{"shader","phosphor-field"},{"instance","field"},{"layer","background"}}}}}, {}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("contextual-scene.toggle",7));
+    QElapsedTimer timer;timer.start();
+    bool updated=false;
+    while(timer.elapsed()<1500 && !updated) {
+        QCoreApplication::processEvents(); QThread::msleep(5);
+        for(const auto& e:std::as_const(rec.applied)) if(e.value("kind")=="shader_parameters") {
+            updated=true; EXPECT_NEAR(e.value("values").toMap().value("intensity").toDouble(),1.175,.001);
+            EXPECT_EQ(e.value("scope"),"tab"); EXPECT_EQ(e.value("transition").toMap().value("duration_ms").toInt(),900);
+        }
+    }
+    ASSERT_TRUE(updated);
+    rec.applied.clear();
+    ASSERT_TRUE(host->runAction("contextual-scene.toggle",7));
+    bool reset=false;
+    for(const auto& e:std::as_const(rec.applied)) if(e.value("kind")=="shader_parameters") {
+        reset=true; EXPECT_TRUE(e.value("values").toMap().isEmpty()); EXPECT_EQ(e.value("scope"),"window");
+    }
+    EXPECT_TRUE(reset);
+    host->setEnabled(false);
+    for (const auto& result : rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
 TEST_F(ScriptHostTest, PhosphorReactsToCommandsAndDemoActions)
 {
     host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
@@ -398,6 +429,19 @@ TEST_F(ScriptHostTest, PhosphorReactsToCommandsAndDemoActions)
     EXPECT_EQ(takeSignals(), (Sent{{4, 2.0}}));
     host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("done")}});
     EXPECT_EQ(takeSignals(), (Sent{{4, 0.0}, {1, 1.0}}));
+}
+
+TEST_F(ScriptHostTest, PhosphorFocusChangesDoNotSpendEffectBudgetOrRetargetHeat)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});host->setEnabled(true);
+    host->dispatch("on_command_started",7);
+    ASSERT_EQ(rec.applied.size(),2);
+    rec.applied.clear();
+    for(int i=0;i<64;++i) host->dispatch("on_focus", i%2 ? 7 : 8);
+    EXPECT_TRUE(rec.applied.isEmpty());
+    host->dispatch("on_command_finished",7,{{"exit_code",0},{"duration_ms",2000}});
+    EXPECT_EQ(rec.applied.size(),2);
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
 TEST_F(ScriptHostTest, PhosphorDemoActionsAndStatus)

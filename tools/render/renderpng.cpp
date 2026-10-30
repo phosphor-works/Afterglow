@@ -90,6 +90,8 @@ int main(int argc, char** argv)
                       QStringLiteral("b,m,t")});
     parser.addOption({QStringLiteral("scrollback-lines"), QStringLiteral("Synthetic combined history rows for a deterministic preview."),
                       QStringLiteral("n")});
+    parser.addOption({QStringLiteral("pixels"), QStringLiteral("Exact pane framebuffer size WIDTHxHEIGHT."), QStringLiteral("size")});
+    parser.addOption({QStringLiteral("last-only"), QStringLiteral("Save only the final frame (benchmarking).")});
     parser.addOption({QStringLiteral("timings"), QStringLiteral("Report render/readback and PNG times, excluding the first frame.")});
     parser.addOption({QStringLiteral("wake-from"), QStringLiteral("Previous cursor cell."), QStringLiteral("col,row")});
     parser.addOption({QStringLiteral("split"), QStringLiteral("Show the terminal twice, side by side; the left pane focused.")});
@@ -243,7 +245,13 @@ int main(int argc, char** argv)
 
     AfterglowRender::PaneSnapshot snapshot;
     snapshot.capture(terminal);
-    const QSize size(cols * metrics.cellWidth, rows * metrics.cellHeight);
+    QSize size(cols * metrics.cellWidth, rows * metrics.cellHeight);
+    if (parser.isSet(QStringLiteral("pixels"))) {
+        const auto dimensions = parser.value(QStringLiteral("pixels")).split(QLatin1Char('x'));
+        const int w = dimensions.value(0).toInt(), h = dimensions.value(1).toInt();
+        if (dimensions.size() != 2 || w < 1 || h < 1 || w > 8192 || h > 8192) return 1;
+        size = QSize(w, h);
+    }
     const auto alpha = std::uint8_t(std::lround(std::clamp(parser.value(QStringLiteral("opacity")).toDouble(), 0.0, 1.0) * 255));
     AfterglowRender::WindowRenderer::Pane pane;
     pane.snapshot = &snapshot;
@@ -299,6 +307,7 @@ int main(int argc, char** argv)
     }
     const QFileInfo output(args[1]);
     double renderMs = 0.0, pngMs = 0.0;
+    std::vector<double> samples;
     for (int frame = 0; frame < frames; ++frame) {
         const float elapsed = float(frame / fps);
         renderer.setClockOverride(time + elapsed);
@@ -318,16 +327,20 @@ int main(int argc, char** argv)
         const QString path = frames == 1 ? args[1]
             : output.absolutePath() + QLatin1Char('/') + output.completeBaseName()
                 + QStringLiteral("-%1.png").arg(frame, 4, 10, QLatin1Char('0'));
-        if (image.isNull() || !image.save(path)) {
+        if (image.isNull() || ((!parser.isSet(QStringLiteral("last-only")) || frame == frames - 1) && !image.save(path))) {
             std::fprintf(stderr, "rendering failed: %s\n", qPrintable(path));
             return 1;
         }
         if (frame > 0) {
-            renderMs += std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
+            samples.push_back(std::chrono::duration<double, std::milli>(renderEnd - renderStart).count());
+            renderMs += samples.back();
             pngMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - renderEnd).count();
         }
     }
     if (parser.isSet(QStringLiteral("timings")) && frames > 1) {
+        std::sort(samples.begin(), samples.end());
+        std::fprintf(stderr, "framebuffer %dx%d; p50 %.2f ms; p95 %.2f ms\n", frameSize.width(), frameSize.height(),
+                     samples[samples.size()/2], samples[std::min(samples.size()-1, std::size_t(samples.size()*.95))]);
         std::fprintf(stderr, "%d frames after warmup: render + readback %.2f ms/frame, PNG %.2f ms/frame (not GPU-only timings)\n",
                      frames - 1, renderMs / (frames - 1), pngMs / (frames - 1));
     }
