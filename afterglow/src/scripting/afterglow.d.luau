@@ -66,7 +66,16 @@ export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: 
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 
 export type OperationError = { code: string, message: string }
-export type OperationData = { text: string?, truncated: boolean?, available: boolean?, name: string?, stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?, pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }? }
+export type OperationData = {
+    text: string?, truncated: boolean?, available: boolean?, name: string?,
+    stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?,
+    pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }?,
+    -- Durable state results; revision must be supplied to the next state_write.
+    value: {[string]: any}?, version: number?, revision: number?,
+    -- Project listing and launch/restore results.
+    names: { string }?, cwd: string?, reused: boolean?,
+    pane_ids: {[string]: number}?, tab_ids: {[string]: number}?, warnings: { string }?,
+}
 export type ResultEvent = {
     request_id: string,
     kind: string,

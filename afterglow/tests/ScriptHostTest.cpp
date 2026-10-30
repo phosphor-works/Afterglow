@@ -7,6 +7,10 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <QSaveFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <signal.h>
+#include <cerrno>
 #include <sys/stat.h>
 
 #include <QCoreApplication>
@@ -44,7 +48,8 @@ protected:
             QVariantList panes;
             for (const auto& p : std::as_const(paneState)) panes.append(p);
             return QVariantMap{{QStringLiteral("panes"), panes}, {QStringLiteral("active_window"), 1},
-                               {QStringLiteral("active_tab"), 10}, {QStringLiteral("active_pane"), 7}};
+                               {QStringLiteral("active_tab"), 10}, {QStringLiteral("active_pane"), 7},
+                               {QStringLiteral("windows"), windows}, {QStringLiteral("tabs"), tabs}};
         };
         c.structuralAction = [](const QString& name) {
             return name.startsWith(QLatin1String("split_")) || name.startsWith(QLatin1String("close_"))
@@ -76,6 +81,15 @@ protected:
         f.write(source);
     }
 
+    void installPackage(const QString& name)
+    {
+        const QDir package(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES) + "/" + name);
+        ASSERT_TRUE(QDir().mkpath(user.filePath(name)));
+        for (const auto& file : package.entryList(QDir::Files))
+            ASSERT_TRUE(QFile::copy(package.filePath(file),user.filePath(name+"/"+file)));
+    }
+
+    QVariantList windows, tabs;
     QTemporaryDir system;
     QTemporaryDir user;
     Recorder rec;
@@ -1124,4 +1138,190 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
     ScriptState::Snapshot stored;
     ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-navigator",stored).isEmpty());
     EXPECT_TRUE(stored.value.value("favorites").toMap().value("/tmp").toBool());
+}
+
+TEST_F(ScriptHostTest, PackageReloadAndRemovalRetireJobsTimersWatchesAndUi)
+{
+    QDir().mkpath(user.filePath("lifecycle"));
+    write(user, "lifecycle/package.json", R"({"id":"lifecycle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "watched", "original");
+    write(user, "lifecycle/init.luau", R"(
+local generation
+return {
+ metadata={actions={{id="dialog"}}},
+ on_load=function(ev)
+  generation=ev.package.config.generation
+  return {afterglow.timer("tick",250,250),
+   afterglow.watch_file("watch",ev.package.config.watch),
+   afterglow.request("job",afterglow.exec("job",{"/bin/sh","-c",'echo $$ > "$1"; exec sleep 60',"probe",ev.package.config.pid})),
+   afterglow.status(7,"generation "..generation)}
+ end,
+ run_action=function(_,ev) return afterglow.request("dialog",afterglow.prompt(ev.pane,"Pending")) end,
+ on_timer=function() return afterglow.copy("tick-"..generation) end,
+ on_file_changed=function() return afterglow.copy("watch-"..generation) end,
+ on_result=function(ev) return afterglow.copy("late-"..generation) end,
+}
+)");
+    auto config = [&](int generation) {
+        QJsonObject value{{"generation",generation},{"pid",user.filePath("pid")},{"watch",user.filePath("watched")}};
+        write(user,"lifecycle/config.json",QJsonDocument(value).toJson());
+    };
+    auto pid = [&]() { QFile file(user.filePath("pid")); return file.open(QIODevice::ReadOnly) ? file.readAll().trimmed().toLongLong() : 0; };
+    auto wait = [](const std::function<bool()>& condition) {
+        QElapsedTimer timer; timer.start();
+        do { QCoreApplication::processEvents(); QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+            if (condition()) return true;
+            QThread::msleep(5);
+        } while (timer.elapsed()<3000);
+        return false;
+    };
+    config(0); host->setEnabled(true);
+    ASSERT_TRUE(wait([&]{return pid()>0;}));
+    qint64 previousPid=pid();
+    for (int generation=1;generation<=5;++generation) {
+        ASSERT_TRUE(host->runAction("lifecycle.dialog",7));
+        auto obsoleteReply=std::move(pendingReply);
+        ASSERT_TRUE(bool(obsoleteReply));
+        config(generation); host->reload();
+        ASSERT_TRUE(wait([&]{return pid()>0 && pid()!=previousPid;}));
+        ASSERT_TRUE(wait([&]{return ::kill(pid_t(previousPid),0)==-1 && errno==ESRCH;}));
+        previousPid=pid();
+        EXPECT_EQ(cleaned.size(),generation);
+        obsoleteReply({{},{{"text","obsolete"}}, {}});
+        rec.applied.clear();
+        write(user,"watched",QByteArray::number(generation));
+        const auto marker=QStringLiteral("watch-%1").arg(generation);
+        ASSERT_TRUE(wait([&]{return std::any_of(rec.applied.begin(),rec.applied.end(),[&](const auto& e){return e.value("text")==marker;});}));
+        for (const auto& effect:rec.applied) {
+            const auto text=effect.value("text").toString();
+            EXPECT_TRUE(text==marker || text==QStringLiteral("tick-%1").arg(generation)) << text.toStdString();
+        }
+        EXPECT_EQ(host->actions().size(),1);
+    }
+    ASSERT_TRUE(QDir(user.filePath("lifecycle")).removeRecursively());
+    host->reload();
+    ASSERT_TRUE(wait([&]{return ::kill(pid_t(previousPid),0)==-1 && errno==ESRCH;}));
+    EXPECT_EQ(cleaned.size(),6);
+    EXPECT_TRUE(host->actions().isEmpty());
+    EXPECT_TRUE(host->diagnostics().isEmpty());
+    rec.applied.clear();
+    write(user,"watched","after removal");
+    QElapsedTimer quiet;quiet.start();
+    while(quiet.elapsed()<600) {QCoreApplication::processEvents();QThread::msleep(5);}
+    EXPECT_TRUE(rec.applied.isEmpty());
+}
+
+TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
+{
+    installPackage("project-autosave");
+    windows={QVariantMap{{"id",1},{"project","dev"},{"active_pane",7}}};
+    applyHook=[](const QVariantMap& e)->ScriptHost::EffectResult {
+        if(e.value("kind")=="list_projects") return {{},{{"names",QStringList{"dev","unrelated"}}},{}};
+        if(e.value("kind")=="select") {
+            EXPECT_EQ(e.value("items").toList().size(),1);
+            EXPECT_EQ(e.value("items").toList().first().toMap().value("title"),"dev");
+            return {{},{{"id","1"}},{}};
+        }
+        return {};
+    };
+    auto pump=[] {for(int i=0;i<12;++i) QCoreApplication::processEvents();};
+    host->setEnabled(true);
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump();
+    ScriptState::Snapshot value;
+    ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-autosave",value).isEmpty());
+    EXPECT_TRUE(value.value.value("enabled").toMap().value("dev").toBool());
+    ASSERT_GE(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.first().value("kind"),"save_project");
+    EXPECT_TRUE(rec.applied.first().value("overwrite").toBool());
+    host->setEnabled(false);host->setEnabled(true);rec.applied.clear();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.first().value("name"),"dev");
+    // Duplicate live instances of a named project cannot overwrite each other.
+    windows.append(QVariantMap{{"id",2},{"project","dev"},{"active_pane",9}});
+    rec.applied.clear();host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    EXPECT_TRUE(rec.applied.isEmpty());windows.removeLast();
+    ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump();
+    ASSERT_EQ(rec.applied.last().value("kind"),"open_project");
+    EXPECT_EQ(rec.applied.last().value("name"),"dev");
+    EXPECT_FALSE(rec.applied.last().value("new_instance").toBool());
+    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump();rec.applied.clear();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump();EXPECT_TRUE(rec.applied.isEmpty());
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, TabStatusTracksActivePaneAndPersistsToggle)
+{
+    installPackage("tab-status");
+    write(user,"tab-status/config.json",R"({"git":false,"segments":["cwd","command","exit"],"separator":" / "})");
+    paneState[7]["cwd"]="/tmp/repository";paneState[7]["context"]="";
+    paneState[8]["cwd"]="/tmp/other";paneState[8]["context"]="";
+    tabs={QVariantMap{{"active_pane",7}}};
+    auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    host->setEnabled(true);tick();
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.last().value("text"),"repository / idle");
+    EXPECT_EQ(rec.applied.last().value("tab_title"),"repository");
+    host->dispatch("on_command_finished",7,{{"exit_code",2}});tick();
+    EXPECT_EQ(rec.applied.last().value("text"),"repository / idle / exit 2");
+    paneState[7]["command"]="make";tick();
+    EXPECT_EQ(rec.applied.last().value("text"),"repository / make");
+    tabs={QVariantMap{{"active_pane",8}}};rec.applied.clear();tick();
+    ASSERT_EQ(rec.applied.size(),2);
+    EXPECT_EQ(rec.applied.first().value("pane").toUInt(),7u);
+    EXPECT_EQ(rec.applied.first().value("text"),"");
+    EXPECT_EQ(rec.applied.last().value("text"),"other / idle");
+    ASSERT_TRUE(host->runAction("tab-status.toggle",8));
+    for(int i=0;i<6;++i)QCoreApplication::processEvents();
+    tick();EXPECT_EQ(rec.applied.last().value("text"),"");
+    host->setEnabled(false);host->setEnabled(true);rec.applied.clear();tick();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, TabStatusParsesGitAndBoundsConfigurableSegments)
+{
+    installPackage("tab-status");
+    write(user,"tab-status/init.luau",R"(
+local s=require("segments")
+return {on_load=function()
+ assert(s.git("## main...origin/main\n M file.cpp\n")=="main *")
+ assert(s.git("## No commits yet on feature\n")=="feature")
+ assert(s.git("fatal: not a repository")=="")
+ local text,title=s.render({cwd="/tmp/project",command="",context="remote"},"main",1,{segments={"context","cwd","unknown","exit"},separator=" | ",tab_title=false})
+ assert(text=="remote | project | exit 1" and title=="")
+ local bounded=s.render({cwd=string.rep("x",1000),command=string.rep("y",1000)},"",nil,{})
+ assert(#bounded<=500)
+ return afterglow.copy("segments passed")
+end}
+)");
+    host->setEnabled(true);
+    ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.first().value("text"),"segments passed");
+}
+
+TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
+{
+    installPackage("project-autosave");
+    windows={QVariantMap{{"id",1},{"project","dev"},{"active_pane",7}}};
+    bool fail=true;
+    applyHook=[&](const QVariantMap& e)->ScriptHost::EffectResult {
+        if(e.value("kind")=="save_project" && fail) return {"Disk unavailable",{},"io_error"};
+        if(e.value("kind")=="list_projects") return {{},{{"names",QStringList{"dev"}}},{}};
+        if(e.value("kind")=="select") return {"Cancelled",{},"cancelled"};
+        return {};
+    };
+    auto pump=[] {for(int i=0;i<12;++i)QCoreApplication::processEvents();};
+    host->setEnabled(true);ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump();
+    EXPECT_EQ(rec.applied.last().value("kind"),"notify");
+    EXPECT_EQ(rec.applied.last().value("body"),"Disk unavailable");
+    fail=false;rec.applied.clear();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.last().value("kind"),"save_project");
+    rec.applied.clear();ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump();
+    ASSERT_EQ(rec.applied.size(),2);EXPECT_EQ(rec.applied.last().value("kind"),"select");
+    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump();
+    ScriptState::Snapshot stored;
+    ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-autosave",stored).isEmpty());
+    EXPECT_FALSE(stored.value.value("enabled").toMap().contains("dev"));
 }

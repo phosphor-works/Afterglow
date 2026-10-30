@@ -67,3 +67,53 @@ The package uses only declared local imports and Afterglow effects.
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
 from the repository on a Wayland desktop for an isolated live check. It uses
 a private D-Bus session and temporary config/state, then closes its windows.
+
+## Walkthrough: reuse a split layout across repositories
+
+1. Open two or three terminal splits. Choose **Save Project** in the command
+   palette and name the layout `development`.
+2. Choose **Navigate projects**, type part of a repository path, then press Enter.
+   With `fd` installed, Git repositories beneath the configured roots appear
+   automatically. Roots themselves remain usable without discovery tools.
+3. Choose `development` in the **Layout for …** picker. A new window opens with
+   the saved split structure, and every pane starts in the chosen repository.
+   Explicit commands saved with the layout run again. Commands typed into an
+   interactive shell are not recorded as launch commands.
+4. Choose **Toggle favorite project directory** in the new window. Open the
+   navigator again: that directory is marked with a star and `[running]`.
+5. Select another repository and apply a layout. **Previous project** returns
+   to the earlier directory. Selecting a running directory reuses its window
+   and running processes.
+6. Restart Afterglow. Favorites and recent directories remain in the picker.
+   Selecting a directory offers its last-used layout first.
+
+A directory opens directly into a shell when no saved layouts exist. Save a
+layout first to exercise the multi-pane workflow. To add periodic saves and
+repository status, install the sibling [project-autosave](../project-autosave/README.md)
+and [tab-status](../tab-status/README.md) packages.
+
+## Reload, uninstall and recovery
+
+Edits to `config.json`, modules and the manifest reload the package as a unit.
+An invalid edit leaves the last working version active; `afterglow ctl scripts`
+shows `last-good` and the error. Correct the edit to recover. Open dialogs and
+provider jobs from a successfully replaced version are cancelled.
+
+Remove the `scripts/project-navigator/` directory to uninstall. Its actions,
+open selector and jobs are removed automatically. Favorites/history stay in
+`state/scripts/project-navigator.json` beside your config so reinstall restores
+them. To reset history too, remove that state file while the package is unloaded.
+
+The native acceptance check requires KWin, an X11/XWayland display, libX11,
+libXtst, xprop, ImageMagick, Git and fd:
+
+```bash
+python3 afterglow/tests/navigator_ui_smoke.py build/afterglow/afterglow
+```
+
+It creates a nested desktop with private D-Bus/config/state, drives the real
+picker with keyboard input, verifies window reuse, config reload, removal with
+an open selector, reinstall and remembered layouts after restart. It also checks
+the companion packages' periodic save and restore flow. Screenshots and the
+application log go to `/tmp/afterglow-navigator-ui/` (override with `--artifacts`).
+Only its temporary windows/processes are closed at the end.

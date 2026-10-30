@@ -1,0 +1,15 @@
+{
+  "id": "tab-status",
+  "version": "1.0.0",
+  "api_version": 1,
+  "state_version": 1,
+  "entry": "main",
+  "modules": {"main": "init.luau", "segments": "segments.luau"},
+  "config": {
+    "segments": ["cwd", "git", "command", "exit", "context"],
+    "separator": "  |  ",
+    "tab_title": true,
+    "git": true,
+    "git_refresh_seconds": 15
+  }
+}

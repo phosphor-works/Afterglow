@@ -407,6 +407,12 @@ scripting off.
 The [project navigator package](data/examples/packages/project-navigator/README.md)
 combines saved layouts, running projects, Git discovery, optional zoxide,
 favorites and persistent history in a native fuzzy picker.
+The [project autosave package](data/examples/packages/project-autosave/README.md)
+adds opt-in periodic layout saves and a restore picker; the
+[tab/status package](data/examples/packages/tab-status/README.md) adds configurable
+Git, directory, command and exit-status components. These are native Luau examples
+inspired by sessionizer.wezterm, resurrect.wezterm and tabline.wez, respectively.
+Each package includes installation, configuration, walkthrough and removal instructions.
 
 ### Luau packages and persistent state
 
@@ -476,7 +482,9 @@ return effects; effects take place after successful activation, and their
 operation failures are reported normally through `on_result`.
 
 `afterglow ctl scripts` reports active, disabled, failed and last-good instances,
-including paths and load errors. Fix a file to retry loading. Package removal
+including paths and load errors. Fix a file to retry loading. In-memory module
+state survives unchanged reloads, but resets on replacement, removal or process
+exit. Only explicit disk state survives those boundaries. Package removal
 cleans up its tasks and UI contributions, while its stored data remains.
 
 `afterglow.open_directory(path, layout?)` opens a directory with a shell or a

@@ -1,0 +1,9 @@
+{
+  "id": "project-autosave",
+  "version": "1.0.0",
+  "api_version": 1,
+  "state_version": 1,
+  "entry": "main",
+  "modules": {"main": "init.luau", "projects": "projects.luau"},
+  "config": {"interval_seconds": 60}
+}
