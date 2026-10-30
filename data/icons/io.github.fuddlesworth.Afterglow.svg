@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Afterglow app icon.
-
-  A prompt chevron and a block cursor trailing light: the glow a moving
-  cursor leaves behind, which is where the terminal's name comes from.
--->
+<!-- Afterglow: a tapered A with a split elliptical crossbar, in the Phosphor family. -->
 <svg width="1024" height="1024" viewBox="96 96 832 832" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">Afterglow</title>
-  <desc id="desc">A prompt chevron and a block cursor leaving a fading gradient trail, the icon of the Afterglow terminal.</desc>
+  <desc id="desc">A sculpted A formed by tapered strokes and a split elliptical crossbar inside a gradient frame.</desc>
   <defs>
     <linearGradient id="gBorder" x1="120" y1="120" x2="904" y2="904" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#22D3EE"/>
@@ -23,24 +18,11 @@
       <stop offset="1" stop-color="#050916"/>
     </radialGradient>
 
-    <linearGradient id="gZones" x1="260" y1="300" x2="820" y2="820" gradientUnits="userSpaceOnUse">
+    <linearGradient id="gZones" x1="330" y1="250" x2="694" y2="780" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#22D3EE"/>
       <stop offset="0.55" stop-color="#A855F7"/>
       <stop offset="1" stop-color="#F43F5E"/>
     </linearGradient>
-
-    <filter id="fGlow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="6" result="blur"/>
-      <feColorMatrix in="blur" type="matrix"
-        values="1 0 0 0 0
-                0 1 0 0 0
-                0 0 1 0 0
-                0 0 0 0.8 0" result="glow"/>
-      <feMerge>
-        <feMergeNode in="glow"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
 
     <filter id="fInnerShadow" x="-20%" y="-20%" width="140%" height="140%">
       <feOffset dx="0" dy="8" in="SourceAlpha" result="off"/>
@@ -55,18 +37,6 @@
         <feMergeNode in="shadow"/>
         <feMergeNode in="SourceGraphic"/>
       </feMerge>
-    </filter>
-
-    <!-- The trail: transparent where the cursor was, brightening into it. -->
-    <linearGradient id="gTrail" x1="424" y1="0" x2="780" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#22D3EE" stop-opacity="0"/>
-      <stop offset="0.5" stop-color="#3B82F6" stop-opacity="0.14"/>
-      <stop offset="1" stop-color="#A855F7" stop-opacity="0.5"/>
-    </linearGradient>
-
-    <!-- The trail is light, not an object: soft edges. -->
-    <filter id="fTrail" x="-10%" y="-20%" width="120%" height="140%">
-      <feGaussianBlur stdDeviation="7"/>
     </filter>
 
     <clipPath id="clip">
@@ -84,15 +54,16 @@
     <circle cx="790" cy="580" r="460" fill="#A855F7" opacity="0.10"/>
     <circle cx="740" cy="360" r="390" fill="#F43F5E" opacity="0.06"/>
 
-    <g filter="url(#fGlow)">
-      <!-- Prompt chevron -->
-      <path d="M244 372 L384 512 L244 652" stroke="url(#gZones)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>
-
-      <!-- Afterglow: the light the cursor leaves behind as it moves -->
-      <rect x="424" y="392" width="356" height="240" rx="36" fill="url(#gTrail)" filter="url(#fTrail)"/>
-
-      <!-- Block cursor -->
-      <rect x="648" y="392" width="132" height="240" rx="34" fill="url(#gZones)" opacity="0.95"/>
+    <!-- Tapered blades and an interrupted ellipse echo the Phosphor mark. -->
+    <g fill="url(#gZones)">
+      <path d="M512 230 C484 410 394 650 286 794 C336 614 424 374 512 230 Z"/>
+      <path d="M512 230 C600 374 688 614 738 794 C630 650 540 410 512 230 Z"/>
+      <path d="M298 486 C340 564 416 600 492 604
+               C478 620 466 628 450 626
+               C372 616 312 566 298 486 Z"/>
+      <path d="M532 604 C608 600 684 564 726 486
+               C712 566 652 616 574 626
+               C558 628 546 620 532 604 Z"/>
     </g>
   </g>
 </svg>
