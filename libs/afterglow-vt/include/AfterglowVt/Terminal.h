@@ -280,7 +280,8 @@ public:
         LastOutput, ///< what the last command printed (OSC 133 C to D)
     };
     /// Plain text; soft-wrapped rows join, trailing blanks are trimmed.
-    std::string text(TextScope scope) const;
+    std::string text(TextScope scope, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
+    bool hasCommandOutput() const noexcept { return m_outputStart.valid; }
     /// Selection colours: set by OSC 17/19, else configured; unset ones invert the cell.
     const Rgb* selectionForeground() const noexcept
     {
@@ -461,7 +462,7 @@ private:
     Mark m_outputEnd; ///< D
     bool m_commandRunning = false;
     Mark cursorMark() const;
-    std::string textBetween(const Mark& from, const Mark& to) const;
+    std::string textBetween(const Mark& from, const Mark& to, std::size_t maxBytes = 1024 * 1024, bool* truncated = nullptr) const;
     void finishCommand(int exitCode);
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;

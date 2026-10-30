@@ -22,6 +22,9 @@ struct SelectionPoint
     auto operator<=>(const SelectionPoint&) const = default;
 };
 
+/// Move one grapheme cell horizontally, or physical rows vertically; clamp to history.
+AFTERGLOWVT_EXPORT SelectionPoint moveSelectionCursor(const Screen&, SelectionPoint, int dx, int dy);
+
 enum class SelectionMode : std::uint8_t {
     Normal, ///< character stream
     Word, ///< extends to word boundaries

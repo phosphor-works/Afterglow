@@ -3020,8 +3020,9 @@ void Terminal::finishCommand(int exitCode)
     m_host.commandFinished(exitCode);
 }
 
-std::string Terminal::textBetween(const Mark& from, const Mark& to) const
+std::string Terminal::textBetween(const Mark& from, const Mark& to, std::size_t maxBytes, bool* truncated) const
 {
+    if (truncated) *truncated = false;
     const Screen& scr = *m_primary;
     const long long first = scr.absoluteIndexOf(from.row);
     const long long last = scr.absoluteIndexOf(to.row);
@@ -3055,27 +3056,36 @@ std::string Terminal::textBetween(const Mark& from, const Mark& to) const
                 line.pop_back();
             }
         }
+        if (out.size() + line.size() > maxBytes) {
+            std::size_t bytes = maxBytes > out.size() ? maxBytes - out.size() : 0;
+            while (bytes > 0 && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80) --bytes;
+            out.append(line, 0, bytes);
+            if (truncated) *truncated = true;
+            return out;
+        }
         out += line;
         if (!continues && i < last) {
+            if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
             out += '\n';
         }
     }
     return out;
 }
 
-std::string Terminal::text(TextScope scope) const
+std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncated) const
 {
+    if (truncated) *truncated = false;
     switch (scope) {
     case TextScope::LastOutput:
         if (!m_outputStart.valid) {
             return {};
         }
-        return textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark());
+        return textBetween(m_outputStart, m_outputEnd.valid ? m_outputEnd : cursorMark(), maxBytes, truncated);
     case TextScope::All: {
         const Screen& scr = *m_primary;
         const Mark top{scr.rowsDropped(), 0, true};
         const Mark end{scr.rowsDropped() + scr.historySize() + std::uint64_t(scr.rows() - 1), scr.cols(), true};
-        std::string s = textBetween(top, end);
+        std::string s = textBetween(top, end, maxBytes, truncated);
         while (!s.empty() && s.back() == '\n') {
             s.pop_back();
         }
@@ -3105,7 +3115,15 @@ std::string Terminal::text(TextScope scope) const
         while (!line.empty() && line.back() == ' ') {
             line.pop_back();
         }
+        if (out.size() + line.size() > maxBytes) {
+            std::size_t bytes = maxBytes > out.size() ? maxBytes - out.size() : 0;
+            while (bytes > 0 && bytes < line.size() && (static_cast<unsigned char>(line[bytes]) & 0xc0) == 0x80) --bytes;
+            out.append(line, 0, bytes);
+            if (truncated) *truncated = true;
+            return out;
+        }
         out += line;
+        if (out.size() == maxBytes) { if (truncated) *truncated = true; return out; }
         out += '\n';
     }
     while (!out.empty() && out.back() == '\n') {

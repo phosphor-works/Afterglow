@@ -10,6 +10,7 @@ add_library(AfterglowVt SHARED
     src/Notifications.cpp
     src/ProgramStatus.cpp
     src/Screen.cpp
+    src/TextSearch.cpp
     src/Search.cpp
     src/Selection.cpp
     src/Sixel.cpp
@@ -27,8 +28,10 @@ generate_export_header(AfterglowVt
 target_include_directories(AfterglowVt PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 find_package(ZLIB REQUIRED)
-target_link_libraries(AfterglowVt PRIVATE ZLIB::ZLIB)
+target_link_libraries(AfterglowVt PRIVATE ZLIB::ZLIB PkgConfig::PCRE2)
 
 # The parser's hot path crosses files and the library's own exported
 # functions: let calls inside the library go straight to their targets (no

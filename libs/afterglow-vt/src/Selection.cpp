@@ -214,3 +214,32 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
 }
 
 } // namespace AfterglowVt
+
+namespace AfterglowVt {
+SelectionPoint moveSelectionCursor(const Screen& screen, SelectionPoint point, int dx, int dy)
+{
+    const auto first = screen.rowsDropped();
+    const auto last = first + screen.totalRows() - 1;
+    point.row = std::clamp(point.row, first, last);
+    point.row = std::uint64_t(std::clamp(std::int64_t(point.row) + dy, std::int64_t(first), std::int64_t(last)));
+    point.col = std::clamp(point.col, 0, screen.cols() - 1);
+    const auto tail = [&](SelectionPoint p) { return screen.absoluteRow(std::size_t(p.row - first)).at(p.col).isTail(); };
+    if (dx) {
+        const int step = dx > 0 ? 1 : -1;
+        do {
+            const auto before = point;
+            point.col += step;
+            if (point.col >= screen.cols()) {
+                if (point.row < last) { ++point.row; point.col = 0; }
+                else point.col = screen.cols() - 1;
+            } else if (point.col < 0) {
+                if (point.row > first) { --point.row; point.col = screen.cols() - 1; }
+                else point.col = 0;
+            }
+            if (point == before) break;
+        } while (tail(point));
+    }
+    while (point.col > 0 && tail(point)) --point.col;
+    return point;
+}
+}
