@@ -10,6 +10,7 @@ Native desktop tests use KDE/KWin. Other compositors and screen readers are not 
 Build and installation procedures do not change. This release does not add macOS or Windows support.
 
 - Detach a tab by dragging it outside the bar, or through its context menu. Existing panes keep their running processes.
+- Reuse history rows during resize when their text still fits on one line. Preserve their cells, styles and graphemes without rebuilding them.
 - Expose each current-tab terminal pane through Qt/AT-SPI, including viewport text, cursor, selection, geometry and change events.
 - Provide read-only IME surrounding text for the live cursor row and remove the Latin-only preference hint.
 - Accept local file drops with shell quoting and bracketed paste into the target pane.
@@ -25,7 +26,7 @@ Build and installation procedures do not change. This release does not add macOS
 - Exercise native split creation, chrome keyboard routing, paste confirmation, IME commits and compositor-delivered drag/drop in an isolated KWin desktop.
 
 
-Large-history width changes can take hundreds of milliseconds.
+Width changes still reflow wrapped lines and lines that exceed the new width.
 See [performance measurements](docs/PERFORMANCE.md) for timings, workloads and limits.
 
 See [compatibility](docs/COMPATIBILITY.md) for protocol limits and memory costs.

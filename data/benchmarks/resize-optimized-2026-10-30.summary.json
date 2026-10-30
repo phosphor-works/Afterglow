@@ -1,0 +1,563 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "started_utc": "2026-10-30T23:33:40.761185+00:00",
+    "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
+    "commit": "f1fcaeed31b1f0290ea6a3d9346dd0a4f447fa3a",
+    "source_status": "",
+    "tool_sources": {
+      "tools/bench/CMakeLists.txt": "e855a7e3ddf567027142b2472ed5f7a5e855d60a98f053d2a378dcde48957df5",
+      "tools/bench/native_benchmark.py": "387b319ea106edc8a7d9b0541d03daa9d3453dae301972faca91f251a608bba2",
+      "tools/bench/nativebench.cpp": "3288b64943b67b9153d2a47735d64df6b28caf96da3988974a75bf53311afd5a",
+      "tools/bench/pty_workload.py": "35d170af038537878b4cab8a734b4c5100a233ce4b4238c00bd3abcbfeff2cf1",
+      "tools/bench/summarize_native.py": "827d684f283a063a2cd966ee77e518acc705f7906e9800ae896c993d1db62aa9",
+      "tools/bench/vtbench.cpp": "a291b874c1e11d8de68f76ddaf168df5ff4170423e41cfbb888fe13b9646612b"
+    },
+    "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "binary_sha256": "761336d03d5399e669e9581a02bf54015de9ab6fa00773564ebd6bd467e05bc7",
+    "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           39 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  8\nOn-line CPU(s) list:                     0-7\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz\nCPU family:                              6\nModel:                                   158\nThread(s) per core:                      1\nCore(s) per socket:                      8\nSocket(s):                               1\nStepping:                                12\nMicrocode version:                       0xf8\nCPU(s) scaling MHz:                      84%\nCPU max MHz:                             4900.0000\nCPU min MHz:                             800.0000\nBogoMIPS:                                7200.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid mpx rdseed adx smap clflushopt intel_pt xsaveopt xsavec xgetbv1 xsaves dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp vnmi md_clear flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               256 KiB (8 instances)\nL1i cache:                               256 KiB (8 instances)\nL2 cache:                                2 MiB (8 instances)\nL3 cache:                                12 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-7\nVulnerability Gather data sampling:      Mitigation; Microcode\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             KVM: Mitigation: Split huge pages\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Mitigation; Clear CPU buffers; SMT disabled\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Mitigation; Clear CPU buffers; SMT disabled\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Mitigation; IBRS\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; IBRS; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Mitigation; Microcode\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Mitigation; TSX disabled\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace",
+    "gpu": "name, driver_version, power.limit [W], clocks.current.graphics [MHz], clocks.current.memory [MHz]\nNVIDIA GeForce RTX 2080, 615.78.08, 225.00 W, 405 MHz, 810 MHz",
+    "kernel": "7.3.0-4-cachyos",
+    "compositor": "kwin 6.8.1",
+    "font": "Monaspace Neon Var.ttf: \"Monaspace Neon Var\" \"Regular\"",
+    "build_type": "RelWithDebInfo",
+    "repeats": 3,
+    "duration_s": 15,
+    "input_samples": 100,
+    "style": "Basic",
+    "platform_theme": "generic",
+    "shaders": [],
+    "opacity": 1,
+    "scale": 1,
+    "note": "Nested KWin on the active desktop; ordinary power management and shared GPU. No clock locking.",
+    "finished_utc": "2026-10-30T23:35:32.273935+00:00"
+  },
+  "case_runs": 6,
+  "aggregation": "Median, minimum and maximum across per-run statistics; percentiles are not pooled. GPU allocation and activity statistics pool available external samples. Activity excludes missing values and is not time-weighted; vendor readings can repeat.",
+  "cases": [
+    {
+      "width": 1920,
+      "height": 1080,
+      "case": "resize",
+      "history_rows": 100000,
+      "snapshot_panes": 1,
+      "repeats": 3,
+      "cpu_percent_one_core": {
+        "count": 3,
+        "median": 40.318542553120665,
+        "min": 40.10244489267255,
+        "max": 40.33934822702181
+      },
+      "wall_ms": {
+        "count": 3,
+        "median": 14484.424637000076,
+        "min": 14442.524977999972,
+        "max": 14497.993225999875
+      },
+      "history_fill_ms": {
+        "count": 3,
+        "median": 66.30324499984272,
+        "min": 65.88933299994096,
+        "max": 67.50438499986194
+      },
+      "frame_service": {
+        "count": {
+          "count": 3,
+          "median": 859,
+          "min": 859,
+          "max": 861
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 16.689956375146522,
+          "min": 16.664628615835138,
+          "max": 16.71346033061936
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 16.556986999930814,
+          "min": 16.555076000047848,
+          "max": 16.572573999874294
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 22.846289000008255,
+          "min": 22.768968999851495,
+          "max": 24.020182999782264
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 27.040585999842733,
+          "min": 26.989871999947354,
+          "max": 31.102613999973983
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 32.312702000141144,
+          "min": 31.889227000065148,
+          "max": 35.882476000115275
+        }
+      },
+      "frame_intervals": {
+        "count": {
+          "count": 3,
+          "median": 858,
+          "min": 858,
+          "max": 860
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 16.72166930232549,
+          "min": 16.696628184149223,
+          "max": 16.745152884615326
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 16.60910900007002,
+          "min": 16.605845999903977,
+          "max": 16.6213150001131
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 22.86228600004688,
+          "min": 22.781941999914125,
+          "max": 24.065519999945536
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 27.054569999920204,
+          "min": 27.007748999865726,
+          "max": 31.11790099996142
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 32.32570300018415,
+          "min": 31.902226000092924,
+          "max": 35.893523999955505
+        }
+      },
+      "terminal_gpu_elapsed": {
+        "count": {
+          "count": 3,
+          "median": 859,
+          "min": 859,
+          "max": 861
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 0.09565580478338276,
+          "min": 0.09221453790588692,
+          "max": 0.108664847517926
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 0.07020799815654755,
+          "min": 0.06950400024652481,
+          "max": 0.10198400169610977
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 0.23664000630378723,
+          "min": 0.2144639939069748,
+          "max": 0.2568959891796112
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 0.2953599989414215,
+          "min": 0.2951680123806,
+          "max": 0.31939199566841125
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 0.359391987323761,
+          "min": 0.332863986492157,
+          "max": 0.4137279987335205
+        }
+      },
+      "input_to_submitted_snapshot": {
+        "count": {
+          "count": 0
+        },
+        "mean_ms": {
+          "count": 0
+        },
+        "p50_ms": {
+          "count": 0
+        },
+        "p95_ms": {
+          "count": 0
+        },
+        "p99_ms": {
+          "count": 0
+        },
+        "max_ms": {
+          "count": 0
+        }
+      },
+      "operation": {
+        "count": {
+          "count": 3,
+          "median": 286,
+          "min": 285,
+          "max": 288
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 0.008854076386746278,
+          "min": 0.008732538461893589,
+          "max": 0.009132582454925828
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 0.00866999989375472,
+          "min": 0.008597000036388636,
+          "max": 0.00877700001001358
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 0.010704000014811754,
+          "min": 0.01042200019583106,
+          "max": 0.01091499999165535
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 0.014651000034064054,
+          "min": 0.011725000105798244,
+          "max": 0.02269700006581843
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 0.020924000069499016,
+          "min": 0.015865999972447753,
+          "max": 0.05538300005719066
+        }
+      },
+      "Rss_kib": {
+        "count": 3,
+        "median": 274868,
+        "min": 274712,
+        "max": 276228
+      },
+      "Pss_kib": {
+        "count": 3,
+        "median": 185301,
+        "min": 185263,
+        "max": 186707
+      },
+      "Private_Dirty_kib": {
+        "count": 3,
+        "median": 154628,
+        "min": 154560,
+        "max": 156048
+      },
+      "peak_rss_kib": {
+        "count": 3,
+        "median": 289944,
+        "min": 289252,
+        "max": 289984
+      },
+      "resident_growth_mib": {
+        "count": 3,
+        "median": 118.6328125,
+        "min": 118.6015625,
+        "max": 119.9453125
+      },
+      "operations_per_second": {
+        "count": 3,
+        "median": 19.802631495230816,
+        "min": 19.676307975117982,
+        "max": 19.86481822073949
+      },
+      "submitted_events_per_second": {
+        "count": 3,
+        "median": 59.3875294724191,
+        "min": 59.30508263377666,
+        "max": 59.47713445595549
+      },
+      "output_mib_per_second": {
+        "count": 0
+      },
+      "gpu_framebuffer_mib": {
+        "count": 176,
+        "median": 81.0,
+        "min": 51.0,
+        "max": 91.0
+      },
+      "gpu_process_sample_count": 176,
+      "gpu_sm_percent": {
+        "count": 38,
+        "median": 26.0,
+        "min": 2.0,
+        "max": 40.0
+      },
+      "gpu_memory_activity_percent": {
+        "count": 38,
+        "median": 4.0,
+        "min": 0.0,
+        "max": 24.0
+      }
+    },
+    {
+      "width": 3840,
+      "height": 2160,
+      "case": "resize",
+      "history_rows": 100000,
+      "snapshot_panes": 1,
+      "repeats": 3,
+      "cpu_percent_one_core": {
+        "count": 3,
+        "median": 46.087392932581125,
+        "min": 45.799384820989154,
+        "max": 46.205313651015146
+      },
+      "wall_ms": {
+        "count": 3,
+        "median": 14407.20740199997,
+        "min": 14396.696241999976,
+        "max": 14424.923580999952
+      },
+      "history_fill_ms": {
+        "count": 3,
+        "median": 92.75769899995066,
+        "min": 92.23571899998933,
+        "max": 96.67793000000529
+      },
+      "frame_service": {
+        "count": {
+          "count": 3,
+          "median": 854,
+          "min": 853,
+          "max": 857
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 16.70774797892331,
+          "min": 16.680737165695323,
+          "max": 16.73867582298263
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 16.556047999998555,
+          "min": 16.527316000079736,
+          "max": 16.561388000147417
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 24.576794000109658,
+          "min": 24.571719999890774,
+          "max": 25.513001000043005
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 29.019496999913827,
+          "min": 28.22154500009492,
+          "max": 30.930426000151783
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 37.849777000024915,
+          "min": 35.91749999998137,
+          "max": 38.85470000002533
+        }
+      },
+      "frame_intervals": {
+        "count": {
+          "count": 3,
+          "median": 853,
+          "min": 852,
+          "max": 856
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 16.740564872215668,
+          "min": 16.71495395093459,
+          "max": 16.772394422535182
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 16.612391999922693,
+          "min": 16.578471000073478,
+          "max": 16.62006999994628
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 24.61436100001447,
+          "min": 24.589185000164434,
+          "max": 25.523866000119597
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 29.033092000056058,
+          "min": 28.23671400011517,
+          "max": 30.94407399999909
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 37.86385599989444,
+          "min": 35.928713999921456,
+          "max": 38.86832400015555
+        }
+      },
+      "terminal_gpu_elapsed": {
+        "count": {
+          "count": 3,
+          "median": 854,
+          "min": 853,
+          "max": 857
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 0.2734660348939029,
+          "min": 0.2570808305814775,
+          "max": 0.27489611278757
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 0.21369600296020508,
+          "min": 0.2096959948539734,
+          "max": 0.218176007270813
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 0.4256640076637268,
+          "min": 0.4196479916572571,
+          "max": 0.5695040225982666
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 0.8791679739952087,
+          "min": 0.8024640083312988,
+          "max": 0.9758399724960327
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 1.0912959575653076,
+          "min": 1.068127989768982,
+          "max": 1.1356480121612549
+        }
+      },
+      "input_to_submitted_snapshot": {
+        "count": {
+          "count": 0
+        },
+        "mean_ms": {
+          "count": 0
+        },
+        "p50_ms": {
+          "count": 0
+        },
+        "p95_ms": {
+          "count": 0
+        },
+        "p99_ms": {
+          "count": 0
+        },
+        "max_ms": {
+          "count": 0
+        }
+      },
+      "operation": {
+        "count": {
+          "count": 3,
+          "median": 284,
+          "min": 284,
+          "max": 286
+        },
+        "mean_ms": {
+          "count": 3,
+          "median": 0.008721115385097537,
+          "min": 0.008711165498489593,
+          "max": 0.008817538721519719
+        },
+        "p50_ms": {
+          "count": 3,
+          "median": 0.008529999991878867,
+          "min": 0.008422999875620008,
+          "max": 0.008586999960243702
+        },
+        "p95_ms": {
+          "count": 3,
+          "median": 0.010279000038281083,
+          "min": 0.010134999873116612,
+          "max": 0.011129999998956919
+        },
+        "p99_ms": {
+          "count": 3,
+          "median": 0.015284000197425485,
+          "min": 0.013106999918818474,
+          "max": 0.021391999907791615
+        },
+        "max_ms": {
+          "count": 3,
+          "median": 0.02292599994689226,
+          "min": 0.016506999963894486,
+          "max": 0.03691600007005036
+        }
+      },
+      "Rss_kib": {
+        "count": 3,
+        "median": 282928,
+        "min": 259320,
+        "max": 283404
+      },
+      "Pss_kib": {
+        "count": 3,
+        "median": 193378,
+        "min": 169715,
+        "max": 193977
+      },
+      "Private_Dirty_kib": {
+        "count": 3,
+        "median": 162704,
+        "min": 139020,
+        "max": 163276
+      },
+      "peak_rss_kib": {
+        "count": 3,
+        "median": 296704,
+        "min": 296060,
+        "max": 298424
+      },
+      "resident_growth_mib": {
+        "count": 3,
+        "median": 122.9609375,
+        "min": 101.171875,
+        "max": 124.296875
+      },
+      "operations_per_second": {
+        "count": 3,
+        "median": 19.726748083458,
+        "min": 19.712355911567975,
+        "max": 19.826794810664374
+      },
+      "submitted_events_per_second": {
+        "count": 3,
+        "median": 59.31916501152511,
+        "min": 59.206477438617895,
+        "max": 59.411059974613174
+      },
+      "output_mib_per_second": {
+        "count": 0
+      },
+      "gpu_framebuffer_mib": {
+        "count": 181,
+        "median": 169.0,
+        "min": 169.0,
+        "max": 201.0
+      },
+      "gpu_process_sample_count": 181,
+      "gpu_sm_percent": {
+        "count": 56,
+        "median": 29.5,
+        "min": 10.0,
+        "max": 44.0
+      },
+      "gpu_memory_activity_percent": {
+        "count": 56,
+        "median": 4.5,
+        "min": 2.0,
+        "max": 23.0
+      }
+    }
+  ]
+}

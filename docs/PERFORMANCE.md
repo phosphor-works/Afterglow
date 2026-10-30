@@ -7,7 +7,7 @@ The native benchmark measures the application in an isolated KWin desktop.
 See [testing](TESTING.md#native-performance-measurements) for commands.
 See [Phosphor scene performance](../data/examples/phosphor/PERFORMANCE.md) for separate shader measurements.
 
-## Recorded results
+## Original baseline
 
 Measurement date: 30 October 2026.
 Source commit: `2aa71e7`. Build type: `RelWithDebInfo`.
@@ -43,7 +43,7 @@ Static idle submitted no frames in all six runs.
 Scroll frame-interval p95 is 33.56 ms at 1080p and 33.60 ms at 4K.
 Resize frame-interval p95 is 237.07 ms at 1080p and 341.86 ms at 4K.
 After the resize workload, median RSS is 640.76 MiB at 1080p and 959.75 MiB at 4K.
-Resizing remains a visible performance limit.
+Resizing was a visible performance limit in this baseline.
 Width changes run [history reflow](../libs/afterglow-vt/src/Screen.cpp), which rebuilds stored rows.
 The high CPU use and shorter GPU times suggest CPU-side resize work is the main cost.
 The 50 ms request timer cannot maintain its requested rate during this workload.
@@ -109,6 +109,33 @@ The maximum column covers both viewport sizes. Effect application is excluded.
 | 1 | 5.12 / 9.04 | 5.13 / 9.30 | 84.68 |
 | 8 | 9.31 / 14.25 | 9.27 / 14.14 | 146.91 |
 | 32 | 21.48 / 30.27 | 21.66 / 30.31 | 225.91 |
+
+## Resize after row reuse
+
+Source commit: `f1fcaee`. Measurement date: 30 October 2026.
+This set repeats the same resize workload three times at each resolution.
+The hardware, build type, font and appearance settings are the same as the original baseline.
+Each process contains 100,000 history rows. Each text line has 75 ASCII characters.
+Tables show medians of per-run statistics.
+See the [summary and ranges](../data/benchmarks/resize-optimized-2026-10-30.summary.json) and [compressed raw samples](../data/benchmarks/resize-optimized-2026-10-30.raw.json.gz).
+
+| Metric | 1080p before | 1080p after | 4K before | 4K after |
+| --- | ---: | ---: | ---: | ---: |
+| Frame service p95 (ms) | 237.06 | 22.85 | 341.84 | 24.58 |
+| CPU (% of one core) | 91.54 | 40.32 | 94.09 | 46.09 |
+| RSS after resize (MiB) | 640.76 | 268.43 | 959.75 | 276.30 |
+| Resize requests per second | 4.21 | 19.80 | 2.99 | 19.73 |
+
+The resize path now moves compact history rows when a complete line still fits.
+It keeps their cell allocations, styles and graphemes.
+Rows that enter the active screen expand to the new screen width.
+Wrapped lines and lines wider than the new width still use full reflow.
+
+This removes repeated cell reconstruction from this workload.
+It does not remove the traversal of history rows.
+Long wrapped text can still cost more than these short lines.
+These results do not establish a frame-time bound for all history content.
+The nested-compositor and timing limits below still apply.
 
 ## Workloads
 
