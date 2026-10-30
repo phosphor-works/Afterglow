@@ -1,15 +1,270 @@
 <!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# Luau API reference
+# Luau scripting
 
-API version 1. The [typed declaration file](../afterglow/src/scripting/afterglow.d.luau) defines every event, snapshot, result and helper signature; it is the source of truth for editor integration. The table below indexes all helpers.
+Afterglow uses Luau API version 1.
+The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) define helper signatures, events, snapshots and results.
+Installed declarations are in `share/afterglow/api/afterglow.d.luau`.
+Installed examples are in `share/afterglow/examples/scripts`.
 
-Helpers construct effects. Return an effect or a list of effects from a handler to execute them. `panes` filters an existing snapshot locally; `request` wraps an effect so its completion returns to the originating script instance through `on_result`. A snapshot is immutable event data, not a live object. Use IDs to target panes, tabs and windows; closed IDs fail through operation results.
+## Install a script
 
-See [state and identity](../README.md#terminal-state-in-luau), [operation results](../README.md#operation-results), [async tasks and native UI](../README.md#script-lifecycle-tasks-and-native-ui), [package lifecycle and storage](../README.md#luau-packages-and-persistent-state), and [shader controls](../README.md#live-named-shader-parameters) for payloads, limits and examples.
+Copy a `.luau` file into `scripts/` beside the active configuration file.
+The usual directory is `~/.config/afterglow/scripts/`.
+A script can handle terminal events and add command-palette actions.
+Use `script:<id>.<action>` in a keybinding to run a script action.
+Set `Scripts.enabled=false` to disable scripting.
+See [packages](PACKAGES.md) for modules, dependencies and saved state.
+
+The VM has no direct file or process API.
+Installed scripts are trusted local code.
+They can request file reads and process launches through host effects.
+The VM sandbox does not prevent those explicit operations.
+
+## Effects and results
+
+Helpers create effects. Return an effect or a list of effects from a handler to apply them.
+`afterglow.request(id, effect)` requests an `on_result` callback.
+Request IDs must contain 1–64 characters.
+Use different IDs for requests that require separate tracking.
+
+```lua
+function script.run_action(action, ev)
+    if ev.pane then
+        return afterglow.request("workspace", afterglow.split(ev.pane, "right"))
+    end
+end
+
+function script.on_result(ev)
+    if ev.request_id ~= "workspace" then return nil end
+    if not ev.ok then return afterglow.log(ev.error.message) end
+    return afterglow.set_title(ev.data.pane, "Workspace")
+end
+```
+
+| Result field | Meaning |
+| --- | --- |
+| `request_id` | Caller-supplied request ID |
+| `kind` | Operation type |
+| `ok` | Success flag |
+| `data` | Operation-specific values |
+| `terminal` | New terminal snapshot |
+| `pane` | Initiating event's pane, when available |
+| `error` | Error `code` and `message`, on failure |
+
+Common errors are `invalid_effect`, `no_pane`, `rate_limited`, `operation_failed` and `unavailable`.
+Direct creation effects return `data.pane`, `pane_id`, `tab_id` and `window_id`.
+Other effects return an empty data table unless their reference specifies other fields.
+
+Afterglow queues results for the originating script instance after it applies the operation.
+The result records the operation at application time.
+Its snapshot can already show that a new pane has closed.
+Later effects validate the ID again.
+
+Success confirms operation acceptance or application.
+It does not confirm process completion or acceptance of an asynchronous dialog from a generic action.
+Use direct creation helpers when you need a returned pane ID.
+
+Replacement, removal or disable cancels outstanding results.
+An unchanged script keeps its VM and pending results during reload.
+Effect lists execute in order. They are not transactions.
+Malformed request IDs receive no result.
+
+## Execution limits
+
+| Limit | Value |
+| --- | --- |
+| VM memory | 16 MiB |
+| Event handler | 20 ms |
+| User action | 100 ms |
+| Effects in one returned list | 64 |
+| Applied effects | 20 each second |
+| Structural effects | 3 each 10 seconds |
+| Queued results | 64 |
+| Result delivery | 64 each second |
+
+A list with more than 64 effects applies nothing and causes an error.
+Exceeding a result limit disables the script until its source changes.
+Refused operations also count toward result limits.
+Structural effects create or close panes, tabs or windows.
+Generic actions and direct effects use the same structural budget.
+
+## Terminal state
+
+Each handler receives `ev.terminal`, a version 1 metadata snapshot.
+It contains `windows`, `tabs`, `panes`, `active_window`, `active_tab` and `active_pane`.
+It does not contain terminal text.
+Changing the snapshot does not change the terminal.
+Afterglow captures the snapshot before dispatch.
+A queued event can describe an earlier command than the snapshot.
+`ev.state` in `on_status` remains the program status string.
+
+| Record | Fields |
+| --- | --- |
+| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory` |
+| Tab | `id`, `window`, `index`, `title`, `active`, `active_pane` |
+| Pane | `id`, `window`, `tab_id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `focused`, `context` |
+
+A tab is active when its window selects it.
+Each unfocused window keeps its selected tab and pane.
+Top-level active IDs are zero when no Afterglow window has keyboard focus.
+Pane, tab and window IDs exist only during the process lifetime.
+`tab_id` remains stable during tab reordering.
+`pane.tab` and the D-Bus tab field are zero-based positions.
+
+Closed-pane events retain `id`, `tab_id` and `window`.
+The closed pane is absent from the live snapshot.
+Use these IDs to update surviving panes in the affected tab.
+
+`afterglow.panes(state, scope, anchor)` filters an existing snapshot.
+Scope is `all`, `pane`, `tab` or `window`. The default is `all`.
+The anchor can be a pane record or ID.
+Without an anchor, the helper uses the globally active objects.
+A missing anchor ID gives no matches.
+
+```lua
+function script.run_action(action, ev)
+    local panes = afterglow.panes(ev.terminal, "tab", ev.pane)
+    return afterglow.log("This tab has " .. #panes .. " panes")
+end
+```
+
+## Events and lifecycle
+
+Pane events include `on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell` and `on_title`.
+Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var` and `on_context`.
+These events contain the applicable pane and terminal snapshot.
+
+`run_action(action, ev)` handles declared palette and key actions.
+`on_load`, `on_unload` and `on_config_changed` handle lifecycle changes.
+`on_timer` and `on_file_changed` contain the task name.
+
+A broken replacement keeps the last working instance.
+Successful replacement, removal, disable or repeated handler errors cancel tasks and remove UI contributions.
+`on_unload` uses the normal handler time limit. Its returned effects are ignored.
+
+## Tasks
+
+Task names contain 1–64 characters and belong to one script instance.
+Limits are 16 active tasks for each script and 128 in total.
+Reusing an active name returns `busy`.
+`afterglow.cancel(name)` cancels the owned timer, watcher or job.
+
+| Effect | Behavior |
+| --- | --- |
+| `timer(name, delay_ms, repeat_ms?)` | Calls `on_timer` with `ev.name` |
+| `exec(name, argv, options?)` | Starts an asynchronous process and returns a result with the task name |
+| `read_file(name, path, options?)` | Reads a regular file asynchronously and returns `text` and `truncated` |
+| `watch_file(name, path)` | Monitors an existing regular file and calls `on_file_changed` |
+
+Omit `repeat_ms` for a single timer callback.
+A repeating timer has an interval of at least 250 ms.
+The interval starts after its handler returns. Callbacks do not overlap.
+Timer and watcher delivery is limited to 64 callbacks each second for each instance.
+Watcher events contain `name`, `path` and `exists`.
+Watchers handle atomic file replacement and combine changes within 250 ms.
+
+Process options include `cwd`, `env`, `timeout_ms` and `max_bytes`.
+File reads accept the timeout and byte-limit options.
+Timeout defaults to 30,000 ms and cannot exceed 600,000 ms.
+The output limit defaults to 65,536 bytes and cannot exceed 1 MiB.
+At most eight file workers run together. Special files are not permitted.
+
+Normal process results contain `stdout`, `stderr`, `exit_code` and `truncated`.
+Errors include `spawn_failed`, `process_failed`, `timeout`, `output_limit`, `cancelled` and `io_error`.
+Exceeding the combined stdout/stderr limit stops the job and returns partial output.
+Timeout, cancellation and unload terminate the process group.
+Afterglow discards callbacks for retired instances.
+
+## Native UI
+
+Wrap `select(pane, title, items)` or `prompt(pane, title, initial_text?)` with `afterglow.request`.
+Selectors accept up to 500 unique `{id, title}` items and provide fuzzy filtering.
+Selection results contain `id` and `title`. Prompt results contain `text`.
+Escape, pane closure or window closure cancels a dialog.
+A second dialog in the same window returns `busy`.
+Dialogs use the desktop Qt Quick Controls theme.
+
+`set_actions` replaces up to 32 palette actions for a script with a `run_action` handler.
+`status(pane, text?, tab_title?)` replaces the status label and tab suffix.
+Empty strings clear these contributions.
+
+`override(pane, values)` replaces the owner's pane appearance settings.
+Supported fields are `cursorBlink`, `backgroundOpacity` and `unfocusedDim`.
+The last two fields accept values from zero to one.
+The latest script value for each field takes priority over configuration.
+Removal exposes the next owner's value or the configured value.
+An empty table clears the owner's values.
+Unload and pane closure remove all contributions.
+
+## Launch options
+
+`split`, `new_tab` and `new_window` accept a final `LaunchOptions` table.
+`cwd` sets the working directory.
+`env` changes inherited environment variables.
+`size` sets the new split fraction, greater than zero and less than one.
+Split directions are `left`, `right`, `up` and `down`.
+Failed launches return errors and remove the incomplete ordinary pane.
+
+Set an environment value to `false` to remove it.
+Other environment values must be strings.
+`exec` accepts the same `env` map.
+Each map permits 256 variables and 64 KiB of combined names and values.
+
+```luau
+return afterglow.split(ev.pane, "left", {"fish"}, {
+    cwd = "/tmp", size = 0.3,
+    env = {PROJECT_MODE = "development", INHERITED_SECRET = false},
+})
+```
+
+## Text and semantic regions
+
+`read_text` accepts `screen`, `scrollback`, `last-output` and `selection`.
+The default scope is `last-output`.
+Results contain `text`, `available` and `truncated`.
+`max_bytes` limits UTF-8 output to 1–1048576 bytes. The default is 65536 bytes.
+A missing selection or unavailable region returns `available=false`.
+
+`semantic_regions` returns up to 1024 retained shell regions in chronological order.
+Each region has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Stable string ID |
+| `kind` | `prompt`, `input` or `output` |
+| `start`, `finish` | Start position and exclusive end position |
+| `open` | Region is still receiving content |
+| `available` | Region still has retained text |
+| `start_trimmed` | History removal deleted the region start |
+| `exit_code` | Optional completed-output exit status |
+
+Positions use stable row IDs encoded as strings and zero-based columns.
+Strings avoid Luau number precision loss.
+`read_region(pane, id, max_bytes)` returns logical text for that region.
+Unknown or fully discarded IDs are unavailable.
+Reset does not reuse IDs. Retained positions follow text reflow.
+
+Set `Scripts.allowReadText=false` to deny these queries.
+This setting is independent of external `Control.allowReadText` permissions.
+It controls terminal queries, not operating-system file or process access.
+
+The [shell-region picker](../data/examples/scripts/semantic-regions.luau) copies a selected region, with a 256 KiB limit.
+The [build inspector](../data/examples/scripts/build-inspector.luau) finds compiler locations in command output.
+The [creation example](../data/examples/scripts/create-and-title.luau) uses launch options and a returned pane ID.
+
+## Diagnostics
+
+`afterglow ctl scripts` reports `calls`, `handler_errors`, `effect_errors` and `last_error`.
+Timing fields are `last_call_ms`, `max_call_ms` and `total_call_ms`.
+Diagnostics also count dropped callbacks, effects and results.
+Timing measures VM handler execution, not asynchronous process duration.
+Deferred failures count when the operation completes.
+Unchanged instances retain counters. Replacements start new counters.
 
 ## Helpers
+
 
 | Helper | Signature |
 | --- | --- |
@@ -57,52 +312,9 @@ See [state and identity](../README.md#terminal-state-in-luau), [operation result
 | `afterglow.signals` | `(pane: PaneRef, values: { SignalValue }, scope: ("pane" \| "tab" \| "window")?) -> Effect` |
 | `afterglow.log` | `(message: string) -> Effect` |
 
-## Events
 
-`on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell`, `on_title`, `on_status`, `on_command_started`, `on_command_finished`, `on_user_var` and `on_context` carry the relevant pane and terminal snapshot. Closed-pane events retain the closed pane's `id`, `tab_id` and `window`.
+## Related references
 
-`run_action(action, ev)` handles declared palette/key actions. `on_load`, `on_unload` and `on_config_changed` manage lifecycle. `on_timer` and `on_file_changed` carry the task name. `on_result` carries request ID, success, data or structured error and a fresh terminal snapshot.
-
-Packages receive package paths/config/assets plus stored value, schema version and revision in `on_load`. `migrate(value, oldVersion, newVersion)` returns the migrated object. Reload cancels old tasks and rejects stale completions. Do not use `io`, unrestricted filesystem access, network APIs or undeclared modules; return bounded host effects instead.
-
-## Examples
-
-| Workflow | Package |
-| --- | --- |
-| Projects and native selection | [Project navigator](../data/examples/packages/project-navigator) |
-| Scene parameters and presets | [Scene controls](../data/examples/packages/scene-controls) |
-| Context-aware scene intensity | [Contextual scene](../data/examples/packages/contextual-scene) |
-
-Browse the [full package catalog](../data/examples/packages) for the remaining examples. Each package README describes installation, actions and required options. Start with its actual manifest and modules rather than copying only an entry file.
-
-## Launch options and child environments
-
-`split`, `new_tab` and `new_window` accept a final `LaunchOptions` table. `cwd` selects the working directory, `env` merges environment variables into the inherited environment, and `size` sets the new split fraction between zero and one. Splits accept `left`, `right`, `up` and `down`. Set an environment value to `false` to remove it; other values must be strings. `exec` accepts the same `env` map in its options. Each map is limited to 256 variables and 64 KiB of combined names and values.
-
-```luau
-return afterglow.split(ev.pane, "left", {"fish"}, {
-    cwd = "/tmp", size = 0.3,
-    env = {PROJECT_MODE = "development", INHERITED_SECRET = false},
-})
-```
-
-## Bounded text and semantic regions
-
-`read_text` supports `screen`, `scrollback`, `last-output` and `selection`. Text results contain `text`, `available` and `truncated`; `max_bytes` is a UTF-8 byte limit between 1 and 1048576 (default 65536). A missing selection or unavailable retained region returns `available=false`.
-
-`semantic_regions` returns up to 1024 retained shell-integration regions in chronological order. Each region has a stable string `id`, a `kind` (`prompt`, `input` or `output`), `start` and exclusive `finish` positions, `open`, `available` and `start_trimmed`. Completed output can carry `exit_code`. Positions use stable row IDs encoded as strings and zero-based columns, avoiding Luau number precision loss. `read_region(pane, id, max_bytes)` reads that region in logical text order. Unknown or fully discarded IDs are unavailable; IDs are not reused after reset. Retained positions follow reflow.
-
-`Scripts.allowReadText=false` denies all of these queries. It is independent of `Control.allowReadText`, which governs external CLI/D-Bus reads. Scripts are local trusted code with separate file/process effects; this setting controls the terminal query API rather than providing an OS security sandbox.
-
-## Diagnostics and lifecycle identity
-
-Script diagnostics include total `calls`, `handler_errors`, `effect_errors`, `last_error`, `last_call_ms`, `max_call_ms`, `total_call_ms`, and dropped callback/effect/result counts. Call timing measures VM handler execution, excluding asynchronous process duration. Deferred operation failures are counted when they complete. Reloading an unchanged instance retains its counters; replacing it starts fresh counters.
-
-`on_pane_closed` retains the closed pane's `id`, `tab_id` and `window` even after its live pane is gone. Use these identities to update surviving panes in the affected tab instead of falling back to whichever tab is currently active.
-
-The [shell-region picker](../data/examples/scripts/semantic-regions.luau) lists
-retained prompt/input/output regions and copies a selected region with a 256 KiB
-limit. The [create-and-title example](../data/examples/scripts/create-and-title.luau)
-uses split size, working directory and environment options before targeting the
-returned pane identity. Copy either script into the active config's `scripts/`
-directory and run its action from the command palette.
+- [Packages and saved state](PACKAGES.md)
+- [Project operations](PROJECTS.md)
+- [Shader signals, parameters and presets](SHADERS.md#script-controls)

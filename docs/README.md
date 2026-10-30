@@ -1,25 +1,33 @@
 <!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# Afterglow user reference
+# User documents
 
-Afterglow is a Linux terminal with GPU rendering, tabs and splits, automatic shell integration and Luau extensions. Configuration reloads from `$XDG_CONFIG_HOME/afterglow/config.json` (normally `~/.config/afterglow/config.json`). Start with the examples below; files in the examples directory do not activate themselves.
+Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integration and Luau scripts.
 
-| Task | Reference and working example |
+| Task | Document |
 | --- | --- |
-| Configure fonts, colors, windows, input or audio | [Complete settings reference](CONFIGURATION.md), [font rendering](../README.md#font-rendering), [themes](../README.md#themes) |
-| Navigate commands and copy output | [Shell integration](../README.md#shell-integration), [history, search and hints](../README.md#history-search-and-hints) |
-| Change keyboard shortcuts and key tables | [Keybindings](../README.md#keybinds); all default bindings are in the generated settings reference |
-| Move panes or restore a project | [Pane movement](../README.md#moving-panes-and-tabs), [saved projects](../README.md#named-projects), [project examples](../data/examples/projects) |
-| Write an extension | [Luau API guide and index](SCRIPTING.md), [typed declarations](../afterglow/src/scripting/afterglow.d.luau), [packages](../data/examples/packages) |
-| Build a visual scene | [Shader guide](../README.md#shaders), [live parameters](../README.md#live-named-shader-parameters), [Phosphor demo](../data/examples/phosphor/README.md), [measured presets](../data/examples/phosphor/VALIDATION.md) |
-| Use accessibility, input methods or file workflows | [Desktop integration](DESKTOP.md) |
-| Check protocol support and limits | [Compatibility](COMPATIBILITY.md), [interactive examples](../data/examples/compatibility) |
-| Upgrade configuration or scripts | [Migration notes](MIGRATION.md), [release notes](../CHANGELOG.md) |
+| Build or install | [Build instructions](BUILD.md) |
+| Set fonts, colors or themes | [Appearance](APPEARANCE.md) |
+| Find a setting or default binding | [Configuration reference](CONFIGURATION.md) |
+| Use keybindings, selection, search or hints | [Input](INPUT.md) |
+| Move panes or save layouts | [Projects](PROJECTS.md) |
+| Control a running instance | [Command line and D-Bus](CONTROL.md) |
+| Write scripts | [Luau API](SCRIPTING.md) |
+| Install or write packages | [Packages and state](PACKAGES.md) |
+| Configure reactive effects | [Shaders](SHADERS.md) |
+| Write shader passes | [Shader API](SHADER-API.md) |
+| Use accessibility, input methods or files | [Desktop integration](DESKTOP.md) |
+| Use bidirectional text | [Bidirectional text](BIDI.md) |
+| Check protocol support | [Compatibility](COMPATIBILITY.md) |
+| Upgrade | [Migration](MIGRATION.md), [release notes](../CHANGELOG.md) |
+| Check test results and limits | [Validation](VALIDATION.md), [completion audit](AUDIT.md) |
+| Write documentation | [Writing rules](WRITING.md) |
 
-`afterglow --help` lists launch options; `afterglow ctl --help` lists live control commands. `afterglow --config-reference` prints defaults, descriptions, ranges and choices directly from the runtime configuration schema without starting a desktop window. It reads no user configuration.
+## First configuration
 
-For a minimal first customization:
+The usual configuration path is `~/.config/afterglow/config.json`.
+`XDG_CONFIG_HOME` can change its parent directory.
 
 ```json
 {
@@ -30,4 +38,16 @@ For a minimal first customization:
 }
 ```
 
-Shell integration runs automatically for Bash, Zsh and Fish. Run a command, then use the command palette to find prompt navigation, command output, search and project actions. Install a package by copying its whole directory under `~/.config/afterglow/scripts/`; its README explains the actions and required options. The package directory, manifest ID and module filenames matter. Open the palette again after reload to find the package's actions.
+Afterglow reloads configuration changes automatically.
+Shell integration starts automatically for supported Bash, Zsh and Fish versions.
+The command palette contains prompt navigation, output, search and project actions.
+
+Example files do not activate themselves.
+Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
+Keep the directory name, manifest ID and module filenames unchanged.
+Follow the package's instructions for required settings.
+Reopen the palette after reload to see new actions.
+
+`afterglow --help` lists launch options.
+`afterglow ctl --help` lists live control commands.
+`afterglow --config-reference` prints the runtime schema without a window or user configuration.

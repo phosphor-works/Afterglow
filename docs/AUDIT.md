@@ -3,9 +3,16 @@
 
 # Delivery completion audit
 
-Baseline: `cbbd8b8`. Scope: repository implementation and delivery-plan gaps through V1 and non-build D1. The frozen baseline inventory contains 298 files, all reviewed across the root, app/config/scripting, VT/PTY and renderer partitions. Four baseline passes preceded remediation; three confirmation rounds checked changes and their consumers. New files were included in confirmation coverage.
+Baseline: `cbbd8b8`.
+Scope: repository implementation and delivery-plan gaps through V1 and D1, excluding build and installation work.
+The baseline contains 298 files.
+Review covered root files, application, configuration, scripting, VT, PTY and renderer code.
+Four baseline passes preceded corrections. Three confirmation rounds checked changes and their consumers.
+Confirmation review also covered new files.
 
-All 93 recorded items are fixed and validated. These include feature gaps and protocol/UI acceptance requirements, not only independent bugs. The work continued across resumed turns; this final report closes the audit after the implementation, confirmation reviews and test gates.
+All 93 recorded items are fixed and validated.
+Items include feature gaps, protocol requirements, UI acceptance requirements and defects.
+Implementation, confirmation reviews and required tests are complete.
 
 | Metric | Result |
 | --- | --- |
@@ -27,132 +34,141 @@ All 93 recorded items are fixed and validated. These include feature gaps and pr
 | Native AT-SPI/downloads | PASS |
 | Verdict | CLEAN within the audited scope |
 
-See [validation evidence and reproduction commands](VALIDATION.md). Native tests exercise compositor-delivered Wayland drag/drop, not a directly injected Qt drop event. The drag driver uses actual window coordinates and complete readiness data; the final targeted test passed after that synchronization change.
+See [validation evidence and reproduction commands](VALIDATION.md).
+Native drag tests use Wayland events delivered by the compositor.
+The drag driver uses actual window coordinates and complete readiness data.
+The final targeted test passed after that synchronization correction.
 
 ## Findings and remediation
 
-Locations and descriptions refer to the baseline or the confirmation round where the finding was raised. Fix descriptions reflect the final implementation.
+Each ID identifies a recorded finding. The resolution column describes the final correction.
+References identify the affected implementation where recorded.
+The [original report](https://github.com/phosphor-works/Afterglow/blob/0cc16f7/docs/AUDIT.md) retains detailed baseline observations and proposed checks.
 
 ### Baseline pass 1
 
-| ID | Severity | Finding | Fix |
+| ID | Severity | Reference | Resolution |
 | --- | --- | --- | --- |
-| ROOT1 | LOW | README.md:543 claims no durable state/module loader despite delivered L3. Remove stale claim, link current lifecycle. | Replace obsolete package/state claims with the implemented lifecycle. |
-| ROOT2 | MEDIUM | tools/render/renderpng.cpp:211 and option setup accepts invalid/nonfinite dimensions, dpr, size, time, signal ages and opacity before allocation/arithmetic; validate developer CLI inputs and frame size bounds. | Reject nonfinite/out-of-range CLI values and bound framebuffer and image decoding before allocation. |
-| ROOT3 | MEDIUM | tools/conformance/headless.cpp:173 atoi dimensions can overflow pixel arithmetic or allocate unexpectedly; strict bounded parsing before fork. Responder filename is unquoted in shell command (line294), breaks directories with spaces/metacharacters. Quote only filename, retain explicit responder shell syntax. | Strictly parse dimensions and shell-quote responder filenames. |
-| ROOT4 | LOW | tools/fuzz/vtfuzz.cpp:57 selection mode uses op%4 in case2, hence always mode2; use independent bits and exercise all modes. | Use independent operation bits so fuzz selection covers all four modes; link PCRE2 in the sanitizer target. |
-| ROOT5 | MEDIUM | data/examples/glasshouse/shaders/glasshouse-glass/effect.frag:109 calls smoothstep(front+2,front-2,r) with reversed edges (undefined GLSL). Use 1-smoothstep(front-2,front+2,r). Same reversed smoothstep in phosphor-field envelope (.91,.75), renderer owner fixes. | Replace reversed smoothstep edges with the complementary ordered expression. |
-| ROOT7 | HIGH | D1 validation lacks event-path/native DND and IME composition evidence. Must close with native integration coverage, not only pure utility tests. App partition coordinates. | Add real TerminalWindow/native compositor tests for composition, focus, paste and drag/drop. |
-| R1 | HIGH | — libs/afterglow-render/src/GridRenderer.cpp:100: bidi is absent: every text run forced HB_DIRECTION_LTR. This is a requested functionality gap, not a claim that V1 originally promised bidi. Implement paragraph-aware logical-to-visual mapping with proper RTL HarfBuzz runs; share mapping with cursor, mouse selection/hints, accessibility geometry and IME. Keep copied/queried text logical and provide explicit application-grid opt-out. Simply reversing glyph output breaks cell semantics. | Resolve bounded paragraphs with FriBidi, shape directional runs and share logical/visual mappings with input and accessibility. |
-| R2 | HIGH | — libs/afterglow-render/src/GridRenderer.cpp:950: shape cache invalidates only on fontEpoch (setFontSpec), not a devicePixelRatio change. ShapeKey:87 keys only face/slot/text. A window migrating DPI reuses glyph IDs/offsets from the former FontSet; fallback faces can even have different indices/order. Fix cache identity to include current FontSet/generation or invalidate on font-resource identity change. Test same renderer switching 1 -> 2 -> 1.25 without setFontSpec, with combining marks and differing fallback load order. Existing DPR test calls mode(), which resets fontEpoch and masks this. | Invalidate shaping on font-resource identity changes, including DPR changes. |
-| R3 | HIGH | — libs/afterglow-render/src/GridRenderer.cpp:1011: second atlas overflow resets the atlas then falls out of retry loop and renders partial earlier-pane instances against cleared atlas. The failing pane and all later panes disappear; earlier text also loses glyphs. Handle unrecoverable working-set overflow explicitly with a bounded multi-page/batch atlas design or complete-frame fallback that retains valid glyph storage. Test frame exceeding one atlas including multiple panes/scaled characters. Do not merely add unlimited retries. | Retain bounded atlas pages so overflow cannot invalidate glyphs already queued for the frame. |
-| R4 | MEDIUM | — libs/afterglow-render/src/GridRenderer.cpp:1021: image quads omit params.scrollShift while all glyph/background instances subtract it at line144. Kitty/Sixel/placeholder images jump whole rows and detach from text during smooth scroll. Apply the same content transform to image geometry and capture partial trailing placements where needed; pixel-test fractional scroll of image plus neighboring glyph. | Apply content scroll displacement to image geometry and trailing placements. |
-| R5 | MEDIUM | — libs/afterglow-render/src/FontSet.cpp:35,130: Fontconfig lookup ignores FontStyleSpec weight/slant/width. applyAxes only handles variable fonts. All four slots using a static family (e.g. DejaVu Sans Mono) select the same regular face, so bold/italic settings silently do nothing. Pass style properties to Fontconfig matching (retain requested axes for variable families), verify static regular/bold/italic faces and renders. Fallback style matching likewise currently always derives regular; include style in fallback matching/cache when applying this correction. | Include static weight/slant/width and style in primary/fallback font matching. |
-| R6 | MEDIUM | — libs/afterglow-render/src/PostChain.cpp:552-554: iCursorText is filled from defaultBg rather than snapshot.cursorTextColor, and selection uniforms always default inverse colors even when OSC17/19 or configured colors exist. Actual rendering and shader inputs disagree. Add resolved selection colors to PaneSnapshot, pack those and cursorTextColor; test OSC/config overrides with a shader outputting each uniform. All producer/consumer sites: Snapshot.h/cpp and PostChain::fill; GLSL uniform schema already contains fields. | Snapshot and pack the actual cursor text and selection colors. |
-| R7 | MEDIUM | — data/examples/phosphor/scripts/phosphor.luau:45: on_pane_closed recomputes heat only for tab.active. Closing a running pane in a background tab with survivors leaves that tab's commandHeat=1 indefinitely after switching back (focus handler intentionally removed). Recompute the affected surviving tab regardless of active state, using closure tab identity; test background close while no remaining commands run. | Recompute heat for the affected surviving tab using closed-pane identity. |
-| R8 | LOW | — libs/afterglow-render/src/ShaderProgram.cpp:209: passthrough compilation has Q_ASSERT_X only. A release compilation failure returns null subsequently dereferenced by PostChain::record. Pair with runtime error/failure propagation. This is the only runtime assertion in this partition (layout static_asserts need no release guard). | Add a runtime failure guard for passthrough compilation. |
-| R9 | LOW | — libs/afterglow-render/tests/RenderTest.cpp:66: rgb() comment/conversion asserts 0xAARRGGBB but Snapshot actually packRgba stores 0xAABBGGRR (Snapshot.h:20). Helper reverses red/blue and tests mostly evade it through neutral defaults. Correct helper and exercise non-gray configured defaults/cursor colors. | Correct the test helper channel order and exercise non-gray colors. |
-| R10 | HIGH | (cross-partition, confirmed root lead) — data/shaders/phosphor-depths/effect.frag:43,48 defines srgbToLinear and linearToSrgb, now already unconditionally defined in ShaderProgram.cpp:75,78 prefix. Bundled shader fails compilation with duplicate GLSL definitions. Remove pack duplicates or namespace/version public shader helper contract; compile every bundled pack as regression. Repo-wide search finds only this duplicate pair (feedback-glow uses helpers correctly). | Remove duplicate color helpers and compile every bundled/example shader pack. |
-| VT01 | HIGH | `libs/afterglow-vt/src/Graphics.cpp:385–395`: shared-memory offset without size copies the whole mapping length starting at the offset, reading beyond mapped bytes. Validate fstat/size/offset, bound to remaining bytes and use bounded reads to avoid truncate/mmap SIGBUS. | Validate the opened payload descriptor and bound offset/length against actual file size. |
-| VT02 | HIGH | `Graphics.cpp:261–278,358–364`: multipart graphics accumulates without limit; file payload allocates up to UINT32_MAX or reads an entire arbitrary regular file before quota validation. Bound in-flight decoded transfers and file/shared-memory reads before allocation, including cancellation/recovery after oversized transfers. | Bound pending transfers and file reads before allocation; recover after rejection. |
-| VT03 | HIGH | `Graphics.cpp:585`: placements grow without bound independently of image memory quota; relative placement validation/render becomes increasingly expensive. Introduce a finite placement/metadata budget and defined eviction/rejection behavior. | Cap image, placement and frame metadata independently of decoded pixel storage. |
-| VT04 | HIGH | `Graphics.cpp:85–132,1043`: graphics dimensions use signed int multiply/add on application-controlled coordinates and sizes. Composition loops over entire requested rectangles even when mostly outside a tiny image. Use checked wide geometry and clip source/destination rectangles before iteration. Graphics.HugeRowCountDoesNotHang currently exercises signed overflow rather than proving safe arithmetic. | Use wide checked geometry and clip source/destination rectangles before composition. |
-| VT05 | HIGH | `libs/afterglow-vt/src/Input.cpp:635–655`: deleting bracketed-paste end markers while resuming search at the deletion index can synthesize an earlier end marker. Input ESC[20 + ESC[201~ + 1~ leaves ESC[201~ intact. Use a bounded linear sanitizer that cannot construct marker sequences. All callers: afterglow/src/TerminalWindow.cpp paste-confirmation, dropped-file and paste paths (lines 275,1400,3100 at baseline); InputTest only covers direct marker. | Sanitize paste terminators without synthesizing a new terminator across deletions. |
-| VT06 | HIGH | `libs/afterglow-vt/src/Sixel.cpp:146–180`: repeated blank pixels advance x without MaxSide checks. About 215k !10000? tokens overflow signed x; a subsequent lit pixel indexes negative x as size_t. Bound every coordinate advance including blank pixels and reject oversize output instead of returning a partially rendered image. | Bound every sixel coordinate advance, including blank runs. |
-| VT07 | HIGH | `libs/afterglow-pty/src/Pty.cpp:125`: unchecked eventfd failure can leave poll blocked forever and destructor join hanging; unchecked nonblocking fcntl similarly risks blocking read-loop shutdown. Validate required descriptors/flags before starting the worker and unwind child resources on error. | Check worker descriptors and flags and unwind startup on failure. |
-| VT08 | HIGH | `Pty.cpp:257`, `include/AfterglowPty/Pty.h:78`: worker writes plain m_pid while GUI pid(), currentWorkingDirectory(), foregroundProcess() read it, causing a data race. Use synchronized PID state or an immutable process identity plus synchronized exit status. External readers include afterglow/src/Pane.cpp:630,638. | Synchronize process identity shared with the I/O thread. |
-| VT09 | HIGH | `Pty.cpp` run/flushPending: drain loops do not observe shutdown while a producer continuously keeps the descriptor readable/writable; queued writes have no limit/backpressure. Bound each work batch, check stop, and bound pending bytes with explicit write failure/backpressure semantics propagated to callers. | Bound pending input and per-loop I/O work; observe shutdown and propagate rejection. |
-| VT10 | HIGH | `libs/afterglow-vt/src/Clipboard.cpp`: streaming clipboard quota counts floor(decoded bytes) independently per chunk and accepts unbounded auxiliary metadata. Repeated 1–3-byte encoded chunks evade accounting. Enforce cumulative encoded/decoded budget and metadata bounds. ClipboardTest claims a non-4-byte split but both chunks have length8; add actual 1/2/3-byte boundary tests. | Account cumulative encoded clipboard bytes and bound metadata across partial chunks. |
-| VT11 | MEDIUM | `Terminal.cpp:1658,1810`: RIS calls fullReset directly, so extra cursors on primary screen survive (public reset clears them separately). Existing reset test runs on alternate screen and therefore masks this. Centralize reset of extra cursors, and audit transfer/session/protocol state reset (iTerm multipart, prompt/context markers and sixel palette) so stale state cannot survive reset. | Centralize protocol and extra-cursor reset state. |
-| VT12 | MEDIUM | `Terminal.cpp:364` resize: command output/input marks retain old row IDs while reflow renumbers/reuses rows. LastOutput/command-completion text can become unrelated or empty after resize. Retarget text marks through reflow, including offset/column, or explicitly invalidate only truly lost marks. Callers include command metadata, Pane::text and control text endpoints. | Retarget retained semantic marks through reflow rather than retaining stale row identities. |
-| VT13 | MEDIUM | `Terminal.cpp:3106` text extraction: Screen scope inserts newlines at every physical row while public text contract says soft-wrapped rows join; All/LastOutput do join. Align logical text semantics across scopes and tests (TerminalTest currently codifies the inconsistency). | Join soft wraps consistently in screen text extraction. |
-| VT14 | MEDIUM | `Selection.cpp` range/extract: a selection starting on the tail cell of a wide glyph does not normalize the starting boundary to the head. Selecting that tail alone yields empty text despite the documented whole-character contract. Normalize both boundaries, with tests for either drag direction and block selection. | Normalize selection endpoints to complete wide glyphs. |
-| VT15 | MEDIUM | `ProgramStatus.cpp:171`: sets native-report mode before validating state/base64. Invalid reports unexpectedly disable valid legacy OSC9 progress. Set native flag only after successful full validation. | Enable native progress reporting only after a valid report. |
-| VT16 | MEDIUM | `ProgramStatus.cpp:314–319`: retains lower_bound iterator across vector erase and computes it-1 when invalidated. Compute numeric insertion position before erasing, then rederive iterator. Validate under debug iterators. | Preserve an insertion index rather than an invalidated vector iterator. |
-| VT17 | HIGH | `Graphics.cpp:136–149,349–373`: path validation stats a canonical path but opens the original later, allowing symlink swaps to devices/FIFOs. Temporary cleanup checks lexical /tmp prefix, permitting /tmp/../outside/tty-graphics-protocol paths and /tmp-other roots; temp_directory_path can throw. Open nonblocking then validate the actual fd, validate canonical parent containment for cleanup, avoid removing a replaced file, and use error-code filesystem APIs. | Validate opened regular descriptors and canonical temporary-file ownership before reads/cleanup. |
-| VT18 | MEDIUM | `Terminal.cpp:1562–1586`: saved cursor copies Style containing hyperlink slot ID without retaining the hyperlink. Closing the link frees/reuses that slot before restore, so restoring can assign an unrelated URL or duplicate-free a vacant slot. Hold a proper style/link reference for saved cursor, release symmetrically on overwrite/reset/destruction, and test link close/reuse/restore on both screens. | Retain and release saved cursor hyperlink references symmetrically. |
-| VT19 | LOW | `include/AfterglowVt/Terminal.h:143–160`: decodePng/decodeImage callback docs are separated from their declarations by requestResize/downloadFile declarations. Move comments to the intended members. | Attach callback documentation to the correct declarations. |
+| ROOT1 | LOW | `README.md:543` | Replace obsolete package/state claims with the implemented lifecycle. |
+| ROOT2 | MEDIUM | `tools/render/renderpng.cpp:211` | Reject nonfinite/out-of-range CLI values and bound framebuffer and image decoding before allocation. |
+| ROOT3 | MEDIUM | `tools/conformance/headless.cpp:173` | Strictly parse dimensions and shell-quote responder filenames. |
+| ROOT4 | LOW | `tools/fuzz/vtfuzz.cpp:57` | Use independent operation bits so fuzz selection covers all four modes; link PCRE2 in the sanitizer target. |
+| ROOT5 | MEDIUM | `data/examples/glasshouse/shaders/glasshouse-glass/effect.frag:109` | Replace reversed smoothstep edges with the complementary ordered expression. |
+| ROOT7 | HIGH | Recorded under ROOT7 | Add real TerminalWindow/native compositor tests for composition, focus, paste and drag/drop. |
+| R1 | HIGH | `libs/afterglow-render/src/GridRenderer.cpp:100:` | Resolve bounded paragraphs with FriBidi, shape directional runs and share logical/visual mappings with input and accessibility. |
+| R2 | HIGH | `libs/afterglow-render/src/GridRenderer.cpp:950:` | Invalidate shaping on font-resource identity changes, including DPR changes. |
+| R3 | HIGH | `libs/afterglow-render/src/GridRenderer.cpp:1011:` | Retain bounded atlas pages so overflow cannot invalidate glyphs already queued for the frame. |
+| R4 | MEDIUM | `libs/afterglow-render/src/GridRenderer.cpp:1021:` | Apply content scroll displacement to image geometry and trailing placements. |
+| R5 | MEDIUM | `libs/afterglow-render/src/FontSet.cpp:35,130:` | Include static weight/slant/width and style in primary/fallback font matching. |
+| R6 | MEDIUM | `libs/afterglow-render/src/PostChain.cpp:552-554:`, `Snapshot.h` | Snapshot and pack the actual cursor text and selection colors. |
+| R7 | MEDIUM | `data/examples/phosphor/scripts/phosphor.luau:45:` | Recompute heat for the affected surviving tab using closed-pane identity. |
+| R8 | LOW | `libs/afterglow-render/src/ShaderProgram.cpp:209:` | Add a runtime failure guard for passthrough compilation. |
+| R9 | LOW | `libs/afterglow-render/tests/RenderTest.cpp:66:`, `Snapshot.h:20` | Correct the test helper channel order and exercise non-gray colors. |
+| R10 | HIGH | `data/shaders/phosphor-depths/effect.frag:43,48`, `ShaderProgram.cpp:75,78` | Remove duplicate color helpers and compile every bundled/example shader pack. |
+| VT01 | HIGH | `libs/afterglow-vt/src/Graphics.cpp:385–395` | Validate the opened payload descriptor and bound offset/length against actual file size. |
+| VT02 | HIGH | `Graphics.cpp:261–278,358–364` | Bound pending transfers and file reads before allocation; recover after rejection. |
+| VT03 | HIGH | `Graphics.cpp:585` | Cap image, placement and frame metadata independently of decoded pixel storage. |
+| VT04 | HIGH | `Graphics.cpp:85–132,1043` | Use wide checked geometry and clip source/destination rectangles before composition. |
+| VT05 | HIGH | `libs/afterglow-vt/src/Input.cpp:635–655`, `afterglow/src/TerminalWindow.cpp` | Sanitize paste terminators without synthesizing a new terminator across deletions. |
+| VT06 | HIGH | `libs/afterglow-vt/src/Sixel.cpp:146–180` | Bound every sixel coordinate advance, including blank runs. |
+| VT07 | HIGH | `libs/afterglow-pty/src/Pty.cpp:125` | Check worker descriptors and flags and unwind startup on failure. |
+| VT08 | HIGH | `Pty.cpp:257`, `include/AfterglowPty/Pty.h:78`, `afterglow/src/Pane.cpp:630,638` | Synchronize process identity shared with the I/O thread. |
+| VT09 | HIGH | `Pty.cpp` | Bound pending input and per-loop I/O work; observe shutdown and propagate rejection. |
+| VT10 | HIGH | `libs/afterglow-vt/src/Clipboard.cpp` | Account cumulative encoded clipboard bytes and bound metadata across partial chunks. |
+| VT11 | MEDIUM | `Terminal.cpp:1658,1810` | Centralize protocol and extra-cursor reset state. |
+| VT12 | MEDIUM | `Terminal.cpp:364` | Retarget retained semantic marks through reflow rather than retaining stale row identities. |
+| VT13 | MEDIUM | `Terminal.cpp:3106` | Join soft wraps consistently in screen text extraction. |
+| VT14 | MEDIUM | `Selection.cpp` | Normalize selection endpoints to complete wide glyphs. |
+| VT15 | MEDIUM | `ProgramStatus.cpp:171` | Enable native progress reporting only after a valid report. |
+| VT16 | MEDIUM | `ProgramStatus.cpp:314–319` | Preserve an insertion index rather than an invalidated vector iterator. |
+| VT17 | HIGH | `Graphics.cpp:136–149,349–373` | Validate opened regular descriptors and canonical temporary-file ownership before reads/cleanup. |
+| VT18 | MEDIUM | `Terminal.cpp:1562–1586` | Retain and release saved cursor hyperlink references symmetrically. |
+| VT19 | LOW | `include/AfterglowVt/Terminal.h:143–160` | Attach callback documentation to the correct declarations. |
 
 ### Baseline pass 2
 
-| ID | Severity | Finding | Fix |
+| ID | Severity | Reference | Resolution |
 | --- | --- | --- | --- |
-| ROOT8 | MEDIUM | tools/conformance/headless.cpp blocking PTY reply writes can deadlock query-producing child; queue bounded nonblocking writes and poll POLLOUT. | Queue bounded nonblocking PTY replies and poll for writable readiness. |
-| ROOT9 | LOW | tools/conformance/headless.cpp --responder without --idle-dump is silently skipped; create temporary screen file or reject invalid combination. | Provide a temporary responder snapshot when no explicit dump path is supplied. |
-| ROOT10 | MEDIUM | tools/conformance/esctest.sh suppresses all runner failures and weak summary detection can report incomplete crashed suite as clean. | Require a complete consistent nonempty esctest summary and reject runner exceptions. |
-| ROOT11 | LOW | data/examples/packages/project-navigator/providers.luau max_depth clamp lacks integer conversion; fractional configured depth causes fd failure. | Floor the bounded discovery depth before passing it to fd. |
-| ROOT12 | MEDIUM | data/shaders/bloom/effect.frag smoothstep(p_threshold,1.0,luma) undefined at allowed threshold1; handle equal-edge hard threshold. | Handle threshold 1 as a hard threshold instead of equal-edge smoothstep. |
-| VT20 | MEDIUM | `Screen.cpp:109–119,201–224`, `Terminal.cpp:1067`: OSC66 explicit-width text accepts up to4096 UTF-8 bytes and promises to place the whole string in one block, but routes text through appendGrapheme's32-codepoint limit, silently truncating after33 codepoints. Give bounded sized-text storage the full accepted payload capacity without removing the ordinary grapheme cap; preserve through copy, reflow and rendering. Add a 34+ character explicit-width test. | Retain the complete bounded OSC66 sized-text payload without weakening ordinary grapheme limits. |
-| VT21 | MEDIUM | `Terminal.cpp:364–376`: a cell-pixel-size-only resize updates metrics then returns without generation or enabled mode2048 notification. Handle metrics-only changes and report new pixel dimensions. Regression with unchanged rows/cols but new cell metrics. | Publish generation/resize notification changes when only pixel metrics change. |
-| VT22 | MEDIUM | `Unicode.cpp:26–30`: ASCII fast path suppresses widensWithVs16 for #, * and0–9 even though generated Stage2 entries correctly mark these. These emoji/keycap sequences stay one cell. Preserve ASCII emoji properties; test normal printing/OSC66 and UTF8 chunk boundaries. Terminal's ASCII fast paths need no emoji boundary change but must use correct base properties when VS16 arrives. | Preserve ASCII emoji/keycap properties for variation-selector widening. |
-| VT23 | MEDIUM | `Terminal.cpp:1018–1057`: OSC66's separate UTF8 decoder rejects surrogates/out-of-range but accepts overlong sequences (C1 A1 => 'a'), contradicting its replacement contract and differing from ordinary parser. Share strict scalar decoding or enforce minimum codepoint for length and legal lead bytes. | Reject overlong and invalid UTF-8 scalars in sized text. |
-| VT24 | HIGH | `Terminal.cpp:3326`, `windowOp:3302` and OSC8 case: general parser64MiB payload limit permits huge title strings retained64 times in title stack, huge URLs retained once per live cell and unrestricted command metadata. Apply field-specific text/URI/title/command caps before copying/interning. Existing notification/text domains already use much smaller bounds; keep binary graphics/download bounds distinct. | Apply separate bounded title, hyperlink and command metadata limits. |
-| VT25 | LOW | `Notifications.cpp:18,260–272`: MaxText comment claims title/body/buttons combined64KiB, but implementation grants64KiB to each and uses combined64KiB+4MiB. Enforce combined text budget independently of icon bytes. | Enforce the combined notification text budget independently of icon data. |
-| VT26 | LOW | `ShellContext.cpp:88–104`: setRemoteHost bypasses MaxDepth on first insertion when stack already has64 entries. Use same capped insertion helper as apply; preserve existing context replacement/end semantics. | Apply the context stack limit to remote-host insertion. |
-| VT27 | LOW | `Terminal.cpp:343`: comment says primary history only retained if it had any, while implementation correctly permits enabling history after maxScrollback0. Update stale comment. | Correct the history-retention comment. |
-| A1 | HIGH | `afterglow/src/TerminalWindow.cpp:1135`: pane-title pass indexes the rendered-pane vector for every split leaf, although the first pass skips empty rectangles. Zoom hides leaves with empty rectangles, so zoom with pane titles enabled reads past the vector. Use emitted pane/render pairs or identical filtering; regress first/last leaf zoom and tiny layouts. | Pair emitted panes with render entries so zoomed/empty leaves cannot index past the frame. |
-| A2 | MEDIUM | `afterglow/src/Pane.cpp:458`: preedit caret is received in UTF-16 units but compared with UTF-32 indexes; zero-width combining marks/ZWJ are discarded. Preserve grapheme clusters and convert caret offsets. Test supplementary-plane caret, combining and joined emoji. | Preserve preedit graphemes and translate UTF-16 caret positions. |
-| A3 | HIGH | `afterglow/src/desktop/Accessibility.cpp:122`: window accessibility tree only exposes terminal panes; offscreen chrome controls are not parented into it. Native selectors/search/history scrollbar cannot be reached via the application tree. Hidden zoom leaves also remain reported visible. Bridge chrome tree, focus and geometry with native terminal window and reflect visibility. | Bridge the chrome accessibility tree to the native window and hide zoomed-away panes. |
-| A4 | MEDIUM | `afterglow/src/app/NotificationCenter.cpp:248`: notification expiration timer captures only reused server ID; old timer closes a replacement early. Associate expiration with entry generation or cancel/restart owned timer. | Bind notification expiration to replacement generation. |
-| A5 | MEDIUM | `afterglow/src/config/Keybinds.cpp:302`: literal UTF-16 code units converted individually to UTF-8 corrupt supplementary Unicode in text bindings and sequence targets. Convert contiguous literal ranges/codepoints; test literal emoji and mixed escapes. | Encode contiguous UTF-16 literal ranges without splitting surrogate pairs. |
-| A6 | MEDIUM | `afterglow/src/TerminalWindow.cpp:1335`: IME query explicitly disables IME while chrome wants keyboard; terminal context is returned rather than focused chrome editor context. Forward query/commit and map candidate rectangle for focused chrome editor. | Forward IME queries/commits and map the focused chrome editor rectangle. |
-| A7 | MEDIUM | `afterglow/qml/Chrome.qml:116`: scrollbar only dispatches position when `pressed`; accessibility/keyboard value changes never scroll. Ensure non-pointer actions dispatch and controller-to-widget synchronization does not feed back. | Dispatch keyboard/accessibility scrollbar changes without controller feedback loops. |
-| A8 | MEDIUM | `afterglow/src/scripting/ScriptHost.cpp:226`: directory precedence uses basename map but actual explicit metadata-ID clashes resolve later in alphabetic basename order. A system z.luau overrides user a.luau sharing metadata id despite later-directory contract. Retain directory priority through ID resolution; test reverse lexical filenames. | Carry directory precedence through explicit metadata-ID resolution. |
-| A9 | LOW | `afterglow/src/scripting/ScriptHost.cpp:197`: setStateDirectory relies exclusively on debug assertion while live writes/migrations depend on stable path. Runtime reject mutation when enabled, test release semantics. | Reject live state-directory mutation at runtime. |
-| A10 | HIGH | TerminalWindow.cpp:466–487: normal failed process creation logs error but still emits paneCreated and returns success. Split/new-tab/new-window script/control results claim created IDs although no process runs. Propagate launch errors/rollback ordinary creation; preserve explicit project recovery. ControlProject.cpp:39,82 also must handle a missing/null window factory consistently with Control::newWindow. RestoreProject has public debug-only preconditions at TerminalWindowProject.cpp:35; guard in release before side effects. | Propagate executable startup errors, roll back ordinary creation and guard project recovery paths. |
-| A11 | MEDIUM | TerminalWindow.cpp:2820–2852: consumed URL/Unicode/chrome keypresses are not inserted in m_consumedKeys. Escape/Return dismiss mode/dialog on press and corresponding release is sent to PTY under kitty release reporting. Track all consumed physical presses through release, including focus-change cancellation. | Track consumed physical key presses through release and forward only to the owning chrome interaction. |
-| A12 | MEDIUM | TerminalWindow.cpp:274,3080: unsafe-paste confirmation stores text only and later writes into current focused pane. Control/notification focus changes while prompt open retarget approved text into a different process. Retain origin QPointer, cancel on origin closure/move, deliver only to that target. | Retain the originating pane for paste confirmation and cancel invalid targets. |
-| A13 | LOW | control/Ctl.cpp:236: watch event subscription omits PaneMoved although bus exports it; add event and native movement watcher regression. | Include PaneMoved in CLI event watching. |
-| A14 | LOW | TerminalWindow.h:243 pasteText declared without definition/call; Pane.h:134 unused SearchResult; desktop/TerminalText offset helper has no callers; NotificationCenter Entry.window/closeRequested never read. Remove or integrate deliberately as part of corresponding fixes; preserve meaningful compatibility surfaces only. Control.h statusChanged comment says most pressing but implementation emits newest: correct comment or align intended policy. IconProvider image://icon registration unused after QML themed icon migration; remove orphan provider while retaining theme setup. | Remove unused creation/provider helpers and fields; reconcile API comments with their callers. |
+| ROOT8 | MEDIUM | `tools/conformance/headless.cpp` | Queue bounded nonblocking PTY replies and poll for writable readiness. |
+| ROOT9 | LOW | `tools/conformance/headless.cpp` | Provide a temporary responder snapshot when no explicit dump path is supplied. |
+| ROOT10 | MEDIUM | `tools/conformance/esctest.sh` | Require a complete consistent nonempty esctest summary and reject runner exceptions. |
+| ROOT11 | LOW | `data/examples/packages/project-navigator/providers.luau` | Floor the bounded discovery depth before passing it to fd. |
+| ROOT12 | MEDIUM | `data/shaders/bloom/effect.frag` | Handle threshold 1 as a hard threshold instead of equal-edge smoothstep. |
+| VT20 | MEDIUM | `Screen.cpp:109–119,201–224`, `Terminal.cpp:1067` | Retain the complete bounded OSC66 sized-text payload without weakening ordinary grapheme limits. |
+| VT21 | MEDIUM | `Terminal.cpp:364–376` | Publish generation/resize notification changes when only pixel metrics change. |
+| VT22 | MEDIUM | `Unicode.cpp:26–30` | Preserve ASCII emoji/keycap properties for variation-selector widening. |
+| VT23 | MEDIUM | `Terminal.cpp:1018–1057` | Reject overlong and invalid UTF-8 scalars in sized text. |
+| VT24 | HIGH | `Terminal.cpp:3326` | Apply separate bounded title, hyperlink and command metadata limits. |
+| VT25 | LOW | `Notifications.cpp:18,260–272` | Enforce the combined notification text budget independently of icon data. |
+| VT26 | LOW | `ShellContext.cpp:88–104` | Apply the context stack limit to remote-host insertion. |
+| VT27 | LOW | `Terminal.cpp:343` | Correct the history-retention comment. |
+| A1 | HIGH | `afterglow/src/TerminalWindow.cpp:1135` | Pair emitted panes with render entries so zoomed/empty leaves cannot index past the frame. |
+| A2 | MEDIUM | `afterglow/src/Pane.cpp:458` | Preserve preedit graphemes and translate UTF-16 caret positions. |
+| A3 | HIGH | `afterglow/src/desktop/Accessibility.cpp:122` | Bridge the chrome accessibility tree to the native window and hide zoomed-away panes. |
+| A4 | MEDIUM | `afterglow/src/app/NotificationCenter.cpp:248` | Bind notification expiration to replacement generation. |
+| A5 | MEDIUM | `afterglow/src/config/Keybinds.cpp:302` | Encode contiguous UTF-16 literal ranges without splitting surrogate pairs. |
+| A6 | MEDIUM | `afterglow/src/TerminalWindow.cpp:1335` | Forward IME queries/commits and map the focused chrome editor rectangle. |
+| A7 | MEDIUM | Recorded under A7 | Dispatch keyboard/accessibility scrollbar changes without controller feedback loops. |
+| A8 | MEDIUM | `afterglow/src/scripting/ScriptHost.cpp:226`, `z.luau`, `a.luau` | Carry directory precedence through explicit metadata-ID resolution. |
+| A9 | LOW | `afterglow/src/scripting/ScriptHost.cpp:197` | Reject live state-directory mutation at runtime. |
+| A10 | HIGH | `TerminalWindow.cpp:466–487:`, `ControlProject.cpp:39,82`, `TerminalWindowProject.cpp:35` | Propagate executable startup errors, roll back ordinary creation and guard project recovery paths. |
+| A11 | MEDIUM | `TerminalWindow.cpp:2820–2852:` | Track consumed physical key presses through release and forward only to the owning chrome interaction. |
+| A12 | MEDIUM | `TerminalWindow.cpp:274,3080:` | Retain the originating pane for paste confirmation and cancel invalid targets. |
+| A13 | LOW | `control/Ctl.cpp:236:` | Include PaneMoved in CLI event watching. |
+| A14 | LOW | `TerminalWindow.h:243`, `Pane.h:134`, `Control.h` | Remove unused creation/provider helpers and fields; reconcile API comments with their callers. |
 
 ### Baseline pass 3
 
-| ID | Severity | Finding | Fix |
+| ID | Severity | Reference | Resolution |
 | --- | --- | --- | --- |
 | FEATURE1 | HIGH | Complete multiple-cursor color operations30/40/query101, snapshot per-cell color resolution, rendering, examples, interoperability. | Implement extra-cursor color operations and queries, rendering and interactive examples. |
 | FEATURE2 | HIGH | Complete Luau pane creation options: all four split directions,size,cwd,environment plus per-job process environment. | Apply cwd, environment, requested split share and all directions consistently, with launch-error rollback. |
 | FEATURE3 | MEDIUM | Expose promised inspectable script timings/errors/dropped work counters and bounded semantic/selection text queries; reconcile read-policy promise. | Expose lifecycle timings/errors/drops, bounded selection/semantic-region reads and a script text-read policy. |
 | FEATURE4 | HIGH | Complete V1 multi-buffer/per-buffer metadata, repeat/mirror wrap and image parameter live/preset adapter functionality. | Implement eight buffers, four image slots, sampler modes, auxiliary depth and custom vertex hooks with live/preset integration. |
-| A15 | HIGH | Settings predictable merged config temporary path follows symlinks; use owner-only QTemporaryFile with checked writes. | Use an owner-only checked QTemporaryFile for merged configuration. |
-| A16 | MEDIUM | Watch external theme parent directories across deletion/recreation and missing configured file. | Watch parent directories so external themes recover after deletion/recreation. |
-| A17 | LOW | ConfigTest restore XDG_CONFIG_HOME after fixture. | Restore the configuration environment after each fixture. |
-| A18 | HIGH | Pty worker callbacks race Pane assignment/destruction; defer start and stop/join before reset. | Defer PTY worker startup until pane ownership is installed; stop/join before teardown. |
-| ROOT14 | MEDIUM | Contextual scene asynchronous results use original timer pane rather than sampled active pane after focus changes/closure. | Capture the sampled scene target and discard obsolete asynchronous results. |
-| A19 | MEDIUM | ChromeLayer size-only guard misses device pixel ratio changes with same physical dimensions. | Include DPR in chrome render-target invalidation. |
-| A20 | MEDIUM | Notification image allocation and cache dimensions must bound height as well as width, decode before allocation with limits. | Validate image dimensions and decoded bounds before retaining notification textures. |
-| A21 | MEDIUM | Notification icon cache g ids need pane identity isolation and lifetime cleanup. | Scope icon identity and cache cleanup to the owning pane. |
-| A22 | LOW | Notification rate quota keyed raw Pane pointer never cleaned up; pointer reuse inherits prior quota. | Release pane-keyed notification rate state when its owner closes. |
-| R11 | MEDIUM | GlyphCache sprite sx clamps to7 although OSC66 scale*width can reach49; widen cache key and preserve complete block rendering. | Allow the full scale×width range in sprite cache keys. |
+| A15 | HIGH | Recorded under A15 | Use an owner-only checked QTemporaryFile for merged configuration. |
+| A16 | MEDIUM | Recorded under A16 | Watch parent directories so external themes recover after deletion/recreation. |
+| A17 | LOW | Recorded under A17 | Restore the configuration environment after each fixture. |
+| A18 | HIGH | Recorded under A18 | Defer PTY worker startup until pane ownership is installed; stop/join before teardown. |
+| ROOT14 | MEDIUM | Recorded under ROOT14 | Capture the sampled scene target and discard obsolete asynchronous results. |
+| A19 | MEDIUM | Recorded under A19 | Include DPR in chrome render-target invalidation. |
+| A20 | MEDIUM | Recorded under A20 | Validate image dimensions and decoded bounds before retaining notification textures. |
+| A21 | MEDIUM | Recorded under A21 | Scope icon identity and cache cleanup to the owning pane. |
+| A22 | LOW | Recorded under A22 | Release pane-keyed notification rate state when its owner closes. |
+| R11 | MEDIUM | Recorded under R11 | Allow the full scale×width range in sprite cache keys. |
 
 ### Confirmation 1
 
-| ID | Severity | Finding | Fix |
+| ID | Severity | Reference | Resolution |
 | --- | --- | --- | --- |
-| C1 | MEDIUM | Script source/state/package reads validate pathname before blocking open; use bounded descriptor-validated regular-file reads. | Read bounded bytes from the same nonblocking regular descriptor that was validated. |
-| C2 | LOW | ScriptHost metadata ID regex permits trailing newline; use strict whole-string anchors. | Anchor script IDs to the absolute beginning/end of the string. |
-| C3 | MEDIUM | Shader live images require decoded CPU budget, transactional rejection and safe descriptor/containment checks. | Count retained decoded images, including transition endpoints, and reject oversized live updates atomically. |
-| C4 | MEDIUM | Native chrome consumed key releases fail to reach still-open controls; forward without leaking into PTY. | Deliver key release to still-focused chrome controls without leaking it to the PTY. |
-| C5 | MEDIUM | PasteConfirm focus callback refers to undefined prompt instead of confirm. | Reference the correct visible paste-confirmation object when restoring focus. |
-| C6 | MEDIUM | Parser reset retains overflow flag, dropping next valid OSC. | Clear parser overflow state on reset. |
-| C7 | MEDIUM | Terminal extreme valid geometry overflows pixel reporting arithmetic and image percentage dimensions. | Widen pixel-report and percentage image geometry arithmetic. |
-| C8 | MEDIUM | Intermediate custom-vertex window pass retains stale pixels outside deformed geometry. | Use matching clearing render-pass descriptors and pipelines for intermediate custom-vertex window passes. |
-| C9 | LOW | Blocked shader buffers do not recover when their allocation fits budget again. | Retry blocked shader buffers after the requested allocation fits again. |
-| C10 | LOW | FontSet constructor exceptions leak FreeType/HarfBuzz resources. | Guard font/face construction and roll back FreeType/HarfBuzz ownership on exceptions. |
-| C11 | MEDIUM | File-drop budget counted UTF-16 units and omitted separators; now counts UTF-8 bytes. | Count UTF-8 bytes and path separators in the file-drop budget. |
-| C12 | MEDIUM | Wide-tail tracked reflow boundary landed one column after the wide glyph. | Map a tracked wide-tail boundary back to its glyph head during reflow. |
-| C13 | MEDIUM | Hidden context-menu focus stole paste-confirmation keyboard focus; bind focus to visibility. | Bind hidden context-menu and paste-panel keyboard focus to visibility. |
-| C14 | MEDIUM | Transient configured shader-image budget failure was cached permanently; retry after other packs are removed. | Do not permanently cache transient configured-image budget failures. |
-| C15 | LOW | Glasshouse retained Colors.theme over explicit world colors and leaked temporary JSON on jq failure. | Clear theme overrides for explicit Glasshouse worlds; clean temporary JSON through a subshell EXIT trap. |
-| C16 | LOW | Documentation still described removed image/bidi/cursor limitations and omitted new schema settings. | Regenerate the schema reference and reconcile feature, migration and validation documentation. |
+| C1 | MEDIUM | Recorded under C1 | Read bounded bytes from the same nonblocking regular descriptor that was validated. |
+| C2 | LOW | Recorded under C2 | Anchor script IDs to the absolute beginning/end of the string. |
+| C3 | MEDIUM | Recorded under C3 | Count retained decoded images, including transition endpoints, and reject oversized live updates atomically. |
+| C4 | MEDIUM | Recorded under C4 | Deliver key release to still-focused chrome controls without leaking it to the PTY. |
+| C5 | MEDIUM | Recorded under C5 | Reference the correct visible paste-confirmation object when restoring focus. |
+| C6 | MEDIUM | Recorded under C6 | Clear parser overflow state on reset. |
+| C7 | MEDIUM | Recorded under C7 | Widen pixel-report and percentage image geometry arithmetic. |
+| C8 | MEDIUM | Recorded under C8 | Use matching clearing render-pass descriptors and pipelines for intermediate custom-vertex window passes. |
+| C9 | LOW | Recorded under C9 | Retry blocked shader buffers after the requested allocation fits again. |
+| C10 | LOW | Recorded under C10 | Guard font/face construction and roll back FreeType/HarfBuzz ownership on exceptions. |
+| C11 | MEDIUM | Recorded under C11 | Count UTF-8 bytes and path separators in the file-drop budget. |
+| C12 | MEDIUM | Recorded under C12 | Map a tracked wide-tail boundary back to its glyph head during reflow. |
+| C13 | MEDIUM | Recorded under C13 | Bind hidden context-menu and paste-panel keyboard focus to visibility. |
+| C14 | MEDIUM | Recorded under C14 | Do not permanently cache transient configured-image budget failures. |
+| C15 | LOW | Recorded under C15 | Clear theme overrides for explicit Glasshouse worlds; clean temporary JSON through a subshell EXIT trap. |
+| C16 | LOW | Recorded under C16 | Regenerate the schema reference and reconcile feature, migration and validation documentation. |
 
 ### Confirmation 2
 
-| ID | Severity | Finding | Fix |
+| ID | Severity | Reference | Resolution |
 | --- | --- | --- | --- |
-| C17 | LOW | Native drag coordinate readiness file becomes visible before its payload is complete; synchronize on complete coordinates. | Wait for a complete coordinate payload before driving the isolated compositor gesture. |
+| C17 | LOW | Recorded under C17 | Wait for a complete coordinate payload before driving the isolated compositor gesture. |
 
 ## Verification boundaries
 
-The audit preserves the explicitly deferred build/install, packaging and package/build CI work. Persistent mux, broad SSH integration, remote package updates, display HDR, cross-platform distribution and a full resumable transfer suite remain separate product scope. Bidi has an explicit bounded primary-screen policy. Native IME event tests do not certify every external input-method candidate UI.
+Build, installation, packaging and package/build CI work remain deferred.
+Persistent multiplexing, broad SSH integration, remote package updates, display HDR, cross-platform distribution and resumable transfers remain separate product work.
+Bidirectional layout has a bounded primary-screen policy.
+Native IME tests do not certify every external candidate interface.
 
-CLEAN means no recorded findings remain open after confirmation and the documented gates pass. It is not a claim that every possible defect or external interoperability case has been exhausted.
+CLEAN means no recorded findings remain open and the documented checks pass.
+It does not mean that tests cover every possible defect or external interoperability case.

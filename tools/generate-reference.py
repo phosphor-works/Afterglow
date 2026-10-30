@@ -12,8 +12,8 @@ reference = json.loads(subprocess.check_output([str(Path(sys.argv[1]).resolve())
 def code(value):
     return '`' + json.dumps(value, ensure_ascii=False).replace('|', '\\|').replace('`', '&#96;') + '`'
 lines = ['<!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->', '<!-- SPDX-License-Identifier: GPL-3.0-or-later -->', '', '# Configuration reference', '',
-         'Generated from the runtime Phosphor schema by `tools/generate-reference.py`. Group and key names are case-sensitive. See the [user guide](README.md) for loading, examples and live reload.', '',
-         'Numeric values are clamped to the listed ranges. Invalid enum choices fall back to the default. Empty strings retain the meaning in each description. Omitted values use defaults.', '']
+         '`tools/generate-reference.py` generates this document from the runtime Phosphor schema. Group and key names are case-sensitive. See [appearance](APPEARANCE.md) for configuration loading and examples.', '',
+         'Numeric values are clamped to the listed ranges. Invalid enum choices use the default. Each description defines the meaning of an empty string. Omitted values use defaults.', '']
 for group, keys in reference['groups'].items():
     lines += ['## ' + group, '', '| Key | Default | Range or choices | Meaning |', '| --- | --- | --- | --- |']
     for name, entry in keys.items():

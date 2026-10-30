@@ -1,72 +1,70 @@
-<!--
-SPDX-FileCopyrightText: 2026 fuddlesworth
-SPDX-License-Identifier: GPL-3.0-or-later
--->
+<!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# Glasshouse for afterglow
+# Glasshouse for Afterglow
 
-Afterglow dressed for [Glasshouse](https://github.com/Dsaquel/dots), Dsaquel's
-stained-glass Hyprland desktop. The look follows Glasshouse's own shaders and
-shell: quarry glazing in its jewels, lit lead came with a keyline beside it, a
-lamp above, light added in the dark world and ink laid on in the light one.
-The window's frame stays Vitrail's; afterglow fills it.
+This example adapts Afterglow's appearance to [Glasshouse](https://github.com/Dsaquel/dots), Dsaquel's stained-glass Hyprland desktop.
+It uses stained-glass backgrounds, illuminated lead borders and an overhead lamp.
+The dark palette adds light. The light palette uses darker marks.
+Vitrail supplies the window frame.
 
-![Glasshouse in afterglow: split panes in the dark world, a failed command cracking the glass, a long command's glaze with cursor sparks, and the light world](preview.webp)
+![Glasshouse panes with dark and light palettes](preview.webp)
 
-## What it does
+## Components
 
-| Piece | Where | |
-|---|---|---|
-| `glasshouse-glass` | background layer | quarry glazing behind the text, stained by the light behind it and lit by the lamp |
-| `glasshouse-gilt` | text layer | the lamp's glow behind the letters; light sweeps over them now and then |
-| `glasshouse-ember` | cursor layer | the cursor glows like the lamp; jumps throw sparks |
-| `glasshouse-mullion` | pane chain | splits meet at a leaded mullion; focus arriving gilds it behind a hot tip |
-| `glasshouse.luau` | script | turns shell events into the shaders' signals |
+| Component | Location | Behavior |
+| --- | --- | --- |
+| `glasshouse-glass` | Background | Stained-glass pattern illuminated by the lamp. |
+| `glasshouse-gilt` | Text | Lamp glow and periodic light movement behind letters. |
+| `glasshouse-ember` | Cursor | Cursor glow and sparks during movement. |
+| `glasshouse-mullion` | Pane | Lead dividers and moving focus highlights. |
+| `glasshouse.luau` | Script | Converts shell events into shader signals. |
 
-The text sits on its own layer, so none of the glass ever blurs or tints it.
+Text has a separate layer. Glass does not blur or tint it.
+Shell integration uses OSC 133.
 
-What the shell does to the glass (with shell integration, OSC 133):
+| Event | Effect |
+| --- | --- |
+| Command failure | Cracks spread from the prompt, glow, cool and disappear after a few seconds. Ctrl+C is excluded. |
+| Success after at least 5 seconds, or OSC 7501 task completion | Light moves along the borders and text. |
+| Running command | Lamp and borders become warmer. They cool after completion. |
+| Bell | A ring expands from the cursor and distorts the glass. |
+| OSC 7501 working status | Lamp intensity changes periodically. |
+| OSC 7501 blocked or error status | Glass uses the alert color. |
+| Command completion after at least 20 seconds in an unfocused pane | Desktop notification. |
 
-- **A command fails**: the pane cracks from the prompt like struck glass, the
-  cracks glowing hot, then cooling to scars, and the alert calls through it.
-  The glass mends after a few seconds. Ctrl+C does not count.
-- **A long command succeeds** (5 s or more), or a program reports its task done
-  (OSC 7501): light sweeps along the lead and over the text.
-- **A command runs**: the lamp and keylines warm, and cool when it ends.
-- **The bell**: a shock ring rolls out from the cursor and bends the glass.
-- **Program status** (OSC 7501): working makes the lamp breathe; blocked and
-  error make the glass call in the alert colour.
-- A command of 20 s or more finishing in a pane you are not looking at sends a
-  notification.
+The command palette includes Glasshouse strike, glaze, ring and heat actions.
+Bind an action with configuration such as:
 
-The command palette has *Glasshouse: strike / glaze / ring / heat* to see each
-effect, and they bind like any action, for example
-`"Keybinds": { "bindings": { "script:glasshouse.strike": "Ctrl+Alt+S" } }`.
-Other programs can drive the glass too: `afterglow ctl signal 0 1` strikes the
-focused pane (channels below).
+```json
+{"Keybinds": {"bindings": {"script:glasshouse.strike": "Ctrl+Alt+S"}}}
+```
+
+`afterglow ctl signal 0 1` triggers strike in the focused pane.
 
 ## Install
+
+Run from this example directory:
 
 ```sh
 bin/glasshouse-afterglow install
 ```
 
-This copies the shader packs and the script into `~/.config/afterglow` and
-merges the settings (font, padding, shaders, dark-world colours) into
-`config.json`; the rest of your settings stay. Running afterglow windows pick
-it up at once.
+The command copies shaders and the script into `~/.config/afterglow`.
+It merges font, padding, shader and dark-palette settings into `config.json`.
+Other settings remain unchanged. Running windows reload the changes.
 
-## Following the world switch
+## Follow palette changes
 
-The shaders read the world from the terminal's background, so only the colours
-need switching:
+Shaders read the palette from the terminal background.
+Change the colors with:
 
 ```sh
 bin/glasshouse-afterglow world dark    # or light
 ```
 
-To have Glasshouse's `theme-switch.sh` do it, add afterglow's config to the
-files it snapshots (so a failed switch rolls it back too):
+Add Afterglow's configuration to the files saved by Glasshouse `theme-switch.sh` before a change.
+This permits rollback after failure:
 
 ```bash
 MUTABLE=(
@@ -75,7 +73,7 @@ MUTABLE=(
 )
 ```
 
-and switch it beside kitty's theme:
+Add the Afterglow switch beside the Kitty theme switch:
 
 ```bash
 put "${TMP_KITTY}" "${KITTY_DIR}/theme-active.conf"
@@ -84,20 +82,19 @@ glasshouse-afterglow world "${MODE}"
 
 ## Signals
 
-The shaders listen on afterglow's shader signals (`iSignal`), which scripts
-set with `afterglow.signal(pane, channel, value)` and other programs with
-`afterglow ctl signal CHANNEL VALUE` or D-Bus `Signal`:
+Shaders read `iSignal` values.
+Scripts use `afterglow.signal(pane, channel, value)`.
+Other programs use `afterglow ctl signal CHANNEL VALUE` or D-Bus `Signal`.
 
-| Channel | Meaning | Value |
-|---|---|---|
-| 0 | strike | the exit code |
-| 1 | glaze | seconds the command took |
-| 2 | heat | 1 while running, 0 after |
-| 3 | ring | anything |
-| 4 | status | 1 working, 2 blocked, 3 error, 0 none |
+| Channel | Name | Value |
+| --- | --- | --- |
+| 0 | strike | Exit code. |
+| 1 | glaze | Command duration in seconds. |
+| 2 | heat | 1 during a command; 0 after completion. |
+| 3 | ring | Any value. |
+| 4 | status | 1 working, 2 blocked, 3 error, 0 none. |
 
 ## Credits
 
-Glasshouse, its palettes and its look are Dsaquel's
-([Dsaquel/dots](https://github.com/Dsaquel/dots)). These shaders and the script
-are written for afterglow after it; none of Glasshouse's code is copied.
+Glasshouse, its palettes and its appearance are Dsaquel's work: [Dsaquel/dots](https://github.com/Dsaquel/dots).
+These shaders and scripts were written for Afterglow. They do not copy Glasshouse code.

@@ -150,64 +150,65 @@ PhosphorConfig::Schema buildSchema()
     schema.version = 1;
     schema.groups[Font] = {
         stringKey(QStringLiteral("family"), QString::fromStdString(font.regular.family), QStringLiteral("Regular text font family")),
-        stringKey(QStringLiteral("boldFamily"), {}, QStringLiteral("Bold font family; empty uses family")),
-        stringKey(QStringLiteral("italicFamily"), {}, QStringLiteral("Italic font family; empty uses family")),
-        stringKey(QStringLiteral("boldItalicFamily"), {}, QStringLiteral("Bold italic font family; empty uses the italic family")),
+        stringKey(QStringLiteral("boldFamily"), {}, QStringLiteral("Bold font family. An empty value uses family.")),
+        stringKey(QStringLiteral("italicFamily"), {}, QStringLiteral("Italic font family. An empty value uses family.")),
+        stringKey(QStringLiteral("boldItalicFamily"), {}, QStringLiteral("Bold italic font family. An empty value uses the italic family.")),
         doubleKey(QStringLiteral("size"), font.sizePoints, 4, 96, QStringLiteral("Size in points")),
-        intKey(QStringLiteral("weight"), 400, 100, 900, QStringLiteral("Weight of regular text (variable fonts)")),
-        intKey(QStringLiteral("boldWeight"), 700, 100, 900, QStringLiteral("Weight of bold text (variable fonts)")),
+        intKey(QStringLiteral("weight"), 400, 100, 900, QStringLiteral("Regular font weight. Used for static font matching and variable font axes.")),
+        intKey(QStringLiteral("boldWeight"), 700, 100, 900, QStringLiteral("Bold font weight. Used for static font matching and variable font axes.")),
         doubleKey(QStringLiteral("width"), 100, 50, 200, QStringLiteral("Width axis (Monaspace: 100-125)")),
         doubleKey(QStringLiteral("italicSlant"), -11, -90, 90, QStringLiteral("Slant of italic text (variable fonts)")),
         {QStringLiteral("features"), features, QMetaType::QVariantList,
          QStringLiteral("OpenType features in HarfBuzz syntax: calt, liga, ss01, cv01=2, -liga")},
         {QStringLiteral("fallbackFamilies"), QVariantList{}, QMetaType::QVariantList,
-         QStringLiteral("Families tried, in order, for characters the font lacks (symbols, CJK), before the system's choice")},
+         QStringLiteral("Fallback families in priority order. These supply missing characters before system fallback.")},
         doubleKey(QStringLiteral("cellHeight"), 1.0, 0.5, 3.0,
-                  QStringLiteral("Row height against the font's own: 1.2 adds a fifth of a line between rows")),
-        doubleKey(QStringLiteral("cellWidth"), 1.0, 0.5, 3.0, QStringLiteral("Column width against the font's own")),
+                  QStringLiteral("Row-height multiplier relative to font metrics. A value of 1.2 adds 20 percent to the row height.")),
+        doubleKey(QStringLiteral("cellWidth"), 1.0, 0.5, 3.0, QStringLiteral("Column-width multiplier relative to font metrics.")),
         {QStringLiteral("symbolMap"), QVariantMap{}, QMetaType::QVariantMap,
-         QStringLiteral("Codepoint ranges drawn from a given family first, e.g. { \"U+E000-U+F8FF,U+F0000-U+FFFFD\": "
-                        "\"Symbols Nerd Font Mono\" }. Box drawing and powerline shapes are drawn by afterglow itself")},
+         QStringLiteral("Preferred families for codepoint ranges. Example: { \"U+E000-U+F8FF,U+F0000-U+FFFFD\": \"Symbols Nerd "
+                                 "Font Mono\" }. Afterglow draws box and powerline shapes itself.")},
         enumKey(QStringLiteral("hinting"), QStringLiteral("light"),
-                QStringLiteral("Glyph hinting: none (as designed), light (vertical only, the default) or full (crispest)"),
+                QStringLiteral("Glyph hinting mode. The none mode preserves outlines. The light mode aligns vertical positions only. "
+                                 "The full mode aligns both axes."),
                 {QStringLiteral("none"), QStringLiteral("light"), QStringLiteral("full")}),
         enumKey(QStringLiteral("antialiasing"), QStringLiteral("grayscale"),
-                QStringLiteral("Font antialiasing: grayscale, none, rgb or bgr. Subpixel modes use grayscale with transparency or shaders"),
+                QStringLiteral("Font antialiasing mode. Subpixel modes use grayscale when transparency or shaders are active."),
                 {QStringLiteral("grayscale"), QStringLiteral("none"), QStringLiteral("rgb"), QStringLiteral("bgr")}),
         doubleKey(QStringLiteral("gamma"), 1.0, 0.5, 3.0,
-                  QStringLiteral("Glyph coverage gamma: 1 preserves coverage; higher values strengthen edges")),
+                  QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
     };
     AfterglowVt::TerminalOptions term;
     const auto hex = [](AfterglowVt::Rgb c) { return QColor(c.r, c.g, c.b).name(); };
     schema.groups[Colors] = {
         stringKey(QStringLiteral("theme"), {},
-                  QStringLiteral("A theme from ~/.config/afterglow/themes or the bundled ones (afterglow-dark, afterglow-light), "
-                                 "or light:NAME,dark:NAME to follow the desktop. Its colours replace the ones below. "
-                                 "Reads afterglow JSON, Ghostty and kitty theme files")),
-        colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text colour")),
-        colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background colour")),
-        colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor colour; empty follows the foreground")),
-        colorKey(QStringLiteral("cursorText"), {}, QStringLiteral("Text under a block cursor; empty uses the background")),
-        colorKey(QStringLiteral("selectionForeground"), {}, QStringLiteral("Selected text; empty inverts the cell")),
-        colorKey(QStringLiteral("selectionBackground"), {}, QStringLiteral("Selection background; empty inverts the cell")),
+                  QStringLiteral("Theme name from ~/.config/afterglow/themes or bundled themes: afterglow-dark and afterglow-light. Use "
+                                 "light:NAME,dark:NAME to follow the desktop. Theme colors replace explicit colors. Supports Afterglow "
+                                 "JSON, Ghostty and Kitty themes.")),
+        colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
+        colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background color.")),
+        colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor color. An empty value uses the foreground.")),
+        colorKey(QStringLiteral("cursorText"), {}, QStringLiteral("Text color under a block cursor. An empty value uses the background.")),
+        colorKey(QStringLiteral("selectionForeground"), {}, QStringLiteral("Selected text color. An empty value reverses the cell colors.")),
+        colorKey(QStringLiteral("selectionBackground"), {}, QStringLiteral("Selection background color. An empty value reverses the cell colors.")),
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
-         QStringLiteral("The 16 ANSI colours, black to bright white")},
-        colorKey(QStringLiteral("divider"), QStringLiteral("#3a3a42"), QStringLiteral("Split divider colour")),
-        doubleKey(QStringLiteral("unfocusedDim"), 0.19, 0, 1, QStringLiteral("Darkening over unfocused splits")),
+         QStringLiteral("The 16 ANSI colors, from black to bright white.")},
+        colorKey(QStringLiteral("divider"), QStringLiteral("#3a3a42"), QStringLiteral("Split divider color.")),
+        doubleKey(QStringLiteral("unfocusedDim"), 0.19, 0, 1, QStringLiteral("Darkening amount for unfocused splits.")),
         {QStringLiteral("boldIsBright"), false, QMetaType::Bool,
-         QStringLiteral("Bold text in colours 0-7 uses their bright versions, 8-15")},
+         QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), 1.0, 1.0, 21.0,
-                  QStringLiteral("Lowest contrast ratio between text and its background; text below it is lightened or "
-                                 "darkened. 1 leaves colours alone, 4.5 is WCAG AA")),
+                  QStringLiteral("Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors; 4.5 is the "
+                                 "WCAG AA normal-text threshold.")),
     };
     schema.groups[Terminal] = {
         enumKey(QStringLiteral("bidi"), QStringLiteral("off"),
-            QStringLiteral("Bidirectional paragraph layout: off, auto, ltr or rtl; application grids keep logical order"),
+            QStringLiteral("Bidirectional paragraph layout mode. Application grids retain logical order."),
             {QStringLiteral("off"), QStringLiteral("auto"), QStringLiteral("ltr"), QStringLiteral("rtl")}),
         intKey(QStringLiteral("scrollback"), 10000, 0, 1000000, QStringLiteral("Lines of history per pane")),
         {QStringLiteral("shellIntegration"), true, QMetaType::Bool, QStringLiteral("Automatic Bash, Zsh and Fish prompt integration")},
-        stringKey(QStringLiteral("pager"), QStringLiteral("less -R"), QStringLiteral("Command used to view the last command output; no shell expansion")),
-        stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run; empty runs your login shell")),
+        stringKey(QStringLiteral("pager"), QStringLiteral("less -R"), QStringLiteral("Command for viewing the last command output. Shell expansion is disabled.")),
+        stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run. An empty value starts your login shell.")),
         stringKey(QStringLiteral("term"), QStringLiteral("xterm-256color"), QStringLiteral("TERM for child programs")),
         {QStringLiteral("cursorShape"), QStringLiteral("block"), QMetaType::QString, QStringLiteral("block, underline or bar"),
          [](const QVariant& v) {
@@ -219,7 +220,7 @@ PhosphorConfig::Schema buildSchema()
           {QStringLiteral("bar"), QStringLiteral("bar")}}},
         {QStringLiteral("cursorBlink"), true, QMetaType::Bool, QStringLiteral("Blink the cursor")},
         {QStringLiteral("copyOnSelect"), QStringLiteral("primary"), QMetaType::QString,
-         QStringLiteral("Copy a selection when it is made: primary (middle-click paste), clipboard (both), or off"),
+         QStringLiteral("Copy new selections to primary, both primary and clipboard, or neither with off."),
          [](const QVariant& v) {
              // true and false from older configs: primary and off.
              const QString s = v.typeId() == QMetaType::Bool ? (v.toBool() ? QStringLiteral("primary") : QStringLiteral("off"))
@@ -252,16 +253,16 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("confirmClose"), true, QMetaType::Bool,
          QStringLiteral("Ask before closing a split, tab or window where a program is running")},
         {QStringLiteral("hideMouseWhileTyping"), false, QMetaType::Bool,
-         QStringLiteral("Hide the mouse pointer while typing; moving it shows it again")},
-        intKey(QStringLiteral("scrollLines"), 3, 1, 50, QStringLiteral("Lines a mouse wheel notch scrolls")),
-        intKey(QStringLiteral("cursorBlinkInterval"), 530, 100, 5000, QStringLiteral("Milliseconds the blinking cursor stays on, and off")),
+         QStringLiteral("Hide the pointer while typing. Pointer movement shows it again.")},
+        intKey(QStringLiteral("scrollLines"), 3, 1, 50, QStringLiteral("Number of rows scrolled for each mouse-wheel notch.")),
+        intKey(QStringLiteral("cursorBlinkInterval"), 530, 100, 5000, QStringLiteral("Duration in milliseconds for each visible and hidden cursor phase.")),
         {QStringLiteral("scrollOnOutput"), false, QMetaType::Bool,
-         QStringLiteral("New output jumps a pane scrolled back through history to the bottom")},
-        {QStringLiteral("scrollOnInput"), true, QMetaType::Bool, QStringLiteral("Typing and pasting jump to the bottom")},
+         QStringLiteral("Scroll to the bottom when new output arrives.")},
+        {QStringLiteral("scrollOnInput"), true, QMetaType::Bool, QStringLiteral("Scroll to the bottom on typing or paste.")},
         {QStringLiteral("ambiguousWide"), false, QMetaType::Bool,
-         QStringLiteral("East Asian Ambiguous characters (Greek, Cyrillic, some symbols) take two cells, for CJK setups")},
+         QStringLiteral("Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols.")},
         stringKey(QStringLiteral("bellSound"), {},
-                  QStringLiteral("Sound for the bell: empty for none, default for the desktop's bell, or a sound file")),
+                  QStringLiteral("Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file.")),
         stringKey(QStringLiteral("wordSeparators"), wordSeparators,
                   QStringLiteral("Characters that end a word for double-click selection, besides spaces")),
         {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
@@ -285,50 +286,52 @@ PhosphorConfig::Schema buildSchema()
         doubleKey(QStringLiteral("backgroundOpacity"), 1.0, 0.05, 1.0,
                   QStringLiteral("Opacity of the default background; text stays opaque")),
         {QStringLiteral("blur"), false, QMetaType::Bool,
-         QStringLiteral("Blur what shows through a translucent background (KWin)")},
+         QStringLiteral("Blur content behind translucent backgrounds with KWin.")},
         {QStringLiteral("paneTitles"), false, QMetaType::Bool,
-         QStringLiteral("Label each split with its title while a tab has several")},
+         QStringLiteral("Show pane titles in tabs with multiple splits.")},
         stringKey(QStringLiteral("workingDirectory"), QStringLiteral("inherit"),
-                  QStringLiteral("Where new tabs, splits and windows start: inherit (the focused pane's directory, or "
-                                 "the launcher's), home, or a path. afterglow -d overrides it")),
+                  QStringLiteral("Starting directory for new tabs, splits and windows. Use inherit, home or a path. Inherit uses the "
+                                 "focused pane's directory or launcher's directory. The afterglow -d option overrides this setting.")),
         enumKey(QStringLiteral("startMode"), QStringLiteral("normal"), QStringLiteral("How new windows open: normal, maximized or fullscreen"),
                 {QStringLiteral("normal"), QStringLiteral("maximized"), QStringLiteral("fullscreen")}),
         {QStringLiteral("decorations"), true, QMetaType::Bool,
          QStringLiteral("The compositor's title bar and borders (new windows)")},
         {QStringLiteral("balancePadding"), false, QMetaType::Bool,
-         QStringLiteral("Share the space left over by whole cells between opposite edges, instead of leaving it right and below")},
+         QStringLiteral("Distribute unused cell space between opposite edges. Otherwise, space remains at the right and "
+                                 "bottom.")},
         enumKey(QStringLiteral("tabBar"), QStringLiteral("auto"),
-                QStringLiteral("Show the tab bar: auto (while there are several tabs), always or never"),
+                QStringLiteral("Tab-bar visibility. The auto value shows the bar when multiple tabs exist."),
                 {QStringLiteral("auto"), QStringLiteral("always"), QStringLiteral("never")}),
     };
     schema.groups[MouseGroup] = {
         enumKey(QStringLiteral("rightClick"), QStringLiteral("menu"),
-                QStringLiteral("Right-click: menu, paste, copy-or-paste (copy a selection, else paste) or extend (the selection)"),
+                QStringLiteral("Right-click action. The copy-or-paste action copies an existing selection or pastes otherwise. The "
+                                 "extend action extends the selection."),
                 {QStringLiteral("menu"), QStringLiteral("paste"), QStringLiteral("copy-or-paste"), QStringLiteral("extend")}),
         enumKey(QStringLiteral("middleClick"), QStringLiteral("primary"),
-                QStringLiteral("Middle-click pastes: primary (the last selection), clipboard, or none"),
+                QStringLiteral("Middle-click action. Paste the primary selection, paste the clipboard, or do nothing."),
                 {QStringLiteral("primary"), QStringLiteral("clipboard"), QStringLiteral("none")}),
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), true, QMetaType::Bool,
-         QStringLiteral("Find URLs in plain text, besides the links programs mark (OSC 8)")},
+         QStringLiteral("Detect plain-text URLs in addition to application-provided OSC 8 links.")},
         stringKey(QStringLiteral("openWith"), {},
-                  QStringLiteral("Command to open links with, the URL added at the end; empty uses the desktop's browser")),
+                  QStringLiteral("Command for opening links. The URL is appended. An empty value uses the desktop browser.")),
         enumKey(QStringLiteral("modifier"), QStringLiteral("ctrl"),
-                QStringLiteral("Key held to hover and open links: ctrl, shift, alt, or none (a plain click opens them)"),
+                QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link."),
                 {QStringLiteral("ctrl"), QStringLiteral("shift"), QStringLiteral("alt"), QStringLiteral("none")}),
     };
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), 0.4, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen")),
         stringKey(QStringLiteral("shortcut"), QStringLiteral("Meta+`"),
-                  QStringLiteral("Global shortcut that shows and hides it; empty for none")),
-        {QStringLiteral("animate"), true, QMetaType::Bool, QStringLiteral("Slide in and out")},
+                  QStringLiteral("Global shortcut to show or hide the quick terminal. An empty value disables the shortcut.")),
+        {QStringLiteral("animate"), true, QMetaType::Bool, QStringLiteral("Animate quick-terminal opening and closing.")},
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), true, QMetaType::Bool,
-         QStringLiteral("Let other programs control afterglow over D-Bus (afterglow ctl)")},
+         QStringLiteral("Allow other programs to control Afterglow through D-Bus and afterglow ctl.")},
         {QStringLiteral("allowReadText"), false, QMetaType::Bool,
-         QStringLiteral("Let them read what panes show, scrollback included")},
+         QStringLiteral("Allow D-Bus clients to read pane text, including scrollback.")},
     };
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("allowReadText"), true, QMetaType::Bool,
@@ -338,16 +341,16 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[AudioGroup] = {
         {QStringLiteral("enabled"), true, QMetaType::Bool,
-         QStringLiteral("Analyze system playback while a visible shader opts into audio (requires cava)")},
+         QStringLiteral("Analyze system playback when a visible shader requests audio. Requires cava.")},
         enumKey(QStringLiteral("inputMethod"), QStringLiteral("auto"), QStringLiteral("Audio capture backend"),
                 {QStringLiteral("auto"), QStringLiteral("pipewire"), QStringLiteral("pulse")}),
         stringKey(QStringLiteral("inputSource"), QStringLiteral("auto"),
-                  QStringLiteral("Playback source for the capture backend; auto follows the default output")),
+                  QStringLiteral("Playback source for capture. The auto value follows the default output.")),
     };
     schema.groups[Animation] = {
-        {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("The cursor glides between cells")},
-        {QStringLiteral("scroll"), true, QMetaType::Bool, QStringLiteral("Scrolling eases instead of jumping by rows")},
-        {QStringLiteral("splits"), true, QMetaType::Bool, QStringLiteral("Splits open, close and resize smoothly")},
+        {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("Animate cursor movement between cells.")},
+        {QStringLiteral("scroll"), true, QMetaType::Bool, QStringLiteral("Animate scrolling between rows.")},
+        {QStringLiteral("splits"), true, QMetaType::Bool, QStringLiteral("Animate split opening, closing and resizing.")},
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), QVariantList{}, QMetaType::QVariantList,
@@ -367,7 +370,7 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("patterns"), QVariantList{QVariantMap{
             {QStringLiteral("pattern"), QStringLiteral(R"((?:~?/|\.{1,2}/)?[\w.@+-]+(?:/[\w.@+-]+)*(?:\.[\w+-]+|:\d+)(?::\d+){0,2})")},
             {QStringLiteral("action"), QStringLiteral("copy")}}}, QMetaType::QVariantList,
-         QStringLiteral("Up to 16 regex hints with copy, open or command action; command is an argv list")},
+         QStringLiteral("Up to 16 regular-expression hints with copy, open or command actions. A command uses an argv list.")},
     };
     schema.groups[Keys] = {
         stringKey(QStringLiteral("leader"), {}, QStringLiteral("Prefix key used by Leader sequences")),
@@ -375,7 +378,7 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("tableTimeout"), 5000, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table")),
         {QStringLiteral("tables"), QVariantMap{}, QMetaType::QVariantMap, QStringLiteral("Named action-to-key maps, activated with table:name")},
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
-         QStringLiteral("Action to key combination, or a list of them; an empty string unbinds")},
+         QStringLiteral("Map each action to a key combination or list. An empty string removes the binding.")},
     };
     return schema;
 }

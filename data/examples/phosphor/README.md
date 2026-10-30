@@ -3,40 +3,41 @@
 
 # Phosphor for Afterglow
 
-A shared 3D reactor in a lit chamber: curved metal fragments, volumetric plasma,
-magnetic filaments, turbulent haze and reflections. System playback drives the
-armor, plasma and lights; shell events charge and
-fracture the reactor, then send refractive waves through live terminal content.
+This scene places a shared 3D reactor inside a lit chamber.
+It includes curved metal fragments, plasma, magnetic filaments, haze and reflections.
+System playback controls armor, plasma and lights.
+Shell events charge and fracture the reactor. Pressure waves distort live terminal content.
 
-![The Phosphor reactor charging, fracturing and recalling its shell in a reflective chamber](preview.webp)
+![Phosphor reactor and terminal panes](preview.webp)
 
 ## Try it
 
-From a built checkout:
+From a built checkout, run:
 
 ```sh
 data/examples/phosphor/bin/phosphor-afterglow launch --show --binary ./build/afterglow/afterglow
 ```
 
-After installation:
+After installation, run:
 
 ```sh
 /usr/share/afterglow/examples/phosphor/bin/phosphor-afterglow launch --show
 ```
 
-Adjust the prefix if installed somewhere other than `/usr`. Requires Python 3,
-Bash, Wayland, Vulkan, and an Afterglow build with `iPreviousText`, `AFTERGLOW_HDR`
-and `AFTERGLOW_AUDIO` support, the `iScrollback` uniform, and the version 1 Luau
-terminal snapshots, live shader parameters/transitions and scene preset APIs. Install `cava` for the audio response.
-Add `--light` to start in the light palette.
+Adjust the path for an installation prefix other than `/usr`.
+Requirements are Python 3, Bash, Wayland, Vulkan and the current Afterglow shader and Luau APIs.
+Required interfaces include `iPreviousText`, `AFTERGLOW_HDR`, `AFTERGLOW_AUDIO`, `iScrollback`, version 1 snapshots, parameter transitions and presets.
+Install `cava` for audio response.
+Add `--light` to start with the light palette.
 
-The launcher creates a temporary configuration, shader packs and Luau script,
-then starts a separate Afterglow process. Closing its last window removes that
-configuration. Your normal Afterglow settings stay intact. Every split opens a
-clean Bash demo shell with OSC 133 integration; programs started inside it see
-your usual XDG configuration directory. The demo shell does not save history.
+The launcher creates temporary configuration, shader packs and scripts, then starts a separate Afterglow process.
+Closing its last window removes the temporary configuration.
+Normal Afterglow settings remain unchanged.
+Each split opens a clean Bash demo shell with OSC 133 integration.
+Programs inside it use your normal XDG configuration directory.
+The demo shell does not save history.
 
-In the demo:
+## Demonstration commands
 
 ```sh
 phosphor show
@@ -44,143 +45,150 @@ phosphor scene light
 phosphor scene dark
 ```
 
-`--show` plays the showcase automatically in the first pane. `phosphor show`
-replays it: idle, charge, fracture, recall, impulse, then afterglow. The sequence
-uses the alternate screen and restores your prompt on completion or Ctrl+C.
-It drives the real Luau actions via OSC 1337 user variables. Ordinary commands
-also charge the core, fracture it on failure and recall its pieces on success.
+`--show` starts the demonstration in the first pane. `phosphor show` repeats it.
+The stages are idle, charge, fracture, recall, impulse and afterglow.
+The sequence uses the alternate screen. Completion or Ctrl+C restores the prompt.
+OSC 1337 user variables trigger real Luau actions.
+Ordinary commands charge the core. Failure fractures it; success recalls its pieces.
 
 ## Scene controls
 
-The launcher includes the **Edit scene parameters and presets** palette action.
-Choose `background: phosphor-field` to apply Quiet, Balanced or Cinematic, edit
-quality/intensity, save current values, or reset this editor's overrides. Saved
-presets in this isolated demo last until its temporary directory is removed;
-install [scene-controls](../packages/scene-controls/README.md) in your normal
-configuration for durable presets.
+Select **Edit scene parameters and presets** in the command palette.
+Select `background: phosphor-field` to apply Quiet, Balanced or Cinematic.
+The editor also changes parameters, saves current values and resets its overrides.
+Demo presets exist only until the temporary directory is removed.
+Install [scene-controls](../packages/scene-controls/README.md) in normal configuration for persistent presets.
 
-**Toggle contextual Phosphor exposure** optionally lets the packaged Luau script
-choose an intensity target from bounded audio/history summaries once per second.
-The host interpolates it. Toggle it off to release its overrides. Audio and
-history still drive the shader directly whether this optional policy is enabled
-or not. Phosphor's command heat uses host transitions; timestamped impulses
-remain in the shader.
+**Toggle contextual Phosphor exposure** enables one intensity decision each second from audio and history summaries.
+The host interpolates changes. Disable this option to release its overrides.
+Audio and history continue to affect the shader directly.
+Command activity uses host transitions. Impulses use shader timestamps.
 
-See [validation and measured quality tiers](VALIDATION.md) before choosing a
-preset for 4K. A quality tier describes sampling quality, not a frame-rate promise.
-The text effect adds a dark glyph outline to preserve readability over hot
-highlights; `phosphor-emission.readability` controls it (0–1, default 0.9).
+See [measurements](VALIDATION.md) before choosing a preset for 4K.
+Quality tiers specify sampling quality, not guaranteed frame rates.
+The text effect adds a dark glyph outline for readability over highlights.
+`phosphor-emission.readability` controls this outline from 0 to 1. Its default is 0.9.
 
 ## Audio response
 
-Play music in your usual player or browser. The scene follows system playback
-through the same PhosphorAudio/CAVA provider as PlasmaZones:
+Play audio in your normal player or browser.
+PhosphorAudio and CAVA analyze system playback, as in PlasmaZones.
 
-- Bass opens the armor, energizes the plasma volume and strengthens floor caustics.
-- Mids bend and illuminate the magnetic filaments and surrounding haze.
-- Treble lights the floating motes; individual bands illuminate panel indicators
-  and segments of the orbital traces.
+| Input | Effect |
+| --- | --- |
+| Bass | Opens armor, increases plasma energy and strengthens floor caustics. |
+| Mids | Bend and illuminate filaments and haze. |
+| Treble | Illuminates floating particles. |
+| Individual bands | Illuminate panel indicators and orbital segments. |
 
-Audio and Luau run together: command failures still fracture the core, success
-recalls it, and bells send shock fronts. Silence retains the normal scene.
-The lens blooms the changing emission before text is composited.
+Audio and Luau operate together.
+Command failure fractures the core. Success recalls it. Bells create pressure waves.
+Silence preserves normal scene animation.
+The lens adds bloom before text composition.
 
-`Shaders.params.phosphor-field.audioStrength` controls the response (0–2,
-default 1). Set `Audio.enabled` to `false` to stop capture entirely. The
-`Audio.inputMethod` and `Audio.inputSource` settings select a backend and
-source; both default to `auto`. Capture stops when no exposed audio-reactive
-window remains. Missing CAVA logs a warning and leaves the scene running.
+`Shaders.params.phosphor-field.audioStrength` ranges from 0 to 2. Its default is 1.
+Set `Audio.enabled` to `false` to stop capture.
+`Audio.inputMethod` and `Audio.inputSource` select the backend and source. Both default to `auto`.
+Capture stops when no exposed audio-responsive window remains.
+Missing CAVA logs a warning. The scene continues to run.
 
 ## Scrollback response
 
-The combined retained history of all panes in the **current tab** gradually
-builds the scene's baseline: brighter and more intricate plasma, slightly opened
-armor, stronger violet energy, illuminated magnetic filaments, haze and floor
-caustics. Background tabs and other windows do not contribute. Audio and Luau
-keep driving their effects on top of this baseline.
+Combined retained history in the current tab increases the scene's baseline energy.
+Effects include brighter plasma, more open armor, stronger violet light, illuminated filaments, haze and floor caustics.
+Background tabs and other windows do not contribute.
+Audio and Luau continue to apply their effects.
 
-Try `seq 1 4000` in a demo pane. Switch to a fresh tab to see the scene ease back
-down; return to the original tab to restore its accumulated energy. Clearing
-history or closing a pane also lowers the total. Entering a full-screen program
-preserves the primary screen's history contribution.
+1. Run `seq 1 4000` in a demo pane.
+2. Switch to a fresh tab.
+3. Return to the original tab.
 
-`Shaders.params.phosphor-field.historyStrength` sets the influence (0–2,
-default 1; zero disables it). `historyScale` controls how quickly it builds:
-at the default 4000 rows, the effect reaches about 63% at 4000 combined rows and
-92% at 10000. It saturates smoothly for long sessions, keeping text crisp and
-music transients distinct. Growth and decay use the renderer's eased count.
+The fresh tab reduces baseline energy. Returning restores the original history contribution.
+Clearing history or closing a pane lowers the total.
+Full-screen programs preserve primary-screen history influence.
+
+`Shaders.params.phosphor-field.historyStrength` ranges from 0 to 2. Its default is 1; zero disables the influence.
+`historyScale` sets the growth rate. The default is 4000 rows.
+At this setting, 4000 combined rows produce approximately 63 percent influence; 10000 rows produce 92 percent.
+The influence approaches its maximum smoothly.
+Growth and decay use the renderer's smoothed count.
 
 ## Make a clip
 
-1. Open the demo and enlarge its window.
-2. Use **Ctrl+Shift+E** to split right, then **Ctrl+Shift+O** to split the
-   focused pane down. The containment core has one camera for the whole window.
-3. Move the pointer over the window to see depth, and drag a divider: the scene
-   stays in place while the panes expose different parts of it.
-4. Start music, then run `phosphor show` in one pane. Keep the others at a quiet prompt so the
-   light and afterimages have room to read.
-5. End on the reassembled core with the new Afterglow icon visible in the desktop.
+1. Open the demo.
+2. Enlarge the window.
+3. Press **Ctrl+Shift+E** to split right.
+4. Press **Ctrl+Shift+O** to split the focused pane down.
+5. Move the pointer over the window to change depth.
+6. Drag a divider to show different parts of the scene.
+7. Start music.
+8. Run `phosphor show` in one pane.
 
-The command palette (**Ctrl+Shift+P**) also has four Phosphor actions:
+The core uses one camera across the window. The scene remains stationary while dividers move.
+Quiet prompts in other panes make light and afterimages easier to see.
+The final view can show the reassembled core and the Afterglow desktop icon.
+
+The command palette (**Ctrl+Shift+P**) also contains these actions:
 
 | Shortcut | Action | Signal |
-|---|---|---|
+| --- | --- | --- |
 | Ctrl+Alt+1 | Fracture the core | 0 |
-| Ctrl+Alt+2 | Recall the fragments | 1 |
-| Ctrl+Alt+3 | Send a shock front | 3 |
-| Ctrl+Alt+4 | Charge until the next command finishes | 2 |
+| Ctrl+Alt+2 | Recall fragments | 1 |
+| Ctrl+Alt+3 | Send a pressure wave | 3 |
+| Ctrl+Alt+4 | Charge until the next command completes | 2 |
 
-Desktop shortcuts may intercept these; use the palette in that case. The
-isolated process does not own the ordinary `afterglow ctl` service name, so
-use these in-process actions when trying the demo alongside your normal app.
+Use the palette if desktop shortcuts intercept these keys.
+The isolated process does not own the normal `afterglow ctl` service name.
+Use its internal actions when another Afterglow process is running.
 
 ## Layers and signals
 
 | Pack | Chain | Behavior |
-|---|---|---|
-| `phosphor-field` | background | Rounded spherical shell segments, reflected studio lighting, a 48-step plasma volume, magnetic filaments, orbital traces, defocused motes, turbulent haze, caustic floor light and ray-traced floor reflections. |
-| `phosphor-lens` | background, after field | HDR highlight bloom at three scales, anamorphic scatter, filmic highlight rolloff, vignette and fine dithering. Runs before glyphs are composited. |
-| `phosphor-emission` | text | A small coloured halo around glyphs and persistent text afterimages; current glyphs retain their original colour and position. |
-| `phosphor-cursor` | cursor | A tapered filament on cursor movement. |
-| `phosphor-frame` | pane | Frame light plus a refractive pressure front and trailing ripples through live terminal content, with a narrow colour fringe. |
+| --- | --- | --- |
+| `phosphor-field` | background | Curved shell panels, studio lighting, plasma volume, filaments, orbital traces, particles, haze, caustics and floor reflections. The plasma uses 48 steps. |
+| `phosphor-lens` | background, after field | Three-scale HDR bloom, anamorphic scatter, filmic highlight compression, vignette and dithering. Runs before text composition. |
+| `phosphor-emission` | text | Colored glyph halos and retained afterimages. Current glyphs preserve color and position. |
+| `phosphor-cursor` | cursor | Tapered filaments during cursor movement. |
+| `phosphor-frame` | pane | Frame light, refractive pressure waves, trailing ripples and a narrow color fringe. |
 
-The Luau script uses `ev.terminal` snapshots and `afterglow.signals` to update
-all panes in the event's tab in one batch, with a shared timestamp. It works
-when loaded after panes already exist, without maintaining a pane registry.
-A command finishing does not cool the core while another pane in that tab is
-still running. Background tabs and other windows keep their own state. Channels contain a
-value and the shader time at which it was set:
+The script reads `ev.terminal` snapshots and updates the event's tab with `afterglow.signals`.
+Each batch uses one timestamp across panes.
+It also works when loaded after panes exist. No separate pane registry is required.
+One completed command does not cool the core while another pane in that tab is running a command.
+Background tabs and other windows retain separate state.
+Each signal stores a value and its shader update time.
 
 | Channel | Meaning |
-|---|---|
-| 0 | Failed command's exit code; Ctrl+C and unknown exit codes are ignored |
-| 1 | Successful command's duration in seconds, for commands lasting at least 1.5 seconds; also program status `done` |
-| 2 | 1 while a command runs, 0 when it ends |
-| 3 | Bell event |
-| 4 | Program status: 1 working, 2 blocked, 3 error, 0 otherwise |
+| --- | --- |
+| 0 | Failed command exit code. Ctrl+C and unknown codes are ignored. |
+| 1 | Successful command duration in seconds, for commands lasting at least 1.5 seconds. Also used for program status `done`. |
+| 2 | 1 during a command; 0 after completion. |
+| 3 | Bell event. |
+| 4 | Program status: 1 working, 2 blocked, 3 error, 0 otherwise. |
 
-The text history is a single window-sized texture of the previous processed
-text layer. Decay uses elapsed frame time. History clears on shader
-reload, pane layout/tab changes, resize, default foreground/background colour
-changes, font cell-size changes, and clock resets. It is allocated and copied
-only when a shader references `iPreviousText`. The plain renderer is unchanged.
-The field and lens request RGBA16F intermediate targets with
-`#define AFTERGLOW_HDR 1`. Highlights stay above display white until the lens
-pass blooms and tone-maps them. This is an SDR presentation with HDR
-intermediates. The history texture costs about 16 MiB at 1080p or 64 MiB at 4K
-in this mode, in addition to the layer targets. Chains without this opt-in
-retain RGBA8 targets at half that memory cost.
+## Rendering and memory
 
-The scene combines analytic ray intersections, rounded signed-distance surfaces
-and volume integration. It is a 3D background; glyphs,
-selection and input remain on the normal flat terminal surface. The frame
-history and layer separation work in the renderer, independently of the
-compositor. Palette changes currently reload immediately rather than morphing.
+Text history uses one window-sized texture of the previous processed text layer.
+Decay uses elapsed frame time.
+Shader reload, layout, tab, size, default colors, font cell size and clock reset clear history.
+History is allocated and copied only when a shader references `iPreviousText`.
+The plain renderer does not require it.
+
+Field and lens request RGBA16F intermediate targets with `#define AFTERGLOW_HDR 1`.
+Highlights remain above display white until lens bloom and tone mapping.
+Display output remains SDR.
+The history texture requires approximately 16 MiB at 1080p or 64 MiB at 4K, in addition to layer targets.
+Chains without this definition use RGBA8 at half that memory cost.
+
+The scene combines analytic ray intersections, rounded signed-distance surfaces and volume integration.
+Glyphs, selection and input remain on the flat terminal surface.
+The renderer controls history and layer separation independently of the compositor.
+Palette changes reload immediately without a color transition.
 
 ## Tuning
 
-Parameters are declared in each pack's `metadata.json`. Add overrides under
-`Shaders.params` in `config/phosphor.json` before launching, for example:
+Each pack declares parameters in `metadata.json`.
+Add overrides under `Shaders.params` in `config/phosphor.json` before launch:
 
 ```json
 {
@@ -195,26 +203,31 @@ Parameters are declared in each pack's `metadata.json`. Add overrides under
 }
 ```
 
-The shell is divided into 96 curved panels, with selected panels omitted to
-expose the core. Bounding spheres reject panels before marching their rounded
-surfaces. The default `quality: 1` uses two rotated-grid samples per pixel;
-`quality: 2` uses four for capture, and `quality: 0` uses one. `shutter` controls motion
-integration across those samples. Text keeps its normal sharp rendering.
+The shell contains 96 curved panels. Omitted panels expose the core.
+Bounding spheres reject panels before surface ray marching.
 
-This scene animates continuously and traces reflections as well as the primary
-view. Cost grows with resolution and sample count. Use `quality: 0` if
-recording at high resolution is too expensive; the lens and atmosphere remain.
-To disable the scene, remove **both** `phosphor-field` and `phosphor-lens` from
-the background chain. A zero `speed` and `parallax` freeze the camera, but do not
-disable redraws while animated packs remain enabled. For reduced motion, clear
-all shader chains.
+| Quality | Samples per pixel |
+| --- | --- |
+| 0 | One. |
+| 1 | Two rotated-grid samples. This is the default. |
+| 2 | Four samples for capture. |
 
-## Render an animation without recording the desktop
+`shutter` controls motion integration across samples.
+Text retains normal sharp rendering.
+The scene animates continuously and traces reflected and primary views.
+Cost increases with resolution and sample count.
+Use quality 0 to reduce capture cost. Lens and atmosphere effects remain active.
 
-The developer renderer accepts `--frames N --fps N`; with multiple frames,
-`shot.png` becomes `shot-0000.png`, `shot-0001.png`, and so on. Shader time and
-signal ages advance at the requested playback rate, independently of render
-speed. For example, with these packs in the renderer's shader search path:
+Remove both `phosphor-field` and `phosphor-lens` from the background chain to disable the scene background.
+Zero `speed` and `parallax` freeze the camera without stopping redraws from animated packs.
+Clear all shader chains for reduced motion.
+
+## Render an animation without desktop capture
+
+The developer renderer accepts `--frames N --fps N`.
+With multiple frames, `shot.png` becomes `shot-0000.png`, `shot-0001.png` and subsequent numbered files.
+Shader time and signal ages advance at the requested playback rate, independently of render speed.
+With the packs in the renderer's shader search path, run:
 
 ```sh
 afterglow_renderpng --background-shader phosphor-field \
@@ -223,19 +236,17 @@ afterglow_renderpng --background-shader phosphor-field \
 ffmpeg -framerate 24 -i fracture-%04d.png -c:v libx264 -pix_fmt yuv420p fracture.mp4
 ```
 
-The preview is generated through this real renderer, rather than a mockup.
+The preview uses the actual renderer.
+`--timings --frames N` separates render/readback time from PNG encoding.
+These measurements include readback. They are not GPU-only timings.
 
-Use `--timings --frames N` to separate render/readback time from PNG encoding.
-These wall-clock measurements include readback and are not GPU-only timings.
+`--audio-bands 0.7,0.3,0.15` supplies synthetic bass, mid and treble levels for deterministic previews.
+Without this option, the renderer uses silence.
+The interactive launcher uses system playback automatically.
 
-For deterministic audio previews, add `--audio-bands 0.7,0.3,0.15` to the
-render command. These are synthetic bass/mid/treble levels, not live capture.
-Omitting the option renders silence. The interactive launcher uses real
-system playback automatically.
+`--scrollback-lines 10000` supplies synthetic combined history.
+Without this option, the renderer sums actual retained rows from the supplied panes.
 
-Add `--scrollback-lines 10000` for a synthetic combined-history preview. Without
-this option the renderer sums the actual retained rows in the supplied panes.
-
-Command heat now uses the named `commandHeat` parameter and a 650 ms Phosphor
-host transition. Impulses (fracture, recall and shock fronts) continue using
-signal timestamps. Install the updated shader pack and script together.
+Command activity uses `commandHeat` and a 650 ms host transition.
+Fracture, recall and pressure-wave impulses use signal timestamps.
+Install the shader pack and script together.

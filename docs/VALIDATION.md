@@ -3,9 +3,33 @@
 
 # Delivery validation
 
+## Documentation and compiler diagnostics, 30 October 2026
+
+The README now lists main features and links to focused documents.
+Configuration descriptions use the runtime schema. Keys, defaults, ranges and bindings remain unchanged.
+All 43 Luau helper-reference rows and 93 audit IDs remain available.
+
+| Check | Result |
+| --- | --- |
+| Clean rebuild before corrections | Seven compiler warnings reproduced. |
+| Rebuild after corrections | Passed without compiler warnings. |
+| Full CTest suite | 412/412 passed. |
+| Native windows with generic Qt platform theme | 12/12 passed. |
+| Documentation | 107 local links resolve. All 12 JSON examples parse. Configuration generation is reproducible. |
+
+The corrections initialize test launch options and add braces around a conditional test assertion.
+CMake still reports four intentional Qt private-API dependencies.
+See the [Qt rebuild requirement](BUILD.md#qt-private-apis).
+
+The first native run timed out waiting for the drag press while KDE portal services started.
+A generic-platform-theme run passed all cases.
+The native runner now selects that theme explicitly, as the desktop acceptance runner already does.
+
 ## Completion audit, 30 October 2026
 
-The [completion audit](AUDIT.md) covers the repository and the delivery plan through V1 and non-build D1. Validation uses the existing RelWithDebInfo tree, Qt 6.12, KDE/KWin Wayland and NVIDIA RTX 2080 Vulkan; packaging and installation remain deferred.
+The [completion audit](AUDIT.md) covers the repository and delivery plan through V1 and D1, excluding build and installation work.
+Validation uses the existing RelWithDebInfo tree, Qt 6.12, KDE/KWin Wayland and NVIDIA RTX 2080 Vulkan.
+Packaging and installation remain deferred.
 
 | Check | Result |
 | --- | --- |
@@ -21,7 +45,10 @@ The [completion audit](AUDIT.md) covers the repository and the delivery plan thr
 | Reference example | depth-trails compiled and rendered 30 frames at 960×540; output inspected visually |
 | Documentation | Runtime configuration reference regenerated; local Markdown links resolve |
 
-The depth-trails run recorded p50 0.85 ms and p95 1.86 ms for render plus readback after warmup. This short API-example run is not a GPU-only benchmark or a new Phosphor-scene performance claim. The [original Phosphor measurements](../data/examples/phosphor/VALIDATION.md) retain their original workload and limits.
+The depth-trails run recorded p50 0.85 ms and p95 1.86 ms for render plus readback after warmup.
+This short API-example run is not a GPU-only benchmark.
+It does not update Phosphor-scene performance measurements.
+The [original Phosphor measurements](../data/examples/phosphor/VALIDATION.md) retain their workload and limits.
 
 ```sh
 cmake --build build -j4
@@ -32,11 +59,18 @@ python3 tools/conformance/test_headless.py build/tools/conformance/afterglow_hea
 python3 tools/generate-reference.py build/afterglow/afterglow
 ```
 
-Bidi remains opt-in with [bounded application-grid fallback](BIDI.md). IME tests exercise real Qt composition/commit and surrounding-text queries, not external ibus/fcitx candidate applications. Accessibility acceptance is not screen-reader certification. Shader auxiliary depth is a sampled color attachment, not a 3D geometry/depth-test engine. Display HDR, a persistent mux, full resumable transfers and cross-platform distribution remain separate product work.
+Bidirectional layout remains optional with [bounded application-grid fallback](BIDI.md).
+IME tests check Qt composition, commit and surrounding-text queries. They do not test external IBus or Fcitx candidate applications.
+Accessibility acceptance does not certify screen readers.
+Shader auxiliary depth is a sampled color attachment. It does not provide a 3D geometry or depth-test engine.
+Display HDR, persistent multiplexing, resumable transfers and cross-platform distribution remain separate product work.
 
 ## Original D1 acceptance evidence
 
-Implementation: `4eaf265`. Validation on 30 October 2026 used the existing RelWithDebInfo tree, Qt 6.12, KDE/KWin Wayland and NVIDIA RTX 2080 Vulkan. No installation or packaging changes were made.
+Implementation: `4eaf265`.
+Validation date: 30 October 2026.
+Environment: existing RelWithDebInfo tree, Qt 6.12, KDE/KWin Wayland and NVIDIA RTX 2080 Vulkan.
+The change did not include installation or packaging work.
 
 | Check | Result |
 | --- | --- |
@@ -50,7 +84,10 @@ Implementation: `4eaf265`. Validation on 30 October 2026 used the existing RelWi
 | Upstream client | Native save/cancel also passes with the unmodified upstream iTerm2 `it2dl` script |
 | References and examples | Configuration generated from runtime schema; local Markdown links resolve; new Python examples compile |
 
-The upstream script was retrieved from `https://iterm2.com/utilities/it2dl`; SHA-256 `e19325bb81ca19cd3be22af7e58f1ef9a334ff71e8d71133abea2099f11f26e3`. It is not vendored or fetched automatically by tests. Pass a locally inspected copy with `--it2dl /path/to/it2dl` to repeat that interoperability check.
+The upstream script came from `https://iterm2.com/utilities/it2dl`.
+SHA-256: `e19325bb81ca19cd3be22af7e58f1ef9a334ff71e8d71133abea2099f11f26e3`.
+The repository does not include this script. Tests do not download it automatically.
+Pass an inspected local copy with `--it2dl /path/to/it2dl` to repeat the check.
 
 ```sh
 ctest --test-dir build --output-on-failure -j4
@@ -59,4 +96,10 @@ python3 afterglow/tests/desktop_acceptance.py build/afterglow/afterglow --it2dl 
 python3 tools/generate-reference.py build/afterglow/afterglow
 ```
 
-The native test starts its own accessibility registry and uses a generic Qt platform theme so Save/Cancel remain inside the isolated desktop, independent of portal activation. It exercises the public AT-SPI interfaces; it is not an Orca/NVDA certification. At this original checkpoint, actual IME candidate UIs and physical file-manager drag were manual checks, and bidi and multiple-cursor colors were not delivered. The completion-audit results above supersede those limitations where implemented; resumable transfers remain outside this workflow.
+The native test starts its own accessibility registry and uses a generic Qt platform theme.
+Save and Cancel remain inside the isolated desktop without portal activation.
+The test checks public AT-SPI interfaces. It does not certify Orca or NVDA.
+At the original checkpoint, IME candidate interfaces and physical file-manager drag required manual checks.
+Bidirectional layout and multiple-cursor colors were not yet implemented.
+The completion-audit results above update these limits where implementation is complete.
+Resumable transfers remain outside this workflow.

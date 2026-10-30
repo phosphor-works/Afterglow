@@ -1,13 +1,16 @@
+<!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+
 # Project navigator
 
-An Afterglow Luau package inspired by the configurable discovery menus in
-[sessionizer.wezterm](https://github.com/mikkasendke/sessionizer.wezterm).
-It uses Afterglow's native selector, async jobs, project layouts and durable state.
+This Luau package provides project discovery and selection.
+It uses ideas from [sessionizer.wezterm](https://github.com/mikkasendke/sessionizer.wezterm).
+It uses native selectors, asynchronous jobs, project layouts and persistent state.
 
-Copy this entire directory into `~/.config/afterglow/scripts/project-navigator/`
-(or `scripts/` beside your custom config). Packaged installations also ship it
-under `/usr/share/afterglow/examples/packages/project-navigator/` when using the
-usual `/usr` prefix. No commands run merely by loading the package.
+Copy this complete directory into `~/.config/afterglow/scripts/project-navigator/`.
+For custom configuration, use its adjacent `scripts/` directory.
+With the `/usr` installation prefix, examples are installed in `/usr/share/afterglow/examples/packages/project-navigator/`.
+Loading the package does not run commands.
 
 From the repository root, install it with:
 
@@ -43,13 +46,14 @@ Create `config.json` beside `package.json` to override the defaults:
 }
 ```
 
-`fd` discovers Git repositories (including `.git` files for worktrees), and
-`zoxide query --list` contributes frequently used directories. Both are
-optional; missing commands are reported in the picker title. Configured roots,
-saved layouts, favorites and history remain available. Providers run concurrently
-with a five-second timeout and bounded output. Up to eight roots and 400 choices
-are used. An already-open operation must finish or be cancelled before starting
-another one. Escape cancels a selector without launching anything.
+`fd` discovers Git repositories, including worktrees with `.git` files.
+`zoxide query --list` supplies frequently used directories.
+Both commands are optional. The picker title reports missing commands.
+Configured roots, saved layouts, favorites and history remain available.
+Providers run concurrently with a five-second timeout and bounded output.
+Limits are eight roots and 400 choices.
+Finish or cancel the current operation before starting another.
+Escape cancels a selector without starting a project.
 
 Favorites, the last 50 projects and layout choices survive reloads/restarts.
 Storage is scoped to `project-navigator`, under
@@ -111,9 +115,9 @@ libXtst, xprop, ImageMagick, Git and fd:
 python3 afterglow/tests/navigator_ui_smoke.py build/afterglow/afterglow
 ```
 
-It creates a nested desktop with private D-Bus/config/state, drives the real
-picker with keyboard input, verifies window reuse, config reload, removal with
-an open selector, reinstall and remembered layouts after restart. It also checks
-the companion packages' periodic save and restore flow. Screenshots and the
-application log go to `/tmp/afterglow-navigator-ui/` (override with `--artifacts`).
-Only its temporary windows/processes are closed at the end.
+The test creates a nested desktop with private D-Bus, configuration and state.
+It drives the picker with keyboard input.
+It checks window reuse, configuration reload, removal with an open selector, reinstallation and retained layouts after restart.
+It also checks periodic save and restore in companion packages.
+Screenshots and logs use `/tmp/afterglow-navigator-ui/`. Change this with `--artifacts`.
+The test closes only its temporary windows and processes.

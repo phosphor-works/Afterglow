@@ -3,9 +3,11 @@
 
 # Release notes
 
-## Unreleased — D1 desktop and compatibility
+## Unreleased
 
-Target platform: Linux on Wayland with a Vulkan driver. Native desktop acceptance is exercised on KDE/KWin; other compositors and screen readers are not individually certified. This update does not change the build/install workflow or establish macOS/Windows support.
+Target platform: Linux on Wayland with Vulkan.
+Native desktop tests use KDE/KWin. Other compositors and screen readers are not individually certified.
+Build and installation procedures do not change. This release does not add macOS or Windows support.
 
 - Expose each current-tab terminal pane through Qt/AT-SPI, including viewport text, cursor, selection, geometry and change events.
 - Provide read-only IME surrounding text for the live cursor row and remove the Latin-only preference hint.
@@ -21,8 +23,11 @@ Target platform: Linux on Wayland with a Vulkan driver. Native desktop acceptanc
 - Harden PTY startup/backpressure, parser resets and bounds, graphics decoding, script file reads, reload ownership and shader allocation recovery.
 - Exercise native split creation, chrome keyboard routing, paste confirmation, IME commits and compositor-delivered drag/drop in an isolated KWin desktop.
 
-Known limits: accessibility exposes the viewport rather than the entire history; rectangular selections report an encompassing range. IME replacement edits remain unsupported. Bidi is opt-in and preserves application-controlled grids; see [the bidi policy](docs/BIDI.md). Multiple-cursor custom text/fill colors are supported. Downloads are capped at 8 MiB and one pending request. Relative parent chains are capped at 32. Layered rendering uses one additional frame texture for mixed cursor order; see the [compatibility reference](docs/COMPATIBILITY.md) for memory costs and precise semantics.
 
-Validation: [Regression and native desktop acceptance](docs/VALIDATION.md).
+See [compatibility](docs/COMPATIBILITY.md) for protocol limits and memory costs.
+See [desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.
+See [bidirectional text](docs/BIDI.md) for the application-grid policy.
 
-See [migration guidance](docs/MIGRATION.md) for behavior changes, [desktop workflows](docs/DESKTOP.md), and [protocol acceptance](docs/COMPATIBILITY.md). Packaging, clean-machine installation and package/build CI remain deferred at the user's request.
+[Validation](docs/VALIDATION.md) records regression and native acceptance results.
+[Migration](docs/MIGRATION.md) describes behavior changes.
+Packaging, clean-machine installation and package/build CI remain deferred.
