@@ -168,44 +168,38 @@ FontResources& GpuDevice::fontResources(double devicePixelRatio)
 
 void GpuDevice::prepareAtlases(FontResources& res, QRhiResourceUpdateBatch* updates)
 {
-    struct PageBinding
-    {
-        AtlasPage& page;
-        QRhiTexture*& texture;
-        std::uint64_t& layout;
-        QRhiTexture::Format format;
-    };
-    PageBinding pages[2] = {
-        {res.glyphs.grayPage(), res.grayTexture, res.grayLayout, QRhiTexture::R8},
-        {res.glyphs.colorPage(), res.colorTexture, res.colorLayout, QRhiTexture::BGRA8},
-    };
-    for (PageBinding& b : pages) {
-        const int size = b.page.size();
-        if (!b.texture || b.texture->pixelSize() != QSize(size, size)) {
-            delete b.texture;
-            b.texture = m_rhi->newTexture(b.format, QSize(size, size));
-            b.texture->create();
-            res.textureGeneration = ++m_textureSerial;
-            b.page.markDirty(QRect(0, 0, size, size));
+    auto upload = [&](bool color) {
+        auto& textures = color ? res.colorTextures : res.grayTextures;
+        const auto count = color ? res.glyphs.colorPageCount() : res.glyphs.grayPageCount();
+        while (textures.size() > count) { delete textures.back(); textures.pop_back(); res.textureGeneration = ++m_textureSerial; }
+        textures.resize(count, nullptr);
+        for (std::size_t i = 0; i < count; ++i) {
+            auto& page = color ? res.glyphs.colorPage(i) : res.glyphs.grayPage(i);
+            auto*& texture = textures[i];
+            const QSize size = page.image().size();
+            if (!texture || texture->pixelSize() != size) {
+                delete texture;
+                texture = m_rhi->newTexture(color ? QRhiTexture::BGRA8 : QRhiTexture::R8, size);
+                if (!texture->create()) throw std::runtime_error("glyph atlas GPU allocation failed");
+                res.textureGeneration = ++m_textureSerial;
+                page.markDirty(page.image().rect());
+            }
+            const QRect dirty = page.takeDirty();
+            if (dirty.isEmpty()) continue;
+            QRhiTextureSubresourceUploadDescription sub(page.image());
+            sub.setSourceTopLeft(dirty.topLeft()); sub.setSourceSize(dirty.size());
+            sub.setDestinationTopLeft(dirty.topLeft());
+            updates->uploadTexture(texture, QRhiTextureUploadDescription({0, 0, sub}));
         }
-        b.layout = b.page.layoutVersion();
-        const QRect dirty = b.page.takeDirty();
-        if (dirty.isEmpty()) {
-            continue;
-        }
-        QRhiTextureSubresourceUploadDescription sub(b.page.image());
-        sub.setSourceTopLeft(dirty.topLeft());
-        sub.setSourceSize(dirty.size());
-        sub.setDestinationTopLeft(dirty.topLeft());
-        updates->uploadTexture(b.texture, QRhiTextureUploadDescription({0, 0, sub}));
-    }
+    };
+    upload(false); upload(true);
 }
 
 void GpuDevice::releaseFontResources()
 {
     for (auto& [key, res] : m_fonts) {
-        delete res->grayTexture;
-        delete res->colorTexture;
+        for (auto* texture : res->grayTextures) delete texture;
+        for (auto* texture : res->colorTextures) delete texture;
     }
     m_fonts.clear();
 }

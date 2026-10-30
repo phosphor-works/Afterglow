@@ -9,6 +9,8 @@
 #include <QRect>
 
 #include <cstdint>
+#include <memory>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -69,6 +71,7 @@ struct GlyphEntry
     std::uint16_t height = 0;
     std::uint16_t u = 0; ///< atlas position in pixels
     std::uint16_t v = 0;
+    std::uint32_t page = 0;
     bool subpixel = false; ///< RGB coverage in the color atlas, with opaque alpha
 };
 
@@ -79,8 +82,7 @@ public:
     GlyphCache();
 
     /// Looks up or rasterises a glyph. @p cellSpan is the cluster's width in
-    /// cells, used to fit colour bitmaps. Returns nullptr if both atlases are
-    /// full; the caller must then call reset() and rebuild its frame.
+    /// cells, used to fit colour bitmaps. Allocates additional pages as needed; allocation failures throw.
     /// @p scale16 is the size in sixteenths of the base size (16 is 1:1),
     /// for scaled text (OSC 66, double-size lines).
     const GlyphEntry* glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16 = 16,
@@ -92,7 +94,7 @@ public:
     /// baseline, as for other glyphs.
     const GlyphEntry* icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel = true);
 
-    /// A procedurally drawn cell (see Sprites.h), or nullptr if the atlas is full.
+    /// A procedurally drawn cell (see Sprites.h), allocating atlas pages as needed.
     /// The entry's top is the baseline, so it lands on the cell's top edge.
     /// A procedurally drawn character, @p sx by @p sy cells large.
     const GlyphEntry* sprite(FontSet& fonts, char32_t cp, int sx = 1, int sy = 1);
@@ -101,8 +103,14 @@ public:
     /// Bumped by reset(): glyph entries from before are gone.
     std::uint64_t epoch() const noexcept { return m_epoch; }
 
-    AtlasPage& grayPage() noexcept { return m_gray; }
-    AtlasPage& colorPage() noexcept { return m_color; }
+    AtlasPage& grayPage(std::size_t page = 0) noexcept { return *m_gray[page]; }
+    AtlasPage& colorPage(std::size_t page = 0) noexcept { return *m_color[page]; }
+    std::size_t grayPageCount() const noexcept { return m_gray.size(); }
+    std::size_t colorPageCount() const noexcept { return m_color.size(); }
+    void beginFrame(std::size_t glyphBound, int textureLimit);
+    void touchPage(bool color, std::size_t page);
+    std::size_t bytes() const noexcept;
+
 
 private:
     bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel,
@@ -112,8 +120,13 @@ private:
     /// Copies an 8-bit coverage bitmap into the gray atlas.
     bool storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top, GlyphEntry& out);
 
-    AtlasPage m_gray;
-    AtlasPage m_color;
+    AtlasPage& allocate(bool color, int width, int height, int& x, int& y, std::uint32_t& page);
+    std::vector<std::unique_ptr<AtlasPage>> m_gray;
+    std::vector<std::unique_ptr<AtlasPage>> m_color;
+    std::vector<std::uint64_t> m_grayUsed, m_colorUsed;
+    std::uint64_t m_frame = 0;
+    std::size_t m_pageBound = std::numeric_limits<std::size_t>::max();
+    int m_textureLimit = 4096;
     std::unordered_map<std::uint64_t, GlyphEntry> m_entries;
     /// Separately rasterised grayscale coverage for translucent or post-processed text.
     std::unordered_map<std::uint64_t, GlyphEntry> m_grayFallbackEntries;

@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <tuple>
+#include <set>
 #include <vector>
 
 class QRhiBuffer;
@@ -23,6 +24,7 @@ class QRhiCommandBuffer;
 class QRhiGraphicsPipeline;
 class QRhiRenderPassDescriptor;
 class QRhiRenderTarget;
+class QRhiResourceUpdateBatch;
 class QRhiSampler;
 class QRhiShaderResourceBindings;
 class QRhiTexture;
@@ -184,7 +186,15 @@ public:
 
 private:
     QRhiGraphicsPipeline* pipeline(const ShaderProgram& program, QRhiRenderPassDescriptor* pass);
-    QRhiShaderResourceBindings* bindings(int ubo, int texture, QRhiTexture* buffer = nullptr, QRhiSampler* sampler = nullptr);
+    struct BufferInputs {
+        QRhiTexture* depth = nullptr;
+        std::array<QRhiTexture*, MaxShaderBuffers> textures{};
+        std::array<QRhiSampler*, MaxShaderBuffers> samplers{};
+    };
+    QRhiShaderResourceBindings* bindings(int ubo, int texture, const ShaderRegionState* region = nullptr,
+        const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr, QRhiResourceUpdateBatch* updates = nullptr);
+    QRhiTexture* localTexture(QRhiTexture* source, const QRect& rect, QRhiResourceUpdateBatch* updates);
+    QRhiTexture* parameterTexture(const QImage& image, QRhiResourceUpdateBatch* updates);
     QRhiShaderResourceBindings* compositeBindings(int ubo, int background, int text, int cursor, int other);
     QRhiGraphicsPipeline* compositePipeline();
     /// Runs @p chain over each pane region of the layer in texture @p input,
@@ -196,10 +206,18 @@ private:
               const ShaderProgram& program) const;
 
     struct BufferState;
-    BufferState* runBuffer(QRhiCommandBuffer* cb, const ShaderProgram& program, int scope, int step,
+    std::vector<BufferInputs> runBuffers(QRhiCommandBuffer* cb, const ShaderProgram& program, int scope, int step,
                            int input, const std::vector<ShaderRegionState>& regions,
                            const ShaderFrameTime& time, int& ubo);
-    std::map<std::tuple<const ShaderProgram*, int, int>, std::unique_ptr<BufferState>> m_buffers;
+    using BufferKey = std::tuple<const ShaderProgram*, int, int, const PaneSnapshot*>;
+    std::map<BufferKey, std::array<std::unique_ptr<BufferState>, MaxShaderBuffers>> m_buffers;
+    std::set<std::tuple<const ShaderProgram*, int, int>> m_bufferInstances;
+    struct CachedTexture { std::unique_ptr<QRhiTexture> texture; std::uint64_t used = 0; std::uint64_t bytes = 0; };
+    std::map<std::tuple<QRhiTexture*, int, int, int, int>, CachedTexture> m_localTextures;
+    std::map<qint64, CachedTexture> m_parameterTextures;
+    std::unique_ptr<QRhiTexture> m_emptyTexture;
+    bool m_inputBudgetWarned = false;
+    std::uint64_t m_frame = 0;
     std::uint64_t m_bufferBytes = 0;
     static constexpr std::uint64_t BufferBudget = 256 * 1024 * 1024;
     GpuDevice& m_device;
@@ -223,6 +241,7 @@ private:
     std::unique_ptr<QRhiTextureRenderTarget> m_gridTarget;
     std::unique_ptr<QRhiRenderPassDescriptor> m_gridPass;
     std::unique_ptr<QRhiTextureRenderTarget> m_targets[2];
+    std::unique_ptr<QRhiTextureRenderTarget> m_windowTargets[2]; ///< clearing, for deformed quads
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
     std::unique_ptr<QRhiSampler> m_sampler;
     std::unique_ptr<QRhiTexture> m_previousText;
@@ -232,7 +251,7 @@ private:
     bool m_historyValid = false;
     float m_historyTime = 0;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
-    std::map<std::tuple<int, int, QRhiTexture*, QRhiSampler*>, std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
+    std::vector<std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
     std::map<std::array<int, 5>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;
     std::vector<std::unique_ptr<QRhiBuffer>> m_compositeUbos;
     /// Uniform buffers used so far this frame: a dynamic buffer holds one

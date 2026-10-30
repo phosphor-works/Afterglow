@@ -59,6 +59,7 @@ struct Instance
     float u0, v0, u1, v1;
     std::uint32_t color;
     std::uint32_t kind;
+    std::uint32_t atlasPage = 0; ///< CPU draw batching; not a shader attribute
 };
 
 enum class InstanceKind : std::uint32_t {
@@ -127,8 +128,8 @@ public:
         bool cursorBelowText = false;
     };
 
-    /// Appends the pane's instances. Returns false if the glyph atlas
-    /// overflowed; the caller resets the glyph cache and rebuilds the frame.
+    /// Appends the pane's instances. Atlas pages grow with the visible working
+    /// set; allocation failures throw before a partial frame can be submitted.
     bool buildPane(const PaneSnapshot& snap, const PaneParams& params, FontSet& fonts, GlyphCache& glyphs,
                    std::vector<Instance>& out, Ranges& ranges);
 
@@ -147,6 +148,8 @@ private:
     {
         int face;
         int slot;
+        bool rtl;
+        std::uint32_t script;
         std::u32string text;
         bool operator==(const ShapeKey&) const = default;
     };
@@ -155,8 +158,9 @@ private:
         std::size_t operator()(const ShapeKey& k) const noexcept;
     };
 
-    const std::vector<ShapedGlyph>& shape(FontSet& fonts, int face, int slot, const std::u32string& text);
+    const std::vector<ShapedGlyph>& shape(FontSet& fonts, int face, int slot, const std::u32string& text, bool rtl = false, std::uint32_t script = 0);
 
+    std::uint64_t m_shapeFont = 0;
     std::unordered_map<ShapeKey, std::vector<ShapedGlyph>, ShapeKeyHash> m_shapeCache;
     std::u32string m_runText;
     std::vector<int> m_runColumns;
@@ -305,7 +309,7 @@ private:
         std::uint64_t seenFrame = 0;
     };
     std::unordered_map<const PaneSnapshot*, CursorTrack> m_cursorTracks;
-    std::unique_ptr<QRhiShaderResourceBindings> m_bindings;
+    std::vector<std::unique_ptr<QRhiShaderResourceBindings>> m_pageBindings;
     std::unique_ptr<QRhiBuffer> m_uniforms;
     std::unique_ptr<QRhiBuffer> m_instances;
     struct ImageBinding

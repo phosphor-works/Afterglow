@@ -63,8 +63,8 @@ protected:
         return renderer->renderToImage(size, {pane}, {}, clear);
     }
 
-    // Packed 0xAARRGGBB as the snapshot stores colours, alpha ignored.
-    static QRgb rgb(std::uint32_t c) { return qRgb((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF); }
+    // Packed 0xAABBGGRR as the snapshot stores colours, alpha ignored.
+    static QRgb rgb(std::uint32_t c) { return qRgb(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF); }
     QPoint cellCenter(int x, int y) const { return {x * cw + cw / 2, y * ch + ch / 2}; }
 
     NullHost host;
@@ -1228,4 +1228,226 @@ TEST_F(Render, UnicodePlaceholderImageSurvivesSnapshotCapture)
                              "\x1b[38;2;0;0;7m\xf4\x8e\xbb\xae\x1b[0m");
     ASSERT_EQ(snapshot.images.size(), 1u);
     EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(255, 0, 0));
+}
+
+TEST_F(Render, ShapeCacheTracksFontResourceAcrossDprChanges)
+{
+    terminal->feed("office ffi AV ij");
+    snapshot.capture(*terminal);
+    for (qreal dpr : {1.0, 2.0, 1.25, 1.0}) {
+        renderer->setDevicePixelRatio(dpr);
+        const auto& metrics = renderer->fonts().fonts->metrics();
+        const QSize size(Cols * metrics.cellWidth, Rows * metrics.cellHeight);
+        WindowRenderer::Pane pane;
+        pane.snapshot = &snapshot;
+        pane.params.rect = QRect(QPoint(), size);
+        const auto reused = renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg);
+        WindowRenderer fresh(*s_device, nullptr);
+        fresh.setDevicePixelRatio(dpr);
+        const auto expected = fresh.renderToImage(size, {pane}, {}, snapshot.defaultBg);
+        EXPECT_EQ(reused, expected) << "DPR " << dpr;
+    }
+}
+
+TEST_F(Render, SpriteCachePreservesFullMulticellWidth)
+{
+    auto& resources = renderer->fonts();
+    const auto* wide = resources.glyphs.sprite(*resources.fonts, U'\u2588', 49, 2);
+    ASSERT_NE(wide, nullptr);
+    EXPECT_EQ(wide->width, cw * 49);
+    EXPECT_EQ(wide->height, ch * 2);
+    const auto* narrow = resources.glyphs.sprite(*resources.fonts, U'\u2588', 17, 2);
+    ASSERT_NE(narrow, nullptr);
+    EXPECT_EQ(narrow->width, cw * 17);
+}
+
+TEST_F(Render, NonNeutralBackgroundKeepsRedAndBlueChannels)
+{
+    const auto image = render("\x1b]11;#b03070\x07\x1b[?25l");
+    EXPECT_PIXEL(image, cellCenter(10, 2), qRgb(0xb0, 0x30, 0x70));
+    EXPECT_PIXEL(image, cellCenter(10, 2), rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, FullAtlasAddsPagesWithoutInvalidatingEarlierGlyphs)
+{
+    auto& cache = renderer->fonts().glyphs;
+    cache.reset();
+    render("A");
+    const auto epoch = cache.epoch();
+    int x = 0, y = 0;
+    while (cache.grayPage().allocate(128, 128, x, y)) {}
+    for (int height = 1; height <= ch; ++height)
+        while (cache.grayPage().allocate(1, height, x, y)) {}
+    const auto actual = render("B");
+    EXPECT_GT(cache.grayPageCount(), 1u);
+    EXPECT_EQ(cache.epoch(), epoch);
+    cache.reset();
+    const auto expected = render("");
+    EXPECT_EQ(actual, expected);
+}
+
+TEST(Fonts, StaticStyleSlotsAndSymbolMappingsSelectStyledFaces)
+{
+    FontSpec spec;
+    spec.regular.family = spec.bold.family = spec.italic.family = spec.boldItalic.family = "DejaVu Sans Mono";
+    spec.symbolMap = {{U'A', U'Z', "DejaVu Sans Mono"}};
+    FontSet fonts(spec, 1.0);
+    EXPECT_NE(fonts.face(fonts.primary(StyleSlot::Regular)).path, fonts.face(fonts.primary(StyleSlot::Bold)).path);
+    EXPECT_NE(fonts.face(fonts.primary(StyleSlot::Regular)).path, fonts.face(fonts.primary(StyleSlot::Italic)).path);
+    const int regular = fonts.faceFor(U'A', StyleSlot::Regular, false);
+    const int bold = fonts.faceFor(U'A', StyleSlot::Bold, false);
+    EXPECT_NE(fonts.face(regular).path, fonts.face(bold).path);
+}
+
+TEST_F(Render, ArabicLigatureUsesLeftEdgeOfItsVisualCells)
+{
+    AfterglowVt::TerminalOptions options;
+    options.bidi = AfterglowVt::BidiMode::LeftToRight;
+    AfterglowVt::Terminal rtl(Cols, Rows, host, options);
+    rtl.feed("\x1b[?25l\xd9\x84\xd8\xa7"); // lam + alef
+    PaneSnapshot snap;
+    snap.capture(rtl);
+    ASSERT_EQ(snap.logicalColumn(0, 0), 1);
+    FrameBuilder builder;
+    std::vector<Instance> instances;
+    FrameBuilder::Ranges ranges;
+    FrameBuilder::PaneParams params;
+    params.rect = QRect(0, 0, Cols * cw, Rows * ch);
+    auto& resources = renderer->fonts();
+    ASSERT_TRUE(builder.buildPane(snap, params, *resources.fonts, resources.glyphs, instances, ranges));
+    std::vector<Instance> text;
+    for (std::size_t i = ranges.textStart; i < ranges.cursorStart; ++i)
+        if (instances[i].kind == std::uint32_t(InstanceKind::GrayGlyph)) text.push_back(instances[i]);
+    ASSERT_EQ(text.size(), 1u); // contextual lam-alef ligature, not isolated forms
+    EXPECT_LT(text.front().x, cw);
+}
+
+TEST_F(Render, ShaderUniformsUseResolvedCursorAndSelectionColors)
+{
+    snapshot.capture(*terminal);
+    snapshot.cursorTextColor = packRgba(11, 22, 33);
+    snapshot.selectionForegroundColor = packRgba(44, 55, 66);
+    snapshot.selectionBackgroundColor = packRgba(77, 88, 99);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    for (const auto& [name, expected] : std::vector<std::pair<const char*, QRgb>>{
+             {"iCursorText", qRgb(11, 22, 33)},
+             {"iSelectionForegroundColor", qRgb(44, 55, 66)},
+             {"iSelectionBackgroundColor", qRgb(77, 88, 99)}}) {
+        const std::string body = std::string("fragColor = vec4(") + name + ", 1.0);";
+        ShaderChains chains;
+        chains.pane = {layerShader(name, body.c_str())};
+        renderer->setShaderChains(chains);
+        const auto image = renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg);
+        EXPECT_PIXEL(image, cellCenter(2, 2), expected);
+    }
+}
+
+TEST_F(Render, MultipleBuffersCarryDepthAndSamplerHelpers)
+{
+    ShaderProgramSource source;
+    source.id = "multipass-depth";
+    source.useDepthBuffer = true;
+    ShaderBufferSource first;
+    first.code = "void mainImage(out vec4 c,in vec2 p){ c=vec4(1,0,0,1); depthBuffer=vec4(0.25,0.5,0.75,1); }";
+    first.wrap = ShaderWrap::Repeat;
+    ShaderBufferSource second;
+    second.code = "vec4 sampleIt(sampler2D s,vec2 uv){return texture(s,uv);} void mainImage(out vec4 c,in vec2 p){c=sampleIt(iBuffer0,vec2(2.5)); depthBuffer=texture(iDepth,vec2(0.5));}";
+    source.buffers = {first, second};
+    source.code = "void mainImage(out vec4 c,in vec2 p){ c=texture(iDepth,vec2(0.5)); }";
+    QString error;
+    const auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains;
+    chains.window = {program};
+    renderer->setShaderChains(chains);
+    const auto image = render("\x1b[?25l");
+    EXPECT_PIXEL(image, cellCenter(10,2), qRgb(64,128,191));
+}
+
+TEST_F(Render, VertexHookDeformsQuadUsingSharedParameters)
+{
+    ShaderProgramSource source;
+    source.id = "vertex-hook";
+    source.vertexCode = "void mainVertex(inout vec4 p,in vec2 uv){p.x *= customParams[0].x;}";
+    source.params[0] = .5f;
+    source.code = "void mainImage(out vec4 c,in vec2 p){c=vec4(1,0,0,1);}";
+    QString error;
+    const auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains;
+    chains.window = {program};
+    renderer->setShaderChains(chains);
+    const auto image = render("\x1b[?25l");
+    EXPECT_PIXEL(image, cellCenter(10,2), qRgb(255,0,0));
+    EXPECT_PIXEL(image, cellCenter(1,2), qRgb(0,0,0));
+}
+
+TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
+{
+    ShaderProgramSource source;
+    source.id = "image-live";
+    source.images[0] = QImage(2,2,QImage::Format_RGBA8888);
+    source.images[0].fill(Qt::red);
+    source.code = "vec4 readImage(sampler2D s,vec2 uv){return texture(s,uv);} void mainImage(out vec4 c,in vec2 p){c=readImage(uTexture0,vec2(.5));}";
+    QString error;
+    auto program = ShaderProgram::compile(source,&error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains;
+    chains.pane = {program->instance("image")};
+    renderer->setShaderChains(chains);
+    snapshot.capture(*terminal);
+    const QSize size(Cols*cw,Rows*ch);
+    WindowRenderer::Pane pane{&snapshot,{}};
+    pane.params.rect = QRect(QPoint(),size);
+    const auto draw = [&]{return renderer->renderToImage(size,{pane},{},snapshot.defaultBg);};
+    EXPECT_PIXEL(draw(),cellCenter(10,2),qRgb(255,0,0));
+    ShaderParameterValues values;
+    values.imageMask = 1;
+    values.images[0] = source.images[0];
+    values.images[0].fill(Qt::blue);
+    pane.params.shaderParameters.insert("image", values);
+    EXPECT_PIXEL(draw(),cellCenter(10,2),qRgb(0,0,255));
+    pane.params.shaderParameters.clear();
+    EXPECT_PIXEL(draw(),cellCenter(10,2),qRgb(255,0,0));
+}
+
+TEST_F(Render, BufferRepeatAndMirrorWorkThroughSamplerHelpers)
+{
+    for (const auto wrap : {ShaderWrap::Repeat, ShaderWrap::Mirror}) {
+        ShaderProgramSource source;
+        source.id = "wrap-helper";
+        ShaderBufferSource buffer;
+        buffer.wrap = wrap;
+        buffer.nearest = true;
+        buffer.code = "void mainImage(out vec4 c,in vec2 p){c=p.x<iResolution.x*.5?vec4(1,0,0,1):vec4(0,1,0,1);}";
+        source.buffers = {buffer};
+        source.code = "vec4 readBuffer(sampler2D s,vec2 uv){return texture(s,uv);} void mainImage(out vec4 c,in vec2 p){c=readBuffer(iBuffer0,vec2(1.25,.5));}";
+        QString error;
+        auto program = ShaderProgram::compile(source,&error);
+        ASSERT_TRUE(program) << error.toStdString();
+        ShaderChains chains; chains.pane = {program}; renderer->setShaderChains(chains);
+        const auto image = render("\x1b[?25l");
+        EXPECT_PIXEL(image,cellCenter(10,2),wrap==ShaderWrap::Repeat?qRgb(255,0,0):qRgb(0,255,0));
+    }
+}
+
+TEST_F(Render, IntermediateWindowVertexPassClearsUncoveredPixelsEveryFrame)
+{
+    ShaderProgramSource source;
+    source.id = "vertex-intermediate";
+    source.vertexCode = "void mainVertex(inout vec4 p,in vec2 uv){p.x *= iTime < 1.0 ? 1.0 : 0.5;}";
+    source.code = "void mainImage(out vec4 c,in vec2 p){c=vec4(1,0,0,1);}";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.window = {program, ShaderProgram::passthrough()};
+    renderer->setShaderChains(chains);
+    renderer->setClockOverride(0);
+    EXPECT_PIXEL(render("\x1b[?25l"),cellCenter(1,2),qRgb(255,0,0));
+    renderer->setClockOverride(2);
+    const auto image = render("");
+    EXPECT_PIXEL(image,cellCenter(1,2),qRgb(0,0,0));
+    EXPECT_PIXEL(image,cellCenter(10,2),qRgb(255,0,0));
 }

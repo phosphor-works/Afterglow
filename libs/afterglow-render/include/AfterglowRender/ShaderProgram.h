@@ -5,6 +5,10 @@
 
 #include <AfterglowRender/afterglowrender_export.h>
 
+#include <PhosphorShaders/CustomParamsKey.h>
+#include <PhosphorShaders/ShaderParamPreamble.h>
+#include <QImage>
+#include <vector>
 #include <QByteArray>
 #include <QHash>
 #include <QString>
@@ -85,11 +89,27 @@ static_assert(sizeof(TerminalShaderUniforms) == 5120);
 /// What a shader is built from: user code defining
 /// `void mainImage(out vec4 fragColor, in vec2 fragCoord)` with includes
 /// already expanded, plus parameter accessors and values.
+inline constexpr int MaxShaderBuffers = PhosphorShaders::kMaxBufferPasses;
+inline constexpr int MaxShaderImages = PhosphorShaders::kMaxImageSlots;
+enum class ShaderWrap { Clamp, Repeat, Mirror };
+struct ShaderBufferSource {
+    QByteArray code;
+    bool feedback = false;
+    bool halfFloat = true;
+    float scale = 1.0f;
+    bool nearest = false;
+    ShaderWrap wrap = ShaderWrap::Clamp;
+    bool depthBuffer = false;
+};
 struct ShaderProgramSource
 {
     QString id; ///< for messages
     QByteArray code;
-    QByteArray bufferCode; ///< optional single Phosphor buffer pass
+    QByteArray vertexCode; ///< void mainVertex(inout vec4 position, in vec2 uv)
+    bool useDepthBuffer = false; ///< auxiliary RGBA depth data on buffer passes
+    bool depthOutput = false; ///< internal compiled MRT pass
+    std::vector<ShaderBufferSource> buffers;
+    QByteArray bufferCode; ///< compatibility shorthand for the first buffer
     bool bufferFeedback = false;
     bool halfFloatBuffer = true;
     float bufferScale = 1.0f;
@@ -97,6 +117,8 @@ struct ShaderProgramSource
     QByteArray parameterPreamble; ///< `#define p_<id> customParams[...]` lines
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
+    std::array<QImage, MaxShaderImages> images;
+    std::array<QString, MaxShaderImages> imagePaths;
 };
 
 /// Sparse per-instance overrides; applied only while packing frame uniforms.
@@ -104,6 +126,9 @@ struct ShaderParameterValues
 {
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
+    std::array<QImage, MaxShaderImages> images;
+    std::array<QString, MaxShaderImages> imagePaths;
+    std::uint8_t imageMask = 0;
     std::uint32_t paramMask = 0;
     std::uint16_t colorMask = 0;
     void merge(const ShaderParameterValues& other)
@@ -113,6 +138,9 @@ struct ShaderParameterValues
         for (int i = 0; i < 16; ++i)
             if (other.colorMask & (1u << i))
                 for (int c = 0; c < 4; ++c) colors[i * 4 + c] = other.colors[i * 4 + c];
+        for (int i = 0; i < MaxShaderImages; ++i)
+            if (other.imageMask & (1u << i)) { images[i] = other.images[i]; imagePaths[i] = other.imagePaths[i]; }
+        imageMask |= other.imageMask;
         paramMask |= other.paramMask;
         colorMask |= other.colorMask;
     }
@@ -140,11 +168,18 @@ public:
     /// y-up texture wrapper of Ghostty's convention.
     static QByteArray prefix();
 
-    const ShaderProgram* buffer() const noexcept { return m_buffer.get(); }
+    const ShaderProgram* buffer() const noexcept { return m_buffers.empty() ? nullptr : m_buffers.front().get(); }
+    const auto& buffers() const noexcept { return m_buffers; }
+    const ShaderBufferSource& bufferSettings(std::size_t i) const { return m_bufferSettings.at(i); }
+    const auto& images() const noexcept { return m_images; }
+    const auto& imagePaths() const noexcept { return m_imagePaths; }
     bool bufferFeedback() const noexcept { return m_bufferFeedback; }
     bool halfFloatBuffer() const noexcept { return m_halfFloatBuffer; }
     float bufferScale() const noexcept { return m_bufferScale; }
     bool bufferNearest() const noexcept { return m_bufferNearest; }
+    const QShader& vertexShader() const noexcept { return m_vertexShader; }
+    bool depthOutput() const noexcept { return m_depthOutput; }
+    int vertexCount() const noexcept { return m_vertexShader.isValid() ? 6 : 3; }
     const QShader& shader() const noexcept { return m_shader; }
     const QString& id() const noexcept { return m_id; }
     const QString& instanceId() const noexcept { return m_instanceId; }
@@ -166,12 +201,17 @@ public:
     const std::array<float, 64>& colors() const noexcept { return m_colors; }
 
 private:
-    std::shared_ptr<ShaderProgram> m_buffer;
+    std::vector<std::shared_ptr<ShaderProgram>> m_buffers;
+    std::vector<ShaderBufferSource> m_bufferSettings;
+    std::array<QImage, MaxShaderImages> m_images;
+    std::array<QString, MaxShaderImages> m_imagePaths;
     bool m_bufferFeedback = false;
     bool m_halfFloatBuffer = true;
     float m_bufferScale = 1.0f;
     bool m_bufferNearest = false;
     QShader m_shader;
+    QShader m_vertexShader;
+    bool m_depthOutput = false;
     QString m_id;
     QString m_instanceId;
     bool m_animated = false;

@@ -77,13 +77,17 @@ FrameBuilder::~FrameBuilder()
 
 std::size_t FrameBuilder::ShapeKeyHash::operator()(const ShapeKey& k) const noexcept
 {
-    return std::hash<std::u32string>{}(k.text) ^ (std::size_t(k.face) * 0x9E3779B97F4A7C15ull) ^ std::size_t(k.slot);
+    return std::hash<std::u32string>{}(k.text) ^ (std::size_t(k.face) * 0x9E3779B97F4A7C15ull) ^ std::size_t(k.slot) ^ (std::size_t(k.script) << 3) ^ std::size_t(k.rtl);
 }
 
 const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts, int face, int slot,
-                                                                  const std::u32string& text)
+                                                                  const std::u32string& text, bool rtl, std::uint32_t script)
 {
-    ShapeKey key{face, slot, text};
+    if (m_shapeFont != fonts.identity()) {
+        m_shapeCache.clear();
+        m_shapeFont = fonts.identity();
+    }
+    ShapeKey key{face, slot, rtl, script, text};
     if (auto it = m_shapeCache.find(key); it != m_shapeCache.end()) {
         return it->second;
     }
@@ -95,8 +99,8 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
     hb_buffer_add_utf32(m_hbBuffer, reinterpret_cast<const std::uint32_t*>(text.data()), int(text.size()), 0,
                         int(text.size()));
     hb_buffer_guess_segment_properties(m_hbBuffer);
-    // Terminals lay text out left to right in cells; no bidi reordering here.
-    hb_buffer_set_direction(m_hbBuffer, HB_DIRECTION_LTR);
+    hb_buffer_set_direction(m_hbBuffer, rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+    if (script) hb_buffer_set_script(m_hbBuffer, hb_script_t(script));
     hb_buffer_set_cluster_level(m_hbBuffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
     const auto& features = fonts.features();
     hb_shape(fonts.face(face).hb, m_hbBuffer, features.data(), unsigned(features.size()));
@@ -123,6 +127,18 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
 }
 
 namespace {
+
+bool directionControl(char32_t cp)
+{
+    return cp == 0x061c || cp == 0x200e || cp == 0x200f || (cp >= 0x202a && cp <= 0x202e)
+        || (cp >= 0x2066 && cp <= 0x2069);
+}
+char32_t displayCodepoint(char32_t cp) { return directionControl(cp) ? U'\u25c7' : cp; }
+std::uint32_t strongScript(char32_t cp)
+{
+    const auto script = hb_unicode_script(hb_unicode_funcs_get_default(), cp);
+    return script == HB_SCRIPT_COMMON || script == HB_SCRIPT_INHERITED || script == HB_SCRIPT_UNKNOWN ? 0 : script;
+}
 
 /// A symbol from a Private Use Area (Nerd Font icons), other than the
 /// powerline and box shapes drawn as sprites.
@@ -168,15 +184,15 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // Text under a block cursor takes the background colour once it has arrived.
     const bool cursorSettled = (cursorPos - cellPos).manhattanLength() < 0.5;
     bool recolorUnderCursor = blockCursor && cursorSettled;
-    std::vector<bool> extraBlocks;
+    std::vector<std::optional<std::uint32_t>> extraBlocks;
     if (drawExtraCursors && !s.extraCursors.empty()) {
         extraBlocks.resize(std::size_t(s.cols) * s.rows);
         for (const auto& c : s.extraCursors) if (c.shape == AfterglowVt::CursorShape::Block && c.x >= 0 && c.x < s.cols && c.y >= 0 && c.y < s.rows) {
             const int width = std::max(1, int(s.at(c.x, c.y).width));
-            for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx) extraBlocks[std::size_t(c.y) * s.cols + c.x + dx] = true;
+            for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx) extraBlocks[std::size_t(c.y) * s.cols + c.x + dx] = c.textColor;
         }
     }
-    auto extraBlock = [&](int x, int y) { return !extraBlocks.empty() && y < s.rows && x < s.cols && extraBlocks[std::size_t(y) * s.cols + x]; };
+    auto extraBlock = [&](int x, int y) { return !extraBlocks.empty() && y < s.rows && x < s.cols && extraBlocks[std::size_t(y) * s.cols + x].has_value(); };
     // The cursor box: a cell, a doubled cell on a double-size line, or the
     // whole of a multicell block.
     float curX = cursorX;
@@ -230,7 +246,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         return color;
     };
     auto cellText = [&s](const SnapshotCell& cell) {
-        std::u32string text(1, cell.cp);
+        std::u32string text(1, displayCodepoint(cell.cp));
         if (cell.grapheme) {
             text += s.graphemes[cell.grapheme - 1];
         }
@@ -254,6 +270,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 continue;
             }
             Instance inst{};
+            inst.atlasPage = e->page;
             inst.u0 = float(e->u);
             inst.v0 = float(e->v);
             inst.u1 = float(e->u + e->width);
@@ -330,7 +347,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     if (!e->empty) {
                         pushClipped({cx, tall ? bandTop : rowTop, float(e->width), float(e->height), float(e->u),
                                      float(e->v), float(e->u + e->width), float(e->v + e->height), c.fg,
-                                     std::uint32_t(InstanceKind::GrayGlyph)},
+                                     std::uint32_t(InstanceKind::GrayGlyph), e->page},
                                     rowTop, rowTop + float(ch));
                     }
                     continue;
@@ -382,7 +399,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                         if (!e->empty && alphaOf(c.fg) != 0) {
                             out.push_back({bx, by, float(e->width), float(e->height), float(e->u), float(e->v),
                                            float(e->u + e->width), float(e->v + e->height), c.fg,
-                                           std::uint32_t(InstanceKind::GrayGlyph)});
+                                           std::uint32_t(InstanceKind::GrayGlyph), e->page});
                         }
                     } else if (!drawScaled(face, slot, cellText(c), ax, ay + float(m.baseline) * f, scale16, 1.0f, c.fg,
                                            c.mcWidth, -NoClip, NoClip)) {
@@ -401,12 +418,13 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     if (!e->empty) {
                         std::uint32_t color = c.fg;
                         if (extraBlock(x, y) || (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan)) {
-                            color = s.cursorTextColor;
+                            color = recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan
+                                ? s.cursorTextColor : *extraBlocks[std::size_t(y) * s.cols + x];
                         }
                         const float sx = ox + float(x * cw);
                         out.push_back({sx, baseline - float(e->top), float(e->width), float(e->height), float(e->u),
                                        float(e->v), float(e->u + e->width), float(e->v + e->height), color,
-                                       std::uint32_t(InstanceKind::GrayGlyph)});
+                                       std::uint32_t(InstanceKind::GrayGlyph), e->page});
                     }
                 }
                 ++x;
@@ -419,15 +437,23 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     const std::u32string& extra = s.graphemes[cell.grapheme - 1];
                     color = extra.find(AfterglowVt::Unicode::VariationSelector16) != std::u32string::npos;
                 }
-                return fonts.faceFor(cell.cp, slotFor(cell.attrs), color);
+                return fonts.faceFor(displayCodepoint(cell.cp), slotFor(cell.attrs), color);
             };
 
             const StyleSlot slot = slotFor(c.attrs);
             const int face = faceOf(c);
+            const bool rtl = (c.bidiLevel & 1) != 0;
+            auto script = strongScript(c.cp);
+            for (int probe = x + 1; !script && probe < s.cols; ++probe) {
+                const auto& next = s.at(probe, y);
+                if (next.bidiLevel != c.bidiLevel || directionControl(next.cp)) break;
+                script = strongScript(next.cp);
+            }
 
             m_runText.clear();
             m_runColumns.clear();
             int end = x;
+            std::vector<int> columns;
             while (end < s.cols) {
                 const SnapshotCell& n = s.at(end, y);
                 if (n.width == 0) {
@@ -435,35 +461,53 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     continue;
                 }
                 if (n.cp == 0 || n.mcScale != 0 || (hideBlinking && (n.attrs & BlinkAttr)) || slotFor(n.attrs) != slot || (n.grapheme == 0 && Sprites::isSprite(n.cp))
-                    || (end != x && faceOf(n) != face)) {
+                    || n.bidiLevel != c.bidiLevel
+                    || (end != x && (faceOf(n) != face || directionControl(c.cp) || directionControl(n.cp)
+                        || (strongScript(n.cp) && script && strongScript(n.cp) != script)))) {
                     break;
                 }
-                m_runText.push_back(n.cp);
-                m_runColumns.push_back(end);
-                if (n.grapheme) {
-                    for (char32_t e : s.graphemes[n.grapheme - 1]) {
-                        m_runText.push_back(e);
-                        m_runColumns.push_back(end);
-                    }
-                }
+                columns.push_back(end);
                 ++end;
             }
+            if (rtl) std::reverse(columns.begin(), columns.end());
+            for (int column : columns) {
+                const auto& cell = s.at(column, y);
+                const auto text = cellText(cell);
+                for (char32_t cp : text) { m_runText.push_back(cp); m_runColumns.push_back(column); }
+            }
 
-            const auto& shaped = shape(fonts, face, int(slot), m_runText);
+            const auto& shaped = shape(fonts, face, int(slot), m_runText, rtl, script);
+            std::vector<std::uint32_t> clusters;
+            for (const auto& glyph : shaped) clusters.push_back(glyph.cluster);
+            clusters.push_back(std::uint32_t(m_runText.size()));
+            std::sort(clusters.begin(), clusters.end());
+            clusters.erase(std::unique(clusters.begin(), clusters.end()), clusters.end());
             for (const ShapedGlyph& g : shaped) {
-                const int col = m_runColumns[std::min<std::size_t>(g.cluster, m_runColumns.size() - 1)];
+                const auto start = std::min<std::size_t>(g.cluster, m_runColumns.size() - 1);
+                int col = m_runColumns[start];
+                int clusterRight = col + std::max(1, int(s.at(col, y).width));
+                if (rtl) {
+                    const auto next = std::upper_bound(clusters.begin(), clusters.end(), g.cluster);
+                    const auto stop = next == clusters.end() ? m_runColumns.size() : std::size_t(*next);
+                    for (auto i = start; i < stop; ++i) {
+                        const int at = m_runColumns[i];
+                        col = std::min(col, at);
+                        clusterRight = std::max(clusterRight, at + std::max(1, int(s.at(at, y).width)));
+                    }
+                }
                 const SnapshotCell& cell = s.at(col, y);
                 std::uint32_t color = cell.fg;
                 if (alphaOf(color) == 0) {
                     continue;
                 }
                 if (extraBlock(col, y) || (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan)) {
-                    color = s.cursorTextColor;
+                    color = recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan
+                        ? s.cursorTextColor : *extraBlocks[std::size_t(y) * s.cols + col];
                 }
                 // Icons (Nerd Font symbols) are fitted to the grid: two cells
                 // when the next one is blank, as prompts expect, else one.
                 const bool icon = cell.grapheme == 0 && isIcon(cell.cp);
-                int span = std::max<int>(1, cell.width);
+                int span = rtl ? clusterRight - col : std::max<int>(1, cell.width);
                 if (icon && span == 1 && col + 1 < s.cols) {
                     const SnapshotCell& next = s.at(col + 1, y);
                     if ((next.cp == 0 || next.cp == U' ') && next.width == 1 && next.mcScale == 0) {
@@ -482,17 +526,17 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 if (icon && !e->color) {
                     out.push_back({std::round(cellX + float(e->left)), std::round(baseline - float(e->top)), float(e->width),
                                    float(e->height), float(e->u), float(e->v), float(e->u + e->width),
-                                   float(e->v + e->height), color, std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph)});
+                                   float(e->v + e->height), color, std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph), e->page});
                 } else if (e->color) {
                     out.push_back({cellX + float(e->left), baseline - float(e->top), float(e->width), float(e->height),
                                    float(e->u), float(e->v), float(e->u + e->width), float(e->v + e->height),
-                                   withAlpha(0xFFFFFFu, alphaOf(color)), std::uint32_t(InstanceKind::ColorGlyph)});
+                                   withAlpha(0xFFFFFFu, alphaOf(color)), std::uint32_t(InstanceKind::ColorGlyph), e->page});
                 } else {
                     const float gx = std::round(cellX + float(m.glyphOffsetX) + g.xOffset + float(e->left));
                     const float gy = std::round(baseline - float(e->top) - g.yOffset);
                     out.push_back({gx, gy, float(e->width), float(e->height), float(e->u), float(e->v),
                                    float(e->u + e->width), float(e->v + e->height), color,
-                                   std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph)});
+                                   std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph), e->page});
                 }
             }
             x = end;
@@ -561,7 +605,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 continue;
             }
             const bool hovered = (p.hoveredLink != 0 && c.link == p.hoveredLink)
-                || (y == p.hoverRow && cx >= p.hoverColStart && cx <= p.hoverColEnd);
+                || (y == p.hoverRow && c.logicalColumn >= p.hoverColStart && c.logicalColumn <= p.hoverColEnd);
             if (hovered && c.underline == UnderlineStyle::None) {
                 solid(ox + float(cx * cw), std::round(rowTop + float(m.underlinePosition) - th / 2), float(cw), th,
                       c.fg);
@@ -584,9 +628,9 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         const float x = ox + c.x * cw * xs, y = oy + c.y * ch;
         const float w = std::max(1, int(s.at(c.x, c.y).width)) * cw * xs;
         const float thickness = std::max(1.f, std::round(dpr));
-        if (c.shape == AfterglowVt::CursorShape::Block) solid(x, y, w, ch, s.cursorColor);
-        else if (c.shape == AfterglowVt::CursorShape::Bar) solid(x, y, std::max(thickness, std::round(cw * .12f)), ch, s.cursorColor);
-        else { const float h = std::max(thickness, std::round(ch * .08f)); solid(x, y + ch - h, w, h, s.cursorColor); }
+        if (c.shape == AfterglowVt::CursorShape::Block) solid(x, y, w, ch, c.color);
+        else if (c.shape == AfterglowVt::CursorShape::Bar) solid(x, y, std::max(thickness, std::round(cw * .12f)), ch, c.color);
+        else { const float h = std::max(thickness, std::round(ch * .08f)); solid(x, y + ch - h, w, h, c.color); }
     };
     if (drawExtraCursors) for (const auto& c : s.extraCursors)
         if ((c.shape == AfterglowVt::CursorShape::Block) == blockCursor) extraCursor(c);
@@ -715,7 +759,7 @@ void WindowRenderer::releaseSwapChain()
     m_postPipelinePass = nullptr;
     m_swapPipelines = {};
     m_imageBindings.clear();
-    m_bindings.reset();
+    m_pageBindings.clear();
     m_uniforms.reset();
     m_instances.reset();
     if (m_swapChain) {
@@ -766,27 +810,21 @@ bool WindowRenderer::animating() const
 
 void WindowRenderer::ensureBindings(FontResources& res)
 {
-    if (m_bindings && m_boundTextureGeneration == res.textureGeneration) {
-        return;
-    }
-    QRhi* rhi = m_device.rhi();
-    const bool fresh = !m_bindings;
-    if (fresh) {
-        m_bindings.reset(rhi->newShaderResourceBindings());
-    }
+    if (!m_pageBindings.empty() && m_boundTextureGeneration == res.textureGeneration) return;
+    const auto count = std::max(res.grayTextures.size(), res.colorTextures.size());
+    m_pageBindings.clear();
     const auto stages = QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
-    m_bindings->setBindings({
-        QRhiShaderResourceBinding::uniformBuffer(0, stages, m_uniforms.get()),
-        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, res.grayTexture,
-                                                  m_device.atlasSampler()),
-        QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage, res.colorTexture,
-                                                  m_device.atlasSampler()),
-    });
-    if (fresh) {
-        m_bindings->create();
-    } else {
-        // Same layout, new textures: the pipelines stay valid.
-        m_bindings->updateResources();
+    for (std::size_t i = 0; i < count; ++i) {
+        auto binding = std::unique_ptr<QRhiShaderResourceBindings>(m_device.rhi()->newShaderResourceBindings());
+        binding->setBindings({
+            QRhiShaderResourceBinding::uniformBuffer(0, stages, m_uniforms.get()),
+            QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage,
+                res.grayTextures[i < res.grayTextures.size() ? i : 0], m_device.atlasSampler()),
+            QRhiShaderResourceBinding::sampledTexture(2, QRhiShaderResourceBinding::FragmentStage,
+                res.colorTextures[i < res.colorTextures.size() ? i : 0], m_device.atlasSampler()),
+        });
+        if (!binding->create()) throw std::runtime_error("glyph atlas binding allocation failed");
+        m_pageBindings.push_back(std::move(binding));
     }
     m_boundTextureGeneration = res.textureGeneration;
 }
@@ -825,7 +863,7 @@ std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeGridPipeline(QRhiRende
         {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/afterglow/shaders/grid.frag.qsb"))},
     });
     p->setVertexInputLayout(instanceLayout());
-    p->setShaderResourceBindings(m_bindings.get());
+    p->setShaderResourceBindings(m_pageBindings.front().get());
     p->setRenderPassDescriptor(pass);
     if (!p->create()) {
         throw std::runtime_error("failed to create the grid pipeline");
@@ -952,11 +990,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         m_fontEpoch = m_device.fontEpoch();
     }
 
-    // Build all instances first; a full atlas resets once and rebuilds.
-    for (int attempt = 0; attempt < 2; ++attempt) {
+    std::size_t glyphBound = 0;
+    for (const auto& pane : panes) {
+        glyphBound += pane.snapshot->cells.size();
+        for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
+    }
+    res.glyphs.beginFrame(glyphBound, rhi->resourceLimit(QRhi::TextureSizeMax));
+    {
         m_frame.clear();
         m_ranges.clear();
-        bool ok = true;
         for (const Pane& pane : panes) {
             const auto first = std::uint32_t(m_frame.size());
             FrameBuilder::PaneParams pp = pane.params;
@@ -975,8 +1017,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 m_scratch.clear();
                 FrameBuilder::Ranges ranges;
                 if (!m_builder.buildPane(*pane.snapshot, pp, *res.fonts, res.glyphs, m_scratch, ranges)) {
-                    ok = false;
-                    break;
+                    throw std::runtime_error("glyph rasterization failed");
                 }
                 cache.instances.swap(m_scratch);
                 cache.ranges = ranges;
@@ -1005,10 +1046,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                                 first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
                                 cache.ranges.cursorBelowText, pp.rect, {}});
         }
-        if (ok) {
-            break;
-        }
-        res.glyphs.reset();
+
+    }
+    for (const auto& instance : m_frame) {
+        if (instance.kind == std::uint32_t(InstanceKind::GrayGlyph)) res.glyphs.touchPage(false, instance.atlasPage);
+        if (instance.kind == std::uint32_t(InstanceKind::ColorGlyph) || instance.kind == std::uint32_t(InstanceKind::SubpixelGlyph))
+            res.glyphs.touchPage(true, instance.atlasPage);
     }
     // Image quads go after all grid instances; each is drawn with its own texture.
     for (std::size_t i = 0; i < m_ranges.size(); ++i) {
@@ -1018,7 +1061,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             const float fw = float(img.frame->width);
             const float fh = float(img.frame->height);
             const auto index = std::uint32_t(m_frame.size());
-            m_frame.push_back({float(origin.x() + img.x), float(origin.y() + img.y), float(img.width),
+            m_frame.push_back({float(origin.x() + img.x), float(origin.y() + img.y) - pane.params.scrollShift, float(img.width),
                                float(img.height), float(img.srcX) / fw, float(img.srcY) / fh,
                                float(img.srcX + img.srcW) / fw, float(img.srcY + img.srcH) / fh,
                                packRgba(255, 255, 255), std::uint32_t(InstanceKind::Solid)});
@@ -1119,7 +1162,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     auto bindGrid = [&] {
         cb->setGraphicsPipeline(gridPipelines->grid.get());
         cb->setViewport({0, 0, float(px.width()), float(px.height())});
-        cb->setShaderResources(m_bindings.get());
+        cb->setShaderResources(m_pageBindings.front().get());
         cb->setVertexInput(0, 1, &input);
     };
     auto drawImages = [&](const DrawRange& range, bool below) {
@@ -1284,6 +1327,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             const bool lcd = first.kind == std::uint32_t(InstanceKind::SubpixelGlyph);
             std::uint32_t end = from + 1;
             while (end < to && (m_frame[end].kind == std::uint32_t(InstanceKind::SubpixelGlyph)) == lcd
+                   && m_frame[end].atlasPage == first.atlasPage
                    && (!lcd || m_frame[end].color == first.color)) {
                 ++end;
             }
@@ -1296,6 +1340,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             } else {
                 cb->setGraphicsPipeline(gridPipelines->grid.get());
             }
+            cb->setShaderResources(m_pageBindings.at(first.atlasPage).get());
             cb->draw(4, end - from, 0, from);
             from = end;
         }

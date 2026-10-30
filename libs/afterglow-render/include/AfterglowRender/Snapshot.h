@@ -29,6 +29,8 @@ inline constexpr std::uint32_t packRgba(AfterglowVt::Rgb c, std::uint8_t a = 255
 
 struct SnapshotCell
 {
+    int logicalColumn = 0;
+    std::uint8_t bidiLevel = 0;
     char32_t cp = 0;
     std::uint32_t fg = 0;
     std::uint32_t bg = 0; ///< alpha 0: default background, nothing to draw
@@ -72,8 +74,10 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     std::uint32_t defaultFg = 0;
     std::uint32_t defaultBg = 0;
+    std::uint32_t selectionForegroundColor = 0;
+    std::uint32_t selectionBackgroundColor = 0;
 
-    struct ExtraCursor { int x, y; AfterglowVt::CursorShape shape; };
+    struct ExtraCursor { int x, y; AfterglowVt::CursorShape shape; std::uint32_t color = 0, textColor = 0; };
     std::vector<ExtraCursor> extraCursors;
     bool cursorVisible = false;
     int cursorX = 0;
@@ -98,6 +102,12 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     /// DEC line size per captured row.
     std::vector<AfterglowVt::LineSize> lineSizes;
+    std::vector<int> logicalToVisual;
+
+    int visualColumn(int logical, int row) const;
+    int logicalColumn(int visual, int row) const;
+    const SnapshotCell& logicalAt(int x, int y) const { return at(visualColumn(x, y), y); }
+    void applyBidi(const AfterglowVt::Terminal& terminal);
 
     const SnapshotCell& at(int x, int y) const { return cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)]; }
     AfterglowVt::LineSize lineSize(int y) const
@@ -107,7 +117,7 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     /// @param selection drawn with inverted colours when valid for the active screen.
     void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,
-                 const SearchHighlight& search = {}, int extraRows = 0);
+                 const SearchHighlight& search = {}, int extraRows = 0, bool reorder = true);
 };
 
 } // namespace AfterglowRender

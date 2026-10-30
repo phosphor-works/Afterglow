@@ -16,6 +16,8 @@
 #include <QLoggingCategory>
 
 #include <cmath>
+#include <algorithm>
+#include <atomic>
 #include <stdexcept>
 
 Q_LOGGING_CATEGORY(lcFont, "afterglow.font", QtInfoMsg)
@@ -32,10 +34,18 @@ struct FcMatch
     bool exact = false; ///< the font has the family asked for; otherwise fontconfig substituted
 };
 
-FcMatch matchFamily(const std::string& family, bool mono)
+void matchStyle(FcPattern* pat, const FontStyleSpec& style)
+{
+    FcPatternAddDouble(pat, FC_WEIGHT, FcWeightFromOpenTypeDouble(style.weight));
+    FcPatternAddDouble(pat, FC_WIDTH, style.width);
+    FcPatternAddInteger(pat, FC_SLANT, style.slant == 0 ? FC_SLANT_ROMAN : FC_SLANT_ITALIC);
+}
+
+FcMatch matchFamily(const std::string& family, bool mono, const FontStyleSpec& style)
 {
     FcPattern* pat = FcPatternCreate();
     FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(family.c_str()));
+    matchStyle(pat, style);
     if (mono) {
         FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
     }
@@ -96,6 +106,9 @@ void applyAxes(FT_Library lib, FT_Face face, const FontStyleSpec& spec)
         case FT_MAKE_TAG('w', 'd', 't', 'h'):
             v = spec.width;
             break;
+        case FT_MAKE_TAG('i', 't', 'a', 'l'):
+            v = spec.slant == 0 ? 0 : 1;
+            break;
         case FT_MAKE_TAG('s', 'l', 'n', 't'):
             v = spec.slant;
             break;
@@ -112,80 +125,84 @@ void applyAxes(FT_Library lib, FT_Face face, const FontStyleSpec& spec)
 } // namespace
 
 FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
-    : m_spec(spec)
+    : m_identity([] { static std::atomic<std::uint64_t> serial{0}; return ++serial; }())
+    , m_spec(spec)
     , m_dpr(devicePixelRatio)
     , m_pixelSize(float(spec.sizePoints * 96.0 / 72.0 * devicePixelRatio))
 {
     if (FT_Init_FreeType(&m_ft) != 0) {
         throw std::runtime_error("FreeType initialisation failed");
     }
-    // ClearType builds need filtering; Harmony builds use their own geometry
-    // and return an unimplemented-feature error for this optional setting.
-    FT_Library_SetLcdFilter(m_ft, FT_LCD_FILTER_DEFAULT);
-    FcInit();
+    try {
+        // ClearType builds need filtering; Harmony builds use their own geometry
+        // and return an unimplemented-feature error for this optional setting.
+        FT_Library_SetLcdFilter(m_ft, FT_LCD_FILTER_DEFAULT);
+        FcInit();
 
-    const FontStyleSpec* styleSpecs[4] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
-    for (int slot = 0; slot < 4; ++slot) {
-        const FontStyleSpec* s = styleSpecs[slot];
-        const FcMatch m = matchFamily(s->family, true);
-        if (m.path.empty()) {
-            throw std::runtime_error("no font found for family " + s->family);
+        const FontStyleSpec* styleSpecs[4] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
+        for (int slot = 0; slot < 4; ++slot) {
+            const FontStyleSpec* s = styleSpecs[slot];
+            const FcMatch m = matchFamily(s->family, true, *s);
+            if (m.path.empty()) {
+                throw std::runtime_error("no font found for family " + s->family);
+            }
+            if (!m.exact && !isGenericFamily(s->family)) {
+                qCWarning(lcFont) << "font family" << s->family.c_str() << "is not installed; using" << m.family.c_str();
+            }
+            // Each slot gets its own FT_Face so variable axes stay independent.
+            const int idx = loadFace(m.path, m.index, s);
+            if (idx < 0) {
+                throw std::runtime_error("failed to load font " + m.path);
+            }
+            qCInfo(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
         }
-        if (!m.exact && !isGenericFamily(s->family)) {
-            qCWarning(lcFont) << "font family" << s->family.c_str() << "is not installed; using" << m.family.c_str();
+
+        for (int slot = 0; slot < 4; ++slot) {
+            const auto& style = *styleSpecs[slot];
+            auto loadStyled = [&](const std::string& family) {
+                const FcMatch match = matchFamily(family, false, style);
+                if (!match.exact) {
+                    qCWarning(lcFont) << "font family" << family.c_str() << "is not installed";
+                    return -1;
+                }
+                const auto key = match.path + '#' + std::to_string(match.index) + '#' + std::to_string(slot);
+                if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) return it->second;
+                const int face = loadFace(match.path, match.index, &style);
+                if (face >= 0) m_faceByPath.emplace(key, face);
+                return face;
+            };
+            for (const auto& entry : m_spec.symbolMap) m_symbolFaces[slot].push_back(loadStyled(entry.family));
+            for (const auto& family : m_spec.fallbackFamilies) {
+                const int face = loadStyled(family);
+                if (face >= 0) m_fallbackFaces[slot].push_back(face);
+            }
         }
-        // Each slot gets its own FT_Face so variable axes stay independent.
-        const int idx = loadFace(m.path, m.index, s);
-        if (idx < 0) {
-            throw std::runtime_error("failed to load font " + m.path);
+
+        for (const std::string& f : m_spec.features) {
+            hb_feature_t feat;
+            if (hb_feature_from_string(f.c_str(), int(f.size()), &feat)) {
+                m_features.push_back(feat);
+            } else {
+                qCWarning(lcFont) << "ignoring invalid font feature" << f.c_str();
+            }
         }
-        qCInfo(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
+
+        computeMetrics();
+    } catch (...) {
+        releaseFaces();
+        FT_Done_FreeType(m_ft);
+        m_ft = nullptr;
+        throw;
     }
-
-    for (const SymbolMapEntry& entry : m_spec.symbolMap) {
-        int idx = -1;
-        const FcMatch m = matchFamily(entry.family, false);
-        if (!m.exact) {
-            qCWarning(lcFont) << "symbol map font family" << entry.family.c_str() << "is not installed";
-        } else if (auto it = m_faceByPath.find(m.path + '#' + std::to_string(m.index)); it != m_faceByPath.end()) {
-            idx = it->second;
-        } else if ((idx = loadFace(m.path, m.index, &m_spec.regular)) >= 0) {
-            m_faceByPath.emplace(m.path + '#' + std::to_string(m.index), idx);
-        }
-        m_symbolFaces.push_back(idx);
-    }
-
-    for (const std::string& family : m_spec.fallbackFamilies) {
-        const FcMatch m = matchFamily(family, false);
-        if (!m.exact) {
-            qCWarning(lcFont) << "fallback font family" << family.c_str() << "is not installed";
-            continue;
-        }
-        const std::string key = m.path + '#' + std::to_string(m.index);
-        int idx = -1;
-        if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) {
-            idx = it->second;
-        } else if ((idx = loadFace(m.path, m.index, &m_spec.regular)) >= 0) {
-            m_faceByPath.emplace(key, idx);
-        }
-        if (idx >= 0) {
-            m_fallbackFaces.push_back(idx);
-        }
-    }
-
-    for (const std::string& f : m_spec.features) {
-        hb_feature_t feat;
-        if (hb_feature_from_string(f.c_str(), int(f.size()), &feat)) {
-            m_features.push_back(feat);
-        } else {
-            qCWarning(lcFont) << "ignoring invalid font feature" << f.c_str();
-        }
-    }
-
-    computeMetrics();
 }
 
 FontSet::~FontSet()
+{
+    releaseFaces();
+    FT_Done_FreeType(m_ft);
+}
+
+void FontSet::releaseFaces() noexcept
 {
     for (auto& f : m_faces) {
         if (f->hb) {
@@ -195,7 +212,7 @@ FontSet::~FontSet()
             FT_Done_Face(f->ft);
         }
     }
-    FT_Done_FreeType(m_ft);
+    m_faces.clear();
 }
 
 int FontSet::loadFace(const std::string& path, int index, const FontStyleSpec* axes)
@@ -204,6 +221,8 @@ int FontSet::loadFace(const std::string& path, int index, const FontStyleSpec* a
     if (FT_New_Face(m_ft, path.c_str(), index, &ft) != 0) {
         return -1;
     }
+    const auto freeFace = [](FT_Face value) { FT_Done_Face(value); };
+    std::unique_ptr<FT_FaceRec_, decltype(freeFace)> faceGuard(ft, freeFace);
     auto face = std::make_unique<Face>();
     face->ft = ft;
     face->path = path;
@@ -227,9 +246,12 @@ int FontSet::loadFace(const std::string& path, int index, const FontStyleSpec* a
         FT_Select_Size(ft, best);
     }
     face->hb = hb_ft_font_create_referenced(ft);
+    std::unique_ptr<hb_font_t, decltype(&hb_font_destroy)> hbGuard(face->hb, &hb_font_destroy);
     hb_ft_font_set_load_flags(face->hb, loadFlags());
 
     m_faces.push_back(std::move(face));
+    hbGuard.release();
+    faceGuard.release();
     return int(m_faces.size()) - 1;
 }
 
@@ -304,9 +326,9 @@ int FontSet::faceFor(char32_t cp, StyleSlot slot, bool preferColor)
     if (cp == 0 || cp == U' ') {
         return primaryIdx;
     }
-    for (std::size_t i = 0; i < m_symbolFaces.size(); ++i) {
+    for (std::size_t i = 0; i < m_symbolFaces[primaryIdx].size(); ++i) {
         const SymbolMapEntry& entry = m_spec.symbolMap[i];
-        const int idx = m_symbolFaces[i];
+        const int idx = m_symbolFaces[primaryIdx][i];
         if (cp >= entry.first && cp <= entry.last && idx >= 0
             && FT_Get_Char_Index(m_faces[std::size_t(idx)]->ft, cp) != 0) {
             return idx;
@@ -315,24 +337,26 @@ int FontSet::faceFor(char32_t cp, StyleSlot slot, bool preferColor)
     if (!preferColor && FT_Get_Char_Index(m_faces[std::size_t(primaryIdx)]->ft, cp) != 0) {
         return primaryIdx;
     }
-    const std::uint64_t key = (std::uint64_t(cp) << 1) | (preferColor ? 1 : 0);
+    const std::uint64_t key = (std::uint64_t(cp) << 3) | (std::uint64_t(primaryIdx) << 1) | (preferColor ? 1 : 0);
     if (auto it = m_fallbackCache.find(key); it != m_fallbackCache.end()) {
         return it->second < 0 ? primaryIdx : it->second;
     }
-    int idx = findFallback(cp, preferColor);
+    int idx = findFallback(cp, preferColor, slot);
     if (idx < 0 && preferColor && FT_Get_Char_Index(m_faces[std::size_t(primaryIdx)]->ft, cp) != 0) {
         idx = primaryIdx;
     }
     if (idx < 0 && preferColor) {
-        idx = findFallback(cp, false);
+        idx = findFallback(cp, false, slot);
     }
     m_fallbackCache.emplace(key, idx);
     return idx < 0 ? primaryIdx : idx;
 }
 
-int FontSet::findFallback(char32_t cp, bool color)
+int FontSet::findFallback(char32_t cp, bool color, StyleSlot slot)
 {
-    for (int idx : m_fallbackFaces) {
+    const FontStyleSpec* styles[] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
+    const auto& style = *styles[int(slot)];
+    for (int idx : m_fallbackFaces[int(slot)]) {
         const Face& f = *m_faces[std::size_t(idx)];
         if ((!color || f.color) && FT_Get_Char_Index(f.ft, cp) != 0) {
             return idx;
@@ -345,7 +369,8 @@ int FontSet::findFallback(char32_t cp, bool color)
     if (color) {
         FcPatternAddBool(pat, FC_COLOR, FcTrue);
     }
-    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(m_spec.regular.family.c_str()));
+    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(style.family.c_str()));
+    matchStyle(pat, style);
     FcConfigSubstitute(nullptr, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
     FcResult result;
@@ -376,11 +401,11 @@ int FontSet::findFallback(char32_t cp, bool color)
             }
             FcPatternGetInteger(set->fonts[i], FC_INDEX, 0, &index);
             const std::string path = reinterpret_cast<const char*>(file);
-            const std::string key = path + '#' + std::to_string(index);
+            const std::string key = path + '#' + std::to_string(index) + '#' + std::to_string(int(slot));
             if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) {
                 found = it->second;
             } else {
-                found = loadFace(path, index, nullptr);
+                found = loadFace(path, index, &style);
                 if (found >= 0) {
                     m_faceByPath.emplace(key, found);
                 }

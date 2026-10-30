@@ -31,10 +31,7 @@ struct FontResources
 {
     std::unique_ptr<FontSet> fonts;
     GlyphCache glyphs;
-    QRhiTexture* grayTexture = nullptr;
-    QRhiTexture* colorTexture = nullptr;
-    std::uint64_t grayLayout = 0;
-    std::uint64_t colorLayout = 0;
+    std::vector<QRhiTexture*> grayTextures, colorTextures;
     /// Changes whenever a texture object is replaced; bindings must be rebuilt.
     /// Unique across all FontResources, so a reused address never aliases.
     std::uint64_t textureGeneration = 0;

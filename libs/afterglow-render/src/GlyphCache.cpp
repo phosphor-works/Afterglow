@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 
 namespace AfterglowRender {
 
@@ -28,6 +29,7 @@ AtlasPage::AtlasPage(QImage::Format format, int initialSize, int maxSize)
     , m_maxSize(maxSize)
     , m_image(initialSize, initialSize, format)
 {
+    if (m_image.isNull()) throw std::bad_alloc();
     m_image.fill(0);
 }
 
@@ -68,8 +70,9 @@ bool AtlasPage::grow()
     if (m_image.width() >= m_maxSize) {
         return false;
     }
-    const int size = m_image.width() * 2;
+    const int size = std::min(m_maxSize, m_image.width() * 2);
     QImage bigger(size, size, m_format);
+    if (bigger.isNull()) throw std::bad_alloc();
     bigger.fill(0);
     for (int row = 0; row < m_image.height(); ++row) {
         std::memcpy(bigger.scanLine(row), m_image.constScanLine(row), std::size_t(m_image.bytesPerLine()));
@@ -98,19 +101,64 @@ QRect AtlasPage::takeDirty()
 
 // --- GlyphCache ------------------------------------------------------------
 
-GlyphCache::GlyphCache()
-    : m_gray(QImage::Format_Grayscale8, 1024, 4096)
-    , m_color(QImage::Format_ARGB32_Premultiplied, 512, 4096)
-{
-}
+GlyphCache::GlyphCache() { reset(); }
 
 void GlyphCache::reset()
 {
     ++m_epoch;
     m_entries.clear();
     m_grayFallbackEntries.clear();
-    m_gray.reset();
-    m_color.reset();
+    m_gray.clear(); m_color.clear();
+    m_gray.emplace_back(std::make_unique<AtlasPage>(QImage::Format_Grayscale8, 1024, 4096));
+    m_color.emplace_back(std::make_unique<AtlasPage>(QImage::Format_ARGB32_Premultiplied, 512, 4096));
+    m_grayUsed.assign(1, m_frame); m_colorUsed.assign(1, m_frame);
+}
+
+std::size_t GlyphCache::bytes() const noexcept
+{
+    std::size_t result = 0;
+    for (const auto& page : m_gray) result += page->image().sizeInBytes();
+    for (const auto& page : m_color) result += page->image().sizeInBytes();
+    return result;
+}
+
+void GlyphCache::beginFrame(std::size_t glyphBound, int textureLimit)
+{
+    ++m_frame;
+    m_grayUsed.front() = m_colorUsed.front() = m_frame;
+    // Keep a large current working set intact. Reclaim old pages once they
+    // exceed the cache budget and have not contributed to recent frames.
+    const auto stale = [this](auto last) { return last + 2 < m_frame; };
+    if (bytes() > 64u * 1024u * 1024u
+        && (std::any_of(m_grayUsed.begin(), m_grayUsed.end(), stale)
+            || std::any_of(m_colorUsed.begin(), m_colorUsed.end(), stale))) reset();
+    m_pageBound = m_gray.size() + m_color.size() + glyphBound;
+    m_textureLimit = textureLimit;
+}
+
+void GlyphCache::touchPage(bool color, std::size_t page)
+{
+    (color ? m_colorUsed : m_grayUsed).at(page) = m_frame;
+}
+
+AtlasPage& GlyphCache::allocate(bool color, int width, int height, int& x, int& y, std::uint32_t& index)
+{
+    auto& pages = color ? m_color : m_gray;
+    for (std::size_t i = 0; i < pages.size(); ++i) {
+        if (pages[i]->allocate(width, height, x, y)) {
+            index = std::uint32_t(i); touchPage(color, i); return *pages[i];
+        }
+    }
+    if (width >= m_textureLimit || height >= m_textureLimit || m_gray.size() + m_color.size() >= m_pageBound)
+        throw std::runtime_error("glyph atlas exceeds the device or viewport working set");
+    const int maximum = std::max(4096, std::max(width, height) + 1);
+    const int initial = std::min(maximum, std::max(512, std::max(width, height) + 1));
+    pages.emplace_back(std::make_unique<AtlasPage>(color ? QImage::Format_ARGB32_Premultiplied : QImage::Format_Grayscale8,
+                                                  initial, std::min(maximum, m_textureLimit)));
+    (color ? m_colorUsed : m_grayUsed).push_back(m_frame);
+    index = std::uint32_t(pages.size() - 1);
+    if (!pages.back()->allocate(width, height, x, y)) throw std::runtime_error("glyph atlas allocation failed");
+    return *pages.back();
 }
 
 const GlyphEntry* GlyphCache::glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel)
@@ -193,45 +241,44 @@ bool GlyphCache::storeGray(const unsigned char* pixels, int width, int height, i
 {
     int x = 0;
     int y = 0;
-    if (!m_gray.allocate(width, height, x, y)) {
-        return false;
-    }
-    QImage& img = m_gray.image();
+    std::uint32_t pageIndex = 0;
+    auto& atlas = allocate(false, width, height, x, y, pageIndex);
+    QImage& img = atlas.image();
     for (int row = 0; row < height; ++row) {
         std::memcpy(img.scanLine(y + row) + x, pixels + std::ptrdiff_t(row) * pitch, std::size_t(width));
     }
-    m_gray.markDirty(QRect(x, y, width, height));
+    atlas.markDirty(QRect(x, y, width, height));
     out = GlyphEntry{false, false, std::int16_t(left), std::int16_t(top), std::uint16_t(width), std::uint16_t(height),
-                     std::uint16_t(x), std::uint16_t(y)};
+                     std::uint16_t(x), std::uint16_t(y), pageIndex};
     return true;
 }
 
 const GlyphEntry* GlyphCache::sprite(FontSet& fonts, char32_t cp, int sx, int sy)
 {
     constexpr std::uint64_t SpriteFace = 0xFFFF;
-    sx = std::clamp(sx, 1, 7);
+    sx = std::clamp(sx, 1, 49);
     sy = std::clamp(sy, 1, 7);
-    const std::uint64_t key = (std::uint64_t((sx - 1) * 8 + (sy - 1)) << 56) | (SpriteFace << 40) | std::uint64_t(cp);
+    const std::uint64_t key = (std::uint64_t(sx - 1) << 32) | (std::uint64_t(sy - 1) << 56) | (SpriteFace << 40) | std::uint64_t(cp);
     if (auto it = m_entries.find(key); it != m_entries.end()) {
         return &it->second;
     }
     const FontMetrics& m = fonts.metrics();
     QImage canvas(m.cellWidth * sx, m.cellHeight * sy, QImage::Format_Alpha8);
+    if (canvas.isNull()) throw std::bad_alloc();
     if (!Sprites::draw(cp, canvas, m.underlineThickness * std::min(sx, sy))) {
         return &m_entries.emplace(key, GlyphEntry{}).first->second;
     }
     int x = 0;
     int y = 0;
-    if (!m_gray.allocate(canvas.width(), canvas.height(), x, y)) {
-        return nullptr;
-    }
-    QImage& img = m_gray.image();
+    std::uint32_t pageIndex = 0;
+    auto& atlas = allocate(false, canvas.width(), canvas.height(), x, y, pageIndex);
+    QImage& img = atlas.image();
     for (int row = 0; row < canvas.height(); ++row) {
         std::memcpy(img.scanLine(y + row) + x, canvas.constScanLine(row), std::size_t(canvas.width()));
     }
-    m_gray.markDirty(QRect(x, y, canvas.width(), canvas.height()));
+    atlas.markDirty(QRect(x, y, canvas.width(), canvas.height()));
     const GlyphEntry entry{false, false, 0, std::int16_t(m.baseline * sy), std::uint16_t(canvas.width()),
-                           std::uint16_t(canvas.height()), std::uint16_t(x), std::uint16_t(y)};
+                           std::uint16_t(canvas.height()), std::uint16_t(x), std::uint16_t(y), pageIndex};
     return &m_entries.emplace(key, entry).first->second;
 }
 
@@ -292,18 +339,18 @@ bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, i
         } else {
             img = src.copy();
         }
+        if (img.isNull()) throw std::bad_alloc();
         int x = 0;
         int y = 0;
-        if (!m_color.allocate(img.width(), img.height(), x, y)) {
-            return false;
-        }
-        QPainter p(&m_color.image());
+        std::uint32_t pageIndex = 0;
+        auto& atlas = allocate(true, img.width(), img.height(), x, y, pageIndex);
+        QPainter p(&atlas.image());
         p.setCompositionMode(QPainter::CompositionMode_Source);
         p.drawImage(x, y, img);
         p.end();
-        m_color.markDirty(QRect(x, y, img.width(), img.height()));
+        atlas.markDirty(QRect(x, y, img.width(), img.height()));
         out = GlyphEntry{true, false, std::int16_t(left), std::int16_t(top), std::uint16_t(img.width()),
-                         std::uint16_t(img.height()), std::uint16_t(x), std::uint16_t(y)};
+                         std::uint16_t(img.height()), std::uint16_t(x), std::uint16_t(y), pageIndex};
         return true;
     }
 
@@ -319,20 +366,19 @@ bool GlyphCache::storeBitmap(const FT_Bitmap& bm, const FontSet& fonts, int left
     }
     if (bm.pixel_mode == FT_PIXEL_MODE_LCD) {
         int x = 0, y = 0;
-        if (!m_color.allocate(w, h, x, y)) {
-            return false;
-        }
+        std::uint32_t pageIndex = 0;
+        auto& atlas = allocate(true, w, h, x, y, pageIndex);
         const bool bgr = fonts.spec().antialiasing == Antialiasing::Bgr;
         for (int row = 0; row < h; ++row) {
             const auto* src = bm.buffer + std::ptrdiff_t(row) * bm.pitch;
-            auto* dst = reinterpret_cast<QRgb*>(m_color.image().scanLine(y + row)) + x;
+            auto* dst = reinterpret_cast<QRgb*>(atlas.image().scanLine(y + row)) + x;
             for (int col = 0; col < w; ++col) {
                 dst[col] = qRgb(src[col * 3 + (bgr ? 2 : 0)], src[col * 3 + 1], src[col * 3 + (bgr ? 0 : 2)]);
             }
         }
-        m_color.markDirty(QRect(x, y, w, h));
+        atlas.markDirty(QRect(x, y, w, h));
         out = GlyphEntry{false, false, std::int16_t(left), std::int16_t(top), std::uint16_t(w), std::uint16_t(h),
-                         std::uint16_t(x), std::uint16_t(y), true};
+                         std::uint16_t(x), std::uint16_t(y), pageIndex, true};
         return true;
     }
     if (bm.pixel_mode == FT_PIXEL_MODE_GRAY && bm.num_grays == 256
@@ -342,6 +388,7 @@ bool GlyphCache::storeBitmap(const FT_Bitmap& bm, const FontSet& fonts, int left
     // Unpack embedded monochrome/low-depth strikes as well as outline MONO
     // output. AA-off thresholds gray strikes too; color emoji stay untouched.
     QImage mask(w, h, QImage::Format_Grayscale8);
+    if (mask.isNull()) throw std::bad_alloc();
     for (int row = 0; row < h; ++row) {
         const auto* src = bm.buffer + std::ptrdiff_t(row) * bm.pitch;
         auto* dst = mask.scanLine(row);

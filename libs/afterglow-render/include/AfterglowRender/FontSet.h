@@ -6,6 +6,7 @@
 #include <AfterglowRender/afterglowrender_export.h>
 
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -114,6 +115,8 @@ public:
     const FontSpec& spec() const noexcept { return m_spec; }
     double devicePixelRatio() const noexcept { return m_dpr; }
     float pixelSize() const noexcept { return m_pixelSize; }
+    /// Stable identity even when an allocator reuses a destroyed FontSet address.
+    std::uint64_t identity() const noexcept { return m_identity; }
 
     /// Face index for a style slot (always 0-3).
     int primary(StyleSlot slot) const noexcept { return int(slot); }
@@ -137,9 +140,11 @@ public:
 
 private:
     int loadFace(const std::string& path, int index, const FontStyleSpec* axes);
-    int findFallback(char32_t cp, bool color);
+    int findFallback(char32_t cp, bool color, StyleSlot slot);
     void computeMetrics();
+    void releaseFaces() noexcept;
 
+    std::uint64_t m_identity;
     FontSpec m_spec;
     double m_dpr;
     float m_pixelSize;
@@ -147,8 +152,8 @@ private:
     std::vector<std::unique_ptr<Face>> m_faces;
     std::unordered_map<std::string, int> m_faceByPath;
     std::unordered_map<std::uint64_t, int> m_fallbackCache;
-    std::vector<int> m_fallbackFaces; ///< the spec's fallback families, loaded
-    std::vector<int> m_symbolFaces; ///< per symbol map entry; -1 when not installed
+    std::array<std::vector<int>, 4> m_fallbackFaces; ///< the spec's fallback families, loaded
+    std::array<std::vector<int>, 4> m_symbolFaces; ///< per symbol map entry; -1 when not installed
     std::vector<hb_feature_t> m_features;
     FontMetrics m_metrics;
 };

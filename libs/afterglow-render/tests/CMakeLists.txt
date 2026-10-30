@@ -5,7 +5,7 @@ find_package(GTest REQUIRED)
 
 # Renders through the real Vulkan pipeline into offscreen images. Skips when
 # there is no Vulkan device or Wayland display (CI without a GPU).
-add_executable(afterglow_render_tests RenderTest.cpp)
+add_executable(afterglow_render_tests RenderTest.cpp BidiTest.cpp)
 target_link_libraries(afterglow_render_tests PRIVATE Afterglow::Render Qt6::Gui GTest::gtest)
 set_target_properties(afterglow_render_tests PROPERTIES AUTOMOC OFF)
 

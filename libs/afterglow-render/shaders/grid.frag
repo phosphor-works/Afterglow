@@ -41,12 +41,12 @@ void main()
     if (vKind == KindSolid) {
         fragColor = premul(vColor, 1.0);
     } else if (vKind == KindGrayGlyph) {
-        fragColor = premul(vColor, pow(texture(grayAtlas, vUv / grayAtlasSize).r, 1.0 / textGamma));
+        fragColor = premul(vColor, pow(texture(grayAtlas, vUv / vec2(textureSize(grayAtlas, 0))).r, 1.0 / textGamma));
     } else if (vKind == KindSubpixelGlyph) {
-        vec3 coverage = pow(texture(colorAtlas, vUv / colorAtlasSize).rgb, vec3(1.0 / textGamma));
+        vec3 coverage = pow(texture(colorAtlas, vUv / vec2(textureSize(colorAtlas, 0))).rgb, vec3(1.0 / textGamma));
         fragColor = vec4(coverage * vColor.a, 0.0);
     } else if (vKind == KindColorGlyph) {
-        fragColor = texture(colorAtlas, vUv / colorAtlasSize) * vColor.a;
+        fragColor = texture(colorAtlas, vUv / vec2(textureSize(colorAtlas, 0))) * vColor.a;
     } else if (vKind == KindUndercurl) {
         // vParams.x: line thickness, vParams.y: wavelength. Phase follows the
         // absolute x so adjacent runs join seamlessly.

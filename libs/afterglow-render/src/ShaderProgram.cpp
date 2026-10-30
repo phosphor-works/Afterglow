@@ -7,12 +7,13 @@
 
 #include <QRegularExpression>
 #include <cmath>
+#include <stdexcept>
 
 namespace AfterglowRender {
 
 QByteArray ShaderProgram::prefix()
 {
-    return QByteArrayLiteral(R"GLSL(#version 440
+    QByteArray result = QByteArrayLiteral(R"GLSL(#version 440
 
 layout(std140, binding = 0) uniform Globals {
     vec3  iResolution;
@@ -68,7 +69,7 @@ layout(binding = 2) uniform sampler2D iPreviousText;
 layout(binding = 3) uniform sampler2D uAudioSpectrum;
 // Previous buffer in the buffer pass; current buffer in the image pass.
 // iChannel0 remains the terminal/layer input in both passes.
-layout(binding = 4) uniform sampler2D iBuffer;
+// AFTERGLOW_EXTRA_SAMPLERS
 
 // Explicit conversions of straight RGB. Terminal input/output is encoded sRGB,
 // premultiplied alpha. Buffer data has no implicit transfer function.
@@ -107,23 +108,23 @@ float getOverall() { return iAudioLevels.w; }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord);
 
-// Shaders see their region (a pane or the window) as a y-up image starting at
-// (0, 0), as on Shadertoy and in Ghostty. The input texture is the whole
-// framebuffer, top-left origin, so map region coordinates onto it. Defined
-// before the macro, so the inner call is the built-in.
+// Every input is local to this region. Hardware sampler modes therefore work
+// for buffers and image parameters even when passed through a user helper.
 vec4 _afterglowTexture(sampler2D s, vec2 uv)
 {
-    vec2 dimensions = vec2(textureSize(s, 0));
-    vec2 start = floor(iTextureRegion.xy * dimensions + .5);
-    vec2 end = floor((iTextureRegion.xy + iTextureRegion.zw) * dimensions + .5);
-    vec2 px = mix(start, end, vec2(uv.x, 1.0-uv.y));
-    // Use the same rounded region edges as the scaled render target. This
-    // matters for odd split sizes/fractional DPI: half-texel clamps based on
-    // unrounded edges can still interpolate a neighbour's first texel.
-    return texture(s, clamp(px, start + .5, max(start + .5, end - .5)) / dimensions);
+    return texture(s, vec2(uv.x, 1.0-uv.y));
 }
 #define texture _afterglowTexture
 )GLSL");
+    QByteArray samplers;
+    for (int i = 0; i < MaxShaderBuffers; ++i)
+        samplers += "layout(binding = " + QByteArray::number(4 + i) + ") uniform sampler2D iBuffer" + QByteArray::number(i) + ";\n";
+    samplers += "#define iBuffer iBuffer0\n";
+    for (int i = 0; i < MaxShaderImages; ++i)
+        samplers += "layout(binding = " + QByteArray::number(4 + MaxShaderBuffers + i) + ") uniform sampler2D uTexture" + QByteArray::number(i) + ";\n";
+    samplers += "layout(binding = 16) uniform sampler2D iDepth;\n#define uDepthBuffer iDepth\n";
+    result.replace("// AFTERGLOW_EXTRA_SAMPLERS", samplers);
+    return result;
 }
 
 namespace {
@@ -138,15 +139,27 @@ void main()
 
 std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource& source, QString* error)
 {
-    if (!source.bufferCode.isEmpty() && (!std::isfinite(source.bufferScale) || source.bufferScale < 0.125f || source.bufferScale > 1.0f)) {
-        if (error) *error = QStringLiteral("bufferScale must be 0.125..1");
-        return nullptr;
+    auto buffers = source.buffers;
+    if (!source.bufferCode.isEmpty()) {
+        if (!buffers.empty()) { if (error) *error = QStringLiteral("Use buffers or bufferCode, not both"); return nullptr; }
+        buffers.push_back({source.bufferCode, source.bufferFeedback, source.halfFloatBuffer, source.bufferScale, source.bufferNearest});
+    }
+    if (buffers.size() > MaxShaderBuffers) { if (error) *error = QStringLiteral("Too many buffer passes"); return nullptr; }
+    for (const auto& buffer : buffers) {
+        if (buffer.code.isEmpty() || !std::isfinite(buffer.scale) || buffer.scale < .125f || buffer.scale > 1.f) {
+            if (error) *error = QStringLiteral("Buffer needs code and scale 0.125..1");
+            return nullptr;
+        }
     }
     QByteArray full = prefix();
+    if (source.depthOutput) full += "\nlayout(location=1) out vec4 depthBuffer;\n";
+    else full += "\nvec4 depthBuffer;\n";
     full += source.parameterPreamble;
     full += "\n#line 1\n";
     full += source.code;
-    full += Suffix;
+    auto suffix = Suffix;
+    suffix.replace("    mainImage(", "    depthBuffer = vec4(0.0);\n    mainImage(");
+    full += suffix;
 
     QShaderBaker baker;
     // Vulkan only: SPIR-V, nothing else to translate (and fail) to.
@@ -162,6 +175,26 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     }
     auto program = std::make_shared<ShaderProgram>();
     program->m_shader = std::move(shader);
+    program->m_depthOutput = source.depthOutput;
+    if (!source.vertexCode.isEmpty()) {
+        auto vertex = prefix();
+        vertex.replace("layout(location = 0) out vec4 _afterglowFragColor;", "");
+        vertex += source.parameterPreamble + "\n" + source.vertexCode;
+        vertex += R"GLSL(
+void main() {
+    const vec2 corners[6] = vec2[6](vec2(0,0),vec2(1,0),vec2(0,1),vec2(0,1),vec2(1,0),vec2(1,1));
+    vec2 uv = corners[gl_VertexIndex];
+    vec4 position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+    mainVertex(position, uv);
+    vec2 center = vec2(iRegion.x + iRegion.z * 0.5, iRegion.y + iRegion.w * 0.5);
+    position.xy = position.xy * iRegion.zw / iFramebufferSize + (center * 2.0 / iFramebufferSize - 1.0) * position.w;
+    gl_Position = position;
+}
+)GLSL";
+        baker.setSourceString(vertex, QShader::VertexStage, source.id + QStringLiteral(" vertex"));
+        program->m_vertexShader = baker.bake();
+        if (!program->m_vertexShader.isValid()) { if (error) *error = baker.errorMessage(); return nullptr; }
+    }
     program->m_id = source.id;
     static const QRegularExpression usesTime(QStringLiteral("\\b(?:iTime|iTimeDelta|iFrame|iFrameRate)\\b"));
     static const QRegularExpression usesHistory(QStringLiteral("\\biPreviousText\\b"));
@@ -170,7 +203,7 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     static const QRegularExpression usesAudio(QStringLiteral("^[ \t]*#[ \t]*define[ \t]+AFTERGLOW_AUDIO[ \t]+1[ \t]*(?://[^\r\n]*)?\r?$"),
                                               QRegularExpression::MultilineOption);
     static const QRegularExpression usesScrollback(QStringLiteral("\\biScrollback\\b"));
-    const QString code = QString::fromUtf8(source.code);
+    const QString code = QString::fromUtf8(source.code + "\n" + source.vertexCode);
     program->m_readsPreviousText = code.contains(usesHistory);
     program->m_requiresHdr = code.contains(usesHdr);
     program->m_requiresAudio = code.contains(usesAudio);
@@ -178,21 +211,30 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     program->m_animated = code.contains(usesTime) || program->m_readsPreviousText;
     program->m_params = source.params;
     program->m_colors = source.colors;
-    if (!source.bufferCode.isEmpty()) {
+    program->m_images = source.images;
+    program->m_imagePaths = source.imagePaths;
+    for (const auto& settings : buffers) {
         auto bufferSource = source;
-        bufferSource.code = source.bufferCode;
+        bufferSource.code = settings.code;
+        bufferSource.depthOutput = source.useDepthBuffer || settings.depthBuffer;
+        bufferSource.buffers.clear();
         bufferSource.bufferCode.clear();
-        program->m_buffer = compile(bufferSource, error);
-        if (!program->m_buffer) return nullptr;
-        program->m_bufferFeedback = source.bufferFeedback;
-        program->m_halfFloatBuffer = source.halfFloatBuffer;
-        program->m_bufferScale = source.bufferScale;
-        program->m_bufferNearest = source.bufferNearest;
-        program->m_animated |= source.bufferFeedback || program->m_buffer->animated();
-        program->m_readsPreviousText |= program->m_buffer->readsPreviousText();
-        program->m_readsScrollback |= program->m_buffer->readsScrollback();
-        program->m_requiresAudio |= program->m_buffer->requiresAudio();
-        program->m_requiresHdr |= program->m_buffer->requiresHdr();
+        auto buffer = compile(bufferSource, error);
+        if (!buffer) return nullptr;
+        program->m_animated |= settings.feedback || buffer->animated();
+        program->m_readsPreviousText |= buffer->readsPreviousText();
+        program->m_readsScrollback |= buffer->readsScrollback();
+        program->m_requiresAudio |= buffer->requiresAudio();
+        program->m_requiresHdr |= buffer->requiresHdr();
+        program->m_buffers.push_back(std::move(buffer));
+        program->m_bufferSettings.push_back(settings);
+    }
+    if (!buffers.empty()) {
+        const auto& first = buffers.front();
+        program->m_bufferFeedback = first.feedback;
+        program->m_halfFloatBuffer = first.halfFloat;
+        program->m_bufferScale = first.scale;
+        program->m_bufferNearest = first.nearest;
     }
     return program;
 }
@@ -206,7 +248,7 @@ std::shared_ptr<ShaderProgram> ShaderProgram::passthrough()
                    "{\n    fragColor = texture(iChannel0, fragCoord / iResolution.xy);\n}\n";
         QString error;
         auto p = compile(src, &error);
-        Q_ASSERT_X(p, "ShaderProgram::passthrough", qPrintable(error));
+        if (!p) throw std::runtime_error("passthrough shader failed: " + error.toStdString());
         return p;
     }();
     return instance;

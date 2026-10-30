@@ -8,6 +8,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+pkg_check_modules(FRIBIDI REQUIRED IMPORTED_TARGET fribidi)
 
 add_library(AfterglowRender SHARED
     src/FontSet.cpp
@@ -17,6 +18,7 @@ add_library(AfterglowRender SHARED
     src/PostChain.cpp
     src/ShaderProgram.cpp
     src/Snapshot.cpp
+    src/Bidi.cpp
     src/Sprites.cpp
     src/Sprites.h
     include/AfterglowRender/GpuDevice.h
@@ -34,8 +36,8 @@ target_include_directories(AfterglowRender PUBLIC
 target_compile_definitions(AfterglowRender PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(AfterglowRender
     # Public headers include the QRhi headers (rhi/qrhi.h).
-    PUBLIC Afterglow::Vt Qt6::Core Qt6::Gui Qt6::GuiPrivate
-    PRIVATE Qt6::ShaderToolsPrivate PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG)
+    PUBLIC Afterglow::Vt PhosphorShaders::PhosphorShaders Qt6::Core Qt6::Gui Qt6::GuiPrivate
+    PRIVATE Qt6::ShaderToolsPrivate PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG PkgConfig::FRIBIDI)
 set_target_properties(AfterglowRender PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR})

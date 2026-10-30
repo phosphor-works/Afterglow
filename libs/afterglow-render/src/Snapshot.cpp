@@ -53,7 +53,7 @@ Rgb withContrast(Rgb fg, Rgb bg, double minimum)
 
 } // namespace
 
-void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra)
+void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra, bool reorder)
 {
     const Screen& scr = t.screen();
     const Modes& modes = t.modes();
@@ -77,6 +77,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     }
     defaultFg = packRgba(defFg);
     defaultBg = packRgba(defBg);
+    selectionForegroundColor = t.selectionForeground() ? packRgba(*t.selectionForeground()) : defaultBg;
+    selectionBackgroundColor = t.selectionBackground() ? packRgba(*t.selectionBackground()) : defaultFg;
+    logicalToVisual.clear();
 
     auto resolve = [&](Color c, Rgb fallback) -> Rgb {
         return c.isDefault() ? fallback : t.resolve(c, true);
@@ -90,7 +93,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     const std::size_t top = scr.viewportTop();
     const int cw = t.cellWidth();
     const int ch = t.cellHeight();
-    images = t.graphics().visible(scr, cw, ch);
+    images = t.graphics().visible(scr, cw, ch, extra);
     // Matches overlapping the viewport, found once instead of per cell.
     std::vector<int> visibleMatches;
     if (search.matches) {
@@ -122,6 +125,8 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             const Cell& c = row.at(x);
             const Style& st = scr.styles().get(c.styleId());
             SnapshotCell& out = cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)];
+            out.logicalColumn = x;
+            out.bidiLevel = 0;
 
             Rgb fg = resolve(st.fg, defFg);
             if (options.boldIsBright && st.has(Attr::Bold) && st.fg.kind() == Color::Kind::Palette && st.fg.index() < 8) {
@@ -240,19 +245,40 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     cursorY = scr.cursor.y;
     cursorShape = t.cursorShape();
     cursorBlink = modes.cursorBlink;
-    extraCursors.clear();
-    if (scr.viewportOffset() == 0) for (const auto& [point, shape] : t.extraCursors()) {
-        const auto resolved = shape == 29 ? cursorShape : shape == 1 ? CursorShape::Block
-            : shape == 2 ? CursorShape::Bar : CursorShape::Underline;
-        extraCursors.push_back({point.second, point.first, resolved});
-    }
     cursorColor = t.cursorColor() ? packRgba(*t.cursorColor()) : defaultFg;
     cursorTextColor = t.cursorTextColor() ? packRgba(*t.cursorTextColor()) : defaultBg;
+    extraCursors.clear();
+    if (scr.viewportOffset() == 0) for (const auto& [point, shape] : t.extraCursors()) {
+        const int x = point.second, y = point.first;
+        if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
+        const auto resolved = shape == 29 ? cursorShape : shape == 1 ? CursorShape::Block
+            : shape == 2 ? CursorShape::Bar : CursorShape::Underline;
+        const auto& cell = scr.absoluteRow(top + std::size_t(y)).at(x);
+        const auto& style = scr.styles().get(cell.styleId());
+        auto fg = resolve(style.fg, defFg), bg = resolve(style.bg, defBg);
+        if (options.boldIsBright && style.has(Attr::Bold) && style.fg.kind() == Color::Kind::Palette && style.fg.index() < 8)
+            fg = t.paletteColor(style.fg.index() + 8);
+        if (style.has(Attr::Inverse)) std::swap(fg, bg);
+        const auto color = [&](const ExtraCursorColor& spec, std::uint32_t main, Rgb reverse) {
+            switch (spec.mode) {
+            case ExtraCursorColor::Mode::Main: return main;
+            case ExtraCursorColor::Mode::Reverse: return packRgba(reverse);
+            case ExtraCursorColor::Mode::Rgb:
+            case ExtraCursorColor::Mode::Palette: return packRgba(t.resolve(spec.color, true));
+            }
+            return main;
+        };
+        const auto fill = color(t.extraCursorColor(), cursorColor, fg);
+        const auto text = t.extraCursorColor().mode == ExtraCursorColor::Mode::Reverse ? packRgba(bg)
+            : color(t.extraCursorTextColor(), cursorTextColor, bg);
+        extraCursors.push_back({x, y, resolved, fill, text});
+    }
     generation = t.generation();
     ++version;
     for (int i = 0; i < 256; ++i) {
         palette[std::size_t(i)] = packRgba(t.paletteColor(i));
     }
+    if (reorder) applyBidi(t);
 }
 
 } // namespace AfterglowRender
