@@ -24,6 +24,7 @@
 #include <sys/wait.h>
 #include <csignal>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -32,6 +33,8 @@
 #include <deque>
 #include <string>
 #include <vector>
+#include <charconv>
+#include <chrono>
 
 namespace {
 
@@ -44,29 +47,43 @@ public:
     }
     void writeToPty(std::string_view bytes) override
     {
-        while (!bytes.empty()) {
-            const ssize_t n = ::write(m_fd, bytes.data(), bytes.size());
-            if (n < 0) {
-                if (errno == EINTR || errno == EAGAIN) {
-                    continue;
-                }
-                return;
-            }
-            bytes.remove_prefix(std::size_t(n));
+        if (bytes.size() > MaxPending - (m_pending.size() - m_offset)) {
+            failed = true;
+            return;
         }
+        if (!pending()) m_progress = std::chrono::steady_clock::now();
+        m_pending.erase(0, m_offset);
+        m_offset = 0;
+        m_pending.append(bytes);
     }
+    bool pending() const { return m_offset < m_pending.size(); }
+    void flush()
+    {
+        if (!pending()) return;
+        const ssize_t n = ::write(m_fd, m_pending.data() + m_offset, m_pending.size() - m_offset);
+        if (n > 0) {
+            m_offset += std::size_t(n);
+            m_progress = std::chrono::steady_clock::now();
+            if (!pending()) { m_pending.clear(); m_offset = 0; }
+        } else if (n == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) failed = true;
+    }
+    bool stalled() const
+    {
+        return pending() && std::chrono::steady_clock::now() - m_progress > std::chrono::seconds(5);
+    }
+    bool failed = false;
 
     // Size changes asked for by the program (DECCOLM, XTWINOPS) are granted,
     // as xterm does with window ops allowed; the pty follows.
     bool requestResize(int cols, int rows) override
     {
+        if (cols < 1 || cols > 1000 || rows < 1 || rows > 500) return false;
         winsize ws{};
         ws.ws_col = std::uint16_t(cols);
         ws.ws_row = std::uint16_t(rows);
         ws.ws_xpixel = std::uint16_t(cols * CellWidth);
         ws.ws_ypixel = std::uint16_t(rows * CellHeight);
-        ::ioctl(m_fd, TIOCSWINSZ, &ws);
-        return true;
+        return ::ioctl(m_fd, TIOCSWINSZ, &ws) == 0;
     }
 
     // A 1920x1080 display, so maximum sizes and screen reports have answers.
@@ -81,8 +98,76 @@ public:
     static constexpr int CellHeight = 20;
 
 private:
+    static constexpr std::size_t MaxPending = 1024 * 1024;
     int m_fd;
+    std::string m_pending;
+    std::size_t m_offset = 0;
+    std::chrono::steady_clock::time_point m_progress{};
 };
+
+bool dimension(const char* value, int maximum, int& result)
+{
+    const char* end = value + std::strlen(value);
+    const auto parsed = std::from_chars(value, end, result);
+    return parsed.ec == std::errc{} && parsed.ptr == end && result >= 1 && result <= maximum;
+}
+
+std::string shellQuote(const std::string& value)
+{
+    std::string out = "'";
+    for (char c : value) out += c == '\'' ? "'\\''" : std::string(1, c);
+    return out + "'";
+}
+
+bool respond(const std::string& command, const std::string& path, std::string& output)
+{
+    int fds[2];
+    if (::pipe2(fds, O_CLOEXEC) != 0) return false;
+    const std::string invocation = command + " " + shellQuote(path);
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        ::setpgid(0, 0);
+        ::dup2(fds[1], STDOUT_FILENO);
+        ::close(fds[0]); ::close(fds[1]);
+        ::execl("/bin/sh", "sh", "-c", invocation.c_str(), nullptr);
+        _exit(127);
+    }
+    ::close(fds[1]);
+    if (pid < 0) { ::close(fds[0]); return false; }
+    ::setpgid(pid, pid);
+    bool ok = ::fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (ok) {
+        if (std::chrono::steady_clock::now() >= deadline) { ok = false; break; }
+        pollfd pfd{fds[0], POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 100);
+        if (ready < 0) { if (errno == EINTR) continue; ok = false; break; }
+        if (!ready) continue;
+        char buffer[4096];
+        const auto count = ::read(fds[0], buffer, sizeof buffer);
+        if (count == 0) break;
+        if (count < 0) { if (errno == EINTR || errno == EAGAIN) continue; ok = false; break; }
+        if (output.size() + std::size_t(count) > 1024 * 1024) { ok = false; break; }
+        output.append(buffer, std::size_t(count));
+    }
+    ::close(fds[0]);
+    int status = 0;
+    // A responder can close stdout and then hang. Its process lifetime shares
+    // the same deadline as output collection.
+    for (;;) {
+        const auto done = ::waitpid(pid, &status, WNOHANG);
+        if (done == pid) break;
+        if (done < 0 && errno != EINTR) { ok = false; break; }
+        if (!ok || std::chrono::steady_clock::now() >= deadline) {
+            ok = false;
+            ::kill(-pid, SIGKILL); ::kill(pid, SIGKILL);
+            while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            break;
+        }
+        ::poll(nullptr, 0, 20);
+    }
+    return ok && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 
 std::string screenText(const AfterglowVt::Terminal& terminal)
 {
@@ -174,9 +259,13 @@ int main(int argc, char** argv)
     int i = 1;
     for (; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cols") && i + 1 < argc) {
-            cols = std::atoi(argv[++i]);
+            if (!dimension(argv[++i], 1000, cols)) {
+                std::fprintf(stderr, "--cols must be an integer in 1..1000\n"); return 2;
+            }
         } else if (!std::strcmp(argv[i], "--rows") && i + 1 < argc) {
-            rows = std::atoi(argv[++i]);
+            if (!dimension(argv[++i], 500, rows)) {
+                std::fprintf(stderr, "--rows must be an integer in 1..500\n"); return 2;
+            }
         } else if (!std::strcmp(argv[i], "--dump")) {
             dumpScreen = true;
         } else if (!std::strcmp(argv[i], "--idle-dump") && i + 1 < argc) {
@@ -234,6 +323,11 @@ int main(int argc, char** argv)
         _exit(127);
     }
 
+    if (::fcntl(master, F_SETFL, O_NONBLOCK) < 0) {
+        std::perror("fcntl"); ::kill(child, SIGKILL); ::close(master);
+        while (::waitpid(child, nullptr, 0) < 0 && errno == EINTR) {};
+        return 2;
+    }
     Host host(master);
     AfterglowVt::Terminal terminal(cols, rows, host);
     terminal.resize(cols, rows, CellWidth, CellHeight);
@@ -243,16 +337,35 @@ int main(int argc, char** argv)
     bool changed = false;
     int dumps = 0;
     int quietRounds = 0;
+    bool failed = false;
+    struct TemporaryScreen {
+        std::string path;
+        ~TemporaryScreen() { if (!path.empty()) ::unlink(path.c_str()); }
+    } temporary;
+    if (!responder.empty() && idleDir.empty()) {
+        char name[] = "/tmp/afterglow-screen-XXXXXX";
+        const int fd = ::mkstemp(name);
+        if (fd < 0) failed = true;
+        else { temporary.path = name; ::close(fd); }
+    }
     for (;;) {
-        pollfd pfd{master, POLLIN, 0};
-        const int ready = ::poll(&pfd, 1, interactive ? 300 : -1);
+        if (failed) break;
+        host.flush();
+        if (host.failed || host.stalled()) {
+            std::fprintf(stderr, "PTY reply queue failed or stopped making progress\n");
+            failed = true;
+            break;
+        }
+        pollfd pfd{master, short(POLLIN | (host.pending() ? POLLOUT : 0)), 0};
+        const int ready = ::poll(&pfd, 1, interactive || host.pending() ? 300 : -1);
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            break;
+            failed = true; break;
         }
         if (ready == 0) {
+            if (host.pending()) continue;
             // Quiet: the program waits for input. Record the screen, answer.
             if (!changed) {
                 // Nothing new since the last answer (a prompt that does not
@@ -260,7 +373,7 @@ int main(int argc, char** argv)
                 ++quietRounds;
                 if (quietRounds > 40) {
                     std::fprintf(stderr, "the program stopped responding; stopping\n");
-                    ::kill(child, SIGKILL);
+                    failed = true;
                     break;
                 }
                 if (quietRounds % 4 != 0) {
@@ -276,19 +389,19 @@ int main(int argc, char** argv)
                 char name[64];
                 std::snprintf(name, sizeof name, "/%04d.txt", ++dumps);
                 dumpPath = idleDir + name;
-                if (FILE* f = std::fopen(dumpPath.c_str(), "w")) {
-                    std::fputs(text.c_str(), f);
-                    std::fclose(f);
-                }
+            } else dumpPath = temporary.path;
+            if (!dumpPath.empty()) {
+                FILE* f = std::fopen(dumpPath.c_str(), "w");
+                if (!f) { std::perror("screen dump"); failed = true; break; }
+                const bool written = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+                const bool closed = std::fclose(f) == 0;
+                if (!written || !closed) { failed = true; break; }
             }
             if (!responder.empty() && !dumpPath.empty()) {
                 std::string keys;
-                if (FILE* pipe = ::popen((responder + " " + dumpPath).c_str(), "r")) {
-                    char line[4096];
-                    while (std::fgets(line, sizeof line, pipe)) {
-                        keys += line;
-                    }
-                    ::pclose(pipe);
+                if (!respond(responder, dumpPath, keys)) {
+                    std::fprintf(stderr, "responder failed, timed out or exceeded 1 MiB\n");
+                    failed = true; break;
                 }
                 while (!keys.empty() && (keys.back() == '\n')) {
                     keys.pop_back();
@@ -308,6 +421,8 @@ int main(int argc, char** argv)
             }
             continue;
         }
+        if (pfd.revents & POLLOUT) host.flush();
+        if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) continue;
         changed = true;
         const ssize_t n = ::read(master, buf, sizeof buf);
         if (n > 0) {
@@ -318,10 +433,14 @@ int main(int argc, char** argv)
             break; // EIO: the child closed its side
         }
     }
+    ::close(master);
+    if (failed) ::kill(child, SIGKILL);
     int status = 0;
-    ::waitpid(child, &status, 0);
+    while (::waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) { std::perror("waitpid"); return 2; }
+    }
     if (dumpScreen) {
         std::fputs(screenText(terminal).c_str(), stderr);
     }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    return failed ? 2 : WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }

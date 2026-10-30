@@ -22,11 +22,28 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-"$build/tools/conformance/afterglow_headless" -- python3 "$suite/esctest/esctest.py" \
+if ! "$build/tools/conformance/afterglow_headless" -- python3 "$suite/esctest/esctest.py" \
     --expected-terminal xterm --xterm-checksum 400 --xterm-reverse-wrap 383 \
-    --timeout 0.1 --no-print-logs --logfile "$work/esctest.log" "$@" >/dev/null 2>&1 || true
+    --timeout 0.1 --no-print-logs --logfile "$work/esctest.log" "$@" >"$work/runner.log" 2>&1; then
+    cat "$work/runner.log" >&2
+    echo "esctest runner failed" >&2
+    exit 1
+fi
 
-grep '^\*\*\* .* tests passed' "$work/esctest.log" || { echo "esctest produced no summary" >&2; exit 1; }
+# Upstream catches Python exceptions without a failing exit status. Require
+# exactly one complete summary and reject its exception marker independently.
+python3 - "$work/esctest.log" <<'PY'
+import re
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+summaries = re.findall(r'^\*\*\* (\d+) tests? passed, (\d+) known bugs?, (\d+) tests? failed \*\*\*$', text, re.M | re.I)
+failures = re.findall(r'^\*\*\* TEST \S+ FAILED:', text, re.M)
+if (len(summaries) != 1 or 'Failed with traceback:' in text or
+        int(summaries[0][2]) != len(failures) or sum(map(int, summaries[0])) == 0):
+    sys.exit('esctest did not complete a consistent, nonempty run')
+print('esctest: %s passed, %s known bugs, %s failed' % summaries[0])
+PY
 sed -n 's/^\*\*\* TEST [A-Za-z0-9_]*\.\(test_[A-Za-z0-9_]*\) FAILED:.*/\1/p' "$work/esctest.log" | sort -u > "$work/failed"
 grep -v '^#' "$here/esctest-expected-failures.txt" | grep . | sort -u > "$work/expected"
 
