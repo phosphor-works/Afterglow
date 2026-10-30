@@ -48,7 +48,8 @@ qt_add_executable(afterglow
 )
 
 # Shader pack loading, shared with the developer render tool.
-qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h)
+qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h
+    src/shaders/ShaderControls.cpp src/shaders/ShaderControls.h)
 target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")

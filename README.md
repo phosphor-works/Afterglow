@@ -655,6 +655,57 @@ The Phosphor example uses current snapshots and tab batches, so loading it
 after panes already exist works without rebuilding a pane registry. Command
 activity in background tabs does not charge the visible tab's scene.
 
+### Live named shader parameters
+
+`afterglow.shaders(pane)` returns the window's active effect instances through
+`afterglow.request` / `on_result`, in `data.shaders`. Each has `instance`,
+`shader`, `layer`, `parameters` (IDs, types, defaults, ranges, units and a
+`supported` flag), and the effective `values` for that pane. Repeated uses of
+one pack have distinct instance IDs. Raw shaders without metadata are listed
+with no editable parameters. Image parameters are not supported by this API.
+
+`afterglow.shader_parameters(pane, instance, values, scope?)` replaces this
+script's overrides for the selected instance and target panes. Scope defaults
+to `"pane"`; `"tab"` and `"window"` select the anchor's current tab or window
+at application time. These are snapshots of the target set, not subscriptions
+for newly created panes. A window-layer effect requires `"window"` scope and
+has one window-owned value independent of pane focus. Other layers can be
+updated across at most 128 panes in one atomic operation and one effect budget
+unit. Results include the affected `data.panes`.
+
+```lua
+return afterglow.request("inspect", afterglow.shaders(ev.pane))
+```
+
+In `on_result`, select an instance from `ev.data.shaders`, then return:
+
+```lua
+return afterglow.shader_parameters(ev.pane, instance.instance,
+    { strength = 0.8 }, "tab")
+```
+
+Numbers must be finite, integer parameters require integral values, booleans
+require booleans, and colors require valid Qt color strings such as `"#ff0077"`.
+Unknown names, unsupported types/slots, and out-of-range values reject the whole
+update. Phosphor supplies metadata and range validation; script values are not
+silently clamped or replaced. Configuration loading also uses Phosphor's
+validation/default handling.
+
+An empty values table resets this script's overrides on the selected targets.
+The most recent successful write wins per parameter across scripts; reset or
+unload reveals any other script's value, then the configured/default value.
+Writes replace the owner's previous table, so omitted parameters are released.
+Shader/configuration rebuilds clear overrides and expire instance IDs; query
+again after a stale-ID error. Moving a pane to another window drops its source
+window's parameter overrides. Closing panes releases their overrides. Values
+are transient and uniform-only: they neither edit configuration nor recompile
+shader programs. Smooth transitions are a subsequent increment.
+
+Install [shader-parameters.luau](data/examples/scripts/shader-parameters.luau)
+in `~/.config/afterglow/scripts/` for palette actions that boost or reset the
+first active Bloom instance in the current tab (or window for a window effect).
+Enable Bloom in a shader chain first; the example reports if none is active.
+
 ## Licence
 
 The application is GPL-3.0-or-later; the libraries under `libs/` are

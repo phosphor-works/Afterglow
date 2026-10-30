@@ -1229,6 +1229,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 const float age = sig.at ? std::chrono::duration<float>(wall - *sig.at).count() : 1e6f;
                 st.signals[i] = {sig.value, now - age};
             }
+            st.shaderParameters = pane.params.shaderParameters;
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;

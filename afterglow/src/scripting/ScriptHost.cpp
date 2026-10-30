@@ -130,6 +130,8 @@ const EffectKind Kinds[] = {
     {"log", false, false, {"message"}, false},
     {"signal", true, false, {}, false, {"channel", "value"}},
     {"signals", true, false, {"scope"}, false},
+    {"shaders", true, false, {}, false},
+    {"shader_parameters", true, false, {"instance", "scope"}, false},
 };
 
 bool number(const QVariant& v)
@@ -674,6 +676,17 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 badNumber = QLatin1String(key);
             }
             if (v.isValid()) effect.insert(QLatin1String(key), v.toDouble());
+        }
+        if (kind == QLatin1String("shader_parameters")) {
+            const auto values = raw.value(QStringLiteral("values"));
+            const auto scope = effect.value(QStringLiteral("scope")).toString();
+            if (values.typeId() != QMetaType::QVariantMap || values.toMap().size() > 48)
+                error = QStringLiteral("Shader values must be an object with at most 48 parameters");
+            if (scope != QLatin1String("pane") && scope != QLatin1String("tab") && scope != QLatin1String("window"))
+                error = QStringLiteral("Shader scope must be pane, tab or window");
+            const auto instance = effect.value(QStringLiteral("instance")).toString();
+            if (instance.isEmpty() || instance.size() > 128) error = QStringLiteral("Invalid shader instance ID");
+            effect.insert(QStringLiteral("values"), values);
         }
         if (kind == QLatin1String("state_write")) {
             const auto value = raw.value(QStringLiteral("value"));

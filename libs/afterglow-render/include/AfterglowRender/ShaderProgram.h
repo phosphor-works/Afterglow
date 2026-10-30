@@ -6,6 +6,7 @@
 #include <AfterglowRender/afterglowrender_export.h>
 
 #include <QByteArray>
+#include <QHash>
 #include <QString>
 #include <rhi/qshader.h>
 
@@ -92,6 +93,34 @@ struct ShaderProgramSource
     std::array<float, 64> colors{};
 };
 
+/// Sparse per-instance overrides; applied only while packing frame uniforms.
+struct ShaderParameterValues
+{
+    std::array<float, 32> params{};
+    std::array<float, 64> colors{};
+    std::uint32_t paramMask = 0;
+    std::uint16_t colorMask = 0;
+    void merge(const ShaderParameterValues& other)
+    {
+        for (int i = 0; i < 32; ++i)
+            if (other.paramMask & (std::uint32_t(1) << i)) params[i] = other.params[i];
+        for (int i = 0; i < 16; ++i)
+            if (other.colorMask & (1u << i))
+                for (int c = 0; c < 4; ++c) colors[i * 4 + c] = other.colors[i * 4 + c];
+        paramMask |= other.paramMask;
+        colorMask |= other.colorMask;
+    }
+    void apply(TerminalShaderUniforms& u) const
+    {
+        for (int i = 0; i < 32; ++i)
+            if (paramMask & (std::uint32_t(1) << i)) u.customParams[i / 4][i % 4] = params[i];
+        for (int i = 0; i < 16; ++i)
+            if (colorMask & (1u << i))
+                for (int c = 0; c < 4; ++c) u.customColors[i][c] = colors[i * 4 + c];
+    }
+};
+using ShaderParameterMap = QHash<QString, ShaderParameterValues>;
+
 /// A compiled terminal post-processing shader (SPIR-V for Vulkan).
 class AFTERGLOWRENDER_EXPORT ShaderProgram
 {
@@ -107,6 +136,13 @@ public:
 
     const QShader& shader() const noexcept { return m_shader; }
     const QString& id() const noexcept { return m_id; }
+    const QString& instanceId() const noexcept { return m_instanceId; }
+    std::shared_ptr<const ShaderProgram> instance(const QString& id) const
+    {
+        auto copy = std::make_shared<ShaderProgram>(*this);
+        copy->m_instanceId = id;
+        return copy;
+    }
     /// The shader reads iTime, so the window must keep rendering frames.
     bool animated() const noexcept { return m_animated; }
     bool readsScrollback() const noexcept { return m_readsScrollback; }
@@ -121,6 +157,7 @@ public:
 private:
     QShader m_shader;
     QString m_id;
+    QString m_instanceId;
     bool m_animated = false;
     bool m_readsPreviousText = false;
     bool m_readsScrollback = false;

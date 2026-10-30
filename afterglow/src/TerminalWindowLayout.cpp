@@ -30,6 +30,7 @@ void TerminalWindow::releasePaneUi(Pane* pane)
 void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
 {
     if (destination == this) return;
+    m_shaderControls.removePane(pane->id()); // instance IDs belong to the source window
     QObject::disconnect(pane, nullptr, this, nullptr);
     if (auto node = m_statusViews.extract(pane); !node.empty()) destination->m_statusViews.insert(std::move(node));
     if (auto node = m_clipboardGrants.extract(pane); !node.empty()) destination->m_clipboardGrants.insert(std::move(node));

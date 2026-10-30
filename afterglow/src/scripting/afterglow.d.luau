@@ -65,8 +65,17 @@ export type ActionEvent = { pane: Pane?, terminal: State } -- the targeted pane,
 export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 
+export type ShaderParameter = {
+    id: string, name: string, type: string, default: (number | boolean | string),
+    min: number?, max: number?, slot: number, unit: string, supported: boolean,
+}
+export type ShaderInstance = {
+    instance: string, shader: string, layer: string,
+    parameters: { ShaderParameter }, values: {[string]: number | boolean | string},
+}
 export type OperationError = { code: string, message: string }
 export type OperationData = {
+    shaders: { ShaderInstance }?,
     text: string?, truncated: boolean?, available: boolean?, name: string?,
     stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?,
     pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }?,
@@ -155,6 +164,10 @@ declare afterglow: {
     open_url: (url: string) -> Effect, -- http, https and mailto
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
     -- sets iSignal[channel] (0-7) on the pane's shaders to (value, iTime now)
+    -- Query active instances, metadata and effective values via on_result.
+    shaders: (pane: PaneRef) -> Effect,
+    -- Replaces this script's overrides; {} resets. Window effects require window scope.
+    shader_parameters: (pane: PaneRef, instance: string, values: {[string]: number | boolean | string}, scope: ("pane" | "tab" | "window")?) -> Effect,
     signal: (pane: PaneRef, channel: number, value: number?) -> Effect,
     -- One effect, 1-8 unique channels, at most 128 panes. Defaults to anchor's tab.
     signals: (pane: PaneRef, values: { SignalValue }, scope: ("pane" | "tab" | "window")?) -> Effect,

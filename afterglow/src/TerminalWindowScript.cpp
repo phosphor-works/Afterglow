@@ -72,8 +72,30 @@ QVariantMap TerminalWindow::scriptOverrides(Pane* pane) const
     }
     return values;
 }
+QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVariantMap& effect, QVariantMap& result)
+{
+    if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
+    if (effect.value(QStringLiteral("kind")) == QLatin1String("shaders")) {
+        result.insert(QStringLiteral("shaders"), m_shaderControls.describe(pane->id()));
+        return {};
+    }
+    const auto scope = effect.value(QStringLiteral("scope")).toString();
+    QList<quint32> targets;
+    QVariantList ids;
+    for (Pane* p : panes()) {
+        if (scope == QLatin1String("window") || (scope == QLatin1String("tab") && tabOf(p) == tabOf(pane))
+            || (scope == QLatin1String("pane") && p == pane)) { targets.append(p->id()); ids.append(p->id()); }
+    }
+    const auto error = m_shaderControls.update(owner, targets, effect.value(QStringLiteral("instance")).toString(),
+                                               scope, effect.value(QStringLiteral("values")).toMap());
+    if (!error.isEmpty()) return error;
+    result.insert(QStringLiteral("panes"), ids);
+    scheduleRender();
+    return {};
+}
 void TerminalWindow::clearScriptOwner(const QString& owner)
 {
+    m_shaderControls.clearOwner(owner);
     if (m_scriptDialog && m_scriptDialog->owner == owner) finishScriptDialog(false, {});
     std::erase_if(m_scriptAppearance, [&](const auto& item) { return item.owner == owner; });
     updateChrome(); scheduleRender();

@@ -112,6 +112,7 @@ public:
             std::optional<std::chrono::steady_clock::time_point> at;
         };
         std::array<Signal, 8> signals{};
+        ShaderParameterMap shaderParameters;
     };
 
     /// Where each layer's instances start, relative to the pane's first:

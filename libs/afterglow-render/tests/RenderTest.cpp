@@ -657,6 +657,34 @@ ShaderProgramPtr layerShader(const char* id, const char* body, bool hdr = false)
 }
 } // namespace
 
+TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
+{
+    auto source = layerShader("live-parameters", "fragColor = vec4(customParams[0].x, customColors[0].g, 0.0, 1.0);");
+    ASSERT_TRUE(source);
+    auto program = source->instance(QStringLiteral("test-instance"));
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(0, 0), size);
+    ShaderParameterValues values;
+    values.paramMask = 1; values.params[0] = 0.25f;
+    values.colorMask = 1; values.colors[1] = 0.75f;
+    for (int layer = 0; layer < 3; ++layer) {
+        ShaderChains chains;
+        if (layer == 0) chains.background = {program};
+        if (layer == 1) chains.pane = {program};
+        if (layer == 2) chains.window = {program};
+        renderer->setShaderChains(chains);
+        pane.params.shaderParameters.insert(program->instanceId(), values);
+        auto image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(64, 191, 0));
+        pane.params.shaderParameters.clear();
+        image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(0, 0, 0));
+    }
+}
+
 TEST_F(Render, IdentityLayerShadersChangeNothing)
 {
     // Coloured cells, an underline, translucency and a block cursor on a letter.

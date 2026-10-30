@@ -1325,3 +1325,56 @@ TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
     ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-autosave",stored).isEmpty());
     EXPECT_FALSE(stored.value.value("enabled").toMap().contains("dev"));
 }
+
+TEST_F(ScriptHostTest, ShaderEffectsPreserveTypedValuesAndValidateShape)
+{
+    write(user, QStringLiteral("shader.luau"), R"(
+return {
+    on_bell = function(ev)
+        return {
+            afterglow.shaders(ev.pane),
+            afterglow.shader_parameters(ev.pane, "instance", {strength=0.5, tint="#ff0077", enabled=true}, "tab"),
+            afterglow.shader_parameters(ev.pane, "instance", {}),
+            afterglow.shader_parameters(ev.pane, "", {strength=1}),
+            afterglow.shader_parameters(ev.pane, "instance", {strength=1}, "all"),
+            afterglow.shader_parameters(ev.pane, "instance", 3),
+        }
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.results.size(), 6);
+    ASSERT_EQ(rec.applied.size(), 3);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("kind")), QStringLiteral("shaders"));
+    const auto values = rec.applied[1].value(QStringLiteral("values")).toMap();
+    EXPECT_EQ(values.value(QStringLiteral("enabled")).typeId(), QMetaType::Bool);
+    EXPECT_DOUBLE_EQ(values.value(QStringLiteral("strength")).toDouble(), 0.5);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("scope")), QStringLiteral("tab"));
+    EXPECT_TRUE(rec.applied[2].value(QStringLiteral("values")).toMap().isEmpty());
+}
+
+TEST_F(ScriptHostTest, ShaderParameterExampleDiscoversThenTargetsReturnedInstance)
+{
+    ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS) + "/shader-parameters.luau",
+                           user.filePath("shader-parameters.luau")));
+    applyHook = [](const QVariantMap& e) {
+        if (e.value(QStringLiteral("kind")) == QLatin1String("shaders"))
+            return ScriptHost::EffectResult{{}, {{QStringLiteral("shaders"), QVariantList{
+                QVariantMap{{QStringLiteral("instance"), QStringLiteral("window-instance")},
+                            {QStringLiteral("shader"), QStringLiteral("bloom")},
+                            {QStringLiteral("layer"), QStringLiteral("window")}}}}}, {}};
+        return ScriptHost::EffectResult{};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction(QStringLiteral("shader-parameters.boost"), 7));
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("instance")), QStringLiteral("window-instance"));
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("scope")), QStringLiteral("window"));
+    EXPECT_DOUBLE_EQ(rec.applied[1].value(QStringLiteral("values")).toMap().value(QStringLiteral("strength")).toDouble(), 1.2);
+    ASSERT_TRUE(host->runAction(QStringLiteral("shader-parameters.reset"), 7));
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 4);
+    EXPECT_TRUE(rec.applied.last().value(QStringLiteral("values")).toMap().isEmpty());
+}

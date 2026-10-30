@@ -54,6 +54,7 @@ struct ShaderRegionState
     std::array<float, 3> scrollback{}; ///< pane rows, current-tab rows, eased current-tab rows
     /// Script signals: value and shader time when set.
     std::array<std::array<float, 2>, 8> signals{};
+    ShaderParameterMap shaderParameters;
 };
 
 struct ShaderFrameTime

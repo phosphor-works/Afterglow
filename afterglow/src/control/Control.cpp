@@ -461,6 +461,13 @@ QString Control::scriptAppearance(const QString& owner, quint32 id, const QVaria
     auto* pane = find(id, &window);
     return pane ? window->setScriptAppearance(owner, pane, effect) : QStringLiteral("Pane closed");
 }
+QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? window->scriptShader(owner, pane, effect, result) : noPane(id);
+}
+
 void Control::clearScriptOwner(const QString& owner)
 {
     for (auto window : m_windows) if (window) window->clearScriptOwner(owner);

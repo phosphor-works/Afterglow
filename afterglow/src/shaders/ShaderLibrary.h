@@ -49,6 +49,9 @@ public:
     AfterglowRender::ShaderChains build(const Refs& refs, const QVariantMap& params);
 
     QStringList packIds() const;
+    QVariantList parameters(const QString& ref) const;
+    QString validateParameters(const QString& ref, const QVariantMap& values,
+                               AfterglowRender::ShaderParameterValues& packed) const;
 
 Q_SIGNALS:
     /// A pack or shader file changed on disk; chains should be rebuilt.

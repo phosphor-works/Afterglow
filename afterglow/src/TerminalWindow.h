@@ -9,6 +9,7 @@
 #include "animation/PaneMotion.h"
 #include "app/Services.h"
 #include "config/Settings.h"
+#include "shaders/ShaderControls.h"
 
 #include <AfterglowRender/GridRenderer.h>
 
@@ -97,6 +98,7 @@ public:
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
     void clearScriptOwner(const QString& owner);
+    QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
 
     QJsonObject projectLayout() const;
     QVariantMap restoreProject(const QJsonObject& document);
@@ -288,6 +290,7 @@ private:
     SettingsStore& m_settings;
     QQmlEngine& m_engine;
     ShaderLibrary& m_shaders;
+    ShaderControls m_shaderControls;
     ScriptHost& m_scripts;
     AudioController& m_audio;
     bool m_audioReactive = false;

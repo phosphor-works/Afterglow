@@ -124,6 +124,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     , m_settings(services.settings)
     , m_engine(services.engine)
     , m_shaders(services.shaders)
+    , m_shaderControls(services.shaders)
     , m_scripts(services.scripts)
     , m_audio(services.audio)
     , m_id(s_nextWindowId++)
@@ -515,6 +516,7 @@ void TerminalWindow::closePane(Pane* pane)
 {
     const int index = tabOf(pane);
     if (m_scriptDialog && m_scriptDialog->pane == pane) finishScriptDialog(false, {});
+    m_shaderControls.removePane(pane->id());
     std::erase_if(m_scriptAppearance, [pane](const auto& item) { return item.pane == pane; });
     if (index < 0) {
         return;
@@ -766,6 +768,7 @@ void TerminalWindow::closeTab(int index)
         return;
     }
     if (m_scriptDialog && tabOf(m_scriptDialog->pane) == index) finishScriptDialog(false, {});
+    for (Pane* p : panes()) if (tabOf(p) == index) m_shaderControls.removePane(p->id());
     std::erase_if(m_scriptAppearance, [this, index](const auto& item) { return tabOf(item.pane) == index; });
     if (m_tabs.size() == 1) {
         qCInfo(lcWindow) << "last pane closed, closing the window";
@@ -1271,6 +1274,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     params.cursorPosition = m.cursor.value();
     params.scrollShift = shift;
     params.signals = pane->shaderSignals();
+    params.shaderParameters = m_shaderControls.values(pane->id());
 }
 
 void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
@@ -2634,6 +2638,7 @@ void TerminalWindow::applyShaders()
 {
     const Settings& s = m_settings.settings();
     auto chains = m_shaders.build(s.shaders, s.shaderParams);
+    m_shaderControls.rebuild(chains);
     m_audioReactive = chains.audioReactive();
     m_renderer->setShaderChains(std::move(chains));
     m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);

@@ -99,6 +99,7 @@ public:
     QString scriptDialog(const QString& owner, quint32 pane, const QVariantMap& effect, ScriptReply reply);
     QString scriptAppearance(const QString& owner, quint32 pane, const QVariantMap& effect);
     void clearScriptOwner(const QString& owner);
+    QString scriptShader(const QString& owner, quint32 pane, const QVariantMap& effect, QVariantMap& result);
 
     static QString scopeName(TextScope scope);
     static std::optional<TextScope> scopeFromName(const QString& name);

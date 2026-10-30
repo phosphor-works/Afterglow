@@ -7,6 +7,9 @@
 #include <PhosphorShaders/ShaderRegistry.h>
 
 #include <QColor>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -105,6 +108,66 @@ PhosphorShaders::ShaderRegistry::ShaderInfo findPack(const PhosphorShaders::Shad
 }
 } // namespace
 
+QVariantList ShaderLibrary::parameters(const QString& ref) const
+{
+    QVariantList result;
+    for (const auto& p : findPack(*m_registry, ref).parameters) {
+        const bool supported = p.slot >= 0 && ((p.type == QLatin1String("color") && p.slot < 16)
+            || ((p.type == QLatin1String("float") || p.type == QLatin1String("int") || p.type == QLatin1String("bool")) && p.slot < 32));
+        QVariantMap entry{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name},
+            {QStringLiteral("type"), p.type}, {QStringLiteral("default"), p.defaultValue},
+            {QStringLiteral("slot"), p.slot}, {QStringLiteral("supported"), supported}, {QStringLiteral("unit"), p.unit}};
+        if (p.minValue.isValid()) entry.insert(QStringLiteral("min"), p.minValue);
+        if (p.maxValue.isValid()) entry.insert(QStringLiteral("max"), p.maxValue);
+        result.append(entry);
+    }
+    return result;
+}
+
+QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap& values,
+                                         AfterglowRender::ShaderParameterValues& packed) const
+{
+    const auto info = findPack(*m_registry, ref);
+    if (!info.isValid()) return QStringLiteral("Shader has no parameter metadata");
+    AfterglowRender::ShaderParameterValues candidate;
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        const auto p = std::find_if(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); });
+        if (p == info.parameters.end()) return QStringLiteral("Unknown shader parameter: %1").arg(it.key());
+        const QVariant& v = it.value();
+        const auto type = v.metaType().id();
+        if (p->type == QLatin1String("float") || p->type == QLatin1String("int")) {
+            const double n = v.toDouble();
+            if ((type != QMetaType::Double && type != QMetaType::Int && type != QMetaType::LongLong)
+                || !std::isfinite(n) || std::abs(n) > std::numeric_limits<float>::max()
+                || (p->type == QLatin1String("int") && (n != std::floor(n) || n < std::numeric_limits<int>::min() || n > std::numeric_limits<int>::max())))
+                return QStringLiteral("Parameter %1 needs a finite %2").arg(it.key(), p->type);
+        } else if (p->type == QLatin1String("bool")) {
+            if (type != QMetaType::Bool) return QStringLiteral("Parameter %1 needs a boolean").arg(it.key());
+        } else if (p->type == QLatin1String("color")) {
+            if (type != QMetaType::QString || !QColor(v.toString()).isValid()) return QStringLiteral("Parameter %1 needs a color string").arg(it.key());
+        } else return QStringLiteral("Unsupported parameter type: %1").arg(p->type);
+        if (p->slot < 0 || p->slot >= (p->type == QLatin1String("color") ? 16 : 32))
+            return QStringLiteral("Parameter has no supported uniform slot");
+    }
+    if (!m_registry->validateParams(info.id, values)) return QStringLiteral("Shader parameter outside its declared range");
+    const auto validated = m_registry->validateAndCoerceParams(info.id, values);
+    for (const auto& p : info.parameters) {
+        if (!values.contains(p.id)) continue;
+        const auto v = validated.value(p.id);
+        if (p.type == QLatin1String("color")) {
+            const QColor c(v.toString());
+            candidate.colorMask |= std::uint16_t(1u << p.slot);
+            auto* out = candidate.colors.data() + p.slot * 4;
+            out[0] = c.redF(); out[1] = c.greenF(); out[2] = c.blueF(); out[3] = c.alphaF();
+        } else {
+            candidate.paramMask |= std::uint32_t(1) << p.slot;
+            candidate.params[p.slot] = p.type == QLatin1String("bool") ? (v.toBool() ? 1.f : 0.f) : v.toFloat();
+        }
+    }
+    packed = candidate;
+    return {};
+}
+
 AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVariantMap& params)
 {
     AfterglowRender::ShaderChains chains;
@@ -155,11 +218,12 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
         dir = info.packDir;
         src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();
         // Defaults, overlaid with the config's values, in phosphor's slot layout.
+        const auto validated = m_registry->validateAndCoerceParams(info.id, overrides);
         for (const auto& p : info.parameters) {
             if (p.slot < 0) {
                 continue;
             }
-            const QVariant v = overrides.contains(p.id) ? overrides.value(p.id) : p.defaultValue;
+            const QVariant v = validated.value(p.id, p.defaultValue);
             if (p.type == QLatin1String("color")) {
                 const QColor c(v.toString());
                 if (p.slot < 16 && c.isValid()) {

@@ -453,6 +453,7 @@ void PostChain::fill(TerminalShaderUniforms& u, const ShaderRegionState& s, cons
         u.iAudioSpectrumSize = m_device.audioSpectrumSize();
     }
     std::memcpy(u.customColors, program.colors().data(), sizeof u.customColors);
+    if (auto it = s.shaderParameters.constFind(program.instanceId()); it != s.shaderParameters.cend()) it->apply(u);
     for (std::size_t i = 0; i < s.signals.size(); ++i) {
         u.iSignal[i][0] = s.signals[i][0];
         u.iSignal[i][1] = s.signals[i][1];
