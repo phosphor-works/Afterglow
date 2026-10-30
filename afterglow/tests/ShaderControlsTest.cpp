@@ -5,6 +5,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <gtest/gtest.h>
 #include <limits>
@@ -35,6 +36,20 @@ protected:
         return controls.update(owner, panes, id(index), scope, values);
     }
 };
+
+TEST_F(ShaderControlsTest, EveryBundledAndExamplePackCompiles)
+{
+    const auto ids = library.packIds();
+    ASSERT_GE(ids.size(), 14);
+    for (const auto& pack : ids) {
+        SCOPED_TRACE(pack.toStdString());
+        ShaderLibrary::Refs refs;
+        refs.background = {pack};
+        const auto result = library.build(refs, {});
+        ASSERT_EQ(result.background.size(), 1);
+        EXPECT_TRUE(result.background.front()->shader().isValid());
+    }
+}
 
 TEST_F(ShaderControlsTest, InstancesAreDistinctAndUpdatesNeverRecompile)
 {
@@ -179,6 +194,27 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     QTemporaryDir config;
     qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
+    QDirIterator packs(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("metadata.json")}, QDir::Files, QDirIterator::Subdirectories);
+    while (packs.hasNext()) {
+        const QFileInfo metadata(packs.next());
+        const QDir source = metadata.dir();
+        const QString target = config.filePath(QStringLiteral("afterglow/shaders/") + source.dirName());
+        if (!QDir().mkpath(target)) return 1;
+        QDirIterator files(source.absolutePath(), QDir::Files, QDirIterator::Subdirectories);
+        while (files.hasNext()) {
+            const QString from = files.next();
+            const QString to = target + QLatin1Char('/') + source.relativeFilePath(from);
+            if (!QDir().mkpath(QFileInfo(to).absolutePath()) || !QFile::copy(from, to)) return 1;
+        }
+    }
+    const QString shared = config.filePath(QStringLiteral("afterglow/shaders/shared"));
+    if (!QDir().mkpath(shared)) return 1;
+    QDirIterator includes(QStringLiteral(AFTERGLOW_SHADER_DATA_DIR), {QStringLiteral("*.glsl")}, QDir::Files, QDirIterator::Subdirectories);
+    while (includes.hasNext()) {
+        const QString from = includes.next();
+        if (QFileInfo(from).dir().dirName() == QLatin1String("shared")
+            && !QFile::copy(from, shared + QLatin1Char('/') + QFileInfo(from).fileName())) return 1;
+    }
     const auto path = config.filePath(QStringLiteral("afterglow/shaders/types"));
     QDir().mkpath(path);
     QFile metadata(path + QStringLiteral("/metadata.json"));
@@ -186,12 +222,113 @@ int main(int argc, char** argv)
     metadata.write(R"({"id":"types","name":"Types","fragmentShader":"effect.frag","presets":{"One":{"count":1}},"parameters":[
         {"id":"count","name":"Count","type":"int","default":2,"min":1,"max":8},
         {"id":"enabled","name":"Enabled","type":"bool","default":false},
-        {"id":"tint","name":"Tint","type":"color","default":"#ffffff"}]})");
+        {"id":"tint","name":"Tint","type":"color","default":"#ffffff"},
+        {"id":"photo","name":"Photo","type":"image","default":"red.png"}]})");
     metadata.close();
     QFile shader(path + QStringLiteral("/effect.frag"));
     if (!shader.open(QIODevice::WriteOnly)) return 1;
     shader.write("void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }");
     shader.close();
+    QImage red(2,2,QImage::Format_RGBA8888); red.fill(Qt::red);
+    QImage blue(2,2,QImage::Format_RGBA8888); blue.fill(Qt::blue);
+    if (!red.save(path+QStringLiteral("/red.png")) || !blue.save(path+QStringLiteral("/blue.png"))) return 1;
+    const auto passes=config.filePath(QStringLiteral("afterglow/shaders/passes"));
+    QDir().mkpath(passes);
+    QFile multi(passes+QStringLiteral("/metadata.json"));
+    if(!multi.open(QIODevice::WriteOnly)) return 1;
+    multi.write(R"({"id":"passes","name":"Passes","multipass":true,"fragmentShader":"effect.frag","bufferShaders":["a.frag","b.frag"],"bufferWraps":["repeat","mirror"],"bufferFilters":["nearest","linear"],"bufferFeedback":true})"); multi.close();
+    for(const auto& name:{QStringLiteral("effect.frag"),QStringLiteral("a.frag"),QStringLiteral("b.frag")}) {
+        QFile f(passes+QLatin1Char('/')+name); if(!f.open(QIODevice::WriteOnly)) return 1;
+        f.write("void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}");
+    }
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+TEST_F(ShaderControlsTest, ImagesLoadTransactionallyAndTransitionAtCompletion)
+{
+    ShaderLibrary::Refs refs; refs.background={QStringLiteral("types")};
+    auto images=library.build(refs,{}); ASSERT_EQ(images.background.size(),1u);
+    controls.rebuild(images); ShaderClock clock; controls.setClock(&clock);
+    const auto instance=controls.describe(7).front().toMap()["instance"].toString();
+    ShaderParameterValues packed;
+    ASSERT_TRUE(library.validateParameters("types",{{"photo","blue.png"}},packed).isEmpty());
+    ASSERT_EQ(packed.imageMask,1); EXPECT_EQ(packed.images[0].pixelColor(0,0),QColor(Qt::blue));
+    EXPECT_FALSE(library.validateParameters("types",{{"photo","missing.png"}},packed).isEmpty());
+    EXPECT_EQ(packed.images[0].pixelColor(0,0),QColor(Qt::blue));
+    ASSERT_TRUE(controls.update("test",{7},instance,"pane",{{"photo","blue.png"}},{{"duration_ms",1000.}}).isEmpty());
+    clock.step(500); controls.advance();
+    EXPECT_EQ(controls.values(7)[instance].images[0].pixelColor(0,0),QColor(Qt::red));
+    clock.step(600); controls.advance();
+    EXPECT_EQ(controls.values(7)[instance].images[0].pixelColor(0,0),QColor(Qt::blue));
+    QVariantMap saved, values;
+    ASSERT_TRUE(library.savePreset("types","Image scene",{{"photo","blue.png"}},saved).isEmpty());
+    EXPECT_TRUE(library.presetParameters("types",saved["id"].toString(),values).isEmpty());
+    EXPECT_EQ(values["photo"].toString(),"blue.png");
+}
+TEST_F(ShaderControlsTest, MultipleBufferMetadataPreservesSamplerModes)
+{
+    ShaderLibrary::Refs refs; refs.background={QStringLiteral("passes")};
+    const auto result=library.build(refs,{}); ASSERT_EQ(result.background.size(),1u);
+    const auto& program=*result.background.front(); ASSERT_EQ(program.buffers().size(),2u);
+    EXPECT_EQ(program.bufferSettings(0).wrap,ShaderWrap::Repeat);
+    EXPECT_EQ(program.bufferSettings(1).wrap,ShaderWrap::Mirror);
+    EXPECT_TRUE(program.bufferSettings(0).nearest); EXPECT_FALSE(program.bufferSettings(1).nearest);
+}
+
+TEST_F(ShaderControlsTest, DecodedImageBudgetRejectsWholeUpdate)
+{
+    QTemporaryDir assets;
+    QImage image(4096, 1024, QImage::Format_RGBA8888);
+    image.fill(Qt::green);
+    const QString path = assets.filePath(QStringLiteral("large.png"));
+    ASSERT_TRUE(image.save(path));
+    ShaderLibrary::Refs refs; refs.background = {QStringLiteral("types")};
+    auto chain = library.build(refs, {}); ASSERT_EQ(chain.background.size(), 1u);
+    controls.rebuild(chain);
+    const auto instance = controls.describe(7).front().toMap()["instance"].toString();
+    // Distinct decodes stay retained under different owners. Including the
+    // configured tiny default, the sixteenth 16-MiB image exceeds the budget.
+    for (int i = 0; i < 15; ++i)
+        ASSERT_TRUE(controls.update(QString::number(i), {7}, instance, "pane", {{"photo", path}}).isEmpty());
+    const auto previous = controls.values(7)[instance].images[0].cacheKey();
+    EXPECT_FALSE(controls.update("overflow", {7}, instance, "pane", {{"photo", path}}).isEmpty());
+    EXPECT_EQ(controls.values(7)[instance].images[0].cacheKey(), previous);
+    EXPECT_TRUE(controls.update("0", {7}, instance, "pane", {}).isEmpty());
+    EXPECT_TRUE(controls.update("overflow", {7}, instance, "pane", {{"photo", path}}).isEmpty());
+}
+
+TEST_F(ShaderControlsTest, ConfiguredImageBudgetRecoversAfterRemovingOtherPacks)
+{
+    const auto base = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/");
+    QImage image(4096, 1024, QImage::Format_RGBA8888);
+    image.fill(Qt::green);
+    ShaderLibrary::Refs refs;
+    for (int i = 0; i < 17; ++i) {
+        const auto name = QStringLiteral("budget-%1").arg(i);
+        const auto dir = base + name;
+        ASSERT_TRUE(QDir().mkpath(dir));
+        QFile metadata(dir + QStringLiteral("/metadata.json"));
+        ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
+        metadata.write((QStringLiteral(R"({"id":"%1","name":"Budget","fragmentShader":"effect.frag","parameters":[{"id":"photo","name":"Photo","type":"image","default":"image.png"}]})").arg(name)).toUtf8());
+        metadata.close();
+        QFile shader(dir + QStringLiteral("/effect.frag"));
+        ASSERT_TRUE(shader.open(QIODevice::WriteOnly));
+        shader.write("void mainImage(out vec4 c,in vec2 p){c=vec4(1.0);}");
+        shader.close();
+        ASSERT_TRUE(image.save(dir + QStringLiteral("/image.png")));
+        refs.background.push_back(name);
+    }
+    {
+        ShaderLibrary bounded;
+        auto full = bounded.build(refs, {});
+        EXPECT_EQ(full.background.size(), 16u);
+        full = {};
+        refs.background = {QStringLiteral("budget-16")};
+        auto recovered = bounded.build(refs, {});
+        ASSERT_EQ(recovered.background.size(), 1u);
+        EXPECT_EQ(recovered.background.front()->images()[0].pixelColor(0, 0), QColor(Qt::green));
+    }
+    for (int i = 0; i < 17; ++i)
+        EXPECT_TRUE(QDir(base + QStringLiteral("budget-%1").arg(i)).removeRecursively());
 }

@@ -7,7 +7,13 @@
 #include <PhosphorShaders/ShaderRegistry.h>
 #include <PhosphorShaders/ShaderPresetStore.h>
 #include <QSaveFile>
+#include <QSet>
+#include <QImageReader>
+#include <QBuffer>
 #include <QUuid>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <QColor>
 #include <algorithm>
@@ -29,6 +35,52 @@ namespace {
 QString expandHome(const QString& path)
 {
     return path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
+}
+
+QString loadImageParameter(const QString& pack, const QString& value, QImage& image, QString& resolved)
+{
+    if (value.isEmpty()) { image = {}; resolved.clear(); return {}; }
+    if (value.size() > 4096 || value.contains(QChar::Null)) return QStringLiteral("Invalid image path");
+    const auto path = expandHome(value);
+    if (QDir::isRelativePath(path) && (QDir::cleanPath(path) == QLatin1String("..")
+        || QDir::cleanPath(path).startsWith(QLatin1String("../")))) return QStringLiteral("Relative images must stay inside the pack");
+    resolved = QFileInfo(QDir(pack).absoluteFilePath(path)).absoluteFilePath();
+    constexpr qint64 MaxBytes = 16 * 1024 * 1024;
+    // Validate the opened descriptor: a path replacement must not turn a
+    // regular asset into a blocking FIFO or device read on the GUI thread.
+    const int fd = ::open(QFile::encodeName(resolved).constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return QStringLiteral("Cannot open image: %1").arg(value);
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > MaxBytes) {
+        ::close(fd);
+        return QStringLiteral("Image must be a regular file of at most 16 MiB");
+    }
+    if (QDir::isRelativePath(path)) {
+        const auto openedPath = QFileInfo(QStringLiteral("/proc/self/fd/%1").arg(fd)).canonicalFilePath();
+        const auto packPath = QFileInfo(pack).canonicalFilePath() + QLatin1Char('/');
+        if (openedPath.isEmpty() || !openedPath.startsWith(packPath)) {
+            ::close(fd);
+            return QStringLiteral("Relative images must stay inside the pack");
+        }
+    }
+    QFile file;
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        return QStringLiteral("Cannot read image: %1").arg(value);
+    }
+    auto bytes = file.read(MaxBytes + 1);
+    if (file.error() != QFileDevice::NoError) return QStringLiteral("Cannot read image: %1").arg(value);
+    if (bytes.size() > MaxBytes) return QStringLiteral("Image file exceeds 16 MiB");
+    QBuffer buffer(&bytes); buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer);
+    const auto size = reader.size();
+    if (size.isEmpty() || size.width() > 4096 || size.height() > 4096
+        || qint64(size.width()) * size.height() > 4 * 1024 * 1024)
+        return QStringLiteral("Image must fit 4096 pixels per side and 4 megapixels");
+    image = reader.read();
+    if (image.isNull() || image.size() != size) return QStringLiteral("Cannot decode image: %1").arg(value);
+    image = image.convertToFormat(QImage::Format_RGBA8888);
+    return image.isNull() ? QStringLiteral("Cannot allocate image") : QString();
 }
 
 bool isFileReference(const QString& ref)
@@ -182,7 +234,8 @@ QVariantList ShaderLibrary::parameters(const QString& ref) const
 {
     QVariantList result;
     for (const auto& p : findPack(*m_registry, ref).parameters) {
-        const bool supported = p.slot >= 0 && ((p.type == QLatin1String("color") && p.slot < 16)
+        const bool supported = p.slot >= 0 && (((p.type == QLatin1String("image") || p.type == QLatin1String("texture")) && p.slot < AfterglowRender::MaxShaderImages)
+            || (p.type == QLatin1String("color") && p.slot < 16)
             || ((p.type == QLatin1String("float") || p.type == QLatin1String("int") || p.type == QLatin1String("bool")) && p.slot < 32));
         QVariantMap entry{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name},
             {QStringLiteral("type"), p.type}, {QStringLiteral("default"), p.defaultValue},
@@ -215,8 +268,11 @@ QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap&
             if (type != QMetaType::Bool) return QStringLiteral("Parameter %1 needs a boolean").arg(it.key());
         } else if (p->type == QLatin1String("color")) {
             if (type != QMetaType::QString || !QColor(v.toString()).isValid()) return QStringLiteral("Parameter %1 needs a color string").arg(it.key());
+        } else if (p->type == QLatin1String("image") || p->type == QLatin1String("texture")) {
+            if (type != QMetaType::QString) return QStringLiteral("Image parameter needs a path string");
         } else return QStringLiteral("Unsupported parameter type: %1").arg(p->type);
-        if (p->slot < 0 || p->slot >= (p->type == QLatin1String("color") ? 16 : 32))
+        const bool image = p->type == QLatin1String("image") || p->type == QLatin1String("texture");
+        if (p->slot < 0 || p->slot >= (image ? AfterglowRender::MaxShaderImages : p->type == QLatin1String("color") ? 16 : 32))
             return QStringLiteral("Parameter has no supported uniform slot");
     }
     if (!m_registry->validateParams(info.id, values)) return QStringLiteral("Shader parameter outside its declared range");
@@ -224,7 +280,11 @@ QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap&
     for (const auto& p : info.parameters) {
         if (!values.contains(p.id)) continue;
         const auto v = validated.value(p.id);
-        if (p.type == QLatin1String("color")) {
+        if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
+            const auto error = loadImageParameter(info.packDir, v.toString(), candidate.images[p.slot], candidate.imagePaths[p.slot]);
+            if (!error.isEmpty()) return error;
+            candidate.imageMask |= std::uint8_t(1u << p.slot);
+        } else if (p.type == QLatin1String("color")) {
             const QColor c(v.toString());
             candidate.colorMask |= std::uint16_t(1u << p.slot);
             auto* out = candidate.colors.data() + p.slot * 4;
@@ -241,9 +301,34 @@ QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap&
 AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVariantMap& params)
 {
     AfterglowRender::ShaderChains chains;
+    auto cacheKey = [&](const QString& ref) {
+        return ref + QLatin1Char('\x1f')
+            + QString::fromUtf8(QJsonDocument::fromVariant(params.value(ref).toMap()).toJson(QJsonDocument::Compact));
+    };
+    QSet<QString> desired;
+    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window})
+        for (const auto& ref : chain) desired.insert(cacheKey(ref));
+    // Configuration changes must release old decoded assets and compiled packs.
+    m_cache.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
+    m_failed.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
+    QSet<qint64> images;
+    qint64 imageBytes = 0;
     auto add = [&](const QStringList& from, std::vector<AfterglowRender::ShaderProgramPtr>& to) {
         for (const QString& ref : from) {
             if (auto p = load(ref, params.value(ref).toMap())) {
+                auto candidate = images;
+                qint64 bytes = imageBytes;
+                for (const auto& image : p->images()) if (!image.isNull() && !candidate.contains(image.cacheKey())) {
+                    candidate.insert(image.cacheKey()); bytes += image.sizeInBytes();
+                }
+                if (bytes > 256LL * 1024 * 1024) {
+                    const auto error = QStringLiteral("Configured images exceed the 256 MiB decoded-image budget");
+                    qCWarning(lcShaders) << ref << error;
+                    // Budget pressure is transient: retry after other packs are removed.
+                    m_cache.remove(cacheKey(ref));
+                    continue;
+                }
+                images = std::move(candidate); imageBytes = bytes;
                 to.push_back(std::move(p));
             }
         }
@@ -284,31 +369,42 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
             m_failed.insert(key, error);
             return nullptr;
         }
-        // Registry owns pack discovery/schema/containment. This terminal
-        // adapter currently implements one colour buffer, not Qt Quick's
-        // multi-buffer/depth/vertex pipeline.
-        const auto wrap = info.bufferWraps.value(0, info.bufferWrap);
-        const auto filter = info.bufferFilters.value(0, info.bufferFilter);
-        if (info.bufferShaderPaths.size() > 1 || info.useDepthBuffer || !info.vertexShaderPath.isEmpty()
-            || wrap != QLatin1String("clamp") || (filter != QLatin1String("linear") && filter != QLatin1String("nearest"))) {
-            const auto error = QStringLiteral("Terminal packs support one buffer, clamp wrap, linear/nearest filtering and no custom vertex/depth pass");
-            qCWarning(lcShaders) << ref << error;
-            m_failed.insert(key, error);
-            return nullptr;
+        if (info.bufferShaderPaths.size() > AfterglowRender::MaxShaderBuffers) {
+            m_failed.insert(key, QStringLiteral("Too many buffer passes")); return nullptr;
         }
-        if (!info.bufferShaderPaths.isEmpty()) {
-            const auto bufferPath = info.bufferShaderPaths.front();
+        src.useDepthBuffer = info.useDepthBuffer;
+        if (!info.vertexShaderPath.isEmpty()) {
+            QFile vertex(info.vertexShaderPath);
+            QString error;
+            if (!vertex.open(QIODevice::ReadOnly)) error = QStringLiteral("Cannot read vertex shader: %1").arg(info.vertexShaderPath);
+            else src.vertexCode = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
+                QString::fromUtf8(vertex.readAll()), QFileInfo(info.vertexShaderPath).absolutePath(), m_includeDirs, &error).toUtf8();
+            if (!error.isEmpty()) { m_failed.insert(key, error); qCWarning(lcShaders) << error; return nullptr; }
+            if (!m_files.files().contains(info.vertexShaderPath)) m_files.addPath(info.vertexShaderPath);
+        }
+        for (int index = 0; index < info.bufferShaderPaths.size(); ++index) {
+            const auto bufferPath = info.bufferShaderPaths[index];
             QFile buffer(bufferPath);
             QString error;
+            AfterglowRender::ShaderBufferSource pass;
             if (!buffer.open(QIODevice::ReadOnly)) error = QStringLiteral("Cannot read buffer shader: %1").arg(bufferPath);
-            else src.bufferCode = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
+            else pass.code = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
                 QString::fromUtf8(buffer.readAll()), QFileInfo(bufferPath).absolutePath(), m_includeDirs, &error).toUtf8();
             if (!error.isEmpty()) { qCWarning(lcShaders) << error; m_failed.insert(key, error); return nullptr; }
             if (!m_files.files().contains(bufferPath)) m_files.addPath(bufferPath);
-            src.bufferFeedback = info.bufferFeedback;
-            src.halfFloatBuffer = info.halfFloatBuffers;
-            src.bufferScale = float(info.bufferScale);
-            src.bufferNearest = filter == QLatin1String("nearest");
+            pass.feedback = info.bufferFeedback;
+            pass.halfFloat = info.halfFloatBuffers;
+            pass.scale = float(info.bufferScale);
+            const auto filter = info.bufferFilters.value(index, info.bufferFilter);
+            const auto wrap = info.bufferWraps.value(index, info.bufferWrap);
+            if ((filter != QLatin1String("linear") && filter != QLatin1String("nearest"))
+                || (wrap != QLatin1String("clamp") && wrap != QLatin1String("repeat") && wrap != QLatin1String("mirror"))) {
+                m_failed.insert(key, QStringLiteral("Invalid buffer filter/wrap")); return nullptr;
+            }
+            pass.nearest = filter == QLatin1String("nearest");
+            pass.wrap = wrap == QLatin1String("repeat") ? AfterglowRender::ShaderWrap::Repeat
+                : wrap == QLatin1String("mirror") ? AfterglowRender::ShaderWrap::Mirror : AfterglowRender::ShaderWrap::Clamp;
+            src.buffers.push_back(std::move(pass));
         }
         path = info.sourcePath;
         dir = info.packDir;
@@ -320,7 +416,12 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
                 continue;
             }
             const QVariant v = validated.value(p.id, p.defaultValue);
-            if (p.type == QLatin1String("color")) {
+            if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
+                if (p.slot >= AfterglowRender::MaxShaderImages) continue;
+                const auto error = loadImageParameter(info.packDir, v.toString(), src.images[p.slot], src.imagePaths[p.slot]);
+                if (!error.isEmpty()) { m_failed.insert(key, error); qCWarning(lcShaders) << error; return nullptr; }
+                if (!src.imagePaths[p.slot].isEmpty() && !m_files.files().contains(src.imagePaths[p.slot])) m_files.addPath(src.imagePaths[p.slot]);
+            } else if (p.type == QLatin1String("color")) {
                 const QColor c(v.toString());
                 if (p.slot < 16 && c.isValid()) {
                     float* out = &src.colors[std::size_t(p.slot) * 4];

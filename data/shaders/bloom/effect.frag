@@ -22,7 +22,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
             vec2 offset = vec2(cos(a), sin(a)) * radius / iResolution.xy;
             vec3 s = texture(iChannel0, uv + offset).rgb;
             float luma = dot(s, vec3(0.2126, 0.7152, 0.0722));
-            glow += s * smoothstep(p_threshold, 1.0, luma) * weight;
+            glow += s * (p_threshold >= 1.0 ? step(1.0, luma) : smoothstep(p_threshold, 1.0, luma)) * weight;
             total += weight;
         }
     }

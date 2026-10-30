@@ -1,0 +1,18 @@
+{
+  "id": "depth-trails",
+  "name": "Depth trails",
+  "fragmentShader": "effect.frag",
+  "vertexShader": "effect.vert",
+  "multipass": true,
+  "bufferShaders": ["field.frag", "trail.frag"],
+  "bufferWraps": ["mirror", "clamp"],
+  "bufferFilters": ["linear", "linear"],
+  "bufferFeedback": true,
+  "bufferScale": 0.5,
+  "depthBuffer": true,
+  "halfFloatBuffers": true,
+  "parameters": [
+    {"id": "strength", "name": "Intensity", "type": "float", "default": 0.25, "min": 0, "max": 1},
+    {"id": "image", "name": "Optional image path", "type": "image", "default": ""}
+  ]
+}

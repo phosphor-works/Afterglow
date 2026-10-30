@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ShaderControls.h"
+#include <QSet>
 #include <QColor>
 #include <PhosphorAnimation/Spring.h>
 #include <QUuid>
@@ -18,6 +19,10 @@ bool ShaderControls::advance(bool finish)
         else t.progress.advance();
         const double progress = std::clamp(double(t.progress.value()), 0.0, 1.0);
         item.packed = t.target;
+        if (t.progress.isAnimating()) {
+            item.packed.images = t.from.images;
+            item.packed.imagePaths = t.from.imagePaths;
+        }
         for (int i = 0; i < 32; ++i) {
             if (!(t.target.paramMask & (std::uint32_t(1) << i))) continue;
             item.packed.params[i] = (t.discrete & (std::uint32_t(1) << i))
@@ -80,7 +85,10 @@ QVariantList ShaderControls::describe(quint32 pane) const
             const int slot = p.value(QStringLiteral("slot")).toInt();
             const auto type = p.value(QStringLiteral("type")).toString();
             QVariant value;
-            if (type == QLatin1String("color")) {
+            if (type == QLatin1String("image") || type == QLatin1String("texture")) {
+                const auto packed = overrides.value(program.instanceId());
+                value = packed.imageMask & (1u << slot) ? packed.imagePaths[slot] : program.imagePaths()[slot];
+            } else if (type == QLatin1String("color")) {
                 const float* c = u.customColors[slot];
                 value = QColor::fromRgbF(c[0], c[1], c[2], c[3]).name(QColor::HexArgb);
             } else if (type == QLatin1String("bool")) value = bool(u.customParams[slot / 4][slot % 4]);
@@ -137,8 +145,9 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
         if (duration > 0) {
             auto t = std::make_shared<Transition>();
             t->from.params = instance->program->params(); t->from.colors = instance->program->colors();
+            t->from.images = instance->program->images(); t->from.imagePaths = instance->program->imagePaths();
             t->from.merge(this->values(pane).value(id));
-            t->from.paramMask = packed.paramMask; t->from.colorMask = packed.colorMask;
+            t->from.paramMask = packed.paramMask; t->from.colorMask = packed.colorMask; t->from.imageMask = packed.imageMask;
             t->target = packed;
             for (const auto& metadata : instance->parameters) {
                 const auto p = metadata.toMap(); const int slot = p.value(QStringLiteral("slot")).toInt();
@@ -159,6 +168,28 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
         }
         replacements.append(std::move(item));
     }
+    // Count shared image storage once, including both endpoints of transitions.
+    // Reject the whole update before replacing any owner's current values.
+    QSet<qint64> imageKeys;
+    qint64 imageBytes = 0;
+    auto countImages = [&](const auto& images) {
+        for (const auto& image : images) if (!image.isNull() && !imageKeys.contains(image.cacheKey())) {
+            imageKeys.insert(image.cacheKey());
+            imageBytes += image.sizeInBytes();
+        }
+    };
+    auto countOverride = [&](const Override& item) {
+        countImages(item.packed.images);
+        if (item.transition) {
+            countImages(item.transition->from.images);
+            countImages(item.transition->target.images);
+        }
+    };
+    for (const auto& configured : m_instances) countImages(configured.program->images());
+    for (const auto& item : m_overrides) if (!matches(item)) countOverride(item);
+    for (const auto& item : replacements) countOverride(item);
+    if (!values.isEmpty() && imageBytes > 256LL * 1024 * 1024)
+        return QStringLiteral("Shader images exceed the 256 MiB decoded-image budget");
     m_overrides.removeIf(matches);
     m_overrides.append(replacements);
     return {};
