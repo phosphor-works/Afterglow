@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>
+#include <cstdio>
 #include <functional>
 #include <stdexcept>
 #include <sys/resource.h>
@@ -180,7 +181,7 @@ int main(int argc, char** argv)
         window->show();
         waitMs(2000);
         if (!window->isExposed()) throw std::runtime_error("Benchmark window is not exposed");
-        if (window->size()!=QSize(width,height)) throw std::runtime_error("Compositor changed the requested window size");
+        if (window->size()!=QSize(width,height)) throw std::runtime_error(QStringLiteral("Compositor changed %1x%2 to %3x%4").arg(width).arg(height).arg(window->width()).arg(window->height()).toStdString());
         auto* pane = window->focusedPane();
         if (!pane || pane->isHeld()) throw std::runtime_error("Child did not start");
         result.insert(QStringLiteral("width"),window->width());
@@ -307,5 +308,5 @@ int main(int argc, char** argv)
         save(out,result);
         qt.target=nullptr;
         return 0;
-    } catch (const std::exception& e) { qCritical("%s",e.what()); return 1; }
+    } catch (const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; }
 }

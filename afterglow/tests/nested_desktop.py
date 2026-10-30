@@ -23,10 +23,11 @@ def wait_for(condition, timeout=10):
 
 
 class NestedDesktop:
-    def __init__(self, root, width=1100, height=750):
+    def __init__(self, root, width=1100, height=750, fixed_size=False):
         if not 640 <= width <= 7680 or not 480 <= height <= 4320:
             raise ValueError("Invalid nested desktop dimensions")
         self.width, self.height = width, height
+        self.fixed_size = fixed_size
         self.root = root
         self.socket = f"afterglow-ui-{os.getpid()}"
         self.env = dict(os.environ, XDG_CONFIG_HOME=str(root),
@@ -67,10 +68,30 @@ class NestedDesktop:
             self.display = self.x.XOpenDisplay(None)
             assert self.display, "Cannot open DISPLAY"
             self.window = wait_for(lambda: self.find_window(self.x.XDefaultRootWindow(self.display)))
+            if self.fixed_size:
+                self.set_fixed_size()
             return self
         except BaseException:
             self.__exit__(None, None, None)
             raise
+
+    def set_fixed_size(self):
+        # Constrain only this temporary host window, including under host tiling.
+        class SizeHints(C.Structure):
+            _fields_ = [("flags", C.c_long)] + [(name, C.c_int) for name in (
+                "x", "y", "width", "height", "min_width", "min_height", "max_width", "max_height",
+                "width_inc", "height_inc", "min_aspect_x", "min_aspect_y", "max_aspect_x",
+                "max_aspect_y", "base_width", "base_height", "win_gravity")]
+        hints = SizeHints()
+        hints.flags = (1 << 4) | (1 << 5)
+        hints.min_width = hints.max_width = self.width
+        hints.min_height = hints.max_height = self.height
+        self.x.XSetWMNormalHints.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(SizeHints)]
+        self.x.XResizeWindow.argtypes = [C.c_void_p, C.c_ulong, C.c_uint, C.c_uint]
+        self.x.XSetWMNormalHints(self.display, self.window, C.byref(hints))
+        self.x.XResizeWindow(self.display, self.window, self.width, self.height)
+        self.x.XFlush(self.display)
+        time.sleep(.5)
 
     def find_window(self, window):
         props = subprocess.run(["xprop", "-id", hex(window), "_NET_WM_PID", "_NET_WM_NAME"],

@@ -167,7 +167,7 @@ def main():
                 '<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen><auth>EXTERNAL</auth>'
                 '<policy context="default"><allow send_destination="*"/><allow receive_sender="*"/>'
                 '<allow own="*"/></policy></busconfig>')
-            with NestedDesktop(desktop_root,width=width,height=height) as desktop:
+            with NestedDesktop(desktop_root,width=width,height=height,fixed_size=True) as desktop:
                 # Set only this runner's environment; children use its private Wayland socket.
                 previous = os.environ.copy()
                 os.environ.update(desktop.env)
