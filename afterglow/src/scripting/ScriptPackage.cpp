@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ScriptPackage.h"
+#include "ScriptFiles.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -60,11 +61,9 @@ struct Builder
     QByteArray read(const QString& file, int limit)
     {
         if (!error.isEmpty()) return {};
-        const QFileInfo info(file);
-        if (!info.isFile() || info.size() > limit) { error = QStringLiteral("Missing or oversized package file: %1").arg(file); return {}; }
-        QFile input(file);
-        if (!input.open(QIODevice::ReadOnly)) { error = input.errorString(); return {}; }
-        auto contents = input.read(limit + 1);
+        QByteArray contents;
+        error = readScriptFile(file, limit, contents, root);
+        if (!error.isEmpty()) return {};
         bytes += contents.size();
         if (contents.size() > limit || bytes > 1024 * 1024) error = QStringLiteral("Package exceeds its source limit (1 MiB)");
         return contents;

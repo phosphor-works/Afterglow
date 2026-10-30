@@ -39,10 +39,12 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                     {QStringLiteral("window_id"), moved.value(QStringLiteral("window"))}};
                 return error;
             }
-            if (kind == QLatin1String("read_text")) {
+            if (kind == QLatin1String("semantic_regions")) return control.semanticRegions(pane, data);
+            if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
                 const double limit = e.value(QStringLiteral("max_bytes")).toDouble();
-                if (limit < 1 || limit > 1024 * 1024 || limit != std::floor(limit)) return QStringLiteral("invalid max_bytes");
-                return control.readTextBounded(pane, s("scope"), int(limit), data);
+                if (!std::isfinite(limit) || limit < 1 || limit > 1024 * 1024 || limit != std::floor(limit)) return QStringLiteral("invalid max_bytes");
+                return kind == QLatin1String("read_region") ? control.readRegion(pane, s("region"), int(limit), data)
+                    : control.readTextBounded(pane, s("scope"), int(limit), data);
             }
             if (kind == QLatin1String("send_text")) {
                 return control.sendText(pane, s("text"));
@@ -51,13 +53,13 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                 return control.notify(pane, s("title"), s("body"));
             }
             if (kind == QLatin1String("split")) {
-                return control.split(pane, s("direction") == QLatin1String("right"), command, created);
+                return control.split(pane, s("direction"), command, e.value(QStringLiteral("options")).toMap(), created);
             }
             if (kind == QLatin1String("new_tab")) {
-                return control.newTab(pane, s("cwd"), command, created);
+                return control.newTab(pane, s("cwd"), command, e.value(QStringLiteral("options")).toMap(), created);
             }
             if (kind == QLatin1String("new_window")) {
-                return control.newWindow(s("cwd"), command, created);
+                return control.newWindow(s("cwd"), command, e.value(QStringLiteral("options")).toMap(), created);
             }
             if (kind == QLatin1String("focus")) {
                 return control.focus(pane);
@@ -134,7 +136,12 @@ void connectScriptEvents(ScriptHost& host, Control& control)
     constexpr auto Queued = Qt::QueuedConnection;
     QObject::connect(&control, &Control::paneMoved, &host, on("on_pane_moved"), Queued);
     QObject::connect(&control, &Control::paneCreated, &host, on("on_pane_created"), Queued);
-    QObject::connect(&control, &Control::paneClosed, &host, on("on_pane_closed"), Queued);
+    QObject::connect(&control, &Control::paneClosedDetailed, &host,
+        [&host](quint32 pane, quint32 tab, quint32 window) {
+            host.dispatch(QStringLiteral("on_pane_closed"), pane,
+                {{QStringLiteral("pane"), QVariantMap{{QStringLiteral("id"), pane},
+                    {QStringLiteral("tab_id"), tab}, {QStringLiteral("window"), window}}}});
+        }, Queued);
     QObject::connect(&control, &Control::bell, &host, on("on_bell"), Queued);
     QObject::connect(&control, &Control::focusChanged, &host, on("on_focus"), Queued);
     QObject::connect(&control, &Control::titleChanged, &host, [&host](quint32 pane, const QString& title) {

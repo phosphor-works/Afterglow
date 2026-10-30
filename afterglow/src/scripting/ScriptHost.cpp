@@ -3,6 +3,7 @@
 
 #include "ScriptHost.h"
 #include "ScriptTasks.h"
+#include "ScriptFiles.h"
 #include "ScriptPackage.h"
 #include "ScriptState.h"
 #include <QCryptographicHash>
@@ -12,6 +13,7 @@
 #include <PhosphorScripting/LuauWatchdog.h>
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QLoggingCategory>
@@ -49,11 +51,26 @@ struct ScriptHost::Script
     int module = -1;
     QList<ScriptAction> actions;
     int failures = 0;
+    quint64 calls = 0, handlerErrors = 0, effectErrors = 0;
+    quint64 droppedCallbacks = 0, droppedEffects = 0, droppedResults = 0;
+    qint64 lastCallNs = 0, maxCallNs = 0, totalCallNs = 0;
+    QString lastError;
     bool disabled = false;
     std::deque<qint64> effects; ///< when recent effects ran, for the budgets
     std::deque<qint64> structural;
     std::deque<qint64> results;
     int pendingResults = 0;
+    LuauEngine::CallOutcome invoke(const QString& function, const QVariantList& args, int timeoutMs)
+    {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        auto outcome = engine->callModule(module, function, args, timeoutMs);
+        ++calls;
+        lastCallNs = elapsed.nsecsElapsed();
+        maxCallNs = std::max(maxCallNs, lastCallNs);
+        totalCallNs += lastCallNs;
+        return outcome;
+    }
 };
 
 namespace {
@@ -62,7 +79,7 @@ constexpr int ReloadDelayMs = 200;
 
 bool validId(const QString& id)
 {
-    static const QRegularExpression re(QStringLiteral("^[A-Za-z0-9_-]{1,64}$"));
+    static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
     return re.match(id).hasMatch();
 }
 
@@ -116,6 +133,8 @@ const EffectKind Kinds[] = {
     {"status", true, false, {"text", "tab_title"}, false},
     {"override", true, false, {}, false},
     {"read_text", true, false, {"scope"}, false, {"max_bytes"}},
+    {"semantic_regions", true, false, {}, false},
+    {"read_region", true, false, {"region"}, false, {"max_bytes"}},
     {"send_text", true, false, {"text"}, false},
     {"notify", true, false, {"title", "body"}, false},
     {"split", true, true, {"direction"}, true},
@@ -194,7 +213,10 @@ QStringList ScriptHost::defaultSearchPaths()
 
 void ScriptHost::setStateDirectory(const QString& directory)
 {
-    Q_ASSERT(!m_enabled); // configure before loading any package
+    if (m_enabled) {
+        qCWarning(lcScripts) << "State directory cannot change while scripts are enabled";
+        return;
+    }
     m_stateDirectory = directory;
 }
 
@@ -223,22 +245,29 @@ void ScriptHost::reload()
     m_loadErrors.clear();
     if (m_enabled) {
         // id -> path, later directories winning.
-        std::map<QString, QString> chosen;
+        std::map<QString, std::pair<int, QString>> chosen;
+        int priority = 0;
         for (const QString& dir : std::as_const(m_searchPaths)) {
             const QFileInfoList files = QDir(dir).entryInfoList({QStringLiteral("*.luau")}, QDir::Files | QDir::Readable,
                                                                 QDir::Name);
             for (const QFileInfo& f : files) {
                 if (!f.fileName().endsWith(QLatin1String(".d.luau"))) {
-                    chosen[f.completeBaseName()] = f.absoluteFilePath();
+                    chosen[f.completeBaseName()] = {priority, f.absoluteFilePath()};
                 }
             }
             for (const auto& folder : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
                 m_packageWatches << folder.absoluteFilePath();
                 const auto manifest = folder.absoluteFilePath() + QStringLiteral("/package.json");
-                if (QFileInfo::exists(manifest)) chosen[folder.fileName()] = manifest;
+                if (QFileInfo::exists(manifest)) chosen[folder.fileName()] = {priority, manifest};
             }
+            ++priority;
         }
-        for (const auto& [base, path] : chosen) {
+        std::vector<std::pair<QString, std::pair<int, QString>>> ordered(chosen.begin(), chosen.end());
+        std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+            return a.second.first < b.second.first;
+        });
+        for (const auto& [base, entry] : ordered) {
+            const auto& path = entry.second;
             ScriptPackage package;
             const bool isPackage = QFileInfo(path).fileName() == QLatin1String("package.json");
             QByteArray source;
@@ -252,12 +281,7 @@ void ScriptHost::reload()
                     {QStringLiteral("state_version"), package.stateVersion}, {QStringLiteral("assets"), package.assets}, {QStringLiteral("config"), package.config}};
                 source += "\n-- metadata: " + QCryptographicHash::hash(QJsonDocument::fromVariant(identity).toJson(), QCryptographicHash::Sha256).toHex();
             } else {
-                QFile file(path);
-                if (!file.open(QIODevice::ReadOnly)) failure = file.errorString();
-                else {
-                    source = file.read(1024 * 1024 + 1);
-                    if (source.size() > 1024 * 1024) failure = QStringLiteral("Script exceeds 1 MiB");
-                }
+                failure = readScriptFile(path, 1024 * 1024, source);
             }
             auto same = std::find_if(m_scripts.begin(), m_scripts.end(),
                                      [&](const ScriptPtr& s) { return s->path == path && s->source == source; });
@@ -385,7 +409,7 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         if (error.isEmpty() && script->storage.version > 0 && script->storage.version < script->stateVersion) {
             if (!script->engine->hasFunction(script->module, QStringLiteral("migrate"))) error = QStringLiteral("State migration function is missing");
             else {
-                const auto migrated = script->engine->callModule(script->module, QStringLiteral("migrate"),
+                const auto migrated = script->invoke(QStringLiteral("migrate"),
                     {script->storage.value, script->storage.version, script->stateVersion}, ActionTimeoutMs);
                 if (migrated.status != LuauEngine::CallStatus::Ok || migrated.result.typeId() != QMetaType::QVariantMap)
                     error = QStringLiteral("Migration failed: ") + migrated.message;
@@ -399,7 +423,7 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         if (error.isEmpty() && script->engine->hasFunction(script->module, QStringLiteral("on_load"))) {
             const QVariantMap storage{{QStringLiteral("value"), script->storage.value}, {QStringLiteral("version"), script->stateVersion},
                 {QStringLiteral("revision"), script->storage.revision + (script->migrateState ? 1 : 0)}};
-            const auto initialized = script->engine->callModule(script->module, QStringLiteral("on_load"),
+            const auto initialized = script->invoke(QStringLiteral("on_load"),
                 {QVariantMap{{QStringLiteral("terminal"), state()}, {QStringLiteral("package"), script->packageInfo}, {QStringLiteral("storage"), storage}}}, ActionTimeoutMs);
             if (initialized.status != LuauEngine::CallStatus::Ok) error = QStringLiteral("Initialization failed: ") + initialized.message;
             else script->initialEffects = initialized.result;
@@ -458,7 +482,15 @@ QVariantList ScriptHost::diagnostics() const
         result << QVariantMap{{QStringLiteral("id"), script->id}, {QStringLiteral("path"), script->path},
             {QStringLiteral("version"), script->packageInfo.value(QStringLiteral("version"))},
             {QStringLiteral("status"), script->disabled ? QStringLiteral("disabled") : m_loadErrors.contains(script->path) ? QStringLiteral("last-good") : QStringLiteral("active")},
-            {QStringLiteral("error"), m_loadErrors.value(script->path)}};
+            {QStringLiteral("error"), m_loadErrors.value(script->path)},
+            {QStringLiteral("calls"), script->calls}, {QStringLiteral("handler_errors"), script->handlerErrors},
+            {QStringLiteral("effect_errors"), script->effectErrors}, {QStringLiteral("last_error"), script->lastError},
+            {QStringLiteral("last_call_ms"), script->lastCallNs / 1e6},
+            {QStringLiteral("max_call_ms"), script->maxCallNs / 1e6},
+            {QStringLiteral("total_call_ms"), script->totalCallNs / 1e6},
+            {QStringLiteral("dropped_callbacks"), script->droppedCallbacks},
+            {QStringLiteral("dropped_effects"), script->droppedEffects},
+            {QStringLiteral("dropped_results"), script->droppedResults}};
     }
     for (auto it = m_loadErrors.begin(); it != m_loadErrors.end(); ++it) if (!active.contains(it.key()))
         result << QVariantMap{{QStringLiteral("path"), it.key()}, {QStringLiteral("status"), QStringLiteral("failed")}, {QStringLiteral("error"), it.value()}};
@@ -567,7 +599,7 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
         || !script->engine->hasFunction(script->module, handler)) return;
     const qint64 now = m_clock.elapsed();
     while (!script->callbacks.empty() && now - script->callbacks.front() >= 1000) script->callbacks.pop_front();
-    if (script->callbacks.size() >= 64) return; // coalesce excess timer/watch work
+    if (script->callbacks.size() >= 64) { ++script->droppedCallbacks; return; }
     script->callbacks.push_back(now);
     event.insert(QStringLiteral("terminal"), state());
     if (pane && m_callbacks.paneInfo) event.insert(QStringLiteral("pane"), m_callbacks.paneInfo(pane));
@@ -577,11 +609,13 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 void ScriptHost::call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
                       quint32 eventPane)
 {
-    const LuauEngine::CallOutcome out = script->engine->callModule(script->module, function, args, timeoutMs);
+    const auto out = script->invoke(function, args, timeoutMs);
     if (out.status != LuauEngine::CallStatus::Ok) {
         const QString why = out.status == LuauEngine::CallStatus::TimedOut
             ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
             : out.message;
+        ++script->handlerErrors;
+        script->lastError = function + QStringLiteral(": ") + why;
         qCWarning(lcScripts).noquote() << script->id << function << "failed:" << why;
         if (++script->failures >= MaxFailures) {
             script->disabled = true;
@@ -616,6 +650,9 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, qu
         if (effects.size() > MaxEffectsPerCall) {
             const QString error = QStringLiteral("a handler may return at most %1 effects; no effects applied").arg(MaxEffectsPerCall);
             qCWarning(lcScripts).noquote() << script->id << error;
+            ++script->effectErrors;
+            script->droppedEffects += effects.size();
+            script->lastError = error;
             Q_EMIT effectApplied(script->id, {}, error);
             return;
         }
@@ -629,6 +666,8 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, qu
     }
     const QString error = QStringLiteral("a handler returned a %1, not effects").arg(QString::fromLatin1(result.typeName()));
     qCWarning(lcScripts).noquote() << script->id << error;
+    ++script->effectErrors;
+    script->lastError = error;
     Q_EMIT effectApplied(script->id, {}, error);
 }
 
@@ -672,6 +711,45 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         if (info->command) {
             effect.insert(QStringLiteral("command"), command(raw.value(QStringLiteral("command"))));
         }
+        const bool launch = kind == QLatin1String("split") || kind == QLatin1String("new_tab")
+            || kind == QLatin1String("new_window");
+        QVariantMap options;
+        if (launch) {
+            const auto value = raw.value(QStringLiteral("options"));
+            if (value.isValid() && value.typeId() != QMetaType::QVariantMap
+                && !(value.typeId() == QMetaType::QVariantList && value.toList().isEmpty()))
+                error = QStringLiteral("Launch options must be an object");
+            options = value.toMap();
+            for (auto it = options.begin(); it != options.end(); ++it) {
+                if (it.key() == QLatin1String("cwd")) {
+                    if (it.value().typeId() != QMetaType::QString || it.value().toString().contains(QChar::Null))
+                        error = QStringLiteral("cwd must be a string without NUL");
+                } else if (it.key() == QLatin1String("size")) {
+                    const auto size = it.value().toDouble();
+                    if (!number(it.value()) || !std::isfinite(size) || size <= 0 || size >= 1)
+                        error = QStringLiteral("size must be a fraction between zero and one");
+                } else if (it.key() != QLatin1String("env")) error = QStringLiteral("Unknown launch option %1").arg(it.key());
+            }
+        }
+        if (launch || kind == QLatin1String("exec")) {
+            const auto value = (launch ? options : raw).value(QStringLiteral("env"));
+            if (value.isValid() && value.typeId() != QMetaType::QVariantMap
+                && !(value.typeId() == QMetaType::QVariantList && value.toList().isEmpty()))
+                error = QStringLiteral("env must be an object");
+            const auto env = value.toMap();
+            qsizetype bytes = 0;
+            for (auto it = env.begin(); it != env.end(); ++it) {
+                const auto& v = it.value();
+                bytes += it.key().toUtf8().size() + v.toString().toUtf8().size();
+                if (it.key().isEmpty() || it.key().contains(QLatin1Char('=')) || it.key().contains(QChar::Null)
+                    || !((v.typeId() == QMetaType::QString && !v.toString().contains(QChar::Null))
+                         || (v.typeId() == QMetaType::Bool && !v.toBool())))
+                    error = QStringLiteral("env needs valid variable names and string values or false to remove");
+            }
+            if (env.size() > 256 || bytes > 65536) error = QStringLiteral("Environment overrides exceed their limit");
+            if (launch) effect.insert(QStringLiteral("options"), options);
+            else effect.insert(QStringLiteral("env"), env);
+        }
         QString badNumber;
         for (const char* key : info->numbers) {
             const QVariant v = raw.value(QLatin1String(key));
@@ -684,8 +762,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         if (kind == QLatin1String("shader_parameters") || kind == QLatin1String("shader_preset")) {
             const auto values = raw.value(QStringLiteral("values"));
             const auto scope = effect.value(QStringLiteral("scope")).toString();
-            if (kind == QLatin1String("shader_parameters") && (values.typeId() != QMetaType::QVariantMap || values.toMap().size() > 48))
-                error = QStringLiteral("Shader values must be an object with at most 48 parameters");
+            if (kind == QLatin1String("shader_parameters") && (values.typeId() != QMetaType::QVariantMap || values.toMap().size() > 52))
+                error = QStringLiteral("Shader values must be an object with at most 52 parameters");
             if (scope != QLatin1String("pane") && scope != QLatin1String("tab") && scope != QLatin1String("window"))
                 error = QStringLiteral("Shader scope must be pane, tab or window");
             const auto instance = effect.value(QStringLiteral("instance")).toString();
@@ -784,8 +862,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (info->pane && effect.value(QStringLiteral("pane")).toUInt() == 0) {
             error = QStringLiteral("%1 needs a pane").arg(kind);
         } else if (kind == QLatin1String("split") && effect.value(QStringLiteral("direction")) != QLatin1String("right")
-                   && effect.value(QStringLiteral("direction")) != QLatin1String("down")) {
-            error = QStringLiteral("split direction must be \"right\" or \"down\"");
+                   && effect.value(QStringLiteral("direction")) != QLatin1String("down")
+                   && effect.value(QStringLiteral("direction")) != QLatin1String("left")
+                   && effect.value(QStringLiteral("direction")) != QLatin1String("up")) {
+            error = QStringLiteral("split direction must be right, down, left or up");
         } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(QLatin1String("script:"))) {
             error = QStringLiteral("scripts cannot run script actions");
         } else if (kind == QLatin1String("signal")
@@ -795,6 +875,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             result.code = QStringLiteral("no_pane");
             error = QStringLiteral("no pane %1").arg(effect.value(QStringLiteral("pane")).toUInt());
         } else if (!withinBudget(*script, structural)) {
+            ++script->droppedEffects;
             result.code = QStringLiteral("rate_limited");
             error = QStringLiteral("too many effects; %1 dropped").arg(kind);
         } else if (kind == QLatin1String("state_read") || kind == QLatin1String("state_write")) {
@@ -819,14 +900,20 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
             result = m_tasks->apply(script->owner, effect,
                 [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane](EffectResult finished) {
-                    if (auto script = weak.lock(); script && !request.isEmpty()) queueResult(script, request, kind, finished, eventPane);
+                    if (auto script = weak.lock()) {
+                        if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
+                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane);
+                    }
                 }, [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event) {
                     if (auto script = weak.lock()) emitOwned(script, handler, std::move(event), eventPane);
                 });
         } else if (m_callbacks.applyOwned || m_callbacks.apply) {
             result = m_callbacks.applyOwned ? m_callbacks.applyOwned(script->owner, effect,
                 [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane](EffectResult finished) {
-                    if (auto script = weak.lock(); script && !request.isEmpty()) queueResult(script, request, kind, finished, eventPane);
+                    if (auto script = weak.lock()) {
+                        if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
+                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane);
+                    }
                 }) : m_callbacks.apply(effect);
             if (!result.error.isEmpty() && result.code.isEmpty()) {
                 result.code = QStringLiteral("operation_failed");
@@ -837,6 +924,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         }
     }
     if (!error.isEmpty()) {
+        ++script->effectErrors;
+        script->lastError = error;
         qCWarning(lcScripts).noquote() << script->id + QLatin1Char(':') << error;
     }
     Q_EMIT effectApplied(script->id, effect, error);
@@ -856,6 +945,8 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
         script->results.pop_front();
     }
     if (script->pendingResults >= MaxPendingResults || int(script->results.size()) >= MaxResultsPerSecond) {
+        ++script->droppedResults;
+        script->lastError = QStringLiteral("Too many operation results");
         // Include refusals in this budget: a handler that retries a rejected
         // request from on_result must not create an endless queued feedback loop.
         script->disabled = true;

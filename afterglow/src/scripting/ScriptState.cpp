@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ScriptState.h"
+#include "ScriptFiles.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -57,10 +58,8 @@ QString ScriptState::read(const QString& id, Snapshot& result) const
     if (info.isSymLink()) return QStringLiteral("State symlinks are not supported");
     if (!info.exists()) { result = {}; return {}; }
     if (!info.isFile() || info.size() > MaxBytes) return QStringLiteral("State is not a regular bounded file");
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return file.errorString();
-    const auto bytes = file.read(MaxBytes + 1);
-    if (bytes.size() > MaxBytes) return QStringLiteral("State exceeds 256 KiB");
+    QByteArray bytes;
+    if (const auto error = readScriptFile(path, MaxBytes, bytes, {}, true); !error.isEmpty()) return error;
     QJsonParseError parse;
     const auto document = QJsonDocument::fromJson(bytes, &parse);
     const auto object = document.object();

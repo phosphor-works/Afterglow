@@ -22,7 +22,7 @@ function providers.jobs(config, home)
                 table.insert(roots, root)
                 if config.fd ~= false then
                     table.insert(jobs, {id="fd-"..i, kind="fd", command={"fd", "--hidden", "--no-ignore", "--max-depth",
-                        tostring(math.clamp(tonumber(config.max_depth) or 5, 1, 16)), "--glob", ".git", "--print0", "--", root}})
+                        tostring(math.floor(math.clamp(tonumber(config.max_depth) or 5, 1, 16))), "--glob", ".git", "--print0", "--", root}})
                 end
             end
         end

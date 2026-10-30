@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "scripting/ScriptPackage.h"
 #include "scripting/ScriptState.h"
+#include "scripting/ScriptFiles.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -76,4 +77,21 @@ TEST(ScriptPackage, ConfigOverridesAndDeclaredAssetsStayLocal)
     EXPECT_EQ(p.config.value("label"),"user"); EXPECT_EQ(p.assets.value("theme").toString(),dir.filePath("theme.json"));
     put(dir.filePath("package.json"),manifest({{"assets",QJsonObject{{"escape","../theme.json"}}}}));
     EXPECT_FALSE(ScriptPackage::read(dir.filePath("package.json"),p).isEmpty());
+}
+
+TEST(ScriptFiles, RejectsSpecialFilesAndChecksOpenedContainment)
+{
+    QTemporaryDir inside, outside;
+    const auto fifo = inside.filePath("fifo");
+    ASSERT_EQ(::mkfifo(QFile::encodeName(fifo).constData(), 0600), 0);
+    QByteArray bytes("unchanged");
+    EXPECT_FALSE(readScriptFile(fifo, 1024, bytes).isEmpty());
+    EXPECT_EQ(bytes, "unchanged");
+    put(outside.filePath("source"), "return {}");
+    ASSERT_TRUE(QFile::link(outside.filePath("source"), inside.filePath("link")));
+    EXPECT_FALSE(readScriptFile(inside.filePath("link"), 1024, bytes, inside.path()).isEmpty());
+    EXPECT_FALSE(readScriptFile(inside.filePath("link"), 1024, bytes, {}, true).isEmpty());
+    EXPECT_TRUE(readScriptFile(inside.filePath("link"), 1024, bytes).isEmpty());
+    EXPECT_EQ(bytes, "return {}");
+    EXPECT_FALSE(readScriptFile(outside.filePath("source"), 4, bytes).isEmpty());
 }

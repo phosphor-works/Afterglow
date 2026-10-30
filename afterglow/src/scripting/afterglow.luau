@@ -44,7 +44,7 @@ afterglow = {
     exec = function(name, command, options)
         local o = options or {}
         return {kind="exec", name=name, request_id=name, command=list(command), cwd=o.cwd or "",
-            timeout_ms=o.timeout_ms or 30000, max_bytes=o.max_bytes or 65536}
+            timeout_ms=o.timeout_ms or 30000, max_bytes=o.max_bytes or 65536, env=o.env}
     end,
     read_file = function(name, path, options)
         local o = options or {}
@@ -57,6 +57,10 @@ afterglow = {
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
     status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,
     override = function(pane, values) return {kind="override", pane=paneId(pane), values=values} end,
+    semantic_regions = function(pane) return {kind="semantic_regions", pane=paneId(pane)} end,
+    read_region = function(pane, region, max_bytes)
+        return {kind="read_region", pane=paneId(pane), region=region, max_bytes=max_bytes or 65536}
+    end,
     read_text = function(pane, scope, max_bytes)
         return {kind="read_text", pane=paneId(pane), scope=scope or "last-output", max_bytes=max_bytes or 65536}
     end,
@@ -91,14 +95,14 @@ afterglow = {
     notify = function(title, body, pane)
         return { kind = "notify", title = tostring(title), body = body and tostring(body) or "", pane = paneId(pane) }
     end,
-    split = function(pane, direction, command)
-        return { kind = "split", pane = paneId(pane), direction = direction or "right", command = list(command) }
+    split = function(pane, direction, command, options)
+        return { kind = "split", pane = paneId(pane), direction = direction or "right", command = list(command), options = options or {} }
     end,
-    new_tab = function(pane, cwd, command)
-        return { kind = "new_tab", pane = paneId(pane), cwd = cwd or "", command = list(command) }
+    new_tab = function(pane, cwd, command, options)
+        return { kind = "new_tab", pane = paneId(pane), cwd = cwd or "", command = list(command), options = options or {} }
     end,
-    new_window = function(cwd, command)
-        return { kind = "new_window", cwd = cwd or "", command = list(command) }
+    new_window = function(cwd, command, options)
+        return { kind = "new_window", cwd = cwd or "", command = list(command), options = options or {} }
     end,
     focus = function(pane)
         return { kind = "focus", pane = paneId(pane) }

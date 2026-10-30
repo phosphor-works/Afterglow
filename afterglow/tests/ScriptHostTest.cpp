@@ -295,6 +295,33 @@ TEST_F(ScriptHostTest, ExamplesLoad)
     EXPECT_EQ(host->scriptIds().size(), QDir(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS)).entryList({QStringLiteral("*.luau")}).size());
 }
 
+TEST_F(ScriptHostTest, SemanticRegionExampleCopiesSelectedOutput)
+{
+    QFile example(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS) + QStringLiteral("/semantic-regions.luau"));
+    ASSERT_TRUE(example.open(QIODevice::ReadOnly));
+    write(user, "semantic-regions.luau", example.readAll());
+    applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        if (effect["kind"] == QLatin1String("semantic_regions"))
+            return {{}, {{"regions", QVariantList{QVariantMap{{"id", "42"}, {"kind", "output"}, {"available", true}}}}}, {}};
+        if (effect["kind"] == QLatin1String("select")) return {{}, {{"id", "42"}}, {}};
+        if (effect["kind"] == QLatin1String("read_region"))
+            return {{}, {{"text", "command output\n"}, {"available", true}, {"truncated", false}}, {}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 4);
+    EXPECT_EQ(rec.applied[1]["items"].toList().front().toMap()["id"].toString(), "42");
+    EXPECT_EQ(rec.applied[2]["region"].toString(), "42");
+    EXPECT_EQ(rec.applied[2]["max_bytes"].toInt(), 262144);
+    EXPECT_EQ(rec.applied[3]["kind"].toString(), "copy");
+    EXPECT_EQ(rec.applied[3]["text"].toString(), "command output\n");
+    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    EXPECT_EQ(rec.applied.size(), 8);
+}
+
 TEST_F(ScriptHostTest, SignalEffects)
 {
     write(user, QStringLiteral("s.luau"), R"(
@@ -1421,4 +1448,119 @@ TEST_F(ScriptHostTest, ShaderParameterExampleDiscoversThenTargetsReturnedInstanc
     QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 4);
     EXPECT_TRUE(rec.applied.last().value(QStringLiteral("values")).toMap().isEmpty());
+}
+
+TEST_F(ScriptHostTest, SearchDirectoryPriorityWinsOverMetadataIdFilenameOrder)
+{
+    write(system, "z-system.luau", "return {metadata={id='same',actions={{id='system'}}},run_action=function() end}");
+    write(user, "a-user.luau", "return {metadata={id='same',actions={{id='user'}}},run_action=function() end}");
+    host->setEnabled(true);
+    ASSERT_EQ(host->actions().size(), 1);
+    EXPECT_EQ(host->actions()[0].token, QStringLiteral("same.user"));
+}
+
+TEST_F(ScriptHostTest, LaunchOptionsPreserveEnvironmentSizeAndAllDirections)
+{
+    write(user, "launch.luau", R"(
+return {on_bell=function(ev)
+ return {afterglow.split(ev.pane,"left",{"/bin/sh"},{cwd="/tmp",size=0.3,env={VALUE="hello",REMOVE=false}}),
+         afterglow.split(ev.pane,"up"), afterglow.new_tab(ev.pane,"",nil,{env={VALUE="tab"}})}
+end}
+)");
+    write(user,"window.luau","return {on_bell=function() return afterglow.new_window('',nil,{cwd='/tmp'}) end}");
+    host->setEnabled(true);
+    host->dispatch("on_bell",7);
+    ASSERT_EQ(rec.applied.size(),4);
+    const auto options=rec.applied[0]["options"].toMap();
+    EXPECT_EQ(options["cwd"].toString(),"/tmp");
+    EXPECT_DOUBLE_EQ(options["size"].toDouble(),0.3);
+    EXPECT_EQ(options["env"].toMap()["REMOVE"].typeId(),QMetaType::Bool);
+    EXPECT_FALSE(options["env"].toMap()["REMOVE"].toBool());
+}
+
+TEST_F(ScriptHostTest, InvalidLaunchAndEnvironmentOptionsNeverReachHost)
+{
+    write(user,"bad-options.luau",R"(
+return {on_bell=function(ev) return {
+ afterglow.split(ev.pane,"up",nil,{size=0/0}),
+ afterglow.new_tab(ev.pane,"",nil,{env={FOO=true}}),
+ afterglow.new_window("",nil,{env={["BAD=NAME"]="value"}}),
+ afterglow.exec("bad",{"/bin/true"},{env={BAD=17}})
+} end}
+)");
+    host->setEnabled(true); host->dispatch("on_bell",7);
+    EXPECT_TRUE(rec.applied.empty());
+    ASSERT_EQ(rec.results.size(),4);
+    for (const auto& result:rec.results) EXPECT_FALSE(result.second.isEmpty());
+}
+
+TEST(ScriptTasksTest, ProcessEnvironmentOverridesAndRemovals)
+{
+    ScriptTasks tasks;
+    auto effect=job("env",{"/bin/sh","-c","printf '%s:%s' \"$AFTERGLOW_ENV_TEST\" \"${HOME+set}\""});
+    effect["env"]=QVariantMap{{"AFTERGLOW_ENV_TEST","value"},{"HOME",false}};
+    bool done=false; ScriptHost::EffectResult result;
+    ASSERT_TRUE(tasks.apply("owner",effect,[&](auto value){result=value;done=true;},{}).deferred);
+    ASSERT_TRUE(await([&]{return done;}));
+    EXPECT_TRUE(result.error.isEmpty());
+    EXPECT_EQ(result.data["stdout"].toString(),"value:");
+}
+
+TEST_F(ScriptHostTest, DiagnosticsIncludeCallsErrorsTimingAndDroppedEffects)
+{
+    write(user,"stats.luau",R"(
+return {on_bell=function() error("handler failed") end,
+ on_focus=function() return {kind="unknown"} end,
+ on_title=function() local out={} for i=1,100 do table.insert(out,afterglow.log("x")) end return out end}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell",7); host->dispatch("on_focus",7); host->dispatch("on_title",7);
+    const auto stats=host->diagnostics().first().toMap();
+    EXPECT_EQ(stats["calls"].toULongLong(),3);
+    EXPECT_EQ(stats["handler_errors"].toULongLong(),1);
+    EXPECT_EQ(stats["effect_errors"].toULongLong(),2);
+    EXPECT_EQ(stats["dropped_effects"].toULongLong(),100);
+    EXPECT_GT(stats["total_call_ms"].toDouble(),0);
+    EXPECT_GE(stats["max_call_ms"].toDouble(),stats["last_call_ms"].toDouble());
+    EXPECT_FALSE(stats["last_error"].toString().isEmpty());
+}
+
+TEST_F(ScriptHostTest, ClosedBackgroundPaneUpdatesOnlyItsSurvivingTab)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
+    paneState[8]["tab_id"]=20;
+    paneState[8]["window"]=2;
+    tabs={QVariantMap{{"id",10},{"active_pane",7}},QVariantMap{{"id",20},{"active_pane",9}}};
+    host->setEnabled(true);
+    paneState.remove(8);
+    host->dispatch("on_pane_closed",8,{{"pane",QVariantMap{{"id",8},{"tab_id",20},{"window",2}}}});
+    ASSERT_EQ(rec.applied.size(),2);
+    for (const auto& effect:rec.applied) EXPECT_EQ(effect["pane"].toUInt(),9u);
+    EXPECT_EQ(rec.applied[0]["kind"].toString(),"signals");
+    EXPECT_EQ(rec.applied[0]["values"].toList()[0].toMap()["value"].toDouble(),0);
+}
+
+TEST(ScriptTasksTest, ExecutableSearchUsesChildPathAndWorkingDirectory)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(QDir(dir.path()).mkpath("bin"));
+    QFile file(dir.filePath("bin/afterglow-env-path-probe"));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\nprintf child-path"); file.close();
+    ASSERT_TRUE(file.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    ScriptTasks tasks;
+    auto effect=job("path",{"afterglow-env-path-probe"});
+    effect["cwd"]=dir.path(); effect["env"]=QVariantMap{{"PATH","bin"}};
+    bool done=false; ScriptHost::EffectResult result;
+    ASSERT_TRUE(tasks.apply("owner",effect,[&](auto value){result=value;done=true;},{}).deferred);
+    ASSERT_TRUE(await([&]{return done;}));
+    EXPECT_TRUE(result.error.isEmpty()) << result.error.toStdString();
+    EXPECT_EQ(result.data["stdout"].toString(),"child-path");
+}
+
+TEST_F(ScriptHostTest, MetadataIdsRejectTrailingNewlines)
+{
+    write(user, "bad-id.luau", "return {metadata={id='bad\\n'}}");
+    host->setEnabled(true);
+    EXPECT_TRUE(host->scriptIds().isEmpty());
 }

@@ -10,7 +10,8 @@ script.metadata = {
 
 function script.run_action(action, ev)
     if action == "split" and ev.pane then
-        return afterglow.request("workspace", afterglow.split(ev.pane, "right"))
+        return afterglow.request("workspace", afterglow.split(ev.pane, "right", nil,
+            {size=0.35, cwd=ev.pane.cwd, env={AFTERGLOW_WORKSPACE="1"}}))
     end
 end
 

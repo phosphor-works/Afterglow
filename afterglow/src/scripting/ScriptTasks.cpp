@@ -8,6 +8,8 @@
 #include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QProcess>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
 #include <QtConcurrentRun>
 #include <QSemaphore>
 #include <atomic>
@@ -153,6 +155,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
             while (bytes.size() <= maxBytes && !*cancelled) {
                 char chunk[8192];
                 const auto count = ::read(fd, chunk, std::size_t(std::min(qsizetype(sizeof chunk), maxBytes + 1 - bytes.size())));
+                if (count < 0 && errno == EINTR) continue;
                 if (count < 0) return failure("io_error", QStringLiteral("Cannot read file"));
                 if (count == 0) break;
                 bytes.append(chunk, qsizetype(count));
@@ -175,6 +178,28 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     task->process = process;
     process->setUnixProcessParameters(QProcess::UnixProcessFlag::CreateNewSession);
     process->setWorkingDirectory(e.value(QStringLiteral("cwd")).toString());
+    auto environment = QProcessEnvironment::systemEnvironment();
+    const auto overrides = e.value(QStringLiteral("env")).toMap();
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        if (it.value().typeId() == QMetaType::Bool) environment.remove(it.key());
+        else environment.insert(it.key(), it.value().toString());
+    }
+    process->setProcessEnvironment(environment);
+    if (!command.front().contains(QLatin1Char('/'))) {
+        const QDir working(e.value(QStringLiteral("cwd")).toString().isEmpty() ? QDir::currentPath()
+            : e.value(QStringLiteral("cwd")).toString());
+        QStringList paths;
+        const auto path = environment.contains(QStringLiteral("PATH")) ? environment.value(QStringLiteral("PATH"))
+            : QStringLiteral("/bin:/usr/bin");
+        for (const auto& entry : path.split(QLatin1Char(':'), Qt::KeepEmptyParts))
+            paths.append(working.absoluteFilePath(entry.isEmpty() ? QStringLiteral(".") : entry));
+        const auto executable = QStandardPaths::findExecutable(command.front(), paths);
+        if (executable.isEmpty()) {
+            QTimer::singleShot(0, task, [this, task] { finish(task, failure("spawn_failed", QStringLiteral("Executable not found in child PATH"))); });
+            return {{}, {}, {}, true};
+        }
+        command.front() = executable;
+    }
     auto read = [this, task, maxBytes](bool stderrChannel) {
         if (task->done) return;
         auto* process = task->process;

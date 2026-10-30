@@ -41,7 +41,7 @@ end
 function script.on_pane_closed(ev)
     local effects = {}
     for _, tab in ipairs(ev.terminal.tabs) do
-        if tab.active and tab.active_pane ~= 0 then
+        if ev.pane and tab.id == ev.pane.tab_id and tab.active_pane ~= 0 then
             for _, effect in ipairs(broadcast(tab.active_pane, { { 2, heat(ev.terminal, tab.active_pane) } })) do
                 table.insert(effects, effect)
             end

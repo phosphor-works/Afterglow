@@ -22,6 +22,8 @@
 -- in the command palette and bind in Keybinds.bindings as
 -- "script:<id>.<action>".
 
+export type LaunchOptions = { cwd: string?, env: {[string]: string | false}?, size: number? }
+
 export type Pane = {
     id: number,
     window: number,
@@ -50,7 +52,7 @@ export type State = {
     active_pane: number,
 }
 export type PaneEvent = { pane: Pane, terminal: State }
-export type ClosedPaneEvent = { pane: { id: number }, terminal: State }
+export type ClosedPaneEvent = { pane: { id: number, tab_id: number, window: number }, terminal: State }
 export type TitleEvent = { pane: Pane, title: string, terminal: State }
 export type CommandStartedEvent = { pane: Pane, command: string, terminal: State }
 export type CommandFinishedEvent = {
@@ -79,7 +81,13 @@ export type SceneState = {
     tab_id: number, sample_ms: number, history_rows: number, history_normalized: number,
     audio_available: boolean, bass: number, mids: number, treble: number, overall: number,
 }
+export type SemanticPosition = {row: string, col: number} -- stable row identity, zero-based column
+export type SemanticRegion = {
+    id: string, kind: "prompt" | "input" | "output", start: SemanticPosition, finish: SemanticPosition,
+    open: boolean, start_trimmed: boolean, available: boolean, exit_code: number?,
+}
 export type OperationData = {
+    regions: {SemanticRegion}?,
     scene: SceneState?, presets: {{id: string, name: string, read_only: boolean}}?,
     shaders: { ShaderInstance }?,
     text: string?, truncated: boolean?, available: boolean?, name: string?,
@@ -137,7 +145,9 @@ declare afterglow: {
     -- id: 1-64 characters. Results are queued to the originating script instance.
     request: (id: string, effect: Effect) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
-    read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output")?, max_bytes: number?) -> Effect,
+    semantic_regions: (pane: PaneRef) -> Effect,
+    read_region: (pane: PaneRef, region: string, max_bytes: number?) -> Effect,
+    read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output" | "selection")?, max_bytes: number?) -> Effect,
     -- Package-local JSON object; writes use the revision returned by state_read.
     state_read: () -> Effect,
     state_write: (value: {[string]: any}, revision: number) -> Effect,
@@ -149,7 +159,7 @@ declare afterglow: {
     detach_tab: (pane: PaneRef) -> Effect,
     timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,
     cancel: (name: string) -> Effect,
-    exec: (name: string, command: { string }, options: { cwd: string?, timeout_ms: number?, max_bytes: number? }?) -> Effect,
+    exec: (name: string, command: { string }, options: { env: {[string]: string | false}?, cwd: string?, timeout_ms: number?, max_bytes: number? }?) -> Effect,
     read_file: (name: string, path: string, options: { timeout_ms: number?, max_bytes: number? }?) -> Effect,
     watch_file: (name: string, path: string) -> Effect,
     set_actions: (actions: { { id: string, title: string } }) -> Effect,
@@ -160,9 +170,9 @@ declare afterglow: {
     send_text: (pane: PaneRef, text: string) -> Effect,
     -- pane defaults to the event's pane
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,
-    split: (pane: PaneRef, direction: ("right" | "down")?, command: (string | { string })?) -> Effect,
-    new_tab: (pane: PaneRef, cwd: string?, command: (string | { string })?) -> Effect,
-    new_window: (cwd: string?, command: (string | { string })?) -> Effect,
+    split: (pane: PaneRef, direction: ("right" | "down" | "left" | "up")?, command: (string | { string })?, options: LaunchOptions?) -> Effect,
+    new_tab: (pane: PaneRef, cwd: string?, command: (string | { string })?, options: LaunchOptions?) -> Effect,
+    new_window: (cwd: string?, command: (string | { string })?, options: LaunchOptions?) -> Effect,
     focus: (pane: PaneRef) -> Effect,
     close: (pane: PaneRef) -> Effect,
     set_title: (pane: PaneRef, title: string) -> Effect, -- "" returns to the program's title
