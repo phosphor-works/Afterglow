@@ -9,6 +9,7 @@ Target platform: Linux on Wayland with Vulkan.
 Native desktop tests use KDE/KWin. Other compositors and screen readers are not individually certified.
 Build and installation procedures do not change. This release does not add macOS or Windows support.
 
+- Detach a tab by dragging it outside the bar, or through its context menu. Existing panes keep their running processes.
 - Expose each current-tab terminal pane through Qt/AT-SPI, including viewport text, cursor, selection, geometry and change events.
 - Provide read-only IME surrounding text for the live cursor row and remove the Latin-only preference hint.
 - Accept local file drops with shell quoting and bracketed paste into the target pane.
@@ -23,6 +24,9 @@ Build and installation procedures do not change. This release does not add macOS
 - Harden PTY startup/backpressure, parser resets and bounds, graphics decoding, script file reads, reload ownership and shader allocation recovery.
 - Exercise native split creation, chrome keyboard routing, paste confirmation, IME commits and compositor-delivered drag/drop in an isolated KWin desktop.
 
+
+Large-history width changes can take hundreds of milliseconds.
+See [performance measurements](docs/PERFORMANCE.md) for timings, workloads and limits.
 
 See [compatibility](docs/COMPATIBILITY.md) for protocol limits and memory costs.
 See [desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.

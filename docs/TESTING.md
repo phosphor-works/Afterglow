@@ -132,3 +132,14 @@ python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench ~
 ```
 
 See [performance measurements](PERFORMANCE.md) for metric definitions and limits.
+
+Archive a completed run:
+
+```sh
+python3 tools/bench/summarize_native.py ~/afterglow-native-performance ~/afterglow-native-baseline
+```
+
+This command writes `.summary.json` and `.raw.json.gz` files.
+It rejects incomplete runs, missing repeats and inconsistent sample counts.
+The summary gives the median and range of each per-run statistic.
+The compressed archive keeps all samples and environment metadata.

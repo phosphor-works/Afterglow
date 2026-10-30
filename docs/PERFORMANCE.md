@@ -7,6 +7,109 @@ The native benchmark measures the application in an isolated KWin desktop.
 See [testing](TESTING.md#native-performance-measurements) for commands.
 See [Phosphor scene performance](../data/examples/phosphor/PERFORMANCE.md) for separate shader measurements.
 
+## Recorded results
+
+Measurement date: 30 October 2026.
+Source commit: `2aa71e7`. Build type: `RelWithDebInfo`.
+The recorded set contains 72 case runs: three repeats of each workload at each resolution.
+Timed cases request 15 seconds. CPU rates use actual elapsed time.
+Input cases use 100 acknowledgements per run. Script cases use 10,000 callbacks per run.
+Tables show medians of per-run statistics. Maximum columns contain the largest observed sample.
+Percentiles are not pooled across runs.
+See the [summary and ranges](../data/benchmarks/native-2026-10-30.summary.json) and [compressed raw samples](../data/benchmarks/native-2026-10-30.raw.json.gz).
+
+| Condition | Value |
+| --- | --- |
+| CPU | Intel Core i7-9700K, 8 cores |
+| GPU | NVIDIA GeForce RTX 2080, driver 615.78.08 |
+| System | CachyOS 7.3.0-4, Qt 6.12.0, nested KWin 6.8.1 |
+| Viewport | Exact 1920×1080 and 3840×2160 windows, scale 1 |
+| Font | Monaspace Neon Var, 11 points, grayscale antialiasing, light hinting |
+| Appearance | Basic controls, generic platform theme, opaque background, no shaders or audio |
+| Power | 225 W GPU limit, normal power management, shared desktop GPU, unlocked clocks |
+
+### CPU and frame service
+
+CPU percentages use 100% for one full core.
+
+| Workload | 1080p CPU (%) | 4K CPU (%) | 1080p frame p95 (ms) | 4K frame p95 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Idle | 0.09 | 0.08 | — | — |
+| Cursor blink | 0.31 | 0.52 | 0.96 | 1.98 |
+| Scroll, 100,000 rows | 6.79 | 12.79 | 1.29 | 2.71 |
+| Resize, 100,000 rows | 91.54 | 94.09 | 237.06 | 341.84 |
+
+Static idle submitted no frames in all six runs.
+Scroll frame-interval p95 is 33.56 ms at 1080p and 33.60 ms at 4K.
+Resize frame-interval p95 is 237.07 ms at 1080p and 341.86 ms at 4K.
+After the resize workload, median RSS is 640.76 MiB at 1080p and 959.75 MiB at 4K.
+Resizing remains a visible performance limit.
+Width changes run [history reflow](../libs/afterglow-vt/src/Screen.cpp), which rebuilds stored rows.
+The high CPU use and shorter GPU times suggest CPU-side resize work is the main cost.
+The 50 ms request timer cannot maintain its requested rate during this workload.
+
+### Terminal GPU timing and allocation
+
+GPU elapsed time is asynchronous. Allocation is the largest external process sample across all repeats.
+
+| Workload | 1080p GPU p95 (ms) | 4K GPU p95 (ms) | 1080p allocation (MiB) | 4K allocation (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Cursor blink | 0.11 | 0.33 | 71.00 | 137.00 |
+| Scroll | 0.13 | 0.40 | 81.00 | 169.00 |
+| Resize | 0.21 | 0.74 | 91.00 | 201.00 |
+
+The driver supplied process activity for only some external samples.
+The table pools available SM activity readings across three repeats.
+Coverage is the number of numerical readings divided by all external samples.
+These medians exclude missing readings. They are not time-weighted utilization.
+Vendor readings can repeat between polls.
+
+| Workload | 1080p coverage | 1080p SM median / max (%) | 4K coverage | 4K SM median / max (%) |
+| --- | ---: | ---: | ---: | ---: |
+| Scroll | 117 / 177 | 21 / 41 | 79 / 177 | 25 / 37 |
+| Resize | 10 / 178 | 16 / 33 | 4 / 180 | 21 / 21 |
+| Input | 13 / 121 | 17 / 29 | 1 / 123 | 20 / 20 |
+| Input with output | 85 / 123 | 20 / 41 | 52 / 123 | 17 / 39 |
+
+Static idle and cursor blink supplied no numerical SM activity readings.
+Zero submitted frames does not establish zero GPU utilization.
+
+### History memory
+
+| Retained rows | 1080p RSS / PSS (MiB) | 4K RSS / PSS (MiB) | 1080p RSS growth (MiB) | 4K RSS growth (MiB) |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 150.89 / 71.70 | 155.74 / 76.57 | 1.25 | 2.39 |
+| 100,000 | 236.04 / 148.94 | 243.34 / 156.11 | 86.19 | 89.57 |
+| 1,000,000 | 802.78 / 715.59 | 847.72 / 760.58 | 651.36 | 695.86 |
+
+Growth is measured from the same process before history population.
+It includes parser storage, viewport content and font-cache changes.
+
+### Input response
+
+All 1,200 acknowledgement requests completed. These times end at terminal frame submission.
+
+| Viewport | Output | p50 (ms) | p95 (ms) | p99 (ms) | Maximum (ms) | Achieved output (MiB/s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1080p | Acknowledgements only | 1.52 | 5.52 | 6.34 | 7.20 | — |
+| 1080p | 4 MiB/s target | 33.93 | 50.55 | 50.68 | 66.87 | 4.00 |
+| 4K | Acknowledgements only | 2.31 | 4.31 | 5.24 | 6.34 | — |
+| 4K | 4 MiB/s target | 13.75 | 18.64 | 30.76 | 50.33 | 4.00 |
+
+The observed maximum is not a worst-case latency bound.
+Compositor scheduling, other applications and power management can change tail latency.
+
+### Script callback duration
+
+All 180,000 callbacks completed without handler errors.
+The maximum column covers both viewport sizes. Effect application is excluded.
+
+| Synthetic panes | 1080p p50 / p95 (µs) | 4K p50 / p95 (µs) | Maximum (µs) |
+| ---: | ---: | ---: | ---: |
+| 1 | 5.12 / 9.04 | 5.13 / 9.30 | 84.68 |
+| 8 | 9.31 / 14.25 | 9.27 / 14.14 | 146.91 |
+| 32 | 21.48 / 30.27 | 21.66 / 30.31 | 225.91 |
+
 ## Workloads
 
 | Case | Work |
@@ -71,4 +174,6 @@ The scroll case traverses the scrollbar position; it does not reproduce smooth w
 The history case uses short ASCII rows; images, styles and complex text change memory requirements.
 The input case does not represent every full-screen application or output pattern.
 The nested compositor shares the host GPU and normal power management.
+Its additional presentation stage can affect frame pacing.
+These timings do not establish latency with a direct connection to the host compositor.
 Short repeated measurements do not establish a cross-terminal performance comparison.
