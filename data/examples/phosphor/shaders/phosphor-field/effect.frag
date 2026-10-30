@@ -83,8 +83,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
     if (sphere(ro,rd,4.1).y <= 0.0) return vec4(0,0,0,FAR);
     float t = time*p_speed;
     float failureAge = max(0.0,time-iSignal[0].y), successAge = max(0.0,time-iSignal[1].y);
-    float heatAge = max(0.0,time-iSignal[2].y);
-    float heat = iSignal[2].x > 0.5 ? 1.0-exp(-heatAge*2.4) : exp(-heatAge*2.0);
+    float heat = p_commandHeat;
     float bass = bassDrive(), mids = midDrive(), treble = trebleDrive();
     float history = historyDrive();
     float rupture = ruptureAt(failureAge,successAge);
@@ -307,8 +306,7 @@ vec3 atmosphere(vec3 rd, float t, float heat) {
 }
 vec3 traceScene(vec2 pixel, float shutter) {
     float time = max(0.0,iTime-shutter), t = time*p_speed;
-    float heatAge = max(0.0,time-iSignal[2].y);
-    float heat = iSignal[2].x > 0.5 ? 1.0-exp(-heatAge*2.4) : exp(-heatAge*2.0);
+    float heat = p_commandHeat;
     vec2 uv = (pixel-iFramebufferSize*vec2(0.60,0.55))/iFramebufferSize.y;
     vec2 pointer = clamp(phWindow(iMouse.xy)/iFramebufferSize-0.5,-0.5,0.5);
     mat3 camera = rotation(vec3(0,1,0),sin(t*0.12)*0.16+pointer.x*p_parallax)

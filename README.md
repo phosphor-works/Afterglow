@@ -699,7 +699,17 @@ Shader/configuration rebuilds clear overrides and expire instance IDs; query
 again after a stale-ID error. Moving a pane to another window drops its source
 window's parameter overrides. Closing panes releases their overrides. Values
 are transient and uniform-only: they neither edit configuration nor recompile
-shader programs. Smooth transitions are a subsequent increment.
+shader programs. Pass an optional fifth argument `{duration_ms=650, curve="ease-in-out"}` to
+animate toward the new values with Phosphor's host animation runtime. Supported
+curves are `linear`, `ease-in-out` and a critically damped `spring`; duration is
+0–60000 ms (0 applies immediately), and is a hard lifetime ceiling for springs.
+Retargeting preserves the currently visible position and starts a new duration.
+Float parameters interpolate within their endpoints; colors interpolate in
+linear-light sRGB through Phosphor and return encoded color uniforms. Integer
+and boolean parameters switch at completion. Omitted parameters and empty-table
+resets release overrides immediately. Unload, rebuild, pane closure and transfer
+cancel owned transitions. Completion results acknowledge acceptance, not the
+end of the animation. Hidden windows catch up when rendered again.
 
 Install [shader-parameters.luau](data/examples/scripts/shader-parameters.luau)
 in `~/.config/afterglow/scripts/` for palette actions that boost or reset the

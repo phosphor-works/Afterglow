@@ -70,6 +70,14 @@
             "default": 4000,
             "min": 100,
             "max": 50000
+        },
+        {
+            "id": "commandHeat",
+            "name": "Command heat",
+            "type": "float",
+            "default": 0,
+            "min": 0,
+            "max": 1
         }
     ]
 }

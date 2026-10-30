@@ -121,8 +121,8 @@ afterglow = {
     shaders = function(pane)
         return { kind = "shaders", pane = paneId(pane) }
     end,
-    shader_parameters = function(pane, instance, values, scope)
-        return { kind = "shader_parameters", pane = paneId(pane), instance = instance, values = values, scope = scope or "pane" }
+    shader_parameters = function(pane, instance, values, scope, transition)
+        return { kind = "shader_parameters", pane = paneId(pane), instance = instance, values = values, scope = scope or "pane", transition = transition }
     end,
     signal = function(pane, channel, value)
         return { kind = "signal", pane = paneId(pane), channel = channel, value = value or 1 }

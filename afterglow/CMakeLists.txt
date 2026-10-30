@@ -53,7 +53,7 @@ qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shader
 target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
-target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders Qt6::Core)
+target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation Qt6::Core)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)

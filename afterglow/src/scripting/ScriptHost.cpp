@@ -686,6 +686,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("Shader scope must be pane, tab or window");
             const auto instance = effect.value(QStringLiteral("instance")).toString();
             if (instance.isEmpty() || instance.size() > 128) error = QStringLiteral("Invalid shader instance ID");
+            const auto transition = raw.value(QStringLiteral("transition"));
+            if (transition.isValid() && transition.typeId() != QMetaType::QVariantMap)
+                error = QStringLiteral("Transition must be an object table");
+            effect.insert(QStringLiteral("transition"), transition.toMap());
             effect.insert(QStringLiteral("values"), values);
         }
         if (kind == QLatin1String("state_write")) {

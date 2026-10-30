@@ -18,7 +18,13 @@ local function broadcast(pane, values)
     for _, value in ipairs(values) do
         table.insert(channels, { channel = value[1], value = value[2] })
     end
-    return afterglow.signals(pane, channels, "tab")
+    local signal = afterglow.signals(pane, channels, "tab")
+    for _, value in ipairs(values) do
+        if value[1] == 2 then
+            return { signal, afterglow.request("heat:" .. tostring(value[2]), afterglow.shaders(pane)) }
+        end
+    end
+    return signal
 end
 
 local function heat(state, pane)
@@ -36,7 +42,9 @@ function script.on_pane_closed(ev)
     local effects = {}
     for _, tab in ipairs(ev.terminal.tabs) do
         if tab.active and tab.active_pane ~= 0 then
-            table.insert(effects, broadcast(tab.active_pane, { { 2, heat(ev.terminal, tab.active_pane) } }))
+            for _, effect in ipairs(broadcast(tab.active_pane, { { 2, heat(ev.terminal, tab.active_pane) } })) do
+                table.insert(effects, effect)
+            end
         end
     end
     return effects
@@ -86,5 +94,15 @@ end
 function script.on_user_var(ev)
     if ev.name == "phosphor" then return script.run_action(ev.value, ev) end
     return nil
+end
+function script.on_result(ev)
+    if not ev.ok or string.sub(ev.request_id, 1, 5) ~= "heat:" then return nil end
+    local value = tonumber(string.sub(ev.request_id, 6))
+    for _, shader in ipairs(ev.data.shaders or {}) do
+        if shader.shader == "phosphor-field" then
+            return afterglow.shader_parameters(ev.pane, shader.instance, {commandHeat=value}, "tab",
+                {duration_ms=650, curve="ease-in-out"})
+        end
+    end
 end
 return script

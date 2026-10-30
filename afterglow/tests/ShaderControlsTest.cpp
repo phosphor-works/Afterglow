@@ -121,6 +121,42 @@ TEST_F(ShaderControlsTest, ColorsBooleansAndIntegersUseTypedValidation)
         EXPECT_FALSE(library.validateParameters("types", bad, packed).isEmpty());
     EXPECT_FLOAT_EQ(packed.params[0], 4.); // invalid requests leave packed output intact
 }
+class ShaderClock : public PhosphorAnimation::IMotionClock
+{
+public:
+    std::chrono::nanoseconds time{};
+    std::chrono::nanoseconds now() const override { return time; }
+    qreal refreshRate() const override { return 60; }
+    void requestFrame() override {}
+    const void* epochIdentity() const override { return steadyClockEpoch(); }
+    void step(int ms) { time += std::chrono::milliseconds(ms); }
+};
+TEST_F(ShaderControlsTest, TransitionsRetargetFromVisibleValueAndStopOnCleanup)
+{
+    ShaderClock clock;
+    controls.setClock(&clock);
+    const QVariantMap transition{{"duration_ms", 1000.}, {"curve", "linear"}};
+    ASSERT_TRUE(controls.update("one", {7,8}, id(), "tab", {{"strength", 1.4}}, transition).isEmpty());
+    EXPECT_NEAR(strength(), 0.4, 0.001);
+    clock.step(500); EXPECT_TRUE(controls.advance());
+    EXPECT_NEAR(strength(), 0.9, 0.001); EXPECT_NEAR(strength(8), 0.9, 0.001);
+    ASSERT_TRUE(controls.update("one", {7}, id(), "pane", {{"strength", 0.4}}, transition).isEmpty());
+    EXPECT_NEAR(strength(), 0.9, 0.001);
+    clock.step(500); controls.advance();
+    EXPECT_NEAR(strength(), 0.65, 0.001); EXPECT_NEAR(strength(8), 1.4, 0.001);
+    controls.clearOwner("one"); EXPECT_FALSE(controls.advance()); EXPECT_NEAR(strength(), 0.4, 0.001);
+}
+TEST_F(ShaderControlsTest, InvalidTransitionsAreAtomicAndSpringHasBoundedLifetime)
+{
+    ShaderClock clock; controls.setClock(&clock);
+    for (const QVariantMap& bad : {QVariantMap{{"duration_ms", -1.}}, QVariantMap{{"duration_ms", "100"}},
+        QVariantMap{{"duration_ms", 60001.}}, QVariantMap{{"curve", "missing"}}, QVariantMap{{"typo", 1}}})
+        EXPECT_FALSE(controls.update("one", {7}, id(), "pane", {{"strength", 1.4}}, bad).isEmpty());
+    EXPECT_NEAR(strength(), 0.4, 0.001);
+    ASSERT_TRUE(controls.update("one", {7}, id(), "pane", {{"strength", 1.4}}, {{"duration_ms", 300.}, {"curve", "spring"}}).isEmpty());
+    for (int i=0;i<40;++i) { clock.step(10); controls.advance(); }
+    EXPECT_FALSE(controls.advance()); EXPECT_NEAR(strength(), 1.4, 0.001);
+}
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);

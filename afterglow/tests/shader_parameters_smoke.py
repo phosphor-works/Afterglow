@@ -46,7 +46,7 @@ return {
 local remembered
 return {
  metadata={actions={{id="pane",title="Pane"},{id="tab",title="Tab"},{id="window",title="Window"},
-          {id="bad",title="Invalid"},{id="stale",title="Stale"},{id="reset",title="Reset"}}},
+          {id="transition",title="Transition"},{id="bad",title="Invalid"},{id="stale",title="Stale"},{id="reset",title="Reset"}}},
  run_action=function(action,ev)
   if action=="stale" then return afterglow.request("done",afterglow.shader_parameters(ev.pane,remembered,{strength=1.2})) end
   return afterglow.request(action,afterglow.shaders(ev.pane))
@@ -58,7 +58,7 @@ return {
   remembered=shader.instance
   local scope=ev.request_id=="tab" and "tab" or ev.request_id=="window" and "window" or "pane"
   local values=ev.request_id=="reset" and {} or {strength=ev.request_id=="bad" and 999 or 1.2}
-  return afterglow.request("done",afterglow.shader_parameters(ev.pane,shader.instance,values,scope))
+  return afterglow.request("done",afterglow.shader_parameters(ev.pane,shader.instance,values,scope,ev.request_id=="transition" and {duration_ms=800,curve="linear"} or nil))
  end,
 }
 ''')
@@ -109,6 +109,11 @@ return {
             near(inspect(first)[0]["values"]["strength"], 1.2)
             action(first, "reset")
             near(inspect(first)[0]["values"]["strength"], 0.1)
+            action(first, "transition")
+            midway = inspect(first)[0]["values"]["strength"]
+            assert 0.15 < midway < 1.15, midway
+            time.sleep(0.9)
+            near(inspect(first)[0]["values"]["strength"], 1.2)
             action(first, "tab")
             near(inspect(second)[0]["values"]["strength"], 1.2)
             action(first, "window")

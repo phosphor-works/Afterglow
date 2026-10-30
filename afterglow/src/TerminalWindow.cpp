@@ -158,6 +158,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     resize(int(std::lround(initial.width() / dpr)), int(std::lround(initial.height() / dpr)));
 
     m_clock = std::make_unique<FrameClock>(this);
+    m_shaderControls.setClock(m_clock.get());
 
     m_controller = new ChromeController(this);
     connect(m_controller, &ChromeController::scriptDialogAnswered, this, &TerminalWindow::finishScriptDialog);
@@ -1063,7 +1064,7 @@ void TerminalWindow::renderNow()
     std::vector<std::pair<QRect, std::uint32_t>> overlays;
     const bool multiple = m_splits->paneCount() > 1;
     bool holding = false;
-    bool animating = false;
+    bool animating = m_shaderControls.advance();
     const QRect area = paneArea();
     const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
     const std::uint32_t dim = packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255)));

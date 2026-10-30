@@ -214,3 +214,7 @@ system playback automatically.
 
 Add `--scrollback-lines 10000` for a synthetic combined-history preview. Without
 this option the renderer sums the actual retained rows in the supplied panes.
+
+Command heat now uses the named `commandHeat` parameter and a 650 ms Phosphor
+host transition. Impulses (fracture, recall and shock fronts) continue using
+signal timestamps. Install the updated shader pack and script together.

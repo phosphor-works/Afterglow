@@ -76,6 +76,7 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
 {
     if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
     if (effect.value(QStringLiteral("kind")) == QLatin1String("shaders")) {
+        m_shaderControls.advance();
         result.insert(QStringLiteral("shaders"), m_shaderControls.describe(pane->id()));
         return {};
     }
@@ -87,7 +88,7 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
             || (scope == QLatin1String("pane") && p == pane)) { targets.append(p->id()); ids.append(p->id()); }
     }
     const auto error = m_shaderControls.update(owner, targets, effect.value(QStringLiteral("instance")).toString(),
-                                               scope, effect.value(QStringLiteral("values")).toMap());
+                                               scope, effect.value(QStringLiteral("values")).toMap(), effect.value(QStringLiteral("transition")).toMap());
     if (!error.isEmpty()) return error;
     result.insert(QStringLiteral("panes"), ids);
     scheduleRender();

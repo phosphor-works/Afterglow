@@ -65,6 +65,7 @@ export type ActionEvent = { pane: Pane?, terminal: State } -- the targeted pane,
 export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 
+export type ShaderTransition = { duration_ms: number, curve: ("linear" | "ease-in-out" | "spring")? }
 export type ShaderParameter = {
     id: string, name: string, type: string, default: (number | boolean | string),
     min: number?, max: number?, slot: number, unit: string, supported: boolean,
@@ -167,7 +168,7 @@ declare afterglow: {
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
     -- Replaces this script's overrides; {} resets. Window effects require window scope.
-    shader_parameters: (pane: PaneRef, instance: string, values: {[string]: number | boolean | string}, scope: ("pane" | "tab" | "window")?) -> Effect,
+    shader_parameters: (pane: PaneRef, instance: string, values: {[string]: number | boolean | string}, scope: ("pane" | "tab" | "window")?, transition: ShaderTransition?) -> Effect,
     signal: (pane: PaneRef, channel: number, value: number?) -> Effect,
     -- One effect, 1-8 unique channels, at most 128 panes. Defaults to anchor's tab.
     signals: (pane: PaneRef, values: { SignalValue }, scope: ("pane" | "tab" | "window")?) -> Effect,

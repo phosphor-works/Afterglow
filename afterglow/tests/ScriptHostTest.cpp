@@ -407,7 +407,7 @@ TEST_F(ScriptHostTest, PhosphorDemoActionsAndStatus)
     for (const auto& [action, channel] : std::initializer_list<std::pair<const char*, int>>{
              {"strike", 0}, {"complete", 1}, {"ring", 3}, {"heat", 2}}) {
         ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.") + QString::fromLatin1(action), 7));
-        ASSERT_EQ(rec.applied.size(), 1);
+        ASSERT_EQ(rec.applied.size(), channel == 2 ? 2 : 1);
         const auto value = rec.applied[0].value(QStringLiteral("values")).toList().first().toMap();
         EXPECT_EQ(value.value(QStringLiteral("channel")).toInt(), channel);
         EXPECT_DOUBLE_EQ(value.value(QStringLiteral("value")).toDouble(), 1.0);
@@ -665,7 +665,7 @@ TEST_F(ScriptHostTest, EightPanePhosphorUpdateUsesOneEffectForThreeChannels)
     host->dispatch(QStringLiteral("on_command_finished"), 7,
                    {{QStringLiteral("exit_code"), 2}, {QStringLiteral("duration_ms"), 2000}});
     ASSERT_EQ(paneState.size(), 8);
-    ASSERT_EQ(rec.applied.size(), 1);
+    ASSERT_EQ(rec.applied.size(), 2); // one signal batch plus named-parameter discovery
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("kind")), QStringLiteral("signals"));
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("values")).toList().size(), 3);
     EXPECT_TRUE(rec.results[0].second.isEmpty());
