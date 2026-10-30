@@ -1,0 +1,1 @@
+{"id":"contextual-scene","version":"1.0.0","api_version":1,"state_version":1,"entry":"main","modules":{"main":"init.luau"},"config":{"base_intensity":0.8,"peak_intensity":1.3}}

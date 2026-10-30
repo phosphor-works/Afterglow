@@ -5,6 +5,7 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -32,8 +33,8 @@ with tempfile.TemporaryDirectory(prefix="afterglow-v11-") as temp:
 local revision = 0
 return {
  on_load=function(ev) revision=ev.storage.revision end,
- metadata={actions={{id="read",title="Inspect shader parameters"}}},
- run_action=function(_,ev) return afterglow.request("read",afterglow.shaders(ev.pane)) end,
+ metadata={actions={{id="read",title="Inspect shader parameters"},{id="scene",title="Inspect scene"}}},
+ run_action=function(action,ev) return afterglow.request("read",action=="scene" and afterglow.scene_state(ev.pane) or afterglow.shaders(ev.pane)) end,
  on_result=function(ev)
   if ev.request_id=="read" and ev.ok then
    return afterglow.request("saved",afterglow.state_write(ev.data,revision))
@@ -41,6 +42,9 @@ return {
  end,
 }
 ''')
+    source = Path(__file__).resolve().parents[2]
+    shutil.copytree(source / "data/examples/packages/scene-controls", config / "scripts/scene-controls")
+    shutil.copytree(source / "data/shaders/bloom", config / "shaders/bloom")
     writer = config / "scripts/writer.luau"
     writer.write_text('''
 local remembered
@@ -83,11 +87,11 @@ return {
             ctl("action", "script:writer." + name, "--pane", pane)
             time.sleep(0.2)
         state = config / "state/scripts/inspect.json"
-        def inspect(pane):
+        def inspect(pane, kind="read"):
             previous = json.loads(state.read_text())["revision"] if state.exists() else 0
-            ctl("action", "script:inspect.read", "--pane", pane)
+            ctl("action", "script:inspect." + kind, "--pane", pane)
             wait_for(lambda: state.exists() and json.loads(state.read_text())["revision"] > previous)
-            return json.loads(state.read_text())["value"]["shaders"]
+            return json.loads(state.read_text())["value"]["scene" if kind == "scene" else "shaders"]
         def near(value, expected): assert abs(value - expected) < 0.001, (value, expected)
         try:
             first = wait_for(panes)[0]["id"]
@@ -132,6 +136,50 @@ return {
             near(inspect(second)[0]["values"]["strength"], 0.2)
             assert "WRITE_REJECTED" in (artifacts / "application.log").read_text()
             desktop.screenshot(artifacts / "reset.png")
+            third = int(ctl("new-tab", "--pane", first))
+            time.sleep(0.3)
+            empty = inspect(first, "scene")
+            ctl("send-text", "--pane", first, "seq 1 200\\n")
+            time.sleep(0.4)
+            hidden = inspect(first, "scene")
+            assert hidden["tab_id"] == empty["tab_id"] and hidden["history_rows"] == empty["history_rows"]
+            ctl("focus", "--pane", first)
+            active = inspect(first, "scene")
+            assert active["tab_id"] != hidden["tab_id"] and active["history_rows"] > 100
+            assert not active["audio_available"] and active["overall"] == 0
+            def menu(choice):
+                ctl("action", "script:scene-controls.open", "--pane", first)
+                time.sleep(0.3)
+                desktop.key("Return")
+                time.sleep(0.5)
+                desktop.text(choice)
+                desktop.key("Return")
+                time.sleep(0.3)
+            menu("Choose preset")
+            desktop.text("Bright")
+            desktop.screenshot(artifacts / "preset-picker.png")
+            desktop.key("Return")
+            time.sleep(0.6)
+            near(inspect(first)[0]["values"]["strength"], 0.8)
+            menu("Save current")
+            desktop.key("Return")
+            time.sleep(0.3)
+            assert list((config / "shader-presets/surface").glob("*.json"))
+            menu("Reset my")
+            time.sleep(0.3)
+            desktop.screenshot(artifacts / "preset-reset.png")
+            near(inspect(first)[0]["values"]["strength"], 0.2)
+            app.terminate(); app.wait(timeout=5)
+            app = subprocess.Popen([binary, "--title", "V1 persisted preset"], env=env, stdout=log, stderr=subprocess.STDOUT)
+            first = wait_for(panes)[0]["id"]
+            time.sleep(0.4)
+            desktop.activate()
+            menu("Choose preset")
+            desktop.text("My scene")
+            desktop.key("Return")
+            time.sleep(0.6)
+            near(inspect(first)[0]["values"]["strength"], 0.8)
+            print("PASS: current-tab-only history, unavailable audio, native preset picker/apply/save/reset, restart persistence")
             print("PASS: native discovery, duplicate instances, pane/tab/window updates, invalid atomic rejection, focus independence, reset, reload/stale ID rejection, script uninstall cleanup")
         except Exception:
             print((artifacts / "application.log").read_text()[-5000:], file=sys.stderr)

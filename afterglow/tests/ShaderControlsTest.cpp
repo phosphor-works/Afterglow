@@ -121,6 +121,23 @@ TEST_F(ShaderControlsTest, ColorsBooleansAndIntegersUseTypedValidation)
         EXPECT_FALSE(library.validateParameters("types", bad, packed).isEmpty());
     EXPECT_FLOAT_EQ(packed.params[0], 4.); // invalid requests leave packed output intact
 }
+TEST_F(ShaderControlsTest, PresetsReusePhosphorStoreAndSurviveRestart)
+{
+    QVariantMap values, result;
+    EXPECT_TRUE(library.presetParameters("types", "One", values).isEmpty());
+    EXPECT_EQ(values.value("count").toInt(), 1);
+    ASSERT_TRUE(library.savePreset("types", "Test saved scene", {{"count", 5}, {"enabled", true}, {"tint", "#ff7700"}}, result).isEmpty());
+    const auto savedId = result.value("id").toString();
+    ShaderLibrary restarted;
+    EXPECT_TRUE(restarted.presetParameters("types", savedId, values).isEmpty());
+    EXPECT_EQ(values.value("count").toInt(), 5);
+    EXPECT_TRUE(values.value("enabled").toBool());
+    EXPECT_TRUE(restarted.presetParameters("types", "@defaults", values).isEmpty());
+    EXPECT_EQ(values.value("count").toInt(), 2);
+    EXPECT_FALSE(restarted.presetParameters("types", "does-not-exist", values).isEmpty());
+    EXPECT_FALSE(library.savePreset("types", "", {{"count", 5}}, result).isEmpty());
+    EXPECT_FALSE(library.savePreset("types", "Invalid", {{"count", 99}}, result).isEmpty());
+}
 class ShaderClock : public PhosphorAnimation::IMotionClock
 {
 public:
@@ -166,7 +183,7 @@ int main(int argc, char** argv)
     QDir().mkpath(path);
     QFile metadata(path + QStringLiteral("/metadata.json"));
     if (!metadata.open(QIODevice::WriteOnly)) return 1;
-    metadata.write(R"({"id":"types","name":"Types","fragmentShader":"effect.frag","parameters":[
+    metadata.write(R"({"id":"types","name":"Types","fragmentShader":"effect.frag","presets":{"One":{"count":1}},"parameters":[
         {"id":"count","name":"Count","type":"int","default":2,"min":1,"max":8},
         {"id":"enabled","name":"Enabled","type":"bool","default":false},
         {"id":"tint","name":"Tint","type":"color","default":"#ffffff"}]})");

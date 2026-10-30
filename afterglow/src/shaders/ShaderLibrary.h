@@ -17,6 +17,7 @@
 
 namespace PhosphorShaders {
 class ShaderRegistry;
+class ShaderPresetStore;
 }
 
 namespace Afterglow {
@@ -49,6 +50,9 @@ public:
     AfterglowRender::ShaderChains build(const Refs& refs, const QVariantMap& params);
 
     QStringList packIds() const;
+    QVariantList presets(const QString& ref) const;
+    QString presetParameters(const QString& ref, const QString& id, QVariantMap& values) const;
+    QString savePreset(const QString& ref, const QString& name, const QVariantMap& values, QVariantMap& result);
     QVariantList parameters(const QString& ref) const;
     QString validateParameters(const QString& ref, const QVariantMap& values,
                                AfterglowRender::ShaderParameterValues& packed) const;
@@ -60,7 +64,9 @@ Q_SIGNALS:
 private:
     AfterglowRender::ShaderProgramPtr load(const QString& ref, const QVariantMap& params);
 
+    void seedPresets();
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
+    std::unique_ptr<PhosphorShaders::ShaderPresetStore> m_presets;
     QStringList m_includeDirs;
     QFileSystemWatcher m_files;
     QHash<QString, AfterglowRender::ShaderProgramPtr> m_cache;

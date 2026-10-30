@@ -7,8 +7,43 @@
     "version": "1.0",
     "fragmentShader": "effect.frag",
     "parameters": [
-        { "id": "radius", "name": "Radius", "group": "Glow", "type": "float", "default": 6.0, "min": 1.0, "max": 24.0, "unit": "px" },
-        { "id": "strength", "name": "Strength", "group": "Glow", "type": "float", "default": 0.35, "min": 0.0, "max": 2.0 },
-        { "id": "threshold", "name": "Threshold", "group": "Glow", "type": "float", "default": 0.45, "min": 0.0, "max": 1.0 }
-    ]
+        {
+            "id": "radius",
+            "name": "Radius",
+            "group": "Glow",
+            "type": "float",
+            "default": 6.0,
+            "min": 1.0,
+            "max": 24.0,
+            "unit": "px"
+        },
+        {
+            "id": "strength",
+            "name": "Strength",
+            "group": "Glow",
+            "type": "float",
+            "default": 0.35,
+            "min": 0.0,
+            "max": 2.0
+        },
+        {
+            "id": "threshold",
+            "name": "Threshold",
+            "group": "Glow",
+            "type": "float",
+            "default": 0.45,
+            "min": 0.0,
+            "max": 1.0
+        }
+    ],
+    "presets": {
+        "Subtle": {
+            "strength": 0.2,
+            "radius": 4
+        },
+        "Bright": {
+            "strength": 0.8,
+            "radius": 10
+        }
+    }
 }

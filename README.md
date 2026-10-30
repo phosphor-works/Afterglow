@@ -716,6 +716,31 @@ in `~/.config/afterglow/scripts/` for palette actions that boost or reset the
 first active Bloom instance in the current tab (or window for a window effect).
 Enable Bloom in a shader chain first; the example reports if none is active.
 
+### Scene presets and telemetry
+
+Install [scene-controls](data/examples/packages/scene-controls/README.md) for
+native effect/preset selectors, quality/intensity editing, save and reset.
+The host exposes `shader_presets(pane, instance)`,
+`shader_preset(pane, instance, preset, scope?, transition?)`, and
+`save_shader_preset(pane, instance, name)`, all with normal operation results.
+Discovery returns `data.presets`; save returns `data.id` and `data.name`.
+`@defaults` applies pack defaults, while an empty `shader_parameters` table
+releases the calling script's changes. Saved presets use Phosphor's schema and
+registry under `~/.config/afterglow/shader-presets/surface/`, separate from
+PlasmaZones. Pack presets are read-only; saves create new named entries and
+survive restarts. Applying presets is transient until explicitly reapplied.
+
+`scene_state(pane)` returns `data.scene`: the anchor window's **current** tab ID,
+combined `history_rows`, `history_normalized = rows / (rows + 5000)`, monotonic
+`sample_ms`, `audio_available`, and 0–1 `bass`, `mids`, `treble`, `overall` levels.
+Samples are cached for 100 ms; changing tabs invalidates that cache. History
+always counts the current tab, even when the anchor pane is in a background tab.
+Audio observes the existing shared analyzer; querying does not start capture.
+Unavailable/stale capture gives false availability and zero levels. Scripts
+can sample with bounded timers; continuous FFT inputs and interpolation stay
+in the host. [contextual-scene](data/examples/packages/contextual-scene/README.md)
+shows a once-per-second decision driving a smooth Phosphor exposure transition.
+
 ## Licence
 
 The application is GPL-3.0-or-later; the libraries under `libs/` are

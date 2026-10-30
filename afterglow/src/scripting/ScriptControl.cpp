@@ -103,7 +103,9 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                                                std::function<void(ScriptHost::EffectResult)> complete) -> ScriptHost::EffectResult {
         const auto kind = e.value(QStringLiteral("kind")).toString();
         const auto pane = e.value(QStringLiteral("pane")).toUInt();
-        if (kind == QLatin1String("shaders") || kind == QLatin1String("shader_parameters")) {
+        if (kind == QLatin1String("shaders") || kind == QLatin1String("shader_parameters")
+            || kind == QLatin1String("shader_presets") || kind == QLatin1String("shader_preset")
+            || kind == QLatin1String("save_shader_preset") || kind == QLatin1String("scene_state")) {
             QVariantMap data;
             const auto error = control.scriptShader(owner, pane, e, data);
             return {error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};

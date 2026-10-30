@@ -79,5 +79,25 @@
             "min": 0,
             "max": 1
         }
-    ]
+    ],
+    "presets": {
+        "Quiet": {
+            "quality": 0,
+            "intensity": 0.75,
+            "audioStrength": 0.5,
+            "historyStrength": 0.5
+        },
+        "Balanced": {
+            "quality": 1,
+            "intensity": 1.05,
+            "audioStrength": 1.0,
+            "historyStrength": 1.0
+        },
+        "Cinematic": {
+            "quality": 2,
+            "intensity": 1.15,
+            "audioStrength": 1.2,
+            "historyStrength": 1.0
+        }
+    }
 }

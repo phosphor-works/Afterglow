@@ -131,6 +131,10 @@ const EffectKind Kinds[] = {
     {"signal", true, false, {}, false, {"channel", "value"}},
     {"signals", true, false, {"scope"}, false},
     {"shaders", true, false, {}, false},
+    {"shader_presets", true, false, {"instance"}, false},
+    {"shader_preset", true, false, {"instance", "preset", "scope"}, false},
+    {"save_shader_preset", true, false, {"instance", "name"}, false},
+    {"scene_state", true, false, {}, false},
     {"shader_parameters", true, false, {"instance", "scope"}, false},
 };
 
@@ -677,10 +681,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             }
             if (v.isValid()) effect.insert(QLatin1String(key), v.toDouble());
         }
-        if (kind == QLatin1String("shader_parameters")) {
+        if (kind == QLatin1String("shader_parameters") || kind == QLatin1String("shader_preset")) {
             const auto values = raw.value(QStringLiteral("values"));
             const auto scope = effect.value(QStringLiteral("scope")).toString();
-            if (values.typeId() != QMetaType::QVariantMap || values.toMap().size() > 48)
+            if (kind == QLatin1String("shader_parameters") && (values.typeId() != QMetaType::QVariantMap || values.toMap().size() > 48))
                 error = QStringLiteral("Shader values must be an object with at most 48 parameters");
             if (scope != QLatin1String("pane") && scope != QLatin1String("tab") && scope != QLatin1String("window"))
                 error = QStringLiteral("Shader scope must be pane, tab or window");

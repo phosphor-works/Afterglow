@@ -75,7 +75,12 @@ export type ShaderInstance = {
     parameters: { ShaderParameter }, values: {[string]: number | boolean | string},
 }
 export type OperationError = { code: string, message: string }
+export type SceneState = {
+    tab_id: number, sample_ms: number, history_rows: number, history_normalized: number,
+    audio_available: boolean, bass: number, mids: number, treble: number, overall: number,
+}
 export type OperationData = {
+    scene: SceneState?, presets: {{id: string, name: string, read_only: boolean}}?,
     shaders: { ShaderInstance }?,
     text: string?, truncated: boolean?, available: boolean?, name: string?,
     stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?,
@@ -167,6 +172,10 @@ declare afterglow: {
     -- sets iSignal[channel] (0-7) on the pane's shaders to (value, iTime now)
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
+    scene_state: (pane: PaneRef) -> Effect,
+    shader_presets: (pane: PaneRef, instance: string) -> Effect,
+    shader_preset: (pane: PaneRef, instance: string, preset: string, scope: ("pane" | "tab" | "window")?, transition: ShaderTransition?) -> Effect,
+    save_shader_preset: (pane: PaneRef, instance: string, name: string) -> Effect,
     -- Replaces this script's overrides; {} resets. Window effects require window scope.
     shader_parameters: (pane: PaneRef, instance: string, values: {[string]: number | boolean | string}, scope: ("pane" | "tab" | "window")?, transition: ShaderTransition?) -> Effect,
     signal: (pane: PaneRef, channel: number, value: number?) -> Effect,

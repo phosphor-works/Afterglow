@@ -84,7 +84,12 @@ QVariantList ShaderControls::describe(quint32 pane) const
                 const float* c = u.customColors[slot];
                 value = QColor::fromRgbF(c[0], c[1], c[2], c[3]).name(QColor::HexArgb);
             } else if (type == QLatin1String("bool")) value = bool(u.customParams[slot / 4][slot % 4]);
-            else value = double(u.customParams[slot / 4][slot % 4]);
+            else {
+                double number = u.customParams[slot / 4][slot % 4];
+                if (p.contains(QStringLiteral("min"))) number = std::max(number, p.value(QStringLiteral("min")).toDouble());
+                if (p.contains(QStringLiteral("max"))) number = std::min(number, p.value(QStringLiteral("max")).toDouble());
+                value = number;
+            }
             effective.insert(p.value(QStringLiteral("id")).toString(), value);
         }
         result.append(QVariantMap{{QStringLiteral("instance"), program.instanceId()},

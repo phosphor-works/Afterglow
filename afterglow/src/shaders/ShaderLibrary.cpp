@@ -5,6 +5,9 @@
 
 #include <PhosphorShaders/ShaderIncludeResolver.h>
 #include <PhosphorShaders/ShaderRegistry.h>
+#include <PhosphorShaders/ShaderPresetStore.h>
+#include <QSaveFile>
+#include <QUuid>
 
 #include <QColor>
 #include <algorithm>
@@ -39,6 +42,7 @@ bool isFileReference(const QString& ref)
 ShaderLibrary::ShaderLibrary(QObject* parent)
     : QObject(parent)
     , m_registry(std::make_unique<PhosphorShaders::ShaderRegistry>())
+    , m_presets(std::make_unique<PhosphorShaders::ShaderPresetStore>())
 {
     // Lowest priority first: bundled, then system, then the user's own packs.
     QStringList dirs;
@@ -64,8 +68,12 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
         }
     }
     m_registry->refresh();
+    m_presets->load(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
+        + QStringLiteral("/afterglow/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
+    seedPresets();
 
     connect(m_registry.get(), &PhosphorShaders::ShaderRegistry::shadersChanged, this, [this] {
+        seedPresets();
         m_cache.clear();
         m_failed.clear();
         Q_EMIT changed();
@@ -107,6 +115,68 @@ PhosphorShaders::ShaderRegistry::ShaderInfo findPack(const PhosphorShaders::Shad
     return {};
 }
 } // namespace
+
+void ShaderLibrary::seedPresets()
+{
+    PhosphorShaders::seedPackPresets(m_presets->registry(), PhosphorShaders::ShaderFamily::Surface, m_registry->availableShaders());
+}
+
+QVariantList ShaderLibrary::presets(const QString& ref) const
+{
+    const auto info = findPack(*m_registry, ref);
+    QVariantList result;
+    if (!info.isValid()) return result;
+    result.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("@defaults")}, {QStringLiteral("name"), QStringLiteral("Pack defaults")}, {QStringLiteral("read_only"), true}});
+    for (const auto& preset : m_presets->registry().presetsFor(PhosphorShaders::ShaderFamily::Surface, info.id))
+        result.append(QVariantMap{{QStringLiteral("id"), preset.id}, {QStringLiteral("name"), preset.name}, {QStringLiteral("read_only"), preset.readOnly}});
+    return result;
+}
+QString ShaderLibrary::presetParameters(const QString& ref, const QString& id, QVariantMap& values) const
+{
+    const auto info = findPack(*m_registry, ref);
+    if (!info.isValid()) return QStringLiteral("Shader has no preset metadata");
+    QVariantMap candidate;
+    for (const auto& p : parameters(ref)) {
+        const auto metadata = p.toMap();
+        if (metadata.value(QStringLiteral("supported")).toBool())
+            candidate.insert(metadata.value(QStringLiteral("id")).toString(), metadata.value(QStringLiteral("default")));
+    }
+    if (id != QLatin1String("@defaults")) {
+        const auto preset = m_presets->registry().preset(PhosphorShaders::ShaderFamily::Surface, info.id, id);
+        if (!preset.isValid()) return QStringLiteral("Unknown shader preset");
+        const auto resolved = m_presets->registry().resolveParams(PhosphorShaders::ShaderFamily::Surface, info.id, id, {});
+        for (auto it = resolved.begin(); it != resolved.end(); ++it) {
+            if (!candidate.contains(it.key())) return QStringLiteral("Preset contains an unknown or unsupported parameter");
+            candidate.insert(it.key(), it.value());
+        }
+    }
+    AfterglowRender::ShaderParameterValues packed;
+    const auto error = validateParameters(ref, candidate, packed);
+    if (error.isEmpty()) values = candidate;
+    return error;
+}
+QString ShaderLibrary::savePreset(const QString& ref, const QString& name, const QVariantMap& values, QVariantMap& result)
+{
+    if (name.trimmed().isEmpty() || name.size() > 128) return QStringLiteral("Preset name needs 1 to 128 characters");
+    AfterglowRender::ShaderParameterValues packed;
+    const auto error = validateParameters(ref, values, packed);
+    if (!error.isEmpty()) return error;
+    const auto info = findPack(*m_registry, ref);
+    const auto directory = m_presets->directoryFor(PhosphorShaders::ShaderFamily::Surface);
+    if (QDir(directory).entryList({QStringLiteral("*.json")}, QDir::Files).size() >= 128)
+        return QStringLiteral("At most 128 user presets can be stored");
+    PhosphorShaders::ShaderPreset preset;
+    preset.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    preset.name = name.trimmed(); preset.packId = info.id; preset.params = values;
+    if (!QDir().mkpath(directory)) return QStringLiteral("Cannot create preset directory");
+    QSaveFile file(directory + QLatin1Char('/') + preset.id + QStringLiteral(".json"));
+    const auto bytes = QJsonDocument(preset.toJson()).toJson();
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+        return QStringLiteral("Cannot save shader preset: %1").arg(file.errorString());
+    m_presets->rescanNow(PhosphorShaders::ShaderFamily::Surface);
+    result = {{QStringLiteral("id"), preset.id}, {QStringLiteral("name"), preset.name}};
+    return {};
+}
 
 QVariantList ShaderLibrary::parameters(const QString& ref) const
 {

@@ -291,6 +291,8 @@ private:
     QQmlEngine& m_engine;
     ShaderLibrary& m_shaders;
     ShaderControls m_shaderControls;
+    QVariantMap m_sceneSample;
+    qint64 m_sceneSampleMs = -1000;
     ScriptHost& m_scripts;
     AudioController& m_audio;
     bool m_audioReactive = false;

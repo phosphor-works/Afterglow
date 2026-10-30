@@ -118,6 +118,12 @@ afterglow = {
     action = function(pane, name)
         return { kind = "action", pane = paneId(pane), name = tostring(name) }
     end,
+    scene_state = function(pane) return {kind="scene_state", pane=paneId(pane)} end,
+    shader_presets = function(pane, instance) return {kind="shader_presets", pane=paneId(pane), instance=instance} end,
+    shader_preset = function(pane, instance, preset, scope, transition)
+        return {kind="shader_preset", pane=paneId(pane), instance=instance, preset=preset, scope=scope or "pane", transition=transition}
+    end,
+    save_shader_preset = function(pane, instance, name) return {kind="save_shader_preset", pane=paneId(pane), instance=instance, name=name} end,
     shaders = function(pane)
         return { kind = "shaders", pane = paneId(pane) }
     end,

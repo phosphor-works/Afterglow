@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TerminalWindow.h"
 #include "chrome/ChromeController.h"
+#include <AfterglowRender/GpuDevice.h>
 #include <algorithm>
 
 namespace Afterglow {
@@ -80,6 +81,39 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
         result.insert(QStringLiteral("shaders"), m_shaderControls.describe(pane->id()));
         return {};
     }
+    const auto kind = effect.value(QStringLiteral("kind")).toString();
+    if (kind == QLatin1String("scene_state")) {
+        const qint64 now = std::chrono::duration_cast<std::chrono::milliseconds>(m_clock->now()).count();
+        if (now - m_sceneSampleMs >= 100 || m_sceneSample.value(QStringLiteral("tab_id")).toUInt() != activeTabId()) {
+            quint64 rows = 0;
+            for (Pane* p : panes()) if (tabIdOf(p) == activeTabId())
+                rows += p->withTerminal([](auto& t) { return t.primaryScreen().historySize(); });
+            const auto& audio = m_device.audioLevels();
+            m_sceneSample = {{QStringLiteral("tab_id"), activeTabId()}, {QStringLiteral("history_rows"), rows},
+                {QStringLiteral("history_normalized"), double(rows) / (double(rows) + 5000.)},
+                {QStringLiteral("sample_ms"), now}, {QStringLiteral("audio_available"), m_device.audioSpectrumSize() > 0},
+                {QStringLiteral("bass"), audio[0]}, {QStringLiteral("mids"), audio[1]},
+                {QStringLiteral("treble"), audio[2]}, {QStringLiteral("overall"), audio[3]}};
+            m_sceneSampleMs = now;
+        }
+        result.insert(QStringLiteral("scene"), m_sceneSample);
+        return {};
+    }
+    QVariantMap values = effect.value(QStringLiteral("values")).toMap();
+    const auto instanceId = effect.value(QStringLiteral("instance")).toString();
+    if (kind == QLatin1String("shader_presets") || kind == QLatin1String("shader_preset") || kind == QLatin1String("save_shader_preset")) {
+        m_shaderControls.advance();
+        QVariantMap instance;
+        for (const auto& item : m_shaderControls.describe(pane->id()))
+            if (item.toMap().value(QStringLiteral("instance")) == instanceId) { instance = item.toMap(); break; }
+        if (instance.isEmpty()) return QStringLiteral("Shader instance expired; query shaders again");
+        const auto ref = instance.value(QStringLiteral("shader")).toString();
+        if (kind == QLatin1String("shader_presets")) { result.insert(QStringLiteral("presets"), m_shaders.presets(ref)); return {}; }
+        if (kind == QLatin1String("save_shader_preset"))
+            return m_shaders.savePreset(ref, effect.value(QStringLiteral("name")).toString(), instance.value(QStringLiteral("values")).toMap(), result);
+        const auto error = m_shaders.presetParameters(ref, effect.value(QStringLiteral("preset")).toString(), values);
+        if (!error.isEmpty()) return error;
+    }
     const auto scope = effect.value(QStringLiteral("scope")).toString();
     QList<quint32> targets;
     QVariantList ids;
@@ -88,7 +122,7 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
             || (scope == QLatin1String("pane") && p == pane)) { targets.append(p->id()); ids.append(p->id()); }
     }
     const auto error = m_shaderControls.update(owner, targets, effect.value(QStringLiteral("instance")).toString(),
-                                               scope, effect.value(QStringLiteral("values")).toMap(), effect.value(QStringLiteral("transition")).toMap());
+                                               scope, values, effect.value(QStringLiteral("transition")).toMap());
     if (!error.isEmpty()) return error;
     result.insert(QStringLiteral("panes"), ids);
     scheduleRender();
