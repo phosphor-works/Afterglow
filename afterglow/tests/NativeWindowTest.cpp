@@ -94,7 +94,9 @@ TEST_F(NativeWindow, LaunchOptionsAndClosedIdentity) {
 }
 TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition) {
     auto* first = window->focusedPane();
-    auto* second = window->splitPane(first, SplitTree::Direction::Right, PaneLaunchOptions{.command = {QStringLiteral("/bin/cat")}}, nullptr);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     for (auto* pane : {first, second}) {
         window->revealPane(pane);
@@ -108,7 +110,9 @@ TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition) {
 }
 TEST_F(NativeWindow, PasteConfirmationRetainsOriginalPane) {
     auto* first = window->focusedPane();
-    auto* second = window->splitPane(first, SplitTree::Direction::Right, PaneLaunchOptions{.command = {QStringLiteral("/bin/cat")}}, nullptr);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
     QGuiApplication::clipboard()->setText(QStringLiteral("original-pane-line-one\noriginal-pane-line-two\n"));
@@ -239,7 +243,9 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     request.iconData.clear();
     center.handle(first, window, request); drain(60);
     EXPECT_FALSE(server.images.last().isEmpty());
-    auto* second = window->splitPane(first, SplitTree::Direction::Down, PaneLaunchOptions{.command = {QStringLiteral("/bin/cat")}}, nullptr);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(second, nullptr);
     request.id = "another-pane";
     center.handle(second, window, request); drain(160);

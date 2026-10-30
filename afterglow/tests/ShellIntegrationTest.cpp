@@ -108,7 +108,9 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     auto initial = output.take();
     EXPECT_NE(initial.find("AG_READY>"), std::string::npos) << initial;
-    if (shell != "fish") EXPECT_NE(initial.find("USER_HOOK"), std::string::npos) << initial;
+    if (shell != "fish") {
+        EXPECT_NE(initial.find("USER_HOOK"), std::string::npos) << initial;
+    }
     EXPECT_NE(initial.find("\x1b]133;A"), std::string::npos) << initial;
     ASSERT_TRUE(pty->write("false\r"));
     ASSERT_TRUE(output.wait("\x1b]133;D;1")) << output.take();

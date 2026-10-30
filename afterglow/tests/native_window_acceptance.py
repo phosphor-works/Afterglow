@@ -18,7 +18,9 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
     root = Path(temporary)
     with NestedDesktop(root) as desktop:
         marker = root / "drag-ready"
-        env = dict(desktop.env, AFTERGLOW_NATIVE_DND_READY=str(marker), QT_QUICK_CONTROLS_STYLE="Basic")
+        # Keep desktop portal activation outside this isolated input test.
+        env = dict(desktop.env, AFTERGLOW_NATIVE_DND_READY=str(marker),
+                   QT_QUICK_CONTROLS_STYLE="Basic", QT_QPA_PLATFORMTHEME="generic")
         process = subprocess.Popen(["dbus-run-session", "--", os.path.abspath(args.binary)], env=env)
         try:
             coordinates = []
