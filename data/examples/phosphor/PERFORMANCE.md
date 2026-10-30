@@ -1,49 +1,11 @@
 <!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# V1 scene validation
+# Phosphor scene performance
 
-Validation date: 30 October 2026.
-V1.1–V1.5 include live parameters, host transitions, presets, bounded telemetry, persistent buffers, packaged controls and measured scene acceptance.
+Measurement date: 30 October 2026.
 Results describe one local Linux/Vulkan environment.
 They do not certify other GPUs or compare Afterglow with other terminals.
-
-## Acceptance
-
-| Check | Result |
-| --- | --- |
-| CTest | 340/340 passed. |
-| Native presets | Selection, apply, save, reset, restart persistence, stale-ID rejection and owner/removal cleanup passed. |
-| Combined scene | Real CAVA capture, command transitions and combined history passed. |
-| Focus and lifecycle | Focus, split resize, zoom, fullscreen, opacity, font reload, contextual exposure, silence and disabled capture passed. |
-| Disabled capture | Reports `audio_available: false` and zero levels. |
-| Visual inspection | Dark and light scenes, text scaling, splits, opacity, audio, command impulses and large synthetic history rendered successfully. |
-
-Renderer tests cover live uniforms in all relevant chains and retained buffers in all five scopes.
-They also cover RGBA8, RGBA16F, disabled feedback, alpha conversion, linear-light conversion and fractional-scale split isolation.
-Reset tests cover layout, tab, theme, resize and clock changes. Tests also enforce the buffer-instance limit.
-
-A selector timing failure was corrected in the native test driver.
-The combined test used a temporary Pulse null-sink monitor and 9,944 history rows across two panes.
-A fresh tab started with near-zero history. Returning restored the original tab's total.
-Playback used only the silent test sink. The test then stopped playback and removed the sink.
-
-The first combined run found redundant focus-triggered material updates.
-Removing them eliminated effect-budget drops.
-A regression sends 64 focus events without spending shader effects.
-Provider tests cover absent, failed and stalled capture with bounded retries.
-Scripts do not calculate FFT data.
-
-Visual checks used text scales of 1×, 1.25× and 2×, 75 percent opacity and one million synthetic history rows.
-The bright-core check found white text over white highlights.
-The corrected text pass adds a configurable dark outline and preserves the prompt.
-DPR checks used offscreen rendering. They did not test live mixed-monitor migration.
-
-The launcher includes scene-controls and contextual-scene packages.
-Saved demo presets disappear when its temporary directory is removed.
-Install packages in normal configuration for persistence.
-Reset releases only the editor's contribution.
-Pack defaults apply metadata defaults, not configured values.
 
 ## Measurement method
 
@@ -93,23 +55,6 @@ Feedback adds persistent storage.
 Observed driver memory exceeds the pixel-storage formula because allocations are rounded.
 Short-run timing differences do not establish an optimization.
 
-## Before/after adapter baseline
-
-The pre-V1.4 baseline used the V1.3 renderer at `33dc961`, with measurement-tool changes.
-The field-only workload used quality 1.
-The same workload ran after adapter integration: 12 frames, with 11 measured.
-This comparison allocates no feedback buffer. It checks cost for existing shaders.
-
-| Resolution | Before p50 / p95 (ms) | After p50 / p95 (ms) |
-| --- | ---: | ---: |
-| 1920x1080 | 17.93 / 22.64 | 21.13 / 22.92 |
-| 3840x2160 | 59.43 / 63.73 | 59.53 / 61.93 |
-
-Results remain in the same general cost range with normal desktop and clock variation.
-They do not establish a statistically significant improvement or regression.
-Pre-adapter process GPU memory was not recorded.
-The first table supplies final no-shader and scene memory values.
-
 ## Reproduce
 
 Run from the repository root:
@@ -129,14 +74,10 @@ The benchmark's NVIDIA memory sampler is optional.
 Other GPUs still produce timings, with memory marked unavailable.
 The tool does not substitute whole-machine GPU memory.
 
-Local evidence used `/tmp/afterglow-shader-parameters/`, `/tmp/afterglow-scene-acceptance/` and `/tmp/afterglow-v1-evidence/`.
-Temporary captures are not shipped assets. Scripts and summarized JSON are committed.
+## Measurement limits
 
-## Remaining limits
-
-These measurements describe the original single-buffer adapter.
-The later completion audit added eight buffers, repeat/mirror wrapping, images, vertex hooks and auxiliary depth attachments.
-The recorded Phosphor timings do not measure these new stages.
+The optional feedback case uses one buffer.
+These timings do not measure multi-buffer effects, repeat/mirror wrapping, image parameters, vertex hooks or auxiliary depth attachments.
 Persistent buffer pixels have a 256 MiB limit per window.
 Region inputs and uploaded images share a separate 256 MiB cache.
 Driver allocations and frames in flight require additional memory.
@@ -146,4 +87,4 @@ Luau summaries remain cached for 100 ms. Contextual exposure samples once each s
 Continuous motion and audio remain in the host and GPU.
 Command and script bursts remain subject to the normal effect budget.
 Focus changes do not consume that budget.
-V1 results do not establish cross-terminal throughput, accessibility, packaging or mixed-monitor compatibility.
+These measurements do not establish cross-terminal throughput or mixed-monitor performance.

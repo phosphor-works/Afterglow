@@ -106,7 +106,6 @@ The suite also checks these behaviors:
 - Button key releases.
 - Notifications and script text permissions.
 
-All 12 cases passed together during the recorded native validation.
 Composition tests use Qt events through the window, renderer and PTY.
 They do not certify external IBus or Fcitx engines.
 The separate `desktop_acceptance.py` suite checks AT-SPI and native file-save dialogs.

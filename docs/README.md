@@ -21,7 +21,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Use bidirectional text | [Bidirectional text](BIDI.md) |
 | Check protocol support | [Compatibility](COMPATIBILITY.md) |
 | Upgrade | [Migration](MIGRATION.md), [release notes](../CHANGELOG.md) |
-| Check test results and limits | [Validation](VALIDATION.md), [completion audit](AUDIT.md) |
+| Run tests | [Testing](TESTING.md) |
 | Write documentation | [Writing rules](WRITING.md) |
 
 ## First configuration

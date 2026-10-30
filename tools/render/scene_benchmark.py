@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Reproducible V1 scene renders and NVIDIA per-process memory sampling.
+"""Reproducible Phosphor scene renders and NVIDIA per-process memory sampling.
 
 Build afterglow_renderpng with AFTERGLOW_BUILD_TOOLS=ON. Timings include CPU
 submission and synchronous GPU readback, not presentation or input latency.

@@ -3,7 +3,7 @@
 
 # Migration
 
-## D1 desktop and compatibility update
+## Desktop and protocol behavior
 
 Configuration and Luau API versions do not change.
 Existing settings, scripts and package state retain their formats.
@@ -17,7 +17,7 @@ Existing settings, scripts and package state retain their formats.
 | Relative images | Invalid parents and cycles return protocol errors. Applications that ignore replies should use `q=2`. |
 | Extra cursors | Query support with `CSI > SPACE q`. Use the returned operation list. |
 
-## Completion audit update
+## Text, scripting and shaders
 
 `Terminal.bidi` defaults to `off`.
 Select `auto`, `ltr` or `rtl` for primary-screen paragraph ordering.
@@ -38,7 +38,7 @@ Existing one-buffer packs retain their behavior.
 Live images change at transition completion. Reset restores the configured image.
 Memory limits reject a complete live update and preserve current values.
 
-## Earlier delivery milestones
+## Configuration and package formats
 
 `Terminal.copyOnSelect` accepts `primary`, `clipboard` and `off`.
 Legacy booleans map to `primary` and `off`. Use named values in new configuration files.

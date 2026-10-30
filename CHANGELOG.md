@@ -28,6 +28,5 @@ See [compatibility](docs/COMPATIBILITY.md) for protocol limits and memory costs.
 See [desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.
 See [bidirectional text](docs/BIDI.md) for the application-grid policy.
 
-[Validation](docs/VALIDATION.md) records regression and native acceptance results.
+[Testing](docs/TESTING.md) describes regression and native desktop test procedures.
 [Migration](docs/MIGRATION.md) describes behavior changes.
-Packaging, clean-machine installation and package/build CI remain deferred.

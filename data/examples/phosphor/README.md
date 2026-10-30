@@ -64,7 +64,7 @@ The host interpolates changes. Disable this option to release its overrides.
 Audio and history continue to affect the shader directly.
 Command activity uses host transitions. Impulses use shader timestamps.
 
-See [measurements](VALIDATION.md) before choosing a preset for 4K.
+See [measurements](PERFORMANCE.md) before choosing a preset for 4K.
 Quality tiers specify sampling quality, not guaranteed frame rates.
 The text effect adds a dark glyph outline for readability over highlights.
 `phosphor-emission.readability` controls this outline from 0 to 1. Its default is 0.9.

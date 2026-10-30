@@ -8,7 +8,8 @@ The reference is [ASD-STE100, Issue 9](https://www.asd-ste100.org/assets/files/A
 These repository rules do not certify full compliance with the standard's dictionary.
 
 Keep the root README limited to the product purpose, main supported features and document links.
-Put procedures, API details, limits, examples and validation results in the linked documents.
+Put procedures, API details, limits, examples and performance measurements in the linked documents.
+Keep audit reports, implementation plans, milestone labels and work-session summaries out of repository documentation.
 
 ## Sentences and procedures
 

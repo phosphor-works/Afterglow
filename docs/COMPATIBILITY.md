@@ -7,7 +7,7 @@ Afterglow targets Linux and Wayland with Vulkan.
 The protocol implementation is in `libs/afterglow-vt`. Renderer tests also check GPU pixels.
 The following table describes tested features. It does not claim complete xterm, Kitty or iTerm2 compatibility.
 
-## D1 protocol additions
+## Supported protocol features
 
 | Feature | Supported behavior | Regression and interoperability fixture |
 | --- | --- | --- |

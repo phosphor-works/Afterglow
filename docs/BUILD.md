@@ -4,7 +4,7 @@
 # Build and install
 
 Afterglow requires Linux, Wayland and a Vulkan driver.
-These instructions use the current source layout. Package distribution and clean-machine build checks remain separate work.
+These instructions use the current source layout.
 
 ## Required software
 
@@ -84,4 +84,4 @@ It also includes the API declarations and examples.
 Private libraries go in `lib/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
 
-See [validation](VALIDATION.md) for native desktop test commands.
+See [testing](TESTING.md) for native desktop test commands.
