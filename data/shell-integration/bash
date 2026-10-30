@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+# ENV is used only for this startup; restore it before reading user files.
+[[ $- == *i* && ${AFTERGLOW_BASH_INJECT-} == 1 ]] || return
+unset AFTERGLOW_BASH_INJECT
+if [[ ${AFTERGLOW_ORIGINAL_ENV_SET-} == 1 ]]; then
+    export ENV=$AFTERGLOW_ORIGINAL_ENV
+else
+    unset ENV
+fi
+unset AFTERGLOW_ORIGINAL_ENV AFTERGLOW_ORIGINAL_ENV_SET
+set +o posix
+shopt -u inherit_errexit
+# POSIX startup otherwise chooses .sh_history instead of Bash's usual file.
+[[ ${HISTFILE-} == "$HOME/.sh_history" ]] && HISTFILE=$HOME/.bash_history
+if shopt -q login_shell; then
+    [[ -r /etc/profile ]] && source /etc/profile
+    for __afterglow_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+        if [[ -r $__afterglow_profile ]]; then source "$__afterglow_profile"; break; fi
+    done
+    unset __afterglow_profile
+else
+    if [[ -r /etc/bash.bashrc ]]; then source /etc/bash.bashrc
+    elif [[ -r /etc/bash/bashrc ]]; then source /etc/bash/bashrc; fi
+    [[ -r $HOME/.bashrc ]] && source "$HOME/.bashrc"
+fi
+[[ ${__afterglow_loaded-} == 1 || ${AFTERGLOW_SHELL_INTEGRATION-} == 0 ]] && return
+# Respect prompts already configured with OSC 133/633 integration.
+[[ $PS1 == *']133;'* || $PS1 == *']633;'* ]] && return
+[[ $(declare -p PROMPT_COMMAND 2>/dev/null) =~ ^declare\ -[^[:space:]]*r ]] && return
+__afterglow_loaded=1
+__afterglow_before_prompt() {
+    __afterglow_status=$?
+    printf '\033]133;D;%d\007' "$__afterglow_status"
+    return "$__afterglow_status"
+}
+__afterglow_prompt() {
+    local begin='\[\e]133;A;redraw=1\a\]' end='\[\e]133;B\a\]'
+    PS1=${PS1#"$begin"}; PS1=${PS1%"$end"}
+    PS1=$begin$PS1$end
+    local start=$'\e]133;C\a'
+    PS0=$start${PS0#"$start"}
+    local LC_ALL=C path=$PWD encoded='' char hex i
+    for ((i=0; i<${#path}; i++)); do
+        char=${path:i:1}
+        case $char in
+            [a-zA-Z0-9/._~-]) encoded+=$char ;;
+            *) printf -v hex '%%%02X' "'$char"; encoded+=$hex ;;
+        esac
+    done
+    printf '\033]7;file://%s\007' "$encoded"
+    return "$__afterglow_status"
+}
+# Array expansion preserves both scalar commands and existing array entries.
+PROMPT_COMMAND=(__afterglow_before_prompt "${PROMPT_COMMAND[@]}" __afterglow_prompt)

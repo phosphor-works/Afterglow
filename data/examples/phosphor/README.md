@@ -26,7 +26,8 @@ After installation:
 
 Adjust the prefix if installed somewhere other than `/usr`. Requires Python 3,
 Bash, Wayland, Vulkan, and an Afterglow build with `iPreviousText`, `AFTERGLOW_HDR`
-and `AFTERGLOW_AUDIO` support, plus the `iScrollback` uniform. Install `cava` for the audio response.
+and `AFTERGLOW_AUDIO` support, the `iScrollback` uniform, and the version 1 Luau
+terminal snapshots and `afterglow.signals` batch API. Install `cava` for the audio response.
 Add `--light` to start in the light palette.
 
 The launcher creates a temporary configuration, shader packs and Luau script,
@@ -122,9 +123,11 @@ use these in-process actions when trying the demo alongside your normal app.
 | `phosphor-cursor` | cursor | A tapered filament on cursor movement. |
 | `phosphor-frame` | pane | Frame light plus a refractive pressure front and trailing ripples through live terminal content, with a narrow colour fringe. |
 
-The Luau script uses the existing `afterglow.signal` API and broadcasts events
-to known panes in the same window. A command finishing does not cool the core
-while another pane is still running. Separate windows keep their own state. Channels contain a
+The Luau script uses `ev.terminal` snapshots and `afterglow.signals` to update
+all panes in the event's tab in one batch, with a shared timestamp. It works
+when loaded after panes already exist, without maintaining a pane registry.
+A command finishing does not cool the core while another pane in that tab is
+still running. Background tabs and other windows keep their own state. Channels contain a
 value and the shader time at which it was set:
 
 | Channel | Meaning |

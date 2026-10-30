@@ -105,6 +105,7 @@ struct Settings
     MouseSettings mouse;
     LinkSettings links;
     bool scripts = true; ///< run Luau scripts from the scripts directories
+    bool shellIntegration = true;
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection

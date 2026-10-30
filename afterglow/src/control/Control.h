@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QStringList>
+#include <QVariantMap>
 
 #include <functional>
 #include <optional>
@@ -32,6 +33,7 @@ struct PaneInfo
     /// Where the shell runs when not here as you ("root", "deploy@prod-1");
     /// not part of the D-Bus pane structure.
     QString context;
+    quint32 tabId = 0; ///< stable within this process; tab remains the legacy index
 };
 
 /// What afterglow lets other programs (D-Bus) and scripts (Luau) do: one
@@ -55,6 +57,10 @@ public:
 
     QList<PaneInfo> panes() const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
+    /// Windows and tabs, including each window's active tab and pane.
+    QVariantMap state() const;
+    static QVariantMap paneMap(const PaneInfo& pane);
+    static bool isStructuralAction(const QString& action);
 
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText unless @p trusted (afterglow itself).
@@ -67,6 +73,9 @@ public:
     QString setTitle(quint32 pane, const QString& title);
     /// Sets shader signal @p channel (0-7, iSignal in shaders) on the pane.
     QString signal(quint32 pane, int channel, double value);
+    static constexpr int MaxSignalPanes = 128;
+    /// Validates the complete batch before updating the anchor's pane/tab/window.
+    QString signalsBatch(quint32 pane, const QString& scope, const QVariantList& values, QVariantList& updated);
     QString notify(quint32 pane, const QString& title, const QString& body);
     QString copy(const QString& text);
     /// http, https and mailto only.

@@ -49,6 +49,12 @@ public:
     const std::vector<Divider>& dividers() const noexcept { return m_dividers; }
     int paneCount() const;
     void equalize();
+    /// Zoom changes presentation only; the split topology and ratios survive.
+    void setZoomedPane(Pane* pane);
+    Pane* zoomedPane() const { return m_zoomed; }
+    bool isVisible(const Pane* pane) const { return !m_zoomed || pane == m_zoomed; }
+    /// Move the nearest appropriate divider by pixels in the given direction.
+    bool resizePane(Pane* pane, Neighbour direction, int pixels, int dividerWidth, const QSize& minimum);
 
     /// The divider within @p tolerance pixels of @p pos, if any.
     std::optional<Divider> dividerAt(const QPoint& pos, int tolerance) const;
@@ -71,9 +77,11 @@ private:
     Node* find(Node* node, const Pane* pane) const;
     void layoutNode(Node* node, const QRect& area, int dividerWidth);
     void visit(const Node* node, const std::function<void(const Node*)>& fn) const;
+    QSize minimumSize(const Node* node, int dividerWidth, const QSize& minimum) const;
 
     std::unique_ptr<Node> m_root;
     std::vector<Divider> m_dividers;
+    Pane* m_zoomed = nullptr;
 };
 
 } // namespace Afterglow

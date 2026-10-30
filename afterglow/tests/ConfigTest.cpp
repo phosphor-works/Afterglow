@@ -302,6 +302,17 @@ TEST_F(ConfigTest, AudioDefaultsAndOverrides)
     EXPECT_EQ(custom.settings().audio.inputSource, QStringLiteral("speakers.monitor"));
 }
 
+TEST_F(ConfigTest, StructuralActionClassification)
+{
+    for (Action action : {Action::SplitRight, Action::SplitLeft, Action::SplitDown, Action::SplitUp,
+                          Action::NewTab, Action::NewWindow, Action::ClosePane, Action::CloseTab, Action::CloseWindow}) {
+        EXPECT_TRUE(Keybinds::isStructural(action));
+    }
+    for (Action action : {Action::Copy, Action::NextTab, Action::MoveTabLeft, Action::RenamePane, Action::EqualizeSplits}) {
+        EXPECT_FALSE(Keybinds::isStructural(action));
+    }
+}
+
 TEST_F(ConfigTest, FontRenderingDefaultsNormalizationAndReload)
 {
     const QString path = write(QStringLiteral("fonts.json"), "{}");

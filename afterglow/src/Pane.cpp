@@ -434,7 +434,16 @@ void Pane::setSignal(int channel, float value)
     if (channel < 0 || channel >= SignalCount) {
         return;
     }
-    m_signals[std::size_t(channel)] = {value, std::chrono::steady_clock::now()};
+    setSignals({{channel, value}}, std::chrono::steady_clock::now());
+}
+
+void Pane::setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time)
+{
+    for (const auto& [channel, value] : values) {
+        if (channel >= 0 && channel < SignalCount) {
+            m_signals[std::size_t(channel)] = {value, time};
+        }
+    }
     Q_EMIT shaderSignalsChanged();
 }
 

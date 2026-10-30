@@ -30,3 +30,8 @@ gtest_discover_tests(afterglow_config_tests)
 qt_add_executable(afterglow_audio_tests AudioControllerTest.cpp)
 target_link_libraries(afterglow_audio_tests PRIVATE afterglow_audio GTest::gtest)
 gtest_discover_tests(afterglow_audio_tests)
+
+qt_add_executable(afterglow_shell_tests ShellIntegrationTest.cpp)
+target_link_libraries(afterglow_shell_tests PRIVATE afterglow_shell Afterglow::Vt GTest::gtest_main)
+target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration")
+gtest_discover_tests(afterglow_shell_tests)

@@ -15,6 +15,7 @@
 #include <QUrl>
 
 #include <cmath>
+#include <limits>
 
 namespace Afterglow {
 
@@ -106,7 +107,7 @@ QList<PaneInfo> Control::panes() const
         for (Pane* p : w->panes()) {
             out.append(PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->workingDirectory(),
                                 p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p,
-                                p->contextLabel()});
+                                p->contextLabel(), w->tabIdOf(p)});
         }
     }
     return out;
@@ -120,6 +121,57 @@ std::optional<PaneInfo> Control::paneInfo(quint32 id) const
         }
     }
     return std::nullopt;
+}
+
+QVariantMap Control::paneMap(const PaneInfo& p)
+{
+    return {{QStringLiteral("id"), p.id}, {QStringLiteral("window"), p.window},
+            {QStringLiteral("tab"), p.tab}, {QStringLiteral("tab_id"), p.tabId},
+            {QStringLiteral("title"), p.title}, {QStringLiteral("cwd"), p.workingDirectory},
+            {QStringLiteral("command"), p.command}, {QStringLiteral("cols"), p.cols},
+            {QStringLiteral("rows"), p.rows}, {QStringLiteral("focused"), p.focused},
+            {QStringLiteral("context"), p.context}};
+}
+
+QVariantMap Control::state() const
+{
+    QVariantList windows, tabs, paneList;
+    quint32 activeWindow = 0, activeTab = 0, activePane = 0;
+    for (const auto& w : m_windows) {
+        if (!w) {
+            continue;
+        }
+        const quint32 focused = w->focusedPane() ? w->focusedPane()->id() : 0;
+        windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("focused"), w->isActive()},
+                                   {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused}});
+        for (const auto& tab : w->tabs()) {
+            tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},
+                                    {QStringLiteral("index"), tab.index}, {QStringLiteral("title"), tab.title},
+                                    {QStringLiteral("active"), tab.id == w->activeTabId()},
+                                    {QStringLiteral("active_pane"), tab.activePane}});
+        }
+        if (w->isActive()) {
+            activeWindow = w->id();
+            activeTab = w->activeTabId();
+            activePane = focused;
+        }
+    }
+    for (const auto& p : panes()) {
+        paneList.append(paneMap(p));
+    }
+    return {{QStringLiteral("windows"), windows}, {QStringLiteral("tabs"), tabs}, {QStringLiteral("panes"), paneList},
+            {QStringLiteral("active_window"), activeWindow}, {QStringLiteral("active_tab"), activeTab},
+            {QStringLiteral("active_pane"), activePane}};
+}
+
+bool Control::isStructuralAction(const QString& action)
+{
+    for (Action a : Keybinds::allActions()) {
+        if (Keybinds::token(a) == action) {
+            return Keybinds::isStructural(a);
+        }
+    }
+    return false;
 }
 
 namespace {
@@ -246,10 +298,60 @@ QString Control::signal(quint32 id, int channel, double value)
     if (channel < 0 || channel >= Pane::SignalCount) {
         return QStringLiteral("signal channels are 0 to %1").arg(Pane::SignalCount - 1);
     }
-    if (!std::isfinite(value)) {
-        return QStringLiteral("a signal value must be a finite number");
+    if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max()) {
+        return QStringLiteral("a signal value must fit in a finite float");
     }
     p->setSignal(channel, float(value));
+    return {};
+}
+
+QString Control::signalsBatch(quint32 id, const QString& scope, const QVariantList& values, QVariantList& updated)
+{
+    updated.clear();
+    TerminalWindow* window = nullptr;
+    Pane* anchor = find(id, &window);
+    if (!anchor) {
+        return noPane(id);
+    }
+    if (scope != QLatin1String("pane") && scope != QLatin1String("tab") && scope != QLatin1String("window")) {
+        return QStringLiteral("signal scope must be pane, tab or window");
+    }
+    if (values.isEmpty() || values.size() > Pane::SignalCount) {
+        return QStringLiteral("a signal batch needs 1 to 8 channels");
+    }
+    QList<QPair<int, float>> channels;
+    QSet<int> seen;
+    for (const auto& v : values) {
+        const auto entry = v.toMap();
+        bool channelOk = false, valueOk = false;
+        const double channel = entry.value(QStringLiteral("channel")).toDouble(&channelOk);
+        const double value = entry.value(QStringLiteral("value")).toDouble(&valueOk);
+        if (!channelOk || !valueOk || !std::isfinite(channel) || channel != std::floor(channel)
+            || channel < 0 || channel >= Pane::SignalCount || seen.contains(int(channel))
+            || !std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max()) {
+            return QStringLiteral("invalid or duplicate signal channel/value");
+        }
+        seen.insert(int(channel));
+        channels.append({int(channel), float(value)});
+    }
+    QList<Pane*> targets;
+    const quint32 tab = window->tabIdOf(anchor);
+    for (Pane* p : window->panes()) {
+        if (scope == QLatin1String("window") || (scope == QLatin1String("tab") && window->tabIdOf(p) == tab)
+            || (scope == QLatin1String("pane") && p == anchor)) {
+            targets.append(p);
+        }
+    }
+    if (targets.size() > MaxSignalPanes) {
+        return QStringLiteral("a signal batch supports at most %1 panes").arg(MaxSignalPanes);
+    }
+    // No event-loop turn between validation and application: paint sees the
+    // whole batch. All channels and panes share the same animation epoch.
+    const auto now = std::chrono::steady_clock::now();
+    for (Pane* p : targets) {
+        p->setSignals(channels, now);
+        updated.append(p->id());
+    }
     return {};
 }
 
@@ -294,8 +396,7 @@ QString Control::runAction(quint32 id, const QString& action)
     }
     for (Action a : Keybinds::allActions()) {
         if (Keybinds::token(a) == action) {
-            w->runAction(p, a);
-            return {};
+            return w->runAction(p, a) ? QString() : QStringLiteral("action %1 is unavailable here").arg(action);
         }
     }
     return QStringLiteral("no action %1").arg(action);

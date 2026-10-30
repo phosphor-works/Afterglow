@@ -12,6 +12,24 @@
 
 namespace Afterglow {
 
+bool Keybinds::isStructural(Action action)
+{
+    switch (action) {
+    case Action::SplitRight:
+    case Action::SplitDown:
+    case Action::SplitLeft:
+    case Action::SplitUp:
+    case Action::ClosePane:
+    case Action::NewWindow:
+    case Action::NewTab:
+    case Action::CloseTab:
+    case Action::CloseWindow:
+        return true;
+    default:
+        return false;
+    }
+}
+
 namespace {
 
 struct ActionInfo
@@ -59,6 +77,11 @@ const ActionInfo Actions[] = {
     {Action::FocusUp, "focus_up", "Focus Split Above", {"Ctrl+Shift+Up"}},
     {Action::FocusDown, "focus_down", "Focus Split Below", {"Ctrl+Shift+Down"}},
     {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", {"Ctrl+Shift+="}},
+    {Action::TogglePaneZoom, "toggle_pane_zoom", "Toggle Pane Zoom", {"Ctrl+Shift+Return"}},
+    {Action::ResizeLeft, "resize_left", "Resize Split Left", {"Ctrl+Shift+Alt+Left"}},
+    {Action::ResizeRight, "resize_right", "Resize Split Right", {"Ctrl+Shift+Alt+Right"}},
+    {Action::ResizeUp, "resize_up", "Resize Split Up", {"Ctrl+Shift+Alt+Up"}},
+    {Action::ResizeDown, "resize_down", "Resize Split Down", {"Ctrl+Shift+Alt+Down"}},
     {Action::FontBigger, "font_bigger", "Increase Font Size", {"Ctrl+=", "Ctrl++"}},
     {Action::FontSmaller, "font_smaller", "Decrease Font Size", {"Ctrl+-"}},
     {Action::FontReset, "font_reset", "Reset Font Size", {"Ctrl+0"}},

@@ -26,6 +26,7 @@ export type Pane = {
     id: number,
     window: number,
     tab: number,
+    tab_id: number, -- stable for the process lifetime; tab is the zero-based position
     title: string,
     cwd: string,
     command: string, -- running now (OSC 133), "" at the prompt
@@ -35,35 +36,67 @@ export type Pane = {
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
 }
 
-export type PaneEvent = { pane: Pane }
-export type TitleEvent = { pane: Pane, title: string }
-export type CommandStartedEvent = { pane: Pane, command: string }
+export type Window = { id: number, focused: boolean, active_tab: number, active_pane: number }
+export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
+-- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
+-- Zero active IDs mean that no terminal window currently has keyboard focus.
+export type State = {
+    version: number, -- 1
+    windows: { Window },
+    tabs: { Tab },
+    panes: { Pane },
+    active_window: number,
+    active_tab: number, -- stable ID, not an index
+    active_pane: number,
+}
+export type PaneEvent = { pane: Pane, terminal: State }
+export type ClosedPaneEvent = { pane: { id: number }, terminal: State }
+export type TitleEvent = { pane: Pane, title: string, terminal: State }
+export type CommandStartedEvent = { pane: Pane, command: string, terminal: State }
 export type CommandFinishedEvent = {
     pane: Pane,
     command: string,
     exit_code: number, -- -1 when the shell did not report one
     duration_ms: number,
+    terminal: State,
 }
-export type StatusEvent = { pane: Pane, state: string, text: string }
-export type ActionEvent = { pane: Pane? } -- the focused pane, if any
-export type UserVarEvent = { pane: Pane, name: string, value: string } -- iTerm2 SetUserVar
-export type ContextEvent = { pane: Pane, context: string } -- OSC 3008 / RemoteHost; "" back home
+export type StatusEvent = { pane: Pane, state: string, text: string, terminal: State }
+export type ActionEvent = { pane: Pane?, terminal: State } -- the targeted pane, if any
+export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
+export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 
-export type Effect = { kind: string }
+export type OperationError = { code: string, message: string }
+export type OperationData = { pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }? }
+export type ResultEvent = {
+    request_id: string,
+    kind: string,
+    ok: boolean,
+    data: OperationData,
+    error: OperationError?,
+    pane: (Pane | { id: number })?,
+    terminal: State, -- fresh at delivery; data describes the earlier operation
+}
+export type SignalValue = { channel: number, value: number }
+
+export type Effect = { kind: string, request_id: string? }
 export type Effects = Effect | { Effect }
 
 -- Handlers a script may define, all optional:
---   on_pane_created(ev: PaneEvent)        on_pane_closed(ev: { pane: { id: number } })
+--   on_pane_created(ev: PaneEvent)        on_pane_closed(ev: ClosedPaneEvent)
 --   on_focus(ev: PaneEvent)               on_bell(ev: PaneEvent)
 --   on_title(ev: TitleEvent)              on_status(ev: StatusEvent)
 --   on_command_started(ev: CommandStartedEvent)
 --   on_command_finished(ev: CommandFinishedEvent)
 --   on_user_var(ev: UserVarEvent)            on_context(ev: ContextEvent)
 --   run_action(action: string, ev: ActionEvent)
+--   on_result(ev: ResultEvent) -- only for effects wrapped in afterglow.request
 
 type PaneRef = Pane | number
 
 declare afterglow: {
+    panes: (state: State, scope: ("all" | "pane" | "tab" | "window")?, anchor: PaneRef?) -> { Pane },
+    -- id: 1-64 characters. Results are queued to the originating script instance.
+    request: (id: string, effect: Effect) -> Effect,
     send_text: (pane: PaneRef, text: string) -> Effect,
     -- pane defaults to the event's pane
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,
@@ -78,5 +111,7 @@ declare afterglow: {
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
     -- sets iSignal[channel] (0-7) on the pane's shaders to (value, iTime now)
     signal: (pane: PaneRef, channel: number, value: number?) -> Effect,
+    -- One effect, 1-8 unique channels, at most 128 panes. Defaults to anchor's tab.
+    signals: (pane: PaneRef, values: { SignalValue }, scope: ("pane" | "tab" | "window")?) -> Effect,
     log: (message: string) -> Effect,
 }

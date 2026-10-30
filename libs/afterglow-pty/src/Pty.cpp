@@ -22,9 +22,7 @@ extern char** environ;
 
 namespace AfterglowPty {
 
-namespace {
-
-std::string userShell()
+std::string Pty::defaultShell()
 {
     if (const char* s = std::getenv("SHELL"); s && *s) {
         return s;
@@ -34,6 +32,8 @@ std::string userShell()
     }
     return "/bin/sh";
 }
+
+namespace {
 
 winsize makeWinsize(int cols, int rows, int pw, int ph)
 {
@@ -53,7 +53,7 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     // threaded process only async-signal-safe calls are allowed.
     std::vector<std::string> args = options.argv;
     if (args.empty()) {
-        args.push_back(userShell());
+        args.push_back(defaultShell());
     }
     std::vector<char*> argv;
     for (std::string& a : args) {

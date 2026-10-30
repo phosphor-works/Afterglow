@@ -47,6 +47,8 @@ public:
 class AFTERGLOWPTY_EXPORT Pty
 {
 public:
+    /// Resolve SHELL, then the account login shell, falling back to /bin/sh.
+    static std::string defaultShell();
     static std::unique_ptr<Pty> spawn(const SpawnOptions& options, IPtyListener& listener, std::string* error = nullptr);
 
     ~Pty();

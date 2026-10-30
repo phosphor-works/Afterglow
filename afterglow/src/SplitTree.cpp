@@ -55,6 +55,9 @@ bool SplitTree::remove(Pane* pane)
     if (!leaf || leaf == m_root.get()) {
         return false;
     }
+    if (pane == m_zoomed) {
+        m_zoomed = nullptr;
+    }
     Node* parent = leaf->parent;
     std::unique_ptr<Node> sibling = std::move(parent->first.get() == leaf ? parent->second : parent->first);
     // The sibling replaces the parent in place.
@@ -76,6 +79,60 @@ void SplitTree::layout(const QRect& area, int dividerWidth)
 {
     m_dividers.clear();
     layoutNode(m_root.get(), area, dividerWidth);
+    if (m_zoomed) {
+        m_dividers.clear();
+    }
+}
+
+void SplitTree::setZoomedPane(Pane* pane)
+{
+    if (!pane || contains(pane)) {
+        m_zoomed = pane;
+        m_dividers.clear();
+    }
+}
+
+QSize SplitTree::minimumSize(const Node* node, int dividerWidth, const QSize& minimum) const
+{
+    if (node->pane) return minimum;
+    const QSize a = minimumSize(node->first.get(), dividerWidth, minimum);
+    const QSize b = minimumSize(node->second.get(), dividerWidth, minimum);
+    // Preserve descendant ratios while ensuring their smallest leaves fit.
+    const double ratio = std::clamp(node->ratio, 0.001, 0.999);
+    const auto extent = [ratio, dividerWidth](int first, int second) {
+        const double size = std::ceil(std::max(first / ratio, second / (1 - ratio))) + dividerWidth;
+        return int(std::min(size, double(std::numeric_limits<int>::max() / 2)));
+    };
+    if (node->vertical) {
+        return {std::max(a.width(), b.width()), extent(a.height(), b.height())};
+    }
+    return {extent(a.width(), b.width()), std::max(a.height(), b.height())};
+}
+
+bool SplitTree::resizePane(Pane* pane, Neighbour direction, int pixels, int dividerWidth, const QSize& minimum)
+{
+    if (m_zoomed || pixels <= 0) return false;
+    Node* leaf = find(m_root.get(), pane);
+    if (!leaf) return false;
+    const bool vertical = direction == Neighbour::Up || direction == Neighbour::Down;
+    const bool positive = direction == Neighbour::Right || direction == Neighbour::Down;
+    Node* target = nullptr;
+    for (Node* child = leaf; child->parent; child = child->parent) {
+        Node* parent = child->parent;
+        if (parent->vertical != vertical) continue;
+        if (!target) target = parent;
+        if ((parent->first.get() == child) == positive) {
+            target = parent;
+            break;
+        }
+    }
+    if (!target) return false;
+    const double before = target->ratio;
+    const int available = (vertical ? target->rect.height() : target->rect.width()) - dividerWidth;
+    const int offset = int(std::lround(available * target->ratio)) + (positive ? pixels : -pixels);
+    const QPoint pos = target->rect.topLeft() + (vertical ? QPoint(0, offset) : QPoint(offset, 0));
+    dragDivider({{}, vertical, target->rect, target}, pos, dividerWidth, minimum);
+    return before != target->ratio;
 }
 
 void SplitTree::layoutNode(Node* node, const QRect& area, int dividerWidth)
@@ -117,6 +174,7 @@ std::optional<SplitTree::Divider> SplitTree::dividerAt(const QPoint& pos, int to
 
 void SplitTree::dragDivider(const Divider& divider, const QPoint& pos, int dividerWidth, const QSize& minimum)
 {
+    if (m_zoomed) return;
     // The node may be gone if the tree changed during the drag.
     std::function<Node*(Node*)> find = [&](Node* n) -> Node* {
         if (!n || n->pane) {
@@ -136,12 +194,15 @@ void SplitTree::dragDivider(const Divider& divider, const QPoint& pos, int divid
     }
     const QRect& area = node->rect;
     const int avail = (node->vertical ? area.height() : area.width()) - dividerWidth;
-    const int minSide = node->vertical ? minimum.height() : minimum.width();
-    if (avail <= 2 * minSide) {
+    const QSize a = minimumSize(node->first.get(), dividerWidth, minimum);
+    const QSize b = minimumSize(node->second.get(), dividerWidth, minimum);
+    const int minFirst = node->vertical ? a.height() : a.width();
+    const int minSecond = node->vertical ? b.height() : b.width();
+    if (avail < minFirst + minSecond) {
         return;
     }
     const int offset = node->vertical ? pos.y() - area.top() : pos.x() - area.left();
-    node->ratio = double(std::clamp(offset, minSide, avail - minSide)) / double(avail);
+    if (avail > 0) node->ratio = double(std::clamp(offset, minFirst, avail - minSecond)) / double(avail);
 }
 
 void SplitTree::visit(const Node* node, const std::function<void(const Node*)>& fn) const
@@ -164,12 +225,14 @@ bool SplitTree::contains(const Pane* pane) const
 
 QRect SplitTree::rectOf(const Pane* pane) const
 {
+    if (m_zoomed) return pane == m_zoomed ? m_root->rect : QRect();
     const Node* n = find(m_root.get(), pane);
     return n ? n->rect : QRect();
 }
 
 Pane* SplitTree::paneAt(const QPoint& pos) const
 {
+    if (m_zoomed) return m_root->rect.contains(pos) ? m_zoomed : nullptr;
     Pane* hit = nullptr;
     visit(m_root.get(), [&](const Node* n) {
         if (n->rect.contains(pos)) {
@@ -181,7 +244,8 @@ Pane* SplitTree::paneAt(const QPoint& pos) const
 
 Pane* SplitTree::neighbour(const Pane* from, Neighbour direction) const
 {
-    const QRect src = rectOf(from);
+    const Node* source = find(m_root.get(), from);
+    const QRect src = source ? source->rect : QRect();
     if (src.isNull()) {
         return nullptr;
     }
@@ -231,7 +295,7 @@ Pane* SplitTree::neighbour(const Pane* from, Neighbour direction) const
 
 void SplitTree::forEachPane(const std::function<void(Pane*, const QRect&)>& fn) const
 {
-    visit(m_root.get(), [&](const Node* n) { fn(n->pane, n->rect); });
+    visit(m_root.get(), [&](const Node* n) { fn(n->pane, m_zoomed ? rectOf(n->pane) : n->rect); });
 }
 
 int SplitTree::paneCount() const

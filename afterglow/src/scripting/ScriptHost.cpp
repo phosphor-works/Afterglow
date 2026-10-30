@@ -11,9 +11,12 @@
 #include <QFileInfo>
 #include <QLoggingCategory>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 
+#include <cmath>
 #include <deque>
+#include <limits>
 #include <map>
 
 Q_LOGGING_CATEGORY(lcScripts, "afterglow.scripts", QtInfoMsg)
@@ -35,6 +38,8 @@ struct ScriptHost::Script
     bool disabled = false;
     std::deque<qint64> effects; ///< when recent effects ran, for the budgets
     std::deque<qint64> structural;
+    std::deque<qint64> results;
+    int pendingResults = 0;
 };
 
 namespace {
@@ -91,7 +96,20 @@ const EffectKind Kinds[] = {
     {"action", true, false, {"name"}, false},
     {"log", false, false, {"message"}, false},
     {"signal", true, false, {}, false, {"channel", "value"}},
+    {"signals", true, false, {"scope"}, false},
 };
+
+bool number(const QVariant& v)
+{
+    return v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int || v.typeId() == QMetaType::LongLong;
+}
+
+bool validSignal(const QVariant& channel, const QVariant& value)
+{
+    const double c = channel.toDouble(), v = value.toDouble();
+    return number(channel) && number(value) && std::isfinite(c) && c == std::floor(c) && c >= 0 && c < 8
+        && std::isfinite(v) && std::abs(v) <= std::numeric_limits<float>::max();
+}
 
 } // namespace
 
@@ -319,7 +337,7 @@ bool ScriptHost::runAction(const QString& token, quint32 pane)
         if (it == s->actions.cend()) {
             return false;
         }
-        QVariantMap ev;
+        QVariantMap ev{{QStringLiteral("terminal"), state()}};
         if (pane) {
             ev.insert(QStringLiteral("pane"), m_callbacks.paneInfo ? m_callbacks.paneInfo(pane) : QVariantMap{});
         }
@@ -334,6 +352,7 @@ void ScriptHost::dispatch(const QString& handler, quint32 pane, QVariantMap even
     if (m_scripts.empty()) {
         return;
     }
+    event.insert(QStringLiteral("terminal"), state());
     if (!event.contains(QStringLiteral("pane"))) {
         QVariantMap info = m_callbacks.paneInfo ? m_callbacks.paneInfo(pane) : QVariantMap{};
         if (info.isEmpty()) {
@@ -347,6 +366,23 @@ void ScriptHost::dispatch(const QString& handler, quint32 pane, QVariantMap even
             call(s, handler, {event}, EventTimeoutMs, pane);
         }
     }
+}
+
+QVariantMap ScriptHost::state() const
+{
+    QVariantMap snapshot = m_callbacks.state ? m_callbacks.state() : QVariantMap{};
+    snapshot.insert(QStringLiteral("version"), StateVersion);
+    for (const char* key : {"windows", "tabs", "panes"}) {
+        if (!snapshot.contains(QLatin1String(key))) {
+            snapshot.insert(QLatin1String(key), QVariantList{});
+        }
+    }
+    for (const char* key : {"active_window", "active_tab", "active_pane"}) {
+        if (!snapshot.contains(QLatin1String(key))) {
+            snapshot.insert(QLatin1String(key), 0);
+        }
+    }
+    return snapshot;
 }
 
 void ScriptHost::call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
@@ -386,7 +422,17 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, qu
         return;
     }
     if (result.typeId() == QMetaType::QVariantList) {
-        for (const QVariant& v : result.toList()) {
+        const auto effects = result.toList();
+        if (effects.size() > MaxEffectsPerCall) {
+            const QString error = QStringLiteral("a handler may return at most %1 effects; no effects applied").arg(MaxEffectsPerCall);
+            qCWarning(lcScripts).noquote() << script->id << error;
+            Q_EMIT effectApplied(script->id, {}, error);
+            return;
+        }
+        for (const QVariant& v : effects) {
+            if (script->disabled || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
+                break;
+            }
             applyEffect(script, v.toMap(), eventPane);
         }
         return;
@@ -407,13 +453,28 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     }
     // Rebuilt from the known fields only, with their types settled.
     QVariantMap effect{{QStringLiteral("kind"), kind}};
-    QString error;
-    if (!info) {
+    EffectResult result;
+    QString& error = result.error;
+    result.code = QStringLiteral("invalid_effect");
+    const QVariant requestValue = raw.value(QStringLiteral("request_id"));
+    const QString request = requestValue.toString();
+    const bool validRequest = requestValue.typeId() == QMetaType::QString && !request.isEmpty() && request.size() <= 64;
+    if (requestValue.isValid() && !validRequest) {
+        error = QStringLiteral("request_id must be a nonempty string of at most 64 characters");
+    } else if (!info) {
         error = QStringLiteral("unknown effect \"%1\"").arg(kind);
     } else {
+        if (validRequest) {
+            effect.insert(QStringLiteral("request_id"), request);
+        }
         if (info->pane) {
-            const quint32 pane = raw.value(QStringLiteral("pane")).toUInt();
-            effect.insert(QStringLiteral("pane"), pane ? pane : eventPane);
+            const QVariant value = raw.value(QStringLiteral("pane"));
+            const double pane = value.toDouble();
+            if (value.isValid() && (!number(value) || !std::isfinite(pane) || pane < 1
+                                   || pane > std::numeric_limits<quint32>::max() || pane != std::floor(pane))) {
+                error = QStringLiteral("pane must be a positive integer ID");
+            }
+            effect.insert(QStringLiteral("pane"), value.isValid() && error.isEmpty() ? quint32(pane) : eventPane);
         }
         for (const char* key : info->strings) {
             effect.insert(QLatin1String(key), str(raw, key));
@@ -424,14 +485,41 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         QString badNumber;
         for (const char* key : info->numbers) {
             const QVariant v = raw.value(QLatin1String(key));
-            const bool numeric = !v.isValid() || v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int
-                || v.typeId() == QMetaType::LongLong;
+            const bool numeric = !v.isValid() || number(v);
             if (!numeric) {
                 badNumber = QLatin1String(key);
             }
             effect.insert(QLatin1String(key), v.toDouble());
         }
-        if (!badNumber.isEmpty()) {
+        if (kind == QLatin1String("signals")) {
+            const auto values = raw.value(QStringLiteral("values")).toList();
+            QVariantList checked;
+            QSet<int> seen;
+            if (values.isEmpty() || values.size() > 8) {
+                error = QStringLiteral("a signal batch needs 1 to 8 channels");
+            }
+            for (const auto& value : values) {
+                const auto entry = value.toMap();
+                const auto channel = entry.value(QStringLiteral("channel"));
+                const auto amount = entry.value(QStringLiteral("value"));
+                if (!validSignal(channel, amount) || seen.contains(channel.toInt())) {
+                    error = QStringLiteral("invalid or duplicate signal channel/value");
+                    break;
+                }
+                seen.insert(channel.toInt());
+                checked.append(QVariantMap{{QStringLiteral("channel"), channel.toInt()}, {QStringLiteral("value"), amount.toDouble()}});
+            }
+            effect.insert(QStringLiteral("values"), checked);
+            const QString scope = str(effect, "scope");
+            if (scope != QLatin1String("pane") && scope != QLatin1String("tab") && scope != QLatin1String("window")) {
+                error = QStringLiteral("signal scope must be pane, tab or window");
+            }
+        }
+        const bool structural = info->structural || (kind == QLatin1String("action")
+            && (!m_callbacks.structuralAction || m_callbacks.structuralAction(str(effect, "name"))));
+        if (!error.isEmpty()) {
+            // A validation failure must never reach the host callbacks.
+        } else if (!badNumber.isEmpty()) {
             error = QStringLiteral("%1: %2 must be a number").arg(kind, badNumber);
         } else if (info->pane && effect.value(QStringLiteral("pane")).toUInt() == 0) {
             error = QStringLiteral("%1 needs a pane").arg(kind);
@@ -440,18 +528,83 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("split direction must be \"right\" or \"down\"");
         } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(QLatin1String("script:"))) {
             error = QStringLiteral("scripts cannot run script actions");
-        } else if (!withinBudget(*script, info->structural)) {
+        } else if (kind == QLatin1String("signal")
+                   && !validSignal(effect.value(QStringLiteral("channel")), effect.value(QStringLiteral("value")))) {
+            error = QStringLiteral("invalid signal channel/value");
+        } else if (info->pane && (!m_callbacks.paneInfo || m_callbacks.paneInfo(effect.value(QStringLiteral("pane")).toUInt()).isEmpty())) {
+            result.code = QStringLiteral("no_pane");
+            error = QStringLiteral("no pane %1").arg(effect.value(QStringLiteral("pane")).toUInt());
+        } else if (!withinBudget(*script, structural)) {
+            result.code = QStringLiteral("rate_limited");
             error = QStringLiteral("too many effects; %1 dropped").arg(kind);
         } else if (kind == QLatin1String("log")) {
             qCInfo(lcScripts).noquote() << script->id + QLatin1Char(':') << effect.value(QStringLiteral("message")).toString();
         } else if (m_callbacks.apply) {
-            error = m_callbacks.apply(effect);
+            result = m_callbacks.apply(effect);
+            if (!result.error.isEmpty() && result.code.isEmpty()) {
+                result.code = QStringLiteral("operation_failed");
+            }
+        } else {
+            result.code = QStringLiteral("unavailable");
+            error = QStringLiteral("no effect handler is available");
         }
     }
     if (!error.isEmpty()) {
         qCWarning(lcScripts).noquote() << script->id + QLatin1Char(':') << error;
     }
     Q_EMIT effectApplied(script->id, effect, error);
+    if (validRequest) {
+        queueResult(script, request, kind, result, eventPane);
+    }
+}
+
+void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
+                             const EffectResult& result, quint32 eventPane)
+{
+    if (script->disabled || !script->engine->hasFunction(script->module, QStringLiteral("on_result"))) {
+        return;
+    }
+    const qint64 now = m_clock.elapsed();
+    while (!script->results.empty() && now - script->results.front() >= 1000) {
+        script->results.pop_front();
+    }
+    if (script->pendingResults >= MaxPendingResults || int(script->results.size()) >= MaxResultsPerSecond) {
+        // Include refusals in this budget: a handler that retries a rejected
+        // request from on_result must not create an endless queued feedback loop.
+        script->disabled = true;
+        qCWarning(lcScripts) << script->id << "disabled: too many operation results";
+        Q_EMIT actionsChanged();
+        return;
+    }
+    script->results.push_back(now);
+    ++script->pendingResults;
+    QVariantMap event{{QStringLiteral("request_id"), request}, {QStringLiteral("kind"), kind},
+                      {QStringLiteral("ok"), result.error.isEmpty()}, {QStringLiteral("data"), result.data}};
+    if (!result.error.isEmpty()) {
+        event.insert(QStringLiteral("error"), QVariantMap{{QStringLiteral("code"), result.code},
+                                                          {QStringLiteral("message"), result.error}});
+    }
+    // Queued after application. Never re-enter a VM, and never deliver an old
+    // instance's completions to its replacement following a reload.
+    QTimer::singleShot(0, this, [this, weak = std::weak_ptr<Script>(script), event = std::move(event), eventPane]() mutable {
+        const auto script = weak.lock();
+        if (!script) {
+            return;
+        }
+        --script->pendingResults;
+        if (script->disabled || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
+            return;
+        }
+        event.insert(QStringLiteral("terminal"), state());
+        QVariantMap pane = m_callbacks.paneInfo ? m_callbacks.paneInfo(eventPane) : QVariantMap{};
+        if (eventPane) {
+            if (pane.isEmpty()) {
+                pane.insert(QStringLiteral("id"), eventPane);
+            }
+            event.insert(QStringLiteral("pane"), pane);
+        }
+        call(script, QStringLiteral("on_result"), {event}, EventTimeoutMs, eventPane);
+    });
 }
 
 bool ScriptHost::withinBudget(Script& script, bool structural)

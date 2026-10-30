@@ -7,77 +7,77 @@
 
 namespace Afterglow {
 
-namespace {
-
-QVariantMap paneMap(const PaneInfo& p)
-{
-    return {
-        {QStringLiteral("id"), p.id},
-        {QStringLiteral("window"), p.window},
-        {QStringLiteral("tab"), p.tab},
-        {QStringLiteral("title"), p.title},
-        {QStringLiteral("cwd"), p.workingDirectory},
-        {QStringLiteral("command"), p.command},
-        {QStringLiteral("cols"), p.cols},
-        {QStringLiteral("rows"), p.rows},
-        {QStringLiteral("focused"), p.focused},
-        {QStringLiteral("context"), p.context},
-    };
-}
-
-} // namespace
-
 ScriptHost::Callbacks scriptCallbacks(Control& control)
 {
     ScriptHost::Callbacks c;
     c.paneInfo = [&control](quint32 pane) {
         const auto info = control.paneInfo(pane);
-        return info ? paneMap(*info) : QVariantMap{};
+        return info ? Control::paneMap(*info) : QVariantMap{};
     };
-    c.apply = [&control](const QVariantMap& e) -> QString {
+    c.state = [&control] { return control.state(); };
+    c.structuralAction = &Control::isStructuralAction;
+    c.apply = [&control](const QVariantMap& e) -> ScriptHost::EffectResult {
         const QString kind = e.value(QStringLiteral("kind")).toString();
         const quint32 pane = e.value(QStringLiteral("pane")).toUInt();
         auto s = [&e](const char* key) { return e.value(QLatin1String(key)).toString(); };
         const QStringList command = e.value(QStringLiteral("command")).toStringList();
         quint32 created = 0;
-        if (kind == QLatin1String("send_text")) {
-            return control.sendText(pane, s("text"));
+        QVariantMap data;
+        const QString error = [&]() -> QString {
+            if (kind == QLatin1String("send_text")) {
+                return control.sendText(pane, s("text"));
+            }
+            if (kind == QLatin1String("notify")) {
+                return control.notify(pane, s("title"), s("body"));
+            }
+            if (kind == QLatin1String("split")) {
+                return control.split(pane, s("direction") == QLatin1String("right"), command, created);
+            }
+            if (kind == QLatin1String("new_tab")) {
+                return control.newTab(pane, s("cwd"), command, created);
+            }
+            if (kind == QLatin1String("new_window")) {
+                return control.newWindow(s("cwd"), command, created);
+            }
+            if (kind == QLatin1String("focus")) {
+                return control.focus(pane);
+            }
+            if (kind == QLatin1String("close")) {
+                return control.close(pane);
+            }
+            if (kind == QLatin1String("set_title")) {
+                return control.setTitle(pane, s("title"));
+            }
+            if (kind == QLatin1String("copy")) {
+                return control.copy(s("text"));
+            }
+            if (kind == QLatin1String("open_url")) {
+                return control.openUrl(s("url"));
+            }
+            if (kind == QLatin1String("signal")) {
+                return control.signal(pane, e.value(QStringLiteral("channel")).toInt(),
+                                      e.value(QStringLiteral("value")).toDouble());
+            }
+            if (kind == QLatin1String("signals")) {
+                QVariantList updated;
+                const QString error = control.signalsBatch(pane, s("scope"), e.value(QStringLiteral("values")).toList(), updated);
+                if (error.isEmpty()) {
+                    data.insert(QStringLiteral("panes"), updated);
+                }
+                return error;
+            }
+            if (kind == QLatin1String("action")) {
+                return control.runAction(pane, s("name"));
+            }
+            return QStringLiteral("unknown effect \"%1\"").arg(kind);
+        }();
+        if (error.isEmpty() && created) {
+            if (const auto p = control.paneInfo(created)) {
+                data = {{QStringLiteral("pane"), Control::paneMap(*p)}, {QStringLiteral("pane_id"), p->id},
+                        {QStringLiteral("tab_id"), p->tabId}, {QStringLiteral("window_id"), p->window}};
+            }
         }
-        if (kind == QLatin1String("notify")) {
-            return control.notify(pane, s("title"), s("body"));
-        }
-        if (kind == QLatin1String("split")) {
-            return control.split(pane, s("direction") == QLatin1String("right"), command, created);
-        }
-        if (kind == QLatin1String("new_tab")) {
-            return control.newTab(pane, s("cwd"), command, created);
-        }
-        if (kind == QLatin1String("new_window")) {
-            return control.newWindow(s("cwd"), command, created);
-        }
-        if (kind == QLatin1String("focus")) {
-            return control.focus(pane);
-        }
-        if (kind == QLatin1String("close")) {
-            return control.close(pane);
-        }
-        if (kind == QLatin1String("set_title")) {
-            return control.setTitle(pane, s("title"));
-        }
-        if (kind == QLatin1String("copy")) {
-            return control.copy(s("text"));
-        }
-        if (kind == QLatin1String("open_url")) {
-            return control.openUrl(s("url"));
-        }
-        if (kind == QLatin1String("signal")) {
-            return control.signal(pane, e.value(QStringLiteral("channel")).toInt(),
-                                  e.value(QStringLiteral("value")).toDouble());
-        }
-        if (kind == QLatin1String("action")) {
-            return control.runAction(pane, s("name"));
-        }
-        return QStringLiteral("unknown effect \"%1\"").arg(kind);
+        return {error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
     };
     return c;
 }

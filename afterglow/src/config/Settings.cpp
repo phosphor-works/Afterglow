@@ -198,6 +198,7 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[Terminal] = {
         intKey(QStringLiteral("scrollback"), 10000, 0, 1000000, QStringLiteral("Lines of history per pane")),
+        {QStringLiteral("shellIntegration"), true, QMetaType::Bool, QStringLiteral("Automatic Bash, Zsh and Fish prompt integration")},
         stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run; empty runs your login shell")),
         stringKey(QStringLiteral("term"), QStringLiteral("xterm-256color"), QStringLiteral("TERM for child programs")),
         {QStringLiteral("cursorShape"), QStringLiteral("block"), QMetaType::QString, QStringLiteral("block, underline or bar"),
@@ -670,6 +671,7 @@ Settings SettingsStore::read() const
                     : shape == QLatin1String("underline") ? AfterglowVt::CursorShape::Underline
                                                           : AfterglowVt::CursorShape::Block;
     t.cursorBlink = st.read<bool>(Terminal, QStringLiteral("cursorBlink"));
+    s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell"));
     s.term = st.read<QString>(Terminal, QStringLiteral("term"));
     {

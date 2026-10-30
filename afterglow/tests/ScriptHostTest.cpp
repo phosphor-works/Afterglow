@@ -27,16 +27,26 @@ protected:
     {
         ASSERT_TRUE(system.isValid() && user.isValid());
         ScriptHost::Callbacks c;
-        c.paneInfo = [](quint32 pane) {
-            if (pane < 7 || pane > 9) {
-                return QVariantMap{};
-            }
-            return QVariantMap{{QStringLiteral("id"), pane}, {QStringLiteral("window"), pane == 9 ? 2 : 1}, {QStringLiteral("focused"), false},
-                               {QStringLiteral("title"), QStringLiteral("fish")}};
+        for (quint32 pane : {7u, 8u, 9u}) {
+            paneState.insert(pane, {{QStringLiteral("id"), pane}, {QStringLiteral("window"), pane == 9 ? 2 : 1},
+                                   {QStringLiteral("tab_id"), pane == 9 ? 20 : 10}, {QStringLiteral("tab"), 0},
+                                   {QStringLiteral("focused"), false}, {QStringLiteral("command"), QString()},
+                                   {QStringLiteral("title"), QStringLiteral("fish")}});
+        }
+        c.paneInfo = [this](quint32 pane) { return paneState.value(pane); };
+        c.state = [this] {
+            QVariantList panes;
+            for (const auto& p : std::as_const(paneState)) panes.append(p);
+            return QVariantMap{{QStringLiteral("panes"), panes}, {QStringLiteral("active_window"), 1},
+                               {QStringLiteral("active_tab"), 10}, {QStringLiteral("active_pane"), 7}};
+        };
+        c.structuralAction = [](const QString& name) {
+            return name.startsWith(QLatin1String("split_")) || name.startsWith(QLatin1String("close_"))
+                || name == QLatin1String("new_tab") || name == QLatin1String("new_window");
         };
         c.apply = [this](const QVariantMap& e) {
             rec.applied.append(e);
-            return QString();
+            return applyHook ? applyHook(e) : ScriptHost::EffectResult{};
         };
         host = std::make_unique<ScriptHost>(c);
         QObject::connect(host.get(), &ScriptHost::effectApplied, host.get(),
@@ -54,6 +64,8 @@ protected:
     QTemporaryDir system;
     QTemporaryDir user;
     Recorder rec;
+    QMap<quint32, QVariantMap> paneState;
+    std::function<ScriptHost::EffectResult(const QVariantMap&)> applyHook;
     std::unique_ptr<ScriptHost> host;
 };
 
@@ -323,8 +335,11 @@ TEST_F(ScriptHostTest, PhosphorReactsToCommandsAndDemoActions)
     auto takeSignals = [this] {
         QList<QPair<int, double>> sent;
         for (const auto& e : std::as_const(rec.applied)) {
-            if (e.value(QStringLiteral("kind")) == QStringLiteral("signal")) {
-                sent.append({e.value(QStringLiteral("channel")).toInt(), e.value(QStringLiteral("value")).toDouble()});
+            if (e.value(QStringLiteral("kind")) == QStringLiteral("signals")) {
+                for (const auto& v : e.value(QStringLiteral("values")).toList()) {
+                    const auto channel = v.toMap();
+                    sent.append({channel.value(QStringLiteral("channel")).toInt(), channel.value(QStringLiteral("value")).toDouble()});
+                }
                 EXPECT_EQ(e.value(QStringLiteral("pane")).toUInt(), 7u);
             }
         }
@@ -362,36 +377,37 @@ TEST_F(ScriptHostTest, PhosphorDemoActionsAndStatus)
              {"strike", 0}, {"complete", 1}, {"ring", 3}, {"heat", 2}}) {
         ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.") + QString::fromLatin1(action), 7));
         ASSERT_EQ(rec.applied.size(), 1);
-        EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), channel);
-        EXPECT_DOUBLE_EQ(rec.applied[0].value(QStringLiteral("value")).toDouble(), 1.0);
+        const auto value = rec.applied[0].value(QStringLiteral("values")).toList().first().toMap();
+        EXPECT_EQ(value.value(QStringLiteral("channel")).toInt(), channel);
+        EXPECT_DOUBLE_EQ(value.value(QStringLiteral("value")).toDouble(), 1.0);
         rec.applied.clear();
     }
     host->dispatch(QStringLiteral("on_status"), 7, {{QStringLiteral("state"), QStringLiteral("error")}});
-    ASSERT_EQ(rec.applied.size(), 2);
-    EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), 4);
-    EXPECT_DOUBLE_EQ(rec.applied[0].value(QStringLiteral("value")).toDouble(), 3.0);
-    EXPECT_EQ(rec.applied[1].value(QStringLiteral("channel")).toInt(), 0);
+    ASSERT_EQ(rec.applied.size(), 1);
+    const auto values = rec.applied[0].value(QStringLiteral("values")).toList();
+    ASSERT_EQ(values.size(), 2);
+    EXPECT_EQ(values[0].toMap().value(QStringLiteral("channel")).toInt(), 4);
+    EXPECT_DOUBLE_EQ(values[0].toMap().value(QStringLiteral("value")).toDouble(), 3.0);
+    EXPECT_EQ(values[1].toMap().value(QStringLiteral("channel")).toInt(), 0);
 }
 
-TEST_F(ScriptHostTest, PhosphorBroadcastsWithinTheWindow)
+TEST_F(ScriptHostTest, PhosphorUsesTabBatchesWithoutAPaneRegistry)
 {
     host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
     host->setEnabled(true);
-    for (quint32 id : {7u, 8u, 9u}) host->dispatch(QStringLiteral("on_pane_created"), id);
-    rec.applied.clear();
     host->dispatch(QStringLiteral("on_user_var"), 7,
                    {{QStringLiteral("name"), QStringLiteral("phosphor")}, {QStringLiteral("value"), QStringLiteral("strike")}});
-    ASSERT_EQ(rec.applied.size(), 2);
+    ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("pane")).toUInt(), 7u);
-    EXPECT_EQ(rec.applied[1].value(QStringLiteral("pane")).toUInt(), 8u);
-    for (const auto& effect : rec.applied) EXPECT_EQ(effect.value(QStringLiteral("channel")).toInt(), 0);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("scope")), QStringLiteral("tab"));
     rec.applied.clear();
+    paneState.remove(8);
     host->dispatch(QStringLiteral("on_pane_closed"), 8);
     rec.applied.clear();
     ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.complete"), 7));
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("pane")).toUInt(), 7u);
-    EXPECT_EQ(rec.applied[0].value(QStringLiteral("channel")).toInt(), 1);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("values")).toList().first().toMap().value(QStringLiteral("channel")).toInt(), 1);
 }
 
 TEST_F(ScriptHostTest, PhosphorStaysChargedWhileAnotherPaneIsRunning)
@@ -399,18 +415,259 @@ TEST_F(ScriptHostTest, PhosphorStaysChargedWhileAnotherPaneIsRunning)
     host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
     host->setEnabled(true);
     host->dispatch(QStringLiteral("on_command_started"), 7);
+    paneState[8].insert(QStringLiteral("command"), QStringLiteral("make"));
     host->dispatch(QStringLiteral("on_command_started"), 8);
     rec.applied.clear();
     host->dispatch(QStringLiteral("on_command_finished"), 7,
                    {{QStringLiteral("exit_code"), 0}, {QStringLiteral("duration_ms"), 100}});
     int charges = 0;
     for (const auto& e : rec.applied) {
-        if (e.value(QStringLiteral("channel")).toInt() == 2) {
-            ++charges;
-            EXPECT_DOUBLE_EQ(e.value(QStringLiteral("value")).toDouble(), 1.0);
+        for (const auto& v : e.value(QStringLiteral("values")).toList()) {
+            const auto value = v.toMap();
+            if (value.value(QStringLiteral("channel")).toInt() == 2) {
+                ++charges;
+                EXPECT_DOUBLE_EQ(value.value(QStringLiteral("value")).toDouble(), 1.0);
+            }
         }
     }
-    EXPECT_EQ(charges, 2);
+    EXPECT_EQ(charges, 1); // one batch updates both panes
+}
+
+TEST_F(ScriptHostTest, SnapshotsAreVersionedDetachedAndUseStableTabIds)
+{
+    write(user, QStringLiteral("state.luau"), R"(
+local s = {}
+function s.on_bell(ev)
+    assert(ev.terminal.version == 1)
+    assert(ev.terminal.active_pane == 7 and ev.terminal.active_tab == 10)
+    assert(#afterglow.panes(ev.terminal) == 3)
+    assert(#afterglow.panes(ev.terminal, "tab") == 2)
+    assert(#afterglow.panes(ev.terminal, "tab", 999) == 0)
+    assert(#afterglow.panes(ev.terminal, "tab", {id=999}) == 0)
+    assert(#afterglow.panes(ev.terminal, "tab", {id=8, tab_id=999}) == 2)
+    local panes = afterglow.panes(ev.terminal, "tab", ev.pane)
+    assert(#panes == 2 and panes[1].title == "fish")
+    panes[1].title = "only this copy"
+    return afterglow.copy(tostring(#panes))
+end
+return s
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    paneState[7].insert(QStringLiteral("tab"), 3); // reorder leaves identity intact
+    paneState[8].insert(QStringLiteral("tab"), 3);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("text")), QStringLiteral("2"));
+    EXPECT_EQ(paneState[7].value(QStringLiteral("title")), QStringLiteral("fish"));
+}
+
+TEST_F(ScriptHostTest, CreationResultsAreQueuedAndDeliveredOnlyToTheirOwner)
+{
+    write(user, QStringLiteral("creator.luau"), R"(
+return {
+    on_bell = function(ev) return afterglow.request("split", afterglow.split(ev.pane)) end,
+    on_result = function(ev)
+        assert(ev.request_id == "split" and ev.kind == "split" and ev.ok and ev.error == nil)
+        assert(ev.data.pane.id == 42 and ev.data.tab_id == 10)
+        assert(#afterglow.panes(ev.terminal, "tab", ev.data.pane) == 3)
+        return afterglow.set_title(ev.data.pane, "created")
+    end,
+}
+)");
+    write(user, QStringLiteral("other.luau"), R"(
+return { on_result = function() return afterglow.copy("wrong owner") end }
+)");
+    applyHook = [this](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        if (effect.value(QStringLiteral("kind")) != QLatin1String("split")) return {};
+        auto pane = paneState[7];
+        pane.insert(QStringLiteral("id"), 42);
+        paneState.insert(42, pane);
+        return {{}, {{QStringLiteral("pane"), pane}, {QStringLiteral("tab_id"), 10}}, {}};
+    };
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 1); // completion does not re-enter the handler
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("pane")).toUInt(), 42u);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("title")), QStringLiteral("created"));
+}
+
+TEST_F(ScriptHostTest, RefusalsAndFailuresHaveCorrelatedErrorCodes)
+{
+    write(user, QStringLiteral("errors.luau"), R"(
+return {
+    on_bell = function(ev)
+        return {
+            afterglow.request("invalid_effect", {kind = "unknown"}),
+            afterglow.request("no_pane", afterglow.focus(999)),
+            afterglow.request("operation_failed", afterglow.close(ev.pane)),
+        }
+    end,
+    on_result = function(ev)
+        assert(not ev.ok and ev.error.code == ev.request_id and ev.error.message ~= "")
+        return afterglow.copy(ev.request_id)
+    end,
+}
+)");
+    applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        return effect.value(QStringLiteral("kind")) == QLatin1String("close")
+            ? ScriptHost::EffectResult{QStringLiteral("cannot close"), {}, {}} : ScriptHost::EffectResult{};
+    };
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 4);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("text")), QStringLiteral("invalid_effect"));
+    EXPECT_EQ(rec.applied[2].value(QStringLiteral("text")), QStringLiteral("no_pane"));
+    EXPECT_EQ(rec.applied[3].value(QStringLiteral("text")), QStringLiteral("operation_failed"));
+}
+
+TEST_F(ScriptHostTest, PaneClosedBeforeCompletionCannotBeRetargeted)
+{
+    write(user, QStringLiteral("stale.luau"), R"(
+return {
+    on_bell = function(ev) return afterglow.request("first", afterglow.set_title(ev.pane, "before")) end,
+    on_result = function(ev)
+        if ev.request_id == "first" then
+            assert(ev.ok and ev.pane.id == 7 and ev.pane.title == nil)
+            assert(#afterglow.panes(ev.terminal, "pane", 7) == 0)
+            return afterglow.request("followup", afterglow.focus(ev.pane))
+        end
+        assert(not ev.ok and ev.error.code == "no_pane")
+        return afterglow.copy("closed")
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    paneState.remove(7);
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1].value(QStringLiteral("text")), QStringLiteral("closed"));
+}
+
+TEST_F(ScriptHostTest, ReloadAndUnloadCancelOldCompletions)
+{
+    const QByteArray source = R"(
+return {
+    on_bell = function(ev) return afterglow.request("r", afterglow.focus(ev.pane)) end,
+    on_result = function() return afterglow.copy("unexpected") end,
+}
+)";
+    write(user, QStringLiteral("pending.luau"), source);
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    write(user, QStringLiteral("pending.luau"), source + "\n-- new instance\n");
+    host->reload();
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 1);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    host->setEnabled(false);
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 2);
+}
+
+TEST_F(ScriptHostTest, GenericActionsShareTheStructuralBudget)
+{
+    write(user, QStringLiteral("budget.luau"), R"(
+return {
+    on_bell = function(ev)
+        return {
+            afterglow.action(ev.pane, "split_left"),
+            afterglow.new_tab(ev.pane),
+            afterglow.action(ev.pane, "close_window"),
+            afterglow.request("limited", afterglow.action(ev.pane, "new_window")),
+        }
+    end,
+    on_result = function(ev)
+        assert(not ev.ok and ev.error.code == "rate_limited")
+        return afterglow.copy("limited")
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 3);
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 4);
+    EXPECT_EQ(rec.applied.last().value(QStringLiteral("text")), QStringLiteral("limited"));
+}
+
+TEST_F(ScriptHostTest, SignalBatchesValidateEveryChannelBeforeApplying)
+{
+    write(user, QStringLiteral("batch.luau"), R"(
+return {
+    on_bell = function(ev)
+        return {
+            afterglow.signals(ev.pane, {{channel=0,value=1}, {channel=8,value=1}}),
+            afterglow.signals(ev.pane, {{channel=0,value=1}, {channel=0,value=2}}),
+            afterglow.signals(ev.pane, {{channel=0,value=1}}, "bad"),
+            afterglow.signals(ev.pane, {{channel=0,value=1e100}}),
+            afterglow.signal(ev.pane, 0.5, 1),
+            afterglow.signal(ev.pane, 1, 0/0),
+            afterglow.signals(ev.pane, {{channel=0,value=1}, {channel=2,value=0}, {channel=4,value=0}}),
+        }
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    ASSERT_EQ(rec.results.size(), 7);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("values")).toList().size(), 3);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("scope")), QStringLiteral("tab"));
+}
+
+TEST_F(ScriptHostTest, EightPanePhosphorUpdateUsesOneEffectForThreeChannels)
+{
+    for (quint32 id = 8; id < 15; ++id) {
+        auto pane = paneState[7];
+        pane.insert(QStringLiteral("id"), id);
+        paneState.insert(id, pane);
+    }
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS)});
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_command_finished"), 7,
+                   {{QStringLiteral("exit_code"), 2}, {QStringLiteral("duration_ms"), 2000}});
+    ASSERT_EQ(paneState.size(), 8);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("kind")), QStringLiteral("signals"));
+    EXPECT_EQ(rec.applied[0].value(QStringLiteral("values")).toList().size(), 3);
+    EXPECT_TRUE(rec.results[0].second.isEmpty());
+}
+
+TEST_F(ScriptHostTest, ResultFeedbackIsBoundedEvenForRejectedRequests)
+{
+    write(user, QStringLiteral("loop.luau"), R"(
+local function retry() return afterglow.request("again", afterglow.focus(999)) end
+return { on_bell = retry, on_result = retry }
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    for (int i = 0; i <= ScriptHost::MaxResultsPerSecond; ++i) QCoreApplication::processEvents();
+    EXPECT_TRUE(host->isDisabled(QStringLiteral("loop")));
+    EXPECT_TRUE(rec.applied.isEmpty());
+    EXPECT_EQ(rec.results.size(), ScriptHost::MaxResultsPerSecond + 1);
+}
+
+TEST_F(ScriptHostTest, OversizedEffectListsApplyNothing)
+{
+    write(user, QStringLiteral("large.luau"), R"(
+return { on_bell = function(ev)
+    local effects = {}
+    for i = 1, 65 do table.insert(effects, afterglow.set_title(ev.pane, "x")) end
+    return effects
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    EXPECT_TRUE(rec.applied.isEmpty());
+    ASSERT_EQ(rec.results.size(), 1);
+    EXPECT_FALSE(rec.results[0].second.isEmpty());
 }
 
 int main(int argc, char** argv)

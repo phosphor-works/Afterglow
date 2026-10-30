@@ -23,6 +23,31 @@ local function list(value)
 end
 
 afterglow = {
+    -- Scope is relative to the anchor, or the globally active objects when
+    -- omitted. This only reads the detached snapshot provided with the event.
+    panes = function(state, scope, anchor)
+        local out = {}
+        local id = anchor == nil and state.active_pane or paneId(anchor)
+        local tab, window = state.active_tab, state.active_window
+        if anchor ~= nil then
+            tab, window = 0, 0 -- a stale anchor must not fall back to the active tab
+            for _, pane in ipairs(state.panes) do
+                if pane.id == id then tab, window = pane.tab_id, pane.window; break end
+            end
+        end
+        for _, pane in ipairs(state.panes) do
+            if scope == nil or scope == "all" or (scope == "pane" and pane.id == id)
+                or (scope == "tab" and pane.tab_id == tab) or (scope == "window" and pane.window == window) then
+                table.insert(out, pane)
+            end
+        end
+        return out
+    end,
+    request = function(id, effect)
+        local out = table.clone(effect)
+        out.request_id = id
+        return out
+    end,
     send_text = function(pane, text)
         return { kind = "send_text", pane = paneId(pane), text = tostring(text) }
     end,
@@ -58,6 +83,9 @@ afterglow = {
     end,
     signal = function(pane, channel, value)
         return { kind = "signal", pane = paneId(pane), channel = channel, value = value or 1 }
+    end,
+    signals = function(pane, values, scope)
+        return { kind = "signals", pane = paneId(pane), values = values, scope = scope or "tab" }
     end,
     log = function(message)
         return { kind = "log", message = tostring(message) }

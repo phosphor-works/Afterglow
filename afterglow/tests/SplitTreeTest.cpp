@@ -87,3 +87,60 @@ TEST(SplitTree, SplitLeftAndUpPutTheNewPaneFirst)
     EXPECT_LT(t.rectOf(c).y(), t.rectOf(a).y());
     EXPECT_EQ(t.rectOf(c).x(), t.rectOf(a).x());
 }
+
+TEST(SplitTree, ZoomPreservesTopologyRatiosAndNavigation)
+{
+    SplitTree t(fake(1));
+    t.split(fake(1), fake(2), SplitTree::Direction::Right);
+    t.split(fake(2), fake(3), SplitTree::Direction::Down);
+    t.layout(QRect(0, 0, 401, 201), 1);
+    ASSERT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 40, 1, QSize(40, 20)));
+    t.layout(QRect(0, 0, 401, 201), 1);
+    const QRect original = t.rectOf(fake(1));
+    Pane* neighbour = t.neighbour(fake(1), SplitTree::Neighbour::Right);
+    t.setZoomedPane(fake(1));
+    EXPECT_EQ(t.paneCount(), 3);
+    EXPECT_EQ(t.rectOf(fake(1)), QRect(0, 0, 401, 201));
+    EXPECT_TRUE(t.rectOf(fake(2)).isEmpty());
+    EXPECT_EQ(t.paneAt(QPoint(350, 150)), fake(1));
+    EXPECT_TRUE(t.dividers().empty());
+    EXPECT_EQ(t.neighbour(fake(1), SplitTree::Neighbour::Right), neighbour);
+    EXPECT_FALSE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 20, 1, QSize(40, 20)));
+    t.setZoomedPane(nullptr);
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_EQ(t.rectOf(fake(1)), original);
+    EXPECT_EQ(t.dividers().size(), 2u);
+    t.setZoomedPane(fake(3));
+    t.layout(QRect(0, 0, 801, 401), 1);
+    EXPECT_EQ(t.rectOf(fake(3)), QRect(0, 0, 801, 401));
+    t.setZoomedPane(nullptr);
+    t.layout(QRect(0, 0, 801, 401), 1);
+    EXPECT_EQ(t.rectOf(fake(1)).width(), 2 * original.width());
+    t.setZoomedPane(fake(3));
+    EXPECT_TRUE(t.remove(fake(3)));
+    EXPECT_EQ(t.zoomedPane(), nullptr);
+}
+
+TEST(SplitTree, KeyboardResizeClampsNestedMinimumSizes)
+{
+    SplitTree t(fake(1));
+    t.split(fake(1), fake(2), SplitTree::Direction::Right);
+    t.split(fake(2), fake(3), SplitTree::Direction::Right);
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 1000, 1, QSize(40, 20)));
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_GE(t.rectOf(fake(2)).width(), 40);
+    EXPECT_GE(t.rectOf(fake(3)).width(), 40);
+    EXPECT_FALSE(t.resizePane(fake(1), SplitTree::Neighbour::Right, 1000, 1, QSize(40, 20)));
+    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Left, 1000, 1, QSize(40, 20)));
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_EQ(t.rectOf(fake(1)).width(), 40);
+    t.split(fake(1), fake(4), SplitTree::Direction::Down);
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_TRUE(t.resizePane(fake(4), SplitTree::Neighbour::Up, 30, 1, QSize(40, 20)));
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_EQ(t.rectOf(fake(4)).height(), 130);
+    EXPECT_TRUE(t.resizePane(fake(1), SplitTree::Neighbour::Down, 1000, 1, QSize(40, 20)));
+    t.layout(QRect(0, 0, 401, 201), 1);
+    EXPECT_EQ(t.rectOf(fake(4)).height(), 20);
+}

@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+status is-interactive; or return
+set -q __afterglow_loaded; and return
+set -g __afterglow_loaded 1
+# Fish 4+ supplies native OSC 133 marks, including redraw handling. Leave its
+# mark-prompt feature setting intact, and add the portable cwd notification.
+function __afterglow_cwd --on-event fish_prompt
+    set -l saved_status $status
+    printf '\e]7;file://%s\a' (string escape --style=url -- $PWD | string replace -a '%2F' '/')
+    return $saved_status
+end

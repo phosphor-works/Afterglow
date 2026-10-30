@@ -12,6 +12,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <QList>
 #include <QObject>
 #include <QTimer>
 #include <QString>
@@ -118,6 +119,7 @@ public:
     using Signals = std::array<AfterglowRender::FrameBuilder::PaneParams::Signal, 8>;
     static constexpr int SignalCount = 8;
     void setSignal(int channel, float value);
+    void setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time);
     const Signals& shaderSignals() const noexcept { return m_signals; }
 
     // Search (GUI thread).

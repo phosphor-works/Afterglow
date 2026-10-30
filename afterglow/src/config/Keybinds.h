@@ -67,6 +67,11 @@ enum class Action {
     GotoTab8,
     GotoTab9,
     ToggleFullscreen,
+    TogglePaneZoom,
+    ResizeLeft,
+    ResizeRight,
+    ResizeUp,
+    ResizeDown,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",
@@ -91,6 +96,8 @@ public:
     /// Display name of an action, for the command palette.
     static QString title(Action action);
     static QList<Action> allActions();
+    /// Actions that create or destroy panes, tabs or windows.
+    static bool isStructural(Action action);
 
     /// The action bound to a key press, or Action::None.
     Action match(const QKeyEvent* event) const;

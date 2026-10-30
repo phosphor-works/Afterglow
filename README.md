@@ -161,6 +161,36 @@ to the terminal (`\e \r \n \t \\ \xHH \uHHHH`), for example
 `"text:\\x1b\\r": "Shift+Return"`, and `"script:<id>.<action>"` runs a script
 action.
 
+Pane controls are also available through the command palette, `ctl action`,
+and Luau actions:
+
+| Action | Default shortcut | Behavior |
+| --- | --- | --- |
+| `toggle_pane_zoom` | Ctrl+Shift+Return | Fill the tab with the focused pane; toggle again to restore the split layout |
+| `resize_left`, `resize_right` | Ctrl+Shift+Alt+Left/Right | Move a nearby vertical divider by two character cells |
+| `resize_up`, `resize_down` | Ctrl+Shift+Alt+Up/Down | Move a nearby horizontal divider by two character cells |
+
+Zoom preserves split ratios and pane identities. Directional focus switches
+which pane is zoomed; splitting or resizing restores the layout first. Hidden
+panes keep running at their previous terminal size. Resizing clamps nested
+splits to a minimum of four columns and two rows plus padding. At an outside
+edge, a resize moves the nearest divider on that axis in the requested direction.
+
+### Shell integration
+
+New panes automatically integrate interactive Bash (4.4+), Zsh and Fish (4+).
+Prompt and command boundaries, command exit status, and working-directory updates
+feed command navigation and Luau events. Bash and Zsh retain their user startup
+files and prompt hooks; Fish retains its native `mark-prompt` behavior. No
+user dotfiles are modified. Login and interactive flags are supported; shell
+scripts, `-c` commands and explicit startup overrides such as `--norc`, `-f`
+or `--no-config` are left alone.
+
+Set `Terminal.shellIntegration` to `false`, or launch with
+`AFTERGLOW_SHELL_INTEGRATION=0`, to disable automatic injection. This applies to
+new panes and does not remove manually configured hooks or Fish's native marks.
+Custom shell wrappers and older Fish versions need their own prompt integration.
+
 ## Shaders
 
 Shaders are Ghostty-style GLSL (`mainImage`, `iChannel0`, the cursor uniforms)
@@ -211,11 +241,118 @@ turns the interface off.
 Luau scripts in `~/.config/afterglow/scripts/` react to events (commands
 finishing, bells, titles, focus) and add actions to the command palette, which
 bind in `Keybinds` as `"script:<id>.<action>"`. Scripts run sandboxed, with
-no file or process access and a short time limit. They return effects, which
+no direct file or process API and a short time limit. They return effects, which
 afterglow rate limits and carries out. Types for editors are installed to
 `share/afterglow/api/afterglow.d.luau`, and examples to
 `share/afterglow/examples/scripts`. `"Scripts": { "enabled": false }` turns
 scripting off.
+
+### Terminal state in Luau
+
+Every handler receives `ev.terminal`, a version 1 snapshot with `windows`,
+`tabs`, `panes`, `active_window`, `active_tab` and `active_pane`. It contains
+metadata, not terminal text. It is a detached copy: editing it cannot change
+the terminal. Snapshots are captured before dispatch; queued events can describe
+an earlier command while the snapshot already reflects more recent activity.
+The existing `on_status` field `ev.state` remains the program's status string.
+
+Window records contain `id`, `focused`, `active_tab` and `active_pane`. Tab
+records contain `id`, `window`, `index`, `title`, `active` and `active_pane`;
+`active` means selected in its window. Pane records include `id`, `window`,
+`tab_id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `focused` and
+`context`. Each window retains its selected tab and pane when unfocused.
+The top-level active IDs are zero when no Afterglow window has keyboard focus.
+
+Pane, tab and window IDs last for the process lifetime. `pane.tab_id` is stable
+across tab reordering; the existing `pane.tab` and D-Bus tab field remain
+zero-based positions. IDs do not persist across restart. A closed pane can
+appear as only `{ id = ... }` in a queued event and is absent from the snapshot.
+
+`afterglow.panes(ev.terminal, scope, anchor)` filters a snapshot. Scope is
+`"all"` (the default), `"pane"`, `"tab"` or `"window"`. The anchor is a pane
+record or ID; omitted, it uses the globally active objects. A missing anchor
+ID produces no matches, rather than targeting another pane.
+
+```lua
+function script.run_action(action, ev)
+    local panes = afterglow.panes(ev.terminal, "tab", ev.pane)
+    return afterglow.log("This tab has " .. #panes .. " panes")
+end
+```
+
+### Operation results
+
+Wrap any effect in `afterglow.request("request-id", effect)` to receive its
+result in that script's `on_result(ev)`. Request IDs are nonempty strings of
+at most 64 characters; use distinct IDs when requests need separate tracking.
+Existing effects without a request ID keep their current behavior.
+
+```lua
+function script.run_action(action, ev)
+    if ev.pane then
+        return afterglow.request("workspace", afterglow.split(ev.pane, "right"))
+    end
+end
+
+function script.on_result(ev)
+    if ev.request_id ~= "workspace" then return nil end
+    if not ev.ok then return afterglow.log(ev.error.message) end
+    return afterglow.set_title(ev.data.pane, "Workspace")
+end
+```
+
+Results contain `request_id`, `kind`, `ok`, `data`, a fresh `terminal`
+snapshot, and the initiating event's `pane` when available. Failures include
+`error = { code, message }`: `invalid_effect`, `no_pane`, `rate_limited`,
+`operation_failed` or `unavailable`. Direct `split`, `new_tab` and `new_window`
+effects return `data.pane`, `pane_id`, `tab_id` and `window_id`. Other effects
+return an empty data table unless documented otherwise.
+
+Results are queued after application, only to the originating script instance.
+The result records what happened at application time; its fresh snapshot may
+already show the created pane closed. Follow-up effects validate the ID again.
+Success means the host accepted/applied the operation, not that a spawned
+process finished or a generic action's asynchronous UI prompt was confirmed.
+Use direct creation helpers when a returned pane identity is required.
+
+Unloading, replacing or disabling a script cancels its outstanding results.
+An unchanged script retains its VM and pending results during reload. Handlers
+may return at most 64 effects; larger lists apply nothing and log an error.
+Malformed request IDs do not receive results. A script exceeding 64 queued
+or 64 results per second is disabled until its source changes, cancelling
+pending callbacks; refusals count too, preventing an endless retry loop.
+
+The existing limits remain: 16 MiB per VM, 20 ms per event, 100 ms per user
+action, 20 applied effects per second, and three structural effects per ten
+seconds. Generic actions that create or close panes, tabs or windows use the
+same structural budget as direct effects. Effect lists apply in order and are
+not transactions. See [create-and-title.luau](data/examples/scripts/create-and-title.luau)
+for a complete action with a result handler.
+
+### Scoped shader signal batches
+
+`afterglow.signals(pane, values, scope)` updates 1–8 distinct channels in one
+effect. Scope is `"pane"`, `"tab"` (default), or `"window"`, relative to the
+anchor pane at application time. Each value is `{ channel = 0, value = 1 }`;
+channels are integers 0–7 and values must fit in a finite float.
+
+```lua
+return afterglow.signals(ev.pane, {
+    { channel = 2, value = 0 },
+    { channel = 4, value = 0 },
+    { channel = 0, value = 1 },
+}, "tab")
+```
+
+The host validates the entire batch and its target set before changing any
+signal. Up to 128 panes receive all channels in one GUI-thread turn, with the
+same timestamp; painting sees the complete update. A batch consumes one effect
+from the rate budget. When requested, its result lists updated pane IDs in
+`data.panes`. The original `afterglow.signal` helper remains available.
+
+The Phosphor example uses current snapshots and tab batches, so loading it
+after panes already exist works without rebuilding a pane registry. Command
+activity in background tabs does not charge the visible tab's scene.
 
 ## Licence
 

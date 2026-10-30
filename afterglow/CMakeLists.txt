@@ -68,6 +68,15 @@ target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
 target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
     PhosphorConfig::PhosphorConfig Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 
+qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h)
+target_include_directories(afterglow_shell PUBLIC src)
+target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core)
+target_compile_definitions(afterglow_shell PRIVATE QT_NO_CAST_FROM_ASCII
+    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
+    AFTERGLOW_SOURCE_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
+    AFTERGLOW_INSTALLED_SHELL_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/shell-integration")
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shell-integration/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shell-integration)
+
 # A single lazy system-playback analyzer, shared with its lifecycle tests.
 qt_add_library(afterglow_audio STATIC
     src/audio/AudioController.cpp src/audio/AudioController.h src/audio/AudioSettings.h)
@@ -108,7 +117,7 @@ target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VER
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
-target_link_libraries(afterglow PRIVATE afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+target_link_libraries(afterglow PRIVATE afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting

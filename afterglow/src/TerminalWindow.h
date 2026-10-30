@@ -74,6 +74,16 @@ public:
     /// Every pane, tab by tab.
     QList<Pane*> panes() const;
     int tabIndexOf(const Pane* pane) const { return tabOf(pane); }
+    quint32 tabIdOf(const Pane* pane) const;
+    struct TabInfo
+    {
+        quint32 id;
+        int index;
+        quint32 activePane;
+        QString title;
+    };
+    QList<TabInfo> tabs() const;
+    quint32 activeTabId() const;
     Pane* focusedPane() const { return m_focused; }
     /// Splits @p pane running @p command (empty: the shell); returns the new pane.
     Pane* splitPane(Pane* pane, SplitTree::Direction direction, const QStringList& command);
@@ -141,6 +151,8 @@ private:
     void scheduleRender();
     void renderNow();
     void relayout();
+    void setPaneZoom(Pane* pane);
+    bool resizeFocused(SplitTree::Neighbour direction);
     bool handleShortcut(QKeyEvent* e);
     bool performAction(Action action);
     void updateChrome();
@@ -241,6 +253,7 @@ private:
     std::unique_ptr<AfterglowRender::WindowRenderer> m_renderer;
     struct Tab
     {
+        quint32 id = 0; ///< process-lifetime identity, independent of tab position
         std::unique_ptr<SplitTree> splits;
         QPointer<Pane> focused;
         QString title; ///< set by the user; empty follows the focused pane

@@ -34,12 +34,23 @@ class ScriptHost : public QObject
     Q_OBJECT
 
 public:
+    struct EffectResult
+    {
+        QString error; ///< empty on success
+        QVariantMap data;
+        QString code; ///< stable error category, empty on success
+    };
+
     struct Callbacks
     {
         /// The pane as scripts see it, empty if there is no such pane.
         std::function<QVariantMap(quint32 pane)> paneInfo;
-        /// Carries out a checked effect; returns an error, empty on success.
-        std::function<QString(const QVariantMap& effect)> apply;
+        /// A detached snapshot of terminal metadata, without terminal text.
+        std::function<QVariantMap()> state;
+        /// Resolves generic actions to the same budget class as direct effects.
+        std::function<bool(const QString& action)> structuralAction;
+        /// Carries out a checked effect, preserving created object identities.
+        std::function<EffectResult(const QVariantMap& effect)> apply;
     };
 
     struct ScriptAction
@@ -53,6 +64,10 @@ public:
     static constexpr int MaxFailures = 5; ///< in a row, before a script is disabled
     static constexpr int MaxEffectsPerSecond = 20;
     static constexpr int MaxStructuralPer10s = 3; ///< splits, tabs, windows and closes
+    static constexpr int MaxEffectsPerCall = 64;
+    static constexpr int MaxPendingResults = 64;
+    static constexpr int MaxResultsPerSecond = 64;
+    static constexpr int StateVersion = 1;
     static constexpr std::size_t MemoryCapBytes = 16u * 1024 * 1024;
 
     explicit ScriptHost(Callbacks callbacks, QObject* parent = nullptr);
@@ -91,6 +106,9 @@ private:
               quint32 eventPane);
     void applyResult(const ScriptPtr& script, const QVariant& result, quint32 eventPane);
     void applyEffect(const ScriptPtr& script, const QVariantMap& effect, quint32 eventPane);
+    QVariantMap state() const;
+    void queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
+                     const EffectResult& result, quint32 eventPane);
     bool withinBudget(Script& script, bool structural);
     void watch();
 

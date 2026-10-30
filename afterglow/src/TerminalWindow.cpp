@@ -3,6 +3,7 @@
 
 #include "TerminalWindow.h"
 #include "audio/AudioController.h"
+#include "shell/ShellIntegration.h"
 
 #include "app/NotificationCenter.h"
 
@@ -388,7 +389,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
                     }
                     // The program's occasion: when the user is not on the pane, or cannot see it.
                     const bool focused = isActive() && guard == m_focused;
-                    const bool visible = isExposed() && windowState() != Qt::WindowMinimized && tabOf(guard) == m_currentTab;
+                    const bool visible = isExposed() && windowState() != Qt::WindowMinimized && tabOf(guard) == m_currentTab && m_splits->isVisible(guard);
                     if ((request.occasion == Occasion::Unfocused && focused)
                         || (request.occasion == Occasion::Invisible && visible)) {
                         return;
@@ -417,6 +418,7 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     } else if (const QString shell = m_settings.settings().shell; !shell.isEmpty()) {
         opts.argv = {shell.toStdString()};
     }
+    ShellIntegration::prepare(opts, m_settings.settings().shellIntegration);
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
     const int cols = std::max(2, content.width() / m.cellWidth);
@@ -433,6 +435,10 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringL
 {
     if (!m_focused) {
         return;
+    }
+    if (m_splits->zoomedPane()) {
+        setPaneZoom(nullptr);
+        relayout();
     }
     // Start the new shell at the size its half of the split will have.
     QRect area = m_splits->rectOf(m_focused);
@@ -490,6 +496,7 @@ void TerminalWindow::closePane(Pane* pane)
         }
     }
     pane->deleteLater();
+    updatePaneVisibility();
     m_layoutSize = QSize();
     scheduleRender();
 }
@@ -499,7 +506,7 @@ void TerminalWindow::closePane(Pane* pane)
 int TerminalWindow::tabOf(const Pane* pane) const
 {
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
-        if (m_tabs[i]->splits->contains(pane)) {
+        if (m_tabs[i]->splits && m_tabs[i]->splits->contains(pane)) {
             return int(i);
         }
     }
@@ -538,6 +545,8 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
     }
     m_tabs.insert(m_tabs.begin() + at, std::make_unique<Tab>());
     Tab& tab = *m_tabs[std::size_t(at)];
+    static quint32 nextTabId = 1;
+    tab.id = nextTabId++;
     // Size the shell for the area it will get, with the tab bar if it now shows.
     Pane* first = createPane(workingDirectory, paneArea(), command);
     tab.splits = std::make_unique<SplitTree>(first);
@@ -551,7 +560,32 @@ QList<Pane*> TerminalWindow::panes() const
 {
     QList<Pane*> out;
     for (const auto& tab : m_tabs) {
-        tab->splits->forEachPane([&out](Pane* p, const QRect&) { out.append(p); });
+        if (tab->splits) {
+            tab->splits->forEachPane([&out](Pane* p, const QRect&) { out.append(p); });
+        }
+    }
+    return out;
+}
+
+quint32 TerminalWindow::tabIdOf(const Pane* pane) const
+{
+    const int index = tabOf(pane);
+    return index < 0 ? 0 : m_tabs[std::size_t(index)]->id;
+}
+
+quint32 TerminalWindow::activeTabId() const
+{
+    return m_currentTab < int(m_tabs.size()) ? m_tabs[std::size_t(m_currentTab)]->id : 0;
+}
+
+QList<TerminalWindow::TabInfo> TerminalWindow::tabs() const
+{
+    QList<TabInfo> out;
+    for (std::size_t i = 0; i < m_tabs.size(); ++i) {
+        const Tab& tab = *m_tabs[i];
+        const Pane* pane = int(i) == m_currentTab ? m_focused.data() : tab.focused.data();
+        out.append({tab.id, int(i), pane ? pane->id() : 0,
+                    tab.title.isEmpty() && pane ? pane->title() : tab.title});
     }
     return out;
 }
@@ -848,6 +882,9 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     }
     QGuiApplication::inputMethod()->reset();
     m_focused = pane;
+    if (m_splits && m_splits->zoomedPane() && m_splits->contains(pane)) {
+        setPaneZoom(pane);
+    }
     if (pane && m_windowFocused) {
         pane->sendInput(pane->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
     }
@@ -885,6 +922,34 @@ void TerminalWindow::restartBlink()
 
 // --- rendering -------------------------------------------------------------
 
+void TerminalWindow::setPaneZoom(Pane* pane)
+{
+    m_splits->setZoomedPane(pane);
+    m_dividerDrag.reset();
+    m_hover = {};
+    m_selectionPane = nullptr;
+    stopUrlMode();
+    m_splits->forEachPane([this](Pane* p, const QRect&) { motion(p).rectKnown = false; });
+    m_layoutSize = QSize();
+    updatePaneVisibility();
+    scheduleRender();
+}
+
+bool TerminalWindow::resizeFocused(SplitTree::Neighbour direction)
+{
+    if (!m_focused || !m_splits) return false;
+    if (m_splits->zoomedPane()) setPaneZoom(nullptr);
+    relayout();
+    const auto& metrics = m_renderer->fonts().fonts->metrics();
+    const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
+    const bool vertical = direction == SplitTree::Neighbour::Up || direction == SplitTree::Neighbour::Down;
+    const bool changed = m_splits->resizePane(m_focused, direction, 2 * (vertical ? metrics.cellHeight : metrics.cellWidth),
+        std::max(1, int(std::lround(devicePixelRatio()))), QSize(4 * metrics.cellWidth + 2 * pad, 2 * metrics.cellHeight + 2 * pad));
+    m_layoutSize = QSize();
+    scheduleRender();
+    return changed;
+}
+
 void TerminalWindow::scheduleRender()
 {
     // requestUpdate() coalesces on its own. Tracking "already requested" here
@@ -915,6 +980,7 @@ void TerminalWindow::relayout()
     m_splits->layout(paneArea(), std::max(1, int(std::lround(dpr))));
     const auto& m = m_renderer->fonts().fonts->metrics();
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
+        if (r.isEmpty()) return; // hidden by zoom: retain the PTY's existing size
         const QRect content = contentRect(r);
         const int cols = std::max(2, content.width() / m.cellWidth);
         const int rows = std::max(1, content.height() / m.cellHeight);
@@ -957,6 +1023,7 @@ void TerminalWindow::renderNow()
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     bool anyBlinkingText = false;
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
+        if (r.isEmpty()) return;
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
@@ -1277,8 +1344,9 @@ void TerminalWindow::updatePaneVisibility()
     const bool shown = isExposed() && windowState() != Qt::WindowMinimized;
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
         const bool visible = shown && int(i) == m_currentTab;
-        m_tabs[i]->splits->forEachPane([visible](Pane* p, const QRect&) {
-            p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
+        const SplitTree* tree = m_tabs[i]->splits.get();
+        tree->forEachPane([visible, tree](Pane* p, const QRect&) {
+            p->withTerminal([visible, tree, p](Terminal& t) { t.setVisible(visible && tree->isVisible(p)); });
         });
     }
 }
@@ -1354,6 +1422,18 @@ bool TerminalWindow::performAction(Action action)
     const long page = m_focused ? std::max(1, m_focused->rows() - 1) : 1;
 
     switch (action) {
+    case Action::TogglePaneZoom:
+        if (!m_focused || m_splits->paneCount() < 2) return false;
+        setPaneZoom(m_splits->zoomedPane() ? nullptr : m_focused.data());
+        return true;
+    case Action::ResizeLeft:
+        return resizeFocused(SplitTree::Neighbour::Left);
+    case Action::ResizeRight:
+        return resizeFocused(SplitTree::Neighbour::Right);
+    case Action::ResizeUp:
+        return resizeFocused(SplitTree::Neighbour::Up);
+    case Action::ResizeDown:
+        return resizeFocused(SplitTree::Neighbour::Down);
     case Action::SplitRight:
         splitFocused(SplitTree::Direction::Right);
         return true;
