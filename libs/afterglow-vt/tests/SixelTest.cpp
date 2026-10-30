@@ -72,3 +72,12 @@ TEST(Sixel, ReportsAndAttributes)
     t.feed("\x1b[?1;1S\x1b[?2;1S\x1b[c");
     EXPECT_EQ(host.written, "\x1b[?1;0;1024S\x1b[?2;0;200;200S\x1b[?65;4;6;22;28;52c");
 }
+
+TEST(Sixel, BlankRunsAndBandsAreBoundedAndOverflowRejectsWholeImage)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    EXPECT_FALSE(decodeSixel("~!10000?!10000?~", 1, 0, palette, frame));
+    EXPECT_FALSE(decodeSixel("~" + std::string(2000, '-'), 1, 0, palette, frame));
+    EXPECT_FALSE(decodeSixel("~!10000~", 1, 0, palette, frame));
+}

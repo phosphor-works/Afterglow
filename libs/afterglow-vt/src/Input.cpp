@@ -647,9 +647,13 @@ std::string encodePaste(std::string_view text, const Modes& modes)
         return body;
     }
     constexpr std::string_view End = "\x1b[201~";
-    for (auto pos = body.find(End); pos != std::string::npos; pos = body.find(End, pos)) {
-        body.erase(pos, End.size());
+    std::string sanitized;
+    sanitized.reserve(body.size());
+    for (char c : body) {
+        sanitized.push_back(c);
+        if (sanitized.ends_with(End)) sanitized.resize(sanitized.size() - End.size());
     }
+    body = std::move(sanitized);
     return "\x1b[200~" + body + std::string(End);
 }
 

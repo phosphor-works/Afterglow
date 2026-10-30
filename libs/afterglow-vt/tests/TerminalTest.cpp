@@ -430,3 +430,22 @@ TEST(Terminal, AmbiguousWidthFollowsTheOption)
     EXPECT_EQ(wide.t.screen().row(0).at(0).width(), 2);
     EXPECT_EQ(wide.t.screen().row(0).at(2).codepoint(), U'\u03b2');
 }
+
+TEST(Terminal, BidiControlsAreRetainedAndCopiedOnlyForBidiShellContent)
+{
+    for (BidiMode mode : {BidiMode::Auto, BidiMode::LeftToRight, BidiMode::RightToLeft}) {
+        RecordingHost host;
+        TerminalOptions options;
+        options.bidi = mode;
+        Terminal terminal(20, 3, host, options);
+        const std::string control = "\xe2\x80\xae";
+        terminal.feed(control + "abc");
+        EXPECT_EQ(terminal.screen().row(0).at(0).codepoint(), U'\u202e');
+        EXPECT_EQ(terminal.screen().cursor.x, 4);
+        EXPECT_EQ(terminal.text(Terminal::TextScope::All), control + "abc");
+        terminal.feed("\x1b[?1049h\x1b[H" + control + "x");
+        EXPECT_EQ(terminal.screen().row(0).at(0).codepoint(), U'x');
+        terminal.feed("\x1b[?1049l\x1b[2J\x1b[H\x1b[?1000h" + control + "y");
+        EXPECT_EQ(terminal.screen().row(0).at(0).codepoint(), U'y');
+    }
+}

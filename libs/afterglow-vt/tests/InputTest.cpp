@@ -155,3 +155,14 @@ TEST(Input, ModifyOtherKeys)
     EXPECT_EQ(encodeKey(shiftComma, m), "<");
     EXPECT_EQ(encodeKey(key(Key::Text, 0, "a", U'a'), m), "a");
 }
+
+TEST(Input, NestedPasteTerminatorsCannotReappearAfterRemoval)
+{
+    Modes modes;
+    modes.bracketedPaste = true;
+    EXPECT_EQ(encodePaste("a\x1b[20\x1b[201~1~b", modes), "\x1b[200~ab\x1b[201~");
+    std::string nested;
+    for (int i = 0; i < 10000; ++i) nested += "\x1b[20";
+    for (int i = 0; i < 10000; ++i) nested += "1~";
+    EXPECT_EQ(encodePaste(nested, modes), "\x1b[200~\x1b[201~");
+}

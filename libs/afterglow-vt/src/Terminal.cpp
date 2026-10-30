@@ -506,8 +506,16 @@ void Terminal::print(char32_t cp)
         m_singleShift = 0;
     }
 
-    // Printable ASCII has the default properties; skip the table lookup.
-    const Unicode::Props props = (cp >= 0x20 && cp < 0x7F) ? Unicode::Props{} : Unicode::props(cp);
+    // Preserve directional controls as visible cells when bidi layout is enabled.
+    Unicode::Props props = Unicode::props(cp);
+    const bool directionalControl = cp == 0x061c || cp == 0x200e || cp == 0x200f
+        || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069);
+    if (directionalControl && m_options.bidi != BidiMode::Off && !m_modes.altScreen
+        && m_modes.mouseTracking == MouseTracking::None) {
+        // Retain controls in visible cells: the renderer reveals their presence.
+        props.width = 1;
+        props.graphemeBreak = Unicode::GraphemeBreak::Control;
+    }
 
     // Join the previous cell's cluster when no grapheme boundary falls here.
     if (m_lastX >= 0) {

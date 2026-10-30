@@ -134,6 +134,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
     while (i < data.size() && !overflow) {
         const char c = data[i];
         if (c >= '?' && c <= '~') {
+            if (x >= MaxSide || band > MaxSide - 6) return false;
             const int bits = c - '?';
             if (bits != 0) {
                 if (!ensure(x + 1, band + 6)) {
@@ -157,7 +158,8 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             readParams(data, i, &n, 1);
             if (i < data.size() && data[i] >= '?' && data[i] <= '~') {
                 const int bits = data[i] - '?';
-                n = std::clamp(n, 1, MaxSide);
+                n = std::max(n, 1);
+                if (n > MaxSide - x || band > MaxSide - 6) return false;
                 if (bits != 0) {
                     if (!ensure(x + n, band + 6)) {
                         overflow = true;
@@ -201,6 +203,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             ++i;
         } else if (c == '-') {
             x = 0;
+            if (band > MaxSide - 6) return false;
             band += 6;
             ++i;
         } else {
@@ -208,6 +211,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
         }
     }
 
+    if (overflow) return false;
     const int width = std::max(usedW, rasterW);
     const int height = std::max(usedH, rasterH);
     if (width <= 0 || height <= 0 || !ensure(width, height)) {

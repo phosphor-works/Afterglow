@@ -33,6 +33,8 @@ struct Rgb
     bool operator==(const Rgb&) const = default;
 };
 
+enum class BidiMode : std::uint8_t { Off, Auto, LeftToRight, RightToLeft };
+
 enum class CursorShape : std::uint8_t { Block, Underline, Bar };
 
 enum class MouseTracking : std::uint8_t {
@@ -189,6 +191,7 @@ struct TerminalOptions
     /// East Asian Ambiguous characters (Greek, Cyrillic, box drawing, some
     /// symbols) take two cells, as CJK fonts and programs expect.
     bool ambiguousWide = false;
+    BidiMode bidi = BidiMode::Off;
     /// The cursor DECSCUSR 0 and a reset return to.
     CursorShape cursorShape = CursorShape::Block;
     bool cursorBlink = true;
