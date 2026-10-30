@@ -13,6 +13,7 @@ qt_add_executable(afterglow
     src/Pane.h
     src/SplitTree.cpp
     src/SplitTree.h
+    src/TerminalWindowLayout.cpp
     src/TerminalWindowScript.cpp
     src/TerminalWindow.cpp
     src/TerminalWindow.h

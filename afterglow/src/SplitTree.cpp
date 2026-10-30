@@ -75,6 +75,17 @@ bool SplitTree::remove(Pane* pane)
     return true;
 }
 
+bool SplitTree::swap(Pane* first, Pane* second)
+{
+    auto* a = find(m_root.get(), first);
+    auto* b = find(m_root.get(), second);
+    if (!a || !b || !a->pane || !b->pane || a == b) return false;
+    std::swap(a->pane, b->pane);
+    m_zoomed = nullptr;
+    m_dividers.clear();
+    return true;
+}
+
 void SplitTree::layout(const QRect& area, int dividerWidth)
 {
     m_dividers.clear();

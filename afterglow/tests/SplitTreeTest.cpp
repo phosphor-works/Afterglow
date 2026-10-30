@@ -144,3 +144,21 @@ TEST(SplitTree, KeyboardResizeClampsNestedMinimumSizes)
     t.layout(QRect(0, 0, 401, 201), 1);
     EXPECT_EQ(t.rectOf(fake(4)).height(), 20);
 }
+
+TEST(SplitTree, SwapPreservesTopologyAndClearsZoom)
+{
+    SplitTree tree(fake(1));
+    tree.split(fake(1), fake(2), SplitTree::Direction::Right);
+    tree.split(fake(2), fake(3), SplitTree::Direction::Down);
+    tree.layout(QRect(0, 0, 301, 201), 1);
+    const auto first = tree.rectOf(fake(1)), second = tree.rectOf(fake(3));
+    tree.setZoomedPane(fake(1));
+    ASSERT_TRUE(tree.swap(fake(1), fake(3)));
+    tree.layout(QRect(0, 0, 301, 201), 1);
+    EXPECT_EQ(tree.rectOf(fake(3)), first);
+    EXPECT_EQ(tree.rectOf(fake(1)), second);
+    EXPECT_EQ(tree.zoomedPane(), nullptr);
+    EXPECT_EQ(tree.paneCount(), 3);
+    EXPECT_FALSE(tree.swap(fake(1), fake(9)));
+    EXPECT_FALSE(tree.swap(fake(1), fake(1)));
+}

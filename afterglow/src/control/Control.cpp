@@ -29,6 +29,12 @@ Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* pare
 void Control::attachWindow(TerminalWindow* window)
 {
     m_windows.append(window);
+    connect(window, &TerminalWindow::paneMoved, this, [this](Pane* p) { Q_EMIT paneMoved(p->id()); });
+    connect(window, &TerminalWindow::transferRequested, this, [this](Pane* pane, bool tab) {
+        QVariantMap result;
+        const auto error = tab ? detachTab(pane->id(), result) : movePane(pane->id(), 0, QStringLiteral("new-window"), result);
+        if (!error.isEmpty()) notify(pane->id(), QStringLiteral("Move failed"), error);
+    });
     connect(window, &TerminalWindow::paneCreated, this, [this, window](Pane* p) { attachPane(window, p); });
     connect(window, &TerminalWindow::focusedPaneChanged, this, [this](Pane* p) {
         if (p) {
@@ -264,7 +270,7 @@ QString Control::newTab(quint32 id, const QString& workingDirectory, const QStri
 
 QString Control::newWindow(const QString& workingDirectory, const QStringList& command, quint32& created)
 {
-    TerminalWindow* w = m_newWindow ? m_newWindow(workingDirectory, command) : nullptr;
+    TerminalWindow* w = m_newWindow ? m_newWindow(workingDirectory, command, false) : nullptr;
     if (!w || w->panes().isEmpty()) {
         return QStringLiteral("cannot open a window");
     }
@@ -457,6 +463,44 @@ QString Control::scriptAppearance(const QString& owner, quint32 id, const QVaria
 void Control::clearScriptOwner(const QString& owner)
 {
     for (auto window : m_windows) if (window) window->clearScriptOwner(owner);
+}
+
+QString Control::movePane(quint32 id, quint32 target, const QString& placement, QVariantMap& result)
+{
+    TerminalWindow *source = nullptr, *destination = nullptr;
+    auto* pane = find(id, &source);
+    if (!pane) return QStringLiteral("Pane closed");
+    Pane* beside = target ? find(target, &destination) : nullptr;
+    if (target && !beside) return QStringLiteral("Target pane closed");
+    SplitTree::Direction direction = SplitTree::Direction::Right;
+    if (placement == QLatin1String("left")) direction = SplitTree::Direction::Left;
+    else if (placement == QLatin1String("up")) direction = SplitTree::Direction::Up;
+    else if (placement == QLatin1String("down")) direction = SplitTree::Direction::Down;
+    else if (placement != QLatin1String("right") && placement != QLatin1String("new-tab") && placement != QLatin1String("new-window"))
+        return QStringLiteral("Invalid pane placement");
+    const bool newTab = placement == QLatin1String("new-tab");
+    const bool newWindow = placement == QLatin1String("new-window");
+    if ((newTab || newWindow) && target) return QStringLiteral("New destinations require target 0");
+    if (!newTab && !newWindow && !beside) return QStringLiteral("A target pane is required");
+    if (pane == beside) return QStringLiteral("Cannot move a pane beside itself");
+    if (newTab) destination = source;
+    if (newWindow) destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
+    if (!destination) return QStringLiteral("Cannot create destination window");
+    const auto error = source->movePaneTo(pane, destination, beside, direction);
+    if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
+    return error;
+}
+
+QString Control::detachTab(quint32 id, QVariantMap& result)
+{
+    TerminalWindow* source = nullptr;
+    auto* pane = find(id, &source);
+    if (!pane) return QStringLiteral("Pane closed");
+    auto* destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
+    if (!destination) return QStringLiteral("Cannot create destination window");
+    const auto error = source->detachTabTo(pane, destination);
+    if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
+    return error;
 }
 
 } // namespace Afterglow

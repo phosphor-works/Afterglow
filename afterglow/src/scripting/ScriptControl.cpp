@@ -25,6 +25,16 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         quint32 created = 0;
         QVariantMap data;
         const QString error = [&]() -> QString {
+            if (kind == QLatin1String("move_pane") || kind == QLatin1String("detach_tab")) {
+                QVariantMap moved;
+                const auto error = kind == QLatin1String("move_pane")
+                    ? control.movePane(pane, e.value(QStringLiteral("target")).toUInt(), s("placement"), moved)
+                    : control.detachTab(pane, moved);
+                if (error.isEmpty()) data = {{QStringLiteral("pane"), moved},
+                    {QStringLiteral("pane_id"), pane}, {QStringLiteral("tab_id"), moved.value(QStringLiteral("tab_id"))},
+                    {QStringLiteral("window_id"), moved.value(QStringLiteral("window"))}};
+                return error;
+            }
             if (kind == QLatin1String("read_text")) {
                 const double limit = e.value(QStringLiteral("max_bytes")).toDouble();
                 if (limit < 1 || limit > 1024 * 1024 || limit != std::floor(limit)) return QStringLiteral("invalid max_bytes");
@@ -111,6 +121,7 @@ void connectScriptEvents(ScriptHost& host, Control& control)
         return [&host, handler](quint32 pane) { host.dispatch(QLatin1String(handler), pane); };
     };
     constexpr auto Queued = Qt::QueuedConnection;
+    QObject::connect(&control, &Control::paneMoved, &host, on("on_pane_moved"), Queued);
     QObject::connect(&control, &Control::paneCreated, &host, on("on_pane_created"), Queued);
     QObject::connect(&control, &Control::paneClosed, &host, on("on_pane_closed"), Queued);
     QObject::connect(&control, &Control::bell, &host, on("on_bell"), Queued);

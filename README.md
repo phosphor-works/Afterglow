@@ -210,6 +210,22 @@ panes keep running at their previous terminal size. Resizing clamps nested
 splits to a minimum of four columns and two rows plus padding. At an outside
 edge, a resize moves the nearest divider on that axis in the requested direction.
 
+### Moving panes and tabs
+
+`swap_left/right/up/down` exchange the focused pane with its neighbour.
+`move_pane_to_tab` moves it to a new tab; `move_pane_to_window` and `detach_tab`
+create a window for one pane or the entire split tab. Bind these actions or
+use the command palette. Processes, history, graphics and pane IDs survive;
+a detached whole tab also retains its ID and split ratios.
+
+`afterglow ctl --pane 12 move-pane 34 right` moves pane 12 beside pane 34,
+including across tabs/windows. Use target `0` with `new-tab` or `new-window`.
+`afterglow ctl --pane 12 detach-tab` detaches its whole tab. Luau has matching
+`afterglow.move_pane(pane, target, placement)` and `afterglow.detach_tab(pane)`
+effects. Request results contain the pane snapshot and destination IDs;
+`on_pane_moved(pane, ctx)` receives the updated location without a fake
+creation/closure event. Moving the last pane closes the emptied window.
+
 ### History, search, and hints
 
 `copy_mode` (Ctrl+Shift+Space) enters keyboard selection. Move with arrows or

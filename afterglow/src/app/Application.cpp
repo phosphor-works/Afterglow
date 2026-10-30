@@ -28,8 +28,8 @@ const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 Application::Application(const QString& configPath, const QJsonObject& overrides)
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
     , m_device(m_settings.settings().font)
-    , m_control(m_settings, [this](const QString& cwd, const QStringList& command) {
-        return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false});
+    , m_control(m_settings, [this](const QString& cwd, const QStringList& command, bool empty) {
+        return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false, empty});
     })
     , m_controlBus(m_control, m_settings)
     , m_scripts(scriptCallbacks(m_control))
@@ -119,7 +119,7 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });
     connect(window, &QObject::destroyed, this, &Application::quitWhenNoWindowsRemain, Qt::QueuedConnection);
-    if (!options.quick) {
+    if (!options.quick && !options.empty) {
         const WindowSettings& ws = m_settings.settings().window;
         window->setFlag(Qt::FramelessWindowHint, !ws.decorations);
         switch (ws.startMode) {

@@ -87,6 +87,8 @@ struct EffectKind
 };
 
 const EffectKind Kinds[] = {
+    {"move_pane", true, true, {"placement"}, false, {"target"}},
+    {"detach_tab", true, true, {}, false},
     {"timer", false, false, {"name"}, false, {"delay_ms", "repeat_ms"}},
     {"cancel", false, false, {"name"}, false},
     {"exec", false, false, {"name", "cwd"}, true, {"timeout_ms", "max_bytes"}},
@@ -546,6 +548,11 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 badNumber = QLatin1String(key);
             }
             if (v.isValid()) effect.insert(QLatin1String(key), v.toDouble());
+        }
+        if (kind == QLatin1String("move_pane")) {
+            const double target = effect.value(QStringLiteral("target"), 0).toDouble();
+            if (!std::isfinite(target) || target < 0 || target > std::numeric_limits<quint32>::max() || target != std::floor(target))
+                error = QStringLiteral("target must be a pane ID or zero");
         }
         if (kind == QLatin1String("set_actions") || kind == QLatin1String("select")) {
             const auto key = kind == QLatin1String("select") ? QStringLiteral("items") : QStringLiteral("actions");

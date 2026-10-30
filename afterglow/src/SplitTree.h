@@ -37,6 +37,7 @@ public:
     /// Removes @p pane; its sibling takes the freed space. Returns false if
     /// the pane was the last one.
     bool remove(Pane* pane);
+    bool swap(Pane* first, Pane* second);
 
     /// Lays the tree out in @p area with dividers @p dividerWidth wide.
     void layout(const QRect& area, int dividerWidth);

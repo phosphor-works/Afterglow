@@ -75,6 +75,8 @@ enum class Action {
     CopyMode,
     ShowLastOutput,
     ShowHints,
+    SwapLeft, SwapRight, SwapUp, SwapDown,
+    MovePaneToTab, MovePaneToWindow, DetachTab,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

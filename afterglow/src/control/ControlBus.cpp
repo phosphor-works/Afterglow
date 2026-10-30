@@ -190,4 +190,17 @@ void ControlBus::RunAction(uint pane, const QString& action)
     fail(m_control.runAction(pane, action));
 }
 
+QVariantMap ControlBus::MovePane(uint pane, uint target, const QString& placement)
+{
+    QVariantMap result;
+    fail(m_control.movePane(pane, target, placement, result));
+    return result;
+}
+QVariantMap ControlBus::DetachTab(uint pane)
+{
+    QVariantMap result;
+    fail(m_control.detachTab(pane, result));
+    return result;
+}
+
 } // namespace Afterglow

@@ -35,6 +35,8 @@ public Q_SLOTS:
     Q_SCRIPTABLE uint Split(uint pane, const QString& direction, const QStringList& command);
     Q_SCRIPTABLE uint NewTab(uint pane, const QString& workingDirectory, const QStringList& command);
     Q_SCRIPTABLE uint CreateWindow(const QString& workingDirectory, const QStringList& command);
+    Q_SCRIPTABLE QVariantMap MovePane(uint pane, uint target, const QString& placement);
+    Q_SCRIPTABLE QVariantMap DetachTab(uint pane);
     Q_SCRIPTABLE void Focus(uint pane);
     Q_SCRIPTABLE void Close(uint pane);
     Q_SCRIPTABLE void SetTitle(uint pane, const QString& title);

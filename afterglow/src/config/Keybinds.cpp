@@ -15,6 +15,9 @@ namespace Afterglow {
 bool Keybinds::isStructural(Action action)
 {
     switch (action) {
+    case Action::MovePaneToTab:
+    case Action::MovePaneToWindow:
+    case Action::DetachTab:
     case Action::SplitRight:
     case Action::SplitDown:
     case Action::SplitLeft:
@@ -42,6 +45,13 @@ struct ActionInfo
 };
 
 const ActionInfo Actions[] = {
+    {Action::SwapLeft, "swap_left", "Swap Pane Left", {}},
+    {Action::SwapRight, "swap_right", "Swap Pane Right", {}},
+    {Action::SwapUp, "swap_up", "Swap Pane Above", {}},
+    {Action::SwapDown, "swap_down", "Swap Pane Below", {}},
+    {Action::MovePaneToTab, "move_pane_to_tab", "Move Pane to New Tab", {}},
+    {Action::MovePaneToWindow, "move_pane_to_window", "Move Pane to New Window", {}},
+    {Action::DetachTab, "detach_tab", "Detach Tab to New Window", {}},
     {Action::SplitRight, "split_right", "Split Right", {"Ctrl+Shift+E"}},
     {Action::SplitDown, "split_down", "Split Down", {"Ctrl+Shift+O"}},
     {Action::SplitLeft, "split_left", "Split Left", {}},

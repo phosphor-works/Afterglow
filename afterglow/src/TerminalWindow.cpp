@@ -275,7 +275,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
     m_fixedTitle = options.title;
     m_holdNextPane = options.hold;
-    newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command);
+    if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command);
     updateTitle();
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
@@ -319,9 +319,8 @@ QList<TerminalWindow*> TerminalWindow::windows()
 
 // --- panes -----------------------------------------------------------------
 
-Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command)
+void TerminalWindow::bindPane(Pane* pane)
 {
-    auto* pane = new Pane(m_settings.settings().terminal, this);
     connect(pane, &QObject::destroyed, this, [this, pane] {
         m_motion.erase(pane);
         m_growFrom.erase(pane);
@@ -425,6 +424,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         }
     });
 
+}
+
+Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command)
+{
+    auto* pane = new Pane(m_settings.settings().terminal, this);
+    bindPane(pane);
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
     opts.environment = m_settings.settings().environment;
@@ -568,8 +573,6 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
     }
     m_tabs.insert(m_tabs.begin() + at, std::make_unique<Tab>());
     Tab& tab = *m_tabs[std::size_t(at)];
-    static quint32 nextTabId = 1;
-    tab.id = nextTabId++;
     // Size the shell for the area it will get, with the tab bar if it now shows.
     Pane* first = createPane(workingDirectory, paneArea(), command);
     tab.splits = std::make_unique<SplitTree>(first);
@@ -1021,7 +1024,7 @@ void TerminalWindow::relayout()
 
 void TerminalWindow::renderNow()
 {
-    if (!isExposed() || !m_renderer->ensureSwapChain()) {
+    if (!m_splits || !isExposed() || !m_renderer->ensureSwapChain()) {
         return;
     }
     qCDebug(lcWindow) << "frame";
@@ -1496,6 +1499,18 @@ bool TerminalWindow::performAction(Action action)
     const long page = m_focused ? std::max(1, m_focused->rows() - 1) : 1;
 
     switch (action) {
+    case Action::SwapLeft: return swapPane(m_focused, SplitTree::Neighbour::Left);
+    case Action::SwapRight: return swapPane(m_focused, SplitTree::Neighbour::Right);
+    case Action::SwapUp: return swapPane(m_focused, SplitTree::Neighbour::Up);
+    case Action::SwapDown: return swapPane(m_focused, SplitTree::Neighbour::Down);
+    case Action::MovePaneToTab:
+        return m_focused && movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right).isEmpty();
+    case Action::MovePaneToWindow:
+    case Action::DetachTab:
+        if (!m_focused) return false;
+        Q_EMIT transferRequested(m_focused, action == Action::DetachTab);
+        return true;
+
     case Action::TogglePaneZoom:
         if (!m_focused || m_splits->paneCount() < 2) return false;
         setPaneZoom(m_splits->zoomedPane() ? nullptr : m_focused.data());

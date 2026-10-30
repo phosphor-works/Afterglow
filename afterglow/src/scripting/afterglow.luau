@@ -23,6 +23,10 @@ local function list(value)
 end
 
 afterglow = {
+    move_pane = function(pane, target, placement)
+        return {kind="move_pane", pane=paneId(pane), target=target and paneId(target) or 0, placement=placement or "right"}
+    end,
+    detach_tab = function(pane) return {kind="detach_tab", pane=paneId(pane)} end,
     timer = function(name, delay_ms, repeat_ms)
         return {kind="timer", name=name, delay_ms=delay_ms, repeat_ms=repeat_ms or 0}
     end,

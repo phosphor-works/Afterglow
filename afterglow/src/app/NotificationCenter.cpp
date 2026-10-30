@@ -279,8 +279,8 @@ void NotificationCenter::onActionInvoked(uint id, const QString& action)
     const Entry& e = *it;
     const QString client = e.clientId.isEmpty() ? QStringLiteral("0") : e.clientId;
     if (action == QLatin1String("default")) {
-        if (e.focusOnActivate && e.window && e.pane) {
-            e.window->revealPane(e.pane);
+        if (e.focusOnActivate && e.pane) {
+            if (auto* window = qobject_cast<TerminalWindow*>(e.pane->parent())) window->revealPane(e.pane);
         }
         if (e.reportActivation && e.pane) {
             e.pane->sendInput(QStringLiteral("\x1b]99;i=%1;\x1b\\").arg(client).toStdString());

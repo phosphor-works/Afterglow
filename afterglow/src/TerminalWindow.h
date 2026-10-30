@@ -47,6 +47,7 @@ struct WindowOptions
     QString title;
     /// Keep the first pane open after its program exits (afterglow --hold).
     bool hold = false;
+    bool empty = false; ///< Internal: receive live panes or a restored project before showing.
 };
 
 class ChromeController;
@@ -97,6 +98,10 @@ public:
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
     void clearScriptOwner(const QString& owner);
 
+    QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction);
+    QString detachTabTo(Pane* pane, TerminalWindow* destination);
+    bool swapPane(Pane* pane, SplitTree::Neighbour direction);
+
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
 
@@ -106,6 +111,8 @@ Q_SIGNALS:
     /// The new-window action, for the application to fulfil.
     void newWindowRequested(const QString& workingDirectory);
     void paneCreated(Pane* pane);
+    void paneMoved(Pane* pane);
+    void transferRequested(Pane* pane, bool wholeTab);
     void focusedPaneChanged(Pane* pane);
 
 protected:
@@ -126,6 +133,11 @@ protected:
 private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {});
+    void bindPane(Pane* pane);
+    void releasePaneUi(Pane* pane);
+    void reparentPane(Pane* pane, TerminalWindow* destination);
+    void removeTabShell(int index);
+    void finishTransfer();
     void splitFocused(SplitTree::Direction direction, const QStringList& command = {});
     Pane* newTab(const QString& workingDirectory, const QStringList& command = {});
     void switchTab(int index);
@@ -279,6 +291,7 @@ private:
     std::unique_ptr<AfterglowRender::WindowRenderer> m_renderer;
     struct Tab
     {
+        Tab() { static quint32 next = 1; id = next++; }
         quint32 id = 0; ///< process-lifetime identity, independent of tab position
         std::unique_ptr<SplitTree> splits;
         QPointer<Pane> focused;

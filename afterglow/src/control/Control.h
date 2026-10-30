@@ -45,7 +45,7 @@ class Control : public QObject
 
 public:
     enum class TextScope { Screen, Scrollback, Selection, LastOutput };
-    using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command)>;
+    using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
     /// Runs a script action ("<script id>.<action id>"); false if there is none.
     using ScriptActionRunner = std::function<bool(const QString& action, quint32 pane)>;
 
@@ -62,6 +62,8 @@ public:
     static QVariantMap paneMap(const PaneInfo& pane);
     static bool isStructuralAction(const QString& action);
 
+    QString movePane(quint32 pane, quint32 target, const QString& placement, QVariantMap& result);
+    QString detachTab(quint32 pane, QVariantMap& result);
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText unless @p trusted (afterglow itself).
     QString readText(quint32 pane, TextScope scope, QString& out, bool trusted = false);
@@ -96,6 +98,7 @@ public:
 
 Q_SIGNALS:
     void paneCreated(quint32 pane);
+    void paneMoved(quint32 pane);
     void paneClosed(quint32 pane);
     void titleChanged(quint32 pane, const QString& title);
     void bell(quint32 pane);

@@ -83,6 +83,7 @@ export type Effects = Effect | { Effect }
 
 -- Handlers a script may define, all optional:
 --   on_pane_created(ev: PaneEvent)        on_pane_closed(ev: ClosedPaneEvent)
+--   on_pane_moved(ev: PaneEvent) -- same pane ID, new window/tab in the snapshot
 --   on_focus(ev: PaneEvent)               on_bell(ev: PaneEvent)
 --   on_title(ev: TitleEvent)              on_status(ev: StatusEvent)
 --   on_command_started(ev: CommandStartedEvent)
@@ -103,6 +104,8 @@ declare afterglow: {
     request: (id: string, effect: Effect) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output")?, max_bytes: number?) -> Effect,
+    move_pane: (pane: PaneRef, target: PaneRef?, placement: ("left" | "right" | "up" | "down" | "new-tab" | "new-window")?) -> Effect,
+    detach_tab: (pane: PaneRef) -> Effect,
     timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,
     cancel: (name: string) -> Effect,
     exec: (name: string, command: { string }, options: { cwd: string?, timeout_ms: number?, max_bytes: number? }?) -> Effect,

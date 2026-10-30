@@ -34,6 +34,8 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   get-text [--screen|--scrollback|--selection|--last-output]
                                       print pane text (needs Control.allowReadText)
   split [--right|--down] [-- CMD...]  split, running CMD or the shell; prints the new pane
+  move-pane TARGET PLACEMENT        move beside pane (left/right/up/down); TARGET 0 for new-tab/new-window
+  detach-tab                        detach the selected pane's whole tab
   new-tab [--cwd DIR] [-- CMD...]     open a tab; prints its pane
   new-window [--cwd DIR] [-- CMD...]  open a window; prints its pane
   focus | close                       focus or close the pane
@@ -264,6 +266,14 @@ int runCtl(int argc, char** argv)
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         return call(QStringLiteral("NewTab"), {*pane, cwd, trailing}, reply) ? printPane(reply) : 1;
     }
+    if (command == QLatin1String("move-pane")) {
+        bool valid = false;
+        const uint target = args.value(0).toUInt(&valid);
+        if (!valid || args.size() != 2) return fail(QStringLiteral("move-pane needs TARGET and PLACEMENT"));
+        return call(QStringLiteral("MovePane"), {*pane, target, args[1]}, reply) ? 0 : 1;
+    }
+    if (command == QLatin1String("detach-tab"))
+        return call(QStringLiteral("DetachTab"), {*pane}, reply) ? 0 : 1;
     if (command == QLatin1String("focus")) {
         return call(QStringLiteral("Focus"), {*pane}, reply) ? 0 : 1;
     }
