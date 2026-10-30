@@ -9,6 +9,16 @@ Copy this entire directory into `~/.config/afterglow/scripts/project-navigator/`
 under `/usr/share/afterglow/examples/packages/project-navigator/` when using the
 usual `/usr` prefix. No commands run merely by loading the package.
 
+From the repository root, install it with:
+
+```bash
+mkdir -p ~/.config/afterglow/scripts
+cp -r data/examples/packages/project-navigator ~/.config/afterglow/scripts/
+```
+
+The destination must contain `scripts/project-navigator/package.json`, not
+`scripts/package.json`. Afterglow automatically reloads scripts when they change.
+
 Open the command palette and choose:
 
 - **Navigate projects** — search running projects, saved layouts, favorites,
