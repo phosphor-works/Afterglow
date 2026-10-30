@@ -67,6 +67,7 @@ struct alignas(16) TerminalShaderUniforms
     float audioPad[3];
     /// Pane rows, combined current-tab rows, eased current-tab rows, reserved (0).
     float iScrollback[4];
+    float iTextureRegion[4]; ///< normalized source rectangle, unchanged by buffer scaling
 };
 static_assert(offsetof(TerminalShaderUniforms, iMouse) == 160);
 static_assert(offsetof(TerminalShaderUniforms, iCurrentCursor) == 208);
@@ -79,7 +80,7 @@ static_assert(offsetof(TerminalShaderUniforms, iBackgroundOpacity) == 4912);
 static_assert(offsetof(TerminalShaderUniforms, iSignal) == 4928);
 static_assert(offsetof(TerminalShaderUniforms, iAudioLevels) == 5056);
 static_assert(offsetof(TerminalShaderUniforms, iScrollback) == 5088);
-static_assert(sizeof(TerminalShaderUniforms) == 5104);
+static_assert(sizeof(TerminalShaderUniforms) == 5120);
 
 /// What a shader is built from: user code defining
 /// `void mainImage(out vec4 fragColor, in vec2 fragCoord)` with includes
@@ -88,6 +89,11 @@ struct ShaderProgramSource
 {
     QString id; ///< for messages
     QByteArray code;
+    QByteArray bufferCode; ///< optional single Phosphor buffer pass
+    bool bufferFeedback = false;
+    bool halfFloatBuffer = true;
+    float bufferScale = 1.0f;
+    bool bufferNearest = false;
     QByteArray parameterPreamble; ///< `#define p_<id> customParams[...]` lines
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
@@ -134,6 +140,11 @@ public:
     /// y-up texture wrapper of Ghostty's convention.
     static QByteArray prefix();
 
+    const ShaderProgram* buffer() const noexcept { return m_buffer.get(); }
+    bool bufferFeedback() const noexcept { return m_bufferFeedback; }
+    bool halfFloatBuffer() const noexcept { return m_halfFloatBuffer; }
+    float bufferScale() const noexcept { return m_bufferScale; }
+    bool bufferNearest() const noexcept { return m_bufferNearest; }
     const QShader& shader() const noexcept { return m_shader; }
     const QString& id() const noexcept { return m_id; }
     const QString& instanceId() const noexcept { return m_instanceId; }
@@ -155,6 +166,11 @@ public:
     const std::array<float, 64>& colors() const noexcept { return m_colors; }
 
 private:
+    std::shared_ptr<ShaderProgram> m_buffer;
+    bool m_bufferFeedback = false;
+    bool m_halfFloatBuffer = true;
+    float m_bufferScale = 1.0f;
+    bool m_bufferNearest = false;
     QShader m_shader;
     QString m_id;
     QString m_instanceId;

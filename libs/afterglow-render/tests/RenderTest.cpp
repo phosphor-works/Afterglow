@@ -685,6 +685,122 @@ TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
     }
 }
 
+TEST_F(Render, PersistentBufferAccumulatesAcrossFramesAndAllScopes)
+{
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    const QSize size(Cols*cw, Rows*ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(0,0), size);
+    for (bool half : {false, true}) for (int scope = 0; scope < 5; ++scope) {
+        ShaderProgramSource src;
+        src.id = QStringLiteral("feedback"); src.bufferFeedback = true; src.halfFloatBuffer = half; src.bufferScale = .5f;
+        src.bufferCode = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy)+vec4(customParams[0].x,0,0,0);c.a=1.;}";
+        src.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy);}";
+        QString error; auto compiled = ShaderProgram::compile(src, &error); ASSERT_TRUE(compiled) << error.toStdString();
+        auto program = compiled->instance(QStringLiteral("feedback-live"));
+        ShaderChains chains;
+        auto* chain = scope==0 ? &chains.background : scope==1 ? &chains.text : scope==2 ? &chains.cursor : scope==3 ? &chains.pane : &chains.window;
+        chain->push_back(program); renderer->setShaderChains(chains);
+        ShaderParameterValues values; values.paramMask=1; values.params[0]=.1f;
+        pane.params.shaderParameters.insert(program->instanceId(), values);
+        renderer->setClockOverride(1.f);
+        auto image=renderer->renderToImage(size,{pane},{},0xFF000000u);
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(26,0,0));
+        renderer->setClockOverride(2.f);
+        image=renderer->renderToImage(size,{pane},{},0xFF000000u);
+        EXPECT_PIXEL_NEAR(image,cellCenter(2,2),qRgb(51,0,0),3);
+        renderer->setClockOverride(.5f); // Clock rewind resets accumulation.
+        image=renderer->renderToImage(size,{pane},{},0xFF000000u);
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(26,0,0));
+        renderer->setShaderChains(chains); // Reload is also a reset.
+        image=renderer->renderToImage(size,{pane},{},0xFF000000u);
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(26,0,0));
+        image=renderer->renderToImage(size+QSize(cw,ch),{pane},{},0xFF000000u);
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(26,0,0));
+    }
+}
+
+TEST_F(Render, PersistentBufferIsolatesPanesAndResetsIdentityAndTheme)
+{
+    ShaderProgramSource src; src.id=QStringLiteral("isolation"); src.bufferFeedback=true;src.bufferScale=.375f;
+    src.bufferCode="void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy+vec2(10,0))+vec4(customParams[0].x,0,0,0);c.a=1.;}";
+    src.code="void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy);}";
+    QString error; auto p=ShaderProgram::compile(src,&error); ASSERT_TRUE(p) << error.toStdString();
+    auto program=p->instance(QStringLiteral("isolation"));
+    ShaderChains chains; chains.background={program}; renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal); PaneSnapshot other=snapshot;
+    const QSize size(Cols*cw+3,Rows*ch+1), frame(size.width()*2,size.height());
+    WindowRenderer::Pane left{&snapshot,{}},right{&other,{}};
+    left.params.rect=QRect(QPoint(0,0),size); right.params.rect=QRect(QPoint(size.width(),0),size);
+    right.params.contentOrigin=right.params.rect.topLeft();
+    ShaderParameterValues values;values.paramMask=1;values.params[0]=.1f;
+    left.params.shaderParameters.insert(program->instanceId(),values);
+    renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    auto image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    EXPECT_PIXEL(image,cellCenter(2,2),qRgb(51,0,0));
+    EXPECT_PIXEL(image,cellCenter(2,2)+QPoint(size.width(),0),qRgb(0,0,0));
+    left.params.shaderParameters.clear();
+    left.params.rect.setWidth(size.width()-cw); // Geometry reset.
+    image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    EXPECT_PIXEL(image,cellCenter(2,2),qRgb(0,0,0));
+    left.params.shaderParameters.insert(program->instanceId(),values);
+    renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    left.params.shaderParameters.clear(); PaneSnapshot newTab=snapshot;left.snapshot=&newTab;
+    image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    EXPECT_PIXEL(image,cellCenter(2,2),qRgb(0,0,0));
+    left.params.shaderParameters.insert(program->instanceId(),values);
+    renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    left.params.shaderParameters.clear();newTab.defaultBg=0xFF102030u;
+    image=renderer->renderToImage(frame,{left,right},{},0xFF000000u);
+    EXPECT_PIXEL(image,cellCenter(2,2),qRgb(0,0,0));
+}
+
+TEST_F(Render, BufferFormatRetainsHdrAndNonfeedbackClears)
+{
+    for (bool half : {false,true}) {
+        ShaderProgramSource src;src.id=QStringLiteral("buffer-format");src.halfFloatBuffer=half;
+        src.bufferCode="void mainImage(out vec4 c,in vec2 p){c=vec4(texture(iBuffer,p/iResolution.xy).r+4.,0,0,1);}";
+        src.code="void mainImage(out vec4 c,in vec2 p){c=vec4(texture(iBuffer,p/iResolution.xy).r/4.,0,0,1);}";
+        QString error;auto program=ShaderProgram::compile(src,&error);ASSERT_TRUE(program);
+        ShaderChains chains;chains.pane={program};renderer->setShaderChains(chains);
+        auto image=render("\x1b[?25l");
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(half ? 255 : 64,0,0));
+        image=render(""); // No feedback: input remains clear on every pass.
+        EXPECT_PIXEL(image,cellCenter(2,2),qRgb(half ? 255 : 64,0,0));
+    }
+}
+
+TEST_F(Render, BufferInstanceLimitUsesTransparentFallback)
+{
+    ShaderProgramSource src; src.id=QStringLiteral("bounded");src.bufferFeedback=true;
+    src.bufferCode="void mainImage(out vec4 c,in vec2 p){c=vec4(.5,0,0,1);}";
+    src.code="void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy);}";
+    QString error;auto program=ShaderProgram::compile(src,&error);ASSERT_TRUE(program);
+    ShaderChains chains;
+    for(int i=0;i<34;++i) chains.pane.push_back(program);
+    renderer->setShaderChains(chains);
+    auto image=render("\x1b[?25l");
+    EXPECT_EQ(image.pixelColor(cellCenter(2,2)).alpha(),0);
+    image=render("");
+    EXPECT_EQ(image.pixelColor(cellCenter(2,2)).alpha(),0);
+    src.bufferScale=0; EXPECT_FALSE(ShaderProgram::compile(src,&error));
+}
+
+TEST_F(Render, ExplicitColorConversionsPreserveAlphaAndLinearLight)
+{
+    // Averaging black and white in linear light is approximately sRGB .735.
+    ShaderChains chains; chains.window={layerShader("linear-mix", R"(
+        vec4 a=toLinearPremultiplied(vec4(0.0,0.0,0.0,0.5));
+        vec4 b=toLinearPremultiplied(vec4(0.5,0.5,0.5,0.5));
+        fragColor=toSrgbPremultiplied(mix(a,b,.5));
+    )")};
+    renderer->setShaderChains(chains); auto image=render("\x1b[?25l",true,128);
+    auto pixel=image.pixel(cellCenter(2,2));
+    EXPECT_NEAR(qAlpha(pixel),128,1);
+    // Readback QImage uses straight alpha.
+    EXPECT_NEAR(image.pixelColor(cellCenter(2,2)).redF(),.735, .02);
+}
+
 TEST_F(Render, IdentityLayerShadersChangeNothing)
 {
     // Coloured cells, an underline, translucency and a block cursor on a letter.

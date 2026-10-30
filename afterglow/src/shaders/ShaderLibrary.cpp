@@ -284,6 +284,32 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
             m_failed.insert(key, error);
             return nullptr;
         }
+        // Registry owns pack discovery/schema/containment. This terminal
+        // adapter currently implements one colour buffer, not Qt Quick's
+        // multi-buffer/depth/vertex pipeline.
+        const auto wrap = info.bufferWraps.value(0, info.bufferWrap);
+        const auto filter = info.bufferFilters.value(0, info.bufferFilter);
+        if (info.bufferShaderPaths.size() > 1 || info.useDepthBuffer || !info.vertexShaderPath.isEmpty()
+            || wrap != QLatin1String("clamp") || (filter != QLatin1String("linear") && filter != QLatin1String("nearest"))) {
+            const auto error = QStringLiteral("Terminal packs support one buffer, clamp wrap, linear/nearest filtering and no custom vertex/depth pass");
+            qCWarning(lcShaders) << ref << error;
+            m_failed.insert(key, error);
+            return nullptr;
+        }
+        if (!info.bufferShaderPaths.isEmpty()) {
+            const auto bufferPath = info.bufferShaderPaths.front();
+            QFile buffer(bufferPath);
+            QString error;
+            if (!buffer.open(QIODevice::ReadOnly)) error = QStringLiteral("Cannot read buffer shader: %1").arg(bufferPath);
+            else src.bufferCode = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
+                QString::fromUtf8(buffer.readAll()), QFileInfo(bufferPath).absolutePath(), m_includeDirs, &error).toUtf8();
+            if (!error.isEmpty()) { qCWarning(lcShaders) << error; m_failed.insert(key, error); return nullptr; }
+            if (!m_files.files().contains(bufferPath)) m_files.addPath(bufferPath);
+            src.bufferFeedback = info.bufferFeedback;
+            src.halfFloatBuffer = info.halfFloatBuffers;
+            src.bufferScale = float(info.bufferScale);
+            src.bufferNearest = filter == QLatin1String("nearest");
+        }
         path = info.sourcePath;
         dir = info.packDir;
         src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();

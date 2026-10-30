@@ -6,6 +6,7 @@
 #include <rhi/qshaderbaker.h>
 
 #include <QRegularExpression>
+#include <cmath>
 
 namespace AfterglowRender {
 
@@ -51,6 +52,7 @@ layout(std140, binding = 0) uniform Globals {
     vec4  iAudioLevels;
     int   iAudioSpectrumSize;
     vec4  iScrollback;
+    vec4  iTextureRegion;
 };
 
 #define CURSORSTYLE_BLOCK        0
@@ -64,6 +66,24 @@ layout(binding = 1) uniform sampler2D iChannel0;
 // Transparent on first use and after layout, theme or shader changes.
 layout(binding = 2) uniform sampler2D iPreviousText;
 layout(binding = 3) uniform sampler2D uAudioSpectrum;
+// Previous buffer in the buffer pass; current buffer in the image pass.
+// iChannel0 remains the terminal/layer input in both passes.
+layout(binding = 4) uniform sampler2D iBuffer;
+
+// Explicit conversions of straight RGB. Terminal input/output is encoded sRGB,
+// premultiplied alpha. Buffer data has no implicit transfer function.
+vec3 srgbToLinear(vec3 c) {
+    return mix(c / 12.92, pow(max((c + 0.055) / 1.055, vec3(0.0)), vec3(2.4)), step(vec3(0.04045), c));
+}
+vec3 linearToSrgb(vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0/2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+vec4 toLinearPremultiplied(vec4 c) {
+    return c.a > 0.0 ? vec4(srgbToLinear(c.rgb / c.a) * c.a, c.a) : vec4(0.0);
+}
+vec4 toSrgbPremultiplied(vec4 c) {
+    return c.a > 0.0 ? vec4(linearToSrgb(c.rgb / c.a) * c.a, c.a) : vec4(0.0);
+}
 layout(location = 0) out vec4 _afterglowFragColor;
 
 // Spectrum coordinates are independent of pane and framebuffer coordinates.
@@ -93,8 +113,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord);
 // before the macro, so the inner call is the built-in.
 vec4 _afterglowTexture(sampler2D s, vec2 uv)
 {
-    vec2 px = vec2(iRegion.x + uv.x * iRegion.z, iRegion.y + (1.0 - uv.y) * iRegion.w);
-    return texture(s, px / iFramebufferSize);
+    vec2 dimensions = vec2(textureSize(s, 0));
+    vec2 start = floor(iTextureRegion.xy * dimensions + .5);
+    vec2 end = floor((iTextureRegion.xy + iTextureRegion.zw) * dimensions + .5);
+    vec2 px = mix(start, end, vec2(uv.x, 1.0-uv.y));
+    // Use the same rounded region edges as the scaled render target. This
+    // matters for odd split sizes/fractional DPI: half-texel clamps based on
+    // unrounded edges can still interpolate a neighbour's first texel.
+    return texture(s, clamp(px, start + .5, max(start + .5, end - .5)) / dimensions);
 }
 #define texture _afterglowTexture
 )GLSL");
@@ -112,6 +138,10 @@ void main()
 
 std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource& source, QString* error)
 {
+    if (!source.bufferCode.isEmpty() && (!std::isfinite(source.bufferScale) || source.bufferScale < 0.125f || source.bufferScale > 1.0f)) {
+        if (error) *error = QStringLiteral("bufferScale must be 0.125..1");
+        return nullptr;
+    }
     QByteArray full = prefix();
     full += source.parameterPreamble;
     full += "\n#line 1\n";
@@ -133,7 +163,7 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     auto program = std::make_shared<ShaderProgram>();
     program->m_shader = std::move(shader);
     program->m_id = source.id;
-    static const QRegularExpression usesTime(QStringLiteral("\\biTime\\b"));
+    static const QRegularExpression usesTime(QStringLiteral("\\b(?:iTime|iTimeDelta|iFrame|iFrameRate)\\b"));
     static const QRegularExpression usesHistory(QStringLiteral("\\biPreviousText\\b"));
     static const QRegularExpression usesHdr(QStringLiteral("^[ \\t]*#[ \\t]*define[ \\t]+AFTERGLOW_HDR[ \\t]+1[ \\t]*(?://[^\\r\\n]*)?\\r?$"),
                                             QRegularExpression::MultilineOption);
@@ -148,6 +178,22 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     program->m_animated = code.contains(usesTime) || program->m_readsPreviousText;
     program->m_params = source.params;
     program->m_colors = source.colors;
+    if (!source.bufferCode.isEmpty()) {
+        auto bufferSource = source;
+        bufferSource.code = source.bufferCode;
+        bufferSource.bufferCode.clear();
+        program->m_buffer = compile(bufferSource, error);
+        if (!program->m_buffer) return nullptr;
+        program->m_bufferFeedback = source.bufferFeedback;
+        program->m_halfFloatBuffer = source.halfFloatBuffer;
+        program->m_bufferScale = source.bufferScale;
+        program->m_bufferNearest = source.bufferNearest;
+        program->m_animated |= source.bufferFeedback || program->m_buffer->animated();
+        program->m_readsPreviousText |= program->m_buffer->readsPreviousText();
+        program->m_readsScrollback |= program->m_buffer->readsScrollback();
+        program->m_requiresAudio |= program->m_buffer->requiresAudio();
+        program->m_requiresHdr |= program->m_buffer->requiresHdr();
+    }
     return program;
 }
 

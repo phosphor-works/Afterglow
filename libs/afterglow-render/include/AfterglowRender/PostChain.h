@@ -184,17 +184,24 @@ public:
 
 private:
     QRhiGraphicsPipeline* pipeline(const ShaderProgram& program, QRhiRenderPassDescriptor* pass);
-    QRhiShaderResourceBindings* bindings(int ubo, int texture);
+    QRhiShaderResourceBindings* bindings(int ubo, int texture, QRhiTexture* buffer = nullptr, QRhiSampler* sampler = nullptr);
     QRhiShaderResourceBindings* compositeBindings(int ubo, int background, int text, int cursor);
     QRhiGraphicsPipeline* compositePipeline();
     /// Runs @p chain over each pane region of the layer in texture @p input,
     /// writing to free layer textures; returns the texture with the result.
     int runLayerChain(QRhiCommandBuffer* cb, const std::vector<ShaderProgramPtr>& chain, int input,
-                      const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo);
+                      const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo, int scope);
     QRhiBuffer* uniformBuffer(int index);
     void fill(TerminalShaderUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
               const ShaderProgram& program) const;
 
+    struct BufferState;
+    BufferState* runBuffer(QRhiCommandBuffer* cb, const ShaderProgram& program, int scope, int step,
+                           int input, const std::vector<ShaderRegionState>& regions,
+                           const ShaderFrameTime& time, int& ubo);
+    std::map<std::tuple<const ShaderProgram*, int, int>, std::unique_ptr<BufferState>> m_buffers;
+    std::uint64_t m_bufferBytes = 0;
+    static constexpr std::uint64_t BufferBudget = 256 * 1024 * 1024;
     GpuDevice& m_device;
     ShaderChains m_chains;
     std::map<std::pair<const ShaderProgram*, const QRhiRenderPassDescriptor*>, std::unique_ptr<QRhiGraphicsPipeline>>
@@ -220,12 +227,12 @@ private:
     std::unique_ptr<QRhiSampler> m_sampler;
     std::unique_ptr<QRhiTexture> m_previousText;
     std::unique_ptr<QRhiTextureRenderTarget> m_historyTarget;
-    using HistoryRegion = std::tuple<const PaneSnapshot*, QRect, std::uint32_t, std::uint32_t, QSizeF>;
+    using HistoryRegion = std::tuple<const PaneSnapshot*, QRect, std::uint32_t, std::uint32_t, QSizeF, float>;
     std::vector<HistoryRegion> m_historyRegions;
     bool m_historyValid = false;
     float m_historyTime = 0;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
-    std::map<std::pair<int, int>, std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
+    std::map<std::tuple<int, int, QRhiTexture*, QRhiSampler*>, std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
     std::map<std::array<int, 4>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;
     std::vector<std::unique_ptr<QRhiBuffer>> m_compositeUbos;
     /// Uniform buffers used so far this frame: a dynamic buffer holds one

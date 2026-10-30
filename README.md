@@ -385,6 +385,12 @@ its radiance before the final output. Phosphor does this in its background
 lens pass, before compositing text. HDR doubles intermediate texture memory;
 ordinary shader chains retain their existing format.
 
+Packs can also declare one persistent buffer using Phosphor's `bufferShaders`,
+`bufferFeedback`, scale, format and filter metadata. The terminal adapter adds
+`iBuffer` and explicit sRGB/linear conversion helpers. See
+[Feedback glow and the buffer contract](data/shaders/feedback-glow/README.md)
+for an installable example, reset rules, supported options and memory limits.
+
 ## Control and scripting
 
 Other programs drive afterglow over D-Bus (`io.github.fuddlesworth.Afterglow.Control`
