@@ -36,7 +36,7 @@ export type Pane = {
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
 }
 
-export type Window = { id: number, project: string, focused: boolean, active_tab: number, active_pane: number }
+export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number, active_pane: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
 -- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
 -- Zero active IDs mean that no terminal window currently has keyboard focus.
@@ -90,11 +90,21 @@ export type Effects = Effect | { Effect }
 --   on_command_finished(ev: CommandFinishedEvent)
 --   on_user_var(ev: UserVarEvent)            on_context(ev: ContextEvent)
 --   run_action(action: string, ev: ActionEvent)
+-- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
+-- returns a new state object. Migration/init failures retain the old instance.
 --   on_load(ev: ActionEvent)             on_unload(ev: ActionEvent)
 --   on_config_changed(ev: ActionEvent)
 --   on_timer(ev: ActionEvent & { name: string })
 --   on_file_changed(ev: ActionEvent & { name: string, path: string, exists: boolean })
 --   on_result(ev: ResultEvent) -- only for effects wrapped in afterglow.request
+
+export type PackageLoadEvent = {
+    terminal: State,
+    package: { id: string, version: string, api_version: number, home: string,
+        config: {[string]: any}, assets: {[string]: string} },
+    storage: { version: number, revision: number, value: {[string]: any} },
+}
+-- Package modules expose tables through local require("declared-module") or require("@dependency").
 
 type PaneRef = Pane | number
 
@@ -104,6 +114,10 @@ declare afterglow: {
     request: (id: string, effect: Effect) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output")?, max_bytes: number?) -> Effect,
+    -- Package-local JSON object; writes use the revision returned by state_read.
+    state_read: () -> Effect,
+    state_write: (value: {[string]: any}, revision: number) -> Effect,
+    open_directory: (cwd: string, layout: string?) -> Effect,
     save_project: (pane: PaneRef, name: string, overwrite: boolean?) -> Effect,
     open_project: (name: string, newInstance: boolean?) -> Effect,
     list_projects: () -> Effect,

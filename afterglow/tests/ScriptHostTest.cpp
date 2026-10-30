@@ -3,6 +3,7 @@
 
 #include "scripting/ScriptHost.h"
 #include "scripting/ScriptTasks.h"
+#include "scripting/ScriptState.h"
 #include <QElapsedTimer>
 #include <QThread>
 #include <QSaveFile>
@@ -62,6 +63,7 @@ protected:
             return apply(effect);
         };
         host = std::make_unique<ScriptHost>(c);
+        host->setStateDirectory(user.filePath("state"));
         QObject::connect(host.get(), &ScriptHost::effectApplied, host.get(),
                          [this](const QString&, const QVariantMap& e, const QString& error) { rec.results.append({e, error}); });
         host->setSearchPaths({system.path(), user.path()});
@@ -968,4 +970,67 @@ TEST_F(ScriptHostTest, ProjectExampleChainsListingSelectionAndLaunch)
     EXPECT_EQ(rec.applied[2].value("kind").toString(), QStringLiteral("open_project"));
     EXPECT_EQ(rec.applied[2].value("name").toString(), QStringLiteral("dev"));
     for (const auto& result : rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, PackagesCacheModulesAndRetainLastGoodOnBrokenModuleEdits)
+{
+    QDir().mkpath(user.filePath("bundle"));
+    write(user,"bundle/package.json",R"({"id":"bundle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau","counter":"counter.luau"}})");
+    write(user,"bundle/init.luau",R"(
+local count=require("counter")
+assert(count==require("counter"))
+return {on_bell=function() return afterglow.copy(count.next()) end}
+)");
+    write(user,"bundle/counter.luau","local i=0; return {next=function() i+=1; return tostring(i) end}");
+    host->setEnabled(true);
+    host->dispatch("on_bell",7); ASSERT_EQ(rec.applied.size(),1); EXPECT_EQ(rec.applied.last().value("text"),"1");
+    write(user,"bundle/counter.luau","broken syntax !"); host->reload();
+    host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"2");
+    write(user,"bundle/counter.luau","return {next=function() return 'fixed' end}"); host->reload();
+    host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"fixed");
+}
+TEST_F(ScriptHostTest, PackageMigrationAndInitializationAreTransactional)
+{
+    QDir().mkpath(user.filePath("bundle"));
+    auto manifest=[&](int schema) { write(user,"bundle/package.json",QString(R"({"id":"bundle","version":"1.0.0","api_version":1,"state_version":%1,"entry":"main","modules":{"main":"init.luau"},"config":{"label":"test"}})").arg(schema).toUtf8()); };
+    manifest(1);
+    write(user,"bundle/init.luau",R"(
+return {on_load=function(ev)
+ assert(ev.package.config.label=="test")
+ return afterglow.state_write({count=41},ev.storage.revision)
+end,on_bell=function() return afterglow.copy("original") end}
+)");
+    host->setEnabled(true);
+    ScriptState::Snapshot stored;
+    ScriptState store(user.filePath("state"));
+    ASSERT_TRUE(store.read("bundle",stored).isEmpty()); ASSERT_EQ(stored.version,1);
+    manifest(2);
+    write(user,"bundle/init.luau",R"(
+return {migrate=function(value,from,to) assert(from==1 and to==2); return {count=value.count+1} end,
+on_load=function(ev) error("broken initialization") end}
+)");
+    host->reload();
+    host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"original");
+    ASSERT_TRUE(store.read("bundle",stored).isEmpty()); EXPECT_EQ(stored.version,1);
+    write(user,"bundle/init.luau",R"(
+return {migrate=function(value,from,to) return {count=value.count+1} end,
+on_load=function(ev) assert(ev.storage.value.count==42 and ev.storage.revision==2) end,
+on_bell=function() return afterglow.copy("migrated") end}
+)");
+    host->reload(); host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"migrated");
+    ASSERT_TRUE(store.read("bundle",stored).isEmpty()); EXPECT_EQ(stored.version,2); EXPECT_EQ(stored.value.value("count").toInt(),42);
+    host->setEnabled(false); host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(),QStringList{"bundle"});
+}
+TEST_F(ScriptHostTest, PackagesRejectMissingDependenciesAndCycles)
+{
+    QDir().mkpath(user.filePath("bundle/vendor/lib"));
+    write(user,"bundle/package.json",R"({"id":"bundle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},"dependencies":{"lib":{"path":"vendor/lib","version":"1.0.0"}}})");
+    write(user,"bundle/init.luau","local lib=require('@lib'); return {on_bell=function() return afterglow.copy(lib.label) end}");
+    host->setEnabled(true); EXPECT_TRUE(host->scriptIds().isEmpty());
+    write(user,"bundle/vendor/lib/package.json",R"({"id":"lib","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"lib.luau"}})");
+    write(user,"bundle/vendor/lib/lib.luau","return {label='dependency'}");
+    host->reload(); host->dispatch("on_bell",7); ASSERT_FALSE(rec.applied.isEmpty()); EXPECT_EQ(rec.applied.last().value("text"),"dependency");
+    write(user,"bundle/vendor/lib/lib.luau","return require('main')");
+    host->reload(); host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"dependency");
 }

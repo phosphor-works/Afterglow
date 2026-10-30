@@ -94,7 +94,9 @@ target_link_libraries(afterglow_audio PUBLIC PhosphorAudio::PhosphorAudio Qt6::C
 
 # The script host, shared with its tests. The Control binding lives in the app.
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
-    src/scripting/ScriptTasks.cpp src/scripting/ScriptTasks.h)
+    src/scripting/ScriptTasks.cpp src/scripting/ScriptTasks.h
+    src/scripting/ScriptPackage.cpp src/scripting/ScriptPackage.h
+    src/scripting/ScriptState.cpp src/scripting/ScriptState.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting Qt6::Core Qt6::Concurrent)

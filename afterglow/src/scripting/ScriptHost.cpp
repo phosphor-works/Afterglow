@@ -3,6 +3,10 @@
 
 #include "ScriptHost.h"
 #include "ScriptTasks.h"
+#include "ScriptPackage.h"
+#include "ScriptState.h"
+#include <QCryptographicHash>
+#include <QJsonDocument>
 
 #include <PhosphorScripting/LuauEngine.h>
 #include <PhosphorScripting/LuauWatchdog.h>
@@ -35,6 +39,12 @@ struct ScriptHost::Script
     QString name;
     QString path;
     QByteArray source;
+    bool package = false;
+    QVariantMap packageInfo;
+    ScriptState::Snapshot storage;
+    int stateVersion = 1;
+    bool migrateState = false;
+    QVariant initialEffects;
     std::unique_ptr<LuauEngine> engine;
     int module = -1;
     QList<ScriptAction> actions;
@@ -87,6 +97,9 @@ struct EffectKind
 };
 
 const EffectKind Kinds[] = {
+    {"state_read", false, false, {}, false},
+    {"state_write", false, false, {}, false, {"revision"}},
+    {"open_directory", false, true, {"cwd", "layout"}, false},
     {"save_project", true, false, {"name"}, false},
     {"open_project", false, true, {"name"}, false},
     {"list_projects", false, false, {}, false},
@@ -138,6 +151,7 @@ ScriptHost::ScriptHost(Callbacks callbacks, QObject* parent)
     , m_callbacks(std::move(callbacks))
     , m_watchdog(std::make_shared<PhosphorScripting::LuauWatchdog>())
     , m_searchPaths(defaultSearchPaths())
+    , m_stateDirectory(QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation) + QStringLiteral("/afterglow/scripts"))
 {
     QFile prelude(QStringLiteral(":/afterglow/scripting/afterglow.luau"));
     if (prelude.open(QIODevice::ReadOnly)) {
@@ -172,6 +186,12 @@ QStringList ScriptHost::defaultSearchPaths()
     return dirs;
 }
 
+void ScriptHost::setStateDirectory(const QString& directory)
+{
+    Q_ASSERT(!m_enabled); // configure before loading any package
+    m_stateDirectory = directory;
+}
+
 void ScriptHost::setSearchPaths(const QStringList& dirs)
 {
     m_searchPaths = dirs;
@@ -193,6 +213,8 @@ void ScriptHost::reload()
 {
     m_reloadTimer.stop();
     std::vector<ScriptPtr> loaded;
+    m_packageWatches.clear();
+    m_loadErrors.clear();
     if (m_enabled) {
         // id -> path, later directories winning.
         std::map<QString, QString> chosen;
@@ -204,17 +226,38 @@ void ScriptHost::reload()
                     chosen[f.completeBaseName()] = f.absoluteFilePath();
                 }
             }
+            for (const auto& folder : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
+                m_packageWatches << folder.absoluteFilePath();
+                const auto manifest = folder.absoluteFilePath() + QStringLiteral("/package.json");
+                if (QFileInfo::exists(manifest)) chosen[folder.fileName()] = manifest;
+            }
         }
         for (const auto& [base, path] : chosen) {
-            QFile file(path);
-            if (!file.open(QIODevice::ReadOnly)) {
-                continue;
+            ScriptPackage package;
+            const bool isPackage = QFileInfo(path).fileName() == QLatin1String("package.json");
+            QByteArray source;
+            QString failure;
+            if (isPackage) {
+                failure = ScriptPackage::read(path, package);
+                m_packageWatches << package.watched;
+                if (failure.isEmpty() && package.id != base) failure = QStringLiteral("Package id must match its directory name");
+                source = package.source;
+                const QVariantMap identity{{QStringLiteral("id"), package.id}, {QStringLiteral("version"), package.version},
+                    {QStringLiteral("state_version"), package.stateVersion}, {QStringLiteral("assets"), package.assets}, {QStringLiteral("config"), package.config}};
+                source += "\n-- metadata: " + QCryptographicHash::hash(QJsonDocument::fromVariant(identity).toJson(), QCryptographicHash::Sha256).toHex();
+            } else {
+                QFile file(path);
+                if (!file.open(QIODevice::ReadOnly)) failure = file.errorString();
+                else {
+                    source = file.read(1024 * 1024 + 1);
+                    if (source.size() > 1024 * 1024) failure = QStringLiteral("Script exceeds 1 MiB");
+                }
             }
-            const QByteArray source = file.readAll();
-            // An unchanged script keeps its state, including being disabled.
             auto same = std::find_if(m_scripts.begin(), m_scripts.end(),
                                      [&](const ScriptPtr& s) { return s->path == path && s->source == source; });
-            ScriptPtr script = same != m_scripts.end() ? *same : load(path, source);
+            ScriptPtr script;
+            if (failure.isEmpty()) script = same != m_scripts.end() ? *same : load(path, source, isPackage ? &package : nullptr);
+            else { m_loadErrors[path] = failure; qCWarning(lcScripts).noquote() << path << failure; }
             if (!script) {
                 // A broken edit keeps its last working instance and resources.
                 const auto old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) { return s->path == path; });
@@ -230,6 +273,24 @@ void ScriptHost::reload()
             }
         }
     }
+    // Commit migrations only for the selected replacement, after compilation and
+    // initialization succeeded. A conflict retains the old live instance.
+    for (auto it = loaded.begin(); it != loaded.end();) {
+        auto& script = *it;
+        if (script->migrateState) {
+            ScriptState::Snapshot committed;
+            const auto error = ScriptState(m_stateDirectory).write(script->id, script->stateVersion,
+                script->storage.revision, script->storage.value, committed);
+            if (!error.isEmpty()) {
+                m_loadErrors[script->path] = error;
+                qCWarning(lcScripts).noquote() << script->id << "migration not committed:" << error;
+                const auto old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) { return s->path == script->path; });
+                if (old == m_scripts.end()) { it = loaded.erase(it); continue; }
+                script = *old;
+            } else { script->storage = committed; script->migrateState = false; }
+        }
+        ++it;
+    }
     QList<ScriptAction> before = actions();
     const auto previous = m_scripts;
     for (const auto& script : previous) {
@@ -238,8 +299,10 @@ void ScriptHost::reload()
     m_scripts = std::move(loaded);
     watch();
     for (const auto& script : m_scripts) {
-        if (std::find(previous.begin(), previous.end(), script) == previous.end())
-            emitOwned(script, QStringLiteral("on_load"), {}, 0);
+        if (std::find(previous.begin(), previous.end(), script) == previous.end()) {
+            if (script->package) applyResult(script, script->initialEffects, 0);
+            else emitOwned(script, QStringLiteral("on_load"), {}, 0);
+        }
     }
     const QList<ScriptAction> after = actions();
     const bool changed = before.size() != after.size()
@@ -250,7 +313,7 @@ void ScriptHost::reload()
     }
 }
 
-ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& source) const
+ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& source, const ScriptPackage* package) const
 {
     auto script = std::make_shared<Script>();
     script->path = path;
@@ -259,22 +322,29 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     QString error;
     const QString chunk = QStringLiteral("@") + QFileInfo(path).fileName();
     if (!script->engine->init(&error) || !script->engine->runPrelude(QStringLiteral("@afterglow"), m_prelude, &error)) {
+        m_loadErrors[path] = error;
         qCWarning(lcScripts) << "cannot start the script engine:" << error;
         return nullptr;
     }
     script->engine->sandbox();
     script->module = script->engine->loadModule(chunk, source, &error);
     if (script->module < 0) {
+        m_loadErrors[path] = error;
         qCWarning(lcScripts).noquote() << path << "did not load:" << error;
         return nullptr;
     }
 
     const QVariantMap meta = script->engine->moduleField(script->module, QStringLiteral("metadata")).toMap();
-    script->id = str(meta, "id");
+    script->id = package ? package->id : str(meta, "id");
+    if (package && !str(meta, "id").isEmpty() && str(meta, "id") != package->id) {
+        m_loadErrors[path] = QStringLiteral("Entry metadata id differs from manifest");
+        qCWarning(lcScripts) << path << "entry metadata id differs from manifest"; return nullptr;
+    }
     if (script->id.isEmpty()) {
         script->id = QFileInfo(path).completeBaseName();
     }
     if (!validId(script->id)) {
+        m_loadErrors[path] = QStringLiteral("Invalid script id");
         qCWarning(lcScripts) << path << "has an unusable id" << script->id << "(letters, digits, _ and - only)";
         return nullptr;
     }
@@ -299,6 +369,37 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         const QString title = str(a, "title");
         script->actions.append({script->id + QLatin1Char('.') + id, title.isEmpty() ? id : title});
     }
+    if (package) {
+        script->package = true;
+        script->stateVersion = package->stateVersion;
+        script->packageInfo = {{QStringLiteral("id"), package->id}, {QStringLiteral("version"), package->version},
+            {QStringLiteral("api_version"), 1}, {QStringLiteral("assets"), package->assets}, {QStringLiteral("home"), QDir::homePath()}, {QStringLiteral("config"), package->config}};
+        error = ScriptState(m_stateDirectory).read(script->id, script->storage);
+        if (error.isEmpty() && script->storage.version > script->stateVersion) error = QStringLiteral("Stored state is newer than this package");
+        if (error.isEmpty() && script->storage.version > 0 && script->storage.version < script->stateVersion) {
+            if (!script->engine->hasFunction(script->module, QStringLiteral("migrate"))) error = QStringLiteral("State migration function is missing");
+            else {
+                const auto migrated = script->engine->callModule(script->module, QStringLiteral("migrate"),
+                    {script->storage.value, script->storage.version, script->stateVersion}, ActionTimeoutMs);
+                if (migrated.status != LuauEngine::CallStatus::Ok || migrated.result.typeId() != QMetaType::QVariantMap)
+                    error = QStringLiteral("Migration failed: ") + migrated.message;
+                else {
+                    script->storage.value = migrated.result.toMap();
+                    error = ScriptState::validate(script->storage.value);
+                    script->migrateState = error.isEmpty();
+                }
+            }
+        }
+        if (error.isEmpty() && script->engine->hasFunction(script->module, QStringLiteral("on_load"))) {
+            const QVariantMap storage{{QStringLiteral("value"), script->storage.value}, {QStringLiteral("version"), script->stateVersion},
+                {QStringLiteral("revision"), script->storage.revision + (script->migrateState ? 1 : 0)}};
+            const auto initialized = script->engine->callModule(script->module, QStringLiteral("on_load"),
+                {QVariantMap{{QStringLiteral("terminal"), state()}, {QStringLiteral("package"), script->packageInfo}, {QStringLiteral("storage"), storage}}}, ActionTimeoutMs);
+            if (initialized.status != LuauEngine::CallStatus::Ok) error = QStringLiteral("Initialization failed: ") + initialized.message;
+            else script->initialEffects = initialized.result;
+        }
+        if (!error.isEmpty()) { m_loadErrors[path] = error; qCWarning(lcScripts).noquote() << path << error; return nullptr; }
+    }
     qCInfo(lcScripts).noquote() << "loaded" << script->id << "from" << path;
     return script;
 }
@@ -322,6 +423,12 @@ void ScriptHost::watch()
             m_watcher.addPath(info.absoluteFilePath());
         }
     }
+    m_packageWatches.removeDuplicates();
+    for (auto path : std::as_const(m_packageWatches)) {
+        QFileInfo info(path);
+        while (!info.exists() && info.absolutePath() != info.absoluteFilePath()) info = QFileInfo(info.absolutePath());
+        if (info.exists()) m_watcher.addPath(info.absoluteFilePath());
+    }
     for (const ScriptPtr& s : m_scripts) {
         m_watcher.addPath(s->path); // editors that save in place change only the file
     }
@@ -334,6 +441,22 @@ QStringList ScriptHost::scriptIds() const
         ids.append(s->id);
     }
     return ids;
+}
+
+QVariantList ScriptHost::diagnostics() const
+{
+    QVariantList result;
+    QSet<QString> active;
+    for (const auto& script : m_scripts) {
+        active.insert(script->path);
+        result << QVariantMap{{QStringLiteral("id"), script->id}, {QStringLiteral("path"), script->path},
+            {QStringLiteral("version"), script->packageInfo.value(QStringLiteral("version"))},
+            {QStringLiteral("status"), script->disabled ? QStringLiteral("disabled") : m_loadErrors.contains(script->path) ? QStringLiteral("last-good") : QStringLiteral("active")},
+            {QStringLiteral("error"), m_loadErrors.value(script->path)}};
+    }
+    for (auto it = m_loadErrors.begin(); it != m_loadErrors.end(); ++it) if (!active.contains(it.key()))
+        result << QVariantMap{{QStringLiteral("path"), it.key()}, {QStringLiteral("status"), QStringLiteral("failed")}, {QStringLiteral("error"), it.value()}};
+    return result;
 }
 
 bool ScriptHost::isDisabled(const QString& id) const
@@ -552,6 +675,15 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             }
             if (v.isValid()) effect.insert(QLatin1String(key), v.toDouble());
         }
+        if (kind == QLatin1String("state_write")) {
+            const auto value = raw.value(QStringLiteral("value"));
+            const auto revision = effect.value(QStringLiteral("revision"), -1).toDouble();
+            if (value.typeId() != QMetaType::QVariantMap) error = QStringLiteral("State value must be an object table");
+            else error = ScriptState::validate(value.toMap());
+            if (!effect.contains(QStringLiteral("revision")) || !std::isfinite(revision) || revision < 0
+                || revision >= std::numeric_limits<int>::max() || revision != std::floor(revision)) error = QStringLiteral("State write needs an integer revision");
+            effect.insert(QStringLiteral("value"), value);
+        }
         if (kind == QLatin1String("save_project") || kind == QLatin1String("open_project")) {
             const auto key = kind == QLatin1String("save_project") ? QStringLiteral("overwrite") : QStringLiteral("new_instance");
             const auto value = raw.value(key);
@@ -644,6 +776,15 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (!withinBudget(*script, structural)) {
             result.code = QStringLiteral("rate_limited");
             error = QStringLiteral("too many effects; %1 dropped").arg(kind);
+        } else if (kind == QLatin1String("state_read") || kind == QLatin1String("state_write")) {
+            ScriptState::Snapshot saved;
+            ScriptState store(m_stateDirectory);
+            result.code = QStringLiteral("state_error");
+            error = kind == QLatin1String("state_read") ? store.read(script->id, saved)
+                : store.write(script->id, script->stateVersion, effect.value(QStringLiteral("revision")).toInt(), effect.value(QStringLiteral("value")).toMap(), saved);
+            if (error.isEmpty() && saved.version > script->stateVersion) error = QStringLiteral("Stored state is newer than this script");
+            if (error.isEmpty()) result.data = {{QStringLiteral("value"), saved.value}, {QStringLiteral("version"), saved.version ? saved.version : script->stateVersion},
+                                               {QStringLiteral("revision"), saved.revision}};
         } else if (kind == QLatin1String("log")) {
             qCInfo(lcScripts).noquote() << script->id + QLatin1Char(':') << effect.value(QStringLiteral("message")).toString();
         } else if (kind == QLatin1String("set_actions")) {

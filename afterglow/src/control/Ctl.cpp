@@ -42,6 +42,8 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   set-title TITLE                     set the pane's title ("" to clear)
   signal CHANNEL VALUE                set a shader signal (iSignal[CHANNEL], 0-7)
   notify TITLE [BODY]                 desktop notification from the pane
+  scripts                             show script/package diagnostics as JSON
+  open-directory PATH [--layout NAME]  open a repository with a saved layout
   projects                            list saved projects
   save-project NAME [--overwrite]      save the target pane's window layout
   open-project NAME [--new]            switch to a project or launch its layout
@@ -237,6 +239,16 @@ int runCtl(int argc, char** argv)
                         SLOT(onSignal(QDBusMessage)));
         }
         return app.exec();
+    }
+    if (command == QLatin1String("scripts")) {
+        if (!call(QStringLiteral("ScriptDiagnostics"), {}, reply)) return 1;
+        std::printf("%s\n", qPrintable(reply.arguments().value(0).toString()));
+        return 0;
+    }
+    if (command == QLatin1String("open-directory")) {
+        const auto layout = takeValue(QStringLiteral("--layout")).value_or(QString());
+        if (args.size() != 1) return fail(QStringLiteral("open-directory takes PATH [--layout NAME]"));
+        return call(QStringLiteral("OpenDirectory"), {args.first(), layout}, reply) ? printProject(reply) : 1;
     }
     if (command == QLatin1String("projects")) {
         if (!call(QStringLiteral("Projects"), {}, reply)) return 1;

@@ -63,6 +63,9 @@ public:
     static QVariantMap paneMap(const PaneInfo& pane);
     static bool isStructuralAction(const QString& action);
 
+    QString openDirectory(const QString& cwd, const QString& layout, QVariantMap& result);
+    void setScriptDiagnostics(std::function<QVariantList()> read) { m_scriptDiagnostics = std::move(read); }
+    QVariantList scriptDiagnostics() const { return m_scriptDiagnostics ? m_scriptDiagnostics() : QVariantList{}; }
     QStringList projectNames() const;
     QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
     QString openProject(const QString& name, bool newInstance, QVariantMap& result);
@@ -125,6 +128,7 @@ private:
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
     ScriptActionRunner m_scriptActions;
+    std::function<QVariantList()> m_scriptDiagnostics;
     QList<QPointer<TerminalWindow>> m_windows;
 };
 

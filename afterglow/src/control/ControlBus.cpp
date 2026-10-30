@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ControlBus.h"
+#include <QJsonDocument>
 
 #include "../config/Settings.h"
 
@@ -204,6 +205,16 @@ QVariantMap ControlBus::DetachTab(uint pane)
     return result;
 }
 
+QString ControlBus::ScriptDiagnostics()
+{
+    return QString::fromUtf8(QJsonDocument::fromVariant(m_control.scriptDiagnostics()).toJson(QJsonDocument::Compact));
+}
+QVariantMap ControlBus::OpenDirectory(const QString& cwd, const QString& layout)
+{
+    QVariantMap result;
+    if (fail(m_control.openDirectory(cwd, layout, result))) return {};
+    return result;
+}
 QStringList ControlBus::Projects() { return m_control.projectNames(); }
 QVariantMap ControlBus::SaveProject(uint pane, const QString& name, bool overwrite)
 {

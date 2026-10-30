@@ -23,6 +23,9 @@ local function list(value)
 end
 
 afterglow = {
+    open_directory = function(cwd, layout) return {kind="open_directory", cwd=cwd, layout=layout or ""} end,
+    state_read = function() return {kind="state_read"} end,
+    state_write = function(value, revision) return {kind="state_write", value=value, revision=revision} end,
     save_project = function(pane, name, overwrite)
         return {kind="save_project", pane=paneId(pane), name=name, overwrite=overwrite or false}
     end,

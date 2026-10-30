@@ -6,6 +6,8 @@
 #include "../config/Settings.h"
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <unistd.h>
 
 namespace Afterglow {
 ProjectStore Control::projects() const
@@ -41,6 +43,53 @@ QString Control::openProject(const QString& name, bool newInstance, QVariantMap&
     const auto warnings = result.value(QStringLiteral("warnings")).toStringList();
     if (!warnings.isEmpty() && window->focusedPane())
         notify(window->focusedPane()->id(), QStringLiteral("Project opened with warnings"), warnings.join(QLatin1Char('\n')));
+    return {};
+}
+
+QString Control::openDirectory(const QString& requested, const QString& layout, QVariantMap& result)
+{
+    QString path = requested;
+    if (path == QLatin1String("~") || path.startsWith(QLatin1String("~/"))) path = QDir::homePath() + path.mid(1);
+    if (!QDir::isAbsolutePath(path) || path.contains(QChar::Null) || path.size() > 4096)
+        return QStringLiteral("Project directory must be absolute or start with ~/");
+    path = QFileInfo(path).canonicalFilePath();
+    if (path.isEmpty() || !QFileInfo(path).isDir() || ::access(QFile::encodeName(path).constData(), X_OK) != 0)
+        return QStringLiteral("Project directory is unavailable");
+    for (const auto& window : m_windows) {
+        if (!window || window->projectDirectory() != path || !window->focusedPane()) continue;
+        focus(window->focusedPane()->id());
+        result = {{QStringLiteral("window_id"), window->id()}, {QStringLiteral("pane_id"), window->focusedPane()->id()},
+                  {QStringLiteral("cwd"), path}, {QStringLiteral("reused"), true}};
+        return {};
+    }
+    QJsonObject document;
+    if (!layout.isEmpty()) {
+        if (const auto error = projects().read(layout, document); !error.isEmpty()) return error;
+        std::function<QJsonObject(QJsonObject)> relocate = [&](QJsonObject node) {
+            if (node.contains(QStringLiteral("pane"))) {
+                auto pane = node.value(QStringLiteral("pane")).toObject();
+                pane.insert(QStringLiteral("cwd"), path);
+                node.insert(QStringLiteral("pane"), pane);
+            } else for (const auto& key : {QStringLiteral("first"), QStringLiteral("second")}) node.insert(key, relocate(node.value(key).toObject()));
+            return node;
+        };
+        QJsonArray tabs;
+        for (const auto& value : document.value(QStringLiteral("tabs")).toArray()) {
+            auto tab = value.toObject(); tab.insert(QStringLiteral("tree"), relocate(tab.value(QStringLiteral("tree")).toObject())); tabs.append(tab);
+        }
+        document.insert(QStringLiteral("tabs"), tabs);
+    }
+    auto* window = m_newWindow(path, {}, !layout.isEmpty());
+    window->setProjectDirectory(path);
+    if (layout.isEmpty()) result = {{QStringLiteral("window_id"), window->id()}, {QStringLiteral("reused"), false}};
+    else result = window->restoreProject(document);
+    result.insert(QStringLiteral("cwd"), path);
+    if (window->focusedPane()) {
+        result.insert(QStringLiteral("pane_id"), window->focusedPane()->id());
+        focus(window->focusedPane()->id());
+        const auto warnings = result.value(QStringLiteral("warnings")).toStringList();
+        if (!warnings.isEmpty()) notify(window->focusedPane()->id(), QStringLiteral("Project opened with warnings"), warnings.join(QLatin1Char('\n')));
+    }
     return {};
 }
 

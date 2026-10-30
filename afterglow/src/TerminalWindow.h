@@ -100,6 +100,8 @@ public:
 
     QJsonObject projectLayout() const;
     QVariantMap restoreProject(const QJsonObject& document);
+    QString projectDirectory() const { return m_projectDirectory; }
+    void setProjectDirectory(const QString& path) { m_projectDirectory = path; }
     QString projectName() const { return m_projectName; }
     void setProjectName(const QString& name) { m_projectName = name; }
     QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction);
@@ -303,6 +305,7 @@ private:
         QString title; ///< set by the user; empty follows the focused pane
     };
     QString m_projectName;
+    QString m_projectDirectory;
     std::vector<std::unique_ptr<Tab>> m_tabs;
     int m_currentTab = 0;
     // The current tab's tree and focused pane (focus is saved back on switch).

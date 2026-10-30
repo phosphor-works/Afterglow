@@ -20,7 +20,7 @@ function script.on_result(ev)
     if ev.request_id == "names" then
         local items = {}
         for _, name in ev.data.names do table.insert(items, {id=name, title=name}) end
-        if #items == 0 then return afterglow.notify(anchor, "Projects", "Save a project first using Save Project in the palette.") end
+        if #items == 0 then return afterglow.notify("Projects", "Save a project first using Save Project in the palette.", anchor) end
         return afterglow.request("choice", afterglow.select(anchor, "Open project", items))
     elseif ev.request_id == "choice" then
         return afterglow.request("opened", afterglow.open_project(ev.data.id))

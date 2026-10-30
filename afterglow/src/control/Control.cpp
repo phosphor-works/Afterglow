@@ -149,7 +149,7 @@ QVariantMap Control::state() const
             continue;
         }
         const quint32 focused = w->focusedPane() ? w->focusedPane()->id() : 0;
-        windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("focused"), w->isActive()},
+        windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("project_directory"), w->projectDirectory()}, {QStringLiteral("focused"), w->isActive()},
                                    {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused}});
         for (const auto& tab : w->tabs()) {
             tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},

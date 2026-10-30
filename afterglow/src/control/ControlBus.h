@@ -35,6 +35,8 @@ public Q_SLOTS:
     Q_SCRIPTABLE uint Split(uint pane, const QString& direction, const QStringList& command);
     Q_SCRIPTABLE uint NewTab(uint pane, const QString& workingDirectory, const QStringList& command);
     Q_SCRIPTABLE uint CreateWindow(const QString& workingDirectory, const QStringList& command);
+    Q_SCRIPTABLE QString ScriptDiagnostics();
+    Q_SCRIPTABLE QVariantMap OpenDirectory(const QString& cwd, const QString& layout);
     Q_SCRIPTABLE QStringList Projects();
     Q_SCRIPTABLE QVariantMap SaveProject(uint pane, const QString& name, bool overwrite);
     Q_SCRIPTABLE QVariantMap OpenProject(const QString& name, bool newInstance);

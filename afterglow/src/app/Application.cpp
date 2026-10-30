@@ -58,6 +58,11 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
     m_engine.addImageProvider(QStringLiteral("icon"), new IconProvider); // the engine owns it
     connectScriptEvents(m_scripts, m_control);
     m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
+    m_control.setScriptDiagnostics([this] { return m_scripts.diagnostics(); });
+    auto scriptPaths = ScriptHost::defaultSearchPaths();
+    scriptPaths.last() = QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/scripts");
+    m_scripts.setSearchPaths(scriptPaths);
+    m_scripts.setStateDirectory(QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/state/scripts"));
     m_scripts.setEnabled(m_settings.settings().scripts);
 
     connect(&m_settings, &SettingsStore::changed, this, [this](const Settings& previous) {

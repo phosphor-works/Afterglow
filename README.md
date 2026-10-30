@@ -404,6 +404,84 @@ afterglow rate limits and carries out. Types for editors are installed to
 `share/afterglow/examples/scripts`. `"Scripts": { "enabled": false }` turns
 scripting off.
 
+### Luau packages and persistent state
+
+Single `.luau` scripts remain supported. A package is a directory under the
+active configuration's `scripts/` directory, containing `package.json`:
+
+```json
+{
+  "id": "my-extension",
+  "version": "1.0.0",
+  "api_version": 1,
+  "state_version": 1,
+  "entry": "main",
+  "modules": {"main": "init.luau", "format": "format.luau"},
+  "config": {"enabled": true},
+  "dependencies": {"utils": {"path": "vendor/utils", "version": "1.0.0"}},
+  "assets": {"theme": "assets/theme.json"}
+}
+```
+
+The ID must match the package directory. `version` is an `X.Y.Z` release;
+`api_version` must be `1`. Each module returns a table. `require("format")`
+loads a declared module once per instance; `require("@utils")` loads the entry
+of a vendored package with its own manifest and the exact declared version.
+Imports are local: nothing is downloaded or installed automatically. Dependencies
+share the caller's sandbox and state namespace. Cycles and undeclared imports
+fail with diagnostics. Up to 16 packages and 64 modules may be bundled, with
+256 KiB per source file and 1 MiB total source/manifest/config data.
+
+Optional `config.json` beside the manifest overrides its `config` keys.
+Package `on_load(ev)` receives `ev.package` (ID, version, API version, home
+path, config and declared asset paths) and `ev.storage` (value, schema version,
+revision). Asset declarations can accompany themes, shader preset files and
+images: up to 32 local files, 4 MiB each and 16 MiB total. They are exposed as
+paths; declaration does not activate a theme or shader. Paths and symlinks
+cannot escape the package root. Source files, dependency manifests and config
+are watched together; edits replace the complete instance. Compilation,
+initialization or migration failures preserve the previous working instance.
+
+```lua
+local script = {}
+function script.on_load(ev)
+    local state = ev.storage.value
+    state.launches = (state.launches or 0) + 1
+    return afterglow.request("saved", afterglow.state_write(state, ev.storage.revision))
+end
+return script
+```
+
+`afterglow.state_read()` and `state_write(value, revision)` are correlated effects;
+wrap them in `afterglow.request` to receive `{value, version, revision}` through
+`on_result`. Storage is scoped to the script ID under `state/scripts/` beside the
+active config. Writes use a lock, revision comparison and atomic replacement.
+A conflict returns `state_error`; reread and merge before retrying. Values must
+be JSON-compatible object tables (nested lists supported), within 256 KiB,
+16 levels and 8192 values. Nonfinite numbers, unsupported values, symlinks and
+corrupt files are rejected. Corrupt data is retained for manual recovery.
+Single-file scripts use schema version 1 and can use the same read/write effects.
+
+Increase the manifest's `state_version` when the stored shape changes, and
+export `migrate(value, oldVersion, newVersion)` returning the migrated object.
+Migrations and `on_load` run under the 100 ms action deadline. Migration output
+is validated and committed only after the replacement compiles and initializes;
+exceptions, timeouts and revision conflicts retain the original file and live
+instance. Downgrades to an older state schema are refused. `on_load` should
+return effects; effects take place after successful activation, and their
+operation failures are reported normally through `on_result`.
+
+`afterglow ctl scripts` reports active, disabled, failed and last-good instances,
+including paths and load errors. Fix a file to retry loading. Package removal
+cleans up its tasks and UI contributions, while its stored data remains.
+
+`afterglow.open_directory(path, layout?)` opens a directory with a shell or a
+saved project layout, placing every template pane in that directory. A window
+already associated with the canonical directory is focused without restarting
+it. Results contain `window_id`, `pane_id`, `cwd` and `reused`, plus mappings and
+warnings for a layout restore. Window snapshots expose `project_directory`.
+The CLI equivalent is `afterglow ctl open-directory PATH --layout NAME`.
+
 ### Terminal state in Luau
 
 Every handler receives `ev.terminal`, a version 1 snapshot with `windows`,

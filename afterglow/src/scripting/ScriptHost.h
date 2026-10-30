@@ -22,6 +22,7 @@ class LuauWatchdog;
 namespace Afterglow {
 
 class ScriptTasks;
+struct ScriptPackage;
 
 /// Luau scripts that react to terminal events and add actions. Each script
 /// runs in its own sandboxed engine with a heap cap and a time limit per
@@ -81,12 +82,14 @@ public:
 
     /// The system data directories, then ~/.config/afterglow/scripts.
     static QStringList defaultSearchPaths();
+    void setStateDirectory(const QString& directory);
     void setSearchPaths(const QStringList& dirs);
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
     void reload();
 
     QStringList scriptIds() const;
+    QVariantList diagnostics() const;
     /// Whether a script stopped running after repeated failures.
     bool isDisabled(const QString& id) const;
     QList<ScriptAction> actions() const;
@@ -107,7 +110,7 @@ private:
     struct Script;
     using ScriptPtr = std::shared_ptr<Script>;
 
-    ScriptPtr load(const QString& path, const QByteArray& source) const;
+    ScriptPtr load(const QString& path, const QByteArray& source, const ScriptPackage* package = nullptr) const;
     void call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
               quint32 eventPane);
     void applyResult(const ScriptPtr& script, const QVariant& result, quint32 eventPane);
@@ -125,6 +128,9 @@ private:
     std::shared_ptr<PhosphorScripting::LuauWatchdog> m_watchdog;
     QByteArray m_prelude;
     QStringList m_searchPaths;
+    QString m_stateDirectory;
+    QStringList m_packageWatches;
+    mutable QMap<QString, QString> m_loadErrors;
     bool m_enabled = false;
     std::vector<ScriptPtr> m_scripts;
     QFileSystemWatcher m_watcher;
