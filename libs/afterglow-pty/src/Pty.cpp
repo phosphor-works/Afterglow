@@ -3,7 +3,9 @@
 
 #include <AfterglowPty/Pty.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <system_error>
 #include <csignal>
 #include <cstring>
 #include <filesystem>
@@ -38,10 +40,10 @@ namespace {
 winsize makeWinsize(int cols, int rows, int pw, int ph)
 {
     winsize ws{};
-    ws.ws_col = static_cast<unsigned short>(cols);
-    ws.ws_row = static_cast<unsigned short>(rows);
-    ws.ws_xpixel = static_cast<unsigned short>(pw);
-    ws.ws_ypixel = static_cast<unsigned short>(ph);
+    ws.ws_col = static_cast<unsigned short>(std::clamp(cols, 1, 65535));
+    ws.ws_row = static_cast<unsigned short>(std::clamp(rows, 1, 65535));
+    ws.ws_xpixel = static_cast<unsigned short>(std::clamp(pw, 0, 65535));
+    ws.ws_ypixel = static_cast<unsigned short>(std::clamp(ph, 0, 65535));
     return ws;
 }
 
@@ -66,7 +68,7 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
         const std::string_view entry(*e);
         const auto eq = entry.find('=');
         const std::string_view key = entry.substr(0, eq);
-        bool overridden = false;
+        bool overridden = std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), key) != options.unsetEnvironment.end();
         for (const auto& kv : options.environment) {
             if (kv.first == key) {
                 overridden = true;
@@ -89,9 +91,17 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     const std::string cwd = options.workingDirectory;
     winsize ws = makeWinsize(options.cols, options.rows, options.pixelWidth, options.pixelHeight);
 
+    const int wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (wakeFd < 0) {
+        if (error) *error = std::string("eventfd failed: ") + std::strerror(errno);
+        return nullptr;
+    }
     int master = -1;
     const pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid < 0) {
+        const int forkError = errno;
+        close(wakeFd);
+        errno = forkError;
         if (error) {
             *error = std::string("forkpty failed: ") + std::strerror(errno);
         }
@@ -116,40 +126,66 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
         _exit(127);
     }
 
-    fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK);
-    fcntl(master, F_SETFD, FD_CLOEXEC);
-    return std::unique_ptr<Pty>(new Pty(master, pid, listener));
+    auto result = std::unique_ptr<Pty>(new Pty(master, wakeFd, pid, listener));
+    const int flags = fcntl(master, F_GETFL);
+    if (flags < 0 || fcntl(master, F_SETFL, flags | O_NONBLOCK) < 0 || fcntl(master, F_SETFD, FD_CLOEXEC) < 0) {
+        if (error) *error = std::string("pty setup failed: ") + std::strerror(errno);
+        return nullptr;
+    }
+    if (!options.deferStart && !result->start(error)) return nullptr;
+    return result;
 }
 
-Pty::Pty(int masterFd, pid_t pid, IPtyListener& listener)
-    : m_master(masterFd)
-    , m_wakeFd(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
-    , m_pid(pid)
-    , m_listener(listener)
+Pty::Pty(int masterFd, int wakeFd, pid_t pid, IPtyListener& listener)
+    : m_master(masterFd), m_wakeFd(wakeFd), m_pid(pid), m_listener(listener)
 {
-    m_thread = std::thread([this] { run(); });
+}
+
+bool Pty::start(std::string* error)
+{
+    if (m_stop.load()) {
+        if (error) *error = "PTY has been stopped";
+        return false;
+    }
+    if (m_thread.joinable()) return true;
+    try {
+        m_thread = std::thread([this] { run(); });
+    } catch (const std::system_error& e) {
+        if (error) *error = e.what();
+        stop();
+        return false;
+    }
+    return true;
+}
+
+void Pty::stop()
+{
+    m_accepting.store(false);
+    m_stop.store(true);
+    wake();
+    if (m_thread.joinable()) m_thread.join();
+    std::lock_guard lock(m_writeMutex);
+    m_pending.clear();
+    m_pendingBytes = m_pendingOffset = 0;
 }
 
 Pty::~Pty()
 {
-    m_stop.store(true);
-    wake();
-    if (m_thread.joinable()) {
-        m_thread.join();
-    }
-    if (m_pid > 0) {
+    stop();
+    const pid_t child = m_pid.load();
+    if (child > 0) {
         int status = 0;
-        if (waitpid(m_pid, &status, WNOHANG) == 0) {
-            kill(m_pid, SIGHUP);
+        if (waitpid(child, &status, WNOHANG) == 0) {
+            kill(child, SIGHUP);
             // Give the child a moment to leave on SIGHUP before forcing it.
             for (int i = 0; i < 20; ++i) {
-                if (waitpid(m_pid, &status, WNOHANG) != 0) {
+                if (waitpid(child, &status, WNOHANG) != 0) {
                     break;
                 }
                 usleep(5000);
                 if (i == 19) {
-                    kill(m_pid, SIGKILL);
-                    waitpid(m_pid, &status, 0);
+                    kill(child, SIGKILL);
+                    waitpid(child, &status, 0);
                 }
             }
         }
@@ -158,16 +194,21 @@ Pty::~Pty()
     close(m_wakeFd);
 }
 
-void Pty::write(std::string_view bytes)
+bool Pty::write(std::string_view bytes)
 {
-    if (bytes.empty()) {
-        return;
-    }
+    constexpr std::size_t MaxPending = 32u * 1024 * 1024;
     {
         std::lock_guard lock(m_writeMutex);
-        m_pending.append(bytes);
+        if (!m_accepting.load() || bytes.size() > MaxPending - m_pendingBytes) return false;
+        if (bytes.empty()) return true;
+        if (!m_pending.empty() && m_pending.back().size() + bytes.size() <= 65536)
+            m_pending.back().append(bytes);
+        else
+            m_pending.emplace_back(bytes);
+        m_pendingBytes += bytes.size();
     }
     wake();
+    return true;
 }
 
 void Pty::resize(int cols, int rows, int pixelWidth, int pixelHeight)
@@ -183,14 +224,14 @@ std::string Pty::currentWorkingDirectory() const
     if (!ec) {
         return p.string();
     }
-    const auto own = std::filesystem::read_symlink("/proc/" + std::to_string(m_pid) + "/cwd", ec);
+    const auto own = std::filesystem::read_symlink("/proc/" + std::to_string(m_pid.load()) + "/cwd", ec);
     return ec ? std::string() : own.string();
 }
 
 std::string Pty::foregroundProcess() const
 {
     const pid_t group = tcgetpgrp(m_master);
-    if (group <= 0 || group == m_pid) {
+    if (group <= 0 || group == m_pid.load()) {
         return {};
     }
     std::ifstream comm("/proc/" + std::to_string(group) + "/comm");
@@ -208,16 +249,21 @@ void Pty::wake()
 bool Pty::flushPending()
 {
     std::lock_guard lock(m_writeMutex);
-    while (!m_pending.empty()) {
-        const ssize_t n = ::write(m_master, m_pending.data(), m_pending.size());
+    // Bound work per poll tick so shutdown and output remain responsive.
+    for (int attempts = 0; attempts < 16 && !m_pending.empty() && !m_stop.load(); ++attempts) {
+        const auto& front = m_pending.front();
+        const std::size_t amount = std::min<std::size_t>(65536, front.size() - m_pendingOffset);
+        const ssize_t n = ::write(m_master, front.data() + m_pendingOffset, amount);
         if (n > 0) {
-            m_pending.erase(0, std::size_t(n));
+            m_pendingOffset += std::size_t(n);
+            m_pendingBytes -= std::size_t(n);
+            if (m_pendingOffset == front.size()) { m_pending.pop_front(); m_pendingOffset = 0; }
+        } else if (n < 0 && errno == EINTR) {
             continue;
+        } else {
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) m_accepting.store(false);
+            break;
         }
-        if (n < 0 && errno == EINTR) {
-            continue;
-        }
-        break; // EAGAIN: wait for POLLOUT; other errors surface as POLLHUP
     }
     return !m_pending.empty();
 }
@@ -251,11 +297,15 @@ void Pty::run()
             }
         }
 
+        if (!m_accepting.load()) closed = true;
         if (closed) {
+            m_accepting.store(false);
             int status = 0;
-            if (waitpid(m_pid, &status, WNOHANG) == m_pid) {
+            const pid_t child = m_pid.load();
+            const pid_t reaped = waitpid(child, &status, WNOHANG);
+            if (reaped == child || (reaped < 0 && errno == ECHILD)) {
                 m_pid = -1;
-                m_listener.ptyClosed(status);
+                m_listener.ptyClosed(reaped == child ? status : -1);
                 return;
             }
             continue;
@@ -265,8 +315,8 @@ void Pty::run()
             wantWrite = flushPending();
         }
         if (fds[0].revents & POLLIN) {
-            // Drain everything available so one wake parses one large batch.
-            for (;;) {
+            // A finite batch prevents continuous output starving stop().
+            for (int reads = 0; reads < 16 && !m_stop.load(); ++reads) {
                 const ssize_t n = ::read(m_master, buf.data(), buf.size());
                 if (n > 0) {
                     m_listener.ptyData(std::string_view(buf.data(), std::size_t(n)));
@@ -281,10 +331,12 @@ void Pty::run()
                 closed = true; // EIO or EOF: the child side is gone
                 break;
             }
-        } else if (fds[0].revents & (POLLHUP | POLLERR)) {
+        } else if (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
             closed = true;
         }
+        if (closed) m_accepting.store(false);
     }
+    m_accepting.store(false);
 }
 
 } // namespace AfterglowPty

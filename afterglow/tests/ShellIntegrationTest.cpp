@@ -35,10 +35,10 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost {
     void commandFinished(int value) override { lastExit = value; }
     AfterglowVt::Terminal terminal{80, 24, *this};
     void writeToPty(std::string_view bytes) override {
-        if (pty) pty->write(bytes); else pending += bytes;
+        if (pty) EXPECT_TRUE(pty->write(bytes)); else pending += bytes;
     }
     void attach(Pty* value) {
-        std::lock_guard lock(mutex); pty = value; pty->write(std::exchange(pending, {}));
+        std::lock_guard lock(mutex); pty = value; EXPECT_TRUE(pty->write(std::exchange(pending, {})));
     }
     void resize(int cols, int rows) {
         std::lock_guard lock(mutex); terminal.resize(cols, rows, 8, 16); pty->resize(cols, rows, 0, 0);
@@ -100,15 +100,17 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
         {"ENV", "/original/env"}};
     ASSERT_TRUE(prepare(o, true, root()));
     Output output; std::string error;
+    o.deferStart = true;
     auto pty = Pty::spawn(o, output, &error);
     ASSERT_NE(pty, nullptr) << error;
     output.attach(pty.get());
+    ASSERT_TRUE(pty->start(&error)) << error;
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     auto initial = output.take();
     EXPECT_NE(initial.find("AG_READY>"), std::string::npos) << initial;
     if (shell != "fish") EXPECT_NE(initial.find("USER_HOOK"), std::string::npos) << initial;
     EXPECT_NE(initial.find("\x1b]133;A"), std::string::npos) << initial;
-    pty->write("false\r");
+    ASSERT_TRUE(pty->write("false\r"));
     ASSERT_TRUE(output.wait("\x1b]133;D;1")) << output.take();
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     {
@@ -118,22 +120,66 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
     }
     auto command = output.take();
     EXPECT_NE(command.find("\x1b]133;C"), std::string::npos) << command;
-    pty->write("printf 'RC_%s_DONE\\n' \"$AG_USER_RC\"\r");
+    ASSERT_TRUE(pty->write("printf 'RC_%s_DONE\\n' \"$AG_USER_RC\"\r"));
     ASSERT_TRUE(output.wait("RC_yes_DONE")) << output.take();
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     output.take();
     if (login && shell != "fish") {
-        pty->write("printf 'LOGIN_%s_DONE\\n' \"$AG_LOGIN\"\r");
+        ASSERT_TRUE(pty->write("printf 'LOGIN_%s_DONE\\n' \"$AG_LOGIN\"\r"));
         ASSERT_TRUE(output.wait("LOGIN_yes_DONE")) << output.take();
         ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
         output.take();
     }
     output.resize(100, 40);
-    pty->write("printf 'AFTER_%s_DONE\\n' resize\r");
+    ASSERT_TRUE(pty->write("printf 'AFTER_%s_DONE\\n' resize\r"));
     ASSERT_TRUE(output.wait("AFTER_resize_DONE")) << output.take();
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
-    pty->write("exit\r");
+    ASSERT_TRUE(pty->write("exit\r"));
 }
 INSTANTIATE_TEST_SUITE_P(Shells, InteractiveShell, testing::Values(
     std::pair{"bash", false}, std::pair{"bash", true}, std::pair{"zsh", false},
     std::pair{"zsh", true}, std::pair{"fish", false}, std::pair{"fish", true}));
+
+TEST(Pty, DeferredStartBoundsQueueAndStopsContinuouslyWritingChild)
+{
+    struct Listener : IPtyListener {
+        std::atomic<unsigned> calls{0};
+        void ptyData(std::string_view) override { ++calls; }
+        void ptyClosed(int) override { ++calls; }
+    } listener;
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "while :; do printf output; done"};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, listener);
+    ASSERT_NE(pty, nullptr);
+    EXPECT_EQ(listener.calls.load(), 0u);
+    EXPECT_TRUE(pty->write(std::string(32u * 1024 * 1024, 'x')));
+    EXPECT_FALSE(pty->write("rejected"));
+    ASSERT_TRUE(pty->start());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!listener.calls.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    EXPECT_GT(listener.calls.load(), 0u);
+    const auto started = std::chrono::steady_clock::now();
+    pty->stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
+    pty->stop();
+    EXPECT_FALSE(pty->write("closed"));
+    EXPECT_FALSE(pty->start());
+}
+
+TEST(Pty, RemovesInheritedEnvironmentAndExplicitValuesWin)
+{
+    Output output;
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "printf 'HOME=%s PATH=%s DONE' \"${HOME-unset}\" \"$PATH\""};
+    options.unsetEnvironment = {"HOME", "PATH"};
+    options.environment = {{"PATH", "/test/explicit"}};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, output);
+    ASSERT_NE(pty, nullptr);
+    output.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    EXPECT_TRUE(output.wait("HOME=unset PATH=/test/explicit DONE")) << output.take();
+    pty->stop();
+}

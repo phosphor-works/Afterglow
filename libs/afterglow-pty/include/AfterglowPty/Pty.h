@@ -6,6 +6,7 @@
 #include <AfterglowPty/afterglowpty_export.h>
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -25,6 +26,9 @@ struct SpawnOptions
     std::string workingDirectory;
     /// Variables set (or overridden) in the child's environment.
     std::vector<std::pair<std::string, std::string>> environment;
+    std::vector<std::string> unsetEnvironment;
+    /// Delay callbacks until the owner has published the returned object.
+    bool deferStart = false;
     int cols = 80;
     int rows = 24;
     int pixelWidth = 0;
@@ -57,10 +61,14 @@ public:
     Pty& operator=(const Pty&) = delete;
 
     /// Queues bytes for the child. Thread-safe; never blocks on the child.
-    void write(std::string_view bytes);
+    /// Entire writes are accepted atomically, up to 32 MiB pending.
+    [[nodiscard]] bool write(std::string_view bytes);
+    /// Lifecycle operations belong to the owner thread. Cannot restart after stop.
+    [[nodiscard]] bool start(std::string* error = nullptr);
+    void stop();
     void resize(int cols, int rows, int pixelWidth, int pixelHeight);
 
-    pid_t pid() const noexcept { return m_pid; }
+    pid_t pid() const noexcept { return m_pid.load(); }
     /// The child's current working directory, read from /proc.
     std::string currentWorkingDirectory() const;
     /// The name of the job in the foreground when it is not the child itself
@@ -68,18 +76,21 @@ public:
     std::string foregroundProcess() const;
 
 private:
-    Pty(int masterFd, pid_t pid, IPtyListener& listener);
+    Pty(int masterFd, int wakeFd, pid_t pid, IPtyListener& listener);
     void run();
     void wake();
     bool flushPending();
 
     int m_master;
     int m_wakeFd;
-    pid_t m_pid;
+    std::atomic<pid_t> m_pid;
     IPtyListener& m_listener;
 
     std::mutex m_writeMutex;
-    std::string m_pending;
+    std::deque<std::string> m_pending;
+    std::size_t m_pendingOffset = 0;
+    std::size_t m_pendingBytes = 0;
+    std::atomic<bool> m_accepting{true};
 
     std::atomic<bool> m_stop{false};
     std::thread m_thread;
