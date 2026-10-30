@@ -15,6 +15,7 @@
 namespace Afterglow {
 
 class Pane;
+class ProjectStore;
 class SettingsStore;
 class TerminalWindow;
 
@@ -62,6 +63,9 @@ public:
     static QVariantMap paneMap(const PaneInfo& pane);
     static bool isStructuralAction(const QString& action);
 
+    QStringList projectNames() const;
+    QString saveProject(quint32 pane, const QString& name, bool overwrite, QVariantMap& result);
+    QString openProject(const QString& name, bool newInstance, QVariantMap& result);
     QString movePane(quint32 pane, quint32 target, const QString& placement, QVariantMap& result);
     QString detachTab(quint32 pane, QVariantMap& result);
     QString sendText(quint32 pane, const QString& text);
@@ -113,6 +117,8 @@ Q_SIGNALS:
     void contextChanged(quint32 pane, const QString& context);
 
 private:
+    ProjectStore projects() const;
+    void projectDialog(Pane* pane, bool save);
     void attachPane(TerminalWindow* window, Pane* pane);
     Pane* find(quint32 id, TerminalWindow** window = nullptr) const;
 

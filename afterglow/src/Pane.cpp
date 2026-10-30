@@ -889,8 +889,8 @@ void Pane::ptyClosed(int status)
     {
         std::lock_guard lock(m_mutex);
         m_terminal.programExited();
-        if (m_hold.load()) {
-            const int code = status == -1 ? 0 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
+        const int code = status == -1 ? 0 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
+        if (m_hold.load() || (m_holdOnFailure.load() && code != 0)) {
             const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(code)
                 + "; press any key to close]\x1b[0m\x1b[?25l";
             m_terminal.feed(note);
@@ -902,6 +902,16 @@ void Pane::ptyClosed(int status)
         return;
     }
     Q_EMIT closed();
+}
+
+void Pane::holdStartFailure()
+{
+    {
+        std::lock_guard lock(m_mutex);
+        m_terminal.feed("\r\n[Unable to start a process; check the project/configuration. Press any key to close.]\r\n");
+        m_held.store(true);
+    }
+    Q_EMIT contentChanged();
 }
 
 } // namespace Afterglow

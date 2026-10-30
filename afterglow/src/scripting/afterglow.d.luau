@@ -36,7 +36,7 @@ export type Pane = {
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
 }
 
-export type Window = { id: number, focused: boolean, active_tab: number, active_pane: number }
+export type Window = { id: number, project: string, focused: boolean, active_tab: number, active_pane: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
 -- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
 -- Zero active IDs mean that no terminal window currently has keyboard focus.
@@ -104,6 +104,9 @@ declare afterglow: {
     request: (id: string, effect: Effect) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output")?, max_bytes: number?) -> Effect,
+    save_project: (pane: PaneRef, name: string, overwrite: boolean?) -> Effect,
+    open_project: (name: string, newInstance: boolean?) -> Effect,
+    list_projects: () -> Effect,
     move_pane: (pane: PaneRef, target: PaneRef?, placement: ("left" | "right" | "up" | "down" | "new-tab" | "new-window")?) -> Effect,
     detach_tab: (pane: PaneRef) -> Effect,
     timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,

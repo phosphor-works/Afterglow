@@ -29,6 +29,7 @@ Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* pare
 void Control::attachWindow(TerminalWindow* window)
 {
     m_windows.append(window);
+    connect(window, &TerminalWindow::projectRequested, this, &Control::projectDialog);
     connect(window, &TerminalWindow::paneMoved, this, [this](Pane* p) { Q_EMIT paneMoved(p->id()); });
     connect(window, &TerminalWindow::transferRequested, this, [this](Pane* pane, bool tab) {
         QVariantMap result;
@@ -148,7 +149,7 @@ QVariantMap Control::state() const
             continue;
         }
         const quint32 focused = w->focusedPane() ? w->focusedPane()->id() : 0;
-        windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("focused"), w->isActive()},
+        windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("focused"), w->isActive()},
                                    {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused}});
         for (const auto& tab : w->tabs()) {
             tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},

@@ -17,6 +17,7 @@ bool Keybinds::isStructural(Action action)
     switch (action) {
     case Action::MovePaneToTab:
     case Action::MovePaneToWindow:
+    case Action::SwitchProject:
     case Action::DetachTab:
     case Action::SplitRight:
     case Action::SplitDown:
@@ -52,6 +53,8 @@ const ActionInfo Actions[] = {
     {Action::MovePaneToTab, "move_pane_to_tab", "Move Pane to New Tab", {}},
     {Action::MovePaneToWindow, "move_pane_to_window", "Move Pane to New Window", {}},
     {Action::DetachTab, "detach_tab", "Detach Tab to New Window", {}},
+    {Action::SaveProject, "save_project", "Save Project", {}},
+    {Action::SwitchProject, "switch_project", "Switch Project", {}},
     {Action::SplitRight, "split_right", "Split Right", {"Ctrl+Shift+E"}},
     {Action::SplitDown, "split_down", "Split Down", {"Ctrl+Shift+O"}},
     {Action::SplitLeft, "split_left", "Split Left", {}},

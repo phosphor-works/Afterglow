@@ -25,6 +25,9 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         quint32 created = 0;
         QVariantMap data;
         const QString error = [&]() -> QString {
+            if (kind == QLatin1String("save_project")) return control.saveProject(pane, s("name"), e.value(QStringLiteral("overwrite")).toBool(), data);
+            if (kind == QLatin1String("open_project")) return control.openProject(s("name"), e.value(QStringLiteral("new_instance")).toBool(), data);
+            if (kind == QLatin1String("list_projects")) { data.insert(QStringLiteral("names"), control.projectNames()); return {}; }
             if (kind == QLatin1String("move_pane") || kind == QLatin1String("detach_tab")) {
                 QVariantMap moved;
                 const auto error = kind == QLatin1String("move_pane")

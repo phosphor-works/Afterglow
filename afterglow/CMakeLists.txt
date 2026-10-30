@@ -15,6 +15,7 @@ qt_add_executable(afterglow
     src/ProjectStore.h
     src/SplitTree.cpp
     src/SplitTree.h
+    src/TerminalWindowProject.cpp
     src/TerminalWindowLayout.cpp
     src/TerminalWindowScript.cpp
     src/TerminalWindow.cpp
@@ -32,6 +33,7 @@ qt_add_executable(afterglow
     src/animation/PaneMotion.h
     src/app/Application.cpp
     src/app/NotificationCenter.cpp
+    src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
     src/control/ControlBus.cpp
@@ -145,6 +147,7 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTAL
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
 # Scripting: types for editors and examples to copy; neither loads on its own.
 install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/projects/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/projects)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/glasshouse
         USE_SOURCE_PERMISSIONS)

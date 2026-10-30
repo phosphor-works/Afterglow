@@ -35,6 +35,9 @@ public Q_SLOTS:
     Q_SCRIPTABLE uint Split(uint pane, const QString& direction, const QStringList& command);
     Q_SCRIPTABLE uint NewTab(uint pane, const QString& workingDirectory, const QStringList& command);
     Q_SCRIPTABLE uint CreateWindow(const QString& workingDirectory, const QStringList& command);
+    Q_SCRIPTABLE QStringList Projects();
+    Q_SCRIPTABLE QVariantMap SaveProject(uint pane, const QString& name, bool overwrite);
+    Q_SCRIPTABLE QVariantMap OpenProject(const QString& name, bool newInstance);
     Q_SCRIPTABLE QVariantMap MovePane(uint pane, uint target, const QString& placement);
     Q_SCRIPTABLE QVariantMap DetachTab(uint pane);
     Q_SCRIPTABLE void Focus(uint pane);
@@ -46,6 +49,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     Q_SCRIPTABLE void PaneCreated(uint pane);
+    Q_SCRIPTABLE void PaneMoved(uint pane);
     Q_SCRIPTABLE void PaneClosed(uint pane);
     Q_SCRIPTABLE void TitleChanged(uint pane, const QString& title);
     Q_SCRIPTABLE void Bell(uint pane);

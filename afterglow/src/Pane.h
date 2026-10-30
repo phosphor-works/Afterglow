@@ -94,11 +94,16 @@ public:
     /// the program the pane was opened for. Empty while a shell sits idle.
     QString foregroundJob() const;
     /// Names the program the pane was opened to run (afterglow -e), instead of a shell.
+    const QStringList& launchCommand() const { return m_launchCommand; }
+    const QString& launchDirectory() const { return m_launchDirectory; }
+    void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
     void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
     /// Keeps the pane open when its program exits, until a key is pressed
     /// (afterglow --hold).
+    void setHoldOnFailure(bool hold) { m_holdOnFailure = hold; }
     void setHold(bool hold) { m_hold = hold; }
     /// The program exited and the pane is held open: a key press closes it.
+    void holdStartFailure();
     bool isHeld() const { return m_held.load(); }
     /// Whether output and input jump a scrolled-back pane to the bottom.
     void setScrollPolicy(bool onOutput, bool onInput)
@@ -220,8 +225,11 @@ private:
     const quint32 m_id;
     QString m_userTitle;
     QString m_launchedProgram;
+    QStringList m_launchCommand;
+    QString m_launchDirectory;
     std::atomic<bool> m_scrollOnOutput{false}; ///< read on the pty thread
     std::atomic<bool> m_hold{false};
+    std::atomic<bool> m_holdOnFailure{false};
     std::atomic<bool> m_held{false}; ///< exited and held open
     bool m_scrollOnInput = true;
     QString m_contextLabel;

@@ -77,6 +77,7 @@ enum class Action {
     ShowHints,
     SwapLeft, SwapRight, SwapUp, SwapDown,
     MovePaneToTab, MovePaneToWindow, DetachTab,
+    SaveProject, SwitchProject,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

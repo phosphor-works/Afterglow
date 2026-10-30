@@ -426,16 +426,18 @@ void TerminalWindow::bindPane(Pane* pane)
 
 }
 
-Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command)
+Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command, QString* failure)
 {
     auto* pane = new Pane(m_settings.settings().terminal, this);
     bindPane(pane);
+    pane->setLaunch(workingDirectory, command);
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
     opts.environment = m_settings.settings().environment;
     pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
     // Before the program starts: a quick one may exit at once.
     pane->setHold(std::exchange(m_holdNextPane, false));
+    pane->setHoldOnFailure(failure != nullptr);
     if (!command.isEmpty()) {
         pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
         for (const QString& arg : command) {
@@ -452,6 +454,17 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     QString error;
     if (!pane->start(opts, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error)) {
         qCCritical(lcWindow) << "failed to start the shell:" << error;
+        if (failure) {
+            *failure = error;
+            // A project must remain inspectable even if its configured shell fails.
+            AfterglowPty::SpawnOptions fallback;
+            fallback.argv = {"/bin/sh"};
+            fallback.workingDirectory = QDir::homePath().toStdString();
+            fallback.environment = m_settings.settings().environment;
+            pane->setHold(true);
+            if (!pane->start(fallback, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error))
+                pane->holdStartFailure();
+        }
     }
     Q_EMIT paneCreated(pane);
     return pane;
@@ -1499,6 +1512,11 @@ bool TerminalWindow::performAction(Action action)
     const long page = m_focused ? std::max(1, m_focused->rows() - 1) : 1;
 
     switch (action) {
+    case Action::SaveProject:
+    case Action::SwitchProject:
+        if (!m_focused) return false;
+        Q_EMIT projectRequested(m_focused, action == Action::SaveProject);
+        return true;
     case Action::SwapLeft: return swapPane(m_focused, SplitTree::Neighbour::Left);
     case Action::SwapRight: return swapPane(m_focused, SplitTree::Neighbour::Right);
     case Action::SwapUp: return swapPane(m_focused, SplitTree::Neighbour::Up);
@@ -2272,7 +2290,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
 
 void TerminalWindow::updateLinkHover()
 {
-    Pane* pane = linkModifierHeld() ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    Pane* pane = m_splits && linkModifierHeld() ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
@@ -2748,6 +2766,7 @@ bool TerminalWindow::copyModeKey(QKeyEvent* e)
 
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
+    if (!m_splits) return;
     const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
     if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
     if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
@@ -3088,6 +3107,7 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 
 void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
+    if (!m_splits) return;
     if (m_pointerHidden) {
         m_pointerHidden = false;
         applyPointerShape();
@@ -3288,6 +3308,7 @@ void TerminalWindow::moveCursorToClick(Pane* pane, const QPointF& pos)
 
 void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 {
+    if (!m_splits) return;
     m_pointerHidden = false;
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
@@ -3338,6 +3359,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 
 void TerminalWindow::wheelEvent(QWheelEvent* e)
 {
+    if (!m_splits) return;
     if (routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "active_tab": "code",
+  "tabs": [
+    {
+      "id": "code",
+      "title": "Development",
+      "active_pane": "editor",
+      "tree": {
+        "direction": "right",
+        "ratio": 0.7,
+        "first": {"pane": {"id": "editor", "cwd": "~/Projects/afterglow", "title": "Editor", "command": ["nvim", "."]}},
+        "second": {"pane": {"id": "shell", "cwd": "~/Projects/afterglow", "title": "Build shell", "command": []}}
+      }
+    },
+    {
+      "id": "tools",
+      "title": "Tools",
+      "active_pane": "status",
+      "tree": {"pane": {"id": "status", "cwd": "~/Projects/afterglow", "title": "Repository status", "command": ["git", "status", "--short"]}}
+    }
+  ]
+}

@@ -913,3 +913,59 @@ int main(int argc, char** argv)
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+TEST_F(ScriptHostTest, ProjectHelpersPreserveExplicitIntentAndResults)
+{
+    write(user, QStringLiteral("projects.luau"), R"(
+return { on_bell = function(ev)
+    return {afterglow.save_project(ev.pane, "dev", true), afterglow.open_project("dev", true), afterglow.list_projects(),
+            afterglow.move_pane(ev.pane, 8, "left"), afterglow.detach_tab(ev.pane)}
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    ASSERT_EQ(rec.applied.size(), 5);
+    EXPECT_EQ(rec.applied[0].value("pane").toUInt(), 7u);
+    EXPECT_EQ(rec.applied[0].value("name").toString(), QStringLiteral("dev"));
+    EXPECT_TRUE(rec.applied[0].value("overwrite").toBool());
+    EXPECT_TRUE(rec.applied[1].value("new_instance").toBool());
+    EXPECT_EQ(rec.applied[2].value("kind").toString(), QStringLiteral("list_projects"));
+    EXPECT_EQ(rec.applied[3].value("target").toUInt(), 8u);
+}
+TEST_F(ScriptHostTest, ProjectLaunchesShareStructuralBudgetAndRejectNonBooleanFlags)
+{
+    write(user, QStringLiteral("projects.luau"), R"(
+return { on_bell = function(ev)
+    local out = {{kind="open_project",name="dev",new_instance="yes"}, {kind="save_project",name="dev",overwrite=1}}
+    for i = 1, 10 do table.insert(out, afterglow.open_project("dev")) end
+    return out
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch(QStringLiteral("on_bell"), 7);
+    EXPECT_EQ(rec.applied.size(), ScriptHost::MaxStructuralPer10s);
+    ASSERT_GE(rec.results.size(), 2);
+    EXPECT_FALSE(rec.results[0].second.isEmpty());
+    EXPECT_FALSE(rec.results[1].second.isEmpty());
+}
+
+TEST_F(ScriptHostTest, ProjectExampleChainsListingSelectionAndLaunch)
+{
+    host->setSearchPaths({QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS)});
+    applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        const auto kind = effect.value("kind").toString();
+        if (kind == QLatin1String("list_projects")) return {{}, {{"names", QStringList{"dev"}}}, {}};
+        if (kind == QLatin1String("select")) return {{}, {{"id", "dev"}}, {}};
+        if (kind == QLatin1String("open_project")) return {{}, {{"window_id", 5}, {"reused", true}}, {}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("projects.open", 7));
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 3);
+    EXPECT_EQ(rec.applied[1].value("kind").toString(), QStringLiteral("select"));
+    EXPECT_EQ(rec.applied[1].value("items").toList().first().toMap().value("title").toString(), QStringLiteral("dev"));
+    EXPECT_EQ(rec.applied[2].value("kind").toString(), QStringLiteral("open_project"));
+    EXPECT_EQ(rec.applied[2].value("name").toString(), QStringLiteral("dev"));
+    for (const auto& result : rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}

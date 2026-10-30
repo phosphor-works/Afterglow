@@ -42,6 +42,9 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   set-title TITLE                     set the pane's title ("" to clear)
   signal CHANNEL VALUE                set a shader signal (iSignal[CHANNEL], 0-7)
   notify TITLE [BODY]                 desktop notification from the pane
+  projects                            list saved projects
+  save-project NAME [--overwrite]      save the target pane's window layout
+  open-project NAME [--new]            switch to a project or launch its layout
   action NAME                         run a keybind action (split_right, new_tab...)
                                       or a script action (script:ID.ACTION)
   watch                               print events as JSON lines until interrupted
@@ -97,6 +100,27 @@ public Q_SLOTS:
         std::fflush(stdout);
     }
 };
+
+QJsonValue jsonValue(QVariant value)
+{
+    if (value.metaType() == QMetaType::fromType<QDBusArgument>()) {
+        const auto arg = value.value<QDBusArgument>();
+        if (arg.currentType() == QDBusArgument::MapType) value = qdbus_cast<QVariantMap>(arg);
+        else if (arg.currentType() == QDBusArgument::ArrayType) value = qdbus_cast<QStringList>(arg);
+    }
+    if (value.metaType() == QMetaType::fromType<QVariantMap>()) {
+        QJsonObject out;
+        const auto map = value.toMap();
+        for (auto it = map.begin(); it != map.end(); ++it) out.insert(it.key(), jsonValue(it.value()));
+        return out;
+    }
+    return QJsonValue::fromVariant(value);
+}
+int printProject(const QDBusMessage& reply)
+{
+    std::printf("%s\n", QJsonDocument(jsonValue(reply.arguments().value(0)).toObject()).toJson(QJsonDocument::Compact).constData());
+    return 0;
+}
 
 int fail(const QString& message)
 {
@@ -214,6 +238,16 @@ int runCtl(int argc, char** argv)
         }
         return app.exec();
     }
+    if (command == QLatin1String("projects")) {
+        if (!call(QStringLiteral("Projects"), {}, reply)) return 1;
+        for (const auto& name : qdbus_cast<QStringList>(reply.arguments().value(0))) std::printf("%s\n", qPrintable(name));
+        return 0;
+    }
+    if (command == QLatin1String("open-project")) {
+        const bool fresh = takeFlag(QStringLiteral("--new"));
+        if (args.size() != 1) return fail(QStringLiteral("open-project takes NAME [--new]"));
+        return call(QStringLiteral("OpenProject"), {args.first(), fresh}, reply) ? printProject(reply) : 1;
+    }
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         return call(QStringLiteral("CreateWindow"), {cwd, trailing}, reply) ? printPane(reply) : 1;
@@ -222,6 +256,11 @@ int runCtl(int argc, char** argv)
     const std::optional<uint> pane = targetPane();
     if (!pane) {
         return 1;
+    }
+    if (command == QLatin1String("save-project")) {
+        const bool overwrite = takeFlag(QStringLiteral("--overwrite"));
+        if (args.size() != 1) return fail(QStringLiteral("save-project takes NAME [--overwrite]"));
+        return call(QStringLiteral("SaveProject"), {*pane, args.first(), overwrite}, reply) ? printProject(reply) : 1;
     }
     if (command == QLatin1String("send-text")) {
         QString text;

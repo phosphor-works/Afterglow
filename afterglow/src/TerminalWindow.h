@@ -98,6 +98,10 @@ public:
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
     void clearScriptOwner(const QString& owner);
 
+    QJsonObject projectLayout() const;
+    QVariantMap restoreProject(const QJsonObject& document);
+    QString projectName() const { return m_projectName; }
+    void setProjectName(const QString& name) { m_projectName = name; }
     QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction);
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
@@ -113,6 +117,7 @@ Q_SIGNALS:
     void paneCreated(Pane* pane);
     void paneMoved(Pane* pane);
     void transferRequested(Pane* pane, bool wholeTab);
+    void projectRequested(Pane* pane, bool save);
     void focusedPaneChanged(Pane* pane);
 
 protected:
@@ -132,7 +137,7 @@ protected:
 
 private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
-    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {});
+    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr);
     void bindPane(Pane* pane);
     void releasePaneUi(Pane* pane);
     void reparentPane(Pane* pane, TerminalWindow* destination);
@@ -297,6 +302,7 @@ private:
         QPointer<Pane> focused;
         QString title; ///< set by the user; empty follows the focused pane
     };
+    QString m_projectName;
     std::vector<std::unique_ptr<Tab>> m_tabs;
     int m_currentTab = 0;
     // The current tab's tree and focused pane (focus is saved back on switch).

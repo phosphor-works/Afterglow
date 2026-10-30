@@ -218,13 +218,72 @@ create a window for one pane or the entire split tab. Bind these actions or
 use the command palette. Processes, history, graphics and pane IDs survive;
 a detached whole tab also retains its ID and split ratios.
 
-`afterglow ctl --pane 12 move-pane 34 right` moves pane 12 beside pane 34,
+`afterglow ctl move-pane 34 right --pane 12` moves pane 12 beside pane 34,
 including across tabs/windows. Use target `0` with `new-tab` or `new-window`.
-`afterglow ctl --pane 12 detach-tab` detaches its whole tab. Luau has matching
+`afterglow ctl detach-tab --pane 12` detaches its whole tab. Luau has matching
 `afterglow.move_pane(pane, target, placement)` and `afterglow.detach_tab(pane)`
 effects. Request results contain the pane snapshot and destination IDs;
-`on_pane_moved(pane, ctx)` receives the updated location without a fake
+`on_pane_moved(ev)` receives the updated location without a fake
 creation/closure event. Moving the last pane closes the emptied window.
+
+### Named projects
+
+Use **Save Project** in the command palette to save the current window's tabs,
+ordered split trees, ratios, active tab/panes, user titles, working directories
+and explicit launch arguments. **Switch Project** searches saved names and
+focuses an already-open project; otherwise it launches the saved layout in a
+new window. These actions are `save_project` and `switch_project` for keybinds.
+The original windows remain open. Replacing an existing save requires confirmation.
+
+```sh
+afterglow ctl save-project development --pane 12
+afterglow ctl projects
+afterglow ctl open-project development          # focus existing, or launch
+afterglow ctl open-project development --new    # launch another instance
+afterglow ctl save-project development --pane 12 --overwrite
+```
+
+Layouts live in `projects/` beside the active config file (normally
+`~/.config/afterglow/projects/`). Names use 1–64 letters, digits, underscores or
+hyphens. Saves use atomic replacement and reject symlink files. The version-1
+JSON format allows up to 16 tabs, 32 panes, tree depth 16 and 1 MiB per file.
+Invalid layouts are rejected before creating windows or running commands.
+
+Copy [development.json](data/examples/projects/development.json) into that
+folder, adjust its directories and commands, then open `development`. A leaf
+has `pane: {id, cwd, title, command}`; a split has `direction` (`right` or `down`),
+`ratio` (strictly between 0 and 1), `first` and `second`. Each tab has `id`,
+`title`, `active_pane` and `tree`; the document has `version`, `active_tab` and
+`tabs`. Saved pane IDs must be unique across the document; tab IDs must also
+be unique. They are labels mapped to fresh runtime IDs on every launch.
+
+`command` is an argv array: `[]` starts the configured shell. Only commands
+explicitly supplied when a pane was created are captured; foreground commands
+and shell history are never inferred. There is no implicit shell expansion;
+use an explicit shell with `-c` when wanted. Directories must be absolute or
+start with `~/` (`~` alone means home). Missing directories fall back to home;
+unavailable commands fall back to a shell with a warning. Explicit commands
+stay visible after exit, including their exit status; restored shells also
+stay visible if they exit unsuccessfully. Press a key to close a held pane.
+These are launch layouts: scrollback, environment snapshots, remote sessions,
+and running process state are not persisted. Review commands in imported layouts
+before opening them, just as for a shell script.
+
+Luau exposes `save_project(pane, name, overwrite?)`,
+`open_project(name, newInstance?)` and `list_projects()` effects. Wrap them with
+`afterglow.request(id, effect)` to receive results: saving returns `name` and
+`window_id`; listing returns `names`; opening returns `name`, `window_id` and
+`reused`. A fresh launch also returns `pane_ids` and `tab_ids` maps (saved labels
+to runtime IDs) and `warnings`. Opening projects shares the structural action
+budget. Window snapshots include `project` (empty for unnamed windows).
+[projects.luau](data/examples/scripts/projects.luau) demonstrates a native
+selector driven by these APIs. D-Bus offers `Projects`, `SaveProject` and
+`OpenProject`; the CLI prints save/open results as JSON.
+
+For an opt-in integration check on a running Wayland desktop, run
+`python3 afterglow/tests/project_smoke.py build/afterglow/afterglow`.
+It creates its own D-Bus session and temporary config, checks live pane transfers,
+save/restore and failure recovery, then closes its test windows.
 
 ### History, search, and hints
 

@@ -87,6 +87,9 @@ struct EffectKind
 };
 
 const EffectKind Kinds[] = {
+    {"save_project", true, false, {"name"}, false},
+    {"open_project", false, true, {"name"}, false},
+    {"list_projects", false, false, {}, false},
     {"move_pane", true, true, {"placement"}, false, {"target"}},
     {"detach_tab", true, true, {}, false},
     {"timer", false, false, {"name"}, false, {"delay_ms", "repeat_ms"}},
@@ -548,6 +551,12 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 badNumber = QLatin1String(key);
             }
             if (v.isValid()) effect.insert(QLatin1String(key), v.toDouble());
+        }
+        if (kind == QLatin1String("save_project") || kind == QLatin1String("open_project")) {
+            const auto key = kind == QLatin1String("save_project") ? QStringLiteral("overwrite") : QStringLiteral("new_instance");
+            const auto value = raw.value(key);
+            if (value.isValid() && value.metaType().id() != QMetaType::Bool) error = key + QStringLiteral(" must be boolean");
+            effect.insert(key, value.toBool());
         }
         if (kind == QLatin1String("move_pane")) {
             const double target = effect.value(QStringLiteral("target"), 0).toDouble();

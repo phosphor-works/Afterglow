@@ -23,6 +23,13 @@ local function list(value)
 end
 
 afterglow = {
+    save_project = function(pane, name, overwrite)
+        return {kind="save_project", pane=paneId(pane), name=name, overwrite=overwrite or false}
+    end,
+    open_project = function(name, newInstance)
+        return {kind="open_project", name=name, new_instance=newInstance or false}
+    end,
+    list_projects = function() return {kind="list_projects"} end,
     move_pane = function(pane, target, placement)
         return {kind="move_pane", pane=paneId(pane), target=target and paneId(target) or 0, placement=placement or "right"}
     end,

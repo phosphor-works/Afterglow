@@ -38,6 +38,7 @@ ControlBus::ControlBus(Control& control, SettingsStore& settings, QObject* paren
     qDBusRegisterMetaType<PaneInfo>();
     qDBusRegisterMetaType<QList<PaneInfo>>();
     connect(&control, &Control::paneCreated, this, &ControlBus::PaneCreated);
+    connect(&control, &Control::paneMoved, this, &ControlBus::PaneMoved);
     connect(&control, &Control::paneClosed, this, &ControlBus::PaneClosed);
     connect(&control, &Control::titleChanged, this, &ControlBus::TitleChanged);
     connect(&control, &Control::bell, this, &ControlBus::Bell);
@@ -200,6 +201,20 @@ QVariantMap ControlBus::DetachTab(uint pane)
 {
     QVariantMap result;
     fail(m_control.detachTab(pane, result));
+    return result;
+}
+
+QStringList ControlBus::Projects() { return m_control.projectNames(); }
+QVariantMap ControlBus::SaveProject(uint pane, const QString& name, bool overwrite)
+{
+    QVariantMap result;
+    if (fail(m_control.saveProject(pane, name, overwrite, result))) return {};
+    return result;
+}
+QVariantMap ControlBus::OpenProject(const QString& name, bool newInstance)
+{
+    QVariantMap result;
+    if (fail(m_control.openProject(name, newInstance, result))) return {};
     return result;
 }
 
