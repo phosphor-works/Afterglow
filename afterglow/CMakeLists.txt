@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Gui Widgets Qml Quick QuickControls2 DBus)
+find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus)
 find_package(KF6WindowSystem REQUIRED) # KWin blur behind
 find_package(Qt6GuiPrivate CONFIG REQUIRED) # rhi/qrhi.h for the chrome render target
 qt_policy(SET QTP0001 NEW)
@@ -13,6 +13,7 @@ qt_add_executable(afterglow
     src/Pane.h
     src/SplitTree.cpp
     src/SplitTree.h
+    src/TerminalWindowScript.cpp
     src/TerminalWindow.cpp
     src/TerminalWindow.h
     src/KeyMapping.cpp
@@ -87,10 +88,11 @@ target_compile_definitions(afterglow_audio PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_audio PUBLIC PhosphorAudio::PhosphorAudio Qt6::Core)
 
 # The script host, shared with its tests. The Control binding lives in the app.
-qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h)
+qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
+    src/scripting/ScriptTasks.cpp src/scripting/ScriptTasks.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
-target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting Qt6::Core)
+target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting Qt6::Core Qt6::Concurrent)
 qt_add_resources(afterglow_scripting afterglow_scripting_prelude
     PREFIX /afterglow/scripting
     BASE src/scripting
@@ -106,6 +108,7 @@ qt_add_qml_module(afterglow
         qml/ConfirmPrompt.qml
         qml/ContextMenu.qml
         qml/PasteConfirm.qml
+        qml/ScriptDialog.qml
         qml/SearchBar.qml
         qml/StatusIndicator.qml
         qml/TitlePrompt.qml
@@ -120,7 +123,7 @@ target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VER
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
 target_link_libraries(afterglow PRIVATE afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
-    Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate
+    Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland

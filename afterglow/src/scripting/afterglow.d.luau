@@ -66,7 +66,7 @@ export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: 
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 
 export type OperationError = { code: string, message: string }
-export type OperationData = { pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }? }
+export type OperationData = { text: string?, truncated: boolean?, available: boolean?, name: string?, stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?, pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }? }
 export type ResultEvent = {
     request_id: string,
     kind: string,
@@ -89,6 +89,10 @@ export type Effects = Effect | { Effect }
 --   on_command_finished(ev: CommandFinishedEvent)
 --   on_user_var(ev: UserVarEvent)            on_context(ev: ContextEvent)
 --   run_action(action: string, ev: ActionEvent)
+--   on_load(ev: ActionEvent)             on_unload(ev: ActionEvent)
+--   on_config_changed(ev: ActionEvent)
+--   on_timer(ev: ActionEvent & { name: string })
+--   on_file_changed(ev: ActionEvent & { name: string, path: string, exists: boolean })
 --   on_result(ev: ResultEvent) -- only for effects wrapped in afterglow.request
 
 type PaneRef = Pane | number
@@ -97,6 +101,18 @@ declare afterglow: {
     panes: (state: State, scope: ("all" | "pane" | "tab" | "window")?, anchor: PaneRef?) -> { Pane },
     -- id: 1-64 characters. Results are queued to the originating script instance.
     request: (id: string, effect: Effect) -> Effect,
+    -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
+    read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output")?, max_bytes: number?) -> Effect,
+    timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,
+    cancel: (name: string) -> Effect,
+    exec: (name: string, command: { string }, options: { cwd: string?, timeout_ms: number?, max_bytes: number? }?) -> Effect,
+    read_file: (name: string, path: string, options: { timeout_ms: number?, max_bytes: number? }?) -> Effect,
+    watch_file: (name: string, path: string) -> Effect,
+    set_actions: (actions: { { id: string, title: string } }) -> Effect,
+    select: (pane: PaneRef, title: string, items: { { id: string, title: string } }) -> Effect,
+    prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
+    status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
+    override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
     send_text: (pane: PaneRef, text: string) -> Effect,
     -- pane defaults to the event's pane
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,

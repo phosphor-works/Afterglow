@@ -4,6 +4,7 @@
 #include "ScriptControl.h"
 
 #include "../control/Control.h"
+#include <cmath>
 
 namespace Afterglow {
 
@@ -24,6 +25,11 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         quint32 created = 0;
         QVariantMap data;
         const QString error = [&]() -> QString {
+            if (kind == QLatin1String("read_text")) {
+                const double limit = e.value(QStringLiteral("max_bytes")).toDouble();
+                if (limit < 1 || limit > 1024 * 1024 || limit != std::floor(limit)) return QStringLiteral("invalid max_bytes");
+                return control.readTextBounded(pane, s("scope"), int(limit), data);
+            }
             if (kind == QLatin1String("send_text")) {
                 return control.sendText(pane, s("text"));
             }
@@ -79,6 +85,23 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         }
         return {error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
     };
+    c.applyOwned = [&control, apply = c.apply](const QString& owner, const QVariantMap& e,
+                                               std::function<void(ScriptHost::EffectResult)> complete) -> ScriptHost::EffectResult {
+        const auto kind = e.value(QStringLiteral("kind")).toString();
+        const auto pane = e.value(QStringLiteral("pane")).toUInt();
+        if (kind == QLatin1String("select") || kind == QLatin1String("prompt")) {
+            const auto error = control.scriptDialog(owner, pane, e, [complete = std::move(complete)](QString error, QVariantMap data) {
+                complete({error, data, error.isEmpty() ? QString() : QStringLiteral("cancelled")});
+            });
+            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("busy"), error.isEmpty()};
+        }
+        if (kind == QLatin1String("status") || kind == QLatin1String("override")) {
+            const auto error = control.scriptAppearance(owner, pane, e);
+            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+        }
+        return apply(e);
+    };
+    c.cleanup = [&control](const QString& owner) { control.clearScriptOwner(owner); };
     return c;
 }
 

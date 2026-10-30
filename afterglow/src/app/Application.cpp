@@ -68,6 +68,7 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
             bindShortcuts();
         }
         m_scripts.setEnabled(m_settings.settings().scripts);
+        QTimer::singleShot(0, &m_scripts, [this] { m_scripts.dispatch(QStringLiteral("on_config_changed"), 0); });
         if (m_settings.settings().audio != previous.audio) {
             m_audio.configure(m_settings.settings().audio);
         }

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "scripting/ScriptHost.h"
+#include "scripting/ScriptTasks.h"
+#include <QElapsedTimer>
+#include <QThread>
+#include <QSaveFile>
+#include <sys/stat.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -48,6 +53,14 @@ protected:
             rec.applied.append(e);
             return applyHook ? applyHook(e) : ScriptHost::EffectResult{};
         };
+        c.cleanup = [this](const QString& owner) { cleaned << owner; };
+        c.applyOwned = [this, apply = c.apply](const QString&, const QVariantMap& effect, std::function<void(ScriptHost::EffectResult)> complete) {
+            if (effect.value(QStringLiteral("kind")) == QLatin1String("prompt")) {
+                pendingReply = std::move(complete);
+                return ScriptHost::EffectResult{{}, {}, {}, true};
+            }
+            return apply(effect);
+        };
         host = std::make_unique<ScriptHost>(c);
         QObject::connect(host.get(), &ScriptHost::effectApplied, host.get(),
                          [this](const QString&, const QVariantMap& e, const QString& error) { rec.results.append({e, error}); });
@@ -66,6 +79,8 @@ protected:
     Recorder rec;
     QMap<quint32, QVariantMap> paneState;
     std::function<ScriptHost::EffectResult(const QVariantMap&)> applyHook;
+    QStringList cleaned;
+    std::function<void(ScriptHost::EffectResult)> pendingReply;
     std::unique_ptr<ScriptHost> host;
 };
 
@@ -668,6 +683,228 @@ end }
     EXPECT_TRUE(rec.applied.isEmpty());
     ASSERT_EQ(rec.results.size(), 1);
     EXPECT_FALSE(rec.results[0].second.isEmpty());
+}
+
+
+namespace {
+bool await(const std::function<bool()>& done, int timeout = 3000)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (!done() && clock.elapsed() < timeout) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    return done();
+}
+QVariantMap job(const QString& name, const QStringList& argv)
+{
+    return {{QStringLiteral("kind"), QStringLiteral("exec")}, {QStringLiteral("name"), name},
+            {QStringLiteral("command"), argv}, {QStringLiteral("timeout_ms"), 1000}, {QStringLiteral("max_bytes"), 128}};
+}
+}
+
+TEST(ScriptTasksTest, ProcessesReportSuccessFailureLimitsAndCancellationOnce)
+{
+    ScriptTasks tasks;
+    QMap<QString, QList<ScriptHost::EffectResult>> results;
+    auto start = [&](QVariantMap effect) {
+        auto name = effect.value(QStringLiteral("name")).toString();
+        return tasks.apply(QStringLiteral("owner"), effect, [&, name](auto result) { results[name].append(result); }, {});
+    };
+    EXPECT_TRUE(start(job("ok", {"/bin/sh", "-c", "printf hello; printf warning >&2"})).deferred);
+    EXPECT_TRUE(start(job("bad", {"/bin/sh", "-c", "exit 7"})).deferred);
+    EXPECT_TRUE(start(job("spawn", {"/no/such/afterglow-test-command"})).deferred);
+    auto timeout = job("timeout", {"/bin/sleep", "10"});
+    timeout["timeout_ms"] = 30;
+    EXPECT_TRUE(start(timeout).deferred);
+    EXPECT_TRUE(start(job("limit", {"/bin/sh", "-c", "while :; do printf xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done"})).deferred);
+    EXPECT_TRUE(start(job("cancel", {"/bin/sleep", "10"})).deferred);
+    EXPECT_TRUE(tasks.apply("owner", {{"kind", "cancel"}, {"name", "cancel"}}, {}, {}).error.isEmpty());
+    ASSERT_TRUE(await([&] { return results.size() == 6; }));
+    EXPECT_EQ(results["ok"][0].data["stdout"], QStringLiteral("hello"));
+    EXPECT_EQ(results["ok"][0].data["stderr"], QStringLiteral("warning"));
+    EXPECT_TRUE(results["ok"][0].error.isEmpty());
+    EXPECT_EQ(results["bad"][0].code, QStringLiteral("process_failed"));
+    EXPECT_EQ(results["bad"][0].data["exit_code"], 7);
+    EXPECT_EQ(results["spawn"][0].code, QStringLiteral("spawn_failed"));
+    EXPECT_EQ(results["timeout"][0].code, QStringLiteral("timeout"));
+    EXPECT_EQ(results["limit"][0].code, QStringLiteral("output_limit"));
+    EXPECT_LE(results["limit"][0].data["stdout"].toString().size(), 128);
+    EXPECT_EQ(results["cancel"][0].code, QStringLiteral("cancelled"));
+    QCoreApplication::processEvents();
+    for (const auto& values : results) EXPECT_EQ(values.size(), 1);
+}
+
+TEST(ScriptTasksTest, FileReadsAreBoundedAndRejectSpecialFiles)
+{
+    QTemporaryDir dir;
+    QFile file(dir.filePath("input")); ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("abcdef"); file.close();
+    const auto fifo = dir.filePath("fifo");
+    ASSERT_EQ(::mkfifo(QFile::encodeName(fifo).constData(), 0600), 0);
+    ScriptTasks tasks;
+    QMap<QString, ScriptHost::EffectResult> results;
+    for (const auto& name : {QStringLiteral("input"), QStringLiteral("fifo")}) {
+        EXPECT_TRUE(tasks.apply("owner", {{"kind", "read_file"}, {"name", name}, {"path", dir.filePath(name)}, {"max_bytes", 3}},
+            [&, name](auto result) { results.insert(name, result); }, {}).deferred);
+    }
+    ASSERT_TRUE(await([&] { return results.size() == 2; }));
+    EXPECT_EQ(results["input"].data["text"], QStringLiteral("abc"));
+    EXPECT_TRUE(results["input"].data["truncated"].toBool());
+    EXPECT_EQ(results["fifo"].code, QStringLiteral("io_error"));
+}
+
+TEST(ScriptTasksTest, OwnerCleanupStopsTimersAndDropsAsyncCallbacks)
+{
+    ScriptTasks tasks;
+    int callbacks = 0;
+    EXPECT_TRUE(tasks.apply("owner", {{"kind", "timer"}, {"name", "tick"}, {"delay_ms", 5}, {"repeat_ms", 250}},
+        {}, [&](auto, auto) { ++callbacks; }).error.isEmpty());
+    ASSERT_TRUE(await([&] { return callbacks == 1; }));
+    EXPECT_TRUE(tasks.apply("owner", job("job", {"/bin/sleep", "5"}), [&](auto) { ++callbacks; }, {}).deferred);
+    tasks.clear("owner");
+    await([] { return false; }, 300);
+    EXPECT_EQ(callbacks, 1);
+}
+
+TEST(ScriptTasksTest, WatchSurvivesAtomicFileReplacement)
+{
+    QTemporaryDir dir;
+    const auto path = dir.filePath("watch");
+    { QFile f(path); ASSERT_TRUE(f.open(QIODevice::WriteOnly)); f.write("old"); }
+    ScriptTasks tasks;
+    int changes = 0;
+    EXPECT_TRUE(tasks.apply("owner", {{"kind", "watch_file"}, {"name", "watch"}, {"path", path}}, {},
+        [&](const QString& handler, const QVariantMap& event) {
+            EXPECT_EQ(handler, QStringLiteral("on_file_changed"));
+            EXPECT_TRUE(event["exists"].toBool());
+            ++changes;
+        }).error.isEmpty());
+    for (int i = 1; i <= 2; ++i) {
+        QSaveFile f(path); ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray::number(i)); ASSERT_TRUE(f.commit());
+        ASSERT_TRUE(await([&] { return changes == i; }));
+    }
+}
+
+TEST_F(ScriptHostTest, LifecycleTimersJobsAndDynamicActions)
+{
+    write(user, "lifecycle.luau", R"(
+return {
+    on_load = function()
+        return {afterglow.copy("loaded"), afterglow.timer("tick", 1),
+                afterglow.exec("job", {"/bin/sh", "-c", "printf hello"}),
+                afterglow.set_actions({{id="dynamic",title="Dynamic"}})}
+    end,
+    on_timer = function(ev) return afterglow.copy(ev.name) end,
+    on_result = function(ev)
+        assert(ev.ok)
+        return afterglow.copy(ev.data.stdout)
+    end,
+    run_action = function() return afterglow.copy("action") end,
+}
+)");
+    host->setEnabled(true);
+    ASSERT_TRUE(await([&] { return rec.applied.size() == 3; }));
+    QStringList text;
+    for (const auto& e : rec.applied) text << e["text"].toString();
+    EXPECT_TRUE(text.contains("loaded")); EXPECT_TRUE(text.contains("tick")); EXPECT_TRUE(text.contains("hello"));
+    ASSERT_EQ(host->actions().size(), 1);
+    EXPECT_EQ(host->actions()[0].token, QStringLiteral("lifecycle.dynamic"));
+    host->reload(); // unchanged source keeps its instance
+    EXPECT_EQ(rec.applied.size(), 3);
+    write(user, "lifecycle.luau", "return {"); host->reload(); // broken edit retains last good
+    EXPECT_EQ(host->actions().size(), 1);
+    EXPECT_TRUE(host->runAction("lifecycle.dynamic", 7));
+    EXPECT_EQ(rec.applied.last()["text"], QStringLiteral("action"));
+    host->setEnabled(false);
+    EXPECT_TRUE(host->actions().isEmpty());
+}
+
+TEST_F(ScriptHostTest, InvalidOwnedUiEffectsNeverReachTheWindow)
+{
+    write(user, "invalidui.luau", R"(
+return { on_bell = function(ev)
+    return {
+        afterglow.override(ev.pane, {backgroundOpacity=2}),
+        afterglow.override(ev.pane, {cursorBlink=1}),
+        afterglow.override(ev.pane, {shell="evil"}),
+        afterglow.select(ev.pane, "Duplicate", {{id="x"},{id="x"}}),
+        afterglow.prompt(ev.pane, "Too long", string.rep("x",4097)),
+        afterglow.set_actions({{id="no-handler"}}),
+        afterglow.override(ev.pane, {backgroundOpacity=0.5,cursorBlink=false}),
+    }
+end }
+)");
+    host->setEnabled(true); host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("override"));
+}
+
+
+TEST_F(ScriptHostTest, RetiredInstanceDropsPendingUiResultsAndCleansOwnedResources)
+{
+    write(user, "retire.luau", R"(
+return {
+    on_bell = function(ev) return afterglow.request("ui",afterglow.prompt(ev.pane,"Prompt")) end,
+    on_result = function() return afterglow.copy("obsolete") end,
+}
+)");
+    host->setEnabled(true); host->dispatch("on_bell", 7);
+    ASSERT_TRUE(bool(pendingReply));
+    EXPECT_TRUE(rec.applied.isEmpty());
+    write(user, "retire.luau", "return {}"); host->reload();
+    ASSERT_EQ(cleaned.size(), 1);
+    pendingReply({{}, {{"text","late"}}, {}});
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    host->setEnabled(false);
+    EXPECT_EQ(cleaned.size(), 2);
+}
+
+TEST_F(ScriptHostTest, PromptResultsAreDeferredAndDeliveredToTheirOwner)
+{
+    write(user, "prompt.luau", R"(
+return {
+    on_bell = function(ev) return afterglow.request("ui",afterglow.prompt(ev.pane,"Prompt")) end,
+    on_result = function(ev)
+        assert(ev.request_id=="ui" and ev.ok)
+        return afterglow.copy(ev.data.text)
+    end,
+}
+)");
+    host->setEnabled(true); host->dispatch("on_bell", 7);
+    ASSERT_TRUE(bool(pendingReply));
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    pendingReply({{}, {{"text","accepted"}}, {}});
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], QStringLiteral("accepted"));
+}
+
+
+TEST_F(ScriptHostTest, BuildInspectorExtractsDiagnosticsIntoASelector)
+{
+    QFile example(QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS) + QStringLiteral("/../../scripts/build-inspector.luau"));
+    ASSERT_TRUE(example.open(QIODevice::ReadOnly));
+    write(user, "inspector.luau", example.readAll());
+    applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        if (effect["kind"] == QLatin1String("read_text"))
+            return {{}, {{"available",true},{"truncated",false},
+                {"text","src/main.cpp:42:3: error: broken\nlib/other.cpp:7: warning\n"}} , {}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("build-inspector.inspect", 7));
+    QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1]["kind"], QStringLiteral("select"));
+    const auto items = rec.applied[1]["items"].toList();
+    ASSERT_EQ(items.size(), 2);
+    EXPECT_EQ(items[0].toMap()["id"], QStringLiteral("1"));
+    EXPECT_TRUE(items[1].toMap()["title"].toString().startsWith("lib/other.cpp:7:"));
 }
 
 int main(int argc, char** argv)

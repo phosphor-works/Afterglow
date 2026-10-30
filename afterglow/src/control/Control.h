@@ -65,6 +65,8 @@ public:
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText unless @p trusted (afterglow itself).
     QString readText(quint32 pane, TextScope scope, QString& out, bool trusted = false);
+    /// Bounded script query. Installed scripts are trusted to read their terminal.
+    QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result);
     QString split(quint32 pane, bool right, const QStringList& command, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newWindow(const QString& workingDirectory, const QStringList& command, quint32& created);
@@ -83,6 +85,11 @@ public:
     /// A keybind action by its config name (split_right, new_tab...), or a
     /// script action as "script:<script id>.<action id>".
     QString runAction(quint32 pane, const QString& action);
+
+    using ScriptReply = std::function<void(QString, QVariantMap)>;
+    QString scriptDialog(const QString& owner, quint32 pane, const QVariantMap& effect, ScriptReply reply);
+    QString scriptAppearance(const QString& owner, quint32 pane, const QVariantMap& effect);
+    void clearScriptOwner(const QString& owner);
 
     static QString scopeName(TextScope scope);
     static std::optional<TextScope> scopeFromName(const QString& name);

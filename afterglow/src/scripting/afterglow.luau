@@ -23,6 +23,29 @@ local function list(value)
 end
 
 afterglow = {
+    timer = function(name, delay_ms, repeat_ms)
+        return {kind="timer", name=name, delay_ms=delay_ms, repeat_ms=repeat_ms or 0}
+    end,
+    cancel = function(name) return {kind="cancel", name=name} end,
+    exec = function(name, command, options)
+        local o = options or {}
+        return {kind="exec", name=name, request_id=name, command=list(command), cwd=o.cwd or "",
+            timeout_ms=o.timeout_ms or 30000, max_bytes=o.max_bytes or 65536}
+    end,
+    read_file = function(name, path, options)
+        local o = options or {}
+        return {kind="read_file", name=name, request_id=name, path=path,
+            timeout_ms=o.timeout_ms or 30000, max_bytes=o.max_bytes or 65536}
+    end,
+    watch_file = function(name, path) return {kind="watch_file", name=name, path=path} end,
+    set_actions = function(actions) return {kind="set_actions", actions=actions} end,
+    select = function(pane, title, items) return {kind="select", pane=paneId(pane), title=title, items=items} end,
+    prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
+    status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,
+    override = function(pane, values) return {kind="override", pane=paneId(pane), values=values} end,
+    read_text = function(pane, scope, max_bytes)
+        return {kind="read_text", pane=paneId(pane), scope=scope or "last-output", max_bytes=max_bytes or 65536}
+    end,
     -- Scope is relative to the anchor, or the globally active objects when
     -- omitted. This only reads the detached snapshot provided with the event.
     panes = function(state, scope, anchor)

@@ -92,6 +92,10 @@ public:
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane.
     bool runAction(Pane* pane, Action action);
+    using ScriptReply = std::function<void(QString, QVariantMap)>;
+    QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
+    QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
+    void clearScriptOwner(const QString& owner);
 
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
@@ -155,6 +159,22 @@ private:
     bool resizeFocused(SplitTree::Neighbour direction);
     bool handleShortcut(QKeyEvent* e);
     void updateKeyMode();
+    bool copyModeKey(QKeyEvent* e);
+    void stopCopyMode();
+    QPointer<Pane> m_copyPane;
+    struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; };
+    std::optional<ScriptDialog> m_scriptDialog;
+    void finishScriptDialog(bool accepted, const QString& value);
+    struct ScriptAppearance {
+        QString owner;
+        QPointer<Pane> pane;
+        QVariantMap values;
+        QString status, tab;
+        quint64 order = 0;
+    };
+    std::vector<ScriptAppearance> m_scriptAppearance;
+    quint64 m_scriptAppearanceOrder = 0;
+    QVariantMap scriptOverrides(Pane* pane) const;
     void cancelKeyMode();
     KeyModes::State m_keyMode;
     QTimer m_keyModeTimer;
@@ -314,6 +334,8 @@ private:
         QString url;
         int row = 0;
         int col = 0;
+        QString action = {};
+        QStringList command = {};
     };
     struct UrlMode
     {
@@ -322,7 +344,11 @@ private:
         QPointer<Pane> pane;
         std::vector<UrlHint> hints;
         QString typed;
+        std::uint64_t generation = 0;
     } m_urlMode;
+    std::shared_ptr<std::atomic<bool>> m_hintCancel;
+    void startHints();
+    void activateHints(std::vector<UrlHint> hints, bool copy);
     void startUrlMode(bool copy);
     void stopUrlMode();
     void showUrlHints();

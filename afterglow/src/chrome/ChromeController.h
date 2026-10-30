@@ -16,6 +16,10 @@ namespace Afterglow {
 class ChromeController : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(QVariantMap scriptDialog READ scriptDialog NOTIFY scriptDialogChanged)
+    Q_PROPERTY(QString scriptStatus READ scriptStatus NOTIFY scriptStatusChanged)
+    Q_PROPERTY(QVariantMap history READ history NOTIFY historyChanged)
+    Q_PROPERTY(bool searchRegex READ searchRegex WRITE setSearchRegex NOTIFY searchRegexChanged)
     Q_PROPERTY(QString keyMode READ keyMode NOTIFY keyModeChanged)
     Q_PROPERTY(QStringList tabTitles READ tabTitles NOTIFY tabsChanged)
     Q_PROPERTY(QVariantList tabStatus READ tabStatus NOTIFY tabStatusChanged)
@@ -44,6 +48,16 @@ class ChromeController : public QObject
 
 public:
     using QObject::QObject;
+    QVariantMap scriptDialog() const { return m_scriptDialog; }
+    void setScriptDialog(const QVariantMap& value) { m_scriptDialog = value; Q_EMIT scriptDialogChanged(); }
+    Q_INVOKABLE void answerScriptDialog(bool accepted, const QString& value) { Q_EMIT scriptDialogAnswered(accepted, value); }
+    QString scriptStatus() const { return m_scriptStatus; }
+    void setScriptStatus(const QString& value) { if (m_scriptStatus != value) { m_scriptStatus = value; Q_EMIT scriptStatusChanged(); } }
+    QVariantMap history() const { return m_history; }
+    void setHistory(const QVariantMap& value) { if (m_history != value) { m_history = value; Q_EMIT historyChanged(); } }
+    Q_INVOKABLE void scrollHistory(double value) { Q_EMIT historyRequested(value); }
+    bool searchRegex() const { return m_searchRegex; }
+    void setSearchRegex(bool value) { if (m_searchRegex != value) { m_searchRegex = value; Q_EMIT searchRegexChanged(); } }
     QString keyMode() const { return m_keyMode; }
     void setKeyMode(const QString& value) {
         if (m_keyMode != value) { m_keyMode = value; Q_EMIT keyModeChanged(); }
@@ -132,7 +146,7 @@ public:
     bool wantsKeyboard() const
     {
         return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen || contextMenuOpen()
-            || titlePromptOpen() || confirmPromptOpen();
+            || titlePromptOpen() || confirmPromptOpen() || m_scriptDialog.value(QStringLiteral("open")).toBool();
     }
 
     Q_INVOKABLE void activateTab(int index) { Q_EMIT activateTabRequested(index); }
@@ -155,6 +169,12 @@ Q_SIGNALS:
     void tabStatusChanged();
     void tabContextsChanged();
     void urlHintsChanged();
+    void scriptDialogChanged();
+    void scriptDialogAnswered(bool accepted, const QString& value);
+    void scriptStatusChanged();
+    void historyChanged();
+    void historyRequested(double position);
+    void searchRegexChanged();
     void keyModeChanged();
     void unicodeInputChanged();
     void clipboardPromptChanged();
@@ -184,6 +204,10 @@ Q_SIGNALS:
     void searchRequested(const QString& query, int direction);
 
 private:
+    QVariantMap m_scriptDialog;
+    QString m_scriptStatus;
+    QVariantMap m_history;
+    bool m_searchRegex = false;
     QString m_keyMode;
     QStringList m_tabTitles;
     QVariantList m_tabStatus;

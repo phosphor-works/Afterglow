@@ -106,6 +106,7 @@ struct Settings
     MouseSettings mouse;
     LinkSettings links;
     bool scripts = true; ///< run Luau scripts from the scripts directories
+    QString pager = QStringLiteral("less -R");
     bool shellIntegration = true;
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
@@ -132,6 +133,7 @@ struct Settings
     QString themePath;
     /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString clipboardRead = QStringLiteral("ask");
+    QVariantList hintPatterns;
     KeyModes keyModes;
     Keybinds keybinds = Keybinds::defaults();
     /// Shader references (pack ids or file paths) for each chain, applied in order.

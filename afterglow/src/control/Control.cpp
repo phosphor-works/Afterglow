@@ -218,6 +218,21 @@ QString Control::readText(quint32 id, TextScope scope, QString& out, bool truste
     return {};
 }
 
+QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QVariantMap& result)
+{
+    if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
+    auto* pane = find(id);
+    if (!pane) return noPane(id);
+    using Scope = AfterglowVt::Terminal::TextScope;
+    Scope kind;
+    if (scope == QLatin1String("screen")) kind = Scope::Screen;
+    else if (scope == QLatin1String("scrollback")) kind = Scope::All;
+    else if (scope == QLatin1String("last-output")) kind = Scope::LastOutput;
+    else return QStringLiteral("text scope must be screen, scrollback or last-output");
+    result = pane->readText(kind, std::size_t(limit));
+    return {};
+}
+
 QString Control::split(quint32 id, bool right, const QStringList& command, quint32& created)
 {
     TerminalWindow* w = nullptr;
@@ -425,6 +440,23 @@ std::optional<Control::TextScope> Control::scopeFromName(const QString& name)
         }
     }
     return std::nullopt;
+}
+
+QString Control::scriptDialog(const QString& owner, quint32 id, const QVariantMap& effect, ScriptReply reply)
+{
+    TerminalWindow* window = nullptr;
+    auto* pane = find(id, &window);
+    return pane ? window->showScriptDialog(owner, pane, effect, std::move(reply)) : QStringLiteral("Pane closed");
+}
+QString Control::scriptAppearance(const QString& owner, quint32 id, const QVariantMap& effect)
+{
+    TerminalWindow* window = nullptr;
+    auto* pane = find(id, &window);
+    return pane ? window->setScriptAppearance(owner, pane, effect) : QStringLiteral("Pane closed");
+}
+void Control::clearScriptOwner(const QString& owner)
+{
+    for (auto window : m_windows) if (window) window->clearScriptOwner(owner);
 }
 
 } // namespace Afterglow

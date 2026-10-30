@@ -199,6 +199,7 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Terminal] = {
         intKey(QStringLiteral("scrollback"), 10000, 0, 1000000, QStringLiteral("Lines of history per pane")),
         {QStringLiteral("shellIntegration"), true, QMetaType::Bool, QStringLiteral("Automatic Bash, Zsh and Fish prompt integration")},
+        stringKey(QStringLiteral("pager"), QStringLiteral("less -R"), QStringLiteral("Command used to view the last command output; no shell expansion")),
         stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run; empty runs your login shell")),
         stringKey(QStringLiteral("term"), QStringLiteral("xterm-256color"), QStringLiteral("TERM for child programs")),
         {QStringLiteral("cursorShape"), QStringLiteral("block"), QMetaType::QString, QStringLiteral("block, underline or bar"),
@@ -352,6 +353,12 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Shaders run over the whole window, across splits, after the pane shaders")},
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Per shader parameter values, e.g. { \"bloom\": { \"strength\": 0.5 } }")},
+    };
+    schema.groups[QStringLiteral("Hints")] = {
+        {QStringLiteral("patterns"), QVariantList{QVariantMap{
+            {QStringLiteral("pattern"), QStringLiteral(R"((?:~?/|\.{1,2}/)?[\w.@+-]+(?:/[\w.@+-]+)*(?:\.[\w+-]+|:\d+)(?::\d+){0,2})")},
+            {QStringLiteral("action"), QStringLiteral("copy")}}}, QMetaType::QVariantList,
+         QStringLiteral("Up to 16 regex hints with copy, open or command action; command is an argv list")},
     };
     schema.groups[Keys] = {
         stringKey(QStringLiteral("leader"), {}, QStringLiteral("Prefix key used by Leader sequences")),
@@ -675,6 +682,7 @@ Settings SettingsStore::read() const
                     : shape == QLatin1String("underline") ? AfterglowVt::CursorShape::Underline
                                                           : AfterglowVt::CursorShape::Block;
     t.cursorBlink = st.read<bool>(Terminal, QStringLiteral("cursorBlink"));
+    s.pager = st.read<QString>(Terminal, QStringLiteral("pager"));
     s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell"));
     s.term = st.read<QString>(Terminal, QStringLiteral("term"));
@@ -771,6 +779,7 @@ Settings SettingsStore::read() const
                  shaderList("window")};
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
+    s.hintPatterns = st.read<QVariantList>(QStringLiteral("Hints"), QStringLiteral("patterns")).mid(0, 16);
     // Keybinds
     QStringList errors;
     s.keybinds = Keybinds::fromMap(st.read<QVariantMap>(Keys, QStringLiteral("bindings")), &errors);

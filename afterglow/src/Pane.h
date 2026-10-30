@@ -14,6 +14,7 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <AfterglowVt/TextSearch.h>
 #include <QTimer>
 #include <QString>
 
@@ -86,6 +87,7 @@ public:
     QString userTitle() const;
     QString workingDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
+    QVariantMap readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit);
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;
     /// The program closing the pane would end: the shell's foreground job, or
@@ -130,7 +132,7 @@ public:
     };
     /// Runs or steps a search and scrolls the match into view. @p direction:
     /// 0 searches afresh from the bottom of the viewport, 1 next, -1 previous.
-    SearchResult search(const QString& query, int direction);
+    void search(const QString& query, int direction, bool regex = false);
     void clearSearch();
 
     /// Text being composed by an input method, drawn over the grid at the
@@ -151,12 +153,19 @@ public:
     void clearSelection();
     /// Selects all the history and the screen down to the cursor's row.
     void selectAll();
+    void beginCopyMode();
+    bool moveCopyCursor(int dx, int dy, int edge = 0);
+    void toggleCopySelection(AfterglowVt::SelectionMode mode);
+    void endCopyMode();
+    QVariantMap historyPosition() const;
+    void scrollHistory(double fraction);
     bool hasSelection() const;
     QString selectedText() const;
 
 Q_SIGNALS:
     /// The terminal changed. Emitted on the GUI thread, coalesced.
     void contentChanged();
+    void searchStatusChanged(const QString& status);
     void titleUpdated(const QString& title);
     void contextUpdated();
     void userVarUpdated(const QString& name, const QString& value);
@@ -224,10 +233,25 @@ private:
     AfterglowVt::Terminal m_terminal;
     QString m_title;
 
+    bool m_copyMode = false;
+    bool m_copySelecting = false;
+    AfterglowVt::SelectionPoint m_copyCursor;
     AfterglowVt::Selection m_selection;
     bool m_selectionOnAltScreen = false;
     std::uint64_t m_selectionSerial = 0;
 
+    struct SearchJob {
+        AfterglowVt::TextSnapshot text;
+        std::atomic<bool> cancelled{false};
+        std::uint64_t epoch = 0, nextRow = 0, lastRow = 0;
+        bool alt = false;
+    };
+    std::shared_ptr<SearchJob> m_searchJob;
+    void captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex);
+    bool m_searchRegex = false;
+    std::uint64_t m_searchEpoch = 0;
+    bool m_searchAlt = false;
+    QString m_searchNotice;
     std::vector<AfterglowVt::SearchMatch> m_searchMatches;
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;

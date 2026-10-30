@@ -560,6 +560,28 @@ TEST_F(Render, FocusedBlockCursorFillsItsCell)
     EXPECT_PIXEL(img, cellCenter(3, 1), rgb(snapshot.defaultBg));
 }
 
+TEST_F(Render, OwnedCursorBlinkOverridesInvalidateCachedFramesAndRestoreTerminalMode)
+{
+    for (int terminalStyle : {1, 2}) {
+        render("\x1b[" + std::to_string(terminalStyle) + " q");
+        WindowRenderer::Pane pane{&snapshot, {}};
+        const QSize size(Cols * cw, Rows * ch);
+        pane.params.rect = QRect(QPoint(), size);
+        pane.params.focused = true;
+        pane.params.cursorBlinkOn = false;
+        auto draw = [&] {
+            return renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg).pixel(cellCenter(0, 0));
+        };
+        pane.params.cursorBlinkOverride = 0;
+        EXPECT_NE(draw(), rgb(snapshot.defaultBg));
+        pane.params.cursorBlinkOverride = 1;
+        EXPECT_EQ(draw(), rgb(snapshot.defaultBg));
+        pane.params.cursorBlinkOverride = -1;
+        if (terminalStyle == 1) EXPECT_EQ(draw(), rgb(snapshot.defaultBg));
+        else EXPECT_NE(draw(), rgb(snapshot.defaultBg));
+    }
+}
+
 TEST_F(Render, ScaledBlockFillsItsCells)
 {
     // OSC 66 s=2 with a full block: 2x2 cells of foreground.

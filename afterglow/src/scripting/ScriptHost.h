@@ -21,6 +21,8 @@ class LuauWatchdog;
 
 namespace Afterglow {
 
+class ScriptTasks;
+
 /// Luau scripts that react to terminal events and add actions. Each script
 /// runs in its own sandboxed engine with a heap cap and a time limit per
 /// call. Handlers do not touch the terminal: they return effects, which the
@@ -39,6 +41,7 @@ public:
         QString error; ///< empty on success
         QVariantMap data;
         QString code; ///< stable error category, empty on success
+        bool deferred = false; ///< completion is delivered asynchronously
     };
 
     struct Callbacks
@@ -51,6 +54,9 @@ public:
         std::function<bool(const QString& action)> structuralAction;
         /// Carries out a checked effect, preserving created object identities.
         std::function<EffectResult(const QVariantMap& effect)> apply;
+        /// Owned UI/override operations. Completion is used only when deferred=true.
+        std::function<EffectResult(const QString& owner, const QVariantMap&, std::function<void(EffectResult)>)> applyOwned;
+        std::function<void(const QString& owner)> cleanup;
     };
 
     struct ScriptAction
@@ -111,8 +117,11 @@ private:
                      const EffectResult& result, quint32 eventPane);
     bool withinBudget(Script& script, bool structural);
     void watch();
+    void retire(const ScriptPtr& script);
+    void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane);
 
     Callbacks m_callbacks;
+    std::unique_ptr<ScriptTasks> m_tasks;
     std::shared_ptr<PhosphorScripting::LuauWatchdog> m_watchdog;
     QByteArray m_prelude;
     QStringList m_searchPaths;

@@ -87,6 +87,7 @@ public:
         QPoint contentOrigin; ///< top-left of cell (0, 0)
         bool focused = false;
         bool cursorBlinkOn = true;
+        int cursorBlinkOverride = -1; ///< -1 follows terminal mode, 0 steady, 1 blinking
         /// The visible phase of blinking text (SGR 5).
         bool textBlinkOn = true;
         /// Where the cursor is drawn, in pixels from cell (0, 0), while it
@@ -333,6 +334,7 @@ private:
         QPoint origin;
         bool focused = false;
         bool blinkOn = false;
+        int cursorBlinkOverride = -1;
         bool textBlinkOn = true;
         std::optional<QPointF> cursorPosition;
         float scrollShift = 0;

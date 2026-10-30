@@ -155,7 +155,8 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // Blinking text (SGR 5) disappears in the off phase; its background stays.
     const bool hideBlinking = !p.textBlinkOn && s.hasBlinkingText;
     const bool cursorInGrid = s.cursorX >= 0 && s.cursorX < s.cols && s.cursorY >= 0 && s.cursorY < s.rows;
-    const bool drawCursor = s.cursorVisible && cursorInGrid && (!p.focused || !s.cursorBlink || p.cursorBlinkOn);
+    const bool cursorBlink = p.cursorBlinkOverride < 0 ? s.cursorBlink : p.cursorBlinkOverride != 0;
+    const bool drawCursor = s.cursorVisible && cursorInGrid && (!p.focused || !cursorBlink || p.cursorBlinkOn);
     const int cursorSpan = drawCursor && s.at(s.cursorX, s.cursorY).width == 2 ? 2 : 1;
     const bool blockCursor = drawCursor && p.focused && s.cursorShape == AfterglowVt::CursorShape::Block;
     // Where the cursor is drawn: its cell, or a point on its glide there.
@@ -940,6 +941,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
                 && cache.glyphEpoch == res.glyphs.epoch() && cache.fonts == res.fonts.get() && cache.rect == pp.rect
                 && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
+                && cache.cursorBlinkOverride == pp.cursorBlinkOverride
                 && cache.cursorPosition == pp.cursorPosition && cache.scrollShift == pp.scrollShift
                 && cache.backgroundAlpha == pp.backgroundAlpha && cache.allowSubpixel == pp.allowSubpixel && cache.hoveredLink == pp.hoveredLink
                 && cache.hoverRow == pp.hoverRow && cache.hoverColStart == pp.hoverColStart
@@ -961,6 +963,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 cache.origin = pp.contentOrigin;
                 cache.focused = pp.focused;
                 cache.blinkOn = pp.cursorBlinkOn;
+                cache.cursorBlinkOverride = pp.cursorBlinkOverride;
                 cache.textBlinkOn = pp.textBlinkOn;
                 cache.cursorPosition = pp.cursorPosition;
                 cache.scrollShift = pp.scrollShift;

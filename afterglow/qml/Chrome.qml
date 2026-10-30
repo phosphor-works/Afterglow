@@ -15,12 +15,17 @@ Item {
 
     // Called by the host for every pointer event: true if the chrome takes it.
     function wantsPointer(x: real, y: real): bool {
+        if (scriptDialog.active) return true
         if (contextMenu.visible || titlePrompt.visible || confirmPrompt.visible)
             return true
         if (tabBar.visible && y < tabBar.height)
             return true
         if (commandPalette.visible || pasteConfirm.visible || root.controller.clipboardPromptOpen)
             return true
+        if (historyScroll.visible) {
+            const p = historyScroll.mapFromItem(root, x, y)
+            if (historyScroll.contains(p)) return true
+        }
         if (searchBar.visible) {
             const p = searchBar.mapFromItem(root, x, y)
             return searchBar.contains(p)
@@ -95,6 +100,26 @@ Item {
         width: root.width
         height: root.controller.tabBarHeight > 0 ? root.controller.tabBarHeight : 0
         visible: root.controller.tabBarHeight > 0
+    }
+
+    QQC.ScrollBar {
+        id: historyScroll
+        x: root.controller.history.x || 0
+        y: root.controller.history.y || 0
+        height: root.controller.history.height || 0
+        width: 12
+        orientation: Qt.Vertical
+        size: root.controller.history.size === undefined ? 1 : root.controller.history.size
+        visible: size < 1
+        active: hovered || pressed
+        Accessible.name: qsTr("Scrollback position")
+        onPositionChanged: { if (pressed) root.controller.scrollHistory(position) }
+        Binding {
+            target: historyScroll
+            property: "position"
+            value: root.controller.history.position || 0
+            when: !historyScroll.pressed
+        }
     }
 
     SearchBar {
@@ -179,6 +204,27 @@ Item {
         }
     }
 
+    Rectangle {
+        id: scriptStatusBadge
+        anchors.bottom: root.bottom
+        anchors.left: root.left
+        anchors.margins: 12
+        visible: root.controller.scriptStatus.length > 0
+        width: Math.min(scriptStatusLabel.implicitWidth + 16, root.width * 0.6)
+        height: scriptStatusLabel.implicitHeight + 12
+        color: systemPalette.window
+        radius: 4
+        QQC.Label {
+            id: scriptStatusLabel
+            anchors.fill: scriptStatusBadge
+            anchors.margins: 6
+            textFormat: Text.PlainText
+            text: root.controller.scriptStatus
+            elide: Text.ElideRight
+            color: systemPalette.windowText
+        }
+    }
+
     ClipboardPrompt {
         controller: root.controller
         anchors.fill: root
@@ -211,6 +257,13 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.confirmPrompt.open === true
+    }
+
+    Loader {
+        id: scriptDialog
+        anchors.fill: root
+        active: root.controller.scriptDialog.open === true
+        sourceComponent: Component { ScriptDialog { controller: root.controller } }
     }
 
     ContextMenu {

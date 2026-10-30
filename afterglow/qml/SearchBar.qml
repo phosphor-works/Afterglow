@@ -38,6 +38,19 @@ Pane {
             Keys.onEnterPressed: event => bar.controller.search(text, (event.modifiers & Qt.ShiftModifier) ? -1 : 1)
         }
 
+        ToolButton {
+            text: qsTr(".*")
+            checkable: true
+            checked: bar.controller.searchRegex
+            Accessible.name: qsTr("Regular expression")
+            ToolTip.visible: hovered
+            ToolTip.text: Accessible.name
+            onClicked: {
+                bar.controller.searchRegex = checked
+                bar.controller.search(query.text, 0)
+            }
+        }
+
         Label {
             text: bar.controller.searchStatus
         }

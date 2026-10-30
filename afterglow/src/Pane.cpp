@@ -23,6 +23,8 @@
 #include <unistd.h>
 
 #include <sys/wait.h>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 
 Q_LOGGING_CATEGORY(lcPane, "afterglow.pane", QtInfoMsg)
 
@@ -55,6 +57,7 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
 
 Pane::~Pane()
 {
+    if (m_searchJob) m_searchJob->cancelled = true;
     // Stop the pty thread before the terminal it feeds goes away.
     m_pty.reset();
 }
@@ -176,7 +179,7 @@ bool Pane::refreshSnapshot(int extraRows)
         || extraRows != m_snapshotExtraRows) {
         const bool selectionHere = m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen;
         AfterglowRender::SearchHighlight highlight;
-        if (m_searchActive) {
+        if (m_searchActive && m_searchEpoch == m_terminal.screen().layoutEpoch() && m_searchAlt == m_terminal.modes().altScreen) {
             highlight.matches = &m_searchMatches;
             highlight.current = m_searchCurrent;
             highlight.matchColor = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
@@ -279,43 +282,162 @@ void revealRow(AfterglowVt::Terminal& t, std::size_t abs)
 }
 } // namespace
 
-Pane::SearchResult Pane::search(const QString& query, int direction)
+void Pane::beginCopyMode()
 {
     std::lock_guard lock(m_mutex);
-    const std::u32string needle = query.toStdU32String();
-    const AfterglowVt::Screen& scr = m_terminal.screen();
-    if (direction == 0 || needle != m_searchQuery || !m_searchActive) {
-        m_searchQuery = needle;
-        m_searchMatches = AfterglowVt::findAll(scr, needle);
-        m_searchActive = true;
-        // Start from the newest match at or above the bottom of the viewport.
-        const std::uint64_t bottom = scr.rowsDropped() + scr.viewportTop() + std::size_t(scr.rows()) - 1;
-        m_searchCurrent = -1;
-        for (int i = int(m_searchMatches.size()) - 1; i >= 0; --i) {
-            if (m_searchMatches[std::size_t(i)].start.row <= bottom) {
-                m_searchCurrent = i;
-                break;
+    const auto& screen = m_terminal.screen();
+    m_copyCursor = {screen.rowsDropped() + (screen.viewportOffset() ? screen.viewportTop() : screen.historySize() + std::size_t(screen.cursor.y)),
+                    screen.viewportOffset() ? 0 : screen.cursor.x};
+    m_copyCursor = AfterglowVt::moveSelectionCursor(screen, m_copyCursor, 0, 0);
+    m_copyMode = true; m_copySelecting = false;
+    m_selection = {m_copyCursor, m_copyCursor, AfterglowVt::SelectionMode::Normal, screen.layoutEpoch(), true};
+    m_selectionOnAltScreen = m_terminal.modes().altScreen;
+    ++m_selectionSerial;
+}
+bool Pane::moveCopyCursor(int dx, int dy, int edge)
+{
+    std::lock_guard lock(m_mutex);
+    const auto& screen = m_terminal.screen();
+    if (!m_copyMode || !m_selection.validFor(screen) || m_selectionOnAltScreen != m_terminal.modes().altScreen) return false;
+    if (edge == 1) m_copyCursor.col = 0;
+    if (edge == 2) m_copyCursor.col = screen.cols() - 1;
+    if (edge == 3) m_copyCursor = {screen.rowsDropped(), 0};
+    if (edge == 4) m_copyCursor = {screen.rowsDropped() + screen.totalRows() - 1, 0};
+    m_copyCursor = AfterglowVt::moveSelectionCursor(screen, m_copyCursor, dx, dy);
+    if (!m_copySelecting) m_selection.anchor = m_copyCursor;
+    m_selection.head = m_copyCursor;
+    revealRow(m_terminal, std::size_t(m_copyCursor.row - screen.rowsDropped()));
+    ++m_selectionSerial;
+    return true;
+}
+void Pane::toggleCopySelection(AfterglowVt::SelectionMode mode)
+{
+    std::lock_guard lock(m_mutex);
+    m_copySelecting = !m_copySelecting || m_selection.mode != mode;
+    m_selection.mode = mode;
+    m_selection.anchor = m_copyCursor;
+    ++m_selectionSerial;
+}
+void Pane::endCopyMode()
+{
+    std::lock_guard lock(m_mutex);
+    m_copyMode = false; m_copySelecting = false; m_selection.active = false;
+    ++m_selectionSerial;
+}
+QVariantMap Pane::historyPosition() const
+{
+    std::lock_guard lock(m_mutex);
+    const auto& screen = m_terminal.screen();
+    return {{QStringLiteral("position"), double(screen.viewportTop()) / double(screen.totalRows())},
+            {QStringLiteral("size"), double(screen.rows()) / double(screen.totalRows())}};
+}
+void Pane::scrollHistory(double fraction)
+{
+    std::lock_guard lock(m_mutex);
+    const auto& screen = m_terminal.screen();
+    const long top = long(std::clamp(fraction, 0.0, 1.0) * double(screen.totalRows()));
+    m_terminal.scrollViewport(long(screen.viewportTop()) - top);
+}
+
+void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex)
+{
+    if (job != m_searchJob || job->cancelled) return;
+    bool more = false;
+    {
+        std::lock_guard lock(m_mutex);
+        const auto& screen = m_terminal.screen();
+        if (screen.layoutEpoch() != job->epoch || m_terminal.modes().altScreen != job->alt) {
+            job->cancelled = true;
+        } else {
+            const auto begin = std::max(job->nextRow, screen.rowsDropped());
+            const auto end = std::min({begin + 128, job->lastRow, screen.rowsDropped() + screen.totalRows()});
+            for (auto row = begin; row < end; ++row) {
+                if (!AfterglowVt::appendTextRow(job->text, screen, std::size_t(row - screen.rowsDropped()))) break;
             }
+            job->nextRow = end;
+            more = end < std::min(job->lastRow, screen.rowsDropped() + screen.totalRows()) && !job->text.truncated;
         }
-        if (m_searchCurrent < 0 && !m_searchMatches.empty()) {
+    }
+    if (job->cancelled) {
+        m_searchJob.reset();
+        Q_EMIT searchStatusChanged(tr("Layout changed; search again"));
+        return;
+    }
+    if (more) {
+        QTimer::singleShot(0, this, [this, job, query = std::move(query), regex] { captureSearch(job, query, regex); });
+        return;
+    }
+    auto* watcher = new QFutureWatcher<AfterglowVt::TextSearchResult>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, job] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        if (job != m_searchJob || result.cancelled) return;
+        m_searchJob.reset();
+        {
+            std::lock_guard lock(m_mutex);
+            if (m_terminal.screen().layoutEpoch() != job->epoch || m_terminal.modes().altScreen != job->alt) {
+                result.matches.clear(); result.error = "Layout changed; search again";
+            }
+            std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
+            m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
+            m_searchNotice = QString::fromStdString(result.error);
+            if (result.truncated) m_searchNotice += tr(" (limited results)");
+            if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
+            ++m_selectionSerial;
         }
-    } else if (!m_searchMatches.empty()) {
-        const int n = int(m_searchMatches.size());
-        m_searchCurrent = ((m_searchCurrent + direction) % n + n) % n;
+        search(QString::fromStdU32String(m_searchQuery), 0, m_searchRegex);
+        Q_EMIT contentChanged();
+    });
+    watcher->setFuture(QtConcurrent::run([job, query = std::move(query), regex] {
+        return AfterglowVt::searchText(job->text, query, regex, job->cancelled);
+    }));
+}
+
+void Pane::search(const QString& query, int direction, bool regex)
+{
+    const auto needle = query.toStdU32String();
+    bool layoutChanged = false;
+    {
+        std::lock_guard lock(m_mutex);
+        layoutChanged = m_searchEpoch != m_terminal.screen().layoutEpoch() || m_searchAlt != m_terminal.modes().altScreen;
     }
-    if (m_searchCurrent >= 0) {
-        const long long abs = scr.absoluteIndexOf(m_searchMatches[std::size_t(m_searchCurrent)].start.row);
-        if (abs >= 0) {
-            revealRow(m_terminal, std::size_t(abs));
+    if (layoutChanged || needle != m_searchQuery || regex != m_searchRegex || !m_searchActive) {
+        clearSearch();
+        m_searchActive = true; m_searchRegex = regex; m_searchQuery = needle;
+        m_searchNotice.clear();
+        auto job = std::make_shared<SearchJob>();
+        {
+            std::lock_guard lock(m_mutex);
+            const auto& screen = m_terminal.screen();
+            job->epoch = m_searchEpoch = screen.layoutEpoch(); job->alt = m_searchAlt = m_terminal.modes().altScreen;
+            job->lastRow = screen.rowsDropped() + screen.totalRows();
+            job->nextRow = screen.rowsDropped();
         }
+        m_searchJob = job;
+        Q_EMIT searchStatusChanged(tr("Searching…"));
+        captureSearch(job, needle, regex);
+        return;
     }
-    ++m_selectionSerial; // highlights changed: recapture
-    return {m_searchCurrent, int(m_searchMatches.size())};
+    if (m_searchJob) return;
+    QString status;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_searchMatches.empty()) {
+            const int count = int(m_searchMatches.size());
+            m_searchCurrent = (m_searchCurrent + direction + count) % count;
+            const auto row = m_terminal.screen().absoluteIndexOf(m_searchMatches[std::size_t(m_searchCurrent)].start.row);
+            if (row >= 0) revealRow(m_terminal, std::size_t(row));
+            status = tr("%1 of %2").arg(m_searchCurrent + 1).arg(count);
+        } else status = tr("No matches");
+        ++m_selectionSerial;
+    }
+    Q_EMIT searchStatusChanged(m_searchNotice.isEmpty() ? status : status + QStringLiteral(" · ") + m_searchNotice);
 }
 
 void Pane::clearSearch()
 {
+    if (m_searchJob) { m_searchJob->cancelled = true; m_searchJob.reset(); }
     std::lock_guard lock(m_mutex);
     if (!m_searchActive) {
         return;
@@ -462,6 +584,15 @@ QString Pane::text(AfterglowVt::Terminal::TextScope scope)
 {
     std::lock_guard lock(m_mutex);
     return QString::fromStdString(m_terminal.text(scope));
+}
+
+QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit)
+{
+    std::lock_guard lock(m_mutex);
+    bool truncated = false;
+    const auto text = m_terminal.text(scope, std::min(limit, std::size_t(1024 * 1024)), &truncated);
+    return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("truncated"), truncated},
+            {QStringLiteral("available"), scope != AfterglowVt::Terminal::TextScope::LastOutput || m_terminal.hasCommandOutput()}};
 }
 
 QString Pane::runningCommand() const

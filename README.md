@@ -8,10 +8,10 @@ every window draws through one GPU device.
 
 ## Requirements
 
-- Qt 6.8 or later (Core, Gui, Widgets, Qml, Quick, QuickControls2, DBus, ShaderTools, and the GuiPrivate,
+- Qt 6.8 or later (Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, ShaderTools, and the GuiPrivate,
   WaylandClientPrivate and QuickPrivate headers)
 - A Vulkan driver
-- FreeType, HarfBuzz, fontconfig, xkbcommon, wayland-client, zlib
+- FreeType, HarfBuzz, fontconfig, xkbcommon, wayland-client, zlib, PCRE2 (32-bit library)
 - KF6 WindowSystem
 - The phosphor libraries from a PlasmaZones checkout (see below)
 - Optional: `rsvg-convert` (renders the icon sizes), `tic` (compiles the
@@ -210,6 +210,53 @@ panes keep running at their previous terminal size. Resizing clamps nested
 splits to a minimum of four columns and two rows plus padding. At an outside
 edge, a resize moves the nearest divider on that axis in the requested direction.
 
+### History, search, and hints
+
+`copy_mode` (Ctrl+Shift+Space) enters keyboard selection. Move with arrows or
+hjkl, PageUp/PageDown, Home/End, or Ctrl+Home/End for history boundaries.
+Press v for character selection, Shift+V for lines, Ctrl+V for a rectangle,
+and y or Return to copy and leave. Escape/q cancels; / opens search. Wide
+characters and combining sequences remain whole. A resize invalidates the
+selection rather than copying stale coordinates. The focused pane has a
+themed scrollbar showing its position within scrollback.
+
+Search's `.*` toggle enables PCRE2 regular expressions. Search joins soft
+wraps and maps matches back to cells, including wide and combining characters.
+Lowercase queries are case insensitive; uppercase makes them case sensitive.
+Capture is incremental and matching runs in a worker. Results are capped at
+10,000 matches over the first 4 Mi characters; a notice reports truncation or
+regex complexity/time limits. Search is a snapshot; reopen or edit the query
+to refresh after new output. Resize during capture cancels that search.
+
+`show_last_output` opens the last marked command output in a new tab using
+`Terminal.pager` (default `less -R`). Output is limited to 1 MiB with a
+truncation notice. The pager receives a temporary file, removed when its pane
+closes; the command uses argv parsing without shell expansion. Missing shell
+marks or an unavailable pager produce a notification.
+
+`show_hints` (Ctrl+Shift+H) labels regex matches in the current viewport.
+The default matches file:line references and copies the selected match.
+Replace `Hints.patterns` to customize it:
+
+```json
+{
+  "Hints": {
+    "patterns": [
+      {"pattern": "[A-Za-z0-9_./-]+:[0-9]+", "action": "copy"},
+      {"pattern": "[A-Za-z0-9_./-]+:[0-9]+:[0-9]+", "action": "command",
+       "command": ["kate", "--line", "{line}", "--column", "{column}", "{path}"]}
+    ]
+  }
+}
+```
+
+Actions are `copy`, `open` (a local file through the desktop), or `command`
+(explicit argv, no shell). Placeholders are `{match}`, `{path}`, `{line}`,
+and `{column}`; paths resolve against the pane's working directory.
+Matching is bounded to 16 patterns, 64 Ki characters and 1,000 distinct matches.
+Typing a label accepts it; Escape cancels. Changing pane content invalidates
+these hints. Existing URL hints remain available separately.
+
 ### Shell integration
 
 New panes automatically integrate interactive Bash (4.4+), Zsh and Fish (4+).
@@ -275,7 +322,8 @@ turns the interface off.
 Luau scripts in `~/.config/afterglow/scripts/` react to events (commands
 finishing, bells, titles, focus) and add actions to the command palette, which
 bind in `Keybinds` as `"script:<id>.<action>"`. Scripts run sandboxed, with
-no direct file or process API and a short time limit. They return effects, which
+no direct file or process API and a short time limit. Installed scripts are trusted:
+file reads and process launches are available through explicit effects. They return effects, which
 afterglow rate limits and carries out. Types for editors are installed to
 `share/afterglow/api/afterglow.d.luau`, and examples to
 `share/afterglow/examples/scripts`. `"Scripts": { "enabled": false }` turns
@@ -313,6 +361,60 @@ function script.run_action(action, ev)
     return afterglow.log("This tab has " .. #panes .. " panes")
 end
 ```
+
+### Script lifecycle, tasks, and native UI
+
+Scripts may define `on_load`, `on_unload`, and `on_config_changed`.
+Unchanged source retains its instance; a broken edit keeps the last working
+instance. Successful replacement, removal, disable, or repeated handler failure
+cancels its tasks and clears its UI contributions. Unload runs with the normal
+handler time limit; returned effects are ignored because resources are being
+retired. No durable state or module loader is provided yet.
+
+All task names are local to a script instance (1–64 characters), with 16 active
+tasks per script and 128 globally. Reusing an active name reports `busy`.
+`afterglow.cancel(name)` cancels that owned timer, watcher, or job.
+
+| Effect | Behavior |
+| --- | --- |
+| `timer(name, delay_ms, repeat_ms?)` | Calls `on_timer(ev)` with `ev.name`; omit repeat for one shot. Repeat is at least 250 ms and starts after the handler returns, so callbacks cannot overlap. |
+| `exec(name, argv, options?)` | Runs an explicit argv list asynchronously and sends `on_result` using name as request ID. Options: `cwd`, `timeout_ms` (default 30,000; max 600,000), `max_bytes` (default 65,536; max 1 MiB). |
+| `read_file(name, path, options?)` | Asynchronously reads a regular file with the same timeout/byte options; returns `text` and `truncated`. Eight file workers maximum; special files are rejected. |
+| `watch_file(name, path)` | Watches an existing regular file, including atomic replacement, and calls `on_file_changed` with `name`, `path`, `exists`; changes debounce for 250 ms. |
+
+Process results include `stdout`, `stderr`, `exit_code`, and `truncated`
+on normal completion. Errors include `spawn_failed`, `process_failed`,
+`timeout`, `output_limit`, `cancelled`, and `io_error`. Exceeding the combined
+stdout/stderr cap terminates the job and returns partial output. Timeout,
+cancellation, and unload terminate its process group. Callbacks for retired
+instances are discarded. Timer/watch delivery is capped at 64 callbacks per
+second per instance.
+
+Wrap `select(pane, title, items)` or `prompt(pane, title, initial_text?)`
+in `afterglow.request`. Selectors accept up to 500 unique `{id, title}`
+items with fuzzy filtering; results return the selected `id/title`.
+Prompts return `text`. Escape, pane closure, or window closure cancels;
+a second dialog in that window reports `busy`. These use the desktop's Qt
+Quick Controls theme.
+
+`set_actions({{id=..., title=...}, ...})` replaces up to 32 palette actions
+for that script, which must supply `run_action`.
+`status(pane, text?, tab_title?)` replaces its status label and tab suffix;
+empty strings clear them. `override(pane, values)` replaces its pane-local
+appearance overrides: `cursorBlink` (boolean), `backgroundOpacity`, and
+`unfocusedDim` (0–1). For each field the latest applied script override wins,
+above the loaded configuration; removing it reveals the next owner's value
+or configuration. Empty values clear that owner's overrides. All contributions
+are removed automatically on unload and pane closure.
+
+`read_text(pane, scope?, max_bytes?)` returns bounded terminal text through
+`afterglow.request`: scopes are `screen`, `scrollback`, and `last-output`
+(default), with a default 64 KiB and maximum 1 MiB. Results contain `text`,
+`truncated`, and `available`; missing command marks set `available=false`.
+Installed scripts can read terminal text independently of the external D-Bus
+read-text switch. The shipped `build-inspector.luau` example extracts compiler
+diagnostics from the last output, offers a fuzzy selector, and opens the selected
+file and line in a new editor tab.
 
 ### Operation results
 

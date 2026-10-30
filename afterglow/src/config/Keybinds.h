@@ -72,6 +72,9 @@ enum class Action {
     ResizeRight,
     ResizeUp,
     ResizeDown,
+    CopyMode,
+    ShowLastOutput,
+    ShowHints,
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",
