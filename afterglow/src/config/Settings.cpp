@@ -22,6 +22,9 @@
 #include <QLoggingCategory>
 #include <QStandardPaths>
 #include <QStyleHints>
+#include <QTemporaryDir>
+#include <QSaveFile>
+#include <QSet>
 
 Q_LOGGING_CATEGORY(lcConfig, "afterglow.config", QtInfoMsg)
 
@@ -198,6 +201,9 @@ PhosphorConfig::Schema buildSchema()
                                  "darkened. 1 leaves colours alone, 4.5 is WCAG AA")),
     };
     schema.groups[Terminal] = {
+        enumKey(QStringLiteral("bidi"), QStringLiteral("off"),
+            QStringLiteral("Bidirectional paragraph layout: off, auto, ltr or rtl; application grids keep logical order"),
+            {QStringLiteral("off"), QStringLiteral("auto"), QStringLiteral("ltr"), QStringLiteral("rtl")}),
         intKey(QStringLiteral("scrollback"), 10000, 0, 1000000, QStringLiteral("Lines of history per pane")),
         {QStringLiteral("shellIntegration"), true, QMetaType::Bool, QStringLiteral("Automatic Bash, Zsh and Fish prompt integration")},
         stringKey(QStringLiteral("pager"), QStringLiteral("less -R"), QStringLiteral("Command used to view the last command output; no shell expansion")),
@@ -325,6 +331,8 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Let them read what panes show, scrollback included")},
     };
     schema.groups[ScriptsGroup] = {
+        {QStringLiteral("allowReadText"), true, QMetaType::Bool,
+         QStringLiteral("Allow local Luau scripts to query pane text, selections and semantic regions")},
         {QStringLiteral("enabled"), true, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from ~/.config/afterglow/scripts")},
     };
@@ -405,8 +413,10 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
     QDir().mkpath(QFileInfo(path).absolutePath());
     if (!m_overrides.isEmpty()) {
         const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-        m_mergedPath = (runtime.isEmpty() ? QDir::tempPath() : runtime)
-            + QStringLiteral("/afterglow-config-%1.json").arg(QCoreApplication::applicationPid());
+        m_mergeDirectory = std::make_unique<QTemporaryDir>((runtime.isEmpty() ? QDir::tempPath() : runtime)
+            + QStringLiteral("/afterglow-config-XXXXXX"));
+        if (!m_mergeDirectory->isValid()) qFatal("Cannot create a private configuration directory");
+        m_mergedPath = m_mergeDirectory->filePath(QStringLiteral("config.json"));
     }
     m_backend = std::make_unique<PhosphorConfig::JsonBackend>(m_mergedPath.isEmpty() ? path : m_mergedPath);
     m_store = std::make_unique<PhosphorConfig::Store>(m_backend.get(), buildSchema());
@@ -417,7 +427,7 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
             qCWarning(lcConfig).noquote() << "cannot write" << path << "- running with defaults";
         }
     }
-    writeMerged();
+    if (!writeMerged()) qFatal("Cannot write the private merged configuration");
     m_backend->reparseConfiguration();
     dropMerged();
     m_settings = read();
@@ -462,21 +472,21 @@ QJsonObject merged(QJsonObject base, const QJsonObject& over)
 
 } // namespace
 
-void SettingsStore::writeMerged() const
+bool SettingsStore::writeMerged() const
 {
     if (m_mergedPath.isEmpty()) {
-        return;
+        return true;
     }
     QJsonObject root;
     QFile f(m_path);
     if (f.open(QIODevice::ReadOnly)) {
         root = QJsonDocument::fromJson(f.readAll()).object();
     }
-    QFile out(m_mergedPath);
-    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        out.write(QJsonDocument(merged(root, m_overrides)).toJson());
-    }
+    QSaveFile out(m_mergedPath);
+    const auto bytes = QJsonDocument(merged(root, m_overrides)).toJson();
+    return out.open(QIODevice::WriteOnly)
+        && out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+        && out.write(bytes) == bytes.size() && out.commit();
 }
 
 bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignment)
@@ -505,24 +515,39 @@ bool SettingsStore::darkScheme() const
 
 void SettingsStore::watch()
 {
-    // Editors often replace the file instead of writing it, which drops the
-    // file watch; watching the directory catches that and re-adds the file.
-    const QString dir = QFileInfo(m_path).absolutePath();
-    if (!m_watcher.directories().contains(dir)) {
-        m_watcher.addPath(dir);
+    QSet<QString> files, directories;
+    auto parent = [&](QString path) {
+        path = QFileInfo(path).absolutePath();
+        while (!QFileInfo(path).isDir()) {
+            const auto next = QFileInfo(path).absolutePath();
+            if (next == path) break;
+            path = next;
+        }
+        if (QFileInfo(path).isDir()) directories.insert(path);
+    };
+    auto file = [&](const QString& path) {
+        if (path.isEmpty()) return;
+        parent(path);
+        if (QFileInfo(path).isFile()) files.insert(QFileInfo(path).absoluteFilePath());
+    };
+    file(m_path);
+    const auto spec = m_store->read<QString>(Colors, QStringLiteral("theme")).trimmed();
+    const auto name = Themes::pick(spec, darkScheme());
+    if (!name.isEmpty()) {
+        if (name.contains(QLatin1Char('/'))) {
+            file(name.startsWith(QLatin1String("~/")) ? QDir::homePath() + name.mid(1) : name);
+        } else {
+            for (const auto& directory : Themes::searchDirs())
+                for (const auto& suffix : {QStringLiteral(".json"), QStringLiteral(".conf"), QString()})
+                    file(directory + QLatin1Char('/') + name + suffix);
+        }
     }
-    if (QFile::exists(m_path) && !m_watcher.files().contains(m_path)) {
-        m_watcher.addPath(m_path);
-    }
-    // The theme in use, and the user's themes folder for themes added later.
-    const QString themes = Themes::searchDirs().constFirst();
-    if (QFileInfo(themes).isDir() && !m_watcher.directories().contains(themes)) {
-        m_watcher.addPath(themes);
-    }
-    const QString theme = m_settings.themePath;
-    if (!theme.isEmpty() && QFile::exists(theme) && !m_watcher.files().contains(theme)) {
-        m_watcher.addPath(theme);
-    }
+    // Reconcile rather than accumulating watches as themes change. Parent
+    // watches survive atomic replacement and missing-file recreation.
+    for (const auto& path : m_watcher.files()) if (!files.contains(path)) m_watcher.removePath(path);
+    for (const auto& path : m_watcher.directories()) if (!directories.contains(path)) m_watcher.removePath(path);
+    for (const auto& path : files) if (!m_watcher.files().contains(path)) m_watcher.addPath(path);
+    for (const auto& path : directories) if (!m_watcher.directories().contains(path)) m_watcher.addPath(path);
 }
 
 void SettingsStore::reload()
@@ -538,7 +563,10 @@ void SettingsStore::reload()
             return;
         }
     }
-    writeMerged();
+    if (!writeMerged()) {
+        qCWarning(lcConfig) << "Cannot write merged configuration; keeping current settings";
+        return;
+    }
     m_backend->reparseConfiguration();
     dropMerged();
     const Settings previous = m_settings;
@@ -758,6 +786,11 @@ Settings SettingsStore::read() const
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
+    s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
+    const auto bidi = st.read<QString>(Terminal, QStringLiteral("bidi"));
+    s.terminal.bidi = bidi == QLatin1String("auto") ? AfterglowVt::BidiMode::Auto
+        : bidi == QLatin1String("ltr") ? AfterglowVt::BidiMode::LeftToRight
+        : bidi == QLatin1String("rtl") ? AfterglowVt::BidiMode::RightToLeft : AfterglowVt::BidiMode::Off;
 
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));

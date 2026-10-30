@@ -299,7 +299,14 @@ QByteArray Keybinds::unescape(const QString& text)
     QByteArray out;
     for (qsizetype i = 0; i < text.size(); ++i) {
         if (text[i] != QLatin1Char('\\')) {
-            out += QString(text[i]).toUtf8();
+            if (text[i].isHighSurrogate()) {
+                if (i + 1 >= text.size() || !text[i + 1].isLowSurrogate()) return {};
+                out += text.mid(i, 2).toUtf8();
+                ++i;
+            } else {
+                if (text[i].isLowSurrogate()) return {};
+                out += QString(text[i]).toUtf8();
+            }
             continue;
         }
         if (++i >= text.size()) {
@@ -337,13 +344,19 @@ QByteArray Keybinds::unescape(const QString& text)
                 return {};
             }
             break;
-        case 'u':
-            if (const auto v = hex(4)) {
-                out += QString::fromUcs4(&*v, 1).toUtf8();
-            } else {
-                return {};
-            }
+        case 'u': {
+            auto value = hex(4);
+            if (!value) return {};
+            if (*value >= 0xD800 && *value <= 0xDBFF) {
+                if (text.mid(i + 1, 2) != QLatin1String("\\u")) return {};
+                i += 2;
+                const auto low = hex(4);
+                if (!low || *low < 0xDC00 || *low > 0xDFFF) return {};
+                *value = 0x10000 + ((*value - 0xD800) << 10) + (*low - 0xDC00);
+            } else if (*value >= 0xDC00 && *value <= 0xDFFF) return {};
+            out += QString::fromUcs4(&*value, 1).toUtf8();
             break;
+        }
         default:
             return {};
         }

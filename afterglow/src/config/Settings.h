@@ -19,6 +19,8 @@
 
 #include <memory>
 
+class QTemporaryDir;
+
 namespace PhosphorConfig {
 class JsonBackend;
 class Store;
@@ -105,6 +107,7 @@ struct Settings
     ControlSettings control;
     MouseSettings mouse;
     LinkSettings links;
+    bool scriptsAllowReadText = true;
     bool scripts = true; ///< run Luau scripts from the scripts directories
     QString pager = QStringLiteral("less -R");
     bool shellIntegration = true;
@@ -178,13 +181,14 @@ private:
     void watch();
     Settings read() const;
     /// With overrides: writes the file merged with them where the backend reads.
-    void writeMerged() const;
+    bool writeMerged() const;
     void dropMerged() const;
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
 
     QString m_path;
     QJsonObject m_overrides;
+    std::unique_ptr<QTemporaryDir> m_mergeDirectory;
     QString m_mergedPath; ///< what the backend reads when there are overrides
     std::unique_ptr<PhosphorConfig::JsonBackend> m_backend;
     std::unique_ptr<PhosphorConfig::Store> m_store;

@@ -7,6 +7,10 @@
 #include <AfterglowRender/Snapshot.h>
 
 #include <QDir>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QSaveFile>
 #include <QKeyEvent>
 #include <QFile>
 #include <QJsonObject>
@@ -35,9 +39,15 @@ class ConfigTest : public ::testing::Test
 protected:
     void SetUp() override
     {
+        wasSet = qEnvironmentVariableIsSet("XDG_CONFIG_HOME");
+        previous = qgetenv("XDG_CONFIG_HOME");
         ASSERT_TRUE(m_home.isValid());
         qputenv("XDG_CONFIG_HOME", m_home.path().toUtf8());
     }
+
+    void TearDown() override { if (wasSet) qputenv("XDG_CONFIG_HOME", previous); else qunsetenv("XDG_CONFIG_HOME"); }
+    bool wasSet = false;
+    QByteArray previous;
 
     QString write(const QString& name, const QByteArray& content)
     {
@@ -419,4 +429,63 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
     EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 4);
     EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
+}
+
+TEST(Keybinds, SupplementaryUnicodeSurvivesLiteralAndEscapedBindings)
+{
+    EXPECT_EQ(Keybinds::unescape(QString::fromUtf8("a🙂é\\n")),QByteArray("a🙂é\n"));
+    EXPECT_EQ(Keybinds::unescape(QStringLiteral("\\uD83D\\uDE42")),QByteArray("🙂"));
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\uD83D")).isEmpty());
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\uDE42")).isEmpty());
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\uD83D\\u0041")).isEmpty());
+}
+
+TEST_F(ConfigTest, BidiAndScriptReadPolicyHaveExplicitDefaultsAndOverrides)
+{
+    const auto path=write(QStringLiteral("options.json"),"{}");
+    SettingsStore defaults(path);
+    EXPECT_EQ(defaults.settings().terminal.bidi,AfterglowVt::BidiMode::Off);
+    EXPECT_TRUE(defaults.settings().scriptsAllowReadText);
+    SettingsStore configured(path,QJsonObject{
+        {QStringLiteral("Terminal"),QJsonObject{{QStringLiteral("bidi"),QStringLiteral("rtl")}}},
+        {QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("allowReadText"),false}}}});
+    EXPECT_EQ(configured.settings().terminal.bidi,AfterglowVt::BidiMode::RightToLeft);
+    EXPECT_FALSE(configured.settings().scriptsAllowReadText);
+}
+
+TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
+{
+    int argc=1; char name[]="config-test"; char* argv[]={name,nullptr};
+    std::unique_ptr<QCoreApplication> app;
+    if (!QCoreApplication::instance()) app=std::make_unique<QCoreApplication>(argc,argv);
+    const auto theme=m_home.filePath(QStringLiteral("new/sub/theme.json"));
+    const auto config=write(QStringLiteral("watch.json"),QJsonDocument(QJsonObject{
+        {QStringLiteral("Colors"),QJsonObject{{QStringLiteral("theme"),theme},{QStringLiteral("foreground"),QStringLiteral("#112233")}}}
+    }).toJson());
+    SettingsStore store(config);
+    auto waitFor=[&](Rgb color) {
+        QElapsedTimer timer; timer.start();
+        do { QCoreApplication::processEvents(); QThread::msleep(5);
+            if(same(store.settings().terminal.defaultForeground,color)) return true;
+        } while(timer.elapsed()<2500);
+        return false;
+    };
+    auto replace=[&](const QByteArray& value) {
+        QSaveFile file(theme); EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+        EXPECT_EQ(file.write(value),value.size()); EXPECT_TRUE(file.commit());
+    };
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(theme).absolutePath()));
+    replace("{\"foreground\":\"#445566\"}"); ASSERT_TRUE(waitFor({0x44,0x55,0x66}));
+    replace("{\"foreground\":\"#778899\"}"); ASSERT_TRUE(waitFor({0x77,0x88,0x99}));
+    ASSERT_TRUE(QFile::remove(theme)); ASSERT_TRUE(waitFor({0x11,0x22,0x33}));
+    replace("{\"foreground\":\"#aabbcc\"}"); ASSERT_TRUE(waitFor({0xaa,0xbb,0xcc}));
+    const auto other=write(QStringLiteral("other.json"),"{\"foreground\":\"#123456\"}");
+    QFile file(config); ASSERT_TRUE(file.open(QIODevice::WriteOnly|QIODevice::Truncate));
+    file.write(QJsonDocument(QJsonObject{{QStringLiteral("Colors"),QJsonObject{{QStringLiteral("theme"),other}}}}).toJson());
+    file.close(); ASSERT_TRUE(waitFor({0x12,0x34,0x56}));
+    // Old-theme edits must not reload the active settings after switching.
+    int changed=0; QObject::connect(&store,&SettingsStore::changed,&store,[&]{++changed;});
+    replace("{\"foreground\":\"#ffffff\"}");
+    QElapsedTimer timer;timer.start(); while(timer.elapsed()<300) {QCoreApplication::processEvents();QThread::msleep(5);}
+    EXPECT_EQ(changed,0);
 }
