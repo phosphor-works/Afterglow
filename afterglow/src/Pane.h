@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "desktop/TerminalText.h"
 
 #include <AfterglowPty/Pty.h>
 #include <AfterglowRender/GridRenderer.h>
@@ -166,6 +167,7 @@ public:
     void scrollHistory(double fraction);
     bool hasSelection() const;
     QString selectedText() const;
+    TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
     /// The terminal changed. Emitted on the GUI thread, coalesced.
@@ -206,6 +208,7 @@ private:
     void commandFinished(int exitCode) override;
     void contextChanged() override;
     void userVarChanged(std::string_view name, std::string_view value) override;
+    void downloadFile(std::string_view name, std::string_view data) override;
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                      std::vector<std::uint8_t>& rgba) override;
     void desktopNotification(const AfterglowVt::NotificationRequest& request) override;

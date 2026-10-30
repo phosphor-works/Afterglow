@@ -1205,3 +1205,27 @@ int main(int argc, char** argv)
     s_device.reset();
     return result;
 }
+
+TEST_F(Render, MultipleCursorsMixBlocksAndBeamsWithHiddenMainCursor)
+{
+    const std::string content = "\x1b[?25l\x1b[2 q█ █\x1b[>1;2:1:1 q\x1b[>2;2:1:3 q";
+    auto img = render(content);
+    EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, QPoint(2 * cw, ch / 2), rgb(snapshot.cursorColor));
+    ShaderChains chains;
+    chains.cursor = {layerShader("green-cursors", "fragColor = vec4(0.0, c.a, 0.0, c.a);")};
+    renderer->setShaderChains(std::move(chains));
+    img = render("");
+    EXPECT_PIXEL(img, cellCenter(0, 0), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, QPoint(2 * cw, ch / 2), qRgb(0, 255, 0));
+    terminal->feed("\x1b[>0;4 q"); snapshot.capture(*terminal);
+    EXPECT_TRUE(snapshot.extraCursors.empty());
+}
+
+TEST_F(Render, UnicodePlaceholderImageSurvivesSnapshotCapture)
+{
+    const QImage img = render("\x1b[?25l\x1b_Ga=T,f=32,s=1,v=1,i=7,p=1,U=1,c=1,r=1,q=2;/wAA/w==\x1b\\"
+                             "\x1b[38;2;0;0;7m\xf4\x8e\xbb\xae\x1b[0m");
+    ASSERT_EQ(snapshot.images.size(), 1u);
+    EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(255, 0, 0));
+}

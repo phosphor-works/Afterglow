@@ -8,6 +8,7 @@ qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 
 qt_add_executable(afterglow
+    src/desktop/Accessibility.cpp
     src/main.cpp
     src/Pane.cpp
     src/Pane.h
@@ -61,6 +62,8 @@ pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 
 # Settings, keybinds and themes, shared with their tests.
 qt_add_library(afterglow_config STATIC
+    src/desktop/TerminalText.cpp
+    src/desktop/TerminalText.h
     src/config/Keybinds.cpp
     src/config/Keybinds.h
     src/config/KeyModes.cpp

@@ -15,10 +15,11 @@ namespace AfterglowVt::detail {
 /// https://iterm2.com/documentation-images.html
 struct ITerm2File
 {
+    std::string name; ///< base64 encoded suggested filename
     std::string width; ///< N (cells), Npx, N%, or auto/empty
     std::string height;
     bool preserveAspectRatio = true;
-    bool inlineImage = false; ///< inline=1: show it; otherwise it is a download, which is not offered
+    bool inlineImage = false; ///< inline=1: show it; otherwise request a download
     bool doNotMoveCursor = false;
     std::size_t size = 0; ///< as declared, 0 if not
 };

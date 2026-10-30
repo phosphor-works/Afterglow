@@ -240,6 +240,12 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     cursorY = scr.cursor.y;
     cursorShape = t.cursorShape();
     cursorBlink = modes.cursorBlink;
+    extraCursors.clear();
+    if (scr.viewportOffset() == 0) for (const auto& [point, shape] : t.extraCursors()) {
+        const auto resolved = shape == 29 ? cursorShape : shape == 1 ? CursorShape::Block
+            : shape == 2 ? CursorShape::Bar : CursorShape::Underline;
+        extraCursors.push_back({point.second, point.first, resolved});
+    }
     cursorColor = t.cursorColor() ? packRgba(*t.cursorColor()) : defaultFg;
     cursorTextColor = t.cursorTextColor() ? packRgba(*t.cursorTextColor()) : defaultBg;
     generation = t.generation();
@@ -247,7 +253,6 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     for (int i = 0; i < 256; ++i) {
         palette[std::size_t(i)] = packRgba(t.paletteColor(i));
     }
-    images = t.graphics().visible(scr, t.cellWidth(), t.cellHeight());
 }
 
 } // namespace AfterglowRender

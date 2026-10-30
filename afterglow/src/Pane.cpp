@@ -9,6 +9,11 @@
 
 #include <QByteArray>
 #include <QFile>
+#include <QFileDialog>
+#include <QSaveFile>
+#include <QStandardPaths>
+#include <QDir>
+#include <QMessageBox>
 #include <QStringList>
 #include <QImage>
 #include <QSysInfo>
@@ -915,3 +920,48 @@ void Pane::holdStartFailure()
 }
 
 } // namespace Afterglow
+
+namespace Afterglow {
+TerminalText Pane::accessibleText(bool cursorRow) const
+{
+    std::lock_guard lock(m_mutex);
+    return TerminalText::capture(m_terminal.screen(),
+        m_selectionOnAltScreen == m_terminal.modes().altScreen ? &m_selection : nullptr, cursorRow, m_terminal.options().wordBoundaries);
+}
+}
+
+namespace Afterglow {
+void Pane::downloadFile(std::string_view name, std::string_view data)
+{
+    // Bound the entire application's pending payloads, including queued GUI work.
+    static std::atomic_bool busy{false};
+    if (busy.exchange(true)) return;
+    auto lease = std::shared_ptr<void>(nullptr, [](void*) { busy.store(false); });
+    const QByteArray bytes(data.data(), qsizetype(data.size()));
+    QString suggested = QString::fromUtf8(name.data(), qsizetype(name.size()));
+    suggested.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    suggested = suggested.section(QLatin1Char('/'), -1);
+    QString clean;
+    for (const QChar c : suggested) if (!c.isNull() && c.isPrint() && c.category() != QChar::Other_Format) clean += c;
+    if (clean.isEmpty() || clean == QLatin1String(".") || clean == QLatin1String("..")) clean = QStringLiteral("download.bin");
+    clean = clean.left(180);
+    QMetaObject::invokeMethod(this, [this, bytes, clean, lease] {
+        auto* dialog = new QFileDialog(nullptr, tr("Save file received from %1").arg(title().left(100)));
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setAcceptMode(QFileDialog::AcceptSave);
+        dialog->setFileMode(QFileDialog::AnyFile);
+        dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        dialog->selectFile(clean);
+        // Keep the lease until the dialog is destroyed, including on cancellation.
+        connect(dialog, &QObject::destroyed, [lease] {});
+        connect(this, &QObject::destroyed, dialog, &QDialog::reject);
+        connect(dialog, &QFileDialog::fileSelected, dialog, [bytes, dialog](const QString& path) {
+            QSaveFile file(path);
+            if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+                QMessageBox::warning(dialog, tr("Download failed"), file.errorString());
+            }
+        });
+        dialog->open();
+    }, Qt::QueuedConnection);
+}
+}

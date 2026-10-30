@@ -277,14 +277,14 @@ QRhiGraphicsPipeline* PostChain::pipeline(const ShaderProgram& program, QRhiRend
     return slot.get();
 }
 
-QRhiShaderResourceBindings* PostChain::compositeBindings(int ubo, int background, int text, int cursor)
+QRhiShaderResourceBindings* PostChain::compositeBindings(int ubo, int background, int text, int cursor, int other)
 {
     while (int(m_compositeUbos.size()) <= ubo) {
         auto* b = m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(CompositeUniforms));
         b->create();
         m_compositeUbos.emplace_back(b);
     }
-    auto& slot = m_compositeBindings[{ubo, background, text, cursor}];
+    auto& slot = m_compositeBindings[{ubo, background, text, cursor, other}];
     if (!slot) {
         const auto stage = QRhiShaderResourceBinding::FragmentStage;
         slot.reset(m_device.rhi()->newShaderResourceBindings());
@@ -293,6 +293,7 @@ QRhiShaderResourceBindings* PostChain::compositeBindings(int ubo, int background
             QRhiShaderResourceBinding::sampledTexture(1, stage, m_textures[background].get(), m_sampler.get()),
             QRhiShaderResourceBinding::sampledTexture(2, stage, m_textures[text].get(), m_sampler.get()),
             QRhiShaderResourceBinding::sampledTexture(3, stage, m_textures[cursor].get(), m_sampler.get()),
+            QRhiShaderResourceBinding::sampledTexture(4, stage, m_textures[other].get(), m_sampler.get()),
         });
         slot->create();
     }
@@ -310,7 +311,7 @@ QRhiGraphicsPipeline* PostChain::compositePipeline()
     m_composite->setFlags(QRhiGraphicsPipeline::UsesScissor);
     m_composite->setShaderStages({{QRhiShaderStage::Vertex, m_vertex}, {QRhiShaderStage::Fragment, m_compositeShader}});
     m_composite->setVertexInputLayout({});
-    m_composite->setShaderResourceBindings(compositeBindings(0, first, first + 1, first + 2));
+    m_composite->setShaderResourceBindings(compositeBindings(0, first, first + 1, first + 2, first + 3));
     m_composite->setRenderPassDescriptor(m_gridPass.get());
     if (!m_composite->create()) {
         throw std::runtime_error("failed to create the layer composite pipeline");
@@ -424,7 +425,7 @@ int PostChain::runLayerChain(QRhiCommandBuffer* cb, const std::vector<ShaderProg
         auto* buffer = runBuffer(cb, *program, scope, step++, current, panes, time, ubo);
         // The layer textures not holding a layer: one is always free.
         int out = FirstLayerTexture;
-        while (out == m_layerTexture[0] || out == m_layerTexture[1] || out == m_layerTexture[2]) {
+        while (std::find(std::begin(m_layerTexture), std::end(m_layerTexture), out) != std::end(m_layerTexture)) {
             ++out;
         }
         QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
@@ -455,7 +456,7 @@ int PostChain::runLayerChain(QRhiCommandBuffer* cb, const std::vector<ShaderProg
 }
 
 void PostChain::composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes,
-                          const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear)
+                          const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors)
 {
     if (m_previousText) {
         std::vector<HistoryRegion> regions;
@@ -476,11 +477,12 @@ void PostChain::composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionS
     const int background = runLayerChain(cb, m_chains.background, m_layerTexture[0], panes, time, ubo, 0);
     const int text = runLayerChain(cb, m_chains.text, m_layerTexture[1], panes, time, ubo, 1);
     const int cursor = runLayerChain(cb, m_chains.cursor, m_layerTexture[2], panes, time, ubo, 2);
+    const int other = otherCursors ? runLayerChain(cb, m_chains.cursor, m_layerTexture[3], panes, time, ubo, 5) : m_layerTexture[3];
     m_nextUbo = ubo;
 
     QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
     for (std::size_t i = 0; i < panes.size(); ++i) {
-        compositeBindings(int(i), background, text, cursor); // makes the buffer
+        compositeBindings(int(i), background, text, cursor, other); // makes the buffer
         const CompositeUniforms u{{float(m_size.width()), float(m_size.height())},
                                   i < cursorBelowText.size() && cursorBelowText[i] ? 1 : 0, 0};
         updates->updateDynamicBuffer(m_compositeUbos[i].get(), 0, sizeof u, &u);
@@ -490,7 +492,7 @@ void PostChain::composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionS
     cb->setViewport({0, 0, float(m_size.width()), float(m_size.height())});
     for (std::size_t i = 0; i < panes.size(); ++i) {
         cb->setScissor(scissorFor(panes[i].rect, m_size));
-        cb->setShaderResources(compositeBindings(int(i), background, text, cursor));
+        cb->setShaderResources(compositeBindings(int(i), background, text, cursor, other));
         cb->draw(3);
     }
 }

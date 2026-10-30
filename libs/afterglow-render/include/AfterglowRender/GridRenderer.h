@@ -122,6 +122,7 @@ public:
     {
         std::size_t textStart = 0;
         std::size_t cursorStart = 0;
+        std::size_t cursorOtherStart = 0;
         /// A block cursor goes under the text; other shapes go over it.
         bool cursorBelowText = false;
     };
@@ -260,6 +261,7 @@ private:
         std::uint32_t first;
         std::uint32_t textStart;
         std::uint32_t cursorStart;
+        std::uint32_t cursorOtherStart;
         std::uint32_t end;
         bool cursorBelowText;
         QRect scissor;

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "XkbKeyboard.h"
+#include "config/Settings.h"
+#include <QJsonDocument>
+#include <cstdio>
 #include "app/Application.h"
 #include "control/Ctl.h"
 
@@ -72,6 +75,12 @@ ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& co
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--config-reference") == 0) {
+        QCoreApplication app(argc, argv);
+        const QByteArray json = QJsonDocument(Afterglow::SettingsStore::reference()).toJson();
+        std::fwrite(json.constData(), 1, std::size_t(json.size()), stdout);
+        return 0;
+    }
     // afterglow ctl ...: a D-Bus client for a running afterglow, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
@@ -103,6 +112,7 @@ int main(int argc, char** argv)
     parser.setApplicationDescription(QStringLiteral("A GPU accelerated terminal"));
     parser.addHelpOption();
     parser.addVersionOption();
+    parser.addOption({QStringLiteral("config-reference"), QStringLiteral("Print the configuration reference as JSON (use alone; no desktop required).")});
     const QCommandLineOption cwdOption({QStringLiteral("d"), QStringLiteral("working-directory")},
                                        QStringLiteral("Start in <dir>."), QStringLiteral("dir"));
     const QCommandLineOption quickOption(QStringLiteral("quick-terminal"),

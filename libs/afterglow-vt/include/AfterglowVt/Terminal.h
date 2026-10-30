@@ -152,6 +152,8 @@ public:
     }
     /// Decodes an image in any format the host reads (iTerm2 inline images:
     /// PNG, JPEG, GIF...) into RGBA8. Defaults to PNG only.
+    /// Complete bounded OSC 1337 download. The host must ask before writing.
+    virtual void downloadFile(std::string_view name, std::string_view data) {}
     virtual bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
                              std::vector<std::uint8_t>& rgba)
     {
@@ -221,6 +223,7 @@ public:
     const Screen& primaryScreen() const noexcept { return *m_primary; }
 
     const Modes& modes() const noexcept { return m_modes; }
+    const std::map<std::pair<int, int>, int>& extraCursors() const { return m_extraCursors; }
     CursorShape cursorShape() const noexcept { return m_cursorShape; }
 
     /// Bumped on every state change the renderer could see.
@@ -430,6 +433,8 @@ private:
     Protection m_protection = Protection::Off;
     int m_attributeChangeExtent = 0; ///< DECSACE, reported only
     std::unordered_map<int, bool> m_savedDecModes; ///< XTSAVE
+    void setExtraCursors(const Params&);
+    std::map<std::pair<int, int>, int> m_extraCursors; ///< (row, column), protocol shape
     CursorShape m_cursorShape = CursorShape::Block;
     Region m_margins;
     std::vector<bool> m_tabStops;

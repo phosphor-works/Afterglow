@@ -4,6 +4,7 @@
 #include "TestUtil.h"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 
 #include <zlib.h>
 
@@ -274,4 +275,65 @@ TEST(Graphics, UnicodePlaceholders)
     EXPECT_EQ(slice->srcH, 20);
     EXPECT_FALSE(t.g().placeholderSlice(3, 0, 2, 0, 0, 0, 10, 20).has_value()); // outside the grid
     EXPECT_FALSE(t.g().placeholderSlice(99, 0, 0, 0, 0, 0, 10, 20).has_value());
+}
+
+TEST(Graphics, RelativePlacementsFollowParentAndCascadeDeletion)
+{
+    Term t(40, 20);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=1", b64(rgba(1, 1, 1, 2, 3))));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=2", b64(rgba(1, 1, 9, 8, 7))));
+    t.t.feed("\x1b[4;5H");
+    t.t.feed(apc("a=p,i=1,p=1,C=1"));
+    t.t.feed(apc("a=p,i=2,p=2,P=1,Q=1,H=-2,V=3"));
+    EXPECT_EQ(t.t.screen().cursor.x, 4); EXPECT_EQ(t.t.screen().cursor.y, 3);
+    auto visible = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(visible.size(), 2u); EXPECT_EQ(visible[1].x, 20); EXPECT_EQ(visible[1].y, 120);
+    t.t.feed("\x1b[6;8H"); t.t.feed(apc("a=p,i=1,p=1,C=1"));
+    visible = t.g().visible(t.t.screen(), 10, 20);
+    auto child = std::find_if(visible.begin(), visible.end(), [](const auto& v) { return v.imageId == 2; });
+    ASSERT_NE(child, visible.end()); EXPECT_EQ(child->x, 50); EXPECT_EQ(child->y, 160);
+    t.t.feed(apc("a=d,d=i,i=1,p=1"));
+    EXPECT_TRUE(t.g().placements().empty()); EXPECT_EQ(t.g().images().count(2), 0u);
+}
+TEST(Graphics, RelativeErrorsDoNotReplaceExistingPlacement)
+{
+    Term t(40, 20);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=1", b64(rgba(1, 1, 1, 2, 3))));
+    t.t.feed(apc("a=p,i=1,p=1,C=1"));
+    t.t.feed(apc("a=p,i=1,p=2,P=1,Q=1"));
+    t.host.written.clear();
+    t.t.feed(apc("a=p,i=1,p=1,P=1,Q=2"));
+    EXPECT_NE(t.host.written.find("ECYCLE"), std::string::npos);
+    EXPECT_EQ(t.g().placements().size(), 2u);
+    t.host.written.clear(); t.t.feed(apc("a=p,i=1,p=3,P=99"));
+    EXPECT_NE(t.host.written.find("ENOPARENT"), std::string::npos);
+    t.host.written.clear(); t.t.feed(apc("a=p,i=1,p=3,P=1,Q=1,U=1"));
+    EXPECT_NE(t.host.written.find("EINVAL"), std::string::npos);
+    for (int i = 3; i <= 33; ++i) t.t.feed(apc("a=p,i=1,p=" + std::to_string(i) + ",P=1,Q=" + std::to_string(i - 1)));
+    EXPECT_EQ(t.g().placements().size(), 33u);
+    t.host.written.clear(); t.t.feed(apc("a=p,i=1,p=34,P=1,Q=33"));
+    EXPECT_NE(t.host.written.find("ETOODEEP"), std::string::npos);
+}
+TEST(Graphics, RelativeVirtualParentTracksPlaceholderText)
+{
+    Term t(40, 20);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=1", b64(rgba(1, 1, 1, 2, 3))));
+    t.t.feed(apc("a=p,i=1,p=1,U=1,c=1,r=1"));
+    t.t.feed(apc("a=p,i=1,p=2,P=1,Q=1,H=2,V=1"));
+    EXPECT_TRUE(t.g().visible(t.t.screen(), 10, 20).empty());
+    t.t.feed("\x1b[3;4H\x1b[38;2;0;0;1m\xf4\x8e\xbb\xae\x1b[0m");
+    auto visible = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(visible.size(), 1u); EXPECT_EQ(visible[0].x, 50); EXPECT_EQ(visible[0].y, 60);
+    t.t.feed("\x1b[3;1H\x1b[2@");
+    visible = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(visible.size(), 1u); EXPECT_EQ(visible[0].x, 70);
+}
+
+TEST(Graphics, TransmitAndPlaceReportsInvalidRelativeParent)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=T,f=32,s=1,v=1,i=1,P=99", b64(rgba(1, 1, 1, 2, 3))));
+    EXPECT_NE(t.host.written.find("ENOPARENT"), std::string::npos);
+    EXPECT_EQ(t.host.written.find("OK"), std::string::npos);
+    EXPECT_TRUE(t.g().placements().empty());
 }

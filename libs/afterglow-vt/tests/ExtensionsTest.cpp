@@ -243,3 +243,43 @@ TEST(Extensions, ConEmuCommands)
     t.feed("\x1b]9;42 is the answer\x07");
     EXPECT_EQ(host.notified, "|42 is the answer");
 }
+
+TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
+{
+    struct Host : RecordingHost {
+        int count = 0; std::string name, data;
+        void downloadFile(std::string_view n, std::string_view d) override { ++count; name = n; data = d; }
+    } host;
+    Terminal t(20, 4, host);
+    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07");
+    ASSERT_EQ(host.count, 1); EXPECT_EQ(host.name, "test.txt"); EXPECT_EQ(host.data, "hello");
+    t.feed("\x1b]1337;File=size=6:aGVsbG8=\x07");
+    t.feed("\x1b]1337;File=size=99999999:aGVsbG8=\x07");
+    t.feed("\x1b]1337;File=:aGVsbG8!\x07");
+    EXPECT_EQ(host.count, 1);
+    t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07\x1b]1337;FilePart=aGVs\x07");
+    EXPECT_EQ(host.count, 1);
+    t.feed("\x1b]1337;FilePart=bG8=\x07\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(host.count, 2); EXPECT_EQ(host.data, "hello");
+    t.feed("\x1b]1337;FileEnd\x07"); EXPECT_EQ(host.count, 2);
+}
+
+TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
+{
+    RecordingHost host; Terminal t(10, 5, host);
+    t.feed("\x1b[> q\x1b[c");
+    EXPECT_TRUE(host.written.starts_with("\x1b[>1;2;3;29;100 q\x1b[?"));
+    t.feed("\x1b[>1;2:2:3:99:99:4 q");
+    ASSERT_EQ(t.extraCursors().size(), 1u);
+    EXPECT_EQ(t.extraCursors().at({1, 2}), 1);
+    t.feed("\x1b[>2;4:4:9:9:12 q");
+    EXPECT_EQ(t.extraCursors().size(), 5u);
+    t.feed("\x1b[>0;2:2:3 q"); EXPECT_EQ(t.extraCursors().size(), 4u);
+    host.written.clear(); t.feed("\x1b[>100 q");
+    EXPECT_EQ(host.written, "\x1b[>100;2:2:4:9;2:2:4:10;2:2:5:9;2:2:5:10 q");
+    t.feed("\x1b[5;1H\n\x1b[?25l"); EXPECT_EQ(t.extraCursors().size(), 4u);
+    t.feed("\x1b[>0;4 q"); EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[>29;0 q\x1b[?1049h"); EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[>1;0 q\x1b[2J"); EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[>1;0 q\x1b" "c"); EXPECT_TRUE(t.extraCursors().empty());
+}

@@ -157,6 +157,8 @@ public:
     ~SettingsStore() override;
 
     static QString defaultPath();
+    /// Machine-readable reference generated from the runtime Phosphor schema.
+    static QJsonObject reference();
 
     const Settings& settings() const noexcept { return m_settings; }
     QString path() const { return m_path; }

@@ -363,6 +363,7 @@ void Terminal::setOptions(const TerminalOptions& options)
 
 void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
 {
+    std::erase_if(m_extraCursors, [&](const auto& c) { return c.first.first >= rows || c.first.second >= cols; });
     cols = std::max(cols, 2);
     rows = std::max(rows, 1);
     m_cellWidth = cellWidth;
@@ -1222,6 +1223,7 @@ void Terminal::setProtection(bool on, bool iso)
 
 void Terminal::eraseDisplay(int mode, bool selective)
 {
+    if (mode == 2 || mode == 3 || mode == 22) m_extraCursors.clear();
     Screen& scr = *m_active;
     Cursor& cur = cursor();
     const std::uint32_t fill = acquireFill();
@@ -1602,6 +1604,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         }
         const Cursor primaryCursor = m_primary->cursor;
         m_active = m_alternate.get();
+        m_extraCursors.clear();
         m_modes.altScreen = true;
         syncKittyFlags();
         m_alternate->setPen(primaryCursor.pen);
@@ -1619,6 +1622,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
             }
         }
         m_active = m_primary.get();
+        m_extraCursors.clear();
         m_modes.altScreen = false;
         syncKittyFlags();
         if (saveRestoreCursor) {
@@ -1634,6 +1638,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
 
 void Terminal::reset()
 {
+    m_extraCursors.clear();
     fullReset();
     touch();
 }
@@ -2132,6 +2137,10 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         return;
     }
 
+    if (inter.is('>', ' ') && final == 'q') {
+        setExtraCursors(p);
+        return;
+    }
     if (inter.count == 1 && inter.bytes[0] == ' ' && inter.marker == 0 && final == 'q') {
         setCursorStyle(p.at(0));
         return;
@@ -2328,6 +2337,7 @@ void Terminal::sixel(const Params& p, std::string_view data)
 
 void Terminal::softReset()
 {
+    m_extraCursors.clear();
     // DECSTR, plus what xterm also resets: reverse wrap and DECLRMM.
     m_modes.insert = false;
     m_modes.originMode = false;
@@ -3783,9 +3793,16 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
 {
     detail::ITerm2File file;
     detail::parseITerm2Args(args, file);
-    if (!file.inlineImage || m_cellWidth <= 0 || m_cellHeight <= 0) {
-        return; // downloads are not offered
+    if (!file.inlineImage) {
+        constexpr std::size_t MaxDownload = 8u * 1024 * 1024;
+        if (base64.size() > ((MaxDownload + 2) / 3) * 4 || file.size > MaxDownload) return;
+        const auto data = detail::base64Decode(base64, detail::Base64Check::Strict);
+        const auto name = detail::base64Decode(file.name, detail::Base64Check::Strict);
+        if (!data || !name || data->size() > MaxDownload || (file.size && file.size != data->size())) return;
+        m_host.downloadFile(*name, *data);
+        return;
     }
+    if (m_cellWidth <= 0 || m_cellHeight <= 0) return;
     ImageFrame frame;
     if (!m_host.decodeImage(detail::base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
         || frame.height == 0 || frame.rgba.size() != std::size_t(frame.width) * frame.height * 4) {
@@ -4260,3 +4277,40 @@ std::uint64_t Terminal::advanceAnimations(std::uint64_t nowMs)
 }
 
 } // namespace AfterglowVt
+
+namespace AfterglowVt {
+void Terminal::setExtraCursors(const Params& p)
+{
+    if (!p.given(0)) { reply("\x1b[>1;2;3;29;100 q"); return; }
+    const int shape = p.at(0);
+    if (shape == 100) {
+        std::string response = "\x1b[>100";
+        for (const auto& [point, value] : m_extraCursors)
+            response += ";" + std::to_string(value) + ":2:" + std::to_string(point.first + 1) + ":" + std::to_string(point.second + 1);
+        reply(response + " q"); return;
+    }
+    if (shape != 0 && shape != 1 && shape != 2 && shape != 3 && shape != 29) return;
+    auto set = [&](int y, int x) {
+        if (x < 1 || y < 1 || x > cols() || y > rows()) return;
+        const auto key = std::pair(y - 1, x - 1);
+        if (shape) m_extraCursors[key] = shape; else m_extraCursors.erase(key);
+    };
+    auto rectangle = [&](int top, int left, int bottom, int right) {
+        for (int y = std::max(1, top); y <= std::min(rows(), bottom); ++y)
+            for (int x = std::max(1, left); x <= std::min(cols(), right); ++x) set(y, x);
+    };
+    for (int i = 1; i < p.count;) {
+        int end = i + 1;
+        while (end < p.count && p.isSub(end)) ++end;
+        if (p.at(i) == 0) set(cursor().y + 1, cursor().x + 1);
+        else if (p.at(i) == 2) {
+            for (int j = i + 1; j + 1 < end; j += 2) set(p.at(j), p.at(j + 1));
+        } else if (p.at(i) == 4) {
+            if (end == i + 1) rectangle(1, 1, rows(), cols());
+            for (int j = i + 1; j + 3 < end; j += 4) rectangle(p.at(j), p.at(j + 1), p.at(j + 2), p.at(j + 3));
+        }
+        i = end;
+    }
+    touch();
+}
+}

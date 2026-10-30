@@ -13,6 +13,7 @@ layout(std140, binding = 0) uniform Composite {
 layout(binding = 1) uniform sampler2D backgroundLayer;
 layout(binding = 2) uniform sampler2D textLayer;
 layout(binding = 3) uniform sampler2D cursorLayer;
+layout(binding = 4) uniform sampler2D otherCursorLayer;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -27,5 +28,7 @@ void main()
     vec4 background = texture(backgroundLayer, uv);
     vec4 text = texture(textLayer, uv);
     vec4 cursor = texture(cursorLayer, uv);
-    fragColor = cursorBelowText != 0 ? over(text, over(cursor, background)) : over(cursor, over(text, background));
+    vec4 other = texture(otherCursorLayer, uv);
+    fragColor = cursorBelowText != 0 ? over(other, over(text, over(cursor, background)))
+                                    : over(cursor, over(text, over(other, background)));
 }

@@ -189,6 +189,8 @@ struct GraphicsStore::Command
     int C = 0;
     std::int32_t z = 0;
     int U = 0;
+    std::uint32_t P = 0, Q = 0;
+    int H = 0, V = 0;
 
     static Command parse(std::string_view keys)
     {
@@ -236,6 +238,10 @@ struct GraphicsStore::Command
             case 'C': cmd.C = i; break;
             case 'z': cmd.z = i; break;
             case 'U': cmd.U = i; break;
+            case 'P': cmd.P = u; break;
+            case 'Q': cmd.Q = u; break;
+            case 'H': cmd.H = i; break;
+            case 'V': cmd.V = i; break;
             default: break;
             }
         }
@@ -480,6 +486,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
         }
     }
     std::erase_if(m_placements, [id](const Placement& p) { return p.imageId == id; });
+    pruneOrphans();
 
     Image img;
     img.id = id;
@@ -491,12 +498,13 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     m_images[id] = std::move(img);
     enforceQuota();
 
-    respond(cmd, ctx, "OK", false);
     if (cmd.action == 'T') {
         Command pc = cmd;
         pc.id = id;
-        pc.quiet = 2; // the transmit already answered
-        place(pc, ctx);
+        if (cmd.id == 0 && cmd.number == 0) pc.quiet = 2;
+        place(pc, ctx); // Placement errors must not be hidden by an earlier OK.
+    } else {
+        respond(cmd, ctx, "OK", false);
     }
 }
 
@@ -531,6 +539,35 @@ void GraphicsStore::place(const Command& cmd, Context& ctx)
     Placement pl;
     pl.imageId = img->id;
     pl.placementId = cmd.placement ? cmd.placement : m_nextPlacementId++;
+    pl.parentImage = cmd.P;
+    pl.parentPlacement = cmd.Q;
+    pl.relativeX = cmd.H;
+    pl.relativeY = cmd.V;
+    if (cmd.P || cmd.Q) {
+        if (cmd.U) { respond(cmd, ctx, "EINVAL:virtual placement cannot be relative", true); return; }
+        const Placement* parent = parentOf(pl);
+        if (!parent) { respond(cmd, ctx, "ENOPARENT:no such parent placement", true); return; }
+        pl.parentPlacement = parent->placementId; // Resolve an omitted Q once.
+        int depth = 0;
+        while (parent) {
+            if (parent->imageId == pl.imageId && parent->placementId == pl.placementId) {
+                respond(cmd, ctx, "ECYCLE:relative placement cycle", true); return;
+            }
+            if (++depth > 32) { respond(cmd, ctx, "ETOODEEP:relative placement depth exceeds 32", true); return; }
+            parent = parentOf(*parent);
+        }
+        // Reparenting also lengthens existing descendant chains.
+        for (const auto& candidate : m_placements) {
+            const Placement* ancestor = &candidate;
+            for (int below = 0; ancestor && below <= 32; ++below) {
+                if (ancestor->imageId == pl.imageId && ancestor->placementId == pl.placementId) {
+                    if (depth + below > 32) { respond(cmd, ctx, "ETOODEEP:descendant depth exceeds 32", true); return; }
+                    break;
+                }
+                ancestor = parentOf(*ancestor);
+            }
+        }
+    }
     std::erase_if(m_placements, [&](const Placement& p) {
         return p.imageId == pl.imageId && p.placementId == pl.placementId;
     });
@@ -548,7 +585,7 @@ void GraphicsStore::place(const Command& cmd, Context& ctx)
     pl.isVirtual = cmd.U == 1;
     m_placements.push_back(pl);
 
-    if (!pl.isVirtual && cmd.C == 0 && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
+    if (!pl.isVirtual && !pl.parentImage && cmd.C == 0 && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
         // The cursor moves past the image: down to its last row, right of its last column.
         const DisplaySize size = displaySize(pl, *img, ctx.cellWidth, ctx.cellHeight);
         const long long cellsWide = (static_cast<long long>(size.width) + pl.offsetX + ctx.cellWidth - 1) / ctx.cellWidth;
@@ -630,9 +667,10 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
     const char kind = char(d | 0x20);
 
     auto cellRect = [&](const Placement& p, int& row0, int& col0, int& rows, int& cols) {
-        const long long abs = scr.absoluteIndexOf(p.row);
-        row0 = abs < 0 ? -1 : int(abs - (long long)scr.historySize());
-        col0 = p.col;
+        const auto position = origin(p, scr);
+        const long long abs = position ? position->second : -1;
+        row0 = abs < 0 ? -1 : int(std::clamp(abs - (long long)scr.historySize(), -1000000000LL, 1000000000LL));
+        col0 = position ? int(std::clamp(position->first, -1000000000LL, 1000000000LL)) : -1000000000;
         const auto it = m_images.find(p.imageId);
         if (it == m_images.end() || ctx.cellWidth <= 0 || ctx.cellHeight <= 0) {
             rows = cols = 1;
@@ -662,8 +700,8 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
     switch (kind) {
     case 'a':
         drop([&](const Placement& p) {
-            const long long abs = scr.absoluteIndexOf(p.row);
-            return abs >= (long long)scr.historySize();
+            const auto at = origin(p, scr);
+            return at && at->second >= (long long)scr.historySize();
         });
         break;
     case 'i':
@@ -727,6 +765,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         break;
     }
 
+    pruneOrphans();
     if (freeImages) {
         for (std::uint32_t id : touched) {
             dropUnusedImage(id);
@@ -907,6 +946,81 @@ bool GraphicsStore::advanceAnimations(std::uint64_t nowMs, std::uint64_t& nextDe
 
 // --- queries and maintenance -----------------------------------------------
 
+const Placement* GraphicsStore::parentOf(const Placement& p) const
+{
+    if (!p.parentImage) return nullptr;
+    for (const auto& parent : m_placements)
+        if (parent.imageId == p.parentImage && (!p.parentPlacement || parent.placementId == p.parentPlacement)) return &parent;
+    return nullptr;
+}
+
+void GraphicsStore::pruneOrphans()
+{
+    // Erase after collecting keys: erase_if moves elements while predicates run.
+    for (;;) {
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> gone;
+        for (const auto& p : m_placements)
+            if (p.parentImage && !parentOf(p)) gone.emplace_back(p.imageId, p.placementId);
+        if (gone.empty()) break;
+        std::erase_if(m_placements, [&](const Placement& p) {
+            return std::find(gone.begin(), gone.end(), std::pair(p.imageId, p.placementId)) != gone.end();
+        });
+        for (const auto& [id, placement] : gone) dropUnusedImage(id);
+    }
+}
+
+std::optional<std::pair<long long, long long>> GraphicsStore::origin(const Placement& p, const Screen& s, int depth) const
+{
+    if (depth > 32) return std::nullopt;
+    if (p.parentImage) {
+        const auto* parent = parentOf(p);
+        auto at = parent ? origin(*parent, s, depth + 1) : std::nullopt;
+        if (at) { at->first += p.relativeX; at->second += p.relativeY; }
+        return at;
+    }
+    if (!p.isVirtual) {
+        const auto row = s.absoluteIndexOf(p.row);
+        if (row < 0) return std::nullopt;
+        return std::pair<long long, long long>(p.col, row);
+    }
+    // Virtual placements have no fixed anchor: derive the origin of their
+    // displayed placeholder images, including the implied diacritics.
+    std::optional<std::pair<long long, long long>> at;
+    auto colorId = [](Color c) -> std::uint32_t {
+        return c.kind() == Color::Kind::Rgb ? (std::uint32_t(c.r()) << 16) | (std::uint32_t(c.g()) << 8) | c.b()
+            : c.kind() == Color::Kind::Palette ? c.index() : 0;
+    };
+    for (auto y = s.viewportTop(); y < s.viewportTop() + std::size_t(s.rows()); ++y) {
+        const auto& row = s.absoluteRow(y);
+        bool previous = false;
+        std::uint32_t prevImage = 0, prevPlacement = 0;
+        int prevRow = 0, prevCol = 0;
+        for (int x = 0; x < s.cols(); ++x) {
+            const auto& cell = row.at(x);
+            if (cell.codepoint() != PlaceholderCodepoint) { previous = false; continue; }
+            const auto& style = s.styles().get(cell.styleId());
+            auto image = colorId(style.fg);
+            const auto placement = colorId(style.underlineColor);
+            const auto extra = s.graphemeExtra(row, x);
+            const bool continues = previous && (image & 0xffffff) == (prevImage & 0xffffff) && placement == prevPlacement;
+            const int r = extra.size() > 0 ? placeholderDiacriticValue(extra[0]) : -1;
+            const int c = extra.size() > 1 ? placeholderDiacriticValue(extra[1]) : -1;
+            const int high = extra.size() > 2 ? placeholderDiacriticValue(extra[2]) : -1;
+            if (high >= 0) image |= std::uint32_t(high) << 24;
+            else if (continues) image = prevImage;
+            const int gridRow = r >= 0 ? r : continues ? prevRow : 0;
+            const int gridCol = c >= 0 ? c : continues ? prevCol + 1 : 0;
+            if (image == p.imageId && (!placement || placement == p.placementId)) {
+                const long long px = x - gridCol, py = static_cast<long long>(y) - gridRow;
+                if (!at) at = std::pair(px, py);
+                else { at->first = std::min(at->first, px); at->second = std::min(at->second, py); }
+            }
+            previous = true; prevImage = image; prevPlacement = placement; prevRow = gridRow; prevCol = gridCol;
+        }
+    }
+    return at;
+}
+
 std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int cw, int ch) const
 {
     std::vector<VisiblePlacement> out;
@@ -923,15 +1037,17 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         if (it == m_images.end() || it->second.frames.empty()) {
             continue;
         }
-        const long long abs = screen.absoluteIndexOf(p.row);
-        if (abs < 0) {
-            continue;
-        }
+        const auto position = origin(p, screen);
+        if (!position) continue;
+        const auto [col, abs] = *position;
         const Image& img = it->second;
         const DisplaySize size = displaySize(p, img, cw, ch);
         VisiblePlacement v;
-        v.x = p.col * cw + p.offsetX;
-        v.y = int(abs - top) * ch + p.offsetY;
+        const long long px = col * cw + p.offsetX;
+        const long long py = (abs - top) * ch + p.offsetY;
+        if (px < -size.width || px >= static_cast<long long>(screen.cols()) * cw || py < -size.height || py >= viewH) continue;
+        v.x = int(px);
+        v.y = int(py);
         v.width = size.width;
         v.height = size.height;
         if (v.y + v.height <= 0 || v.y >= viewH || v.width <= 0 || v.height <= 0) {
@@ -1013,8 +1129,9 @@ void GraphicsStore::clearPlacements(const Screen& screen, bool includeHistory)
 {
     std::erase_if(m_placements, [&](const Placement& p) {
         const long long abs = screen.absoluteIndexOf(p.row);
-        return includeHistory || abs < 0 || abs >= (long long)screen.historySize();
+        return includeHistory || (!p.parentImage && (abs < 0 || abs >= (long long)screen.historySize()));
     });
+    pruneOrphans();
 }
 
 std::vector<std::size_t> GraphicsStore::anchorRows(const Screen& screen) const
@@ -1033,12 +1150,14 @@ void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t
     std::size_t i = 0;
     std::erase_if(m_placements, [&](Placement& p) {
         const std::size_t abs = rows[i++];
+        if (p.parentImage || p.isVirtual) return false;
         if (abs == Screen::TrackedRowGone) {
             return true;
         }
         p.row = screen.rowsDropped() + abs;
         return false;
     });
+    pruneOrphans();
 }
 
 void GraphicsStore::clear()
@@ -1077,6 +1196,8 @@ void GraphicsStore::enforceQuota()
         const std::uint32_t id = victim->first;
         std::erase_if(m_placements, [id](const Placement& p) { return p.imageId == id; });
         m_images.erase(victim);
+        pruneOrphans();
+        total = totalBytes();
     }
 }
 

@@ -11,6 +11,7 @@
 #include <PhosphorConfig/Store.h>
 
 #include <QColor>
+#include <limits>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -793,3 +794,30 @@ Settings SettingsStore::read() const
 }
 
 } // namespace Afterglow
+
+namespace Afterglow {
+QJsonObject SettingsStore::reference()
+{
+    const auto schema = buildSchema();
+    QJsonObject groups;
+    for (auto group = schema.groups.cbegin(); group != schema.groups.cend(); ++group) {
+        QJsonObject keys;
+        for (const auto& key : group.value()) {
+            QJsonObject entry{{QStringLiteral("default"), QJsonValue::fromVariant(key.defaultValue)},
+                              {QStringLiteral("description"), key.description}};
+            QJsonArray choices;
+            for (const auto& choice : key.choices) choices.append(QJsonValue::fromVariant(choice.value));
+            if (!choices.isEmpty()) entry.insert(QStringLiteral("choices"), choices);
+            if (key.validator && (key.expectedType == QMetaType::Int || key.expectedType == QMetaType::Double)) {
+                const QVariant lo = key.expectedType == QMetaType::Int ? QVariant(std::numeric_limits<int>::min()) : QVariant(-1e100);
+                const QVariant hi = key.expectedType == QMetaType::Int ? QVariant(std::numeric_limits<int>::max()) : QVariant(1e100);
+                entry.insert(QStringLiteral("minimum"), QJsonValue::fromVariant(key.validator(lo)));
+                entry.insert(QStringLiteral("maximum"), QJsonValue::fromVariant(key.validator(hi)));
+            }
+            keys.insert(key.key, entry);
+        }
+        groups.insert(group.key(), keys);
+    }
+    return {{QStringLiteral("schema_version"), schema.version}, {QStringLiteral("groups"), groups}};
+}
+}

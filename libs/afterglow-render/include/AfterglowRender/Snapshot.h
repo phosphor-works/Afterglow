@@ -73,6 +73,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::uint32_t defaultFg = 0;
     std::uint32_t defaultBg = 0;
 
+    struct ExtraCursor { int x, y; AfterglowVt::CursorShape shape; };
+    std::vector<ExtraCursor> extraCursors;
     bool cursorVisible = false;
     int cursorX = 0;
     int cursorY = 0;

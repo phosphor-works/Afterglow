@@ -411,3 +411,12 @@ TEST(KeyModes, RejectsAmbiguousPrefixesAndPreservesExistingSingles)
     EXPECT_FALSE(modes.press(&copy, state, 0).consumed);
     EXPECT_EQ(singles.match(&copy), Action::Copy);
 }
+
+TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
+{
+    const auto groups = Afterglow::SettingsStore::reference().value(QStringLiteral("groups")).toObject();
+    const auto font = groups.value(QStringLiteral("Font")).toObject();
+    EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
+    EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 4);
+    EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
+}

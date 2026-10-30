@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "TerminalWindow.h"
+#include "desktop/FileDrop.h"
+#include "desktop/Accessibility.h"
+#include <QAccessible>
+#include <QDropEvent>
+#include <QDragEnterEvent>
 #include "audio/AudioController.h"
 #include "shell/ShellIntegration.h"
 
@@ -129,6 +134,13 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     , m_audio(services.audio)
     , m_id(s_nextWindowId++)
 {
+    installTerminalAccessibility();
+    connect(this, &TerminalWindow::focusedPaneChanged, this, [](Pane* pane) {
+        if (pane && QAccessible::isActive()) { QAccessibleEvent event(pane, QAccessible::Focus); QAccessible::updateAccessibility(&event); }
+    });
+    connect(this, &TerminalWindow::tabsChanged, this, [this] {
+        if (QAccessible::isActive()) { QAccessibleEvent event(this, QAccessible::ObjectReorder); QAccessible::updateAccessibility(&event); }
+    });
     connect(&m_device, &AfterglowRender::GpuDevice::audioChanged, this, [this] {
         if (m_audioReactive && isExposed()) scheduleRender();
     });
@@ -292,7 +304,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     m_blinkTimer.setInterval(m_settings.settings().cursorBlinkInterval);
     connect(&m_blinkTimer, &QTimer::timeout, this, [this] {
         m_blinkOn = !m_blinkOn;
-        if (m_focused && scriptOverrides(m_focused).value(QStringLiteral("cursorBlink"), m_focused->snapshot().cursorBlink).toBool() && m_focused->snapshot().cursorVisible) {
+        if (m_focused && scriptOverrides(m_focused).value(QStringLiteral("cursorBlink"), m_focused->snapshot().cursorBlink).toBool() && (m_focused->snapshot().cursorVisible || !m_focused->snapshot().extraCursors.empty())) {
             scheduleRender();
         }
     });
@@ -347,6 +359,9 @@ void TerminalWindow::bindPane(Pane* pane)
         scheduleRender();
     });
     connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
+    connect(pane, &Pane::contentChanged, this, [this, pane] {
+        if (pane == m_focused && isActive()) QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
+    });
     connect(pane, &Pane::shaderSignalsChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::contextUpdated, this, [this, pane] {
         if (pane == m_focused) {
@@ -1160,6 +1175,7 @@ void TerminalWindow::renderNow()
         m_reportedImeRect = imeRect;
         QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
     }
+    updateTerminalAccessibility(this);
     if (animating || sliding || m_renderer->animating()) {
         scheduleRender(); // something is moving: keep frames coming
     }
@@ -1318,18 +1334,15 @@ bool TerminalWindow::event(QEvent* e)
             q->setValue(Qt::ImCursorRectangle, inputMethodCursorRect());
         }
         if (queries & Qt::ImHints) {
-            q->setValue(Qt::ImHints, int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase | Qt::ImhPreferLatin));
+            q->setValue(Qt::ImHints, int(Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase));
         }
-        // No surrounding text: a terminal cannot let the input method edit it.
-        if (queries & Qt::ImSurroundingText) {
-            q->setValue(Qt::ImSurroundingText, QString());
-        }
-        if (queries & Qt::ImCursorPosition) {
-            q->setValue(Qt::ImCursorPosition, 0);
-        }
-        if (queries & Qt::ImAnchorPosition) {
-            q->setValue(Qt::ImAnchorPosition, 0);
-        }
+        const TerminalText context = m_focused ? m_focused->accessibleText(true) : TerminalText{};
+        if (queries & Qt::ImSurroundingText) q->setValue(Qt::ImSurroundingText, context.text);
+        if (queries & Qt::ImCursorPosition) q->setValue(Qt::ImCursorPosition, std::max(0, context.cursor));
+        if (queries & Qt::ImAnchorPosition) q->setValue(Qt::ImAnchorPosition, std::max(0, context.cursor));
+        if (queries & Qt::ImCurrentSelection) q->setValue(Qt::ImCurrentSelection, QString());
+        if (queries & Qt::ImTextBeforeCursor) q->setValue(Qt::ImTextBeforeCursor, context.text.left(std::max(0, context.cursor)));
+        if (queries & Qt::ImTextAfterCursor) q->setValue(Qt::ImTextAfterCursor, context.text.mid(std::max(0, context.cursor)));
         q->accept();
         return true;
     }
@@ -1337,6 +1350,12 @@ bool TerminalWindow::event(QEvent* e)
         auto* ime = static_cast<QInputMethodEvent*>(e);
         if (m_controller->wantsKeyboard()) {
             m_chrome->deliver(e);
+            return true;
+        }
+        // Terminal output is not an editable document. Never translate arbitrary
+        // IME replacement ranges into destructive shell keystrokes.
+        if (ime->replacementStart() != 0 || ime->replacementLength() != 0) {
+            ime->ignore();
             return true;
         }
         if (m_focused) {
@@ -1361,6 +1380,31 @@ bool TerminalWindow::event(QEvent* e)
         ime->accept();
         return true;
     }
+    case QEvent::DragEnter:
+    case QEvent::DragMove:
+    case QEvent::Drop: {
+        auto* drop = static_cast<QDropEvent*>(e);
+        Pane* target = m_splits ? m_splits->paneAt((drop->position() * devicePixelRatio()).toPoint()) : nullptr;
+        const QString paths = droppedFiles(drop->mimeData());
+        if (!target || target->isHeld() || m_controller->wantsKeyboard() || paths.isEmpty()
+            || !(drop->possibleActions() & Qt::CopyAction)) {
+            drop->ignore();
+            return true;
+        }
+        drop->setDropAction(Qt::CopyAction);
+        drop->accept();
+        if (e->type() == QEvent::Drop) {
+            setFocusedPane(target);
+            const auto bytes = paths.toUtf8();
+            target->sendInput(target->withTerminal([&](Terminal& t) {
+                return AfterglowVt::encodePaste(std::string_view(bytes.constData(), std::size_t(bytes.size())), t.modes());
+            }));
+        }
+        return true;
+    }
+    case QEvent::DragLeave:
+        e->accept();
+        return true;
     case QEvent::PlatformSurface:
         if (static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType()
             == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
@@ -1392,6 +1436,8 @@ bool TerminalWindow::event(QEvent* e)
 
 void TerminalWindow::exposeEvent(QExposeEvent*)
 {
+    QAccessibleEvent accessibleEvent(this, isExposed() ? QAccessible::ObjectShow : QAccessible::ObjectHide);
+    QAccessible::updateAccessibility(&accessibleEvent);
     m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
     if (isExposed() && !m_effectsApplied) {
         m_effectsApplied = true;
@@ -1422,6 +1468,7 @@ void TerminalWindow::resizeEvent(QResizeEvent*)
 
 void TerminalWindow::focusInEvent(QFocusEvent*)
 {
+    if (m_focused) { QAccessibleEvent event(m_focused, QAccessible::Focus); QAccessible::updateAccessibility(&event); }
     m_windowFocused = true;
     if (m_focused) {
         m_focused->sendInput(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
@@ -3414,3 +3461,37 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
 }
 
 } // namespace Afterglow
+
+namespace Afterglow {
+QRect TerminalWindow::accessiblePaneRect(Pane* pane) const
+{
+    if (!m_splits || tabIdOf(pane) != activeTabId()) return {};
+    const QRect px = contentRect(m_splits->rectOf(pane));
+    const qreal dpr = devicePixelRatio();
+    return QRect(mapToGlobal((QPointF(px.topLeft()) / dpr).toPoint()), (QSizeF(px.size()) / dpr).toSize());
+}
+QRect TerminalWindow::accessibleCellRect(Pane* pane, AfterglowVt::SelectionPoint point) const
+{
+    const QRect area = accessiblePaneRect(pane);
+    if (area.isEmpty()) return {};
+    return pane->withTerminal([&](Terminal& t) {
+        const auto& s = t.screen();
+        const auto row = s.absoluteIndexOf(point.row) - static_cast<long long>(s.viewportTop());
+        if (row < 0 || row >= s.rows()) return QRect();
+        const auto& metrics = m_renderer->fonts().fonts->metrics();
+        const auto& line = s.absoluteRow(s.viewportTop() + std::size_t(row));
+        const double scale = line.lineSize == AfterglowVt::LineSize::Single ? 1 : 2;
+        const double cw = metrics.cellWidth * scale / devicePixelRatio();
+        const double ch = metrics.cellHeight / devicePixelRatio();
+        const int width = std::max(1, line.at(point.col).width());
+        return QRectF(area.x() + point.col * cw, area.y() + row * ch, width * cw, ch).toAlignedRect();
+    });
+}
+}
+
+namespace Afterglow {
+QAccessibleInterface* TerminalWindow::accessibleRoot() const
+{
+    return QAccessible::queryAccessibleInterface(const_cast<TerminalWindow*>(this));
+}
+}

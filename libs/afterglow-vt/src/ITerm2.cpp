@@ -48,7 +48,9 @@ void parseITerm2Args(std::string_view args, ITerm2File& out)
         if (eq != std::string_view::npos) {
             const std::string_view key = pair.substr(0, eq);
             const std::string_view value = pair.substr(eq + 1);
-            if (key == "width") {
+            if (key == "name") {
+                out.name = std::string(value.substr(0, 4096));
+            } else if (key == "width") {
                 out.width = std::string(value.substr(0, 32));
             } else if (key == "height") {
                 out.height = std::string(value.substr(0, 32));

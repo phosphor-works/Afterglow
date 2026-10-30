@@ -135,8 +135,8 @@ struct ShaderChains
 class AFTERGLOWRENDER_EXPORT PostChain
 {
 public:
-    enum class Layer { Background, Text, Cursor };
-    static constexpr int LayerCount = 3;
+    enum class Layer { Background, Text, Cursor, OtherCursor };
+    static constexpr int LayerCount = 4;
 
     explicit PostChain(GpuDevice& device);
     ~PostChain();
@@ -168,7 +168,7 @@ public:
     /// unless @p cursorBelowText says otherwise for that pane. Returns with
     /// the pass open, so the caller can draw overlays before ending it.
     void composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes,
-                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear);
+                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors = false);
 
     /// Records the shader passes after the grid pass. Returns with the final
     /// pass on @p swapTarget begun and drawn, so the caller can add the
@@ -185,7 +185,7 @@ public:
 private:
     QRhiGraphicsPipeline* pipeline(const ShaderProgram& program, QRhiRenderPassDescriptor* pass);
     QRhiShaderResourceBindings* bindings(int ubo, int texture, QRhiTexture* buffer = nullptr, QRhiSampler* sampler = nullptr);
-    QRhiShaderResourceBindings* compositeBindings(int ubo, int background, int text, int cursor);
+    QRhiShaderResourceBindings* compositeBindings(int ubo, int background, int text, int cursor, int other);
     QRhiGraphicsPipeline* compositePipeline();
     /// Runs @p chain over each pane region of the layer in texture @p input,
     /// writing to free layer textures; returns the texture with the result.
@@ -233,7 +233,7 @@ private:
     float m_historyTime = 0;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
     std::map<std::tuple<int, int, QRhiTexture*, QRhiSampler*>, std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
-    std::map<std::array<int, 4>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;
+    std::map<std::array<int, 5>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;
     std::vector<std::unique_ptr<QRhiBuffer>> m_compositeUbos;
     /// Uniform buffers used so far this frame: a dynamic buffer holds one
     /// value per frame, so every pass takes its own.

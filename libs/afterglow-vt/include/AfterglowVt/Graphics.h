@@ -72,6 +72,8 @@ struct Placement
     int cols = 0; ///< requested size in cells, 0: from the pixel size
     int rows = 0;
     std::int32_t z = 0;
+    std::uint32_t parentImage = 0, parentPlacement = 0;
+    int relativeX = 0, relativeY = 0; ///< signed cell offsets from parent
     bool isVirtual = false; ///< for Unicode placeholders, not drawn directly
 };
 
@@ -171,6 +173,9 @@ private:
     void compose(const Command& cmd, Context& ctx);
     void respond(const Command& cmd, Context& ctx, std::string_view status, bool isError);
     Image* findImage(const Command& cmd);
+    const Placement* parentOf(const Placement&) const;
+    std::optional<std::pair<long long, long long>> origin(const Placement&, const Screen&, int depth = 0) const;
+    void pruneOrphans();
     void enforceQuota();
     void dropUnusedImage(std::uint32_t id);
 

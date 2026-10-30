@@ -156,6 +156,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     const bool hideBlinking = !p.textBlinkOn && s.hasBlinkingText;
     const bool cursorInGrid = s.cursorX >= 0 && s.cursorX < s.cols && s.cursorY >= 0 && s.cursorY < s.rows;
     const bool cursorBlink = p.cursorBlinkOverride < 0 ? s.cursorBlink : p.cursorBlinkOverride != 0;
+    const bool drawExtraCursors = !p.focused || !cursorBlink || p.cursorBlinkOn;
     const bool drawCursor = s.cursorVisible && cursorInGrid && (!p.focused || !cursorBlink || p.cursorBlinkOn);
     const int cursorSpan = drawCursor && s.at(s.cursorX, s.cursorY).width == 2 ? 2 : 1;
     const bool blockCursor = drawCursor && p.focused && s.cursorShape == AfterglowVt::CursorShape::Block;
@@ -167,6 +168,15 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // Text under a block cursor takes the background colour once it has arrived.
     const bool cursorSettled = (cursorPos - cellPos).manhattanLength() < 0.5;
     bool recolorUnderCursor = blockCursor && cursorSettled;
+    std::vector<bool> extraBlocks;
+    if (drawExtraCursors && !s.extraCursors.empty()) {
+        extraBlocks.resize(std::size_t(s.cols) * s.rows);
+        for (const auto& c : s.extraCursors) if (c.shape == AfterglowVt::CursorShape::Block && c.x >= 0 && c.x < s.cols && c.y >= 0 && c.y < s.rows) {
+            const int width = std::max(1, int(s.at(c.x, c.y).width));
+            for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx) extraBlocks[std::size_t(c.y) * s.cols + c.x + dx] = true;
+        }
+    }
+    auto extraBlock = [&](int x, int y) { return !extraBlocks.empty() && y < s.rows && x < s.cols && extraBlocks[std::size_t(y) * s.cols + x]; };
     // The cursor box: a cell, a doubled cell on a double-size line, or the
     // whole of a multicell block.
     float curX = cursorX;
@@ -390,7 +400,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     }
                     if (!e->empty) {
                         std::uint32_t color = c.fg;
-                        if (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan) {
+                        if (extraBlock(x, y) || (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan)) {
                             color = s.cursorTextColor;
                         }
                         const float sx = ox + float(x * cw);
@@ -447,7 +457,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 if (alphaOf(color) == 0) {
                     continue;
                 }
-                if (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan) {
+                if (extraBlock(col, y) || (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan)) {
                     color = s.cursorTextColor;
                 }
                 // Icons (Nerd Font symbols) are fitted to the grid: two cells
@@ -568,6 +578,18 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
 
     ranges.cursorStart = out.size();
     ranges.cursorBelowText = blockCursor;
+    auto extraCursor = [&](const PaneSnapshot::ExtraCursor& c) {
+        if (c.x < 0 || c.x >= s.cols || c.y < 0 || c.y >= s.rows) return;
+        const float xs = s.lineSize(c.y) == AfterglowVt::LineSize::Single ? 1.f : 2.f;
+        const float x = ox + c.x * cw * xs, y = oy + c.y * ch;
+        const float w = std::max(1, int(s.at(c.x, c.y).width)) * cw * xs;
+        const float thickness = std::max(1.f, std::round(dpr));
+        if (c.shape == AfterglowVt::CursorShape::Block) solid(x, y, w, ch, s.cursorColor);
+        else if (c.shape == AfterglowVt::CursorShape::Bar) solid(x, y, std::max(thickness, std::round(cw * .12f)), ch, s.cursorColor);
+        else { const float h = std::max(thickness, std::round(ch * .08f)); solid(x, y + ch - h, w, h, s.cursorColor); }
+    };
+    if (drawExtraCursors) for (const auto& c : s.extraCursors)
+        if ((c.shape == AfterglowVt::CursorShape::Block) == blockCursor) extraCursor(c);
     if (blockCursor) {
         solid(curX, curY, curW, curH, s.cursorColor);
     }
@@ -589,6 +611,9 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             solid(x0, y0 + hh - h, w, h, s.cursorColor);
         }
     }
+    ranges.cursorOtherStart = out.size();
+    if (drawExtraCursors) for (const auto& c : s.extraCursors)
+        if ((c.shape == AfterglowVt::CursorShape::Block) != blockCursor) extraCursor(c);
     return true;
 }
 
@@ -977,7 +1002,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             cache.seenFrame = m_frameCounter + 1;
             m_frame.insert(m_frame.end(), cache.instances.begin(), cache.instances.end());
             m_ranges.push_back({first, first + std::uint32_t(cache.ranges.textStart),
-                                first + std::uint32_t(cache.ranges.cursorStart), std::uint32_t(m_frame.size()),
+                                first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
                                 cache.ranges.cursorBelowText, pp.rect, {}});
         }
         if (ok) {
@@ -1301,7 +1326,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                  drawSpan(range.textStart, range.cursorStart);
                  drawImages(range, false);
              }},
-            {PostChain::Layer::Cursor, [&](const DrawRange& range) { drawSpan(range.cursorStart, range.end); }},
+            {PostChain::Layer::Cursor, [&](const DrawRange& range) { drawSpan(range.cursorStart, range.cursorOtherStart); }},
+            {PostChain::Layer::OtherCursor, [&](const DrawRange& range) { drawSpan(range.cursorOtherStart, range.end); }},
         };
         bool first = true;
         for (const auto& [layer, draw] : layers) {
@@ -1320,7 +1346,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         for (const DrawRange& range : m_ranges) {
             cursorBelowText.push_back(range.cursorBelowText);
         }
-        m_post->composite(cb, regions, cursorBelowText, time, clear);
+        const bool otherCursors = std::any_of(m_ranges.begin(), m_ranges.end(), [](const auto& r) { return r.cursorOtherStart < r.end; });
+        m_post->composite(cb, regions, cursorBelowText, time, clear, otherCursors);
         bindGrid();
         drawOverlays();
         cb->endPass();
@@ -1335,15 +1362,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
             cb->setScissor(scissor(range.scissor));
             drawBackgrounds(range);
-            if (range.cursorBelowText) {
-                drawSpan(range.cursorStart, range.end);
-            }
+            if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+            else drawSpan(range.cursorOtherStart, range.end);
             drawImages(range, true);
             cb->setScissor(scissor(range.scissor));
             drawSpan(range.textStart, range.cursorStart);
-            if (!range.cursorBelowText) {
-                drawSpan(range.cursorStart, range.end);
-            }
+            if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+            else drawSpan(range.cursorOtherStart, range.end);
             drawImages(range, false);
         }
         drawOverlays();

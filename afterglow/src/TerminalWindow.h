@@ -68,6 +68,9 @@ public:
     ~TerminalWindow() override;
 
     static QList<TerminalWindow*> windows();
+    QAccessibleInterface* accessibleRoot() const override;
+    QRect accessiblePaneRect(Pane*) const;
+    QRect accessibleCellRect(Pane*, AfterglowVt::SelectionPoint) const;
     /// Switches to @p pane's tab, focuses it and raises the window.
     void revealPane(Pane* pane);
 
