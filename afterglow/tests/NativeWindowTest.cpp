@@ -68,6 +68,13 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     const QPointF start(50, chrome->tabBarHeight()/2.0), outside(50, 150);
     pointer(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
     pointer(QEvent::MouseMove, outside, Qt::NoButton, Qt::LeftButton);
+    pointer(QEvent::MouseMove, start, Qt::NoButton, Qt::LeftButton);
+    pointer(QEvent::MouseButtonRelease, start, Qt::LeftButton, Qt::NoButton);
+    drain(50);
+    ASSERT_EQ(original->parent(), window);
+    ASSERT_EQ(window->tabs().size(), 2);
+    pointer(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    pointer(QEvent::MouseMove, outside, Qt::NoButton, Qt::LeftButton);
     pointer(QEvent::MouseButtonRelease, outside, Qt::LeftButton, Qt::NoButton);
     drain(250);
     auto* detached = qobject_cast<TerminalWindow*>(original->parent());
@@ -95,6 +102,27 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     drain(200);
     EXPECT_NE(background->parent(), window);
     EXPECT_EQ(other->parent(), window);
+
+    application.reset();
+    application = std::make_unique<Application>(directory.filePath(QStringLiteral("single-tab.conf")),
+        QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("tabBar"), QStringLiteral("always")}}}});
+    WindowOptions singleOptions;
+    singleOptions.command = {QStringLiteral("/bin/cat")};
+    window = application->newWindow(singleOptions);
+    ASSERT_NE(window, nullptr);
+    window->resize(900, 600);
+    drain(200);
+    QPointer<Pane> lastPane = window->focusedPane();
+    QPointer<TerminalWindow> source = window;
+    pointer(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    pointer(QEvent::MouseMove, QPointF(-50,150), Qt::NoButton, Qt::LeftButton);
+    pointer(QEvent::MouseButtonRelease, QPointF(-50,150), Qt::LeftButton, Qt::NoButton);
+    drain(200);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    EXPECT_TRUE(source.isNull());
+    ASSERT_FALSE(lastPane.isNull());
+    ASSERT_NE(qobject_cast<TerminalWindow*>(lastPane->parent()), nullptr);
+    EXPECT_FALSE(lastPane->isHeld());
 }
 
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {

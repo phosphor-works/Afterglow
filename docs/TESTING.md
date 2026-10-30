@@ -110,12 +110,13 @@ cmake --build build --target afterglow_native_bench -j4
 Run the repeated workloads:
 
 ```sh
-python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench /tmp/afterglow-native-performance
+python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench ~/afterglow-native-performance
 ```
 
 The runner requires the native window test dependencies and `dbus-run-session`.
 NVIDIA process memory sampling is optional.
 The output directory must not contain earlier results.
+Use persistent storage to keep results through a restart.
 The default run uses three repeats, 15-second intervals and 100 input samples.
 It measures 1920×1080 and 3840×2160 windows at scale 1.
 Each case uses a new application process and temporary configuration.
@@ -126,7 +127,7 @@ Do not build or run other tests during measurement.
 Use `--cases` to select workloads and `--sizes` to select window sizes:
 
 ```sh
-python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench /tmp/afterglow-input-performance \
+python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench ~/afterglow-input-performance \
     --cases input input-load --sizes 1920x1080 --repeats 3 --samples 100
 ```
 

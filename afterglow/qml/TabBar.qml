@@ -237,6 +237,8 @@ QQC.ToolBar {
                         bar.dragX = Math.max(0, Math.min(max, at - grabOffset))
                         bar.dragTo = Math.max(0, Math.min(bar.count - 1, Math.round(bar.dragX / bar.tabWidth)))
                         bar.dragFrom = tab.index
+                        bar.lastPress = 0
+                        bar.lastPressTab = -2
                     }
                     onReleased: mouse => {
                         if (mouse.button === Qt.LeftButton && bar.dragFrom >= 0) {
@@ -249,11 +251,14 @@ QQC.ToolBar {
                             bar.settling = true
                             bar.dragFrom = -1
                             bar.dragTo = -1
-                            if (detach)
+                            if (detach) {
+                                bar.settling = false
                                 bar.controller.detachTab(from)
-                            else if (to !== from)
-                                bar.controller.moveTab(from, to)
-                            Qt.callLater(() => bar.settling = false)
+                            } else {
+                                if (to !== from)
+                                    bar.controller.moveTab(from, to)
+                                Qt.callLater(() => bar.settling = false)
+                            }
                         }
                     }
                     onCanceled: {

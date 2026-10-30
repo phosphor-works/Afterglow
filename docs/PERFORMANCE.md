@@ -11,8 +11,8 @@ See [Phosphor scene performance](../data/examples/phosphor/PERFORMANCE.md) for s
 
 | Case | Work |
 | --- | --- |
-| Idle | Filled viewport, no output, static cursor |
-| Idle with blink | Filled viewport, no output, blinking cursor |
+| Idle | 75-character viewport rows, no output, static cursor |
+| Idle with blink | 75-character viewport rows, no output, blinking cursor |
 | Scroll | Repeated scrollbar traversal through 100,000 history rows; requests every 16 ms |
 | Resize | Repeated width changes of 160 pixels and height changes of 80 pixels; requests every 50 ms |
 | History | Retain exactly 0, 100,000 or 1,000,000 rows, then measure idle memory |
@@ -26,6 +26,7 @@ Each history line has 75 ASCII characters and a carriage return/newline pair.
 The input cases use a real PTY child.
 They send one acknowledgement request every 100 ms, with at most one outstanding request.
 The child reserves the first screen row for acknowledgements.
+Its partial scrolling region does not add output to scrollback.
 The recorded output rate covers the interval between the first and last requests.
 
 The script case loads the shipped Phosphor callback through ScriptHost.
