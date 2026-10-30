@@ -187,7 +187,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             ctl("send-text", "--pane", active, "sleep 3; false\\n")
             time.sleep(1.5)
             desktop.screenshot(args.artifacts / "status-running.png")
-            time.sleep(3)
+            time.sleep(5)  # command finishes, then all three tabs receive a refresh
             desktop.screenshot(args.artifacts / "status-failed.png")
             ctl("action", "script:tab-status.toggle", "--pane", active)
             status_state = config / "state/scripts/tab-status.json"
