@@ -52,7 +52,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             AfterglowVt::Selection sel;
             sel.anchor = {s.rowsDropped() + std::uint64_t(a % (s.totalRows() + 1)), a % s.cols()};
             sel.head = {s.rowsDropped() + std::uint64_t(b % (s.totalRows() + 1)), b % s.cols()};
-            sel.mode = AfterglowVt::SelectionMode(op % 4);
+            sel.mode = AfterglowVt::SelectionMode((op / 4) % 4);
             sel.layoutEpoch = s.layoutEpoch();
             sel.active = true;
             (void)sel.text(s);

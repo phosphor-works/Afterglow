@@ -24,6 +24,8 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
+#include <QImageReader>
+#include <QBuffer>
 
 #include <algorithm>
 #include <array>
@@ -41,11 +43,18 @@ public:
     bool decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height,
                    std::vector<std::uint8_t>& rgba) override
     {
-        QImage img = QImage::fromData(reinterpret_cast<const uchar*>(png.data()), int(png.size()), "PNG");
-        if (img.isNull()) {
-            return false;
-        }
+        if (png.size() > AfterglowVt::GraphicsStore::DefaultQuota) return false;
+        QByteArray bytes = QByteArray::fromRawData(png.data(), qsizetype(png.size()));
+        QBuffer buffer(&bytes);
+        buffer.open(QIODevice::ReadOnly);
+        QImageReader reader(&buffer, "PNG");
+        const auto size = reader.size();
+        if (size.isEmpty() || size.width() > 10000 || size.height() > 10000
+            || quint64(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
+        QImage img = reader.read();
+        if (img.isNull() || img.size() != size) return false;
         img.convertTo(QImage::Format_RGBA8888);
+        if (img.isNull()) return false;
         width = std::uint32_t(img.width());
         height = std::uint32_t(img.height());
         rgba.resize(std::size_t(width) * height * 4);
@@ -119,6 +128,30 @@ int main(int argc, char** argv)
     if (!framesOk || frames < 1 || frames > 10000 || !fpsOk || !std::isfinite(fps) || fps < 1 || fps > 240) {
         std::fprintf(stderr, "--frames must be 1..10000 and --fps must be 1..240\n");
         return 1;
+    }
+    auto validNumber = [](const QString& text, double low, double high, bool integer = false) {
+        bool ok = false;
+        const double value = text.toDouble(&ok);
+        return ok && std::isfinite(value) && value >= low && value <= high
+            && (!integer || value == std::floor(value));
+    };
+    struct Range { const char* key; double low, high; bool integer; };
+    for (const Range r : {Range{"cols", 1, 1000, true}, {"rows", 1, 500, true},
+            {"dpr", .25, 8, false}, {"size", 4, 96, false}, {"time", 0, 10000000, false},
+            {"wake-age", 0, 10000000, false}, {"opacity", 0, 1, false}, {"weight", 100, 900, false}}) {
+        const auto key = QLatin1String(r.key);
+        if (parser.value(key).isEmpty() && !parser.isSet(key)) continue;
+        if (!validNumber(parser.value(key), r.low, r.high, r.integer)) {
+            std::fprintf(stderr, "--%s requires a finite %s in %g..%g\n", r.key,
+                         r.integer ? "integer" : "number", r.low, r.high);
+            return 1;
+        }
+    }
+    // Integer options use the same strict conversion as their eventual consumers.
+    for (const auto& key : {QStringLiteral("cols"), QStringLiteral("rows")}) {
+        bool ok = false;
+        parser.value(key).toInt(&ok);
+        if (!ok) { std::fprintf(stderr, "--%s requires an integer\n", qPrintable(key)); return 1; }
     }
 
     QFile in;
@@ -252,6 +285,12 @@ int main(int argc, char** argv)
         if (dimensions.size() != 2 || w < 1 || h < 1 || w > 8192 || h > 8192) return 1;
         size = QSize(w, h);
     }
+    const qint64 fullWidth = parser.isSet(QStringLiteral("split")) ? qint64(size.width()) * 2 + 2 : size.width();
+    if (size.width() < 1 || size.height() < 1 || fullWidth > 8192 || size.height() > 8192
+        || fullWidth * size.height() > 16 * 1024 * 1024) {
+        std::fprintf(stderr, "framebuffer must fit within 8192 pixels per side and 16 megapixels\n");
+        return 1;
+    }
     const auto alpha = std::uint8_t(std::lround(std::clamp(parser.value(QStringLiteral("opacity")).toDouble(), 0.0, 1.0) * 255));
     AfterglowRender::WindowRenderer::Pane pane;
     pane.snapshot = &snapshot;
@@ -263,8 +302,11 @@ int main(int argc, char** argv)
     for (const QString& spec : parser.values(QStringLiteral("signal"))) {
         const QStringList kv = spec.split(QLatin1Char('='));
         const QStringList va = kv.value(1).split(QLatin1Char('@'));
-        const int channel = kv.value(0).toInt();
-        if (kv.size() != 2 || channel < 0 || channel >= int(pane.params.signals.size())) {
+        bool channelOk = false;
+        const int channel = kv.value(0).toInt(&channelOk);
+        if (kv.size() != 2 || !channelOk || channel < 0 || channel >= int(pane.params.signals.size())
+            || va.size() > 2 || !validNumber(va.value(0), -1e30, 1e30)
+            || !validNumber(va.value(1, QStringLiteral("0")), 0, 10000000)) {
             std::fprintf(stderr, "bad --signal %s\n", qPrintable(spec));
             return 1;
         }
@@ -278,10 +320,16 @@ int main(int argc, char** argv)
     const float time = parser.value(QStringLiteral("time")).toFloat();
     if (parser.isSet(QStringLiteral("wake-from"))) {
         const QStringList at = parser.value(QStringLiteral("wake-from")).split(QLatin1Char(','));
+        bool xOk = false, yOk = false;
+        const int previousX = at.value(0).toInt(&xOk), previousY = at.value(1).toInt(&yOk);
+        if (at.size() != 2 || !xOk || !yOk || previousX < 0 || previousX >= cols || previousY < 0 || previousY >= rows) {
+            std::fprintf(stderr, "--wake-from requires a valid col,row within the grid\n");
+            return 1;
+        }
         const int x = snapshot.cursorX;
         const int y = snapshot.cursorY;
-        snapshot.cursorX = at.value(0).toInt();
-        snapshot.cursorY = at.value(1).toInt();
+        snapshot.cursorX = previousX;
+        snapshot.cursorY = previousY;
         renderer.setClockOverride(time - parser.value(QStringLiteral("wake-age")).toFloat());
         renderer.renderToImage(size, {pane}, {}, clear);
         snapshot.cursorX = x;

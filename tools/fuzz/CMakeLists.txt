@@ -12,6 +12,8 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "AFTERGLOW_BUILD_FUZZERS needs clang (libFuzzer)")
 endif()
 find_package(ZLIB REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 file(GLOB VT_SOURCES ${PROJECT_SOURCE_DIR}/libs/afterglow-vt/src/*.cpp)
 add_executable(afterglow_vtfuzz vtfuzz.cpp ${VT_SOURCES})
 target_include_directories(afterglow_vtfuzz PRIVATE
@@ -20,5 +22,5 @@ target_include_directories(afterglow_vtfuzz PRIVATE
 target_compile_options(afterglow_vtfuzz PRIVATE -g -O1 -fsanitize=fuzzer,address,undefined
     -fno-sanitize-recover=undefined)
 target_link_options(afterglow_vtfuzz PRIVATE -fsanitize=fuzzer,address,undefined)
-target_link_libraries(afterglow_vtfuzz PRIVATE ZLIB::ZLIB)
+target_link_libraries(afterglow_vtfuzz PRIVATE ZLIB::ZLIB PkgConfig::PCRE2)
 set_target_properties(afterglow_vtfuzz PROPERTIES AUTOMOC OFF)
