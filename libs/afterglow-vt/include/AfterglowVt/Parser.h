@@ -132,7 +132,8 @@ public:
         m_state = State::Ground;
         m_utf8Needed = 0;
         clearSequence();
-        m_string.clear();
+        abortString();
+        m_stringIsApc = false;
     }
 
 private:

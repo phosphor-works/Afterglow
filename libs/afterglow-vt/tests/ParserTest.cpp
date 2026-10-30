@@ -155,3 +155,15 @@ TEST(Parser, EscDispatch)
     EXPECT_EQ(f.r.events[1], "esc (0");
     EXPECT_EQ(f.r.events[2], "esc #8");
 }
+
+TEST(Parser, ResetRecoversFromUnterminatedOverflow)
+{
+    Fixture f;
+    f.p.feed("\x1b]2;");
+    const std::string chunk(1024 * 1024, 'a');
+    for (std::size_t i = 0; i <= Parser<Recorder>::MaxStringPayload / chunk.size(); ++i) f.p.feed(chunk);
+    f.p.reset();
+    f.p.feed("\x1b]2;recovered\x07");
+    ASSERT_EQ(f.r.events.size(), 1u);
+    EXPECT_EQ(f.r.events.front(), "osc 2;recovered bel");
+}

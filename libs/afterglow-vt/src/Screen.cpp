@@ -851,7 +851,6 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
 
     // 2. Rewrap every line to the new width.
     std::deque<Row> out;
-    std::vector<std::size_t> lineFirstRow;
     std::vector<std::size_t> trackedNew(trackedPos.size(), TrackedRowGone);
     std::vector<int> mappedColumns(trackedPos.size(), 0);
     std::vector<std::vector<std::pair<std::size_t, std::size_t>>> lineMarks(lines.size());
@@ -863,27 +862,26 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     int cursorCol = 0;
     for (std::size_t li = 0; li < lines.size(); ++li) {
         Line& line = lines[li];
-        lineFirstRow.push_back(out.size());
         out.emplace_back(cols).promptStart = line.promptStart;
         int col = 0;
         bool cursorPlaced = false;
         std::size_t nextMark = 0;
-        auto placeCursorIfHere = [&](std::size_t offset) {
+        auto placeCursorIfHere = [&](std::size_t offset, int mappedCol) {
             while (nextMark < lineMarks[li].size() && lineMarks[li][nextMark].first <= offset) {
                 const auto index = lineMarks[li][nextMark++].second;
                 trackedNew[index] = out.size() - 1;
-                mappedColumns[index] = col;
+                mappedColumns[index] = mappedCol;
             }
             if (trackCursor && li == cursorLine && !cursorPlaced && offset == cursorOffset) {
                 cursorRow = out.size() - 1;
-                cursorCol = col;
+                cursorCol = mappedCol;
                 cursorPlaced = true;
             }
         };
         for (std::size_t off = 0; off < line.cells.size(); ++off) {
             const Cell& c = line.cells[off];
             if (c.isTail()) {
-                placeCursorIfHere(off);
+                placeCursorIfHere(off, col - 1);
                 continue; // re-emitted with its head
             }
             const int w = std::max(1, c.width());
@@ -895,7 +893,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
                 out.emplace_back(cols);
                 col = 0;
             }
-            placeCursorIfHere(off);
+            placeCursorIfHere(off, col);
             Row& dst = out.back();
             dst.cells[std::size_t(col)] = c;
             if (c.hasGrapheme()) {
@@ -919,7 +917,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             }
             col += w;
         }
-        placeCursorIfHere(line.cells.size());
+        placeCursorIfHere(line.cells.size(), col);
         while (nextMark < lineMarks[li].size()) {
             const auto index = lineMarks[li][nextMark++].second;
             trackedNew[index] = out.size() - 1;

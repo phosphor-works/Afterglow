@@ -138,6 +138,7 @@ public:
     /// @p trackedRows, if given, holds absolute row indices of things anchored
     /// to rows (image placements). They are rewritten to where those rows end
     /// up, or to TrackedRowGone if the row no longer exists.
+    /// Optional matching columns preserve cell positions, including wide tails and end-exclusive boundaries.
     void resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart = std::nullopt,
                 std::vector<std::size_t>* trackedRows = nullptr, std::vector<int>* trackedColumns = nullptr);
     static constexpr std::size_t TrackedRowGone = std::size_t(-1);

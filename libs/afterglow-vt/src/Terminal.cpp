@@ -270,8 +270,8 @@ void Terminal::setVisible(bool visible)
 void Terminal::reportSize()
 {
     char buf[64];
-    const int n = std::snprintf(buf, sizeof buf, "\x1b[48;%d;%d;%d;%dt", rows(), cols(), rows() * m_cellHeight,
-                                cols() * m_cellWidth);
+    const int n = std::snprintf(buf, sizeof buf, "\x1b[48;%d;%d;%lld;%lldt", rows(), cols(), 1LL * rows() * m_cellHeight,
+                                1LL * cols() * m_cellWidth);
     reply(std::string_view(buf, std::size_t(n)));
 }
 
@@ -2067,8 +2067,8 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
             if (p.at(0) == 1) {
                 n = std::snprintf(buf, sizeof buf, "\x1b[?1;0;1024S");
             } else if (p.at(0) == 2) {
-                n = std::snprintf(buf, sizeof buf, "\x1b[?2;0;%d;%dS", std::max(1, cols() * m_cellWidth),
-                                  std::max(1, rows() * m_cellHeight));
+                n = std::snprintf(buf, sizeof buf, "\x1b[?2;0;%lld;%lldS", std::max(1LL, 1LL * cols() * m_cellWidth),
+                                  std::max(1LL, 1LL * rows() * m_cellHeight));
             } else {
                 n = std::snprintf(buf, sizeof buf, "\x1b[?%d;1;0S", int(p.at(0))); // ReGIS: not supported
             }
@@ -3335,7 +3335,7 @@ void Terminal::windowOp(const Params& p)
         break;
     }
     case 14:
-        n = std::snprintf(buf, sizeof buf, "\x1b[4;%d;%dt", rows() * m_cellHeight, cols() * m_cellWidth);
+        n = std::snprintf(buf, sizeof buf, "\x1b[4;%lld;%lldt", 1LL * rows() * m_cellHeight, 1LL * cols() * m_cellWidth);
         break;
     case 16:
         n = std::snprintf(buf, sizeof buf, "\x1b[6;%d;%dt", m_cellHeight, m_cellWidth);

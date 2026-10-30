@@ -240,3 +240,14 @@ TEST(History, RowsAreCompactedAndStillReadable)
         EXPECT_EQ(t.screen().row(y).cells.size(), 40u);
     }
 }
+
+TEST(Reflow, TrackedWideTailKeepsItsCellOffset)
+{
+    Term t(10, 3);
+    t.t.feed("界abc");
+    std::vector<std::size_t> rows{0, 0};
+    std::vector<int> columns{1, 2};
+    t.t.screen().resize(6, 3, true, std::nullopt, &rows, &columns);
+    EXPECT_EQ(rows, (std::vector<std::size_t>{0, 0}));
+    EXPECT_EQ(columns, (std::vector<int>{1, 2}));
+}

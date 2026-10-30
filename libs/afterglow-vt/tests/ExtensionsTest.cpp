@@ -313,3 +313,19 @@ TEST(Extensions, MultipleCursorLongListsAndOverflowAreAtomic)
     t.feed(command + " q");
     EXPECT_TRUE(t.extraCursors().empty());
 }
+
+TEST(Extensions, PixelReportsAndImagePercentagesUseWideGeometry)
+{
+    RecordingHost host;
+    Terminal t(2, 32769, host);
+    t.resize(2, 32769, 65535, 65535);
+    t.feed("\x1b[?2048h\x1b[14t\x1b[?2;1S");
+    const auto pixels = std::to_string(32769LL * 65535);
+    EXPECT_EQ(host.written, "\x1b[48;32769;2;" + pixels + ";131070t"
+        "\x1b[4;" + pixels + ";131070t\x1b[?2;0;131070;" + pixels + "S");
+    detail::ITerm2File file;
+    file.width = "1px"; file.height = "100%"; file.preserveAspectRatio = false;
+    std::uint32_t w = 0, h = 0;
+    ASSERT_TRUE(detail::iterm2ImageSize(file, 1, 1, 65535, 65535, 2, 32769, w, h));
+    EXPECT_EQ(w, 1u); EXPECT_EQ(h, 10000u);
+}

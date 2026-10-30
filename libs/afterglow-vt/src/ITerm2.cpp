@@ -15,7 +15,7 @@ constexpr double MaxSide = 10000;
 constexpr double MaxPixels = 4096.0 * 4096.0;
 
 /// A size argument in pixels; negative for auto.
-double sizeArg(std::string_view spec, int cell, int total)
+double sizeArg(std::string_view spec, int cell, double total)
 {
     if (spec.empty() || spec == "auto") {
         return -1;
@@ -79,8 +79,8 @@ bool iterm2ImageSize(const ITerm2File& file, std::uint32_t naturalW, std::uint32
     }
     const double totalW = double(cols) * cellW;
     const double totalH = double(rows) * cellH;
-    double w = sizeArg(file.width, cellW, int(totalW));
-    double h = sizeArg(file.height, cellH, int(totalH));
+    double w = sizeArg(file.width, cellW, totalW);
+    double h = sizeArg(file.height, cellH, totalH);
     const double aspect = double(naturalW) / double(naturalH);
     if (w < 0 && h < 0) {
         // Natural size, made to fit the terminal's width.

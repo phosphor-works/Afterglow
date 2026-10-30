@@ -255,10 +255,11 @@ public:
 
     const std::string& title() const noexcept { return m_title; }
     const std::string& workingDirectory() const noexcept { return m_cwd; }
-    /// True while the cursor is in a shell prompt or its input (OSC 133 A/B, before C).
+    /// The newest 1024 retained OSC 133 regions, including trimmed descriptors.
     std::vector<SemanticRegion> semanticRegions() const;
     std::optional<std::string> semanticRegionText(std::uint64_t id, std::size_t maxBytes = 1024 * 1024,
                                                   bool* truncated = nullptr) const;
+    /// True while the cursor is in a shell prompt or its input (OSC 133 A/B, before C).
     bool atShellPrompt() const noexcept { return m_semanticZone != SemanticZone::Output; }
     /// A resize kept the prompt's previous layout for the shell to repaint,
     /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
