@@ -130,6 +130,12 @@ qt_add_qml_module(${target}
 endfunction()
 afterglow_add_chrome(afterglow)
 
+if(AFTERGLOW_BUILD_TOOLS)
+    qt_add_executable(afterglow_native_bench ../tools/bench/nativebench.cpp)
+    target_link_libraries(afterglow_native_bench PRIVATE afterglow_app)
+    afterglow_add_chrome(afterglow_native_bench)
+endif()
+
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     qt_add_executable(afterglow_native_tests tests/NativeWindowTest.cpp)

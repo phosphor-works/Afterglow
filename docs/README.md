@@ -22,6 +22,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Check protocol support | [Compatibility](COMPATIBILITY.md) |
 | Upgrade | [Migration](MIGRATION.md), [release notes](../CHANGELOG.md) |
 | Run tests | [Testing](TESTING.md) |
+| Measure performance | [Performance](PERFORMANCE.md) |
 | Write documentation | [Writing rules](WRITING.md) |
 
 ## First configuration

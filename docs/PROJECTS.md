@@ -13,6 +13,9 @@
 | `detach_tab` | Moves the complete tab to a new window |
 
 Use the command palette or a keybinding to run these actions.
+Drag a tab outside the tab bar and release it to open a new window.
+Alternatively, right-click the tab and select **Detach Tab to New Window**.
+A horizontal drag inside the bar changes tab order.
 Movement keeps processes, history, graphics and pane IDs.
 A detached tab also keeps its tab ID and split ratios.
 An empty source window closes after its last pane moves.

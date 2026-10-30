@@ -153,6 +153,7 @@ public:
     Q_INVOKABLE void closeTab(int index) { Q_EMIT closeTabRequested(index); }
     Q_INVOKABLE void newTab() { Q_EMIT newTabRequested(); }
     /// Moves the tab at @p from to @p to (the indexes as shown).
+    Q_INVOKABLE void detachTab(int index) { Q_EMIT detachTabRequested(index); }
     Q_INVOKABLE void moveTab(int from, int to) { Q_EMIT moveTabRequested(from, to); }
     Q_INVOKABLE void renameTab(int index) { Q_EMIT renameTabRequested(index); }
     /// The tab's menu, at @p x, @p y (logical pixels).
@@ -197,6 +198,7 @@ Q_SIGNALS:
     void activateTabRequested(int index);
     void closeTabRequested(int index);
     void newTabRequested();
+    void detachTabRequested(int index);
     void moveTabRequested(int from, int to);
     void renameTabRequested(int index);
     void tabMenuRequested(int index, const QPointF& at);

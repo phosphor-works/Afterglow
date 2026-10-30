@@ -197,6 +197,13 @@ public:
     void releaseSwapChain();
     QSize pixelSize() const;
 
+    /// Optional diagnostic sampling. GPU time is asynchronous, in seconds;
+    /// zero means unavailable. It need not describe the most recent frame.
+    void setGpuTimingEnabled(bool enabled) { m_gpuTimingEnabled = enabled; m_completedGpuSeconds = 0; }
+    double completedGpuSeconds() const { return m_completedGpuSeconds; }
+    std::uint64_t submittedFrames() const { return m_submittedFrames; }
+
+
     FontResources& fonts();
 
     /// Post-processing shaders: over each layer, each pane and the whole window.
@@ -225,6 +232,10 @@ public:
                          const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor);
 
 private:
+    bool m_gpuTimingEnabled = false;
+    double m_completedGpuSeconds = 0;
+    std::uint64_t m_submittedFrames = 0;
+
     struct PipelineSet
     {
         std::unique_ptr<QRhiGraphicsPipeline> grid;

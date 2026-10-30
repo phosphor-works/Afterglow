@@ -49,6 +49,54 @@ protected:
     }
     void TearDown() override { application.reset(); drain(); }
 };
+TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
+    auto* original = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* split = window->splitPane(original, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(split, nullptr);
+    const auto tabId = window->tabIdOf(original);
+    auto* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    drain();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_GT(chrome->tabBarHeight(), 0);
+    auto pointer = [&](QEvent::Type type, QPointF position, Qt::MouseButton button, Qt::MouseButtons held) {
+        QMouseEvent event(type, position, QPointF(window->mapToGlobal(position.toPoint())), button, held, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    const QPointF start(50, chrome->tabBarHeight()/2.0), outside(50, 150);
+    pointer(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    pointer(QEvent::MouseMove, outside, Qt::NoButton, Qt::LeftButton);
+    pointer(QEvent::MouseButtonRelease, outside, Qt::LeftButton, Qt::NoButton);
+    drain(250);
+    auto* detached = qobject_cast<TerminalWindow*>(original->parent());
+    ASSERT_NE(detached, nullptr);
+    ASSERT_NE(detached, window);
+    EXPECT_EQ(split->parent(), detached);
+    EXPECT_EQ(detached->tabIdOf(original), tabId);
+    EXPECT_EQ(window->panes(), QList<Pane*>{other});
+    original->sendInput("printf 'detached-process-alive\\n'\n");
+    drain(150);
+    EXPECT_TRUE(original->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("detached-process-alive")));
+    auto* background = window->openTab(launch, nullptr);
+    ASSERT_NE(background, nullptr);
+    window->revealPane(other);
+    chrome->tabMenu(1, 50, 15);
+    const auto items = chrome->contextMenu().value(QStringLiteral("items")).toList();
+    int detachId = -1;
+    for (const auto& item : items) {
+        const auto map = item.toMap();
+        if (map.value(QStringLiteral("title")).toString() == QStringLiteral("Detach Tab to New Window"))
+            detachId = map.value(QStringLiteral("id")).toInt();
+    }
+    ASSERT_GE(detachId, 0);
+    chrome->activateMenuItem(detachId);
+    drain(200);
+    EXPECT_NE(background->parent(), window);
+    EXPECT_EQ(other->parent(), window);
+}
+
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {
     const int panes = window->panes().size(), tabs = window->tabs().size();
     PaneLaunchOptions options; options.command = {QStringLiteral("/nonexistent/afterglow-test-program")};

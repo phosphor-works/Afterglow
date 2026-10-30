@@ -80,6 +80,11 @@ public:
 
     // For the control interface and scripts.
     quint32 id() const noexcept { return m_id; }
+    /// Developer diagnostics; collection is off unless explicitly enabled.
+    void setGpuTimingEnabled(bool enabled) { m_renderer->setGpuTimingEnabled(enabled); }
+    double completedGpuSeconds() const { return m_renderer->completedGpuSeconds(); }
+    std::uint64_t submittedFrames() const { return m_renderer->submittedFrames(); }
+
     /// Every pane, tab by tab.
     QList<Pane*> panes() const;
     int tabIndexOf(const Pane* pane) const { return tabOf(pane); }
@@ -170,6 +175,7 @@ private:
     QString focusedDirectory() const;
     /// Moves the tab at @p from to @p to; the current tab stays current.
     void moveTab(int from, int to);
+    void detachTab(int index);
     void renameTab(int index);
     /// The menu of the tab at @p index, at @p pos (logical pixels).
     void openTabMenu(int index, const QPointF& pos);

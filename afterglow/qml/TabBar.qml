@@ -6,9 +6,9 @@ import QtQuick.Controls as QQC
 
 // The tab bar. Tabs share the width between a minimum and a maximum; past
 // that the bar scrolls (mouse wheel) and keeps the current tab in view.
-// Press a tab to switch to it and drag it sideways to move it; middle-click
-// closes, double-click renames, right-click opens its menu. Double-clicking
-// the empty bar opens a new tab.
+// Press a tab to switch to it. Drag inside the bar to reorder, or outside
+// to detach. Middle-click closes, double-click renames, right-click opens
+// its menu. Double-clicking the empty bar opens a new tab.
 QQC.ToolBar {
     id: bar
 
@@ -212,12 +212,12 @@ QQC.ToolBar {
                     hoverEnabled: true
                     cursorShape: bar.dragFrom >= 0 ? Qt.ClosedHandCursor : Qt.PointingHandCursor
                     acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
-                    property real pressX: 0
+                    property point pressPosition: Qt.point(0, 0)
                     property real grabOffset: 0
 
                     onPressed: mouse => {
                         if (mouse.button === Qt.LeftButton) {
-                            pressX = mapToItem(strip.contentItem, mouse.x, 0).x
+                            pressPosition = mapToItem(bar, mouse.x, mouse.y)
                             grabOffset = mouse.x
                             if (bar.secondClick(tab.index))
                                 bar.controller.renameTab(tab.index)
@@ -226,10 +226,12 @@ QQC.ToolBar {
                         }
                     }
                     onPositionChanged: mouse => {
-                        if (!(mouse.buttons & Qt.LeftButton) || bar.count < 2)
+                        if (!(mouse.buttons & Qt.LeftButton))
                             return
                         const at = mapToItem(strip.contentItem, mouse.x, 0).x
-                        if (bar.dragFrom < 0 && Math.abs(at - pressX) < 6)
+                        const position = mapToItem(bar, mouse.x, mouse.y)
+                        if (bar.dragFrom < 0
+                            && Math.hypot(position.x - pressPosition.x, position.y - pressPosition.y) < Qt.styleHints.startDragDistance)
                             return
                         const max = (bar.count - 1) * bar.tabWidth
                         bar.dragX = Math.max(0, Math.min(max, at - grabOffset))
@@ -240,13 +242,23 @@ QQC.ToolBar {
                         if (mouse.button === Qt.LeftButton && bar.dragFrom >= 0) {
                             const from = bar.dragFrom
                             const to = bar.dragTo
+                            const position = mapToItem(bar, mouse.x, mouse.y)
+                            const margin = Qt.styleHints.startDragDistance
+                            const detach = position.x < -margin || position.x > bar.width + margin
+                                           || position.y < -margin || position.y > bar.height + margin
                             bar.settling = true
                             bar.dragFrom = -1
                             bar.dragTo = -1
-                            if (to !== from)
+                            if (detach)
+                                bar.controller.detachTab(from)
+                            else if (to !== from)
                                 bar.controller.moveTab(from, to)
                             Qt.callLater(() => bar.settling = false)
                         }
+                    }
+                    onCanceled: {
+                        bar.dragFrom = -1
+                        bar.dragTo = -1
                     }
                     onClicked: mouse => {
                         if (mouse.button === Qt.MiddleButton)

@@ -23,7 +23,10 @@ def wait_for(condition, timeout=10):
 
 
 class NestedDesktop:
-    def __init__(self, root):
+    def __init__(self, root, width=1100, height=750):
+        if not 640 <= width <= 7680 or not 480 <= height <= 4320:
+            raise ValueError("Invalid nested desktop dimensions")
+        self.width, self.height = width, height
         self.root = root
         self.socket = f"afterglow-ui-{os.getpid()}"
         self.env = dict(os.environ, XDG_CONFIG_HOME=str(root),
@@ -37,7 +40,7 @@ class NestedDesktop:
         try:
             self.process = subprocess.Popen(
                 ["kwin_wayland", "--x11-display", os.environ["DISPLAY"],
-                 "--socket", self.socket, "--width", "1100", "--height", "750",
+                 "--socket", self.socket, "--width", str(self.width), "--height", str(self.height),
                  "--no-lockscreen", "--no-global-shortcuts", "--no-kactivities"],
                 env=dict(self.env, QT_QPA_PLATFORM="xcb", WAYLAND_DISPLAY=""),
                 stdout=self.log, stderr=subprocess.STDOUT)

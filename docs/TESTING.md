@@ -97,3 +97,37 @@ python3 afterglow/tests/scene_acceptance.py build/afterglow/afterglow
 These tests require KWin, X11 or XWayland, XTest and ImageMagick.
 The combined scene test also requires CAVA, pactl and paplay.
 See [Phosphor performance](../data/examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
+
+## Native performance measurements
+
+Configure and build the benchmark:
+
+```sh
+/usr/lib/qt6/bin/qt-cmake -S . -B build -DAFTERGLOW_BUILD_TOOLS=ON
+cmake --build build --target afterglow_native_bench -j4
+```
+
+Run the repeated workloads:
+
+```sh
+python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench /tmp/afterglow-native-performance
+```
+
+The runner requires the native window test dependencies and `dbus-run-session`.
+NVIDIA process memory sampling is optional.
+The output directory must not contain earlier results.
+The default run uses three repeats, 15-second intervals and 100 input samples.
+It measures 1920×1080 and 3840×2160 windows at scale 1.
+Each case uses a new application process and temporary configuration.
+The test does not change your terminal configuration.
+Close other heavy applications before measurement.
+Do not build or run other tests during measurement.
+
+Use `--cases` to select workloads and `--sizes` to select window sizes:
+
+```sh
+python3 tools/bench/native_benchmark.py build/afterglow/afterglow_native_bench /tmp/afterglow-input-performance \
+    --cases input input-load --sizes 1920x1080 --repeats 3 --samples 100
+```
+
+See [performance measurements](PERFORMANCE.md) for metric definitions and limits.

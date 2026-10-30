@@ -913,6 +913,7 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
                             const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
                             QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
+    m_completedGpuSeconds = 0;
     if (!m_hasSwapChain) {
         return;
     }
@@ -927,12 +928,17 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
             }
             r = rhi->beginFrame(m_swapChain.get());
         }
-        return r == QRhi::FrameOpSuccess ? m_swapChain->currentFrameCommandBuffer() : nullptr;
+        if (r != QRhi::FrameOpSuccess) return nullptr;
+        auto* cb = m_swapChain->currentFrameCommandBuffer();
+        if (m_gpuTimingEnabled) m_completedGpuSeconds = cb->lastCompletedGpuTime();
+        return cb;
     };
     target.renderTarget = [this] { return m_swapChain->currentFrameRenderTarget(); };
     target.renderPass = m_renderPass.get();
     target.pipelines = &m_swapPipelines;
-    target.end = [this, rhi] { rhi->endFrame(m_swapChain.get()); };
+    target.end = [this, rhi] {
+        if (rhi->endFrame(m_swapChain.get()) == QRhi::FrameOpSuccess) ++m_submittedFrames;
+    };
     renderTo(target, panes, overlays, clearColor, overlayTexture, overlaySerial);
 }
 

@@ -80,6 +80,7 @@ constexpr int TabMenuMoveRight = 40003;
 constexpr int TabMenuClose = 40004;
 constexpr int TabMenuCloseOthers = 40005;
 constexpr int TabMenuCloseRight = 40006;
+constexpr int TabMenuDetach = 40007;
 } // namespace
 
 namespace Afterglow {
@@ -193,6 +194,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
             close();
         }
     });
+    connect(m_controller, &ChromeController::detachTabRequested, this, &TerminalWindow::detachTab);
     connect(m_controller, &ChromeController::moveTabRequested, this, &TerminalWindow::moveTab);
     connect(m_controller, &ChromeController::renameTabRequested, this, &TerminalWindow::renameTab);
     connect(m_controller, &ChromeController::tabMenuRequested, this, &TerminalWindow::openTabMenu);
@@ -871,6 +873,18 @@ void TerminalWindow::renameTab(int index)
     m_controller->askTitle(QStringLiteral("Tab title"), m_titleTab->title);
 }
 
+void TerminalWindow::detachTab(int index)
+{
+    if (index < 0 || index >= int(m_tabs.size())) return;
+    auto& tab = *m_tabs[std::size_t(index)];
+    QPointer<Pane> pane = tab.focused;
+    if (!pane) tab.splits->forEachPane([&](Pane* candidate, const QRect&) { if (!pane) pane = candidate; });
+    // A transfer can close this window. Let the QML pointer/menu handler return first.
+    QTimer::singleShot(0, this, [this, pane] {
+        if (pane && tabOf(pane) >= 0) Q_EMIT transferRequested(pane, true);
+    });
+}
+
 void TerminalWindow::runTabMenuItem(int id)
 {
     int index = -1;
@@ -896,6 +910,9 @@ void TerminalWindow::runTabMenuItem(int id)
         break;
     case TabMenuMoveRight:
         moveTab(index, index + 1);
+        break;
+    case TabMenuDetach:
+        detachTab(index);
         break;
     case TabMenuClose:
         requestCloseTabs({index});
@@ -940,6 +957,7 @@ void TerminalWindow::openTabMenu(int index, const QPointF& pos)
     const QVariantList items{
         entry(TabMenuRename, QStringLiteral("Change Tab Title\u2026"), "document-edit"),
         entry(TabMenuNew, QStringLiteral("New Tab"), "tab-new"),
+        entry(TabMenuDetach, QStringLiteral("Detach Tab to New Window"), "window-new"),
         separator,
         entry(TabMenuMoveLeft, QStringLiteral("Move Left"), "go-previous", index > 0),
         entry(TabMenuMoveRight, QStringLiteral("Move Right"), "go-next", index < count - 1),
