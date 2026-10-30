@@ -13,7 +13,7 @@ Item {
 
     onVisibleChanged: {
         if (visible)
-            panel.forceActiveFocus()
+            Qt.callLater(() => { if (confirm.visible) panel.forceActiveFocus() })
     }
 
     Rectangle {
@@ -27,6 +27,7 @@ Item {
 
     Pane {
         id: panel
+        focus: confirm.visible
         anchors.centerIn: parent
         width: Math.min(560, parent.width * 0.85)
         padding: 16

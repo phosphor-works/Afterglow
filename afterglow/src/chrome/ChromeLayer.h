@@ -11,6 +11,8 @@
 #include <memory>
 
 class QEvent;
+class QInputMethodQueryEvent;
+class QAccessibleInterface;
 class QPointF;
 class QQmlEngine;
 class QQuickItem;
@@ -52,6 +54,10 @@ public:
     bool wantsPointer(const QPointF& pos) const;
     /// Sends an input event to the QML scene.
     void deliver(QEvent* event);
+    void queryInputMethod(QInputMethodQueryEvent* event) const;
+    QQuickWindow* quickWindow() const { return m_window.get(); }
+    QQuickItem* rootItem() const { return m_root; }
+    QQuickItem* focusedItem() const;
     /// The pointer the chrome asks for at @p pos (logical pixels): the
     /// cursor of the topmost item there that sets one, an arrow otherwise.
     QCursor cursorAt(const QPointF& pos) const;
@@ -77,6 +83,7 @@ private:
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
     std::unique_ptr<QRhiTextureRenderTarget> m_target;
     QSize m_size;
+    qreal m_dpr = 0;
     bool m_dirty = true;
     bool m_initialized = false;
     bool m_failed = false;

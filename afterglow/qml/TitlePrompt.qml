@@ -14,7 +14,7 @@ Item {
         if (visible) {
             input.text = controller.titlePrompt.text || ""
             input.selectAll()
-            input.forceActiveFocus()
+            Qt.callLater(() => { if (prompt.visible) input.forceActiveFocus() })
         }
     }
 

@@ -3,7 +3,8 @@
 
 #include "Application.h"
 
-#include "../chrome/IconProvider.h"
+#include <QIcon>
+#include <QStandardPaths>
 #include "../scripting/ScriptControl.h"
 
 #include <PhosphorShortcuts/Factory.h>
@@ -55,7 +56,13 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
         m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
     });
     m_audio.configure(m_settings.settings().audio);
-    m_engine.addImageProvider(QStringLiteral("icon"), new IconProvider); // the engine owns it
+    QStringList iconPaths = QIcon::themeSearchPaths();
+    for (const auto& path : QStandardPaths::locateAll(QStandardPaths::GenericDataLocation,
+            QStringLiteral("icons"), QStandardPaths::LocateDirectory))
+        if (!iconPaths.contains(path)) iconPaths.append(path);
+    QIcon::setThemeSearchPaths(iconPaths);
+    if (QIcon::themeName().isEmpty()) QIcon::setThemeName(QStringLiteral("breeze"));
+    if (QIcon::fallbackThemeName().isEmpty()) QIcon::setFallbackThemeName(QStringLiteral("hicolor"));
     connectScriptEvents(m_scripts, m_control);
     m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
     m_control.setScriptDiagnostics([this] { return m_scripts.diagnostics(); });
@@ -120,6 +127,7 @@ void Application::bindShortcuts()
 TerminalWindow* Application::newWindow(const WindowOptions& options)
 {
     auto* window = new TerminalWindow(m_services, options);
+    if (!options.empty && !window->focusedPane()) { delete window; return nullptr; }
     m_control.attachWindow(window);
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });
@@ -147,7 +155,7 @@ void Application::NewWindow(const QString& workingDirectory, const QStringList& 
     TerminalWindow* w = newWindow({workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
                                    options.value(QStringLiteral("title")).toString(),
                                    options.value(QStringLiteral("hold")).toBool()});
-    w->requestActivate();
+    if (w) w->requestActivate();
 }
 
 void Application::ToggleQuickTerminal()
@@ -155,7 +163,7 @@ void Application::ToggleQuickTerminal()
     if (!m_quick) {
         m_quick = newWindow({{}, {}, true, false, {}, false});
     }
-    m_quick->toggleQuick();
+    if (m_quick) m_quick->toggleQuick();
 }
 
 void Application::quitWhenNoWindowsRemain()

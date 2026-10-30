@@ -4,6 +4,10 @@
 #include "../TerminalWindow.h"
 #include <QAccessibleObject>
 #include <QGuiApplication>
+#include <QQuickWindow>
+#include <QQuickItem>
+#include <QPointer>
+#include <private/qaccessiblequickitem_p.h>
 #include <algorithm>
 
 namespace Afterglow {
@@ -35,7 +39,8 @@ public:
         QAccessible::State s;
         auto* w = owner(pane());
         s.focusable = true; s.selectableText = true; s.multiLine = true;
-        s.readOnly = true; s.invisible = !w || !w->isVisible() || w->tabIdOf(pane()) != w->activeTabId();
+        s.readOnly = true; s.invisible = !w || !w->isVisible() || w->accessiblePaneRect(pane()).isEmpty();
+        s.focusable = !s.invisible;
         s.focused = w && w->isActive() && w->focusedPane() == pane();
         return s;
     }
@@ -117,24 +122,43 @@ public:
     QWindow* window() const override { return terminal(); }
     QList<Pane*> visiblePanes() const {
         QList<Pane*> result;
-        for (auto* p : terminal()->panes()) if (terminal()->tabIdOf(p) == terminal()->activeTabId()) result.append(p);
+        for (auto* p : terminal()->panes()) if (!terminal()->accessiblePaneRect(p).isEmpty()) result.append(p);
         return result;
     }
     QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(qApp); }
-    int childCount() const override { return int(visiblePanes().size()); }
-    QAccessibleInterface* child(int i) const override { const auto p = visiblePanes(); return i >= 0 && i < p.size() ? QAccessible::queryAccessibleInterface(p[i]) : nullptr; }
-    int indexOfChild(const QAccessibleInterface* c) const override { return int(visiblePanes().indexOf(qobject_cast<Pane*>(c ? c->object() : nullptr))); }
+    int childCount() const override { return int(visiblePanes().size()) + (terminal()->accessibleChrome() ? 1 : 0); }
+    QAccessibleInterface* child(int i) const override { const auto p = visiblePanes(); return i >= 0 && i < p.size() ? QAccessible::queryAccessibleInterface(p[i]) : i == p.size() ? terminal()->accessibleChrome() : nullptr; }
+    int indexOfChild(const QAccessibleInterface* c) const override { return c && c == terminal()->accessibleChrome() ? int(visiblePanes().size()) : int(visiblePanes().indexOf(qobject_cast<Pane*>(c ? c->object() : nullptr))); }
     QAccessibleInterface* childAt(int x, int y) const override {
+        if (auto* chrome = terminal()->accessibleChrome()) if (auto* control = chrome->childAt(x, y)) return control;
         for (int i = 0; i < childCount(); ++i) if (child(i)->rect().contains(x, y)) return child(i);
         return nullptr;
     }
-    QAccessibleInterface* focusChild() const override { return QAccessible::queryAccessibleInterface(terminal()->focusedPane()); }
+    QAccessibleInterface* focusChild() const override {
+        if (auto* focus = terminal()->accessibleChromeFocus()) return focus;
+        return QAccessible::queryAccessibleInterface(terminal()->focusedPane());
+    }
     QRect rect() const override { return QRect(terminal()->mapToGlobal(QPoint()), terminal()->size()); }
     QString text(QAccessible::Text t) const override { return t == QAccessible::Name ? terminal()->title() : QString(); }
     QAccessible::Role role() const override { return QAccessible::Window; }
     QAccessible::State state() const override { QAccessible::State s; s.active = terminal()->isActive(); s.invisible = !terminal()->isVisible(); return s; }
 };
 }
+void installChromeAccessibility(QQuickItem* item, QWindow* host)
+{
+    class ChromeRoot final : public QAccessibleQuickItem {
+    public:
+        ChromeRoot(QQuickItem* item, QWindow* host) : QAccessibleQuickItem(item), m_host(host) {}
+        QWindow* window() const override { return m_host; }
+        QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(m_host); }
+    private:
+        QPointer<QWindow> m_host;
+    };
+    if (auto* old = QAccessible::queryAccessibleInterface(item))
+        QAccessible::deleteAccessibleInterface(QAccessible::uniqueId(old));
+    QAccessible::registerAccessibleInterface(new ChromeRoot(item, host));
+}
+
 void installTerminalAccessibility()
 {
     static const bool installed = [] {

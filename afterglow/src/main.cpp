@@ -190,7 +190,7 @@ int main(int argc, char** argv)
         if (quick) {
             application.ToggleQuickTerminal();
         } else {
-            application.newWindow({cwd, command, false, cwdGiven, parser.value(titleOption), parser.isSet(holdOption)});
+            if (!application.newWindow({cwd, command, false, cwdGiven, parser.value(titleOption), parser.isSet(holdOption)})) return 1;
         }
         return app.exec();
     } catch (const std::exception& e) {

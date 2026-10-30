@@ -27,7 +27,7 @@ Item {
             levels = [{ items: at.items || [], left: at.x || 0, right: at.x || 0, top: at.y || 0, root: true }]
             currents = [-1]
             hoverTimer.stop()
-            keys.forceActiveFocus()
+            Qt.callLater(() => { if (menu.visible) keys.forceActiveFocus() })
         } else {
             levels = []
             currents = []
@@ -208,6 +208,7 @@ Item {
                             checked: entry.modelData.checked === true
                             rightPadding: shortcut.implicitWidth + 24
                             Accessible.description: entry.modelData.shortcut || ""
+                            onTriggered: menu.activate(panel.level, entry.index)
 
                             QQC.Label {
                                 id: shortcut
@@ -242,7 +243,7 @@ Item {
 
     Item {
         id: keys
-        focus: true
+        focus: menu.visible
         readonly property int level: menu.levels.length - 1
         Keys.onUpPressed: menu.step(level, -1)
         Keys.onDownPressed: menu.step(level, 1)

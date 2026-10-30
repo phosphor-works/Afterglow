@@ -16,6 +16,5 @@ struct TerminalText {
     int selectionStart = -1, selectionEnd = -1;
     static TerminalText capture(const AfterglowVt::Screen&, const AfterglowVt::Selection* = nullptr, bool cursorRow = false,
                                 std::u32string_view wordBoundaries = AfterglowVt::DefaultWordBoundaries);
-    int offset(AfterglowVt::SelectionPoint point) const;
 };
 }

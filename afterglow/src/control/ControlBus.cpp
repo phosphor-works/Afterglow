@@ -139,12 +139,8 @@ QString ControlBus::GetText(uint pane, const QString& scope)
 
 uint ControlBus::Split(uint pane, const QString& direction, const QStringList& command)
 {
-    if (direction != QLatin1String("right") && direction != QLatin1String("down")) {
-        fail(QStringLiteral("direction is right or down"));
-        return 0;
-    }
     quint32 created = 0;
-    fail(m_control.split(pane, direction == QLatin1String("right"), command, created));
+    fail(m_control.split(pane, direction, command, {}, created));
     return created;
 }
 

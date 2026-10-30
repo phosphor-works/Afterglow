@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "PaneLaunchOptions.h"
 
 #include "Pane.h"
 #include "SplitTree.h"
@@ -49,6 +50,7 @@ struct WindowOptions
     /// Keep the first pane open after its program exits (afterglow --hold).
     bool hold = false;
     bool empty = false; ///< Internal: receive live panes or a restored project before showing.
+    QVariantMap environment = {};
 };
 
 class ChromeController;
@@ -69,6 +71,8 @@ public:
 
     static QList<TerminalWindow*> windows();
     QAccessibleInterface* accessibleRoot() const override;
+    QAccessibleInterface* accessibleChrome() const;
+    QAccessibleInterface* accessibleChromeFocus() const;
     QRect accessiblePaneRect(Pane*) const;
     QRect accessibleCellRect(Pane*, AfterglowVt::SelectionPoint) const;
     /// Switches to @p pane's tab, focuses it and raises the window.
@@ -90,10 +94,10 @@ public:
     QList<TabInfo> tabs() const;
     quint32 activeTabId() const;
     Pane* focusedPane() const { return m_focused; }
-    /// Splits @p pane running @p command (empty: the shell); returns the new pane.
-    Pane* splitPane(Pane* pane, SplitTree::Direction direction, const QStringList& command);
-    /// Opens a tab running @p command; returns its pane.
-    Pane* openTab(const QString& workingDirectory, const QStringList& command);
+    /// Splits @p pane using @p options (empty command: the shell); returns the new pane.
+    Pane* splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error);
+    /// Opens a tab using @p options; returns its pane.
+    Pane* openTab(const PaneLaunchOptions& options, QString* error);
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane.
     bool runAction(Pane* pane, Action action);
@@ -122,6 +126,7 @@ Q_SIGNALS:
     /// The new-window action, for the application to fulfil.
     void newWindowRequested(const QString& workingDirectory);
     void paneCreated(Pane* pane);
+    void paneClosing(quint32 pane, quint32 tab, quint32 window);
     void paneMoved(Pane* pane);
     void transferRequested(Pane* pane, bool wholeTab);
     void projectRequested(Pane* pane, bool save);
@@ -144,14 +149,14 @@ protected:
 
 private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
-    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr);
+    Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     void bindPane(Pane* pane);
     void releasePaneUi(Pane* pane);
     void reparentPane(Pane* pane, TerminalWindow* destination);
     void removeTabShell(int index);
     void finishTransfer();
-    void splitFocused(SplitTree::Direction direction, const QStringList& command = {});
-    Pane* newTab(const QString& workingDirectory, const QStringList& command = {});
+    Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
+    Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr);
     void switchTab(int index);
     void closeTab(int index);
     /// Closes tabs from the tab bar, menus and keys: asks first where a program runs.
@@ -240,7 +245,6 @@ private:
     QVariantMap statusSummary(const Pane* pane) const;
     /// Taskbar progress and urgency across all windows.
     static void publishLauncherStatus();
-    void pasteText(Pane* pane, const QByteArray& text);
 
     // Animation
     PaneMotion& motion(const Pane* pane);
@@ -415,6 +419,7 @@ private:
     /// Panes that notify when their next command finishes.
     QSet<const Pane*> m_notifyOnFinish;
     QByteArray m_pendingPaste;
+    QPointer<Pane> m_pendingPastePane;
     QString m_fixedTitle; ///< afterglow --title
     bool m_holdNextPane = false; ///< afterglow --hold, for the first pane
     std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with

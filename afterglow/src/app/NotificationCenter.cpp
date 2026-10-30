@@ -85,6 +85,15 @@ bool NotificationCenter::rateLimited(const Pane* pane)
 {
     // At most 20 notifications in 10 seconds from one pane.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!m_recent.contains(pane) && pane) {
+        connect(pane, &QObject::destroyed, this, [this, pane, prefix = QString::number(pane->id()) + QLatin1Char(':')] {
+            m_recent.remove(pane);
+            for (auto it = m_iconCache.begin(); it != m_iconCache.end();) {
+                if (it.key().startsWith(prefix)) { m_iconCacheOrder.removeAll(it.key()); it = m_iconCache.erase(it); }
+                else ++it;
+            }
+        });
+    }
     QList<qint64>& recent = m_recent[pane];
     recent.removeIf([now](qint64 t) { return now - t > 10000; });
     if (recent.size() >= 20) {
@@ -113,7 +122,6 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
     const QString clientId = fromUtf8(r.id);
     if (r.kind == Kind::Close) {
         if (const uint id = idFor(pane, clientId)) {
-            m_entries[id].closeRequested = true;
             close(id);
         }
         return;
@@ -159,11 +167,11 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
     QImage image;
     if (!r.iconData.empty()) {
         image = QImage::fromData(reinterpret_cast<const uchar*>(r.iconData.data()), int(r.iconData.size()));
-        if (!image.isNull() && image.width() > 512) {
+        if (!image.isNull() && (image.width() > 512 || image.height() > 512)) {
             image = image.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         }
         if (!image.isNull() && !r.iconCacheId.empty()) {
-            const QString key = fromUtf8(r.iconCacheId);
+            const QString key = QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId);
             m_iconCache.insert(key, image);
             m_iconCacheOrder.removeAll(key);
             m_iconCacheOrder.append(key);
@@ -172,7 +180,7 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
             }
         }
     } else if (!r.iconCacheId.empty()) {
-        image = m_iconCache.value(fromUtf8(r.iconCacheId));
+        image = m_iconCache.value(QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId));
     }
     if (iconName.isEmpty() && !r.appName.empty() && QIcon::hasThemeIcon(fromUtf8(r.appName))) {
         iconName = fromUtf8(r.appName);
@@ -202,7 +210,7 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
 
     Entry entry;
     entry.pane = pane;
-    entry.window = window;
+    Q_UNUSED(window);
     entry.clientId = clientId;
     entry.focusOnActivate = r.focusOnActivate;
     entry.reportActivation = r.reportActivation;
@@ -220,7 +228,7 @@ void NotificationCenter::showSimple(Pane* pane, TerminalWindow* window, const QS
     }
     Entry entry;
     entry.pane = pane;
-    entry.window = window;
+    Q_UNUSED(window);
     notify(entry, 0, title, escapeMarkup(body), QString(), {QStringLiteral("default"), QString()},
            {{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(urgency))}},
            -1, -1);
@@ -243,11 +251,13 @@ void NotificationCenter::notify(const Entry& entry, uint replaces, const QString
         if (replaces != 0 && replaces != id) {
             m_entries.remove(replaces);
         }
-        m_entries.insert(id, entry);
+        Entry current = entry;
+        current.generation = ++m_generation;
+        m_entries.insert(id, current);
         if (expireMs > 0) {
             // The protocol promises closing after the time, whatever the server does.
-            QTimer::singleShot(expireMs, this, [this, id] {
-                if (m_entries.contains(id)) {
+            QTimer::singleShot(expireMs, this, [this, id, generation = current.generation] {
+                if (m_entries.contains(id) && m_entries.value(id).generation == generation) {
                     close(id);
                 }
             });

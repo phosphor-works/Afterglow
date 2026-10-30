@@ -20,7 +20,7 @@ inline QString droppedFiles(const QMimeData* mime)
         // Both POSIX shells and fish understand adjacent quoted/unquoted fragments.
         path.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
         path = QLatin1Char('\'') + path + QLatin1Char('\'');
-        size += path.size();
+        size += path.toUtf8().size() + (paths.isEmpty() ? 0 : 1);
         if (size > 1024 * 1024) return {};
         paths.append(path);
     }

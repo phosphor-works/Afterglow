@@ -31,7 +31,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE void SendText(uint pane, const QString& text);
     /// @p scope: screen, scrollback, selection or last-output.
     Q_SCRIPTABLE QString GetText(uint pane, const QString& scope);
-    /// @p direction: right or down. Returns the new pane.
+    /// @p direction: left, right, up or down. Returns the new pane.
     Q_SCRIPTABLE uint Split(uint pane, const QString& direction, const QStringList& command);
     Q_SCRIPTABLE uint NewTab(uint pane, const QString& workingDirectory, const QStringList& command);
     Q_SCRIPTABLE uint CreateWindow(const QString& workingDirectory, const QStringList& command);

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 find_package(GTest REQUIRED)
+target_link_libraries(afterglow_native_tests PRIVATE GTest::gtest)
 
 qt_add_executable(afterglow_app_tests
     ProjectStoreTest.cpp
@@ -41,4 +42,14 @@ gtest_discover_tests(afterglow_shell_tests)
 
 qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)
 target_link_libraries(afterglow_shader_tests PRIVATE afterglow_shaders GTest::gtest)
+target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 gtest_discover_tests(afterglow_shader_tests)
+
+option(AFTERGLOW_NATIVE_TESTS "Run integration tests in a nested KWin desktop (requires DISPLAY)" OFF)
+if(AFTERGLOW_NATIVE_TESTS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME afterglow_native_window_acceptance
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
+                --binary $<TARGET_FILE:afterglow_native_tests>)
+    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 120)
+endif()

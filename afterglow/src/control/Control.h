@@ -74,11 +74,16 @@ public:
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText unless @p trusted (afterglow itself).
     QString readText(quint32 pane, TextScope scope, QString& out, bool trusted = false);
-    /// Bounded script query. Installed scripts are trusted to read their terminal.
+    /// Bounded script query, subject to Scripts.allowReadText.
     QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result);
+    QString semanticRegions(quint32 pane, QVariantMap& result);
+    QString readRegion(quint32 pane, const QString& region, int limit, QVariantMap& result);
     QString split(quint32 pane, bool right, const QStringList& command, quint32& created);
+    QString split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, quint32& created);
+    QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
     QString newWindow(const QString& workingDirectory, const QStringList& command, quint32& created);
+    QString newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
     QString focus(quint32 pane);
     QString close(quint32 pane);
     QString setTitle(quint32 pane, const QString& title);
@@ -108,11 +113,12 @@ Q_SIGNALS:
     void paneCreated(quint32 pane);
     void paneMoved(quint32 pane);
     void paneClosed(quint32 pane);
+    void paneClosedDetailed(quint32 pane, quint32 tab, quint32 window);
     void titleChanged(quint32 pane, const QString& title);
     void bell(quint32 pane);
     void commandStarted(quint32 pane, const QString& command);
     void commandFinished(quint32 pane, const QString& command, int exitCode, qint64 durationMs);
-    /// Program status (OSC 7501): the pane's most pressing state.
+    /// Program status (OSC 7501): the pane's newest status record.
     void statusChanged(quint32 pane, const QString& state, const QString& text);
     void focusChanged(quint32 pane);
     /// A program set an iTerm2 user variable (OSC 1337 SetUserVar).
@@ -131,6 +137,7 @@ private:
     ScriptActionRunner m_scriptActions;
     std::function<QVariantList()> m_scriptDiagnostics;
     QList<QPointer<TerminalWindow>> m_windows;
+    QHash<quint32, QPair<quint32, quint32>> m_closingPanes;
 };
 
 } // namespace Afterglow

@@ -138,6 +138,7 @@ QQC.ToolBar {
                     down: tab.dragged || body.pressed
                     focusPolicy: Qt.NoFocus
                     Accessible.name: tab.title || qsTr("Shell")
+                    onClicked: bar.controller.activateTab(tab.index)
                 }
 
                 // A separator between two tabs that are neither current nor hovered.

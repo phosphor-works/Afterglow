@@ -28,7 +28,7 @@ SplitTree::Node* SplitTree::find(Node* node, const Pane* pane) const
     return find(node->second.get(), pane);
 }
 
-void SplitTree::split(Pane* target, Pane* added, Direction direction)
+void SplitTree::split(Pane* target, Pane* added, Direction direction, double fraction)
 {
     Node* leaf = find(m_root.get(), target);
     if (!leaf || !leaf->pane) {
@@ -44,7 +44,7 @@ void SplitTree::split(Pane* target, Pane* added, Direction direction)
     second->parent = leaf;
     leaf->pane = nullptr;
     leaf->vertical = direction == Direction::Down || direction == Direction::Up;
-    leaf->ratio = 0.5;
+    leaf->ratio = before ? fraction : 1.0 - fraction;
     leaf->first = std::move(first);
     leaf->second = std::move(second);
 }

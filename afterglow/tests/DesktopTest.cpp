@@ -53,3 +53,16 @@ TEST(FileDrop, QuotesPathsWithoutExecutingCommands)
     mime.setUrls({QUrl::fromLocalFile(QStringLiteral("relative"))});
     EXPECT_TRUE(droppedFiles(&mime).isEmpty());
 }
+
+TEST(FileDrop, BoundsEncodedBytesIncludingSeparators)
+{
+    QMimeData mime;
+    const QString prefix = QStringLiteral("/") + QString(349524, QChar(0x754c));
+    mime.setUrls({QUrl::fromLocalFile(prefix)});
+    ASSERT_FALSE(droppedFiles(&mime).isEmpty());
+    mime.setUrls({QUrl::fromLocalFile(prefix + QChar(0x754c))});
+    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    const QString half = QStringLiteral("/") + QString(524285, QLatin1Char('x'));
+    mime.setUrls({QUrl::fromLocalFile(half), QUrl::fromLocalFile(half)});
+    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+}

@@ -42,12 +42,11 @@ private:
     struct Entry
     {
         QPointer<Pane> pane;
-        QPointer<TerminalWindow> window;
+        quint64 generation = 0;
         QString clientId; ///< the program's id, empty for none
         bool focusOnActivate = true;
         bool reportActivation = false;
         bool reportClose = false;
-        bool closeRequested = false;
     };
 
     void notify(const Entry& entry, uint replaces, const QString& title, const QString& body, const QString& icon,
@@ -64,6 +63,7 @@ private Q_SLOTS:
 private:
     QHash<uint, Entry> m_entries; ///< by D-Bus notification id
     QHash<const Pane*, QList<qint64>> m_recent; ///< recent show times, for rate limiting
+    quint64 m_generation = 0;
     QHash<QString, QImage> m_iconCache; ///< OSC 99 'g' ids
     QStringList m_iconCacheOrder;
 };

@@ -34,7 +34,7 @@ public:
     explicit SplitTree(Pane* root);
 
     /// Splits @p target, placing @p added on the @p direction side of it.
-    void split(Pane* target, Pane* added, Direction direction);
+    void split(Pane* target, Pane* added, Direction direction, double fraction = 0.5);
     /// Removes @p pane; its sibling takes the freed space. Returns false if
     /// the pane was the last one.
     bool remove(Pane* pane);

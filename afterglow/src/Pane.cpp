@@ -16,6 +16,9 @@
 #include <QMessageBox>
 #include <QStringList>
 #include <QImage>
+#include <QImageReader>
+#include <QBuffer>
+#include <QTextBoundaryFinder>
 #include <QSysInfo>
 
 #include <algorithm>
@@ -64,6 +67,7 @@ Pane::~Pane()
 {
     if (m_searchJob) m_searchJob->cancelled = true;
     // Stop the pty thread before the terminal it feeds goes away.
+    if (m_pty) m_pty->stop();
     m_pty.reset();
 }
 
@@ -103,7 +107,13 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     opts.environment.emplace_back("TERM_PROGRAM", "afterglow");
     opts.environment.emplace_back("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);
     std::string err;
+    opts.deferStart = true;
+    if (m_pty) m_pty->stop();
     m_pty = AfterglowPty::Pty::spawn(opts, *this, &err);
+    if (m_pty && !m_pty->start(&err)) {
+        m_pty->stop();
+        m_pty.reset();
+    }
     if (!m_pty && error) {
         *error = QString::fromStdString(err);
     }
@@ -143,16 +153,18 @@ int Pane::rows() const
     return m_terminal.rows();
 }
 
-void Pane::sendInput(std::string_view bytes)
+bool Pane::sendInput(std::string_view bytes)
 {
     if (bytes.empty() || !m_pty || m_held.load()) {
-        return;
+        return bytes.empty();
     }
     if (m_scrollOnInput) {
         std::lock_guard lock(m_mutex);
         m_terminal.resetViewport();
     }
-    m_pty->write(bytes);
+    const bool accepted = m_pty->write(bytes);
+    if (!accepted) reportInputFailure();
+    return accepted;
 }
 
 bool Pane::refreshSnapshot(int extraRows)
@@ -190,8 +202,9 @@ bool Pane::refreshSnapshot(int extraRows)
             highlight.matchColor = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
             highlight.currentColor = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
         }
-        m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight, extraRows);
+        m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight, extraRows, false);
         applyPreedit();
+        m_snapshot.applyBidi(m_terminal);
         m_snapshotSelectionSerial = m_selectionSerial;
         m_snapshotExtraRows = extraRows;
         qCDebug(lcPane) << "snapshot generation" << m_terminal.generation() << "images" << m_snapshot.images.size();
@@ -458,6 +471,7 @@ void Pane::setPreedit(const QString& text, int cursor)
 {
     std::lock_guard lock(m_mutex);
     const std::u32string preedit = text.toStdU32String();
+    cursor = int(text.left(std::clamp(cursor, 0, int(text.size()))).toStdU32String().size());
     if (preedit == m_preedit && cursor == m_preeditCursor) {
         return;
     }
@@ -475,37 +489,45 @@ void Pane::applyPreedit()
     if (m_preedit.empty() || !s.cursorVisible || s.cursorY >= s.rows) {
         return;
     }
-    std::vector<std::pair<char32_t, int>> cells;
+    std::vector<std::pair<std::u32string, int>> cells;
     int total = 0;
     int caretCol = -1;
-    for (std::size_t i = 0; i < m_preedit.size(); ++i) {
-        if (int(i) == m_preeditCursor) {
-            caretCol = total;
-        }
-        const int w = m_terminal.charWidth(AfterglowVt::Unicode::props(m_preedit[i]));
-        if (w == 0) {
-            continue;
-        }
-        cells.emplace_back(m_preedit[i], w);
-        total += w;
+    const QString text = QString::fromStdU32String(m_preedit);
+    QTextBoundaryFinder boundaries(QTextBoundaryFinder::Grapheme, text);
+    int startOffset = 0, codepointOffset = 0;
+    for (int end = boundaries.toNextBoundary(); end >= 0; end = boundaries.toNextBoundary()) {
+        auto cluster = text.mid(startOffset, end - startOffset).toStdU32String();
+        int width = 0;
+        for (const char32_t cp : cluster) width = std::max(width, m_terminal.charWidth(AfterglowVt::Unicode::props(cp)));
+        width = std::clamp(width, 1, 2);
+        if (m_preeditCursor >= codepointOffset && m_preeditCursor < codepointOffset + int(cluster.size())) caretCol = total;
+        codepointOffset += int(cluster.size());
+        cells.emplace_back(std::move(cluster), width);
+        total += width;
+        startOffset = end;
     }
     if (caretCol < 0) {
         caretCol = total;
     }
     const int start = std::max(0, std::min(s.cursorX, s.cols - std::min(total + 1, s.cols)));
     int x = start;
-    for (const auto& [cp, w] : cells) {
+    for (const auto& [cluster, w] : cells) {
         if (x + w > s.cols) {
             break;
         }
         AfterglowRender::SnapshotCell& c = s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(x)];
-        c.cp = cp;
+        c = {};
+        c.logicalColumn = x;
+        c.cp = cluster.front();
         c.width = std::uint8_t(w);
         c.fg = s.defaultFg;
         c.bg = s.defaultBg;
         c.underline = AfterglowVt::UnderlineStyle::Single;
         c.underlineColor = s.defaultFg;
-        c.grapheme = 0;
+        if (cluster.size() > 1) {
+            s.graphemes.push_back(cluster);
+            c.grapheme = std::uint32_t(s.graphemes.size());
+        }
         c.link = 0;
         if (w == 2 && x + 1 < s.cols) {
             AfterglowRender::SnapshotCell& tail = s.cells[std::size_t(s.cursorY) * std::size_t(s.cols) + std::size_t(x + 1)];
@@ -638,11 +660,18 @@ QString Pane::workingDirectory() const
     return m_pty ? QString::fromStdString(m_pty->currentWorkingDirectory()) : QString();
 }
 
+void Pane::reportInputFailure()
+{
+    if (m_inputFailureQueued.exchange(true)) return;
+    QMetaObject::invokeMethod(this, [this] {
+        m_inputFailureQueued = false;
+        Q_EMIT inputRejected();
+    }, Qt::QueuedConnection);
+}
+
 void Pane::writeToPty(std::string_view bytes)
 {
-    if (m_pty) {
-        m_pty->write(bytes);
-    }
+    if (m_pty && !m_pty->write(bytes)) reportInputFailure();
 }
 
 void Pane::titleChanged(std::string_view title)
@@ -673,10 +702,10 @@ namespace {
 
 bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    if (img.isNull()) {
-        return false;
-    }
+    if (img.isNull() || img.width() > 10000 || img.height() > 10000
+        || std::uint64_t(img.width()) * img.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
     img.convertTo(QImage::Format_RGBA8888);
+    if (img.isNull()) return false;
     width = std::uint32_t(img.width());
     height = std::uint32_t(img.height());
     rgba.resize(std::size_t(width) * height * 4);
@@ -684,6 +713,20 @@ bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector
         std::memcpy(rgba.data() + std::size_t(y) * width * 4, img.constScanLine(y), std::size_t(width) * 4);
     }
     return true;
+}
+
+bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t& width,
+                        std::uint32_t& height, std::vector<std::uint8_t>& rgba)
+{
+    if (data.size() > AfterglowVt::GraphicsStore::DefaultQuota) return false;
+    QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
+    QBuffer input(&bytes);
+    if (!input.open(QIODevice::ReadOnly)) return false;
+    QImageReader reader(&input, format);
+    const QSize size = reader.size();
+    if (!size.isValid() || size.isEmpty() || size.width() > 10000 || size.height() > 10000
+        || std::uint64_t(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
+    return toRgba(reader.read(), width, height, rgba);
 }
 
 QString localUser()
@@ -696,13 +739,13 @@ QString localUser()
 
 bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    return toRgba(QImage::fromData(reinterpret_cast<const uchar*>(png.data()), int(png.size()), "PNG"), width, height, rgba);
+    return decodeBoundedImage(png, "PNG", width, height, rgba);
 }
 
 bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
     // Whatever Qt reads; an animation shows its first frame.
-    return toRgba(QImage::fromData(reinterpret_cast<const uchar*>(data.data()), int(data.size())), width, height, rgba);
+    return decodeBoundedImage(data, "", width, height, rgba);
 }
 
 void Pane::contextChanged()

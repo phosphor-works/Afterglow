@@ -32,8 +32,9 @@ QJsonObject TerminalWindow::projectLayout() const
 
 QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
 {
-    Q_ASSERT(m_tabs.empty());
-    Q_ASSERT(ProjectStore::validate(document).isEmpty());
+    if (!m_tabs.empty()) return {{QStringLiteral("error"), QStringLiteral("Project destination must be empty")}};
+    if (const auto error = ProjectStore::validate(document); !error.isEmpty())
+        return {{QStringLiteral("error"), error}};
     QVariantMap paneIds, tabIds;
     QStringList warnings;
     const auto tabs = document.value(QStringLiteral("tabs")).toArray();
@@ -65,7 +66,7 @@ QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
             }
             m_holdNextPane = !configured.isEmpty();
             QString failure;
-            auto* pane = createPane(cwd, paneArea(), command, &failure);
+            auto* pane = createPane(cwd, paneArea(), command, &failure, {}, true);
             pane->setLaunch(cwd, configured); // retain explicit intent if the launch used a fallback
             pane->setUserTitle(data.value(QStringLiteral("title")).toString());
             if (!failure.isEmpty()) warnings << QStringLiteral("Pane %1: %2; attempted /bin/sh recovery").arg(savedId, failure);

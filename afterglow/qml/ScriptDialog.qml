@@ -32,7 +32,7 @@ Item {
     Component.onCompleted: {
         input.text = selector ? "" : (controller.scriptDialog.text || "")
         input.selectAll()
-        input.forceActiveFocus()
+        Qt.callLater(() => { if (dialog.visible) input.forceActiveFocus() })
     }
     Rectangle {
         anchors.fill: parent

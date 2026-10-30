@@ -36,7 +36,8 @@ QString Control::openProject(const QString& name, bool newInstance, QVariantMap&
     }
     QJsonObject document;
     if (const auto error = projects().read(name, document); !error.isEmpty()) return error;
-    auto* window = m_newWindow({}, {}, true);
+    auto* window = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
+    if (!window) return QStringLiteral("Cannot create project window");
     window->setProjectName(name);
     result = window->restoreProject(document);
     result.insert(QStringLiteral("name"), name);
@@ -79,7 +80,8 @@ QString Control::openDirectory(const QString& requested, const QString& layout, 
         }
         document.insert(QStringLiteral("tabs"), tabs);
     }
-    auto* window = m_newWindow(path, {}, !layout.isEmpty());
+    auto* window = m_newWindow ? m_newWindow(path, {}, !layout.isEmpty()) : nullptr;
+    if (!window) return QStringLiteral("Cannot create project window");
     window->setProjectDirectory(path);
     if (layout.isEmpty()) result = {{QStringLiteral("window_id"), window->id()}, {QStringLiteral("reused"), false}};
     else result = window->restoreProject(document);

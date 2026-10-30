@@ -46,9 +46,4 @@ TerminalText TerminalText::capture(const AfterglowVt::Screen& s, const Afterglow
     }
     return out;
 }
-int TerminalText::offset(AfterglowVt::SelectionPoint point) const
-{
-    const auto it = std::lower_bound(cells.cbegin(), cells.cend(), point);
-    return int(it - cells.cbegin());
-}
 }

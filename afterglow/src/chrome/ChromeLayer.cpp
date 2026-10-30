@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ChromeLayer.h"
+#include "../desktop/Accessibility.h"
+#include <QInputMethodEvent>
 
 #include "ChromeController.h"
 
@@ -92,6 +94,7 @@ bool ChromeLayer::initialize()
         return false;
     }
     m_root->setParentItem(m_window->contentItem());
+    installChromeAccessibility(m_root, m_host);
 
     auto markDirty = [this] {
         m_dirty = true;
@@ -125,12 +128,16 @@ void ChromeLayer::renderIfNeeded(const QSize& pixelSize)
         m_target->setRenderPassDescriptor(m_renderPass.get());
         m_target->create();
         m_window->setRenderTarget(QQuickRenderTarget::fromRhiRenderTarget(m_target.get()));
-        const qreal dpr = m_host->devicePixelRatio();
-        m_window->setGeometry(0, 0, int(std::lround(pixelSize.width() / dpr)),
-                              int(std::lround(pixelSize.height() / dpr)));
-        m_root->setSize(m_window->size());
         m_size = pixelSize;
         ++m_serial;
+        m_dirty = true;
+    }
+    const qreal dpr = m_host->devicePixelRatio();
+    const QSize logicalSize(int(std::lround(pixelSize.width() / dpr)), int(std::lround(pixelSize.height() / dpr)));
+    if (m_dpr != dpr || m_window->size() != logicalSize) {
+        m_dpr = dpr;
+        m_window->setGeometry(QRect(QPoint(), logicalSize));
+        m_root->setSize(logicalSize);
         m_dirty = true;
     }
     if (!m_dirty) {
@@ -164,7 +171,9 @@ bool ChromeLayer::wantsPointer(const QPointF& pos) const
 
 void ChromeLayer::deliver(QEvent* event)
 {
-    if (m_window) {
+    if (event->type() == QEvent::InputMethod && focusedItem()) {
+        QCoreApplication::sendEvent(focusedItem(), event);
+    } else if (m_window) {
         QCoreApplication::sendEvent(m_window.get(), event);
     }
 }
@@ -219,3 +228,39 @@ void ChromeLayer::releaseResources()
 }
 
 } // namespace Afterglow
+
+void Afterglow::ChromeLayer::queryInputMethod(QInputMethodQueryEvent* event) const
+{
+    auto* focus = focusedItem();
+    if (!focus) { event->setValue(Qt::ImEnabled, false); event->accept(); return; }
+    for (unsigned bit = 1; bit != 0; bit <<= 1) {
+        const auto query = static_cast<Qt::InputMethodQuery>(bit);
+        if (!(event->queries() & query)) continue;
+        QVariant value = focus->inputMethodQuery(query);
+        if (query == Qt::ImCursorRectangle || query == Qt::ImAnchorRectangle || query == Qt::ImInputItemClipRectangle)
+            value = focus->mapRectToScene(value.toRectF());
+        event->setValue(query, value);
+    }
+    event->accept();
+}
+
+QQuickItem* Afterglow::ChromeLayer::focusedItem() const
+{
+    if (!m_window) return nullptr;
+    auto* item = m_window->activeFocusItem();
+    if (!item) item = m_window->contentItem();
+    while (auto* child = item->scopedFocusItem()) {
+        if (child == item) break;
+        item = child;
+    }
+    if (item->flags().testFlag(QQuickItem::ItemAcceptsInputMethod)) return item;
+    // Render-control windows have no platform focus object. A visible focus
+    // scope can retain its editor focus while the offscreen root is active.
+    const auto find = [](auto&& self, QQuickItem* parent) -> QQuickItem* {
+        if (!parent->isVisible() || !parent->isEnabled()) return nullptr;
+        for (auto* child : parent->childItems()) if (auto* focus = self(self, child)) return focus;
+        return parent->hasFocus() && parent->flags().testFlag(QQuickItem::ItemAcceptsInputMethod) ? parent : nullptr;
+    };
+    if (auto* editor = find(find, m_window->contentItem())) return editor;
+    return item;
+}

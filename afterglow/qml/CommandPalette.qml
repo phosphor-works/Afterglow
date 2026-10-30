@@ -23,7 +23,7 @@ Item {
         if (visible) {
             input.text = ""
             list.currentIndex = 0
-            input.forceActiveFocus()
+            Qt.callLater(() => { if (commandPalette.visible) input.forceActiveFocus() })
         }
     }
 

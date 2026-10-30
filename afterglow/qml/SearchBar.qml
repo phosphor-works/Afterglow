@@ -18,7 +18,7 @@ Pane {
     onVisibleChanged: {
         if (visible) {
             query.selectAll()
-            query.forceActiveFocus()
+            Qt.callLater(() => { if (bar.visible) query.forceActiveFocus() })
         }
     }
 
@@ -28,6 +28,7 @@ Pane {
 
         TextField {
             id: query
+            focus: bar.visible
             Layout.fillWidth: true
             placeholderText: qsTr("Search")
             Accessible.name: placeholderText

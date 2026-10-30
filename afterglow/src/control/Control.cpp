@@ -9,6 +9,8 @@
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QGuiApplication>
@@ -29,6 +31,9 @@ Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* pare
 void Control::attachWindow(TerminalWindow* window)
 {
     m_windows.append(window);
+    connect(window, &TerminalWindow::paneClosing, this, [this](quint32 pane, quint32 tab, quint32 window) {
+        m_closingPanes.insert(pane, {tab, window});
+    });
     connect(window, &TerminalWindow::projectRequested, this, &Control::projectDialog);
     connect(window, &TerminalWindow::paneMoved, this, [this](Pane* p) { Q_EMIT paneMoved(p->id()); });
     connect(window, &TerminalWindow::transferRequested, this, [this](Pane* pane, bool tab) {
@@ -51,7 +56,11 @@ void Control::attachWindow(TerminalWindow* window)
 void Control::attachPane(TerminalWindow* window, Pane* pane)
 {
     const quint32 id = pane->id();
-    connect(pane, &QObject::destroyed, this, [this, id] { Q_EMIT paneClosed(id); });
+    connect(pane, &QObject::destroyed, this, [this, id] {
+        const auto identity = m_closingPanes.take(id);
+        Q_EMIT paneClosedDetailed(id, identity.first, identity.second);
+        Q_EMIT paneClosed(id);
+    });
     connect(pane, &Pane::titleUpdated, this, [this, id](const QString& t) { Q_EMIT titleChanged(id, t); });
     connect(pane, &Pane::bellRang, this, [this, id] { Q_EMIT bell(id); });
     connect(pane, &Pane::userVarUpdated, this,
@@ -194,8 +203,7 @@ QString Control::sendText(quint32 id, const QString& text)
     if (!p) {
         return noPane(id);
     }
-    p->sendInput(text.toStdString());
-    return {};
+    return p->sendInput(text.toStdString()) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
 QString Control::readText(quint32 id, TextScope scope, QString& out, bool trusted)
@@ -227,55 +235,138 @@ QString Control::readText(quint32 id, TextScope scope, QString& out, bool truste
 
 QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QVariantMap& result)
 {
+    if (!m_settings.settings().scriptsAllowReadText)
+        return QStringLiteral("Script text queries are disabled (Scripts.allowReadText)");
     if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
     auto* pane = find(id);
     if (!pane) return noPane(id);
+    if (scope == QLatin1String("selection")) {
+        result = pane->readSelection(std::size_t(limit));
+        return {};
+    }
     using Scope = AfterglowVt::Terminal::TextScope;
     Scope kind;
     if (scope == QLatin1String("screen")) kind = Scope::Screen;
     else if (scope == QLatin1String("scrollback")) kind = Scope::All;
     else if (scope == QLatin1String("last-output")) kind = Scope::LastOutput;
-    else return QStringLiteral("text scope must be screen, scrollback or last-output");
+    else return QStringLiteral("text scope must be screen, scrollback, last-output or selection");
     result = pane->readText(kind, std::size_t(limit));
     return {};
 }
 
+QString Control::semanticRegions(quint32 id, QVariantMap& result)
+{
+    if (!m_settings.settings().scriptsAllowReadText)
+        return QStringLiteral("Script text queries are disabled (Scripts.allowReadText)");
+    auto* pane = find(id);
+    if (!pane) return noPane(id);
+    result = pane->semanticRegions();
+    return {};
+}
+
+QString Control::readRegion(quint32 id, const QString& region, int limit, QVariantMap& result)
+{
+    if (!m_settings.settings().scriptsAllowReadText)
+        return QStringLiteral("Script text queries are disabled (Scripts.allowReadText)");
+    if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
+    bool ok = false;
+    const auto regionId = region.toULongLong(&ok);
+    if (!ok || !regionId || QString::number(regionId) != region) return QStringLiteral("Invalid region ID");
+    auto* pane = find(id);
+    if (!pane) return noPane(id);
+    result = pane->readRegion(regionId, std::size_t(limit));
+    return {};
+}
+
+namespace {
+QString launchOptions(const QString& cwd, const QStringList& command, const QVariantMap& input, PaneLaunchOptions& out)
+{
+    out.cwd = cwd;
+    out.command = command;
+    if (input.contains(QStringLiteral("cwd"))) {
+        if (input.value(QStringLiteral("cwd")).metaType().id() != QMetaType::QString) return QStringLiteral("cwd must be a string");
+        out.cwd = input.value(QStringLiteral("cwd")).toString();
+    }
+    if (out.cwd.contains(QChar::Null)) return QStringLiteral("cwd contains a null character");
+    if (out.cwd == QLatin1String("~") || out.cwd.startsWith(QLatin1String("~/"))) out.cwd = QDir::homePath() + out.cwd.mid(1);
+    if (!out.cwd.isEmpty() && (!QDir::isAbsolutePath(out.cwd) || !QFileInfo(out.cwd).isDir())) return QStringLiteral("cwd must name an existing absolute directory");
+    for (const auto& arg : command) if (arg.contains(QChar::Null)) return QStringLiteral("command contains a null character");
+    if (!command.isEmpty() && command.first().isEmpty()) return QStringLiteral("command must name a program");
+    if (input.contains(QStringLiteral("size"))) {
+        bool ok = false;
+        out.fraction = input.value(QStringLiteral("size")).toDouble(&ok);
+        if (!ok || !std::isfinite(out.fraction) || out.fraction <= 0 || out.fraction >= 1) return QStringLiteral("size must be a fraction between 0 and 1");
+    }
+    if (input.contains(QStringLiteral("env"))) {
+        if (input.value(QStringLiteral("env")).metaType().id() != QMetaType::QVariantMap) return QStringLiteral("env must be a table");
+        out.environment = input.value(QStringLiteral("env")).toMap();
+        for (auto it = out.environment.cbegin(); it != out.environment.cend(); ++it) {
+            if (it.key().isEmpty() || it.key().contains(QLatin1Char('=')) || it.key().contains(QChar::Null)) return QStringLiteral("invalid environment name");
+            const auto& value = it.value();
+            if (value.metaType().id() == QMetaType::Bool && !value.toBool()) continue;
+            if (value.metaType().id() != QMetaType::QString || value.toString().contains(QChar::Null)) return QStringLiteral("environment values must be strings or false");
+        }
+    }
+    return {};
+}
+}
 QString Control::split(quint32 id, bool right, const QStringList& command, quint32& created)
 {
-    TerminalWindow* w = nullptr;
-    Pane* p = find(id, &w);
-    if (!p) {
-        return noPane(id);
-    }
-    Pane* added = w->splitPane(p, right ? SplitTree::Direction::Right : SplitTree::Direction::Down, command);
-    if (!added) {
-        return QStringLiteral("cannot split pane %1").arg(id);
-    }
+    return split(id, right ? QStringLiteral("right") : QStringLiteral("down"), command, {}, created);
+}
+QString Control::split(quint32 id, const QString& direction, const QStringList& command, const QVariantMap& input, quint32& created)
+{
+    created = 0;
+    SplitTree::Direction dir;
+    if (direction == QLatin1String("right")) dir = SplitTree::Direction::Right;
+    else if (direction == QLatin1String("left")) dir = SplitTree::Direction::Left;
+    else if (direction == QLatin1String("up")) dir = SplitTree::Direction::Up;
+    else if (direction == QLatin1String("down")) dir = SplitTree::Direction::Down;
+    else return QStringLiteral("direction must be left, right, up or down");
+    PaneLaunchOptions options;
+    if (const auto error = launchOptions({}, command, input, options); !error.isEmpty()) return error;
+    TerminalWindow* window = nullptr;
+    auto* pane = find(id, &window);
+    if (!pane) return noPane(id);
+    QString error;
+    auto* added = window->splitPane(pane, dir, options, &error);
+    if (!added) return error.isEmpty() ? QStringLiteral("cannot split pane") : error;
     created = added->id();
     return {};
 }
-
-QString Control::newTab(quint32 id, const QString& workingDirectory, const QStringList& command, quint32& created)
+QString Control::newTab(quint32 id, const QString& cwd, const QStringList& command, quint32& created)
 {
-    TerminalWindow* w = nullptr;
-    if (!find(id, &w)) {
-        return noPane(id);
-    }
-    Pane* added = w->openTab(workingDirectory, command);
-    if (!added) {
-        return QStringLiteral("cannot open a tab");
-    }
+    return newTab(id, cwd, command, {}, created);
+}
+QString Control::newTab(quint32 id, const QString& cwd, const QStringList& command, const QVariantMap& input, quint32& created)
+{
+    created = 0;
+    PaneLaunchOptions options;
+    if (const auto error = launchOptions(cwd, command, input, options); !error.isEmpty()) return error;
+    TerminalWindow* window = nullptr;
+    if (!find(id, &window)) return noPane(id);
+    QString error;
+    auto* added = window->openTab(options, &error);
+    if (!added) return error.isEmpty() ? QStringLiteral("cannot open a tab") : error;
     created = added->id();
     return {};
 }
-
-QString Control::newWindow(const QString& workingDirectory, const QStringList& command, quint32& created)
+QString Control::newWindow(const QString& cwd, const QStringList& command, quint32& created)
 {
-    TerminalWindow* w = m_newWindow ? m_newWindow(workingDirectory, command, false) : nullptr;
-    if (!w || w->panes().isEmpty()) {
-        return QStringLiteral("cannot open a window");
-    }
-    created = w->panes().first()->id();
+    return newWindow(cwd, command, {}, created);
+}
+QString Control::newWindow(const QString& cwd, const QStringList& command, const QVariantMap& input, quint32& created)
+{
+    created = 0;
+    PaneLaunchOptions options;
+    if (const auto error = launchOptions(cwd, command, input, options); !error.isEmpty()) return error;
+    auto* window = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
+    if (!window) return QStringLiteral("cannot open a window");
+    QString error;
+    auto* added = window->openTab(options, &error);
+    if (!added) { window->deleteLater(); return error.isEmpty() ? QStringLiteral("cannot start program") : error; }
+    created = added->id();
+    window->show();
     return {};
 }
 

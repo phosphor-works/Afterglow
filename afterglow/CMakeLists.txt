@@ -3,14 +3,15 @@
 
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus)
 find_package(KF6WindowSystem REQUIRED) # KWin blur behind
+find_package(Qt6QuickPrivate CONFIG REQUIRED) # native chrome accessibility bridge
 find_package(Qt6GuiPrivate CONFIG REQUIRED) # rhi/qrhi.h for the chrome render target
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 
-qt_add_executable(afterglow
+qt_add_library(afterglow_app STATIC
     src/desktop/Accessibility.cpp
-    src/main.cpp
     src/Pane.cpp
+    src/PaneText.cpp
     src/Pane.h
     src/ProjectStore.cpp
     src/ProjectStore.h
@@ -27,8 +28,6 @@ qt_add_executable(afterglow
     src/chrome/ChromeController.h
     src/chrome/ChromeLayer.cpp
     src/chrome/ChromeLayer.h
-    src/chrome/IconProvider.cpp
-    src/chrome/IconProvider.h
     src/animation/FrameClock.cpp
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
@@ -39,14 +38,15 @@ qt_add_executable(afterglow
     src/control/Control.h
     src/control/ControlBus.cpp
     src/control/ControlBus.h
-    src/control/Ctl.cpp
-    src/control/Ctl.h
     src/scripting/ScriptControl.cpp
     src/scripting/ScriptControl.h
     src/app/NotificationCenter.h
     src/app/Application.h
     src/app/Services.h
 )
+
+qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h)
+target_link_libraries(afterglow PRIVATE afterglow_app)
 
 # Shader pack loading, shared with the developer render tool.
 qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h
@@ -109,9 +109,11 @@ qt_add_resources(afterglow_scripting afterglow_scripting_prelude
     BASE src/scripting
     FILES src/scripting/afterglow.luau)
 
-qt_add_qml_module(afterglow
+function(afterglow_add_chrome target)
+qt_add_qml_module(${target}
     URI Afterglow.Chrome
     VERSION 1.0
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${target}-qml/Afterglow/Chrome"
     QML_FILES
         qml/Chrome.qml
         qml/ClipboardPrompt.qml
@@ -125,16 +127,26 @@ qt_add_qml_module(afterglow
         qml/TitlePrompt.qml
         qml/TabBar.qml
 )
+endfunction()
+afterglow_add_chrome(afterglow)
 
-target_compile_definitions(afterglow PRIVATE QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
+if(BUILD_TESTING)
+    find_package(GTest REQUIRED)
+    qt_add_executable(afterglow_native_tests tests/NativeWindowTest.cpp)
+    target_link_libraries(afterglow_native_tests PRIVATE afterglow_app)
+    afterglow_add_chrome(afterglow_native_tests)
+endif()
+
+target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
     AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
     AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/afterglow/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
     AFTERGLOW_INSTALLED_TERMINFO_DIR="${CMAKE_INSTALL_FULL_DATADIR}/terminfo")
 # The layer-shell QPA plugin is part of the phosphor build; make sure it exists.
 add_dependencies(afterglow phosphorwayland-qpa)
-target_link_libraries(afterglow PRIVATE afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
-    Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate
+target_include_directories(afterglow_app PUBLIC src)
+target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
+    Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland

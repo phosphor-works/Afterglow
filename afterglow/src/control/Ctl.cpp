@@ -33,7 +33,7 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   send-text --stdin                   type standard input
   get-text [--screen|--scrollback|--selection|--last-output]
                                       print pane text (needs Control.allowReadText)
-  split [--right|--down] [-- CMD...]  split, running CMD or the shell; prints the new pane
+  split [--left|--right|--up|--down] [-- CMD...]  split, running CMD or the shell; prints the new pane
   move-pane TARGET PLACEMENT        move beside pane (left/right/up/down); TARGET 0 for new-tab/new-window
   detach-tab                        detach the selected pane's whole tab
   new-tab [--cwd DIR] [-- CMD...]     open a tab; prints its pane
@@ -233,7 +233,7 @@ int runCtl(int argc, char** argv)
     if (command == QLatin1String("watch")) {
         Watcher watcher;
         QDBusConnection bus = QDBusConnection::sessionBus();
-        for (const char* name : {"PaneCreated", "PaneClosed", "TitleChanged", "Bell", "CommandStarted",
+        for (const char* name : {"PaneCreated", "PaneMoved", "PaneClosed", "TitleChanged", "Bell", "CommandStarted",
                                  "CommandFinished", "StatusChanged", "FocusChanged", "UserVarChanged", "ContextChanged"}) {
             bus.connect(Service, QLatin1String(ControlBus::ObjectPath), iface, QLatin1String(name), &watcher,
                         SLOT(onSignal(QDBusMessage)));
@@ -309,8 +309,9 @@ int runCtl(int argc, char** argv)
         return 0;
     }
     if (command == QLatin1String("split")) {
-        const QString dir = takeFlag(QStringLiteral("--down")) ? QStringLiteral("down") : QStringLiteral("right");
-        takeFlag(QStringLiteral("--right"));
+        QString dir = QStringLiteral("right");
+        for (const auto* direction : {"left", "right", "up", "down"})
+            if (takeFlag(QStringLiteral("--") + QLatin1String(direction))) dir = QLatin1String(direction);
         return call(QStringLiteral("Split"), {*pane, dir, trailing}, reply) ? printPane(reply) : 1;
     }
     if (command == QLatin1String("new-tab")) {

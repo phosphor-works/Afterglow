@@ -8,6 +8,8 @@ import QtQuick.Controls as QQC
 // GPU device. Transparent everywhere except the tab bar and open overlays.
 Item {
     id: root
+    Accessible.role: Accessible.Pane
+    Accessible.name: qsTr("Terminal controls")
 
     required property QtObject controller
 
@@ -113,12 +115,17 @@ Item {
         visible: size < 1
         active: hovered || pressed
         Accessible.name: qsTr("Scrollback position")
-        onPositionChanged: { if (pressed) root.controller.scrollHistory(position) }
-        Binding {
-            target: historyScroll
-            property: "position"
-            value: root.controller.history.position || 0
-            when: !historyScroll.pressed
+        property bool syncing: false
+        function syncPosition(): void {
+            syncing = true
+            position = root.controller.history.position || 0
+            syncing = false
+        }
+        onPositionChanged: { if (!syncing) root.controller.scrollHistory(position) }
+        Component.onCompleted: syncPosition()
+        Connections {
+            target: root.controller
+            function onHistoryChanged(): void { if (!historyScroll.pressed) historyScroll.syncPosition() }
         }
     }
 

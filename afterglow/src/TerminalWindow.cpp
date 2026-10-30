@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "TerminalWindow.h"
+#include <QQuickWindow>
+#include <QQuickItem>
 #include "desktop/FileDrop.h"
 #include "desktop/Accessibility.h"
 #include <QAccessible>
@@ -270,11 +272,12 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     });
     connect(m_controller, &ChromeController::pasteAnswered, this, [this](bool paste) {
         const QByteArray text = std::exchange(m_pendingPaste, {});
-        if (paste && m_focused) {
-            const std::string bytes = m_focused->withTerminal([&text](Terminal& t) {
+        const QPointer<Pane> target = std::exchange(m_pendingPastePane, {});
+        if (paste && target && tabOf(target) >= 0) {
+            const std::string bytes = target->withTerminal([&text](Terminal& t) {
                 return AfterglowVt::encodePaste(std::string_view(text.constData(), std::size_t(text.size())), t.modes());
             });
-            m_focused->sendInput(bytes);
+            target->sendInput(bytes);
         }
     });
     connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::updateChrome);
@@ -289,7 +292,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
     m_fixedTitle = options.title;
     m_holdNextPane = options.hold;
-    if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command);
+    if (!options.empty) newTab(options.directoryGiven ? options.workingDirectory : startDirectory(options.workingDirectory), options.command, options.environment);
     updateTitle();
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
@@ -317,6 +320,8 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
 TerminalWindow::~TerminalWindow()
 {
+    for (auto* pane : findChildren<Pane*>(QString(), Qt::FindDirectChildrenOnly))
+        Q_EMIT paneClosing(pane->id(), tabIdOf(pane), id());
     if (m_hintCancel) *m_hintCancel = true;
     finishScriptDialog(false, {});
     s_windows.removeAll(this);
@@ -335,6 +340,10 @@ QList<TerminalWindow*> TerminalWindow::windows()
 
 void TerminalWindow::bindPane(Pane* pane)
 {
+    connect(pane, &Pane::inputRejected, this, [this, pane] {
+        NotificationCenter::instance().showSimple(pane, this, QStringLiteral("Terminal input rejected"),
+            QStringLiteral("The program closed or its input queue is full."));
+    });
     connect(pane, &QObject::destroyed, this, [this, pane] {
         m_motion.erase(pane);
         m_growFrom.erase(pane);
@@ -443,7 +452,7 @@ void TerminalWindow::bindPane(Pane* pane)
 
 }
 
-Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command, QString* failure)
+Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& area, const QStringList& command, QString* failure, const QVariantMap& environment, bool fallback)
 {
     auto* pane = new Pane(m_settings.settings().terminal, this);
     bindPane(pane);
@@ -451,10 +460,16 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     AfterglowPty::SpawnOptions opts;
     opts.workingDirectory = workingDirectory.toStdString();
     opts.environment = m_settings.settings().environment;
+    for (auto it = environment.cbegin(); it != environment.cend(); ++it) {
+        const auto name = it.key().toStdString();
+        std::erase_if(opts.environment, [&](const auto& entry) { return entry.first == name; });
+        if (it.value().metaType().id() == QMetaType::Bool) opts.unsetEnvironment.push_back(name);
+        else opts.environment.emplace_back(name, it.value().toString().toStdString());
+    }
     pane->setScrollPolicy(m_settings.settings().scrollOnOutput, m_settings.settings().scrollOnInput);
     // Before the program starts: a quick one may exit at once.
     pane->setHold(std::exchange(m_holdNextPane, false));
-    pane->setHoldOnFailure(failure != nullptr);
+    pane->setHoldOnFailure(fallback);
     if (!command.isEmpty()) {
         pane->setLaunchedProgram(QFileInfo(command.first()).fileName());
         for (const QString& arg : command) {
@@ -471,8 +486,8 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
     QString error;
     if (!pane->start(opts, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error)) {
         qCCritical(lcWindow) << "failed to start the shell:" << error;
-        if (failure) {
-            *failure = error;
+        if (failure) *failure = error;
+        if (fallback) {
             // A project must remain inspectable even if its configured shell fails.
             AfterglowPty::SpawnOptions fallback;
             fallback.argv = {"/bin/sh"};
@@ -481,31 +496,35 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
             pane->setHold(true);
             if (!pane->start(fallback, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error))
                 pane->holdStartFailure();
+        } else {
+            delete pane;
+            return nullptr;
         }
     }
     Q_EMIT paneCreated(pane);
     return pane;
 }
 
-void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringList& command)
+Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringList& command, const PaneLaunchOptions& options, QString* error)
 {
     if (!m_focused) {
-        return;
+        return nullptr;
     }
     if (m_splits->zoomedPane()) {
         setPaneZoom(nullptr);
         relayout();
     }
-    // Start the new shell at the size its half of the split will have.
+    // Start the new shell at the size its requested share of the split will have.
     QRect area = m_splits->rectOf(m_focused);
     const int divider = std::max(1, int(std::lround(devicePixelRatio())));
     const bool sideways = direction == SplitTree::Direction::Right || direction == SplitTree::Direction::Left;
     if (sideways) {
-        area.setWidth((area.width() - divider) / 2);
+        area.setWidth(int((area.width() - divider) * options.fraction));
     } else {
-        area.setHeight((area.height() - divider) / 2);
+        area.setHeight(int((area.height() - divider) * options.fraction));
     }
-    Pane* added = createPane(startDirectory(m_focused->workingDirectory()), area, command);
+    Pane* added = createPane(options.cwd.isEmpty() ? startDirectory(m_focused->workingDirectory()) : options.cwd, area, command, error, options.environment);
+    if (!added) return nullptr;
     // The new pane grows out of the edge being split.
     const QRect old = m_splits->rectOf(m_focused);
     switch (direction) {
@@ -522,14 +541,16 @@ void TerminalWindow::splitFocused(SplitTree::Direction direction, const QStringL
         m_growFrom[added] = QRectF(old.left(), old.top(), old.width(), 0);
         break;
     }
-    m_splits->split(m_focused, added, direction);
+    m_splits->split(m_focused, added, direction, options.fraction);
     setFocusedPane(added);
     m_layoutSize = QSize();
     scheduleRender();
+    return added;
 }
 
 void TerminalWindow::closePane(Pane* pane)
 {
+    Q_EMIT paneClosing(pane->id(), tabIdOf(pane), id());
     const int index = tabOf(pane);
     if (m_scriptDialog && m_scriptDialog->pane == pane) finishScriptDialog(false, {});
     m_shaderControls.removePane(pane->id());
@@ -595,7 +616,7 @@ QRect TerminalWindow::paneArea() const
     return QRect(0, bar, px.width(), std::max(0, px.height() - bar));
 }
 
-Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command)
+Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command, const QVariantMap& environment, QString* error)
 {
     // A new tab opens beside the current one.
     const int at = m_tabs.empty() ? 0 : m_currentTab + 1;
@@ -605,7 +626,11 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
     m_tabs.insert(m_tabs.begin() + at, std::make_unique<Tab>());
     Tab& tab = *m_tabs[std::size_t(at)];
     // Size the shell for the area it will get, with the tab bar if it now shows.
-    Pane* first = createPane(workingDirectory, paneArea(), command);
+    Pane* first = createPane(workingDirectory, paneArea(), command, error, environment);
+    if (!first) {
+        m_tabs.erase(m_tabs.begin() + at);
+        return nullptr;
+    }
     tab.splits = std::make_unique<SplitTree>(first);
     tab.focused = first;
     m_splits = nullptr; // the current tab's index moved; nothing to save
@@ -647,19 +672,17 @@ QList<TerminalWindow::TabInfo> TerminalWindow::tabs() const
     return out;
 }
 
-Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, const QStringList& command)
+Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error)
 {
-    if (tabOf(pane) < 0) {
-        return nullptr;
-    }
+    if (tabOf(pane) < 0) return nullptr;
     revealPane(pane);
-    splitFocused(direction, command);
-    return m_focused;
+    return splitFocused(direction, options.command, options, error);
 }
 
-Pane* TerminalWindow::openTab(const QString& workingDirectory, const QStringList& command)
+Pane* TerminalWindow::openTab(const PaneLaunchOptions& options, QString* error)
 {
-    return newTab(workingDirectory.isEmpty() ? startDirectory(focusedDirectory()) : workingDirectory, command);
+    return newTab(options.cwd.isEmpty() ? startDirectory(focusedDirectory()) : options.cwd,
+                  options.command, options.environment, error);
 }
 
 QString TerminalWindow::focusedDirectory() const
@@ -788,7 +811,7 @@ void TerminalWindow::closeTab(int index)
     std::erase_if(m_scriptAppearance, [this, index](const auto& item) { return tabOf(item.pane) == index; });
     if (m_tabs.size() == 1) {
         qCInfo(lcWindow) << "last pane closed, closing the window";
-        m_tabs[0]->splits->forEachPane([](Pane* p, const QRect&) { p->deleteLater(); });
+        m_tabs[0]->splits->forEachPane([this](Pane* p, const QRect&) { Q_EMIT paneClosing(p->id(), tabIdOf(p), id()); p->deleteLater(); });
         m_closeConfirmed = true; // asked already, or its program ended
         close();
         return;
@@ -801,7 +824,7 @@ void TerminalWindow::closeTab(int index)
     if (m_menuTab == closing) {
         m_menuTab = nullptr;
     }
-    m_tabs[std::size_t(index)]->splits->forEachPane([](Pane* p, const QRect&) { p->deleteLater(); });
+    m_tabs[std::size_t(index)]->splits->forEachPane([this](Pane* p, const QRect&) { Q_EMIT paneClosing(p->id(), tabIdOf(p), id()); p->deleteLater(); });
     m_tabs.erase(m_tabs.begin() + index);
     if (index != m_currentTab) {
         // A tab in the background: the current one is untouched.
@@ -1132,7 +1155,8 @@ void TerminalWindow::renderNow()
     if (multiple && m_settings.settings().window.paneTitles) {
         const qreal dpr = devicePixelRatio();
         std::size_t index = 0;
-        m_splits->forEachPane([&](Pane* p, const QRect&) {
+        m_splits->forEachPane([&](Pane* p, const QRect& area) {
+            if (area.isEmpty()) return;
             const QRect r = panes[index++].params.rect;
             titles.append(QVariantMap{{QStringLiteral("x"), r.x() / dpr},
                                       {QStringLiteral("y"), r.y() / dpr},
@@ -1326,6 +1350,7 @@ bool TerminalWindow::event(QEvent* e)
     case QEvent::InputMethodQuery: {
         // The window is its own focus object; tell the input method about the terminal.
         auto* q = static_cast<QInputMethodQueryEvent*>(e);
+        if (m_controller->wantsKeyboard()) { m_chrome->queryInputMethod(q); return true; }
         const Qt::InputMethodQueries queries = q->queries();
         if (queries & Qt::ImEnabled) {
             q->setValue(Qt::ImEnabled, !m_controller->wantsKeyboard());
@@ -2247,7 +2272,7 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
     const QPoint cell = cellAt(pane, pos);
     const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
     if (cell.x() < snap.cols && cell.y() < snap.rows) {
-        const AfterglowRender::SnapshotCell& c = snap.at(cell.x(), cell.y());
+        const AfterglowRender::SnapshotCell& c = snap.logicalAt(cell.x(), cell.y());
         if (c.link != 0 && c.link <= snap.links.size()) {
             found.pane = pane;
             found.link = c.link;
@@ -2358,13 +2383,13 @@ std::vector<TerminalWindow::UrlSpan> TerminalWindow::findUrls(const AfterglowRen
     std::vector<UrlSpan> spans;
     // OSC 8 hyperlinks: runs of cells with the same link.
     for (int x = 0; x < snap.cols;) {
-        const std::uint32_t link = snap.at(x, row).link;
+        const std::uint32_t link = snap.logicalAt(x, row).link;
         if (link == 0 || link > snap.links.size()) {
             ++x;
             continue;
         }
         int end = x;
-        while (end + 1 < snap.cols && snap.at(end + 1, row).link == link) {
+        while (end + 1 < snap.cols && snap.logicalAt(end + 1, row).link == link) {
             ++end;
         }
         spans.push_back({x, end, link, QString::fromStdString(snap.links[link - 1])});
@@ -2374,7 +2399,7 @@ std::vector<TerminalWindow::UrlSpan> TerminalWindow::findUrls(const AfterglowRen
     QString text;
     std::vector<int> columns;
     for (int x = 0; x < snap.cols; ++x) {
-        const AfterglowRender::SnapshotCell& rc = snap.at(x, row);
+        const AfterglowRender::SnapshotCell& rc = snap.logicalAt(x, row);
         if (rc.width == 0) {
             continue;
         }
@@ -2537,7 +2562,7 @@ void TerminalWindow::showUrlHints()
         if (!h.label.startsWith(m_urlMode.typed)) {
             continue;
         }
-        list.append(QVariantMap{{QStringLiteral("x"), (origin.x() + h.col * m.cellWidth) / dpr},
+        list.append(QVariantMap{{QStringLiteral("x"), (origin.x() + m_urlMode.pane->snapshot().visualColumn(h.col, h.row) * m.cellWidth) / dpr},
                                 {QStringLiteral("y"), (origin.y() + h.row * m.cellHeight) / dpr},
                                 {QStringLiteral("label"), h.label},
                                 {QStringLiteral("typed"), int(m_urlMode.typed.size())}});
@@ -2824,10 +2849,12 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
     if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
     if (m_urlMode.active) {
+        m_consumedKeys.insert(physicalKey);
         urlModeKey(e);
         return;
     }
     if (m_unicodeInput) {
+        m_consumedKeys.insert(physicalKey);
         unicodeInputKey(e);
         return;
     }
@@ -2835,6 +2862,7 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         updateLinkHover();
     }
     if (m_controller->wantsKeyboard()) {
+        m_consumedKeys.insert(physicalKey);
         cancelKeyMode();
         // The palette and search keybinds still toggle while the chrome has the keyboard.
         const Action a = m_settings.settings().keybinds.match(e);
@@ -2857,6 +2885,7 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
     const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
     if (m_consumedKeys.contains(physicalKey)) {
         if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
+        if (m_controller->wantsKeyboard()) m_chrome->deliver(e);
         return;
     }
     if (m_urlMode.active || m_unicodeInput) {
@@ -3092,6 +3121,7 @@ void TerminalWindow::paste(QClipboard::Mode mode)
     const QByteArray trimmed = text.trimmed();
     if (m_settings.settings().confirmUnsafePaste && !bracketed && trimmed.contains('\n')) {
         m_pendingPaste = text;
+        m_pendingPastePane = m_focused;
         const QString preview = QString::fromUtf8(trimmed.left(4000));
         m_controller->askPaste(preview, int(trimmed.count('\n')) + 1);
         return;
@@ -3113,7 +3143,7 @@ QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
     if (pane->snapshot().lineSize(row) != AfterglowVt::LineSize::Single) {
         return QPoint(col / 2, row);
     }
-    return QPoint(col, row);
+    return QPoint(pane->snapshot().logicalColumn(col, row), row);
 }
 
 bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int action,
@@ -3463,9 +3493,18 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
 } // namespace Afterglow
 
 namespace Afterglow {
+QAccessibleInterface* TerminalWindow::accessibleChrome() const
+{
+    return m_chrome && m_chrome->rootItem() ? QAccessible::queryAccessibleInterface(m_chrome->rootItem()) : nullptr;
+}
+QAccessibleInterface* TerminalWindow::accessibleChromeFocus() const
+{
+    auto* item = m_chrome && m_controller->wantsKeyboard() ? m_chrome->focusedItem() : nullptr;
+    return item ? QAccessible::queryAccessibleInterface(item) : nullptr;
+}
 QRect TerminalWindow::accessiblePaneRect(Pane* pane) const
 {
-    if (!m_splits || tabIdOf(pane) != activeTabId()) return {};
+    if (!m_splits || tabIdOf(pane) != activeTabId() || m_splits->rectOf(pane).isEmpty()) return {};
     const QRect px = contentRect(m_splits->rectOf(pane));
     const qreal dpr = devicePixelRatio();
     return QRect(mapToGlobal((QPointF(px.topLeft()) / dpr).toPoint()), (QSizeF(px.size()) / dpr).toSize());
@@ -3484,7 +3523,7 @@ QRect TerminalWindow::accessibleCellRect(Pane* pane, AfterglowVt::SelectionPoint
         const double cw = metrics.cellWidth * scale / devicePixelRatio();
         const double ch = metrics.cellHeight / devicePixelRatio();
         const int width = std::max(1, line.at(point.col).width());
-        return QRectF(area.x() + point.col * cw, area.y() + row * ch, width * cw, ch).toAlignedRect();
+        return QRectF(area.x() + pane->snapshot().visualColumn(point.col, int(row)) * cw, area.y() + row * ch, width * cw, ch).toAlignedRect();
     });
 }
 }

@@ -14,7 +14,7 @@ Item {
 
     onVisibleChanged: {
         if (visible)
-            panel.forceActiveFocus()
+            Qt.callLater(() => { if (prompt.visible) panel.forceActiveFocus() })
     }
 
     Rectangle {

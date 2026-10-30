@@ -62,7 +62,7 @@ public:
     int rows() const;
 
     /// Sends bytes to the child and snaps the viewport back to the bottom.
-    void sendInput(std::string_view bytes);
+    bool sendInput(std::string_view bytes);
 
     /// Runs @p fn with the terminal locked.
     template<typename Fn>
@@ -131,18 +131,13 @@ public:
     const Signals& shaderSignals() const noexcept { return m_signals; }
 
     // Search (GUI thread).
-    struct SearchResult
-    {
-        int current = -1; ///< 0-based, -1 for no match
-        int count = 0;
-    };
     /// Runs or steps a search and scrolls the match into view. @p direction:
     /// 0 searches afresh from the bottom of the viewport, 1 next, -1 previous.
     void search(const QString& query, int direction, bool regex = false);
     void clearSearch();
 
     /// Text being composed by an input method, drawn over the grid at the
-    /// cursor until it is committed. @p cursor is its caret, in characters.
+    /// cursor until it is committed. @p cursor is its caret, in UTF-16 code units.
     void setPreedit(const QString& text, int cursor);
 
     /// Program status records, copied (GUI thread).
@@ -167,6 +162,9 @@ public:
     void scrollHistory(double fraction);
     bool hasSelection() const;
     QString selectedText() const;
+    QVariantMap readSelection(std::size_t limit) const;
+    QVariantMap semanticRegions() const;
+    QVariantMap readRegion(std::uint64_t id, std::size_t limit) const;
     TerminalText accessibleText(bool cursorRow = false) const;
 
 Q_SIGNALS:
@@ -180,6 +178,7 @@ Q_SIGNALS:
     void bellRang();
     void clipboardWriteRequested(const QString& text, bool primarySelection);
     void notificationRequested(const QString& title, const QString& body);
+    void inputRejected();
     void pointerShapeRequested(const QString& shape);
     /// Program status records changed; read them with status().
     void statusChanged();
@@ -197,6 +196,8 @@ Q_SIGNALS:
 private:
     // ITerminalHost (pty thread, m_mutex held)
     void writeToPty(std::string_view bytes) override;
+    void reportInputFailure();
+    std::atomic_bool m_inputFailureQueued{false};
     void titleChanged(std::string_view title) override;
     void bell() override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
