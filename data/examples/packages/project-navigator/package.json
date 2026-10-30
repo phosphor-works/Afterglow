@@ -1,0 +1,18 @@
+{
+  "id": "project-navigator",
+  "version": "1.0.0",
+  "api_version": 1,
+  "state_version": 2,
+  "entry": "main",
+  "modules": {
+    "main": "init.luau",
+    "providers": "providers.luau",
+    "history": "history.luau"
+  },
+  "config": {
+    "roots": ["~/Projects"],
+    "fd": true,
+    "zoxide": true,
+    "max_depth": 5
+  }
+}

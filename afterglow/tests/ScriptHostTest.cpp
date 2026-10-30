@@ -1034,3 +1034,94 @@ TEST_F(ScriptHostTest, PackagesRejectMissingDependenciesAndCycles)
     write(user,"bundle/vendor/lib/lib.luau","return require('main')");
     host->reload(); host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"dependency");
 }
+
+TEST_F(ScriptHostTest, NavigatorLaunchesChosenLayoutAndPersistsFavoritesAcrossReload)
+{
+    QDir package(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES) + "/project-navigator");
+    QDir().mkpath(user.filePath("project-navigator"));
+    for (const auto& name : package.entryList(QDir::Files)) ASSERT_TRUE(QFile::copy(package.filePath(name),user.filePath("project-navigator/")+name));
+    write(user,"project-navigator/config.json",R"({"roots":["/tmp/navigator-project"],"fd":false,"zoxide":false})");
+    auto pane = paneState[7]; pane["cwd"]="/tmp/navigator-project"; paneState[7]=pane;
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        const auto kind=e.value("kind").toString();
+        if (kind=="list_projects") return {{},{{"names",QStringList{"dev"}}},{}};
+        if (kind=="select") {
+            const auto title=e.value("title").toString();
+            if (title.startsWith("Layout for")) return {{},{{"id","layout-1"}},{}};
+            for (const auto& item : e.value("items").toList()) if (item.toMap().value("title").toString().contains("/tmp/navigator-project")) return {{},{{"id",item.toMap().value("id")}},{}};
+        }
+        if (kind=="open_directory") return {{},{{"window_id",3},{"cwd","/tmp/navigator-project"},{"reused",false}},{}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_EQ(host->scriptIds(),QStringList{"project-navigator"});
+    ASSERT_TRUE(host->runAction("project-navigator.open",7));
+    for (int i=0;i<10;++i) QCoreApplication::processEvents();
+    bool launched=false;
+    for (const auto& e : rec.applied) if (e.value("kind")=="open_directory") { launched=true; EXPECT_EQ(e.value("layout"),"dev"); }
+    EXPECT_TRUE(launched);
+    ASSERT_TRUE(host->runAction("project-navigator.favorite",7));
+    for (int i=0;i<5;++i) QCoreApplication::processEvents();
+    ScriptState::Snapshot stored; ScriptState store(user.filePath("state"));
+    ASSERT_TRUE(store.read("project-navigator",stored).isEmpty());
+    EXPECT_TRUE(stored.value.value("favorites").toMap().value("/tmp/navigator-project").toBool());
+    EXPECT_EQ(stored.value.value("templates").toMap().value("/tmp/navigator-project"),"dev");
+    host->setEnabled(false); host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(),QStringList{"project-navigator"});
+    EXPECT_EQ(host->diagnostics().first().toMap().value("status"),"active");
+    for (const auto& result : rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, NavigatorParsesBoundedProviderRecords)
+{
+    QDir().mkpath(user.filePath("providers"));
+    ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES)+"/project-navigator/providers.luau",user.filePath("providers/providers.luau")));
+    write(user,"providers/package.json",R"({"id":"providers","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"main.luau","providers":"providers.luau"}})");
+    write(user,"providers/main.luau",R"(
+local p=require("providers")
+return {on_bell=function()
+ local paths=p.parse("fd","/tmp/with spaces/.git\0/tmp/worktree/.git/\0/truncated","/home/test")
+ assert(#paths==2 and paths[1]=="/tmp/with spaces" and paths[2]=="/tmp/worktree")
+ local z=p.parse("zoxide","/tmp/one\n/tmp/two\npartial","/home/test")
+ assert(#z==2 and z[2]=="/tmp/two")
+ local jobs,roots=p.jobs({roots={"~/Projects"},fd=true,zoxide=true,max_depth=100},"/home/test")
+ assert(#jobs==2 and roots[1]=="/home/test/Projects" and jobs[1].command[5]=="16")
+ return afterglow.copy("parsed")
+end}
+)");
+    host->setEnabled(true); host->dispatch("on_bell",7);
+    ASSERT_EQ(rec.applied.size(),1); EXPECT_EQ(rec.applied[0].value("text"),"parsed");
+}
+TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
+{
+    QDir package(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES)+"/project-navigator");
+    QDir().mkpath(user.filePath("project-navigator"));
+    for (const auto& name : package.entryList(QDir::Files)) ASSERT_TRUE(QFile::copy(package.filePath(name),user.filePath("project-navigator/")+name));
+    write(user,"project-navigator/config.json",R"({"roots":["/tmp"],"fd":true,"zoxide":false})");
+    QFile provider(user.filePath("project-navigator/providers.luau")); ASSERT_TRUE(provider.open(QIODevice::ReadOnly));
+    auto source=provider.readAll(); provider.close();
+    source.replace("command={\"fd\"", "command={\"afterglow-nonexistent-fd-test\"");
+    write(user,"project-navigator/providers.luau",source);
+    auto pane=paneState[7];pane["cwd"]="/tmp";paneState[7]=pane;
+    bool selected=false;
+    applyHook=[&](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if (e.value("kind")=="list_projects") return {{},{{"names",QStringList{}}},{}};
+        if (e.value("kind")=="select") {
+            selected=true;
+            EXPECT_TRUE(e.value("title").toString().contains("fd-1"));
+            EXPECT_FALSE(e.value("items").toList().isEmpty());
+            return {"Dialog cancelled",{},"cancelled"};
+        }
+        return {};
+    };
+    host->setEnabled(true); ASSERT_TRUE(host->runAction("project-navigator.open",7));
+    QElapsedTimer clock;clock.start();
+    while (!selected && clock.elapsed()<3000) { QCoreApplication::processEvents(); QThread::msleep(5); }
+    ASSERT_TRUE(selected);
+    for (int i=0;i<5;++i) QCoreApplication::processEvents();
+    ASSERT_TRUE(host->runAction("project-navigator.favorite",7));
+    for (int i=0;i<5;++i) QCoreApplication::processEvents();
+    ScriptState::Snapshot stored;
+    ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-navigator",stored).isEmpty());
+    EXPECT_TRUE(stored.value.value("favorites").toMap().value("/tmp").toBool());
+}

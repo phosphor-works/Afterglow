@@ -404,6 +404,10 @@ afterglow rate limits and carries out. Types for editors are installed to
 `share/afterglow/examples/scripts`. `"Scripts": { "enabled": false }` turns
 scripting off.
 
+The [project navigator package](data/examples/packages/project-navigator/README.md)
+combines saved layouts, running projects, Git discovery, optional zoxide,
+favorites and persistent history in a native fuzzy picker.
+
 ### Luau packages and persistent state
 
 Single `.luau` scripts remain supported. A package is a directory under the
