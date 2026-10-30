@@ -230,9 +230,9 @@ public:
     const std::string& workingDirectory() const noexcept { return m_cwd; }
     /// True while the cursor is in a shell prompt or its input (OSC 133 A/B, before C).
     bool atShellPrompt() const noexcept { return m_semanticZone != SemanticZone::Output; }
-    /// A resize blanked the prompt for the shell to repaint, and the shell has
-    /// not finished repainting it (OSC 133;B) yet. Renderers can keep showing
-    /// the previous frame meanwhile instead of flashing an empty prompt.
+    /// A resize kept the prompt's previous layout for the shell to repaint,
+    /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
+    /// the previous frame meanwhile instead of showing a partial repaint.
     bool promptRedrawPending() const noexcept { return m_promptRedrawPending; }
     /// The shell asked (OSC 133 click_events) for clicks on its command line
     /// to move the cursor there, and the user is at that line now.

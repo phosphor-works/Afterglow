@@ -235,7 +235,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         const float f = float(scale16) / 16.0f;
         const auto& shaped = shape(fonts, face, int(slot), text);
         for (const ShapedGlyph& g : shaped) {
-            const GlyphEntry* e = glyphs.glyph(fonts, face, g.glyphId, cellSpan, scale16);
+            const GlyphEntry* e = glyphs.glyph(fonts, face, g.glyphId, cellSpan, scale16, p.allowSubpixel);
             if (!e) {
                 return false;
             }
@@ -258,7 +258,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 inst.x = std::round(x + (g.penX + float(m.glyphOffsetX)) * f + float(e->left));
                 inst.y = std::round(baseline - (float(e->top) + g.yOffset * f) * vstretch);
                 inst.color = color;
-                inst.kind = std::uint32_t(InstanceKind::GrayGlyph);
+                inst.kind = std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph);
             }
             pushClipped(inst, clipTop, clipBottom);
         }
@@ -459,8 +459,8 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                         span = 2;
                     }
                 }
-                const GlyphEntry* e = icon ? glyphs.icon(fonts, face, g.glyphId, span)
-                                           : glyphs.glyph(fonts, face, g.glyphId, span);
+                const GlyphEntry* e = icon ? glyphs.icon(fonts, face, g.glyphId, span, p.allowSubpixel)
+                                           : glyphs.glyph(fonts, face, g.glyphId, span, 16, p.allowSubpixel);
                 if (!e) {
                     return false;
                 }
@@ -471,7 +471,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 if (icon && !e->color) {
                     out.push_back({std::round(cellX + float(e->left)), std::round(baseline - float(e->top)), float(e->width),
                                    float(e->height), float(e->u), float(e->v), float(e->u + e->width),
-                                   float(e->v + e->height), color, std::uint32_t(InstanceKind::GrayGlyph)});
+                                   float(e->v + e->height), color, std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph)});
                 } else if (e->color) {
                     out.push_back({cellX + float(e->left), baseline - float(e->top), float(e->width), float(e->height),
                                    float(e->u), float(e->v), float(e->u + e->width), float(e->v + e->height),
@@ -481,7 +481,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     const float gy = std::round(baseline - float(e->top) - g.yOffset);
                     out.push_back({gx, gy, float(e->width), float(e->height), float(e->u), float(e->v),
                                    float(e->u + e->width), float(e->v + e->height), color,
-                                   std::uint32_t(InstanceKind::GrayGlyph)});
+                                   std::uint32_t(e->subpixel ? InstanceKind::SubpixelGlyph : InstanceKind::GrayGlyph)});
                 }
             }
             x = end;
@@ -775,12 +775,25 @@ void WindowRenderer::initResources(FontResources& res)
     ensureBindings(res);
 }
 
-std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeGridPipeline(QRhiRenderPassDescriptor* pass, bool blend)
+std::unique_ptr<QRhiGraphicsPipeline> WindowRenderer::makeGridPipeline(QRhiRenderPassDescriptor* pass, GridBlend blend)
 {
     std::unique_ptr<QRhiGraphicsPipeline> p(m_device.rhi()->newGraphicsPipeline());
-    p->setTargetBlends({blend ? premultipliedBlend() : QRhiGraphicsPipeline::TargetBlend{}});
+    auto targetBlend = blend == GridBlend::None ? QRhiGraphicsPipeline::TargetBlend{} : premultipliedBlend();
+    if (blend == GridBlend::Subpixel) {
+        // The fragment emits per-channel coverage (including text opacity).
+        // out.rgb = foreground * coverage + background * (1 - coverage).
+        // Keep the opaque destination alpha. Equal-colour runs share a draw.
+        targetBlend.srcColor = QRhiGraphicsPipeline::ConstantColor;
+        targetBlend.dstColor = QRhiGraphicsPipeline::OneMinusSrcColor;
+        targetBlend.colorWrite = QRhiGraphicsPipeline::R | QRhiGraphicsPipeline::G | QRhiGraphicsPipeline::B;
+    }
+    p->setTargetBlends({targetBlend});
     p->setTopology(QRhiGraphicsPipeline::TriangleStrip);
-    p->setFlags(QRhiGraphicsPipeline::UsesScissor);
+    auto flags = QRhiGraphicsPipeline::Flags(QRhiGraphicsPipeline::UsesScissor);
+    if (blend == GridBlend::Subpixel) {
+        flags |= QRhiGraphicsPipeline::UsesBlendConstants;
+    }
+    p->setFlags(flags);
     p->setShaderStages({
         {QRhiShaderStage::Vertex, loadShader(QStringLiteral(":/afterglow/shaders/grid.vert.qsb"))},
         {QRhiShaderStage::Fragment, loadShader(QStringLiteral(":/afterglow/shaders/grid.frag.qsb"))},
@@ -920,13 +933,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         bool ok = true;
         for (const Pane& pane : panes) {
             const auto first = std::uint32_t(m_frame.size());
-            const FrameBuilder::PaneParams& pp = pane.params;
+            FrameBuilder::PaneParams pp = pane.params;
+            pp.allowSubpixel = pp.allowSubpixel && !m_translucent && !(m_post && m_post->active())
+                && pp.backgroundAlpha == 255;
             PaneCache& cache = m_paneCache[pane.snapshot];
             const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
                 && cache.glyphEpoch == res.glyphs.epoch() && cache.fonts == res.fonts.get() && cache.rect == pp.rect
                 && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
                 && cache.cursorPosition == pp.cursorPosition && cache.scrollShift == pp.scrollShift
-                && cache.backgroundAlpha == pp.backgroundAlpha && cache.hoveredLink == pp.hoveredLink
+                && cache.backgroundAlpha == pp.backgroundAlpha && cache.allowSubpixel == pp.allowSubpixel && cache.hoveredLink == pp.hoveredLink
                 && cache.hoverRow == pp.hoverRow && cache.hoverColStart == pp.hoverColStart
                 && cache.hoverColEnd == pp.hoverColEnd;
             if (!reusable) {
@@ -950,6 +965,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 cache.cursorPosition = pp.cursorPosition;
                 cache.scrollShift = pp.scrollShift;
                 cache.backgroundAlpha = pp.backgroundAlpha;
+                cache.allowSubpixel = pp.allowSubpixel;
                 cache.hoveredLink = pp.hoveredLink;
                 cache.hoverRow = pp.hoverRow;
                 cache.hoverColStart = pp.hoverColStart;
@@ -1033,7 +1049,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         float(res.glyphs.colorPage().size()),
         float(res.glyphs.colorPage().size()),
         0.0f,
-        0.0f,
+        std::isfinite(res.fonts->spec().gamma) ? std::clamp(res.fonts->spec().gamma, 0.5f, 3.0f) : 1.0f,
     };
     updates->updateDynamicBuffer(m_uniforms.get(), 0, sizeof uniforms, uniforms);
 
@@ -1061,8 +1077,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         gridPipelines = &m_postPipelines;
     }
     if (!gridPipelines->grid) {
-        gridPipelines->grid = makeGridPipeline(gridPass, true);
-        gridPipelines->fill = makeGridPipeline(gridPass, false);
+        gridPipelines->grid = makeGridPipeline(gridPass, GridBlend::Premultiplied);
+        gridPipelines->fill = makeGridPipeline(gridPass, GridBlend::None);
     }
 
     const QColor clear = premultipliedClear(clearColor);
@@ -1232,9 +1248,29 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
     };
     auto drawSpan = [&](std::uint32_t from, std::uint32_t to) {
-        if (to > from) {
-            cb->draw(4, to - from, 0, from);
+        // Preserve glyph order (including overlaps and combining marks),
+        // batching ordinary instances and equal-colour subpixel glyphs.
+        while (from < to) {
+            const Instance& first = m_frame[from];
+            const bool lcd = first.kind == std::uint32_t(InstanceKind::SubpixelGlyph);
+            std::uint32_t end = from + 1;
+            while (end < to && (m_frame[end].kind == std::uint32_t(InstanceKind::SubpixelGlyph)) == lcd
+                   && (!lcd || m_frame[end].color == first.color)) {
+                ++end;
+            }
+            if (lcd) {
+                if (!gridPipelines->subpixel) {
+                    gridPipelines->subpixel = makeGridPipeline(gridPass, GridBlend::Subpixel);
+                }
+                cb->setGraphicsPipeline(gridPipelines->subpixel.get());
+                cb->setBlendConstants(toColor(first.color));
+            } else {
+                cb->setGraphicsPipeline(gridPipelines->grid.get());
+            }
+            cb->draw(4, end - from, 0, from);
+            from = end;
         }
+        cb->setGraphicsPipeline(gridPipelines->grid.get());
     };
     auto drawOverlays = [&] {
         if (overlayEnd > overlayFirst) {

@@ -68,6 +68,10 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("dpr"), QStringLiteral("Device pixel ratio."), QStringLiteral("f"), QStringLiteral("1")});
     parser.addOption({QStringLiteral("size"), QStringLiteral("Font size in points."), QStringLiteral("pt"),
                       QStringLiteral("11")});
+    parser.addOption({QStringLiteral("antialiasing"), QStringLiteral("Font coverage: grayscale, none, rgb or bgr."),
+                      QStringLiteral("mode"), QStringLiteral("grayscale")});
+    parser.addOption({QStringLiteral("text-gamma"), QStringLiteral("Glyph coverage gamma (0.5..3)."),
+                      QStringLiteral("gamma"), QStringLiteral("1")});
     parser.addOption({QStringLiteral("shader"), QStringLiteral("Window shader (repeatable)."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("pane-shader"), QStringLiteral("Pane shader (repeatable)."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("background-shader"), QStringLiteral("Background layer shader (repeatable)."),
@@ -126,6 +130,23 @@ int main(int argc, char** argv)
 
     AfterglowRender::FontSpec spec;
     spec.sizePoints = parser.value(QStringLiteral("size")).toFloat();
+    const QString aa = parser.value(QStringLiteral("antialiasing"));
+    if (aa == QLatin1String("none")) {
+        spec.antialiasing = AfterglowRender::Antialiasing::None;
+    } else if (aa == QLatin1String("rgb")) {
+        spec.antialiasing = AfterglowRender::Antialiasing::Rgb;
+    } else if (aa == QLatin1String("bgr")) {
+        spec.antialiasing = AfterglowRender::Antialiasing::Bgr;
+    } else if (aa != QLatin1String("grayscale")) {
+        std::fprintf(stderr, "--antialiasing must be grayscale, none, rgb or bgr\n");
+        return 1;
+    }
+    bool gammaOk = false;
+    spec.gamma = parser.value(QStringLiteral("text-gamma")).toFloat(&gammaOk);
+    if (!gammaOk || !std::isfinite(spec.gamma) || spec.gamma < 0.5f || spec.gamma > 3.0f) {
+        std::fprintf(stderr, "--text-gamma must be 0.5..3\n");
+        return 1;
+    }
     if (parser.isSet(QStringLiteral("family"))) {
         spec.regular.family = parser.value(QStringLiteral("family")).toStdString();
         spec.bold.family = spec.italic.family = spec.boldItalic.family = spec.regular.family;

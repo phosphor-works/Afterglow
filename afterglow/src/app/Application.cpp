@@ -11,9 +11,11 @@
 #include <PhosphorShortcuts/Registry.h>
 
 #include <QDBusConnection>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeySequence>
 #include <QLoggingCategory>
+#include <QQuickStyle>
 
 Q_LOGGING_CATEGORY(lcApp, "afterglow.app", QtInfoMsg)
 
@@ -33,6 +35,22 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
     , m_scripts(scriptCallbacks(m_control))
     , m_services{m_device, m_settings, m_engine, m_shaders, m_scripts, m_audio}
 {
+    // Some platform-theme versions leave Qt Quick at its default Fusion style.
+    // Prefer the desktop bridge on Plasma, preserving explicit style choices
+    // and falling back normally when the optional module is not installed.
+    const QString desktop = qEnvironmentVariable("XDG_CURRENT_DESKTOP").toLower();
+    if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")
+        && qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_CONF")
+        && QQuickStyle::name() == QLatin1String("Fusion")
+        && (desktop.contains(QLatin1String("kde")) || desktop.contains(QLatin1String("plasma")))) {
+        for (const QString& path : m_engine.importPathList()) {
+            if (QFileInfo::exists(path + QStringLiteral("/org/kde/desktop/qmldir"))) {
+                QQuickStyle::setStyle(QStringLiteral("org.kde.desktop"));
+                break;
+            }
+        }
+    }
+
     connect(&m_audio, &AudioController::spectrumChanged, &m_device, [this](const QVector<float>& spectrum) {
         m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
     });

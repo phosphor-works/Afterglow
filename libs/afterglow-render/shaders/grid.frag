@@ -16,7 +16,7 @@ layout(std140, binding = 0) uniform Frame {
     vec2 grayAtlasSize;
     vec2 colorAtlasSize;
     float time;
-    float pad;
+    float textGamma;
 };
 
 layout(binding = 1) uniform sampler2D grayAtlas;
@@ -28,6 +28,7 @@ const uint KindColorGlyph = 2u;
 const uint KindUndercurl = 3u;
 const uint KindDotted = 4u;
 const uint KindDashed = 5u;
+const uint KindSubpixelGlyph = 6u;
 
 vec4 premul(vec4 c, float coverage)
 {
@@ -40,7 +41,10 @@ void main()
     if (vKind == KindSolid) {
         fragColor = premul(vColor, 1.0);
     } else if (vKind == KindGrayGlyph) {
-        fragColor = premul(vColor, texture(grayAtlas, vUv / grayAtlasSize).r);
+        fragColor = premul(vColor, pow(texture(grayAtlas, vUv / grayAtlasSize).r, 1.0 / textGamma));
+    } else if (vKind == KindSubpixelGlyph) {
+        vec3 coverage = pow(texture(colorAtlas, vUv / colorAtlasSize).rgb, vec3(1.0 / textGamma));
+        fragColor = vec4(coverage * vColor.a, 0.0);
     } else if (vKind == KindColorGlyph) {
         fragColor = texture(colorAtlas, vUv / colorAtlasSize) * vColor.a;
     } else if (vKind == KindUndercurl) {

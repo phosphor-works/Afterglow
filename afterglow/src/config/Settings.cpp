@@ -167,6 +167,11 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("hinting"), QStringLiteral("light"),
                 QStringLiteral("Glyph hinting: none (as designed), light (vertical only, the default) or full (crispest)"),
                 {QStringLiteral("none"), QStringLiteral("light"), QStringLiteral("full")}),
+        enumKey(QStringLiteral("antialiasing"), QStringLiteral("grayscale"),
+                QStringLiteral("Font antialiasing: grayscale, none, rgb or bgr. Subpixel modes use grayscale with transparency or shaders"),
+                {QStringLiteral("grayscale"), QStringLiteral("none"), QStringLiteral("rgb"), QStringLiteral("bgr")}),
+        doubleKey(QStringLiteral("gamma"), 1.0, 0.5, 3.0,
+                  QStringLiteral("Glyph coverage gamma: 1 preserves coverage; higher values strengthen edges")),
     };
     AfterglowVt::TerminalOptions term;
     const auto hex = [](AfterglowVt::Rgb c) { return QColor(c.r, c.g, c.b).name(); };
@@ -577,6 +582,12 @@ Settings SettingsStore::read() const
     f.hinting = hinting == QLatin1String("none")   ? AfterglowRender::Hinting::None
                 : hinting == QLatin1String("full") ? AfterglowRender::Hinting::Full
                                                    : AfterglowRender::Hinting::Light;
+    const QString aa = st.read<QString>(Font, QStringLiteral("antialiasing"));
+    f.antialiasing = aa == QLatin1String("none") ? AfterglowRender::Antialiasing::None
+                    : aa == QLatin1String("rgb") ? AfterglowRender::Antialiasing::Rgb
+                    : aa == QLatin1String("bgr") ? AfterglowRender::Antialiasing::Bgr
+                                                 : AfterglowRender::Antialiasing::Grayscale;
+    f.gamma = float(st.read<double>(Font, QStringLiteral("gamma")));
     f.cellHeightScale = float(st.read<double>(Font, QStringLiteral("cellHeight")));
     f.cellWidthScale = float(st.read<double>(Font, QStringLiteral("cellWidth")));
 

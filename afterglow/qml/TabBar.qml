@@ -2,18 +2,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import QtQuick
+import QtQuick.Controls as QQC
 
 // The tab bar. Tabs share the width between a minimum and a maximum; past
 // that the bar scrolls (mouse wheel) and keeps the current tab in view.
 // Press a tab to switch to it and drag it sideways to move it; middle-click
 // closes, double-click renames, right-click opens its menu. Double-clicking
 // the empty bar opens a new tab.
-Rectangle {
+QQC.ToolBar {
     id: bar
 
     required property QtObject controller
 
-    readonly property color ink: controller.foreground
+    SystemPalette { id: systemPalette }
+
+    readonly property color ink: systemPalette.windowText
     readonly property int count: controller.tabTitles.length
     readonly property real minTab: 110
     readonly property real maxTab: 220
@@ -40,11 +43,11 @@ Rectangle {
         return second
     }
 
-    color: Qt.darker(controller.background, 1.3)
+    padding: 0
 
     // The colour for a context kind: elevated, remote or container.
     function contextColor(kind: string): color {
-        return kind === "elevated" ? controller.badColor : kind === "remote" ? controller.warnColor : controller.accent
+        return kind === "elevated" ? controller.badColor : kind === "remote" ? controller.warnColor : systemPalette.highlight
     }
 
     // Where tab @p i is drawn while another is being dragged.
@@ -117,7 +120,7 @@ Rectangle {
                 readonly property string title: bar.controller.tabTitles[index] || ""
                 readonly property bool current: index === bar.controller.currentTab
                 readonly property bool dragged: index === bar.dragFrom
-                readonly property bool hovered: body.containsMouse || closeArea.containsMouse
+                readonly property bool hovered: body.containsMouse || closeButton.hovered
 
                 width: bar.tabWidth
                 height: strip.height
@@ -129,31 +132,12 @@ Rectangle {
                     NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
                 }
 
-                Rectangle {
+                QQC.TabButton {
                     anchors.fill: parent
-                    anchors.topMargin: 3
-                    radius: 6
-                    // Only the top corners round: the bottom joins the terminal.
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        height: parent.radius
-                        color: parent.color
-                    }
-                    color: tab.current || tab.dragged ? bar.controller.background
-                         : tab.hovered ? Qt.rgba(bar.ink.r, bar.ink.g, bar.ink.b, 0.07) : "transparent"
-                    opacity: tab.dragged ? 0.95 : 1.0
-
-                    Rectangle {
-                        visible: tab.current
-                        anchors.top: parent.top
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: parent.width - 2 * parent.radius
-                        height: 2
-                        radius: 1
-                        color: bar.controller.accent
-                    }
+                    checked: tab.current
+                    down: tab.dragged || body.pressed
+                    focusPolicy: Qt.NoFocus
+                    Accessible.name: tab.title || qsTr("Shell")
                 }
 
                 // A separator between two tabs that are neither current nor hovered.
@@ -207,7 +191,7 @@ Rectangle {
                     }
                 }
 
-                Text {
+                QQC.Label {
                     anchors.left: contextChip.right
                     anchors.right: closeButton.left
                     anchors.verticalCenter: parent.verticalCenter
@@ -218,7 +202,6 @@ Rectangle {
                     elide: Text.ElideRight
                     color: bar.ink
                     opacity: tab.current ? 1.0 : (tab.hovered ? 0.8 : 0.55)
-                    font.pixelSize: 13
                 }
 
                 // The tab itself: switch, drag to move, and the other buttons.
@@ -275,64 +258,38 @@ Rectangle {
                 }
 
                 // Above the tab's own area, so a click here only closes.
-                Rectangle {
+                QQC.ToolButton {
                     id: closeButton
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.verticalCenterOffset: 1
-                    anchors.rightMargin: 8
-                    width: 20
-                    height: 20
-                    radius: 4
+                    anchors.rightMargin: 4
+                    width: Math.min(implicitWidth, tab.height)
+                    height: Math.min(implicitHeight, tab.height)
                     z: 20
                     visible: (tab.current || tab.hovered) && !tab.dragged
-                    color: closeArea.containsMouse ? Qt.rgba(bar.ink.r, bar.ink.g, bar.ink.b, 0.15) : "transparent"
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "×"
-                        color: bar.ink
-                        opacity: closeArea.containsMouse ? 1.0 : 0.55
-                        font.pixelSize: 16
-                    }
-
-                    MouseArea {
-                        id: closeArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-                        onClicked: bar.controller.closeTab(tab.index)
+                    icon.name: "window-close"
+                    text: qsTr("Close tab")
+                    display: QQC.AbstractButton.IconOnly
+                    focusPolicy: Qt.NoFocus
+                    onClicked: bar.controller.closeTab(tab.index)
+                    TapHandler {
+                        acceptedButtons: Qt.MiddleButton
+                        onTapped: bar.controller.closeTab(tab.index)
                     }
                 }
             }
         }
     }
 
-    Rectangle {
+    QQC.ToolButton {
         id: addButton
         x: strip.x + strip.width + 4
         anchors.verticalCenter: parent.verticalCenter
-        anchors.verticalCenterOffset: 1
-        width: 26
-        height: 22
-        radius: 5
-        color: addArea.containsMouse ? Qt.rgba(bar.ink.r, bar.ink.g, bar.ink.b, 0.12) : "transparent"
-
-        Text {
-            anchors.centerIn: parent
-            text: "+"
-            color: bar.ink
-            opacity: addArea.containsMouse ? 1.0 : 0.6
-            font.pixelSize: 17
-        }
-
-        MouseArea {
-            id: addArea
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: bar.controller.newTab()
-        }
+        height: Math.min(implicitHeight, bar.height)
+        icon.name: "list-add"
+        text: qsTr("New tab")
+        display: QQC.AbstractButton.IconOnly
+        focusPolicy: Qt.NoFocus
+        onClicked: bar.controller.newTab()
     }
 }

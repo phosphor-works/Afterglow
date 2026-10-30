@@ -54,17 +54,6 @@ void ChromeController::setStatusColors(const QColor& good, const QColor& warn, c
     Q_EMIT themeChanged();
 }
 
-void ChromeController::setTheme(const QColor& background, const QColor& foreground, const QColor& accent)
-{
-    if (background == m_background && foreground == m_foreground && accent == m_accent) {
-        return;
-    }
-    m_background = background;
-    m_foreground = foreground;
-    m_accent = accent;
-    Q_EMIT themeChanged();
-}
-
 void ChromeController::setActions(const QVariantList& actions)
 {
     if (actions == m_actions) {

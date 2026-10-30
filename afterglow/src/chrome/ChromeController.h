@@ -26,9 +26,6 @@ class ChromeController : public QObject
     Q_PROPERTY(QColor badColor READ badColor NOTIFY themeChanged)
     Q_PROPERTY(int currentTab READ currentTab NOTIFY tabsChanged)
     Q_PROPERTY(int tabBarHeight READ tabBarHeight NOTIFY tabsChanged)
-    Q_PROPERTY(QColor background READ background NOTIFY themeChanged)
-    Q_PROPERTY(QColor foreground READ foreground NOTIFY themeChanged)
-    Q_PROPERTY(QColor accent READ accent NOTIFY themeChanged)
     Q_PROPERTY(QVariantList actions READ actions NOTIFY actionsChanged)
     Q_PROPERTY(bool paletteOpen READ paletteOpen WRITE setPaletteOpen NOTIFY paletteOpenChanged)
     Q_PROPERTY(bool searchOpen READ searchOpen WRITE setSearchOpen NOTIFY searchOpenChanged)
@@ -71,10 +68,6 @@ public:
         }
     }
 
-    QColor background() const { return m_background; }
-    QColor foreground() const { return m_foreground; }
-    QColor accent() const { return m_accent; }
-    void setTheme(const QColor& background, const QColor& foreground, const QColor& accent);
     QColor goodColor() const { return m_goodColor; }
     QColor warnColor() const { return m_warnColor; }
     QColor badColor() const { return m_badColor; }
@@ -198,9 +191,6 @@ private:
     QColor m_badColor{Qt::red};
     int m_currentTab = 0;
     int m_tabBarHeight = 0;
-    QColor m_background{0x1c, 0x1c, 0x1c};
-    QColor m_foreground{0xd8, 0xd8, 0xd8};
-    QColor m_accent{0x6c, 0x9e, 0xf8};
     QVariantList m_actions;
     bool m_paletteOpen = false;
     bool m_searchOpen = false;

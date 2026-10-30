@@ -144,6 +144,49 @@ TEST(Reflow, PromptOptOutReflowsNormally)
     EXPECT_EQ(screenText(t.t), "01234\n56789\nAB");
 }
 
+TEST(Reflow, PromptSurvivesResizeWithoutShellRepaint)
+{
+    Term t(20, 8);
+    t.t.feed("fastfetch output\r\n\x1b]133;A\x1b\\\r\nuser@host\r\n> \x1b]133;B\x1b\\typed");
+    // Fish may only query the cursor after SIGWINCH: its screen diff can
+    // leave unchanged prompt/input cells alone. No Enter or full repaint.
+    for (int cols : {30, 18, 32, 22}) {
+        t.t.resize(cols, 8, 8, 16);
+        t.t.feed("\x1b[6n\x1b[0c");
+        const int cy = t.t.screen().cursor.y;
+        EXPECT_EQ(rowText(t.t, cy - 1), "user@host");
+        EXPECT_EQ(rowText(t.t, cy), "> typed");
+        EXPECT_EQ(rowText(t.t, 0), "fastfetch output");
+        EXPECT_EQ(t.t.screen().cursor.x, 7);
+    }
+    t.t.feed("!"); // incremental input update still uses the retained row
+    EXPECT_EQ(rowText(t.t, t.t.screen().cursor.y), "> typed!");
+}
+
+TEST(Reflow, PreservedPromptClipsWideGlyphsAndRetainsStyles)
+{
+    Term t(12, 6);
+    t.t.feed("\x1b]133;A\x1b\\\x1b[31me\xCC\x81" "ab\xE4\xB8\xAD\xCC\x81"
+             "\x1b[32mtail\x1b[0m\r\n> \x1b]133;B\x1b\\");
+    const auto style = t.t.screen().styles().get(t.t.screen().row(0).at(0).styleId());
+    ASSERT_EQ(t.t.screen().styles().liveCount(), 3u);
+    // The new last column bisects the wide character and its combining mark.
+    t.t.resize(4, 6, 8, 16);
+    EXPECT_EQ(rowText(t.t, 0), "e\xCC\x81" "ab");
+    EXPECT_EQ(rowText(t.t, 1), ">");
+    EXPECT_TRUE(t.t.screen().row(0).at(3).isEmpty());
+    EXPECT_FALSE(t.t.screen().row(0).at(3).hasGrapheme());
+    EXPECT_EQ(t.t.screen().graphemeExtra(t.t.screen().row(0), 3), U"");
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 2u); // green clipped, red retained
+    t.t.resize(16, 6, 8, 16);
+    EXPECT_EQ(rowText(t.t, 0), "e\xCC\x81" "ab");
+    // Reuse the released style slot; the surviving prompt must stay red.
+    t.t.feed("\x1b[34mnew\x1b[0m");
+    EXPECT_EQ(t.t.screen().styles().get(t.t.screen().row(0).at(0).styleId()), style);
+    t.t.feed("\x1b[2J");
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 1u);
+}
+
 TEST(Reflow, CommandOutputIsNeverBlanked)
 {
     Term t(10, 4);
@@ -157,7 +200,7 @@ TEST(Reflow, PromptRedrawPendingUntilShellRepaints)
     Term t(20, 6);
     t.t.feed("\x1b]133;A\x1b\\> \x1b]133;B\x1b\\");
     EXPECT_FALSE(t.t.promptRedrawPending());
-    t.t.resize(20, 8, 8, 16); // height only: nothing blanked
+    t.t.resize(20, 8, 8, 16); // height only: no reflow
     EXPECT_FALSE(t.t.promptRedrawPending());
     t.t.resize(15, 8, 8, 16);
     EXPECT_TRUE(t.t.promptRedrawPending());

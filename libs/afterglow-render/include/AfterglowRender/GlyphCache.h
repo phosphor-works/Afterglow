@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+typedef struct FT_Bitmap_ FT_Bitmap;
+
 namespace AfterglowRender {
 
 class FontSet;
@@ -67,6 +69,7 @@ struct GlyphEntry
     std::uint16_t height = 0;
     std::uint16_t u = 0; ///< atlas position in pixels
     std::uint16_t v = 0;
+    bool subpixel = false; ///< RGB coverage in the color atlas, with opaque alpha
 };
 
 /// Rasterised glyphs keyed by (face, glyph id, cell span).
@@ -80,13 +83,14 @@ public:
     /// full; the caller must then call reset() and rebuild its frame.
     /// @p scale16 is the size in sixteenths of the base size (16 is 1:1),
     /// for scaled text (OSC 66, double-size lines).
-    const GlyphEntry* glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16 = 16);
+    const GlyphEntry* glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16 = 16,
+                            bool allowSubpixel = true);
 
     /// An icon (a Nerd Font symbol in the Private Use Area) fitted to
     /// @p cellSpan cells: sized to the line, shrunk if too wide, and centred.
     /// The entry's left is from the start of its cells and its top from the
     /// baseline, as for other glyphs.
-    const GlyphEntry* icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan);
+    const GlyphEntry* icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel = true);
 
     /// A procedurally drawn cell (see Sprites.h), or nullptr if the atlas is full.
     /// The entry's top is the baseline, so it lands on the cell's top edge.
@@ -101,14 +105,18 @@ public:
     AtlasPage& colorPage() noexcept { return m_color; }
 
 private:
-    bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, GlyphEntry& out);
-    bool rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, GlyphEntry& out);
+    bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel,
+                   GlyphEntry& out);
+    bool rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel, GlyphEntry& out);
+    bool storeBitmap(const FT_Bitmap& bitmap, const FontSet& fonts, int left, int top, GlyphEntry& out);
     /// Copies an 8-bit coverage bitmap into the gray atlas.
     bool storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top, GlyphEntry& out);
 
     AtlasPage m_gray;
     AtlasPage m_color;
     std::unordered_map<std::uint64_t, GlyphEntry> m_entries;
+    /// Separately rasterised grayscale coverage for translucent or post-processed text.
+    std::unordered_map<std::uint64_t, GlyphEntry> m_grayFallbackEntries;
     std::uint64_t m_epoch = 1;
 };
 

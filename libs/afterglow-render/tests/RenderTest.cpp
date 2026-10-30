@@ -255,6 +255,258 @@ TEST(Fonts, HintingChoosesLoadFlags)
     EXPECT_NE(none, light);
 }
 
+class FontRendering : public Render
+{
+protected:
+    void SetUp() override
+    {
+        if (s_device) {
+            saved = s_device->fontSpec();
+        }
+        Render::SetUp();
+    }
+    void TearDown() override
+    {
+        renderer.reset();
+        if (s_device) {
+            s_device->setFontSpec(saved);
+        }
+    }
+    void mode(Antialiasing aa, float gamma = 1.0f, Hinting hinting = Hinting::Light)
+    {
+        FontSpec spec = saved;
+        spec.antialiasing = aa;
+        spec.gamma = gamma;
+        spec.hinting = hinting;
+        s_device->setFontSpec(spec);
+        const auto& metrics = renderer->fonts().fonts->metrics();
+        cw = metrics.cellWidth;
+        ch = metrics.cellHeight;
+        terminal->resize(Cols, Rows, cw, ch);
+    }
+    QImage sample(const std::string& text = " MWi Il -> fi", const std::string& colors = "255;255;255;48;2;0;0;0")
+    {
+        return render("\x1b[?25l\x1b[H\x1b#5\x1b[0;38;2;" + colors + "m\x1b[2J" + text);
+    }
+    static int coloredEdges(const QImage& image)
+    {
+        int n = 0;
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                const QRgb c = image.pixel(x, y);
+                n += qRed(c) != qGreen(c) || qGreen(c) != qBlue(c);
+            }
+        }
+        return n;
+    }
+    FontSpec saved;
+};
+
+TEST_F(FontRendering, ModesAndHintingProduceTheRequestedCoverage)
+{
+    for (const auto hint : {Hinting::None, Hinting::Light, Hinting::Full}) {
+        for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
+            mode(aa, 1.0f, hint);
+            const QImage img = sample();
+            ASSERT_FALSE(img.isNull());
+            int ink = 0, intermediate = 0;
+            for (int y = 0; y < img.height(); ++y) {
+                for (int x = 0; x < img.width(); ++x) {
+                    const QRgb c = img.pixel(x, y);
+                    EXPECT_EQ(qAlpha(c), 255);
+                    ink += qRed(c) > 0;
+                    intermediate += qRed(c) > 0 && qRed(c) < 255;
+                }
+            }
+            EXPECT_GT(ink, 0);
+            if (aa == Antialiasing::None) {
+                EXPECT_EQ(intermediate, 0);
+            } else {
+                EXPECT_GT(intermediate, 0);
+            }
+            if (aa == Antialiasing::Rgb || aa == Antialiasing::Bgr) {
+                EXPECT_GT(coloredEdges(img), 0);
+            } else {
+                EXPECT_EQ(coloredEdges(img), 0);
+            }
+        }
+    }
+}
+
+TEST_F(FontRendering, BgrReversesRedAndBlueCoverage)
+{
+    mode(Antialiasing::Rgb);
+    const QImage rgb = sample();
+    mode(Antialiasing::Bgr);
+    const QImage bgr = sample();
+    ASSERT_EQ(rgb.size(), bgr.size());
+    EXPECT_GT(coloredEdges(rgb), 0);
+    for (int y = 0; y < rgb.height(); ++y) {
+        for (int x = 0; x < rgb.width(); ++x) {
+            const QRgb a = rgb.pixel(x, y), b = bgr.pixel(x, y);
+            EXPECT_EQ(qRed(a), qBlue(b));
+            EXPECT_EQ(qGreen(a), qGreen(b));
+            EXPECT_EQ(qBlue(a), qRed(b));
+        }
+    }
+}
+
+TEST_F(FontRendering, SubpixelCompositesEachChannelOverColoredBackgrounds)
+{
+    for (const auto aa : {Antialiasing::Rgb, Antialiasing::Bgr}) {
+        for (const float gamma : {1.0f, 1.6f}) {
+            mode(aa, gamma);
+            const QImage coverage = sample();
+            const QImage colored = sample(" MWi Il -> fi", "220;90;40;48;2;30;120;200");
+            for (int y = 0; y < colored.height(); ++y) {
+                for (int x = 0; x < colored.width(); ++x) {
+                    const QRgb c = coverage.pixel(x, y), actual = colored.pixel(x, y);
+                    EXPECT_NEAR(qRed(actual), 30 + (220 - 30) * qRed(c) / 255.0, 2);
+                    EXPECT_NEAR(qGreen(actual), 120 + (90 - 120) * qGreen(c) / 255.0, 2);
+                    EXPECT_NEAR(qBlue(actual), 200 + (40 - 200) * qBlue(c) / 255.0, 2);
+                    EXPECT_EQ(qAlpha(actual), 255);
+                }
+            }
+        }
+    }
+}
+
+TEST_F(FontRendering, GammaChangesCoverageButLeavesMonochromeBinary)
+{
+    for (const auto aa : {Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::None}) {
+        mode(aa);
+        // Isolate one glyph: coverage gamma is applied before overlapping
+        // glyphs are composited, so it is not a power of the final pixel.
+        const QImage normal = sample(" M ");
+        mode(aa, 2.0f);
+        const QImage stronger = sample(" M ");
+        int changed = 0;
+        for (int y = 0; y < normal.height(); ++y) {
+            for (int x = 0; x < normal.width(); ++x) {
+                const QRgb a = normal.pixel(x, y), b = stronger.pixel(x, y);
+                changed += a != b;
+                EXPECT_NEAR(qRed(b), 255 * std::sqrt(qRed(a) / 255.0), 2);
+                EXPECT_NEAR(qGreen(b), 255 * std::sqrt(qGreen(a) / 255.0), 2);
+                EXPECT_NEAR(qBlue(b), 255 * std::sqrt(qBlue(a) / 255.0), 2);
+            }
+        }
+        if (aa == Antialiasing::None) {
+            EXPECT_EQ(changed, 0);
+        } else {
+            EXPECT_GT(changed, 0);
+        }
+    }
+}
+
+TEST_F(FontRendering, SubpixelFallbackTracksShadersAndTranslucencyWithoutSnapshotChanges)
+{
+    const QImage gray = sample();
+    mode(Antialiasing::Rgb);
+    const QImage lcd = sample();
+    EXPECT_GT(coloredEdges(lcd), 0);
+    WindowRenderer::Pane pane;
+    pane.snapshot = &snapshot;
+    pane.params.rect = QRect(QPoint(), lcd.size());
+    pane.params.focused = true;
+    auto redraw = [&] { return renderer->renderToImage(lcd.size(), {pane}, {}, packRgba(0, 0, 0)); };
+    for (int layer = 0; layer < 3; ++layer) {
+        ShaderChains chains;
+        if (layer == 0) chains.text = {ShaderProgram::passthrough()};
+        if (layer == 1) chains.pane = {ShaderProgram::passthrough()};
+        if (layer == 2) chains.window = {ShaderProgram::passthrough()};
+        renderer->setShaderChains(chains);
+        EXPECT_EQ(redraw(), gray);
+        renderer->setShaderChains({});
+        EXPECT_EQ(redraw(), lcd);
+    }
+    renderer->setTranslucent(true);
+    EXPECT_EQ(redraw(), gray);
+    renderer->setTranslucent(false);
+    EXPECT_EQ(redraw(), lcd);
+    pane.params.backgroundAlpha = 150;
+    // Explicit cell backgrounds are opaque, but the pane still requests the
+    // fallback. This also checks cached instances after an opacity change.
+    EXPECT_EQ(redraw(), gray);
+    pane.params.backgroundAlpha = 255;
+    EXPECT_EQ(redraw(), lcd);
+}
+
+TEST_F(FontRendering, IconsAndScaledTextWorkInEveryMode)
+{
+    for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
+        mode(aa);
+        const QImage icon = sample(" \uf015 ");
+        int ink = 0;
+        for (int y = 0; y < ch; ++y) {
+            for (int x = cw; x < cw * 3; ++x) {
+                ink += qRed(icon.pixel(x, y)) != 0;
+            }
+        }
+        EXPECT_GT(ink, 0);
+        const QImage scaled = sample("\x1b#6 WMi");
+        EXPECT_EQ(coloredEdges(scaled) > 0, aa == Antialiasing::Rgb || aa == Antialiasing::Bgr);
+        EXPECT_NE(scaled, sample(" WMi"));
+    }
+}
+
+TEST_F(FontRendering, SubpixelColorRunsRespectFaintTextAndWhiteBackgrounds)
+{
+    mode(Antialiasing::Rgb);
+    const QImage white = sample(" MMMM", "255;255;255;48;2;0;0;0");
+    const QImage black = sample(" MMMM", "0;0;0;48;2;255;255;255");
+    for (int y = 0; y < white.height(); ++y) {
+        for (int x = 0; x < white.width(); ++x) {
+            const QRgb a = white.pixel(x, y), b = black.pixel(x, y);
+            EXPECT_NEAR(qRed(a) + qRed(b), 255, 1);
+            EXPECT_NEAR(qGreen(a) + qGreen(b), 255, 1);
+            EXPECT_NEAR(qBlue(a) + qBlue(b), 255, 1);
+        }
+    }
+    const QImage mixed = sample(" \x1b[31mM\x1b[32mM\x1b[34mM\x1b[2mM");
+    const QImage plain = sample(" \x1b[34mMMMM");
+    int redInk = 0, greenInk = 0, blueInk = 0, faintInk = 0;
+    for (int y = 0; y < ch; ++y) {
+        for (int x = 0; x < cw; ++x) {
+            redInk += qRed(mixed.pixel(cw + x, y));
+            greenInk += qGreen(mixed.pixel(2 * cw + x, y));
+            blueInk += qBlue(mixed.pixel(3 * cw + x, y));
+            faintInk += qBlue(mixed.pixel(4 * cw + x, y));
+            EXPECT_EQ(mixed.pixel(3 * cw + x, y), plain.pixel(3 * cw + x, y));
+        }
+    }
+    EXPECT_GT(redInk, 0);
+    EXPECT_GT(greenInk, 0);
+    EXPECT_GT(blueInk, faintInk);
+    EXPECT_GT(faintInk, 0);
+}
+
+TEST_F(FontRendering, ColorEmojiBypassAntialiasingAndGamma)
+{
+    FontSet& fonts = *renderer->fonts().fonts;
+    if (!fonts.face(fonts.faceFor(U'🙂', StyleSlot::Regular, true)).color) {
+        GTEST_SKIP() << "no color emoji font";
+    }
+    const QImage original = sample(" 🙂 ");
+    for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
+        mode(aa, 2.0f);
+        EXPECT_EQ(sample(" 🙂 "), original);
+    }
+}
+
+TEST_F(FontRendering, SubpixelCoverageWorksAtFractionalAndHighDpi)
+{
+    for (const double dpr : {1.25, 2.0}) {
+        renderer->setDevicePixelRatio(dpr);
+        mode(Antialiasing::Rgb);
+        const QImage lcd = sample();
+        EXPECT_GT(coloredEdges(lcd), 0);
+        mode(Antialiasing::Grayscale);
+        const QImage gray = sample();
+        EXPECT_EQ(coloredEdges(gray), 0);
+        EXPECT_EQ(gray.size(), lcd.size());
+    }
+}
+
 TEST_F(Render, EmptyScreenIsBackground)
 {
     const QImage img = render("\x1b[?25l");

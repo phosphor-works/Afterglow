@@ -130,8 +130,8 @@ public:
     ///
     /// @p promptStart is the absolute row where the shell prompt under the
     /// cursor begins, when the shell redraws its prompt on resize. Rows from
-    /// there to the cursor are not reflowed: they are blanked and keep their
-    /// row count, so the shell's relative cursor movement (computed at the old
+    /// there to the cursor keep their cells (clipped to fit) and their row
+    /// count, so the shell's relative cursor movement (computed at the old
     /// width) lands back on the prompt start when it repaints.
     ///
     /// @p trackedRows, if given, holds absolute row indices of things anchored
@@ -186,6 +186,7 @@ private:
     /// Erases blocks in rows top..bottom that also reach outside the region.
     void eraseMulticellsCrossing(int top, int bottom, int left, int right);
     void trimHistory();
+    void truncateRow(Row& row, int cols);
     void resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked);
     void resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked);
 

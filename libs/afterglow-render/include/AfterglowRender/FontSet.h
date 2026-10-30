@@ -46,6 +46,9 @@ enum class Hinting : std::uint8_t {
     Full, ///< the font's or FreeType's full hinting: crispest, least faithful
 };
 
+/// Coverage of outline glyphs. RGB/BGR describe horizontal display stripes.
+enum class Antialiasing : std::uint8_t { Grayscale, None, Rgb, Bgr };
+
 struct FontSpec
 {
     float sizePoints = 11.0f;
@@ -63,6 +66,9 @@ struct FontSpec
     /// Ranges pinned to a family ahead of the style's own font (kitty's symbol_map).
     std::vector<SymbolMapEntry> symbolMap;
     Hinting hinting = Hinting::Light;
+    Antialiasing antialiasing = Antialiasing::Grayscale;
+    /// Coverage adjustment: pow(coverage, 1 / gamma). 1 preserves FreeType's coverage.
+    float gamma = 1.0f;
     /// Cell size against the font's own: 1.2 adds a fifth of a line between rows.
     float cellWidthScale = 1.0f;
     float cellHeightScale = 1.0f;
@@ -123,7 +129,11 @@ public:
 
     /// FreeType load flags and render mode for the configured hinting.
     std::int32_t loadFlags() const noexcept;
-    int renderMode() const noexcept;
+    int renderMode(bool allowSubpixel = true) const noexcept;
+    bool subpixel() const noexcept
+    {
+        return m_spec.antialiasing == Antialiasing::Rgb || m_spec.antialiasing == Antialiasing::Bgr;
+    }
 
 private:
     int loadFace(const std::string& path, int index, const FontStyleSpec* axes);

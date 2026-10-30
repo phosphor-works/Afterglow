@@ -68,6 +68,7 @@ enum class InstanceKind : std::uint32_t {
     Undercurl = 3,
     Dotted = 4,
     Dashed = 5,
+    SubpixelGlyph = 6,
 };
 
 /// Turns pane snapshots into instances: background runs, shaped text,
@@ -95,6 +96,8 @@ public:
         float scrollShift = 0;
         /// Opacity of the default background (window translucency).
         std::uint8_t backgroundAlpha = 255;
+        /// Disabled when text cannot be composited directly onto an opaque background.
+        bool allowSubpixel = true;
         /// A link under the pointer, underlined: cells of this snapshot link
         /// index, or a detected URL as a run of cells on one row.
         std::uint32_t hoveredLink = 0;
@@ -220,6 +223,7 @@ private:
         std::unique_ptr<QRhiGraphicsPipeline> grid;
         std::unique_ptr<QRhiGraphicsPipeline> fill; ///< grid without blending, for pane backgrounds
         std::unique_ptr<QRhiGraphicsPipeline> image;
+        std::unique_ptr<QRhiGraphicsPipeline> subpixel;
     };
     /// Where a frame goes: the swapchain or an offscreen texture.
     struct Target
@@ -238,7 +242,8 @@ private:
                   QRhiTexture* overlayTexture, std::uint64_t overlaySerial);
     void initResources(FontResources& res);
     void ensureBindings(FontResources& res);
-    std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass, bool blend);
+    enum class GridBlend { None, Premultiplied, Subpixel };
+    std::unique_ptr<QRhiGraphicsPipeline> makeGridPipeline(QRhiRenderPassDescriptor* pass, GridBlend blend);
     std::unique_ptr<QRhiGraphicsPipeline> makeImagePipeline(QRhiRenderPassDescriptor* pass,
                                                             QRhiShaderResourceBindings* layout);
 
@@ -332,6 +337,7 @@ private:
         std::optional<QPointF> cursorPosition;
         float scrollShift = 0;
         std::uint8_t backgroundAlpha = 0;
+        bool allowSubpixel = true;
         std::uint32_t hoveredLink = 0;
         int hoverRow = -1;
         int hoverColStart = 0;

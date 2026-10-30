@@ -301,3 +301,32 @@ TEST_F(ConfigTest, AudioDefaultsAndOverrides)
     EXPECT_EQ(custom.settings().audio.inputMethod, QStringLiteral("pulse"));
     EXPECT_EQ(custom.settings().audio.inputSource, QStringLiteral("speakers.monitor"));
 }
+
+TEST_F(ConfigTest, FontRenderingDefaultsNormalizationAndReload)
+{
+    const QString path = write(QStringLiteral("fonts.json"), "{}");
+    SettingsStore store(path);
+    EXPECT_EQ(store.settings().font.antialiasing, AfterglowRender::Antialiasing::Grayscale);
+    EXPECT_FLOAT_EQ(store.settings().font.gamma, 1.0f);
+    const std::pair<const char*, AfterglowRender::Antialiasing> modes[] = {
+        {"RGB", AfterglowRender::Antialiasing::Rgb}, {"bgr", AfterglowRender::Antialiasing::Bgr},
+        {"none", AfterglowRender::Antialiasing::None}, {"invalid", AfterglowRender::Antialiasing::Grayscale},
+    };
+    for (const auto& [name, aa] : modes) {
+        write(QStringLiteral("fonts.json"), QByteArray("{\"Font\":{\"antialiasing\":\"") + name + "\",\"gamma\":1.4}}");
+        store.reload();
+        EXPECT_EQ(store.settings().font.antialiasing, aa);
+        EXPECT_FLOAT_EQ(store.settings().font.gamma, 1.4f);
+    }
+    for (const auto& [value, expected] : {std::pair{-5, 0.5f}, std::pair{10, 3.0f}}) {
+        write(QStringLiteral("fonts.json"), QByteArray("{\"Font\":{\"gamma\":") + QByteArray::number(value) + "}}");
+        store.reload();
+        EXPECT_FLOAT_EQ(store.settings().font.gamma, expected);
+    }
+    QJsonObject overrides;
+    SettingsStore::addOverride(overrides, QStringLiteral("Font.antialiasing=bgr"));
+    SettingsStore::addOverride(overrides, QStringLiteral("Font.gamma=1.2"));
+    SettingsStore overridden(path, overrides);
+    EXPECT_EQ(overridden.settings().font.antialiasing, AfterglowRender::Antialiasing::Bgr);
+    EXPECT_FLOAT_EQ(overridden.settings().font.gamma, 1.2f);
+}

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import QtQuick
+import QtQuick.Controls as QQC
 
 // The window chrome, drawn over the terminal into a texture on afterglow's
 // GPU device. Transparent everywhere except the tab bar and open overlays.
@@ -10,13 +11,15 @@ Item {
 
     required property QtObject controller
 
+    SystemPalette { id: systemPalette }
+
     // Called by the host for every pointer event: true if the chrome takes it.
     function wantsPointer(x: real, y: real): bool {
         if (contextMenu.visible || titlePrompt.visible || confirmPrompt.visible)
             return true
         if (tabBar.visible && y < tabBar.height)
             return true
-        if (commandPalette.visible || pasteConfirm.visible)
+        if (commandPalette.visible || pasteConfirm.visible || root.controller.clipboardPromptOpen)
             return true
         if (searchBar.visible) {
             const p = searchBar.mapFromItem(root, x, y)
@@ -36,11 +39,11 @@ Item {
                             + (paneContext.visible ? paneContext.width + 6 : 0), modelData.width * 0.5)
             height: label.implicitHeight + 6
             radius: height / 2
-            color: Qt.rgba(root.controller.background.r, root.controller.background.g,
-                           root.controller.background.b, 0.85)
-            border.color: modelData.focused ? root.controller.accent
-                                            : Qt.rgba(root.controller.foreground.r, root.controller.foreground.g,
-                                                      root.controller.foreground.b, 0.15)
+            color: Qt.rgba(systemPalette.window.r, systemPalette.window.g,
+                           systemPalette.window.b, 0.85)
+            border.color: modelData.focused ? systemPalette.highlight
+                                            : Qt.rgba(systemPalette.windowText.r, systemPalette.windowText.g,
+                                                      systemPalette.windowText.b, 0.15)
             StatusIndicator {
                 id: paneStatus
                 controller: root.controller
@@ -53,7 +56,7 @@ Item {
                 id: paneContext
                 readonly property string kind: parent.modelData.contextKind || ""
                 readonly property color tint: kind === "elevated" ? root.controller.badColor
-                                            : kind === "remote" ? root.controller.warnColor : root.controller.accent
+                                            : kind === "remote" ? root.controller.warnColor : systemPalette.highlight
                 visible: (parent.modelData.context || "").length > 0
                 anchors.left: paneStatus.visible ? paneStatus.right : parent.left
                 anchors.leftMargin: paneStatus.visible ? 4 : 6
@@ -71,7 +74,7 @@ Item {
                     font.bold: true
                 }
             }
-            Text {
+            QQC.Label {
                 id: label
                 anchors.left: paneContext.visible ? paneContext.right : paneStatus.visible ? paneStatus.right : parent.left
                 anchors.leftMargin: paneContext.visible || paneStatus.visible ? 4 : 8
@@ -80,9 +83,8 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 text: parent.modelData.title.length > 0 ? parent.modelData.title : "shell"
                 elide: Text.ElideMiddle
-                color: root.controller.foreground
+                color: systemPalette.windowText
                 opacity: parent.modelData.focused ? 0.95 : 0.6
-                font.pixelSize: 11
             }
         }
     }
@@ -139,21 +141,21 @@ Item {
         width: unicodeRow.implicitWidth + 16
         height: unicodeRow.implicitHeight + 10
         radius: 6
-        color: Qt.lighter(root.controller.background, 1.2)
-        border.color: root.controller.accent
+        color: systemPalette.window
+        border.color: systemPalette.highlight
         Row {
             id: unicodeRow
             anchors.centerIn: parent
             spacing: 10
             Text {
                 text: "U+" + (root.controller.unicodeInput.text || "")
-                color: root.controller.foreground
+                color: systemPalette.windowText
                 font.family: "monospace"
                 font.pixelSize: 14
             }
             Text {
                 text: root.controller.unicodeInput.preview || "\u2026"
-                color: root.controller.foreground
+                color: systemPalette.windowText
                 font.pixelSize: 18
             }
         }

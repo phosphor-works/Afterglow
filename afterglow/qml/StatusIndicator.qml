@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import QtQuick
+import QtQuick.Controls as QQC
 
 // A program's status (OSC 7501) as a small mark: a spinner or progress arc
 // while working, a pulsing dot while blocked on the user, a check when done,
@@ -10,6 +11,8 @@ Item {
     id: root
 
     required property QtObject controller
+
+    SystemPalette { id: systemPalette }
     property var status: ({})
 
     readonly property string state_: status && status.state ? status.state : ""
@@ -25,7 +28,7 @@ Item {
         anchors.fill: parent
         visible: root.state_ === "working"
         property real fraction: root.progress >= 0 ? root.progress / 100 : 0.28
-        property color tint: root.controller.accent
+        property color tint: systemPalette.highlight
         onFractionChanged: requestPaint()
         onTintChanged: requestPaint()
         onVisibleChanged: requestPaint()
@@ -82,26 +85,10 @@ Item {
         id: hover
     }
 
-    Rectangle {
-        // What the program said, on hover.
-        visible: hover.hovered && label.text.length > 0
-        z: 100
-        x: 0
-        y: root.height + 6
-        width: Math.min(label.implicitWidth + 12, 420)
-        height: label.implicitHeight + 8
-        radius: 4
-        color: Qt.rgba(root.controller.background.r, root.controller.background.g, root.controller.background.b, 0.95)
-        border.color: Qt.rgba(root.controller.foreground.r, root.controller.foreground.g, root.controller.foreground.b, 0.2)
-        Text {
-            id: label
-            anchors.centerIn: parent
-            width: parent.width - 12
-            text: root.status && root.status.text ? root.status.text : ""
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            color: root.controller.foreground
-            font.pixelSize: 11
-        }
+    QQC.ToolTip {
+        parent: root
+        visible: hover.hovered && text.length > 0
+        text: root.status && root.status.text
+            ? "<span>" + root.status.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>" : ""
     }
 }

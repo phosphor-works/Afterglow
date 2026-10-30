@@ -8,7 +8,7 @@ every window draws through one GPU device.
 
 ## Requirements
 
-- Qt 6.8 or later (Core, Gui, Qml, Quick, DBus, ShaderTools, and the GuiPrivate,
+- Qt 6.8 or later (Core, Gui, Widgets, Qml, Quick, QuickControls2, DBus, ShaderTools, and the GuiPrivate,
   WaylandClientPrivate and QuickPrivate headers)
 - A Vulkan driver
 - FreeType, HarfBuzz, fontconfig, xkbcommon, wayland-client, zlib
@@ -57,6 +57,40 @@ Those three change the whole process, so such a launch runs on its own
 instead of opening its window in the afterglow already running. `--title`
 fixes the window title and `--hold` keeps the window open after an `-e`
 program exits.
+
+Ordinary launches reuse the running process only if it uses the same
+executable file. A development build or a freshly replaced binary starts
+separately, so an older running copy cannot silently handle its new windows.
+
+### Font rendering
+
+Tabs, menus, prompts, and search use the desktop's Qt control style, palette,
+and UI font. On Plasma this uses the installed `qqc2-desktop-style` and
+platform theme integration; `QT_QUICK_CONTROLS_STYLE` can select another
+installed style. Terminal colors and fonts remain configurable separately.
+
+The live-reloaded `Font` group accepts:
+
+| Setting | Values | Default |
+|---|---|---|
+| `antialiasing` | `grayscale`, `none` (monochrome), `rgb`, `bgr` | `grayscale` |
+| `hinting` | `none`, `light` (vertical snapping), `full` | `light` |
+| `gamma` | 0.5–3.0; higher values strengthen antialiased edges | 1.0 |
+
+For example, `afterglow -o Font.antialiasing=rgb -o Font.gamma=1.2`.
+RGB/BGR describe horizontal display subpixel order; choose the order matching
+your panel. These modes blend filtered FreeType coverage independently for
+each color channel. Windows with active shader chains or translucency, and
+panes with a translucent background, automatically use separately rasterized
+grayscale text. Returning to an opaque, shader-free window restores subpixel
+text. Compositor scaling or rotating the output can make grayscale preferable.
+
+Gamma adjusts glyph coverage (`coverage^(1/gamma)`), not the display's gamma
+or the scene's color space. At 1.0 the existing grayscale appearance is
+preserved. Monochrome font edges remain binary; color emoji retain their
+original pixels. Procedural box drawing and powerline shapes keep their own
+antialiasing, with coverage gamma also applied to their masks. Font rendering
+settings apply to terminal cells; Qt Quick draws the window chrome separately.
 
 ### System audio
 

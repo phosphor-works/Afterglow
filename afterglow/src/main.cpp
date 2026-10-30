@@ -8,7 +8,9 @@
 #include <PhosphorWayland/LayerShellPluginLoader.h>
 
 #include <QCommandLineParser>
+#include <QApplication>
 #include <QDBusConnection>
+#include <QDBusConnectionInterface>
 #include <QDBusInterface>
 #include <QDBusReply>
 #include <QDir>
@@ -20,23 +22,50 @@
 #include <QQuickWindow>
 
 #include <exception>
+#include <sys/stat.h>
 
 namespace {
 
-/// Hands the request to an afterglow already running in this session, so
-/// every window lives in one process on one GPU device. Returns true if
-/// another instance took it.
-bool forwardToRunningInstance(const QString& cwd, const QStringList& command, const QVariantMap& options, bool quick)
+enum class ForwardResult { Forwarded, DifferentExecutable, Unavailable };
+
+/// Share the GPU device with an instance of this executable. A development
+/// build or an executable replaced by an upgrade must run its own code.
+ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& command, const QVariantMap& options, bool quick)
 {
-    QDBusInterface remote(QLatin1String(Afterglow::Application::ServiceName),
+    const QDBusConnection bus = QDBusConnection::sessionBus();
+    QDBusConnectionInterface* interface = bus.interface();
+    if (!interface) {
+        return ForwardResult::Unavailable;
+    }
+    // Pin the unique owner so a service restart cannot change the process
+    // between checking its executable and sending the window request.
+    const QDBusReply<QString> owner = interface->serviceOwner(QLatin1String(Afterglow::Application::ServiceName));
+    if (!owner.isValid()) {
+        return ForwardResult::Unavailable;
+    }
+    const QDBusReply<uint> pid = interface->servicePid(owner.value());
+    if (!pid.isValid()) {
+        return ForwardResult::Unavailable;
+    }
+    const QByteArray executable = QStringLiteral("/proc/%1/exe").arg(pid.value()).toLocal8Bit();
+    struct stat self{}, running{};
+    if (::stat("/proc/self/exe", &self) != 0 || ::stat(executable.constData(), &running) != 0) {
+        return ForwardResult::Unavailable;
+    }
+    // Compare the files themselves: a rebuild can replace the binary while
+    // an old process still runs at the same pathname.
+    if (self.st_dev != running.st_dev || self.st_ino != running.st_ino) {
+        return ForwardResult::DifferentExecutable;
+    }
+    QDBusInterface remote(owner.value(),
                           QLatin1String(Afterglow::Application::ObjectPath),
-                          QLatin1String(Afterglow::Application::ServiceName));
+                          QLatin1String(Afterglow::Application::ServiceName), bus);
     if (!remote.isValid()) {
-        return false;
+        return ForwardResult::Unavailable;
     }
     const QDBusMessage reply = quick ? remote.call(QStringLiteral("ToggleQuickTerminal"))
                                      : remote.call(QStringLiteral("NewWindow"), cwd, command, options);
-    return reply.type() != QDBusMessage::ErrorMessage;
+    return reply.type() != QDBusMessage::ErrorMessage ? ForwardResult::Forwarded : ForwardResult::Unavailable;
 }
 
 } // namespace
@@ -63,7 +92,9 @@ int main(int argc, char** argv)
 #endif
     PhosphorWayland::registerLayerShellPlugin();
 
-    QGuiApplication app(argc, argv);
+    // Desktop Qt Quick styles can delegate their painting to the widget style.
+    // QApplication initializes that style and follows the platform's palette.
+    QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("afterglow"));
     QGuiApplication::setApplicationVersion(QStringLiteral(AFTERGLOW_VERSION));
     QGuiApplication::setDesktopFileName(QStringLiteral("io.github.fuddlesworth.Afterglow"));
@@ -127,12 +158,18 @@ int main(int argc, char** argv)
     // changes them runs on its own instead of handing over.
     const bool separate = !configPath.isEmpty() || !overrides.isEmpty() || parser.isSet(classOption);
 
-    // One process per session: if afterglow already runs, it opens the window.
+    // Reuse the session process only when it runs this executable.
     if (!separate && !QDBusConnection::sessionBus().registerService(QLatin1String(Afterglow::Application::ServiceName))) {
-        if (forwardToRunningInstance(cwd, command, windowOptions, quick)) {
+        switch (forwardToRunningInstance(cwd, command, windowOptions, quick)) {
+        case ForwardResult::Forwarded:
             return 0;
+        case ForwardResult::DifferentExecutable:
+            qInfo("afterglow: the running instance uses a different executable; starting this build separately");
+            break;
+        case ForwardResult::Unavailable:
+            qWarning("afterglow: could not verify or contact the running instance; starting separately");
+            break;
         }
-        qWarning("afterglow: another instance owns the session name but did not answer; starting anyway");
     }
 
     try {

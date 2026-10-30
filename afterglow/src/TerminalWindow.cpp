@@ -1583,10 +1583,7 @@ void TerminalWindow::updateChrome()
 
     if (m_focused) {
         const auto& snap = m_focused->snapshot();
-        auto color = [](std::uint32_t c) { return QColor(int(c & 0xFF), int((c >> 8) & 0xFF), int((c >> 16) & 0xFF)); };
         if (snap.cols > 0) {
-            const AfterglowVt::Rgb accent = m_settings.settings().terminal.basePalette[12];
-            m_controller->setTheme(color(snap.defaultBg), color(snap.defaultFg), QColor(accent.r, accent.g, accent.b));
             // Status colours from the palette's bright green, yellow and red.
             const auto& pal = m_settings.settings().terminal.basePalette;
             m_controller->setStatusColors(QColor(pal[10].r, pal[10].g, pal[10].b), QColor(pal[11].r, pal[11].g, pal[11].b),

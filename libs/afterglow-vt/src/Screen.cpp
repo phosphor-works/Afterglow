@@ -657,6 +657,21 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
     savedCursor.y = std::clamp(savedCursor.y, 0, m_rowCount - 1);
 }
 
+void Screen::truncateRow(Row& row, int cols)
+{
+    if (row.cells.size() <= std::size_t(cols)) {
+        return;
+    }
+    for (std::size_t x = std::size_t(cols); x < row.cells.size(); ++x) {
+        clearCell(row, int(x), StyleTable::DefaultId);
+    }
+    row.cells.resize(std::size_t(cols));
+    if (row.cells.back().width() == 2) {
+        // The wide glyph's tail was clipped; discard its head and grapheme too.
+        clearCell(row, cols - 1, StyleTable::DefaultId);
+    }
+}
+
 void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked)
 {
     const std::uint64_t droppedBefore = m_rowsDropped;
@@ -681,23 +696,7 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         const std::size_t history = historySize();
         for (std::size_t i = 0; i < m_rows.size(); ++i) {
             Row& r = m_rows[i];
-            if (r.cells.size() > std::size_t(cols)) {
-                for (std::size_t x = std::size_t(cols); x < r.cells.size(); ++x) {
-                    m_styles.release(r.cells[x].styleId());
-                    if (r.graphemes) {
-                        r.graphemes->erase(std::uint16_t(x));
-                    }
-                }
-                r.cells.resize(std::size_t(cols));
-                Cell& last = r.cells.back();
-                if (last.width() == 2) {
-                    if (r.graphemes) {
-                        r.graphemes->erase(std::uint16_t(cols - 1));
-                    }
-                    m_styles.release(last.styleId());
-                    last = Cell{};
-                }
-            }
+            truncateRow(r, cols);
             if (i >= history) {
                 r.cells.resize(std::size_t(cols)); // the active area is always full width
             }
@@ -752,8 +751,9 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     };
 
     const std::size_t cursorAbs = historySize() + std::size_t(cursor.y);
-    // With a redrawable prompt, only the rows above it reflow; the prompt rows
-    // themselves are replaced by blank rows below.
+    // Reflow output above a redrawable prompt, preserving the prompt's row
+    // count and cells. Shells may repaint only differences after SIGWINCH;
+    // blanking their cached content makes an unchanged prompt disappear.
     const bool keepPrompt = promptStart && *promptStart <= cursorAbs;
     const std::size_t reflowEnd = keepPrompt ? *promptStart : m_rows.size();
     const std::size_t promptRows = keepPrompt ? cursorAbs - *promptStart + 1 : 0;
@@ -791,7 +791,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     // 1. Unwrap rows into logical lines.
     std::vector<Line> lines;
     Line current;
-    for (std::size_t i = reflowEnd; i < m_rows.size(); ++i) {
+    for (std::size_t i = reflowEnd + promptRows; i < m_rows.size(); ++i) {
         releaseRow(m_rows[i]);
     }
     for (std::size_t i = 0; i < reflowEnd; ++i) {
@@ -922,9 +922,15 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     const std::size_t linesEnd = out.size();
     const std::size_t promptRegionStart = out.size();
     if (keepPrompt) {
-        // The blanked prompt region, same height as before, cursor on its last row.
+        // Preserve row positions so the shell's cursor-up repaint still lands
+        // at the prompt start. Move ownership of styles and graphemes with the
+        // cells; only content clipped by a narrower width is discarded.
         for (std::size_t k = 0; k < promptRows; ++k) {
-            out.emplace_back(cols).promptStart = k == 0;
+            out.push_back(std::move(m_rows[reflowEnd + k]));
+            Row& row = out.back();
+            truncateRow(row, cols);
+            row.cells.resize(std::size_t(cols));
+            row.promptStart = k == 0;
         }
         cursorRow = out.size() - 1;
         cursorCol = std::min(cursor.x, cols - 1);

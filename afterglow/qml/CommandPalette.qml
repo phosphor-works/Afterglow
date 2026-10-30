@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
 
 Item {
     id: commandPalette
@@ -30,43 +32,33 @@ Item {
             controller.runAction(matches[index].id)
     }
 
-    // Dim the terminal; clicking outside the panel closes the palette.
     Rectangle {
         anchors.fill: parent
-        color: "#000000"
-        opacity: 0.35
+        color: "#59000000"
         MouseArea {
             anchors.fill: parent
             onClicked: commandPalette.controller.paletteOpen = false
         }
     }
 
-    Rectangle {
+    Pane {
         id: panel
         anchors.horizontalCenter: parent.horizontalCenter
         y: parent.height * 0.15
         width: Math.min(620, parent.width * 0.85)
-        height: Math.min(header.height + list.contentHeight + 12, parent.height * 0.7)
-        radius: 8
-        color: Qt.lighter(commandPalette.controller.background, 1.15)
-        border.color: Qt.rgba(commandPalette.controller.foreground.r, commandPalette.controller.foreground.g,
-                              commandPalette.controller.foreground.b, 0.15)
-        clip: true
+        height: Math.min(input.implicitHeight + list.contentHeight + 8 + topPadding + bottomPadding, parent.height * 0.7)
+        padding: 8
 
-        Item {
-            id: header
-            width: parent.width
-            height: 44
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 8
 
-            TextInput {
+            TextField {
                 id: input
-                anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
-                verticalAlignment: TextInput.AlignVCenter
-                color: commandPalette.controller.foreground
-                selectionColor: commandPalette.controller.accent
-                font.pixelSize: 15
+                Layout.fillWidth: true
+                placeholderText: qsTr("Type a command")
+                Accessible.name: placeholderText
+                selectByMouse: true
                 onTextChanged: {
                     commandPalette.filter = text
                     list.currentIndex = 0
@@ -76,72 +68,43 @@ Item {
                 Keys.onDownPressed: list.currentIndex = Math.min(list.count - 1, list.currentIndex + 1)
                 Keys.onReturnPressed: commandPalette.run(list.currentIndex)
                 Keys.onEnterPressed: commandPalette.run(list.currentIndex)
-
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: input.text.length === 0
-                    text: "Type a command"
-                    color: commandPalette.controller.foreground
-                    opacity: 0.4
-                    font: input.font
-                }
             }
 
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: Qt.rgba(commandPalette.controller.foreground.r, commandPalette.controller.foreground.g,
-                               commandPalette.controller.foreground.b, 0.1)
-            }
-        }
+            ListView {
+                id: list
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: commandPalette.matches
+                highlightMoveDuration: 0
+                ScrollBar.vertical: ScrollBar {}
 
-        ListView {
-            id: list
-            anchors.top: header.bottom
-            anchors.topMargin: 6
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.margins: 6
-            clip: true
-            model: commandPalette.matches
-            highlightMoveDuration: 0
+                delegate: ItemDelegate {
+                    id: row
+                    required property int index
+                    required property var modelData
 
-            delegate: Rectangle {
-                id: row
+                    width: list.width
+                    text: modelData.title
+                    highlighted: ListView.isCurrentItem
+                    focusPolicy: Qt.NoFocus
+                    rightPadding: shortcut.implicitWidth + 24
+                    rightInset: leftInset
+                    onHoveredChanged: {
+                        if (hovered)
+                            list.currentIndex = index
+                    }
+                    onClicked: commandPalette.run(index)
+                    Accessible.description: modelData.shortcut
 
-                required property int index
-                required property var modelData
-
-                width: list.width
-                height: 32
-                radius: 5
-                color: ListView.isCurrentItem ? Qt.rgba(commandPalette.controller.accent.r, commandPalette.controller.accent.g,
-                                                        commandPalette.controller.accent.b, 0.25) : "transparent"
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: row.modelData.title
-                    color: commandPalette.controller.foreground
-                    font.pixelSize: 14
-                }
-                Text {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: row.modelData.shortcut
-                    color: commandPalette.controller.foreground
-                    opacity: 0.5
-                    font.pixelSize: 12
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onEntered: list.currentIndex = row.index
-                    onClicked: commandPalette.run(row.index)
+                    Label {
+                        id: shortcut
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: row.modelData.shortcut
+                        color: row.highlighted ? row.palette.highlightedText : row.palette.text
+                    }
                 }
             }
         }

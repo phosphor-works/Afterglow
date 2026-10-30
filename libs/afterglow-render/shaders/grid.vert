@@ -20,7 +20,7 @@ layout(std140, binding = 0) uniform Frame {
     vec2 grayAtlasSize;
     vec2 colorAtlasSize;
     float time;
-    float pad;
+    float textGamma;
 };
 
 void main()

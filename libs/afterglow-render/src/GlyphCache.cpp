@@ -8,7 +8,6 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
-#include FT_BITMAP_H
 
 #include <QPainter>
 
@@ -109,45 +108,48 @@ void GlyphCache::reset()
 {
     ++m_epoch;
     m_entries.clear();
+    m_grayFallbackEntries.clear();
     m_gray.reset();
     m_color.reset();
 }
 
-const GlyphEntry* GlyphCache::glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16)
+const GlyphEntry* GlyphCache::glyph(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel)
 {
     scale16 = std::clamp(scale16, 1, 255);
+    auto& entries = !allowSubpixel && fonts.subpixel() ? m_grayFallbackEntries : m_entries;
     const std::uint64_t key = (std::uint64_t(scale16 == 16 ? 0 : scale16) << 56) | (std::uint64_t(face & 0xFFFF) << 40)
         | (std::uint64_t(cellSpan & 0xFF) << 32) | glyphId;
-    if (auto it = m_entries.find(key); it != m_entries.end()) {
+    if (auto it = entries.find(key); it != entries.end()) {
         return &it->second;
     }
     GlyphEntry entry;
-    if (!rasterize(fonts, face, glyphId, cellSpan, scale16, entry)) {
+    if (!rasterize(fonts, face, glyphId, cellSpan, scale16, allowSubpixel, entry)) {
         return nullptr;
     }
-    return &m_entries.emplace(key, entry).first->second;
+    return &entries.emplace(key, entry).first->second;
 }
 
-const GlyphEntry* GlyphCache::icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan)
+const GlyphEntry* GlyphCache::icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel)
 {
     // The span's top bit (no text cluster is 128 cells wide) keeps icons
     // apart from text glyphs.
+    auto& entries = !allowSubpixel && fonts.subpixel() ? m_grayFallbackEntries : m_entries;
     const std::uint64_t key = (std::uint64_t(face & 0xFFFF) << 40) | (std::uint64_t((cellSpan & 0x7F) | 0x80) << 32) | glyphId;
-    if (auto it = m_entries.find(key); it != m_entries.end()) {
+    if (auto it = entries.find(key); it != entries.end()) {
         return &it->second;
     }
     GlyphEntry entry;
-    if (!rasterizeIcon(fonts, face, glyphId, cellSpan, entry)) {
+    if (!rasterizeIcon(fonts, face, glyphId, cellSpan, allowSubpixel, entry)) {
         return nullptr;
     }
-    return &m_entries.emplace(key, entry).first->second;
+    return &entries.emplace(key, entry).first->second;
 }
 
-bool GlyphCache::rasterizeIcon(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, GlyphEntry& out)
+bool GlyphCache::rasterizeIcon(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, bool allowSubpixel, GlyphEntry& out)
 {
     const Face& face = fonts.face(faceIdx);
     if (!face.scalable || face.color) {
-        return rasterize(fonts, faceIdx, glyphId, cellSpan, 16, out);
+        return rasterize(fonts, faceIdx, glyphId, cellSpan, 16, allowSubpixel, out);
     }
     FT_Face ft = face.ft;
     const FontMetrics& m = fonts.metrics();
@@ -172,14 +174,14 @@ bool GlyphCache::rasterizeIcon(FontSet& fonts, int faceIdx, std::uint32_t glyphI
     FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(base * scale * 64.0f)), 72, 72);
     bool ok = true;
     if (FT_Load_Glyph(ft, glyphId, fonts.loadFlags()) == 0
-        && FT_Render_Glyph(ft->glyph, FT_Render_Mode(fonts.renderMode())) == 0) {
+        && FT_Render_Glyph(ft->glyph, FT_Render_Mode(fonts.renderMode(allowSubpixel))) == 0) {
         const FT_Bitmap& bm = ft->glyph->bitmap;
-        if (bm.width > 0 && bm.rows > 0 && bm.pixel_mode == FT_PIXEL_MODE_GRAY) {
-            const int w = int(bm.width);
+        if (bm.width > 0 && bm.rows > 0) {
+            const int w = int(bm.width) / (bm.pixel_mode == FT_PIXEL_MODE_LCD ? 3 : 1);
             const int h = int(bm.rows);
             const int left = int(std::lround((boxW - float(w)) / 2.0f));
             const int top = m.baseline - int(std::lround((boxH - float(h)) / 2.0f));
-            ok = storeGray(bm.buffer, w, h, bm.pitch, left, top, out);
+            ok = storeBitmap(bm, fonts, left, top, out);
         }
     }
     FT_Set_Char_Size(ft, 0, FT_F26Dot6(std::lround(base * 64.0f)), 72, 72);
@@ -233,7 +235,7 @@ const GlyphEntry* GlyphCache::sprite(FontSet& fonts, char32_t cp, int sx, int sy
     return &m_entries.emplace(key, entry).first->second;
 }
 
-bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, int scale16, GlyphEntry& out)
+bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel, GlyphEntry& out)
 {
     const Face& face = fonts.face(faceIdx);
     FT_Face ft = face.ft;
@@ -263,7 +265,10 @@ bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, i
         return true; // missing glyph: draw nothing
     }
     FT_GlyphSlot slot = ft->glyph;
-    if (slot->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(slot, FT_Render_Mode(fonts.renderMode())) != 0) {
+    // Color outline renderers need normal mode; LCD/MONO are coverage modes
+    // for uncolored outlines. Embedded color strikes already bypass rendering.
+    const auto mode = face.color ? FT_RENDER_MODE_NORMAL : FT_Render_Mode(fonts.renderMode(allowSubpixel));
+    if (slot->format != FT_GLYPH_FORMAT_BITMAP && FT_Render_Glyph(slot, mode) != 0) {
         return true;
     }
     const FT_Bitmap& bm = slot->bitmap;
@@ -302,41 +307,57 @@ bool GlyphCache::rasterize(FontSet& fonts, int faceIdx, std::uint32_t glyphId, i
         return true;
     }
 
-    // Grayscale (convert mono or other depths first).
-    FT_Bitmap converted;
-    FT_Bitmap_Init(&converted);
-    const FT_Bitmap* gray = &bm;
-    if (bm.pixel_mode != FT_PIXEL_MODE_GRAY) {
-        FT_Library lib = ft->glyph->library;
-        if (FT_Bitmap_Convert(lib, &bm, &converted, 1) != 0) {
-            return true;
+    return storeBitmap(bm, fonts, slot->bitmap_left, slot->bitmap_top, out);
+}
+
+bool GlyphCache::storeBitmap(const FT_Bitmap& bm, const FontSet& fonts, int left, int top, GlyphEntry& out)
+{
+    const int w = int(bm.width) / (bm.pixel_mode == FT_PIXEL_MODE_LCD ? 3 : 1);
+    const int h = int(bm.rows);
+    if (w == 0 || h == 0) {
+        return true;
+    }
+    if (bm.pixel_mode == FT_PIXEL_MODE_LCD) {
+        int x = 0, y = 0;
+        if (!m_color.allocate(w, h, x, y)) {
+            return false;
         }
-        if (converted.num_grays == 2) {
-            for (unsigned i = 0; i < converted.rows * unsigned(std::abs(converted.pitch)); ++i) {
-                converted.buffer[i] = converted.buffer[i] ? 255 : 0;
+        const bool bgr = fonts.spec().antialiasing == Antialiasing::Bgr;
+        for (int row = 0; row < h; ++row) {
+            const auto* src = bm.buffer + std::ptrdiff_t(row) * bm.pitch;
+            auto* dst = reinterpret_cast<QRgb*>(m_color.image().scanLine(y + row)) + x;
+            for (int col = 0; col < w; ++col) {
+                dst[col] = qRgb(src[col * 3 + (bgr ? 2 : 0)], src[col * 3 + 1], src[col * 3 + (bgr ? 0 : 2)]);
             }
         }
-        gray = &converted;
+        m_color.markDirty(QRect(x, y, w, h));
+        out = GlyphEntry{false, false, std::int16_t(left), std::int16_t(top), std::uint16_t(w), std::uint16_t(h),
+                         std::uint16_t(x), std::uint16_t(y), true};
+        return true;
     }
-
-    const int w = int(gray->width);
-    const int h = int(gray->rows);
-    int x = 0;
-    int y = 0;
-    const bool ok = m_gray.allocate(w, h, x, y);
-    if (ok) {
-        QImage& img = m_gray.image();
-        for (int row = 0; row < h; ++row) {
-            std::memcpy(img.scanLine(y + row) + x, gray->buffer + std::ptrdiff_t(row) * gray->pitch, std::size_t(w));
+    if (bm.pixel_mode == FT_PIXEL_MODE_GRAY && bm.num_grays == 256
+        && fonts.spec().antialiasing != Antialiasing::None) {
+        return storeGray(bm.buffer, w, h, bm.pitch, left, top, out);
+    }
+    // Unpack embedded monochrome/low-depth strikes as well as outline MONO
+    // output. AA-off thresholds gray strikes too; color emoji stay untouched.
+    QImage mask(w, h, QImage::Format_Grayscale8);
+    for (int row = 0; row < h; ++row) {
+        const auto* src = bm.buffer + std::ptrdiff_t(row) * bm.pitch;
+        auto* dst = mask.scanLine(row);
+        for (int col = 0; col < w; ++col) {
+            int coverage = 0;
+            switch (bm.pixel_mode) {
+            case FT_PIXEL_MODE_MONO: coverage = (src[col / 8] & (0x80 >> (col % 8))) ? 255 : 0; break;
+            case FT_PIXEL_MODE_GRAY2: coverage = ((src[col / 4] >> (6 - 2 * (col % 4))) & 3) * 85; break;
+            case FT_PIXEL_MODE_GRAY4: coverage = ((src[col / 2] >> (4 - 4 * (col % 2))) & 15) * 17; break;
+            case FT_PIXEL_MODE_GRAY: coverage = int(src[col]) * 255 / std::max(1, int(bm.num_grays) - 1); break;
+            default: return true;
+            }
+            dst[col] = fonts.spec().antialiasing == Antialiasing::None ? (coverage >= 128 ? 255 : 0) : coverage;
         }
-        m_gray.markDirty(QRect(x, y, w, h));
-        out = GlyphEntry{false, false, std::int16_t(slot->bitmap_left), std::int16_t(slot->bitmap_top),
-                         std::uint16_t(w), std::uint16_t(h), std::uint16_t(x), std::uint16_t(y)};
     }
-    if (gray == &converted) {
-        FT_Bitmap_Done(ft->glyph->library, &converted);
-    }
-    return ok;
+    return storeGray(mask.constBits(), w, h, mask.bytesPerLine(), left, top, out);
 }
 
 } // namespace AfterglowRender

@@ -5,6 +5,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_LCD_FILTER_H
 #include FT_MULTIPLE_MASTERS_H
 #include FT_TRUETYPE_TABLES_H
 
@@ -118,6 +119,9 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
     if (FT_Init_FreeType(&m_ft) != 0) {
         throw std::runtime_error("FreeType initialisation failed");
     }
+    // ClearType builds need filtering; Harmony builds use their own geometry
+    // and return an unimplemented-feature error for this optional setting.
+    FT_Library_SetLcdFilter(m_ft, FT_LCD_FILTER_DEFAULT);
     FcInit();
 
     const FontStyleSpec* styleSpecs[4] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
@@ -276,15 +280,21 @@ std::int32_t FontSet::loadFlags() const noexcept
     case Hinting::None:
         return FT_LOAD_NO_HINTING;
     case Hinting::Full:
-        return FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL;
+        return FT_LOAD_DEFAULT | (m_spec.antialiasing == Antialiasing::None ? FT_LOAD_TARGET_MONO : FT_LOAD_TARGET_NORMAL);
     case Hinting::Light:
         break;
     }
     return FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT;
 }
 
-int FontSet::renderMode() const noexcept
+int FontSet::renderMode(bool allowSubpixel) const noexcept
 {
+    if (m_spec.antialiasing == Antialiasing::None) {
+        return FT_RENDER_MODE_MONO;
+    }
+    if (allowSubpixel && subpixel()) {
+        return FT_RENDER_MODE_LCD;
+    }
     return m_spec.hinting == Hinting::Light ? FT_RENDER_MODE_LIGHT : FT_RENDER_MODE_NORMAL;
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import QtQuick
+import QtQuick.Controls as QQC
 
 // The right-click menu, with submenus. Each open panel is a level: the menu
 // itself, then a submenu beside the row that opened it, and so on. Panels
@@ -15,8 +16,6 @@ Item {
 
     required property QtObject controller
 
-    readonly property color ink: controller.foreground
-    readonly property string inkName: ink.toString()
     // Open panels, outermost first: { items, left, right, top, root }.
     property var levels: []
     // The highlighted row of each level, -1 for none.
@@ -116,9 +115,11 @@ Item {
         }
     }
 
+    QQC.Label { id: menuFont; visible: false }
+
     FontMetrics {
         id: metrics
-        font.pixelSize: 13
+        font: menuFont.font
     }
 
     // Anything outside the panels closes the menu, whatever the button.
@@ -132,7 +133,7 @@ Item {
         id: panels
         model: menu.levels.length
 
-        delegate: Rectangle {
+        delegate: QQC.Pane {
             id: panel
 
             required property int index
@@ -159,21 +160,7 @@ Item {
             x: spec.right + width + 4 <= menu.width ? spec.right : Math.max(4, spec.left - width)
             y: spec.root ? (spec.top + height + 4 <= menu.height ? spec.top : Math.max(4, spec.top - height))
                          : Math.max(4, Math.min(spec.top, menu.height - height - 4))
-            radius: 8
-            color: Qt.lighter(menu.controller.background, 1.15)
-            border.color: Qt.rgba(menu.ink.r, menu.ink.g, menu.ink.b, 0.15)
-
-            // A soft shadow, drawn behind.
-            Rectangle {
-                z: -1
-                anchors.fill: parent
-                anchors.margins: -3
-                anchors.topMargin: -1
-                anchors.bottomMargin: -6
-                radius: parent.radius + 3
-                color: "#000000"
-                opacity: 0.25
-            }
+            padding: 5
 
             // Presses between rows must not close the menu.
             MouseArea {
@@ -183,9 +170,7 @@ Item {
 
             Column {
                 id: column
-                x: 5
-                y: 5
-                width: parent.width - 10
+                width: parent.width
 
                 Repeater {
                     id: rows
@@ -202,66 +187,34 @@ Item {
                         readonly property bool current: menu.currents[panel.level] === index
 
                         width: column.width
-                        height: separator ? 9 : 28
+                        height: separator ? divider.implicitHeight : menuItem.implicitHeight
 
-                        Rectangle {
+                        QQC.MenuSeparator {
+                            id: divider
                             visible: entry.separator
-                            anchors.verticalCenter: parent.verticalCenter
-                            x: 6
-                            width: parent.width - 12
-                            height: 1
-                            color: Qt.rgba(menu.ink.r, menu.ink.g, menu.ink.b, 0.1)
+                            width: parent.width
                         }
 
-                        Rectangle {
+                        QQC.MenuItem {
+                            id: menuItem
                             visible: !entry.separator
-                            anchors.fill: parent
-                            radius: 5
-                            color: entry.current && entry.usable
-                                   ? Qt.rgba(menu.controller.accent.r, menu.controller.accent.g, menu.controller.accent.b, 0.25)
-                                   : "transparent"
-                            opacity: entry.usable ? 1.0 : 0.38
+                            width: parent.width
+                            enabled: entry.usable
+                            highlighted: entry.current && entry.usable
+                            focusPolicy: Qt.NoFocus
+                            text: entry.modelData.title || ""
+                            icon.name: entry.modelData.icon || ""
+                            checkable: entry.modelData.checked !== undefined
+                            checked: entry.modelData.checked === true
+                            rightPadding: shortcut.implicitWidth + 24
+                            Accessible.description: entry.modelData.shortcut || ""
 
-                            // The icon column: a check for toggles that are on, else the icon.
-                            Text {
-                                visible: entry.modelData.checked === true
-                                x: 9
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "✓"
-                                color: menu.controller.accent
-                                font.pixelSize: 14
-                                font.bold: true
-                            }
-                            Image {
-                                visible: entry.modelData.checked !== true && status === Image.Ready
-                                x: 9
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 16
-                                height: 16
-                                sourceSize: Qt.size(32, 32)
-                                source: entry.modelData.icon ? "image://icon/" + entry.modelData.icon + "/" + menu.inkName : ""
-                                smooth: true
-                                opacity: 0.85
-                            }
-                            Text {
-                                x: 34
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - x - (entry.submenu ? 24 : shortcut.implicitWidth + 20)
-                                text: entry.modelData.title || ""
-                                elide: Text.ElideRight
-                                color: menu.ink
-                                opacity: 0.95
-                                font.pixelSize: metrics.font.pixelSize
-                            }
-                            Text {
+                            QQC.Label {
                                 id: shortcut
                                 anchors.right: parent.right
                                 anchors.rightMargin: 10
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: entry.submenu ? "›" : (entry.modelData.shortcut || "")
-                                color: menu.ink
-                                opacity: entry.submenu ? 0.7 : 0.5
-                                font.pixelSize: entry.submenu ? 16 : 12
                             }
                         }
 
