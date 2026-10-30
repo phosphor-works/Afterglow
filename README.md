@@ -6,6 +6,10 @@
 A GPU-accelerated terminal for Wayland, built on Qt and Vulkan. Every pane of
 every window draws through one GPU device.
 
+Start with the [user reference](docs/README.md), [complete configuration keys](docs/CONFIGURATION.md),
+[desktop integration](docs/DESKTOP.md) and [compatibility examples](docs/COMPATIBILITY.md).
+See [release notes](CHANGELOG.md) and [migration guidance](docs/MIGRATION.md) when upgrading.
+
 ## Requirements
 
 - Qt 6.8 or later (Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, ShaderTools, and the GuiPrivate,
