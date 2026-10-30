@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QRect>
+#include <QJsonObject>
 
 #include <functional>
 #include <memory>
@@ -38,6 +39,9 @@ public:
     /// the pane was the last one.
     bool remove(Pane* pane);
     bool swap(Pane* first, Pane* second);
+    QJsonObject snapshot(const std::function<QJsonObject(Pane*)>& pane) const;
+    /// Input must first pass ProjectStore::validate; factory must return a pane.
+    static std::unique_ptr<SplitTree> restore(const QJsonObject&, const std::function<Pane*(const QJsonObject&)>&);
 
     /// Lays the tree out in @p area with dividers @p dividerWidth wide.
     void layout(const QRect& area, int dividerWidth);

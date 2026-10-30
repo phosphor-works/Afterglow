@@ -339,4 +339,34 @@ void SplitTree::equalize()
     walk(m_root.get());
 }
 
+QJsonObject SplitTree::snapshot(const std::function<QJsonObject(Pane*)>& pane) const
+{
+    std::function<QJsonObject(const Node*)> encode = [&](const Node* node) -> QJsonObject {
+        if (node->pane) return {{QStringLiteral("pane"), pane(node->pane)}};
+        return {{QStringLiteral("direction"), node->vertical ? QStringLiteral("down") : QStringLiteral("right")},
+                {QStringLiteral("ratio"), node->ratio}, {QStringLiteral("first"), encode(node->first.get())},
+                {QStringLiteral("second"), encode(node->second.get())}};
+    };
+    return encode(m_root.get());
+}
+
+std::unique_ptr<SplitTree> SplitTree::restore(const QJsonObject& tree, const std::function<Pane*(const QJsonObject&)>& factory)
+{
+    auto result = std::make_unique<SplitTree>(nullptr);
+    std::function<std::unique_ptr<Node>(const QJsonObject&, Node*)> decode = [&](const QJsonObject& value, Node* parent) {
+        auto node = std::make_unique<Node>();
+        node->parent = parent;
+        if (value.contains(QStringLiteral("pane"))) node->pane = factory(value.value(QStringLiteral("pane")).toObject());
+        else {
+            node->vertical = value.value(QStringLiteral("direction")).toString() == QLatin1String("down");
+            node->ratio = value.value(QStringLiteral("ratio")).toDouble();
+            node->first = decode(value.value(QStringLiteral("first")).toObject(), node.get());
+            node->second = decode(value.value(QStringLiteral("second")).toObject(), node.get());
+        }
+        return node;
+    };
+    result->m_root = decode(tree, nullptr);
+    return result;
+}
+
 } // namespace Afterglow

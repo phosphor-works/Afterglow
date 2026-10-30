@@ -4,6 +4,8 @@
 find_package(GTest REQUIRED)
 
 qt_add_executable(afterglow_app_tests
+    ProjectStoreTest.cpp
+    ../src/ProjectStore.cpp
     SplitTreeTest.cpp
     ../src/SplitTree.cpp
 )
