@@ -754,6 +754,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         std::vector<Cell> cells;
         std::unordered_map<std::uint32_t, std::u32string> graphemes;
         bool promptStart = false;
+        std::optional<std::size_t> unchangedRow;
     };
 
     const std::size_t cursorAbs = historySize() + std::size_t(cursor.y);
@@ -814,6 +815,16 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         if (current.cells.empty()) {
             current.promptStart = r.promptStart;
         }
+        // A compact hard line that still fits needs no cell reconstruction.
+        // Keep its allocation and side tables until the output row is moved.
+        // Wrapped predecessors must still join this row through normal reflow.
+        if (i < historySize() && !r.wrapped && (i == 0 || !m_rows[i - 1].wrapped)
+            && r.cells.size() <= std::size_t(cols) && r.lineSize == LineSize::Single) {
+            current.unchangedRow = i;
+            lines.push_back(std::move(current));
+            current = Line{};
+            continue;
+        }
         int keep = m_cols;
         if (lineEnds) {
             while (keep > 0 && isBlank(r.at(keep - 1))) {
@@ -862,6 +873,14 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     int cursorCol = 0;
     for (std::size_t li = 0; li < lines.size(); ++li) {
         Line& line = lines[li];
+        if (line.unchangedRow) {
+            out.push_back(std::move(m_rows[*line.unchangedRow]));
+            for (const auto& [offset, index] : lineMarks[li]) {
+                trackedNew[index] = out.size() - 1;
+                mappedColumns[index] = int(std::min(std::size_t(cols), offset));
+            }
+            continue;
+        }
         out.emplace_back(cols).promptStart = line.promptStart;
         int col = 0;
         bool cursorPlaced = false;
@@ -995,6 +1014,11 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     trimHistory();
     for (std::size_t i = 0; i < historySize(); ++i) {
         compact(m_rows[i]);
+    }
+    // A compact history row can enter the active area when the height grows
+    // or preceding lines unwrap. Active rows must always store every column.
+    for (std::size_t i = historySize(); i < m_rows.size(); ++i) {
+        expand(m_rows[i]);
     }
     if (tracked) {
         const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);

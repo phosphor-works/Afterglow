@@ -251,3 +251,44 @@ TEST(Reflow, TrackedWideTailKeepsItsCellOffset)
     EXPECT_EQ(rows, (std::vector<std::size_t>{0, 0}));
     EXPECT_EQ(columns, (std::vector<int>{1, 2}));
 }
+
+TEST(Reflow, FittingHistoryRetainsCellsStylesAndTrackedPositions)
+{
+    Term t(20, 3);
+    t.t.feed("\x1b[31mA\xcc\x81\xe7\x95\x8c\x1b[0m\r\nsecond\r\nthird\r\nprompt");
+    auto& s = t.t.screen();
+    ASSERT_EQ(s.historySize(), 1u);
+    const Cell* cells = s.absoluteRow(0).cells.data();
+    const auto style = s.absoluteRow(0).at(0).styleId();
+    std::vector<std::size_t> tracked{0, 0, 0};
+    std::vector<int> columns{0, 2, 15};
+    s.resize(10, 3, true, std::nullopt, &tracked, &columns);
+    EXPECT_EQ(s.absoluteRow(0).cells.data(), cells);
+    EXPECT_EQ(tracked, (std::vector<std::size_t>{0, 0, 0}));
+    EXPECT_EQ(columns, (std::vector<int>{0, 2, 10}));
+    EXPECT_EQ(s.absoluteRow(0).at(0).styleId(), style);
+    EXPECT_EQ(s.styles().get(style).fg, Color::palette(1));
+    EXPECT_EQ(s.graphemeExtra(s.absoluteRow(0), 0), U"\u0301");
+    EXPECT_EQ(rowText(s, s.absoluteRow(0)), "A\xcc\x81\xe7\x95\x8c");
+
+    // Growing height pulls the retained row back into the writable grid.
+    s.resize(12, 6, true);
+    for (int y = 0; y < s.rows(); ++y) EXPECT_EQ(s.row(y).cells.size(), 12u);
+    EXPECT_EQ(rowText(s, s.row(0)), "A\xcc\x81\xe7\x95\x8c");
+    s.writeCell(s.row(0), 11, U'!', StyleTable::DefaultId, 1);
+    EXPECT_EQ(s.row(0).at(11).codepoint(), U'!');
+}
+
+TEST(Reflow, ShortContinuationStillJoinsWrappedHistory)
+{
+    Term t(6, 2);
+    t.t.feed("abcdefgh\r\nnext\r\nprompt");
+    ASSERT_EQ(t.t.screen().historySize(), 2u);
+    t.t.resize(12, 2, 8, 16);
+    const auto& s = t.t.screen();
+    EXPECT_EQ(s.historySize(), 1u);
+    EXPECT_EQ(rowText(s, s.absoluteRow(0)), "abcdefgh");
+    EXPECT_FALSE(s.absoluteRow(0).wrapped);
+    EXPECT_EQ(rowText(t.t, 0), "next");
+    EXPECT_EQ(rowText(t.t, 1), "prompt");
+}
