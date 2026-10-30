@@ -161,6 +161,24 @@ Item {
         }
     }
 
+    Rectangle {
+        id: keyModeBadge
+        anchors.bottom: root.bottom
+        anchors.right: root.right
+        anchors.margins: 12
+        visible: root.controller.keyMode.length > 0
+        width: keyModeLabel.implicitWidth + 16
+        height: keyModeLabel.implicitHeight + 16
+        color: systemPalette.highlight
+        radius: 4
+        QQC.Label {
+            id: keyModeLabel
+            anchors.centerIn: keyModeBadge
+            text: qsTr("%1 · Esc to cancel").arg(root.controller.keyMode)
+            color: systemPalette.highlightedText
+        }
+    }
+
     ClipboardPrompt {
         controller: root.controller
         anchors.fill: root

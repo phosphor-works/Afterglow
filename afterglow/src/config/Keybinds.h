@@ -101,6 +101,8 @@ public:
 
     /// The action bound to a key press, or Action::None.
     Action match(const QKeyEvent* event) const;
+    static QList<int> combinations(const QKeyEvent* event);
+    bool isBound(int key) const { return m_byKey.contains(key) || m_scriptByKey.contains(key) || m_textByKey.contains(key); }
     /// The script action ("<script id>.<action id>") bound to a key press, or empty.
     QString matchScript(const QKeyEvent* event) const;
     /// The bytes a "text:" binding sends for a key press, or empty.

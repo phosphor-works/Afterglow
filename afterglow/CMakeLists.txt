@@ -56,6 +56,8 @@ pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 qt_add_library(afterglow_config STATIC
     src/config/Keybinds.cpp
     src/config/Keybinds.h
+    src/config/KeyModes.cpp
+    src/config/KeyModes.h
     src/config/Settings.cpp
     src/config/Settings.h
     src/config/Theme.cpp

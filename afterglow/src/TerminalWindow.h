@@ -154,6 +154,12 @@ private:
     void setPaneZoom(Pane* pane);
     bool resizeFocused(SplitTree::Neighbour direction);
     bool handleShortcut(QKeyEvent* e);
+    void updateKeyMode();
+    void cancelKeyMode();
+    KeyModes::State m_keyMode;
+    QTimer m_keyModeTimer;
+    QElapsedTimer m_keyModeClock;
+    QSet<quint32> m_consumedKeys;
     bool performAction(Action action);
     void updateChrome();
     bool chromeVisible() const;

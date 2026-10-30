@@ -354,6 +354,10 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Per shader parameter values, e.g. { \"bloom\": { \"strength\": 0.5 } }")},
     };
     schema.groups[Keys] = {
+        stringKey(QStringLiteral("leader"), {}, QStringLiteral("Prefix key used by Leader sequences")),
+        intKey(QStringLiteral("sequenceTimeout"), 1000, 100, 10000, QStringLiteral("Milliseconds before an incomplete sequence is cancelled")),
+        intKey(QStringLiteral("tableTimeout"), 5000, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table")),
+        {QStringLiteral("tables"), QVariantMap{}, QMetaType::QVariantMap, QStringLiteral("Named action-to-key maps, activated with table:name")},
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
          QStringLiteral("Action to key combination, or a list of them; an empty string unbinds")},
     };
@@ -770,6 +774,9 @@ Settings SettingsStore::read() const
     // Keybinds
     QStringList errors;
     s.keybinds = Keybinds::fromMap(st.read<QVariantMap>(Keys, QStringLiteral("bindings")), &errors);
+    s.keyModes = KeyModes::fromConfig(st.read<QVariantMap>(Keys, QStringLiteral("bindings")),
+        st.read<QVariantMap>(Keys, QStringLiteral("tables")), st.read<QString>(Keys, QStringLiteral("leader")),
+        st.read<int>(Keys, QStringLiteral("sequenceTimeout")), st.read<int>(Keys, QStringLiteral("tableTimeout")), s.keybinds, &errors);
     for (const QString& e : errors) {
         qCWarning(lcConfig).noquote() << "keybinds:" << e;
     }

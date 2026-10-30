@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Keybinds.h"
+#include "KeyModes.h"
 #include "../audio/AudioSettings.h"
 #include "../shaders/ShaderLibrary.h"
 
@@ -131,6 +132,7 @@ struct Settings
     QString themePath;
     /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString clipboardRead = QStringLiteral("ask");
+    KeyModes keyModes;
     Keybinds keybinds = Keybinds::defaults();
     /// Shader references (pack ids or file paths) for each chain, applied in order.
     ShaderLibrary::Refs shaders;

@@ -155,6 +155,12 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     m_clock = std::make_unique<FrameClock>(this);
 
     m_controller = new ChromeController(this);
+    m_keyModeClock.start();
+    m_keyModeTimer.setSingleShot(true);
+    connect(&m_keyModeTimer, &QTimer::timeout, this, [this] {
+        KeyModes::expire(m_keyMode, m_keyModeClock.elapsed());
+        updateKeyMode();
+    });
     m_chrome = new ChromeLayer(device, this, engine, m_controller);
     connect(m_chrome, &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::activateTabRequested, this, &TerminalWindow::switchTab);
@@ -881,6 +887,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
         m_focused->setPreedit({}, 0);
     }
     QGuiApplication::inputMethod()->reset();
+    cancelKeyMode();
     m_focused = pane;
     if (m_splits && m_splits->zoomedPane() && m_splits->contains(pane)) {
         setPaneZoom(pane);
@@ -1368,6 +1375,7 @@ void TerminalWindow::focusInEvent(QFocusEvent*)
 
 void TerminalWindow::focusOutEvent(QFocusEvent*)
 {
+    cancelKeyMode();
     m_controller->closeContextMenu();
     m_windowFocused = false;
     m_blinkTimer.stop();
@@ -1378,8 +1386,38 @@ void TerminalWindow::focusOutEvent(QFocusEvent*)
     scheduleRender();
 }
 
+void TerminalWindow::cancelKeyMode()
+{
+    m_keyMode = {};
+    updateKeyMode();
+}
+
+void TerminalWindow::updateKeyMode()
+{
+    m_controller->setKeyMode(m_keyMode.label());
+    m_keyModeTimer.stop();
+    if (m_keyMode.active()) m_keyModeTimer.start(int(std::max(qint64(1), m_keyMode.deadline - m_keyModeClock.elapsed())));
+    scheduleRender();
+}
+
 bool TerminalWindow::handleShortcut(QKeyEvent* e)
 {
+    const auto result = m_settings.settings().keyModes.press(e, m_keyMode, m_keyModeClock.elapsed());
+    updateKeyMode();
+    if (result.consumed) {
+        if (result.target.startsWith(QStringLiteral("text:")) && m_focused) {
+            const QByteArray bytes = Keybinds::unescape(result.target.mid(5));
+            m_focused->clearSelection();
+            m_focused->sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())));
+        } else if (result.target.startsWith(QStringLiteral("script:"))) {
+            m_scripts.runAction(result.target.mid(7), m_focused ? m_focused->id() : 0);
+        } else {
+            for (Action action : Keybinds::allActions()) {
+                if (Keybinds::token(action) == result.target) { performAction(action); break; }
+            }
+        }
+        return true;
+    }
     const Keybinds& kb = m_settings.settings().keybinds;
     const Action action = kb.match(e);
     if (action != Action::None) {
@@ -2414,6 +2452,7 @@ void TerminalWindow::applyShaders()
 
 void TerminalWindow::applySettings(const Settings& previous)
 {
+    cancelKeyMode();
     const Settings& now = m_settings.settings();
     if (now.shaders != previous.shaders || now.shaderParams != previous.shaderParams) {
         applyShaders();
@@ -2499,6 +2538,8 @@ void TerminalWindow::toggleQuick()
 
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
+    const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
+    if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
     if (m_urlMode.active) {
         urlModeKey(e);
         return;
@@ -2511,6 +2552,7 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         updateLinkHover();
     }
     if (m_controller->wantsKeyboard()) {
+        cancelKeyMode();
         // The palette and search keybinds still toggle while the chrome has the keyboard.
         const Action a = m_settings.settings().keybinds.match(e);
         if (a == Action::CommandPalette || a == Action::Search) {
@@ -2521,6 +2563,7 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (handleShortcut(e)) {
+        m_consumedKeys.insert(physicalKey);
         return;
     }
     sendKey(e);
@@ -2528,6 +2571,11 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
 
 void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
 {
+    const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
+    if (m_consumedKeys.contains(physicalKey)) {
+        if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
+        return;
+    }
     if (m_urlMode.active || m_unicodeInput) {
         return; // the mode took the press
     }

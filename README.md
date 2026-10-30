@@ -161,6 +161,40 @@ to the terminal (`\e \r \n \t \\ \xHH \uHHHH`), for example
 `"text:\\x1b\\r": "Shift+Return"`, and `"script:<id>.<action>"` runs a script
 action.
 
+Sequences use comma-separated keys (up to four), and `Leader` expands to
+`Keybinds.leader`. Named tables provide temporary modes:
+
+```json
+{
+  "Keybinds": {
+    "leader": "Ctrl+Space",
+    "sequenceTimeout": 1000,
+    "tableTimeout": 5000,
+    "bindings": {
+      "split_right": "Leader, E",
+      "table:resize": "Leader, R"
+    },
+    "tables": {
+      "resize": {
+        "resize_left": "H",
+        "resize_right": "L",
+        "resize_up": "K",
+        "resize_down": "J",
+        "pop_key_table": "Return"
+      }
+    }
+  }
+}
+```
+
+The active sequence/table appears in the window. Escape, timeout, focus changes,
+and config reload cancel it. A mismatched key exits the mode and is processed
+normally; consumed prefixes are never replayed to the shell. Tables remain active
+after matching actions until cancelled, and may activate another table. Ambiguous
+sequences and prefixes overlapping existing single-key shortcuts are rejected;
+unbind the original action explicitly to reuse its key as a prefix. Tables and
+sequences support built-in, `text:` and `script:` actions.
+
 Pane controls are also available through the command palette, `ctl action`,
 and Luau actions:
 

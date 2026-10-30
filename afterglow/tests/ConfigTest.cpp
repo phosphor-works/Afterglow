@@ -341,3 +341,73 @@ TEST_F(ConfigTest, FontRenderingDefaultsNormalizationAndReload)
     EXPECT_EQ(overridden.settings().font.antialiasing, AfterglowRender::Antialiasing::Bgr);
     EXPECT_FLOAT_EQ(overridden.settings().font.gamma, 1.2f);
 }
+
+TEST(KeyModes, LeaderSequenceAndMismatchFallback)
+{
+    QVariantMap bindings{{QStringLiteral("split_right"), QStringLiteral("Leader, E")},
+                         {QStringLiteral("split_down"), QStringLiteral("Leader, O")}};
+    QStringList errors;
+    const auto singles = Keybinds::fromMap(bindings, &errors);
+    const auto modes = KeyModes::fromConfig(bindings, {}, QStringLiteral("Ctrl+Space"), 1000, 5000, singles, &errors);
+    EXPECT_TRUE(errors.isEmpty()) << errors.join('\n').toStdString();
+    KeyModes::State state;
+    QKeyEvent leader(QEvent::KeyPress, Qt::Key_Space, Qt::ControlModifier);
+    QKeyEvent e(QEvent::KeyPress, Qt::Key_E, Qt::NoModifier);
+    QKeyEvent x(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier);
+    EXPECT_TRUE(modes.press(&leader, state, 0).consumed);
+    EXPECT_TRUE(state.active());
+    EXPECT_EQ(modes.press(&e, state, 100).target, QStringLiteral("split_right"));
+    EXPECT_FALSE(state.active());
+    modes.press(&leader, state, 200);
+    EXPECT_FALSE(modes.press(&x, state, 300).consumed);
+    EXPECT_FALSE(state.active());
+    modes.press(&leader, state, 400);
+    EXPECT_FALSE(modes.press(&e, state, 1400).consumed);
+    EXPECT_FALSE(state.active());
+}
+
+TEST(KeyModes, TablesCancelExpireAndDoNotTrapUnmatchedInput)
+{
+    QVariantMap bindings{{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}};
+    QVariantMap resize{{QStringLiteral("resize_left"), QStringLiteral("H")},
+                       {QStringLiteral("resize_right"), QStringLiteral("L")},
+                       {QStringLiteral("pop_key_table"), QStringLiteral("Return")}};
+    QStringList errors;
+    const auto modes = KeyModes::fromConfig(bindings, {{QStringLiteral("resize"), resize}}, {}, 1000, 5000,
+        Keybinds::fromMap(bindings, &errors), &errors);
+    EXPECT_TRUE(errors.isEmpty());
+    KeyModes::State state;
+    QKeyEvent leader(QEvent::KeyPress, Qt::Key_Space, Qt::ControlModifier);
+    QKeyEvent r(QEvent::KeyPress, Qt::Key_R, Qt::NoModifier);
+    QKeyEvent h(QEvent::KeyPress, Qt::Key_H, Qt::NoModifier);
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QKeyEvent x(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier);
+    auto enter = [&] { modes.press(&leader, state, 0); modes.press(&r, state, 100); };
+    enter();
+    EXPECT_EQ(state.table, QStringLiteral("resize"));
+    EXPECT_EQ(modes.press(&h, state, 200).target, QStringLiteral("resize_left"));
+    EXPECT_TRUE(state.active());
+    EXPECT_TRUE(modes.press(&escape, state, 300).consumed);
+    EXPECT_FALSE(state.active());
+    enter();
+    EXPECT_FALSE(modes.press(&x, state, 300).consumed);
+    EXPECT_FALSE(state.active());
+    enter();
+    KeyModes::expire(state, 5100);
+    EXPECT_FALSE(state.active());
+}
+
+TEST(KeyModes, RejectsAmbiguousPrefixesAndPreservesExistingSingles)
+{
+    QStringList errors;
+    QVariantMap bindings{{QStringLiteral("split_right"), QStringLiteral("Ctrl+Shift+C, E")},
+                         {QStringLiteral("split_down"), QStringLiteral("Ctrl+Space, X")},
+                         {QStringLiteral("new_tab"), QStringLiteral("Ctrl+Space, X, T")}};
+    const auto singles = Keybinds::fromMap(bindings, &errors);
+    const auto modes = KeyModes::fromConfig(bindings, {}, {}, 1000, 5000, singles, &errors);
+    EXPECT_EQ(errors.size(), 2);
+    KeyModes::State state;
+    QKeyEvent copy(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_FALSE(modes.press(&copy, state, 0).consumed);
+    EXPECT_EQ(singles.match(&copy), Action::Copy);
+}

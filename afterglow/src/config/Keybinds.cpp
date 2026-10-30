@@ -158,7 +158,7 @@ Keybinds Keybinds::defaults()
 
 std::optional<int> Keybinds::parse(const QString& sequence, const QString& target, QStringList* errors)
 {
-    if (sequence.trimmed().isEmpty()) {
+    if (sequence.trimmed().isEmpty() || sequence.startsWith(QStringLiteral("Leader,"))) {
         return std::nullopt;
     }
     const QKeySequence seq = QKeySequence::fromString(sequence, QKeySequence::PortableText);
@@ -168,9 +168,7 @@ std::optional<int> Keybinds::parse(const QString& sequence, const QString& targe
         }
         return std::nullopt;
     }
-    if (seq.count() > 1 && errors) {
-        errors->append(QStringLiteral("\"%1\": only single key combinations are supported").arg(sequence));
-    }
+    if (seq.count() > 1) return std::nullopt; // handled by KeyModes
     return QKeyCombination(seq[0].keyboardModifiers() & RelevantMods, seq[0].key()).toCombined();
 }
 
@@ -185,7 +183,7 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
 {
     Keybinds kb;
     for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
-        bool known = false;
+        bool known = it.key().startsWith(QStringLiteral("table:")) || it.key() == QLatin1String("pop_key_table");
         for (const ActionInfo& a : Actions) {
             if (it.key() == QLatin1String(a.token)) {
                 known = true;
@@ -239,22 +237,24 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     return kb;
 }
 
+QList<int> Keybinds::combinations(const QKeyEvent* event)
+{
+    constexpr auto modsMask = Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
+    const auto mods = event->modifiers() & modsMask;
+    QList<int> result{QKeyCombination(mods, Qt::Key(event->key())).toCombined()};
+    const char32_t base = XkbKeyboard::instance().unshiftedCodepoint(event->nativeScanCode());
+    if (base >= 0x20 && base < 0x7F) {
+        const int key = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
+        const int combined = QKeyCombination(mods, Qt::Key(key)).toCombined();
+        if (combined != result.front()) result << combined;
+    }
+    return result;
+}
 template<typename T>
 static const T* lookup(const QHash<int, T>& map, const QKeyEvent* event)
 {
-    const Qt::KeyboardModifiers mods = event->modifiers() & RelevantMods;
-    const int key = event->key();
-    if (auto it = map.constFind(QKeyCombination(mods, Qt::Key(key)).toCombined()); it != map.constEnd()) {
-        return &*it;
-    }
-    // Shift changes the reported key on punctuation (Shift+= reports '+'), so
-    // also try the key's unshifted character from the layout.
-    const char32_t base = XkbKeyboard::instance().unshiftedCodepoint(event->nativeScanCode());
-    if (base >= 0x20 && base < 0x7F) {
-        const int baseKey = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
-        if (auto it = map.constFind(QKeyCombination(mods, Qt::Key(baseKey)).toCombined()); it != map.constEnd()) {
-            return &*it;
-        }
+    for (int key : Keybinds::combinations(event)) {
+        if (auto it = map.constFind(key); it != map.constEnd()) return &*it;
     }
     return nullptr;
 }

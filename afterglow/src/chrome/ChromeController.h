@@ -16,6 +16,7 @@ namespace Afterglow {
 class ChromeController : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(QString keyMode READ keyMode NOTIFY keyModeChanged)
     Q_PROPERTY(QStringList tabTitles READ tabTitles NOTIFY tabsChanged)
     Q_PROPERTY(QVariantList tabStatus READ tabStatus NOTIFY tabStatusChanged)
     Q_PROPERTY(QVariantList tabContexts READ tabContexts NOTIFY tabContextsChanged)
@@ -43,6 +44,10 @@ class ChromeController : public QObject
 
 public:
     using QObject::QObject;
+    QString keyMode() const { return m_keyMode; }
+    void setKeyMode(const QString& value) {
+        if (m_keyMode != value) { m_keyMode = value; Q_EMIT keyModeChanged(); }
+    }
 
     QStringList tabTitles() const { return m_tabTitles; }
     int currentTab() const { return m_currentTab; }
@@ -150,6 +155,7 @@ Q_SIGNALS:
     void tabStatusChanged();
     void tabContextsChanged();
     void urlHintsChanged();
+    void keyModeChanged();
     void unicodeInputChanged();
     void clipboardPromptChanged();
     void clipboardAnswered(int answer);
@@ -178,6 +184,7 @@ Q_SIGNALS:
     void searchRequested(const QString& query, int direction);
 
 private:
+    QString m_keyMode;
     QStringList m_tabTitles;
     QVariantList m_tabStatus;
     QVariantList m_tabContexts;
