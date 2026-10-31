@@ -89,6 +89,27 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
 - External control through `afterglow ctl` and D-Bus, with access settings.
 
+### Performance
+
+- Afterglow draws only when content changes. A static window submits no frames.
+- All windows of one process share one GPU device, one glyph atlas for each display scale and one shader library.
+- Layer textures, text history and shader buffers exist only while a configured shader needs them.
+- Resize reuses history rows that still fit on one line, without rebuilding their cells.
+- Search captures text in small parts and matches it in a worker thread.
+
+Measured medians on an Intel Core i7-9700K and NVIDIA GeForce RTX 2080, in a nested KWin session:
+
+| Measurement | 1080p | 4K |
+| --- | ---: | ---: |
+| Idle CPU (% of one core) | 0.09 | 0.08 |
+| Key-to-frame response, p50 / p95 (ms) | 1.52 / 5.52 | 2.31 / 4.31 |
+| Terminal GPU time while scrolling, p95 (ms) | 0.13 | 0.40 |
+| Frame service while resizing with 100,000 history rows, p95 (ms) | 22.85 | 24.58 |
+| Memory for 100,000 history rows (MiB) | 86 | 90 |
+
+Script callbacks take a median of about 5 µs with one pane and 21 µs with 32 panes.
+See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions and limits.
+
 ### Desktop integration
 
 - Terminal text, cursor, selection and geometry for screen readers through Qt and AT-SPI.
@@ -102,5 +123,4 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - [Supported protocols and limits](docs/COMPATIBILITY.md).
 - [Desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.
 - [Bidirectional text](docs/BIDI.md) for the application-grid policy.
-- [Performance measurements](docs/PERFORMANCE.md) for timings, workloads and limits.
 - [Testing](docs/TESTING.md) for regression and native desktop test procedures.
