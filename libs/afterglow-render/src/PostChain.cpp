@@ -97,6 +97,7 @@ struct PostChain::BufferState {
     std::unique_ptr<QRhiTextureRenderTarget> targets[2];
     std::vector<HistoryRegion> regions;
     QSize size;
+    QSize wanted; // the size the pass asks for; `size` is smaller when the budget is short
     int read = 0;
     int frame = 0;
     float time = 0;
@@ -535,23 +536,40 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                                std::max(1, qRound(region.rect.height() * settings.scale)));
             const auto& passProgram = *program.buffers()[index];
             const int sampleCount = meshSamples(passProgram, rhi);
-            const auto bytes = std::uint64_t(wanted.width()) * wanted.height()
-                * ((settings.halfFloat ? 8 : 4) * (2 + (sampleCount > 1 ? sampleCount : 0))
+            const std::uint64_t pixelBytes = (settings.halfFloat ? 8 : 4) * (2 + (sampleCount > 1 ? sampleCount : 0))
                     * (passProgram.depthOutput() ? 2 : 1)
-                    + (passProgram.meshPass() ? 8 * sampleCount : 0))
-                + passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex);
-            const bool canRetry = state && state->blocked && !overflow && bytes <= BufferBudget - m_bufferBytes;
-            if (state && ((!state->blocked && state->size != wanted) || canRetry)) {
+                + (passProgram.meshPass() ? 8 * sampleCount : 0);
+            const std::uint64_t fixedBytes = passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex);
+            const auto bytesFor = [&](QSize size) { return std::uint64_t(size.width()) * size.height() * pixelBytes + fixedBytes; };
+            // A pass that was shrunk to fit grows back once the budget has room.
+            const bool canGrow = state && state->size != wanted && !overflow
+                && bytesFor(wanted) <= BufferBudget - m_bufferBytes + state->bytes;
+            const bool warned = state && state->size != state->wanted;
+            if (state && (state->wanted != wanted || canGrow)) {
                 m_bufferBytes -= state->bytes;
                 m_pipelines.clear(); state.reset();
             }
             if (!state) {
                 state = std::make_unique<BufferState>();
-                state->size = wanted;
-                if (overflow || bytes > BufferBudget - m_bufferBytes) {
-                    state->blocked = true; state->size = QSize(1, 1);
-                    qWarning("Shader buffer budget exceeded for %s; using a transparent buffer", qPrintable(program.id()));
-                } else { state->bytes = bytes; m_bufferBytes += bytes; }
+                state->wanted = state->size = wanted;
+                const std::uint64_t room = overflow ? 0 : BufferBudget - m_bufferBytes;
+                if (bytesFor(wanted) > room) {
+                    // Render the pass smaller rather than not at all: both sides
+                    // shrink by the factor that fits the remaining budget.
+                    const double fit = room > fixedBytes
+                        ? std::sqrt(double(room - fixedBytes) / double(bytesFor(wanted) - fixedBytes)) : 0.0;
+                    state->size = QSize(int(wanted.width() * fit), int(wanted.height() * fit));
+                    state->blocked = std::min(state->size.width(), state->size.height()) < MinimumBufferSide;
+                    if (state->blocked) state->size = QSize(1, 1);
+                    if (!warned && state->blocked) {
+                        qWarning("Shader buffer budget exceeded for %s; using a transparent buffer", qPrintable(program.id()));
+                    } else if (!warned) {
+                        qWarning("Shader buffer budget exceeded for %s; rendering it at %dx%d instead of %dx%d",
+                                 qPrintable(program.id()), state->size.width(), state->size.height(),
+                                 wanted.width(), wanted.height());
+                    }
+                }
+                if (!state->blocked) { state->bytes = bytesFor(state->size); m_bufferBytes += state->bytes; }
                 const auto filter = settings.nearest ? QRhiSampler::Nearest : QRhiSampler::Linear;
                 const auto wrap = settings.wrap == ShaderWrap::Repeat ? QRhiSampler::Repeat
                     : settings.wrap == ShaderWrap::Mirror ? QRhiSampler::Mirror : QRhiSampler::ClampToEdge;

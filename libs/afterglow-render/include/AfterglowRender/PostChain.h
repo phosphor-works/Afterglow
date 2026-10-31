@@ -225,6 +225,7 @@ private:
     std::uint64_t m_frame = 0;
     std::uint64_t m_bufferBytes = 0;
     static constexpr std::uint64_t BufferBudget = 256 * 1024 * 1024;
+    static constexpr int MinimumBufferSide = 16; // a pass that would shrink below this is transparent instead
     GpuDevice& m_device;
     ShaderChains m_chains;
     std::map<std::pair<const ShaderProgram*, const QRhiRenderPassDescriptor*>, std::unique_ptr<QRhiGraphicsPipeline>>

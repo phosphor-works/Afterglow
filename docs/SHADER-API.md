@@ -211,7 +211,8 @@ Geometry assets must be regular files inside the pack, including symlink targets
 Each asset has a 32 MiB file limit. A pack can contain up to 96 MiB of decoded vertices.
 A pass permits 3,145,728 vertices, 4,096 instances and 12,582,912 total vertex invocations.
 Geometry and hardware depth count toward the shared 256 MiB buffer budget.
-A pass that exceeds that budget supplies transparent output.
+A pass that exceeds that budget renders at a smaller size that fits, and logs a warning.
+It grows back when the budget has room again.
 Resize and shader replacement release obsolete GPU resources.
 
 [Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates instanced geometry,
@@ -308,7 +309,7 @@ Chain removal, window destruction or GPU resource release destroys the buffers.
 
 | Storage | Limit and behavior |
 | --- | --- |
-| Persistent buffers | 256 MiB per window and 32 effect occurrences. Excess allocations use transparent inputs and log a warning. |
+| Persistent buffers | 256 MiB per window and 32 effect occurrences. A buffer that does not fit renders smaller and logs a warning. A buffer that would shrink below 16 pixels on a side, or past the 32nd occurrence, is transparent. |
 | Region input copies and uploaded images | A separate 256 MiB GPU cache. Excess inputs become transparent and log a warning. |
 | Decoded live images | 256 MiB per window, including transition endpoints. Excess updates are rejected atomically. Shared images count once. |
 

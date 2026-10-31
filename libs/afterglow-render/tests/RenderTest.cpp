@@ -1722,6 +1722,38 @@ TEST_F(Render, SceneObjectsFollowTheirParentAndLiveParameters)
     EXPECT_PIXEL(image, QPoint(size.width()*3/4, size.height()/2), qRgb(255,0,0));
 }
 
+TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
+{
+    // A multisampled half-float mesh pass costs 80 bytes a pixel, so a
+    // 2048x2048 pane asks for 320 MiB, more than the 256 MiB budget.
+    if (!s_device->rhi()->supportedSampleCounts().contains(4)) GTEST_SKIP() << "no 4x multisampling";
+    ShaderProgramSource source;
+    source.id = "over-budget";
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
+    ShaderBufferSource pass;
+    pass.halfFloat = true;
+    QString error;
+    ASSERT_TRUE(ShaderProgram::loadObj("v -1 -1 0.5\nv 1 -1 0.5\nv 1 1 0.5\nv -1 1 0.5\nf 1 2 3\nf 1 3 4\n", pass.geometry, &error));
+    pass.geometry.samples = 4;
+    pass.geometry.vertexCode = "vec4 pMesh(){return vec4(meshPosition,1);}";
+    pass.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
+    source.buffers = {pass};
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.pane = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    const QSize size(2048, 2048);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, QPoint(size.width()/2, size.height()/2), qRgb(255,0,0));
+    // A smaller pane fits again and renders at full size.
+    pane.params.rect = QRect(QPoint(), QSize(512, 512));
+    image = renderer->renderToImage(QSize(512, 512), {pane}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, QPoint(256, 256), qRgb(255,0,0));
+}
+
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
 {
     std::vector<ShaderSceneObject> objects(3);
