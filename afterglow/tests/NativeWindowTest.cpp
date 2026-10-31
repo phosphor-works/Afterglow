@@ -554,10 +554,14 @@ public:
     int count = 0, closes = 0;
     uint next = 0;
     QList<QSize> images;
+    QString appName, appIcon, desktopEntry;
 public Q_SLOTS:
-    uint Notify(const QString&, uint replaces, const QString&, const QString&, const QString&,
+    uint Notify(const QString& name, uint replaces, const QString& icon, const QString&, const QString&,
                 const QStringList&, const QVariantMap& hints, int) {
         ++count;
+        appName = name;
+        appIcon = icon;
+        desktopEntry = hints.value(QStringLiteral("desktop-entry")).toString();
         QSize size;
         if (hints.contains(QStringLiteral("image-data"))) {
             const auto arg = hints.value(QStringLiteral("image-data")).value<QDBusArgument>();
@@ -586,6 +590,9 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     auto& center = NotificationCenter::instance();
     center.handle(first, window, request); drain(60);
     ASSERT_EQ(server.count, 1);
+    EXPECT_EQ(server.appName, QStringLiteral("Afterglow"));
+    EXPECT_EQ(server.appIcon, QStringLiteral("com.phosphorworks.Afterglow"));
+    EXPECT_EQ(server.desktopEntry, QStringLiteral("com.phosphorworks.Afterglow"));
     EXPECT_LE(server.images.last().height(), 512);
     request.expireMs = 2000;
     request.iconData.clear();

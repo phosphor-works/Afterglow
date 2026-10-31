@@ -22,6 +22,7 @@
 
 #include <cstring>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QQuickWindow>
 
 #include <exception>
@@ -105,8 +106,10 @@ int main(int argc, char** argv)
     // QApplication initializes that style and follows the platform's palette.
     QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("afterglow"));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("Afterglow"));
     QGuiApplication::setApplicationVersion(QStringLiteral(AFTERGLOW_VERSION));
     QGuiApplication::setDesktopFileName(QStringLiteral("com.phosphorworks.Afterglow"));
+    QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral("com.phosphorworks.Afterglow")));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("A GPU accelerated terminal"));

@@ -239,7 +239,8 @@ void NotificationCenter::notify(const Entry& entry, uint replaces, const QString
                                 int expireMs)
 {
     QDBusMessage msg = QDBusMessage::createMethodCall(Service, Path, Interface, QStringLiteral("Notify"));
-    msg << QStringLiteral("afterglow") << replaces << icon << title << body << actions << hints << timeout;
+    msg << QStringLiteral("Afterglow") << replaces << (icon.isEmpty() ? DesktopEntry : icon)
+        << title << body << actions << hints << timeout;
     auto* watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(msg), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, entry, replaces, expireMs](QDBusPendingCallWatcher* w) {
         w->deleteLater();
