@@ -19,7 +19,11 @@ include(CTest)
 include(GNUInstallDirs)
 
 set(AFTERGLOW_QT_MIN 6.8)
+# Private APIs are required by the renderer and Wayland integration. Report
+# their build-version requirement once instead of warning for each module.
+set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Gui ShaderTools)
+message(STATUS "Afterglow uses Qt ${Qt6_VERSION} private APIs; rebuild Afterglow after changing the Qt build.")
 qt_standard_project_setup()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

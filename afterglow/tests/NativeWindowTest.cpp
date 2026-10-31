@@ -432,10 +432,12 @@ TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
         }
         ASSERT_TRUE(ready());
         EXPECT_TRUE(layer->focusedItem()->isVisible());
-        if (kind == QLatin1String("title"))
+        if (kind == QLatin1String("title")) {
             EXPECT_EQ(layer->focusedItem()->property("text").toString(), QStringLiteral("existing title"));
-        if (kind == QLatin1String("palette") || kind == QLatin1String("search"))
+        }
+        if (kind == QLatin1String("palette") || kind == QLatin1String("search")) {
             EXPECT_TRUE(layer->focusedItem()->property("placeholderText").isValid());
+        }
         QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
         QCoreApplication::sendEvent(fresh, &escape);
         EXPECT_FALSE(chrome->wantsKeyboard());
