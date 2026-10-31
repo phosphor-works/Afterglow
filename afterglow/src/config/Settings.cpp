@@ -366,6 +366,10 @@ PhosphorConfig::Schema buildSchema()
                                  "invalid spec uses the default.")),
         intKey(QStringLiteral("splitDuration"), 250, 16, 5000,
                QStringLiteral("Duration of split animations in milliseconds for curves other than springs, which settle by themselves")),
+        stringKey(QStringLiteral("overviewCurve"), QStringLiteral("spring:12,0.82"),
+                  QStringLiteral("Pane overview motion: a Phosphor curve spec, as for splitCurve. The default spring overshoots slightly")),
+        intKey(QStringLiteral("overviewDuration"), 450, 16, 5000,
+               QStringLiteral("Duration of pane overview motion in milliseconds for curves other than springs")),
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), QVariantList{}, QMetaType::QVariantList,
@@ -378,6 +382,8 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Shaders run over each pane: shader pack ids, such as cursor-trail and bloom")},
         {QStringLiteral("window"), QVariantList{}, QMetaType::QVariantList,
          QStringLiteral("Shaders run over the whole window, across splits, after the pane shaders")},
+        stringKey(QStringLiteral("overview"), QStringLiteral("pane-deck"),
+                  QStringLiteral("Shader that draws the pane overview (pane_overview). An empty value turns the overview off")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Per shader parameter values, e.g. { \"bloom\": { \"strength\": 0.5 } }")},
     };
@@ -749,6 +755,8 @@ Settings SettingsStore::read() const
     s.animation.splits = st.read<bool>(Animation, QStringLiteral("splits"));
     s.animation.splitCurve = st.read<QString>(Animation, QStringLiteral("splitCurve")).trimmed();
     s.animation.splitDuration = st.read<int>(Animation, QStringLiteral("splitDuration"));
+    s.animation.overviewCurve = st.read<QString>(Animation, QStringLiteral("overviewCurve")).trimmed();
+    s.animation.overviewDuration = st.read<int>(Animation, QStringLiteral("overviewDuration"));
 
     // Shaders
     auto shaderList = [&st](const char* key) {
@@ -759,7 +767,7 @@ Settings SettingsStore::read() const
         return refs;
     };
     s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
-                 shaderList("window")};
+                 shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed()};
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
     s.hintPatterns = st.read<QVariantList>(QStringLiteral("Hints"), QStringLiteral("patterns")).mid(0, 16);

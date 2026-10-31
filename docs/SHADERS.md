@@ -11,7 +11,7 @@ The [shader API](SHADER-API.md) describes the contract.
 
 ## Shader chains
 
-The `Shaders` configuration group contains five chains:
+The `Shaders` configuration group contains five chains and the pane overview:
 
 | Chain | Input |
 | --- | --- |
@@ -20,12 +20,18 @@ The `Shaders` configuration group contains five chains:
 | `cursor` | Each pane's cursor layer. |
 | `pane` | The completed pane. |
 | `window` | The completed window. |
+| `overview` | The completed window, while the pane overview shows. One pack ID, not a list. |
 
 The first three chains run before pane composition.
 Layer inputs use premultiplied alpha. Empty areas are transparent.
 Shader output must also use premultiplied alpha.
 Afterglow draws the tab bar and other controls after all shader chains.
 Without layer shaders, Afterglow does not allocate separate layers.
+
+The pane overview (`pane_overview`, Ctrl+Shift+D) shows the tab's panes in 3D.
+The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
+Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
+The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.
 
 [Phosphor](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.

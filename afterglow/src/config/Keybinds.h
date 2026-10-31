@@ -76,7 +76,7 @@ enum class Action {
     ShowLastOutput,
     ShowHints,
     SwapLeft, SwapRight, SwapUp, SwapDown,
-    RotatePanesClockwise, RotatePanesCounterclockwise,
+    RotatePanesClockwise, RotatePanesCounterclockwise, PaneOverview,
     MovePaneToTab, MovePaneToWindow, DetachTab,
     SaveProject, SwitchProject,
 };

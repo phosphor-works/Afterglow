@@ -114,6 +114,8 @@ public:
         };
         std::array<Signal, 8> signals{};
         ShaderParameterMap shaderParameters;
+        /// Highlighted in the pane overview.
+        bool highlighted = false;
     };
 
     /// Where each layer's instances start, relative to the pane's first:
@@ -210,6 +212,19 @@ public:
     void setShaderChains(ShaderChains chains);
     /// A shader animates over time: the host keeps scheduling frames.
     bool animating() const;
+    /// The pane overview for terminal_panes.glsl, eased by the host. The
+    /// overview chain runs while it is open and until it has closed.
+    struct Overview
+    {
+        bool open = false;
+        float amount = 0; ///< 0 the flat window, 1 open
+        float position = 0; ///< the highlight, as a fractional pane index
+        std::optional<std::chrono::steady_clock::time_point> changedAt; ///< opened or closed
+        std::optional<std::chrono::steady_clock::time_point> movedAt; ///< the highlight moved
+    };
+    void setOverview(const Overview& overview) { m_overview = overview; }
+    /// Open, or still closing.
+    bool overviewShowing() const;
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
     void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
@@ -299,6 +314,7 @@ private:
     double m_easedScrollbackLines = 0;
     bool m_scrollbackInitialized = false;
     bool m_scrollbackSettling = false;
+    Overview m_overview;
     PipelineSet m_postPipelines;
     QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
     std::unique_ptr<class PostChain> m_post;

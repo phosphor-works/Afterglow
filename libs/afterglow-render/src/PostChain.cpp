@@ -72,6 +72,7 @@ QRhiScissor scissorFor(const QRect& rc, const QSize& px)
 constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
 /// TerminalScene in terminal_scene.glsl: object matrices for mesh passes.
 constexpr int SceneBinding = PreviousTextBinding + 1;
+constexpr int PanesBinding = SceneBinding + 1;
 static_assert(PhosphorShaders::Bindings::kUserTextureCount == MaxShaderImages);
 
 struct CompositeUniforms
@@ -168,6 +169,7 @@ void PostChain::release()
     m_bufferBytes = 0;
     m_ubos.clear();
     m_sceneUbos.clear();
+    m_panesUbo.reset();
     m_compositeUbos.clear();
     m_historyTarget.reset();
     m_previousText.reset();
@@ -307,6 +309,20 @@ QRhiBuffer* PostChain::uniformBuffer(int index)
     return m_ubos[std::size_t(index)].get();
 }
 
+QRhiBuffer* PostChain::panesBuffer()
+{
+    if (!m_panesUbo) {
+        m_panesUbo.reset(m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(TerminalPaneUniforms)));
+        m_panesUbo->create();
+    }
+    return m_panesUbo.get();
+}
+
+void PostChain::uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPaneUniforms& panes)
+{
+    updates->updateDynamicBuffer(panesBuffer(), 0, sizeof panes, &panes);
+}
+
 QRhiBuffer* PostChain::sceneBuffer(int index)
 {
     while (int(m_sceneUbos.size()) <= index) {
@@ -402,6 +418,7 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
             m_chains.audioReactive() ? m_device.audioTexture() : input, m_device.atlasSampler()),
         QRhiShaderResourceBinding::sampledTexture(PreviousTextBinding, stage, history, m_sampler.get()),
         QRhiShaderResourceBinding::uniformBuffer(SceneBinding, stage, sceneBuffer(ubo)),
+        QRhiShaderResourceBinding::uniformBuffer(PanesBinding, stage, panesBuffer()),
     };
     for (int i = 0; i < MaxShaderBuffers; ++i)
         entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kChannelBase + i, stage,
@@ -947,6 +964,7 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
 
     // Window chain; the last step (or a passthrough) writes to the swapchain.
     std::vector<ShaderProgramPtr> steps = m_chains.window;
+    if (m_overviewShowing) steps.insert(steps.end(), m_chains.overview.begin(), m_chains.overview.end());
     if (steps.empty()) {
         steps.push_back(ShaderProgram::passthrough());
     }

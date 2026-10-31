@@ -9,11 +9,31 @@
 | --- | --- |
 | `swap_left`, `swap_right`, `swap_up`, `swap_down` | Exchanges the focused pane with an adjacent pane |
 | `rotate_panes_clockwise` (Ctrl+Shift+]), `rotate_panes_counterclockwise` (Ctrl+Shift+[) | Moves every pane in the tab to the next or previous position in reading order |
+| `pane_overview` (Ctrl+Shift+D) | Shows the tab's panes as live cards to choose from |
 | `move_pane_to_tab` | Moves the pane to a new tab |
 | `move_pane_to_window` | Moves the pane to a new window |
 | `detach_tab` | Moves the complete tab to a new window |
 
 Rotation keeps the layout shape and split ratios. Focus stays with the same pane.
+
+### Pane overview
+
+The pane overview shows every pane in the tab as a live card. The focused pane starts highlighted.
+
+| Key | Function |
+| --- | --- |
+| Right, Down, Tab, `l` or `j` | Highlights the next pane |
+| Left, Up, Shift+Tab, `h` or `k` | Highlights the previous pane |
+| Home, End | Highlights the first or last pane |
+| Enter, Space or a left click | Focuses the highlighted pane and closes the overview |
+| 1 to 9 | Focuses that numbered card and closes the overview |
+| Escape, the `pane_overview` key, or a right or middle click | Closes the overview and keeps the focus |
+
+The mouse wheel also moves the highlight.
+Keys do not reach the panes while the overview is open. Programs in the panes keep running.
+A zoomed tab shows all of its panes in the overview, and returns zoomed on the chosen pane.
+`Animation.overviewCurve` and `Animation.overviewDuration` set the motion.
+`Shaders.overview` chooses the pack that draws it. See [shaders](SHADERS.md#shader-chains).
 Use the command palette or a keybinding to run these actions.
 Drag a tab outside the tab bar and release it to open a new window.
 Alternatively, right-click the tab and select **Detach Tab to New Window**.

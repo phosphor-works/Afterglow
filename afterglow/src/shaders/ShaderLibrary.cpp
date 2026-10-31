@@ -493,7 +493,8 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
             + QString::fromUtf8(QJsonDocument::fromVariant(params.value(ref).toMap()).toJson(QJsonDocument::Compact));
     };
     QSet<QString> desired;
-    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window})
+    const QStringList overview = refs.overview.isEmpty() ? QStringList{} : QStringList{refs.overview};
+    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window, overview})
         for (const auto& ref : chain) desired.insert(cacheKey(ref));
     // Configuration changes must release old decoded assets and compiled packs.
     m_cache.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
@@ -526,6 +527,7 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     add(refs.cursor, chains.cursor);
     add(refs.pane, chains.pane);
     add(refs.window, chains.window);
+    add(overview, chains.overview);
     refreshWatches();
     return chains;
 }

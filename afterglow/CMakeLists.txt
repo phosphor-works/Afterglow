@@ -19,6 +19,7 @@ qt_add_library(afterglow_app STATIC
     src/SplitTree.h
     src/TerminalWindowProject.cpp
     src/TerminalWindowLayout.cpp
+    src/TerminalWindowOverview.cpp
     src/TerminalWindowScript.cpp
     src/TerminalWindow.cpp
     src/TerminalWindow.h

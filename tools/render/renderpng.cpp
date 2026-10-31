@@ -104,6 +104,10 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("timings"), QStringLiteral("Report render/readback and PNG times, excluding the first frame.")});
     parser.addOption({QStringLiteral("wake-from"), QStringLiteral("Previous cursor cell."), QStringLiteral("col,row")});
     parser.addOption({QStringLiteral("split"), QStringLiteral("Show the terminal twice, side by side; the left pane focused.")});
+    parser.addOption({QStringLiteral("grid"), QStringLiteral("Show the terminal in a grid of COLSxROWS panes; the first focused."), QStringLiteral("size")});
+    parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
+    parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("family"), QStringLiteral("Font family."), QStringLiteral("name")});
     parser.addOption({QStringLiteral("weight"), QStringLiteral("Font weight (variable fonts)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("feature"), QStringLiteral("OpenType feature, replacing the defaults (repeatable; \"none\" for none)."),
@@ -261,14 +265,14 @@ int main(int argc, char** argv)
     const Afterglow::ShaderLibrary::Refs refs{
         parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
         parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
-        parser.values(QStringLiteral("shader"))};
+        parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview"))};
     const auto wanted = refs.background.size() + refs.text.size() + refs.cursor.size() + refs.pane.size()
-        + refs.window.size();
+        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1);
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;
         AfterglowRender::ShaderChains chains = library.build(refs, params);
         const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
-            + chains.window.size();
+            + chains.window.size() + chains.overview.size();
         if (got != std::size_t(wanted)) {
             std::fprintf(stderr, "a shader failed to load\n");
             return 1;
@@ -285,9 +289,16 @@ int main(int argc, char** argv)
         if (dimensions.size() != 2 || w < 1 || h < 1 || w > 8192 || h > 8192) return 1;
         size = QSize(w, h);
     }
-    const qint64 fullWidth = parser.isSet(QStringLiteral("split")) ? qint64(size.width()) * 2 + 2 : size.width();
-    if (size.width() < 1 || size.height() < 1 || fullWidth > 8192 || size.height() > 8192
-        || fullWidth * size.height() > 16 * 1024 * 1024) {
+    int gridCols = 1, gridRows = 1;
+    if (parser.isSet(QStringLiteral("grid"))) {
+        const auto grid = parser.value(QStringLiteral("grid")).split(QLatin1Char('x'));
+        gridCols = grid.value(0).toInt(); gridRows = grid.value(1).toInt();
+        if (grid.size() != 2 || gridCols < 1 || gridRows < 1 || gridCols * gridRows > AfterglowRender::MaxShaderPanes) return 1;
+    }
+    const qint64 fullWidth = parser.isSet(QStringLiteral("split")) ? qint64(size.width()) * 2 + 2 : qint64(size.width() + 2) * gridCols - 2;
+    const qint64 fullHeight = qint64(size.height() + 2) * gridRows - 2;
+    if (size.width() < 1 || size.height() < 1 || fullWidth > 8192 || fullHeight > 8192
+        || fullWidth * fullHeight > 16 * 1024 * 1024) {
         std::fprintf(stderr, "framebuffer must fit within 8192 pixels per side and 16 megapixels\n");
         return 1;
     }
@@ -352,6 +363,28 @@ int main(int argc, char** argv)
         right.params.focused = false;
         panes.push_back(right);
         overlays.push_back({QRect(size.width(), 0, divider, size.height()), 0xFF0E0706u});
+    }
+    std::vector<AfterglowRender::PaneSnapshot> copies(std::size_t(gridCols * gridRows), snapshot);
+    if (gridCols * gridRows > 1) {
+        const int divider = 2;
+        frameSize = QSize(int(fullWidth), int(fullHeight));
+        panes.clear();
+        for (int row = 0; row < gridRows; ++row) {
+            for (int col = 0; col < gridCols; ++col) {
+                AfterglowRender::WindowRenderer::Pane cell = pane;
+                cell.snapshot = &copies[std::size_t(row * gridCols + col)];
+                cell.params.rect = QRect(QPoint(col * (size.width() + divider), row * (size.height() + divider)), size);
+                cell.params.contentOrigin = cell.params.rect.topLeft();
+                cell.params.focused = panes.empty() && pane.params.focused;
+                panes.push_back(cell);
+            }
+        }
+    }
+    if (parser.isSet(QStringLiteral("overview"))) {
+        const int highlight = std::clamp(parser.value(QStringLiteral("highlight")).toInt(), 0, int(panes.size()) - 1);
+        panes[std::size_t(highlight)].params.highlighted = true;
+        const float amount = parser.isSet(QStringLiteral("overview-amount")) ? parser.value(QStringLiteral("overview-amount")).toFloat() : 1.0f;
+        renderer.setOverview({true, amount, float(highlight), std::chrono::steady_clock::now(), std::chrono::steady_clock::now()});
     }
     const QFileInfo output(args[1]);
     double renderMs = 0.0, pngMs = 0.0;

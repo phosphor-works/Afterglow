@@ -1167,15 +1167,18 @@ void TerminalWindow::renderNow()
     bool animating = m_shaderControls.advance();
     const QRect area = paneArea();
     const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
-    const std::uint32_t dim = packRgba(0, 0, 0, std::uint8_t(std::lround(m_settings.settings().window.unfocusedDim * 255)));
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     bool anyBlinkingText = false;
+    advanceOverview(animating);
+    // The overview shader draws the cards: fade the unfocused dim out under it.
+    const double overviewAmount = std::clamp(m_overview.amount.value(), 0.0, 1.0);
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         if (r.isEmpty()) return;
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
         wp.params.focused = p == m_focused && m_windowFocused;
+        wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
         const auto overrides = scriptOverrides(p);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.cursorBlinkOverride = overrides.contains(QStringLiteral("cursorBlink"))
@@ -1193,9 +1196,10 @@ void TerminalWindow::renderNow()
         panes.push_back(wp);
         const QRect shown = wp.params.rect;
         if (multiple && p != m_focused) {
-            const auto paneDim = overrides.contains(QStringLiteral("unfocusedDim"))
-                ? packRgba(0, 0, 0, std::uint8_t(std::lround(overrides.value(QStringLiteral("unfocusedDim")).toDouble() * 255))) : dim;
-            overlays.emplace_back(shown, paneDim);
+            const double paneDim = overrides.contains(QStringLiteral("unfocusedDim"))
+                ? overrides.value(QStringLiteral("unfocusedDim")).toDouble() : m_settings.settings().window.unfocusedDim;
+            if (const auto alpha = std::uint8_t(std::lround(paneDim * (1.0 - overviewAmount) * 255)); alpha > 0)
+                overlays.emplace_back(shown, packRgba(0, 0, 0, alpha));
         }
         if (PaneMotion& pm = motion(p); pm.bell.isAnimating()) {
             pm.bell.advance();
@@ -1214,7 +1218,7 @@ void TerminalWindow::renderNow()
     });
     // Split labels, in logical pixels for the chrome.
     QVariantList titles;
-    if (multiple && m_settings.settings().window.paneTitles) {
+    if (multiple && m_settings.settings().window.paneTitles && !m_renderer->overviewShowing()) {
         const qreal dpr = devicePixelRatio();
         std::size_t index = 0;
         m_splits->forEachPane([&](Pane* p, const QRect& area) {
@@ -1614,7 +1618,8 @@ void TerminalWindow::cancelKeyMode()
 
 void TerminalWindow::updateKeyMode()
 {
-    m_controller->setKeyMode(m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy") : m_keyMode.label());
+    m_controller->setKeyMode(m_overview.open ? tr("Panes · arrows choose · Enter or 1–9 focus · Esc cancel")
+                             : m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy") : m_keyMode.label());
     m_keyModeTimer.stop();
     if (m_keyMode.active()) m_keyModeTimer.start(int(std::max(qint64(1), m_keyMode.deadline - m_keyModeClock.elapsed())));
     scheduleRender();
@@ -1691,6 +1696,7 @@ bool TerminalWindow::performAction(Action action)
     case Action::SwapDown: return swapPane(m_focused, SplitTree::Neighbour::Down);
     case Action::RotatePanesClockwise: return rotatePanes(true);
     case Action::RotatePanesCounterclockwise: return rotatePanes(false);
+    case Action::PaneOverview: return openOverview();
     case Action::MovePaneToTab:
         return m_focused && movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right).isEmpty();
     case Action::MovePaneToWindow:
@@ -2789,6 +2795,8 @@ void TerminalWindow::applyShaders()
     auto chains = m_shaders.build(s.shaders, s.shaderParams);
     m_shaderControls.rebuild(chains);
     m_audioReactive = chains.audioReactive();
+    m_overviewAvailable = !chains.overview.empty();
+    if (!m_overviewAvailable) closeOverview(nullptr);
     m_renderer->setShaderChains(std::move(chains));
     m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
     scheduleRender();
@@ -2924,6 +2932,11 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
     if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
     if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
+    if (m_overview.open) {
+        m_consumedKeys.insert(physicalKey);
+        overviewKey(e);
+        return;
+    }
     if (m_urlMode.active) {
         m_consumedKeys.insert(physicalKey);
         urlModeKey(e);
@@ -2964,7 +2977,7 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
         if (m_controller->wantsKeyboard()) m_chrome->deliver(e);
         return;
     }
-    if (m_urlMode.active || m_unicodeInput) {
+    if (m_urlMode.active || m_unicodeInput || m_overview.open) {
         return; // the mode took the press
     }
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
@@ -3267,6 +3280,11 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
     if (!m_splits) return;
+    if (m_overview.open) {
+        // The cards are where the shader draws them: a click takes the one in front.
+        closeOverview(e->button() == Qt::LeftButton ? m_overview.highlighted.data() : nullptr);
+        return;
+    }
     if (m_pointerHidden) {
         m_pointerHidden = false;
         applyPointerShape();
@@ -3397,6 +3415,7 @@ void TerminalWindow::updateSelectionDrag()
 
 void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (m_overview.open || m_overview.amount.isAnimating()) return;
     if (e->button() == Qt::LeftButton) for (auto* pane : panes()) pane->dragDrop()->release();
     if (m_dividerDrag && e->button() == Qt::LeftButton) {
         m_dividerDrag.reset();
@@ -3530,6 +3549,16 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 void TerminalWindow::wheelEvent(QWheelEvent* e)
 {
     if (!m_splits) return;
+    if (m_overview.open) {
+        m_overviewWheel += e->angleDelta().y() ? e->angleDelta().y() : e->angleDelta().x();
+        const auto panes = overviewPanes();
+        const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
+        const int current = at == panes.end() ? 0 : int(at - panes.begin());
+        const int steps = m_overviewWheel / 120;
+        m_overviewWheel -= steps * 120;
+        if (steps) moveOverview(current - steps);
+        return;
+    }
     if (routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

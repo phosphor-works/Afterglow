@@ -80,10 +80,12 @@ struct ShaderChains
     std::vector<ShaderProgramPtr> pane;
     /// Once, over the whole window.
     std::vector<ShaderProgramPtr> window;
+    /// The pane overview, after the window chain, only while the overview shows.
+    std::vector<ShaderProgramPtr> overview;
 
     bool readsScrollback() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
             for (const auto& program : *chain) {
                 if (program->readsScrollback()) return true;
             }
@@ -93,7 +95,7 @@ struct ShaderChains
 
     bool audioReactive() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
             for (const auto& program : *chain) {
                 if (program->requiresAudio()) return true;
             }
@@ -103,7 +105,7 @@ struct ShaderChains
 
     bool highDynamicRange() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
             for (const auto& program : *chain) {
                 if (program->requiresHdr()) {
                     return true;
@@ -115,7 +117,7 @@ struct ShaderChains
 
     bool textHistory() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
             for (const auto& program : *chain) {
                 if (program->readsPreviousText()) {
                     return true;
@@ -151,7 +153,12 @@ public:
     void setChains(ShaderChains chains);
     bool audioReactive() const noexcept { return m_chains.audioReactive(); }
     bool readsScrollback() const noexcept { return m_chains.readsScrollback(); }
-    bool active() const noexcept { return !m_chains.empty(); }
+    bool active() const noexcept { return !m_chains.empty() || (m_overviewShowing && !m_chains.overview.empty()); }
+    /// Runs the overview chain after the window chain while the overview shows.
+    void setOverviewShowing(bool showing) { m_overviewShowing = showing; }
+    /// The pane block for this frame (terminal_panes.glsl), into @p updates
+    /// before the frame's first pass.
+    void uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPaneUniforms& panes);
     bool layered() const noexcept { return m_chains.layered(); }
     /// Some shader reads iTime: the window renders every frame.
     bool animated() const noexcept;
@@ -207,6 +214,7 @@ private:
     QRhiBuffer* uniformBuffer(int index);
     /// The scene block (terminal_scene.glsl) that goes with uniform buffer @p index.
     QRhiBuffer* sceneBuffer(int index);
+    QRhiBuffer* panesBuffer();
     void fill(TerminalUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
               const ShaderProgram& program, const BufferInputs* buffers = nullptr) const;
 
@@ -228,6 +236,8 @@ private:
     static constexpr int MinimumBufferSide = 16; // a pass that would shrink below this is transparent instead
     GpuDevice& m_device;
     ShaderChains m_chains;
+    bool m_overviewShowing = false;
+    std::unique_ptr<QRhiBuffer> m_panesUbo;
     std::map<std::pair<const ShaderProgram*, const QRhiRenderPassDescriptor*>, std::unique_ptr<QRhiGraphicsPipeline>>
         m_pipelines;
     QShader m_vertex;

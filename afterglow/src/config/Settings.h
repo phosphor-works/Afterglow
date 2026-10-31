@@ -99,6 +99,9 @@ struct AnimationSettings
     /// splitDuration milliseconds.
     QString splitCurve = QStringLiteral("spring:22,1");
     int splitDuration = 250;
+    /// The pane overview's motion, as splitCurve; other curves take overviewDuration.
+    QString overviewCurve = QStringLiteral("spring:12,0.82");
+    int overviewDuration = 450;
     bool operator==(const AnimationSettings&) const = default;
 };
 

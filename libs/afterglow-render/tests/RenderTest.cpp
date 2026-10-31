@@ -1754,6 +1754,52 @@ TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
     EXPECT_PIXEL(image, QPoint(256, 256), qRgb(255,0,0));
 }
 
+TEST_F(Render, PaneBlockDescribesPanesAndTheOverviewRunsOnlyWhileShown)
+{
+    ShaderProgramSource source;
+    source.id = "overview";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    vec2 p = terminalPixel(uv);
+    vec4 r = paneRect(highlightedPane());
+    bool inside = all(greaterThanEqual(p, r.xy)) && all(lessThan(p, r.xy + r.zw));
+    return vec4(inside ? 1.0 : 0.0, overviewAmount(), float(paneCount()) / 4.0 + highlightPosition() / 4.0, 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.overview = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    const QSize size(Cols * cw, Rows * ch), frame(size.width() * 2, size.height());
+    WindowRenderer::Pane left{&snapshot, {}}, right{&other, {}};
+    left.params.rect = QRect(QPoint(), size);
+    right.params.rect = QRect(QPoint(size.width(), 0), size);
+    right.params.contentOrigin = right.params.rect.topLeft();
+    right.params.highlighted = true;
+    const QPoint leftCenter(size.width() / 2, size.height() / 2), rightCenter(size.width() * 3 / 2, size.height() / 2);
+    // Closed: the overview chain does not run.
+    auto image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, leftCenter, rgb(snapshot.defaultBg));
+    EXPECT_FALSE(renderer->overviewShowing());
+    // Open: two panes, the right one highlighted, half open, the highlight at pane 1.
+    const auto now = std::chrono::steady_clock::now();
+    renderer->setOverview({true, 0.5f, 1.0f, now, now});
+    EXPECT_TRUE(renderer->overviewShowing());
+    EXPECT_TRUE(renderer->animating());
+    image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, rightCenter, qRgb(255, 128, 191));
+    EXPECT_PIXEL(image, leftCenter, qRgb(0, 128, 191));
+    // Closing keeps it running until the amount reaches zero.
+    renderer->setOverview({false, 0.25f, 1.0f, now, now});
+    EXPECT_TRUE(renderer->overviewShowing());
+    renderer->setOverview({false, 0.0f, 1.0f, now, now});
+    EXPECT_FALSE(renderer->overviewShowing());
+    image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, rightCenter, rgb(other.defaultBg));
+}
+
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
 {
     std::vector<ShaderSceneObject> objects(3);

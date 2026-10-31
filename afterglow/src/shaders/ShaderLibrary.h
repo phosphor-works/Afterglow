@@ -48,6 +48,7 @@ public:
         QStringList cursor;
         QStringList pane;
         QStringList window;
+        QString overview; ///< the pane overview; empty for none
         bool operator==(const Refs&) const = default;
     };
     /// Compiles the configured chains. Shaders that fail are logged and skipped.

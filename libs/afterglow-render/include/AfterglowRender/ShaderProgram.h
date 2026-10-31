@@ -105,6 +105,14 @@ struct alignas(16) TerminalSceneUniforms {
     float uObjectNormalMatrix[MaxSceneObjects][16];
 };
 static_assert(sizeof(TerminalSceneUniforms) == 8192);
+inline constexpr int MaxShaderPanes = 32;
+/// The pane block (std140, binding 19): mirrors terminal_panes.glsl.
+struct alignas(16) TerminalPaneUniforms {
+    std::int32_t uPaneState[4] {0, -1, -1, 0}; ///< panes, focused, highlighted, overview open
+    float uOverview[4] {0.0f, 0.0f, 1e6f, 1e6f}; ///< open amount, highlight position, ages since open/close and highlight move
+    float uPaneRect[MaxShaderPanes][4] {};
+};
+static_assert(sizeof(TerminalPaneUniforms) == 544);
 struct ShaderGeometry {
     QByteArray vertexCode; ///< defines `vec4 pMesh()`, the Vulkan clip position, or its own main()
     QString directory; ///< resolves the vertex code's quoted includes

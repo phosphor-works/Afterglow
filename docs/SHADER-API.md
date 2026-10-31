@@ -23,6 +23,7 @@ Afterglow compiles the copy built into it, so a pack cannot replace these header
 | `terminal_audio.glsl` | `uAudioSpectrum` and the audio helpers. | Enables audio capture. |
 | `terminal_history.glsl` | `uPreviousText`. | Enables text history. |
 | `terminal_scene.glsl` | Object matrices and helpers for mesh passes with `objects`. | For object hierarchies. |
+| `terminal_panes.glsl` | The tab's pane rectangles, focus and the pane overview's state. | For window and overview shaders. |
 
 ### Entry points
 
@@ -261,6 +262,35 @@ Include `terminal_scene.glsl` in the mesh vertex shader:
 The pack still applies its own camera and projection.
 Send `objectIndex()` to the fragment stage in a flat output when that stage needs it.
 [Orrery](../data/shaders/orrery/metadata.json) demonstrates a sun, an orbiting planet and its moon.
+
+## Panes and the overview
+
+A window shader sees the whole window but, without `terminal_panes.glsl`, not where its panes are.
+Include `terminal_panes.glsl` in any pass to read the current tab's panes and the pane overview.
+
+| Function | Value |
+| --- | --- |
+| `paneCount()` | The panes in the tab, up to 32, in layout order. |
+| `paneRect(i)` | Pane `i` in window pixels: x, y, width and height. |
+| `focusedPane()` | The focused pane. |
+| `highlightedPane()` | The pane the overview highlights, or -1. |
+| `overviewOpen()` | True while the overview is open. False while it closes. |
+| `overviewAmount()` | 0 for the flat window, 1 when the overview is open. A spring can pass 1 briefly. |
+| `highlightPosition()` | The highlight as a pane index. It is fractional while the highlight moves. |
+
+A window shader samples point `p` of a pane at `uv = p / iResolution`.
+`uOverview.z` and `uOverview.w` hold the seconds since the overview opened or closed and since the highlight moved.
+
+`Shaders.overview` names the pack that draws the pane overview.
+Afterglow runs that pack after the window chain, only while the overview shows.
+It costs nothing while the overview is closed.
+Afterglow eases `overviewAmount()` and `highlightPosition()` with `Animation.overviewCurve`, so a shader reads positions and never times motion itself.
+Draw the flat window when `overviewAmount()` is 0. Opening and closing then start and end on the window.
+The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
+
+Input does not reach the panes while the overview is open.
+The highlighted pane is the one the user chooses, so a pack needs no hit testing.
+[Pane Deck](../data/shaders/pane-deck/effect.frag) traces the panes as live cards on a carousel in one pass.
 
 ## Images
 

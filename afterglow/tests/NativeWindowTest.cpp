@@ -859,3 +859,58 @@ int main(int argc, char** argv)
 }
 
 #include "NativeWindowTest.moc"
+
+TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
+    ASSERT_NE(third, nullptr);
+    window->revealPane(first);
+    drain();
+    auto press = [&](int key, const QString& text = {}) {
+        QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier, text);
+        QCoreApplication::sendEvent(window, &down);
+        QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier, text);
+        QCoreApplication::sendEvent(window, &up);
+        drain();
+    };
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
+    drain();
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    drain();
+    ASSERT_TRUE(window->overviewOpen());
+    EXPECT_EQ(window->overviewHighlight(), first);
+    EXPECT_TRUE(chrome->keyMode().startsWith(QStringLiteral("Panes")));
+    EXPECT_TRUE(chrome->paneTitles().isEmpty());
+    // Every pane is a card while the overview is open, zoom or not.
+    EXPECT_FALSE(window->accessiblePaneRect(third).isEmpty());
+    press(Qt::Key_Right);
+    EXPECT_EQ(window->overviewHighlight(), second);
+    press(Qt::Key_Right);
+    press(Qt::Key_Right);
+    EXPECT_EQ(window->overviewHighlight(), first); // wraps
+    press(Qt::Key_Left);
+    EXPECT_EQ(window->overviewHighlight(), third);
+    // Keys never reach the shells while the overview is open.
+    press(Qt::Key_X, QStringLiteral("x"));
+    press(Qt::Key_Return);
+    EXPECT_FALSE(window->overviewOpen());
+    EXPECT_EQ(window->focusedPane(), third);
+    // The tab was zoomed: it returns zoomed, on the chosen pane.
+    EXPECT_TRUE(window->accessiblePaneRect(first).isEmpty());
+    EXPECT_FALSE(window->accessiblePaneRect(third).isEmpty());
+    EXPECT_TRUE(chrome->keyMode().isEmpty());
+    // Escape cancels back to the focused pane; a digit chooses directly.
+    ASSERT_TRUE(window->runAction(third, Action::PaneOverview));
+    press(Qt::Key_Right);
+    press(Qt::Key_Escape);
+    EXPECT_EQ(window->focusedPane(), third);
+    ASSERT_TRUE(window->runAction(third, Action::PaneOverview));
+    press(Qt::Key_2, QStringLiteral("2"));
+    EXPECT_FALSE(window->overviewOpen());
+    EXPECT_EQ(window->focusedPane(), second);
+}

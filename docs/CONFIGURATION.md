@@ -12,6 +12,8 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `cursor` | `true` |  | Animate cursor movement between cells. |
+| `overviewCurve` | `"spring:12,0.82"` |  | Pane overview motion: a Phosphor curve spec, as for splitCurve. The default spring overshoots slightly |
+| `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs |
 | `scroll` | `true` |  | Animate scrolling between rows. |
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves |
@@ -123,6 +125,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | --- | --- | --- | --- |
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone |
+| `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off |
 | `pane` | `[]` |  | Shaders run over each pane: shader pack ids, such as cursor-trail and bloom |
 | `params` | `{}` |  | Per shader parameter values, e.g. { "bloom": { "strength": 0.5 } } |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text |
@@ -217,6 +220,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `next_tab` | `["Ctrl+Tab", "Ctrl+PgDown"]` |
 | `notify_on_finish` | `[]` |
 | `open_config` | `"Ctrl+Shift+,"` |
+| `pane_overview` | `"Ctrl+Shift+D"` |
 | `paste` | `"Ctrl+Shift+V"` |
 | `previous_tab` | `["Ctrl+Shift+Tab", "Ctrl+PgUp"]` |
 | `reload_config` | `"Ctrl+Shift+R"` |

@@ -830,7 +830,7 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
         m_scrollbackInitialized = false;
         m_scrollbackSettling = false;
     }
-    if (chains.empty()) {
+    if (chains.empty() && chains.overview.empty()) {
         m_post.reset();
         return;
     }
@@ -842,7 +842,12 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
 
 bool WindowRenderer::animating() const
 {
-    return m_post && (m_post->animated() || m_scrollbackSettling);
+    return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing();
+}
+
+bool WindowRenderer::overviewShowing() const
+{
+    return m_overview.open || std::abs(m_overview.amount) > 1e-3f;
 }
 
 void WindowRenderer::ensureBindings(FontResources& res)
@@ -1192,6 +1197,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     }
 
     // With shaders, the grid goes to an offscreen texture first.
+    if (m_post) m_post->setOverviewShowing(overviewShowing());
     const bool post = m_post && m_post->active();
     QRhiRenderTarget* gridTarget = target.renderTarget();
     QRhiRenderPassDescriptor* gridPass = target.renderPass;
@@ -1270,6 +1276,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     ShaderFrameTime time;
     std::vector<ShaderRegionState> regions;
     ShaderRegionState windowState;
+    TerminalPaneUniforms paneBlock;
     if (post) {
         const float now = m_clockOverride.value_or(float(m_clock.nsecsElapsed()) / 1e9f);
         time = ShaderFrameTime{now, m_shaderFrame > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
@@ -1353,6 +1360,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 st.signals[i] = {sig.value, now - age};
             }
             st.shaderParameters = pane.params.shaderParameters;
+            if (regions.size() < std::size_t(MaxShaderPanes)) {
+                const int index = int(regions.size());
+                const QRect r = st.rect;
+                std::copy_n(std::array<float, 4>{float(r.x()), float(r.y()), float(r.width()), float(r.height())}.data(), 4,
+                            paneBlock.uPaneRect[index]);
+                paneBlock.uPaneState[0] = index + 1;
+                if (pane.params.focused) paneBlock.uPaneState[1] = index;
+                if (pane.params.highlighted) paneBlock.uPaneState[2] = index;
+            }
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;
@@ -1361,6 +1377,14 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+        const auto wall = std::chrono::steady_clock::now();
+        auto age = [&](const auto& at) { return at ? std::chrono::duration<float>(wall - *at).count() : 1e6f; };
+        paneBlock.uPaneState[3] = m_overview.open ? 1 : 0;
+        paneBlock.uOverview[0] = m_overview.amount;
+        paneBlock.uOverview[1] = m_overview.position;
+        paneBlock.uOverview[2] = age(m_overview.changedAt);
+        paneBlock.uOverview[3] = age(m_overview.movedAt);
+        m_post->uploadPanes(updates, paneBlock);
     }
 
     auto drawBackgrounds = [&](const DrawRange& range) {

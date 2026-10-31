@@ -77,6 +77,7 @@ qt_add_resources(AfterglowRender "afterglow_terminal_contract"
         ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_lib.glsl
         ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_multipass.glsl
         ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_scene.glsl
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_panes.glsl
         ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_uniforms.glsl
 )
 

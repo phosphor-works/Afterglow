@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <memory>
+#include <chrono>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -122,6 +123,11 @@ public:
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
     bool rotatePanes(bool clockwise);
+    /// The pane overview: the tab's panes as live cards, drawn by Shaders.overview.
+    bool openOverview();
+    bool overviewOpen() const { return m_overview.open; }
+    /// The highlighted pane, while the overview is open.
+    Pane* overviewHighlight() const { return m_overview.open ? m_overview.highlighted.data() : nullptr; }
     /// Animation.splitCurve, resolved once per spec; the default spring when invalid.
     std::shared_ptr<const PhosphorAnimation::Curve> splitCurve();
 
@@ -398,6 +404,32 @@ private:
     void stopUrlMode();
     void showUrlHints();
     void urlModeKey(QKeyEvent* e);
+
+    struct Overview
+    {
+        bool open = false;
+        QPointer<Pane> highlighted;
+        QPointer<Pane> original; ///< focused when the overview opened
+        QPointer<Pane> zoomed; ///< zoomed when the overview opened
+        PhosphorAnimation::AnimatedValue<qreal> amount; ///< 0 flat, 1 open
+        PhosphorAnimation::AnimatedValue<qreal> position; ///< the highlight as a pane index
+        std::optional<std::chrono::steady_clock::time_point> changedAt;
+        std::optional<std::chrono::steady_clock::time_point> movedAt;
+        QString curveSpec;
+        std::shared_ptr<const PhosphorAnimation::Curve> curve;
+    } m_overview;
+    bool m_overviewAvailable = false; ///< Shaders.overview compiled
+    int m_overviewWheel = 0; ///< wheel travel not yet a whole step
+    /// The panes the overview shows, in layout order.
+    std::vector<Pane*> overviewPanes() const;
+    /// Focuses @p chosen and closes; nullptr cancels back to the original pane.
+    void closeOverview(Pane* chosen);
+    void moveOverview(int index);
+    void overviewKey(QKeyEvent* e);
+    PhosphorAnimation::MotionSpec<qreal> overviewSpec();
+    /// Advances the overview's motion and hands it to the renderer. Closes it
+    /// when its panes went away. Sets @p animating while it moves.
+    void advanceOverview(bool& animating);
 
     // Unicode input: a codepoint typed in hex.
     std::optional<QString> m_unicodeInput;
