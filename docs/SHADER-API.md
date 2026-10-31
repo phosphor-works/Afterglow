@@ -40,6 +40,9 @@ Raw `texelFetch` addresses local texture pixels.
 
 Buffer passes use scaled buffer pixels for `iResolution`, region, cell, cursor and mouse coordinates.
 The image pass uses full-resolution pixels.
+`iWindowRegion` retains the pane rectangle in window pixels: X, Y, width and height.
+Its origin is at the top left. `iWindowSize` retains the window width and height.
+These two uniforms do not change with buffer scale. Use them for a camera or effect that spans split panes.
 Buffer `iFrame` starts at zero after reset. Image `iFrame` retains the window frame counter.
 `iTime` is the shared host clock.
 

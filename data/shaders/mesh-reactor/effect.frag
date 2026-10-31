@@ -4,7 +4,7 @@
 #define AFTERGLOW_AUDIO 1
 #include "scene.glsl"
 vec3 chamber(vec2 uv) {
-    vec2 p=(uv-0.5)*vec2(iResolution.x/iResolution.y,1.0);
+    vec2 p=(uv-0.5)*vec2(iWindowSize.x/iWindowSize.y,1.0);
     float t=iTime*p_speed;
     vec3 cyan=vec3(0.015,0.12,0.20),violet=vec3(0.11,0.015,0.20);
     float n=noise3(vec3(p*3.0,t*0.025));
@@ -26,6 +26,8 @@ vec3 chamber(vec2 uv) {
 }
 void mainImage(out vec4 color,in vec2 pixel) {
     vec2 uv=pixel/iResolution.xy;
+    vec2 windowUV=vec2(iWindowRegion.x+uv.x*iWindowRegion.z,
+        iWindowSize.y-iWindowRegion.y-iWindowRegion.w+uv.y*iWindowRegion.w)/iWindowSize;
     vec4 scene=texture(iBuffer0,uv);
     // Resolve isolated subpixel edges when the driver has no two-sample MSAA.
     vec2 texel=1.0/vec2(textureSize(iBuffer0,0));
@@ -44,9 +46,9 @@ void mainImage(out vec4 color,in vec2 pixel) {
         offset.x*=iResolution.y/iResolution.x;
         glow+=max(texture(iBuffer0,uv+offset).rgb-vec3(0.85),vec3(0))*exp(-r*r*3.0)*0.07;
     }
-    vec3 radiance=scene.rgb+chamber(uv)*(1.0-scene.a);
+    vec3 radiance=scene.rgb+chamber(windowUV)*(1.0-scene.a);
     if(p_linearOutput<0.5) radiance+=glow;
-    float vignette=1.0-0.36*smoothstep(0.18,0.8,length(uv-0.5));
+    float vignette=1.0-0.36*smoothstep(0.18,0.8,length(windowUV-0.5));
     radiance*=p_exposure*vignette;
     if(p_linearOutput>0.5) { color=vec4(radiance,1); return; }
     // ACES fitted display curve; preserve bright cyan and warm metal edges.

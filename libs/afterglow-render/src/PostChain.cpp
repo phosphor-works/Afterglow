@@ -591,6 +591,12 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             scaled.mouse = QPointF((region.mouse.x() - region.rect.x()) * sx, (region.mouse.y() - region.rect.y()) * sy);
             TerminalShaderUniforms uniforms;
             fill(uniforms, scaled, time, program);
+            // Buffer-local coordinates still drive sampling. Keep the original
+            // window rectangle separately so mesh cameras can span splits.
+            uniforms.iWindowRegion[0] = region.rect.x();
+            uniforms.iWindowRegion[1] = region.rect.y();
+            uniforms.iWindowRegion[2] = region.rect.width();
+            uniforms.iWindowRegion[3] = region.rect.height();
             uniforms.iFramebufferSize[0] = size.width(); uniforms.iFramebufferSize[1] = size.height();
             uniforms.iTextureRegion[0] = uniforms.iTextureRegion[1] = 0;
             uniforms.iTextureRegion[2] = uniforms.iTextureRegion[3] = 1;
@@ -772,6 +778,9 @@ void PostChain::fill(TerminalShaderUniforms& u, const ShaderRegionState& s, cons
     u.iRegion[1] = float(r.y());
     u.iRegion[2] = float(r.width());
     u.iRegion[3] = float(r.height());
+    std::copy(std::begin(u.iRegion), std::end(u.iRegion), u.iWindowRegion);
+    u.iWindowSize[0] = float(m_size.width());
+    u.iWindowSize[1] = float(m_size.height());
     u.iFramebufferSize[0] = float(m_size.width());
     u.iFramebufferSize[1] = float(m_size.height());
     u.iTextureRegion[0] = float(r.x()) / m_size.width();

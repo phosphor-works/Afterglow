@@ -10,6 +10,7 @@ Native desktop tests use KDE/KWin. Other compositors and screen readers are not 
 Build and installation procedures do not change. This release does not add macOS or Windows support.
 
 - Keep windows responsive when shader regions move outside the surface during resize or tab detachment. Close GPU frames on rendering errors and release chrome resources in the correct order.
+- Keep the Mesh Reactor camera and chamber continuous across split panes.
 - Expand Mesh Reactor with segmented armor, plasma, chamber lighting and fracture/recall motion. Add `--mesh` to the Phosphor demo launcher for the same Luau controls.
 - Render imported OBJ meshes and shader-generated triangles with instancing and hardware depth testing. Add the Mesh Reactor shader pack.
 - Detach a tab by dragging it outside the bar, or through its context menu. Existing panes keep their running processes.

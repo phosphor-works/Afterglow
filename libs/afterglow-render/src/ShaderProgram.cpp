@@ -58,6 +58,8 @@ layout(std140, binding = 0) uniform Globals {
     int   iAudioSpectrumSize;
     vec4  iScrollback;
     vec4  iTextureRegion;
+    vec4  iWindowRegion;
+    vec2  iWindowSize;
 };
 
 #define CURSORSTYLE_BLOCK        0

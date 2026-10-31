@@ -72,6 +72,9 @@ struct alignas(16) TerminalShaderUniforms
     /// Pane rows, combined current-tab rows, eased current-tab rows, reserved (0).
     float iScrollback[4];
     float iTextureRegion[4]; ///< normalized source rectangle, unchanged by buffer scaling
+    float iWindowRegion[4]; ///< original pane rectangle in window pixels, including in buffer passes
+    float iWindowSize[2]; ///< original window size, independent of buffer scaling
+    float windowPad[2];
 };
 static_assert(offsetof(TerminalShaderUniforms, iMouse) == 160);
 static_assert(offsetof(TerminalShaderUniforms, iCurrentCursor) == 208);
@@ -84,7 +87,7 @@ static_assert(offsetof(TerminalShaderUniforms, iBackgroundOpacity) == 4912);
 static_assert(offsetof(TerminalShaderUniforms, iSignal) == 4928);
 static_assert(offsetof(TerminalShaderUniforms, iAudioLevels) == 5056);
 static_assert(offsetof(TerminalShaderUniforms, iScrollback) == 5088);
-static_assert(sizeof(TerminalShaderUniforms) == 5120);
+static_assert(sizeof(TerminalShaderUniforms) == 5152);
 
 /// What a shader is built from: user code defining
 /// `void mainImage(out vec4 fragColor, in vec2 fragCoord)` with includes

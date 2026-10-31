@@ -1515,6 +1515,57 @@ TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
     EXPECT_PIXEL(split, cellCenter(10,2)+QPoint(size.width(),0), qRgb(0,255,0));
 }
 
+TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
+{
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    PaneSnapshot otherSnapshot = snapshot;
+    const QSize size(320, 240);
+    WindowRenderer::Pane first{&snapshot, {}}, second{&otherSnapshot, {}};
+    for (float scale : {0.5f, 0.75f}) {
+        ShaderProgramSource source;
+        source.id = "window-camera";
+        source.bufferScale = scale;
+        source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+        ShaderBufferSource pass;
+        pass.geometry.vertexCount = 3;
+        pass.geometry.vertexCode = R"(
+            void mainMesh(out vec4 p) {
+                vec2 corners[3]=vec2[3](vec2(-0.8,-0.7),vec2(0.7,-0.4),vec2(0.1,0.8));
+                p=vec4(corners[gl_VertexIndex],0.5,1);
+                p.xy=(p.xy*iWindowSize+(iWindowSize-2.0*iWindowRegion.xy-iWindowRegion.zw)*p.w)/iWindowRegion.zw;
+            })";
+        pass.code = R"(
+            void mainImage(out vec4 c,in vec2 p) {
+                vec2 uv=p/iResolution.xy;
+                vec2 windowPixel=vec2(iWindowRegion.x+uv.x*iWindowRegion.z,
+                    iWindowSize.y-iWindowRegion.y-iWindowRegion.w+uv.y*iWindowRegion.w);
+                c=vec4(windowPixel/iWindowSize,0.7,1);
+            })";
+        source.buffers = {pass};
+        QString error;
+        auto program = ShaderProgram::compile(source, &error);
+        ASSERT_TRUE(program) << error.toStdString();
+        ShaderChains chains; chains.pane = {program->instance("mesh")};
+        renderer->setShaderChains(chains);
+        first.params.rect = QRect(QPoint(), size);
+        const auto whole = renderer->renderToImage(size, {first}, {}, 0xff000000u);
+        // Unequal splits exercise offsets in both axes, independently of buffer scale.
+        for (bool vertical : {false, true}) {
+            first.params.rect = vertical ? QRect(0,0,320,96) : QRect(0,0,128,240);
+            second.params.rect = vertical ? QRect(0,96,320,144) : QRect(128,0,192,240);
+            const auto split = renderer->renderToImage(size, {first,second}, {}, 0xff000000u);
+            for (const QPoint point : {QPoint(80,60), QPoint(180,72), QPoint(160,144), QPoint(20,220)}) {
+                SCOPED_TRACE(::testing::Message() << "scale=" << scale << " vertical=" << vertical
+                    << " point=" << point.x() << "," << point.y());
+                EXPECT_PIXEL_NEAR(split, point, whole.pixel(point), 3);
+            }
+            // Check a known interior point to avoid a vacuous all-clear comparison.
+            EXPECT_GT(qBlue(split.pixel(160,144)), 150);
+        }
+    }
+}
+
 TEST_F(Render, ImportedMeshUsesVertexAttributesAndOcclusion)
 {
     ShaderProgramSource source;

@@ -57,8 +57,11 @@ void mainMesh(out vec4 clipPosition) {
     worldPosition=model*point;
     worldNormal=model*normal;
     vec3 view=transpose(cameraBasis())*(worldPosition-camera());
-    float aspect=iResolution.x/max(iResolution.y,1.0);
+    float aspect=iWindowSize.x/max(iWindowSize.y,1.0);
     const float nearPlane=0.1,farPlane=40.0,focal=2.65;
     clipPosition=vec4(view.x*focal/aspect,-view.y*focal,
         farPlane/(nearPlane-farPlane)*view.z+farPlane*nearPlane/(nearPlane-farPlane),-view.z);
+    // Crop a single window camera to this pane's buffer viewport.
+    clipPosition.xy=(clipPosition.xy*iWindowSize
+        +(iWindowSize-2.0*iWindowRegion.xy-iWindowRegion.zw)*clipPosition.w)/iWindowRegion.zw;
 }
