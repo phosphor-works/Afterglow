@@ -1515,6 +1515,63 @@ TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
     EXPECT_PIXEL(split, cellCenter(10,2)+QPoint(size.width(),0), qRgb(0,255,0));
 }
 
+TEST_F(Render, WindowBackgroundKeepsMeshHistoryAcrossSplitAnimationAndFocus)
+{
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot otherSnapshot = snapshot;
+    ShaderProgramSource source;
+    source.id = "shared-background";
+    source.code = "#define AFTERGLOW_WINDOW_BACKGROUND 1\n"
+        "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+    ShaderBufferSource pass;
+    pass.feedback = true;
+    pass.scale = .5f;
+    pass.geometry.vertexCount = 3;
+    pass.geometry.vertexCode = R"(
+        void mainMesh(out vec4 p) {
+            vec2 corners[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
+            p=vec4(corners[gl_VertexIndex],0.5,1);
+        })";
+    pass.code = R"(
+        void mainImage(out vec4 c,in vec2 p) {
+            c=vec4(texture(iBuffer0,p/iResolution.xy).r+0.05,
+                customParams[0].x,float(iFrame)/20.0,1);
+        })";
+    source.buffers = {pass};
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ASSERT_TRUE(program->windowBackground());
+    ShaderChains chains; chains.background = {program};
+    renderer->setShaderChains(chains);
+    const QSize size(320,240);
+    WindowRenderer::Pane first{&snapshot, {}}, second{&otherSnapshot, {}};
+    first.params.rect = QRect(QPoint(),size);
+    ShaderParameterValues values; values.paramMask=1; values.params[0]=0.75f;
+    second.params.shaderParameters.insert(program->instanceId(),values);
+    auto draw = [&](const std::vector<WindowRenderer::Pane>& panes, int frame) {
+        renderer->setClockOverride(float(frame+1));
+        return renderer->renderToImage(size,panes,{},0xff000000u);
+    };
+    EXPECT_PIXEL_NEAR(draw({first},0), QPoint(20,20), qRgb(13,0,0), 2);
+    for (int frame=1;frame<=8;++frame) {
+        const int divider=100+frame*8;
+        first.params.rect=QRect(0,0,divider,240);
+        second.params.rect=QRect(divider+2,0,318-divider,240);
+        second.params.focused=(frame%2)==1;
+        first.params.focused=!second.params.focused;
+        const auto image=draw({first,second},frame);
+        const auto expected=qRgb(qRound((frame+1)*.05*255),second.params.focused?191:0,qRound(frame*.05*255));
+        EXPECT_PIXEL_NEAR(image,QPoint(20,20),expected,3);
+        EXPECT_PIXEL_NEAR(image,QPoint(300,20),expected,3);
+        EXPECT_PIXEL(image,QPoint(divider,20),qRgb(0,0,0));
+    }
+    // Removing the original pane must not retire the shared scene's buffers.
+    second.params.rect=QRect(QPoint(),size);
+    second.params.focused=true;
+    EXPECT_PIXEL_NEAR(draw({second},9),QPoint(20,20),qRgb(128,191,115),3);
+}
+
 TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
 {
     terminal->feed("\x1b[?25l");

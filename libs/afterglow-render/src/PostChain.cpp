@@ -486,9 +486,11 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
     for (std::size_t regionIndex = 0; regionIndex < regions.size(); ++regionIndex) {
         const auto& region = regions[regionIndex];
         if (region.rect.isEmpty()) continue;
-        auto& passes = m_buffers[{&program, scope, step, region.snapshot}];
+        const bool sharedBackground = scope == 0 && program.windowBackground();
+        const auto* identitySnapshot = sharedBackground ? nullptr : region.snapshot;
+        auto& passes = m_buffers[{&program, scope, step, identitySnapshot}];
         auto& samples = result[regionIndex];
-        const std::vector<HistoryRegion> identity{{region.snapshot, region.rect,
+        const std::vector<HistoryRegion> identity{{identitySnapshot, region.rect,
             region.snapshot ? region.snapshot->defaultBg : 0, region.snapshot ? region.snapshot->defaultFg : 0,
             region.cellSize, region.backgroundOpacity}};
         // Initialise every pass before running any of them. Earlier passes
@@ -638,7 +640,18 @@ int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgram
     int current = input;
     int step = 0;
     for (const ShaderProgramPtr& program : chain) {
-        auto buffers = runBuffers(frame, *program, scope, step++, current, panes, time, ubo);
+        // A scene background owns one window-sized buffer set. Split animation
+        // changes only the scissors, never its camera, targets or mesh draw count.
+        std::vector<ShaderRegionState> sharedRegions;
+        const bool shared = scope == 0 && program->windowBackground() && !panes.empty();
+        if (shared) {
+            auto focused = std::find_if(panes.begin(), panes.end(), [](const auto& pane) { return pane.focused; });
+            auto window = focused == panes.end() ? panes.front() : *focused;
+            window.rect = QRect(QPoint(), m_size);
+            sharedRegions.push_back(std::move(window));
+        }
+        const auto& regions = shared ? sharedRegions : panes;
+        auto buffers = runBuffers(frame, *program, scope, step++, current, regions, time, ubo);
         // The layer textures not holding a layer: one is always free.
         int out = FirstLayerTexture;
         while (std::find(std::begin(m_layerTexture), std::end(m_layerTexture), out) != std::end(m_layerTexture)) {
@@ -646,21 +659,21 @@ int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgram
         }
         QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
         const int firstUbo = ubo;
-        for (const ShaderRegionState& pane : panes) {
+        for (const ShaderRegionState& pane : regions) {
             TerminalShaderUniforms u;
             fill(u, pane, time, *program);
             updates->updateDynamicBuffer(uniformBuffer(ubo++), 0, sizeof u, &u);
         }
         std::vector<QRhiShaderResourceBindings*> resources;
-        for (std::size_t i = 0; i < panes.size(); ++i)
-            resources.push_back(bindings(firstUbo + int(i), current, &panes[i], program.get(), &buffers[i], updates));
+        for (std::size_t i = 0; i < regions.size(); ++i)
+            resources.push_back(bindings(firstUbo + int(i), current, &regions[i], program.get(), &buffers[i], updates));
         // Outside the panes the layer stays transparent.
         frame.beginPass(m_layerTargets[out - FirstLayerTexture].get(), Qt::transparent, {1.0f, 0}, updates);
         cb->setGraphicsPipeline(pipeline(*program, m_gridPass.get()));
         cb->setViewport({0, 0, float(m_size.width()), float(m_size.height())});
         for (std::size_t i = 0; i < panes.size(); ++i) {
             cb->setScissor(scissorFor(panes[i].rect, m_size));
-            cb->setShaderResources(resources[i]);
+            cb->setShaderResources(resources[shared ? 0 : i]);
             cb->draw(program->vertexCount());
         }
         frame.endPass();

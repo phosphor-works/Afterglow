@@ -16,6 +16,7 @@ The metal has bevels, reflection highlights, engraved lines and status lights.
 The final pass adds haze, particles, glow and display tone mapping.
 Terminal text is drawn above the scene.
 The camera spans the window. Each split pane shows its part of the same scene.
+The mesh renders once per frame. Split animation does not resize the scene buffers.
 
 System audio changes the core and lights. Current-tab scrollback increases
 the baseline energy. Silence does not stop the animation.

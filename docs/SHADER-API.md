@@ -46,6 +46,16 @@ These two uniforms do not change with buffer scale. Use them for a camera or eff
 Buffer `iFrame` starts at zero after reset. Image `iFrame` retains the window frame counter.
 `iTime` is the shared host clock.
 
+Add `#define AFTERGLOW_WINDOW_BACKGROUND 1` to a background image shader to share
+one set of buffers across the window. The buffer passes run once per frame.
+The image pass uses window coordinates and is clipped to visible panes.
+Split changes do not resize these buffers or reset their history.
+Window resize, shader reload, and changes to source colors, cell size or opacity still reset history.
+The focused pane supplies the palette, cursor, signals and parameter overrides.
+If no pane has focus, the first visible pane supplies these values.
+This option has no effect in text, cursor, pane or window chains.
+Use it for scene backgrounds and their lens passes, including effects that sample across split boundaries.
+
 ## Auxiliary depth
 
 With depth enabled, write `depthBuffer = vec4(...)` in `mainImage`.

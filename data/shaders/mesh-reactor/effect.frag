@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #define AFTERGLOW_HDR 1
+#define AFTERGLOW_WINDOW_BACKGROUND 1
 #define AFTERGLOW_AUDIO 1
 #include "scene.glsl"
 vec3 chamber(vec2 uv) {

@@ -219,6 +219,8 @@ public:
     bool requiresHdr() const noexcept { return m_requiresHdr; }
     /// Opt-in `#define AFTERGLOW_AUDIO 1`: capture system playback while visible.
     bool requiresAudio() const noexcept { return m_requiresAudio; }
+    /// Render a background once for the window, then clip it to the visible panes.
+    bool windowBackground() const noexcept { return m_windowBackground; }
     const std::array<float, 32>& params() const noexcept { return m_params; }
     const std::array<float, 64>& colors() const noexcept { return m_colors; }
 
@@ -242,6 +244,7 @@ private:
     bool m_readsScrollback = false;
     bool m_requiresHdr = false;
     bool m_requiresAudio = false;
+    bool m_windowBackground = false;
     std::array<float, 32> m_params{};
     std::array<float, 64> m_colors{};
 };

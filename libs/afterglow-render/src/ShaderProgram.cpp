@@ -325,11 +325,15 @@ void main() {
                                             QRegularExpression::MultilineOption);
     static const QRegularExpression usesAudio(QStringLiteral("^[ \t]*#[ \t]*define[ \t]+AFTERGLOW_AUDIO[ \t]+1[ \t]*(?://[^\r\n]*)?\r?$"),
                                               QRegularExpression::MultilineOption);
+    static const QRegularExpression usesWindowBackground(
+        QStringLiteral(R"(^[ \t]*#[ \t]*define[ \t]+AFTERGLOW_WINDOW_BACKGROUND[ \t]+1[ \t]*(?://[^\r\n]*)?\r?$)"),
+        QRegularExpression::MultilineOption);
     static const QRegularExpression usesScrollback(QStringLiteral("\\biScrollback\\b"));
     const QString code = QString::fromUtf8(source.code + "\n" + source.vertexCode + "\n" + geometry.vertexCode);
     program->m_readsPreviousText = code.contains(usesHistory);
     program->m_requiresHdr = code.contains(usesHdr);
     program->m_requiresAudio = code.contains(usesAudio);
+    program->m_windowBackground = code.contains(usesWindowBackground);
     program->m_readsScrollback = code.contains(usesScrollback);
     program->m_animated = code.contains(usesTime) || program->m_readsPreviousText;
     program->m_params = source.params;
