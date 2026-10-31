@@ -65,33 +65,43 @@ float slot(int i) {
 // The carousel's shape: slots round the ring, the angle between them, and
 // the highlight's slot. The same for every card, so computed once a pixel.
 struct Ring {
-    float slots;
+    float slots;     // one round of the cards, gaps included
+    int rounds;      // copies of the cards round the ring
     float step;
     float highlight;
 };
 
+// The cards close the ring, evenly spaced, so scrolling past the last card
+// carries on to the first without turning back. A ring of few cards repeats
+// them until it has at least seven places, so a card always has neighbours.
 Ring ring() {
     int n = max(paneCount(), 1);
     Ring g;
     g.slots = slot(n - 1) + 1.0 + (paneTab(n - 1) != paneTab(0) ? p_tabGap : 0.0);
-    g.step = 2.0 * Pi / max(g.slots, 7.0);
+    g.rounds = int(ceil(7.0 / g.slots));
+    g.step = 2.0 * Pi / (g.slots * float(g.rounds));
+    // The highlight keeps counting past the last card; each lap adds a ring.
     float h = highlightPosition();
-    int below = clamp(int(floor(h)), 0, n - 1);
-    g.highlight = mix(slot(below), slot(min(below + 1, n - 1)), clamp(h - float(below), 0.0, 1.0));
+    float lap = floor(h / float(n));
+    float within = h - lap * float(n);
+    int below = clamp(int(floor(within)), 0, n - 1);
+    float after = below + 1 < n ? slot(below + 1) : g.slots + slot(0);
+    g.highlight = lap * g.slots + mix(slot(below), after, clamp(within - float(below), 0.0, 1.0));
     return g;
 }
 
-// A card's signed distance from the highlight round the ring, in slots. It
-// wraps the short way round the whole ring, whose seam is directly behind
-// the highlight: a ring with few cards is partly empty, so the seam never
-// falls on a card at the side.
-float ringOffset(int i, Ring g) {
-    float k = slot(i) - g.highlight;
-    float ringSlots = 2.0 * Pi / g.step;
+// A copy of card i (copy v / paneCount()) as its signed distance from the
+// highlight round the ring, in slots, the short way round. The seam is
+// directly behind the highlight, where both sides of it are the same place.
+float ringOffset(int v, Ring g) {
+    int n = max(paneCount(), 1);
+    float k = slot(v % n) + float(v / n) * g.slots - g.highlight;
+    float ringSlots = g.slots * float(g.rounds);
     return k - ringSlots * floor(k / ringSlots + 0.5);
 }
 
-Card card(int i, float a, float widest, Ring g) {
+Card card(int v, float a, float widest, Ring g) {
+    int i = v % max(paneCount(), 1);
     vec2 res = iResolution;
     vec4 r = paneRect(i);
     // Flat: where the pane is in its tab, with other tabs to the side.
@@ -100,7 +110,7 @@ Card card(int i, float a, float widest, Ring g) {
     vec2 flatHalf = r.zw * 0.5;
     float fit = deckScale(r);
     float radius = widest * p_spacing / (2.0 * sin(g.step * 0.5));
-    float k = ringOffset(i, g);
+    float k = ringOffset(v, g);
     float theta = k * g.step;
     vec3 deckCenter = vec3(radius * sin(theta), -res.y * 0.04, radius * (cos(theta) - 1.0));
 
@@ -181,7 +191,7 @@ vec4 shade(int i, Card c, vec2 local, bool front, float pixel, float a, out floa
     float focus = 1.0 - clamp(abs(c.offset), 0.0, 1.0);
     color.rgb *= mix(1.0, mix(p_sideBrightness, 1.0, focus), shown);
 
-    if (i == highlightedPane()) {
+    if (i == highlightedPane() && abs(c.offset) < 0.5 * float(paneCount())) {
         // A pulsing border in the theme's cursor colour.
         float width = c.halfSize.y * 0.018;
         float ring = smoothstep(width + pixel, width, -sd) * shown;
@@ -237,10 +247,8 @@ vec4 pTerminal(vec2 uv) {
     Ring g = ring();
     float near = 1e20, next = 1e20;
     int nearCard = -1, nextCard = -1;
-    for (int i = 0; i < n; ++i) {
-        // The far side of the ring faces away: only dark backs, so skip it.
-        if (shown > 0.9 && abs(ringOffset(i, g) * g.step) > 1.8) continue;
-        Card c = card(i, a, widest, g);
+    for (int v = 0; v < n * g.rounds; ++v) {
+        Card c = card(v, a, widest, g);
         float t;
         vec2 local;
         bool front;
@@ -250,17 +258,18 @@ vec4 pTerminal(vec2 uv) {
         if (sdRoundBox(local, c.halfSize, 0.0) > pixel) continue;
         if (t < near) {
             next = near; nextCard = nearCard;
-            near = t; nearCard = i;
+            near = t; nearCard = v;
         } else if (t < next) {
-            next = t; nextCard = i;
+            next = t; nextCard = v;
         }
     }
     vec4 nearColor = vec4(0.0), nextColor = vec4(0.0);
     float nearCover = 0.0, nextCover = 0.0;
     for (int pick = 0; pick < 2; ++pick) {
-        int i = pick == 0 ? nearCard : nextCard;
-        if (i < 0) continue;
-        Card c = card(i, a, widest, g);
+        int v = pick == 0 ? nearCard : nextCard;
+        if (v < 0) continue;
+        int i = v % n;
+        Card c = card(v, a, widest, g);
         float t;
         vec2 local;
         bool front;
@@ -281,10 +290,10 @@ vec4 pTerminal(vec2 uv) {
         vec3 r = vec3(d.x, -d.y, d.z);
         float best = 1e20;
         int bestCard = -1;
-        for (int i = 0; i < n; ++i) {
+        for (int v = 0; v < n * g.rounds; ++v) {
             // Only cards near the front stand close enough to show in the floor.
-            if (abs(ringOffset(i, g)) > 2.5) continue;
-            Card c = card(i, a, widest, g);
+            if (abs(ringOffset(v, g)) > 2.5) continue;
+            Card c = card(v, a, widest, g);
             float t;
             vec2 local;
             bool front;
@@ -292,7 +301,7 @@ vec4 pTerminal(vec2 uv) {
             float pixel = (tf + t) / cam.focal / max(abs(dot(r, c.normal)), 0.15);
             if (sdRoundBox(local, c.halfSize, 0.0) > pixel) continue;
             best = t;
-            bestCard = i;
+            bestCard = v;
         }
         vec4 mirrored = vec4(0.0);
         if (bestCard >= 0) {
@@ -303,7 +312,7 @@ vec4 pTerminal(vec2 uv) {
             intersect(c, p, r, t, local, front);
             float pixel = (tf + t) / cam.focal / max(abs(dot(r, c.normal)), 0.15);
             float cover;
-            vec4 color = shade(bestCard, c, local, front, pixel, a, cover);
+            vec4 color = shade(bestCard % n, c, local, front, pixel, a, cover);
             float height = (floorY - (p.y + r.y * t)) / (2.0 * c.halfSize.y);
             mirrored = color * cover * pow(clamp(1.0 - height * 1.6, 0.0, 1.0), 2.0);
         }

@@ -282,7 +282,7 @@ While it shows, the cards are the panes of every tab, up to 32.
 | `highlightedPane()` | The card the overview highlights, or -1. |
 | `overviewOpen()` | True while the overview is open. False while it closes. |
 | `overviewAmount()` | 0 for the flat window, 1 when the overview is open. A spring can pass 1 briefly. |
-| `highlightPosition()` | The highlight as a card index. It is fractional while the highlight moves. |
+| `highlightPosition()` | The highlight's position in cards. It is fractional while the highlight moves. It counts on past the last card when the highlight wraps round, so motion continues. Take it modulo `paneCount()`. |
 | `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
 

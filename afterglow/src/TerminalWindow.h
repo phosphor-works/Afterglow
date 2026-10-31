@@ -414,7 +414,8 @@ private:
         QPointer<Pane> original; ///< focused when the overview opened
         QPointer<Pane> zoomed; ///< zoomed when the overview opened
         PhosphorAnimation::AnimatedValue<qreal> amount; ///< 0 flat, 1 open
-        PhosphorAnimation::AnimatedValue<qreal> position; ///< the highlight as a pane index
+        PhosphorAnimation::AnimatedValue<qreal> position; ///< the highlight, counting on past the last card
+        qreal positionTarget = 0; ///< where it heads: equals the highlighted index modulo the cards
         std::optional<std::chrono::steady_clock::time_point> changedAt;
         std::optional<std::chrono::steady_clock::time_point> movedAt;
     } m_overview;
@@ -452,7 +453,9 @@ private:
     void layoutOtherTabs();
     /// Focuses @p chosen and closes; nullptr cancels back to the original pane.
     void closeOverview(Pane* chosen);
-    void moveOverview(int index);
+    /// Highlights card @p index, the short way round, or in @p direction (1
+    /// forward, -1 back) when it is given.
+    void moveOverview(int index, int direction = 0);
     void overviewKey(QKeyEvent* e);
     PhosphorAnimation::MotionSpec<qreal> overviewSpec();
     /// Advances the overview's motion. Closes it when its panes went away.

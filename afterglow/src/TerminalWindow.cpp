@@ -3574,7 +3574,7 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         const int current = at == panes.end() ? 0 : int(at - panes.begin());
         const int steps = m_overviewWheel / 120;
         m_overviewWheel -= steps * 120;
-        if (steps) moveOverview(current - steps);
+        if (steps) moveOverview(current - steps, steps > 0 ? -1 : 1);
         return;
     }
     if (routePointerToChrome(e, e->position(), false, false)) {

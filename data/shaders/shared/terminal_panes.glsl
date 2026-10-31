@@ -31,8 +31,9 @@ layout(std140, binding = 19) uniform TerminalPanes {
     ivec4 uPaneState;      // offset 0     .x cards (0-32), .y focused card, .z highlighted card (-1 for none),
                            //              .w 1 while the overview is open, 0 while closed or closing
     vec4 uOverview;        // offset 16    .x how far the overview is open: 0 the flat window, 1 open
-                           //                 (a spring can overshoot), .y the highlight's position: a card
-                           //                 index, fractional while it moves, .z seconds since the overview
+                           //                 (a spring can overshoot), .y the highlight's position in cards:
+                           //                 fractional while it moves, and counting on past the last card
+                           //                 when it wraps round (take it modulo paneCount()), .z seconds since the overview
                            //                 opened or closed, .w seconds since the highlight moved
                            //                 (both 1e6 if never)
     ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index

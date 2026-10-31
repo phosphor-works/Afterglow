@@ -133,6 +133,7 @@ bool TerminalWindow::openOverview()
     // Reopening while it closes continues from where it is.
     m_overview.amount.start(m_overview.amount.value(), 1.0, spec);
     const qreal index = qreal(focused - panes.begin());
+    m_overview.positionTarget = index;
     if (!m_overview.position.isAnimating() && m_overview.amount.value() <= 0.0) m_overview.position.start(index, index, spec);
     else m_overview.position.start(m_overview.position.value(), index, spec);
     m_overview.changedAt = m_overview.movedAt = std::chrono::steady_clock::now();
@@ -155,8 +156,16 @@ void TerminalWindow::closeOverview(Pane* chosen)
     else if (target) setFocusedPane(target);
     const auto spec = overviewSpec();
     m_overview.amount.start(m_overview.amount.value(), 0.0, spec);
-    if (const auto at = std::find(panes.begin(), panes.end(), target); at != panes.end())
-        m_overview.position.start(m_overview.position.value(), qreal(at - panes.begin()), spec);
+    if (const auto at = std::find(panes.begin(), panes.end(), target); at != panes.end()) {
+        // The chosen card, the short way round from where the deck is.
+        const int count = int(panes.size());
+        const qreal now = m_overview.position.value();
+        qreal delta = std::fmod(qreal(at - panes.begin()) - now, qreal(count));
+        if (delta > count / 2.0) delta -= count;
+        if (delta < -count / 2.0) delta += count;
+        m_overview.positionTarget = now + delta;
+        m_overview.position.start(now, m_overview.positionTarget, spec);
+    }
     m_overview.changedAt = std::chrono::steady_clock::now();
     m_overview.highlighted = nullptr;
     m_overview.original = nullptr;
@@ -165,13 +174,19 @@ void TerminalWindow::closeOverview(Pane* chosen)
     scheduleRender();
 }
 
-void TerminalWindow::moveOverview(int index)
+void TerminalWindow::moveOverview(int index, int direction)
 {
     const auto panes = overviewPanes();
     if (!m_overview.open || panes.empty()) return;
     const int count = int(panes.size());
     index = ((index % count) + count) % count;
     if (panes[std::size_t(index)] == m_overview.highlighted) return;
+    const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
+    const int current = at == panes.end() ? 0 : int(at - panes.begin());
+    // The position keeps counting, so wrapping round carries the deck on.
+    int delta = ((index - current) % count + count) % count;
+    if (direction < 0 || (direction == 0 && delta * 2 > count)) delta -= count;
+    m_overview.positionTarget += delta;
     m_overview.highlighted = panes[std::size_t(index)];
     m_overview.movedAt = std::chrono::steady_clock::now();
     scheduleRender();
@@ -188,9 +203,9 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
     } else if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter || e->key() == Qt::Key_Space) {
         closeOverview(m_overview.highlighted);
     } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Backtab || e->key() == Qt::Key_H) {
-        moveOverview(current - 1);
+        moveOverview(current - 1, -1);
     } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_Tab || e->key() == Qt::Key_L) {
-        moveOverview(current + 1);
+        moveOverview(current + 1, 1);
     } else if ((e->key() == Qt::Key_Up || e->key() == Qt::Key_K || e->key() == Qt::Key_Down || e->key() == Qt::Key_J)
                && !panes.empty()) {
         // The first pane of the previous or next tab, wrapping round.
@@ -205,7 +220,7 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
         // Up lands on the first pane of that tab, as Down does.
         const int tab = tabOf(panes[std::size_t(index)]);
         while (index > 0 && tabOf(panes[std::size_t(index - 1)]) == tab) --index;
-        moveOverview(index);
+        moveOverview(index, down ? 1 : -1);
     } else if (e->key() == Qt::Key_Home) {
         moveOverview(0);
     } else if (e->key() == Qt::Key_End) {
@@ -228,9 +243,19 @@ void TerminalWindow::advanceOverview(bool& animating)
             m_overview.highlighted = m_overview.original;
         }
     }
-    if (m_overview.open) {
+    if (m_overview.open && !panes.empty()) {
+        // Panes opened or closed meanwhile shift the indices: keep the target
+        // on the highlighted card, the short way round.
+        const int count = int(panes.size());
         const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
-        const qreal target = qreal(at - panes.begin());
+        const int index = int(at - panes.begin());
+        const int heading = int(std::lround(std::fmod(std::fmod(m_overview.positionTarget, count) + count, count))) % count;
+        if (heading != index) {
+            int delta = ((index - heading) % count + count) % count;
+            if (delta * 2 > count) delta -= count;
+            m_overview.positionTarget += delta;
+        }
+        const qreal target = m_overview.positionTarget;
         if (target != m_overview.position.to() || !m_overview.position.isAnimating()) {
             if (m_overview.position.isAnimating()) m_overview.position.retarget(target);
             else if (m_overview.position.value() != target) m_overview.position.start(m_overview.position.value(), target, overviewSpec());
