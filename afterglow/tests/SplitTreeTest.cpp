@@ -162,3 +162,29 @@ TEST(SplitTree, SwapPreservesTopologyAndClearsZoom)
     EXPECT_FALSE(tree.swap(fake(1), fake(9)));
     EXPECT_FALSE(tree.swap(fake(1), fake(1)));
 }
+
+TEST(SplitTree, RotationCyclesPanesThroughAnUnchangedLayout)
+{
+    SplitTree single(fake(1));
+    EXPECT_FALSE(single.rotate(true));
+    SplitTree tree(fake(1));
+    tree.split(fake(1), fake(2), SplitTree::Direction::Right, 0.3);
+    tree.split(fake(2), fake(3), SplitTree::Direction::Down);
+    const QRect area(0, 0, 301, 201);
+    tree.layout(area, 1);
+    const QRect slots[] = {tree.rectOf(fake(1)), tree.rectOf(fake(2)), tree.rectOf(fake(3))};
+    tree.setZoomedPane(fake(2));
+    ASSERT_TRUE(tree.rotate(true));
+    tree.layout(area, 1);
+    // Each pane takes the next slot in reading order; the last wraps to the first.
+    EXPECT_EQ(tree.rectOf(fake(3)), slots[0]);
+    EXPECT_EQ(tree.rectOf(fake(1)), slots[1]);
+    EXPECT_EQ(tree.rectOf(fake(2)), slots[2]);
+    EXPECT_EQ(tree.zoomedPane(), nullptr);
+    ASSERT_TRUE(tree.rotate(false));
+    tree.layout(area, 1);
+    EXPECT_EQ(tree.rectOf(fake(1)), slots[0]);
+    EXPECT_EQ(tree.rectOf(fake(2)), slots[1]);
+    EXPECT_EQ(tree.rectOf(fake(3)), slots[2]);
+    EXPECT_EQ(tree.paneCount(), 3);
+}

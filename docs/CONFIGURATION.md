@@ -13,6 +13,8 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | --- | --- | --- | --- |
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `scroll` | `true` |  | Animate scrolling between rows. |
+| `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
+| `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves |
 | `splits` | `true` |  | Animate split opening, closing and resizing. |
 
 ## Audio
@@ -223,6 +225,8 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `resize_left` | `"Ctrl+Shift+Alt+Left"` |
 | `resize_right` | `"Ctrl+Shift+Alt+Right"` |
 | `resize_up` | `"Ctrl+Shift+Alt+Up"` |
+| `rotate_panes_clockwise` | `"Ctrl+Shift+]"` |
+| `rotate_panes_counterclockwise` | `"Ctrl+Shift+["` |
 | `save_project` | `[]` |
 | `scroll_bottom` | `"Shift+End"` |
 | `scroll_page_down` | `"Shift+PgDown"` |

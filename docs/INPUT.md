@@ -71,6 +71,9 @@ A split or resize action first restores the layout.
 Hidden panes keep their previous terminal size and continue to run.
 
 A split must have at least four columns and two rows, plus padding.
+Splits animate when they open, close and resize. `Animation.splits` turns this off.
+`Animation.splitCurve` takes a Phosphor curve spec, such as `spring:22,1` or `0.2,0,0,1`.
+A spring settles by itself. Other curves take `Animation.splitDuration` milliseconds.
 At an outside edge, resize moves the nearest divider on the selected axis.
 See [panes and projects](PROJECTS.md) to move panes between windows.
 

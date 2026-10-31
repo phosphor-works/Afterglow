@@ -94,6 +94,11 @@ struct AnimationSettings
     bool cursor = true; ///< the cursor glides between cells
     bool scroll = true; ///< scrolling eases instead of jumping by rows
     bool splits = true; ///< splits open, close and resize smoothly
+    /// The split motion: a Phosphor curve spec, such as a spring or a
+    /// cubic Bézier. Springs settle by themselves; other curves take
+    /// splitDuration milliseconds.
+    QString splitCurve = QStringLiteral("spring:22,1");
+    int splitDuration = 250;
     bool operator==(const AnimationSettings&) const = default;
 };
 

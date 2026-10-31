@@ -59,7 +59,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 ### Windows, tabs and panes
 
-- Tabs and split panes, with pane zoom, resize, swap and directional focus.
+- Tabs and split panes, with pane zoom, resize, swap, rotation and directional focus.
+- Animated splits whose motion takes any Phosphor curve, such as a spring or a cubic Bézier.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut.

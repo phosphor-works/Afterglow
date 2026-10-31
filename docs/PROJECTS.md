@@ -8,10 +8,12 @@
 | Action | Function |
 | --- | --- |
 | `swap_left`, `swap_right`, `swap_up`, `swap_down` | Exchanges the focused pane with an adjacent pane |
+| `rotate_panes_clockwise` (Ctrl+Shift+]), `rotate_panes_counterclockwise` (Ctrl+Shift+[) | Moves every pane in the tab to the next or previous position in reading order |
 | `move_pane_to_tab` | Moves the pane to a new tab |
 | `move_pane_to_window` | Moves the pane to a new window |
 | `detach_tab` | Moves the complete tab to a new window |
 
+Rotation keeps the layout shape and split ratios. Focus stays with the same pane.
 Use the command palette or a keybinding to run these actions.
 Drag a tab outside the tab bar and release it to open a new window.
 Alternatively, right-click the tab and select **Detach Tab to New Window**.

@@ -195,7 +195,8 @@ TEST_F(ConfigTest, ReadsTheNewerSettings)
         "Terminal": {"env": {"EDITOR": "nvim", "BAD=KEY": "x"}, "wordSeparators": " ,", "scrollLines": 5,
                      "confirmClose": false, "hideMouseWhileTyping": true},
         "Window": {"workingDirectory": "home", "startMode": "MAXIMIZED", "decorations": false, "tabBar": "sometimes",
-                   "scrollbar": "always", "scrollbarHideDelay": 90000}
+                   "scrollbar": "always", "scrollbarHideDelay": 90000},
+        "Animation": {"splitCurve": " 0.2,0,0,1 ", "splitDuration": 5}
     })");
     SettingsStore store(config);
     const Settings& s = store.settings();
@@ -221,6 +222,8 @@ TEST_F(ConfigTest, ReadsTheNewerSettings)
     EXPECT_EQ(s.window.tabBar, WindowSettings::TabBar::Auto); // not a choice: the default
     EXPECT_EQ(s.window.scrollbar, WindowSettings::Scrollbar::Always);
     EXPECT_EQ(s.window.scrollbarHideDelay, 60000); // clamped
+    EXPECT_EQ(s.animation.splitCurve, QStringLiteral("0.2,0,0,1"));
+    EXPECT_EQ(s.animation.splitDuration, 16); // clamped
 }
 
 TEST(Keybinds, TextBindingsSendTheirBytes)

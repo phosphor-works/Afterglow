@@ -148,4 +148,14 @@ bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbour direction)
     scheduleRender();
     return true;
 }
+
+bool TerminalWindow::rotatePanes(bool clockwise)
+{
+    if (!m_splits || !m_splits->rotate(clockwise)) return false;
+    setPaneZoom(nullptr);
+    updateChrome();
+    m_layoutSize = {};
+    scheduleRender();
+    return true;
+}
 } // namespace Afterglow

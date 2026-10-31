@@ -3,7 +3,9 @@
 
 #include "SplitTree.h"
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 namespace Afterglow {
@@ -81,6 +83,25 @@ bool SplitTree::swap(Pane* first, Pane* second)
     auto* b = find(m_root.get(), second);
     if (!a || !b || !a->pane || !b->pane || a == b) return false;
     std::swap(a->pane, b->pane);
+    m_zoomed = nullptr;
+    m_dividers.clear();
+    return true;
+}
+
+bool SplitTree::rotate(bool clockwise)
+{
+    std::vector<Node*> leaves;
+    const std::function<void(Node*)> collect = [&](Node* node) {
+        if (node->pane) leaves.push_back(node);
+        else { collect(node->first.get()); collect(node->second.get()); }
+    };
+    collect(m_root.get());
+    if (leaves.size() < 2) return false;
+    std::vector<Pane*> panes;
+    for (const Node* leaf : leaves) panes.push_back(leaf->pane);
+    if (clockwise) std::rotate(panes.rbegin(), panes.rbegin() + 1, panes.rend());
+    else std::rotate(panes.begin(), panes.begin() + 1, panes.end());
+    for (std::size_t i = 0; i < leaves.size(); ++i) leaves[i]->pane = panes[i];
     m_zoomed = nullptr;
     m_dividers.clear();
     return true;

@@ -21,6 +21,7 @@
 #include "KeyMapping.h"
 #include "chrome/ChromeController.h"
 
+#include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorAnimation/Spring.h>
 #include <PhosphorWayland/LayerSurface.h>
 
@@ -1282,6 +1283,20 @@ PaneMotion& TerminalWindow::motion(const Pane* pane)
     return *slot;
 }
 
+std::shared_ptr<const PhosphorAnimation::Curve> TerminalWindow::splitCurve()
+{
+    const QString& spec = m_settings.settings().animation.splitCurve;
+    if (!m_splitCurve || spec != m_splitCurveSpec) {
+        m_splitCurveSpec = spec;
+        m_splitCurve = m_shaders.curves().tryCreate(spec);
+        if (!m_splitCurve) {
+            qCWarning(lcWindow).noquote() << "Animation.splitCurve" << spec << "is not a curve; using the default spring";
+            m_splitCurve = std::make_shared<PhosphorAnimation::Spring>(SplitSpeed, 1.0);
+        }
+    }
+    return m_splitCurve;
+}
+
 void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,
                                  bool& holding, bool& animating)
 {
@@ -1292,7 +1307,9 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
 
     // Where the pane is drawn: its layout rectangle, or on the way there.
     const QRectF rectTarget(layoutRect);
-    const auto rectSpec = springSpec<QRectF>(m_clock.get(), SplitSpeed);
+    auto rectSpec = springSpec<QRectF>(m_clock.get(), SplitSpeed);
+    rectSpec.profile.curve = splitCurve();
+    rectSpec.profile.duration = anim.splitDuration;
     if (!m.rectKnown) {
         m.rectKnown = true;
         m.rectTarget = rectTarget;
@@ -1665,6 +1682,8 @@ bool TerminalWindow::performAction(Action action)
     case Action::SwapRight: return swapPane(m_focused, SplitTree::Neighbour::Right);
     case Action::SwapUp: return swapPane(m_focused, SplitTree::Neighbour::Up);
     case Action::SwapDown: return swapPane(m_focused, SplitTree::Neighbour::Down);
+    case Action::RotatePanesClockwise: return rotatePanes(true);
+    case Action::RotatePanesCounterclockwise: return rotatePanes(false);
     case Action::MovePaneToTab:
         return m_focused && movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right).isEmpty();
     case Action::MovePaneToWindow:

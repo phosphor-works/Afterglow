@@ -39,6 +39,10 @@ public:
     /// the pane was the last one.
     bool remove(Pane* pane);
     bool swap(Pane* first, Pane* second);
+    /// Moves every pane to the next leaf in reading order (the last to the
+    /// first), or the previous one when @p clockwise is false. The layout's
+    /// shape and ratios stay. Returns false with fewer than two panes.
+    bool rotate(bool clockwise);
     QJsonObject snapshot(const std::function<QJsonObject(Pane*)>& pane) const;
     /// Input must first pass ProjectStore::validate; factory must return a pane.
     static std::unique_ptr<SplitTree> restore(const QJsonObject&, const std::function<Pane*(const QJsonObject&)>&);

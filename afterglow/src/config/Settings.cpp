@@ -355,6 +355,12 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("Animate cursor movement between cells.")},
         {QStringLiteral("scroll"), true, QMetaType::Bool, QStringLiteral("Animate scrolling between rows.")},
         {QStringLiteral("splits"), true, QMetaType::Bool, QStringLiteral("Animate split opening, closing and resizing.")},
+        stringKey(QStringLiteral("splitCurve"), QStringLiteral("spring:22,1"),
+                  QStringLiteral("Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, "
+                                 "damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An "
+                                 "invalid spec uses the default.")),
+        intKey(QStringLiteral("splitDuration"), 250, 16, 5000,
+               QStringLiteral("Duration of split animations in milliseconds for curves other than springs, which settle by themselves")),
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), QVariantList{}, QMetaType::QVariantList,
@@ -734,6 +740,8 @@ Settings SettingsStore::read() const
     s.animation.cursor = st.read<bool>(Animation, QStringLiteral("cursor"));
     s.animation.scroll = st.read<bool>(Animation, QStringLiteral("scroll"));
     s.animation.splits = st.read<bool>(Animation, QStringLiteral("splits"));
+    s.animation.splitCurve = st.read<QString>(Animation, QStringLiteral("splitCurve")).trimmed();
+    s.animation.splitDuration = st.read<int>(Animation, QStringLiteral("splitDuration"));
 
     // Shaders
     auto shaderList = [&st](const char* key) {

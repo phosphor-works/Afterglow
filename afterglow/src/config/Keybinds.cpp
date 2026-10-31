@@ -50,6 +50,8 @@ const ActionInfo Actions[] = {
     {Action::SwapRight, "swap_right", "Swap Pane Right", {}},
     {Action::SwapUp, "swap_up", "Swap Pane Above", {}},
     {Action::SwapDown, "swap_down", "Swap Pane Below", {}},
+    {Action::RotatePanesClockwise, "rotate_panes_clockwise", "Rotate Panes Clockwise", {"Ctrl+Shift+]"}},
+    {Action::RotatePanesCounterclockwise, "rotate_panes_counterclockwise", "Rotate Panes Counterclockwise", {"Ctrl+Shift+["}},
     {Action::MovePaneToTab, "move_pane_to_tab", "Move Pane to New Tab", {}},
     {Action::MovePaneToWindow, "move_pane_to_window", "Move Pane to New Window", {}},
     {Action::DetachTab, "detach_tab", "Detach Tab to New Window", {}},

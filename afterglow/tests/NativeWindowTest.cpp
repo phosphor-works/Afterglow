@@ -382,6 +382,31 @@ TEST_F(NativeWindow, SwapFailurePreservesZoomAndSuccessRestoresVisiblePanes) {
     EXPECT_LT(window->accessiblePaneRect(first).width(), zoomed.width());
 }
 
+TEST_F(NativeWindow, RotationMovesLivePanesAndClearsZoom) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
+    ASSERT_NE(third, nullptr);
+    drain();
+    const QRect slots[] = {window->accessiblePaneRect(first), window->accessiblePaneRect(second),
+                           window->accessiblePaneRect(third)};
+    ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
+    drain();
+    ASSERT_TRUE(window->runAction(first, Action::RotatePanesClockwise));
+    drain();
+    EXPECT_EQ(window->accessiblePaneRect(third), slots[0]);
+    EXPECT_EQ(window->accessiblePaneRect(first), slots[1]);
+    EXPECT_EQ(window->accessiblePaneRect(second), slots[2]);
+    EXPECT_EQ(window->findChild<ChromeController*>()->paneTitles().size(), 3);
+    EXPECT_EQ(window->focusedPane(), first);
+    ASSERT_TRUE(window->runAction(first, Action::RotatePanesCounterclockwise));
+    drain();
+    EXPECT_EQ(window->accessiblePaneRect(first), slots[0]);
+}
+
 TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
     auto* chrome = window->findChild<ChromeController*>();
     QVariantList entries;

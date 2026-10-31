@@ -121,6 +121,9 @@ public:
     QString movePaneTo(Pane* pane, TerminalWindow* destination, Pane* beside, SplitTree::Direction direction);
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
+    bool rotatePanes(bool clockwise);
+    /// Animation.splitCurve, resolved once per spec; the default spring when invalid.
+    std::shared_ptr<const PhosphorAnimation::Curve> splitCurve();
 
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
@@ -342,6 +345,8 @@ private:
     bool m_quickShown = false;
     int m_quickHeight = 0;
     PhosphorAnimation::AnimatedValue<qreal> m_slide;
+    QString m_splitCurveSpec;
+    std::shared_ptr<const PhosphorAnimation::Curve> m_splitCurve;
     std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
     /// Where a pane just created by a split grows from.
     std::unordered_map<const Pane*, QRectF> m_growFrom;
