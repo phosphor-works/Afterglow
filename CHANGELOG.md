@@ -11,6 +11,7 @@ Build and installation procedures do not change. This release does not add macOS
 
 - Detach a tab by dragging it outside the bar, or through its context menu. Existing panes keep their running processes.
 - Reuse history rows during resize when their text still fits on one line. Preserve their cells, styles and graphemes without rebuilding them.
+- Limit the command palette to eight visible results. Keep text clear of the scrollbar and show a result count and keyboard hints.
 - Expose each current-tab terminal pane through Qt/AT-SPI, including viewport text, cursor, selection, geometry and change events.
 - Provide read-only IME surrounding text for the live cursor row and remove the Latin-only preference hint.
 - Accept local file drops with shell quoting and bracketed paste into the target pane.
