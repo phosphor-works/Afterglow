@@ -108,6 +108,7 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview, counting every tab (default 0)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("current-tab"), QStringLiteral("With --tabs: the current tab (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("family"), QStringLiteral("Font family."), QStringLiteral("name")});
@@ -391,7 +392,8 @@ int main(int argc, char** argv)
         const int perTab = int(panes.size());
         const int highlight = std::clamp(parser.value(QStringLiteral("highlight")).toInt(), 0, perTab * tabCount - 1);
         const float amount = parser.isSet(QStringLiteral("overview-amount")) ? parser.value(QStringLiteral("overview-amount")).toFloat() : 1.0f;
-        AfterglowRender::WindowRenderer::Overview overview{true, amount, float(highlight), std::chrono::steady_clock::now(),
+        const float position = parser.isSet(QStringLiteral("overview-position")) ? parser.value(QStringLiteral("overview-position")).toFloat() : float(highlight);
+        AfterglowRender::WindowRenderer::Overview overview{true, amount, position, std::chrono::steady_clock::now(),
                                                             std::chrono::steady_clock::now(), currentTab, {}};
         for (int tab = 0; tab < tabCount; ++tab) {
             if (tab == currentTab) continue;

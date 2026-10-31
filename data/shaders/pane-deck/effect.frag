@@ -81,10 +81,14 @@ Ring ring() {
     return g;
 }
 
-// A card's signed distance from the highlight round the ring, in slots.
+// A card's signed distance from the highlight round the ring, in slots. It
+// wraps the short way round the whole ring, whose seam is directly behind
+// the highlight: a ring with few cards is partly empty, so the seam never
+// falls on a card at the side.
 float ringOffset(int i, Ring g) {
     float k = slot(i) - g.highlight;
-    return k - g.slots * floor(k / g.slots + 0.5); // the short way round
+    float ringSlots = 2.0 * Pi / g.step;
+    return k - ringSlots * floor(k / ringSlots + 0.5);
 }
 
 Card card(int i, float a, float widest, Ring g) {
@@ -104,7 +108,8 @@ Card card(int i, float a, float widest, Ring g) {
     c.center = mix(flatCenter, deckCenter, a);
     c.halfSize = mix(flatHalf, flatHalf * fit, a);
     // Cards turn partly toward the camera, so the neighbours stay readable.
-    float yaw = theta * 0.6 * a;
+    // sin() keeps the turn continuous where a card crosses the seam behind.
+    float yaw = 0.6 * sin(theta) * a;
     c.right = vec3(cos(yaw), 0.0, -sin(yaw));
     c.normal = vec3(sin(yaw), 0.0, cos(yaw));
     c.rect = r;
