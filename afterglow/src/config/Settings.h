@@ -135,6 +135,7 @@ struct Settings
     /// The theme file the colours came from; empty when none is set or found.
     QString themePath;
     /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
+    QString fileTransferPassword;
     QString clipboardRead = QStringLiteral("ask");
     QVariantList hintPatterns;
     KeyModes keyModes;

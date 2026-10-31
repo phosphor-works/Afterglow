@@ -6,6 +6,9 @@
 #include <QQuickItem>
 #include "desktop/FileDrop.h"
 #include "desktop/PointerShape.h"
+#include "desktop/FileTransfer.h"
+#include "desktop/DragDrop.h"
+#include <QMessageBox>
 #include "desktop/Accessibility.h"
 #include <QAccessible>
 #include <QDropEvent>
@@ -446,6 +449,34 @@ void TerminalWindow::bindPane(Pane* pane)
                 }
                 NotificationCenter::instance().handle(guard, this, request);
             });
+    connect(pane, &Pane::terminalProtocolRequested, this, [this, guard = QPointer<Pane>(pane)](int code, const QByteArray& payload) {
+        if (!guard) return;
+        auto* files = guard->fileTransfers();
+        files->setPassword(m_settings.settings().fileTransferPassword);
+        if (code == 0) { files->reset(); guard->dragDrop()->reset(); }
+        else if (code == -1) { files->abort(); guard->dragDrop()->abort(); }
+        else if (code == 72) guard->dragDrop()->handle(payload);
+        else if (code == 5113) files->handle(payload);
+    });
+    connect(pane, &Pane::fileTransferPermissionRequested, this,
+            [this, guard = QPointer<FileTransfer>(pane->fileTransfers())](const QString& token, bool writing, const QStringList& paths) {
+        auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"),
+            writing ? tr("Allow this terminal program to write files on this computer? Existing files can be replaced.")
+                    : tr("Allow this terminal program to read the requested files on this computer?"),
+            QMessageBox::Yes | QMessageBox::No);
+        connect(this, &QObject::destroyed, dialog, &QDialog::reject);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setTextFormat(Qt::PlainText);
+        dialog->setDefaultButton(QMessageBox::No);
+        if (!paths.isEmpty()) dialog->setDetailedText(paths.join(QLatin1Char('\n')));
+        dialog->winId(); dialog->windowHandle()->setTransientParent(this);
+        connect(dialog, &QDialog::finished, dialog, [guard, token](int result) { if (guard) guard->approve(token, result == QMessageBox::Yes); });
+        if (guard) {
+            connect(guard, &QObject::destroyed, dialog, &QDialog::reject);
+            connect(guard, &FileTransfer::sessionClosed, dialog, [dialog, token](const QString& closed) { if (closed == token) dialog->reject(); });
+        }
+        dialog->open();
+    });
     connect(pane, &Pane::pointerShapeRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& shape) {
         if (guard) {
             motion(guard).pointerShape = shape;
@@ -1432,6 +1463,12 @@ bool TerminalWindow::event(QEvent* e)
     case QEvent::Drop: {
         auto* drop = static_cast<QDropEvent*>(e);
         Pane* target = m_splits ? m_splits->paneAt((drop->position() * devicePixelRatio()).toPoint()) : nullptr;
+        for (auto* pane : panes()) if (pane != target) pane->dragDrop()->leave();
+        if (target && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
+            const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(m_splits->rectOf(target)).topLeft();
+            target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel, this);
+            return true;
+        }
         const QString paths = droppedFiles(drop->mimeData());
         if (!target || target->isHeld() || m_controller->wantsKeyboard() || paths.isEmpty()
             || !(drop->possibleActions() & Qt::CopyAction)) {
@@ -1450,6 +1487,7 @@ bool TerminalWindow::event(QEvent* e)
         return true;
     }
     case QEvent::DragLeave:
+        for (auto* pane : panes()) pane->dragDrop()->leave();
         e->accept();
         return true;
     case QEvent::PlatformSurface:
@@ -3224,6 +3262,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         openLink(m_hover.url);
         return;
     }
+    if (e->button() == Qt::LeftButton) m_focused->dragDrop()->press(e->position().toPoint());
     const int code = mouseButtonCode(e->button());
     if (code >= 0 && sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Press), e->modifiers())) {
         m_reportedButtons |= e->button();
@@ -3324,6 +3363,7 @@ void TerminalWindow::updateSelectionDrag()
 
 void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (e->button() == Qt::LeftButton) for (auto* pane : panes()) pane->dragDrop()->release();
     if (m_dividerDrag && e->button() == Qt::LeftButton) {
         m_dividerDrag.reset();
         return;
@@ -3424,6 +3464,15 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
     } else {
         applyPointerShape();
+    }
+    if (m_focused && (e->buttons() & Qt::LeftButton)) {
+        const QPoint pixel = px - contentRect(m_splits->rectOf(m_focused)).topLeft();
+        if (m_focused->dragDrop()->move(this, e->position().toPoint(), cellAt(m_focused, e->position()), pixel)) {
+            m_autoScroll.stop();
+            if (m_selectionPane) m_selectionPane->clearSelection();
+            m_selectionPane = nullptr;
+            return;
+        }
     }
     if (m_selectionPane && (e->buttons() & Qt::LeftButton)) {
         m_dragPos = e->position();

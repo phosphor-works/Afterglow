@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Pane.h"
+#include "desktop/FileTransfer.h"
+#include "desktop/DragDrop.h"
 
 #include "app/NotificationCenter.h"
 
@@ -68,6 +70,8 @@ Pane::~Pane()
     if (m_searchJob) m_searchJob->cancelled = true;
     // Stop the pty thread before the terminal it feeds goes away.
     if (m_pty) m_pty->stop();
+    m_dragDrop.reset();
+    m_fileTransfers.reset();
     m_pty.reset();
 }
 
@@ -1008,3 +1012,50 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
     }, Qt::QueuedConnection);
 }
 }
+
+namespace Afterglow {
+FileTransfer* Pane::fileTransfers()
+{
+    if (!m_fileTransfers) {
+        m_fileTransfers = std::make_unique<FileTransfer>();
+        connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
+        connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
+            if (!sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())))) m_fileTransfers->reset();
+        });
+    }
+    return m_fileTransfers.get();
+}
+DragDrop* Pane::dragDrop()
+{
+    if (!m_dragDrop) {
+        m_dragDrop = std::make_unique<DragDrop>();
+        connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
+            if (!sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())))) m_dragDrop->reset();
+        });
+    }
+    return m_dragDrop.get();
+}
+void Pane::terminalProtocol(int code, std::string_view payload)
+{
+    const QByteArray bytes(payload.data(), qsizetype(payload.size()));
+    if (code == 72) {
+        // Capability replies must precede a DA query in the same PTY read.
+        const auto response = DragDrop::queryReply(bytes);
+        if (!response.isEmpty()) { writeToPty(std::string_view(response.constData(), std::size_t(response.size()))); return; }
+    }
+    if (m_protocolBlocked.load()) return;
+    const auto charge = bytes.size() + 128;
+    if (m_protocolBytes.fetch_add(charge) + charge > 16 * 1024 * 1024) {
+        m_protocolBytes.fetch_sub(charge);
+        if (m_protocolBlocked.exchange(true)) return;
+        m_protocolGeneration.fetch_add(1);
+        QMetaObject::invokeMethod(this, [this] { Q_EMIT terminalProtocolRequested(-1, {}); m_protocolBlocked.store(false); }, Qt::QueuedConnection);
+        return;
+    }
+    const auto generation = m_protocolGeneration.load();
+    QMetaObject::invokeMethod(this, [this, code, bytes, generation, charge] {
+        m_protocolBytes.fetch_sub(charge);
+        if (generation == m_protocolGeneration.load()) Q_EMIT terminalProtocolRequested(code, bytes);
+    }, Qt::QueuedConnection);
+}
+} // namespace Afterglow

@@ -14,6 +14,9 @@ Build and installation procedures do not change. This release does not add macOS
 - Limit the command palette to eight visible results. Keep text clear of the scrollbar and show a result count and keyboard hints.
 - Expose each current-tab terminal pane through Qt/AT-SPI, including viewport text, cursor, selection, geometry and change events.
 - Provide read-only IME surrounding text for the live cursor row and remove the Latin-only preference hint.
+- Support Kitty file transfers with approval, directories, links, compression and delta updates.
+- Support Kitty drag-and-drop offers and receivers, including remote directory data and thumbnails.
+- Complete Kitty color-control rendering and separate main/alternate-screen pointer-shape stacks.
 - Accept local file drops with shell quoting and bracketed paste into the target pane.
 - Offer bounded OSC 1337 downloads through a native Save dialog, with atomic file writes.
 - Support Kitty relative image placements, parent chains and Unicode placeholder anchors.

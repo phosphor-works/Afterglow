@@ -33,6 +33,10 @@ qt_add_library(afterglow_app STATIC
     src/animation/PaneMotion.h
     src/app/Application.cpp
     src/app/NotificationCenter.cpp
+    src/desktop/FileTransfer.cpp
+    src/desktop/FileTransfer.h
+    src/desktop/DragDrop.cpp
+    src/desktop/DragDrop.h
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
@@ -57,6 +61,8 @@ target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
 target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation Qt6::Core)
 
 find_package(PkgConfig REQUIRED)
+find_package(ZLIB REQUIRED)
+pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 
@@ -222,3 +228,5 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+target_link_libraries(afterglow_app PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)

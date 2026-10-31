@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/Application.h"
+#include "desktop/DragDrop.h"
+#include "desktop/FileTransfer.h"
+#include <QMessageBox>
 #include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
 #include "config/Keybinds.h"
@@ -11,6 +14,9 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QFile>
+#include <QDir>
+#include <QFileInfo>
+#include <unistd.h>
 #include <QAccessible>
 #include "app/NotificationCenter.h"
 #include <QDBusConnection>
@@ -379,6 +385,116 @@ TEST_F(NativeWindow, NativeWaylandFileDrop) {
     const auto text = window->focusedPane()->text(AfterglowVt::Terminal::TextScope::Screen);
     EXPECT_TRUE(text.contains(QString::fromUtf8("café.txt"))) << text.toStdString();
     EXPECT_TRUE(text.contains(QStringLiteral("'\\''"))) << text.toStdString();
+}
+
+class PressMarker : public QObject {
+public:
+    QString path;
+    bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::MouseButtonPress) { QFile marker(path); if (marker.open(QIODevice::WriteOnly)) marker.close(); }
+        return false;
+    }
+};
+TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
+    auto* original = window->focusedPane();
+    PaneLaunchOptions launch; launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    WindowOptions options; options.command = {QStringLiteral("/bin/cat")};
+    auto* destination = application->newWindow(options); ASSERT_NE(destination, nullptr);
+    destination->show();
+    ASSERT_TRUE(window->movePaneTo(original, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
+    original->fileTransfers()->handle("ac=send;id=moved");
+    drain(150);
+    QList<QMessageBox*> prompts;
+    for (auto* widget : QApplication::topLevelWidgets())
+        if (auto* box = qobject_cast<QMessageBox*>(widget); box && box->isVisible() && box->windowTitle() == QStringLiteral("File transfer")) prompts.append(box);
+    ASSERT_EQ(prompts.size(), 1);
+    EXPECT_EQ(prompts.front()->windowHandle()->transientParent(), destination);
+    prompts.front()->reject(); drain(50);
+}
+
+TEST_F(NativeWindow, KittyDragAndDropClient) {
+    const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");
+    ASSERT_FALSE(ready.isEmpty());
+    const QString source = directory.filePath(QStringLiteral("source.txt"));
+    const QString destination = directory.filePath(QStringLiteral("dropped.txt"));
+    QFile file(source); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write("Native Kitty drag and drop\n"); file.close();
+    PaneLaunchOptions options;
+    options.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drag"), QStringLiteral("text/plain:") + source,
+                       QStringLiteral("--drop"), QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
+    auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
+    PaneLaunchOptions receiverOptions;
+    receiverOptions.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drop"),
+                               QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
+    auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
+    ASSERT_NE(receiver, nullptr);
+    window->showFullScreen();
+    QElapsedTimer timer; timer.start();
+    while (!pane->dragDrop()->offersDrags() && timer.elapsed() < 5000) drain(20);
+    ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops());
+    bool complete = false; QByteArray protocol;
+    QObject::connect(pane->dragDrop(), &DragDrop::reply, window, [&](const QByteArray& bytes) {
+        protocol += bytes;
+        if (bytes.contains("t=e") && bytes.contains("x=4")) complete = true;
+    });
+    const auto incoming = QObject::connect(pane, &Pane::terminalProtocolRequested, window, [&](int code, const QByteArray& bytes) { if (code == 72) protocol += "CLIENT: " + bytes + "\n"; });
+    PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
+    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
+    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
+    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
+    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y())); marker.close();
+    timer.restart(); while (!complete && timer.elapsed() < 15000) drain(20);
+    window->removeEventFilter(&input);
+    QObject::disconnect(incoming);
+    EXPECT_TRUE(complete) << protocol.toStdString() << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    QFile result(destination); ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString();
+    EXPECT_EQ(result.readAll(), QByteArray("Native Kitty drag and drop\n"));
+}
+
+
+TEST_F(NativeWindow, KittyRemoteDragDirectory) {
+    const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");
+    ASSERT_FALSE(ready.isEmpty());
+    const QString source = directory.filePath(QStringLiteral("remote"));
+    const QString destination = directory.filePath(QStringLiteral("received"));
+    ASSERT_TRUE(QDir().mkpath(source + QStringLiteral("/nested")));
+    ASSERT_TRUE(QDir().mkpath(destination));
+    QFile file(source + QStringLiteral("/nested/file")); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write("remote file data"); file.close();
+    QFile empty(source + QStringLiteral("/empty")); ASSERT_TRUE(empty.open(QIODevice::WriteOnly)); empty.close();
+    ASSERT_EQ(::symlink("nested/file", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
+    PaneLaunchOptions options;
+    options.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), source};
+    auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
+    PaneLaunchOptions receiverOptions;
+    receiverOptions.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")};
+    auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
+    ASSERT_NE(receiver, nullptr);
+    window->showFullScreen();
+    QElapsedTimer timer; timer.start();
+    while (!pane->dragDrop()->offersDrags() && timer.elapsed() < 5000) drain(20);
+    ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops());
+    pane->dragDrop()->handle("t=o:x=1;1:remote-test-machine");
+    bool complete = false; QByteArray protocol;
+    QObject::connect(pane->dragDrop(), &DragDrop::reply, window, [&](const QByteArray& bytes) {
+        protocol += bytes;
+        if (bytes.contains("t=e") && bytes.contains("x=4")) complete = true;
+    });
+    const auto incoming = QObject::connect(pane, &Pane::terminalProtocolRequested, window, [&](int code, const QByteArray& bytes) { if (code == 72) protocol += "CLIENT: " + bytes + "\n"; });
+    PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
+    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
+    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
+    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
+    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y())); marker.close();
+    timer.restart(); while (!complete && timer.elapsed() < 15000) drain(20);
+    window->removeEventFilter(&input);
+    QObject::disconnect(incoming);
+    EXPECT_TRUE(complete) << protocol.toStdString() << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    QFile result(destination + QStringLiteral("/remote/nested/file")); ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString();
+    EXPECT_EQ(result.readAll(), QByteArray("remote file data"));
+    EXPECT_TRUE(QFileInfo::exists(destination + QStringLiteral("/remote/empty")));
+    EXPECT_TRUE(QFileInfo(destination + QStringLiteral("/remote/link")).isSymLink());
 }
 
 

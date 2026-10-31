@@ -12,7 +12,7 @@ These instructions use the current source layout.
 - Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus and ShaderTools.
 - Qt GuiPrivate, WaylandClientPrivate and QuickPrivate headers.
 - FreeType, HarfBuzz, FriBidi and fontconfig.
-- xkbcommon, wayland-client, zlib and the 32-bit PCRE2 library.
+- xkbcommon, wayland-client, zlib, xxHash and the 32-bit PCRE2 library.
 - KF6 WindowSystem.
 - The Phosphor libraries from a PlasmaZones checkout.
 

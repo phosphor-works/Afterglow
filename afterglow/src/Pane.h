@@ -42,6 +42,9 @@ struct PaneStatusRecord
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
 /// m_mutex; everything else runs on the GUI thread.
+class FileTransfer;
+class DragDrop;
+
 class Pane : public QObject, private AfterglowVt::ITerminalHost, private AfterglowPty::IPtyListener
 {
     Q_OBJECT
@@ -63,6 +66,8 @@ public:
 
     /// Sends bytes to the child and snaps the viewport back to the bottom.
     bool sendInput(std::string_view bytes);
+    FileTransfer* fileTransfers();
+    DragDrop* dragDrop();
 
     /// Runs @p fn with the terminal locked.
     template<typename Fn>
@@ -191,6 +196,8 @@ Q_SIGNALS:
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
     /// An OSC 5522 clipboard read or write (queued to the GUI thread).
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
+    void terminalProtocolRequested(int code, const QByteArray& payload);
+    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths);
     void closed();
 
 private:
@@ -203,6 +210,12 @@ private:
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void notify(std::string_view title, std::string_view body) override;
     void pointerShapeChanged(std::string_view shape) override;
+    void terminalProtocol(int code, std::string_view payload) override;
+    std::unique_ptr<FileTransfer> m_fileTransfers;
+    std::unique_ptr<DragDrop> m_dragDrop;
+    std::atomic<qsizetype> m_protocolBytes{0};
+    std::atomic<quint64> m_protocolGeneration{0};
+    std::atomic<bool> m_protocolBlocked{false};
     void programStatusChanged() override;
     void flash() override;
     void commandStarted(std::string_view command) override;

@@ -109,3 +109,88 @@ The suite also checks these behaviors:
 Composition tests use Qt events through the window, renderer and PTY.
 They do not certify external IBus or Fcitx engines.
 The separate `desktop_acceptance.py` suite checks AT-SPI and native file-save dialogs.
+
+## Kitty file transfer
+
+Afterglow accepts the [Kitty file-transfer protocol](https://sw.kovidgoyal.net/kitty/file-transfer-protocol/) on OSC 5113.
+A terminal program can send or receive files through its terminal connection, including an SSH connection.
+
+Afterglow asks for permission before a transfer accesses files.
+For a receive request, the dialog lists the requested source paths.
+For a send request, permission allows the program to create or replace destination files.
+Approval applies to one transfer session.
+
+Run these commands on the computer where the terminal program runs:
+
+```sh
+# Send a file to the computer that runs Afterglow.
+kitten transfer ./report.txt /absolute/destination/report.txt
+
+# Receive a file from the computer that runs Afterglow.
+kitten transfer --direction=receive /absolute/source/report.txt ./report.txt
+
+# Update an existing destination with a delta transfer.
+kitten transfer --transmit-deltas ./report.txt /absolute/destination/report.txt
+```
+
+The protocol supports directories, regular files, symbolic links, hard links, permissions and modification times.
+It supports zlib compression, delta transfers, progress reports and cancellation.
+Afterglow writes each incoming regular file to a temporary file in its destination directory.
+After validation, Afterglow replaces the destination and reports success.
+Cancellation removes incomplete temporary files. Completed files remain in place.
+
+Set `Terminal.fileTransferPassword` only when a shared secret must replace the permission dialog.
+Pass the same secret to `kitten transfer --permissions-bypass`.
+An empty setting always requires permission.
+
+Each pane permits eight sessions and 16,384 files per session.
+Individual data packets contain at most 4,096 decoded bytes.
+Input and output queues each have a 16 MiB limit.
+An exceeded limit stops the affected work; it does not authorize more filesystem access.
+File I/O, compression and delta calculation run outside the GUI thread.
+
+Kitty 0.49.2 can omit empty files when it receives a transfer.
+Afterglow sends the required end-of-data packet, including for empty files.
+Use a Kitty client with the upstream empty-file correction when empty files must be received.
+
+## Kitty drag and drop
+
+Afterglow supports the [Kitty drag-and-drop protocol](https://sw.kovidgoyal.net/kitty/dnd-protocol/) on OSC 72.
+Programs can accept desktop drops or supply data for a desktop drag.
+The protocol supports MIME selection, copy and move actions, chunked data, thumbnails, remote files and directory handles.
+
+Run a client, then drag data between its terminal pane and another program:
+
+```sh
+# Offer files and accept dropped files in the current directory.
+kitten dnd ./report.txt ./images/
+
+# Offer text and save dropped text.
+kitten dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
+```
+
+A program must enable the protocol before it receives drag events.
+A source offer requires a physical left-button drag gesture.
+Afterglow rejects file reads before a drop occurs.
+It also rejects remote file reads for a drag that starts and ends in the same window.
+Programs without protocol support retain the quoted-path paste behavior for local file drops.
+
+Remote source files use a temporary directory until the desktop drag finishes.
+Relative symbolic links must remain inside that directory.
+Afterglow rejects absolute links and links that escape the temporary directory.
+
+| Resource | Limit |
+| --- | --- |
+| MIME types per offer | 256 |
+| Data per MIME type | 64 MiB |
+| Cached MIME data per drag | 256 MiB |
+| Remote source data per drag | 1 GiB |
+| Remote source entries | 16,384 |
+| Open directory handles | 256 |
+| Queued read requests | 64 |
+| Thumbnail count | 16 |
+| Decoded thumbnail data per drag | 64 MiB |
+| Thumbnail dimensions | 4,096 × 4,096 pixels |
+
+An exceeded limit cancels the operation with a protocol error.
+A stalled request expires after 30 seconds. A stalled remote source preparation expires after 120 seconds.

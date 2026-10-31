@@ -105,3 +105,20 @@ python3 afterglow/tests/desktop_acceptance.py build/afterglow/afterglow
 
 Native acceptance requires the [nested-desktop dependencies](DESKTOP.md#native-acceptance-coverage), `python-dbus` and AT-SPI.
 It uses temporary configuration and a private session bus.
+
+## Kitty color control and pointer shapes
+
+OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
+Programs can set, query and reset palette colors and dynamic colors.
+Supported values include named X11 colors, hexadecimal colors, `rgb:` values and `rgbi:` values.
+Cursor text, visual-bell color and eight transparent-background slots affect rendering.
+Transparent slots support an explicit opacity or the configured window opacity.
+The color stack saves and restores these settings.
+Unknown color keys produce the protocol's encoded `unknown` response.
+
+OSC 22 supports the [Kitty mouse-pointer protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/).
+Programs can replace, push, pop and query shapes.
+The main screen and alternate screen have separate stacks, each with 32 entries.
+A full stack discards its oldest entry when a new entry is pushed.
+All protocol shape names are supported, including zoom, cell and vertical-text pointers.
+A terminal reset clears both stacks and restores the default text pointer.

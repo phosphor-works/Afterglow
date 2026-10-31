@@ -1717,6 +1717,7 @@ void Terminal::clearScreenAndHistory()
 
 void Terminal::fullReset()
 {
+    m_host.terminalProtocol(0, {});
     m_extraCursors.clear();
     m_extraCursorColor = m_extraCursorTextColor = {};
     m_iterm2Receiving = false;
@@ -3224,6 +3225,7 @@ std::string Terminal::text(TextScope scope, std::size_t maxBytes, bool* truncate
 
 void Terminal::programExited()
 {
+    m_host.terminalProtocol(0, {});
     if (m_programStatus.endActivity()) {
         m_host.programStatusChanged();
     }
@@ -3470,6 +3472,12 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         }
         break;
     }
+    case 72:
+        if (rest.size() <= 8192) m_host.terminalProtocol(72, rest);
+        break;
+    case 5113:
+        if (rest.size() <= 16384) m_host.terminalProtocol(5113, rest);
+        break;
     case 66:
         textSizing(rest);
         break;

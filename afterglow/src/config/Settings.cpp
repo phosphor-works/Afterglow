@@ -269,6 +269,7 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Variables added to the shell's environment, e.g. { \"EDITOR\": \"nvim\" }")},
         {QStringLiteral("confirmUnsafePaste"), true, QMetaType::Bool,
          QStringLiteral("Ask before pasting several lines into a program that would run them")},
+        stringKey(QStringLiteral("fileTransferPassword"), {}, QStringLiteral("Shared secret for Kitty file-transfer approval. Empty always asks for approval.")),
         {QStringLiteral("clipboardRead"), QStringLiteral("ask"), QMetaType::QString,
          QStringLiteral("Programs reading the clipboard (OSC 52): ask, allow or deny"),
          [](const QVariant& v) {
@@ -746,6 +747,7 @@ Settings SettingsStore::read() const
             s.environment.emplace_back(it.key().toStdString(), it.value().toString().toStdString());
         }
     }
+    s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
     s.clipboardRead = st.read<QString>(Terminal, QStringLiteral("clipboardRead"));
 
     // Window

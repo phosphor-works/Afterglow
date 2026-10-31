@@ -158,6 +158,8 @@ public:
     /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
     /// Returning false means the host has no such clipboard support.
     virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
+    /// Host-side file transfer and drag-and-drop commands; code 0 resets sessions.
+    virtual void terminalProtocol(int code, std::string_view payload) {}
     /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
     /// true to let the terminal take that size; the host then follows it.
     virtual bool requestResize(int cols, int rows) { return false; }

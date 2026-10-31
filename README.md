@@ -16,7 +16,8 @@ Afterglow is a terminal for Linux and Wayland. It uses Qt and Vulkan to render t
 - Shader effects that respond to system audio, commands and current-tab history.
 - Luau scripts, local packages and saved script state.
 - Command-line and D-Bus control.
-- Accessible terminal text, input methods, file drops and file downloads.
+- Accessible terminal text and input methods.
+- Kitty file transfers, drag and drop, and file downloads.
 
 ## Documentation
 

@@ -53,3 +53,13 @@ if(AFTERGLOW_NATIVE_TESTS)
                 --binary $<TARGET_FILE:afterglow_native_tests>)
     set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 120)
 endif()
+
+qt_add_executable(afterglow_transfer_tests FileTransferTest.cpp ../src/desktop/FileTransfer.cpp ../src/desktop/FileTransfer.h)
+target_include_directories(afterglow_transfer_tests PRIVATE ../src)
+target_link_libraries(afterglow_transfer_tests PRIVATE Qt6::Core ZLIB::ZLIB PkgConfig::XXHASH GTest::gtest)
+gtest_discover_tests(afterglow_transfer_tests)
+
+qt_add_executable(afterglow_dnd_tests DragDropTest.cpp ../src/desktop/DragDrop.cpp ../src/desktop/DragDrop.h)
+target_include_directories(afterglow_dnd_tests PRIVATE ../src)
+target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui GTest::gtest)
+gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

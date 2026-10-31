@@ -143,3 +143,24 @@ This command writes `.summary.json` and `.raw.json.gz` files.
 It rejects incomplete runs, missing repeats and inconsistent sample counts.
 The summary gives the median and range of each per-run statistic.
 The compressed archive keeps all samples and environment metadata.
+
+## Kitty desktop protocols
+
+Run the file-transfer and drag-and-drop service tests:
+
+```sh
+ctest --test-dir build --output-on-failure -R 'Transfer\.|Dnd\.'
+```
+
+Run interoperability tests with the installed `kitten` client:
+
+```sh
+python3 afterglow/tests/kitty_transfer_interop.py --relay build/afterglow/tests/afterglow_transfer_tests
+```
+
+Kitty 0.49.2 has a receive-side empty-file defect.
+For that version, add `--allow-client-empty-file-bug` to test the remaining transfers.
+The service tests check empty-file completion separately.
+
+The native window suite also uses `kitten dnd` for text drags and remote directory drags.
+Install `kitten` before running those tests.

@@ -142,6 +142,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | block, underline or bar |
 | `env` | `{}` |  | Variables added to the shell's environment, e.g. { "EDITOR": "nvim" } |
+| `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. Empty always asks for approval. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
 | `notifications` | `true` |  | Show desktop notifications programs send (OSC 9, OSC 777) |
 | `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. |
