@@ -3,6 +3,16 @@
 status is-interactive; or return
 set -q __afterglow_loaded; and return
 set -g __afterglow_loaded 1
+# ssh through `afterglow ssh`, unless the user already wraps it.
+if test -n "$AFTERGLOW_SSH_HELPER"; and not functions -q ssh
+    function ssh --wraps ssh --description 'ssh through afterglow ssh'
+        if test -x "$AFTERGLOW_SSH_HELPER"
+            $AFTERGLOW_SSH_HELPER ssh $argv
+        else
+            command ssh $argv
+        end
+    end
+end
 # Fish 4+ supplies native OSC 133 marks, including redraw handling. Leave its
 # mark-prompt feature setting intact, and add the portable cwd notification.
 function __afterglow_cwd --on-event fish_prompt

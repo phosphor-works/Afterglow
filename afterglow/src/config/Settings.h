@@ -118,6 +118,8 @@ struct Settings
     bool scripts = true; ///< run Luau scripts from the scripts directories
     QString pager = QStringLiteral("less -R");
     bool shellIntegration = true;
+    bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
+    QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback
     QString shell; ///< empty: the user's login shell
     QString term = QStringLiteral("xterm-256color");
     /// Where a finished selection is copied: nowhere, the primary selection

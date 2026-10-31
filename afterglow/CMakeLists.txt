@@ -87,7 +87,8 @@ target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
 target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
     PhosphorConfig::PhosphorConfig PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 
-qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h)
+qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h
+    src/shell/Ssh.cpp src/shell/Ssh.h)
 target_include_directories(afterglow_shell PUBLIC src)
 target_link_libraries(afterglow_shell PUBLIC Afterglow::Pty Qt6::Core)
 target_compile_definitions(afterglow_shell PRIVATE QT_NO_CAST_FROM_ASCII

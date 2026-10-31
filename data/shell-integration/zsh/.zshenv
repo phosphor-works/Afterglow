@@ -35,6 +35,12 @@ __afterglow_precmd() {
 __afterglow_setup() {
     # Defer until user prompt frameworks have loaded.
     precmd_functions=(${precmd_functions:#__afterglow_setup})
+    # ssh through `afterglow ssh`, unless the user already wraps it.
+    if [[ -n ${AFTERGLOW_SSH_HELPER-} ]] && (( ! $+functions[ssh] && ! $+aliases[ssh] )); then
+        ssh() {
+            if [[ -x $AFTERGLOW_SSH_HELPER ]]; then "$AFTERGLOW_SSH_HELPER" ssh "$@"; else command ssh "$@"; fi
+        }
+    fi
     [[ $PS1 == *']133;'* || $PS1 == *']633;'* ]] && return
     preexec_functions+=(__afterglow_preexec)
     precmd_functions+=(__afterglow_precmd)

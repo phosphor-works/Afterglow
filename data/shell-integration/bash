@@ -25,6 +25,12 @@ else
     [[ -r $HOME/.bashrc ]] && source "$HOME/.bashrc"
 fi
 [[ ${__afterglow_loaded-} == 1 || ${AFTERGLOW_SHELL_INTEGRATION-} == 0 ]] && return
+# ssh through `afterglow ssh`, unless the user already wraps it.
+if [[ -n ${AFTERGLOW_SSH_HELPER-} ]] && ! declare -F ssh >/dev/null && ! alias ssh >/dev/null 2>&1; then
+    ssh() {
+        if [[ -x $AFTERGLOW_SSH_HELPER ]]; then "$AFTERGLOW_SSH_HELPER" ssh "$@"; else command ssh "$@"; fi
+    }
+fi
 # Respect prompts already configured with OSC 133/633 integration.
 [[ $PS1 == *']133;'* || $PS1 == *']633;'* ]] && return
 [[ $(declare -p PROMPT_COMMAND 2>/dev/null) =~ ^declare\ -[^[:space:]]*r ]] && return

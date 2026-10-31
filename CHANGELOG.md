@@ -48,6 +48,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Prompt, command and exit-status markers (OSC 133 and OSC 633), and the working directory (OSC 7).
 - Command navigation, last-command output in a pager, and command status in tab and pane labels.
 - Terminal contexts (OSC 3008) for remote and elevated sessions, and program status reports (OSC 7501).
+- `afterglow ssh`, which integrated shells use for `ssh`. It labels the pane with the remote host and installs the `afterglow` terminfo entry on the host when needed.
 
 ### Clipboard, notifications and files
 

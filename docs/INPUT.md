@@ -167,3 +167,23 @@ Set `Terminal.shellIntegration=false` to disable automatic injection into new pa
 Alternatively, launch with `AFTERGLOW_SHELL_INTEGRATION=0`.
 This does not remove manually configured hooks or native Fish markers.
 Custom shell wrappers and older Fish versions require their own integration.
+
+### SSH
+
+Integrated shells run `ssh` through `afterglow ssh`.
+The command accepts the same arguments as `ssh`.
+While the session runs, the pane label shows the remote host.
+The session offers `COLORTERM`, `TERM_PROGRAM` and `TERM_PROGRAM_VERSION` to the server.
+The server accepts these variables only when its `AcceptEnv` setting allows them.
+A `SetEnv` setting in your SSH configuration replaces this offer.
+
+The default `TERM` is `xterm-256color`, and every host knows that entry.
+If `Terminal.term` is `afterglow`, the first session to a host installs the `afterglow` terminfo entry in `~/.terminfo` on that host.
+The install and the session share one connection, so you authenticate once.
+Afterglow records the host in `$XDG_STATE_HOME/afterglow/ssh-terminfo`, by default under `~/.local/state`, and does not install the entry again.
+If the host has no `tic`, the session uses `xterm-256color`.
+Set `Terminal.sshTerminfo` to `fallback` to always use `xterm-256color` on remote hosts and install nothing.
+
+Runs that open no session, such as `ssh -G`, `ssh -V`, `ssh -Q` and `ssh -O`, reach `ssh` unchanged.
+An existing `ssh` function or alias takes precedence over the integration.
+Set `Terminal.sshIntegration=false` to run `ssh` directly.

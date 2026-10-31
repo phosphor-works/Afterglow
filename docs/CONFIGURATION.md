@@ -154,6 +154,8 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `scrollback` | `10000` | 0–1000000 | Lines of history per pane |
 | `shell` | `""` |  | Program to run. An empty value starts your login shell. |
 | `shellIntegration` | `true` |  | Automatic Bash, Zsh and Fish prompt integration |
+| `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells: label the pane with the host and offer COLORTERM and TERM_PROGRAM |
+| `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | When TERM is afterglow, install its terminfo entry on each ssh host, or use xterm-256color there instead |
 | `term` | `"xterm-256color"` |  | TERM for child programs |
 | `wordSeparators` | `"&#96;\"'│\|:;,()[]{}<>"` |  | Characters that end a word for double-click selection, besides spaces |
 

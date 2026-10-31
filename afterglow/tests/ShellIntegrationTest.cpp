@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/ShellIntegration.h"
+#include "shell/Ssh.h"
 #include <gtest/gtest.h>
 #include <AfterglowVt/Terminal.h>
 #include <QFile>
 #include <QDir>
+#include <QProcess>
 #include <algorithm>
 #include <utility>
 #include <QStandardPaths>
@@ -12,6 +14,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <chrono>
+#include <optional>
 
 using namespace AfterglowPty;
 using Afterglow::ShellIntegration::prepare;
@@ -93,11 +96,13 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
     file(dir + "/.zlogin", "export AG_LOGIN_LAST=yes\n");
     QDir().mkpath(dir + "/fish");
     file(dir + "/fish/config.fish", "function fish_prompt; printf 'AG_READY> '; end; set -gx AG_USER_RC yes\n");
+    file(dir + "/helper", "#!/bin/sh\nprintf 'HELPER'; printf ' [%s]' \"$@\"; printf '\\n'\n");
+    ASSERT_TRUE(QFile::setPermissions(dir + "/helper", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
     SpawnOptions o;
     o.argv = {executable.toStdString(), login ? "-il" : "-i"};
     o.environment = {{"HOME", dir.toStdString()}, {"XDG_CONFIG_HOME", dir.toStdString()},
         {"TERM", "xterm-256color"}, {"AFTERGLOW_SHELL_INTEGRATION", "1"}, {"ZDOTDIR", dir.toStdString()},
-        {"ENV", "/original/env"}};
+        {"ENV", "/original/env"}, {"AFTERGLOW_SSH_HELPER", (dir + "/helper").toStdString()}};
     ASSERT_TRUE(prepare(o, true, root()));
     Output output; std::string error;
     o.deferStart = true;
@@ -135,6 +140,10 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
     output.resize(100, 40);
     ASSERT_TRUE(pty->write("printf 'AFTER_%s_DONE\\n' resize\r"));
     ASSERT_TRUE(output.wait("AFTER_resize_DONE")) << output.take();
+    ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
+    // Integrated shells run ssh through the helper.
+    ASSERT_TRUE(pty->write("ssh -p 1 'prod host'\r"));
+    ASSERT_TRUE(output.wait("HELPER [ssh] [-p] [1] [prod host]")) << output.take();
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     ASSERT_TRUE(pty->write("exit\r"));
 }
@@ -217,4 +226,164 @@ TEST(Pty, ExecutableSearchUsesChildPathAndWorkingDirectory)
     ASSERT_TRUE(pty->start());
     EXPECT_TRUE(output.wait("CUSTOM_PATH_DONE"));
     pty->stop();
+}
+
+namespace {
+// Sets environment variables for one test and restores them afterwards.
+struct ScopedEnvironment {
+    std::vector<std::pair<QByteArray, std::optional<QByteArray>>> saved;
+    void set(const char* name, const QByteArray& value)
+    {
+        saved.emplace_back(name, qEnvironmentVariableIsSet(name) ? std::optional(qgetenv(name)) : std::nullopt);
+        qputenv(name, value);
+    }
+    ~ScopedEnvironment()
+    {
+        for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+            if (it->second) qputenv(it->first.constData(), *it->second);
+            else qunsetenv(it->first.constData());
+        }
+    }
+};
+
+// A fake ssh on PATH: it answers -G and records every other run.
+struct FakeSsh {
+    QTemporaryDir dir;
+    ScopedEnvironment environment;
+    QString log() const { return dir.filePath("log"); }
+    FakeSsh()
+    {
+        file(dir.filePath("ssh"), "#!/bin/sh\n"
+            "for a; do [ \"$a\" = -G ] && { printf 'host prod\\nuser alice\\nhostname 10.0.0.5\\nport 22\\n';"
+            " [ -n \"$FAKE_SETENV\" ] && echo 'setenv A=B'; exit 0; }; done\n"
+            "{ printf 'ARGS'; printf ' [%s]' \"$@\"; printf '\\nTERM=%s\\n' \"$TERM\"; } >> \"$FAKE_LOG\"\n"
+            "case \"$*\" in *tic*) cat > \"$FAKE_LOG.terminfo\"; exit \"${FAKE_TIC_STATUS:-0}\";; esac\n"
+            "exit 7\n");
+        QFile::setPermissions(dir.filePath("ssh"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        environment.set("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
+        environment.set("FAKE_LOG", log().toUtf8());
+        environment.set("XDG_STATE_HOME", dir.filePath("state").toUtf8());
+        environment.set("XDG_RUNTIME_DIR", dir.path().toUtf8());
+        environment.set("COLORTERM", "truecolor");
+        environment.set("TERM_PROGRAM", "afterglow");
+        environment.set("TERM_PROGRAM_VERSION", "1.0");
+        environment.set("TERM", "xterm-256color");
+        environment.set("AFTERGLOW_SSH_TERMINFO", "install");
+    }
+    // The recorded runs, emptying the log.
+    QStringList take()
+    {
+        QFile f(log());
+        if (!f.open(QIODevice::ReadOnly)) return {};
+        const QStringList lines = QString::fromUtf8(f.readAll()).split('\n', Qt::SkipEmptyParts);
+        f.remove();
+        return lines;
+    }
+    // Compiles afterglow's terminfo entry where infocmp finds it.
+    bool compileTerminfo()
+    {
+        const QString tic = QStandardPaths::findExecutable("tic");
+        if (tic.isEmpty() || QStandardPaths::findExecutable("infocmp").isEmpty()) return false;
+        QProcess process;
+        process.start(tic, {"-x", "-o", dir.filePath("terminfo"), QString::fromUtf8(AFTERGLOW_TEST_TERMINFO_SOURCE)});
+        if (!process.waitForFinished() || process.exitCode() != 0) return false;
+        environment.set("TERMINFO_DIRS", dir.filePath("terminfo").toUtf8() + ':');
+        return true;
+    }
+};
+}
+
+TEST(Ssh, FindsTheDestinationPastOptionsAndTheirValues)
+{
+    using Afterglow::Ssh::parseArguments;
+    EXPECT_EQ(parseArguments({"prod"}).destination, 0);
+    EXPECT_EQ(parseArguments({"-p", "2222", "-v", "prod", "uptime"}).destination, 3);
+    EXPECT_EQ(parseArguments({"-vp2222", "prod"}).destination, 1);
+    EXPECT_EQ(parseArguments({"-tt", "-L", "8080:localhost:80", "alice@prod"}).destination, 3);
+    EXPECT_EQ(parseArguments({"-o", "User=bob", "--", "prod", "-x"}).destination, 3);
+    EXPECT_EQ(parseArguments({"-v"}).destination, -1);
+    EXPECT_TRUE(parseArguments({"-G", "prod"}).passThrough);
+    EXPECT_TRUE(parseArguments({"-V"}).passThrough);
+    EXPECT_TRUE(parseArguments({"-O", "exit", "prod"}).passThrough);
+    EXPECT_FALSE(parseArguments({"-o", "G", "prod"}).passThrough);
+    EXPECT_TRUE(parseArguments({"-fN", "prod"}).noSession);
+    EXPECT_FALSE(parseArguments({"-t", "prod"}).noSession);
+}
+
+TEST(Ssh, ReadsResolvedConfigAndLabelsThePane)
+{
+    using namespace Afterglow::Ssh;
+    const Config config = parseConfig("host prod\nuser alice\nhostname 10.0.0.5\nport 2222\ncontrolpath none\n");
+    EXPECT_EQ(config.host, "prod");
+    EXPECT_EQ(config.hostname, "10.0.0.5");
+    EXPECT_EQ(config.user, "alice");
+    EXPECT_EQ(config.port, "2222");
+    EXPECT_FALSE(config.setEnv);
+    EXPECT_FALSE(config.controlPath);
+    EXPECT_TRUE(parseConfig("setenv A=B\ncontrolpath ~/.ssh/%C\n").controlPath);
+    EXPECT_EQ(contextStart("id1", config), "\x1b]3008;start=id1;type=remote;targetuser=alice;targethost=prod\x1b\\");
+    EXPECT_EQ(contextEnd("id1"), "\x1b]3008;end=id1\x1b\\");
+    // Separators and escapes cannot reach the sequence.
+    Config hostile; hostile.host = "evil;type=x\x1b]0;"; hostile.user = "a b";
+    EXPECT_EQ(contextStart("id", hostile), "\x1b]3008;start=id;type=remote;targetuser=ab;targethost=eviltypex0\x1b\\");
+    // The terminal shows the context and clears it at the end.
+    struct Host : AfterglowVt::ITerminalHost {
+        void writeToPty(std::string_view) override {}
+    } host;
+    AfterglowVt::Terminal terminal(80, 24, host);
+    terminal.feed(contextStart("id1", config).toStdString());
+    ASSERT_EQ(terminal.contexts().stack().size(), 1u);
+    EXPECT_EQ(terminal.contexts().stack().front().targetHost, "prod");
+    terminal.feed(contextEnd("id1").toStdString());
+    EXPECT_TRUE(terminal.contexts().stack().empty());
+}
+
+TEST(Ssh, OffersTheEnvironmentAndKeepsTheExitStatus)
+{
+    FakeSsh ssh;
+    EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod", "uptime"}), 7);
+    EXPECT_EQ(ssh.take(), QStringList({"ARGS [-o] [SetEnv=COLORTERM=truecolor TERM_PROGRAM=afterglow TERM_PROGRAM_VERSION=1.0]"
+                                       " [-p] [2222] [prod] [uptime]", "TERM=xterm-256color"}));
+    // The user's own SetEnv stays in charge.
+    ssh.environment.set("FAKE_SETENV", "1");
+    EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
+    EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=xterm-256color"}));
+    // Runs that open no session reach ssh unchanged.
+    EXPECT_EQ(Afterglow::Ssh::run({"-V"}), 7);
+    EXPECT_EQ(ssh.take(), QStringList({"ARGS [-V]", "TERM=xterm-256color"}));
+}
+
+TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
+{
+    FakeSsh ssh;
+    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    ssh.environment.set("TERM", "afterglow");
+    ssh.environment.set("FAKE_SETENV", "1");
+    EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
+    const QString shared = "[-o] [ControlMaster=auto] [-o] [ControlPath=" + ssh.dir.path() + "/afterglow-ssh-%C] [-o] [ControlPersist=10]";
+    auto runs = ssh.take();
+    ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS " + shared + " [-p] [2222] [-T] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_EQ(runs[2], "ARGS " + shared + " [-p] [2222] [prod]");
+    EXPECT_EQ(runs[3], "TERM=afterglow");
+    QFile entry(ssh.log() + ".terminfo");
+    ASSERT_TRUE(entry.open(QIODevice::ReadOnly));
+    EXPECT_TRUE(entry.readAll().contains("\nafterglow|"));
+    // The host is remembered: the next session connects directly.
+    EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
+    EXPECT_EQ(ssh.take(), QStringList({"ARGS [-p] [2222] [prod]", "TERM=afterglow"}));
+    // A host without tic, or the fallback setting, gets xterm-256color.
+    ssh.environment.set("XDG_STATE_HOME", ssh.dir.filePath("other-state").toUtf8());
+    ssh.environment.set("FAKE_TIC_STATUS", "1");
+    EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
+    runs = ssh.take();
+    ASSERT_EQ(runs.size(), 4);
+    EXPECT_EQ(runs[3], "TERM=xterm-256color");
+    // An unreachable host fails once, without a second connection attempt.
+    ssh.environment.set("FAKE_TIC_STATUS", "255");
+    EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 255);
+    EXPECT_EQ(ssh.take().size(), 2);
+    ssh.environment.set("AFTERGLOW_SSH_TERMINFO", "fallback");
+    EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
+    EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=xterm-256color"}));
 }

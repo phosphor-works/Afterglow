@@ -515,6 +515,13 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         opts.argv = {shell.toStdString()};
     }
     ShellIntegration::prepare(opts, m_settings.settings().shellIntegration);
+    // Integrated shells wrap ssh when the helper is named; a launch's own values win.
+    const auto offer = [&](const char* name, const QString& value) {
+        if (std::none_of(opts.environment.begin(), opts.environment.end(), [&](const auto& e) { return e.first == name; }))
+            opts.environment.emplace_back(name, value.toStdString());
+    };
+    if (m_settings.settings().sshIntegration) offer("AFTERGLOW_SSH_HELPER", QCoreApplication::applicationFilePath());
+    offer("AFTERGLOW_SSH_TERMINFO", m_settings.settings().sshTerminfo);
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
     const int cols = std::max(2, content.width() / m.cellWidth);

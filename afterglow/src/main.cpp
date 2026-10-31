@@ -7,6 +7,7 @@
 #include <cstdio>
 #include "app/Application.h"
 #include "control/Ctl.h"
+#include "shell/Ssh.h"
 
 #include <PhosphorDBus/Client.h>
 #include <PhosphorWayland/LayerShellPluginLoader.h>
@@ -81,6 +82,12 @@ int main(int argc, char** argv)
     // afterglow ctl ...: a D-Bus client for a running afterglow, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
+    }
+    // afterglow ssh ...: ssh with the remote side prepared, no GUI.
+    if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {
+        QStringList args;
+        for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        return Afterglow::Ssh::run(args);
     }
     // The quick terminal is a layer surface; this shell integration also gives
     // ordinary windows their usual xdg-shell role. Chosen before Qt starts.

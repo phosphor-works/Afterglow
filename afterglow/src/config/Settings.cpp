@@ -204,6 +204,11 @@ PhosphorConfig::Schema buildSchema()
             {QStringLiteral("off"), QStringLiteral("auto"), QStringLiteral("ltr"), QStringLiteral("rtl")}),
         intKey(QStringLiteral("scrollback"), 10000, 0, 1000000, QStringLiteral("Lines of history per pane")),
         {QStringLiteral("shellIntegration"), true, QMetaType::Bool, QStringLiteral("Automatic Bash, Zsh and Fish prompt integration")},
+        {QStringLiteral("sshIntegration"), true, QMetaType::Bool,
+         QStringLiteral("Run ssh through afterglow ssh in integrated shells: label the pane with the host and offer COLORTERM and TERM_PROGRAM")},
+        enumKey(QStringLiteral("sshTerminfo"), QStringLiteral("install"),
+            QStringLiteral("When TERM is afterglow, install its terminfo entry on each ssh host, or use xterm-256color there instead"),
+            {QStringLiteral("install"), QStringLiteral("fallback")}),
         stringKey(QStringLiteral("pager"), QStringLiteral("less -R"), QStringLiteral("Command for viewing the last command output. Shell expansion is disabled.")),
         stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run. An empty value starts your login shell.")),
         stringKey(QStringLiteral("term"), QStringLiteral("xterm-256color"), QStringLiteral("TERM for child programs")),
@@ -647,6 +652,8 @@ Settings SettingsStore::read() const
     t.cursorBlink = st.read<bool>(Terminal, QStringLiteral("cursorBlink"));
     s.pager = st.read<QString>(Terminal, QStringLiteral("pager"));
     s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
+    s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
+    s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell"));
     s.term = st.read<QString>(Terminal, QStringLiteral("term"));
     {

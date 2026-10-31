@@ -37,7 +37,8 @@ gtest_discover_tests(afterglow_audio_tests)
 
 qt_add_executable(afterglow_shell_tests ShellIntegrationTest.cpp)
 target_link_libraries(afterglow_shell_tests PRIVATE afterglow_shell Afterglow::Vt GTest::gtest_main)
-target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration")
+target_compile_definitions(afterglow_shell_tests PRIVATE AFTERGLOW_TEST_SHELL_DIR="${PROJECT_SOURCE_DIR}/data/shell-integration"
+    AFTERGLOW_TEST_TERMINFO_SOURCE="${PROJECT_SOURCE_DIR}/data/terminfo/afterglow.terminfo")
 gtest_discover_tests(afterglow_shell_tests)
 
 qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)
