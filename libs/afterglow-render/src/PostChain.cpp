@@ -17,6 +17,12 @@ namespace AfterglowRender {
 
 namespace {
 
+int meshSamples(const ShaderProgram& program, QRhi* rhi)
+{
+    const int requested = program.geometry().samples;
+    return program.meshPass() && rhi->supportedSampleCounts().contains(requested) ? requested : 1;
+}
+
 void setRgb(float* out, std::uint32_t rgba)
 {
     out[0] = float(rgba & 0xFF) / 255.0f;
@@ -62,6 +68,11 @@ struct CompositeUniforms
 struct PostChain::BufferState {
     std::unique_ptr<QRhiTexture> textures[2];
     std::unique_ptr<QRhiTexture> depths[2];
+    std::unique_ptr<QRhiRenderBuffer> hardwareDepth;
+    std::unique_ptr<QRhiTexture> multisampleColor;
+    std::unique_ptr<QRhiTexture> multisampleAuxiliary;
+    std::unique_ptr<QRhiBuffer> vertices;
+    bool uploaded = false;
     std::unique_ptr<QRhiSampler> sampler;
     std::unique_ptr<QRhiRenderPassDescriptor> pass;
     std::unique_ptr<QRhiTextureRenderTarget> targets[2];
@@ -384,7 +395,20 @@ QRhiGraphicsPipeline* PostChain::pipeline(const ShaderProgram& program, QRhiRend
     slot->setTopology(QRhiGraphicsPipeline::Triangles);
     slot->setFlags(QRhiGraphicsPipeline::UsesScissor);
     slot->setShaderStages({{QRhiShaderStage::Vertex, program.vertexShader().isValid() ? program.vertexShader() : m_vertex}, {QRhiShaderStage::Fragment, program.shader()}});
-    slot->setVertexInputLayout({});
+    QRhiVertexInputLayout layout;
+    if (program.meshPass()) {
+        slot->setSampleCount(meshSamples(program, m_device.rhi()));
+        slot->setDepthTest(true);
+        slot->setDepthWrite(true);
+        slot->setDepthOp(QRhiGraphicsPipeline::Less);
+        if (!program.geometry().vertices.empty()) {
+            layout.setBindings({{sizeof(ShaderMeshVertex)}});
+            layout.setAttributes({{0, 0, QRhiVertexInputAttribute::Float3, offsetof(ShaderMeshVertex, position)},
+                {0, 1, QRhiVertexInputAttribute::Float3, offsetof(ShaderMeshVertex, normal)},
+                {0, 2, QRhiVertexInputAttribute::Float2, offsetof(ShaderMeshVertex, uv)}});
+        }
+    }
+    slot->setVertexInputLayout(layout);
     if (program.depthOutput()) {
         const QRhiGraphicsPipeline::TargetBlend blends[2]{};
         slot->setTargetBlends(std::begin(blends), std::end(blends));
@@ -471,8 +495,13 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(QRhiCommandBuffer* cb
             auto& state = passes[index];
             const QSize wanted(std::max(1, qRound(region.rect.width() * settings.scale)),
                                std::max(1, qRound(region.rect.height() * settings.scale)));
-            const auto bytes = std::uint64_t(wanted.width()) * wanted.height() * (settings.halfFloat ? 16 : 8)
-                * (program.buffers()[index]->depthOutput() ? 2 : 1);
+            const auto& passProgram = *program.buffers()[index];
+            const int sampleCount = meshSamples(passProgram, rhi);
+            const auto bytes = std::uint64_t(wanted.width()) * wanted.height()
+                * ((settings.halfFloat ? 8 : 4) * (2 + (sampleCount > 1 ? sampleCount : 0))
+                    * (passProgram.depthOutput() ? 2 : 1)
+                    + (passProgram.meshPass() ? 8 * sampleCount : 0))
+                + passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex);
             const bool canRetry = state && state->blocked && !overflow && bytes <= BufferBudget - m_bufferBytes;
             if (state && ((!state->blocked && state->size != wanted) || canRetry)) {
                 m_bufferBytes -= state->bytes;
@@ -490,16 +519,44 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(QRhiCommandBuffer* cb
                     : settings.wrap == ShaderWrap::Mirror ? QRhiSampler::Mirror : QRhiSampler::ClampToEdge;
                 state->sampler.reset(rhi->newSampler(filter, filter, QRhiSampler::None, wrap, wrap));
                 if (!state->sampler->create()) throw std::runtime_error("shader buffer sampler failed");
+                if (passProgram.meshPass()) {
+                    state->hardwareDepth.reset(rhi->newRenderBuffer(QRhiRenderBuffer::DepthStencil, state->size, sampleCount));
+                    if (!state->hardwareDepth->create()) throw std::runtime_error("mesh depth allocation failed");
+                    if (!state->blocked && !passProgram.geometry().vertices.empty()) {
+                        state->vertices.reset(rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer,
+                            quint32(passProgram.geometry().vertices.size() * sizeof(ShaderMeshVertex))));
+                        if (!state->vertices->create()) throw std::runtime_error("mesh vertex allocation failed");
+                    }
+                }
+                if (sampleCount > 1) {
+                    const auto format = settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
+                    state->multisampleColor.reset(rhi->newTexture(format, state->size, sampleCount, QRhiTexture::RenderTarget));
+                    if (!state->multisampleColor->create()) throw std::runtime_error("mesh multisample allocation failed");
+                    if (passProgram.depthOutput()) {
+                        state->multisampleAuxiliary.reset(rhi->newTexture(format, state->size, sampleCount, QRhiTexture::RenderTarget));
+                        if (!state->multisampleAuxiliary->create()) throw std::runtime_error("mesh auxiliary multisample allocation failed");
+                    }
+                }
                 for (int side = 0; side < 2; ++side) {
                     state->textures[side].reset(rhi->newTexture(settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8,
                                                               state->size, 1, QRhiTexture::RenderTarget));
                     if (!state->textures[side]->create()) throw std::runtime_error("shader buffer allocation failed");
                     QRhiTextureRenderTargetDescription description(state->textures[side].get());
+                    if (state->hardwareDepth) description.setDepthStencilBuffer(state->hardwareDepth.get());
                     if (program.buffers()[index]->depthOutput()) {
                         state->depths[side].reset(rhi->newTexture(settings.halfFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8,
                             state->size, 1, QRhiTexture::RenderTarget));
                         if (!state->depths[side]->create()) throw std::runtime_error("shader depth allocation failed");
                         description.setColorAttachments({state->textures[side].get(), state->depths[side].get()});
+                    }
+                    if (state->multisampleColor) {
+                        QRhiColorAttachment color(state->multisampleColor.get());
+                        color.setResolveTexture(state->textures[side].get());
+                        if (state->multisampleAuxiliary) {
+                            QRhiColorAttachment auxiliary(state->multisampleAuxiliary.get());
+                            auxiliary.setResolveTexture(state->depths[side].get());
+                            description.setColorAttachments({color, auxiliary});
+                        } else description.setColorAttachments({color});
                     }
                     state->targets[side].reset(rhi->newTextureRenderTarget(description));
                     if (!state->pass) state->pass.reset(state->targets[side]->newCompatibleRenderPassDescriptor());
@@ -540,12 +597,21 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(QRhiCommandBuffer* cb
             if (index == 0) samples.depth = buffer.depths[buffer.read].get();
             auto* resources = bindings(ubo++, input, &region, &program, &samples, updates);
             const int out = 1 - buffer.read;
+            if (buffer.vertices && !buffer.uploaded) {
+                updates->uploadStaticBuffer(buffer.vertices.get(), program.buffers()[index]->geometry().vertices.data());
+                buffer.uploaded = true;
+            }
             cb->beginPass(buffer.targets[out].get(), Qt::transparent, {1.f, 0}, updates);
             cb->setGraphicsPipeline(pipeline(*program.buffers()[index], buffer.pass.get()));
             cb->setViewport({0, 0, float(size.width()), float(size.height())});
             cb->setScissor(scissorFor(QRect(QPoint(), size), size));
             cb->setShaderResources(resources);
-            cb->draw(program.buffers()[index]->vertexCount()); cb->endPass();
+            if (buffer.vertices) {
+                const QRhiCommandBuffer::VertexInput binding(buffer.vertices.get(), 0);
+                cb->setVertexInput(0, 1, &binding);
+            }
+            cb->draw(program.buffers()[index]->vertexCount(), program.buffers()[index]->geometry().instances);
+            cb->endPass();
             buffer.read = out;
             if (buffer.frame < std::numeric_limits<int>::max()) ++buffer.frame;
             samples.textures[index] = buffer.textures[out].get();

@@ -6,7 +6,7 @@
 Afterglow uses Phosphor ShaderRegistry metadata, source containment, include resolution, parameter slots and presets.
 Phosphor ShaderNodeRhi renders Qt Quick items.
 Afterglow's PostChain adapts the shared registry to terminal QRhi composition passes.
-There is no separate pack parser.
+Afterglow reads the `geometryPasses` extension from pack metadata.
 Qt Quick shaders with a different uniform block require adaptation to the terminal contract.
 
 ## Metadata
@@ -22,6 +22,7 @@ Qt Quick shaders with a different uniform block require adaptation to the termin
 | `bufferFilter`, `bufferFilters` | `linear`, `nearest`. |
 | `depthBuffer` | `true` adds an auxiliary color attachment to each buffer pass. |
 | `vertexShader` | Path to a terminal vertex hook. |
+| `geometryPasses` | One mesh object or `null` per buffer shader. |
 
 ## Pass order and coordinates
 
@@ -48,7 +49,9 @@ With depth enabled, write `depthBuffer = vec4(...)` in `mainImage`.
 `iDepth`, also named `uDepthBuffer`, samples the preceding pass's auxiliary output.
 The first buffer samples its own previous depth. The image pass samples the final buffer's depth.
 Initial depth values are zero.
-This attachment stores arbitrary shader data. It does not provide hardware depth testing or a mesh scene graph.
+This color attachment stores arbitrary shader data.
+Mesh passes use a separate hardware depth attachment for visibility tests.
+The two attachments have different purposes.
 
 ## Vertex hook
 
@@ -61,7 +64,81 @@ void mainVertex(inout vec4 position, in vec2 uv)
 Position starts in clip space from -1 to 1. UV starts at the top-left and ranges from 0 to 1.
 The hook can use terminal uniforms, parameters and samplers.
 After the hook, the host maps position into the current pane. Scissoring still isolates panes.
-Buffer passes retain fullscreen geometry. The hook applies only to the final image stage.
+Buffer passes use fullscreen geometry unless `geometryPasses` selects a mesh.
+The `mainVertex` hook applies only to the final image stage.
+
+## Mesh passes
+
+A buffer pass can draw triangle meshes with hardware depth testing and depth writes.
+The final image pass samples the result through `iBuffer0` to `iBuffer7`.
+It can combine mesh output with terminal content and other effects.
+Existing ray-marched shaders continue to work.
+
+Add `geometryPasses` to pack metadata. Supply one entry per `bufferShaders` entry.
+Use `null` for a fullscreen pass.
+
+```json
+{
+  "fragmentShader": "effect.frag",
+  "multipass": true,
+  "bufferShaders": ["surface.frag", "blur.frag"],
+  "geometryPasses": [
+    {"vertexShader": "mesh.vert", "mesh": "model.obj", "instances": 4},
+    null
+  ]
+}
+```
+
+A mesh vertex shader defines `void mainMesh(out vec4 clipPosition)`.
+Imported meshes provide `meshPosition` (`vec3`), `meshNormal` (`vec3`) and `meshUV` (`vec2`).
+Positions are in model coordinates. The shader applies model, camera and projection transforms.
+The output uses Vulkan clip coordinates: X and Y from -W to W, and Z from 0 to W.
+Positive Y points down. Smaller depth values are closer to the camera.
+The rasterizer clips triangles and interpolates attributes with perspective correction.
+
+Declare matching `layout(location=N) out` and `in` values in vertex and fragment shaders.
+The fragment shader keeps the `mainImage` interface.
+It must output premultiplied color. Face culling and alpha blending are off.
+Use `discard` for cutout materials. Transparent surfaces require a separate composition method.
+
+Replace `mesh` with `vertexCount` to generate vertices in the shader.
+Use `gl_VertexIndex` to select a vertex and `gl_InstanceIndex` to select an object.
+`vertexCount` must be a multiple of three.
+Both modes support `instances`, which defaults to one.
+Set `samples` to 1, 2, 4 or 8 to select multisample antialiasing. The default is 1.
+The renderer resolves multisample color before another pass samples it.
+An unsupported sample count uses 1. Multisampling increases buffer memory use.
+Use `bufferScale` to reduce the target size when necessary.
+The vertex shader can apply parent and child transforms for an object hierarchy.
+Afterglow does not maintain a separate CPU scene graph or import OBJ materials.
+
+Both shader stages can read terminal uniforms, audio, images and script-controlled parameters.
+Reads of time, audio, scrollback and previous text have the same behavior as fullscreen shaders.
+Parameters update without recompiling or uploading the mesh again.
+
+Each mesh pass has its own depth attachment, cleared to 1 before each draw.
+All instances in that pass share depth. Separate passes do not share visibility tests.
+Depth comparison uses strict `less`; surfaces at equal depth keep the first fragment.
+Feedback retains color and auxiliary data, but does not retain hardware depth.
+To pass visible depth to another shader, enable `depthBuffer` and write
+`depthBuffer = vec4(gl_FragCoord.z)` in the mesh fragment shader.
+
+OBJ files must contain triangles. Export triangulated faces from the modeling application.
+The loader accepts positions, UVs, normals and negative face indices.
+Each OBJ line permits up to 4,096 bytes. Coordinate components must be finite and no greater than 1,000,000 in magnitude.
+It generates face normals when normals are absent. Missing UVs are zero.
+Object names, group names, smoothing groups and material references do not change rendering.
+The loader does not open material files. Supply materials in the shader and image parameters.
+
+Geometry assets must be regular files inside the pack, including symlink targets.
+Each asset has a 32 MiB file limit. A pack can contain up to 96 MiB of decoded vertices.
+A pass permits 3,145,728 vertices, 4,096 instances and 12,582,912 total vertex invocations.
+Geometry and hardware depth count toward the shared 256 MiB buffer budget.
+A pass that exceeds that budget supplies transparent output.
+Resize and shader replacement release obsolete GPU resources.
+
+[Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates instanced geometry,
+parent and child rotations, a perspective camera, lighting and audio response.
 
 ## Images
 

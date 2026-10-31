@@ -9,6 +9,7 @@ Target platform: Linux on Wayland with Vulkan.
 Native desktop tests use KDE/KWin. Other compositors and screen readers are not individually certified.
 Build and installation procedures do not change. This release does not add macOS or Windows support.
 
+- Render imported OBJ meshes and shader-generated triangles with instancing and hardware depth testing. Add the Mesh Reactor shader pack.
 - Detach a tab by dragging it outside the bar, or through its context menu. Existing panes keep their running processes.
 - Reuse history rows during resize when their text still fits on one line. Preserve their cells, styles and graphemes without rebuilding them.
 - Limit the command palette to eight visible results. Keep text clear of the scrollbar and show a result count and keyboard hints.

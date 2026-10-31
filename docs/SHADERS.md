@@ -43,6 +43,8 @@ The chain must tone-map its radiance before final output.
 Phosphor does this in its background lens pass, before text composition.
 
 Packs support eight buffers, four image parameters, auxiliary depth output and a custom vertex hook.
+Mesh passes add imported or shader-generated triangles, instancing and hardware depth testing.
+[Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates this path.
 See the [shader API](SHADER-API.md) for pass order, coordinates, reset conditions and memory limits.
 [Depth trails](../data/shaders/depth-trails/README.md) demonstrates these interfaces.
 

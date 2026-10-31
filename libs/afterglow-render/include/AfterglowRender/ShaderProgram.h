@@ -92,6 +92,19 @@ static_assert(sizeof(TerminalShaderUniforms) == 5120);
 inline constexpr int MaxShaderBuffers = PhosphorShaders::kMaxBufferPasses;
 inline constexpr int MaxShaderImages = PhosphorShaders::kMaxImageSlots;
 enum class ShaderWrap { Clamp, Repeat, Mirror };
+/// Triangle geometry. Empty vertices select procedural generation with gl_VertexIndex.
+struct ShaderMeshVertex {
+    float position[3];
+    float normal[3];
+    float uv[2];
+};
+struct ShaderGeometry {
+    QByteArray vertexCode; ///< mainMesh(out vec4 clipPosition), Vulkan clip coordinates
+    std::vector<ShaderMeshVertex> vertices;
+    int vertexCount = 0;
+    int instances = 1;
+    int samples = 1; ///< 1, 2, 4 or 8 samples per pixel
+};
 struct ShaderBufferSource {
     QByteArray code;
     bool feedback = false;
@@ -100,6 +113,7 @@ struct ShaderBufferSource {
     bool nearest = false;
     ShaderWrap wrap = ShaderWrap::Clamp;
     bool depthBuffer = false;
+    ShaderGeometry geometry;
 };
 struct ShaderProgramSource
 {
@@ -108,6 +122,7 @@ struct ShaderProgramSource
     QByteArray vertexCode; ///< void mainVertex(inout vec4 position, in vec2 uv)
     bool useDepthBuffer = false; ///< auxiliary RGBA depth data on buffer passes
     bool depthOutput = false; ///< internal compiled MRT pass
+    ShaderGeometry geometry; ///< internal compiled mesh pass
     std::vector<ShaderBufferSource> buffers;
     QByteArray bufferCode; ///< compatibility shorthand for the first buffer
     bool bufferFeedback = false;
@@ -167,6 +182,8 @@ public:
     /// The GLSL put in front of user code: uniform block, iChannel0, and the
     /// y-up texture wrapper of Ghostty's convention.
     static QByteArray prefix();
+    /// Read triangulated OBJ faces (v/vt/vn, negative indices supported).
+    static bool loadObj(const QByteArray& data, ShaderGeometry& geometry, QString* error);
 
     const ShaderProgram* buffer() const noexcept { return m_buffers.empty() ? nullptr : m_buffers.front().get(); }
     const auto& buffers() const noexcept { return m_buffers; }
@@ -179,7 +196,9 @@ public:
     bool bufferNearest() const noexcept { return m_bufferNearest; }
     const QShader& vertexShader() const noexcept { return m_vertexShader; }
     bool depthOutput() const noexcept { return m_depthOutput; }
-    int vertexCount() const noexcept { return m_vertexShader.isValid() ? 6 : 3; }
+    const ShaderGeometry& geometry() const noexcept { return m_geometry; }
+    bool meshPass() const noexcept { return !m_geometry.vertexCode.isEmpty(); }
+    int vertexCount() const noexcept { return meshPass() ? m_geometry.vertexCount : m_vertexShader.isValid() ? 6 : 3; }
     const QShader& shader() const noexcept { return m_shader; }
     const QString& id() const noexcept { return m_id; }
     const QString& instanceId() const noexcept { return m_instanceId; }
@@ -212,6 +231,7 @@ private:
     QShader m_shader;
     QShader m_vertexShader;
     bool m_depthOutput = false;
+    ShaderGeometry m_geometry;
     QString m_id;
     QString m_instanceId;
     bool m_animated = false;

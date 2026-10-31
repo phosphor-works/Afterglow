@@ -1466,3 +1466,140 @@ TEST_F(Render, KittyTransparentColorsReplaceThePaneFill)
     EXPECT_EQ(qAlpha(img.pixel(cellCenter(1, 0))), 255);
     EXPECT_EQ(qAlpha(img.pixel(cellCenter(2, 0))), 255);
 }
+
+TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
+{
+    ShaderProgramSource source;
+    source.id = "mesh-depth";
+    source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+    ShaderBufferSource pass;
+    pass.geometry.vertexCount = 3;
+    pass.geometry.instances = 2;
+    pass.geometry.vertexCode = R"(
+        layout(location=0) flat out int objectId;
+        void mainMesh(out vec4 p) {
+            vec2 corners[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
+            objectId=gl_InstanceIndex;
+            float z=gl_InstanceIndex==0 ? 0.2 : 0.8;
+            if(customParams[0].x>0.5) z=1.0-z;
+            p=vec4(corners[gl_VertexIndex],z,1);
+        })";
+    pass.code = R"(layout(location=0) flat in int objectId;
+        void mainImage(out vec4 c,in vec2 p){c=objectId==0 ? vec4(0,1,0,1) : vec4(1,0,0,1);})";
+    source.buffers = {pass};
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.pane = {program->instance("mesh")};
+    renderer->setShaderChains(chains);
+    EXPECT_PIXEL(render("\x1b[?25l"), cellCenter(10,2), qRgb(0,255,0));
+    const QSize size(Cols*cw,Rows*ch);
+    WindowRenderer::Pane pane{&snapshot,{}};
+    pane.params.rect = QRect(QPoint(), size);
+    ShaderParameterValues values; values.paramMask = 1; values.params[0] = 1;
+    pane.params.shaderParameters.insert("mesh", values);
+    const auto image = renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg);
+    EXPECT_PIXEL(image, cellCenter(10,2), qRgb(255,0,0));
+    // Recreate depth attachments at a different size.
+    pane.params.rect = QRect(0,0,size.width()*2,size.height()*2);
+    const auto resized = renderer->renderToImage(size*2, {pane}, {}, snapshot.defaultBg);
+    EXPECT_PIXEL(resized, cellCenter(10,2)*2, qRgb(255,0,0));
+    PaneSnapshot otherSnapshot = snapshot;
+    WindowRenderer::Pane other{&otherSnapshot,{}};
+    pane.params.rect = QRect(QPoint(),size);
+    other.params.rect = QRect(size.width(),0,size.width(),size.height());
+    const auto split = renderer->renderToImage(QSize(size.width()*2,size.height()), {pane,other}, {}, snapshot.defaultBg);
+    EXPECT_PIXEL(split, cellCenter(10,2), qRgb(255,0,0));
+    EXPECT_PIXEL(split, cellCenter(10,2)+QPoint(size.width(),0), qRgb(0,255,0));
+}
+
+TEST_F(Render, ImportedMeshUsesVertexAttributesAndOcclusion)
+{
+    ShaderProgramSource source;
+    source.id = "obj-depth";
+    source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+    ShaderBufferSource pass;
+    QString error;
+    ASSERT_TRUE(ShaderProgram::loadObj(
+        "v -1 -1 0.2\nv 3 -1 0.2\nv -1 3 0.2\nv -1 -1 0.8\nv 3 -1 0.8\nv -1 3 0.8\n"
+        "vt 0 1\nvt 1 0\nvn 0 0 1\nf 1/1/1 2/1/1 3/1/1\nf -3/2/1 -2/2/1 -1/2/1\n", pass.geometry, &error));
+    pass.geometry.vertexCode = R"(
+        layout(location=0) out vec3 color;
+        void mainMesh(out vec4 p){p=vec4(meshPosition,1);color=vec3(meshUV,meshNormal.z*0.5);})";
+    pass.code = "layout(location=0) in vec3 color;void mainImage(out vec4 c,in vec2 p){c=vec4(color,1);}";
+    pass.geometry.samples = 4;
+    pass.depthBuffer = true;
+    pass.code.replace("c=vec4(color,1);", "c=vec4(color,1);depthBuffer=vec4(gl_FragCoord.z);");
+    source.buffers = {pass};
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.window = {program}; renderer->setShaderChains(chains);
+    EXPECT_PIXEL(render("\x1b[?25l"), cellCenter(10,2), qRgb(0,255,128));
+    source.code = "void mainImage(out vec4 c,in vec2 p){c=vec4(texture(iDepth,p/iResolution.xy).rrr,1);}";
+    program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    chains.window = {program}; renderer->setShaderChains(chains);
+    EXPECT_PIXEL(render(""), cellCenter(10,2), qRgb(51,51,51));
+}
+
+TEST(ShaderGeometry, RejectsMalformedMeshesWithoutChangingPreviousGeometry)
+{
+    ShaderGeometry mesh;
+    QString error;
+    ASSERT_TRUE(ShaderProgram::loadObj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n", mesh, &error));
+    ASSERT_EQ(mesh.vertexCount,3);
+    EXPECT_FLOAT_EQ(mesh.vertices[0].normal[2],1.f);
+    for (const auto* data : {"v nan 0 0\n", "v 0 0 0\nf 1 1 2\n", "v 0 0 0\nf 1 1 1 1\n",
+            "v 0 0 0\nf 1/7 1/7 1/7\n", "v 0 0 0\nf 9999999999999999999999999999999999 1 1\n"}) {
+        EXPECT_FALSE(ShaderProgram::loadObj(data,mesh,&error));
+        EXPECT_EQ(mesh.vertexCount,3);
+    }
+}
+
+TEST(ShaderGeometry, RejectsExcessiveOrIncompleteDraws)
+{
+    ShaderProgramSource source;
+    source.code="void mainImage(out vec4 c,in vec2 p){c=vec4(1);}";
+    source.geometry.vertexCode="void mainMesh(out vec4 p){p=vec4(0);}";
+    QString error;
+    for (int count : {0, 1, 4, 3*1024*1024+3}) {
+        source.geometry.vertexCount=count;
+        EXPECT_FALSE(ShaderProgram::compile(source,&error));
+    }
+    source.geometry.vertexCount=3;
+    source.geometry.instances=4097;
+    EXPECT_FALSE(ShaderProgram::compile(source,&error));
+    source.geometry.instances=1;
+    source.geometry.vertices.resize(2);
+    EXPECT_FALSE(ShaderProgram::compile(source,&error));
+}
+
+TEST_F(Render, MeshMultisamplingResolvesPartialEdgeCoverage)
+{
+    ShaderProgramSource source;
+    source.id="mesh-antialiasing";
+    source.code="void mainImage(out vec4 c,in vec2 p){c=vec4(texelFetch(iBuffer0,ivec2(gl_FragCoord.xy),0).r,0,0,1);}";
+    ShaderBufferSource pass;
+    pass.geometry.vertexCount=3;
+    pass.geometry.vertexCode=R"(void mainMesh(out vec4 p){
+        vec2 points[3]=vec2[3](vec2(-0.8,-0.7),vec2(0.7,-0.6),vec2(-0.45,0.8));
+        p=vec4(points[gl_VertexIndex],0.5,1);
+    })";
+    pass.code="void mainImage(out vec4 c,in vec2 p){c=vec4(1,0,0,1);}";
+    for (int samples : {1,4}) {
+        pass.geometry.samples=samples;
+        source.buffers={pass};
+        QString error;
+        const auto program=ShaderProgram::compile(source,&error);
+        ASSERT_TRUE(program) << error.toStdString();
+        ShaderChains chains; chains.window={program}; renderer->setShaderChains(chains);
+        const auto image=render("\x1b[?25l");
+        int partial=0;
+        for(int y=0;y<image.height();++y) for(int x=0;x<image.width();++x) {
+            const int red=qRed(image.pixel(x,y));
+            if(red>20 && red<235) ++partial;
+        }
+        if(samples==1) EXPECT_EQ(partial,0);
+        else EXPECT_GT(partial,10);
+    }
+}

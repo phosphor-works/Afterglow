@@ -23,6 +23,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QStandardPaths>
 
@@ -81,6 +83,86 @@ QString loadImageParameter(const QString& pack, const QString& value, QImage& im
     if (image.isNull() || image.size() != size) return QStringLiteral("Cannot decode image: %1").arg(value);
     image = image.convertToFormat(QImage::Format_RGBA8888);
     return image.isNull() ? QStringLiteral("Cannot allocate image") : QString();
+}
+
+QString readGeometryAsset(const QString& pack, const QString& name, QByteArray& bytes, QString& path)
+{
+    if (name.isEmpty() || name.size() > 4096 || name.contains(QChar::Null) || QDir::isAbsolutePath(name))
+        return QStringLiteral("Geometry asset needs a relative pack path");
+    path = QDir(pack).absoluteFilePath(name);
+    const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return QStringLiteral("Cannot open geometry asset: %1").arg(name);
+    struct stat st {};
+    const auto opened = QFileInfo(QStringLiteral("/proc/self/fd/%1").arg(fd)).canonicalFilePath();
+    const auto root = QFileInfo(pack).canonicalFilePath();
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > 32 * 1024 * 1024
+        || root.isEmpty() || !opened.startsWith(root + QLatin1Char('/'))) {
+        ::close(fd);
+        return QStringLiteral("Geometry assets must be regular files inside the pack, at most 32 MiB");
+    }
+    QFile file;
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd); return QStringLiteral("Cannot read geometry asset");
+    }
+    bytes = file.read(32 * 1024 * 1024 + 1);
+    if (file.error() != QFileDevice::NoError || bytes.size() > 32 * 1024 * 1024)
+        return QStringLiteral("Cannot read geometry asset within size limit");
+    return {};
+}
+
+QString loadGeometryPasses(const QString& pack, AfterglowRender::ShaderProgramSource& source,
+                          const QStringList& includes, QStringList& watched)
+{
+    QByteArray data;
+    QString path;
+    auto error = readGeometryAsset(pack, QStringLiteral("metadata.json"), data, path);
+    if (!error.isEmpty()) return error;
+    watched << path;
+    QJsonParseError parse;
+    const auto document = QJsonDocument::fromJson(data, &parse);
+    if (parse.error != QJsonParseError::NoError || !document.isObject()) return QStringLiteral("Invalid pack metadata");
+    const auto value = document.object().value(QStringLiteral("geometryPasses"));
+    if (value.isUndefined()) return {};
+    if (!value.isArray() || value.toArray().size() != qsizetype(source.buffers.size()))
+        return QStringLiteral("geometryPasses must have one entry per buffer shader (null for fullscreen)");
+    const auto passes = value.toArray();
+    qint64 totalBytes = 0;
+    for (int i = 0; i < passes.size(); ++i) {
+        if (passes[i].isNull()) continue;
+        if (!passes[i].isObject()) return QStringLiteral("Geometry pass must be an object or null");
+        const auto object = passes[i].toObject();
+        for (auto it = object.begin(); it != object.end(); ++it)
+            if (it.key() != QLatin1String("vertexShader") && it.key() != QLatin1String("mesh")
+                && it.key() != QLatin1String("vertexCount") && it.key() != QLatin1String("instances") && it.key() != QLatin1String("samples"))
+                return QStringLiteral("Unknown geometry setting: %1").arg(it.key());
+        auto& geometry = source.buffers[i].geometry;
+        error = readGeometryAsset(pack, object.value(QStringLiteral("vertexShader")).toString(), data, path);
+        if (!error.isEmpty()) return error;
+        watched << path;
+        geometry.vertexCode = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
+            QString::fromUtf8(data), QFileInfo(path).absolutePath(), includes, &error).toUtf8();
+        if (!error.isEmpty()) return error;
+        if (geometry.vertexCode.trimmed().isEmpty()) return QStringLiteral("Empty mesh vertex shader");
+        auto integer = [&](const char* key, int fallback, int& out) {
+            const auto v = object.value(QLatin1String(key));
+            if (v.isUndefined()) { out = fallback; return true; }
+            const double n = v.toDouble(-1);
+            if (!v.isDouble() || n < 1 || n > 3 * 1024 * 1024 || n != std::floor(n)) return false;
+            out = int(n); return true;
+        };
+        if (!integer("instances", 1, geometry.instances)) return QStringLiteral("Invalid geometry instance count");
+        if (!integer("samples", 1, geometry.samples)) return QStringLiteral("Invalid geometry sample count");
+        if (object.contains(QStringLiteral("mesh"))) {
+            if (object.contains(QStringLiteral("vertexCount"))) return QStringLiteral("Use mesh or vertexCount, not both");
+            error = readGeometryAsset(pack, object.value(QStringLiteral("mesh")).toString(), data, path);
+            if (!error.isEmpty()) return error;
+            watched << path;
+            if (!AfterglowRender::ShaderProgram::loadObj(data, geometry, &error)) return error;
+        } else if (!integer("vertexCount", 0, geometry.vertexCount)) return QStringLiteral("Invalid geometry vertex count");
+        totalBytes += qint64(geometry.vertices.size() * sizeof(AfterglowRender::ShaderMeshVertex));
+        if (totalBytes > 96 * 1024 * 1024) return QStringLiteral("Pack geometry exceeds 96 MiB");
+    }
+    return {};
 }
 
 bool isFileReference(const QString& ref)
@@ -406,6 +488,12 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
                 : wrap == QLatin1String("mirror") ? AfterglowRender::ShaderWrap::Mirror : AfterglowRender::ShaderWrap::Clamp;
             src.buffers.push_back(std::move(pass));
         }
+        QStringList geometryFiles;
+        const auto geometryError = loadGeometryPasses(info.packDir, src, m_includeDirs, geometryFiles);
+        if (!geometryError.isEmpty()) {
+            m_failed.insert(key, geometryError); qCWarning(lcShaders) << ref << geometryError; return nullptr;
+        }
+        for (const auto& file : geometryFiles) if (!m_files.files().contains(file)) m_files.addPath(file);
         path = info.sourcePath;
         dir = info.packDir;
         src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();

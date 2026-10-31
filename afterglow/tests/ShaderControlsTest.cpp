@@ -332,3 +332,46 @@ TEST_F(ShaderControlsTest, ConfiguredImageBudgetRecoversAfterRemovingOtherPacks)
     for (int i = 0; i < 17; ++i)
         EXPECT_TRUE(QDir(base + QStringLiteral("budget-%1").arg(i)).removeRecursively());
 }
+
+TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
+{
+    const auto base = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/");
+    const auto write = [](const QString& path, const QByteArray& bytes) {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    const std::vector<std::pair<QByteArray,bool>> cases{
+        {R"([{"vertexShader":"mesh.vert","mesh":"mesh.obj","instances":2}])",true},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3}])",true},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3.5}])",false},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3,"instances":0}])",false},
+        {R"([{"vertexShader":"mesh.vert","mesh":"mesh.obj","vertexCount":3}])",false},
+        {R"([{"vertexShader":"mesh.vert","mesh":"../mesh-outside.obj"}])",false},
+        {R"([{"vertexShader":"mesh.vert","mesh":"escape.obj"}])",false},
+        {R"([{"vertexShader":"mesh.vert","vertexCount":3,"typo":true}])",false},
+        {R"([])",false},
+        {R"([true])",false},
+    };
+    ASSERT_TRUE(write(base+"mesh-outside.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+    for (std::size_t i=0;i<cases.size();++i) {
+        const auto name=QStringLiteral("geometry-test-%1").arg(i);
+        const auto dir=base+name;
+        ASSERT_TRUE(QDir().mkpath(dir));
+        ASSERT_TRUE(write(dir+"/metadata.json", "{\"id\":\""+name.toUtf8()+"\",\"name\":\""+name.toUtf8()
+            +"\",\"fragmentShader\":\"effect.frag\",\"multipass\":true,\"bufferShaders\":[\"effect.frag\"],\"geometryPasses\":"+cases[i].first+"}"));
+        ASSERT_TRUE(write(dir+"/effect.frag", "void mainImage(out vec4 c,in vec2 p){c=vec4(1);}"));
+        ASSERT_TRUE(write(dir+"/mesh.vert", "void mainMesh(out vec4 p){p=vec4(0,0,0,1);}"));
+        ASSERT_TRUE(write(dir+"/mesh.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+        ASSERT_TRUE(QFile::link(base+"mesh-outside.obj",dir+"/escape.obj"));
+        ShaderLibrary library;
+        ShaderLibrary::Refs refs; refs.background={name};
+        const auto chains=library.build(refs,{});
+        EXPECT_EQ(chains.background.size(),cases[i].second ? 1u : 0u) << i;
+        if (i==0 && !chains.background.empty()) {
+            const auto& mesh=chains.background[0]->buffers()[0]->geometry();
+            EXPECT_EQ(mesh.vertices.size(),3u); EXPECT_EQ(mesh.instances,2);
+        }
+        // Do not expose intentionally invalid fixtures to the bundled-pack test.
+        ASSERT_TRUE(QDir(dir).removeRecursively());
+    }
+}
