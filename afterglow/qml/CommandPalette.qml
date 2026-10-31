@@ -45,10 +45,9 @@ Item {
 
     Pane {
         id: panel
-        anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.min(64, parent.height * 0.1)
+        anchors.centerIn: parent
         width: Math.max(0, Math.min(620, parent.width - 32))
-        height: Math.max(0, Math.min(content.implicitHeight + topPadding + bottomPadding, parent.height - y - 16))
+        height: Math.max(0, Math.min(content.implicitHeight + topPadding + bottomPadding, parent.height - 32))
         padding: 12
         clip: true
 
