@@ -22,6 +22,7 @@ Afterglow compiles the copy built into it, so a pack cannot replace these header
 | `terminal_multipass.glsl` | `iChannel0` to `iChannel7` and `uDepthBuffer`. | For buffers. |
 | `terminal_audio.glsl` | `uAudioSpectrum` and the audio helpers. | Enables audio capture. |
 | `terminal_history.glsl` | `uPreviousText`. | Enables text history. |
+| `terminal_scene.glsl` | Object matrices and helpers for mesh passes with `objects`. | For object hierarchies. |
 
 ### Entry points
 
@@ -186,8 +187,7 @@ Set `samples` to 1, 2, 4 or 8 to select multisample antialiasing. The default is
 The renderer resolves multisample color before another pass samples it.
 An unsupported sample count uses 1. Multisampling increases buffer memory use.
 Use `bufferScale` to reduce the target size when necessary.
-The vertex shader can apply parent and child transforms for an object hierarchy.
-Afterglow does not maintain a separate CPU scene graph or import OBJ materials.
+Afterglow does not import OBJ materials.
 
 Both shader stages can read terminal uniforms, audio, images and script-controlled parameters.
 Reads of time, audio, scrollback and previous text have the same behavior as fullscreen shaders.
@@ -215,7 +215,51 @@ A pass that exceeds that budget supplies transparent output.
 Resize and shader replacement release obsolete GPU resources.
 
 [Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates instanced geometry,
-parent and child rotations, a perspective camera, lighting and audio response.
+parent and child rotations in a shader, a perspective camera, lighting and audio response.
+
+### Object hierarchies
+
+Replace `mesh`, `vertexCount` and `instances` with `objects` to describe a scene graph.
+Afterglow computes each object's world transform on every frame and draws each object that has a mesh.
+
+```json
+"geometryPasses": [{
+  "vertexShader": "scene.vert",
+  "objects": [
+    {"id": "sun", "mesh": "sphere.obj", "spin": [0, 8, 0]},
+    {"id": "orbit", "spin": [0, "$orbitSpeed", 0]},
+    {"id": "planet", "parent": "orbit", "mesh": "sphere.obj", "translate": [4, 0, 0], "scale": 0.5}
+  ]
+}]
+```
+
+| Key | Value |
+| --- | --- |
+| `id` | A unique name. |
+| `parent` | The `id` of an earlier object. The object moves with its parent. |
+| `mesh` | An OBJ file in the pack. An object without a mesh is a pivot: it draws nothing and moves its children. |
+| `translate` | Three components. Default: 0, 0, 0. |
+| `rotate` | Three angles in degrees, applied about X, then Y, then Z. Default: 0, 0, 0. |
+| `scale` | Three components, or one value for all axes. Default: 1. |
+| `spin` | Three rates in degrees per second, added to `rotate`. Default: 0, 0, 0. |
+
+Each component is a number, or `"$id"` for the value of a `float` or `int` parameter.
+Parameter references let `shader_parameters` and its transitions move objects without a recompile.
+A world transform is the parent's world transform, then translate, rotate and scale.
+A pass permits 64 objects. Spin makes the pack animated.
+
+Include `terminal_scene.glsl` in the mesh vertex shader:
+
+| Function | Result |
+| --- | --- |
+| `objectIndex()` | The object's position in `objects`. It is also `gl_InstanceIndex`. |
+| `objectPosition(vec3)` | A model position in world coordinates. |
+| `objectNormal(vec3)` | A model normal in world coordinates. |
+
+`uObjectMatrix` and `uObjectNormalMatrix` hold the matrices for all objects.
+The pack still applies its own camera and projection.
+Send `objectIndex()` to the fragment stage in a flat output when that stage needs it.
+[Orrery](../data/shaders/orrery/metadata.json) demonstrates a sun, an orbiting planet and its moon.
 
 ## Images
 

@@ -78,6 +78,33 @@ struct ShaderMeshVertex {
     float normal[3];
     float uv[2];
 };
+inline constexpr int MaxSceneObjects = 64;
+/// One transform component of a scene object: a constant, or the value of a
+/// scalar pack parameter, so scripts and transitions can move objects.
+struct ShaderSceneValue {
+    float value = 0.0f;
+    int slot = -1; ///< customParams lane (0..31), or -1 for the constant
+    float resolve(const std::array<float, 32>& params) const { return slot >= 0 ? params[std::size_t(slot)] : value; }
+};
+/// A node of a mesh pass's object hierarchy. Its world transform is its
+/// parent's world transform, then translate, rotate (degrees about X, then Y,
+/// then Z, plus spin degrees per second) and scale. Objects without vertices
+/// are pivots: they carry a transform for their children but draw nothing.
+struct ShaderSceneObject {
+    int parent = -1; ///< an earlier object, or -1 for a root
+    int firstVertex = 0; ///< into the pass's vertices
+    int vertexCount = 0;
+    std::array<ShaderSceneValue, 3> translate{};
+    std::array<ShaderSceneValue, 3> rotate{};
+    std::array<ShaderSceneValue, 3> scale{ShaderSceneValue{1.0f}, ShaderSceneValue{1.0f}, ShaderSceneValue{1.0f}};
+    std::array<ShaderSceneValue, 3> spin{};
+};
+/// The scene block (std140, binding 18): mirrors terminal_scene.glsl.
+struct alignas(16) TerminalSceneUniforms {
+    float uObjectMatrix[MaxSceneObjects][16];
+    float uObjectNormalMatrix[MaxSceneObjects][16];
+};
+static_assert(sizeof(TerminalSceneUniforms) == 8192);
 struct ShaderGeometry {
     QByteArray vertexCode; ///< defines `vec4 pMesh()`, the Vulkan clip position, or its own main()
     QString directory; ///< resolves the vertex code's quoted includes
@@ -85,6 +112,9 @@ struct ShaderGeometry {
     int vertexCount = 0;
     int instances = 1;
     int samples = 1; ///< 1, 2, 4 or 8 samples per pixel
+    /// With objects, each object with vertices is drawn once and
+    /// gl_InstanceIndex is its index; `instances` must be 1.
+    std::vector<ShaderSceneObject> objects;
 };
 struct ShaderBufferSource {
     QByteArray code; ///< defines `vec4 pTerminal(vec2 uv)` or its own main()
@@ -169,6 +199,10 @@ public:
     static QString contractDirectory();
     /// Read triangulated OBJ faces (v/vt/vn, negative indices supported).
     static bool loadObj(const QByteArray& data, ShaderGeometry& geometry, QString* error);
+    /// The world and normal matrices of @p objects at @p time seconds, with
+    /// @p params as the parameter values. Objects past MaxSceneObjects are ignored.
+    static void sceneMatrices(const std::vector<ShaderSceneObject>& objects, const std::array<float, 32>& params,
+                              float time, TerminalSceneUniforms& out);
 
     const ShaderProgram* buffer() const noexcept { return m_buffers.empty() ? nullptr : m_buffers.front().get(); }
     const auto& buffers() const noexcept { return m_buffers; }

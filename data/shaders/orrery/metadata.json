@@ -1,0 +1,29 @@
+{
+    "id": "orrery",
+    "name": "Orrery",
+    "category": "Background",
+    "description": "A sun, an orbiting planet and its moon behind the terminal: a small example of a mesh pass with an object hierarchy.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "multipass": true,
+    "bufferShaders": ["scene.frag"],
+    "geometryPasses": [
+        {
+            "vertexShader": "scene.vert",
+            "samples": 4,
+            "objects": [
+                {"id": "sun", "mesh": "sphere.obj", "scale": 1.1, "spin": [0, 8, 0]},
+                {"id": "orbit", "rotate": [6, 0, 0], "spin": [0, "$orbitSpeed", 0]},
+                {"id": "planet", "parent": "orbit", "mesh": "sphere.obj", "translate": [4.2, 0, 0], "scale": 0.45, "spin": [0, 40, 0]},
+                {"id": "moonOrbit", "parent": "planet", "rotate": [24, 0, 0], "spin": [0, "$moonSpeed", 0]},
+                {"id": "moon", "parent": "moonOrbit", "mesh": "sphere.obj", "translate": [2.6, 0, 0], "scale": 0.3}
+            ]
+        }
+    ],
+    "parameters": [
+        {"id": "orbitSpeed", "name": "Orbit speed (degrees per second)", "type": "float", "default": 18, "min": -180, "max": 180},
+        {"id": "moonSpeed", "name": "Moon speed (degrees per second)", "type": "float", "default": 70, "min": -360, "max": 360},
+        {"id": "brightness", "name": "Brightness", "type": "float", "default": 0.8, "min": 0, "max": 2}
+    ]
+}

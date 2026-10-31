@@ -130,9 +130,77 @@ QString readGeometryAsset(const QString& pack, const QString& name, QByteArray& 
     return {};
 }
 
+/// A mesh pass's `objects`: each object's meshes are appended to the pass's
+/// vertices. Transform components are numbers or "$id" for a scalar parameter.
+QString loadSceneObjects(const QString& pack, const QJsonArray& list, const QHash<QString, int>& scalarSlots,
+                         AfterglowRender::ShaderGeometry& geometry, QStringList& watched)
+{
+    if (list.isEmpty() || list.size() > AfterglowRender::MaxSceneObjects)
+        return QStringLiteral("objects needs 1 to %1 entries").arg(AfterglowRender::MaxSceneObjects);
+    QHash<QString, int> ids;
+    for (int i = 0; i < list.size(); ++i) {
+        if (!list[i].isObject()) return QStringLiteral("Scene object %1 must be an object").arg(i);
+        const auto entry = list[i].toObject();
+        for (auto it = entry.begin(); it != entry.end(); ++it)
+            if (!QStringList{QStringLiteral("id"), QStringLiteral("parent"), QStringLiteral("mesh"), QStringLiteral("translate"),
+                             QStringLiteral("rotate"), QStringLiteral("scale"), QStringLiteral("spin")}.contains(it.key()))
+                return QStringLiteral("Unknown scene object setting: %1").arg(it.key());
+        const QString id = entry.value(QStringLiteral("id")).toString();
+        if (id.isEmpty() || ids.contains(id)) return QStringLiteral("Scene object %1 needs a unique id").arg(i);
+        AfterglowRender::ShaderSceneObject object;
+        if (entry.contains(QStringLiteral("parent"))) {
+            const QString parent = entry.value(QStringLiteral("parent")).toString();
+            if (!ids.contains(parent)) return QStringLiteral("Scene object %1 needs an earlier parent").arg(id);
+            object.parent = ids.value(parent);
+        }
+        auto value = [&](const QJsonValue& v, AfterglowRender::ShaderSceneValue& out) {
+            if (v.isDouble() && std::isfinite(v.toDouble())) { out = {float(v.toDouble()), -1}; return true; }
+            const QString text = v.toString();
+            if (!text.startsWith(QLatin1Char('$')) || !scalarSlots.contains(text.mid(1))) return false;
+            out = {0.0f, scalarSlots.value(text.mid(1))};
+            return true;
+        };
+        auto vector = [&](const char* key, std::array<AfterglowRender::ShaderSceneValue, 3>& out, bool uniform) {
+            const auto v = entry.value(QLatin1String(key));
+            if (v.isUndefined()) return true;
+            if (uniform && !v.isArray()) {
+                if (!value(v, out[0])) return false;
+                out[1] = out[2] = out[0];
+                return true;
+            }
+            const auto parts = v.toArray();
+            if (parts.size() != 3) return false;
+            for (int axis = 0; axis < 3; ++axis) if (!value(parts[axis], out[axis])) return false;
+            return true;
+        };
+        if (!vector("translate", object.translate, false) || !vector("rotate", object.rotate, false)
+            || !vector("scale", object.scale, true) || !vector("spin", object.spin, false))
+            return QStringLiteral("Scene object %1 has an invalid transform; use numbers or \"$parameter\"").arg(id);
+        if (entry.contains(QStringLiteral("mesh"))) {
+            QByteArray data;
+            QString path;
+            auto error = readGeometryAsset(pack, entry.value(QStringLiteral("mesh")).toString(), data, path);
+            watched << path;
+            if (!error.isEmpty()) return error;
+            AfterglowRender::ShaderGeometry mesh;
+            if (!AfterglowRender::ShaderProgram::loadObj(data, mesh, &error)) return error;
+            if (geometry.vertices.size() + mesh.vertices.size() > std::size_t(3 * 1024 * 1024))
+                return QStringLiteral("Scene meshes exceed the triangle budget");
+            object.firstVertex = int(geometry.vertices.size());
+            object.vertexCount = int(mesh.vertices.size());
+            geometry.vertices.insert(geometry.vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
+        }
+        ids.insert(id, i);
+        geometry.objects.push_back(object);
+    }
+    if (geometry.vertices.empty()) return QStringLiteral("A scene needs at least one object with a mesh");
+    geometry.vertexCount = int(geometry.vertices.size());
+    return {};
+}
+
 /// Afterglow's own metadata keys: the scene flags and the mesh passes.
 QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSource& source,
-                         const QStringList& includes, QStringList& watched)
+                         const QStringList& includes, const QHash<QString, int>& scalarSlots, QStringList& watched)
 {
     QByteArray data;
     QString path;
@@ -159,7 +227,7 @@ QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSour
         if (!passes[i].isObject()) return QStringLiteral("Geometry pass must be an object or null");
         const auto object = passes[i].toObject();
         for (auto it = object.begin(); it != object.end(); ++it)
-            if (it.key() != QLatin1String("vertexShader") && it.key() != QLatin1String("mesh")
+            if (it.key() != QLatin1String("vertexShader") && it.key() != QLatin1String("mesh") && it.key() != QLatin1String("objects")
                 && it.key() != QLatin1String("vertexCount") && it.key() != QLatin1String("instances") && it.key() != QLatin1String("samples"))
                 return QStringLiteral("Unknown geometry setting: %1").arg(it.key());
         auto& geometry = source.buffers[i].geometry;
@@ -179,7 +247,13 @@ QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSour
         };
         if (!integer("instances", 1, geometry.instances)) return QStringLiteral("Invalid geometry instance count");
         if (!integer("samples", 1, geometry.samples)) return QStringLiteral("Invalid geometry sample count");
-        if (object.contains(QStringLiteral("mesh"))) {
+        if (object.contains(QStringLiteral("objects"))) {
+            if (object.contains(QStringLiteral("mesh")) || object.contains(QStringLiteral("vertexCount"))
+                || object.contains(QStringLiteral("instances")))
+                return QStringLiteral("Use objects, or mesh and vertexCount with instances, not both");
+            error = loadSceneObjects(pack, object.value(QStringLiteral("objects")).toArray(), scalarSlots, geometry, watched);
+            if (!error.isEmpty()) return error;
+        } else if (object.contains(QStringLiteral("mesh"))) {
             if (object.contains(QStringLiteral("vertexCount"))) return QStringLiteral("Use mesh or vertexCount, not both");
             error = readGeometryAsset(pack, object.value(QStringLiteral("mesh")).toString(), data, path);
             watched << path;
@@ -514,7 +588,12 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
             : wrap == QLatin1String("mirror") ? AfterglowRender::ShaderWrap::Mirror : AfterglowRender::ShaderWrap::Clamp;
         src.buffers.push_back(std::move(pass));
     }
-    if (const auto error = loadPackMetadata(info.packDir, src, m_includeDirs, watched); !error.isEmpty()) return fail(error);
+    QHash<QString, int> scalarSlots;
+    for (const auto& p : info.parameters)
+        if (p.slot >= 0 && p.slot < 32 && (p.type == QLatin1String("float") || p.type == QLatin1String("int")))
+            scalarSlots.insert(p.id, p.slot);
+    if (const auto error = loadPackMetadata(info.packDir, src, m_includeDirs, scalarSlots, watched); !error.isEmpty())
+        return fail(error);
     src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();
     // Defaults, overlaid with the config's values, in phosphor's slot layout.
     const auto validated = m_registry->validateAndCoerceParams(info.id, overrides);

@@ -70,6 +70,8 @@ QRhiScissor scissorFor(const QRect& rc, const QSize& px)
 
 /// uPreviousText in terminal_history.glsl: the first binding above Phosphor's table.
 constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
+/// TerminalScene in terminal_scene.glsl: object matrices for mesh passes.
+constexpr int SceneBinding = PreviousTextBinding + 1;
 static_assert(PhosphorShaders::Bindings::kUserTextureCount == MaxShaderImages);
 
 struct CompositeUniforms
@@ -164,6 +166,7 @@ void PostChain::release()
     m_emptyTexture.reset();
     m_bufferBytes = 0;
     m_ubos.clear();
+    m_sceneUbos.clear();
     m_compositeUbos.clear();
     m_historyTarget.reset();
     m_previousText.reset();
@@ -303,6 +306,17 @@ QRhiBuffer* PostChain::uniformBuffer(int index)
     return m_ubos[std::size_t(index)].get();
 }
 
+QRhiBuffer* PostChain::sceneBuffer(int index)
+{
+    while (int(m_sceneUbos.size()) <= index) {
+        auto* b = m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                                            sizeof(TerminalSceneUniforms));
+        b->create();
+        m_sceneUbos.emplace_back(b);
+    }
+    return m_sceneUbos[std::size_t(index)].get();
+}
+
 QRhiTexture* PostChain::localTexture(QRhiTexture* source, const QRect& rect, QRhiResourceUpdateBatch* updates)
 {
     if (rect == QRect(QPoint(), source->pixelSize())) return source;
@@ -386,6 +400,7 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
         QRhiShaderResourceBinding::sampledTexture(Bindings::kAudioSpectrum, stage,
             m_chains.audioReactive() ? m_device.audioTexture() : input, m_device.atlasSampler()),
         QRhiShaderResourceBinding::sampledTexture(PreviousTextBinding, stage, history, m_sampler.get()),
+        QRhiShaderResourceBinding::uniformBuffer(SceneBinding, stage, sceneBuffer(ubo)),
     };
     for (int i = 0; i < MaxShaderBuffers; ++i)
         entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kChannelBase + i, stage,
@@ -625,6 +640,16 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             uniforms.base.iFrame = buffer.frame;
             auto* updates = rhi->nextResourceUpdateBatch();
             updates->updateDynamicBuffer(uniformBuffer(ubo), 0, sizeof uniforms, &uniforms);
+            const auto& objects = program.buffers()[index]->geometry().objects;
+            if (!objects.empty()) {
+                ShaderParameterValues values;
+                values.params = program.params();
+                if (auto it = region.shaderParameters.constFind(program.instanceId()); it != region.shaderParameters.cend())
+                    values.merge(*it);
+                TerminalSceneUniforms scene{};
+                ShaderProgram::sceneMatrices(objects, values.params, time.time, scene);
+                updates->updateDynamicBuffer(sceneBuffer(ubo), 0, sizeof scene, &scene);
+            }
             if (index == 0) samples.depth = buffer.depths[buffer.read].get();
             auto* resources = bindings(ubo++, input, &region, &program, &samples, updates);
             const int out = 1 - buffer.read;
@@ -641,7 +666,17 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                 const QRhiCommandBuffer::VertexInput binding(buffer.vertices.get(), 0);
                 cb->setVertexInput(0, 1, &binding);
             }
-            cb->draw(program.buffers()[index]->vertexCount(), program.buffers()[index]->geometry().instances);
+            const auto& geometry = program.buffers()[index]->geometry();
+            if (geometry.objects.empty()) {
+                cb->draw(program.buffers()[index]->vertexCount(), geometry.instances);
+            } else {
+                // One draw per object with vertices; the first instance is its index.
+                for (std::size_t object = 0; object < geometry.objects.size(); ++object) {
+                    const auto& node = geometry.objects[object];
+                    if (node.vertexCount > 0)
+                        cb->draw(quint32(node.vertexCount), 1, quint32(node.firstVertex), quint32(object));
+                }
+            }
             frame.endPass();
             buffer.read = out;
             if (buffer.frame < std::numeric_limits<int>::max()) ++buffer.frame;

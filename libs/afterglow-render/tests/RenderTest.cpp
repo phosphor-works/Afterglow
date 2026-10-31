@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QImage>
 
+#include <QMatrix4x4>
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -1681,6 +1682,70 @@ TEST(ShaderGeometry, RejectsMalformedMeshesWithoutChangingPreviousGeometry)
         EXPECT_FALSE(ShaderProgram::loadObj(data,mesh,&error));
         EXPECT_EQ(mesh.vertexCount,3);
     }
+}
+
+TEST_F(Render, SceneObjectsFollowTheirParentAndLiveParameters)
+{
+    ShaderProgramSource source;
+    source.id = "scene-objects";
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
+    ShaderBufferSource pass;
+    QString error;
+    // A quad over the left half of clip space.
+    ASSERT_TRUE(ShaderProgram::loadObj("v -1 -1 0.5\nv 0 -1 0.5\nv 0 1 0.5\nv -1 1 0.5\nf 1 2 3\nf 1 3 4\n", pass.geometry, &error));
+    pass.geometry.objects.resize(2);
+    pass.geometry.objects[0].translate[0] = {0.0f, 0}; // the pivot moves by parameter lane 0
+    pass.geometry.objects[1].parent = 0;
+    pass.geometry.objects[1].vertexCount = pass.geometry.vertexCount;
+    pass.geometry.vertexCode = R"(
+        #include <terminal_scene.glsl>
+        vec4 pMesh(){return vec4(objectPosition(meshPosition),1);})";
+    pass.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
+    source.buffers = {pass};
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    EXPECT_FALSE(program->animated());
+    ShaderChains chains; chains.pane = {program->instance("scene")};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    const QSize size(Cols*cw, Rows*ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, QPoint(size.width()/4, size.height()/2), qRgb(255,0,0));
+    EXPECT_PIXEL(image, QPoint(size.width()*3/4, size.height()/2), qRgb(0,0,0));
+    // A live parameter moves the pivot, and the child with it, without recompiling.
+    ShaderParameterValues values; values.paramMask = 1; values.params[0] = 1.0f;
+    pane.params.shaderParameters.insert("scene", values);
+    image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, QPoint(size.width()/4, size.height()/2), qRgb(0,0,0));
+    EXPECT_PIXEL(image, QPoint(size.width()*3/4, size.height()/2), qRgb(255,0,0));
+}
+
+TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
+{
+    std::vector<ShaderSceneObject> objects(3);
+    objects[0].translate[0] = {2.0f};                  // root two units right
+    objects[0].spin[2] = {90.0f};                      // turning about Z
+    objects[1].parent = 0;
+    objects[1].translate[1] = {0.0f, 4};               // up by parameter lane 4
+    objects[2].parent = 1;
+    objects[2].scale = {ShaderSceneValue{3.0f}, ShaderSceneValue{3.0f}, ShaderSceneValue{3.0f}};
+    std::array<float, 32> params{};
+    params[4] = 1.0f;
+    TerminalSceneUniforms scene{};
+    ShaderProgram::sceneMatrices(objects, params, 1.0f, scene);
+    auto point = [&](int object, QVector3D p) { return QMatrix4x4(scene.uObjectMatrix[object]).transposed().map(p); };
+    // After one second the root has turned 90 degrees, so the child's "up"
+    // offset points left of the root.
+    EXPECT_TRUE(qFuzzyCompare(point(1, {0, 0, 0}), QVector3D(1, 0, 0))) << point(1, {0, 0, 0}).x();
+    EXPECT_TRUE(qFuzzyCompare(point(2, {1, 0, 0}), QVector3D(1, 3, 0))) << point(2, {1, 0, 0}).y();
+    // Normals undo the scale.
+    const QMatrix4x4 normal = QMatrix4x4(scene.uObjectNormalMatrix[2]).transposed();
+    EXPECT_NEAR(normal.mapVector({1, 0, 0}).length(), 1.0f / 3.0f, 1e-5f);
+    params[4] = 2.0f;
+    ShaderProgram::sceneMatrices(objects, params, 1.0f, scene);
+    EXPECT_TRUE(qFuzzyCompare(point(1, {0, 0, 0}), QVector3D(0, 0, 0)));
 }
 
 TEST(ShaderGeometry, RejectsExcessiveOrIncompleteDraws)

@@ -354,6 +354,15 @@ TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
         {R"([{"vertexShader":"mesh.vert","vertexCount":3,"typo":true}])",false},
         {R"([])",false},
         {R"([true])",false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"pivot","spin":[0,"$angle",0]},
+            {"id":"body","parent":"pivot","mesh":"mesh.obj","translate":[1,0,0],"scale":2}]}])",true},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"body","parent":"missing","mesh":"mesh.obj"}]}])",false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj"},{"id":"a","mesh":"mesh.obj"}]}])",false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj","rotate":[0,"$unknown",0]}]}])",false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"mesh.obj","scale":[1,2]}]}])",false},
+        {R"([{"vertexShader":"mesh.vert","instances":2,"objects":[{"id":"a","mesh":"mesh.obj"}]}])",false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"pivot"}]}])",false},
+        {R"([{"vertexShader":"mesh.vert","objects":[{"id":"a","mesh":"escape.obj"}]}])",false},
     };
     ASSERT_TRUE(write(base+"mesh-outside.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
     for (std::size_t i=0;i<cases.size();++i) {
@@ -361,7 +370,9 @@ TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
         const auto dir=base+name;
         ASSERT_TRUE(QDir().mkpath(dir));
         ASSERT_TRUE(write(dir+"/metadata.json", "{\"id\":\""+name.toUtf8()+"\",\"name\":\""+name.toUtf8()
-            +"\",\"fragmentShader\":\"effect.frag\",\"multipass\":true,\"bufferShaders\":[\"effect.frag\"],\"geometryPasses\":"+cases[i].first+"}"));
+            +"\",\"fragmentShader\":\"effect.frag\",\"multipass\":true,\"bufferShaders\":[\"effect.frag\"],"
+            "\"parameters\":[{\"id\":\"angle\",\"name\":\"Angle\",\"type\":\"float\",\"default\":0,\"min\":0,\"max\":360}],"
+            "\"geometryPasses\":"+cases[i].first+"}"));
         ASSERT_TRUE(write(dir+"/effect.frag", "vec4 pTerminal(vec2 uv){return vec4(1);}"));
         ASSERT_TRUE(write(dir+"/mesh.vert", "vec4 pMesh(){return vec4(0,0,0,1);}"));
         ASSERT_TRUE(write(dir+"/mesh.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
@@ -373,6 +384,13 @@ TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
         if (i==0 && !chains.background.empty()) {
             const auto& mesh=chains.background[0]->buffers()[0]->geometry();
             EXPECT_EQ(mesh.vertices.size(),3u); EXPECT_EQ(mesh.instances,2);
+        }
+        if (i==10 && !chains.background.empty()) {
+            const auto& scene=chains.background[0]->buffers()[0]->geometry();
+            ASSERT_EQ(scene.objects.size(),2u);
+            EXPECT_EQ(scene.objects[0].vertexCount,0); EXPECT_EQ(scene.objects[0].spin[1].slot,0);
+            EXPECT_EQ(scene.objects[1].parent,0); EXPECT_EQ(scene.objects[1].vertexCount,3);
+            EXPECT_FLOAT_EQ(scene.objects[1].scale[2].value,2); EXPECT_TRUE(chains.background[0]->animated());
         }
         // Do not expose intentionally invalid fixtures to the bundled-pack test.
         ASSERT_TRUE(QDir(dir).removeRecursively());

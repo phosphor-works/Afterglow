@@ -9,9 +9,11 @@
 
 #include <rhi/qshaderbaker.h>
 
+#include <QMatrix4x4>
 #include <QRegularExpression>
 #include <QVector3D>
 #include <QVector2D>
+#include <algorithm>
 #include <limits>
 #include <span>
 #include <cmath>
@@ -41,7 +43,7 @@ const QList<PhosphorShaders::EntryCandidate>& fragmentEntry()
 
 QString vertexPrologue()
 {
-    return QStringLiteral("#version 450\n#include <terminal_lib.glsl>\n");
+    return QStringLiteral("#version 450\n#define AFTERGLOW_TERMINAL_VERTEX_STAGE 1\n#include <terminal_lib.glsl>\n");
 }
 
 const QList<PhosphorShaders::EntryCandidate>& vertexEntry()
@@ -210,6 +212,31 @@ bool ShaderProgram::loadObj(const QByteArray& data, ShaderGeometry& geometry, QS
     return true;
 }
 
+void ShaderProgram::sceneMatrices(const std::vector<ShaderSceneObject>& objects, const std::array<float, 32>& params,
+                                  float time, TerminalSceneUniforms& out)
+{
+    std::array<QMatrix4x4, MaxSceneObjects> world;
+    const auto count = std::min<std::size_t>(objects.size(), MaxSceneObjects);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto& object = objects[i];
+        auto component = [&](const std::array<ShaderSceneValue, 3>& values, int axis) { return values[axis].resolve(params); };
+        // Spin is bounded to one turn so the angle keeps its precision.
+        auto angle = [&](int axis) {
+            return float(std::fmod(double(component(object.rotate, axis)) + double(component(object.spin, axis)) * time, 360.0));
+        };
+        QMatrix4x4 local;
+        local.translate(component(object.translate, 0), component(object.translate, 1), component(object.translate, 2));
+        local.rotate(angle(2), 0, 0, 1);
+        local.rotate(angle(1), 0, 1, 0);
+        local.rotate(angle(0), 1, 0, 0);
+        local.scale(component(object.scale, 0), component(object.scale, 1), component(object.scale, 2));
+        world[i] = object.parent >= 0 && std::size_t(object.parent) < i ? world[std::size_t(object.parent)] * local : local;
+        std::copy_n(world[i].constData(), 16, out.uObjectMatrix[i]);
+        const QMatrix4x4 normal = world[i].inverted().transposed();
+        std::copy_n(normal.constData(), 16, out.uObjectNormalMatrix[i]);
+    }
+}
+
 std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource& source, QString* error)
 {
     const auto& buffers = source.buffers;
@@ -241,9 +268,27 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
                 return nullptr;
             }
         }
-    } else if (geometry.vertexCount || !geometry.vertices.empty() || geometry.instances != 1 || geometry.samples != 1) {
+    } else if (geometry.vertexCount || !geometry.vertices.empty() || geometry.instances != 1 || geometry.samples != 1
+               || !geometry.objects.empty()) {
         if (error) *error = QStringLiteral("Mesh requires a vertex shader");
         return nullptr;
+    }
+    if (!geometry.objects.empty()) {
+        if (geometry.objects.size() > std::size_t(MaxSceneObjects) || geometry.instances != 1 || geometry.vertices.empty()) {
+            if (error) *error = QStringLiteral("Objects need imported meshes, one instance and at most %1 objects").arg(MaxSceneObjects);
+            return nullptr;
+        }
+        for (std::size_t i = 0; i < geometry.objects.size(); ++i) {
+            const auto& object = geometry.objects[i];
+            bool valid = object.parent < int(i) && object.firstVertex >= 0 && object.vertexCount >= 0
+                && object.vertexCount % 3 == 0 && qint64(object.firstVertex) + object.vertexCount <= geometry.vertexCount;
+            for (const auto* values : {&object.translate, &object.rotate, &object.scale, &object.spin})
+                for (const auto& value : *values) valid = valid && value.slot < 32 && std::isfinite(value.value);
+            if (!valid) {
+                if (error) *error = QStringLiteral("Invalid scene object %1").arg(i);
+                return nullptr;
+            }
+        }
     }
 
     auto program = std::make_shared<ShaderProgram>();
@@ -276,6 +321,9 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     program->m_windowBackground = source.windowBackground;
     program->m_readsScrollback = author.contains(usesScrollback);
     program->m_animated = author.contains(usesTime) || program->m_readsPreviousText;
+    // Spinning objects move without the shader reading time.
+    for (const auto& object : geometry.objects)
+        for (const auto& value : object.spin) program->m_animated |= value.slot >= 0 || value.value != 0.0f;
     program->m_params = source.params;
     program->m_colors = source.colors;
     program->m_images = source.images;

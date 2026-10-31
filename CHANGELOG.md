@@ -79,8 +79,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Phosphor shader packs in five chains: background, text and cursor layers, panes and the window.
 - A Phosphor shader-family contract: Phosphor's base uniforms plus terminal inputs such as `uCursorRect`, `uSignal` and `uPalette`.
 - Up to eight buffer passes, four image parameters, auxiliary depth, vertex stages and instanced OBJ or generated meshes.
+- Object hierarchies for mesh passes, with transforms that follow parameters, scripts and transitions.
 - System audio input through CAVA, scrollback-driven inputs and parameter transitions with Phosphor curves.
-- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor and Phosphor Depths.
+- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery and Phosphor Depths.
 - The Phosphor and Glasshouse example scenes.
 
 ### Scripting and control

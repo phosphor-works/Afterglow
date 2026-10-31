@@ -205,6 +205,8 @@ private:
     int runLayerChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int input,
                       const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo, int scope);
     QRhiBuffer* uniformBuffer(int index);
+    /// The scene block (terminal_scene.glsl) that goes with uniform buffer @p index.
+    QRhiBuffer* sceneBuffer(int index);
     void fill(TerminalUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
               const ShaderProgram& program, const BufferInputs* buffers = nullptr) const;
 
@@ -254,6 +256,7 @@ private:
     bool m_historyValid = false;
     float m_historyTime = 0;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
+    std::vector<std::unique_ptr<QRhiBuffer>> m_sceneUbos;
     std::vector<std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;
     std::map<std::array<int, 5>, std::unique_ptr<QRhiShaderResourceBindings>> m_compositeBindings;
     std::vector<std::unique_ptr<QRhiBuffer>> m_compositeUbos;
