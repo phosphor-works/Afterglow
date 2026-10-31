@@ -13,6 +13,7 @@
 #include <QSaveFile>
 #include <QKeyEvent>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonObject>
 #include <QTemporaryDir>
 
@@ -138,15 +139,20 @@ TEST(Themes, RejectsFilesWithoutColours)
 
 TEST(Themes, BundledThemesLoad)
 {
-    for (const char* name : {"afterglow-dark", "afterglow-light"}) {
-        const QString path = Themes::locate(QLatin1String(name), {QStringLiteral(AFTERGLOW_THEME_DIR)});
-        ASSERT_FALSE(path.isEmpty()) << name;
+    const QStringList names = QDir(QStringLiteral(AFTERGLOW_THEME_DIR)).entryList({QStringLiteral("*.json")}, QDir::Files);
+    ASSERT_GE(names.size(), 33);
+    for (const QString& file : names) {
+        const QString name = QFileInfo(file).completeBaseName();
+        const QString path = Themes::locate(name, {QStringLiteral(AFTERGLOW_THEME_DIR)});
+        ASSERT_FALSE(path.isEmpty()) << name.toStdString();
         QFile f(path);
         ASSERT_TRUE(f.open(QIODevice::ReadOnly));
         const auto theme = Themes::parse(f.readAll());
-        ASSERT_TRUE(theme) << name;
+        ASSERT_TRUE(theme) << name.toStdString();
+        EXPECT_TRUE(theme->foreground && theme->background)
+            << name.toStdString();
         for (const auto& c : theme->palette) {
-            EXPECT_TRUE(c.has_value()) << name;
+            EXPECT_TRUE(c.has_value()) << name.toStdString();
         }
     }
 }

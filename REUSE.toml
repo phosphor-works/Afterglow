@@ -27,3 +27,42 @@ path = ["data/examples/glasshouse/**/*.json", "data/examples/glasshouse/preview.
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 # Glasshouse palettes after Dsaquel/dots.
+
+[[annotations]]
+path = [
+    "data/themes/ayu-dark.json",
+    "data/themes/ayu-light.json",
+    "data/themes/ayu-mirage.json",
+    "data/themes/catppuccin-frappe.json",
+    "data/themes/catppuccin-latte.json",
+    "data/themes/catppuccin-macchiato.json",
+    "data/themes/catppuccin-mocha.json",
+    "data/themes/dracula.json",
+    "data/themes/everforest-dark.json",
+    "data/themes/everforest-light.json",
+    "data/themes/github-dark.json",
+    "data/themes/github-light.json",
+    "data/themes/gruvbox-dark.json",
+    "data/themes/gruvbox-light.json",
+    "data/themes/kanagawa-dragon.json",
+    "data/themes/kanagawa-lotus.json",
+    "data/themes/kanagawa-wave.json",
+    "data/themes/monokai.json",
+    "data/themes/nord-light.json",
+    "data/themes/nord.json",
+    "data/themes/one-dark.json",
+    "data/themes/one-light.json",
+    "data/themes/rose-pine-dawn.json",
+    "data/themes/rose-pine-moon.json",
+    "data/themes/rose-pine.json",
+    "data/themes/solarized-dark.json",
+    "data/themes/solarized-light.json",
+    "data/themes/tokyonight-day.json",
+    "data/themes/tokyonight-moon.json",
+    "data/themes/tokyonight-night.json",
+    "data/themes/tokyonight-storm.json",
+]
+SPDX-FileCopyrightText = ["2011 to Present Mark Badolato and contributors", "The authors of each colour scheme"]
+SPDX-License-Identifier = "MIT"
+# Converted from mbadolato/iTerm2-Color-Schemes (ghostty/), which collects
+# each scheme from its upstream project.

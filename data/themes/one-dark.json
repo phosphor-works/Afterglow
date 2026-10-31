@@ -1,0 +1,12 @@
+{
+    "foreground": "#abb2bf",
+    "background": "#21252b",
+    "cursor": "#abb2bf",
+    "cursorText": "#21252b",
+    "selectionBackground": "#323844",
+    "selectionForeground": "#abb2bf",
+    "palette": [
+        "#21252b", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf",
+        "#767676", "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#abb2bf"
+    ]
+}

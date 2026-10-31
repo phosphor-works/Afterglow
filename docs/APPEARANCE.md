@@ -84,7 +84,26 @@ An empty theme name lets explicit `Colors` values apply.
 
 Afterglow first searches `~/.config/afterglow/themes`.
 It then searches the installed `share/afterglow/themes` directory.
-The supplied themes are `afterglow-dark` and `afterglow-light`.
+The supplied themes are:
+
+| Family | Themes |
+| --- | --- |
+| Afterglow | `afterglow-dark`, `afterglow-light` |
+| Ayu | `ayu-dark`, `ayu-mirage`, `ayu-light` |
+| Catppuccin | `catppuccin-mocha`, `catppuccin-macchiato`, `catppuccin-frappe`, `catppuccin-latte` |
+| Dracula | `dracula` |
+| Everforest | `everforest-dark`, `everforest-light` |
+| GitHub | `github-dark`, `github-light` |
+| Gruvbox | `gruvbox-dark`, `gruvbox-light` |
+| Kanagawa | `kanagawa-wave`, `kanagawa-dragon`, `kanagawa-lotus` |
+| Monokai | `monokai` |
+| Nord | `nord`, `nord-light` |
+| One | `one-dark`, `one-light` |
+| Rosé Pine | `rose-pine`, `rose-pine-moon`, `rose-pine-dawn` |
+| Solarized | `solarized-dark`, `solarized-light` |
+| Tokyo Night | `tokyonight-night`, `tokyonight-storm`, `tokyonight-moon`, `tokyonight-day` |
+
+The third-party palettes come from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) under the MIT license.
 Supported formats are Afterglow JSON, Ghostty themes and kitty themes.
 Afterglow JSON themes use the `Colors` keys.
 

@@ -10,6 +10,7 @@ Native desktop tests use KDE/KWin. Other compositors and screen readers are not 
 Build and installation procedures do not change. This release does not add macOS or Windows support.
 
 - Write terminal shaders against a Phosphor shader-family contract. Packs define `vec4 pTerminal(vec2 uv)` in top-down coordinates and read Phosphor's base uniforms plus terminal inputs such as `uCursorRect`, `uSignal` and `uPalette`. Audio, text history and buffers are opt-in includes, and high dynamic range and window backgrounds are metadata keys. See the [shader API](docs/SHADER-API.md).
+- Bundle 31 popular colour themes: Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
 - Accept Phosphor curve specs, such as `0.2,0,0,1` and `spring:20,1`, for shader parameter transitions.
 - Keep command-line `-o` overrides in memory instead of a temporary merged configuration file.
 - Keep windows responsive when shader regions move outside the surface during resize or tab detachment. Close GPU frames on rendering errors and release chrome resources in the correct order.
