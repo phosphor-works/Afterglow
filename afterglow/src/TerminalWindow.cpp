@@ -1225,12 +1225,15 @@ void TerminalWindow::renderNow()
     }
     m_controller->setPaneTitles(titles);
     QVariantMap history;
-    if (m_focused) {
+    const WindowSettings& windowSettings = m_settings.settings().window;
+    if (m_focused && windowSettings.scrollbar != WindowSettings::Scrollbar::Never) {
         history = m_focused->historyPosition();
         const QRectF rect = QRectF(m_splits->rectOf(m_focused));
         history.insert(QStringLiteral("x"), rect.right() / devicePixelRatio() - 12);
         history.insert(QStringLiteral("y"), rect.top() / devicePixelRatio());
         history.insert(QStringLiteral("height"), rect.height() / devicePixelRatio());
+        history.insert(QStringLiteral("fade"), windowSettings.scrollbar == WindowSettings::Scrollbar::Auto);
+        history.insert(QStringLiteral("hideDelay"), windowSettings.scrollbarHideDelay);
     }
     m_controller->setHistory(history);
     const std::uint32_t clearRgb = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);

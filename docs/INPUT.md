@@ -88,6 +88,8 @@ Escape or q cancels selection. The / key opens search.
 Wide characters and combining sequences remain complete.
 A resize cancels the selection because its coordinates can change.
 The focused pane has a history scrollbar.
+By default it appears while the view scrolls or the pointer is over it, then fades out.
+`Window.scrollbar` selects `auto`, `always` or `never`. `Window.scrollbarHideDelay` sets the fade delay in milliseconds.
 
 ## Search
 

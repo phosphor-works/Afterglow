@@ -194,7 +194,8 @@ TEST_F(ConfigTest, ReadsTheNewerSettings)
         "Colors": {"cursorText": "#010203", "selectionForeground": "#ffffff", "boldIsBright": true, "minimumContrast": 4.5},
         "Terminal": {"env": {"EDITOR": "nvim", "BAD=KEY": "x"}, "wordSeparators": " ,", "scrollLines": 5,
                      "confirmClose": false, "hideMouseWhileTyping": true},
-        "Window": {"workingDirectory": "home", "startMode": "MAXIMIZED", "decorations": false, "tabBar": "sometimes"}
+        "Window": {"workingDirectory": "home", "startMode": "MAXIMIZED", "decorations": false, "tabBar": "sometimes",
+                   "scrollbar": "always", "scrollbarHideDelay": 90000}
     })");
     SettingsStore store(config);
     const Settings& s = store.settings();
@@ -218,6 +219,8 @@ TEST_F(ConfigTest, ReadsTheNewerSettings)
     EXPECT_EQ(s.window.startMode, WindowSettings::StartMode::Maximized);
     EXPECT_FALSE(s.window.decorations);
     EXPECT_EQ(s.window.tabBar, WindowSettings::TabBar::Auto); // not a choice: the default
+    EXPECT_EQ(s.window.scrollbar, WindowSettings::Scrollbar::Always);
+    EXPECT_EQ(s.window.scrollbarHideDelay, 60000); // clamped
 }
 
 TEST(Keybinds, TextBindingsSendTheirBytes)

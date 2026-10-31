@@ -46,6 +46,10 @@ struct WindowSettings
     /// The tab bar: shown while there are several tabs, always, or never.
     enum class TabBar { Auto, Always, Never };
     TabBar tabBar = TabBar::Auto;
+    /// The history scrollbar: shown while scrolling or hovered, always, or never.
+    enum class Scrollbar { Auto, Always, Never };
+    Scrollbar scrollbar = Scrollbar::Auto;
+    int scrollbarHideDelay = 1200; ///< milliseconds before an auto scrollbar fades
     bool operator==(const WindowSettings&) const = default;
 };
 

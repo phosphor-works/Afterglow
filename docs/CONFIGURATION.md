@@ -167,6 +167,8 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `initialRows` | `30` | 4–500 | Rows of a new window |
 | `padding` | `6` | 0–200 | Space around the grid in logical pixels |
 | `paneTitles` | `false` |  | Show pane titles in tabs with multiple splits. |
+| `scrollbar` | `"auto"` | `"auto"`, `"always"`, `"never"` | History scrollbar visibility. The auto value shows the scrollbar while the view scrolls or the pointer is over it, then fades it out. |
+| `scrollbarHideDelay` | `1200` | 0–60000 | Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves |
 | `startMode` | `"normal"` | `"normal"`, `"maximized"`, `"fullscreen"` | How new windows open: normal, maximized or fullscreen |
 | `tabBar` | `"auto"` | `"auto"`, `"always"`, `"never"` | Tab-bar visibility. The auto value shows the bar when multiple tabs exist. |
 | `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, splits and windows. Use inherit, home or a path. Inherit uses the focused pane's directory or launcher's directory. The afterglow -d option overrides this setting. |

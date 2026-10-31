@@ -117,6 +117,25 @@ Item {
         visible: size < 1
         active: hovered || pressed
         Accessible.name: qsTr("Scrollback position")
+        // Window.scrollbar "auto": an overlay scrollbar. It appears while the view
+        // scrolls or the pointer is on it, and fades out after the configured idle.
+        // Output that arrives while the view follows the bottom does not reveal it.
+        readonly property bool fades: root.controller.history.fade === true
+        property bool revealed: false
+        property real fromBottom: 0
+        opacity: !fades || revealed || hovered || pressed ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        Timer {
+            id: hideTimer
+            interval: root.controller.history.hideDelay === undefined ? 1200 : root.controller.history.hideDelay
+            onTriggered: historyScroll.revealed = false
+        }
+        function reveal(): void {
+            revealed = true
+            hideTimer.restart()
+        }
+        onHoveredChanged: if (!hovered) reveal()
+        onPressedChanged: if (!pressed) reveal()
         property bool syncing: false
         function syncPosition(): void {
             syncing = true
@@ -127,7 +146,15 @@ Item {
         Component.onCompleted: syncPosition()
         Connections {
             target: root.controller
-            function onHistoryChanged(): void { if (!historyScroll.pressed) historyScroll.syncPosition() }
+            function onHistoryChanged(): void {
+                const history = root.controller.history
+                const offset = 1 - (history.position || 0) - (history.size === undefined ? 1 : history.size)
+                if (Math.abs(offset - historyScroll.fromBottom) > 1e-9) {
+                    historyScroll.fromBottom = offset
+                    if (historyScroll.visible) historyScroll.reveal()
+                }
+                if (!historyScroll.pressed) historyScroll.syncPosition()
+            }
         }
     }
 

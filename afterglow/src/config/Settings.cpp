@@ -300,6 +300,12 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("tabBar"), QStringLiteral("auto"),
                 QStringLiteral("Tab-bar visibility. The auto value shows the bar when multiple tabs exist."),
                 {QStringLiteral("auto"), QStringLiteral("always"), QStringLiteral("never")}),
+        enumKey(QStringLiteral("scrollbar"), QStringLiteral("auto"),
+                QStringLiteral("History scrollbar visibility. The auto value shows the scrollbar while the view scrolls or the "
+                               "pointer is over it, then fades it out."),
+                {QStringLiteral("auto"), QStringLiteral("always"), QStringLiteral("never")}),
+        intKey(QStringLiteral("scrollbarHideDelay"), 1200, 0, 60000,
+               QStringLiteral("Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves")),
     };
     schema.groups[MouseGroup] = {
         enumKey(QStringLiteral("rightClick"), QStringLiteral("menu"),
@@ -703,6 +709,11 @@ Settings SettingsStore::read() const
     s.window.tabBar = tabBar == QLatin1String("always") ? WindowSettings::TabBar::Always
                       : tabBar == QLatin1String("never") ? WindowSettings::TabBar::Never
                                                          : WindowSettings::TabBar::Auto;
+    const QString scrollbar = st.read<QString>(Window, QStringLiteral("scrollbar"));
+    s.window.scrollbar = scrollbar == QLatin1String("always") ? WindowSettings::Scrollbar::Always
+                         : scrollbar == QLatin1String("never") ? WindowSettings::Scrollbar::Never
+                                                               : WindowSettings::Scrollbar::Auto;
+    s.window.scrollbarHideDelay = st.read<int>(Window, QStringLiteral("scrollbarHideDelay"));
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
     s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));
