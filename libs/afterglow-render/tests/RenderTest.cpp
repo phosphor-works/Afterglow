@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowRender/RenderFrame.h>
+
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -1601,5 +1603,53 @@ TEST_F(Render, MeshMultisamplingResolvesPartialEdgeCoverage)
         }
         if(samples==1) EXPECT_EQ(partial,0);
         else EXPECT_GT(partial,10);
+    }
+}
+
+
+TEST_F(Render, ExceptionClosesActivePassAndAllowsNextFrame)
+{
+    auto* rhi = s_device->rhi();
+    std::unique_ptr<QRhiTexture> texture(rhi->newTexture(QRhiTexture::RGBA8, QSize(16, 16), 1, QRhiTexture::RenderTarget));
+    ASSERT_TRUE(texture->create());
+    std::unique_ptr<QRhiTextureRenderTarget> target(rhi->newTextureRenderTarget({texture.get()}));
+    std::unique_ptr<QRhiRenderPassDescriptor> pass(target->newCompatibleRenderPassDescriptor());
+    target->setRenderPassDescriptor(pass.get());
+    ASSERT_TRUE(target->create());
+    for (const bool insidePass : {false, true}) {
+        QRhiCommandBuffer* cb = nullptr;
+        ASSERT_EQ(rhi->beginOffscreenFrame(&cb), QRhi::FrameOpSuccess);
+        int ended = 0;
+        EXPECT_THROW({
+            RenderFrame frame(cb, [&] { rhi->endOffscreenFrame(); ++ended; });
+            if (insidePass) frame.beginPass(target.get(), Qt::transparent, {1.f, 0});
+            throw std::runtime_error("injected render failure");
+        }, std::runtime_error);
+        EXPECT_EQ(ended, 1);
+        EXPECT_FALSE(rhi->isRecordingFrame());
+        EXPECT_FALSE(render("still alive").isNull());
+    }
+}
+
+TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
+{
+    ShaderProgramSource source;
+    source.id = QStringLiteral("clipped-region");
+    source.code = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1,0,0,1); }";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.background = {program};
+    renderer->setShaderChains(chains);
+    snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane;
+    pane.snapshot = &snapshot;
+    // Both a spring overshoot and a pane that has moved entirely offscreen.
+    for (const QRect& bounds : {QRect(-cw, -ch, size.width() + 2*cw, size.height() + 2*ch),
+                               QRect(size.width() + cw, 0, cw, ch)}) {
+        pane.params.rect = bounds;
+        const auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
+        ASSERT_FALSE(image.isNull());
     }
 }

@@ -60,10 +60,15 @@ ChromeLayer::ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQml
 
 ChromeLayer::~ChromeLayer()
 {
+    // The scene graph and render control still refer to our render target.
+    // Invalidate them before releasing it, while the shared QRhi is alive.
+    if (m_control) m_control->invalidate();
     releaseResources();
     delete m_root;
-    m_window.reset();
+    m_root = nullptr;
+    // QQuickRenderControl detaches itself from the window on destruction.
     m_control.reset();
+    m_window.reset();
 }
 
 bool ChromeLayer::initialize()
@@ -119,6 +124,7 @@ void ChromeLayer::renderIfNeeded(const QSize& pixelSize)
     }
     if (pixelSize != m_size || !m_texture) {
         QRhi* rhi = m_device.rhi();
+        m_window->setRenderTarget(QQuickRenderTarget());
         m_target.reset();
         m_renderPass.reset();
         m_texture.reset(rhi->newTexture(QRhiTexture::RGBA8, pixelSize, 1, QRhiTexture::RenderTarget));
@@ -221,6 +227,7 @@ QCursor ChromeLayer::cursorAt(const QPointF& pos) const
 
 void ChromeLayer::releaseResources()
 {
+    if (m_window) m_window->setRenderTarget(QQuickRenderTarget());
     m_target.reset();
     m_renderPass.reset();
     m_texture.reset();

@@ -32,6 +32,8 @@ class QRhiTextureRenderTarget;
 
 namespace AfterglowRender {
 
+class RenderFrame;
+
 class GpuDevice;
 struct PaneSnapshot;
 
@@ -169,13 +171,13 @@ public:
     /// each pane background, cursor and text, with the cursor over the text
     /// unless @p cursorBelowText says otherwise for that pane. Returns with
     /// the pass open, so the caller can draw overlays before ending it.
-    void composite(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes,
+    void composite(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
                    const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors = false);
 
     /// Records the shader passes after the grid pass. Returns with the final
     /// pass on @p swapTarget begun and drawn, so the caller can add the
     /// chrome before ending it.
-    void record(QRhiCommandBuffer* cb, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
+    void record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
                 const ShaderFrameTime& time, QRhiRenderTarget* swapTarget, QRhiRenderPassDescriptor* swapPass);
 
     /// After the final pass ends, retain the processed text for iPreviousText.
@@ -199,14 +201,14 @@ private:
     QRhiGraphicsPipeline* compositePipeline();
     /// Runs @p chain over each pane region of the layer in texture @p input,
     /// writing to free layer textures; returns the texture with the result.
-    int runLayerChain(QRhiCommandBuffer* cb, const std::vector<ShaderProgramPtr>& chain, int input,
+    int runLayerChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int input,
                       const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo, int scope);
     QRhiBuffer* uniformBuffer(int index);
     void fill(TerminalShaderUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
               const ShaderProgram& program) const;
 
     struct BufferState;
-    std::vector<BufferInputs> runBuffers(QRhiCommandBuffer* cb, const ShaderProgram& program, int scope, int step,
+    std::vector<BufferInputs> runBuffers(RenderFrame& frame, const ShaderProgram& program, int scope, int step,
                            int input, const std::vector<ShaderRegionState>& regions,
                            const ShaderFrameTime& time, int& ubo);
     using BufferKey = std::tuple<const ShaderProgram*, int, int, const PaneSnapshot*>;

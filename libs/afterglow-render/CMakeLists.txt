@@ -10,7 +10,7 @@ pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(FRIBIDI REQUIRED IMPORTED_TARGET fribidi)
 
-add_library(AfterglowRender SHARED
+qt_add_library(AfterglowRender SHARED
     src/FontSet.cpp
     src/GlyphCache.cpp
     src/GpuDevice.cpp
@@ -21,6 +21,7 @@ add_library(AfterglowRender SHARED
     src/Bidi.cpp
     src/Sprites.cpp
     src/Sprites.h
+    include/AfterglowRender/RenderFrame.h
     include/AfterglowRender/GpuDevice.h
 )
 add_library(Afterglow::Render ALIAS AfterglowRender)
@@ -38,6 +39,15 @@ target_link_libraries(AfterglowRender
     # Public headers include the QRhi headers (rhi/qrhi.h).
     PUBLIC Afterglow::Vt PhosphorShaders::PhosphorShaders Qt6::Core Qt6::Gui Qt6::GuiPrivate
     PRIVATE Qt6::ShaderToolsPrivate PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG PkgConfig::FRIBIDI)
+# Qt 6.12.0 can leave the Wayland surface locked when Vulkan beginFrame fails.
+# Inspect the lock state so a distribution backport does not double-unlock it.
+if(Qt6_VERSION VERSION_EQUAL "6.12.0")
+    find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS WaylandClient)
+    find_package(Qt6WaylandClientPrivate CONFIG REQUIRED)
+    target_link_libraries(AfterglowRender PRIVATE Qt6::WaylandClientPrivate)
+    target_compile_definitions(AfterglowRender PRIVATE AFTERGLOW_QT_612_FRAME_RECOVERY)
+endif()
+
 set_target_properties(AfterglowRender PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR})

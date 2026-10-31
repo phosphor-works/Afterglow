@@ -4,6 +4,7 @@
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include <QMessageBox>
+#include <QJsonArray>
 #include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
 #include "config/Keybinds.h"
@@ -130,6 +131,52 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     ASSERT_NE(qobject_cast<TerminalWindow*>(lastPane->parent()), nullptr);
     EXPECT_FALSE(lastPane->isHeld());
 }
+
+class NativeRenderer : public ::testing::TestWithParam<bool> {};
+TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    Application application(directory.filePath(QStringLiteral("mesh.conf")),
+        QJsonObject{{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("background"), GetParam() ? QJsonArray{QStringLiteral("mesh-reactor")} : QJsonArray{}}}},
+                    {QStringLiteral("Audio"), QJsonObject{{QStringLiteral("enabled"), false}}},
+                    {QStringLiteral("Window"), QJsonObject{{QStringLiteral("backgroundOpacity"), 0.9}}}});
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/cat")};
+    QPointer<TerminalWindow> source = application.newWindow(options);
+    ASSERT_TRUE(source);
+    source->resize(400, 300);
+    auto* survivor = application.newWindow(options);
+    ASSERT_TRUE(survivor);
+    survivor->resize(400, 300);
+    drain(1000);
+    ASSERT_GT(source->submittedFrames(), 0u);
+    ASSERT_GT(survivor->submittedFrames(), 0u);
+    QPointer<Pane> pane = source->focusedPane();
+    ASSERT_TRUE(pane);
+    Q_EMIT source->transferRequested(pane, true);
+    drain(1000);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    ASSERT_TRUE(source.isNull());
+    ASSERT_TRUE(pane);
+    auto* destination = qobject_cast<TerminalWindow*>(pane->parent());
+    ASSERT_TRUE(destination);
+    ASSERT_GT(destination->submittedFrames(), 0u);
+    EXPECT_TRUE(destination->isExposed());
+    EXPECT_TRUE(survivor->isExposed());
+    const auto before = survivor->submittedFrames();
+    const auto destinationBefore = destination->submittedFrames();
+    for (int i = 0; i < 8; ++i) {
+        destination->resize(i % 2 ? QSize(500, 350) : QSize(300, 200));
+        QEvent update(QEvent::UpdateRequest);
+        QCoreApplication::sendEvent(destination, &update);
+        QCoreApplication::sendEvent(survivor, &update);
+        drain(50);
+    }
+    EXPECT_GT(destination->submittedFrames(), destinationBefore);
+    EXPECT_GT(survivor->submittedFrames(), before);
+}
+
+INSTANTIATE_TEST_SUITE_P(Shaders, NativeRenderer, ::testing::Bool());
 
 TEST_F(NativeWindow, FailedLaunchDoesNotAddPaneOrTab) {
     const int panes = window->panes().size(), tabs = window->tabs().size();

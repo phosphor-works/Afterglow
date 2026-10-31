@@ -25,6 +25,9 @@ GpuDevice::GpuDevice(const FontSpec& fontSpec, QObject* parent)
     , m_fontSpec(fontSpec)
 {
     m_vulkan.setApiVersion(QVersionNumber(1, 2));
+    // QRhi can select Wayland surface color spaces that require instance
+    // extensions. QVulkanInstance filters out extensions the loader lacks.
+    m_vulkan.setExtensions(QRhiVulkanInitParams::preferredInstanceExtensions());
     if (qEnvironmentVariableIntValue("AFTERGLOW_VULKAN_VALIDATION")) {
         m_vulkan.setLayers({"VK_LAYER_KHRONOS_validation"});
     }

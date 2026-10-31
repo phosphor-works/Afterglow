@@ -10,6 +10,7 @@
 #include <AfterglowRender/Snapshot.h>
 
 #include "Sprites.h"
+#include <AfterglowRender/RenderFrame.h>
 
 #include <AfterglowVt/Unicode.h>
 
@@ -24,6 +25,10 @@
 #include <cmath>
 #include <stdexcept>
 
+#ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
+#include <QtWaylandClient/private/qwaylandwindow_p.h>
+#endif
+
 namespace AfterglowRender {
 
 using AfterglowVt::Attr::Bold;
@@ -34,6 +39,29 @@ constexpr std::uint16_t BlinkAttr = AfterglowVt::Attr::Blink;
 using AfterglowVt::UnderlineStyle;
 
 namespace {
+#ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
+// Access the protected state with a pointer-to-member, without casting a
+// platform window to an object of a derived type that it does not have.
+class WaylandFrameState : public QtWaylandClient::QWaylandWindow
+{
+public:
+    static bool active(QtWaylandClient::QWaylandWindow* window)
+    {
+        return (window->*(&WaylandFrameState::mInFrameRender)).load();
+    }
+};
+
+void recoverFailedWaylandFrame(QWindow* window)
+{
+    if (qstrcmp(qVersion(), "6.12.0") != 0 || !window) return;
+    auto* platform = dynamic_cast<QtWaylandClient::QWaylandWindow*>(window->handle());
+    if (platform && WaylandFrameState::active(platform)) {
+        platform->endFrame();
+        qWarning("Recovered Qt 6.12.0 Wayland surface lock after failed Vulkan beginFrame");
+    }
+}
+#endif
+
 
 StyleSlot slotFor(std::uint16_t attrs)
 {
@@ -923,15 +951,27 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
     QRhi* rhi = m_device.rhi();
     Target target;
     target.size = m_swapChain->currentPixelSize();
-    target.begin = [this, rhi]() -> QRhiCommandBuffer* {
-        QRhi::FrameOpResult r = rhi->beginFrame(m_swapChain.get());
+    target.begin = [this, rhi, &target]() -> QRhiCommandBuffer* {
+        auto begin = [this, rhi] {
+            const auto result = rhi->beginFrame(m_swapChain.get());
+#ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
+            if (result != QRhi::FrameOpSuccess && !rhi->isRecordingFrame())
+                recoverFailedWaylandFrame(m_window);
+#endif
+            return result;
+        };
+        QRhi::FrameOpResult r = begin();
         if (r == QRhi::FrameOpSwapChainOutOfDate) {
+            // Recreate even if the pixel size has not changed: the surface
+            // can become out of date during window mapping or transfer.
+            m_hasSwapChain = false;
             if (!ensureSwapChain()) {
                 return nullptr;
             }
-            r = rhi->beginFrame(m_swapChain.get());
+            r = begin();
         }
         if (r != QRhi::FrameOpSuccess) return nullptr;
+        target.size = m_swapChain->currentPixelSize();
         auto* cb = m_swapChain->currentFrameCommandBuffer();
         if (m_gpuTimingEnabled) m_completedGpuSeconds = cb->lastCompletedGpuTime();
         return cb;
@@ -940,7 +980,9 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
     target.renderPass = m_renderPass.get();
     target.pipelines = &m_swapPipelines;
     target.end = [this, rhi] {
-        if (rhi->endFrame(m_swapChain.get()) == QRhi::FrameOpSuccess) ++m_submittedFrames;
+        const auto result = rhi->endFrame(m_swapChain.get());
+        if (result == QRhi::FrameOpSuccess) ++m_submittedFrames;
+        else if (result == QRhi::FrameOpSwapChainOutOfDate) m_hasSwapChain = false;
     };
     renderTo(target, panes, overlays, clearColor, overlayTexture, overlaySerial);
 }
@@ -993,6 +1035,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                               QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
     QRhi* rhi = m_device.rhi();
+    QRhiCommandBuffer* cb = target.begin();
+    if (!cb) {
+        return;
+    }
+    RenderFrame frame(cb, target.end);
     FontResources& res = fonts();
     if (m_fontEpoch != m_device.fontEpoch()) {
         m_builder.clearShapeCache();
@@ -1092,10 +1139,6 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                            1u});
     }
 
-    QRhiCommandBuffer* cb = target.begin();
-    if (!cb) {
-        return;
-    }
 
     QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
     m_device.prepareAtlases(res, updates);
@@ -1251,7 +1294,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         for (const Pane& pane : panes) {
             const PaneSnapshot& snap = *pane.snapshot;
             ShaderRegionState st;
-            st.rect = pane.params.rect;
+            st.rect = pane.params.rect.intersected(QRect(QPoint(), px));
+            // Spring animations can overshoot the surface during resize.
+            // Shader inputs must only copy pixels that exist in the target.
+            if (st.rect.isEmpty()) continue;
             st.snapshot = &snap;
             st.scrollback = {float(snap.scrollbackLines), float(combinedLines), float(m_easedScrollbackLines)};
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
@@ -1383,7 +1429,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         };
         bool first = true;
         for (const auto& [layer, draw] : layers) {
-            cb->beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, first ? updates : nullptr);
+            frame.beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, first ? updates : nullptr);
             first = false;
             bindGrid();
             for (const DrawRange& range : m_ranges) {
@@ -1392,21 +1438,22 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                     draw(range);
                 }
             }
-            cb->endPass();
+            frame.endPass();
         }
         std::vector<bool> cursorBelowText;
         for (const DrawRange& range : m_ranges) {
-            cursorBelowText.push_back(range.cursorBelowText);
+            if (!range.scissor.intersected(QRect(QPoint(), px)).isEmpty())
+                cursorBelowText.push_back(range.cursorBelowText);
         }
         const bool otherCursors = std::any_of(m_ranges.begin(), m_ranges.end(), [](const auto& r) { return r.cursorOtherStart < r.end; });
-        m_post->composite(cb, regions, cursorBelowText, time, clear, otherCursors);
+        m_post->composite(frame, regions, cursorBelowText, time, clear, otherCursors);
         bindGrid();
         drawOverlays();
-        cb->endPass();
+        frame.endPass();
     } else {
         // One pass: backgrounds, a block cursor, images below the text, text,
         // other cursors, images above.
-        cb->beginPass(gridTarget, clear, {1.0f, 0}, updates);
+        frame.beginPass(gridTarget, clear, {1.0f, 0}, updates);
         bindGrid();
         for (const DrawRange& range : m_ranges) {
             if (range.scissor.isEmpty()) {
@@ -1425,18 +1472,18 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
         drawOverlays();
         if (post) {
-            cb->endPass();
+            frame.endPass();
         }
     }
     if (post) {
-        m_post->record(cb, regions, windowState, time, target.renderTarget(), target.renderPass);
+        m_post->record(frame, regions, windowState, time, target.renderTarget(), target.renderPass);
     }
     drawChrome();
-    cb->endPass(target.finalUpdates ? target.finalUpdates() : nullptr);
+    frame.endPass(target.finalUpdates ? target.finalUpdates() : nullptr);
     if (post) {
         m_post->finishFrame(cb);
     }
-    target.end();
+    frame.finish();
 
     // Panes not drawn this frame (closed, or in another tab) drop their cache.
     std::erase_if(m_paneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
