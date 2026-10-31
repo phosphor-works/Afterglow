@@ -4,10 +4,72 @@
 # Shader pass API
 
 Afterglow uses Phosphor ShaderRegistry metadata, source containment, include resolution, parameter slots and presets.
-Phosphor ShaderNodeRhi renders Qt Quick items.
-Afterglow's PostChain adapts the shared registry to terminal QRhi composition passes.
-Afterglow reads the `geometryPasses` extension from pack metadata.
-Qt Quick shaders with a different uniform block require adaptation to the terminal contract.
+Terminal shaders are a Phosphor shader family, like Phosphor's overlay, animation, pointer and surface families.
+Afterglow's PostChain renders them in terminal QRhi composition passes.
+Afterglow reads its own metadata keys from pack metadata: `highDynamicRange`, `windowBackground` and `geometryPasses`.
+
+## The terminal contract
+
+The contract is the set of headers in [data/shaders/shared](../data/shaders/shared).
+`terminal_uniforms.glsl` declares every input and documents each one.
+Afterglow compiles the copy built into it, so a pack cannot replace these headers.
+
+| Header | Contents | Include |
+| --- | --- | --- |
+| `terminal_uniforms.glsl` | Uniform block, `uTerminal`, `uTexture0` to `uTexture3` and cursor shape constants. | Automatic. |
+| `terminal_color.glsl` | sRGB and linear conversions. | Automatic. |
+| `terminal_lib.glsl` | The two headers above and helper functions. | Automatic. |
+| `terminal_multipass.glsl` | `iChannel0` to `iChannel7` and `uDepthBuffer`. | For buffers. |
+| `terminal_audio.glsl` | `uAudioSpectrum` and the audio helpers. | Enables audio capture. |
+| `terminal_history.glsl` | `uPreviousText`. | Enables text history. |
+
+### Entry points
+
+Each stage defines one function. Afterglow adds `terminal_lib.glsl`, the parameter definitions and `main()`.
+
+| Stage | Function |
+| --- | --- |
+| Final and buffer passes | `vec4 pTerminal(vec2 uv)` returns premultiplied colour for `uv`. |
+| `vertexShader` | `vec4 pVertex(vec2 uv)` returns the clip position of the canvas quad's corner at `uv`. |
+| Mesh vertex shader | `vec4 pMesh()` returns the clip position of the current vertex. |
+
+A stage can define `main()` instead. Afterglow then adds only the parameter definitions.
+That stage must declare `#version 450`, its includes and its outputs.
+
+### Coordinates
+
+All coordinates are top-down. Y increases downwards in positions, rectangles and texture coordinates.
+`uv` covers the canvas from (0, 0) at its top-left corner to (1, 1) at its bottom-right corner.
+The canvas is the layer, pane, window or buffer that the pass shades.
+Canvas pixels are device pixels, scaled by `bufferScale` in a buffer pass.
+Use `terminalPixel(uv)` and `terminalUv(pixel)` to convert.
+Sample the canvas with `terminalTexel(uv)`.
+
+### Inputs
+
+The uniform block starts with Phosphor's `BaseUniforms` and continues with the terminal fields.
+
+| Input | Meaning |
+| --- | --- |
+| `iTime`, `iTimeDelta`, `iFrame` | Shader time, wrapped every 1,024 seconds, the frame interval and the frame number. |
+| `iResolution` | Canvas size in canvas pixels. |
+| `iMouse` | Pointer in canvas pixels (`.xy`) and normalized (`.zw`). All components are -1 off the canvas. |
+| `uWindowMouse` | Pointer in window pixels, for a scene that spans panes. -1 outside the window. |
+| `customParams`, `customColors` | Parameter values. Use the `p_<id>` names. |
+| `uTerminalRect`, `uWindowSize` | The shaded region in window pixels and the window size. Buffer scaling does not change them. |
+| `uCellSize` | One character cell in canvas pixels. |
+| `uCursorRect`, `uPreviousCursorRect` | The cursor and its previous position, in canvas pixels. |
+| `uCursorColor`, `uPreviousCursorColor` | The cursor colours as drawn. |
+| `uCursorState` | Shape, previous shape, visibility and pane focus. Shapes are the `kCursor` constants. |
+| `uEventAges` | Seconds since the cursor moved and since focus changed. |
+| `uBackgroundColor`, `uForegroundColor` | Theme colours. `uBackgroundColor.a` is the window background opacity. |
+| `uThemeCursorColor`, `uThemeCursorTextColor` | Theme cursor colours. |
+| `uSelectionBackgroundColor`, `uSelectionForegroundColor` | Theme selection colours. |
+| `uPalette` | The 256-colour palette. |
+| `uSignal`, `uScrollback`, `uAudioLevels` | Script signals, history counts and audio levels. See [Shaders](SHADERS.md). |
+
+Helpers in `terminal_lib.glsl` include `cursorVisible()`, `paneFocused()`, `cursorCenter()`, `cursorAge()`, `focusAge()`, `signalValue()`, `signalAge()` and `paletteColor()`.
+Reading time, event ages or signals makes the window render continuously while the shader is active.
 
 ## Metadata
 
@@ -21,32 +83,32 @@ Qt Quick shaders with a different uniform block require adaptation to the termin
 | `bufferWrap`, `bufferWraps` | `clamp`, `repeat`, `mirror`. |
 | `bufferFilter`, `bufferFilters` | `linear`, `nearest`. |
 | `depthBuffer` | `true` adds an auxiliary color attachment to each buffer pass. |
-| `vertexShader` | Path to a terminal vertex hook. |
+| `vertexShader` | Path to a stage that defines `pVertex`. |
 | `geometryPasses` | One mesh object or `null` per buffer shader. |
+| `highDynamicRange` | `true` keeps values above 1 between passes. |
+| `windowBackground` | `true` shares one background across the window's panes. |
 
 ## Pass order and coordinates
 
-`iChannel0` contains the current terminal or layer input in every pass.
-`iBuffer0` through `iBuffer7` expose the configured buffers. `iBuffer` aliases `iBuffer0`.
+`uTerminal` contains the current terminal or layer input in every pass.
+Include `terminal_multipass.glsl` to read the buffers as `iChannel0` through `iChannel7`.
 Passes execute in metadata order.
 Earlier buffers contain the current frame's result. The current and later buffers contain the previous frame.
 Without feedback, previous values are cleared each frame.
 The final image pass receives all current-frame buffers.
 
-Input textures are local to the region.
-The texture wrapper reverses Y to match `mainImage` coordinates.
-Hardware wrapping and filtering also work through user-defined sampler helpers.
+Input textures are local to the region, and every texture is top-down.
 Raw `texelFetch` addresses local texture pixels.
 
-Buffer passes use scaled buffer pixels for `iResolution`, region, cell, cursor and mouse coordinates.
-The image pass uses full-resolution pixels.
-`iWindowRegion` retains the pane rectangle in window pixels: X, Y, width and height.
-Its origin is at the top left. `iWindowSize` retains the window width and height.
-These two uniforms do not change with buffer scale. Use them for a camera or effect that spans split panes.
-Buffer `iFrame` starts at zero after reset. Image `iFrame` retains the window frame counter.
+Buffer passes use scaled buffer pixels for `iResolution`, cell, cursor and mouse coordinates.
+The final pass uses full-resolution pixels.
+`uTerminalRect` keeps the pane rectangle in window pixels: X, Y, width and height.
+`uWindowSize` keeps the window width and height.
+Buffer scaling does not change these two inputs. Use them for a camera or effect that spans split panes.
+Buffer `iFrame` starts at zero after reset. Final-pass `iFrame` keeps the window frame counter.
 `iTime` is the shared host clock.
 
-Add `#define AFTERGLOW_WINDOW_BACKGROUND 1` to a background image shader to share
+Set `"windowBackground": true` on a background pack to share
 one set of buffers across the window. The buffer passes run once per frame.
 The image pass uses window coordinates and is clipped to visible panes.
 Split changes do not resize these buffers or reset their history.
@@ -58,32 +120,34 @@ Use it for scene backgrounds and their lens passes, including effects that sampl
 
 ## Auxiliary depth
 
-With depth enabled, write `depthBuffer = vec4(...)` in `mainImage`.
-`iDepth`, also named `uDepthBuffer`, samples the preceding pass's auxiliary output.
+With depth enabled, write `depthBuffer = vec4(...)` in `pTerminal`.
+`uDepthBuffer` samples the preceding pass's auxiliary output.
 The first buffer samples its own previous depth. The image pass samples the final buffer's depth.
 Initial depth values are zero.
 This color attachment stores arbitrary shader data.
 Mesh passes use a separate hardware depth attachment for visibility tests.
 The two attachments have different purposes.
 
-## Vertex hook
+## Vertex stage
 
 A vertex file defines:
 
 ```glsl
-void mainVertex(inout vec4 position, in vec2 uv)
+vec4 pVertex(vec2 uv)
 ```
 
-Position starts in clip space from -1 to 1. UV starts at the top-left and ranges from 0 to 1.
-The hook can use terminal uniforms, parameters and samplers.
-After the hook, the host maps position into the current pane. Scissoring still isolates panes.
+It returns the clip position of the canvas quad's corner at `uv`, from -1 to 1.
+`uv` starts at the top-left and ranges from 0 to 1.
+`terminalQuadPosition(uv)` is the undeformed position.
+The stage can use terminal inputs, parameters and samplers.
+Afterward, the host maps the position into the current pane. Scissoring still isolates panes.
 Buffer passes use fullscreen geometry unless `geometryPasses` selects a mesh.
-The `mainVertex` hook applies only to the final image stage.
+The vertex stage applies only to the final pass.
 
 ## Mesh passes
 
 A buffer pass can draw triangle meshes with hardware depth testing and depth writes.
-The final image pass samples the result through `iBuffer0` to `iBuffer7`.
+The final pass samples the result through `iChannel0` to `iChannel7`.
 It can combine mesh output with terminal content and other effects.
 Existing ray-marched shaders continue to work.
 
@@ -102,7 +166,7 @@ Use `null` for a fullscreen pass.
 }
 ```
 
-A mesh vertex shader defines `void mainMesh(out vec4 clipPosition)`.
+A mesh vertex shader defines `vec4 pMesh()`, which returns the clip position.
 Imported meshes provide `meshPosition` (`vec3`), `meshNormal` (`vec3`) and `meshUV` (`vec2`).
 Positions are in model coordinates. The shader applies model, camera and projection transforms.
 The output uses Vulkan clip coordinates: X and Y from -W to W, and Z from 0 to W.
@@ -110,7 +174,7 @@ Positive Y points down. Smaller depth values are closer to the camera.
 The rasterizer clips triangles and interpolates attributes with perspective correction.
 
 Declare matching `layout(location=N) out` and `in` values in vertex and fragment shaders.
-The fragment shader keeps the `mainImage` interface.
+The fragment shader defines `pTerminal` as usual.
 It must output premultiplied color. Face culling and alpha blending are off.
 Use `discard` for cutout materials. Transparent surfaces require a separate composition method.
 
@@ -155,7 +219,8 @@ parent and child rotations, a perspective camera, lighting and audio response.
 
 ## Images
 
-Up to four `image` or `texture` parameters use `uTexture0` through `uTexture3`.
+Up to four `image` or `texture` parameters use `uTexture0` through `uTexture3`. Use their `p_<id>` names.
+`iTextureResolution` holds their sizes.
 Defaults, live updates, presets and reset use the same path checks.
 An empty path is transparent.
 Relative paths, including symlink targets, must stay inside the pack.
@@ -220,5 +285,5 @@ The feedback-glow half-resolution RGBA16F pair uses approximately 31.6 MiB at 4K
 ## Examples
 
 - [Feedback glow](../data/shaders/feedback-glow/README.md): one buffer with retained bright pixels.
-- [Depth trails](../data/shaders/depth-trails/README.md): two buffers, depth, a vertex hook and an image parameter.
+- [Depth trails](../data/shaders/depth-trails/README.md): two buffers, depth, a vertex stage and an image parameter.
 - [Phosphor](../data/examples/phosphor/README.md): a complete reactive scene.

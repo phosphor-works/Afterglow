@@ -7,38 +7,36 @@
 // lamp hanging above the pane. The text is its own layer and stays sharp.
 //
 // Signals (glasshouse.luau):
-//   iSignal[0] strike  cracks run out from the prompt with a hot tip, the
-//                      glass calls in the alert colour, then it mends
-//   iSignal[1] glaze   light sweeps along the lead
-//   iSignal[2] heat    1 while a command runs: the lamp and keylines warm
-//   iSignal[4] status  1 working (the lamp breathes), 2 blocked, 3 error (it calls)
+//   0 strike  cracks run out from the prompt with a hot tip, the glass calls
+//             in the alert colour, then it mends
+//   1 glaze   light sweeps along the lead
+//   2 heat    1 while a command runs: the lamp and keylines warm
+//   4 status  1 working (the lamp breathes), 2 blocked, 3 error (it calls)
 
 #include "glasshouse.glsl"
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord)
+vec4 pTerminal(vec2 uv)
 {
-    vec2 uv = fragCoord / iResolution.xy;
-    vec4 layer = texture(iChannel0, uv);
+    vec4 layer = terminalTexel(uv);
     if (layer.a <= 0.0) {
-        fragColor = layer;
-        return;
+        return layer;
     }
     GhWorld w = ghWorld();
     vec3 straight = layer.rgb / layer.a;
     // Cells with a background of their own (selections, status lines) keep it.
-    float plain = 1.0 - smoothstep(0.03, 0.12, distance(straight, iBackgroundColor));
+    float plain = 1.0 - smoothstep(0.03, 0.12, distance(straight, uBackgroundColor.rgb));
     // Pixel position from the top left, as the lattice is laid.
-    vec2 p = vec2(fragCoord.x, iResolution.y - fragCoord.y);
+    vec2 p = terminalPixel(uv);
 
-    float cy = max(iCellSize.y, 1.0) * p_quarry;
+    float cy = max(uCellSize.y, 1.0) * p_quarry;
     vec4 q = ghQuarry(p, vec2(cy * 0.62, cy));
     float h = ghHash(q.xy);
     vec3 jewel = ghJewel(w, fract(h * 7.31 + q.x * 0.37));
 
     // The lamp hangs above the pane and drifts a little; heat and status move it.
     float heatAge = ghAge(2);
-    float heat = iSignal[2].x > 0.5 ? smoothstep(0.0, 5.0, heatAge) : 1.0 - smoothstep(0.0, 2.5, heatAge);
-    int status = int(iSignal[4].x + 0.5);
+    float heat = signalValue(2) > 0.5 ? smoothstep(0.0, 5.0, heatAge) : 1.0 - smoothstep(0.0, 2.5, heatAge);
+    int status = int(signalValue(4) + 0.5);
     float breathe = status == 1 ? 0.5 + 0.5 * sin(iTime * 2.2) : 0.0;
     vec2 lamp = vec2(iResolution.x * (0.5 + 0.08 * sin(iTime * 0.05)), -0.15 * iResolution.y);
     float radius = length(iResolution.xy) * 0.75;
@@ -67,11 +65,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
     float strikeAge = ghAge(0);
     if (strikeAge < 4.5) {
         // From the prompt the failure returned to.
-        vec2 origin = vec2(iCurrentCursor.x, iResolution.y - iCurrentCursor.y + iCurrentCursor.w * 0.5);
+        vec2 origin = vec2(uCursorRect.x, uCursorRect.y + uCursorRect.w * 0.5);
         vec2 d = p - origin;
         float r = length(d);
         float th = atan(d.y, d.x);
-        float seed = floor(iSignal[0].y * 7.0);
+        float seed = floor(ghSetAt(0) * 7.0);
         float maxR = length(iResolution.xy);
         float front = (1.0 - exp(-strikeAge * 6.0)) * maxR * 0.55;
         float best = 1e4;
@@ -146,5 +144,5 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
     vec3 keyTint = mix(w.keyline, w.hot, heat * 0.5);
     c.rgb += keyTint * key * (0.4 + 0.3 * heat + 0.8 * catchLight) * (w.ink ? 0.6 : 1.0) * c.a;
 
-    fragColor = clamp(c, 0.0, 1.0);
+    return clamp(c, 0.0, 1.0);
 }

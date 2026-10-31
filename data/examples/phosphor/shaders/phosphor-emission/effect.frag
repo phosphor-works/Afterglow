@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <terminal_history.glsl>
 #include "phosphor.glsl"
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-    vec4 text = phText(fragCoord);
-    vec4 previous = texture(iPreviousText, fragCoord / iResolution.xy);
+vec4 pTerminal(vec2 uv) {
+    vec2 pixel = terminalPixel(uv);
+    vec4 text = phText(pixel);
+    vec4 previous = texture(uPreviousText, uv);
     // Exponential decay is independent of refresh rate. Subtract one UNORM
     // step as well, so quantisation cannot leave permanent faint pixels.
     float decay = exp(-max(iTimeDelta, 0.0) / max(p_persistence, 0.01));
@@ -13,10 +15,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec4 c = text.a > 0.0 ? text : history;
     vec3 halo = vec3(0.0);
     float edge = 0.0;
-    float radius = max(0.65, iCellSize.y * p_radius * 0.20);
+    float radius = max(0.65, uCellSize.y * p_radius * 0.20);
     for (int y = -2; y <= 2; ++y) {
         for (int x = -2; x <= 2; ++x) {
-            vec4 sampleText = phText(fragCoord + vec2(x, y) * radius);
+            vec4 sampleText = phText(pixel + vec2(x, y) * radius);
             if (abs(x) <= 1 && abs(y) <= 1) edge = max(edge, sampleText.a);
             halo += sampleText.rgb * exp(-float(x*x + y*y) * 0.55);
         }
@@ -30,5 +32,5 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         // reactor highlights. Keep original premultiplied glyph RGB intact.
         c.a = max(c.a, text.a + p_readability * edge * (1.0 - text.a));
     }
-    fragColor = clamp(c, 0.0, 1.0);
+    return clamp(c, 0.0, 1.0);
 }

@@ -87,7 +87,7 @@ public:
     QString focus(quint32 pane);
     QString close(quint32 pane);
     QString setTitle(quint32 pane, const QString& title);
-    /// Sets shader signal @p channel (0-7, iSignal in shaders) on the pane.
+    /// Sets shader signal @p channel (0-7, uSignal in shaders) on the pane.
     QString signal(quint32 pane, int channel, double value);
     static constexpr int MaxSignalPanes = 128;
     /// Validates the complete batch before updating the anchor's pane/tab/window.

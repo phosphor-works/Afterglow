@@ -23,7 +23,7 @@ float ghLuma(vec3 c)
 GhWorld ghWorld()
 {
     GhWorld w;
-    w.ink = ghLuma(iBackgroundColor) > 0.5;
+    w.ink = ghLuma(uBackgroundColor.rgb) > 0.5;
     if (w.ink) {
         w.metalBase = vec3(0.792, 0.639, 0.416); // #caa36a
         w.metalHi = vec3(1.0, 0.969, 0.886); // #fff7e2
@@ -112,5 +112,11 @@ vec4 ghLightUp(GhWorld w, vec4 col, vec3 tint, float k)
 
 float ghAge(int channel)
 {
-    return iTime - iSignal[channel].y;
+    return signalAge(channel);
+}
+
+// When a signal was set, on the wrapped iTime clock, to seed its pattern.
+float ghSetAt(int channel)
+{
+    return iTime - signalAge(channel);
 }

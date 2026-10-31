@@ -3,6 +3,8 @@
   "name": "Mesh Reactor",
   "description": "A segmented containment core with bevelled armor, plasma, orbiting emitters, a lit chamber and audio, history and Luau response.",
   "fragmentShader": "effect.frag",
+  "highDynamicRange": true,
+  "windowBackground": true,
   "multipass": true,
   "bufferShaders": [
     "surface.frag"

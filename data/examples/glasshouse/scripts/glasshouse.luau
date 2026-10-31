@@ -5,11 +5,11 @@
 -- signals. Needs the glasshouse shader packs and shell integration (OSC 133)
 -- for the command events.
 --
---   iSignal[0] strike  a command failed (value: its exit code)
---   iSignal[1] glaze   a long command, or a program's task, succeeded
---   iSignal[2] heat    1 while a command runs, 0 after
---   iSignal[3] ring    the bell
---   iSignal[4] status  a program's status (OSC 7501): 1 working, 2 blocked, 3 error
+--   signal 0 strike  a command failed (value: its exit code)
+--   signal 1 glaze   a long command, or a program's task, succeeded
+--   signal 2 heat    1 while a command runs, 0 after
+--   signal 3 ring    the bell
+--   signal 4 status  a program's status (OSC 7501): 1 working, 2 blocked, 3 error
 
 local STRIKE, GLAZE, HEAT, RING, STATUS = 0, 1, 2, 3, 4
 

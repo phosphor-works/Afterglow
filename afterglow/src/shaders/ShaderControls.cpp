@@ -3,12 +3,24 @@
 #include "ShaderControls.h"
 #include <QSet>
 #include <QColor>
-#include <PhosphorAnimation/Spring.h>
+#include <PhosphorAnimation/CurveRegistry.h>
 #include <QUuid>
 #include <algorithm>
 #include <cstring>
 
 namespace Afterglow {
+namespace {
+/// The documented names, or any Phosphor curve spec ("0.2,0,0,1", "spring:20,1").
+std::shared_ptr<const PhosphorAnimation::Curve> transitionCurve(const PhosphorAnimation::CurveRegistry& curves,
+                                                                const QString& name)
+{
+    if (name == QLatin1String("linear")) return curves.tryCreate(QStringLiteral("0,0,1,1"));
+    if (name == QLatin1String("ease-in-out")) return curves.tryCreate(QStringLiteral("0.42,0,0.58,1"));
+    if (name == QLatin1String("spring")) return curves.tryCreate(QStringLiteral("spring:12,1"));
+    return curves.tryCreate(name);
+}
+} // namespace
+
 bool ShaderControls::advance(bool finish)
 {
     bool active = false;
@@ -74,7 +86,7 @@ QVariantList ShaderControls::describe(quint32 pane) const
     const auto overrides = values(pane);
     for (const auto& instance : m_instances) {
         const auto& program = *instance.program;
-        AfterglowRender::TerminalShaderUniforms u{};
+        PhosphorShaders::BaseUniforms u{};
         std::memcpy(u.customParams, program.params().data(), sizeof u.customParams);
         std::memcpy(u.customColors, program.colors().data(), sizeof u.customColors);
         overrides.value(program.instanceId()).apply(u);
@@ -124,11 +136,14 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
     }
     const auto durationValue = transition.value(QStringLiteral("duration_ms"), 0.0);
     const double duration = durationValue.toDouble();
-    const auto curve = transition.value(QStringLiteral("curve"), QStringLiteral("ease-in-out")).toString();
     if ((durationValue.metaType().id() != QMetaType::Double && durationValue.metaType().id() != QMetaType::Int && durationValue.metaType().id() != QMetaType::LongLong)
-        || !std::isfinite(duration) || duration < 0 || duration > 60000
-        || (curve != QLatin1String("linear") && curve != QLatin1String("ease-in-out") && curve != QLatin1String("spring")))
-        return QStringLiteral("Transition needs duration_ms between 0 and 60000 and linear, ease-in-out or spring curve");
+        || !std::isfinite(duration) || duration < 0 || duration > 60000)
+        return QStringLiteral("Transition needs duration_ms between 0 and 60000");
+    const auto curve = transitionCurve(m_library.curves(),
+        transition.value(QStringLiteral("curve"), QStringLiteral("ease-in-out")).toString());
+    if (!curve) return QStringLiteral("Unknown transition curve");
+    // Float parameters must stay between their endpoints.
+    if (curve->overshoots()) return QStringLiteral("Transition curves must not overshoot");
     for (auto it = transition.begin(); it != transition.end(); ++it)
         if (it.key() != QLatin1String("duration_ms") && it.key() != QLatin1String("curve")) return QStringLiteral("Unknown transition option");
     if (duration > 0 && !m_clock) return QStringLiteral("No animation clock");
@@ -156,13 +171,7 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
             }
             PhosphorAnimation::MotionSpec<qreal> spec;
             spec.clock = m_clock; spec.profile.duration = duration; spec.maxLifetimeMs = int(std::ceil(duration));
-            if (curve == QLatin1String("spring")) spec.profile.curve = std::make_shared<PhosphorAnimation::Spring>(12.0, 1.0);
-            else {
-                auto easing = std::make_shared<PhosphorAnimation::Easing>();
-                easing->x1 = curve == QLatin1String("linear") ? 0.0 : 0.42; easing->y1 = 0.0;
-                easing->x2 = curve == QLatin1String("linear") ? 1.0 : 0.58; easing->y2 = 1.0;
-                spec.profile.curve = easing;
-            }
+            spec.profile.curve = curve;
             t->progress.start(0.0, 1.0, spec); t->progress.advance();
             item.packed = t->from; item.transition = std::move(t);
         }

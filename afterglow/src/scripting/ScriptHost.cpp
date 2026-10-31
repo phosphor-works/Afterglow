@@ -9,6 +9,7 @@
 #include <QCryptographicHash>
 #include <QJsonDocument>
 
+#include <PhosphorFsLoader/WatchedDirectorySet.h>
 #include <PhosphorScripting/LuauEngine.h>
 #include <PhosphorScripting/LuauWatchdog.h>
 
@@ -20,6 +21,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
+#include <QTimer>
 
 #include <cmath>
 #include <deque>
@@ -74,8 +76,6 @@ struct ScriptHost::Script
 };
 
 namespace {
-
-constexpr int ReloadDelayMs = 200;
 
 bool validId(const QString& id)
 {
@@ -186,11 +186,6 @@ ScriptHost::ScriptHost(Callbacks callbacks, QObject* parent)
     }
     m_tasks = std::make_unique<ScriptTasks>();
     m_clock.start();
-    m_reloadTimer.setSingleShot(true);
-    m_reloadTimer.setInterval(ReloadDelayMs);
-    connect(&m_reloadTimer, &QTimer::timeout, this, &ScriptHost::reload);
-    connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_reloadTimer, qOverload<>(&QTimer::start));
-    connect(&m_watcher, &QFileSystemWatcher::fileChanged, &m_reloadTimer, qOverload<>(&QTimer::start));
 }
 
 ScriptHost::~ScriptHost()
@@ -223,8 +218,8 @@ void ScriptHost::setStateDirectory(const QString& directory)
 void ScriptHost::setSearchPaths(const QStringList& dirs)
 {
     m_searchPaths = dirs;
-    if (m_enabled) {
-        reload();
+    if (m_directories) {
+        m_directories->setDirectories(m_searchPaths, PhosphorFsLoader::LiveReload::On);
     }
 }
 
@@ -234,30 +229,44 @@ void ScriptHost::setEnabled(bool enabled)
         return;
     }
     m_enabled = enabled;
-    reload();
+    if (enabled) {
+        // The set scans now and again on every change, recovering watches
+        // for directories that do not exist yet.
+        m_directories = std::make_unique<PhosphorFsLoader::WatchedDirectorySet>(
+            static_cast<PhosphorFsLoader::IScanStrategy&>(*this));
+        m_directories->setDirectories(m_searchPaths, PhosphorFsLoader::LiveReload::On);
+    } else {
+        m_directories.reset();
+        performScan({});
+    }
 }
 
 void ScriptHost::reload()
 {
-    m_reloadTimer.stop();
+    if (m_directories) m_directories->rescanNow();
+    else performScan({});
+}
+
+QStringList ScriptHost::performScan(const QStringList& directories)
+{
     std::vector<ScriptPtr> loaded;
-    m_sourceWatches.clear();
+    QStringList watched;
     m_loadErrors.clear();
     if (m_enabled) {
         // id -> path, later directories winning.
         std::map<QString, std::pair<int, QString>> chosen;
         int priority = 0;
-        for (const QString& dir : std::as_const(m_searchPaths)) {
+        for (const QString& dir : directories) {
             const QFileInfoList files = QDir(dir).entryInfoList({QStringLiteral("*.luau")}, QDir::Files | QDir::Readable,
                                                                 QDir::Name);
             for (const QFileInfo& f : files) {
                 if (!f.fileName().endsWith(QLatin1String(".d.luau"))) {
-                    m_sourceWatches << f.absoluteFilePath();
+                    watched << f.absoluteFilePath();
                     chosen[f.completeBaseName()] = {priority, f.absoluteFilePath()};
                 }
             }
             for (const auto& folder : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
-                m_sourceWatches << folder.absoluteFilePath();
+                watched << folder.absoluteFilePath();
                 const auto manifest = folder.absoluteFilePath() + QStringLiteral("/package.json");
                 if (QFileInfo::exists(manifest)) chosen[folder.fileName()] = {priority, manifest};
             }
@@ -275,7 +284,7 @@ void ScriptHost::reload()
             QString failure;
             if (isPackage) {
                 failure = ScriptPackage::read(path, package);
-                m_sourceWatches << package.watched;
+                watched << package.watched;
                 if (failure.isEmpty() && package.id != base) failure = QStringLiteral("Package id must match its directory name");
                 source = package.source;
                 const QVariantMap identity{{QStringLiteral("id"), package.id}, {QStringLiteral("version"), package.version},
@@ -328,7 +337,6 @@ void ScriptHost::reload()
         if (std::find(loaded.begin(), loaded.end(), script) == loaded.end()) retire(script);
     }
     m_scripts = std::move(loaded);
-    watch();
     for (const auto& script : m_scripts) {
         if (std::find(previous.begin(), previous.end(), script) == previous.end()) {
             if (script->package) applyResult(script, script->initialEffects, 0);
@@ -342,6 +350,11 @@ void ScriptHost::reload()
     if (changed) {
         Q_EMIT actionsChanged();
     }
+    for (const ScriptPtr& s : m_scripts) {
+        watched << s->path; // editors that save in place change only the file
+    }
+    watched.removeDuplicates();
+    return watched;
 }
 
 ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& source, const ScriptPackage* package) const
@@ -433,36 +446,6 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     }
     qCInfo(lcScripts).noquote() << "loaded" << script->id << "from" << path;
     return script;
-}
-
-void ScriptHost::watch()
-{
-    if (const QStringList watched = m_watcher.files() + m_watcher.directories(); !watched.isEmpty()) {
-        m_watcher.removePaths(watched);
-    }
-    if (!m_enabled) {
-        return;
-    }
-    for (const QString& dir : std::as_const(m_searchPaths)) {
-        // Watch the nearest existing directory, so creating the scripts
-        // directory itself is noticed too.
-        QFileInfo info(dir);
-        while (!info.exists() && info.absolutePath() != info.absoluteFilePath()) {
-            info = QFileInfo(info.absolutePath());
-        }
-        if (info.isDir()) {
-            m_watcher.addPath(info.absoluteFilePath());
-        }
-    }
-    m_sourceWatches.removeDuplicates();
-    for (auto path : std::as_const(m_sourceWatches)) {
-        QFileInfo info(path);
-        while (!info.exists() && info.absolutePath() != info.absoluteFilePath()) info = QFileInfo(info.absolutePath());
-        if (info.exists()) m_watcher.addPath(info.absoluteFilePath());
-    }
-    for (const ScriptPtr& s : m_scripts) {
-        m_watcher.addPath(s->path); // editors that save in place change only the file
-    }
 }
 
 QStringList ScriptHost::scriptIds() const

@@ -64,6 +64,21 @@ qt_add_shaders(AfterglowRender "afterglow_grid_shaders"
         shaders/post.vert
 )
 
+# The terminal shader contract, which ShaderProgram completes every pack with.
+# Its source of truth is data/shaders/shared, where pack authors read it.
+set(AFTERGLOW_TERMINAL_CONTRACT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../data/shaders/shared")
+qt_add_resources(AfterglowRender "afterglow_terminal_contract"
+    PREFIX "/afterglow/shaders"
+    BASE "${AFTERGLOW_TERMINAL_CONTRACT_DIR}"
+    FILES
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_audio.glsl
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_color.glsl
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_history.glsl
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_lib.glsl
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_multipass.glsl
+        ${AFTERGLOW_TERMINAL_CONTRACT_DIR}/terminal_uniforms.glsl
+)
+
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

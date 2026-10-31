@@ -82,7 +82,7 @@ glasshouse-afterglow world "${MODE}"
 
 ## Signals
 
-Shaders read `iSignal` values.
+Shaders read `uSignal` values through `signalValue` and `signalAge`.
 Scripts use `afterglow.signal(pane, channel, value)`.
 Other programs use `afterglow ctl signal CHANNEL VALUE` or D-Bus `Signal`.
 

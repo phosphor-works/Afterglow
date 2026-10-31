@@ -15,12 +15,11 @@
 // Content passes through untouched, and the volume dims to near-black under
 // text-dense regions so glyphs keep their contrast.
 //
-// Ported from the Ghostty shader. Differences:
-//  - afterglow's frame holds sRGB-encoded, premultiplied colour; light is
-//    computed in linear space and encoded back, so it matches Ghostty's
-//    linear framebuffer.
+// Notes:
+//  - The frame holds sRGB-encoded, premultiplied colour; light is computed in
+//    linear space and encoded back.
 //  - Text is told from background by colour, and by alpha only when the
-//    background really is translucent (iBackgroundOpacity), so an opaque
+//    background really is translucent (uBackgroundColor.a), so an opaque
 //    window works too.
 //  - Sizes are in cells, so the look holds across font sizes and scales.
 //  - The gradient is configurable or follows the terminal palette.
@@ -46,7 +45,7 @@ vec3 gradientStop(int i)
         // Bright cyan, blue, magenta, red: the themed equivalents of the
         // phosphor stops, so a wallpaper-driven palette carries through.
         const int index[4] = int[4](14, 12, 13, 9);
-        return iPalette[index[i]];
+        return paletteColor(index[i]);
     }
     return i == 0 ? p_stop0.rgb : i == 1 ? p_stop1.rgb : i == 2 ? p_stop2.rgb : p_stop3.rgb;
 }
@@ -61,10 +60,10 @@ vec3 fluxGradient(float t)
     return srgbToLinear(c);
 }
 
-// Screen-diagonal gradient coordinate: 0 top-left, 1 bottom-right (y is up).
-float screenDiag(vec2 fragCoord)
+// Screen-diagonal gradient coordinate: 0 top-left, 1 bottom-right.
+float screenDiag(vec2 pixel)
 {
-    return (fragCoord.x + (iResolution.y - fragCoord.y)) / max(iResolution.x + iResolution.y, 1.0);
+    return (pixel.x + pixel.y) / max(iResolution.x + iResolution.y, 1.0);
 }
 
 // How much a sample reads as content rather than background. Samples are
@@ -72,10 +71,10 @@ float screenDiag(vec2 fragCoord)
 // light, where the thresholds were tuned.
 float contentness(vec4 tex)
 {
-    float d = distance(srgbToLinear(tex.rgb), srgbToLinear(iBackgroundColor * tex.a));
+    float d = distance(srgbToLinear(tex.rgb), srgbToLinear(uBackgroundColor.rgb * tex.a));
     float c = smoothstep(0.015, 0.10, d);
     // Over a translucent background, glyphs are more opaque than it is.
-    if (iBackgroundOpacity < 0.97 && tex.a > iBackgroundOpacity + 0.03) {
+    if (uBackgroundColor.a < 0.97 && tex.a > uBackgroundColor.a + 0.03) {
         c = 1.0;
     }
     return c;
@@ -188,38 +187,37 @@ vec3 suspendedDust(vec2 uv, float t, vec3 glow)
 }
 
 // === LAYER 3: CURSOR EMBER + JUMP WAKE ===
-// Cursor rectangles are (left, top, width, height) with y up.
-vec3 cursorEmber(vec2 fragCoord, float t)
+vec3 cursorEmber(vec2 pixel, float t)
 {
-    float presence = iCursorVisible != 0 ? 1.0 : 0.0;
+    float presence = cursorVisible() ? 1.0 : 0.0;
     if (p_emberSleeps > 0.5) {
         // Ease into and out of sleep as the window loses and gains focus.
-        float since = clamp((iTime - iTimeFocus) / 0.6, 0.0, 1.0);
-        presence *= iFocus != 0 ? since : 1.0 - since;
+        float since = clamp(focusAge() / 0.6, 0.0, 1.0);
+        presence *= paneFocused() ? since : 1.0 - since;
     }
     if (presence <= 0.0) {
         return vec3(0.0);
     }
 
-    float cellPx = max(iCellSize.y, 1.0);
+    float cellPx = max(uCellSize.y, 1.0);
     float radius = p_emberRadius * cellPx;
-    vec2 cur = iCurrentCursor.xy + vec2(iCurrentCursor.z, -iCurrentCursor.w) * 0.5;
-    vec2 prev = iPreviousCursor.xy + vec2(iPreviousCursor.z, -iPreviousCursor.w) * 0.5;
-    vec3 tint = srgbToLinear(iCurrentCursorColor.rgb);
+    vec2 cur = cursorCenter();
+    vec2 prev = previousCursorCenter();
+    vec3 tint = srgbToLinear(uCursorColor.rgb);
     vec3 coreCol = mix(fluxGradient(screenDiag(cur)), tint, p_emberTint);
 
     // Breathing core at the resting cursor.
-    float dCore = length(fragCoord - cur);
+    float dCore = length(pixel - cur);
     float breathe = 0.75 + 0.25 * sin(t * 2.1);
     float core = exp(-dCore * dCore / (radius * radius)) * breathe;
     vec3 result = coreCol * core * p_emberIntensity * 0.28;
 
     // Jump wake: a comet along the travel path, born when the cursor moved.
-    float age = (iTime - iTimeCursorChange) / p_wakeDuration;
+    float age = cursorAge() / p_wakeDuration;
     float jump = distance(cur, prev);
-    if (age >= 0.0 && age < 1.0 && jump > max(1.0, p_wakeMinDistance * iCellSize.x)) {
+    if (age < 1.0 && jump > max(1.0, p_wakeMinDistance * uCellSize.x)) {
         float fade = (1.0 - age) * (1.0 - age);
-        vec2 pa = fragCoord - prev;
+        vec2 pa = pixel - prev;
         vec2 ba = cur - prev;
         float along = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
         float dWake = length(pa - ba * along);
@@ -245,25 +243,24 @@ vec3 cursorEmber(vec2 fragCoord, float t)
 #define CLEARANCE_TAPS 16
 float textClearance(vec2 uv)
 {
-    vec2 radius = p_textClearance * max(iCellSize.y, 1.0) * vec2(1.0, 0.6) / iResolution.xy;
+    vec2 radius = terminalUv(p_textClearance * max(uCellSize.y, 1.0) * vec2(1.0, 0.6));
     float density = 0.0;
     for (int i = 0; i < CLEARANCE_TAPS; i++) {
         float r = sqrt((float(i) + 0.5) / float(CLEARANCE_TAPS));
         float a = float(i) * 2.39996323; // golden angle
-        density += contentness(texture(iChannel0, uv + radius * r * vec2(cos(a), sin(a))));
+        density += contentness(terminalTexel(uv + radius * r * vec2(cos(a), sin(a))));
     }
     return 1.0 - smoothstep(0.06, 0.45, density / float(CLEARANCE_TAPS));
 }
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord)
+vec4 pTerminal(vec2 uv)
 {
-    vec2 uv = fragCoord / iResolution.xy;
-    vec4 tex = texture(iChannel0, uv);
+    vec4 tex = terminalTexel(uv);
     float t = iTime;
 
     // The ember draws over everything (the cursor lives above the text); the
     // volume only lights the background.
-    vec3 fx = cursorEmber(fragCoord, t);
+    vec3 fx = cursorEmber(terminalPixel(uv), t);
 
     float isContent = contentness(tex);
     if (isContent < 1.0) {
@@ -277,8 +274,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
     }
 
     if (all(lessThanEqual(fx, vec3(0.0)))) {
-        fragColor = tex;
-        return;
+        return tex;
     }
-    fragColor = vec4(linearToSrgb(srgbToLinear(tex.rgb) + fx), tex.a);
+    return vec4(linearToSrgb(srgbToLinear(tex.rgb) + fx), tex.a);
 }

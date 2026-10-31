@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-void mainImage(out vec4 color, in vec2 pixel) {
-    vec2 uv = pixel / iResolution.xy;
-    vec4 field = texture(iBuffer0, uv + vec2(0.01 * sin(iTime), 0.0));
-    vec4 previous = texture(iBuffer1, uv);
-    color = mix(field, previous, 0.85);
-    depthBuffer = texture(iDepth, uv);
+#include <terminal_multipass.glsl>
+
+vec4 pTerminal(vec2 uv) {
+    vec4 field = texture(iChannel0, uv + vec2(0.01 * sin(iTime), 0.0));
+    vec4 previous = texture(iChannel1, uv);
+    depthBuffer = texture(uDepthBuffer, uv);
+    return mix(field, previous, 0.85);
 }

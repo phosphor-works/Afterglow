@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <terminal_audio.glsl>
 const float TAU=6.28318530718;
 float hash31(vec3 p) {
     p=fract(p*0.1031); p+=dot(p,p.yzx+33.33);
@@ -12,13 +13,14 @@ float noise3(vec3 p) {
                mix(mix(hash31(q+vec3(0,0,1)),hash31(q+vec3(1,0,1)),f.x),
                    mix(hash31(q+vec3(0,1,1)),hash31(q+vec3(1,1,1)),f.x),f.y),f.z);
 }
-float history() { return 1.0-exp(-max(iScrollback.z,0.0)/4000.0); }
+float history() { return 1.0-exp(-max(uScrollback.z,0.0)/4000.0); }
 float drive() { return p_audio*smoothstep(0.01,0.8,getBass()); }
 float rupture() {
-    float age=max(0.0,iTime-iSignal[0].y);
+    float age=signalAge(0);
     float r=(1.0-exp(-age*5.0))*exp(-max(age-3.0,0.0)*0.8);
-    if(iSignal[0].x==0.0) r=0.0;
-    if(iSignal[1].y>iSignal[0].y) r*=exp(-pow(max(0.0,iTime-iSignal[1].y)*2.0,2.0));
+    if(signalValue(0)==0.0) r=0.0;
+    // A recall after the fracture closes it again.
+    if(signalAge(1)<age) r*=exp(-pow(signalAge(1)*2.0,2.0));
     return r;
 }
 vec3 energyColor() {

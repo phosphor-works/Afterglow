@@ -3,8 +3,11 @@
 
 # Shaders
 
-Afterglow accepts Ghostty-style GLSL shaders and Phosphor shader packs.
-A GLSL shader uses `mainImage`, `iChannel0` and the terminal cursor uniforms.
+Afterglow shaders are Phosphor shader packs.
+A pack is a directory with `metadata.json` and GLSL stages.
+Each stage uses the terminal shader contract and defines `vec4 pTerminal(vec2 uv)`.
+Configuration refers to packs by ID.
+The [shader API](SHADER-API.md) describes the contract.
 
 ## Shader chains
 
@@ -29,20 +32,20 @@ Without layer shaders, Afterglow does not allocate separate layers.
 
 ## Previous text and color
 
-`iPreviousText` contains the previous frame's processed text layer.
-Its coordinates are relative to the region, as with `iChannel0`.
+Include `terminal_history.glsl` to read `uPreviousText`, the previous frame's processed text layer.
+Sample it with the canvas's `uv`, as with `terminalTexel`.
 It starts transparent. Layout, theme and shader changes reset it.
-A reference to this input enables layer rendering, a history texture and animation frames.
+The include enables layer rendering, a history texture and animation frames.
 Other shaders require no text-history allocation or copy.
 
-Add `#define AFTERGLOW_HDR 1` for values above 1 between passes.
+Set `"highDynamicRange": true` in the pack metadata for values above 1 between passes.
 One requesting shader changes the window's intermediate targets and text history from RGBA8 to RGBA16F.
 This doubles intermediate texture memory.
 It does not change display output or convert color spaces.
 The chain must tone-map its radiance before final output.
 Phosphor does this in its background lens pass, before text composition.
 
-Packs support eight buffers, four image parameters, auxiliary depth output and a custom vertex hook.
+Packs support eight buffers, four image parameters, auxiliary depth output and a vertex stage.
 Mesh passes add imported or shader-generated triangles, instancing and hardware depth testing.
 [Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates this path.
 See the [shader API](SHADER-API.md) for pass order, coordinates, reset conditions and memory limits.
@@ -51,7 +54,7 @@ See the [shader API](SHADER-API.md) for pass order, coordinates, reset condition
 ## System audio
 
 1. Install `cava`.
-2. Add `#define AFTERGLOW_AUDIO 1` to the shader.
+2. Add `#include <terminal_audio.glsl>` to the shader.
 
 PhosphorAudio uses CAVA to analyze system playback through PipeWire or PulseAudio.
 One analyzer serves all windows.
@@ -73,22 +76,22 @@ Use `afterglow -o Audio.enabled=false` to disable capture for one launch.
 
 | Input | Meaning |
 | --- | --- |
-| `getBass()`, `getMids()`, `getTreble()`, `getOverall()` | Smoothed RMS energy from 0 to 1. Also available as `iAudioLevels.xyzw`. |
+| `getBass()`, `getMids()`, `getTreble()`, `getOverall()` | Smoothed RMS energy from 0 to 1. Also available as `uAudioLevels.xyzw`. |
 | `audioBar(int index)` | One of 64 mono logarithmic bands from 50 Hz to 10 kHz. Invalid indices return zero. |
 | `audioBarSmooth(float position)` | Interpolated spectrum at a position from 0 to 1. Pane coordinates have no effect. |
 | `iAudioSpectrumSize` | 64 for valid frames; otherwise zero. |
-| `uAudioSpectrum` | A 64×1 R32F texture at binding 3. Use helpers or `texelFetch` to bypass terminal `texture()` coordinate mapping. |
+| `uAudioSpectrum` | A 64×1 R32F texture at binding 10. Use the helpers or `texelFetch`. |
 
 Bass uses bins 0–19. Mids use bins 20–47. Treble uses bins 48–63.
 Automatic gain adjusts these visual levels. They are not calibrated sound-pressure measurements.
 Stopped, disabled, failed or stale capture produces zero values.
-Shaders without the audio definition also receive zero.
-Audio inputs are independent of the eight Luau `iSignal` channels.
+Shaders without the audio include also receive zero.
+Audio inputs are independent of the eight Luau `uSignal` channels.
 Static audio shaders redraw when the spectrum changes. They do not need a continuous timer.
 
 ## Scrollback
 
-`iScrollback` provides retained terminal history counts:
+`uScrollback` provides retained terminal history counts:
 
 | Component | Meaning |
 | --- | --- |
@@ -111,7 +114,9 @@ Use `afterglow.request` and `on_result` when you need a result.
 
 ### Signals
 
-`iSignal[0..7]` stores a value and its update time for each pane.
+`uSignal[0..7]` holds a value for each pane and channel, and the seconds since it was set.
+Read them with `signalValue(channel)` and `signalAge(channel)`.
+A channel that was never set has an age of 1,000,000 seconds.
 Set a channel with `afterglow.signal`, `afterglow ctl signal` or D-Bus.
 
 `afterglow.signals(pane, values, scope)` changes 1–8 distinct channels in one effect.
@@ -140,7 +145,6 @@ Background-tab commands do not increase the visible scene's activity.
 Each entry contains `instance`, `shader`, `layer`, `parameters` and effective `values` for the pane.
 Parameter metadata contains IDs, types, defaults, ranges, units and a `supported` flag.
 Repeated pack instances have different instance IDs.
-Raw shaders without metadata have no editable parameters.
 
 ```lua
 return afterglow.request("inspect", afterglow.shaders(ev.pane))
@@ -189,6 +193,8 @@ return afterglow.shader_parameters(ev.pane, instance.instance,
 
 Duration is 0–60000 ms. Zero applies the change immediately.
 Curves are `linear`, `ease-in-out` and the critically damped `spring`.
+Phosphor curve specs also work, such as `0.2,0,0,1` for a cubic Bézier or `spring:20,1` for a spring with angular frequency 20 and damping ratio 1.
+Curves that overshoot are rejected, such as elastic and bounce curves and springs with damping below 1.
 Duration is also the maximum spring lifetime.
 A new target starts from the visible value with a new duration.
 Float parameters stay between their endpoints.

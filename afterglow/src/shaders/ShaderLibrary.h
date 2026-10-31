@@ -6,7 +6,8 @@
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/ShaderProgram.h>
 
-#include <QFileSystemWatcher>
+#include <PhosphorFsLoader/WatchedFileSet.h>
+
 #include <QHash>
 #include <QObject>
 #include <QStringList>
@@ -15,6 +16,10 @@
 #include <memory>
 #include <vector>
 
+namespace PhosphorAnimation {
+class CurveRegistry;
+}
+
 namespace PhosphorShaders {
 class ShaderRegistry;
 class ShaderPresetStore;
@@ -22,11 +27,11 @@ class ShaderPresetStore;
 
 namespace Afterglow {
 
-/// Terminal shaders by reference: a phosphor shader pack id (a directory with
-/// metadata.json and its fragment shader) or a path to a raw Ghostty-style
-/// shader file. Packs come from ~/.config/afterglow/shaders, the system data
-/// directories and the bundled packs. Compiled programs are cached and rebuilt
-/// when their files change.
+/// Terminal shader packs by id: Phosphor shader packs (a directory with
+/// metadata.json and its stages) written against the terminal contract in
+/// data/shaders/shared. Packs come from ~/.config/afterglow/shaders, the system
+/// data directories and the bundled packs. Compiled programs are cached and
+/// rebuilt when their files change.
 class ShaderLibrary : public QObject
 {
     Q_OBJECT
@@ -56,6 +61,8 @@ public:
     QVariantList parameters(const QString& ref) const;
     QString validateParameters(const QString& ref, const QVariantMap& values,
                                AfterglowRender::ShaderParameterValues& packed) const;
+    /// Curves for parameter transitions.
+    const PhosphorAnimation::CurveRegistry& curves() const { return *m_curves; }
 
 Q_SIGNALS:
     /// A pack or shader file changed on disk; chains should be rebuilt.
@@ -65,11 +72,12 @@ private:
     AfterglowRender::ShaderProgramPtr load(const QString& ref, const QVariantMap& params);
 
     void seedPresets();
-    bool refreshWatches();
+    void refreshWatches();
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
     std::unique_ptr<PhosphorShaders::ShaderPresetStore> m_presets;
+    std::unique_ptr<PhosphorAnimation::CurveRegistry> m_curves;
     QStringList m_includeDirs;
-    QFileSystemWatcher m_files;
+    PhosphorFsLoader::WatchedFileSet m_files;
     QHash<QString, QStringList> m_dependencies; // cache key -> resolved and missing candidate paths
     QHash<QString, AfterglowRender::ShaderProgramPtr> m_cache;
     QHash<QString, QString> m_failed; // cache key -> error, so a broken shader is reported once

@@ -121,7 +121,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | --- | --- | --- | --- |
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone |
-| `pane` | `[]` |  | Shaders run over each pane: pack ids (cursor-trail, bloom) or paths to Ghostty shader files |
+| `pane` | `[]` |  | Shaders run over each pane: shader pack ids, such as cursor-trail and bloom |
 | `params` | `{}` |  | Per shader parameter values, e.g. { "bloom": { "strength": 0.5 } } |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text |
 | `window` | `[]` |  | Shaders run over the whole window, across splits, after the pane shaders |

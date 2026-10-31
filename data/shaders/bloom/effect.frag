@@ -4,11 +4,9 @@
 // Bloom: gathers bright pixels from three rings around each pixel and adds
 // them back as a soft glow. Inner rings weigh more than outer ones.
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord)
+vec4 pTerminal(vec2 uv)
 {
-    vec2 uv = fragCoord / iResolution.xy;
-    vec4 base = texture(iChannel0, uv);
-
+    vec4 base = terminalTexel(uv);
     const int Rings = 3;
     const int Taps = 10;
     vec3 glow = vec3(0.0);
@@ -19,12 +17,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
         for (int i = 0; i < Taps; ++i) {
             // Offset each ring's angle so taps do not line up across rings.
             float a = 6.2831853 * (float(i) + 0.5 * float(r)) / float(Taps);
-            vec2 offset = vec2(cos(a), sin(a)) * radius / iResolution.xy;
-            vec3 s = texture(iChannel0, uv + offset).rgb;
+            vec3 s = terminalTexel(uv + terminalUv(vec2(cos(a), sin(a)) * radius)).rgb;
             float luma = dot(s, vec3(0.2126, 0.7152, 0.0722));
             glow += s * (p_threshold >= 1.0 ? step(1.0, luma) : smoothstep(p_threshold, 1.0, luma)) * weight;
             total += weight;
         }
     }
-    fragColor = vec4(base.rgb + glow / total * p_strength, base.a);
+    return vec4(base.rgb + glow / total * p_strength, base.a);
 }

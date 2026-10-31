@@ -35,7 +35,7 @@ After installation, run:
 
 Adjust the path for an installation prefix other than `/usr`.
 Requirements are Python 3, Bash, Wayland, Vulkan and the current Afterglow shader and Luau APIs.
-Required interfaces include `iPreviousText`, `AFTERGLOW_HDR`, `AFTERGLOW_AUDIO`, `iScrollback`, version 1 snapshots, parameter transitions and presets.
+Required interfaces include the terminal shader contract with `terminal_history.glsl`, `terminal_audio.glsl`, `highDynamicRange` and `uScrollback`, version 1 snapshots, parameter transitions and presets.
 Install `cava` for audio response.
 Add `--light` to start with the light palette.
 
@@ -180,14 +180,14 @@ Each signal stores a value and its shader update time.
 Text history uses one window-sized texture of the previous processed text layer.
 Decay uses elapsed frame time.
 Shader reload, layout, tab, size, default colors, font cell size and clock reset clear history.
-History is allocated and copied only when a shader references `iPreviousText`.
+History is allocated and copied only when a shader includes `terminal_history.glsl`.
 The plain renderer does not require it.
 
-Field and lens request RGBA16F intermediate targets with `#define AFTERGLOW_HDR 1`.
+Field and lens request RGBA16F intermediate targets with `"highDynamicRange": true` in their metadata.
 Highlights remain above display white until lens bloom and tone mapping.
 Display output remains SDR.
 The history texture requires approximately 16 MiB at 1080p or 64 MiB at 4K, in addition to layer targets.
-Chains without this definition use RGBA8 at half that memory cost.
+Chains without this setting use RGBA8 at half that memory cost.
 
 The scene combines analytic ray intersections, rounded signed-distance surfaces and volume integration.
 Glyphs, selection and input remain on the flat terminal surface.

@@ -58,7 +58,8 @@ qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shader
 target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
-target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation Qt6::Core)
+target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation
+    PhosphorFsLoader::PhosphorFsLoader Qt6::Core)
 
 find_package(PkgConfig REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -84,7 +85,7 @@ target_include_directories(afterglow_config PUBLIC src)
 target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
     AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
 target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
-    PhosphorConfig::PhosphorConfig Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
+    PhosphorConfig::PhosphorConfig PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 
 qt_add_library(afterglow_shell STATIC src/shell/ShellIntegration.cpp src/shell/ShellIntegration.h)
 target_include_directories(afterglow_shell PUBLIC src)
@@ -109,7 +110,7 @@ qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scrip
     src/scripting/ScriptState.cpp src/scripting/ScriptState.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
-target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting Qt6::Core Qt6::Concurrent)
+target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Concurrent)
 qt_add_resources(afterglow_scripting afterglow_scripting_prelude
     PREFIX /afterglow/scripting
     BASE src/scripting

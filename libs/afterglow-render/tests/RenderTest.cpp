@@ -649,9 +649,12 @@ ShaderProgramPtr layerShader(const char* id, const char* body, bool hdr = false)
 {
     ShaderProgramSource src;
     src.id = QString::fromLatin1(id);
-    src.code = QByteArray(hdr ? "#define AFTERGLOW_HDR 1\n" : "")
-        + "void mainImage(out vec4 fragColor, in vec2 fragCoord)\n{\n    vec4 c = texture(iChannel0, fragCoord / iResolution.xy);\n"
-        + body + "\n}\n";
+    src.highDynamicRange = hdr;
+    const QByteArray text(body);
+    // A body that reads the previous text opts in to it, as a pack does.
+    src.code = QByteArray(text.contains("uPreviousText") ? "#include <terminal_history.glsl>\n" : "")
+        + "vec4 pTerminal(vec2 uv)\n{\n    vec4 c = terminalTexel(uv);\n    vec4 fragColor = c;\n"
+        + text + "\n    return fragColor;\n}\n";
     QString error;
     auto program = ShaderProgram::compile(src, &error);
     EXPECT_TRUE(program) << error.toStdString();
@@ -695,9 +698,12 @@ TEST_F(Render, PersistentBufferAccumulatesAcrossFramesAndAllScopes)
     pane.params.rect = QRect(QPoint(0,0), size);
     for (bool half : {false, true}) for (int scope = 0; scope < 5; ++scope) {
         ShaderProgramSource src;
-        src.id = QStringLiteral("feedback"); src.bufferFeedback = true; src.halfFloatBuffer = half; src.bufferScale = .5f;
-        src.bufferCode = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy)+vec4(customParams[0].x,0,0,0);c.a=1.;}";
-        src.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy);}";
+        src.id = QStringLiteral("feedback");
+        ShaderBufferSource buffer; buffer.feedback = true; buffer.halfFloat = half; buffer.scale = .5f;
+        buffer.code = "#include <terminal_multipass.glsl>\n"
+            "vec4 pTerminal(vec2 uv){vec4 c=texture(iChannel0,uv)+vec4(customParams[0].x,0,0,0);c.a=1.;return c;}";
+        src.buffers = {buffer};
+        src.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
         QString error; auto compiled = ShaderProgram::compile(src, &error); ASSERT_TRUE(compiled) << error.toStdString();
         auto program = compiled->instance(QStringLiteral("feedback-live"));
         ShaderChains chains;
@@ -724,9 +730,12 @@ TEST_F(Render, PersistentBufferAccumulatesAcrossFramesAndAllScopes)
 
 TEST_F(Render, PersistentBufferIsolatesPanesAndResetsIdentityAndTheme)
 {
-    ShaderProgramSource src; src.id=QStringLiteral("isolation"); src.bufferFeedback=true;src.bufferScale=.375f;
-    src.bufferCode="void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy+vec2(10,0))+vec4(customParams[0].x,0,0,0);c.a=1.;}";
-    src.code="void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy);}";
+    ShaderProgramSource src; src.id=QStringLiteral("isolation");
+    ShaderBufferSource buffer; buffer.feedback=true; buffer.scale=.375f;
+    buffer.code="#include <terminal_multipass.glsl>\n"
+        "vec4 pTerminal(vec2 uv){vec4 c=texture(iChannel0,uv+vec2(10,0))+vec4(customParams[0].x,0,0,0);c.a=1.;return c;}";
+    src.buffers={buffer};
+    src.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     QString error; auto p=ShaderProgram::compile(src,&error); ASSERT_TRUE(p) << error.toStdString();
     auto program=p->instance(QStringLiteral("isolation"));
     ShaderChains chains; chains.background={program}; renderer->setShaderChains(chains);
@@ -760,9 +769,11 @@ TEST_F(Render, PersistentBufferIsolatesPanesAndResetsIdentityAndTheme)
 TEST_F(Render, BufferFormatRetainsHdrAndNonfeedbackClears)
 {
     for (bool half : {false,true}) {
-        ShaderProgramSource src;src.id=QStringLiteral("buffer-format");src.halfFloatBuffer=half;
-        src.bufferCode="void mainImage(out vec4 c,in vec2 p){c=vec4(texture(iBuffer,p/iResolution.xy).r+4.,0,0,1);}";
-        src.code="void mainImage(out vec4 c,in vec2 p){c=vec4(texture(iBuffer,p/iResolution.xy).r/4.,0,0,1);}";
+        ShaderProgramSource src;src.id=QStringLiteral("buffer-format");
+        ShaderBufferSource buffer; buffer.halfFloat=half;
+        buffer.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r+4.,0,0,1);}";
+        src.buffers={buffer};
+        src.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r/4.,0,0,1);}";
         QString error;auto program=ShaderProgram::compile(src,&error);ASSERT_TRUE(program);
         ShaderChains chains;chains.pane={program};renderer->setShaderChains(chains);
         auto image=render("\x1b[?25l");
@@ -774,9 +785,11 @@ TEST_F(Render, BufferFormatRetainsHdrAndNonfeedbackClears)
 
 TEST_F(Render, BufferInstanceLimitUsesTransparentFallback)
 {
-    ShaderProgramSource src; src.id=QStringLiteral("bounded");src.bufferFeedback=true;
-    src.bufferCode="void mainImage(out vec4 c,in vec2 p){c=vec4(.5,0,0,1);}";
-    src.code="void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer,p/iResolution.xy);}";
+    ShaderProgramSource src; src.id=QStringLiteral("bounded");
+    ShaderBufferSource buffer; buffer.feedback=true;
+    buffer.code="vec4 pTerminal(vec2 uv){return vec4(.5,0,0,1);}";
+    src.buffers={buffer};
+    src.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     QString error;auto program=ShaderProgram::compile(src,&error);ASSERT_TRUE(program);
     ShaderChains chains;
     for(int i=0;i<34;++i) chains.pane.push_back(program);
@@ -785,7 +798,7 @@ TEST_F(Render, BufferInstanceLimitUsesTransparentFallback)
     EXPECT_EQ(image.pixelColor(cellCenter(2,2)).alpha(),0);
     image=render("");
     EXPECT_EQ(image.pixelColor(cellCenter(2,2)).alpha(),0);
-    src.bufferScale=0; EXPECT_FALSE(ShaderProgram::compile(src,&error));
+    src.buffers.front().scale=0; EXPECT_FALSE(ShaderProgram::compile(src,&error));
 }
 
 TEST_F(Render, ExplicitColorConversionsPreserveAlphaAndLinearLight)
@@ -852,11 +865,11 @@ TEST_F(Render, AudioSpectrumIsSharedAcrossPanesAndClearsOnStop)
     ShaderProgramSource source;
     source.id = QStringLiteral("audio");
     source.code = R"(
-#define AFTERGLOW_AUDIO 1
-void mainImage(out vec4 c, in vec2 p) {
-    c = vec4(getBass(), getMids(), getTreble(), 1.0);
-    if (p.x > iResolution.x * 0.5)
-        c = vec4(audioBar(0), audioBarSmooth(0.5), audioBar(63), 1.0);
+#include <terminal_audio.glsl>
+vec4 pTerminal(vec2 uv) {
+    if (uv.x > 0.5)
+        return vec4(audioBar(0), audioBarSmooth(0.5), audioBar(63), 1.0);
+    return vec4(getBass(), getMids(), getTreble(), 1.0);
 })";
     QString error;
     auto shader = ShaderProgram::compile(source, &error);
@@ -891,7 +904,7 @@ void mainImage(out vec4 c, in vec2 p) {
     EXPECT_PIXEL(img, cellCenter(15, 0) + QPoint(size.width(), 0), qRgb(0, 0, 0));
     // Non-audio shaders see zeros even while another window uses capture.
     s_device->setAudioSpectrum(spectrum);
-    source.code.replace("#define AFTERGLOW_AUDIO 1", "#define AFTERGLOW_AUDIO 0");
+    source.code = "vec4 pTerminal(vec2 uv) { return vec4(uAudioLevels.xyz + float(iAudioSpectrumSize), 1.0); }";
     auto disabled = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(disabled);
     ASSERT_FALSE(disabled->requiresAudio());
@@ -927,8 +940,8 @@ TEST_F(Render, AudioInputSanitizesInvalidAndPartialFrames)
 TEST_F(Render, ScrollbackCombinesOnlyTheCurrentTabsPanes)
 {
     ShaderChains chains;
-    chains.pane = {layerShader("scrollback", "fragColor = vec4(iScrollback.xyz / 20.0, 1.0);")};
-    chains.window = {layerShader("scrollback-window", "fragColor = vec4(c.r, iScrollback.yz / 20.0, 1.0);")};
+    chains.pane = {layerShader("scrollback", "fragColor = vec4(uScrollback.xyz / 20.0, 1.0);")};
+    chains.window = {layerShader("scrollback-window", "fragColor = vec4(c.r, uScrollback.yz / 20.0, 1.0);")};
     ASSERT_TRUE(chains.readsScrollback());
     renderer->setShaderChains(chains);
     terminal->feed("\x1b[?25l" + std::string(11, '\n'));
@@ -992,7 +1005,7 @@ TEST_F(Render, ScrollbackCombinesOnlyTheCurrentTabsPanes)
 TEST_F(Render, ScrollbackHandlesPaneRemovalAndClockReset)
 {
     ShaderChains chains;
-    chains.background = {layerShader("scrollback", "fragColor = vec4(iScrollback.xyz / 20.0, 1.0);")};
+    chains.background = {layerShader("scrollback", "fragColor = vec4(uScrollback.xyz / 20.0, 1.0);")};
     renderer->setShaderChains(chains);
     terminal->feed("\x1b[?25l" + std::string(7, '\n'));
     snapshot.capture(*terminal);
@@ -1049,7 +1062,7 @@ TEST_F(Render, HdrTextHistoryPreservesRadiance)
 {
     ShaderChains chains;
     chains.text = {layerShader("hdr-history", R"(
-        fragColor = max(vec4(c.rgb * 4.0, c.a), texture(iPreviousText, fragCoord / iResolution.xy) * 0.5);
+        fragColor = max(vec4(c.rgb * 4.0, c.a), texture(uPreviousText, uv) * 0.5);
     )", true)};
     chains.window = {layerShader("expose", "fragColor = vec4(c.rgb / 4.0, c.a);")};
     renderer->setShaderChains(chains);
@@ -1063,7 +1076,7 @@ TEST_F(Render, TextHistoryDecaysAndResets)
 {
     ShaderChains chains;
     chains.text = {layerShader("history", R"(
-        vec4 previous = texture(iPreviousText, fragCoord / iResolution.xy);
+        vec4 previous = texture(uPreviousText, uv);
         fragColor = max(c, previous * 0.5);
     )")};
     renderer->setShaderChains(chains);
@@ -1095,7 +1108,7 @@ TEST_F(Render, TextHistoryDecaysAndResets)
 TEST_F(Render, TextHistoryDoesNotLeakAcrossPanesOrLayouts)
 {
     ShaderChains chains;
-    chains.text = {layerShader("history", "fragColor = max(c, texture(iPreviousText, fragCoord / iResolution.xy) * 0.5);")};
+    chains.text = {layerShader("history", "fragColor = max(c, texture(uPreviousText, uv) * 0.5);")};
     renderer->setShaderChains(chains);
     terminal->feed("\x1b[?25l\x1b]11;#000000\x1b\\\x1b[38;2;255;0;0m█");
     snapshot.capture(*terminal);
@@ -1334,10 +1347,10 @@ TEST_F(Render, ShaderUniformsUseResolvedCursorAndSelectionColors)
     WindowRenderer::Pane pane{&snapshot, {}};
     pane.params.rect = QRect(QPoint(), size);
     for (const auto& [name, expected] : std::vector<std::pair<const char*, QRgb>>{
-             {"iCursorText", qRgb(11, 22, 33)},
-             {"iSelectionForegroundColor", qRgb(44, 55, 66)},
-             {"iSelectionBackgroundColor", qRgb(77, 88, 99)}}) {
-        const std::string body = std::string("fragColor = vec4(") + name + ", 1.0);";
+             {"uThemeCursorTextColor", qRgb(11, 22, 33)},
+             {"uSelectionForegroundColor", qRgb(44, 55, 66)},
+             {"uSelectionBackgroundColor", qRgb(77, 88, 99)}}) {
+        const std::string body = std::string("fragColor = vec4(") + name + ".rgb, 1.0);";
         ShaderChains chains;
         chains.pane = {layerShader(name, body.c_str())};
         renderer->setShaderChains(chains);
@@ -1352,12 +1365,13 @@ TEST_F(Render, MultipleBuffersCarryDepthAndSamplerHelpers)
     source.id = "multipass-depth";
     source.useDepthBuffer = true;
     ShaderBufferSource first;
-    first.code = "void mainImage(out vec4 c,in vec2 p){ c=vec4(1,0,0,1); depthBuffer=vec4(0.25,0.5,0.75,1); }";
+    first.code = "vec4 pTerminal(vec2 uv){ depthBuffer=vec4(0.25,0.5,0.75,1); return vec4(1,0,0,1); }";
     first.wrap = ShaderWrap::Repeat;
     ShaderBufferSource second;
-    second.code = "vec4 sampleIt(sampler2D s,vec2 uv){return texture(s,uv);} void mainImage(out vec4 c,in vec2 p){c=sampleIt(iBuffer0,vec2(2.5)); depthBuffer=texture(iDepth,vec2(0.5));}";
+    second.code = "#include <terminal_multipass.glsl>\nvec4 sampleIt(sampler2D s,vec2 uv){return texture(s,uv);} "
+        "vec4 pTerminal(vec2 uv){depthBuffer=texture(uDepthBuffer,vec2(0.5)); return sampleIt(iChannel0,vec2(2.5));}";
     source.buffers = {first, second};
-    source.code = "void mainImage(out vec4 c,in vec2 p){ c=texture(iDepth,vec2(0.5)); }";
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){ return texture(uDepthBuffer,vec2(0.5)); }";
     QString error;
     const auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
@@ -1372,9 +1386,9 @@ TEST_F(Render, VertexHookDeformsQuadUsingSharedParameters)
 {
     ShaderProgramSource source;
     source.id = "vertex-hook";
-    source.vertexCode = "void mainVertex(inout vec4 p,in vec2 uv){p.x *= customParams[0].x;}";
+    source.vertexCode = "vec4 pVertex(vec2 uv){vec4 p=terminalQuadPosition(uv); p.x *= customParams[0].x; return p;}";
     source.params[0] = .5f;
-    source.code = "void mainImage(out vec4 c,in vec2 p){c=vec4(1,0,0,1);}";
+    source.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
     QString error;
     const auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
@@ -1392,7 +1406,7 @@ TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
     source.id = "image-live";
     source.images[0] = QImage(2,2,QImage::Format_RGBA8888);
     source.images[0].fill(Qt::red);
-    source.code = "vec4 readImage(sampler2D s,vec2 uv){return texture(s,uv);} void mainImage(out vec4 c,in vec2 p){c=readImage(uTexture0,vec2(.5));}";
+    source.code = "vec4 readImage(sampler2D s,vec2 uv){return texture(s,uv);} vec4 pTerminal(vec2 uv){return readImage(uTexture0,vec2(.5));}";
     QString error;
     auto program = ShaderProgram::compile(source,&error);
     ASSERT_TRUE(program) << error.toStdString();
@@ -1423,9 +1437,10 @@ TEST_F(Render, BufferRepeatAndMirrorWorkThroughSamplerHelpers)
         ShaderBufferSource buffer;
         buffer.wrap = wrap;
         buffer.nearest = true;
-        buffer.code = "void mainImage(out vec4 c,in vec2 p){c=p.x<iResolution.x*.5?vec4(1,0,0,1):vec4(0,1,0,1);}";
+        buffer.code = "vec4 pTerminal(vec2 uv){return uv.x<.5?vec4(1,0,0,1):vec4(0,1,0,1);}";
         source.buffers = {buffer};
-        source.code = "vec4 readBuffer(sampler2D s,vec2 uv){return texture(s,uv);} void mainImage(out vec4 c,in vec2 p){c=readBuffer(iBuffer0,vec2(1.25,.5));}";
+        source.code = "#include <terminal_multipass.glsl>\n"
+            "vec4 readBuffer(sampler2D s,vec2 uv){return texture(s,uv);} vec4 pTerminal(vec2 uv){return readBuffer(iChannel0,vec2(1.25,.5));}";
         QString error;
         auto program = ShaderProgram::compile(source,&error);
         ASSERT_TRUE(program) << error.toStdString();
@@ -1439,8 +1454,8 @@ TEST_F(Render, IntermediateWindowVertexPassClearsUncoveredPixelsEveryFrame)
 {
     ShaderProgramSource source;
     source.id = "vertex-intermediate";
-    source.vertexCode = "void mainVertex(inout vec4 p,in vec2 uv){p.x *= iTime < 1.0 ? 1.0 : 0.5;}";
-    source.code = "void mainImage(out vec4 c,in vec2 p){c=vec4(1,0,0,1);}";
+    source.vertexCode = "vec4 pVertex(vec2 uv){vec4 p=terminalQuadPosition(uv); p.x *= iTime < 1.0 ? 1.0 : 0.5; return p;}";
+    source.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
     QString error;
     auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
@@ -1473,21 +1488,21 @@ TEST_F(Render, MeshInstancesUseHardwareDepthAndClearBetweenFrames)
 {
     ShaderProgramSource source;
     source.id = "mesh-depth";
-    source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     pass.geometry.vertexCount = 3;
     pass.geometry.instances = 2;
     pass.geometry.vertexCode = R"(
         layout(location=0) flat out int objectId;
-        void mainMesh(out vec4 p) {
+        vec4 pMesh() {
             vec2 corners[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
             objectId=gl_InstanceIndex;
             float z=gl_InstanceIndex==0 ? 0.2 : 0.8;
             if(customParams[0].x>0.5) z=1.0-z;
-            p=vec4(corners[gl_VertexIndex],z,1);
+            return vec4(corners[gl_VertexIndex],z,1);
         })";
     pass.code = R"(layout(location=0) flat in int objectId;
-        void mainImage(out vec4 c,in vec2 p){c=objectId==0 ? vec4(0,1,0,1) : vec4(1,0,0,1);})";
+        vec4 pTerminal(vec2 uv){return objectId==0 ? vec4(0,1,0,1) : vec4(1,0,0,1);})";
     source.buffers = {pass};
     QString error;
     auto program = ShaderProgram::compile(source, &error);
@@ -1521,20 +1536,21 @@ TEST_F(Render, WindowBackgroundKeepsMeshHistoryAcrossSplitAnimationAndFocus)
     PaneSnapshot otherSnapshot = snapshot;
     ShaderProgramSource source;
     source.id = "shared-background";
-    source.code = "#define AFTERGLOW_WINDOW_BACKGROUND 1\n"
-        "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+    source.windowBackground = true;
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     pass.feedback = true;
     pass.scale = .5f;
     pass.geometry.vertexCount = 3;
     pass.geometry.vertexCode = R"(
-        void mainMesh(out vec4 p) {
+        vec4 pMesh() {
             vec2 corners[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
-            p=vec4(corners[gl_VertexIndex],0.5,1);
+            return vec4(corners[gl_VertexIndex],0.5,1);
         })";
     pass.code = R"(
-        void mainImage(out vec4 c,in vec2 p) {
-            c=vec4(texture(iBuffer0,p/iResolution.xy).r+0.05,
+        #include <terminal_multipass.glsl>
+        vec4 pTerminal(vec2 uv) {
+            return vec4(texture(iChannel0,uv).r+0.05,
                 customParams[0].x,float(iFrame)/20.0,1);
         })";
     source.buffers = {pass};
@@ -1583,22 +1599,21 @@ TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
         ShaderProgramSource source;
         source.id = "window-camera";
 
-        source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+        source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
         ShaderBufferSource pass;
         pass.scale = scale;
         pass.geometry.vertexCount = 3;
         pass.geometry.vertexCode = R"(
-            void mainMesh(out vec4 p) {
+            vec4 pMesh() {
                 vec2 corners[3]=vec2[3](vec2(-0.8,-0.7),vec2(0.7,-0.4),vec2(0.1,0.8));
-                p=vec4(corners[gl_VertexIndex],0.5,1);
-                p.xy=(p.xy*iWindowSize+(iWindowSize-2.0*iWindowRegion.xy-iWindowRegion.zw)*p.w)/iWindowRegion.zw;
+                vec4 p=vec4(corners[gl_VertexIndex],0.5,1);
+                p.xy=(p.xy*uWindowSize+(uWindowSize-2.0*uTerminalRect.xy-uTerminalRect.zw)*p.w)/uTerminalRect.zw;
+                return p;
             })";
         pass.code = R"(
-            void mainImage(out vec4 c,in vec2 p) {
-                vec2 uv=p/iResolution.xy;
-                vec2 windowPixel=vec2(iWindowRegion.x+uv.x*iWindowRegion.z,
-                    iWindowSize.y-iWindowRegion.y-iWindowRegion.w+uv.y*iWindowRegion.w);
-                c=vec4(windowPixel/iWindowSize,0.7,1);
+            vec4 pTerminal(vec2 uv) {
+                vec2 windowPixel=uTerminalRect.xy+uv*uTerminalRect.zw;
+                return vec4(windowPixel/uWindowSize,0.7,1);
             })";
         source.buffers = {pass};
         QString error;
@@ -1629,7 +1644,7 @@ TEST_F(Render, ImportedMeshUsesVertexAttributesAndOcclusion)
 {
     ShaderProgramSource source;
     source.id = "obj-depth";
-    source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
     ShaderBufferSource pass;
     QString error;
     ASSERT_TRUE(ShaderProgram::loadObj(
@@ -1637,17 +1652,17 @@ TEST_F(Render, ImportedMeshUsesVertexAttributesAndOcclusion)
         "vt 0 1\nvt 1 0\nvn 0 0 1\nf 1/1/1 2/1/1 3/1/1\nf -3/2/1 -2/2/1 -1/2/1\n", pass.geometry, &error));
     pass.geometry.vertexCode = R"(
         layout(location=0) out vec3 color;
-        void mainMesh(out vec4 p){p=vec4(meshPosition,1);color=vec3(meshUV,meshNormal.z*0.5);})";
-    pass.code = "layout(location=0) in vec3 color;void mainImage(out vec4 c,in vec2 p){c=vec4(color,1);}";
+        vec4 pMesh(){color=vec3(meshUV,meshNormal.z*0.5);return vec4(meshPosition,1);})";
+    pass.code = "layout(location=0) in vec3 color;vec4 pTerminal(vec2 uv){return vec4(color,1);}";
     pass.geometry.samples = 4;
     pass.depthBuffer = true;
-    pass.code.replace("c=vec4(color,1);", "c=vec4(color,1);depthBuffer=vec4(gl_FragCoord.z);");
+    pass.code.replace("return vec4(color,1);", "depthBuffer=vec4(gl_FragCoord.z);return vec4(color,1);");
     source.buffers = {pass};
     auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
     ShaderChains chains; chains.window = {program}; renderer->setShaderChains(chains);
     EXPECT_PIXEL(render("\x1b[?25l"), cellCenter(10,2), qRgb(0,255,128));
-    source.code = "void mainImage(out vec4 c,in vec2 p){c=vec4(texture(iDepth,p/iResolution.xy).rrr,1);}";
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(uDepthBuffer,uv).rrr,1);}";
     program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
     chains.window = {program}; renderer->setShaderChains(chains);
@@ -1671,8 +1686,8 @@ TEST(ShaderGeometry, RejectsMalformedMeshesWithoutChangingPreviousGeometry)
 TEST(ShaderGeometry, RejectsExcessiveOrIncompleteDraws)
 {
     ShaderProgramSource source;
-    source.code="void mainImage(out vec4 c,in vec2 p){c=vec4(1);}";
-    source.geometry.vertexCode="void mainMesh(out vec4 p){p=vec4(0);}";
+    source.code="vec4 pTerminal(vec2 uv){return vec4(1);}";
+    source.geometry.vertexCode="vec4 pMesh(){return vec4(0);}";
     QString error;
     for (int count : {0, 1, 4, 3*1024*1024+3}) {
         source.geometry.vertexCount=count;
@@ -1690,14 +1705,14 @@ TEST_F(Render, MeshMultisamplingResolvesPartialEdgeCoverage)
 {
     ShaderProgramSource source;
     source.id="mesh-antialiasing";
-    source.code="void mainImage(out vec4 c,in vec2 p){c=vec4(texelFetch(iBuffer0,ivec2(gl_FragCoord.xy),0).r,0,0,1);}";
+    source.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texelFetch(iChannel0,ivec2(gl_FragCoord.xy),0).r,0,0,1);}";
     ShaderBufferSource pass;
     pass.geometry.vertexCount=3;
-    pass.geometry.vertexCode=R"(void mainMesh(out vec4 p){
+    pass.geometry.vertexCode=R"(vec4 pMesh(){
         vec2 points[3]=vec2[3](vec2(-0.8,-0.7),vec2(0.7,-0.6),vec2(-0.45,0.8));
-        p=vec4(points[gl_VertexIndex],0.5,1);
+        return vec4(points[gl_VertexIndex],0.5,1);
     })";
-    pass.code="void mainImage(out vec4 c,in vec2 p){c=vec4(1,0,0,1);}";
+    pass.code="vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
     for (int samples : {1,4}) {
         pass.geometry.samples=samples;
         source.buffers={pass};
@@ -1745,7 +1760,7 @@ TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
 {
     ShaderProgramSource source;
     source.id = QStringLiteral("clipped-region");
-    source.code = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1,0,0,1); }";
+    source.code = "vec4 pTerminal(vec2 uv) { return vec4(1,0,0,1); }";
     QString error;
     auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
@@ -1767,7 +1782,7 @@ TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
 TEST_F(Render, ShaderCursorTracksRepeatedStyleOnlyTransitions)
 {
     ShaderChains chains;
-    chains.window = {layerShader("cursor-styles", "fragColor = vec4(float(iCurrentCursorStyle)/4.0, float(iPreviousCursorStyle)/4.0, iTimeCursorChange/10.0, 1.0);")};
+    chains.window = {layerShader("cursor-styles", "fragColor = vec4(float(uCursorState.x)/4.0, float(uCursorState.y)/4.0, cursorAge()/10.0, 1.0);")};
     renderer->setShaderChains(chains);
     renderer->setClockOverride(0.f);
     render("\x1b[2 q");
@@ -1778,10 +1793,11 @@ TEST_F(Render, ShaderCursorTracksRepeatedStyleOnlyTransitions)
         const float time = float(i + 1);
         renderer->setClockOverride(time);
         auto image = render("\x1b[" + std::to_string(commands[i]) + " q");
-        const QRgb expected = qRgb(qRound(styles[i] * 255.0 / 4), qRound(previous * 255.0 / 4), qRound(time * 255.0 / 10));
+        const QRgb expected = qRgb(qRound(styles[i] * 255.0 / 4), qRound(previous * 255.0 / 4), 0);
         EXPECT_PIXEL(image, cellCenter(10, 2), expected);
+        // An unchanged frame keeps the shapes and ages the change.
         renderer->setClockOverride(time + .5f);
-        EXPECT_PIXEL(render(""), cellCenter(10, 2), expected);
+        EXPECT_PIXEL(render(""), cellCenter(10, 2), qRgb(qRed(expected), qGreen(expected), qRound(.5 * 255.0 / 10)));
         previous = styles[i];
     }
 }
@@ -1806,8 +1822,8 @@ TEST_F(Render, ShaderCursorBoxMatchesDoubleWidthAndMulticellDrawing)
         ASSERT_LT(ranges.cursorStart, instances.size());
         const auto& cursor = instances[ranges.cursorStart];
         EXPECT_EQ(QRectF(cursor.x, cursor.y, cursor.w, cursor.h), expected);
-        const std::string body = "fragColor = all(lessThan(abs(iCurrentCursor - vec4("
-            + std::to_string(expected.x()) + "," + std::to_string(size.height()-expected.y()) + ","
+        const std::string body = "fragColor = all(lessThan(abs(uCursorRect - vec4("
+            + std::to_string(expected.x()) + "," + std::to_string(expected.y()) + ","
             + std::to_string(expected.width()) + "," + std::to_string(expected.height())
             + ")), vec4(0.1))) ? vec4(0,1,0,1) : vec4(1,0,0,1);";
         ShaderChains chains;

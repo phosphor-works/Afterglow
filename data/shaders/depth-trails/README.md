@@ -8,8 +8,8 @@ This is an API example. [Phosphor](../../examples/phosphor/README.md) provides a
 
 The first buffer generates a moving field and auxiliary depth.
 The second reads that field and depth, blends its previous frame and forwards depth.
-The image pass uses `iDepth` to light the field.
-A custom vertex hook changes the size of an oversized quad.
+The image pass uses `uDepthBuffer` to light the field.
+A `pVertex` stage changes the size of an oversized quad.
 Mirror sampling keeps the first buffer's shifted edge continuous without sampling another pane.
 
 Use **Edit scene parameters and presets** to change intensity or enter an image path.

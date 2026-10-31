@@ -106,7 +106,7 @@ public:
         int hoverRow = -1;
         int hoverColStart = 0;
         int hoverColEnd = -1; ///< inclusive
-        /// Script signals for shaders (iSignal); unset when @c at is empty.
+        /// Script signals for shaders (uSignal); unset when @c at is empty.
         struct Signal
         {
             float value = 0;

@@ -46,12 +46,12 @@ struct ShaderRegionState
     QRectF previousCursor;
     QColor cursorColor;
     QColor previousCursorColor;
-    int cursorStyle = 0; ///< Ghostty CURSORSTYLE_*
+    int cursorStyle = 0; ///< kCursor* in terminal_uniforms.glsl
     int previousCursorStyle = 0;
     bool cursorVisible = false;
-    float cursorChangeTime = 0;
+    float cursorChangeTime = 0; ///< shader time of the last cursor move
     bool focused = false;
-    float focusChangeTime = 0;
+    float focusChangeTime = 0; ///< shader time of the last focus change
     QSizeF cellSize;
     QPointF mouse;
     float backgroundOpacity = 1.0f;
@@ -180,7 +180,7 @@ public:
     void record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
                 const ShaderFrameTime& time, QRhiRenderTarget* swapTarget, QRhiRenderPassDescriptor* swapPass);
 
-    /// After the final pass ends, retain the processed text for iPreviousText.
+    /// After the final pass ends, retain the processed text for uPreviousText.
     /// Allocated and copied only when a shader reads that sampler.
     void finishFrame(QRhiCommandBuffer* cb);
 
@@ -192,6 +192,7 @@ private:
         QRhiTexture* depth = nullptr;
         std::array<QRhiTexture*, MaxShaderBuffers> textures{};
         std::array<QRhiSampler*, MaxShaderBuffers> samplers{};
+        std::array<QSize, MaxShaderBuffers> sizes{};
     };
     QRhiShaderResourceBindings* bindings(int ubo, int texture, const ShaderRegionState* region = nullptr,
         const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr, QRhiResourceUpdateBatch* updates = nullptr);
@@ -204,8 +205,8 @@ private:
     int runLayerChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int input,
                       const std::vector<ShaderRegionState>& panes, const ShaderFrameTime& time, int& ubo, int scope);
     QRhiBuffer* uniformBuffer(int index);
-    void fill(TerminalShaderUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
-              const ShaderProgram& program) const;
+    void fill(TerminalUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
+              const ShaderProgram& program, const BufferInputs* buffers = nullptr) const;
 
     struct BufferState;
     std::vector<BufferInputs> runBuffers(RenderFrame& frame, const ShaderProgram& program, int scope, int step,

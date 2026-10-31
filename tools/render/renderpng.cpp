@@ -9,7 +9,7 @@
 // Shaders: --shader REF (window chain), --pane-shader REF and the layer
 // chains --background-shader, --text-shader and --cursor-shader, repeatable;
 // --param REF:ID=VALUE overrides a pack parameter. --time sets iTime, and
-// --signal CH=VALUE@AGE sets iSignal[CH] as if set AGE seconds earlier.
+// --signal CH=VALUE@AGE sets uSignal[CH] as if set AGE seconds earlier.
 // --wake-from COL,ROW renders a frame with the cursor there --wake-age
 // seconds earlier, so cursor effects show a jump.
 

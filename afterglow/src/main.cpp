@@ -8,13 +8,13 @@
 #include "app/Application.h"
 #include "control/Ctl.h"
 
+#include <PhosphorDBus/Client.h>
 #include <PhosphorWayland/LayerShellPluginLoader.h>
 
 #include <QCommandLineParser>
 #include <QApplication>
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
-#include <QDBusInterface>
 #include <QDBusReply>
 #include <QDir>
 #include <QFileInfo>
@@ -61,14 +61,10 @@ ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& co
     if (self.st_dev != running.st_dev || self.st_ino != running.st_ino) {
         return ForwardResult::DifferentExecutable;
     }
-    QDBusInterface remote(owner.value(),
-                          QLatin1String(Afterglow::Application::ObjectPath),
-                          QLatin1String(Afterglow::Application::ServiceName), bus);
-    if (!remote.isValid()) {
-        return ForwardResult::Unavailable;
-    }
-    const QDBusMessage reply = quick ? remote.call(QStringLiteral("ToggleQuickTerminal"))
-                                     : remote.call(QStringLiteral("NewWindow"), cwd, command, options);
+    const PhosphorDBus::Client remote(bus, owner.value(), QLatin1String(Afterglow::Application::ObjectPath));
+    const QString iface = QLatin1String(Afterglow::Application::ServiceName);
+    const QDBusMessage reply = quick ? remote.syncCall(iface, QStringLiteral("ToggleQuickTerminal"))
+                                     : remote.syncCall(iface, QStringLiteral("NewWindow"), {cwd, command, options});
     return reply.type() != QDBusMessage::ErrorMessage ? ForwardResult::Forwarded : ForwardResult::Unavailable;
 }
 

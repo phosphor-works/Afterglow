@@ -3,11 +3,11 @@
 
 #pragma once
 
+#include <PhosphorFsLoader/IScanStrategy.h>
+
 #include <QElapsedTimer>
-#include <QFileSystemWatcher>
 #include <QObject>
 #include <QStringList>
-#include <QTimer>
 #include <QVariantMap>
 
 #include <functional>
@@ -18,6 +18,10 @@ namespace PhosphorScripting {
 class LuauEngine;
 class LuauWatchdog;
 } // namespace PhosphorScripting
+
+namespace PhosphorFsLoader {
+class WatchedDirectorySet;
+}
 
 namespace Afterglow {
 
@@ -32,7 +36,7 @@ struct ScriptPackage;
 /// Scripts load from the search path, lowest priority first; a script with
 /// the same id in a later directory replaces the earlier one. Files ending in
 /// .d.luau are type definitions and are skipped. Edits reload on the fly.
-class ScriptHost : public QObject
+class ScriptHost : public QObject, private PhosphorFsLoader::IScanStrategy
 {
     Q_OBJECT
 
@@ -86,6 +90,7 @@ public:
     void setSearchPaths(const QStringList& dirs);
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
+    /// Rescans the search path now instead of waiting for a file change.
     void reload();
 
     QStringList scriptIds() const;
@@ -119,7 +124,9 @@ private:
     void queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
                      const EffectResult& result, quint32 eventPane);
     bool withinBudget(Script& script, bool structural);
-    void watch();
+    /// Loads the scripts in @p directories, lowest priority first, and
+    /// returns the files and package folders to watch.
+    QStringList performScan(const QStringList& directories) override;
     void retire(const ScriptPtr& script);
     void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane);
 
@@ -129,13 +136,12 @@ private:
     QByteArray m_prelude;
     QStringList m_searchPaths;
     QString m_stateDirectory;
-    QStringList m_sourceWatches;
     mutable QMap<QString, QString> m_loadErrors;
     bool m_enabled = false;
     std::vector<ScriptPtr> m_scripts;
-    QFileSystemWatcher m_watcher;
-    QTimer m_reloadTimer;
     QElapsedTimer m_clock;
+    // Last, so a pending rescan cannot run into a partly destroyed host.
+    std::unique_ptr<PhosphorFsLoader::WatchedDirectorySet> m_directories; ///< while enabled
 };
 
 } // namespace Afterglow

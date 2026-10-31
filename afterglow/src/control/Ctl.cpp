@@ -40,7 +40,7 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   new-window [--cwd DIR] [-- CMD...]  open a window; prints its pane
   focus | close                       focus or close the pane
   set-title TITLE                     set the pane's title ("" to clear)
-  signal CHANNEL VALUE                set a shader signal (iSignal[CHANNEL], 0-7)
+  signal CHANNEL VALUE                set a shader signal (uSignal[CHANNEL], 0-7)
   notify TITLE [BODY]                 desktop notification from the pane
   scripts                             show script/package diagnostics as JSON
   open-directory PATH [--layout NAME]  open a repository with a saved layout

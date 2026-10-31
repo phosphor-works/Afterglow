@@ -5,6 +5,7 @@
 
 #include <AfterglowRender/afterglowrender_export.h>
 
+#include <PhosphorShaders/BaseUniforms.h>
 #include <PhosphorShaders/CustomParamsKey.h>
 #include <PhosphorShaders/ShaderParamPreamble.h>
 #include <QImage>
@@ -12,6 +13,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QString>
+#include <QStringList>
 #include <rhi/qshader.h>
 
 #include <array>
@@ -20,78 +22,53 @@
 
 namespace AfterglowRender {
 
-/// Uniform block of terminal post-processing shaders (std140, binding 0).
-/// The leading part is Ghostty's custom shader block field for field, so its
-/// shaders run unmodified; afterglow's additions follow.
-struct alignas(16) TerminalShaderUniforms
+/// The terminal tail of the uniform block (std140), after Phosphor's base
+/// region. Mirrors data/shaders/shared/terminal_uniforms.glsl field for field;
+/// that file documents each member.
+struct alignas(16) TerminalUniformsTail
 {
-    float iResolution[3];
-    float iTime;
-    float iTimeDelta;
-    float iFrameRate;
-    std::int32_t iFrame;
-    float pad0;
-    float iChannelTime[4][4]; // float[4], std140 stride 16
-    float iChannelResolution[4][4]; // vec3[4]
-    float iMouse[4];
-    float iDate[4];
-    float iSampleRate;
-    float pad1[3];
-    float iCurrentCursor[4];
-    float iPreviousCursor[4];
-    float iCurrentCursorColor[4];
-    float iPreviousCursorColor[4];
-    std::int32_t iCurrentCursorStyle;
-    std::int32_t iPreviousCursorStyle;
-    std::int32_t iCursorVisible;
-    float iTimeCursorChange;
-    float iTimeFocus;
-    std::int32_t iFocus;
-    float pad2[2];
-    float iPalette[256][4]; // vec3[256]
-    float iBackgroundColor[4]; // vec3
-    float iForegroundColor[4];
-    float iCursorColor[4];
-    float iCursorText[4];
-    float iSelectionForegroundColor[4];
-    float iSelectionBackgroundColor[4];
-    // afterglow additions
-    float iRegion[4]; ///< the shaded region in framebuffer pixels, top-left origin
-    float iFramebufferSize[2];
-    float iCellSize[2];
-    float customParams[8][4]; ///< pack parameters (phosphor slot layout)
-    float customColors[16][4];
-    float iBackgroundOpacity; ///< alpha of the default background (window translucency)
-    float _pad0[3];
-    /// Values scripts set on the pane: (value, iTime when set, 0, 0); unset
-    /// channels are (0, -1e6).
-    float iSignal[8][4];
-    float iAudioLevels[4]; ///< bass, mids, treble and overall RMS, 0..1
-    std::int32_t iAudioSpectrumSize; ///< 64 while receiving, otherwise 0
-    float audioPad[3];
-    /// Pane rows, combined current-tab rows, eased current-tab rows, reserved (0).
-    float iScrollback[4];
-    float iTextureRegion[4]; ///< normalized source rectangle, unchanged by buffer scaling
-    float iWindowRegion[4]; ///< original pane rectangle in window pixels, including in buffer passes
-    float iWindowSize[2]; ///< original window size, independent of buffer scaling
-    float windowPad[2];
+    float uCanvas[4];
+    float uTargetSize[2];
+    float uCellSize[2];
+    float uTerminalRect[4];
+    float uWindowSize[2];
+    float uWindowMouse[2];
+    float uCursorRect[4];
+    float uPreviousCursorRect[4];
+    float uCursorColor[4];
+    float uPreviousCursorColor[4];
+    std::int32_t uCursorState[4];
+    float uEventAges[4];
+    float uBackgroundColor[4];
+    float uForegroundColor[4];
+    float uThemeCursorColor[4];
+    float uThemeCursorTextColor[4];
+    float uSelectionBackgroundColor[4];
+    float uSelectionForegroundColor[4];
+    float uAudioLevels[4];
+    float uScrollback[4];
+    float uSignal[8][4];
+    float uPalette[256][4];
 };
-static_assert(offsetof(TerminalShaderUniforms, iMouse) == 160);
-static_assert(offsetof(TerminalShaderUniforms, iCurrentCursor) == 208);
-static_assert(offsetof(TerminalShaderUniforms, iCurrentCursorStyle) == 272);
-static_assert(offsetof(TerminalShaderUniforms, iPalette) == 304);
-static_assert(offsetof(TerminalShaderUniforms, iBackgroundColor) == 4400);
-static_assert(offsetof(TerminalShaderUniforms, iRegion) == 4496);
-static_assert(offsetof(TerminalShaderUniforms, customParams) == 4528);
-static_assert(offsetof(TerminalShaderUniforms, iBackgroundOpacity) == 4912);
-static_assert(offsetof(TerminalShaderUniforms, iSignal) == 4928);
-static_assert(offsetof(TerminalShaderUniforms, iAudioLevels) == 5056);
-static_assert(offsetof(TerminalShaderUniforms, iScrollback) == 5088);
-static_assert(sizeof(TerminalShaderUniforms) == 5152);
 
-/// What a shader is built from: user code defining
-/// `void mainImage(out vec4 fragColor, in vec2 fragCoord)` with includes
-/// already expanded, plus parameter accessors and values.
+/// Uniform block of terminal shaders (std140, binding 0): Phosphor's base
+/// region, then the terminal tail.
+struct alignas(16) TerminalUniforms
+{
+    PhosphorShaders::BaseUniforms base;
+    TerminalUniformsTail terminal;
+};
+
+static_assert(offsetof(TerminalUniforms, terminal) == sizeof(PhosphorShaders::BaseUniforms));
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uTerminalRect) == 704);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uCursorRect) == 736);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uCursorState) == 800);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uBackgroundColor) == 832);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uAudioLevels) == 928);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uSignal) == 960);
+static_assert(offsetof(TerminalUniforms, terminal) + offsetof(TerminalUniformsTail, uPalette) == 1088);
+static_assert(sizeof(TerminalUniforms) == 5184);
+
 inline constexpr int MaxShaderBuffers = PhosphorShaders::kMaxBufferPasses;
 inline constexpr int MaxShaderImages = PhosphorShaders::kMaxImageSlots;
 enum class ShaderWrap { Clamp, Repeat, Mirror };
@@ -102,14 +79,16 @@ struct ShaderMeshVertex {
     float uv[2];
 };
 struct ShaderGeometry {
-    QByteArray vertexCode; ///< mainMesh(out vec4 clipPosition), Vulkan clip coordinates
+    QByteArray vertexCode; ///< defines `vec4 pMesh()`, the Vulkan clip position, or its own main()
+    QString directory; ///< resolves the vertex code's quoted includes
     std::vector<ShaderMeshVertex> vertices;
     int vertexCount = 0;
     int instances = 1;
     int samples = 1; ///< 1, 2, 4 or 8 samples per pixel
 };
 struct ShaderBufferSource {
-    QByteArray code;
+    QByteArray code; ///< defines `vec4 pTerminal(vec2 uv)` or its own main()
+    QString directory; ///< resolves the code's quoted includes
     bool feedback = false;
     bool halfFloat = true;
     float scale = 1.0f;
@@ -118,20 +97,23 @@ struct ShaderBufferSource {
     bool depthBuffer = false;
     ShaderGeometry geometry;
 };
+/// What a terminal shader is built from: pack sources as written, which the
+/// compiler completes with the terminal contract (terminal_lib.glsl and the
+/// generated main()), expands and bakes. A stage that defines main() itself is
+/// taken as complete and must include what it uses.
 struct ShaderProgramSource
 {
     QString id; ///< for messages
-    QByteArray code;
-    QByteArray vertexCode; ///< void mainVertex(inout vec4 position, in vec2 uv)
+    QByteArray code; ///< the final pass: defines `vec4 pTerminal(vec2 uv)` or its own main()
+    QByteArray vertexCode; ///< optional: defines `vec4 pVertex(vec2 uv)`, the canvas quad's clip position
+    QString directory; ///< resolves quoted includes of code and vertexCode
+    QStringList includeDirs; ///< searched for <...> includes after the terminal contract
     bool useDepthBuffer = false; ///< auxiliary RGBA depth data on buffer passes
     bool depthOutput = false; ///< internal compiled MRT pass
     ShaderGeometry geometry; ///< internal compiled mesh pass
     std::vector<ShaderBufferSource> buffers;
-    QByteArray bufferCode; ///< compatibility shorthand for the first buffer
-    bool bufferFeedback = false;
-    bool halfFloatBuffer = true;
-    float bufferScale = 1.0f;
-    bool bufferNearest = false;
+    bool highDynamicRange = false; ///< metadata `highDynamicRange`: keep values above 1 between passes
+    bool windowBackground = false; ///< metadata `windowBackground`: one background for the whole window
     QByteArray parameterPreamble; ///< `#define p_<id> customParams[...]` lines
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
@@ -162,7 +144,7 @@ struct ShaderParameterValues
         paramMask |= other.paramMask;
         colorMask |= other.colorMask;
     }
-    void apply(TerminalShaderUniforms& u) const
+    void apply(PhosphorShaders::BaseUniforms& u) const
     {
         for (int i = 0; i < 32; ++i)
             if (paramMask & (std::uint32_t(1) << i)) u.customParams[i / 4][i % 4] = params[i];
@@ -182,9 +164,9 @@ public:
     /// Copies the input through unchanged; ends a chain that has no window shader.
     static std::shared_ptr<ShaderProgram> passthrough();
 
-    /// The GLSL put in front of user code: uniform block, iChannel0, and the
-    /// y-up texture wrapper of Ghostty's convention.
-    static QByteArray prefix();
+    /// Where `#include <terminal_*.glsl>` resolves: the contract built into
+    /// this library, searched before any other include directory.
+    static QString contractDirectory();
     /// Read triangulated OBJ faces (v/vt/vn, negative indices supported).
     static bool loadObj(const QByteArray& data, ShaderGeometry& geometry, QString* error);
 
@@ -211,13 +193,14 @@ public:
         copy->m_instanceId = id;
         return copy;
     }
-    /// The shader reads iTime, so the window must keep rendering frames.
+    /// The shader reads time or event ages, so the window must keep rendering frames.
     bool animated() const noexcept { return m_animated; }
     bool readsScrollback() const noexcept { return m_readsScrollback; }
+    /// Includes terminal_history.glsl.
     bool readsPreviousText() const noexcept { return m_readsPreviousText; }
-    /// Opt-in `#define AFTERGLOW_HDR 1`: retain highlights above 1 between passes.
+    /// Metadata `highDynamicRange`: retain highlights above 1 between passes.
     bool requiresHdr() const noexcept { return m_requiresHdr; }
-    /// Opt-in `#define AFTERGLOW_AUDIO 1`: capture system playback while visible.
+    /// Includes terminal_audio.glsl: capture system playback while visible.
     bool requiresAudio() const noexcept { return m_requiresAudio; }
     /// Render a background once for the window, then clip it to the visible panes.
     bool windowBackground() const noexcept { return m_windowBackground; }

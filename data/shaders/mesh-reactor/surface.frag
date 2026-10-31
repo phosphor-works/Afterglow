@@ -1,7 +1,5 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
-#define AFTERGLOW_HDR 1
-#define AFTERGLOW_AUDIO 1
 #include "scene.glsl"
 layout(location=0) in vec3 worldPosition;
 layout(location=1) in vec3 worldNormal;
@@ -16,7 +14,7 @@ vec3 environment(vec3 r,float roughness) {
     float strip=exp(-abs(r.y-0.45)*mix(110.0,14.0,roughness))*smoothstep(-0.4,0.5,r.z);
     return vec3(0.018,0.025,0.045)+blue*card*5.0+pink*rim*4.0+vec3(1.6,1.9,2.3)*strip;
 }
-void mainImage(out vec4 color,in vec2 pixel) {
+vec4 pTerminal(vec2 uv) {
     vec3 n=normalize(worldNormal),view=normalize(camera()-worldPosition);
     vec3 energy=energyColor();
     float t=iTime*p_speed;
@@ -38,9 +36,9 @@ void mainImage(out vec4 color,in vec2 pixel) {
         float shadow=smoothstep(0.25,1.7,radius);
         light=vec3(0.014,0.023,0.04)+energy*(pool*0.16*shadow+grid*0.018+ring*0.20);
         light+=environment(reflect(-view,n),0.5)*0.07;
-        float age=max(0.0,iTime-iSignal[3].y);
+        float age=signalAge(3);
         float shock=exp(-pow((radius-age*3.0)/0.10,2.0))*exp(-age);
-        if(iSignal[3].x!=0.0) light+=energy*shock*0.9;
+        if(signalValue(3)!=0.0) light+=energy*shock*0.9;
         light*=exp(-radius*0.13);
     } else if(material>=5 && material<=10) {
         light=energy*1.1+vec3(0.5)*fresnel;
@@ -70,5 +68,5 @@ void mainImage(out vec4 color,in vec2 pixel) {
     float fog=1.0-exp(-distanceToCamera*0.025);
     light=mix(light,vec3(0.018,0.025,0.06),fog);
     float alpha=material==12 ? exp(-pow(length(worldPosition.xz)/10.0,2.0)) : 1.0;
-    color=vec4(light*alpha,alpha);
+    return vec4(light*alpha,alpha);
 }

@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
-#define AFTERGLOW_HDR 1
-#define AFTERGLOW_WINDOW_BACKGROUND 1
-#define AFTERGLOW_AUDIO 1
+#include <terminal_multipass.glsl>
 #include "scene.glsl"
 vec3 chamber(vec2 uv) {
-    vec2 p=(uv-0.5)*vec2(iWindowSize.x/iWindowSize.y,1.0);
+    // Centred, aspect-corrected, y up.
+    vec2 p=(uv-0.5)*vec2(uWindowSize.x/uWindowSize.y,-1.0);
     float t=iTime*p_speed;
     vec3 cyan=vec3(0.015,0.12,0.20),violet=vec3(0.11,0.015,0.20);
     float n=noise3(vec3(p*3.0,t*0.025));
@@ -25,17 +24,15 @@ vec3 chamber(vec2 uv) {
     c+=energyColor()*shafts*exp(-length(p)*5.0)*0.055;
     return c;
 }
-void mainImage(out vec4 color,in vec2 pixel) {
-    vec2 uv=pixel/iResolution.xy;
-    vec2 windowUV=vec2(iWindowRegion.x+uv.x*iWindowRegion.z,
-        iWindowSize.y-iWindowRegion.y-iWindowRegion.w+uv.y*iWindowRegion.w)/iWindowSize;
-    vec4 scene=texture(iBuffer0,uv);
+vec4 pTerminal(vec2 uv) {
+    vec2 windowUV=(uTerminalRect.xy+uv*uTerminalRect.zw)/uWindowSize;
+    vec4 scene=texture(iChannel0,uv);
     // Resolve isolated subpixel edges when the driver has no two-sample MSAA.
-    vec2 texel=1.0/vec2(textureSize(iBuffer0,0));
-    vec4 n=texture(iBuffer0,uv+vec2(0,texel.y));
-    vec4 s=texture(iBuffer0,uv-vec2(0,texel.y));
-    vec4 e=texture(iBuffer0,uv+vec2(texel.x,0));
-    vec4 w=texture(iBuffer0,uv-vec2(texel.x,0));
+    vec2 texel=1.0/vec2(textureSize(iChannel0,0));
+    vec4 n=texture(iChannel0,uv+vec2(0,texel.y));
+    vec4 s=texture(iChannel0,uv-vec2(0,texel.y));
+    vec4 e=texture(iChannel0,uv+vec2(texel.x,0));
+    vec4 w=texture(iChannel0,uv-vec2(texel.x,0));
     float contrast=length(n.rgb-s.rgb)+length(e.rgb-w.rgb);
     scene=mix(scene,(n+s+e+w)*0.25,0.3*smoothstep(0.2,1.2,contrast));
     vec3 glow=vec3(0);
@@ -45,14 +42,14 @@ void mainImage(out vec4 color,in vec2 pixel) {
         float angle=float(tap)*2.39996323;
         vec2 offset=vec2(cos(angle),sin(angle))*r*20.0/max(iResolution.y,1.0);
         offset.x*=iResolution.y/iResolution.x;
-        glow+=max(texture(iBuffer0,uv+offset).rgb-vec3(0.85),vec3(0))*exp(-r*r*3.0)*0.07;
+        glow+=max(texture(iChannel0,uv+offset).rgb-vec3(0.85),vec3(0))*exp(-r*r*3.0)*0.07;
     }
     vec3 radiance=scene.rgb+chamber(windowUV)*(1.0-scene.a);
     if(p_linearOutput<0.5) radiance+=glow;
     float vignette=1.0-0.36*smoothstep(0.18,0.8,length(windowUV-0.5));
     radiance*=p_exposure*vignette;
-    if(p_linearOutput>0.5) { color=vec4(radiance,1); return; }
+    if(p_linearOutput>0.5) return vec4(radiance,1);
     // ACES fitted display curve; preserve bright cyan and warm metal edges.
     vec3 mapped=clamp((radiance*(2.51*radiance+0.03))/(radiance*(2.43*radiance+0.59)+0.14),0.0,1.0);
-    color=vec4(linearToSrgb(mapped),1);
+    return vec4(linearToSrgb(mapped),1);
 }

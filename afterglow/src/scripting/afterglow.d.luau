@@ -67,7 +67,8 @@ export type ActionEvent = { pane: Pane?, terminal: State } -- the targeted pane,
 export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 
-export type ShaderTransition = { duration_ms: number, curve: ("linear" | "ease-in-out" | "spring")? }
+-- curve: "linear", "ease-in-out", "spring" or a Phosphor curve spec such as "0.2,0,0,1" or "spring:20,1"
+export type ShaderTransition = { duration_ms: number, curve: string? }
 export type ShaderParameter = {
     id: string, name: string, type: string, default: (number | boolean | string),
     min: number?, max: number?, slot: number, unit: string, supported: boolean,
@@ -179,7 +180,7 @@ declare afterglow: {
     copy: (text: string) -> Effect,
     open_url: (url: string) -> Effect, -- http, https and mailto
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
-    -- sets iSignal[channel] (0-7) on the pane's shaders to (value, iTime now)
+    -- sets uSignal[channel] (0-7) on the pane's shaders: the value, and its age from now
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
     scene_state: (pane: PaneRef) -> Effect,

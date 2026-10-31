@@ -11,15 +11,13 @@
 #include <AfterglowRender/FontSet.h>
 #include <AfterglowVt/Terminal.h>
 
-#include <QFileSystemWatcher>
+#include <PhosphorFsLoader/WatchedFileSet.h>
+
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
-#include <QTimer>
 
 #include <memory>
-
-class QTemporaryDir;
 
 namespace PhosphorConfig {
 class JsonBackend;
@@ -181,21 +179,15 @@ Q_SIGNALS:
 private:
     void watch();
     Settings read() const;
-    /// With overrides: writes the file merged with them where the backend reads.
-    bool writeMerged() const;
-    void dropMerged() const;
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
 
     QString m_path;
     QJsonObject m_overrides;
-    std::unique_ptr<QTemporaryDir> m_mergeDirectory;
-    QString m_mergedPath; ///< what the backend reads when there are overrides
     std::unique_ptr<PhosphorConfig::JsonBackend> m_backend;
     std::unique_ptr<PhosphorConfig::Store> m_store;
     Settings m_settings;
-    QFileSystemWatcher m_watcher;
-    QTimer m_debounce;
+    PhosphorFsLoader::WatchedFileSet m_files; ///< the config file and its theme
 };
 
 } // namespace Afterglow

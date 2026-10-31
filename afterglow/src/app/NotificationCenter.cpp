@@ -6,6 +6,8 @@
 #include "../Pane.h"
 #include "../TerminalWindow.h"
 
+#include <PhosphorDBus/Client.h>
+
 #include <QDBusArgument>
 #include <QDBusConnection>
 #include <QDBusMetaType>
@@ -13,7 +15,10 @@
 #include <QDBusPendingReply>
 #include <QDateTime>
 #include <QIcon>
+#include <QLoggingCategory>
 #include <QTimer>
+
+Q_LOGGING_CATEGORY(lcNotifications, "afterglow.notifications", QtInfoMsg)
 
 namespace {
 
@@ -21,6 +26,11 @@ const QString Service = QStringLiteral("org.freedesktop.Notifications");
 const QString Path = QStringLiteral("/org/freedesktop/Notifications");
 const QString Interface = QStringLiteral("org.freedesktop.Notifications");
 const QString DesktopEntry = QStringLiteral("com.phosphorworks.Afterglow");
+
+PhosphorDBus::Client notificationServer()
+{
+    return PhosphorDBus::Client(QDBusConnection::sessionBus(), Service, Path, &lcNotifications());
+}
 
 /// The image-data hint: (iiibiiay).
 struct NotificationImage
@@ -238,10 +248,9 @@ void NotificationCenter::notify(const Entry& entry, uint replaces, const QString
                                 const QString& icon, const QStringList& actions, const QVariantMap& hints, int timeout,
                                 int expireMs)
 {
-    QDBusMessage msg = QDBusMessage::createMethodCall(Service, Path, Interface, QStringLiteral("Notify"));
-    msg << QStringLiteral("Afterglow") << replaces << (icon.isEmpty() ? DesktopEntry : icon)
-        << title << body << actions << hints << timeout;
-    auto* watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(msg), this);
+    const QDBusPendingCall call = notificationServer().asyncCall(Interface, QStringLiteral("Notify"),
+        {QStringLiteral("Afterglow"), replaces, icon.isEmpty() ? DesktopEntry : icon, title, body, actions, hints, timeout});
+    auto* watcher = new QDBusPendingCallWatcher(call, this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, entry, replaces, expireMs](QDBusPendingCallWatcher* w) {
         w->deleteLater();
         const QDBusPendingReply<uint> reply = *w;
@@ -268,9 +277,8 @@ void NotificationCenter::notify(const Entry& entry, uint replaces, const QString
 
 void NotificationCenter::close(uint id)
 {
-    QDBusMessage msg = QDBusMessage::createMethodCall(Service, Path, Interface, QStringLiteral("CloseNotification"));
-    msg << id;
-    QDBusConnection::sessionBus().asyncCall(msg);
+    notificationServer().fireAndForget(this, Interface, QStringLiteral("CloseNotification"), {id},
+                                       QStringLiteral("close notification"));
 }
 
 void NotificationCenter::onActivationToken(uint id, const QString& token)

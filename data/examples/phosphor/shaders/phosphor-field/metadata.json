@@ -6,6 +6,7 @@
     "author": "afterglow",
     "version": "2.2",
     "fragmentShader": "effect.frag",
+    "highDynamicRange": true,
     "parameters": [
         {
             "id": "intensity",

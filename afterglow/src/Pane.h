@@ -127,7 +127,7 @@ public:
     /// Values programs set with iTerm2's SetUserVar.
     QHash<QString, QString> userVars() const;
 
-    /// Values for this pane's shaders (iSignal), set by scripts and the
+    /// Values for this pane's shaders (uSignal), set by scripts and the
     /// control interface. GUI thread.
     using Signals = std::array<AfterglowRender::FrameBuilder::PaneParams::Signal, 8>;
     static constexpr int SignalCount = 8;

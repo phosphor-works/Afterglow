@@ -6,27 +6,27 @@ const vec3 phViolet = vec3(0.659, 0.333, 0.969);
 const vec3 phRose = vec3(0.957, 0.247, 0.369);
 
 float phSq(float x) { return x * x; }
-float phAge(int channel) { return max(0.0, iTime - iSignal[channel].y); }
-bool phLight() { return dot(iBackgroundColor, vec3(0.2126, 0.7152, 0.0722)) > 0.5; }
+float phAge(int channel) { return signalAge(channel); }
+bool phLight() { return dot(uBackgroundColor.rgb, vec3(0.2126, 0.7152, 0.0722)) > 0.5; }
 vec3 phTint(float x) { return mix(phCyan, phViolet, clamp(x, 0.0, 1.0)); }
-vec2 phCursor() { return iCurrentCursor.xy + vec2(iCurrentCursor.z, -iCurrentCursor.w) * 0.5; }
 
-// Window coordinates, y-up. The scene has one camera even with many panes.
+// Window coordinates, y-up, from canvas pixels. The scene has one camera even
+// with many panes.
 vec2 phWindow(vec2 p) {
-    return vec2(iRegion.x + p.x, iFramebufferSize.y - iRegion.y - iRegion.w + p.y);
+    return vec2(uTerminalRect.x + p.x, uWindowSize.y - uTerminalRect.y - p.y);
 }
 
 // Clamp to this pane, not the full backing texture, so a neighbouring
 // pane's letters cannot bleed into a halo at a shared edge.
 vec4 phText(vec2 p) {
-    if (any(lessThan(p, vec2(0.5))) || any(greaterThan(p, iResolution.xy - 0.5)))
+    if (any(lessThan(p, vec2(0.5))) || any(greaterThan(p, iResolution - 0.5)))
         return vec4(0.0);
-    return texture(iChannel0, p / iResolution.xy);
+    return terminalTexel(terminalUv(p));
 }
 
 float phHeat() {
     float age = phAge(2);
-    return iSignal[2].x > 0.5 ? 1.0 - exp(-age * 4.0) : exp(-age * 2.5);
+    return signalValue(2) > 0.5 ? 1.0 - exp(-age * 4.0) : exp(-age * 2.5);
 }
 
 // Light on dark glass, coloured pigment on pale glass. Preserve opacity.

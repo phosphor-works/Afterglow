@@ -5,30 +5,29 @@
 // from the old position to the new one. Its tail catches up with an ease-out
 // and the streak fades as it does. Short moves (typing) draw nothing.
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord)
+vec4 pTerminal(vec2 uv)
 {
-    fragColor = texture(iChannel0, fragCoord / iResolution.xy);
-    if (iCursorVisible == 0 || iFocus == 0) {
-        return;
+    vec4 color = terminalTexel(uv);
+    if (!cursorVisible() || !paneFocused()) {
+        return color;
     }
-    float t = clamp((iTime - iTimeCursorChange) / p_duration, 0.0, 1.0);
+    float t = clamp(cursorAge() / p_duration, 0.0, 1.0);
     if (t >= 1.0) {
-        return;
+        return color;
     }
 
-    // Cursor rectangles are (left, top, width, height) with y up.
-    vec2 halfSize = iCurrentCursor.zw * 0.5;
-    vec2 head = iCurrentCursor.xy + vec2(halfSize.x, -halfSize.y);
-    vec2 from = iPreviousCursor.xy + vec2(iPreviousCursor.z * 0.5, -iPreviousCursor.w * 0.5);
-    if (distance(head, from) < p_minDistance * iCellSize.x) {
-        return;
+    vec2 halfSize = uCursorRect.zw * 0.5;
+    vec2 head = cursorCenter();
+    vec2 from = previousCursorCenter();
+    if (distance(head, from) < p_minDistance * uCellSize.x) {
+        return color;
     }
 
     float ease = 1.0 - pow(1.0 - t, 3.0);
     vec2 tail = mix(from, head, ease);
 
     // Distance from this pixel to the cursor box swept from tail to head.
-    vec2 pa = fragCoord - tail;
+    vec2 pa = terminalPixel(uv) - tail;
     vec2 ba = head - tail;
     float along = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-4), 0.0, 1.0);
     vec2 d = abs(pa - ba * along) - halfSize;
@@ -37,5 +36,6 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord)
 
     // Brighter towards the head, gone at the tail, fading out over time.
     float alpha = coverage * mix(0.25, 1.0, along) * (1.0 - ease) * p_opacity;
-    fragColor.rgb = mix(fragColor.rgb, iCurrentCursorColor.rgb, alpha);
+    color.rgb = mix(color.rgb, uCursorColor.rgb, alpha);
+    return color;
 }

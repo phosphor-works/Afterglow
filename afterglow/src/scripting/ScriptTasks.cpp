@@ -5,11 +5,13 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
-#include <QFileSystemWatcher>
+#include <PhosphorFsLoader/WatchedFileSet.h>
+
 #include <QFutureWatcher>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QtConcurrentRun>
 #include <QSemaphore>
 #include <atomic>
@@ -108,27 +110,13 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     if (kind == QLatin1String("watch_file")) {
         const QString path = QFileInfo(e.value(QStringLiteral("path")).toString()).absoluteFilePath();
         if (!QFileInfo(path).isFile()) return reject(QStringLiteral("watch_file requires an existing regular file"));
-        auto* watcher = new QFileSystemWatcher(task);
-        auto* debounce = new QTimer(task);
-        debounce->setSingleShot(true); debounce->setInterval(250);
-        watcher->addPaths({path, QFileInfo(path).absolutePath()});
-        auto stamp = [path] {
-            struct stat info{};
-            if (::stat(QFile::encodeName(path).constData(), &info) != 0) return QByteArray();
-            return QByteArray::number(info.st_ino) + ':' + QByteArray::number(info.st_size) + ':'
-                + QByteArray::number(info.st_mtim.tv_sec) + ':' + QByteArray::number(info.st_mtim.tv_nsec);
-        };
-        auto previous = std::make_shared<QByteArray>(stamp());
-        connect(watcher, &QFileSystemWatcher::fileChanged, debounce, qOverload<>(&QTimer::start));
-        connect(watcher, &QFileSystemWatcher::directoryChanged, debounce, qOverload<>(&QTimer::start));
-        connect(debounce, &QTimer::timeout, task, [task, watcher, path, stamp, previous] {
+        auto* watcher = new PhosphorFsLoader::WatchedFileSet(task);
+        watcher->setDebounceInterval(250);
+        watcher->setPaths({path});
+        connect(watcher, &PhosphorFsLoader::WatchedFileSet::filesChanged, task, [task, path] {
             if (task->done) return;
-            const auto now = stamp();
-            if (now == *previous) return;
-            *previous = now;
-            if (!now.isEmpty() && !watcher->files().contains(path)) watcher->addPath(path);
             task->event(QStringLiteral("on_file_changed"), {{QStringLiteral("name"), task->id},
-                {QStringLiteral("path"), path}, {QStringLiteral("exists"), !now.isEmpty()}});
+                {QStringLiteral("path"), path}, {QStringLiteral("exists"), QFileInfo::exists(path)}});
         });
         return {};
     }

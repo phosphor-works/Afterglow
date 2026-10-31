@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
-#define AFTERGLOW_HDR 1
-#define AFTERGLOW_AUDIO 1
+#include <terminal_audio.glsl>
 #include "phosphor.glsl"
 
 const float PI = 3.141592654;
@@ -16,7 +15,7 @@ float trebleDrive() { return audioDrive(getTreble()); }
 // Eased rows include only this tab's panes. Exponential saturation bounds
 // even very large buffers and preserves a useful response for short sessions.
 float historyDrive() {
-    return p_historyStrength * (1.0 - exp(-max(iScrollback.z,0.0)/max(p_historyScale,1.0)));
+    return p_historyStrength * (1.0 - exp(-max(uScrollback.z,0.0)/max(p_historyScale,1.0)));
 }
 float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 mat3 rotation(vec3 a, float t) {
@@ -75,14 +74,17 @@ float ruptureAt(float failureAge, float successAge) {
     // A quick impulse, a suspended moment, then a damped return. No snapping
     // when recall starts while pieces are still moving outwards.
     float x = (1.0-exp(-failureAge*5.0))*exp(-max(failureAge-4.0,0.0)*0.65);
-    if (iSignal[1].y > iSignal[0].y) x *= exp(-successAge*successAge*2.0);
+    if (phAge(1) < phAge(0)) x *= exp(-successAge*successAge*2.0);
     return x;
 }
 
 vec4 traceObject(vec3 ro, vec3 rd, float time) {
     if (sphere(ro,rd,4.1).y <= 0.0) return vec4(0,0,0,FAR);
     float t = time*p_speed;
-    float failureAge = max(0.0,time-iSignal[0].y), successAge = max(0.0,time-iSignal[1].y);
+    // Signal ages at this sample's moment, which the shutter can put slightly
+    // in the past.
+    float lag = iTime-time;
+    float failureAge = max(0.0,phAge(0)-lag), successAge = max(0.0,phAge(1)-lag);
     float heat = p_commandHeat;
     float bass = bassDrive(), mids = midDrive(), treble = trebleDrive();
     float history = historyDrive();
@@ -208,7 +210,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
         vec3 p = ringO+ringD*distance;
         float radius = 1.47+index*0.15+heat*0.035+bass*0.065;
         float radial = abs(length(p.xz)-radius);
-        float footprint = max(0.002,distance/iFramebufferSize.y/max(abs(ringD.y),0.12));
+        float footprint = max(0.002,distance/uWindowSize.y/max(abs(ringD.y),0.12));
         float line = exp(-phSq(radial/footprint))*0.003/footprint;
         float angle = atan(p.z,p.x);
         float arc = smoothstep(-0.3,0.2,sin(angle*(2.0+index)+t*0.15+index));
@@ -241,7 +243,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
                     float alongRay = dot(nearest-ro,rd);
                     if (alongRay > 0.0 && alongRay < hitDistance) {
                         float distance = length(ro+rd*alongRay-nearest);
-                        float width = max(0.002,alongRay/iFramebufferSize.y*0.6);
+                        float width = max(0.002,alongRay/uWindowSize.y*0.6);
                         float line = exp(-phSq(distance/width))*0.002/width;
                         float wave = pow(max(0.0,sin(u*7.0-t*2.0+index)),8.0);
                         vec3 tint = mix(energy,vec3(0.4,0.18,1.0),0.35+0.25*sin(index));
@@ -307,8 +309,10 @@ vec3 atmosphere(vec3 rd, float t, float heat) {
 vec3 traceScene(vec2 pixel, float shutter) {
     float time = max(0.0,iTime-shutter), t = time*p_speed;
     float heat = p_commandHeat;
-    vec2 uv = (pixel-iFramebufferSize*vec2(0.60,0.55))/iFramebufferSize.y;
-    vec2 pointer = clamp(phWindow(iMouse.xy)/iFramebufferSize-0.5,-0.5,0.5);
+    vec2 uv = (pixel-uWindowSize*vec2(0.60,0.55))/uWindowSize.y;
+    // The pointer anywhere in the window steers the one camera all panes share.
+    vec2 pointer = uWindowMouse.x < 0.0 ? vec2(0.0)
+        : clamp(vec2(uWindowMouse.x,uWindowSize.y-uWindowMouse.y)/uWindowSize-0.5,-0.5,0.5);
     mat3 camera = rotation(vec3(0,1,0),sin(t*0.12)*0.16+pointer.x*p_parallax)
                 * rotation(vec3(1,0,0),-0.12-pointer.y*p_parallax*0.24);
     vec3 ro = camera*vec3(0,0.45,6.2), rd = camera*normalize(vec3(uv*3.2,-3.2));
@@ -327,7 +331,7 @@ vec3 traceScene(vec2 pixel, float shutter) {
         vec3 floorColor = vec3(0.001,0.002,0.004)+reflected.rgb*fresnel;
         floorColor += atmosphere(reflectedRay,t,heat+historyDrive()*0.8)*0.28;
         // Concentric machined grooves pick up the core's moving caustic light.
-        float width = max(0.003,ground/iFramebufferSize.y/max(abs(rd.y),0.08));
+        float width = max(0.003,ground/uWindowSize.y/max(abs(rd.y),0.08));
         float rings = abs(fract(radial*2.4+0.5)-0.5)/2.4;
         float etched = exp(-phSq(rings/width))*0.0025/width;
         float ripple = sin(radial*16.0-t*1.6+fbm(vec3(p.xz*1.4,t*0.07))*4.0);
@@ -345,9 +349,9 @@ vec3 traceScene(vec2 pixel, float shutter) {
     return color;
 }
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-    vec4 base = texture(iChannel0,fragCoord/iResolution.xy);
-    vec2 pixel = phWindow(fragCoord);
+vec4 pTerminal(vec2 uv) {
+    vec4 base = terminalTexel(uv);
+    vec2 pixel = phWindow(terminalPixel(uv));
     // Four rotated-grid samples. A short shutter softens fast fracture motion
     // without smearing terminal text or accumulating stale scene history.
     int samples = p_quality > 1.5 ? 4 : (p_quality > 0.5 ? 2 : 1);
@@ -359,9 +363,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         light += traceScene(pixel+(samples == 1 ? vec2(0) : offsets[sampleIndex]),shutter);
     }
     light *= p_intensity*(1.0+historyDrive()*0.18)/float(samples);
-    float empty = 1.0-smoothstep(0.01,0.08,length(base.rgb-iBackgroundColor*base.a));
+    float empty = 1.0-smoothstep(0.01,0.08,length(base.rgb-uBackgroundColor.rgb*base.a));
     // Store scene-linear radiance in RGBA16F. The lens pass performs bloom
     // before tone mapping; glyphs are composited afterward and remain crisp.
     vec3 linearBase = pow(max(base.rgb,vec3(0)),vec3(2.2));
-    fragColor = vec4(linearBase+light*base.a*empty,base.a);
+    return vec4(linearBase+light*base.a*empty,base.a);
 }

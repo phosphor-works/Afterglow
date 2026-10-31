@@ -7,10 +7,14 @@
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/Snapshot.h>
 
+#include <PhosphorShaders/ShaderBindings.h>
+
 #include <QDateTime>
 #include <QFile>
 #include <rhi/qrhi.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -41,13 +45,20 @@ void setColor(float* out, const QColor& c)
     out[3] = float(c.alphaF());
 }
 
-/// A cursor rectangle in region coordinates, y-up, as (left, top, width, height).
-void setCursor(float* out, const QRectF& c, const QRect& region)
+/// A rectangle in canvas coordinates, as (x, y, width, height).
+void setRect(float* out, const QRectF& c, const QRect& canvas)
 {
-    out[0] = float(c.x() - region.x());
-    out[1] = float((region.y() + region.height()) - c.y());
+    out[0] = float(c.x() - canvas.x());
+    out[1] = float(c.y() - canvas.y());
     out[2] = float(c.width());
     out[3] = float(c.height());
+}
+
+/// Seconds since @p when on the shader clock; events that never happened
+/// (stamped -1e6) read as 1e6.
+float age(float now, float when)
+{
+    return std::clamp(now - when, 0.0f, 1e6f);
 }
 
 QRhiScissor scissorFor(const QRect& rc, const QSize& px)
@@ -56,6 +67,10 @@ QRhiScissor scissorFor(const QRect& rc, const QSize& px)
     const QRect c = rc.intersected(QRect(QPoint(0, 0), px));
     return QRhiScissor(c.x(), px.height() - (c.y() + c.height()), c.width(), c.height());
 }
+
+/// uPreviousText in terminal_history.glsl: the first binding above Phosphor's table.
+constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
+static_assert(PhosphorShaders::Bindings::kUserTextureCount == MaxShaderImages);
 
 struct CompositeUniforms
 {
@@ -281,7 +296,7 @@ QRhiBuffer* PostChain::uniformBuffer(int index)
 {
     while (int(m_ubos.size()) <= index) {
         auto* b = m_device.rhi()->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
-                                            sizeof(TerminalShaderUniforms));
+                                            sizeof(TerminalUniforms));
         b->create();
         m_ubos.emplace_back(b);
     }
@@ -362,24 +377,27 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     auto* input = m_textures[texture].get();
     auto* history = m_previousText ? m_previousText.get() : input;
     if (region) { input = localTexture(input, region->rect, updates); history = localTexture(history, region->rect, updates); }
+    // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
+    // the consumer slot and the previous text in the first free one.
+    namespace Bindings = PhosphorShaders::Bindings;
     std::vector<QRhiShaderResourceBinding> entries{
-        QRhiShaderResourceBinding::uniformBuffer(0, stage, uniformBuffer(ubo)),
-        QRhiShaderResourceBinding::sampledTexture(1, stage, input, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(2, stage, history, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(3, stage,
+        QRhiShaderResourceBinding::uniformBuffer(Bindings::kUniformBlock, stage, uniformBuffer(ubo)),
+        QRhiShaderResourceBinding::sampledTexture(Bindings::kConsumer, stage, input, m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(Bindings::kAudioSpectrum, stage,
             m_chains.audioReactive() ? m_device.audioTexture() : input, m_device.atlasSampler()),
+        QRhiShaderResourceBinding::sampledTexture(PreviousTextBinding, stage, history, m_sampler.get()),
     };
     for (int i = 0; i < MaxShaderBuffers; ++i)
-        entries.push_back(QRhiShaderResourceBinding::sampledTexture(4 + i, stage,
+        entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kChannelBase + i, stage,
             buffers && buffers->textures[i] ? buffers->textures[i] : input,
             buffers && buffers->samplers[i] ? buffers->samplers[i] : m_sampler.get()));
     ShaderParameterValues images;
     if (program) { images.images = program->images(); images.imagePaths = program->imagePaths(); }
     if (program && region) images.merge(region->shaderParameters.value(program->instanceId()));
     for (int i = 0; i < MaxShaderImages; ++i)
-        entries.push_back(QRhiShaderResourceBinding::sampledTexture(4 + MaxShaderBuffers + i, stage,
+        entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kUserTextureBase + i, stage,
             updates ? parameterTexture(images.images[i], updates) : input, m_sampler.get()));
-    entries.push_back(QRhiShaderResourceBinding::sampledTexture(16, stage,
+    entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kDepth, stage,
         buffers && buffers->depth ? buffers->depth : (updates ? parameterTexture({}, updates) : input), m_sampler.get()));
     slot->setBindings(entries.begin(), entries.end());
     if (!slot->create()) throw std::runtime_error("shader sampler bindings failed");
@@ -578,6 +596,7 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
             }
             buffer.regions = identity; buffer.time = time.time;
             samples.textures[index] = buffer.textures[buffer.read].get(); samples.samplers[index] = buffer.sampler.get();
+            samples.sizes[index] = buffer.size;
         }
         for (std::size_t index = 0; index < program.buffers().size(); ++index) {
             auto& buffer = *passes[index];
@@ -591,18 +610,19 @@ std::vector<PostChain::BufferInputs> PostChain::runBuffers(RenderFrame& frame, c
                 (cursor.y() - region.rect.y()) * sy, cursor.width() * sx, cursor.height() * sy); };
             scaled.cursor = localCursor(region.cursor); scaled.previousCursor = localCursor(region.previousCursor);
             scaled.mouse = QPointF((region.mouse.x() - region.rect.x()) * sx, (region.mouse.y() - region.rect.y()) * sy);
-            TerminalShaderUniforms uniforms;
-            fill(uniforms, scaled, time, program);
-            // Buffer-local coordinates still drive sampling. Keep the original
-            // window rectangle separately so mesh cameras can span splits.
-            uniforms.iWindowRegion[0] = region.rect.x();
-            uniforms.iWindowRegion[1] = region.rect.y();
-            uniforms.iWindowRegion[2] = region.rect.width();
-            uniforms.iWindowRegion[3] = region.rect.height();
-            uniforms.iFramebufferSize[0] = size.width(); uniforms.iFramebufferSize[1] = size.height();
-            uniforms.iTextureRegion[0] = uniforms.iTextureRegion[1] = 0;
-            uniforms.iTextureRegion[2] = uniforms.iTextureRegion[3] = 1;
-            uniforms.iFrame = buffer.frame;
+            TerminalUniforms uniforms;
+            fill(uniforms, scaled, time, program, &samples);
+            // The canvas is the buffer. Keep the original window rectangle
+            // separately so mesh cameras can span splits.
+            uniforms.terminal.uTerminalRect[0] = region.rect.x();
+            uniforms.terminal.uTerminalRect[1] = region.rect.y();
+            uniforms.terminal.uTerminalRect[2] = region.rect.width();
+            uniforms.terminal.uTerminalRect[3] = region.rect.height();
+            uniforms.terminal.uTargetSize[0] = size.width(); uniforms.terminal.uTargetSize[1] = size.height();
+            const bool inWindow = QRectF(QPointF(), QSizeF(m_size)).contains(region.mouse);
+            uniforms.terminal.uWindowMouse[0] = inWindow ? float(region.mouse.x()) : -1.0f;
+            uniforms.terminal.uWindowMouse[1] = inWindow ? float(region.mouse.y()) : -1.0f;
+            uniforms.base.iFrame = buffer.frame;
             auto* updates = rhi->nextResourceUpdateBatch();
             updates->updateDynamicBuffer(uniformBuffer(ubo), 0, sizeof uniforms, &uniforms);
             if (index == 0) samples.depth = buffer.depths[buffer.read].get();
@@ -659,9 +679,9 @@ int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgram
         }
         QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
         const int firstUbo = ubo;
-        for (const ShaderRegionState& pane : regions) {
-            TerminalShaderUniforms u;
-            fill(u, pane, time, *program);
+        for (std::size_t i = 0; i < regions.size(); ++i) {
+            TerminalUniforms u;
+            fill(u, regions[i], time, *program, &buffers[i]);
             updates->updateDynamicBuffer(uniformBuffer(ubo++), 0, sizeof u, &u);
         }
         std::vector<QRhiShaderResourceBindings*> resources;
@@ -740,80 +760,97 @@ void PostChain::finishFrame(QRhiCommandBuffer* cb)
     }
 }
 
-void PostChain::fill(TerminalShaderUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
-                     const ShaderProgram& program) const
+void PostChain::fill(TerminalUniforms& u, const ShaderRegionState& s, const ShaderFrameTime& t,
+                     const ShaderProgram& program, const BufferInputs* buffers) const
 {
     std::memset(&u, 0, sizeof u);
+    auto& base = u.base;
+    auto& terminal = u.terminal;
     const QRect& r = s.rect;
-    u.iResolution[0] = float(r.width());
-    u.iResolution[1] = float(r.height());
-    u.iResolution[2] = 1.0f;
-    u.iTime = t.time;
-    u.iTimeDelta = t.delta;
-    u.iFrameRate = t.delta > 0 ? 1.0f / t.delta : 60.0f;
-    u.iFrame = t.frame;
-    u.iChannelResolution[0][0] = float(r.width());
-    u.iChannelResolution[0][1] = float(r.height());
-    u.iChannelResolution[0][2] = 1.0f;
-    u.iMouse[0] = float(s.mouse.x() - r.x());
-    u.iMouse[1] = float((r.y() + r.height()) - s.mouse.y());
+    for (int i = 0; i < 4; ++i) base.qt_Matrix[i * 5] = 1.0f;
+    base.qt_Opacity = 1.0f;
+    const double wraps = std::floor(double(t.time) / PhosphorShaders::kShaderTimeWrap);
+    base.iTimeHi = float(wraps * PhosphorShaders::kShaderTimeWrap);
+    base.iTime = float(double(t.time) - base.iTimeHi);
+    base.iTimeDelta = t.delta;
+    base.iFrame = t.frame;
+    base.iResolution[0] = float(r.width());
+    base.iResolution[1] = float(r.height());
+    const QPointF mouse = s.mouse - QPointF(r.topLeft());
+    if (mouse.x() >= 0 && mouse.y() >= 0 && mouse.x() < r.width() && mouse.y() < r.height()) {
+        base.iMouse[0] = float(mouse.x());
+        base.iMouse[1] = float(mouse.y());
+        base.iMouse[2] = float(mouse.x() / r.width());
+        base.iMouse[3] = float(mouse.y() / r.height());
+    } else {
+        std::fill(std::begin(base.iMouse), std::end(base.iMouse), -1.0f);
+    }
     const QDateTime now = QDateTime::currentDateTime();
-    u.iDate[0] = float(now.date().year());
-    u.iDate[1] = float(now.date().month() - 1);
-    u.iDate[2] = float(now.date().day());
-    u.iDate[3] = float(now.time().msecsSinceStartOfDay()) / 1000.0f;
-    u.iSampleRate = 44100.0f;
+    base.iDate[0] = float(now.date().year());
+    base.iDate[1] = float(now.date().month());
+    base.iDate[2] = float(now.date().day());
+    base.iDate[3] = float(now.time().msecsSinceStartOfDay()) / 1000.0f;
+    std::memcpy(base.customParams, program.params().data(), sizeof base.customParams);
+    std::memcpy(base.customColors, program.colors().data(), sizeof base.customColors);
+    if (auto it = s.shaderParameters.constFind(program.instanceId()); it != s.shaderParameters.cend()) it->apply(base);
+    if (buffers) {
+        for (int i = 0; i < PhosphorShaders::Bindings::kChannelResolutionSlots; ++i) {
+            base.iChannelResolution[i][0] = float(buffers->sizes[std::size_t(i)].width());
+            base.iChannelResolution[i][1] = float(buffers->sizes[std::size_t(i)].height());
+        }
+    }
+    ShaderParameterValues images;
+    images.images = program.images();
+    images.merge(s.shaderParameters.value(program.instanceId()));
+    for (int i = 0; i < MaxShaderImages; ++i) {
+        base.iTextureResolution[i][0] = float(images.images[std::size_t(i)].width());
+        base.iTextureResolution[i][1] = float(images.images[std::size_t(i)].height());
+    }
+    if (program.requiresAudio()) {
+        std::copy(m_device.audioLevels().begin(), m_device.audioLevels().end(), terminal.uAudioLevels);
+        base.iAudioSpectrumSize = m_device.audioSpectrumSize();
+    }
 
-    setCursor(u.iCurrentCursor, s.cursor, r);
-    setCursor(u.iPreviousCursor, s.previousCursor, r);
-    setColor(u.iCurrentCursorColor, s.cursorColor);
-    setColor(u.iPreviousCursorColor, s.previousCursorColor);
-    u.iCurrentCursorStyle = s.cursorStyle;
-    u.iPreviousCursorStyle = s.previousCursorStyle;
-    u.iCursorVisible = s.cursorVisible ? 1 : 0;
-    u.iTimeCursorChange = s.cursorChangeTime;
-    u.iTimeFocus = s.focusChangeTime;
-    u.iFocus = s.focused ? 1 : 0;
-
+    terminal.uCanvas[0] = float(r.x());
+    terminal.uCanvas[1] = float(r.y());
+    terminal.uCanvas[2] = float(r.width());
+    terminal.uCanvas[3] = float(r.height());
+    terminal.uTargetSize[0] = float(m_size.width());
+    terminal.uTargetSize[1] = float(m_size.height());
+    terminal.uCellSize[0] = float(s.cellSize.width());
+    terminal.uCellSize[1] = float(s.cellSize.height());
+    std::copy(std::begin(terminal.uCanvas), std::end(terminal.uCanvas), terminal.uTerminalRect);
+    terminal.uWindowSize[0] = float(m_size.width());
+    terminal.uWindowSize[1] = float(m_size.height());
+    const bool inWindow = QRectF(QPointF(), QSizeF(m_size)).contains(s.mouse);
+    terminal.uWindowMouse[0] = inWindow ? float(s.mouse.x()) : -1.0f;
+    terminal.uWindowMouse[1] = inWindow ? float(s.mouse.y()) : -1.0f;
+    setRect(terminal.uCursorRect, s.cursor, r);
+    setRect(terminal.uPreviousCursorRect, s.previousCursor, r);
+    setColor(terminal.uCursorColor, s.cursorColor);
+    setColor(terminal.uPreviousCursorColor, s.previousCursorColor);
+    terminal.uCursorState[0] = s.cursorStyle;
+    terminal.uCursorState[1] = s.previousCursorStyle;
+    terminal.uCursorState[2] = s.cursorVisible ? 1 : 0;
+    terminal.uCursorState[3] = s.focused ? 1 : 0;
+    terminal.uEventAges[0] = age(t.time, s.cursorChangeTime);
+    terminal.uEventAges[1] = age(t.time, s.focusChangeTime);
     if (const PaneSnapshot* snap = s.snapshot) {
         for (int i = 0; i < 256; ++i) {
-            setRgb(u.iPalette[i], snap->palette[std::size_t(i)]);
+            setRgb(terminal.uPalette[i], snap->palette[std::size_t(i)]);
         }
-        setRgb(u.iBackgroundColor, snap->defaultBg);
-        setRgb(u.iForegroundColor, snap->defaultFg);
-        setRgb(u.iCursorColor, snap->cursorColor);
-        setRgb(u.iCursorText, snap->cursorTextColor);
-        setRgb(u.iSelectionForegroundColor, snap->selectionForegroundColor);
-        setRgb(u.iSelectionBackgroundColor, snap->selectionBackgroundColor);
+        setRgb(terminal.uBackgroundColor, snap->defaultBg);
+        setRgb(terminal.uForegroundColor, snap->defaultFg);
+        setRgb(terminal.uThemeCursorColor, snap->cursorColor);
+        setRgb(terminal.uThemeCursorTextColor, snap->cursorTextColor);
+        setRgb(terminal.uSelectionForegroundColor, snap->selectionForegroundColor);
+        setRgb(terminal.uSelectionBackgroundColor, snap->selectionBackgroundColor);
     }
-
-    u.iRegion[0] = float(r.x());
-    u.iRegion[1] = float(r.y());
-    u.iRegion[2] = float(r.width());
-    u.iRegion[3] = float(r.height());
-    std::copy(std::begin(u.iRegion), std::end(u.iRegion), u.iWindowRegion);
-    u.iWindowSize[0] = float(m_size.width());
-    u.iWindowSize[1] = float(m_size.height());
-    u.iFramebufferSize[0] = float(m_size.width());
-    u.iFramebufferSize[1] = float(m_size.height());
-    u.iTextureRegion[0] = float(r.x()) / m_size.width();
-    u.iTextureRegion[1] = float(r.y()) / m_size.height();
-    u.iTextureRegion[2] = float(r.width()) / m_size.width();
-    u.iTextureRegion[3] = float(r.height()) / m_size.height();
-    u.iCellSize[0] = float(s.cellSize.width());
-    u.iCellSize[1] = float(s.cellSize.height());
-    std::memcpy(u.customParams, program.params().data(), sizeof u.customParams);
-    u.iBackgroundOpacity = s.backgroundOpacity;
-    std::copy(s.scrollback.begin(), s.scrollback.end(), u.iScrollback);
-    if (program.requiresAudio()) {
-        std::copy(m_device.audioLevels().begin(), m_device.audioLevels().end(), u.iAudioLevels);
-        u.iAudioSpectrumSize = m_device.audioSpectrumSize();
-    }
-    std::memcpy(u.customColors, program.colors().data(), sizeof u.customColors);
-    if (auto it = s.shaderParameters.constFind(program.instanceId()); it != s.shaderParameters.cend()) it->apply(u);
+    terminal.uBackgroundColor[3] = s.backgroundOpacity;
+    std::copy(s.scrollback.begin(), s.scrollback.end(), terminal.uScrollback);
     for (std::size_t i = 0; i < s.signals.size(); ++i) {
-        u.iSignal[i][0] = s.signals[i][0];
-        u.iSignal[i][1] = s.signals[i][1];
+        terminal.uSignal[i][0] = s.signals[i][0];
+        terminal.uSignal[i][1] = age(t.time, s.signals[i][1]);
     }
 }
 
@@ -835,9 +872,9 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
         QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
         updates->copyTexture(m_textures[out].get(), m_textures[current].get());
         const int firstUbo = ubo;
-        for (const ShaderRegionState& pane : panes) {
-            TerminalShaderUniforms u;
-            fill(u, pane, time, *program);
+        for (std::size_t i = 0; i < panes.size(); ++i) {
+            TerminalUniforms u;
+            fill(u, panes[i], time, *program, &buffers[i]);
             updates->updateDynamicBuffer(uniformBuffer(ubo++), 0, sizeof u, &u);
         }
         std::vector<QRhiShaderResourceBindings*> resources;
@@ -866,8 +903,8 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
         const bool last = i + 1 == steps.size();
         const int out = 1 - current;
         QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
-        TerminalShaderUniforms u;
-        fill(u, window, time, program);
+        TerminalUniforms u;
+        fill(u, window, time, program, &buffers.front());
         updates->updateDynamicBuffer(uniformBuffer(ubo), 0, sizeof u, &u);
         auto* resources = bindings(ubo, current, &window, &program, &buffers.front(), updates);
         frame.beginPass(last ? swapTarget : m_windowTargets[out].get(), Qt::black, {1.0f, 0}, updates);
