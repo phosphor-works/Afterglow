@@ -293,14 +293,17 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         return true;
     };
 
+    auto background = [&](const SnapshotCell& cell) {
+        return cell.backgroundUsesWindowOpacity ? (cell.bg & 0x00ffffffu) | (std::uint32_t(p.backgroundAlpha) << 24) : cell.bg;
+    };
     // Backgrounds, merged into horizontal runs.
     for (int y = 0; y < drawRows; ++y) {
         const float rowTop = oy + float(y * ch);
         if (s.lineSize(y) != AfterglowVt::LineSize::Single) {
             // Double-size line: the left half of the cells, twice as wide.
             for (int x = 0; x < s.cols / 2; ++x) {
-                const std::uint32_t bg = s.at(x, y).bg;
-                if (alphaOf(bg) != 0) {
+                const std::uint32_t bg = background(s.at(x, y));
+                if (alphaOf(bg) != 0 || s.at(x, y).backgroundOverride) {
                     solid(ox + float(2 * x * cw), rowTop, float(2 * cw), float(ch), bg);
                 }
             }
@@ -308,13 +311,13 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
         int x = 0;
         while (x < s.cols) {
-            const std::uint32_t bg = s.at(x, y).bg;
-            if (alphaOf(bg) == 0) {
+            const std::uint32_t bg = background(s.at(x, y));
+            if (alphaOf(bg) == 0 && !s.at(x, y).backgroundOverride) {
                 ++x;
                 continue;
             }
             int end = x + 1;
-            while (end < s.cols && s.at(end, y).bg == bg) {
+            while (end < s.cols && background(s.at(end, y)) == bg && s.at(end, y).backgroundOverride == s.at(x, y).backgroundOverride) {
                 ++end;
             }
             solid(ox + float(x * cw), rowTop, float((end - x) * cw), float(ch), bg);
@@ -1009,7 +1012,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             const auto first = std::uint32_t(m_frame.size());
             FrameBuilder::PaneParams pp = pane.params;
             pp.allowSubpixel = pp.allowSubpixel && !m_translucent && !(m_post && m_post->active())
-                && pp.backgroundAlpha == 255;
+                && pp.backgroundAlpha == 255 && !pane.snapshot->hasTransparentBackgrounds;
             PaneCache& cache = m_paneCache[pane.snapshot];
             const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
                 && cache.glyphEpoch == res.glyphs.epoch() && cache.fonts == res.fonts.get() && cache.rect == pp.rect
@@ -1319,11 +1322,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         // under it: blended over the translucent clear colour, its alpha
         // would compound (0.9 over 0.9 is 0.99).
         cb->setGraphicsPipeline(gridPipelines->fill.get());
-        cb->draw(4, 1, 0, range.first);
-        cb->setGraphicsPipeline(gridPipelines->grid.get());
-        if (range.textStart > range.first + 1) {
-            cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
-        }
+        // Cell backgrounds replace the pane fill too, including transparent
+        // colors. Blending them over that fill would lose their opacity.
+        cb->draw(4, range.textStart - range.first, 0, range.first);
     };
     auto drawSpan = [&](std::uint32_t from, std::uint32_t to) {
         // Preserve glyph order (including overlaps and combining marks),

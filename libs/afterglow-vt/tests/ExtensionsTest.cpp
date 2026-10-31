@@ -329,3 +329,64 @@ TEST(Extensions, PixelReportsAndImagePercentagesUseWideGeometry)
     ASSERT_TRUE(detail::iterm2ImageSize(file, 1, 1, 65535, 65535, 2, 32769, w, h));
     EXPECT_EQ(w, 1u); EXPECT_EQ(h, 10000u);
 }
+
+TEST(Extensions, PointerShapeStacksQueriesAndReset)
+{
+    RecordingHost host;
+    Terminal t(40, 6, host);
+    t.feed("\x1b]22;?__current__,__default__,__grabbed__,zoom-in,alias,invalid\x1b\\");
+    EXPECT_EQ(host.written, "\x1b]22;0,text,text,1,1,0\x1b\\");
+    t.feed("\x1b]22;pointer\x07\x1b]22;>wait,zoom-out\x07");
+    EXPECT_EQ(host.pointer, "zoom-out");
+    t.feed("\x1b]22;<\x07"); EXPECT_EQ(host.pointer, "wait");
+    t.feed("\x1b[?1049h"); EXPECT_EQ(host.pointer, "");
+    t.feed("\x1b]22;copy\x07\x1b[?1049l"); EXPECT_EQ(host.pointer, "wait");
+    t.feed("\x1b]22;=cell,vertical-text\x07"); EXPECT_EQ(host.pointer, "vertical-text");
+    t.feed("\x1b]22;bogus\x07"); EXPECT_EQ(host.pointer, "vertical-text");
+    t.feed("\x1b]22;<\x07"); EXPECT_EQ(host.pointer, "pointer");
+    t.feed("\x1b]22;\x07"); EXPECT_EQ(host.pointer, "");
+    for (int i = 0; i < 40; ++i) t.feed("\x1b]22;>wait\x07");
+    for (int i = 0; i < 32; ++i) t.feed("\x1b]22;<\x07");
+    EXPECT_EQ(host.pointer, "");
+    t.feed("\x1b" "c\x1b[?1049h"); EXPECT_EQ(host.pointer, "");
+    host.written.clear();
+    t.feed("\x1b]22;?__current__\x07"); EXPECT_EQ(host.written, "\x1b]22;0\x07");
+}
+
+TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
+{
+    RecordingHost host;
+    TerminalOptions options;
+    options.cursorTextColor = Rgb{10, 20, 30};
+    options.selectionBackground = Rgb{40, 50, 60};
+    Terminal t(10, 2, host, options);
+    t.feed("\x1b]21;foreground=ReD;cursor_text=AliceBlue;visual_bell=green;selection_background=blue;transparent_background_color1=#123456@.25\x07");
+    EXPECT_EQ(t.defaultForeground(), (Rgb{255, 0, 0}));
+    ASSERT_NE(t.cursorTextColor(), nullptr);
+    EXPECT_EQ(*t.cursorTextColor(), (Rgb{240, 248, 255}));
+    ASSERT_NE(t.visualBellColor(), nullptr);
+    ASSERT_TRUE(t.transparentColors()[0]);
+    EXPECT_DOUBLE_EQ(t.transparentColors()[0]->opacity, .25);
+    t.feed("\x1b]30001\x07\x1b]21;cursor_text=;selection_background=;visual_bell=;transparent_background_color1=\x07");
+    EXPECT_EQ(t.cursorTextColor(), nullptr);
+    EXPECT_EQ(t.selectionBackground(), nullptr);
+    EXPECT_EQ(t.visualBellColor(), nullptr);
+    EXPECT_FALSE(t.transparentColors()[0]);
+    t.feed("\x1b]30101\x07");
+    ASSERT_NE(t.selectionBackground(), nullptr);
+    EXPECT_EQ(*t.selectionBackground(), (Rgb{0, 0, 255}));
+    ASSERT_TRUE(t.transparentColors()[0]);
+    host.written.clear();
+    t.feed("\x1b]21;transparent_background_color1=?;visual_bell=?;bad=x;1bad=?\x07");
+    EXPECT_EQ(host.written, "\x1b]21;transparent_background_color1=rgb:12/34/56@0.25;visual_bell=rgb:00/ff/00;unknown=YmFk;unknown=MWJhZA\x07");
+    t.feed("\x1b]21;cursor_text;selection_background;foreground=rgbi:-1/2/.5;transparent_background_color8=red@-1\x07");
+    EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
+    EXPECT_EQ(*t.selectionBackground(), (Rgb{40, 50, 60}));
+    EXPECT_EQ(t.defaultForeground(), (Rgb{0, 255, 128}));
+    ASSERT_TRUE(t.transparentColors()[7]);
+    EXPECT_DOUBLE_EQ(t.transparentColors()[7]->opacity, -1);
+    t.feed("\x1b" "c");
+    EXPECT_FALSE(t.transparentColors()[0]);
+    EXPECT_FALSE(t.transparentColors()[7]);
+    EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
+}

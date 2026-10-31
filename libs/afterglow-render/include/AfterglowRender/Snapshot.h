@@ -33,7 +33,9 @@ struct SnapshotCell
     std::uint8_t bidiLevel = 0;
     char32_t cp = 0;
     std::uint32_t fg = 0;
-    std::uint32_t bg = 0; ///< alpha 0: default background, nothing to draw
+    std::uint32_t bg = 0; ///< zero: default background unless backgroundOverride is set
+    bool backgroundOverride = false;
+    bool backgroundUsesWindowOpacity = false;
     std::uint32_t underlineColor = 0;
     std::uint32_t grapheme = 0; ///< 1-based index into PaneSnapshot::graphemes, 0 for none
     std::uint32_t link = 0; ///< 1-based index into PaneSnapshot::links, 0 for none
@@ -74,6 +76,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 
     std::uint32_t defaultFg = 0;
     std::uint32_t defaultBg = 0;
+    bool hasTransparentBackgrounds = false;
+    std::uint32_t visualBellColor = 0;
     std::uint32_t selectionForegroundColor = 0;
     std::uint32_t selectionBackgroundColor = 0;
 

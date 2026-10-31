@@ -77,6 +77,8 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     }
     defaultFg = packRgba(defFg);
     defaultBg = packRgba(defBg);
+    visualBellColor = t.visualBellColor() ? packRgba(*t.visualBellColor()) : packRgba(255, 255, 255);
+    hasTransparentBackgrounds = false;
     selectionForegroundColor = t.selectionForeground() ? packRgba(*t.selectionForeground()) : defaultBg;
     selectionBackgroundColor = t.selectionBackground() ? packRgba(*t.selectionBackground()) : defaultFg;
     logicalToVisual.clear();
@@ -170,9 +172,21 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             out.cp = c.isEmpty() ? 0 : c.codepoint();
             out.fg = packRgba(fg, fgAlpha);
             out.bg = bgDefault ? 0 : packRgba(bg);
+            out.backgroundOverride = false;
+            out.backgroundUsesWindowOpacity = false;
+            for (const auto& transparent : t.transparentColors()) {
+                if (transparent && transparent->color == bg) {
+                    out.backgroundOverride = true;
+                    out.backgroundUsesWindowOpacity = transparent->opacity < 0;
+                    out.bg = packRgba(bg, std::uint8_t(std::lround(std::max(0.0, transparent->opacity) * 255.0)));
+                    hasTransparentBackgrounds = true;
+                    break;
+                }
+            }
             if (highlight != 0) {
                 // Matches read as dark text on the highlight colour.
                 out.bg = highlight;
+                out.backgroundOverride = out.backgroundUsesWindowOpacity = false;
                 out.fg = packRgba(0x10, 0x10, 0x10);
             }
             out.underlineColor = st.underlineColor.isDefault() ? out.fg : packRgba(resolve(st.underlineColor, fg));

@@ -1451,3 +1451,18 @@ TEST_F(Render, IntermediateWindowVertexPassClearsUncoveredPixelsEveryFrame)
     EXPECT_PIXEL(image,cellCenter(1,2),qRgb(0,0,0));
     EXPECT_PIXEL(image,cellCenter(10,2),qRgb(255,0,0));
 }
+
+TEST_F(Render, KittyTransparentColorsReplaceThePaneFill)
+{
+    auto img = render("\x1b[?25l\x1b]21;transparent_background_color1=red@0;transparent_background_color2=blue@.5;transparent_background_color3=green@-1\x07"
+                      "\x1b[48;2;255;0;0m \x1b[48;2;0;0;255m \x1b[48;2;0;255;0m \x1b[0m", true, 180);
+    ASSERT_FALSE(img.isNull());
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(0, 0))), 0);
+    EXPECT_NEAR(qAlpha(img.pixel(cellCenter(1, 0))), 128, 2);
+    EXPECT_NEAR(qAlpha(img.pixel(cellCenter(2, 0))), 180, 2);
+    EXPECT_NEAR(qAlpha(img.pixel(cellCenter(3, 0))), 180, 2);
+    img = render("\x1b]21;transparent_background_color1;transparent_background_color2;transparent_background_color3\x07", true, 180);
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(0, 0))), 255);
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(1, 0))), 255);
+    EXPECT_EQ(qAlpha(img.pixel(cellCenter(2, 0))), 255);
+}

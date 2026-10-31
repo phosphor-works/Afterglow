@@ -5,6 +5,7 @@
 #include <QQuickWindow>
 #include <QQuickItem>
 #include "desktop/FileDrop.h"
+#include "desktop/PointerShape.h"
 #include "desktop/Accessibility.h"
 #include <QAccessible>
 #include <QDropEvent>
@@ -1155,7 +1156,7 @@ void TerminalWindow::renderNow()
         }
         if (PaneMotion& pm = motion(p); pm.bell.isAnimating()) {
             pm.bell.advance();
-            overlays.emplace_back(shown, packRgba(255, 255, 255, std::uint8_t(std::clamp(pm.bell.value(), 0.0, 1.0) * 46)));
+            overlays.emplace_back(shown, (p->snapshot().visualBellColor & 0x00ffffffu) | (std::uint32_t(std::clamp(pm.bell.value(), 0.0, 1.0) * 46) << 24));
             animating |= pm.bell.isAnimating();
         }
         // Dividers follow the drawn edges, so they move with split animations.
@@ -1206,6 +1207,9 @@ void TerminalWindow::renderNow()
         m_chrome->renderIfNeeded(m_renderer->pixelSize());
         chrome = m_chrome->texture();
     }
+    m_renderer->setTranslucent(backgroundAlpha < 255 || std::any_of(panes.begin(), panes.end(), [](const auto& pane) {
+        return pane.snapshot->hasTransparentBackgrounds;
+    }));
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
     if (anyBlinkingText && !m_textBlinkTimer.isActive()) {
         m_textBlinkTimer.start();
@@ -2260,25 +2264,7 @@ void TerminalWindow::applyPointerShape()
     }
     Pane* pane = m_splits ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
     const QString shape = pane ? motion(pane).pointerShape : QString();
-    static const QHash<QString, Qt::CursorShape> Shapes = {
-        {QStringLiteral("default"), Qt::ArrowCursor},     {QStringLiteral("text"), Qt::IBeamCursor},
-        {QStringLiteral("pointer"), Qt::PointingHandCursor}, {QStringLiteral("wait"), Qt::WaitCursor},
-        {QStringLiteral("progress"), Qt::BusyCursor},     {QStringLiteral("crosshair"), Qt::CrossCursor},
-        {QStringLiteral("move"), Qt::SizeAllCursor},      {QStringLiteral("not-allowed"), Qt::ForbiddenCursor},
-        {QStringLiteral("grab"), Qt::OpenHandCursor},     {QStringLiteral("grabbing"), Qt::ClosedHandCursor},
-        {QStringLiteral("help"), Qt::WhatsThisCursor},    {QStringLiteral("ew-resize"), Qt::SizeHorCursor},
-        {QStringLiteral("e-resize"), Qt::SizeHorCursor},  {QStringLiteral("w-resize"), Qt::SizeHorCursor},
-        {QStringLiteral("ns-resize"), Qt::SizeVerCursor}, {QStringLiteral("n-resize"), Qt::SizeVerCursor},
-        {QStringLiteral("s-resize"), Qt::SizeVerCursor},  {QStringLiteral("col-resize"), Qt::SplitHCursor},
-        {QStringLiteral("row-resize"), Qt::SplitVCursor}, {QStringLiteral("nesw-resize"), Qt::SizeBDiagCursor},
-        {QStringLiteral("nwse-resize"), Qt::SizeFDiagCursor},
-    };
-    if (const auto it = Shapes.constFind(shape); it != Shapes.constEnd()) {
-        setCursor(*it);
-    } else {
-        // The terminal's own pointer: a text beam over the grid.
-        setCursor(Qt::IBeamCursor);
-    }
+    setCursor(protocolPointer(shape, devicePixelRatio()));
 }
 
 TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos) const

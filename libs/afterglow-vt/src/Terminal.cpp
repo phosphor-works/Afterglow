@@ -122,10 +122,10 @@ bool parseIntensity(std::string_view s, std::uint8_t& out)
     const std::string text(s);
     char* end = nullptr;
     const double v = std::strtod(text.c_str(), &end);
-    if (text.empty() || end != text.c_str() + text.size() || !(v >= 0.0 && v <= 1.0)) {
+    if (text.empty() || end != text.c_str() + text.size() || !std::isfinite(v)) {
         return false;
     }
-    out = std::uint8_t(std::lround(v * 255.0));
+    out = std::uint8_t(std::lround(std::clamp(v, 0.0, 1.0) * 255.0));
     return true;
 }
 
@@ -163,7 +163,16 @@ bool parseColorSpec(std::string_view spec, Rgb& out)
         return parseHashComponent(spec.substr(0, n), out.r) && parseHashComponent(spec.substr(n, n), out.g)
             && parseHashComponent(spec.substr(2 * n, n), out.b);
     }
-    return false;
+    static constexpr std::pair<std::string_view, Rgb> names[] = {
+#include "ColorNames.inc"
+    };
+    std::string lower(spec);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c); });
+    const auto it = std::lower_bound(std::begin(names), std::end(names), lower,
+        [](const auto& entry, std::string_view value) { return entry.first < value; });
+    if (it == std::end(names) || it->first != lower) return false;
+    out = it->second;
+    return true;
 }
 
 void appendUtf8(std::string& out, char32_t cp)
@@ -351,6 +360,7 @@ void Terminal::setOptions(const TerminalOptions& options)
         m_primary->setMaxScrollback(options.maxScrollback);
     }
     m_options = options;
+    m_protocolColors = {};
     m_palette = buildPalette(m_options.basePalette);
     m_defaultFg = m_options.defaultForeground;
     m_defaultBg = m_options.defaultBackground;
@@ -1649,6 +1659,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         m_extraCursors.clear();
         m_modes.altScreen = true;
         syncKittyFlags();
+        syncPointerShape();
         auto alternatePen = primaryCursor.pen;
         if (alternatePen.link) {
             const auto& source = m_primary->styles();
@@ -1672,6 +1683,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         m_extraCursors.clear();
         m_modes.altScreen = false;
         syncKittyFlags();
+        syncPointerShape();
         if (saveRestoreCursor) {
             restoreCursor();
         } else {
@@ -1729,11 +1741,15 @@ void Terminal::fullReset()
     m_hasSelectionFg = m_hasSelectionBg = false;
     m_reportedDark = -1;
     m_colorStack.clear();
+    m_protocolColors = {};
     m_vt52Address = 0;
     m_protection = Protection::Off;
     m_attributeChangeExtent = 0;
     m_kittyStack[0].clear();
     m_kittyStack[1].clear();
+    m_pointerStacks[0].clear();
+    m_pointerStacks[1].clear();
+    syncPointerShape();
     m_notifications.reset();
     m_clipboard.reset();
     if (!m_programStatus.records().empty()) {
@@ -3520,7 +3536,7 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         break;
     }
     case 22:
-        m_host.pointerShapeChanged(rest);
+        pointerShape(rest, bel);
         break;
     case 8: {
         // OSC 8 ; params ; URI. An empty URI ends the link.
@@ -3613,14 +3629,17 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         } else if (Rgb c; parseColorSpec(rest, c)) {
             target = c;
             has = true;
+            (num == 17 ? m_protocolColors.selectionBgDynamic : m_protocolColors.selectionFgDynamic) = false;
         }
         break;
     }
     case 117:
         m_hasSelectionBg = false;
+        m_protocolColors.selectionBgDynamic = false;
         break;
     case 119:
         m_hasSelectionFg = false;
+        m_protocolColors.selectionFgDynamic = false;
         break;
     case 555:
         m_host.flash();
@@ -3639,6 +3658,7 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         break;
     case 112:
         m_hasCursorColor = false;
+        m_protocolColors.cursorDynamic = false;
         break;
     default:
         break;
@@ -3974,7 +3994,7 @@ std::optional<std::size_t> Terminal::redrawablePromptStart() const
 
 void Terminal::pushColors(int slot)
 {
-    const SavedColors saved{m_palette, m_defaultFg, m_defaultBg, m_cursorColor, m_hasCursorColor};
+    const SavedColors saved{m_palette, m_defaultFg, m_defaultBg, m_cursorColor, m_hasCursorColor, m_selectionFg, m_selectionBg, m_hasSelectionFg, m_hasSelectionBg, m_protocolColors};
     if (slot <= 0) {
         if (m_colorStack.size() < MaxColorStack) {
             m_colorStack.push_back(saved);
@@ -4003,133 +4023,152 @@ void Terminal::popColors(int slot)
     m_defaultBg = from->background;
     m_cursorColor = from->cursor;
     m_hasCursorColor = from->hasCursor;
+    m_selectionFg = from->selectionFg; m_selectionBg = from->selectionBg;
+    m_hasSelectionFg = from->hasSelectionFg; m_hasSelectionBg = from->hasSelectionBg;
+    m_protocolColors = from->protocol;
     if (slot <= 0) {
         m_colorStack.pop_back();
     }
 }
 
+void Terminal::syncPointerShape()
+{
+    const auto& stack = m_pointerStacks[m_modes.altScreen ? 1 : 0];
+    m_host.pointerShapeChanged(stack.empty() ? std::string_view{} : stack.back());
+}
+
+void Terminal::pointerShape(std::string_view command, bool bel)
+{
+    static constexpr std::string_view names[] = {
+        "alias", "cell", "copy", "crosshair", "default", "e-resize", "ew-resize", "grab", "grabbing",
+        "help", "move", "n-resize", "ne-resize", "nesw-resize", "no-drop", "not-allowed", "ns-resize",
+        "nw-resize", "nwse-resize", "pointer", "progress", "s-resize", "se-resize", "sw-resize", "text",
+        "vertical-text", "w-resize", "wait", "zoom-in", "zoom-out", "col-resize", "row-resize"
+    };
+    char operation = '=';
+    if (!command.empty() && std::string_view("=<>?").find(command.front()) != std::string_view::npos) {
+        operation = command.front();
+        command.remove_prefix(1);
+    }
+    auto& stack = m_pointerStacks[m_modes.altScreen ? 1 : 0];
+    if (operation == '<') {
+        if (!stack.empty()) stack.pop_back();
+    } else {
+        std::string answer;
+        for (std::size_t start = 0; start <= command.size();) {
+            const auto end = command.find(',', start);
+            const auto name = command.substr(start, end == std::string_view::npos ? end : end - start);
+            const bool supported = std::find(std::begin(names), std::end(names), name) != std::end(names);
+            if (operation == '?') {
+                if (start) answer += ',';
+                if (name == "__current__") answer += stack.empty() || stack.back().empty() ? "0" : stack.back();
+                else if (name == "__default__" || name == "__grabbed__") answer += "text";
+                else answer += supported ? '1' : '0';
+            } else if (supported || (operation == '=' && name.empty())) {
+                if (operation == '=' && !stack.empty()) stack.back() = name;
+                else {
+                    if (stack.size() == 32) stack.erase(stack.begin());
+                    stack.emplace_back(name);
+                }
+            }
+            if (end == std::string_view::npos) break;
+            start = end + 1;
+        }
+        if (operation == '?') {
+            reply("\x1b]22;" + answer + (bel ? "\x07" : "\x1b\\"));
+            return;
+        }
+    }
+    syncPointerShape();
+}
+
 void Terminal::oscColorControl(std::string_view args, bool bel)
 {
-    // kitty OSC 21: key=value pairs separated by ';'. "key=?" queries,
-    // "key=spec" sets, "key=" makes the colour dynamic and a bare "key"
-    // restores the default. Keys: 0-255 and named colours.
-    std::string reply21;
-    auto append = [&reply21](std::string_view key, const Rgb* c) {
-        reply21 += ';';
-        reply21 += key;
-        reply21 += '=';
-        if (c) {
-            char buf[32];
-            const int n = std::snprintf(buf, sizeof buf, "rgb:%02x/%02x/%02x", c->r, c->g, c->b);
-            reply21.append(buf, std::size_t(n));
+    std::string response;
+    auto append = [&](std::string_view key, const Rgb* color, std::optional<double> opacity = std::nullopt) {
+        response += ';'; response += key; response += '=';
+        if (color) {
+            char buffer[80];
+            std::snprintf(buffer, sizeof buffer, "rgb:%02x/%02x/%02x", color->r, color->g, color->b);
+            response += buffer;
+            if (opacity) {
+                std::snprintf(buffer, sizeof buffer, "@%.6g", *opacity);
+                response += buffer;
+            }
         }
     };
-    const std::array<Rgb, 256> defaults = buildPalette(m_options.basePalette);
-    std::size_t pos = 0;
-    while (pos <= args.size()) {
-        const auto next = args.find(';', pos);
-        const std::string_view item = args.substr(pos, next == std::string_view::npos ? next : next - pos);
-        pos = next == std::string_view::npos ? args.size() + 1 : next + 1;
-        if (item.empty()) {
-            continue;
-        }
-        const auto eq = item.find('=');
-        const std::string_view key = item.substr(0, eq);
-        const bool bare = eq == std::string_view::npos;
-        std::string_view value = bare ? std::string_view{} : item.substr(eq + 1);
-        if (const auto at = value.find('@'); at != std::string_view::npos) {
-            value = value.substr(0, at); // per-colour alpha is not supported
-        }
+    const auto defaults = buildPalette(m_options.basePalette);
+    for (std::size_t start = 0; start <= args.size();) {
+        const auto end = args.find(';', start);
+        const auto field = args.substr(start, end == std::string_view::npos ? end : end - start);
+        start = end == std::string_view::npos ? args.size() + 1 : end + 1;
+        if (field.empty()) continue;
+        const auto equal = field.find('=');
+        const auto key = field.substr(0, equal);
+        const bool reset = equal == std::string_view::npos;
+        const auto value = reset ? std::string_view{} : field.substr(equal + 1);
         const bool query = value == "?";
-
-        int index = -1;
-        Rgb* target = nullptr;
-        Rgb fallback{};
-        bool known = true;
-        if (std::from_chars(key.data(), key.data() + key.size(), index).ec == std::errc{} && index >= 0 && index < 256) {
-            target = &m_palette[std::size_t(index)];
-            fallback = defaults[std::size_t(index)];
-        } else if (key == "foreground") {
-            target = &m_defaultFg;
-            fallback = m_options.defaultForeground;
-        } else if (key == "background") {
-            target = &m_defaultBg;
-            fallback = m_options.defaultBackground;
-        } else if (key == "cursor") {
-            if (query) {
-                append(key, m_hasCursorColor ? &m_cursorColor : nullptr); // empty: follows the text
-            } else if (bare || value.empty()) {
-                m_hasCursorColor = false;
-            } else if (Rgb c; parseColorSpec(value, c)) {
-                m_cursorColor = c;
-                m_hasCursorColor = true;
-            }
+        const auto at = value.find('@');
+        const auto colorValue = value.substr(0, at);
+        Rgb parsed;
+        const bool valid = parseColorSpec(colorValue, parsed);
+        int number = -1;
+        const auto numeric = std::from_chars(key.data(), key.data() + key.size(), number);
+        if (numeric.ec == std::errc{} && numeric.ptr == key.data() + key.size() && number >= 0 && number < 256) {
+            if (query) append(key, &m_palette[std::size_t(number)]);
+            else if (reset) m_palette[std::size_t(number)] = defaults[std::size_t(number)];
+            else if (valid) m_palette[std::size_t(number)] = parsed;
             continue;
-        } else if (key == "selection_background" || key == "selection_foreground") {
-            Rgb& sel = key == "selection_background" ? m_selectionBg : m_selectionFg;
-            bool& has = key == "selection_background" ? m_hasSelectionBg : m_hasSelectionFg;
-            if (query) {
-                append(key, key == "selection_background" ? selectionBackground() : selectionForeground());
-            } else if (bare || value.empty()) {
-                has = false;
-            } else if (Rgb c; parseColorSpec(value, c)) {
-                sel = c;
-                has = true;
-            }
-            continue;
-        } else if (key == "cursor_text") {
-            // Configured only; programs cannot change it.
-            if (query) {
-                append(key, cursorTextColor());
-            }
-            continue;
-        } else if (key == "visual_bell" || key.starts_with("transparent_background_color")) {
-            // Derived from the other colours in afterglow: always dynamic.
-            if (query) {
-                append(key, nullptr);
-            }
-            continue;
-        } else {
-            known = false;
         }
-        if (!known) {
-            if (query) {
-                // Unknown keys come back as unknown=<base64 of the key, unpadded>.
-                static constexpr char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                std::string enc;
-                const std::string_view k = key.substr(0, 64);
-                for (std::size_t j = 0; j < k.size(); j += 3) {
-                    std::uint32_t v = std::uint32_t(std::uint8_t(k[j])) << 16;
-                    if (j + 1 < k.size()) {
-                        v |= std::uint32_t(std::uint8_t(k[j + 1])) << 8;
-                    }
-                    if (j + 2 < k.size()) {
-                        v |= std::uint8_t(k[j + 2]);
-                    }
-                    enc += B64[(v >> 18) & 63];
-                    enc += B64[(v >> 12) & 63];
-                    if (j + 1 < k.size()) {
-                        enc += B64[(v >> 6) & 63];
-                    }
-                    if (j + 2 < k.size()) {
-                        enc += B64[v & 63];
-                    }
+        if (key == "foreground" || key == "background") {
+            auto& target = key == "foreground" ? m_defaultFg : m_defaultBg;
+            if (query) append(key, &target);
+            else if (reset || value.empty()) target = key == "foreground" ? m_options.defaultForeground : m_options.defaultBackground;
+            else if (valid) target = parsed;
+            continue;
+        }
+        if (key == "cursor" || key == "selection_foreground" || key == "selection_background") {
+            Rgb& target = key == "cursor" ? m_cursorColor : key == "selection_foreground" ? m_selectionFg : m_selectionBg;
+            bool& has = key == "cursor" ? m_hasCursorColor : key == "selection_foreground" ? m_hasSelectionFg : m_hasSelectionBg;
+            bool& dynamic = key == "cursor" ? m_protocolColors.cursorDynamic : key == "selection_foreground"
+                ? m_protocolColors.selectionFgDynamic : m_protocolColors.selectionBgDynamic;
+            if (query) append(key, key == "cursor" ? cursorColor() : key == "selection_foreground" ? selectionForeground() : selectionBackground());
+            else if (reset || value.empty()) { has = false; dynamic = !reset; }
+            else if (valid) { target = parsed; has = true; dynamic = false; }
+            continue;
+        }
+        if (key == "cursor_text" || key == "visual_bell") {
+            auto& target = key == "cursor_text" ? m_protocolColors.cursorText : m_protocolColors.bell;
+            if (query) append(key, key == "cursor_text" ? cursorTextColor() : visualBellColor());
+            else if (reset || value.empty() || valid) {
+                if (key == "cursor_text") m_protocolColors.cursorTextSet = !reset;
+                target = valid && !reset ? std::optional<Rgb>(parsed) : std::nullopt;
+            }
+            continue;
+        }
+        constexpr std::string_view prefix = "transparent_background_color";
+        if (key.size() == prefix.size() + 1 && key.starts_with(prefix) && key.back() >= '1' && key.back() <= '8') {
+            auto& target = m_protocolColors.transparent[std::size_t(key.back() - '1')];
+            if (query) append(key, target ? &target->color : nullptr, target ? std::optional<double>(target->opacity) : std::nullopt);
+            else if (reset || value.empty()) target.reset();
+            else if (valid) {
+                double opacity = 1.0;
+                if (at != std::string_view::npos) {
+                    const std::string text(value.substr(at + 1));
+                    char* consumed = nullptr;
+                    opacity = std::strtod(text.c_str(), &consumed);
+                    if (text.empty() || consumed != text.c_str() + text.size() || !std::isfinite(opacity)) continue;
+                    opacity = opacity < 0 ? -1.0 : std::clamp(opacity, 0.0, 1.0);
                 }
-                reply21 += ";unknown=" + enc;
+                target = TransparentColor{parsed, opacity};
             }
             continue;
         }
-        if (query) {
-            append(key, target);
-        } else if (bare || value.empty()) {
-            *target = fallback;
-        } else if (Rgb c; parseColorSpec(value, c)) {
-            *target = c;
-        }
+        auto encoded = detail::base64Encode(key);
+        while (!encoded.empty() && encoded.back() == '=') encoded.pop_back();
+        response += ";unknown=" + encoded;
     }
-    if (!reply21.empty()) {
-        reply("\x1b]21" + reply21 + (bel ? "\x07" : "\x1b\\"));
-    }
+    if (!response.empty()) reply("\x1b]21" + response + (bel ? "\x07" : "\x1b\\"));
 }
 
 void Terminal::oscColor(int which, std::string_view spec, bool bel)
@@ -4149,6 +4188,7 @@ void Terminal::oscColor(int which, std::string_view spec, bool bel)
             *dst = c;
             if (target == 12) {
                 m_hasCursorColor = true;
+                m_protocolColors.cursorDynamic = false;
             }
         }
         if (next == std::string_view::npos) {

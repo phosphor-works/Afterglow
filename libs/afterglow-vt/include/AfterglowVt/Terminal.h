@@ -279,11 +279,16 @@ public:
     /// Cursor colour set by OSC 12, if any.
     const Rgb* cursorColor() const noexcept
     {
+        if (m_protocolColors.cursorDynamic) return nullptr;
         return m_hasCursorColor ? &m_cursorColor : (m_options.cursorColor ? &*m_options.cursorColor : nullptr);
     }
+    struct TransparentColor { Rgb color; double opacity = 1.0; };
+    const auto& transparentColors() const noexcept { return m_protocolColors.transparent; }
+    const Rgb* visualBellColor() const noexcept { return m_protocolColors.bell ? &*m_protocolColors.bell : nullptr; }
     /// Text colour under a block cursor, if configured.
     const Rgb* cursorTextColor() const noexcept
     {
+        if (m_protocolColors.cursorTextSet) return m_protocolColors.cursorText ? &*m_protocolColors.cursorText : nullptr;
         return m_options.cursorTextColor ? &*m_options.cursorTextColor : nullptr;
     }
     Rgb resolve(Color color, bool foreground) const noexcept;
@@ -316,11 +321,13 @@ public:
     /// Selection colours: set by OSC 17/19, else configured; unset ones invert the cell.
     const Rgb* selectionForeground() const noexcept
     {
+        if (m_protocolColors.selectionFgDynamic) return nullptr;
         return m_hasSelectionFg ? &m_selectionFg
                                 : (m_options.selectionForeground ? &*m_options.selectionForeground : nullptr);
     }
     const Rgb* selectionBackground() const noexcept
     {
+        if (m_protocolColors.selectionBgDynamic) return nullptr;
         return m_hasSelectionBg ? &m_selectionBg
                                 : (m_options.selectionBackground ? &*m_options.selectionBackground : nullptr);
     }
@@ -505,6 +512,13 @@ private:
     int m_reportedDark = -1; ///< the theme mode last reported (mode 2031)
     bool m_hasCursorColor = false;
 
+    struct ProtocolColors {
+        bool cursorDynamic = false, selectionFgDynamic = false, selectionBgDynamic = false;
+        bool cursorTextSet = false;
+        std::optional<Rgb> cursorText, bell;
+        std::array<std::optional<TransparentColor>, 8> transparent;
+    } m_protocolColors;
+
     /// XTPUSHCOLORS / kitty's OSC 30001: saved palettes and dynamic colours.
     struct SavedColors
     {
@@ -513,6 +527,9 @@ private:
         Rgb background;
         Rgb cursor;
         bool hasCursor;
+        Rgb selectionFg, selectionBg;
+        bool hasSelectionFg, hasSelectionBg;
+        ProtocolColors protocol;
     };
     static constexpr std::size_t MaxColorStack = 10;
     std::vector<SavedColors> m_colorStack;
@@ -563,6 +580,9 @@ private:
 
     // Kitty keyboard flag stacks, one per screen as the protocol requires.
     std::vector<std::uint8_t> m_kittyStack[2];
+    std::vector<std::string> m_pointerStacks[2];
+    void pointerShape(std::string_view command, bool bel);
+    void syncPointerShape();
     void kittyKeyboard(const Params& params, char marker);
     void syncKittyFlags();
 
