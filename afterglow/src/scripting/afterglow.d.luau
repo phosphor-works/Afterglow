@@ -18,7 +18,8 @@
 --   return script
 --
 -- Handlers run sandboxed with a short time limit and no access to files or
--- processes. They return an effect, a list of effects, or nil. Actions appear
+-- processes. They return an effect, a list of effects, or nil, and can wait
+-- for an effect's result with afterglow.await. Actions appear
 -- in the command palette and bind in Keybinds.bindings as
 -- "script:<id>.<action>".
 
@@ -143,6 +144,13 @@ type PaneRef = Pane | number
 
 declare afterglow: {
     panes: (state: State, scope: ("all" | "pane" | "tab" | "window")?, anchor: PaneRef?) -> { Pane },
+    -- Applies the effect and waits in this handler: its data, or nil and the error,
+    -- then the result event. Not in migrate, on_unload or code that runs at load time.
+    await: (effect: Effect) -> (any?, OperationError?, ResultEvent),
+    -- Applies 0-16 effects in order and waits for all: their result events, in order.
+    await_all: (effects: { Effect }) -> { ResultEvent },
+    -- Waits 0-600000 ms.
+    sleep: (ms: number) -> (any?, OperationError?, ResultEvent),
     -- id: 1-64 characters. Results are queued to the originating script instance.
     request: (id: string, effect: Effect) -> Effect,
     -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.

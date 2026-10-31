@@ -22,10 +22,63 @@ Installed scripts are trusted local code.
 They can request file reads and process launches through host effects.
 The VM sandbox does not prevent those explicit operations.
 
+## Wait for results
+
+`afterglow.await(effect)` applies an effect and waits for its result in the same handler.
+It returns the result data. On failure, it returns `nil` and the error.
+The third value is the complete result event.
+
+```lua
+function script.run_action(action, ev)
+    if not ev.pane then return nil end
+    local name = afterglow.await(afterglow.prompt(ev.pane, "Branch name"))
+    if not name then return nil end -- the dialog was cancelled
+    local switched, err = afterglow.await(afterglow.exec("switch", {"git", "switch", "-c", name.text}, {cwd = ev.pane.cwd}))
+    if not switched then return afterglow.notify("Branch", err.message, ev.pane) end
+    return afterglow.set_title(ev.pane, name.text)
+end
+```
+
+Local variables keep their values across each wait.
+The handler returns its effects when it finishes, as a handler without waits does.
+Other handlers run while a handler waits.
+`ev.terminal` keeps the snapshot from the handler's start.
+The result event contains a new `terminal` snapshot.
+
+`afterglow.await_all(effects)` applies up to 16 effects in order and waits for all of them.
+It returns their result events in the same order. Each event has `ok`, `data` and `error`.
+Use it to run processes or queries together.
+
+```lua
+local results = afterglow.await_all({
+    afterglow.exec("branch", {"git", "branch", "--show-current"}, {cwd = ev.pane.cwd}),
+    afterglow.exec("status", {"git", "status", "--short"}, {cwd = ev.pane.cwd}),
+})
+if results[1].ok then branch = results[1].data.stdout end
+```
+
+`afterglow.sleep(ms)` waits from 0 to 600,000 milliseconds.
+
+Every handler can wait, except `migrate` and `on_unload`.
+Module code that runs at load time cannot wait.
+A wait inside a coroutine that the script creates is an error.
+
+Each part of a handler between waits has the time limit of the handler type.
+An event handler has 20 ms for each part. A user action has 100 ms for each part.
+A script can have 16 waiting handlers and 16 sleeps.
+Another wait returns the error code `busy`.
+An error after a wait counts as a handler failure.
+Awaited results count toward the result limits.
+Replacement, removal or disable discards waiting handlers. They do not continue.
+
+The [shell-region picker](../data/examples/scripts/semantic-regions.luau) waits for three results in one action.
+The [project navigator](../data/examples/packages/project-navigator/init.luau) runs its project searches together with `await_all`.
+
 ## Effects and results
 
 Helpers create effects. Return an effect or a list of effects from a handler to apply them.
-`afterglow.request(id, effect)` requests an `on_result` callback.
+Use `afterglow.await` when the handler needs the result.
+`afterglow.request(id, effect)` requests an `on_result` callback instead.
 Request IDs must contain 1–64 characters.
 Use different IDs for requests that require separate tracking.
 
@@ -83,6 +136,9 @@ Malformed request IDs receive no result.
 | Structural effects | 3 each 10 seconds |
 | Queued results | 64 |
 | Result delivery | 64 each second |
+| Waiting handlers | 16 |
+| Effects in one `await_all` | 16 |
+| Sleeps | 16, each up to 600,000 ms |
 
 A list with more than 64 effects applies nothing and causes an error.
 Exceeding a result limit disables the script until its source changes.
@@ -259,6 +315,7 @@ The [creation example](../data/examples/scripts/create-and-title.luau) uses laun
 `afterglow ctl scripts` reports `calls`, `handler_errors`, `effect_errors` and `last_error`.
 Timing fields are `last_call_ms`, `max_call_ms` and `total_call_ms`.
 Diagnostics also count dropped callbacks, effects and results.
+`waiting` is the number of handlers that wait for a result.
 Timing measures VM handler execution, not asynchronous process duration.
 Deferred failures count when the operation completes.
 Unchanged instances retain counters. Replacements start new counters.
@@ -269,6 +326,9 @@ Unchanged instances retain counters. Replacements start new counters.
 | Helper | Signature |
 | --- | --- |
 | `afterglow.panes` | `(state: State, scope: ("all" \| "pane" \| "tab" \| "window")?, anchor: PaneRef?) -> { Pane }` |
+| `afterglow.await` | `(effect: Effect) -> (any?, OperationError?, ResultEvent)` |
+| `afterglow.await_all` | `(effects: { Effect }) -> { ResultEvent }` |
+| `afterglow.sleep` | `(ms: number) -> (any?, OperationError?, ResultEvent)` |
 | `afterglow.request` | `(id: string, effect: Effect) -> Effect` |
 | `afterglow.semantic_regions` | `(pane: PaneRef) -> Effect` |
 | `afterglow.read_region` | `(pane: PaneRef, region: string, max_bytes: number?) -> Effect` |

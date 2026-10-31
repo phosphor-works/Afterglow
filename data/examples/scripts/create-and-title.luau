@@ -9,19 +9,13 @@ script.metadata = {
 }
 
 function script.run_action(action, ev)
-    if action == "split" and ev.pane then
-        return afterglow.request("workspace", afterglow.split(ev.pane, "right", nil,
-            {size=0.35, cwd=ev.pane.cwd, env={AFTERGLOW_WORKSPACE="1"}}))
-    end
-end
-
-function script.on_result(ev)
-    if ev.request_id ~= "workspace" then return nil end
-    if not ev.ok then return afterglow.log(ev.error.code .. ": " .. ev.error.message) end
+    if action ~= "split" or not ev.pane then return nil end
+    local created, err = afterglow.await(afterglow.split(ev.pane, "right", nil,
+        {size=0.35, cwd=ev.pane.cwd, env={AFTERGLOW_WORKSPACE="1"}}))
+    if not created then return afterglow.log(err.code .. ": " .. err.message) end
     -- Creation is complete. Use the returned identity instead of predicting an
     -- ID or trying to associate a global on_pane_created event with this action.
-    local pane = ev.data.pane
-    if pane then return afterglow.set_title(pane, "Workspace") end
+    return afterglow.set_title(created.pane, "Workspace")
 end
 
 return script

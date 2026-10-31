@@ -110,7 +110,7 @@ Static shaders redraw until the smoothed value settles. They then redraw only fo
 ## Script controls
 
 The [Luau API](SCRIPTING.md) returns effects for host execution.
-Use `afterglow.request` and `on_result` when you need a result.
+Use `afterglow.await` when you need a result.
 
 ### Signals
 
@@ -147,15 +147,12 @@ Parameter metadata contains IDs, types, defaults, ranges, units and a `supported
 Repeated pack instances have different instance IDs.
 
 ```lua
-return afterglow.request("inspect", afterglow.shaders(ev.pane))
-```
-
-Select an instance from `ev.data.shaders` in `on_result`.
-Return an update such as:
-
-```lua
-return afterglow.shader_parameters(ev.pane, instance.instance,
-    { strength = 0.8 }, "tab")
+local active = afterglow.await(afterglow.shaders(ev.pane))
+for _, instance in active and active.shaders or {} do
+    if instance.shader == "bloom" then
+        return afterglow.shader_parameters(ev.pane, instance.instance, { strength = 0.8 }, "tab")
+    end
+end
 ```
 
 `shader_parameters(pane, instance, values, scope?)` replaces the calling script's overrides for the selected targets.

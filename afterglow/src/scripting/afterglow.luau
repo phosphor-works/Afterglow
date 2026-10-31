@@ -22,7 +22,158 @@ local function list(value)
     return value
 end
 
+-- Await. Every handler runs as a coroutine. afterglow.await yields its effects
+-- here; the handler returns them to afterglow tagged with a reserved request
+-- ID, and their results resume the handler where it waited. Handlers that
+-- never wait behave exactly as plain functions.
+local AwaitPrefix = "afterglow.await:"
+local MaxWaiting = 16 -- handlers waiting at once, per script
+local MaxBatch = 16 -- effects in one await_all
+local Yield = {} -- marks the runtime's own yields
+local flows = {} -- waiting handlers by flow ID
+local waiting = 0
+local nextFlow = 0
+local current = nil -- the handler coroutine running now
+
+local function checkEffect(effect, level)
+    if type(effect) ~= "table" or type(effect.kind) ~= "string" then
+        error("afterglow.await expects an effect, such as afterglow.select(...)", level)
+    end
+end
+
+local function suspend(effects, many)
+    if current == nil or coroutine.running() ~= current then
+        error("afterglow.await works only in a handler, not at load time or inside another coroutine", 3)
+    end
+    return coroutine.yield(Yield, effects, many)
+end
+
+local function resumeIn(co, ...)
+    local previous = current
+    current = co
+    local results = table.pack(coroutine.resume(co, ...))
+    current = previous
+    return results
+end
+
+-- Runs a handler coroutine until it finishes or waits. A finished handler
+-- returns its effects; a waiting one returns the effects it waits for.
+local function drive(co, ...)
+    local r = resumeIn(co, ...)
+    while true do
+        if not r[1] then
+            error(r[2], 0)
+        end
+        if coroutine.status(co) == "dead" then
+            return r[2]
+        end
+        if r[2] ~= Yield then
+            error("a handler can pause only through afterglow.await", 0)
+        end
+        local effects, many = r[3], r[4]
+        if waiting < MaxWaiting then
+            nextFlow += 1
+            waiting += 1
+            local id = tostring(nextFlow)
+            flows[id] = { co = co, many = many, remaining = #effects, results = {} }
+            local out = {}
+            for i, effect in ipairs(effects) do
+                local tagged = table.clone(effect)
+                tagged.request_id = AwaitPrefix .. id .. ":" .. i
+                out[i] = tagged
+            end
+            return out
+        end
+        local busy = { ok = false, error = { code = "busy", message = "Too many handlers are waiting" } }
+        if many then
+            local all = {}
+            for i = 1, #effects do
+                all[i] = busy
+            end
+            r = resumeIn(co, all)
+        else
+            r = resumeIn(co, nil, busy.error, busy)
+        end
+    end
+end
+
+-- Afterglow calls this with each result whose request ID the runtime tagged.
+local function resume(ev)
+    local id, index = string.match(ev.request_id or "", "^afterglow%.await:(%d+):(%d+)$")
+    local flow = id and flows[id]
+    index = tonumber(index)
+    if not flow or flow.results[index] ~= nil then
+        return nil
+    end
+    flow.results[index] = ev
+    flow.remaining -= 1
+    if flow.remaining > 0 then
+        return nil
+    end
+    flows[id] = nil
+    waiting -= 1
+    if flow.many then
+        return drive(flow.co, flow.results)
+    end
+    return drive(flow.co, if ev.ok then ev.data else nil, ev.error, ev)
+end
+
+-- Handlers that must return at once: a migration returns state, and effects
+-- returned while unloading are ignored.
+local direct = { migrate = true, on_unload = true }
+
+-- Afterglow loads every script through this: the module's functions run as
+-- handler coroutines, and its other fields read through unchanged.
+local function wrap(module)
+    if type(module) ~= "table" then
+        return module
+    end
+    local cache = {}
+    return setmetatable({}, {
+        __index = function(_, key)
+            if key == "__resume" then
+                return resume
+            elseif key == "__waiting" then
+                return waiting
+            end
+            local value = module[key]
+            if type(value) ~= "function" or direct[key] then
+                return value
+            end
+            local entry = cache[key]
+            if entry == nil or entry.handler ~= value then
+                entry = { handler = value, call = function(...) return drive(coroutine.create(value), ...) end }
+                cache[key] = entry
+            end
+            return entry.call
+        end,
+    })
+end
+
 afterglow = {
+    __wrap = wrap,
+    -- Waits for one effect. Returns its data, or nil and the error, then the result event.
+    await = function(effect)
+        checkEffect(effect, 3)
+        return suspend({ effect }, false)
+    end,
+    -- Waits for several effects, applied in order. Returns their result events in that order.
+    await_all = function(effects)
+        if type(effects) ~= "table" or #effects > MaxBatch then
+            error("afterglow.await_all expects a list of at most " .. MaxBatch .. " effects", 2)
+        end
+        for _, effect in ipairs(effects) do
+            checkEffect(effect, 3)
+        end
+        if #effects == 0 then
+            return {}
+        end
+        return suspend(effects, true)
+    end,
+    -- Waits ms milliseconds, at most 600000.
+    sleep = function(ms)
+        return suspend({ { kind = "sleep", delay_ms = ms } }, false)
+    end,
     open_directory = function(cwd, layout) return {kind="open_directory", cwd=cwd, layout=layout or ""} end,
     state_read = function() return {kind="state_read"} end,
     state_write = function(value, revision) return {kind="state_write", value=value, revision=revision} end,

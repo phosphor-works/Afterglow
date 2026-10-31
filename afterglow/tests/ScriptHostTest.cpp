@@ -1578,3 +1578,219 @@ TEST_F(ScriptHostTest, FailedAndSupersededLooseScriptsRecoverFromInPlaceEdits)
     ASSERT_TRUE(await([&] { return host->scriptIds().contains("independent"); }));
     EXPECT_TRUE(host->scriptIds().contains("shared"));
 }
+
+TEST_F(ScriptHostTest, AwaitChainsEffectsInOneHandler)
+{
+    write(user, "chain.luau", R"(
+return {
+    metadata = {actions = {{id = "copy", title = "Copy"}}},
+    run_action = function(_, ev)
+        local pane = ev.pane.id
+        local regions = afterglow.await(afterglow.semantic_regions(pane))
+        local choice = afterglow.await(afterglow.select(pane, "Region", {{id = regions.regions[1].id, title = "first"}}))
+        local text, err, result = afterglow.await(afterglow.read_region(pane, choice.id))
+        assert(err == nil and result.ok and result.terminal.version == 1)
+        return afterglow.copy(pane .. ":" .. choice.id .. ":" .. text.text)
+    end,
+}
+)");
+    applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        if (effect["kind"] == QLatin1String("semantic_regions"))
+            return {{}, {{"regions", QVariantList{QVariantMap{{"id", "42"}}}}}, {}};
+        if (effect["kind"] == QLatin1String("select")) return {{}, {{"id", "42"}}, {}};
+        if (effect["kind"] == QLatin1String("read_region")) return {{}, {{"text", "output"}}, {}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("chain.copy", 7));
+    ASSERT_TRUE(await([&] { return rec.applied.size() == 4; }));
+    EXPECT_TRUE(rec.applied[0]["request_id"].toString().startsWith("afterglow.await:"));
+    EXPECT_EQ(rec.applied[1]["items"].toList().front().toMap()["id"], "42");
+    EXPECT_EQ(rec.applied[3]["kind"], "copy");
+    EXPECT_EQ(rec.applied[3]["text"], "7:42:output");
+    EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
+    EXPECT_EQ(host->diagnostics().first().toMap()["handler_errors"].toULongLong(), 0u);
+}
+
+TEST_F(ScriptHostTest, AwaitReturnsErrorsAndCancellationAsValues)
+{
+    write(user, "errors.luau", R"(
+return {
+    on_bell = function(ev)
+        local data, err = afterglow.await(afterglow.focus(999))
+        assert(data == nil)
+        local text, cancelled = afterglow.await(afterglow.prompt(ev.pane, "Name"))
+        if not text then return afterglow.copy(err.code .. "," .. cancelled.code) end
+        return afterglow.copy(text.text)
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(await([&] { return bool(pendingReply); }));
+    pendingReply({QStringLiteral("Dialog closed"), {}, QStringLiteral("cancelled")});
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty() && rec.applied.last()["kind"] == "copy"; }));
+    EXPECT_EQ(rec.applied.last()["text"], "no_pane,cancelled");
+}
+
+TEST_F(ScriptHostTest, AwaitAllReturnsResultsInOrder)
+{
+    write(user, "batch.luau", R"(
+return {
+    on_bell = function(ev)
+        local results = afterglow.await_all({afterglow.read_text(ev.pane, "screen"), afterglow.focus(999),
+            afterglow.read_text(ev.pane, "selection")})
+        local out = {}
+        for _, r in results do table.insert(out, if r.ok then r.data.text else r.error.code) end
+        assert(#afterglow.await_all({}) == 0)
+        return afterglow.copy(table.concat(out, ","))
+    end,
+}
+)");
+    applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        return {{}, {{"text", effect["scope"]}}, {}};
+    };
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty() && rec.applied.last()["kind"] == "copy"; }));
+    EXPECT_EQ(rec.applied.last()["text"], "screen,no_pane,selection");
+}
+
+TEST_F(ScriptHostTest, SleepResumesAfterItsDelayAndIsBounded)
+{
+    write(user, "sleep.luau", R"(
+return {
+    on_bell = function(ev)
+        afterglow.sleep(60)
+        return afterglow.copy("woke")
+    end,
+    on_focus = function() return {{kind = "sleep", delay_ms = 10}, afterglow.request("long", {kind = "sleep", delay_ms = 600001})} end,
+}
+)");
+    host->setEnabled(true);
+    QElapsedTimer clock;
+    clock.start();
+    host->dispatch("on_bell", 7);
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }));
+    EXPECT_GE(clock.elapsed(), 55);
+    EXPECT_EQ(rec.applied.last()["text"], "woke");
+    // Sleep exists only to be awaited, and only up to ten minutes.
+    rec.results.clear();
+    host->dispatch("on_focus", 7);
+    ASSERT_EQ(rec.results.size(), 2);
+    EXPECT_TRUE(rec.results[0].second.contains("awaited"));
+    EXPECT_TRUE(rec.results[1].second.contains("600000"));
+}
+
+TEST_F(ScriptHostTest, WaitingHandlersAreBoundedAndReported)
+{
+    write(user, "many.luau", R"(
+return {
+    on_bell = function()
+        local _, err = afterglow.sleep(10000)
+        if err then return afterglow.copy(err.code) end
+        return nil
+    end,
+}
+)");
+    host->setEnabled(true);
+    for (int i = 0; i < 17; ++i) host->dispatch("on_bell", 7);
+    EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 16);
+    ASSERT_FALSE(rec.applied.isEmpty());
+    EXPECT_EQ(rec.applied.last()["text"], "busy");
+}
+
+TEST_F(ScriptHostTest, AwaitMisuseFailsClearly)
+{
+    write(user, "toplevel.luau", "afterglow.await(afterglow.log('x'))\nreturn {}");
+    write(user, "misuse.luau", R"(
+return {
+    on_bell = function() return coroutine.wrap(function() return afterglow.await(afterglow.log("x")) end)() end,
+    on_focus = function() coroutine.yield(1) end,
+    on_title = function() return afterglow.await("not an effect") end,
+}
+)");
+    host->setEnabled(true);
+    EXPECT_FALSE(host->scriptIds().contains("toplevel"));
+    for (const char* handler : {"on_bell", "on_focus", "on_title"}) host->dispatch(handler, 7);
+    QStringList errors;
+    for (const auto& entry : host->diagnostics()) {
+        const auto map = entry.toMap();
+        if (map["path"].toString().endsWith("toplevel.luau")) errors << map["error"].toString();
+        if (map["id"] == "misuse") { EXPECT_EQ(map["handler_errors"].toULongLong(), 3u); }
+    }
+    ASSERT_EQ(errors.size(), 1);
+    EXPECT_TRUE(errors[0].contains("only in a handler")) << errors[0].toStdString();
+    EXPECT_TRUE(rec.applied.isEmpty());
+}
+
+TEST_F(ScriptHostTest, ResumedHandlersKeepTheirTimeLimitAndErrorAccounting)
+{
+    write(user, "resumed.luau", R"(
+return {
+    metadata = {actions = {{id = "spin", title = "Spin"}}},
+    run_action = function()
+        afterglow.sleep(0)
+        local t = os.clock()
+        while os.clock() - t < 0.05 do end -- 50 ms: within an action's 100 ms
+        afterglow.sleep(0)
+        error("after the second await")
+    end,
+}
+)");
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("resumed.spin", 7));
+    ASSERT_TRUE(await([&] { return host->diagnostics().first().toMap()["handler_errors"].toULongLong() == 1; }));
+    const auto stats = host->diagnostics().first().toMap();
+    EXPECT_TRUE(stats["last_error"].toString().startsWith("a handler after await:")) << stats["last_error"].toString().toStdString();
+    EXPECT_TRUE(stats["last_error"].toString().contains("after the second await"));
+    EXPECT_EQ(stats["waiting"].toInt(), 0);
+}
+
+TEST_F(ScriptHostTest, ReplacementDropsWaitingHandlersAndOnResultStillWorks)
+{
+    write(user, "replace.luau", R"(
+return {
+    on_bell = function() afterglow.sleep(50) return afterglow.copy("old") end,
+    on_focus = function(ev) return afterglow.request("plain", afterglow.read_text(ev.pane)) end,
+    on_result = function(ev) return afterglow.copy(ev.request_id) end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_focus", 7);
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty() && rec.applied.last()["kind"] == "copy"; }));
+    EXPECT_EQ(rec.applied.last()["text"], "plain");
+    host->dispatch("on_bell", 7);
+    write(user, "replace.luau", "return {on_bell = function() return afterglow.copy('new') end}");
+    host->reload();
+    const int before = rec.applied.size();
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < 150) { QCoreApplication::processEvents(); QThread::msleep(1); }
+    EXPECT_EQ(rec.applied.size(), before);
+}
+
+TEST_F(ScriptHostTest, PackageLoadCanAwaitItsStateWrite)
+{
+    QDir().mkpath(user.filePath("counter"));
+    write(user, "counter/package.json", R"({"id":"counter","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"main.luau"}})");
+    write(user, "counter/main.luau", R"(
+return {
+    on_load = function(ev)
+        local state = ev.storage.value
+        state.launches = (state.launches or 0) + 1
+        local saved, err = afterglow.await(afterglow.state_write(state, ev.storage.revision))
+        assert(saved, err and err.message)
+        return afterglow.copy("revision " .. saved.revision)
+    end,
+}
+)");
+    host->setEnabled(true);
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }));
+    EXPECT_EQ(rec.applied.last()["text"], "revision 1");
+    ScriptState::Snapshot stored;
+    ASSERT_TRUE(ScriptState(user.filePath("state")).read("counter", stored).isEmpty());
+    EXPECT_EQ(stored.value["launches"].toInt(), 1);
+}

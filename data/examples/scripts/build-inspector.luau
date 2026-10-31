@@ -4,7 +4,6 @@
 -- from the command palette after a compiler command. Requires shell marks.
 -- Opens selected file:line diagnostics in a new tab running vi.
 local script = {}
-local pending = {}
 script.metadata = {
     id = "build-inspector",
     name = "Build inspector",
@@ -13,30 +12,14 @@ script.metadata = {
 
 function script.run_action(action, ev)
     if action ~= "inspect" or not ev.pane then return nil end
-    local id = "output-" .. ev.pane.id
-    pending[id] = { pane = ev.pane }
-    return afterglow.request(id, afterglow.read_text(ev.pane, "last-output", 262144))
-end
-
-function script.on_result(ev)
-    local state = pending[ev.request_id]
-    pending[ev.request_id] = nil
-    if not state then return nil end
-    if not ev.ok then
-        return afterglow.log(ev.error.message)
-    end
-    if state.choices then
-        local diagnostic = state.choices[tonumber(ev.data.id)]
-        if not diagnostic then return nil end
-        -- Explicit argv: compiler output never becomes shell code.
-        return afterglow.new_tab(state.pane, state.pane.cwd,
-            {"vi", "+" .. diagnostic.line, "--", diagnostic.path})
-    end
-    if not ev.data.available then
-        return afterglow.notify("Build inspector", "No command-output marks in this pane.", state.pane)
+    local pane = ev.pane
+    local output, err = afterglow.await(afterglow.read_text(pane, "last-output", 262144))
+    if not output then return afterglow.log(err.message) end
+    if not output.available then
+        return afterglow.notify("Build inspector", "No command-output marks in this pane.", pane)
     end
     local choices, items, seen = {}, {}, {}
-    for line in string.gmatch(ev.data.text, "[^\r\n]+") do
+    for line in string.gmatch(output.text, "[^\r\n]+") do
         local path, number = string.match(line, "^%s*(.-):(%d+):")
         if path and #path > 0 and #path < 400 and not string.find(path, "%c") then
             local key = path .. ":" .. number
@@ -49,16 +32,13 @@ function script.on_result(ev)
         end
     end
     if #items == 0 then
-        return afterglow.notify("Build inspector", "No file:line diagnostics found.", state.pane)
+        return afterglow.notify("Build inspector", "No file:line diagnostics found.", pane)
     end
-    local id = "choose-" .. state.pane.id
-    pending[id] = {pane=state.pane, choices=choices}
-    return afterglow.request(id, afterglow.select(state.pane,
-        "Build diagnostics" .. (ev.data.truncated and " (output limited)" or ""), items))
-end
-function script.on_pane_closed(ev)
-    for id, state in pairs(pending) do
-        if state.pane.id == ev.pane.id then pending[id] = nil end
-    end
+    local choice = afterglow.await(afterglow.select(pane,
+        "Build diagnostics" .. (output.truncated and " (output limited)" or ""), items))
+    local diagnostic = choice and choices[tonumber(choice.id)]
+    if not diagnostic then return nil end
+    -- Explicit argv: compiler output never becomes shell code.
+    return afterglow.new_tab(pane, pane.cwd, {"vi", "+" .. diagnostic.line, "--", diagnostic.path})
 end
 return script

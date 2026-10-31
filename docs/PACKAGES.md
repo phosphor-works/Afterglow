@@ -67,12 +67,14 @@ local script = {}
 function script.on_load(ev)
     local state = ev.storage.value
     state.launches = (state.launches or 0) + 1
-    return afterglow.request("saved", afterglow.state_write(state, ev.storage.revision))
+    local _, err = afterglow.await(afterglow.state_write(state, ev.storage.revision))
+    if err then return afterglow.log("State was not saved: " .. err.message) end
+    return nil
 end
 return script
 ```
 
-`state_read()` and `state_write(value, revision)` return results through `afterglow.request`.
+Wait for the results of `state_read()` and `state_write(value, revision)` with `afterglow.await`.
 The result contains `value`, `version` and `revision`.
 Storage uses the script ID below `state/scripts/`, beside the active configuration.
 Writes use a lock, revision comparison and atomic file replacement.
@@ -104,7 +106,7 @@ A transition to an older state schema is not permitted.
 
 Return effects from `on_load`.
 Afterglow applies these effects after successful activation.
-Operation errors return through `on_result`.
+`on_load` can wait for results. See [waiting for results](SCRIPTING.md#wait-for-results).
 
 ## Reload and removal
 

@@ -116,7 +116,7 @@ Examine commands in imported layouts before you open them.
 | `list_projects()` | `names` |
 | `open_project(name, newInstance?)` | `name`, `window_id`, `reused` |
 
-Wrap the effect with `afterglow.request` to receive its result.
+Wait for the result with `afterglow.await`.
 A new project instance also returns `pane_ids`, `tab_ids` and `warnings`.
 The ID maps connect saved labels to runtime IDs.
 Project creation uses the structural action budget.

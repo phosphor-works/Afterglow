@@ -122,7 +122,7 @@ private:
     void applyEffect(const ScriptPtr& script, const QVariantMap& effect, quint32 eventPane);
     QVariantMap state() const;
     void queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
-                     const EffectResult& result, quint32 eventPane);
+                     const EffectResult& result, quint32 eventPane, int timeoutMs);
     bool withinBudget(Script& script, bool structural);
     /// Loads the scripts in @p directories, lowest priority first, and
     /// returns the files and package folders to watch.

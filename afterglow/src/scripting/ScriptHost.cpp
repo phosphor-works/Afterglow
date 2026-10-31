@@ -62,6 +62,8 @@ struct ScriptHost::Script
     std::deque<qint64> structural;
     std::deque<qint64> results;
     int pendingResults = 0;
+    int sleeping = 0;
+    int callTimeoutMs = ActionTimeoutMs; ///< of the running handler; its awaited results resume with it
     LuauEngine::CallOutcome invoke(const QString& function, const QVariantList& args, int timeoutMs)
     {
         QElapsedTimer elapsed;
@@ -76,6 +78,11 @@ struct ScriptHost::Script
 };
 
 namespace {
+
+/// Request IDs the prelude's await runtime gives the effects a handler waits for.
+const QString AwaitPrefix = QStringLiteral("afterglow.await:");
+constexpr int MaxSleeping = 16;
+constexpr int MaxSleepMs = 600000;
 
 bool validId(const QString& id)
 {
@@ -123,6 +130,7 @@ const EffectKind Kinds[] = {
     {"move_pane", true, true, {"placement"}, false, {"target"}},
     {"detach_tab", true, true, {}, false},
     {"timer", false, false, {"name"}, false, {"delay_ms", "repeat_ms"}},
+    {"sleep", false, false, {}, false, {"delay_ms"}},
     {"cancel", false, false, {"name"}, false},
     {"exec", false, false, {"name", "cwd"}, true, {"timeout_ms", "max_bytes"}},
     {"read_file", false, false, {"name", "path"}, false, {"timeout_ms", "max_bytes"}},
@@ -339,7 +347,7 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     m_scripts = std::move(loaded);
     for (const auto& script : m_scripts) {
         if (std::find(previous.begin(), previous.end(), script) == previous.end()) {
-            if (script->package) applyResult(script, script->initialEffects, 0);
+            if (script->package) { script->callTimeoutMs = ActionTimeoutMs; applyResult(script, script->initialEffects, 0); }
             else emitOwned(script, QStringLiteral("on_load"), {}, 0);
         }
     }
@@ -371,7 +379,9 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         return nullptr;
     }
     script->engine->sandbox();
-    script->module = script->engine->loadModule(chunk, source, &error);
+    // The prelude wraps the module so its handlers can await. The prefix shares
+    // the first line, so error positions keep their line numbers.
+    script->module = script->engine->loadModule(chunk, "return afterglow.__wrap((function(...) " + source + "\nend)(...))", &error);
     if (script->module < 0) {
         m_loadErrors[path] = error;
         qCWarning(lcScripts).noquote() << path << "did not load:" << error;
@@ -474,7 +484,8 @@ QVariantList ScriptHost::diagnostics() const
             {QStringLiteral("total_call_ms"), script->totalCallNs / 1e6},
             {QStringLiteral("dropped_callbacks"), script->droppedCallbacks},
             {QStringLiteral("dropped_effects"), script->droppedEffects},
-            {QStringLiteral("dropped_results"), script->droppedResults}};
+            {QStringLiteral("dropped_results"), script->droppedResults},
+            {QStringLiteral("waiting"), script->engine->moduleField(script->module, QStringLiteral("__waiting")).toInt()}};
     }
     for (auto it = m_loadErrors.begin(); it != m_loadErrors.end(); ++it) if (!active.contains(it.key()))
         result << QVariantMap{{QStringLiteral("path"), it.key()}, {QStringLiteral("status"), QStringLiteral("failed")}, {QStringLiteral("error"), it.value()}};
@@ -593,14 +604,16 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 void ScriptHost::call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
                       quint32 eventPane)
 {
+    script->callTimeoutMs = timeoutMs;
     const auto out = script->invoke(function, args, timeoutMs);
     if (out.status != LuauEngine::CallStatus::Ok) {
         const QString why = out.status == LuauEngine::CallStatus::TimedOut
             ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
             : out.message;
         ++script->handlerErrors;
-        script->lastError = function + QStringLiteral(": ") + why;
-        qCWarning(lcScripts).noquote() << script->id << function << "failed:" << why;
+        const QString name = function == QLatin1String("__resume") ? QStringLiteral("a handler after await") : function;
+        script->lastError = name + QStringLiteral(": ") + why;
+        qCWarning(lcScripts).noquote() << script->id << name << "failed:" << why;
         if (++script->failures >= MaxFailures) {
             script->disabled = true;
             retire(script);
@@ -850,6 +863,11 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                    && effect.value(QStringLiteral("direction")) != QLatin1String("left")
                    && effect.value(QStringLiteral("direction")) != QLatin1String("up")) {
             error = QStringLiteral("split direction must be right, down, left or up");
+        } else if (kind == QLatin1String("sleep") && !validRequest) {
+            error = QStringLiteral("sleep must be awaited: use afterglow.sleep");
+        } else if (kind == QLatin1String("sleep") && !(effect.value(QStringLiteral("delay_ms")).toDouble() >= 0
+                                                      && effect.value(QStringLiteral("delay_ms")).toDouble() <= MaxSleepMs)) {
+            error = QStringLiteral("sleep needs 0 to %1 ms").arg(MaxSleepMs);
         } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(QLatin1String("script:"))) {
             error = QStringLiteral("scripts cannot run script actions");
         } else if (kind == QLatin1String("signal")
@@ -871,6 +889,21 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             if (error.isEmpty() && saved.version > script->stateVersion) error = QStringLiteral("Stored state is newer than this script");
             if (error.isEmpty()) result.data = {{QStringLiteral("value"), saved.value}, {QStringLiteral("version"), saved.version ? saved.version : script->stateVersion},
                                                {QStringLiteral("revision"), saved.revision}};
+        } else if (kind == QLatin1String("sleep")) {
+            if (script->sleeping >= MaxSleeping) {
+                result.code = QStringLiteral("busy");
+                error = QStringLiteral("Too many sleeps");
+            } else {
+                ++script->sleeping;
+                result.deferred = true;
+                QTimer::singleShot(qRound(effect.value(QStringLiteral("delay_ms")).toDouble()), this,
+                    [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs] {
+                        if (auto script = weak.lock()) {
+                            --script->sleeping;
+                            queueResult(script, request, kind, {}, eventPane, timeout);
+                        }
+                    });
+            }
         } else if (kind == QLatin1String("log")) {
             qCInfo(lcScripts).noquote() << script->id + QLatin1Char(':') << effect.value(QStringLiteral("message")).toString();
         } else if (kind == QLatin1String("set_actions")) {
@@ -883,20 +916,20 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("timer") || kind == QLatin1String("cancel") || kind == QLatin1String("exec")
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
             result = m_tasks->apply(script->owner, effect,
-                [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane](EffectResult finished) {
+                [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs](EffectResult finished) {
                     if (auto script = weak.lock()) {
                         if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
-                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane);
+                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane, timeout);
                     }
                 }, [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event) {
                     if (auto script = weak.lock()) emitOwned(script, handler, std::move(event), eventPane);
                 });
         } else if (m_callbacks.applyOwned || m_callbacks.apply) {
             result = m_callbacks.applyOwned ? m_callbacks.applyOwned(script->owner, effect,
-                [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane](EffectResult finished) {
+                [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs](EffectResult finished) {
                     if (auto script = weak.lock()) {
                         if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
-                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane);
+                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane, timeout);
                     }
                 }) : m_callbacks.apply(effect);
             if (!result.error.isEmpty() && result.code.isEmpty()) {
@@ -914,14 +947,16 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     }
     Q_EMIT effectApplied(script->id, effect, error);
     if (validRequest && !result.deferred) {
-        queueResult(script, request, kind, result, eventPane);
+        queueResult(script, request, kind, result, eventPane, script->callTimeoutMs);
     }
 }
 
 void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
-                             const EffectResult& result, quint32 eventPane)
+                             const EffectResult& result, quint32 eventPane, int timeoutMs)
 {
-    if (script->disabled || !script->engine->hasFunction(script->module, QStringLiteral("on_result"))) {
+    // An awaited result resumes its handler, under that handler's time limit.
+    const QString handler = request.startsWith(AwaitPrefix) ? QStringLiteral("__resume") : QStringLiteral("on_result");
+    if (script->disabled || !script->engine->hasFunction(script->module, handler)) {
         return;
     }
     const qint64 now = m_clock.elapsed();
@@ -949,7 +984,7 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
     }
     // Queued after application. Never re-enter a VM, and never deliver an old
     // instance's completions to its replacement following a reload.
-    QTimer::singleShot(0, this, [this, weak = std::weak_ptr<Script>(script), event = std::move(event), eventPane]() mutable {
+    QTimer::singleShot(0, this, [this, weak = std::weak_ptr<Script>(script), event = std::move(event), eventPane, handler, timeoutMs]() mutable {
         const auto script = weak.lock();
         if (!script) {
             return;
@@ -966,7 +1001,7 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
             }
             event.insert(QStringLiteral("pane"), pane);
         }
-        call(script, QStringLiteral("on_result"), {event}, EventTimeoutMs, eventPane);
+        call(script, handler, {event}, handler == QLatin1String("on_result") ? EventTimeoutMs : timeoutMs, eventPane);
     });
 }
 
