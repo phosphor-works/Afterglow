@@ -5,45 +5,102 @@
 
 ## Unreleased
 
-Target platform: Linux on Wayland with Vulkan.
-Native desktop tests use KDE/KWin. Other compositors and screen readers are not individually certified.
-Build and installation procedures do not change. This release does not add macOS or Windows support.
+This is the first release of Afterglow, a terminal for Linux on Wayland with Vulkan rendering.
+Native desktop tests use KDE Plasma and KWin. Other compositors and screen readers are not individually certified.
 
-- Write terminal shaders against a Phosphor shader-family contract. Packs define `vec4 pTerminal(vec2 uv)` in top-down coordinates and read Phosphor's base uniforms plus terminal inputs such as `uCursorRect`, `uSignal` and `uPalette`. Audio, text history and buffers are opt-in includes, and high dynamic range and window backgrounds are metadata keys. See the [shader API](docs/SHADER-API.md).
-- Bundle 31 popular colour themes: Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
-- Accept Phosphor curve specs, such as `0.2,0,0,1` and `spring:20,1`, for shader parameter transitions.
-- Keep command-line `-o` overrides in memory instead of a temporary merged configuration file.
-- Keep windows responsive when shader regions move outside the surface during resize or tab detachment. Close GPU frames on rendering errors and release chrome resources in the correct order.
-- Keep the Mesh Reactor camera and chamber continuous across split panes. Render its mesh once per window and retain scene buffers during split animation.
-- Expand Mesh Reactor with segmented armor, plasma, chamber lighting and fracture/recall motion. Add `--mesh` to the Phosphor demo launcher for the same Luau controls.
-- Render imported OBJ meshes and shader-generated triangles with instancing and hardware depth testing. Add the Mesh Reactor shader pack.
-- Detach a tab by dragging it outside the bar, or through its context menu. Existing panes keep their running processes.
-- Reuse history rows during resize when their text still fits on one line. Preserve their cells, styles and graphemes without rebuilding them.
-- Limit the command palette to eight visible results. Keep text clear of the scrollbar and show a result count and keyboard hints.
-- Expose each current-tab terminal pane through Qt/AT-SPI, including viewport text, cursor, selection, geometry and change events.
-- Provide read-only IME surrounding text for the live cursor row and remove the Latin-only preference hint.
-- Support Kitty file transfers with approval, directories, links, compression and delta updates.
-- Support Kitty drag-and-drop offers and receivers, including remote directory data and thumbnails.
-- Complete Kitty color-control rendering and separate main/alternate-screen pointer-shape stacks.
-- Accept local file drops with shell quoting and bracketed paste into the target pane.
-- Offer bounded OSC 1337 downloads through a native Save dialog, with atomic file writes.
-- Support Kitty relative image placements, parent chains and Unicode placeholder anchors.
-- Support queried multiple-cursor shapes and positions, with correct mixed block/beam layering and cursor shader processing.
-- Add a user guide, complete schema-generated configuration reference, Luau API index, compatibility examples and a headless `--config-reference` command.
+### Terminal emulation
 
-- Add opt-in primary-screen bidi layout with logical copy and mapped pointer, cursor, accessibility and IME geometry.
-- Complete Luau launch options, bounded semantic-region/selection reads and lifecycle diagnostics.
-- Support up to eight shader buffers, four image parameters, auxiliary depth output, custom vertex hooks and sampler modes. Include executable depth-trails and semantic-region examples.
-- Harden PTY startup/backpressure, parser resets and bounds, graphics decoding, script file reads, reload ownership and shader allocation recovery.
-- Exercise native split creation, chrome keyboard routing, paste confirmation, IME commits and compositor-delivered drag/drop in an isolated KWin desktop.
+- VT100 to VT500 control sequences, with conformance levels and the `afterglow` terminfo entry.
+- Scrollback with reflow on resize. Rows that still fit keep their cells, styles and graphemes.
+- Unicode graphemes, wide characters, color emoji, font shaping and optional primary-screen bidirectional layout.
+- Text attributes, including curly, dotted and dashed underlines, underline colors, overlines and OSC 8 hyperlinks.
+- Rectangular editing (DECFRA, DECCRA), character repeat (REP) and cursor shapes (DECSCUSR).
+- Status queries: DECRQM, DECRQSS, XTGETTCAP and XTWINOPS size reports.
+- Synchronized output (mode 2026), grapheme clustering (mode 2027) and in-band resize reports (mode 2048).
+- Color-scheme change reports (mode 2031) and visibility reports (mode 2033).
 
+### Keyboard and mouse
 
-Width changes still reflow wrapped lines and lines that exceed the new width.
-See [performance measurements](docs/PERFORMANCE.md) for timings, workloads and limits.
+- The Kitty keyboard protocol, with a flag stack for each screen, and xterm `modifyOtherKeys`.
+- Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
+- Focus reports, bracketed paste and alternate-scroll mode.
+- The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 
-See [compatibility](docs/COMPATIBILITY.md) for protocol limits and memory costs.
-See [desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.
-See [bidirectional text](docs/BIDI.md) for the application-grid policy.
+### Graphics and text sizing
 
-[Testing](docs/TESTING.md) describes regression and native desktop test procedures.
-[Migration](docs/MIGRATION.md) describes behavior changes.
+- Kitty graphics: transmission, placement, animation, Unicode placeholders and relative placements with parent chains.
+- Sixel images.
+- iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog.
+- Kitty text sizing (OSC 66).
+- The Kitty multiple-cursors protocol, with mixed block and beam layering.
+
+### Colors and themes
+
+- Palette and dynamic colors (OSC 4, 10, 11, 12, 104 and 110 to 112).
+- The Kitty color-control protocol (OSC 21), including transparent background colors and the color stack.
+- Themes in Afterglow JSON, Ghostty and kitty formats, which reload when the file changes.
+- 33 bundled themes: Afterglow, Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
+- `light:NAME,dark:NAME` theme pairs that follow the desktop color scheme.
+
+### Shell integration
+
+- Automatic integration for Bash 4.4 or later, Zsh and Fish 4 or later.
+- Prompt, command and exit-status markers (OSC 133 and OSC 633), and the working directory (OSC 7).
+- Command navigation, last-command output in a pager, and command status in tab and pane labels.
+- Terminal contexts (OSC 3008) for remote and elevated sessions, and program status reports (OSC 7501).
+
+### Clipboard, notifications and files
+
+- Clipboard access through OSC 52 and the Kitty clipboard protocol (OSC 5522), with confirmation prompts.
+- Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99).
+- Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
+- Kitty drag and drop, including remote directory data and thumbnails.
+- Local file drops, quoted for the shell and sent as bracketed paste.
+
+### Windows, tabs and panes
+
+- Tabs and split panes, with pane zoom, resize, swap and directional focus.
+- Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
+- Saved projects that store a window's tabs, splits, directories and launch arguments.
+- A quick terminal on a Wayland layer surface, toggled by a global shortcut.
+- Optional background blur on KWin, window transparency and an overlay history scrollbar that fades when idle.
+
+### Search, selection and input
+
+- Search with PCRE2 regular expressions, across soft-wrapped lines.
+- Keyboard selection in character, line and rectangle modes.
+- Text hints that copy, open or run commands on regular-expression matches, and URL hints.
+- Keybindings with multi-key sequences, a leader key and named key tables.
+- A command palette for actions, projects and script actions.
+
+### Shader effects
+
+- Phosphor shader packs in five chains: background, text and cursor layers, panes and the window.
+- A Phosphor shader-family contract: Phosphor's base uniforms plus terminal inputs such as `uCursorRect`, `uSignal` and `uPalette`.
+- Up to eight buffer passes, four image parameters, auxiliary depth, vertex stages and instanced OBJ or generated meshes.
+- System audio input through CAVA, scrollback-driven inputs and parameter transitions with Phosphor curves.
+- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor and Phosphor Depths.
+- The Phosphor and Glasshouse example scenes.
+
+### Scripting and control
+
+- Luau scripts in a sandbox with time and memory limits, which reload when they change.
+- Script packages with manifests, configuration, assets and saved state with migrations.
+- Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
+- External control through `afterglow ctl` and D-Bus, with access settings.
+
+### Desktop integration
+
+- Terminal text, cursor, selection and geometry for screen readers through Qt and AT-SPI.
+- Input-method support with surrounding text for the cursor row.
+- Tabs, menus and prompts in the desktop Qt style.
+- Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.
+
+## Documentation
+
+- [Documentation index](docs/README.md).
+- [Supported protocols and limits](docs/COMPATIBILITY.md).
+- [Desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.
+- [Bidirectional text](docs/BIDI.md) for the application-grid policy.
+- [Performance measurements](docs/PERFORMANCE.md) for timings, workloads and limits.
+- [Testing](docs/TESTING.md) for regression and native desktop test procedures.
