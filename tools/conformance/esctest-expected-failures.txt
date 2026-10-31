@@ -29,13 +29,6 @@ test_ChangeDynamicColor_CIEuvY
 test_ChangeDynamicColor_CIExyY
 test_ChangeDynamicColor_RGBI
 test_ChangeDynamicColor_TekHVC
-test_ChangeSpecialColor_CIELab
-test_ChangeSpecialColor_CIELuv
-test_ChangeSpecialColor_CIEXYZ
-test_ChangeSpecialColor_CIEuvY
-test_ChangeSpecialColor_CIExyY
-test_ChangeSpecialColor_RGBI
-test_ChangeSpecialColor_TekHVC
 
 # OSC 5/105 special colours (bold/underline/blink colouring), which afterglow does not use.
 test_ChangeSpecialColor_CIELab
