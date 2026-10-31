@@ -10,21 +10,36 @@ To run it from a built checkout:
 ./build/afterglow/afterglow -o 'Shaders.background=["mesh-reactor"]'
 ```
 
-The vertex shader generates a sphere and three rings from triangle grids.
-One instanced draw renders 24,576 triangles with hardware depth testing.
-Each object inherits the assembly transform and applies a local rotation.
-A perspective camera projects the geometry. Surface normals control metal highlights and edge lighting.
-The image pass adds a small glow and maps brightness to the display range.
+The scene contains curved armor panels, a plasma core, three moving rings,
+six orbiting emitters and a chamber floor. Hardware depth testing controls occlusion.
+The metal has bevels, reflection highlights, engraved lines and status lights.
+The final pass adds haze, particles, glow and display tone mapping.
 Terminal text is drawn above the scene.
 
-System audio changes the core brightness and ring thickness.
-Current-tab scrollback increases the scene energy.
-Use the scene parameter controls or Luau shader parameters to change `exposure`, `speed` and `audio`.
-Silence does not stop the animation.
+System audio changes the core and lights. Current-tab scrollback increases
+the baseline energy. Silence does not stop the animation.
+The `exposure`, `speed`, `audio` and `commandHeat` parameters also accept Luau control.
+Set `linearOutput=1` only when a later lens pass will map HDR radiance to the display.
+The Phosphor launcher sets this parameter automatically.
+Signal 0 fractures the armor. Signal 1 recalls it. The camera moves back during fracture.
 
-This pack demonstrates the mesh renderer. The Phosphor example keeps its ray-marched scene.
-The pack uses approximately 47.5 MiB for buffers at 1080p and 189.9 MiB at 4K.
-Other shader buffers share the same 256 MiB budget.
+To use the complete Phosphor demo with its shell integration, text effects,
+pressure waves and Luau actions, run:
+
+```sh
+data/examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
+```
+
+This launcher copies the current shader pack into a temporary demo configuration.
+It does not use an older installed copy of the pack.
+
+The mesh pass submits 319,488 triangles in one instanced draw.
+It renders at 75 percent of the pane width and height and requests two-sample MSAA.
+Devices that do not support two samples use one sample.
+With two samples, its buffer budget is approximately 53.4 MiB at 1080p
+and 213.6 MiB at 4K. Other shader buffers share the same 256 MiB budget.
+These figures exclude the terminal targets, font atlas and driver allocations.
+This is a triangle scene. The default Phosphor scene still uses ray marching.
 
 See [Mesh passes](../../../docs/SHADER-API.md#mesh-passes) for imported OBJ meshes,
 vertex inputs, depth rules and resource limits.

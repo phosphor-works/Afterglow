@@ -99,7 +99,7 @@ function script.on_result(ev)
     if not ev.ok or string.sub(ev.request_id, 1, 5) ~= "heat:" then return nil end
     local value = tonumber(string.sub(ev.request_id, 6))
     for _, shader in ipairs(ev.data.shaders or {}) do
-        if shader.shader == "phosphor-field" then
+        if (shader.shader == "phosphor-field" or shader.shader == "mesh-reactor") then
             return afterglow.shader_parameters(ev.pane, shader.instance, {commandHeat=value}, "tab",
                 {duration_ms=650, curve="ease-in-out"})
         end

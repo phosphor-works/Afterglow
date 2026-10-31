@@ -1,15 +1,63 @@
 {
   "id": "mesh-reactor",
   "name": "Mesh Reactor",
-  "description": "Instanced triangle meshes with hardware depth testing, metal lighting and audio response.",
+  "description": "A segmented containment core with bevelled armor, plasma, orbiting emitters, a lit chamber and audio, history and Luau response.",
   "fragmentShader": "effect.frag",
   "multipass": true,
-  "bufferShaders": ["surface.frag"],
-  "geometryPasses": [{"vertexShader": "scene.vert", "vertexCount": 18432, "instances": 4}],
+  "bufferShaders": [
+    "surface.frag"
+  ],
+  "geometryPasses": [
+    {
+      "vertexShader": "scene.vert",
+      "vertexCount": 73728,
+      "instances": 13,
+      "samples": 2
+    }
+  ],
   "halfFloatBuffers": true,
   "parameters": [
-    {"id": "exposure", "name": "Exposure", "type": "float", "default": 1.0, "min": 0, "max": 3},
-    {"id": "speed", "name": "Scene speed", "type": "float", "default": 0.4, "min": 0, "max": 2},
-    {"id": "audio", "name": "Audio response", "type": "float", "default": 1.0, "min": 0, "max": 2}
-  ]
+    {
+      "id": "exposure",
+      "name": "Exposure",
+      "type": "float",
+      "default": 1.0,
+      "min": 0,
+      "max": 3
+    },
+    {
+      "id": "speed",
+      "name": "Scene speed",
+      "type": "float",
+      "default": 0.4,
+      "min": 0,
+      "max": 2
+    },
+    {
+      "id": "audio",
+      "name": "Audio response",
+      "type": "float",
+      "default": 1.0,
+      "min": 0,
+      "max": 2
+    },
+    {
+      "id": "commandHeat",
+      "name": "Command heat",
+      "type": "float",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "linearOutput",
+      "name": "Linear output for an external lens pass",
+      "type": "float",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    }
+  ],
+  "bufferScale": 0.75,
+  "bufferFilter": "linear"
 }

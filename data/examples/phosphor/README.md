@@ -18,6 +18,15 @@ From a built checkout, run:
 data/examples/phosphor/bin/phosphor-afterglow launch --show --binary ./build/afterglow/afterglow
 ```
 
+Add `--mesh` to use the triangle-mesh reactor with the same Luau actions:
+
+```sh
+data/examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
+```
+
+This mode adds segmented armor, plasma, orbiting emitters and a lit floor.
+The default scene uses ray marching.
+
 After installation, run:
 
 ```sh

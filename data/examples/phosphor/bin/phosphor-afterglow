@@ -77,7 +77,7 @@ def show():
         write('\033[0m\033[?25h\033[?1049l')
 
 
-def launch(binary, mode, autoplay):
+def launch(binary, mode, autoplay, mesh=False):
     executable = shutil.which(binary)
     if not executable:
         raise RuntimeError(f'cannot find {binary!r}; pass --binary /path/to/afterglow')
@@ -91,6 +91,10 @@ def launch(binary, mode, autoplay):
             shutil.copytree(ROOT.parent / 'packages' / package, app_home / 'scripts' / package)
         config = json.loads((ROOT / 'config/phosphor.json').read_text())
         config.update(json.loads((ROOT / 'config' / (mode + '.json')).read_text()))
+        if mesh:
+            shutil.copytree(ROOT.parent.parent / 'shaders/mesh-reactor', app_home / 'shaders/mesh-reactor')
+            config['Shaders']['background'] = ['mesh-reactor', 'phosphor-lens']
+            config['Shaders'].setdefault('params', {})['mesh-reactor'] = {'linearOutput': 1}
         config['Terminal']['shell'] = str(ROOT / 'bin/phosphor-shell')
         config_path = app_home / 'config.json'
         config_path.write_text(json.dumps(config, indent=4) + '\n')
@@ -109,6 +113,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     start = sub.add_parser('launch', help='open a temporary demo session')
     start.add_argument('--binary', default='afterglow')
+    start.add_argument('--mesh', action='store_true', help='use the depth-tested mesh reactor with the same Luau effects')
     start.add_argument('--light', action='store_true')
     start.add_argument('--show', action='store_true', help='play the showcase on launch')
     sub.add_parser('show', help='play the visual sequence inside the demo')
@@ -117,7 +122,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == 'launch':
-            return launch(args.binary, 'light' if args.light else 'dark', args.show)
+            return launch(args.binary, 'light' if args.light else 'dark', args.show, args.mesh)
         if args.command == 'scene':
             scene(args.mode)
         else:
