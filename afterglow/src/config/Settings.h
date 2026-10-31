@@ -102,6 +102,9 @@ struct AnimationSettings
     /// The pane overview's motion, as splitCurve; other curves take overviewDuration.
     QString overviewCurve = QStringLiteral("spring:12,0.82");
     int overviewDuration = 450;
+    /// Tab switches (Shaders.tabTransition), as splitCurve.
+    QString tabCurve = QStringLiteral("spring:13,0.9");
+    int tabDuration = 400;
     bool operator==(const AnimationSettings&) const = default;
 };
 

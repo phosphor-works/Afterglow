@@ -38,23 +38,79 @@ void TerminalWindow::layoutOtherTabs()
     }
 }
 
-PhosphorAnimation::MotionSpec<qreal> TerminalWindow::overviewSpec()
+PhosphorAnimation::MotionSpec<qreal> TerminalWindow::motionSpec(const QString& curve, int durationMs, CurveCache& cache,
+                                                                 const char* setting)
 {
-    const AnimationSettings& anim = m_settings.settings().animation;
-    if (!m_overview.curve || anim.overviewCurve != m_overview.curveSpec) {
-        m_overview.curveSpec = anim.overviewCurve;
-        m_overview.curve = m_shaders.curves().tryCreate(anim.overviewCurve);
-        if (!m_overview.curve) {
-            qCWarning(lcWindow).noquote() << "Animation.overviewCurve" << anim.overviewCurve << "is not a curve; using the default spring";
-            m_overview.curve = std::make_shared<PhosphorAnimation::Spring>(12.0, 0.82);
+    if (!cache.curve || curve != cache.spec) {
+        cache.spec = curve;
+        cache.curve = m_shaders.curves().tryCreate(curve);
+        if (!cache.curve) {
+            qCWarning(lcWindow).noquote() << setting << curve << "is not a curve; using a spring";
+            cache.curve = std::make_shared<PhosphorAnimation::Spring>(12.0, 1.0);
         }
     }
     PhosphorAnimation::MotionSpec<qreal> spec;
     spec.clock = m_clock.get();
-    spec.profile.curve = m_overview.curve;
-    spec.profile.duration = anim.overviewDuration;
+    spec.profile.curve = cache.curve;
+    spec.profile.duration = durationMs;
     spec.retargetPolicy = PhosphorAnimation::RetargetPolicy::PreserveVelocity;
     return spec;
+}
+
+PhosphorAnimation::MotionSpec<qreal> TerminalWindow::overviewSpec()
+{
+    const AnimationSettings& anim = m_settings.settings().animation;
+    return motionSpec(anim.overviewCurve, anim.overviewDuration, m_overviewCurve, "Animation.overviewCurve");
+}
+
+AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int tab, const std::vector<Pane*>* only,
+    std::uint8_t backgroundAlpha, bool& holding, bool& animating)
+{
+    AfterglowRender::WindowRenderer::OverviewTab other{tab, {}};
+    if (tab < 0 || tab >= int(m_tabs.size()) || !m_tabs[std::size_t(tab)]->splits) return other;
+    m_tabs[std::size_t(tab)]->splits->forEachPane([&](Pane* p, const QRect& r) {
+        if (r.isEmpty() || (only && std::find(only->begin(), only->end(), p) == only->end())) return;
+        AfterglowRender::WindowRenderer::Pane wp;
+        preparePane(p, r, wp.params, holding, animating);
+        wp.snapshot = &p->snapshot();
+        wp.params.focused = false;
+        wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
+        wp.params.cursorBlinkOn = m_blinkOn;
+        wp.params.textBlinkOn = m_textBlinkOn;
+        wp.params.backgroundAlpha = backgroundAlpha;
+        other.panes.push_back(std::move(wp));
+    });
+    return other;
+}
+
+void TerminalWindow::startTabTransition(int from, int to)
+{
+    const bool overview = m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3;
+    if (!m_tabTransitionAvailable || from == to || from < 0 || from >= int(m_tabs.size()) || overview || !isExposed()) return;
+    const AnimationSettings& anim = m_settings.settings().animation;
+    m_tabTransition.from = m_tabs[std::size_t(from)]->id;
+    m_tabTransition.direction = to > from ? 1.0f : -1.0f;
+    m_tabTransition.progress.start(0.0, 1.0, motionSpec(anim.tabCurve, anim.tabDuration, m_tabCurve, "Animation.tabCurve"));
+    m_tabTransition.startedAt = std::chrono::steady_clock::now();
+}
+
+void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating)
+{
+    AfterglowRender::WindowRenderer::TabTransition transition;
+    if (m_tabTransition.progress.isAnimating()) {
+        m_tabTransition.progress.advance();
+        const auto from = std::find_if(m_tabs.begin(), m_tabs.end(), [&](const auto& tab) { return tab->id == m_tabTransition.from; });
+        // A tab closed during its own switch has nothing left to show.
+        if (from == m_tabs.end() || int(from - m_tabs.begin()) == m_currentTab) {
+            m_tabTransition.progress.cancel();
+        } else if (m_tabTransition.progress.isAnimating()) {
+            layoutOtherTabs();
+            transition = {true, float(m_tabTransition.progress.value()), m_tabTransition.direction, m_tabTransition.startedAt,
+                          prepareOtherTab(int(from - m_tabs.begin()), nullptr, backgroundAlpha, holding, animating)};
+            animating = true;
+        }
+    }
+    m_renderer->setTabTransition(std::move(transition));
 }
 
 bool TerminalWindow::openOverview()

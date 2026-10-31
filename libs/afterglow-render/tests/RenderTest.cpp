@@ -1843,6 +1843,48 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, QPoint(stripe * 5 / 2, bottom), qRgb(128, 64, 64));
 }
 
+TEST_F(Render, TabTransitionSeesTheTabBeingLeftWhileItRuns)
+{
+    // Left half: the tab being left; right half: the transition's state.
+    ShaderProgramSource source;
+    source.id = "switch";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    if (uv.x < 0.5) return vec4(previousTabTexel(uv).rgb, 1.0);
+    return vec4(tabTransitionProgress(), tabTransitionDirection() < 0.0 ? 1.0 : 0.0, tabTransitionActive() ? 1.0 : 0.0, 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.tabTransition = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot left = snapshot;
+    left.defaultBg = 0xFFC00000u; // blue
+    const QSize size(Cols * cw * 2, Rows * ch);
+    WindowRenderer::Pane current{&snapshot, {}};
+    current.params.rect = QRect(QPoint(), size);
+    WindowRenderer::Pane leaving = current;
+    leaving.snapshot = &left;
+    const QPoint inLeft(size.width() / 4, size.height() / 2), inRight(size.width() * 3 / 4, size.height() / 2);
+    // No switch: the transition chain does not run.
+    auto image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
+    EXPECT_FALSE(renderer->transitionShowing());
+    renderer->setTabTransition({true, 0.5f, -1.0f, std::chrono::steady_clock::now(), {3, {leaving}}});
+    EXPECT_TRUE(renderer->animating());
+    image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
+    EXPECT_PIXEL(image, inRight, qRgb(128, 255, 255));
+    // The overview takes precedence over a switch.
+    renderer->setOverview({true, 1.0f, 0.0f, std::chrono::steady_clock::now(), {}});
+    EXPECT_FALSE(renderer->transitionShowing());
+    renderer->setOverview({});
+    renderer->setTabTransition({});
+    image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
+}
+
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
 {
     std::vector<ShaderSceneObject> objects(3);

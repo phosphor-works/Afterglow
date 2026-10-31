@@ -283,6 +283,8 @@ While it shows, the cards are the panes of every tab, up to 32.
 | `overviewOpen()` | True while the overview is open. False while it closes. |
 | `overviewAmount()` | 0 for the flat window, 1 when the overview is open. A spring can pass 1 briefly. |
 | `highlightPosition()` | The highlight as a card index. It is fractional while the highlight moves. |
+| `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
+| `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
 
 `paneTexel()` reads the current tab's panes from the pass input.
 It reads other tabs from images that Afterglow renders while the overview shows.
@@ -297,6 +299,15 @@ It costs nothing while the overview is closed.
 Afterglow eases `overviewAmount()` and `highlightPosition()` with `Animation.overviewCurve`, so a shader reads positions and never times motion itself.
 Draw the flat window when `overviewAmount()` is 0. Opening and closing then start and end on the window.
 A choice in another tab switches tabs as the overview closes. `currentTab()` changes during that close.
+
+`Shaders.tabTransition` names the pack that animates a tab switch.
+Afterglow runs it after the window chain while the switch runs, over the new tab.
+`previousTabTexel(uv)` reads the tab being left at a window uv. That tab keeps running.
+`tabTransitionProgress()` runs from 0, the tab being left, to 1, the new tab. `Animation.tabCurve` eases it, and a spring can pass 1.
+`tabTransitionDirection()` is 1 toward a tab on the right and -1 toward one on the left.
+Draw the tab being left at progress 0 and the new tab at 1, so a switch starts and ends without a jump.
+The overview takes precedence: a switch that the overview makes does not run the transition.
+[Tab Switch](../data/shaders/tab-switch/effect.frag) shows four styles.
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
 
 Input does not reach the panes while the overview is open.

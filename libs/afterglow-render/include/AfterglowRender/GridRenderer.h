@@ -234,6 +234,18 @@ public:
     void setOverview(Overview overview) { m_overview = std::move(overview); }
     /// Open, or still closing.
     bool overviewShowing() const;
+    /// A tab switch: the tab being left is drawn at full resolution into
+    /// uTabImage while the tab transition chain runs over the new tab.
+    struct TabTransition
+    {
+        bool active = false;
+        float progress = 1; ///< 0 the tab being left, 1 the new tab
+        float direction = 1; ///< 1 toward a tab on the right, -1 toward one on the left
+        std::optional<std::chrono::steady_clock::time_point> startedAt;
+        OverviewTab from;
+    };
+    void setTabTransition(TabTransition transition) { m_transition = std::move(transition); }
+    bool transitionShowing() const { return m_transition.active && !overviewShowing(); }
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
     void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
@@ -324,6 +336,7 @@ private:
     bool m_scrollbackInitialized = false;
     bool m_scrollbackSettling = false;
     Overview m_overview;
+    TabTransition m_transition;
     PipelineSet m_postPipelines;
     QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
     std::unique_ptr<class PostChain> m_post;

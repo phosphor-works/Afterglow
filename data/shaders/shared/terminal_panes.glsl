@@ -19,6 +19,10 @@
 //
 // The overview opens with the pane_overview action. Afterglow eases its
 // motion with Animation.overviewCurve, so shaders read positions, not ages.
+//
+// A tab switch runs the tab transition shader (Shaders.tabTransition) over
+// the new tab while uTabTransition.w is 1. The tab being left keeps running:
+// read it with previousTabTexel(). Animation.tabCurve eases the progress.
 
 #ifndef AFTERGLOW_TERMINAL_PANES_GLSL
 #define AFTERGLOW_TERMINAL_PANES_GLSL
@@ -32,14 +36,21 @@ layout(std140, binding = 19) uniform TerminalPanes {
                            //                 opened or closed, .w seconds since the highlight moved
                            //                 (both 1e6 if never)
     ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index
-    vec4 uPaneRect[32];    // offset 48    each card's pane in window px (x, y, w, h)
-    vec4 uPaneSource[32];  // offset 560   where its pixels are: a uv rectangle (x, y, w, h) in its source
-    ivec4 uPaneTab[32];    // offset 1072  .x its tab's index, .y source: 0 the input, 1 uOverviewTab,
-                           //              2 uOverviewAtlas, .z its index within its tab
-};                         // total 1584 bytes
+    vec4 uTabTransition;   // offset 48    .x progress: 0 the tab being left, 1 the new tab (a spring
+                           //                 can overshoot), .y direction: 1 toward a tab on the
+                           //                 right, -1 toward one on the left, .z seconds since it
+                           //                 started, .w 1 while it runs
+    vec4 uPaneRect[32];    // offset 64    each card's pane in window px (x, y, w, h)
+    vec4 uPaneSource[32];  // offset 576   where its pixels are: a uv rectangle (x, y, w, h) in its source
+    ivec4 uPaneTab[32];    // offset 1088  .x its tab's index, .y source: 0 the input, 1 uTabImage,
+                           //              2 uTabAtlas, .z its index within its tab
+};                         // total 1600 bytes
 
-layout(binding = 20) uniform sampler2D uOverviewTab;   // the highlighted card's tab, when not current
-layout(binding = 21) uniform sampler2D uOverviewAtlas; // the other tabs, smaller
+// Another tab at full resolution, laid out like the window: in the overview
+// the highlighted card's tab when it is not current, in a tab transition the
+// tab being left.
+layout(binding = 20) uniform sampler2D uTabImage;
+layout(binding = 21) uniform sampler2D uTabAtlas; // the overview's other tabs, smaller
 
 int paneCount() {
     return uPaneState.x;
@@ -67,8 +78,8 @@ vec4 paneTexel(int pane, vec2 uv) {
     vec4 source = uPaneSource[pane];
     vec2 at = source.xy + clamp(uv, 0.0, 1.0) * source.zw;
     int kind = uPaneTab[pane].y;
-    if (kind == 1) return texture(uOverviewTab, at);
-    if (kind == 2) return texture(uOverviewAtlas, at);
+    if (kind == 1) return texture(uTabImage, at);
+    if (kind == 2) return texture(uTabAtlas, at);
     return texture(uTerminal, at);
 }
 
@@ -90,6 +101,23 @@ float overviewAmount() {
 
 float highlightPosition() {
     return uOverview.y;
+}
+
+bool tabTransitionActive() {
+    return uTabTransition.w != 0.0;
+}
+
+float tabTransitionProgress() {
+    return uTabTransition.x;
+}
+
+float tabTransitionDirection() {
+    return uTabTransition.y;
+}
+
+// The tab being left, at a window uv.
+vec4 previousTabTexel(vec2 uv) {
+    return texture(uTabImage, uv);
 }
 
 #endif // AFTERGLOW_TERMINAL_PANES_GLSL

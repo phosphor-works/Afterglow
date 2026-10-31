@@ -111,11 +111,12 @@ struct alignas(16) TerminalPaneUniforms {
     std::int32_t uPaneState[4] {0, -1, -1, 0}; ///< panes, focused, highlighted, overview open
     float uOverview[4] {0.0f, 0.0f, 1e6f, 1e6f}; ///< open amount, highlight position, ages since open/close and highlight move
     std::int32_t uTabState[4] {0, 0, 0, 0}; ///< tabs with cards, the current tab
+    float uTabTransition[4] {1.0f, 1.0f, 1e6f, 0.0f}; ///< progress, direction, age, running
     float uPaneRect[MaxShaderPanes][4] {};
     float uPaneSource[MaxShaderPanes][4] {}; ///< uv rectangle in the card's source
     std::int32_t uPaneTab[MaxShaderPanes][4] {}; ///< tab, source (0 input, 1 tab, 2 atlas), index in tab
 };
-static_assert(sizeof(TerminalPaneUniforms) == 1584);
+static_assert(sizeof(TerminalPaneUniforms) == 1600);
 struct ShaderGeometry {
     QByteArray vertexCode; ///< defines `vec4 pMesh()`, the Vulkan clip position, or its own main()
     QString directory; ///< resolves the vertex code's quoted includes

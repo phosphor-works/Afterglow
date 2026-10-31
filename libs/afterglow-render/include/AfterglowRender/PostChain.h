@@ -82,10 +82,12 @@ struct ShaderChains
     std::vector<ShaderProgramPtr> window;
     /// The pane overview, after the window chain, only while the overview shows.
     std::vector<ShaderProgramPtr> overview;
+    /// A tab switch, after the window chain, only while it runs.
+    std::vector<ShaderProgramPtr> tabTransition;
 
     bool readsScrollback() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
             for (const auto& program : *chain) {
                 if (program->readsScrollback()) return true;
             }
@@ -95,7 +97,7 @@ struct ShaderChains
 
     bool audioReactive() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
             for (const auto& program : *chain) {
                 if (program->requiresAudio()) return true;
             }
@@ -105,7 +107,7 @@ struct ShaderChains
 
     bool highDynamicRange() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
             for (const auto& program : *chain) {
                 if (program->requiresHdr()) {
                     return true;
@@ -117,7 +119,7 @@ struct ShaderChains
 
     bool textHistory() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
             for (const auto& program : *chain) {
                 if (program->readsPreviousText()) {
                     return true;
@@ -153,18 +155,24 @@ public:
     void setChains(ShaderChains chains);
     bool audioReactive() const noexcept { return m_chains.audioReactive(); }
     bool readsScrollback() const noexcept { return m_chains.readsScrollback(); }
-    bool active() const noexcept { return !m_chains.empty() || (m_overviewShowing && !m_chains.overview.empty()); }
+    bool active() const noexcept
+    {
+        return !m_chains.empty() || (m_overviewShowing && !m_chains.overview.empty())
+            || (m_transitionShowing && !m_chains.tabTransition.empty());
+    }
     /// Runs the overview chain after the window chain while the overview shows.
     void setOverviewShowing(bool showing) { m_overviewShowing = showing; }
+    /// Runs the tab transition chain after the window chain while a switch runs.
+    void setTransitionShowing(bool showing) { m_transitionShowing = showing; }
     /// The pane block for this frame (terminal_panes.glsl), into @p updates
     /// before the frame's first pass.
     void uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPaneUniforms& panes);
     /// While the overview shows, after prepare(): a clearing, window-sized
     /// target for one other tab, compatible with the grid's pipelines.
-    /// terminal_panes.glsl samples it as uOverviewTab.
-    QRhiTextureRenderTarget* overviewTabTarget();
-    /// Shrinks the tab in overviewTabTarget() into @p tile of the overview
-    /// atlas (uOverviewAtlas), in window pixels.
+    /// terminal_panes.glsl samples it as uTabImage.
+    QRhiTextureRenderTarget* tabImageTarget();
+    /// Shrinks the tab in tabImageTarget() into @p tile of the overview
+    /// atlas (uTabAtlas), in window pixels.
     void shrinkTabToAtlas(RenderFrame& frame, const QRect& tile);
     bool layered() const noexcept { return m_chains.layered(); }
     /// Some shader reads iTime: the window renders every frame.
@@ -245,11 +253,12 @@ private:
     GpuDevice& m_device;
     ShaderChains m_chains;
     bool m_overviewShowing = false;
+    bool m_transitionShowing = false;
     std::unique_ptr<QRhiBuffer> m_panesUbo;
-    std::unique_ptr<QRhiTexture> m_overviewTab;
-    std::unique_ptr<QRhiTexture> m_overviewAtlas;
-    std::unique_ptr<QRhiTextureRenderTarget> m_overviewTabTarget;
-    std::unique_ptr<QRhiTextureRenderTarget> m_overviewAtlasTarget;
+    std::unique_ptr<QRhiTexture> m_tabImage;
+    std::unique_ptr<QRhiTexture> m_tabAtlas;
+    std::unique_ptr<QRhiTextureRenderTarget> m_tabImageTarget;
+    std::unique_ptr<QRhiTextureRenderTarget> m_tabAtlasTarget;
     std::map<std::pair<const ShaderProgram*, const QRhiRenderPassDescriptor*>, std::unique_ptr<QRhiGraphicsPipeline>>
         m_pipelines;
     QShader m_vertex;

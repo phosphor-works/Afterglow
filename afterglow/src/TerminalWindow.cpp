@@ -676,8 +676,11 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
     }
     tab.splits = std::make_unique<SplitTree>(first);
     tab.focused = first;
+    const bool hadTab = m_splits != nullptr;
+    const int from = m_currentTab; // inserted after it, so its index holds
     m_splits = nullptr; // the current tab's index moved; nothing to save
     switchTab(at);
+    if (hadTab) startTabTransition(from, at);
     return first;
 }
 
@@ -826,6 +829,7 @@ void TerminalWindow::switchTab(int index)
     if (m_splits && m_currentTab < int(m_tabs.size())) {
         m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     }
+    if (m_splits) startTabTransition(m_currentTab, index);
     m_currentTab = index;
     Tab& tab = *m_tabs[std::size_t(index)];
     m_splits = tab.splits.get();
@@ -1222,24 +1226,13 @@ void TerminalWindow::renderNow()
     if (m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3) {
         const auto cards = overviewPanes();
         for (int tab = 0; tab < int(m_tabs.size()); ++tab) {
-            if (tab == m_currentTab || !m_tabs[std::size_t(tab)]->splits) continue;
-            AfterglowRender::WindowRenderer::OverviewTab other{tab, {}};
-            m_tabs[std::size_t(tab)]->splits->forEachPane([&](Pane* p, const QRect& r) {
-                if (r.isEmpty() || std::find(cards.begin(), cards.end(), p) == cards.end()) return;
-                AfterglowRender::WindowRenderer::Pane wp;
-                preparePane(p, r, wp.params, holding, animating);
-                wp.snapshot = &p->snapshot();
-                wp.params.focused = false;
-                wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
-                wp.params.cursorBlinkOn = m_blinkOn;
-                wp.params.textBlinkOn = m_textBlinkOn;
-                wp.params.backgroundAlpha = backgroundAlpha;
-                other.panes.push_back(std::move(wp));
-            });
+            if (tab == m_currentTab) continue;
+            auto other = prepareOtherTab(tab, &cards, backgroundAlpha, holding, animating);
             if (!other.panes.empty()) overview.otherTabs.push_back(std::move(other));
         }
     }
     m_renderer->setOverview(std::move(overview));
+    advanceTabTransition(backgroundAlpha, holding, animating);
     // Split labels, in logical pixels for the chrome.
     QVariantList titles;
     if (multiple && m_settings.settings().window.paneTitles && !m_renderer->overviewShowing()) {
@@ -2820,6 +2813,7 @@ void TerminalWindow::applyShaders()
     m_shaderControls.rebuild(chains);
     m_audioReactive = chains.audioReactive();
     m_overviewAvailable = !chains.overview.empty();
+    m_tabTransitionAvailable = !chains.tabTransition.empty();
     if (!m_overviewAvailable) closeOverview(nullptr);
     m_renderer->setShaderChains(std::move(chains));
     m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);

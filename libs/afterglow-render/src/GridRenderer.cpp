@@ -832,7 +832,7 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
         m_scrollbackInitialized = false;
         m_scrollbackSettling = false;
     }
-    if (chains.empty() && chains.overview.empty()) {
+    if (chains.empty() && chains.overview.empty() && chains.tabTransition.empty()) {
         m_post.reset();
         return;
     }
@@ -844,7 +844,7 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
 
 bool WindowRenderer::animating() const
 {
-    return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing();
+    return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing() || transitionShowing();
 }
 
 bool WindowRenderer::overviewShowing() const
@@ -1061,7 +1061,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
 
     // While the overview shows, other tabs' panes are built too; they are
     // drawn into their own targets, after the visible panes.
-    const bool otherTabs = m_post && overviewShowing() && !m_overview.otherTabs.empty();
+    const bool transition = m_post && transitionShowing() && !m_transition.from.panes.empty();
+    const bool otherTabs = (m_post && overviewShowing() && !m_overview.otherTabs.empty()) || transition;
     std::vector<Pane> combined;
     struct TabSlice
     {
@@ -1069,9 +1070,17 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         std::size_t begin, end;
         bool sharp; ///< holds the highlighted pane: kept at full resolution
         int tile = -1;
+        bool card = true; ///< an overview card; a tab being left is not
     };
     std::vector<TabSlice> slices;
-    if (otherTabs) {
+    if (transition) {
+        combined = panes;
+        TabSlice slice{m_transition.from.index, combined.size(), 0, true};
+        slice.card = false;
+        combined.insert(combined.end(), m_transition.from.panes.begin(), m_transition.from.panes.end());
+        slice.end = combined.size();
+        slices.push_back(slice);
+    } else if (otherTabs) {
         combined = panes;
         for (const OverviewTab& tab : m_overview.otherTabs) {
             TabSlice slice{tab.index, combined.size(), 0, false};
@@ -1238,7 +1247,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     }
 
     // With shaders, the grid goes to an offscreen texture first.
-    if (m_post) m_post->setOverviewShowing(overviewShowing());
+    if (m_post) {
+        m_post->setOverviewShowing(overviewShowing());
+        m_post->setTransitionShowing(transitionShowing());
+    }
     const bool post = m_post && m_post->active();
     QRhiRenderTarget* gridTarget = target.renderTarget();
     QRhiRenderPassDescriptor* gridPass = target.renderPass;
@@ -1427,6 +1439,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
         for (const TabSlice& slice : slices) {
+            if (!slice.card) continue;
             int indexInTab = 0;
             for (std::size_t i = slice.begin; i < slice.end; ++i) {
                 const QRect r = drawn[i].params.rect.intersected(QRect(QPoint(), px));
@@ -1462,6 +1475,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
         paneBlock.uTabState[0] = int(tabs.size());
         paneBlock.uTabState[1] = m_overview.currentTab;
+        if (transitionShowing()) {
+            paneBlock.uTabTransition[0] = m_transition.progress;
+            paneBlock.uTabTransition[1] = m_transition.direction;
+            paneBlock.uTabTransition[2] = m_transition.startedAt
+                ? std::chrono::duration<float>(std::chrono::steady_clock::now() - *m_transition.startedAt).count() : 1e6f;
+            paneBlock.uTabTransition[3] = 1.0f;
+        }
         const auto wall = std::chrono::steady_clock::now();
         auto age = [&](const auto& at) { return at ? std::chrono::duration<float>(wall - *at).count() : 1e6f; };
         paneBlock.uPaneState[3] = m_overview.open ? 1 : 0;
@@ -1588,7 +1608,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     if (post && !slices.empty()) {
         // Other tabs for the overview: each into the tab target, then shrunk
         // into its atlas tile. The highlighted pane's tab goes last and stays.
-        QRhiTextureRenderTarget* tabTarget = m_post->overviewTabTarget();
+        QRhiTextureRenderTarget* tabTarget = m_post->tabImageTarget();
         std::stable_partition(slices.begin(), slices.end(), [](const TabSlice& slice) { return !slice.sharp; });
         for (const TabSlice& slice : slices) {
             frame.beginPass(tabTarget, clear, {1.0f, 0}, nullptr);

@@ -18,6 +18,8 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves |
 | `splits` | `true` |  | Animate split opening, closing and resizing. |
+| `tabCurve` | `"spring:13,0.9"` |  | Tab switch motion (Shaders.tabTransition): a Phosphor curve spec, as for splitCurve |
+| `tabDuration` | `400` | 16–5000 | Duration of tab switches in milliseconds for curves other than springs |
 
 ## Audio
 
@@ -128,6 +130,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off |
 | `pane` | `[]` |  | Shaders run over each pane: shader pack ids, such as cursor-trail and bloom |
 | `params` | `{}` |  | Per shader parameter values, e.g. { "bloom": { "strength": 0.5 } } |
+| `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text |
 | `window` | `[]` |  | Shaders run over the whole window, across splits, after the pane shaders |
 

@@ -108,6 +108,9 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview, counting every tab (default 0)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("tab-transition"), QStringLiteral("Tab transition shader, from a copy of the panes on a blue background."), QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("transition-progress"), QStringLiteral("Tab transition progress, 0 to 1 (default 0.5)."), QStringLiteral("f")});
+    parser.addOption({QStringLiteral("transition-direction"), QStringLiteral("1 toward a tab on the right (default), -1 toward one on the left."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("current-tab"), QStringLiteral("With --tabs: the current tab (default 0)."), QStringLiteral("n")});
@@ -268,14 +271,15 @@ int main(int argc, char** argv)
     const Afterglow::ShaderLibrary::Refs refs{
         parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
         parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
-        parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview"))};
+        parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview")),
+        parser.value(QStringLiteral("tab-transition"))};
     const auto wanted = refs.background.size() + refs.text.size() + refs.cursor.size() + refs.pane.size()
-        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1);
+        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1);
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;
         AfterglowRender::ShaderChains chains = library.build(refs, params);
         const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
-            + chains.window.size() + chains.overview.size();
+            + chains.window.size() + chains.overview.size() + chains.tabTransition.size();
         if (got != std::size_t(wanted)) {
             std::fprintf(stderr, "a shader failed to load\n");
             return 1;
@@ -409,6 +413,19 @@ int main(int argc, char** argv)
         }
         if (highlight / perTab == currentTab) panes[std::size_t(highlight % perTab)].params.highlighted = true;
         renderer.setOverview(std::move(overview));
+    }
+    if (parser.isSet(QStringLiteral("tab-transition"))) {
+        for (auto& copy : tabSnapshots) copy.defaultBg = 0xFF5A2A10u; // the tab being left: blue
+        AfterglowRender::WindowRenderer::TabTransition transition{true,
+            parser.isSet(QStringLiteral("transition-progress")) ? parser.value(QStringLiteral("transition-progress")).toFloat() : 0.5f,
+            parser.value(QStringLiteral("transition-direction")).toInt() < 0 ? -1.0f : 1.0f, std::chrono::steady_clock::now(), {0, {}}};
+        for (std::size_t i = 0; i < panes.size(); ++i) {
+            auto copy = panes[i];
+            copy.snapshot = &tabSnapshots[i];
+            copy.params.focused = false;
+            transition.from.panes.push_back(copy);
+        }
+        renderer.setTabTransition(std::move(transition));
     }
     const QFileInfo output(args[1]);
     double renderMs = 0.0, pngMs = 0.0;

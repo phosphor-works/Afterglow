@@ -128,6 +128,8 @@ public:
     bool overviewOpen() const { return m_overview.open; }
     /// The highlighted pane, while the overview is open.
     Pane* overviewHighlight() const { return m_overview.open ? m_overview.highlighted.data() : nullptr; }
+    /// A tab switch is animating (Shaders.tabTransition).
+    bool tabSwitching() const { return m_tabTransition.progress.isAnimating(); }
     /// Animation.splitCurve, resolved once per spec; the default spring when invalid.
     std::shared_ptr<const PhosphorAnimation::Curve> splitCurve();
 
@@ -415,9 +417,33 @@ private:
         PhosphorAnimation::AnimatedValue<qreal> position; ///< the highlight as a pane index
         std::optional<std::chrono::steady_clock::time_point> changedAt;
         std::optional<std::chrono::steady_clock::time_point> movedAt;
-        QString curveSpec;
-        std::shared_ptr<const PhosphorAnimation::Curve> curve;
     } m_overview;
+    /// A curve resolved from its setting once per spec.
+    struct CurveCache
+    {
+        QString spec;
+        std::shared_ptr<const PhosphorAnimation::Curve> curve;
+    };
+    CurveCache m_overviewCurve;
+    PhosphorAnimation::MotionSpec<qreal> motionSpec(const QString& spec, int durationMs, CurveCache& cache, const char* setting);
+    /// Another tab's panes for the renderer, prepared as visible panes are;
+    /// only those in @p only when it is given.
+    AfterglowRender::WindowRenderer::OverviewTab prepareOtherTab(int tab, const std::vector<Pane*>* only,
+                                                                  std::uint8_t backgroundAlpha, bool& holding, bool& animating);
+    // A tab switch (Shaders.tabTransition): the tab being left keeps drawing
+    // until the new one has arrived.
+    struct TabTransition
+    {
+        quint32 from = 0; ///< the tab being left, by id
+        float direction = 1;
+        PhosphorAnimation::AnimatedValue<qreal> progress;
+        std::optional<std::chrono::steady_clock::time_point> startedAt;
+    } m_tabTransition;
+    CurveCache m_tabCurve;
+    bool m_tabTransitionAvailable = false; ///< Shaders.tabTransition compiled
+    void startTabTransition(int from, int to);
+    /// Advances the tab switch and hands it to the renderer.
+    void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled
     int m_overviewWheel = 0; ///< wheel travel not yet a whole step
     /// The overview's cards: while it shows, every tab's panes in tab order,

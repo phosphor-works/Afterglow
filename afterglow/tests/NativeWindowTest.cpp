@@ -954,3 +954,23 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
     EXPECT_EQ(window->focusedPane(), first);
     EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
 }
+
+TEST_F(NativeWindow, TabSwitchAnimatesAndSettles) {
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    EXPECT_TRUE(window->tabSwitching());
+    auto* second = window->focusedPane();
+    EXPECT_NE(second, first);
+    QElapsedTimer clock;
+    clock.start();
+    while (window->tabSwitching() && clock.elapsed() < 3000) drain();
+    EXPECT_FALSE(window->tabSwitching());
+    EXPECT_EQ(window->focusedPane(), second);
+    // Switching back runs again; the overview suppresses it.
+    window->revealPane(first);
+    EXPECT_TRUE(window->tabSwitching());
+    while (window->tabSwitching() && clock.elapsed() < 6000) drain();
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    window->revealPane(second);
+    EXPECT_FALSE(window->tabSwitching());
+}

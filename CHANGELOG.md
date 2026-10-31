@@ -63,6 +63,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Tabs and split panes, with pane zoom, resize, swap, rotation and directional focus.
 - Animated splits whose motion takes any Phosphor curve, such as a spring or a cubic Bézier.
 - A pane overview that shows the panes of every tab as live 3D cards to choose from, drawn by a replaceable shader pack.
+- Animated tab switches, drawn by a replaceable shader pack: a turning cube, a page flip, a shatter or a slide.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut.
@@ -83,7 +84,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Up to eight buffer passes, four image parameters, auxiliary depth, vertex stages and instanced OBJ or generated meshes.
 - Object hierarchies for mesh passes, with transforms that follow parameters, scripts and transitions.
 - System audio input through CAVA, scrollback-driven inputs and parameter transitions with Phosphor curves.
-- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck and Phosphor Depths.
+- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck, Phosphor Depths and Tab Switch.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
 - The Phosphor and Glasshouse example scenes.
 

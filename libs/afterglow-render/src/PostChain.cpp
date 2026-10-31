@@ -73,8 +73,8 @@ constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
 /// TerminalScene in terminal_scene.glsl: object matrices for mesh passes.
 constexpr int SceneBinding = PreviousTextBinding + 1;
 constexpr int PanesBinding = SceneBinding + 1;
-constexpr int OverviewTabBinding = PanesBinding + 1;
-constexpr int OverviewAtlasBinding = OverviewTabBinding + 1;
+constexpr int TabImageBinding = PanesBinding + 1;
+constexpr int TabAtlasBinding = TabImageBinding + 1;
 
 /// Shrinks the window-sized tab image into an atlas tile: each tile pixel
 /// averages a 3x3 grid across the source pixels it covers.
@@ -194,10 +194,10 @@ void PostChain::release()
     m_ubos.clear();
     m_sceneUbos.clear();
     m_panesUbo.reset();
-    m_overviewTabTarget.reset();
-    m_overviewAtlasTarget.reset();
-    m_overviewTab.reset();
-    m_overviewAtlas.reset();
+    m_tabImageTarget.reset();
+    m_tabAtlasTarget.reset();
+    m_tabImage.reset();
+    m_tabAtlas.reset();
     m_compositeUbos.clear();
     m_historyTarget.reset();
     m_previousText.reset();
@@ -242,12 +242,12 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
         }
     }
     const auto format = m_chains.highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
-    // Other tabs' images exist only while the overview shows.
-    if (!m_overviewShowing || size != m_size) {
-        m_overviewTabTarget.reset();
-        m_overviewAtlasTarget.reset();
-        m_overviewTab.reset();
-        m_overviewAtlas.reset();
+    // Other tabs' images exist only while the overview or a tab switch shows them.
+    if ((!m_overviewShowing && !m_transitionShowing) || size != m_size) {
+        m_tabImageTarget.reset();
+        m_tabAtlasTarget.reset();
+        m_tabImage.reset();
+        m_tabAtlas.reset();
     }
     // Layer textures come and go with the layer chains.
     const bool layersReady = layered() == bool(m_textures[FirstLayerTexture]);
@@ -358,30 +358,30 @@ void PostChain::uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPane
     updates->updateDynamicBuffer(panesBuffer(), 0, sizeof panes, &panes);
 }
 
-QRhiTextureRenderTarget* PostChain::overviewTabTarget()
+QRhiTextureRenderTarget* PostChain::tabImageTarget()
 {
-    if (!m_overviewTabTarget) {
+    if (!m_tabImageTarget) {
         QRhi* rhi = m_device.rhi();
         const auto format = m_chains.highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
-        m_overviewTab.reset(rhi->newTexture(format, m_size, 1, QRhiTexture::RenderTarget));
-        m_overviewAtlas.reset(rhi->newTexture(format, m_size, 1, QRhiTexture::RenderTarget));
-        if (!m_overviewTab->create() || !m_overviewAtlas->create()) throw std::runtime_error("overview tab allocation failed");
-        m_overviewTabTarget.reset(rhi->newTextureRenderTarget({m_overviewTab.get()}));
-        m_overviewTabTarget->setRenderPassDescriptor(m_gridPass.get());
-        m_overviewAtlasTarget.reset(rhi->newTextureRenderTarget({m_overviewAtlas.get()},
+        m_tabImage.reset(rhi->newTexture(format, m_size, 1, QRhiTexture::RenderTarget));
+        m_tabAtlas.reset(rhi->newTexture(format, m_size, 1, QRhiTexture::RenderTarget));
+        if (!m_tabImage->create() || !m_tabAtlas->create()) throw std::runtime_error("overview tab allocation failed");
+        m_tabImageTarget.reset(rhi->newTextureRenderTarget({m_tabImage.get()}));
+        m_tabImageTarget->setRenderPassDescriptor(m_gridPass.get());
+        m_tabAtlasTarget.reset(rhi->newTextureRenderTarget({m_tabAtlas.get()},
                                                                 QRhiTextureRenderTarget::PreserveColorContents));
-        m_overviewAtlasTarget->setRenderPassDescriptor(m_renderPass.get());
-        if (!m_overviewTabTarget->create() || !m_overviewAtlasTarget->create())
+        m_tabAtlasTarget->setRenderPassDescriptor(m_renderPass.get());
+        if (!m_tabImageTarget->create() || !m_tabAtlasTarget->create())
             throw std::runtime_error("overview tab target failed");
         // Bindings made earlier this frame point at the old textures.
         m_bindings.clear();
     }
-    return m_overviewTabTarget.get();
+    return m_tabImageTarget.get();
 }
 
 void PostChain::shrinkTabToAtlas(RenderFrame& frame, const QRect& tile)
 {
-    if (!m_overviewTab || tile.isEmpty()) return;
+    if (!m_tabImage || tile.isEmpty()) return;
     auto* cb = frame.commands();
     const ShaderProgram& program = shrinkProgram();
     const int ubo = m_nextUbo++;
@@ -396,8 +396,8 @@ void PostChain::shrinkTabToAtlas(RenderFrame& frame, const QRect& tile)
     u.terminal.uTargetSize[1] = float(m_size.height());
     QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
     updates->updateDynamicBuffer(uniformBuffer(ubo), 0, sizeof u, &u);
-    auto* resources = bindings(ubo, 0, nullptr, &program, nullptr, nullptr, m_overviewTab.get());
-    frame.beginPass(m_overviewAtlasTarget.get(), Qt::transparent, {1.0f, 0}, updates);
+    auto* resources = bindings(ubo, 0, nullptr, &program, nullptr, nullptr, m_tabImage.get());
+    frame.beginPass(m_tabAtlasTarget.get(), Qt::transparent, {1.0f, 0}, updates);
     cb->setGraphicsPipeline(pipeline(program, m_renderPass.get()));
     cb->setViewport({0, 0, float(m_size.width()), float(m_size.height())});
     cb->setScissor(scissorFor(tile, m_size));
@@ -503,10 +503,10 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
         QRhiShaderResourceBinding::uniformBuffer(SceneBinding, stage, sceneBuffer(ubo)),
         QRhiShaderResourceBinding::uniformBuffer(PanesBinding, stage, panesBuffer()),
         // The shrink pass (an explicit source) renders into the atlas, so it binds neither.
-        QRhiShaderResourceBinding::sampledTexture(OverviewTabBinding, stage,
-            m_overviewTab && !source ? m_overviewTab.get() : input, m_sampler.get()),
-        QRhiShaderResourceBinding::sampledTexture(OverviewAtlasBinding, stage,
-            m_overviewAtlas && !source ? m_overviewAtlas.get() : input, m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(TabImageBinding, stage,
+            m_tabImage && !source ? m_tabImage.get() : input, m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(TabAtlasBinding, stage,
+            m_tabAtlas && !source ? m_tabAtlas.get() : input, m_sampler.get()),
     };
     for (int i = 0; i < MaxShaderBuffers; ++i)
         entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kChannelBase + i, stage,
@@ -1053,6 +1053,7 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
     // Window chain; the last step (or a passthrough) writes to the swapchain.
     std::vector<ShaderProgramPtr> steps = m_chains.window;
     if (m_overviewShowing) steps.insert(steps.end(), m_chains.overview.begin(), m_chains.overview.end());
+    else if (m_transitionShowing) steps.insert(steps.end(), m_chains.tabTransition.begin(), m_chains.tabTransition.end());
     if (steps.empty()) {
         steps.push_back(ShaderProgram::passthrough());
     }

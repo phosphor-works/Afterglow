@@ -494,7 +494,8 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     };
     QSet<QString> desired;
     const QStringList overview = refs.overview.isEmpty() ? QStringList{} : QStringList{refs.overview};
-    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window, overview})
+    const QStringList tabTransition = refs.tabTransition.isEmpty() ? QStringList{} : QStringList{refs.tabTransition};
+    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window, overview, tabTransition})
         for (const auto& ref : chain) desired.insert(cacheKey(ref));
     // Configuration changes must release old decoded assets and compiled packs.
     m_cache.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
@@ -528,6 +529,7 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     add(refs.pane, chains.pane);
     add(refs.window, chains.window);
     add(overview, chains.overview);
+    add(tabTransition, chains.tabTransition);
     refreshWatches();
     return chains;
 }

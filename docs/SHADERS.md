@@ -21,6 +21,7 @@ The `Shaders` configuration group contains five chains and the pane overview:
 | `pane` | The completed pane. |
 | `window` | The completed window. |
 | `overview` | The completed window, while the pane overview shows. One pack ID, not a list. |
+| `tabTransition` | The completed window, while a tab switch runs. One pack ID, not a list. |
 
 The first three chains run before pane composition.
 Layer inputs use premultiplied alpha. Empty areas are transparent.
@@ -32,6 +33,12 @@ The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab i
 The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
 The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.
+
+Switching tabs runs `Shaders.tabTransition`. The default pack is Tab Switch.
+Its `style` parameter chooses a turning cube (0), a page flip (1), a shatter (2) or a slide (3).
+The tab being left keeps running until the new tab arrives.
+`Animation.tabCurve` and `Animation.tabDuration` set the motion.
+Set `Shaders.tabTransition` to an empty string to switch tabs at once.
 
 [Phosphor](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.
