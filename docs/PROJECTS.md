@@ -9,7 +9,7 @@
 | --- | --- |
 | `swap_left`, `swap_right`, `swap_up`, `swap_down` | Exchanges the focused pane with an adjacent pane |
 | `rotate_panes_clockwise` (Ctrl+Shift+]), `rotate_panes_counterclockwise` (Ctrl+Shift+[) | Moves every pane in the tab to the next or previous position in reading order |
-| `pane_overview` (Ctrl+Shift+D) | Shows the tab's panes as live cards to choose from |
+| `pane_overview` (Ctrl+Shift+D) | Shows the panes of every tab as live cards to choose from |
 | `move_pane_to_tab` | Moves the pane to a new tab |
 | `move_pane_to_window` | Moves the pane to a new window |
 | `detach_tab` | Moves the complete tab to a new window |
@@ -18,18 +18,21 @@ Rotation keeps the layout shape and split ratios. Focus stays with the same pane
 
 ### Pane overview
 
-The pane overview shows every pane in the tab as a live card. The focused pane starts highlighted.
+The pane overview shows the panes of every tab in the window as live cards, up to 32.
+Each tab's cards form a group, in tab order. The focused pane starts highlighted.
 
 | Key | Function |
 | --- | --- |
-| Right, Down, Tab, `l` or `j` | Highlights the next pane |
-| Left, Up, Shift+Tab, `h` or `k` | Highlights the previous pane |
+| Right, Tab or `l` | Highlights the next pane |
+| Left, Shift+Tab or `h` | Highlights the previous pane |
+| Down or `j`, Up or `k` | Highlights the first pane of the next or previous tab |
 | Home, End | Highlights the first or last pane |
 | Enter, Space or a left click | Focuses the highlighted pane and closes the overview |
 | 1 to 9 | Focuses that numbered card and closes the overview |
 | Escape, the `pane_overview` key, or a right or middle click | Closes the overview and keeps the focus |
 
 The mouse wheel also moves the highlight.
+A pane in another tab switches to that tab.
 Keys do not reach the panes while the overview is open. Programs in the panes keep running.
 A zoomed tab shows all of its panes in the overview, and returns zoomed on the chosen pane.
 `Animation.overviewCurve` and `Animation.overviewDuration` set the motion.

@@ -7,6 +7,7 @@
 #include <QKeyEvent>
 #include <QLoggingCategory>
 #include <algorithm>
+#include <cmath>
 
 Q_DECLARE_LOGGING_CATEGORY(lcWindow)
 
@@ -14,12 +15,27 @@ namespace Afterglow {
 
 std::vector<Pane*> TerminalWindow::overviewPanes() const
 {
+    // While the overview shows, every tab's panes; otherwise the current tab's.
     std::vector<Pane*> panes;
-    if (!m_splits) return panes;
-    m_splits->forEachPane([&](Pane* pane, const QRect& rect) {
-        if (!rect.isEmpty() && panes.size() < std::size_t(AfterglowRender::MaxShaderPanes)) panes.push_back(pane);
-    });
+    const bool allTabs = m_overview.open || m_overview.amount.value() != 0.0 || m_overview.amount.isAnimating();
+    for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
+        const SplitTree* tree = m_tabs[tab]->splits.get();
+        if (!tree || (!allTabs && int(tab) != m_currentTab)) continue;
+        tree->forEachPane([&](Pane* pane, const QRect& rect) {
+            if (!rect.isEmpty() && panes.size() < std::size_t(AfterglowRender::MaxShaderPanes)) panes.push_back(pane);
+        });
+    }
     return panes;
+}
+
+void TerminalWindow::layoutOtherTabs()
+{
+    // Hidden tabs keep the layout of when they were last shown; the overview
+    // shows them at the window's current size.
+    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
+    for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
+        if (int(tab) != m_currentTab && m_tabs[tab]->splits) m_tabs[tab]->splits->layout(paneArea(), dividerWidth);
+    }
 }
 
 PhosphorAnimation::MotionSpec<qreal> TerminalWindow::overviewSpec()
@@ -47,10 +63,14 @@ bool TerminalWindow::openOverview()
     cancelKeyMode();
     m_overview.zoomed = m_splits->zoomedPane();
     if (m_overview.zoomed) setPaneZoom(nullptr);
+    m_overview.open = true;
+    layoutOtherTabs();
     const auto panes = overviewPanes();
     const auto focused = std::find(panes.begin(), panes.end(), m_focused.data());
-    if (focused == panes.end()) return false;
-    m_overview.open = true;
+    if (focused == panes.end()) {
+        m_overview.open = false;
+        return false;
+    }
     m_overview.original = m_focused;
     m_overview.highlighted = m_focused;
     const auto spec = overviewSpec();
@@ -68,12 +88,15 @@ bool TerminalWindow::openOverview()
 void TerminalWindow::closeOverview(Pane* chosen)
 {
     if (!m_overview.open) return;
-    m_overview.open = false;
     const auto panes = overviewPanes();
+    m_overview.open = false;
     Pane* target = chosen && std::find(panes.begin(), panes.end(), chosen) != panes.end() ? chosen : m_overview.original.data();
-    if (target) setFocusedPane(target);
-    // A zoomed tab returns zoomed, on the chosen pane.
-    if (m_overview.zoomed && target) setPaneZoom(chosen ? target : m_overview.zoomed.data());
+    const bool otherTab = target && tabOf(target) != m_currentTab;
+    // A zoomed tab returns zoomed: on the chosen pane, or as it was when
+    // the choice is in another tab.
+    if (m_overview.zoomed) setPaneZoom(target && !otherTab ? target : m_overview.zoomed.data());
+    if (otherTab) revealPane(target);
+    else if (target) setFocusedPane(target);
     const auto spec = overviewSpec();
     m_overview.amount.start(m_overview.amount.value(), 0.0, spec);
     if (const auto at = std::find(panes.begin(), panes.end(), target); at != panes.end())
@@ -108,12 +131,25 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
         closeOverview(nullptr);
     } else if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter || e->key() == Qt::Key_Space) {
         closeOverview(m_overview.highlighted);
-    } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Up || e->key() == Qt::Key_Backtab || e->key() == Qt::Key_H
-               || e->key() == Qt::Key_K) {
+    } else if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Backtab || e->key() == Qt::Key_H) {
         moveOverview(current - 1);
-    } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_Down || e->key() == Qt::Key_Tab || e->key() == Qt::Key_L
-               || e->key() == Qt::Key_J) {
+    } else if (e->key() == Qt::Key_Right || e->key() == Qt::Key_Tab || e->key() == Qt::Key_L) {
         moveOverview(current + 1);
+    } else if ((e->key() == Qt::Key_Up || e->key() == Qt::Key_K || e->key() == Qt::Key_Down || e->key() == Qt::Key_J)
+               && !panes.empty()) {
+        // The first pane of the previous or next tab, wrapping round.
+        const bool down = e->key() == Qt::Key_Down || e->key() == Qt::Key_J;
+        const int count = int(panes.size());
+        const int here = tabOf(panes[std::size_t(current)]);
+        int index = current;
+        for (int step = 1; step <= count; ++step) {
+            const int candidate = ((current + (down ? step : -step)) % count + count) % count;
+            if (tabOf(panes[std::size_t(candidate)]) != here) { index = candidate; break; }
+        }
+        // Up lands on the first pane of that tab, as Down does.
+        const int tab = tabOf(panes[std::size_t(index)]);
+        while (index > 0 && tabOf(panes[std::size_t(index - 1)]) == tab) --index;
+        moveOverview(index);
     } else if (e->key() == Qt::Key_Home) {
         moveOverview(0);
     } else if (e->key() == Qt::Key_End) {
@@ -125,6 +161,7 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
 
 void TerminalWindow::advanceOverview(bool& animating)
 {
+    if (m_overview.open || m_overview.amount.isAnimating()) layoutOtherTabs();
     const auto panes = overviewPanes();
     if (m_overview.open) {
         // A tab switch or a closed pane can take the overview's panes away.
@@ -146,8 +183,6 @@ void TerminalWindow::advanceOverview(bool& animating)
     m_overview.amount.advance();
     m_overview.position.advance();
     animating |= m_overview.amount.isAnimating() || m_overview.position.isAnimating();
-    m_renderer->setOverview({m_overview.open, float(m_overview.amount.value()), float(m_overview.position.value()),
-                             m_overview.changedAt, m_overview.movedAt});
 }
 
 } // namespace Afterglow

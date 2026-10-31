@@ -1800,6 +1800,49 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, rightCenter, rgb(other.defaultBg));
 }
 
+TEST_F(Render, OverviewCardsSampleEveryTabInTabOrder)
+{
+    // One vertical stripe per card, filled with the middle of that card's pane.
+    ShaderProgramSource source;
+    source.id = "stripes";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    int card = min(int(uv.x * float(paneCount())), paneCount() - 1);
+    vec3 color = paneTexel(card, vec2(0.5)).rgb;
+    return vec4(uv.y < 0.5 ? color : vec3(float(paneTab(card)) / 4.0, float(uPaneTab[card].y) / 4.0, float(currentTab()) / 4.0), 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.overview = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot first = snapshot, second = snapshot, third = snapshot;
+    first.defaultBg = 0xFF0000C0u;   // red
+    second.defaultBg = 0xFF00C000u;  // green
+    third.defaultBg = 0xFFC00000u;   // blue
+    const QSize size(Cols * cw * 3, Rows * ch);
+    WindowRenderer::Pane current{&second, {}};
+    current.params.rect = QRect(QPoint(), size);
+    current.params.focused = true;
+    WindowRenderer::Pane before = current, after = current;
+    before.snapshot = &first; before.params.focused = false;
+    after.snapshot = &third; after.params.focused = false;
+    after.params.highlighted = true; // its tab is drawn at full resolution
+    const auto now = std::chrono::steady_clock::now();
+    // The current tab is tab 1: tab 0 comes first, tab 2 last.
+    renderer->setOverview({true, 1.0f, 2.0f, now, now, 1, {{0, {before}}, {2, {after}}}});
+    const auto image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
+    const int stripe = size.width() / 3, top = size.height() / 4, bottom = size.height() * 3 / 4;
+    EXPECT_PIXEL(image, QPoint(stripe / 2, top), qRgb(0xC0, 0, 0));
+    EXPECT_PIXEL(image, QPoint(stripe * 3 / 2, top), qRgb(0, 0xC0, 0));
+    EXPECT_PIXEL(image, QPoint(stripe * 5 / 2, top), qRgb(0, 0, 0xC0));
+    // Tab indices, sources (2 the atlas, 0 the input, 1 the full-resolution tab) and the current tab.
+    EXPECT_PIXEL(image, QPoint(stripe / 2, bottom), qRgb(0, 128, 64));
+    EXPECT_PIXEL(image, QPoint(stripe * 3 / 2, bottom), qRgb(64, 0, 64));
+    EXPECT_PIXEL(image, QPoint(stripe * 5 / 2, bottom), qRgb(128, 64, 64));
+}
+
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
 {
     std::vector<ShaderSceneObject> objects(3);

@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
+#include <QSet>
 #include <stdexcept>
 
 #ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
@@ -1057,8 +1059,35 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         m_fontEpoch = m_device.fontEpoch();
     }
 
+    // While the overview shows, other tabs' panes are built too; they are
+    // drawn into their own targets, after the visible panes.
+    const bool otherTabs = m_post && overviewShowing() && !m_overview.otherTabs.empty();
+    std::vector<Pane> combined;
+    struct TabSlice
+    {
+        int tab;
+        std::size_t begin, end;
+        bool sharp; ///< holds the highlighted pane: kept at full resolution
+        int tile = -1;
+    };
+    std::vector<TabSlice> slices;
+    if (otherTabs) {
+        combined = panes;
+        for (const OverviewTab& tab : m_overview.otherTabs) {
+            TabSlice slice{tab.index, combined.size(), 0, false};
+            for (const Pane& pane : tab.panes) {
+                combined.push_back(pane);
+                slice.sharp |= pane.params.highlighted;
+            }
+            slice.end = combined.size();
+            if (slice.end > slice.begin) slices.push_back(slice);
+        }
+    }
+    const std::vector<Pane>& drawn = otherTabs ? combined : panes;
+    const std::size_t visibleCount = panes.size();
+
     std::size_t glyphBound = 0;
-    for (const auto& pane : panes) {
+    for (const auto& pane : drawn) {
         glyphBound += pane.snapshot->cells.size();
         for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
     }
@@ -1066,7 +1095,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     {
         m_frame.clear();
         m_ranges.clear();
-        for (const Pane& pane : panes) {
+        for (const Pane& pane : drawn) {
             const auto first = std::uint32_t(m_frame.size());
             FrameBuilder::PaneParams pp = pane.params;
             pp.allowSubpixel = pp.allowSubpixel && !m_translucent && !(m_post && m_post->active())
@@ -1122,7 +1151,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     }
     // Image quads go after all grid instances; each is drawn with its own texture.
     for (std::size_t i = 0; i < m_ranges.size(); ++i) {
-        const Pane& pane = panes[i];
+        const Pane& pane = drawn[i];
         const QPoint origin = pane.params.contentOrigin;
         for (const AfterglowVt::VisiblePlacement& img : pane.snapshot->images) {
             const float fw = float(img.frame->width);
@@ -1175,6 +1204,18 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     ensureBindings(res);
 
     const QSize px = target.size;
+    const std::span<const DrawRange> visible(m_ranges.data(), visibleCount);
+    // Shrunk tabs share the atlas in a grid of equal tiles.
+    int tiles = 0;
+    for (TabSlice& slice : slices) {
+        if (!slice.sharp) slice.tile = tiles++;
+    }
+    const int atlasColumns = std::max(1, int(std::ceil(std::sqrt(double(tiles)))));
+    const int atlasRows = std::max(1, (tiles + atlasColumns - 1) / atlasColumns);
+    auto atlasTile = [&](int tile) {
+        const int w = px.width() / atlasColumns, h = px.height() / atlasRows;
+        return QRect((tile % atlasColumns) * w, (tile / atlasColumns) * h, w, h);
+    };
     const float uniforms[8] = {
         float(px.width()),
         float(px.height()),
@@ -1277,6 +1318,21 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     std::vector<ShaderRegionState> regions;
     ShaderRegionState windowState;
     TerminalPaneUniforms paneBlock;
+    struct Card
+    {
+        int tab;
+        int indexInTab;
+        QRect rect;
+        int source; ///< 0 the input, 1 the tab target, 2 the atlas
+        QRectF uv;
+        bool focused;
+        bool highlighted;
+    };
+    std::vector<Card> cards;
+    auto toUv = [&px](const QRect& r) {
+        return QRectF(double(r.x()) / px.width(), double(r.y()) / px.height(),
+                      double(r.width()) / px.width(), double(r.height()) / px.height());
+    };
     if (post) {
         const float now = m_clockOverride.value_or(float(m_clock.nsecsElapsed()) / 1e9f);
         time = ShaderFrameTime{now, m_shaderFrame > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
@@ -1360,15 +1416,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 st.signals[i] = {sig.value, now - age};
             }
             st.shaderParameters = pane.params.shaderParameters;
-            if (regions.size() < std::size_t(MaxShaderPanes)) {
-                const int index = int(regions.size());
-                const QRect r = st.rect;
-                std::copy_n(std::array<float, 4>{float(r.x()), float(r.y()), float(r.width()), float(r.height())}.data(), 4,
-                            paneBlock.uPaneRect[index]);
-                paneBlock.uPaneState[0] = index + 1;
-                if (pane.params.focused) paneBlock.uPaneState[1] = index;
-                if (pane.params.highlighted) paneBlock.uPaneState[2] = index;
-            }
+            cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect),
+                             pane.params.focused, pane.params.highlighted});
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;
@@ -1377,6 +1426,42 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
         }
         std::erase_if(m_cursorTracks, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
+        for (const TabSlice& slice : slices) {
+            int indexInTab = 0;
+            for (std::size_t i = slice.begin; i < slice.end; ++i) {
+                const QRect r = drawn[i].params.rect.intersected(QRect(QPoint(), px));
+                if (r.isEmpty()) continue;
+                QRectF uv = toUv(r);
+                if (!slice.sharp) {
+                    // The tab is shrunk into its tile: the same place, scaled.
+                    const QRectF tile = toUv(atlasTile(slice.tile));
+                    uv = QRectF(tile.x() + uv.x() * tile.width(), tile.y() + uv.y() * tile.height(),
+                                uv.width() * tile.width(), uv.height() * tile.height());
+                }
+                cards.push_back({slice.tab, indexInTab++, r, slice.sharp ? 1 : 2, uv, false, drawn[i].params.highlighted});
+            }
+        }
+        // Cards in tab order, then layout order within each tab.
+        std::stable_sort(cards.begin(), cards.end(), [](const Card& a, const Card& b) { return a.tab < b.tab; });
+        QSet<int> tabs;
+        for (std::size_t i = 0; i < cards.size() && i < std::size_t(MaxShaderPanes); ++i) {
+            const Card& card = cards[i];
+            const int index = int(i);
+            const QRect& r = card.rect;
+            const std::array<float, 4> rect{float(r.x()), float(r.y()), float(r.width()), float(r.height())};
+            const std::array<float, 4> source{float(card.uv.x()), float(card.uv.y()), float(card.uv.width()), float(card.uv.height())};
+            std::copy(rect.begin(), rect.end(), paneBlock.uPaneRect[index]);
+            std::copy(source.begin(), source.end(), paneBlock.uPaneSource[index]);
+            paneBlock.uPaneTab[index][0] = card.tab;
+            paneBlock.uPaneTab[index][1] = card.source;
+            paneBlock.uPaneTab[index][2] = card.indexInTab;
+            paneBlock.uPaneState[0] = index + 1;
+            if (card.focused) paneBlock.uPaneState[1] = index;
+            if (card.highlighted) paneBlock.uPaneState[2] = index;
+            tabs.insert(card.tab);
+        }
+        paneBlock.uTabState[0] = int(tabs.size());
+        paneBlock.uTabState[1] = m_overview.currentTab;
         const auto wall = std::chrono::steady_clock::now();
         auto age = [&](const auto& at) { return at ? std::chrono::duration<float>(wall - *at).count() : 1e6f; };
         paneBlock.uPaneState[3] = m_overview.open ? 1 : 0;
@@ -1429,6 +1514,21 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             cb->draw(4, overlayEnd - overlayFirst, 0, overlayFirst);
         }
     };
+    auto drawRange = [&](const DrawRange& range) {
+        if (range.scissor.isEmpty()) {
+            return;
+        }
+        cb->setScissor(scissor(range.scissor));
+        drawBackgrounds(range);
+        if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+        else drawSpan(range.cursorOtherStart, range.end);
+        drawImages(range, true);
+        cb->setScissor(scissor(range.scissor));
+        drawSpan(range.textStart, range.cursorStart);
+        if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+        else drawSpan(range.cursorOtherStart, range.end);
+        drawImages(range, false);
+    };
 
     if (post && m_post->layered()) {
         // Each layer into its own texture; the layer chains then run on them
@@ -1456,7 +1556,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             frame.beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, first ? updates : nullptr);
             first = false;
             bindGrid();
-            for (const DrawRange& range : m_ranges) {
+            for (const DrawRange& range : visible) {
                 if (!range.scissor.isEmpty()) {
                     cb->setScissor(scissor(range.scissor));
                     draw(range);
@@ -1465,11 +1565,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             frame.endPass();
         }
         std::vector<bool> cursorBelowText;
-        for (const DrawRange& range : m_ranges) {
+        for (const DrawRange& range : visible) {
             if (!range.scissor.intersected(QRect(QPoint(), px)).isEmpty())
                 cursorBelowText.push_back(range.cursorBelowText);
         }
-        const bool otherCursors = std::any_of(m_ranges.begin(), m_ranges.end(), [](const auto& r) { return r.cursorOtherStart < r.end; });
+        const bool otherCursors = std::any_of(visible.begin(), visible.end(), [](const auto& r) { return r.cursorOtherStart < r.end; });
         m_post->composite(frame, regions, cursorBelowText, time, clear, otherCursors);
         bindGrid();
         drawOverlays();
@@ -1479,24 +1579,23 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         // other cursors, images above.
         frame.beginPass(gridTarget, clear, {1.0f, 0}, updates);
         bindGrid();
-        for (const DrawRange& range : m_ranges) {
-            if (range.scissor.isEmpty()) {
-                continue;
-            }
-            cb->setScissor(scissor(range.scissor));
-            drawBackgrounds(range);
-            if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-            else drawSpan(range.cursorOtherStart, range.end);
-            drawImages(range, true);
-            cb->setScissor(scissor(range.scissor));
-            drawSpan(range.textStart, range.cursorStart);
-            if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-            else drawSpan(range.cursorOtherStart, range.end);
-            drawImages(range, false);
-        }
+        for (const DrawRange& range : visible) drawRange(range);
         drawOverlays();
         if (post) {
             frame.endPass();
+        }
+    }
+    if (post && !slices.empty()) {
+        // Other tabs for the overview: each into the tab target, then shrunk
+        // into its atlas tile. The highlighted pane's tab goes last and stays.
+        QRhiTextureRenderTarget* tabTarget = m_post->overviewTabTarget();
+        std::stable_partition(slices.begin(), slices.end(), [](const TabSlice& slice) { return !slice.sharp; });
+        for (const TabSlice& slice : slices) {
+            frame.beginPass(tabTarget, clear, {1.0f, 0}, nullptr);
+            bindGrid();
+            for (std::size_t i = slice.begin; i < slice.end; ++i) drawRange(m_ranges[i]);
+            frame.endPass();
+            if (slice.tile >= 0) m_post->shrinkTabToAtlas(frame, atlasTile(slice.tile));
         }
     }
     if (post) {

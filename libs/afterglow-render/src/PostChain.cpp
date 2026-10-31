@@ -73,6 +73,30 @@ constexpr int PreviousTextBinding = PhosphorShaders::Bindings::kExtraBase;
 /// TerminalScene in terminal_scene.glsl: object matrices for mesh passes.
 constexpr int SceneBinding = PreviousTextBinding + 1;
 constexpr int PanesBinding = SceneBinding + 1;
+constexpr int OverviewTabBinding = PanesBinding + 1;
+constexpr int OverviewAtlasBinding = OverviewTabBinding + 1;
+
+/// Shrinks the window-sized tab image into an atlas tile: each tile pixel
+/// averages a 3x3 grid across the source pixels it covers.
+const ShaderProgram& shrinkProgram()
+{
+    static const std::shared_ptr<ShaderProgram> program = [] {
+        ShaderProgramSource source;
+        source.id = QStringLiteral("overview-shrink");
+        source.code = "vec4 pTerminal(vec2 uv) {\n"
+                      "    vec2 tilePixel = 1.0 / iResolution;\n"
+                      "    vec4 sum = vec4(0.0);\n"
+                      "    for (int y = -1; y <= 1; ++y)\n"
+                      "        for (int x = -1; x <= 1; ++x) sum += terminalTexel(uv + vec2(x, y) * tilePixel / 3.0);\n"
+                      "    return sum / 9.0;\n"
+                      "}\n";
+        QString error;
+        auto compiled = ShaderProgram::compile(source, &error);
+        if (!compiled) throw std::runtime_error("overview shrink shader failed: " + error.toStdString());
+        return compiled;
+    }();
+    return *program;
+}
 static_assert(PhosphorShaders::Bindings::kUserTextureCount == MaxShaderImages);
 
 struct CompositeUniforms
@@ -170,6 +194,10 @@ void PostChain::release()
     m_ubos.clear();
     m_sceneUbos.clear();
     m_panesUbo.reset();
+    m_overviewTabTarget.reset();
+    m_overviewAtlasTarget.reset();
+    m_overviewTab.reset();
+    m_overviewAtlas.reset();
     m_compositeUbos.clear();
     m_historyTarget.reset();
     m_previousText.reset();
@@ -214,6 +242,13 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
         }
     }
     const auto format = m_chains.highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
+    // Other tabs' images exist only while the overview shows.
+    if (!m_overviewShowing || size != m_size) {
+        m_overviewTabTarget.reset();
+        m_overviewAtlasTarget.reset();
+        m_overviewTab.reset();
+        m_overviewAtlas.reset();
+    }
     // Layer textures come and go with the layer chains.
     const bool layersReady = layered() == bool(m_textures[FirstLayerTexture]);
     const bool historyReady = m_chains.textHistory() == bool(m_previousText);
@@ -323,6 +358,54 @@ void PostChain::uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPane
     updates->updateDynamicBuffer(panesBuffer(), 0, sizeof panes, &panes);
 }
 
+QRhiTextureRenderTarget* PostChain::overviewTabTarget()
+{
+    if (!m_overviewTabTarget) {
+        QRhi* rhi = m_device.rhi();
+        const auto format = m_chains.highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
+        m_overviewTab.reset(rhi->newTexture(format, m_size, 1, QRhiTexture::RenderTarget));
+        m_overviewAtlas.reset(rhi->newTexture(format, m_size, 1, QRhiTexture::RenderTarget));
+        if (!m_overviewTab->create() || !m_overviewAtlas->create()) throw std::runtime_error("overview tab allocation failed");
+        m_overviewTabTarget.reset(rhi->newTextureRenderTarget({m_overviewTab.get()}));
+        m_overviewTabTarget->setRenderPassDescriptor(m_gridPass.get());
+        m_overviewAtlasTarget.reset(rhi->newTextureRenderTarget({m_overviewAtlas.get()},
+                                                                QRhiTextureRenderTarget::PreserveColorContents));
+        m_overviewAtlasTarget->setRenderPassDescriptor(m_renderPass.get());
+        if (!m_overviewTabTarget->create() || !m_overviewAtlasTarget->create())
+            throw std::runtime_error("overview tab target failed");
+        // Bindings made earlier this frame point at the old textures.
+        m_bindings.clear();
+    }
+    return m_overviewTabTarget.get();
+}
+
+void PostChain::shrinkTabToAtlas(RenderFrame& frame, const QRect& tile)
+{
+    if (!m_overviewTab || tile.isEmpty()) return;
+    auto* cb = frame.commands();
+    const ShaderProgram& program = shrinkProgram();
+    const int ubo = m_nextUbo++;
+    TerminalUniforms u{};
+    u.base.iResolution[0] = float(tile.width());
+    u.base.iResolution[1] = float(tile.height());
+    u.terminal.uCanvas[0] = float(tile.x());
+    u.terminal.uCanvas[1] = float(tile.y());
+    u.terminal.uCanvas[2] = float(tile.width());
+    u.terminal.uCanvas[3] = float(tile.height());
+    u.terminal.uTargetSize[0] = float(m_size.width());
+    u.terminal.uTargetSize[1] = float(m_size.height());
+    QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
+    updates->updateDynamicBuffer(uniformBuffer(ubo), 0, sizeof u, &u);
+    auto* resources = bindings(ubo, 0, nullptr, &program, nullptr, nullptr, m_overviewTab.get());
+    frame.beginPass(m_overviewAtlasTarget.get(), Qt::transparent, {1.0f, 0}, updates);
+    cb->setGraphicsPipeline(pipeline(program, m_renderPass.get()));
+    cb->setViewport({0, 0, float(m_size.width()), float(m_size.height())});
+    cb->setScissor(scissorFor(tile, m_size));
+    cb->setShaderResources(resources);
+    cb->draw(3);
+    frame.endPass();
+}
+
 QRhiBuffer* PostChain::sceneBuffer(int index)
 {
     while (int(m_sceneUbos.size()) <= index) {
@@ -401,11 +484,11 @@ QRhiTexture* PostChain::parameterTexture(const QImage& image, QRhiResourceUpdate
 }
 
 QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const ShaderRegionState* region,
-    const ShaderProgram* program, const BufferInputs* buffers, QRhiResourceUpdateBatch* updates)
+    const ShaderProgram* program, const BufferInputs* buffers, QRhiResourceUpdateBatch* updates, QRhiTexture* source)
 {
     auto slot = std::unique_ptr<QRhiShaderResourceBindings>(m_device.rhi()->newShaderResourceBindings());
     const auto stage = QRhiShaderResourceBinding::FragmentStage | QRhiShaderResourceBinding::VertexStage;
-    auto* input = m_textures[texture].get();
+    auto* input = source ? source : m_textures[texture].get();
     auto* history = m_previousText ? m_previousText.get() : input;
     if (region) { input = localTexture(input, region->rect, updates); history = localTexture(history, region->rect, updates); }
     // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
@@ -419,6 +502,11 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
         QRhiShaderResourceBinding::sampledTexture(PreviousTextBinding, stage, history, m_sampler.get()),
         QRhiShaderResourceBinding::uniformBuffer(SceneBinding, stage, sceneBuffer(ubo)),
         QRhiShaderResourceBinding::uniformBuffer(PanesBinding, stage, panesBuffer()),
+        // The shrink pass (an explicit source) renders into the atlas, so it binds neither.
+        QRhiShaderResourceBinding::sampledTexture(OverviewTabBinding, stage,
+            m_overviewTab && !source ? m_overviewTab.get() : input, m_sampler.get()),
+        QRhiShaderResourceBinding::sampledTexture(OverviewAtlasBinding, stage,
+            m_overviewAtlas && !source ? m_overviewAtlas.get() : input, m_sampler.get()),
     };
     for (int i = 0; i < MaxShaderBuffers; ++i)
         entries.push_back(QRhiShaderResourceBinding::sampledTexture(Bindings::kChannelBase + i, stage,

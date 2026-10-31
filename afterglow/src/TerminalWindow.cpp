@@ -1216,6 +1216,30 @@ void TerminalWindow::renderNow()
                                   m_settings.settings().window.dividerColor);
         }
     });
+    // The overview shows other tabs' panes too, each prepared like a visible one.
+    AfterglowRender::WindowRenderer::Overview overview{m_overview.open, float(m_overview.amount.value()),
+        float(m_overview.position.value()), m_overview.changedAt, m_overview.movedAt, m_currentTab, {}};
+    if (m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3) {
+        const auto cards = overviewPanes();
+        for (int tab = 0; tab < int(m_tabs.size()); ++tab) {
+            if (tab == m_currentTab || !m_tabs[std::size_t(tab)]->splits) continue;
+            AfterglowRender::WindowRenderer::OverviewTab other{tab, {}};
+            m_tabs[std::size_t(tab)]->splits->forEachPane([&](Pane* p, const QRect& r) {
+                if (r.isEmpty() || std::find(cards.begin(), cards.end(), p) == cards.end()) return;
+                AfterglowRender::WindowRenderer::Pane wp;
+                preparePane(p, r, wp.params, holding, animating);
+                wp.snapshot = &p->snapshot();
+                wp.params.focused = false;
+                wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
+                wp.params.cursorBlinkOn = m_blinkOn;
+                wp.params.textBlinkOn = m_textBlinkOn;
+                wp.params.backgroundAlpha = backgroundAlpha;
+                other.panes.push_back(std::move(wp));
+            });
+            if (!other.panes.empty()) overview.otherTabs.push_back(std::move(other));
+        }
+    }
+    m_renderer->setOverview(std::move(overview));
     // Split labels, in logical pixels for the chrome.
     QVariantList titles;
     if (multiple && m_settings.settings().window.paneTitles && !m_renderer->overviewShowing()) {

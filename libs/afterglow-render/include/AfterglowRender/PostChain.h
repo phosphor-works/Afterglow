@@ -159,6 +159,13 @@ public:
     /// The pane block for this frame (terminal_panes.glsl), into @p updates
     /// before the frame's first pass.
     void uploadPanes(QRhiResourceUpdateBatch* updates, const TerminalPaneUniforms& panes);
+    /// While the overview shows, after prepare(): a clearing, window-sized
+    /// target for one other tab, compatible with the grid's pipelines.
+    /// terminal_panes.glsl samples it as uOverviewTab.
+    QRhiTextureRenderTarget* overviewTabTarget();
+    /// Shrinks the tab in overviewTabTarget() into @p tile of the overview
+    /// atlas (uOverviewAtlas), in window pixels.
+    void shrinkTabToAtlas(RenderFrame& frame, const QRect& tile);
     bool layered() const noexcept { return m_chains.layered(); }
     /// Some shader reads iTime: the window renders every frame.
     bool animated() const noexcept;
@@ -202,7 +209,8 @@ private:
         std::array<QSize, MaxShaderBuffers> sizes{};
     };
     QRhiShaderResourceBindings* bindings(int ubo, int texture, const ShaderRegionState* region = nullptr,
-        const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr, QRhiResourceUpdateBatch* updates = nullptr);
+        const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr, QRhiResourceUpdateBatch* updates = nullptr,
+        QRhiTexture* input = nullptr);
     QRhiTexture* localTexture(QRhiTexture* source, const QRect& rect, QRhiResourceUpdateBatch* updates);
     QRhiTexture* parameterTexture(const QImage& image, QRhiResourceUpdateBatch* updates);
     QRhiShaderResourceBindings* compositeBindings(int ubo, int background, int text, int cursor, int other);
@@ -238,6 +246,10 @@ private:
     ShaderChains m_chains;
     bool m_overviewShowing = false;
     std::unique_ptr<QRhiBuffer> m_panesUbo;
+    std::unique_ptr<QRhiTexture> m_overviewTab;
+    std::unique_ptr<QRhiTexture> m_overviewAtlas;
+    std::unique_ptr<QRhiTextureRenderTarget> m_overviewTabTarget;
+    std::unique_ptr<QRhiTextureRenderTarget> m_overviewAtlasTarget;
     std::map<std::pair<const ShaderProgram*, const QRhiRenderPassDescriptor*>, std::unique_ptr<QRhiGraphicsPipeline>>
         m_pipelines;
     QShader m_vertex;

@@ -266,19 +266,29 @@ Send `objectIndex()` to the fragment stage in a flat output when that stage need
 ## Panes and the overview
 
 A window shader sees the whole window but, without `terminal_panes.glsl`, not where its panes are.
-Include `terminal_panes.glsl` in any pass to read the current tab's panes and the pane overview.
+Include `terminal_panes.glsl` in any pass to read the panes and the pane overview.
+The block lists panes as cards, in tab order and then in layout order within each tab.
+While the overview is closed, the cards are the current tab's panes.
+While it shows, the cards are the panes of every tab, up to 32.
 
 | Function | Value |
 | --- | --- |
-| `paneCount()` | The panes in the tab, up to 32, in layout order. |
-| `paneRect(i)` | Pane `i` in window pixels: x, y, width and height. |
-| `focusedPane()` | The focused pane. |
-| `highlightedPane()` | The pane the overview highlights, or -1. |
+| `paneCount()` | The number of cards. |
+| `paneRect(i)` | Card `i`'s pane in window pixels: x, y, width and height, in its own tab's layout. |
+| `paneTab(i)`, `currentTab()` | The card's tab index and the current tab's index. |
+| `paneInCurrentTab(i)` | True for a pane of the current tab. |
+| `paneTexel(i, uv)` | The card's pixels at `uv`, from (0, 0) at its top-left corner to (1, 1). |
+| `focusedPane()` | The focused card. |
+| `highlightedPane()` | The card the overview highlights, or -1. |
 | `overviewOpen()` | True while the overview is open. False while it closes. |
 | `overviewAmount()` | 0 for the flat window, 1 when the overview is open. A spring can pass 1 briefly. |
-| `highlightPosition()` | The highlight as a pane index. It is fractional while the highlight moves. |
+| `highlightPosition()` | The highlight as a card index. It is fractional while the highlight moves. |
 
-A window shader samples point `p` of a pane at `uv = p / iResolution`.
+`paneTexel()` reads the current tab's panes from the pass input.
+It reads other tabs from images that Afterglow renders while the overview shows.
+The highlighted card's tab is at full resolution. Other tabs share one window-sized atlas, so they are smaller.
+These images do not include layer or pane shaders.
+Use `paneTexel()` in window and overview passes. In other passes, its input is not the window.
 `uOverview.z` and `uOverview.w` hold the seconds since the overview opened or closed and since the highlight moved.
 
 `Shaders.overview` names the pack that draws the pane overview.
@@ -286,10 +296,12 @@ Afterglow runs that pack after the window chain, only while the overview shows.
 It costs nothing while the overview is closed.
 Afterglow eases `overviewAmount()` and `highlightPosition()` with `Animation.overviewCurve`, so a shader reads positions and never times motion itself.
 Draw the flat window when `overviewAmount()` is 0. Opening and closing then start and end on the window.
+A choice in another tab switches tabs as the overview closes. `currentTab()` changes during that close.
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
 
 Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.
+While the overview shows, other tabs use two more window-sized textures. Afterglow releases them when it closes.
 [Pane Deck](../data/shaders/pane-deck/effect.frag) traces the panes as live cards on a carousel in one pass.
 
 ## Images

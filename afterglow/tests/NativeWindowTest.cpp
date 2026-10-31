@@ -914,3 +914,43 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     EXPECT_FALSE(window->overviewOpen());
     EXPECT_EQ(window->focusedPane(), second);
 }
+
+TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    drain();
+    auto* second = window->focusedPane();
+    ASSERT_NE(second, first);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* third = window->splitPane(second, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(third, nullptr);
+    window->revealPane(second);
+    drain();
+    auto press = [&](int key) {
+        QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &down);
+        QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &up);
+        drain();
+    };
+    ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
+    drain();
+    EXPECT_EQ(window->overviewHighlight(), second);
+    // Cards run in tab order: Left from the second tab's first pane reaches the first tab.
+    press(Qt::Key_Left);
+    EXPECT_EQ(window->overviewHighlight(), first);
+    press(Qt::Key_Right);
+    press(Qt::Key_Right);
+    EXPECT_EQ(window->overviewHighlight(), third);
+    // Up and Down jump to the first pane of the previous or next tab.
+    press(Qt::Key_Up);
+    EXPECT_EQ(window->overviewHighlight(), first);
+    press(Qt::Key_Down);
+    EXPECT_EQ(window->overviewHighlight(), second);
+    press(Qt::Key_Up);
+    press(Qt::Key_Return);
+    EXPECT_FALSE(window->overviewOpen());
+    EXPECT_EQ(window->focusedPane(), first);
+    EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
+}

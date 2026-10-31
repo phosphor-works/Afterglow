@@ -420,15 +420,17 @@ private:
     } m_overview;
     bool m_overviewAvailable = false; ///< Shaders.overview compiled
     int m_overviewWheel = 0; ///< wheel travel not yet a whole step
-    /// The panes the overview shows, in layout order.
+    /// The overview's cards: while it shows, every tab's panes in tab order,
+    /// then layout order; otherwise the current tab's.
     std::vector<Pane*> overviewPanes() const;
+    void layoutOtherTabs();
     /// Focuses @p chosen and closes; nullptr cancels back to the original pane.
     void closeOverview(Pane* chosen);
     void moveOverview(int index);
     void overviewKey(QKeyEvent* e);
     PhosphorAnimation::MotionSpec<qreal> overviewSpec();
-    /// Advances the overview's motion and hands it to the renderer. Closes it
-    /// when its panes went away. Sets @p animating while it moves.
+    /// Advances the overview's motion. Closes it when its panes went away.
+    /// Sets @p animating while it moves.
     void advanceOverview(bool& animating);
 
     // Unicode input: a codepoint typed in hex.

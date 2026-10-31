@@ -28,7 +28,7 @@ Shader output must also use premultiplied alpha.
 Afterglow draws the tab bar and other controls after all shader chains.
 Without layer shaders, Afterglow does not allocate separate layers.
 
-The pane overview (`pane_overview`, Ctrl+Shift+D) shows the tab's panes in 3D.
+The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab in 3D.
 The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
 The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.

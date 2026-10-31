@@ -212,6 +212,12 @@ public:
     void setShaderChains(ShaderChains chains);
     /// A shader animates over time: the host keeps scheduling frames.
     bool animating() const;
+    /// Another tab's panes, for the overview.
+    struct OverviewTab
+    {
+        int index = 0;
+        std::vector<Pane> panes; ///< laid out in the window, like the current tab's
+    };
     /// The pane overview for terminal_panes.glsl, eased by the host. The
     /// overview chain runs while it is open and until it has closed.
     struct Overview
@@ -221,8 +227,11 @@ public:
         float position = 0; ///< the highlight, as a fractional pane index
         std::optional<std::chrono::steady_clock::time_point> changedAt; ///< opened or closed
         std::optional<std::chrono::steady_clock::time_point> movedAt; ///< the highlight moved
+        int currentTab = 0; ///< the index of the tab render() draws
+        /// Other tabs, drawn into their own images while the overview shows.
+        std::vector<OverviewTab> otherTabs;
     };
-    void setOverview(const Overview& overview) { m_overview = overview; }
+    void setOverview(Overview overview) { m_overview = std::move(overview); }
     /// Open, or still closing.
     bool overviewShowing() const;
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.

@@ -107,7 +107,9 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("grid"), QStringLiteral("Show the terminal in a grid of COLSxROWS panes; the first focused."), QStringLiteral("size")});
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
-    parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview (default 0)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview, counting every tab (default 0)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("current-tab"), QStringLiteral("With --tabs: the current tab (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("family"), QStringLiteral("Font family."), QStringLiteral("name")});
     parser.addOption({QStringLiteral("weight"), QStringLiteral("Font weight (variable fonts)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("feature"), QStringLiteral("OpenType feature, replacing the defaults (repeatable; \"none\" for none)."),
@@ -380,11 +382,31 @@ int main(int argc, char** argv)
             }
         }
     }
+    // Other tabs: copies of the same panes, with their own snapshots.
+    const int tabCount = std::clamp(parser.isSet(QStringLiteral("tabs")) ? parser.value(QStringLiteral("tabs")).toInt() : 1, 1,
+                                    std::max(1, AfterglowRender::MaxShaderPanes / int(panes.size())));
+    const int currentTab = std::clamp(parser.value(QStringLiteral("current-tab")).toInt(), 0, tabCount - 1);
+    std::vector<AfterglowRender::PaneSnapshot> tabSnapshots(panes.size() * std::size_t(tabCount), snapshot);
     if (parser.isSet(QStringLiteral("overview"))) {
-        const int highlight = std::clamp(parser.value(QStringLiteral("highlight")).toInt(), 0, int(panes.size()) - 1);
-        panes[std::size_t(highlight)].params.highlighted = true;
+        const int perTab = int(panes.size());
+        const int highlight = std::clamp(parser.value(QStringLiteral("highlight")).toInt(), 0, perTab * tabCount - 1);
         const float amount = parser.isSet(QStringLiteral("overview-amount")) ? parser.value(QStringLiteral("overview-amount")).toFloat() : 1.0f;
-        renderer.setOverview({true, amount, float(highlight), std::chrono::steady_clock::now(), std::chrono::steady_clock::now()});
+        AfterglowRender::WindowRenderer::Overview overview{true, amount, float(highlight), std::chrono::steady_clock::now(),
+                                                            std::chrono::steady_clock::now(), currentTab, {}};
+        for (int tab = 0; tab < tabCount; ++tab) {
+            if (tab == currentTab) continue;
+            AfterglowRender::WindowRenderer::OverviewTab other{tab, {}};
+            for (int i = 0; i < perTab; ++i) {
+                auto copy = panes[std::size_t(i)];
+                copy.snapshot = &tabSnapshots[std::size_t(tab * perTab + i)];
+                copy.params.focused = false;
+                copy.params.highlighted = tab * perTab + i == highlight;
+                other.panes.push_back(copy);
+            }
+            overview.otherTabs.push_back(std::move(other));
+        }
+        if (highlight / perTab == currentTab) panes[std::size_t(highlight % perTab)].params.highlighted = true;
+        renderer.setOverview(std::move(overview));
     }
     const QFileInfo output(args[1]);
     double renderMs = 0.0, pngMs = 0.0;
