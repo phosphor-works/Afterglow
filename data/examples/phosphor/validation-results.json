@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-30",
+  "date": "2026-10-31",
   "gpu": "NVIDIA GeForce RTX 2080 8 GiB",
   "driver": "615.78.08",
   "cpu": "Intel Core i7-9700K",
@@ -26,110 +26,164 @@
     {
       "case": "1920x1080-plain",
       "frames_after_warmup": 31,
-      "p50_ms": 4.28,
-      "p95_ms": 6.56,
-      "mean_ms": 4.49,
+      "p50_ms": 5.14,
+      "p95_ms": 6.97,
+      "mean_ms": 5.47,
       "gpu_peak_mib": 51,
-      "gpu_samples": 1
+      "gpu_samples": 2
     },
     {
       "case": "1920x1080-field-baseline-repeat",
       "frames_after_warmup": 11,
-      "p50_ms": 21.13,
-      "p95_ms": 22.92,
-      "mean_ms": 20.54,
-      "gpu_peak_mib": 159,
-      "gpu_samples": 2
+      "p50_ms": 18.65,
+      "p95_ms": 24.01,
+      "mean_ms": 18.99,
+      "gpu_peak_mib": 177,
+      "gpu_samples": 3
     },
     {
       "case": "1920x1080-quiet",
       "frames_after_warmup": 31,
-      "p50_ms": 15.7,
-      "p95_ms": 16.78,
-      "mean_ms": 15.64,
-      "gpu_peak_mib": 177,
-      "gpu_samples": 4
+      "p50_ms": 18.17,
+      "p95_ms": 20.85,
+      "mean_ms": 20.12,
+      "gpu_peak_mib": 195,
+      "gpu_samples": 5
     },
     {
       "case": "1920x1080-balanced",
       "frames_after_warmup": 31,
-      "p50_ms": 21.96,
-      "p95_ms": 22.97,
-      "mean_ms": 21.99,
-      "gpu_peak_mib": 177,
-      "gpu_samples": 6
+      "p50_ms": 24.65,
+      "p95_ms": 26.89,
+      "mean_ms": 24.79,
+      "gpu_peak_mib": 195,
+      "gpu_samples": 7
     },
     {
       "case": "1920x1080-cinematic",
       "frames_after_warmup": 31,
-      "p50_ms": 33.52,
-      "p95_ms": 35.9,
-      "mean_ms": 33.77,
-      "gpu_peak_mib": 177,
-      "gpu_samples": 8
+      "p50_ms": 37.89,
+      "p95_ms": 40.22,
+      "mean_ms": 37.97,
+      "gpu_peak_mib": 195,
+      "gpu_samples": 9
     },
     {
       "case": "1920x1080-balanced-feedback",
       "frames_after_warmup": 31,
-      "p50_ms": 22.55,
-      "p95_ms": 23.9,
-      "mean_ms": 22.47,
-      "gpu_peak_mib": 189,
-      "gpu_samples": 6
+      "p50_ms": 25.78,
+      "p95_ms": 28.58,
+      "mean_ms": 25.62,
+      "gpu_peak_mib": 207,
+      "gpu_samples": 7
+    },
+    {
+      "case": "1920x1080-mesh-reactor",
+      "frames_after_warmup": 31,
+      "p50_ms": 6.77,
+      "p95_ms": 9.04,
+      "mean_ms": 6.89,
+      "gpu_peak_mib": 226,
+      "gpu_samples": 3
+    },
+    {
+      "case": "1920x1080-mesh-scene",
+      "frames_after_warmup": 31,
+      "p50_ms": 11.24,
+      "p95_ms": 13.99,
+      "mean_ms": 11.19,
+      "gpu_peak_mib": 244,
+      "gpu_samples": 4
+    },
+    {
+      "case": "1920x1080-mesh-scene-split",
+      "frames_after_warmup": 31,
+      "p50_ms": 11.62,
+      "p95_ms": 16.33,
+      "mean_ms": 12.09,
+      "gpu_peak_mib": 308,
+      "gpu_samples": 5
     },
     {
       "case": "3840x2160-plain",
       "frames_after_warmup": 31,
-      "p50_ms": 10.78,
-      "p95_ms": 13.29,
-      "mean_ms": 11.13,
+      "p50_ms": 16.2,
+      "p95_ms": 19.76,
+      "mean_ms": 16.39,
       "gpu_peak_mib": 73,
-      "gpu_samples": 3
+      "gpu_samples": 4
     },
     {
       "case": "3840x2160-field-baseline-repeat",
       "frames_after_warmup": 11,
-      "p50_ms": 59.53,
-      "p95_ms": 61.93,
-      "mean_ms": 59.15,
-      "gpu_peak_mib": 457,
-      "gpu_samples": 6
+      "p50_ms": 65.54,
+      "p95_ms": 67.86,
+      "mean_ms": 65.75,
+      "gpu_peak_mib": 521,
+      "gpu_samples": 7
     },
     {
       "case": "3840x2160-quiet",
       "frames_after_warmup": 31,
-      "p50_ms": 46.72,
-      "p95_ms": 49.63,
-      "mean_ms": 47.33,
-      "gpu_peak_mib": 521,
-      "gpu_samples": 12
+      "p50_ms": 57.33,
+      "p95_ms": 61.37,
+      "mean_ms": 57.14,
+      "gpu_peak_mib": 585,
+      "gpu_samples": 14
     },
     {
       "case": "3840x2160-balanced",
       "frames_after_warmup": 31,
-      "p50_ms": 68.41,
-      "p95_ms": 71.84,
-      "mean_ms": 68.69,
-      "gpu_peak_mib": 521,
-      "gpu_samples": 16
+      "p50_ms": 81.39,
+      "p95_ms": 86.65,
+      "mean_ms": 81.48,
+      "gpu_peak_mib": 585,
+      "gpu_samples": 20
     },
     {
       "case": "3840x2160-cinematic",
       "frames_after_warmup": 31,
-      "p50_ms": 112.68,
-      "p95_ms": 121.54,
-      "mean_ms": 113.76,
-      "gpu_peak_mib": 521,
-      "gpu_samples": 23
+      "p50_ms": 125.7,
+      "p95_ms": 136.15,
+      "mean_ms": 126.31,
+      "gpu_peak_mib": 603,
+      "gpu_samples": 27
     },
     {
       "case": "3840x2160-balanced-feedback",
       "frames_after_warmup": 31,
-      "p50_ms": 69.3,
-      "p95_ms": 72.96,
-      "mean_ms": 69.47,
-      "gpu_peak_mib": 557,
-      "gpu_samples": 16
+      "p50_ms": 82.35,
+      "p95_ms": 89.04,
+      "mean_ms": 81.85,
+      "gpu_peak_mib": 621,
+      "gpu_samples": 18
+    },
+    {
+      "case": "3840x2160-mesh-reactor",
+      "frames_after_warmup": 31,
+      "p50_ms": 21.77,
+      "p95_ms": 26.95,
+      "mean_ms": 22.24,
+      "gpu_peak_mib": 709,
+      "gpu_samples": 7
+    },
+    {
+      "case": "3840x2160-mesh-scene",
+      "frames_after_warmup": 31,
+      "p50_ms": 34.28,
+      "p95_ms": 38.72,
+      "mean_ms": 34.14,
+      "gpu_peak_mib": 773,
+      "gpu_samples": 11
+    },
+    {
+      "case": "3840x2160-mesh-scene-split",
+      "frames_after_warmup": 31,
+      "p50_ms": 35.22,
+      "p95_ms": 42.52,
+      "mean_ms": 36.58,
+      "gpu_peak_mib": 1029,
+      "gpu_samples": 11
     }
   ]
 }

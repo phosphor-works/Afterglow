@@ -23,7 +23,9 @@ repo = Path(__file__).resolve().parents[2]
 out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
 config = out / 'config/afterglow/shaders'
 shutil.copytree(repo / 'data/examples/phosphor/shaders', config, dirs_exist_ok=True)
-shutil.copytree(repo / 'data/shaders/feedback-glow', config / 'feedback-glow', dirs_exist_ok=True)
+# Bundled packs are copied too, so an older installed copy cannot shadow them.
+for pack in ['feedback-glow', 'mesh-reactor']:
+    shutil.copytree(repo / 'data/shaders' / pack, config / pack, dirs_exist_ok=True)
 source = out / 'input.ansi'
 source.write_text('\x1b[38;2;100;228;242mPHOSPHOR / REACTIVE SCENE\x1b[0m\r\n\r\n' +
     ''.join(f'  [{i:02d}]  build / render / verify    \x1b[32mPASS\x1b[0m\r\n' for i in range(24)) +
@@ -31,6 +33,9 @@ source.write_text('\x1b[38;2;100;228;242mPHOSPHOR / REACTIVE SCENE\x1b[0m\r\n\r\
 env = dict(os.environ, XDG_CONFIG_HOME=str(out / 'config'))
 results = []
 full = ['--background-shader','phosphor-field','--background-shader','phosphor-lens',
+        '--text-shader','phosphor-emission','--cursor-shader','phosphor-cursor','--pane-shader','phosphor-frame']
+# The launcher's --mesh scene: the mesh reactor in linear light, then the Phosphor lens and chains.
+mesh = ['--background-shader','mesh-reactor','--param','mesh-reactor:linearOutput=1','--background-shader','phosphor-lens',
         '--text-shader','phosphor-emission','--cursor-shader','phosphor-cursor','--pane-shader','phosphor-frame']
 for pixels in ['1920x1080', '3840x2160']:
     for name, extra, frames in [
@@ -40,9 +45,15 @@ for pixels in ['1920x1080', '3840x2160']:
         ('balanced',full+['--param','phosphor-field:quality=1'],32),
         ('cinematic',full+['--param','phosphor-field:quality=2','--param','phosphor-field:intensity=1.15','--param','phosphor-field:audioStrength=1.2'],32),
         ('balanced-feedback',full+['--param','phosphor-field:quality=1','--text-shader','feedback-glow'],32),
+        ('mesh-reactor',['--background-shader','mesh-reactor'],32),
+        ('mesh-scene',mesh,32),
+        ('mesh-scene-split',mesh+['--split'],32),
     ]:
         stem = pixels+'-'+name
-        cmd = [str(args.binary.resolve()),'--pixels',pixels,'--cols','120','--rows','40',
+        # Two panes side by side share the same total frame size (and a 2-pixel divider).
+        width, height = map(int, pixels.split('x'))
+        size = f'{(width-2)//2}x{height}' if '--split' in extra else pixels
+        cmd = [str(args.binary.resolve()),'--pixels',size,'--cols','120','--rows','40',
                '--frames',str(frames),'--last-only','--timings','--time','10',
                '--audio-bands','.5,.3,.2','--scrollback-lines','5000'] + extra + [str(source),str(out/(stem+'.png'))]
         memory = []
