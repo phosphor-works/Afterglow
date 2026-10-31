@@ -131,7 +131,7 @@ Parameters update without recompiling or uploading the mesh again.
 
 Each mesh pass has its own depth attachment, cleared to 1 before each draw.
 All instances in that pass share depth. Separate passes do not share visibility tests.
-Depth comparison uses strict `less`; surfaces at equal depth keep the first fragment.
+Depth comparison uses strict `less`. Surfaces at equal depth keep the first fragment.
 Feedback retains color and auxiliary data, but does not retain hardware depth.
 To pass visible depth to another shader, enable `depthBuffer` and write
 `depthBuffer = vec4(gl_FragCoord.z)` in the mesh fragment shader.

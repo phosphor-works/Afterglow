@@ -187,7 +187,7 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/phosphor/ DESTINATION ${CM
 
 # Desktop integration. The app id matches QGuiApplication::desktopFileName,
 # which Wayland uses to find the icon and group windows.
-set(AFTERGLOW_APP_ID io.github.fuddlesworth.Afterglow)
+set(AFTERGLOW_APP_ID com.phosphorworks.Afterglow)
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 install(FILES ${PROJECT_SOURCE_DIR}/data/icons/${AFTERGLOW_APP_ID}.svg

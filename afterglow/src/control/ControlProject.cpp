@@ -136,7 +136,7 @@ void Control::projectDialog(Pane* pane, bool save)
         for (const auto& name : names) {
             bool live = false;
             for (const auto& w : m_windows) if (w && w->projectName() == name && w->focusedPane()) live = true;
-            items << QVariantMap{{QStringLiteral("id"), name}, {QStringLiteral("title"), name + (live ? QStringLiteral(" — running") : QStringLiteral(" — launch saved commands"))}};
+            items << QVariantMap{{QStringLiteral("id"), name}, {QStringLiteral("title"), name + (live ? QStringLiteral(" (running)") : QStringLiteral(" (launch saved commands)"))}};
         }
         if (items.isEmpty()) { report(QStringLiteral("No saved projects. Use Save Project first.")); return; }
         report(window->showScriptDialog(owner, pane, {{QStringLiteral("kind"), QStringLiteral("select")},

@@ -1564,3 +1564,17 @@ TEST_F(ScriptHostTest, MetadataIdsRejectTrailingNewlines)
     host->setEnabled(true);
     EXPECT_TRUE(host->scriptIds().isEmpty());
 }
+
+TEST_F(ScriptHostTest, FailedAndSupersededLooseScriptsRecoverFromInPlaceEdits)
+{
+    write(user, "broken.luau", "return {");
+    write(system, "old.luau", "return {metadata={id='shared'}}");
+    write(user, "winner.luau", "return {metadata={id='shared'}}");
+    host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(), QStringList{"shared"});
+    write(user, "broken.luau", "return {metadata={id='recovered'}}");
+    ASSERT_TRUE(await([&] { return host->scriptIds().contains("recovered"); }));
+    write(system, "old.luau", "return {metadata={id='independent'}}");
+    ASSERT_TRUE(await([&] { return host->scriptIds().contains("independent"); }));
+    EXPECT_TRUE(host->scriptIds().contains("shared"));
+}

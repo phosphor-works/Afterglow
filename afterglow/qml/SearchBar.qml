@@ -15,12 +15,15 @@ Pane {
     padding: 6
     Keys.onEscapePressed: bar.controller.searchOpen = false
 
-    onVisibleChanged: {
+    function syncVisibility() {
         if (visible) {
             query.selectAll()
             Qt.callLater(() => { if (bar.visible) query.forceActiveFocus() })
         }
     }
+
+    onVisibleChanged: syncVisibility()
+    Component.onCompleted: Qt.callLater(syncVisibility)
 
     RowLayout {
         width: parent.width

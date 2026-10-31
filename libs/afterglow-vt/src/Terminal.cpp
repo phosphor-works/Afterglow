@@ -1669,12 +1669,14 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         m_alternate->cursor.x = primaryCursor.x;
         m_alternate->cursor.y = primaryCursor.y;
         if (clear) {
+            m_graphics[1].clearPlacements(*m_alternate, true);
             for (int y = 0; y < rows(); ++y) {
                 m_alternate->eraseRow(m_alternate->row(y), StyleTable::DefaultId);
             }
         }
     } else {
         if (clear) {
+            m_graphics[1].clearPlacements(*m_alternate, true);
             for (int y = 0; y < rows(); ++y) {
                 m_alternate->eraseRow(m_alternate->row(y), StyleTable::DefaultId);
             }
@@ -1953,8 +1955,11 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case '`': {
             const int col = p.atOr(0, 1) - 1;
             Cursor& cur = cursor();
-            cur.x = std::clamp((m_modes.originMode ? m_margins.left : 0) + col, 0, cols() - 1);
+            const int left = m_modes.originMode ? m_margins.left : 0;
+            const int right = m_modes.originMode ? m_margins.right : cols() - 1;
+            cur.x = std::clamp(left + col, left, right);
             cur.pendingWrap = false;
+            clampToLine();
             return;
         }
         case 'H':
@@ -2002,8 +2007,11 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case 'd': {
             const int row = p.atOr(0, 1) - 1;
             Cursor& cur = cursor();
-            cur.y = std::clamp((m_modes.originMode ? m_margins.top : 0) + row, 0, rows() - 1);
+            const int top = m_modes.originMode ? m_margins.top : 0;
+            const int bottom = m_modes.originMode ? m_margins.bottom : rows() - 1;
+            cur.y = std::clamp(top + row, top, bottom);
             cur.pendingWrap = false;
+            clampToLine();
             return;
         }
         case 'g':
@@ -4188,7 +4196,8 @@ void Terminal::oscColor(int which, std::string_view spec, bool bel)
         const std::string_view item = spec.substr(pos, next - pos);
         Rgb* dst = target == 10 ? &m_defaultFg : target == 11 ? &m_defaultBg : &m_cursorColor;
         if (item == "?") {
-            const Rgb value = target == 12 && !m_hasCursorColor ? m_defaultFg : *dst;
+            const Rgb* configured = target == 12 ? cursorColor() : dst;
+            const Rgb value = configured ? *configured : m_defaultFg;
             char prefix[8];
             const int n = std::snprintf(prefix, sizeof prefix, "%d;", target);
             reply(formatColorReply(std::string_view(prefix, std::size_t(n)), value, bel));

@@ -106,7 +106,7 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
         QVariantMap instance;
         for (const auto& item : m_shaderControls.describe(pane->id()))
             if (item.toMap().value(QStringLiteral("instance")) == instanceId) { instance = item.toMap(); break; }
-        if (instance.isEmpty()) return QStringLiteral("Shader instance expired; query shaders again");
+        if (instance.isEmpty()) return QStringLiteral("Shader instance expired. Query shaders again");
         const auto ref = instance.value(QStringLiteral("shader")).toString();
         if (kind == QLatin1String("shader_presets")) { result.insert(QStringLiteral("presets"), m_shaders.presets(ref)); return {}; }
         if (kind == QLatin1String("save_shader_preset"))

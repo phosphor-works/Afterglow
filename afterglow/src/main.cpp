@@ -106,13 +106,13 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("afterglow"));
     QGuiApplication::setApplicationVersion(QStringLiteral(AFTERGLOW_VERSION));
-    QGuiApplication::setDesktopFileName(QStringLiteral("io.github.fuddlesworth.Afterglow"));
+    QGuiApplication::setDesktopFileName(QStringLiteral("com.phosphorworks.Afterglow"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("A GPU accelerated terminal"));
     parser.addHelpOption();
     parser.addVersionOption();
-    parser.addOption({QStringLiteral("config-reference"), QStringLiteral("Print the configuration reference as JSON (use alone; no desktop required).")});
+    parser.addOption({QStringLiteral("config-reference"), QStringLiteral("Print the configuration reference as JSON. Use alone. No desktop required.")});
     const QCommandLineOption cwdOption({QStringLiteral("d"), QStringLiteral("working-directory")},
                                        QStringLiteral("Start in <dir>."), QStringLiteral("dir"));
     const QCommandLineOption quickOption(QStringLiteral("quick-terminal"),
@@ -128,7 +128,7 @@ int main(int argc, char** argv)
                                           QStringLiteral("file"));
     const QCommandLineOption overrideOption(
         {QStringLiteral("o"), QStringLiteral("override")},
-        QStringLiteral("Override a setting: Group.key=value, e.g. Font.size=14 (repeatable; starts a separate afterglow)."),
+        QStringLiteral("Override a setting: Group.key=value, e.g. Font.size=14 (repeatable). Starts a separate afterglow."),
         QStringLiteral("setting"));
     const QCommandLineOption classOption(QStringLiteral("class"),
                                          QStringLiteral("Wayland app id for window rules (starts a separate afterglow)."),

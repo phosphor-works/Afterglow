@@ -186,6 +186,66 @@ TEST(Graphics, ClearScreenDropsPlacements)
     EXPECT_TRUE(t.g().placements().empty());
 }
 
+TEST(Graphics, SixelAllocationAndCoveragePreserveKittyImagesInInternalRange)
+{
+    Term t(20, 10);
+    const auto id = 3u << 29;
+    t.t.feed(apc("a=T,f=32,s=1,v=1,C=1,q=2,i=" + std::to_string(id), b64(rgba(1, 1, 255, 0, 0))));
+    t.t.feed("\x1bPq#1~\x1b\\");
+    ASSERT_EQ(t.g().placements().size(), 2u);
+    EXPECT_FALSE(t.g().images().at(id).isSixel);
+    EXPECT_EQ(t.g().images().at(id).frames[0]->rgba[0], 255);
+    const auto firstSixel = t.g().placements().back().imageId;
+    EXPECT_NE(firstSixel, id);
+    EXPECT_TRUE(t.g().images().at(firstSixel).isSixel);
+    t.t.feed("\x1b[H\x1bPq#2~\x1b\\");
+    EXPECT_EQ(t.g().placements().size(), 2u); // only the covered sixel is replaced
+    EXPECT_EQ(t.g().images().count(firstSixel), 0u);
+    EXPECT_EQ(t.g().images().count(id), 1u);
+}
+
+TEST(Graphics, KittyClaimRelocatesExistingInternalImageAndPreservesItsAnchor)
+{
+    Term t(20, 10);
+    t.t.feed("\x1b[2;3H\x1bPq#1~\x1b\\");
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    const auto old = t.g().placements().front();
+    const auto oldFrame = t.g().images().at(old.imageId).frames[0];
+    t.t.feed("\x1b[5;6H");
+    t.t.feed(apc("a=T,f=32,s=1,v=1,C=1,q=2,i=" + std::to_string(old.imageId), b64(rgba(1, 1, 255, 0, 0))));
+    ASSERT_EQ(t.g().placements().size(), 2u);
+    const auto relocated = t.g().placements().front();
+    EXPECT_NE(relocated.imageId, old.imageId);
+    EXPECT_EQ(relocated.row, old.row);
+    EXPECT_EQ(relocated.col, old.col);
+    EXPECT_EQ(t.g().images().at(relocated.imageId).frames[0], oldFrame);
+    EXPECT_FALSE(t.g().images().at(old.imageId).isSixel);
+    t.t.feed("\x1b[2;3H\x1bPq#2~\x1b\\");
+    EXPECT_EQ(t.g().images().count(relocated.imageId), 0u);
+    EXPECT_EQ(t.g().images().count(old.imageId), 1u);
+    EXPECT_EQ(t.g().placements().size(), 2u);
+}
+
+TEST(Graphics, KittyCommandsCannotAddressAnInternalImage)
+{
+    Term t(20, 10);
+    t.t.feed("\x1bPq#1~\x1b\\");
+    const auto id = t.g().placements().front().imageId;
+    const auto identity = std::to_string(id);
+    t.host.written.clear();
+    t.t.feed(apc("a=p,i=" + identity));
+    EXPECT_NE(t.host.written.find("ENOENT"), std::string::npos);
+    t.t.feed(apc("a=d,d=I,i=" + identity));
+    t.t.feed(apc("a=d,d=R,x=" + identity + ",y=" + identity));
+    EXPECT_EQ(t.g().images().count(id), 1u);
+    EXPECT_EQ(t.g().placements().size(), 1u);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=1,q=2", b64(rgba(1, 1, 1, 2, 3))));
+    t.host.written.clear();
+    t.t.feed(apc("a=p,i=1,P=" + identity));
+    EXPECT_NE(t.host.written.find("ENOPARENT"), std::string::npos);
+    EXPECT_EQ(t.g().placements().size(), 1u);
+}
+
 TEST(Graphics, AltScreenHasItsOwnImages)
 {
     Term t(20, 10);
@@ -194,6 +254,23 @@ TEST(Graphics, AltScreenHasItsOwnImages)
     EXPECT_TRUE(t.g().images().empty());
     t.t.feed("\x1b[?1049l");
     EXPECT_EQ(t.g().images().size(), 1u);
+}
+
+TEST(Graphics, AlternateScreenClearRemovesPlacementsAcrossSessions)
+{
+    Term t(20, 10);
+    t.t.feed("\x1b[?47h");
+    t.t.feed(apc("a=T,f=32,s=1,v=1,i=1,C=1,q=2", b64(rgba(1, 1, 1, 2, 3))));
+    t.t.feed("\x1b[?47l\x1b[?47h");
+    ASSERT_EQ(t.g().placements().size(), 1u); // mode 47 preserves the screen
+    t.t.feed("\x1b[?47l\x1b[?1049h");
+    EXPECT_TRUE(t.g().placements().empty()); // 1049 clears on entry
+    t.t.feed(apc("a=T,f=32,s=1,v=1,i=2,C=1,q=2", b64(rgba(1, 1, 4, 5, 6))));
+    t.t.feed("\x1b[?1049l\x1b[?47h");
+    EXPECT_TRUE(t.g().placements().empty()); // and on exit
+    t.t.feed(apc("a=T,f=32,s=1,v=1,i=3,C=1,q=2", b64(rgba(1, 1, 7, 8, 9))));
+    t.t.feed("\x1b[?1047l\x1b[?47h");
+    EXPECT_TRUE(t.g().placements().empty());
 }
 
 TEST(Graphics, FramesAndAnimation)

@@ -302,9 +302,11 @@ struct DragDrop::State {
             send(read.meta, bytes.toBase64());
             activity.restart();
         } else {
-            send(read.meta);
+            const auto meta = read.meta;
             readBytes -= read.bytes.size();
             reads.pop_front();
+            // Reply handlers may reset the protocol synchronously.
+            send(meta);
         }
     }
     void file(Meta m, const QString& path)

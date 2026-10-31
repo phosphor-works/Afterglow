@@ -12,10 +12,13 @@ Item {
     required property QtObject controller
     readonly property var spec: controller.confirmPrompt
 
-    onVisibleChanged: {
+    function syncVisibility() {
         if (visible)
             Qt.callLater(() => { if (prompt.visible) panel.forceActiveFocus() })
     }
+
+    onVisibleChanged: syncVisibility()
+    Component.onCompleted: Qt.callLater(syncVisibility)
 
     Rectangle {
         anchors.fill: parent

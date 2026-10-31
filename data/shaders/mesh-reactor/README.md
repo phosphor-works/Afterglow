@@ -36,7 +36,7 @@ This launcher copies the current shader pack into a temporary demo configuration
 It does not use an older installed copy of the pack.
 
 The mesh pass submits 319,488 triangles in one instanced draw.
-It renders at 75 percent of the pane width and height and requests two-sample MSAA.
+It renders at 75 percent of the window framebuffer width and height and requests two-sample MSAA.
 Devices that do not support two samples use one sample.
 With two samples, its buffer budget is approximately 53.4 MiB at 1080p
 and 213.6 MiB at 4K. Other shader buffers share the same 256 MiB budget.

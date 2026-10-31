@@ -21,13 +21,16 @@ Item {
         })
     }
 
-    onVisibleChanged: {
+    function syncVisibility() {
         if (visible) {
             input.text = ""
             list.currentIndex = 0
             Qt.callLater(() => { if (commandPalette.visible) input.forceActiveFocus() })
         }
     }
+
+    onVisibleChanged: syncVisibility()
+    Component.onCompleted: Qt.callLater(syncVisibility)
 
     function run(index: int) {
         if (index >= 0 && index < matches.length)
@@ -115,6 +118,14 @@ Item {
                     width: Math.max(0, list.width - (scrollBar.visible ? scrollBar.width + 8 : 0))
                     height: commandPalette.rowHeight
                     text: modelData.title
+                    contentItem: Label {
+                        text: row.text
+                        textFormat: Text.PlainText
+                        font: row.font
+                        color: row.highlighted ? row.palette.highlightedText : row.palette.text
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                    }
                     highlighted: ListView.isCurrentItem
                     focusPolicy: Qt.NoFocus
                     rightPadding: shortcut.width + 24

@@ -11,16 +11,16 @@
 
 namespace Afterglow {
 
-/// The D-Bus face of Control: io.github.fuddlesworth.Afterglow.Control at
-/// /Afterglow/Control. Present on the bus only while Control.enabled is on.
+/// The D-Bus face of Control: com.phosphorworks.Afterglow.Control at
+/// /com/phosphorworks/Afterglow/Control. Present on the bus only while Control.enabled is on.
 class ControlBus : public QObject, protected QDBusContext
 {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "io.github.fuddlesworth.Afterglow.Control")
+    Q_CLASSINFO("D-Bus Interface", "com.phosphorworks.Afterglow.Control")
 
 public:
-    static constexpr const char* Interface = "io.github.fuddlesworth.Afterglow.Control";
-    static constexpr const char* ObjectPath = "/Afterglow/Control";
+    static constexpr const char* Interface = "com.phosphorworks.Afterglow.Control";
+    static constexpr const char* ObjectPath = "/com/phosphorworks/Afterglow/Control";
 
     ControlBus(Control& control, SettingsStore& settings, QObject* parent = nullptr);
     ~ControlBus() override;

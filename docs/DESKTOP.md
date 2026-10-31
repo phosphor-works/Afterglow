@@ -146,7 +146,7 @@ An empty setting always requires permission.
 Each pane permits eight sessions and 16,384 files per session.
 Individual data packets contain at most 4,096 decoded bytes.
 Input and output queues each have a 16 MiB limit.
-An exceeded limit stops the affected work; it does not authorize more filesystem access.
+An exceeded limit stops the affected work. It does not authorize more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
 
 Kitty 0.49.2 can omit empty files when it receives a transfer.

@@ -140,11 +140,10 @@ QString TerminalWindow::detachTabTo(Pane* pane, TerminalWindow* destination)
 bool TerminalWindow::swapPane(Pane* pane, SplitTree::Neighbour direction)
 {
     if (!m_splits || !m_splits->contains(pane)) return false;
-    m_splits->setZoomedPane(nullptr);
-    m_splits->layout(paneArea(), std::max(1, int(std::lround(devicePixelRatio()))));
     auto* other = m_splits->neighbour(pane, direction);
     if (!other || !m_splits->swap(pane, other)) return false;
-    m_dividerDrag.reset();
+    setPaneZoom(nullptr);
+    updateChrome();
     m_layoutSize = {};
     scheduleRender();
     return true;

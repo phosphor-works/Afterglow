@@ -15,6 +15,7 @@ namespace AfterglowVt {
 namespace {
 
 constexpr std::size_t MaxChunkEncoded = 4096;
+constexpr std::size_t MaxMetadata = 4096;
 constexpr std::size_t MaxText = 64 * 1024; // title, body and buttons together
 constexpr std::size_t MaxIcon = 4 * 1024 * 1024;
 constexpr std::size_t MaxPending = 32;
@@ -97,8 +98,11 @@ std::string NotificationAssembler::queryReply(std::string_view id, std::string_v
 
 NotificationAssembler::Result NotificationAssembler::feed(std::string_view payload, NotificationRequest& out)
 {
+    if (payload.size() > MaxMetadata + 1 + MaxChunkEncoded * 2) {
+        return Result::Ignored;
+    }
     const auto semi = payload.find(';');
-    if (semi == std::string_view::npos) {
+    if (semi == std::string_view::npos || semi > MaxMetadata) {
         return Result::Ignored;
     }
     const std::string_view metadata = payload.substr(0, semi);
@@ -133,8 +137,11 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             case 'e':
                 encoded = value == "1";
                 break;
-            default:
+            case 'a': case 'c': case 'f': case 'g': case 'n': case 'o':
+            case 's': case 't': case 'u': case 'w':
                 keys.emplace_back(key, value);
+                break;
+            default:
                 break;
             }
         }

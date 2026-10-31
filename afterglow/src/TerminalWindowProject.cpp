@@ -49,7 +49,7 @@ QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
             if (cwd == QLatin1String("~")) cwd = QDir::homePath();
             else if (cwd.startsWith(QLatin1String("~/"))) cwd = QDir::homePath() + cwd.mid(1);
             if (!QFileInfo(cwd).isDir()) {
-                warnings << QStringLiteral("Pane %1: directory missing (%2); using home").arg(savedId, cwd);
+                warnings << QStringLiteral("Pane %1: directory missing (%2). Using home").arg(savedId, cwd);
                 cwd = QDir::homePath();
             }
             QStringList command;
@@ -60,7 +60,7 @@ QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
                 const auto resolved = program.contains(QLatin1Char('/')) ? QDir(cwd).absoluteFilePath(program)
                                                                         : QStandardPaths::findExecutable(program);
                 if (resolved.isEmpty() || !QFileInfo(resolved).isFile() || !QFileInfo(resolved).isExecutable()) {
-                    warnings << QStringLiteral("Pane %1: command unavailable (%2); starting a shell").arg(savedId, program);
+                    warnings << QStringLiteral("Pane %1: command unavailable (%2). Starting a shell").arg(savedId, program);
                     command.clear();
                 }
             }
@@ -69,7 +69,7 @@ QVariantMap TerminalWindow::restoreProject(const QJsonObject& document)
             auto* pane = createPane(cwd, paneArea(), command, &failure, {}, true);
             pane->setLaunch(cwd, configured); // retain explicit intent if the launch used a fallback
             pane->setUserTitle(data.value(QStringLiteral("title")).toString());
-            if (!failure.isEmpty()) warnings << QStringLiteral("Pane %1: %2; attempted /bin/sh recovery").arg(savedId, failure);
+            if (!failure.isEmpty()) warnings << QStringLiteral("Pane %1: %2. Attempted /bin/sh recovery").arg(savedId, failure);
             paneIds.insert(savedId, pane->id());
             if (savedId == saved.value(QStringLiteral("active_pane")).toString()) tab->focused = pane;
             return pane;

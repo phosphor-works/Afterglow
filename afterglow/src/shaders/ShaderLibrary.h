@@ -65,10 +65,12 @@ private:
     AfterglowRender::ShaderProgramPtr load(const QString& ref, const QVariantMap& params);
 
     void seedPresets();
+    bool refreshWatches();
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
     std::unique_ptr<PhosphorShaders::ShaderPresetStore> m_presets;
     QStringList m_includeDirs;
     QFileSystemWatcher m_files;
+    QHash<QString, QStringList> m_dependencies; // cache key -> resolved and missing candidate paths
     QHash<QString, AfterglowRender::ShaderProgramPtr> m_cache;
     QHash<QString, QString> m_failed; // cache key -> error, so a broken shader is reported once
 };

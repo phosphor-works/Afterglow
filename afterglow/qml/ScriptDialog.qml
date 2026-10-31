@@ -83,10 +83,19 @@ Item {
                 highlightMoveDuration: 0
                 ScrollBar.vertical: ScrollBar {}
                 delegate: ItemDelegate {
+                    id: choice
                     required property var modelData
                     required property int index
                     width: list.width
                     text: modelData.title
+                    contentItem: Label {
+                        text: choice.text
+                        textFormat: Text.PlainText
+                        font: choice.font
+                        color: choice.highlighted ? choice.palette.highlightedText : choice.palette.text
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                    }
                     highlighted: ListView.isCurrentItem
                     onClicked: dialog.controller.answerScriptDialog(true, modelData.id)
                 }

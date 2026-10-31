@@ -68,7 +68,7 @@ QString ScriptState::read(const QString& id, Snapshot& result) const
     if (parse.error != QJsonParseError::NoError || object.value(QStringLiteral("format")) != QJsonValue(1)
         || !object.value(QStringLiteral("value")).isObject() || schema.toInt() < 1 || schema.toInt() > 10000
         || schema.toDouble() != schema.toInt() || revision.toInt() < 1 || revision.toDouble() != revision.toInt())
-        return QStringLiteral("Invalid state file; original file preserved");
+        return QStringLiteral("Invalid state file. Original file preserved");
     const auto value = object.value(QStringLiteral("value")).toObject().toVariantMap();
     if (const auto error = validate(value); !error.isEmpty()) return error;
     result = {schema.toInt(), revision.toInt(), value};
@@ -81,10 +81,10 @@ QString ScriptState::write(const QString& id, int version, int expectedRevision,
     if (const auto error = validate(value); !error.isEmpty()) return error;
     if (!QDir().mkpath(m_directory)) return QStringLiteral("Cannot create state directory");
     QLockFile lock(QDir(m_directory).filePath(id + QStringLiteral(".lock")));
-    if (!lock.tryLock(0)) return QStringLiteral("State is busy; retry after reading it again");
+    if (!lock.tryLock(0)) return QStringLiteral("State is busy. Retry after reading it again");
     Snapshot current;
     if (const auto error = read(id, current); !error.isEmpty()) return error;
-    if (current.revision != expectedRevision) return QStringLiteral("State revision conflict; read again before saving");
+    if (current.revision != expectedRevision) return QStringLiteral("State revision conflict. Read again before saving");
     if (current.version > version) return QStringLiteral("Cannot overwrite a newer state version");
     QSaveFile file(QDir(m_directory).filePath(id + QStringLiteral(".json")));
     if (!file.open(QIODevice::WriteOnly)) return file.errorString();

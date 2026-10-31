@@ -331,6 +331,7 @@ TerminalWindow::~TerminalWindow()
     if (m_hintCancel) *m_hintCancel = true;
     finishScriptDialog(false, {});
     s_windows.removeAll(this);
+    publishLauncherStatus();
     // The chrome renders on the device through this window; it goes first.
     delete m_chrome;
     m_chrome = nullptr;
@@ -1006,6 +1007,9 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     if (pane == m_focused) {
         return;
     }
+    // Close while the old pane still owns the search and its pending job.
+    m_controller->setSearchOpen(false);
+    if (m_focused) m_focused->clearSearch();
     if (m_focused && m_windowFocused) {
         Pane* old = m_focused;
         old->sendInput(old->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
@@ -1921,12 +1925,13 @@ void TerminalWindow::updateChrome()
     QVariantList tabStatus;
     QVariantList tabContexts;
     for (const auto& tab : m_tabs) {
-        QString title = !tab->title.isEmpty() ? tab->title : tab->focused ? tab->focused->title() : QString();
+        Pane* focused = tab->splits.get() == m_splits ? m_focused : tab->focused;
+        QString title = !tab->title.isEmpty() ? tab->title : focused ? focused->title() : QString();
         for (const auto& item : m_scriptAppearance)
             if (item.pane && tab->splits->contains(item.pane) && !item.tab.isEmpty()) title += QStringLiteral(" · ") + item.tab;
         titles.append(title);
-        tabContexts.append(QVariantMap{{QStringLiteral("label"), tab->focused ? tab->focused->contextLabel() : QString()},
-                                       {QStringLiteral("kind"), tab->focused ? tab->focused->contextKind() : QString()}});
+        tabContexts.append(QVariantMap{{QStringLiteral("label"), focused ? focused->contextLabel() : QString()},
+                                       {QStringLiteral("kind"), focused ? focused->contextKind() : QString()}});
         // The tab shows the most pressing status among its panes.
         QVariantMap best;
         tab->splits->forEachPane([&](Pane* p, const QRect&) {
@@ -2276,10 +2281,10 @@ void TerminalWindow::publishLauncherStatus()
     }
     lastProgress = progress;
     lastUrgent = urgent;
-    QDBusMessage signal = QDBusMessage::createSignal(QStringLiteral("/io/github/fuddlesworth/Afterglow"),
+    QDBusMessage signal = QDBusMessage::createSignal(QStringLiteral("/com/phosphorworks/Afterglow"),
                                                      QStringLiteral("com.canonical.Unity.LauncherEntry"),
                                                      QStringLiteral("Update"));
-    signal << QStringLiteral("application://io.github.fuddlesworth.Afterglow.desktop")
+    signal << QStringLiteral("application://com.phosphorworks.Afterglow.desktop")
            << QVariantMap{{QStringLiteral("progress"), progress >= 0 ? progress / 100.0 : 0.0},
                           {QStringLiteral("progress-visible"), progress >= 0},
                           {QStringLiteral("urgent"), urgent}};
@@ -3158,14 +3163,14 @@ void TerminalWindow::paste(QClipboard::Mode mode)
     if (text.isEmpty()) {
         return;
     }
-    // Several lines into a program without bracketed paste run one by one.
+    // Any raw line terminator can execute input without bracketed paste.
     const bool bracketed = m_focused->withTerminal([](Terminal& t) { return t.modes().bracketedPaste; });
-    const QByteArray trimmed = text.trimmed();
-    if (m_settings.settings().confirmUnsafePaste && !bracketed && trimmed.contains('\n')) {
+    if (m_settings.settings().confirmUnsafePaste && !bracketed && (text.contains('\n') || text.contains('\r'))) {
         m_pendingPaste = text;
         m_pendingPastePane = m_focused;
-        const QString preview = QString::fromUtf8(trimmed.left(4000));
-        m_controller->askPaste(preview, int(trimmed.count('\n')) + 1);
+        const QByteArray normalized = QByteArray(text).replace("\r\n", "\n").replace('\r', '\n');
+        const QString preview = QString::fromUtf8(normalized.left(4000));
+        m_controller->askPaste(preview, int(normalized.count('\n')) + 1);
         return;
     }
     const std::string bytes = m_focused->withTerminal([&text](Terminal& t) {

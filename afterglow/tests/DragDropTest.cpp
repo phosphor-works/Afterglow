@@ -74,6 +74,30 @@ TEST_F(Dnd, DropStreamsMimeAndFinishesWithClientAction)
     EXPECT_TRUE(contains("aGVsbG8gZGVza3RvcA=="));
     EXPECT_TRUE(contains("i=42"));
 }
+TEST_F(Dnd, ResetFromEndReplyReleasesReadBeforeCallback)
+{
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        QMimeData mime;
+        mime.setText(QStringLiteral("reset at end"));
+        enter(mime);
+        bool reset = false;
+        const auto connection = QObject::connect(&service, &DragDrop::reply, &service, [&](const QByteArray& b) {
+            if (b.contains("t=M"))
+                QTimer::singleShot(0, &service, [this] { service.handle("t=r:x=1;"); });
+            if (b.contains("t=r") && b.contains(";\x1b\\")) {
+                reset = true;
+                service.reset();
+            }
+        });
+        QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+        QObject::disconnect(connection);
+        EXPECT_TRUE(reset);
+        EXPECT_FALSE(event.isAccepted());
+        EXPECT_FALSE(service.acceptsDrops());
+    }
+}
+
 TEST_F(Dnd, RemoteReceiverMustReadUrisBeforeFile)
 {
     QMimeData mime;

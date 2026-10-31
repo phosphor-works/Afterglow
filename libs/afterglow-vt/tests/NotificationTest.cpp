@@ -38,6 +38,21 @@ TEST(Notification, TitleOnly)
     EXPECT_FALSE(t.host.requests[0].reportActivation);
 }
 
+TEST(Notification, MetadataLimitRejectsWholeChunkAndPreservesPendingRequest)
+{
+    NotificationAssembler assembler;
+    NotificationRequest request;
+    EXPECT_EQ(assembler.feed("i=job:d=0;start", request), NotificationAssembler::Result::Pending);
+    const std::string excessive = "i=job:u=2:x=" + std::string(4096, 'x') + ";discard";
+    EXPECT_EQ(assembler.feed(excessive, request), NotificationAssembler::Result::Ignored);
+    EXPECT_EQ(assembler.feed("i=job:x=unknown; end", request), NotificationAssembler::Result::Ready);
+    EXPECT_EQ(request.title, "start end");
+    EXPECT_EQ(request.urgency, 1);
+    // A metadata field exactly at the limit remains accepted.
+    EXPECT_EQ(assembler.feed("x=" + std::string(4094, 'x') + ";valid", request), NotificationAssembler::Result::Ready);
+    EXPECT_EQ(request.title, "valid");
+}
+
 TEST(Notification, ChunksAssembleByIdWithMetadata)
 {
     Term t;

@@ -97,12 +97,9 @@ void Screen::writeCell(Row& row, int x, char32_t cp, std::uint32_t styleId, int 
     m_styles.retain(styleId);
 
     if (width == 2 && x + 1 < m_cols) {
+        clearCell(row, x + 1, styleId);
         Cell& tail = row.cells[std::size_t(x + 1)];
-        m_styles.release(tail.styleId());
-        tail = Cell{};
-        tail.setStyleId(styleId);
         tail.setWidth(0);
-        m_styles.retain(styleId);
     }
 }
 

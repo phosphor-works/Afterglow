@@ -31,6 +31,7 @@ namespace {
     using Fields = QMap<QByteArray, QByteArray>;
     constexpr qsizetype MaxQueuedBytes = 16 * 1024 * 1024;
     constexpr int MaxFiles = 16384;
+    constexpr std::size_t MaxActiveFiles = 128;
     bool safe(const QByteArray& s)
     {
         return !s.isEmpty() && s.size() <= 128 && std::all_of(s.begin(), s.end(), [](unsigned char c) {
@@ -146,14 +147,33 @@ struct FileTransfer::Worker {
         bool committed = false, complete = false, failed = false, compressed = false, rsync = false, ended = false;
         z_stream stream { };
         XXH3_state_t* hash = XXH3_createState();
+        std::size_t* activeCount = nullptr;
         quint32 blockSize = 0;
         bool hashSeen = false;
-        File() { XXH3_128bits_reset(hash); }
+        explicit File(std::size_t* count = nullptr) : activeCount(count)
+        {
+            if (activeCount)
+                ++*activeCount;
+            XXH3_128bits_reset(hash);
+        }
         ~File()
         {
-            if (compressed)
-                inflateEnd(&stream);
+            releaseIo();
             XXH3_freeState(hash);
+        }
+        void releaseIo()
+        {
+            output.reset();
+            basis.reset();
+            pending.clear();
+            if (compressed) {
+                inflateEnd(&stream);
+                compressed = false;
+            }
+            if (activeCount) {
+                --*activeCount;
+                activeCount = nullptr;
+            }
         }
     };
     struct Session {
@@ -178,6 +198,7 @@ struct FileTransfer::Worker {
                 deflateEnd(&z);
         }
     };
+    std::size_t activeFiles = 0;
     std::deque<std::unique_ptr<Stream>> streams;
     FileTransfer* owner;
     QThread thread;
@@ -524,14 +545,18 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         status(s, fid, "EINVAL");
         return;
     }
-    auto file = std::make_unique<File>();
-    file->meta = f;
-    file->path = path;
     const auto type = f.value("ft", "regular");
     if (type != "regular" && type != "directory" && type != "symlink" && type != "link") {
         status(s, fid, "EINVAL");
         return;
     }
+    if (type == "regular" && activeFiles >= MaxActiveFiles) {
+        status(s, fid, "EBUSY");
+        return;
+    }
+    auto file = std::make_unique<File>(type == "regular" ? &activeFiles : nullptr);
+    file->meta = f;
+    file->path = path;
     for (QString parent = QFileInfo(path).absolutePath(); !QFileInfo::exists(parent);
         parent = QFileInfo(parent).absolutePath()) {
         s.createdDirs.insert(s.createdDirs.begin(), parent);
@@ -660,6 +685,7 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
     if (!s.sending && file.rsync) {
         if (bytes.size() > 4096 || file.pending.size() + bytes.size() > MaxQueuedBytes) {
             file.failed = true;
+            file.releaseIo();
             status(s, fid, "EFBIG");
             return;
         }
@@ -667,6 +693,7 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
         if (f.value("ac") == "end_data") {
             file.complete = true;
             delta(s, fid, file);
+            file.releaseIo();
         }
         return;
     }
@@ -704,7 +731,7 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
         ok &= file.written == file.meta.value("sz").toLongLong();
     if (!ok) {
         file.failed = true;
-        file.output.reset();
+        file.releaseIo();
         status(s, fid, "EIO");
         return;
     }
@@ -715,7 +742,7 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
                 QFile::encodeName(file.output->fileName()).constData(), QFile::encodeName(file.path).constData())) {
             file.failed = true;
             status(s, fid, errorName());
-            file.output.reset();
+            file.releaseIo();
             return;
         }
         file.output->setAutoRemove(false);
@@ -723,8 +750,10 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
     }
     if (!end || file.output)
         status(s, fid, end ? "OK" : "PROGRESS", file.written);
-    if (end)
+    if (end) {
+        file.releaseIo();
         commitLinks(s, false);
+    }
 }
 
 void FileTransfer::Worker::finish(Session& s)
@@ -1002,6 +1031,16 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
         send({ { "ac", "end_data" }, { "id", s.id }, { "fid", fid }, { "d", QByteArray(target, length) } });
         return;
     }
+    if (f.value("tt") == "rsync") {
+        if (s.files.contains(fid) || s.files.size() >= MaxFiles) {
+            status(s, fid, "EINVAL");
+            return;
+        }
+        if (activeFiles >= MaxActiveFiles) {
+            status(s, fid, "EBUSY");
+            return;
+        }
+    }
     const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) {
         status(s, fid, errorName());
@@ -1020,11 +1059,7 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
         return;
     }
     if (f.value("tt") == "rsync") {
-        if (s.files.contains(fid)) {
-            status(s, fid, "EINVAL");
-            return;
-        }
-        auto file = std::make_unique<File>();
+        auto file = std::make_unique<File>(&activeFiles);
         file->meta = f;
         file->basis = std::move(source);
         file->rsync = true;

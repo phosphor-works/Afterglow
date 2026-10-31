@@ -2,7 +2,7 @@
     "id": "glasshouse-mullion",
     "name": "Glasshouse Mullion",
     "category": "Pane",
-    "description": "For the pane chain: splits meet at a leaded mullion (the window's own frame is Vitrail's). Focus arriving gilds the pane's mullions behind a hot tip; the bell sends a shock ring through the glass.",
+    "description": "For the pane chain: splits meet at a leaded mullion (the window's own frame is Vitrail's). Focus arriving gilds the pane's mullions behind a hot tip. The bell sends a shock ring through the glass.",
     "author": "afterglow, after Dsaquel's Glasshouse",
     "version": "2.0",
     "fragmentShader": "effect.frag",

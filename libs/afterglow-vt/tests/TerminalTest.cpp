@@ -152,6 +152,45 @@ TEST(Terminal, GraphemeClusters)
     EXPECT_EQ(t.t.screen().cursor.x, 2);
 }
 
+TEST(Terminal, WideOverwriteClearsFormerTailGrapheme)
+{
+    Term t(10, 2);
+    t.feed("aX\xcc\x81\r界\x1b[1;2Hb\xcc\x80");
+    const auto& screen = t.t.screen();
+    EXPECT_EQ(screen.graphemeExtra(screen.row(0), 1), U"\u0300");
+    EXPECT_EQ(rowText(t.t, 0), " b\xcc\x80");
+}
+
+TEST(Terminal, AbsoluteAxisMovementRespectsMarginsAndLineWidth)
+{
+    Term t(10, 5);
+    t.feed("\x1b[2;4r\x1b[?69h\x1b[3;7s\x1b[?6h\x1b[99G\x1b[99d");
+    EXPECT_EQ(t.t.screen().cursor.x, 6);
+    EXPECT_EQ(t.t.screen().cursor.y, 3);
+    t.feed("\x1b[1`\x1b[1d");
+    EXPECT_EQ(t.t.screen().cursor.x, 2);
+    EXPECT_EQ(t.t.screen().cursor.y, 1);
+    t.feed("\x1b[?6l\x1b[?69l\x1b[r\x1b[H\x1b#6\x1b[99G");
+    EXPECT_EQ(t.t.screen().cursor.x, 4);
+    t.feed("\x1b[99`");
+    EXPECT_EQ(t.t.screen().cursor.x, 4);
+    t.feed("\x1b[2;10H\x1b[1d");
+    EXPECT_EQ(t.t.screen().cursor.x, 4);
+}
+
+TEST(Terminal, CursorColorQueryMatchesConfiguredOverrideAndReset)
+{
+    Term t(10, 2);
+    TerminalOptions options;
+    options.cursorColor = Rgb{1, 2, 3};
+    t.t.setOptions(options);
+    t.feed("\x1b]12;?\a\x1b]12;#102030\a\x1b]12;?\a\x1b]112\a\x1b]12;?\a");
+    EXPECT_EQ(t.host.written, "\x1b]12;rgb:0101/0202/0303\a\x1b]12;rgb:1010/2020/3030\a\x1b]12;rgb:0101/0202/0303\a");
+    t.host.written.clear();
+    t.feed("\x1b]21;cursor=\a\x1b]10;#112233\a\x1b]12;?\a");
+    EXPECT_EQ(t.host.written, "\x1b]12;rgb:1111/2222/3333\a");
+}
+
 TEST(Terminal, Vs16WidensEmoji)
 {
     Term t(10, 2);

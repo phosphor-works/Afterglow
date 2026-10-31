@@ -7,6 +7,7 @@
 #include <PhosphorShaders/ShaderRegistry.h>
 #include <PhosphorShaders/ShaderPresetStore.h>
 #include <QSaveFile>
+#include <QRegularExpression>
 #include <QSet>
 #include <QImageReader>
 #include <QBuffer>
@@ -37,6 +38,49 @@ namespace {
 QString expandHome(const QString& path)
 {
     return path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
+}
+
+// Mirror the resolver's include search, retaining missing candidates as well
+// as resolved paths so a broken shader can recover without a config change.
+void collectIncludes(const QString& source, const QString& dir, const QStringList& includeDirs,
+                     QStringList& watched, QSet<QString>& seen, int depth = 0)
+{
+    if (depth > PhosphorShaders::ShaderIncludeResolver::MaxIncludeDepth) return;
+    static const QRegularExpression pattern(QStringLiteral(R"(^\s*#include\s+(["<])([^">]+)[">]\s*$)"));
+    for (const auto& line : source.split(QLatin1Char('\n'))) {
+        if (!line.contains(QLatin1String("#include"))) continue;
+        const auto match = pattern.match(line);
+        if (!match.hasMatch()) continue;
+        const auto name = match.captured(2).trimmed();
+        if (name.isEmpty() || QFileInfo(name).fileName() == QLatin1String(PhosphorShaders::ShaderIncludeResolver::GeneratedPreambleInclude)) continue;
+        QStringList search;
+        if (match.captured(1) == QLatin1String("\"")) search << dir;
+        search << includeDirs;
+        for (const auto& location : search) {
+            if (location.isEmpty()) continue;
+            const auto candidate = QDir::cleanPath(QDir(location).absoluteFilePath(name));
+            watched << candidate;
+            const QFileInfo info(candidate);
+            if (!info.exists() || !info.isFile()) continue;
+            const auto resolved = info.canonicalFilePath();
+            watched << resolved;
+            if (!seen.contains(resolved)) {
+                seen.insert(resolved);
+                QFile file(resolved);
+                if (file.open(QIODevice::ReadOnly | QIODevice::Text))
+                    collectIncludes(QString::fromUtf8(file.readAll()), QFileInfo(resolved).absolutePath(), includeDirs, watched, seen, depth + 1);
+            }
+            break;
+        }
+    }
+}
+
+QString expandWatched(const QString& source, const QString& dir, const QStringList& includes,
+                      QStringList& watched, QString* error)
+{
+    QSet<QString> seen;
+    collectIncludes(source, dir, includes, watched, seen);
+    return PhosphorShaders::ShaderIncludeResolver::expandIncludes(source, dir, includes, error, &watched);
 }
 
 QString loadImageParameter(const QString& pack, const QString& value, QImage& image, QString& resolved)
@@ -116,8 +160,8 @@ QString loadGeometryPasses(const QString& pack, AfterglowRender::ShaderProgramSo
     QByteArray data;
     QString path;
     auto error = readGeometryAsset(pack, QStringLiteral("metadata.json"), data, path);
-    if (!error.isEmpty()) return error;
     watched << path;
+    if (!error.isEmpty()) return error;
     QJsonParseError parse;
     const auto document = QJsonDocument::fromJson(data, &parse);
     if (parse.error != QJsonParseError::NoError || !document.isObject()) return QStringLiteral("Invalid pack metadata");
@@ -137,10 +181,10 @@ QString loadGeometryPasses(const QString& pack, AfterglowRender::ShaderProgramSo
                 return QStringLiteral("Unknown geometry setting: %1").arg(it.key());
         auto& geometry = source.buffers[i].geometry;
         error = readGeometryAsset(pack, object.value(QStringLiteral("vertexShader")).toString(), data, path);
-        if (!error.isEmpty()) return error;
         watched << path;
-        geometry.vertexCode = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
-            QString::fromUtf8(data), QFileInfo(path).absolutePath(), includes, &error).toUtf8();
+        if (!error.isEmpty()) return error;
+        geometry.vertexCode = expandWatched(
+            QString::fromUtf8(data), QFileInfo(path).absolutePath(), includes, watched, &error).toUtf8();
         if (!error.isEmpty()) return error;
         if (geometry.vertexCode.trimmed().isEmpty()) return QStringLiteral("Empty mesh vertex shader");
         auto integer = [&](const char* key, int fallback, int& out) {
@@ -155,8 +199,8 @@ QString loadGeometryPasses(const QString& pack, AfterglowRender::ShaderProgramSo
         if (object.contains(QStringLiteral("mesh"))) {
             if (object.contains(QStringLiteral("vertexCount"))) return QStringLiteral("Use mesh or vertexCount, not both");
             error = readGeometryAsset(pack, object.value(QStringLiteral("mesh")).toString(), data, path);
-            if (!error.isEmpty()) return error;
             watched << path;
+            if (!error.isEmpty()) return error;
             if (!AfterglowRender::ShaderProgram::loadObj(data, geometry, &error)) return error;
         } else if (!integer("vertexCount", 0, geometry.vertexCount)) return QStringLiteral("Invalid geometry vertex count");
         totalBytes += qint64(geometry.vertices.size() * sizeof(AfterglowRender::ShaderMeshVertex));
@@ -212,11 +256,15 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
         m_failed.clear();
         Q_EMIT changed();
     });
-    connect(&m_files, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
-        // Editors replace files: watch the new one.
-        if (QFile::exists(path) && !m_files.files().contains(path)) {
-            m_files.addPath(path);
-        }
+    connect(&m_files, &QFileSystemWatcher::fileChanged, this, [this] {
+        refreshWatches();
+        m_cache.clear();
+        m_failed.clear();
+        Q_EMIT changed();
+    });
+    connect(&m_files, &QFileSystemWatcher::directoryChanged, this, [this] {
+        // Unrelated writes beside a shader do not trigger recompilation.
+        if (!refreshWatches()) return;
         m_cache.clear();
         m_failed.clear();
         Q_EMIT changed();
@@ -224,6 +272,31 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
 }
 
 ShaderLibrary::~ShaderLibrary() = default;
+
+bool ShaderLibrary::refreshWatches()
+{
+    QSet<QString> files, directories;
+    for (const auto& dependencies : m_dependencies) for (const auto& path : dependencies) {
+        if (path.isEmpty()) continue;
+        const QFileInfo info(path);
+        if (info.isFile()) files.insert(info.absoluteFilePath());
+        auto directory = info.absolutePath();
+        while (!QFileInfo(directory).isDir()) {
+            const auto parent = QFileInfo(directory).absolutePath();
+            if (parent == directory) break;
+            directory = parent;
+        }
+        if (QFileInfo(directory).isDir()) directories.insert(directory);
+    }
+    const auto oldFiles = m_files.files(), oldDirectories = m_files.directories();
+    const QSet<QString> previousFiles(oldFiles.begin(), oldFiles.end());
+    const QSet<QString> previousDirectories(oldDirectories.begin(), oldDirectories.end());
+    const auto removed = (previousFiles - files) | (previousDirectories - directories);
+    const auto added = (files - previousFiles) | (directories - previousDirectories);
+    if (!removed.isEmpty()) m_files.removePaths(removed.values());
+    if (!added.isEmpty()) m_files.addPaths(added.values());
+    return !removed.isEmpty() || !added.isEmpty();
+}
 
 QStringList ShaderLibrary::packIds() const
 {
@@ -393,6 +466,7 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     // Configuration changes must release old decoded assets and compiled packs.
     m_cache.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
     m_failed.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
+    m_dependencies.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
     QSet<qint64> images;
     qint64 imageBytes = 0;
     auto add = [&](const QStringList& from, std::vector<AfterglowRender::ShaderProgramPtr>& to) {
@@ -420,6 +494,7 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     add(refs.cursor, chains.cursor);
     add(refs.pane, chains.pane);
     add(refs.window, chains.window);
+    refreshWatches();
     return chains;
 }
 
@@ -434,13 +509,16 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
         return nullptr;
     }
 
+    auto& watched = m_dependencies[key];
+    watched.clear();
     AfterglowRender::ShaderProgramSource src;
     src.id = ref;
     QString path;
     QString dir;
     if (isFileReference(ref)) {
         // A raw Ghostty-style shader: mainImage and the shared uniforms, no metadata.
-        path = expandHome(ref);
+        path = QFileInfo(expandHome(ref)).absoluteFilePath();
+        watched << path;
         dir = QFileInfo(path).absolutePath();
     } else {
         const PhosphorShaders::ShaderRegistry::ShaderInfo info = findPack(*m_registry, ref);
@@ -454,26 +532,27 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
         if (info.bufferShaderPaths.size() > AfterglowRender::MaxShaderBuffers) {
             m_failed.insert(key, QStringLiteral("Too many buffer passes")); return nullptr;
         }
+        watched << info.sourcePath << QDir(info.packDir).filePath(QStringLiteral("metadata.json"));
         src.useDepthBuffer = info.useDepthBuffer;
         if (!info.vertexShaderPath.isEmpty()) {
+            watched << info.vertexShaderPath;
             QFile vertex(info.vertexShaderPath);
             QString error;
             if (!vertex.open(QIODevice::ReadOnly)) error = QStringLiteral("Cannot read vertex shader: %1").arg(info.vertexShaderPath);
-            else src.vertexCode = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
-                QString::fromUtf8(vertex.readAll()), QFileInfo(info.vertexShaderPath).absolutePath(), m_includeDirs, &error).toUtf8();
+            else src.vertexCode = expandWatched(
+                QString::fromUtf8(vertex.readAll()), QFileInfo(info.vertexShaderPath).absolutePath(), m_includeDirs, watched, &error).toUtf8();
             if (!error.isEmpty()) { m_failed.insert(key, error); qCWarning(lcShaders) << error; return nullptr; }
-            if (!m_files.files().contains(info.vertexShaderPath)) m_files.addPath(info.vertexShaderPath);
         }
         for (int index = 0; index < info.bufferShaderPaths.size(); ++index) {
             const auto bufferPath = info.bufferShaderPaths[index];
+            watched << bufferPath;
             QFile buffer(bufferPath);
             QString error;
             AfterglowRender::ShaderBufferSource pass;
             if (!buffer.open(QIODevice::ReadOnly)) error = QStringLiteral("Cannot read buffer shader: %1").arg(bufferPath);
-            else pass.code = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
-                QString::fromUtf8(buffer.readAll()), QFileInfo(bufferPath).absolutePath(), m_includeDirs, &error).toUtf8();
+            else pass.code = expandWatched(
+                QString::fromUtf8(buffer.readAll()), QFileInfo(bufferPath).absolutePath(), m_includeDirs, watched, &error).toUtf8();
             if (!error.isEmpty()) { qCWarning(lcShaders) << error; m_failed.insert(key, error); return nullptr; }
-            if (!m_files.files().contains(bufferPath)) m_files.addPath(bufferPath);
             pass.feedback = info.bufferFeedback;
             pass.halfFloat = info.halfFloatBuffers;
             pass.scale = float(info.bufferScale);
@@ -488,12 +567,10 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
                 : wrap == QLatin1String("mirror") ? AfterglowRender::ShaderWrap::Mirror : AfterglowRender::ShaderWrap::Clamp;
             src.buffers.push_back(std::move(pass));
         }
-        QStringList geometryFiles;
-        const auto geometryError = loadGeometryPasses(info.packDir, src, m_includeDirs, geometryFiles);
+        const auto geometryError = loadGeometryPasses(info.packDir, src, m_includeDirs, watched);
         if (!geometryError.isEmpty()) {
             m_failed.insert(key, geometryError); qCWarning(lcShaders) << ref << geometryError; return nullptr;
         }
-        for (const auto& file : geometryFiles) if (!m_files.files().contains(file)) m_files.addPath(file);
         path = info.sourcePath;
         dir = info.packDir;
         src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();
@@ -507,8 +584,8 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
             if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
                 if (p.slot >= AfterglowRender::MaxShaderImages) continue;
                 const auto error = loadImageParameter(info.packDir, v.toString(), src.images[p.slot], src.imagePaths[p.slot]);
+                watched << src.imagePaths[p.slot];
                 if (!error.isEmpty()) { m_failed.insert(key, error); qCWarning(lcShaders) << error; return nullptr; }
-                if (!src.imagePaths[p.slot].isEmpty() && !m_files.files().contains(src.imagePaths[p.slot])) m_files.addPath(src.imagePaths[p.slot]);
             } else if (p.type == QLatin1String("color")) {
                 const QColor c(v.toString());
                 if (p.slot < 16 && c.isValid()) {
@@ -533,17 +610,14 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
         return nullptr;
     }
     QString includeError;
-    const QString code = PhosphorShaders::ShaderIncludeResolver::expandIncludes(
-        QString::fromUtf8(f.readAll()), dir, m_includeDirs, &includeError);
+    const QString code = expandWatched(
+        QString::fromUtf8(f.readAll()), dir, m_includeDirs, watched, &includeError);
     if (!includeError.isEmpty()) {
         qCWarning(lcShaders).noquote() << ref << ":" << includeError;
         m_failed.insert(key, includeError);
         return nullptr;
     }
     src.code = code.toUtf8();
-    if (!m_files.files().contains(path)) {
-        m_files.addPath(path);
-    }
 
     QString error;
     auto program = AfterglowRender::ShaderProgram::compile(src, &error);

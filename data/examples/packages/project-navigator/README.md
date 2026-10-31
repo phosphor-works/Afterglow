@@ -24,13 +24,13 @@ The destination must contain `scripts/project-navigator/package.json`, not
 
 Open the command palette and choose:
 
-- **Navigate projects** — search running projects, saved layouts, favorites,
+- **Navigate projects**: search running projects, saved layouts, favorites,
   recent projects and discovered directories. Running projects are reused.
-  For a new directory, choose a saved layout or a shell; the last-used layout
+  For a new directory, choose a saved layout or a shell. The last-used layout
   is offered first next time. Every template pane starts in that directory.
-- **Toggle favorite project directory** — pin/unpin the current project directory
+- **Toggle favorite project directory**: pin/unpin the current project directory
   (or the pane's working directory for an ordinary window).
-- **Previous project** — return to the most recent different project.
+- **Previous project**: return to the most recent different project.
 
 Keybind tokens are `script:project-navigator.open`,
 `script:project-navigator.favorite` and `script:project-navigator.previous`.
@@ -59,13 +59,13 @@ Favorites, the last 50 projects and layout choices survive reloads/restarts.
 Storage is scoped to `project-navigator`, under
 `state/scripts/project-navigator.json` beside the active configuration. Schema 2
 includes a migration example from schema 1's arrays of favorite/recent paths.
-State conflicts preserve the newer file and report the failed save; the next
+State conflicts preserve the newer file and report the failed save. The next
 action reads current state again. A launch can succeed even if saving its history
 fails. `afterglow ctl scripts` reports package load errors and retained last-good
 instances.
 
-`providers.luau` handles discovery and parsing; `history.luau` handles bounded
-state and migrations; `init.luau` coordinates actions and correlated results.
+`providers.luau` handles discovery and parsing. `history.luau` handles bounded
+state and migrations. `init.luau` coordinates actions and correlated results.
 The package uses only declared local imports and Afterglow effects.
 
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
@@ -99,7 +99,7 @@ and [tab-status](../tab-status/README.md) packages.
 ## Reload, uninstall and recovery
 
 Edits to `config.json`, modules and the manifest reload the package as a unit.
-An invalid edit leaves the last working version active; `afterglow ctl scripts`
+An invalid edit leaves the last working version active. `afterglow ctl scripts`
 shows `last-good` and the error. Correct the edit to recover. Open dialogs and
 provider jobs from a successfully replaced version are cancelled.
 

@@ -129,7 +129,7 @@ private:
     QByteArray m_prelude;
     QStringList m_searchPaths;
     QString m_stateDirectory;
-    QStringList m_packageWatches;
+    QStringList m_sourceWatches;
     mutable QMap<QString, QString> m_loadErrors;
     bool m_enabled = false;
     std::vector<ScriptPtr> m_scripts;

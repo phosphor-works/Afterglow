@@ -80,7 +80,7 @@ local function choose(item)
     for i,name in ipairs(flow.projects or {}) do
         local id="layout-"..i
         flow.layouts[id]=name
-        local choice={id=id,title=name..(name==previous and " — last used" or "")}
+        local choice={id=id,title=name..(name==previous and " (last used)" or "")}
         if name==previous then table.insert(layouts,1,choice) else table.insert(layouts,choice) end
         if #layouts>=100 then break end
     end

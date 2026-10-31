@@ -3,7 +3,7 @@
 
 # Compatibility examples
 
-Run these inside Afterglow; they do not modify your configuration.
+Run these inside Afterglow. They do not modify your configuration.
 
 ```sh
 python3 data/examples/compatibility/relative-images.py

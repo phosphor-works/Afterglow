@@ -181,7 +181,7 @@ private:
     void openTabMenu(int index, const QPointF& pos);
     void runTabMenuItem(int id);
     int tabOf(const Pane* pane) const;
-    /// Height of the tab bar in pixels; 0 while there is a single tab.
+    /// Height of the tab bar in pixels; 0 when hidden by its configured policy.
     int tabBarHeight() const;
     /// Where the current tab's panes are laid out, in pixels.
     QRect paneArea() const;

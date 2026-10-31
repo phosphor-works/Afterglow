@@ -111,7 +111,7 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
                                const QString& scope, const QVariantMap& values, const QVariantMap& transition)
 {
     const auto instance = std::find_if(m_instances.begin(), m_instances.end(), [&](const auto& i) { return i.program->instanceId() == id; });
-    if (instance == m_instances.end()) return QStringLiteral("Shader instance expired or belongs to another window; query shaders again");
+    if (instance == m_instances.end()) return QStringLiteral("Shader instance expired or belongs to another window. Query shaders again");
     if (scope != QLatin1String("pane") && scope != QLatin1String("tab") && scope != QLatin1String("window"))
         return QStringLiteral("Shader scope must be pane, tab or window");
     if (panes.isEmpty() || panes.size() > 128 || panes.contains(0)) return QStringLiteral("Shader update needs 1 to 128 live panes");

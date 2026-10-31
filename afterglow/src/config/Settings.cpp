@@ -198,7 +198,7 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("boldIsBright"), false, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), 1.0, 1.0, 21.0,
-                  QStringLiteral("Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors; 4.5 is the "
+                  QStringLiteral("Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors. 4.5 is the "
                                  "WCAG AA normal-text threshold.")),
     };
     schema.groups[Terminal] = {
@@ -285,7 +285,7 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("initialColumns"), 100, 10, 1000, QStringLiteral("Columns of a new window")),
         intKey(QStringLiteral("initialRows"), 30, 4, 500, QStringLiteral("Rows of a new window")),
         doubleKey(QStringLiteral("backgroundOpacity"), 1.0, 0.05, 1.0,
-                  QStringLiteral("Opacity of the default background; text stays opaque")),
+                  QStringLiteral("Opacity of the default background. Text stays opaque")),
         {QStringLiteral("blur"), false, QMetaType::Bool,
          QStringLiteral("Blur content behind translucent backgrounds with KWin.")},
         {QStringLiteral("paneTitles"), false, QMetaType::Bool,

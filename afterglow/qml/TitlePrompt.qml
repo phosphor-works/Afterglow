@@ -10,13 +10,16 @@ Item {
 
     required property QtObject controller
 
-    onVisibleChanged: {
+    function syncVisibility() {
         if (visible) {
             input.text = controller.titlePrompt.text || ""
             input.selectAll()
             Qt.callLater(() => { if (prompt.visible) input.forceActiveFocus() })
         }
     }
+
+    onVisibleChanged: syncVisibility()
+    Component.onCompleted: Qt.callLater(syncVisibility)
 
     Rectangle {
         anchors.fill: parent

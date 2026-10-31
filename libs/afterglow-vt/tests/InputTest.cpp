@@ -35,6 +35,25 @@ TEST(Input, CursorKeys)
     EXPECT_EQ(encodeKey(key(Key::Left, Mod::Ctrl), m), "\x1b[1;5D");
 }
 
+TEST(Input, ApplicationKeypadCoversEveryKey)
+{
+    Modes modes;
+    modes.keypadApp = true;
+    const std::pair<Key, char> cases[] = {
+        {Key::Keypad0, 'p'}, {Key::Keypad1, 'q'}, {Key::Keypad2, 'r'}, {Key::Keypad3, 's'},
+        {Key::Keypad4, 't'}, {Key::Keypad5, 'u'}, {Key::Keypad6, 'v'}, {Key::Keypad7, 'w'},
+        {Key::Keypad8, 'x'}, {Key::Keypad9, 'y'}, {Key::KeypadDecimal, 'n'}, {Key::KeypadDivide, 'o'},
+        {Key::KeypadMultiply, 'j'}, {Key::KeypadSubtract, 'm'}, {Key::KeypadAdd, 'k'},
+        {Key::KeypadEnter, 'M'}, {Key::KeypadEqual, 'X'},
+    };
+    for (const auto& [code, final] : cases) {
+        EXPECT_EQ(encodeKey(key(code), modes), std::string("\x1bO") + final);
+    }
+    EXPECT_EQ(encodeKey(key(Key::KeypadEqual, Mod::Ctrl, "="), modes), "\x1b[1;5X");
+    modes.keypadApp = false;
+    EXPECT_EQ(encodeKey(key(Key::KeypadEqual, 0, "="), modes), "=");
+}
+
 TEST(Input, TildeAndFunctionKeys)
 {
     Modes m;

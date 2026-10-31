@@ -80,6 +80,27 @@ std::uint32_t withAlpha(std::uint32_t rgba, std::uint8_t a)
     return (rgba & 0x00FFFFFFu) | (std::uint32_t(a) << 24);
 }
 
+// Cell-relative cursor box. Shaders use the logical destination, while the
+// grid may supply an animated position for ordinary cells.
+QRectF cursorBox(const PaneSnapshot& s, const FontMetrics& m, std::optional<QPointF> animated = {})
+{
+    const bool inGrid = s.cursorX >= 0 && s.cursorX < s.cols && s.cursorY >= 0 && s.cursorY < s.rows;
+    const auto position = animated.value_or(QPointF(s.cursorX * m.cellWidth, s.cursorY * m.cellHeight));
+    const int span = inGrid && s.at(s.cursorX, s.cursorY).width == 2 ? 2 : 1;
+    QRectF box(position, QSizeF(span * m.cellWidth, m.cellHeight));
+    if (inGrid) {
+        const auto& cell = s.at(s.cursorX, s.cursorY);
+        if (s.lineSize(s.cursorY) != AfterglowVt::LineSize::Single) {
+            box.setX(2 * s.cursorX * m.cellWidth);
+            box.setWidth(span * m.cellWidth * 2);
+        } else if (cell.mcScale != 0) {
+            box = QRectF((s.cursorX - cell.mcDx) * m.cellWidth, (s.cursorY - cell.mcDy) * m.cellHeight,
+                         cell.mcScale * cell.mcWidth * m.cellWidth, cell.mcScale * m.cellHeight);
+        }
+    }
+    return box;
+}
+
 QShader loadShader(const QString& path)
 {
     QFile f(path);
@@ -207,8 +228,6 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // Where the cursor is drawn: its cell, or a point on its glide there.
     const QPointF cellPos(s.cursorX * cw, s.cursorY * ch);
     const QPointF cursorPos = p.cursorPosition.value_or(cellPos);
-    const float cursorX = ox + float(cursorPos.x());
-    const float cursorY = oy + float(cursorPos.y());
     // Text under a block cursor takes the background colour once it has arrived.
     const bool cursorSettled = (cursorPos - cellPos).manhattanLength() < 0.5;
     bool recolorUnderCursor = blockCursor && cursorSettled;
@@ -221,25 +240,12 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
     }
     auto extraBlock = [&](int x, int y) { return !extraBlocks.empty() && y < s.rows && x < s.cols && extraBlocks[std::size_t(y) * s.cols + x].has_value(); };
-    // The cursor box: a cell, a doubled cell on a double-size line, or the
-    // whole of a multicell block.
-    float curX = cursorX;
-    float curY = cursorY;
-    float curW = float(cursorSpan * cw);
-    float curH = float(ch);
-    if (cursorInGrid) {
-        const SnapshotCell& cc = s.at(s.cursorX, s.cursorY);
-        if (s.lineSize(s.cursorY) != AfterglowVt::LineSize::Single) {
-            curX = ox + float(2 * s.cursorX * cw);
-            curW *= 2;
-            recolorUnderCursor = false;
-        } else if (cc.mcScale != 0) {
-            curX = ox + float((s.cursorX - cc.mcDx) * cw);
-            curY = oy + float((s.cursorY - cc.mcDy) * ch);
-            curW = float(cc.mcScale * cc.mcWidth * cw);
-            curH = float(cc.mcScale * ch);
-            recolorUnderCursor = false;
-        }
+    const QRectF box = cursorBox(s, m, p.cursorPosition).translated(ox, oy);
+    const float curX = float(box.x()), curY = float(box.y());
+    const float curW = float(box.width()), curH = float(box.height());
+    if (cursorInGrid && (s.lineSize(s.cursorY) != AfterglowVt::LineSize::Single
+                        || s.at(s.cursorX, s.cursorY).mcScale != 0)) {
+        recolorUnderCursor = false;
     }
 
     // Pushes a glyph quad clipped vertically to [top, bottom), its texture
@@ -1303,13 +1309,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
             st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
             st.mouse = m_mouse;
-            const int span = (snap.cursorX < snap.cols && snap.cursorY < snap.rows
-                              && snap.at(snap.cursorX, snap.cursorY).width == 2)
-                ? 2
-                : 1;
-            QRectF cursor(pane.params.contentOrigin.x() + snap.cursorX * m.cellWidth,
-                          pane.params.contentOrigin.y() + snap.cursorY * m.cellHeight, span * m.cellWidth,
-                          m.cellHeight);
+            const QRectF cursor = cursorBox(snap, m).translated(pane.params.contentOrigin);
             const int style = !pane.params.focused                                         ? 1
                               : snap.cursorShape == AfterglowVt::CursorShape::Bar          ? 2
                               : snap.cursorShape == AfterglowVt::CursorShape::Underline    ? 3
@@ -1322,7 +1322,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 track.style = track.previousStyle = style;
                 track.focused = pane.params.focused;
             }
-            if (cursor != track.cursor || color != track.color) {
+            if (cursor != track.cursor || color != track.color || style != track.style) {
                 track.previous = track.cursor;
                 track.previousColor = track.color;
                 track.previousStyle = track.style;

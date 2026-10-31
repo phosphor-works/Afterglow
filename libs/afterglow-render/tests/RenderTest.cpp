@@ -799,7 +799,7 @@ TEST_F(Render, ExplicitColorConversionsPreserveAlphaAndLinearLight)
     renderer->setShaderChains(chains); auto image=render("\x1b[?25l",true,128);
     auto pixel=image.pixel(cellCenter(2,2));
     EXPECT_NEAR(qAlpha(pixel),128,1);
-    // Readback QImage uses straight alpha.
+    // pixelColor() returns straight color components from premultiplied storage.
     EXPECT_NEAR(image.pixelColor(cellCenter(2,2)).redF(),.735, .02);
 }
 
@@ -1582,9 +1582,10 @@ TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
     for (float scale : {0.5f, 0.75f}) {
         ShaderProgramSource source;
         source.id = "window-camera";
-        source.bufferScale = scale;
+
         source.code = "void mainImage(out vec4 c,in vec2 p){c=texture(iBuffer0,p/iResolution.xy);}";
         ShaderBufferSource pass;
+        pass.scale = scale;
         pass.geometry.vertexCount = 3;
         pass.geometry.vertexCode = R"(
             void mainMesh(out vec4 p) {
@@ -1603,6 +1604,7 @@ TEST_F(Render, WindowMeshCameraRemainsContinuousAcrossScaledSplits)
         QString error;
         auto program = ShaderProgram::compile(source, &error);
         ASSERT_TRUE(program) << error.toStdString();
+        ASSERT_FLOAT_EQ(program->bufferSettings(0).scale, scale);
         ShaderChains chains; chains.pane = {program->instance("mesh")};
         renderer->setShaderChains(chains);
         first.params.rect = QRect(QPoint(), size);
@@ -1759,5 +1761,58 @@ TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
         pane.params.rect = bounds;
         const auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
         ASSERT_FALSE(image.isNull());
+    }
+}
+
+TEST_F(Render, ShaderCursorTracksRepeatedStyleOnlyTransitions)
+{
+    ShaderChains chains;
+    chains.window = {layerShader("cursor-styles", "fragColor = vec4(float(iCurrentCursorStyle)/4.0, float(iPreviousCursorStyle)/4.0, iTimeCursorChange/10.0, 1.0);")};
+    renderer->setShaderChains(chains);
+    renderer->setClockOverride(0.f);
+    render("\x1b[2 q");
+    const int commands[] = {6, 4, 2, 6};
+    const int styles[] = {2, 3, 0, 2};
+    int previous = 0;
+    for (int i = 0; i < 4; ++i) {
+        const float time = float(i + 1);
+        renderer->setClockOverride(time);
+        auto image = render("\x1b[" + std::to_string(commands[i]) + " q");
+        const QRgb expected = qRgb(qRound(styles[i] * 255.0 / 4), qRound(previous * 255.0 / 4), qRound(time * 255.0 / 10));
+        EXPECT_PIXEL(image, cellCenter(10, 2), expected);
+        renderer->setClockOverride(time + .5f);
+        EXPECT_PIXEL(render(""), cellCenter(10, 2), expected);
+        previous = styles[i];
+    }
+}
+
+TEST_F(Render, ShaderCursorBoxMatchesDoubleWidthAndMulticellDrawing)
+{
+    const QSize size(Cols * cw, Rows * ch);
+    for (bool multicell : {false, true}) {
+        terminal->reset();
+        terminal->feed(multicell ? "\x1b]66;s=2;A\x07\x1b[2;2H" : "\x1b#6\x1b[1;4H");
+        snapshot.capture(*terminal);
+        const QRectF expected = multicell ? QRectF(cw, ch, 2*cw, 2*ch) : QRectF(7*cw, ch, 2*cw, ch);
+        WindowRenderer::Pane pane{&snapshot, {}};
+        pane.params.rect = QRect(QPoint(), size);
+        pane.params.contentOrigin = QPoint(cw, ch);
+        pane.params.focused = true;
+        FrameBuilder builder;
+        FrameBuilder::Ranges ranges;
+        std::vector<Instance> instances;
+        auto& resources = renderer->fonts();
+        ASSERT_TRUE(builder.buildPane(snapshot, pane.params, *resources.fonts, resources.glyphs, instances, ranges));
+        ASSERT_LT(ranges.cursorStart, instances.size());
+        const auto& cursor = instances[ranges.cursorStart];
+        EXPECT_EQ(QRectF(cursor.x, cursor.y, cursor.w, cursor.h), expected);
+        const std::string body = "fragColor = all(lessThan(abs(iCurrentCursor - vec4("
+            + std::to_string(expected.x()) + "," + std::to_string(size.height()-expected.y()) + ","
+            + std::to_string(expected.width()) + "," + std::to_string(expected.height())
+            + ")), vec4(0.1))) ? vec4(0,1,0,1) : vec4(1,0,0,1);";
+        ShaderChains chains;
+        chains.window = {layerShader("cursor-box", body.c_str())};
+        renderer->setShaderChains(chains);
+        EXPECT_PIXEL(renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg), cellCenter(10, 2), qRgb(0,255,0));
     }
 }

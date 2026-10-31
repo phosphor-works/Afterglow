@@ -12,10 +12,13 @@ Item {
     required property QtObject controller
     readonly property bool canRemember: controller.clipboardPromptName.length > 0
 
-    onVisibleChanged: {
+    function syncVisibility() {
         if (visible)
             Qt.callLater(() => { if (prompt.visible) panel.forceActiveFocus() })
     }
+
+    onVisibleChanged: syncVisibility()
+    Component.onCompleted: Qt.callLater(syncVisibility)
 
     Rectangle {
         anchors.fill: parent
@@ -58,7 +61,9 @@ Item {
                 Button {
                     visible: prompt.canRemember
                     width: Math.min(implicitWidth, parent.width)
-                    text: qsTr("Always allow %1").arg(prompt.controller.clipboardPromptName)
+                    readonly property string literalTitle: qsTr("Always allow %1").arg(prompt.controller.clipboardPromptName)
+                    text: "<span>" + literalTitle.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>"
+                    Accessible.name: literalTitle
                     onClicked: prompt.controller.answerClipboard(2)
                 }
                 Button {

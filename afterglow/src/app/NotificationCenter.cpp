@@ -20,7 +20,7 @@ namespace {
 const QString Service = QStringLiteral("org.freedesktop.Notifications");
 const QString Path = QStringLiteral("/org/freedesktop/Notifications");
 const QString Interface = QStringLiteral("org.freedesktop.Notifications");
-const QString DesktopEntry = QStringLiteral("io.github.fuddlesworth.Afterglow");
+const QString DesktopEntry = QStringLiteral("com.phosphorworks.Afterglow");
 
 /// The image-data hint: (iiibiiay).
 struct NotificationImage

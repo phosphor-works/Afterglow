@@ -43,6 +43,7 @@ struct Image
 
     std::uint32_t id = 0;
     std::uint32_t number = 0;
+    bool isSixel = false; ///< internally placed sixel/iTerm2 image, not a kitty protocol ID
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<FramePtr> frames;
@@ -179,14 +180,14 @@ private:
     void pruneOrphans();
     void enforceQuota();
     void dropUnusedImage(std::uint32_t id);
+    std::uint32_t allocateSixelId();
 
     std::map<std::uint32_t, Image> m_images;
     std::vector<Placement> m_placements;
     Pending m_pending;
     std::uint32_t m_nextAutoId = 1u << 31;
     std::uint32_t m_nextPlacementId = 1u << 31;
-    std::uint32_t m_nextSixelId = 3u << 29; ///< sixel images, apart from kitty's automatic ids
-    static bool isSixelId(std::uint32_t id) { return id >= (3u << 29) && id < (1u << 31); }
+    std::uint32_t m_nextSixelId = 3u << 29; ///< preferred range; occupied IDs are skipped
     std::uint64_t m_sequence = 0;
     std::size_t m_quota = DefaultQuota;
 };

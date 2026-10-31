@@ -146,7 +146,7 @@ The nested-compositor and timing limits below still apply.
 | Scroll | Repeated scrollbar traversal through 100,000 history rows; requests every 16 ms |
 | Resize | Repeated width changes of 160 pixels and height changes of 80 pixels; requests every 50 ms |
 | History | Retain exactly 0, 100,000 or 1,000,000 rows, then measure idle memory |
-| Input | Send ASCII key events through Qt and the PTY; wait for a visible acknowledgement |
+| Input | Send ASCII key events through Qt and the PTY and wait for a visible acknowledgement |
 | Input with output | Repeat the input case while the child targets 4 MiB/s of colored output |
 | Scripts | Run the Phosphor command-finished callback 10,000 times with 1, 8 or 32 pane snapshots |
 
@@ -168,7 +168,7 @@ It does not measure effect application, real pane creation or a complete plugin 
 
 | Metric | Meaning |
 | --- | --- |
-| CPU percent | Application process CPU time divided by elapsed time; 100% means one full CPU core |
+| CPU percent | Application process CPU time divided by elapsed time. 100% means one full CPU core |
 | Frame service | Elapsed time inside a Qt update or expose event that submits a terminal frame |
 | Frame interval | Time between the starts of consecutive submitted frame events |
 | GPU elapsed | Asynchronous terminal command-buffer elapsed time reported by Qt |
@@ -197,8 +197,8 @@ Benchmark bookkeeping is included in application CPU time.
 These workloads use no shaders, no audio, one visible terminal pane and scale 1.
 The scripts case changes only its synthetic state snapshot size.
 The tests do not measure physical keyboard latency, presentation latency, mixed-scale monitors or thermal stability.
-The scroll case traverses the scrollbar position; it does not reproduce smooth wheel input.
-The history case uses short ASCII rows; images, styles and complex text change memory requirements.
+The scroll case traverses the scrollbar position. It does not reproduce smooth wheel input.
+The history case uses short ASCII rows. Images, styles and complex text change memory requirements.
 The input case does not represent every full-screen application or output pattern.
 The nested compositor shares the host GPU and normal power management.
 Its additional presentation stage can affect frame pacing.

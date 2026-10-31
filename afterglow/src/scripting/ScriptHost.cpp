@@ -241,7 +241,7 @@ void ScriptHost::reload()
 {
     m_reloadTimer.stop();
     std::vector<ScriptPtr> loaded;
-    m_packageWatches.clear();
+    m_sourceWatches.clear();
     m_loadErrors.clear();
     if (m_enabled) {
         // id -> path, later directories winning.
@@ -252,11 +252,12 @@ void ScriptHost::reload()
                                                                 QDir::Name);
             for (const QFileInfo& f : files) {
                 if (!f.fileName().endsWith(QLatin1String(".d.luau"))) {
+                    m_sourceWatches << f.absoluteFilePath();
                     chosen[f.completeBaseName()] = {priority, f.absoluteFilePath()};
                 }
             }
             for (const auto& folder : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
-                m_packageWatches << folder.absoluteFilePath();
+                m_sourceWatches << folder.absoluteFilePath();
                 const auto manifest = folder.absoluteFilePath() + QStringLiteral("/package.json");
                 if (QFileInfo::exists(manifest)) chosen[folder.fileName()] = {priority, manifest};
             }
@@ -274,7 +275,7 @@ void ScriptHost::reload()
             QString failure;
             if (isPackage) {
                 failure = ScriptPackage::read(path, package);
-                m_packageWatches << package.watched;
+                m_sourceWatches << package.watched;
                 if (failure.isEmpty() && package.id != base) failure = QStringLiteral("Package id must match its directory name");
                 source = package.source;
                 const QVariantMap identity{{QStringLiteral("id"), package.id}, {QStringLiteral("version"), package.version},
@@ -453,8 +454,8 @@ void ScriptHost::watch()
             m_watcher.addPath(info.absoluteFilePath());
         }
     }
-    m_packageWatches.removeDuplicates();
-    for (auto path : std::as_const(m_packageWatches)) {
+    m_sourceWatches.removeDuplicates();
+    for (auto path : std::as_const(m_sourceWatches)) {
         QFileInfo info(path);
         while (!info.exists() && info.absolutePath() != info.absoluteFilePath()) info = QFileInfo(info.absolutePath());
         if (info.exists()) m_watcher.addPath(info.absoluteFilePath());
@@ -648,7 +649,7 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, qu
     if (result.typeId() == QMetaType::QVariantList) {
         const auto effects = result.toList();
         if (effects.size() > MaxEffectsPerCall) {
-            const QString error = QStringLiteral("a handler may return at most %1 effects; no effects applied").arg(MaxEffectsPerCall);
+            const QString error = QStringLiteral("A handler may return at most %1 effects. No effects applied").arg(MaxEffectsPerCall);
             qCWarning(lcScripts).noquote() << script->id << error;
             ++script->effectErrors;
             script->droppedEffects += effects.size();
@@ -877,7 +878,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (!withinBudget(*script, structural)) {
             ++script->droppedEffects;
             result.code = QStringLiteral("rate_limited");
-            error = QStringLiteral("too many effects; %1 dropped").arg(kind);
+            error = QStringLiteral("Too many effects. %1 dropped").arg(kind);
         } else if (kind == QLatin1String("state_read") || kind == QLatin1String("state_write")) {
             ScriptState::Snapshot saved;
             ScriptState store(m_stateDirectory);

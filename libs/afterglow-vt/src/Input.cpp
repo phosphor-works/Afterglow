@@ -198,9 +198,9 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
     default: {
         // Remaining keypad keys.
         if (modes.keypadApp) {
-            static constexpr char Finals[] = "pqrstuvwxynojmkX";
+            static constexpr char Finals[] = "pqrstuvwxynojmkMX";
             const int idx = int(e.key) - int(Key::Keypad0);
-            if (idx >= 0 && idx < 16) {
+            if (idx >= 0 && idx < int(sizeof Finals) - 1) {
                 return ss3Key(Finals[idx], m);
             }
         }

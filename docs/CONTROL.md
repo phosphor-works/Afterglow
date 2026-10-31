@@ -11,8 +11,10 @@ The `watch` command supplies events as JSON lines.
 afterglow ctl --help
 ```
 
-The D-Bus interface is `io.github.fuddlesworth.Afterglow.Control`.
-Its object path is `/Afterglow/Control`.
+The application and D-Bus service ID is `com.phosphorworks.Afterglow`.
+The application object path is `/com/phosphorworks/Afterglow`.
+The control interface is `com.phosphorworks.Afterglow.Control`.
+Its object path is `/com/phosphorworks/Afterglow/Control`.
 
 ## Access settings
 

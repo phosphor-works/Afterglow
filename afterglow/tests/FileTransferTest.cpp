@@ -52,6 +52,14 @@ struct Transfer : testing::Test {
         service.approve(token, true);
         return status("OK");
     }
+    bool fileStatus(const QByteArray& fid, const QByteArray& value)
+    {
+        return waitFor([&] {
+            return std::any_of(replies.begin(), replies.end(), [&](const auto& b) {
+                return b.contains(";fid=" + fid + ";") && b.contains("st=" + b64(value));
+            });
+        });
+    }
     QByteArray path(const char* name) { return b64(dir.filePath(QString::fromLatin1(name)).toUtf8()); }
     QByteArray contents(const char* name)
     {
@@ -173,6 +181,68 @@ TEST_F(Transfer, ResourceAbortReportsFailureAndClosesSession)
     service.abort();
     ASSERT_TRUE(status("ENOMEM"));
     ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+}
+TEST_F(Transfer, PendingUploadsAreBoundedAndCompletionReleasesCapacity)
+{
+    ASSERT_TRUE(start());
+    for (int i = 0; i < 160; ++i) {
+        const auto fid = QByteArray::number(i);
+        send("ac=file;fid=" + fid + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
+    }
+    ASSERT_TRUE(fileStatus("159", "EBUSY"));
+    send("ac=end_data;fid=0");
+    ASSERT_TRUE(fileStatus("0", "OK"));
+    send("ac=file;fid=next;n=" + path("next"));
+    ASSERT_TRUE(fileStatus("next", "STARTED"));
+    send("ac=cancel");
+    ASSERT_TRUE(status("CANCELED"));
+    token.clear();
+    replies.clear();
+    ASSERT_TRUE(start());
+    send("ac=file;fid=fresh;n=" + path("fresh"));
+    EXPECT_TRUE(fileStatus("fresh", "STARTED"));
+}
+TEST_F(Transfer, CompletedUploadsCloseDescriptorsBeforeSessionFinish)
+{
+    ASSERT_TRUE(start());
+    const auto descriptors = [] { return QDir("/proc/self/fd").entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size(); };
+    const auto before = descriptors();
+    for (int i = 0; i < 160; ++i) {
+        const auto fid = QByteArray::number(i);
+        send("ac=file;fid=" + fid + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
+        send("ac=end_data;fid=" + fid);
+    }
+    ASSERT_TRUE(fileStatus("159", "OK"));
+    EXPECT_LE(descriptors(), before + 4);
+    EXPECT_EQ(QDir(dir.path()).entryList(QDir::Files).size(), 160);
+    EXPECT_EQ(closed, 0);
+}
+TEST_F(Transfer, PendingRsyncReadsAreBoundedAndReleaseCapacity)
+{
+    QFile source(dir.filePath("empty"));
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly));
+    source.close();
+    send("ac=receive;sz=1");
+    send("ac=file;fid=request;n=" + path("empty"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    for (int i = 0; i < 160; ++i)
+        send("ac=file;tt=rsync;fid=r" + QByteArray::number(i) + ";n=" + path("empty"));
+    ASSERT_TRUE(fileStatus("r159", "EBUSY"));
+    QByteArray signature(12, '\0');
+    signature[8] = 64;
+    const auto finish = [&](const QByteArray& fid) {
+        send("ac=end_data;fid=" + fid + ";d=" + b64(signature));
+        return waitFor([&] {
+            return std::any_of(replies.begin(), replies.end(), [&](const auto& b) {
+                return b.contains("ac=end_data;") && b.contains(";fid=" + fid + ";");
+            });
+        });
+    };
+    ASSERT_TRUE(finish("r0"));
+    send("ac=file;tt=rsync;fid=next;n=" + path("empty"));
+    EXPECT_TRUE(finish("next"));
 }
 TEST_F(Transfer, ResetClosesPendingPrompt)
 {

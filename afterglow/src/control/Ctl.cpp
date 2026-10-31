@@ -52,7 +52,7 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
   watch                               print events as JSON lines until interrupted
 )";
 
-const QString Service = QStringLiteral("io.github.fuddlesworth.Afterglow");
+const QString Service = QStringLiteral("com.phosphorworks.Afterglow");
 
 QString unescape(const QString& s)
 {

@@ -131,7 +131,8 @@ def main():
 
     values = sorted(set(packed))
     value_index = {v: i for i, v in enumerate(values)}
-    assert len(values) <= 256, len(values)
+    if len(values) > 256:
+        raise ValueError(f"Property table needs {len(values)} values, exceeding the 256-entry index capacity")
 
     blocks = []
     block_index = {}

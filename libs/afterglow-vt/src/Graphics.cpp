@@ -498,7 +498,7 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
 void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ctx)
 {
     Command cmd = cmdIn;
-    if (cmd.action != 'q' && !m_images.contains(cmd.id) && m_images.size() >= 4096) { respond(cmd, ctx, "ENOSPC:too many images", true); return; }
+    if (cmd.action != 'q' && !findImage(Command{.id = cmd.id}) && m_images.size() >= 4096) { respond(cmd, ctx, "ENOSPC:too many images", true); return; }
     ImageFrame frame;
     std::string error;
     if (!decodePixels(cmd, std::move(data), ctx, frame, error)) {
@@ -522,6 +522,18 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
         } while (m_images.count(id));
         if (cmd.number) {
             cmd.id = id;
+        }
+    }
+    if (auto existing = m_images.find(id); existing != m_images.end() && existing->second.isSixel) {
+        // Kitty may explicitly claim any ID, including an internal image's.
+        // Keep that image and its anchors, relocating it before replacement.
+        const auto replacement = allocateSixelId();
+        auto node = m_images.extract(existing);
+        node.key() = replacement;
+        node.mapped().id = replacement;
+        m_images.insert(std::move(node));
+        for (auto& placement : m_placements) {
+            if (placement.imageId == id) placement.imageId = replacement;
         }
     }
     std::erase_if(m_placements, [id](const Placement& p) { return p.imageId == id; });
@@ -551,12 +563,12 @@ Image* GraphicsStore::findImage(const Command& cmd)
 {
     if (cmd.id) {
         auto it = m_images.find(cmd.id);
-        return it == m_images.end() ? nullptr : &it->second;
+        return it == m_images.end() || it->second.isSixel ? nullptr : &it->second;
     }
     if (cmd.number) {
         Image* newest = nullptr;
         for (auto& [id, img] : m_images) {
-            if (img.number == cmd.number && (!newest || img.sequence > newest->sequence)) {
+            if (!img.isSixel && img.number == cmd.number && (!newest || img.sequence > newest->sequence)) {
                 newest = &img;
             }
         }
@@ -645,6 +657,16 @@ void GraphicsStore::place(const Command& cmd, Context& ctx)
     respond(cmd, ctx, "OK", false);
 }
 
+std::uint32_t GraphicsStore::allocateSixelId()
+{
+    std::uint32_t id;
+    do {
+        id = m_nextSixelId++;
+        if (m_nextSixelId >= (1u << 31)) m_nextSixelId = 3u << 29;
+    } while (m_images.contains(id));
+    return id;
+}
+
 void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight)
 {
     if (cellWidth <= 0 || cellHeight <= 0) {
@@ -657,11 +679,8 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
     // A new image over an older one replaces it where it covers it whole.
     std::vector<std::uint32_t> covered;
     std::erase_if(m_placements, [&](const Placement& p) {
-        if (!isSixelId(p.imageId)) {
-            return false;
-        }
         const auto it = m_images.find(p.imageId);
-        if (it == m_images.end()) {
+        if (it == m_images.end() || !it->second.isSixel) {
             return false;
         }
         const int w = int((it->second.width + std::uint32_t(cellWidth) - 1) / std::uint32_t(cellWidth));
@@ -678,10 +697,8 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
     }
 
     Image img;
-    img.id = m_nextSixelId++;
-    if (m_nextSixelId >= (1u << 31)) {
-        m_nextSixelId = 3u << 29;
-    }
+    img.id = allocateSixelId();
+    img.isSixel = true;
     img.width = frame.width;
     img.height = frame.height;
     img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
@@ -730,7 +747,8 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
     std::vector<std::uint32_t> touched;
     auto drop = [&](auto pred) {
         std::erase_if(m_placements, [&](const Placement& p) {
-            if (!pred(p)) {
+            const auto image = m_images.find(p.imageId);
+            if (image == m_images.end() || image->second.isSixel || !pred(p)) {
                 return false;
             }
             touched.push_back(p.imageId);
@@ -749,7 +767,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         drop([&](const Placement& p) {
             return p.imageId == cmd.id && (cmd.placement == 0 || p.placementId == cmd.placement);
         });
-        if (freeImages) {
+        if (freeImages && findImage(Command{.id = cmd.id})) {
             touched.push_back(cmd.id);
         }
         break;
@@ -796,7 +814,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         drop([&](const Placement& p) { return p.imageId >= std::uint32_t(cmd.x) && p.imageId <= std::uint32_t(cmd.y); });
         if (freeImages) {
             for (const auto& [id, img] : m_images) {
-                if (id >= std::uint32_t(cmd.x) && id <= std::uint32_t(cmd.y)) {
+                if (!img.isSixel && id >= std::uint32_t(cmd.x) && id <= std::uint32_t(cmd.y)) {
                     touched.push_back(id);
                 }
             }
@@ -993,6 +1011,8 @@ bool GraphicsStore::advanceAnimations(std::uint64_t nowMs, std::uint64_t& nextDe
 const Placement* GraphicsStore::parentOf(const Placement& p) const
 {
     if (!p.parentImage) return nullptr;
+    const auto image = m_images.find(p.parentImage);
+    if (image == m_images.end() || image->second.isSixel) return nullptr;
     for (const auto& parent : m_placements)
         if (parent.imageId == p.parentImage && (!p.parentPlacement || parent.placementId == p.parentPlacement)) return &parent;
     return nullptr;

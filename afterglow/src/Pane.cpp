@@ -382,7 +382,7 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
     }
     if (job->cancelled) {
         m_searchJob.reset();
-        Q_EMIT searchStatusChanged(tr("Layout changed; search again"));
+        Q_EMIT searchStatusChanged(tr("Layout changed. Search again"));
         return;
     }
     if (more) {
@@ -398,7 +398,7 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
         {
             std::lock_guard lock(m_mutex);
             if (m_terminal.screen().layoutEpoch() != job->epoch || m_terminal.modes().altScreen != job->alt) {
-                result.matches.clear(); result.error = "Layout changed; search again";
+                result.matches.clear(); result.error = "Layout changed. Search again";
             }
             std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
             m_searchMatches = std::move(result.matches);
@@ -944,7 +944,7 @@ void Pane::ptyClosed(int status)
         const int code = status == -1 ? 0 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
         if (m_hold.load() || (m_holdOnFailure.load() && code != 0)) {
             const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(code)
-                + "; press any key to close]\x1b[0m\x1b[?25l";
+                + ". Press any key to close]\x1b[0m\x1b[?25l";
             m_terminal.feed(note);
             m_held.store(true);
         }
@@ -960,7 +960,7 @@ void Pane::holdStartFailure()
 {
     {
         std::lock_guard lock(m_mutex);
-        m_terminal.feed("\r\n[Unable to start a process; check the project/configuration. Press any key to close.]\r\n");
+        m_terminal.feed("\r\n[Unable to start a process. Check the project/configuration. Press any key to close.]\r\n");
         m_held.store(true);
     }
     Q_EMIT contentChanged();

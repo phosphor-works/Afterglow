@@ -33,7 +33,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. |
 | `divider` | `"#3a3a42"` |  | Split divider color. |
 | `foreground` | `"#d8d8d8"` |  | Default text color. |
-| `minimumContrast` | `1` | 1–21 | Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors; 4.5 is the WCAG AA normal-text threshold. |
+| `minimumContrast` | `1` | 1–21 | Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors. 4.5 is the WCAG AA normal-text threshold. |
 | `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
@@ -159,7 +159,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `backgroundOpacity` | `1` | 0.05–1 | Opacity of the default background; text stays opaque |
+| `backgroundOpacity` | `1` | 0.05–1 | Opacity of the default background. Text stays opaque |
 | `balancePadding` | `false` |  | Distribute unused cell space between opposite edges. Otherwise, space remains at the right and bottom. |
 | `blur` | `false` |  | Blur content behind translucent backgrounds with KWin. |
 | `decorations` | `true` |  | The compositor's title bar and borders (new windows) |

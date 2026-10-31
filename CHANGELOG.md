@@ -29,7 +29,7 @@ Build and installation procedures do not change. This release does not add macOS
 
 - Add opt-in primary-screen bidi layout with logical copy and mapped pointer, cursor, accessibility and IME geometry.
 - Complete Luau launch options, bounded semantic-region/selection reads and lifecycle diagnostics.
-- Support up to eight shader buffers, four image parameters, auxiliary depth output, custom vertex hooks and sampler modes; include executable depth-trails and semantic-region examples.
+- Support up to eight shader buffers, four image parameters, auxiliary depth output, custom vertex hooks and sampler modes. Include executable depth-trails and semantic-region examples.
 - Harden PTY startup/backpressure, parser resets and bounds, graphics decoding, script file reads, reload ownership and shader allocation recovery.
 - Exercise native split creation, chrome keyboard routing, paste confirmation, IME commits and compositor-delivered drag/drop in an isolated KWin desktop.
 

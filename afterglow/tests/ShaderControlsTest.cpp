@@ -7,6 +7,9 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QSaveFile>
+#include <QElapsedTimer>
+#include <QThread>
 #include <gtest/gtest.h>
 #include <limits>
 using namespace Afterglow;
@@ -374,4 +377,102 @@ TEST(ShaderGeometryPacks, LoadsImportedMeshesAndRejectsInvalidMetadata)
         // Do not expose intentionally invalid fixtures to the bundled-pack test.
         ASSERT_TRUE(QDir(dir).removeRecursively());
     }
+}
+
+namespace {
+bool writeShaderFixture(const QString& path, const QByteArray& bytes, bool atomic = false)
+{
+    if (atomic) {
+        QSaveFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit();
+    }
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+bool waitForShaderChange(const int& count, int previous, int timeout = 3000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeout) {
+        QCoreApplication::processEvents();
+        if (count > previous) return true;
+        QThread::msleep(5);
+    }
+    return false;
+}
+const QByteArray ShaderBody = "void mainImage(out vec4 c,in vec2 p){c=vec4(shade());}\n";
+}
+
+TEST(ShaderReload, MissingRawFileRecoversThroughNewParentDirectories)
+{
+    QTemporaryDir temporary;
+    const auto path = temporary.filePath("new/deeper/effect.frag");
+    ShaderLibrary library;
+    ShaderLibrary::Refs refs; refs.window = {path};
+    int changes = 0;
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    EXPECT_TRUE(library.build(refs, {}).window.empty());
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+    ASSERT_TRUE(waitForShaderChange(changes, 0));
+    EXPECT_TRUE(library.build(refs, {}).window.empty());
+    const int before = changes;
+    ASSERT_TRUE(writeShaderFixture(path, "float shade(){return 1.;}\n" + ShaderBody));
+    ASSERT_TRUE(waitForShaderChange(changes, before));
+    EXPECT_EQ(library.build(refs, {}).window.size(), 1u);
+}
+
+TEST(ShaderReload, MissingNestedIncludesRecoverAndStayWatchedAfterAtomicReplacement)
+{
+    QTemporaryDir temporary;
+    const auto root = temporary.filePath("effect.frag");
+    const auto include = temporary.filePath("color.glsl");
+    const auto nested = temporary.filePath("nested/tint.glsl");
+    ASSERT_TRUE(writeShaderFixture(root, "#include \"color.glsl\"\n" + ShaderBody));
+    ShaderLibrary library;
+    ShaderLibrary::Refs refs; refs.window = {root};
+    int changes = 0;
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    EXPECT_TRUE(library.build(refs, {}).window.empty());
+    ASSERT_TRUE(writeShaderFixture(include, "#include \"nested/tint.glsl\"\n"));
+    ASSERT_TRUE(waitForShaderChange(changes, 0));
+    EXPECT_TRUE(library.build(refs, {}).window.empty());
+    int before = changes;
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(nested).absolutePath()));
+    ASSERT_TRUE(writeShaderFixture(nested, "float shade(){return 0.25;}\n"));
+    ASSERT_TRUE(waitForShaderChange(changes, before));
+    auto first = library.build(refs, {});
+    ASSERT_EQ(first.window.size(), 1u);
+    for (bool atomic : {false, true, false}) {
+        before = changes;
+        ASSERT_TRUE(writeShaderFixture(nested, atomic ? "float shade(){return 0.75;}\n" : "float shade(){return 0.5;}\n", atomic));
+        ASSERT_TRUE(waitForShaderChange(changes, before));
+        auto rebuilt = library.build(refs, {});
+        ASSERT_EQ(rebuilt.window.size(), 1u);
+        EXPECT_NE(rebuilt.window.front(), first.window.front());
+        first = std::move(rebuilt);
+    }
+    // Dropping references retires both root and include watches.
+    library.build({}, {});
+    QCoreApplication::processEvents();
+    before = changes;
+    ASSERT_TRUE(writeShaderFixture(nested, "float shade(){return 1.;}\n"));
+    ASSERT_TRUE(writeShaderFixture(root, "float shade(){return 1.;}\n" + ShaderBody));
+    EXPECT_FALSE(waitForShaderChange(changes, before, 150));
+}
+
+TEST(ShaderReload, UnrelatedDirectoryWritesDoNotInvalidateCachedPrograms)
+{
+    QTemporaryDir temporary;
+    const auto path = temporary.filePath("effect.frag");
+    ASSERT_TRUE(writeShaderFixture(path, "#include \"p_generated.glsl\"\nfloat shade(){return 1.;}\n" + ShaderBody));
+    ShaderLibrary library;
+    ShaderLibrary::Refs refs; refs.window = {path};
+    auto first = library.build(refs, {});
+    ASSERT_EQ(first.window.size(), 1u);
+    int changes = 0;
+    QObject::connect(&library, &ShaderLibrary::changed, &library, [&] { ++changes; });
+    ASSERT_TRUE(writeShaderFixture(temporary.filePath("p_generated.glsl"), "editor helper"));
+    ASSERT_TRUE(writeShaderFixture(temporary.filePath("unrelated.txt"), "unrelated"));
+    EXPECT_FALSE(waitForShaderChange(changes, 0, 150));
+    EXPECT_EQ(library.build(refs, {}).window.front(), first.window.front());
 }

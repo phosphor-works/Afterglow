@@ -110,7 +110,7 @@ QString ProjectStore::save(const QString& name, const QJsonObject& document, boo
     if (!lock.tryLock(0)) return QStringLiteral("Another project save is in progress");
     const auto path = QDir(m_directory).filePath(name + QStringLiteral(".json"));
     if (QFileInfo(path).isSymLink()) return QStringLiteral("Cannot replace a project symlink");
-    if (!overwrite && QFileInfo::exists(path)) return QStringLiteral("Project already exists; confirm replacement or choose another name");
+    if (!overwrite && QFileInfo::exists(path)) return QStringLiteral("Project already exists. Confirm replacement or choose another name");
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) return file.errorString();
     const auto bytes = QJsonDocument(document).toJson(QJsonDocument::Compact);

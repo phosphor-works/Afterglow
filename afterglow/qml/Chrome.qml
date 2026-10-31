@@ -76,6 +76,7 @@ Item {
                     id: paneContextText
                     anchors.centerIn: parent
                     text: parent.parent.modelData.context || ""
+                    textFormat: Text.PlainText
                     color: parent.tint
                     font.pixelSize: 10
                     font.bold: true
@@ -89,6 +90,7 @@ Item {
                 width: parent.width - 16 - (paneStatus.visible ? paneStatus.width + 2 : 0) - (paneContext.visible ? paneContext.width + 4 : 0)
                 horizontalAlignment: Text.AlignHCenter
                 text: parent.modelData.title.length > 0 ? parent.modelData.title : "shell"
+                textFormat: Text.PlainText
                 elide: Text.ElideMiddle
                 color: systemPalette.windowText
                 opacity: parent.modelData.focused ? 0.95 : 0.6
@@ -207,6 +209,7 @@ Item {
             id: keyModeLabel
             anchors.centerIn: keyModeBadge
             text: qsTr("%1 · Esc to cancel").arg(root.controller.keyMode)
+            textFormat: Text.PlainText
             color: systemPalette.highlightedText
         }
     }

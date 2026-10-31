@@ -58,7 +58,7 @@ phosphor scene dark
 The stages are idle, charge, fracture, recall, impulse and afterglow.
 The sequence uses the alternate screen. Completion or Ctrl+C restores the prompt.
 OSC 1337 user variables trigger real Luau actions.
-Ordinary commands charge the core. Failure fractures it; success recalls its pieces.
+Ordinary commands charge the core. Failure fractures it. Success recalls its pieces.
 
 ## Scene controls
 
@@ -116,9 +116,9 @@ The fresh tab reduces baseline energy. Returning restores the original history c
 Clearing history or closing a pane lowers the total.
 Full-screen programs preserve primary-screen history influence.
 
-`Shaders.params.phosphor-field.historyStrength` ranges from 0 to 2. Its default is 1; zero disables the influence.
+`Shaders.params.phosphor-field.historyStrength` ranges from 0 to 2. Its default is 1. Zero disables the influence.
 `historyScale` sets the growth rate. The default is 4000 rows.
-At this setting, 4000 combined rows produce approximately 63 percent influence; 10000 rows produce 92 percent.
+At this setting, 4000 combined rows produce approximately 63 percent influence. 10000 rows produce 92 percent.
 The influence approaches its maximum smoothly.
 Growth and decay use the renderer's smoothed count.
 

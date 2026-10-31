@@ -134,8 +134,8 @@ struct Settings
     std::vector<std::pair<std::string, std::string>> environment;
     /// The theme file the colours came from; empty when none is set or found.
     QString themePath;
-    /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString fileTransferPassword;
+    /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString clipboardRead = QStringLiteral("ask");
     QVariantList hintPatterns;
     KeyModes keyModes;

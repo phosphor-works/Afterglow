@@ -220,7 +220,7 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
             const QByteArray bytes = unescape(it.key().mid(int(qstrlen(TextPrefix))));
             if (bytes.isEmpty()) {
                 if (errors) {
-                    errors->append(QStringLiteral("\"%1\" sends nothing; check its escapes").arg(it.key()));
+                    errors->append(QStringLiteral("\"%1\" sends nothing. Check its escapes").arg(it.key()));
                 }
             } else {
                 const QVariant v = it.value();

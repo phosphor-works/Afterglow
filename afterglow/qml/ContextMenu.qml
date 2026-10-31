@@ -21,7 +21,7 @@ Item {
     // The highlighted row of each level, -1 for none.
     property var currents: []
 
-    onVisibleChanged: {
+    function syncVisibility() {
         if (visible) {
             const at = controller.contextMenu
             levels = [{ items: at.items || [], left: at.x || 0, right: at.x || 0, top: at.y || 0, root: true }]
@@ -33,6 +33,9 @@ Item {
             currents = []
         }
     }
+
+    onVisibleChanged: syncVisibility()
+    Component.onCompleted: syncVisibility()
 
     function itemAt(level: int, index: int): var {
         return level < levels.length ? levels[level].items[index] : undefined
@@ -80,6 +83,8 @@ Item {
         if (items.length === 0)
             return
         let i = currents[level]
+        if (i < 0 && direction < 0)
+            i = 0
         for (let n = 0; n < items.length; ++n) {
             i = (i + direction + items.length) % items.length
             if (selectable(level, i)) {
@@ -202,7 +207,10 @@ Item {
                             enabled: entry.usable
                             highlighted: entry.current && entry.usable
                             focusPolicy: Qt.NoFocus
-                            text: entry.modelData.title || ""
+                            // Keep the native icon/check layout while treating titles literally.
+                            readonly property string literalTitle: entry.modelData.title || ""
+                            text: "<span>" + literalTitle.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>"
+                            Accessible.name: literalTitle
                             icon.name: entry.modelData.icon || ""
                             checkable: entry.modelData.checked !== undefined
                             checked: entry.modelData.checked === true
@@ -216,6 +224,7 @@ Item {
                                 anchors.rightMargin: 10
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: entry.submenu ? "›" : (entry.modelData.shortcut || "")
+                                textFormat: Text.PlainText
                             }
                         }
 

@@ -185,6 +185,7 @@ QQC.ToolBar {
                         anchors.centerIn: parent
                         width: Math.min(implicitWidth, parent.width - 8)
                         text: contextChip.context.label || ""
+                        textFormat: Text.PlainText
                         elide: Text.ElideMiddle
                         color: contextChip.tint
                         font.pixelSize: 10
@@ -200,6 +201,7 @@ QQC.ToolBar {
                     anchors.leftMargin: contextChip.visible || status.visible ? 6 : 14
                     anchors.rightMargin: 4
                     text: tab.title.length > 0 ? tab.title : "afterglow"
+                    textFormat: Text.PlainText
                     elide: Text.ElideRight
                     color: bar.ink
                     opacity: tab.current ? 1.0 : (tab.hovered ? 0.8 : 0.55)

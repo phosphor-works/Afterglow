@@ -278,7 +278,7 @@ public:
     Rgb paletteColor(int index) const noexcept { return m_palette[std::size_t(index & 0xFF)]; }
     Rgb defaultForeground() const noexcept { return m_defaultFg; }
     Rgb defaultBackground() const noexcept { return m_defaultBg; }
-    /// Cursor colour set by OSC 12, if any.
+    /// Protocol override or configured cursor colour; null uses the foreground.
     const Rgb* cursorColor() const noexcept
     {
         if (m_protocolColors.cursorDynamic) return nullptr;

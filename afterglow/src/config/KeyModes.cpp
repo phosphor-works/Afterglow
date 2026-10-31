@@ -60,7 +60,7 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
                 if (!valid) { error(QStringLiteral("invalid key sequence %1").arg(text)); continue; }
                 if (name.isEmpty() && binding.keys.size() == 1 && !tableAction && target != QLatin1String("pop_key_table")) continue;
                 if (name.isEmpty() && singles.isBound(binding.keys.front())) {
-                    error(QStringLiteral("sequence %1 conflicts with an existing single-key binding; unbind it first").arg(text));
+                    error(QStringLiteral("sequence %1 conflicts with an existing single-key binding. Unbind it first").arg(text));
                     continue;
                 }
                 bool conflict = false;

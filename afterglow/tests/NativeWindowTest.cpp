@@ -10,6 +10,7 @@
 #include "config/Keybinds.h"
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QInputMethodEvent>
 #include <QDrag>
 #include <QMimeData>
@@ -30,12 +31,21 @@
 #include <QKeyEvent>
 #include <QTemporaryDir>
 #include <QThread>
+#include <thread>
 #include <gtest/gtest.h>
 using namespace Afterglow;
 namespace {
 void drain(int ms = 100) {
     QElapsedTimer timer; timer.start();
     do { QCoreApplication::processEvents(); QThread::msleep(2); } while (timer.elapsed() < ms);
+}
+QList<QQuickItem*> visualDescendants(QQuickItem* root) {
+    QList<QQuickItem*> result;
+    for (auto* child : root->childItems()) {
+        result.append(child);
+        result.append(visualDescendants(child));
+    }
+    return result;
 }
 class NativeWindow : public ::testing::Test {
 protected:
@@ -261,6 +271,213 @@ TEST_F(NativeWindow, PasteConfirmationRetainsOriginalPane) {
     EXPECT_TRUE(first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one")));
     EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one")));
 }
+TEST_F(NativeWindow, PasteConfirmsRawLineTerminatorsAndHonorsBracketedMode) {
+    auto* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    for (const auto& text : {QStringLiteral("command\n"), QStringLiteral("command\r"),
+                            QStringLiteral("first\rsecond"), QStringLiteral("command\r\n")}) {
+        QGuiApplication::clipboard()->setText(text);
+        ASSERT_TRUE(window->runAction(pane, Action::Paste));
+        EXPECT_TRUE(chrome->pasteConfirmOpen());
+        chrome->answerPaste(false);
+        EXPECT_FALSE(chrome->pasteConfirmOpen());
+    }
+    pane->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b[?2004h"); });
+    QGuiApplication::clipboard()->setText(QStringLiteral("bracketed\n"));
+    ASSERT_TRUE(window->runAction(pane, Action::Paste));
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+}
+
+TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
+    const QString title = QStringLiteral("<b>A&B</b><img src='http://127.0.0.1:9/a'>");
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr), nullptr);
+    window->focusedPane()->setUserTitle(title);
+    drain();
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    ASSERT_NE(layer->rootItem(), nullptr);
+    int literalLabels = 0;
+    for (auto* item : visualDescendants(layer->rootItem())) {
+        if (item->property("text").toString() == title && item->property("textFormat").isValid()) {
+            EXPECT_EQ(item->property("textFormat").toInt(), 0); // Text.PlainText
+            ++literalLabels;
+        }
+    }
+    EXPECT_GT(literalLabels, 0);
+    auto* chrome = window->findChild<ChromeController*>();
+    chrome->openContextMenu({10, 10}, {QVariantMap{{QStringLiteral("id"), 1}, {QStringLiteral("title"), title}, {QStringLiteral("icon"), QStringLiteral("document-open")}}});
+    drain();
+    bool found = false;
+    for (auto* item : visualDescendants(layer->rootItem())) {
+        if (item->property("literalTitle").toString() != title) continue;
+        found = true;
+        EXPECT_EQ(item->property("text").toString(), QStringLiteral("<span>") + title.toHtmlEscaped() + QStringLiteral("</span>"));
+        auto* accessible = QAccessible::queryAccessibleInterface(item);
+        ASSERT_NE(accessible, nullptr);
+        EXPECT_EQ(accessible->text(QAccessible::Name), title);
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST_F(NativeWindow, FocusUpdatesTabTitleAndRetiresPreviousSearch) {
+    auto* first = window->focusedPane();
+    first->setUserTitle(QStringLiteral("first"));
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    second->setUserTitle(QStringLiteral("second"));
+    auto* chrome = window->findChild<ChromeController*>();
+    window->revealPane(first);
+    EXPECT_EQ(chrome->tabTitles().front(), QStringLiteral("first"));
+    // Finish split layout before capturing a search epoch.
+    drain(300);
+    first->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b[2J\x1b[Hneedle"); });
+    first->refreshSnapshot();
+    const auto original = first->snapshot().at(0, 0).bg;
+    chrome->setSearchOpen(true);
+    chrome->search(QStringLiteral("needle"), 0);
+    drain(200);
+    first->refreshSnapshot();
+    ASSERT_EQ(chrome->searchStatus(), QStringLiteral("1 of 1"));
+    EXPECT_NE(first->snapshot().at(0, 0).bg, original);
+    window->revealPane(second);
+    EXPECT_EQ(chrome->tabTitles().front(), QStringLiteral("second"));
+    EXPECT_FALSE(chrome->searchOpen());
+    EXPECT_TRUE(chrome->searchStatus().isEmpty());
+    drain();
+    first->refreshSnapshot();
+    EXPECT_EQ(first->snapshot().at(0, 0).bg, original);
+    // A search that has not completed must also remain retired after its callback.
+    window->revealPane(first);
+    chrome->setSearchOpen(true);
+    chrome->search(QStringLiteral("needle"), 0);
+    window->revealPane(second);
+    drain();
+    first->refreshSnapshot();
+    EXPECT_EQ(first->snapshot().at(0, 0).bg, original);
+    EXPECT_TRUE(chrome->searchStatus().isEmpty());
+}
+
+TEST_F(NativeWindow, SwapFailurePreservesZoomAndSuccessRestoresVisiblePanes) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
+    ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
+    drain();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_EQ(chrome->paneTitles().size(), 1);
+    const auto zoomed = window->accessiblePaneRect(first);
+    EXPECT_FALSE(window->swapPane(first, SplitTree::Neighbour::Left));
+    drain();
+    EXPECT_EQ(chrome->paneTitles().size(), 1);
+    EXPECT_EQ(window->accessiblePaneRect(first), zoomed);
+    ASSERT_TRUE(window->swapPane(first, SplitTree::Neighbour::Right));
+    drain();
+    EXPECT_EQ(chrome->paneTitles().size(), 2);
+    EXPECT_LT(window->accessiblePaneRect(first).width(), zoomed.width());
+}
+
+TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
+    auto* chrome = window->findChild<ChromeController*>();
+    QVariantList entries;
+    for (int i = 0; i < 3; ++i)
+        entries.append(QVariantMap{{QStringLiteral("id"), 40000 + i}, {QStringLiteral("title"), QString::number(i)}});
+    chrome->openContextMenu({10, 10}, entries);
+    drain();
+    QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &up);
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer->rootItem(), nullptr);
+    QString selected;
+    for (auto* item : visualDescendants(layer->rootItem()))
+        if (item->property("literalTitle").isValid() && item->property("highlighted").toBool())
+            selected = item->property("literalTitle").toString();
+    EXPECT_EQ(selected, QStringLiteral("2"));
+}
+
+TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
+    for (const auto& kind : {QStringLiteral("title"), QStringLiteral("palette"), QStringLiteral("search"),
+                             QStringLiteral("paste"), QStringLiteral("clipboard"), QStringLiteral("confirm")}) {
+        SCOPED_TRACE(kind.toStdString());
+        WindowOptions options;
+        options.command = {QStringLiteral("/bin/cat")};
+        auto* fresh = application->newWindow(options);
+        ASSERT_NE(fresh, nullptr);
+        drain();
+        auto* chrome = fresh->findChild<ChromeController*>();
+        if (kind == QLatin1String("title")) chrome->askTitle(QStringLiteral("Title"), QStringLiteral("existing title"));
+        else if (kind == QLatin1String("palette")) chrome->setPaletteOpen(true);
+        else if (kind == QLatin1String("search")) chrome->setSearchOpen(true);
+        else if (kind == QLatin1String("paste")) chrome->askPaste(QStringLiteral("one\ntwo"), 2);
+        else if (kind == QLatin1String("clipboard")) chrome->askClipboard(QStringLiteral("Read clipboard"), QString());
+        else chrome->askConfirm(QStringLiteral("Confirm"), QStringLiteral("Body"), QStringLiteral("Accept"));
+        auto* layer = fresh->findChild<ChromeLayer*>();
+        const auto ready = [&] {
+            auto* focus = layer->focusedItem();
+            return focus && focus->hasActiveFocus() && focus->isVisible()
+                && focus != focus->window()->contentItem();
+        };
+        QElapsedTimer deadline;
+        deadline.start();
+        while (!ready() && deadline.elapsed() < 2000) {
+            // Run queued QML initialization and focus callbacks on real event-loop turns.
+            QEventLoop loop;
+            QTimer::singleShot(20, &loop, &QEventLoop::quit);
+            loop.exec();
+        }
+        ASSERT_TRUE(ready());
+        EXPECT_TRUE(layer->focusedItem()->isVisible());
+        if (kind == QLatin1String("title"))
+            EXPECT_EQ(layer->focusedItem()->property("text").toString(), QStringLiteral("existing title"));
+        if (kind == QLatin1String("palette") || kind == QLatin1String("search"))
+            EXPECT_TRUE(layer->focusedItem()->property("placeholderText").isValid());
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(fresh, &escape);
+        EXPECT_FALSE(chrome->wantsKeyboard());
+        delete fresh;
+    }
+}
+
+class LauncherObserver : public QObject {
+    Q_OBJECT
+public:
+    QList<QVariantMap> updates;
+public Q_SLOTS:
+    void update(const QString&, const QVariantMap& properties) { updates.append(properties); }
+};
+TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate) {
+    LauncherObserver observer;
+    auto bus = QDBusConnection::sessionBus();
+    ASSERT_TRUE(bus.connect(QString(), QStringLiteral("/com/phosphorworks/Afterglow"),
+        QStringLiteral("com.canonical.Unity.LauncherEntry"), QStringLiteral("Update"),
+        &observer, SLOT(update(QString,QVariantMap))));
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/cat")};
+    auto* contributor = application->newWindow(options);
+    ASSERT_NE(contributor, nullptr);
+    // Terminal status originates on the PTY thread; its GUI receiver takes the pane mutex.
+    std::thread statusOutput([pane = contributor->focusedPane()] {
+        pane->withTerminal([](AfterglowVt::Terminal& terminal) {
+            terminal.feed("\x1b]7501;state=working:progress=50\x1b\\");
+        });
+    });
+    statusOutput.join();
+    drain(200);
+    ASSERT_FALSE(observer.updates.isEmpty());
+    EXPECT_TRUE(observer.updates.last().value(QStringLiteral("progress-visible")).toBool());
+    observer.updates.clear();
+    delete contributor;
+    drain();
+    ASSERT_FALSE(observer.updates.isEmpty());
+    EXPECT_FALSE(observer.updates.last().value(QStringLiteral("progress-visible")).toBool());
+    EXPECT_FALSE(observer.updates.last().value(QStringLiteral("urgent")).toBool());
+}
+
 TEST_F(NativeWindow, InputMethodPreservesGraphemesAndCommitsToPty) {
     auto* pane = window->focusedPane();
     const QString preedit = QString::fromUtf8("🙂é👩‍💻");
