@@ -21,6 +21,13 @@ bool rowIsBlank(const Row& row)
 {
     return std::all_of(row.cells.begin(), row.cells.end(), isBlank);
 }
+
+// A blank cell that a compact row does not store. A spacer head is kept:
+// reflow must not read its column as a blank cell of the line.
+bool isDroppableBlank(const Cell& c)
+{
+    return isBlank(c) && !c.isSpacerHead();
+}
 } // namespace
 
 Screen::Screen(int cols, int rows, std::size_t maxScrollback)
@@ -463,7 +470,7 @@ void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
 void Screen::compact(Row& row)
 {
     std::size_t keep = row.cells.size();
-    while (keep > 0 && isBlank(row.cells[keep - 1])) {
+    while (keep > 0 && isDroppableBlank(row.cells[keep - 1])) {
         --keep;
     }
     if (keep < row.cells.size()) {
@@ -475,6 +482,7 @@ void Screen::compact(Row& row)
 void Screen::expand(Row& row)
 {
     if (row.cells.size() < std::size_t(m_cols)) {
+        row.cells.reserve(std::size_t(m_cols)); // exactly; growth would overallocate
         row.cells.resize(std::size_t(m_cols));
     }
 }
@@ -746,14 +754,6 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
 
 void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptStart, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns)
 {
-    struct Line
-    {
-        std::vector<Cell> cells;
-        std::unordered_map<std::uint32_t, std::u32string> graphemes;
-        bool promptStart = false;
-        std::optional<std::size_t> unchangedRow;
-    };
-
     const std::size_t cursorAbs = historySize() + std::size_t(cursor.y);
     // Reflow output above a redrawable prompt, preserving the prompt's row
     // count and cells. Shells may repaint only differences after SIGWINCH;
@@ -762,19 +762,14 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     const std::size_t reflowEnd = keepPrompt ? *promptStart : m_rows.size();
     const std::size_t promptRows = keepPrompt ? cursorAbs - *promptStart + 1 : 0;
     const bool trackCursor = !keepPrompt;
-    std::size_t cursorLine = 0;
-    std::size_t cursorOffset = 0;
 
-    // Tracked rows are remembered as (line, cell offset within the line) and
-    // mapped back to rows after rewrapping.
-    struct TrackedPos
-    {
-        enum Kind : std::uint8_t { Gone, InLine, InPrompt } kind = Gone;
-        std::size_t line = 0;
-        std::size_t offset = 0;
-    };
-    std::vector<TrackedPos> trackedPos(tracked ? tracked->size() : 0);
+    // Tracked rows are remembered as a cell offset within their logical line
+    // and mapped back to rows while rewrapping. Rows of a kept prompt keep
+    // their row offset.
+    std::vector<std::size_t> trackedNew(tracked ? tracked->size() : 0, TrackedRowGone);
+    std::vector<int> mappedColumns(trackedNew.size(), 0);
     std::vector<std::pair<std::size_t, std::size_t>> trackedOrder; // (abs row, index)
+    std::vector<std::pair<std::size_t, std::size_t>> trackedInPrompt; // (prompt row, index)
     if (tracked) {
         for (std::size_t k = 0; k < tracked->size(); ++k) {
             const std::size_t t = (*tracked)[k];
@@ -782,7 +777,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
                 continue;
             }
             if (t >= reflowEnd) {
-                trackedPos[k] = {TrackedPos::InPrompt, 0, t - reflowEnd};
+                trackedInPrompt.emplace_back(t - reflowEnd, k);
             } else {
                 trackedOrder.emplace_back(t, k);
             }
@@ -790,158 +785,217 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         std::sort(trackedOrder.begin(), trackedOrder.end());
     }
     std::size_t trackedNext = 0;
+    // Spacer heads are not cells of the line.
+    auto trackedOffset = [&](const Row& r, std::size_t index, std::size_t lineCells) {
+        const int col = trackedColumns ? std::clamp((*trackedColumns)[index], 0, m_cols) : 0;
+        std::size_t offset = lineCells;
+        for (int x = 0; x < col; ++x) if (!r.at(x).isSpacerHead()) ++offset;
+        return offset;
+    };
 
-
-    // 1. Unwrap rows into logical lines.
-    std::vector<Line> lines;
-    Line current;
     for (std::size_t i = reflowEnd + promptRows; i < m_rows.size(); ++i) {
         releaseRow(m_rows[i]);
     }
-    for (std::size_t i = 0; i < reflowEnd; ++i) {
-        Row& r = m_rows[i];
-        const bool lineEnds = !r.wrapped || i + 1 == reflowEnd;
-        while (trackedNext < trackedOrder.size() && trackedOrder[trackedNext].first == i) {
-            const auto index = trackedOrder[trackedNext].second;
-            const int col = trackedColumns ? std::clamp((*trackedColumns)[index], 0, m_cols) : 0;
-            std::size_t offset = current.cells.size();
-            for (int x = 0; x < col; ++x) if (!r.at(x).isSpacerHead()) ++offset;
-            trackedPos[index] = {TrackedPos::InLine, lines.size(), offset};
-            ++trackedNext;
-        }
-        if (current.cells.empty()) {
-            current.promptStart = r.promptStart;
-        }
-        // A compact hard line that still fits needs no cell reconstruction.
-        // Keep its allocation and side tables until the output row is moved.
-        // Wrapped predecessors must still join this row through normal reflow.
-        if (i < historySize() && !r.wrapped && (i == 0 || !m_rows[i - 1].wrapped)
-            && r.cells.size() <= std::size_t(cols) && r.lineSize == LineSize::Single) {
-            current.unchangedRow = i;
-            lines.push_back(std::move(current));
-            current = Line{};
-            continue;
-        }
-        int keep = m_cols;
-        if (lineEnds) {
-            while (keep > 0 && isBlank(r.at(keep - 1))) {
-                --keep;
-            }
-        }
-        expand(r); // reading every column below
-        if (trackCursor && i == cursorAbs) {
-            cursorLine = lines.size();
-            cursorOffset = current.cells.size() + std::size_t(cursor.x);
-        }
-        for (int x = 0; x < m_cols; ++x) {
-            Cell& c = r.cells[std::size_t(x)];
-            if (x >= keep || c.isSpacerHead()) {
-                m_styles.release(c.styleId());
-                continue;
-            }
-            if (c.hasGrapheme() && r.graphemes) {
-                auto it = r.graphemes->find(std::uint16_t(x));
-                if (it != r.graphemes->end()) {
-                    current.graphemes.emplace(std::uint32_t(current.cells.size()), std::move(it->second));
-                }
-            }
-            current.cells.push_back(c);
-        }
-        if (lineEnds) {
-            lines.push_back(std::move(current));
-            current = Line{};
 
-        }
-    }
-    if (!current.cells.empty()) {
-        lines.push_back(std::move(current));
-    }
-
-    // 2. Rewrap every line to the new width.
+    // Rewrap one logical line at a time, straight from the old rows into the
+    // new ones. A line's cells are the cells of its rows without spacer heads
+    // and without the blank cells that end the line. Cells keep their style
+    // references, and graphemes move with their cells. The old rows of a
+    // line are freed as soon as the line is rewrapped.
     std::deque<Row> out;
-    std::vector<std::size_t> trackedNew(trackedPos.size(), TrackedRowGone);
-    std::vector<int> mappedColumns(trackedPos.size(), 0);
-    std::vector<std::vector<std::pair<std::size_t, std::size_t>>> lineMarks(lines.size());
-    for (std::size_t k = 0; k < trackedPos.size(); ++k)
-        if (trackedPos[k].kind == TrackedPos::InLine && trackedPos[k].line < lines.size())
-            lineMarks[trackedPos[k].line].emplace_back(trackedPos[k].offset, k);
-    for (auto& marks : lineMarks) std::sort(marks.begin(), marks.end());
     std::size_t cursorRow = 0;
     int cursorCol = 0;
-    for (std::size_t li = 0; li < lines.size(); ++li) {
-        Line& line = lines[li];
-        if (line.unchangedRow) {
-            out.push_back(std::move(m_rows[*line.unchangedRow]));
-            for (const auto& [offset, index] : lineMarks[li]) {
-                trackedNew[index] = out.size() - 1;
-                mappedColumns[index] = int(std::min(std::size_t(cols), offset));
+    // Rows that can store blank cells after their content. Only these need
+    // compacting if they end in history.
+    std::vector<std::size_t> loose;
+    // The row being written. A finished row does not store the unwritten
+    // cells after its content; active rows expand again below.
+    std::vector<Cell> pending(static_cast<std::size_t>(cols));
+    auto finishRow = [&] {
+        std::size_t n = pending.size();
+        while (n > 0 && pending[n - 1] == Cell{}) {
+            --n;
+        }
+        if (n > 0 && isDroppableBlank(pending[n - 1])) {
+            loose.push_back(out.size() - 1);
+        }
+        out.back().cells.assign(pending.begin(), pending.begin() + std::ptrdiff_t(n));
+        std::fill(pending.begin(), pending.begin() + std::ptrdiff_t(n), Cell{});
+    };
+    std::vector<std::pair<std::size_t, std::size_t>> marks; // (cell offset, index) in the line
+    std::size_t i = 0;
+    while (i < reflowEnd) {
+        Row& first = m_rows[i];
+        // A compact hard line that still fits needs no cell reconstruction.
+        // Its row moves with its allocation and side tables.
+        if (i < historySize() && !first.wrapped && first.cells.size() <= std::size_t(cols)
+            && first.lineSize == LineSize::Single) {
+            for (; trackedNext < trackedOrder.size() && trackedOrder[trackedNext].first == i; ++trackedNext) {
+                const auto index = trackedOrder[trackedNext].second;
+                trackedNew[index] = out.size();
+                mappedColumns[index] = int(std::min(std::size_t(cols), trackedOffset(first, index, 0)));
             }
+            loose.push_back(out.size());
+            out.push_back(std::move(first));
+            ++i;
             continue;
         }
-        out.emplace_back(cols).promptStart = line.promptStart;
+
+        const std::size_t lineStart = out.size();
+        out.emplace_back();
+        bool linePrompt = false;
+        std::size_t off = 0; // cells of the line read so far
         int col = 0;
-        bool cursorPlaced = false;
+        int headCol = -1; // a wide head that waits for its tail
+        marks.clear();
         std::size_t nextMark = 0;
+        bool cursorHere = false;
+        bool cursorPlaced = false;
+        std::size_t cursorOffset = 0;
         auto placeCursorIfHere = [&](std::size_t offset, int mappedCol) {
-            while (nextMark < lineMarks[li].size() && lineMarks[li][nextMark].first <= offset) {
-                const auto index = lineMarks[li][nextMark++].second;
+            while (nextMark < marks.size() && marks[nextMark].first <= offset) {
+                const auto index = marks[nextMark++].second;
                 trackedNew[index] = out.size() - 1;
                 mappedColumns[index] = mappedCol;
             }
-            if (trackCursor && li == cursorLine && !cursorPlaced && offset == cursorOffset) {
+            if (cursorHere && !cursorPlaced && offset == cursorOffset) {
                 cursorRow = out.size() - 1;
                 cursorCol = mappedCol;
                 cursorPlaced = true;
             }
         };
-        for (std::size_t off = 0; off < line.cells.size(); ++off) {
-            const Cell& c = line.cells[off];
+        // A wide head takes the tail that follows it in the line, or a new one.
+        auto endWide = [&](const Cell* tail) {
+            Cell& dst = pending[std::size_t(headCol + 1)];
+            if (tail) {
+                dst = *tail;
+            } else {
+                dst.setWidth(0);
+                dst.setStyleId(pending[std::size_t(headCol)].styleId());
+                m_styles.retain(dst.styleId());
+            }
+            headCol = -1;
+        };
+        // Places one cell of the line. The run copy below is the fast case.
+        auto placeCell = [&](Row& src, int x, const Cell& c) {
             if (c.isTail()) {
-                placeCursorIfHere(off, col - 1);
-                continue; // re-emitted with its head
+                if (headCol >= 0) {
+                    endWide(&c);
+                }
+                placeCursorIfHere(off++, col - 1);
+                return;
+            }
+            if (headCol >= 0) {
+                endWide(nullptr);
             }
             const int w = std::max(1, c.width());
             if (col + w > cols) {
                 if (w == 2 && col < cols) {
-                    out.back().cells[std::size_t(col)].setSpacerHead(true);
+                    pending[std::size_t(col)].setSpacerHead(true);
                 }
+                finishRow();
                 out.back().wrapped = true;
-                out.emplace_back(cols);
+                out.emplace_back();
                 col = 0;
             }
-            placeCursorIfHere(off, col);
-            Row& dst = out.back();
-            dst.cells[std::size_t(col)] = c;
-            if (c.hasGrapheme()) {
-                auto it = line.graphemes.find(std::uint32_t(off));
-                if (it != line.graphemes.end()) {
+            placeCursorIfHere(off++, col);
+            pending[std::size_t(col)] = c;
+            if (c.hasGrapheme() && src.graphemes) {
+                // The map node moves to the new row; no string is copied.
+                auto node = src.graphemes->extract(std::uint16_t(x));
+                if (!node.empty()) {
+                    Row& dst = out.back();
                     if (!dst.graphemes) {
                         dst.graphemes = std::make_unique<GraphemeMap>();
                     }
-                    (*dst.graphemes)[std::uint16_t(col)] = std::move(it->second);
+                    node.key() = std::uint16_t(col);
+                    dst.graphemes->insert(std::move(node));
                 }
             }
             if (w == 2) {
-                const bool hasTail = off + 1 < line.cells.size() && line.cells[off + 1].isTail();
-                if (hasTail) {
-                    dst.cells[std::size_t(col + 1)] = line.cells[off + 1];
-                } else {
-                    dst.cells[std::size_t(col + 1)].setWidth(0);
-                    dst.cells[std::size_t(col + 1)].setStyleId(c.styleId());
-                    m_styles.retain(c.styleId());
-                }
+                headCol = col;
             }
             col += w;
+        };
+
+        std::size_t j = i;
+        for (;; ++j) {
+            Row& r = m_rows[j];
+            const bool lineEnds = !r.wrapped || j + 1 == reflowEnd;
+            const std::size_t marked = marks.size();
+            for (; trackedNext < trackedOrder.size() && trackedOrder[trackedNext].first == j; ++trackedNext) {
+                const auto index = trackedOrder[trackedNext].second;
+                marks.emplace_back(trackedOffset(r, index, off), index);
+            }
+            std::sort(marks.begin() + std::ptrdiff_t(marked), marks.end());
+            if (off == 0) {
+                linePrompt = r.promptStart;
+            }
+            int end = m_cols;
+            if (lineEnds) {
+                while (end > 0 && isBlank(r.at(end - 1))) {
+                    --end;
+                }
+            }
+            if (trackCursor && j == cursorAbs) {
+                cursorHere = true;
+                cursorOffset = off + std::size_t(cursor.x);
+            }
+            const Cell* cells = r.cells.data();
+            const int stored = int(r.cells.size());
+            int x = 0;
+            while (x < end) {
+                // Copy narrow plain cells in one run. A run stops at the end
+                // of the new row, at a tracked position or after a wide head.
+                int limit = headCol >= 0 ? 0 : std::min(end - x, cols - col);
+                if (nextMark < marks.size()) {
+                    limit = int(std::min(std::size_t(limit), marks[nextMark].first - off));
+                }
+                if (cursorHere && !cursorPlaced && cursorOffset >= off) {
+                    limit = int(std::min(std::size_t(limit), cursorOffset - off));
+                }
+                int n = 0;
+                while (n < limit && x + n < stored && cells[x + n].width() == 1 && !cells[x + n].hasGrapheme()
+                       && !cells[x + n].isSpacerHead()) {
+                    ++n;
+                }
+                if (x + n >= stored) {
+                    n = limit; // cells past the stored ones read as blank
+                }
+                if (x < stored) {
+                    std::copy(cells + x, cells + std::min(x + n, stored), pending.begin() + col);
+                }
+                x += n;
+                col += n;
+                off += std::size_t(n);
+                if (x >= end) {
+                    break;
+                }
+                const Cell c = r.at(x);
+                if (c.isSpacerHead()) {
+                    m_styles.release(c.styleId());
+                } else {
+                    placeCell(r, x, c);
+                }
+                ++x;
+            }
+            if (lineEnds) {
+                break;
+            }
         }
-        placeCursorIfHere(line.cells.size(), col);
-        while (nextMark < lineMarks[li].size()) {
-            const auto index = lineMarks[li][nextMark++].second;
+        if (headCol >= 0) {
+            endWide(nullptr);
+        }
+        placeCursorIfHere(off, col);
+        finishRow();
+        while (nextMark < marks.size()) {
+            const auto [offset, index] = marks[nextMark++];
             trackedNew[index] = out.size() - 1;
-            mappedColumns[index] = std::min(cols, col + int(trackedPos[index].offset - line.cells.size()));
+            mappedColumns[index] = std::min(cols, col + int(offset - off));
         }
-        if (trackCursor && li == cursorLine && !cursorPlaced) {
+        if (cursorHere && !cursorPlaced) {
             // Cursor past the end of the content: advance virtually.
-            std::size_t extra = cursorOffset - std::min(cursorOffset, line.cells.size());
+            std::size_t extra = cursorOffset - std::min(cursorOffset, off);
             std::size_t r = out.size() - 1;
             std::size_t c = std::size_t(col) + extra;
             if (c == std::size_t(cols)) {
@@ -954,10 +1008,15 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             }
             while (out.size() <= r) {
                 out.back().wrapped = true;
+                loose.push_back(out.size());
                 out.emplace_back(cols);
             }
             cursorRow = r;
             cursorCol = int(c);
+        }
+        out[lineStart].promptStart = linePrompt;
+        for (; i <= j; ++i) {
+            m_rows[i] = Row{};
         }
     }
     const std::size_t promptRegionStart = out.size();
@@ -979,16 +1038,15 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         out.emplace_back(cols);
     }
 
-    for (std::size_t k = 0; k < trackedPos.size(); ++k) {
-        const auto& tp = trackedPos[k];
-        if (tp.kind == TrackedPos::InPrompt && keepPrompt && tp.offset < promptRows) {
-            trackedNew[k] = promptRegionStart + tp.offset;
+    for (const auto& [offset, k] : trackedInPrompt) {
+        if (keepPrompt && offset < promptRows) {
+            trackedNew[k] = promptRegionStart + offset;
             mappedColumns[k] = trackedColumns ? std::clamp((*trackedColumns)[k], 0, cols) : 0;
         }
     }
     if (trackedColumns) *trackedColumns = std::move(mappedColumns);
 
-    // 3. Trim blank rows below the cursor, pad to the screen height.
+    // Trim blank rows below the cursor, pad to the screen height.
     while (out.size() > cursorRow + 1 && rowIsBlank(out.back()) && !out[out.size() - 2].wrapped) {
         out.pop_back();
     }
@@ -1009,7 +1067,13 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     m_viewportOffset = 0;
     const std::uint64_t droppedBefore = m_rowsDropped;
     trimHistory();
-    for (std::size_t i = 0; i < historySize(); ++i) {
+    const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
+    for (const std::size_t k : loose) {
+        if (k >= dropped && k - dropped < historySize()) {
+            compact(m_rows[k - dropped]);
+        }
+    }
+    for (std::size_t i = std::max(promptRegionStart, dropped) - dropped; i < historySize(); ++i) {
         compact(m_rows[i]);
     }
     // A compact history row can enter the active area when the height grows
@@ -1018,7 +1082,6 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         expand(m_rows[i]);
     }
     if (tracked) {
-        const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);
         for (std::size_t k = 0; k < trackedNew.size(); ++k) {
             const std::size_t t = trackedNew[k];
             (*tracked)[k] = (t == TrackedRowGone || t < dropped || t - dropped >= m_rows.size()) ? TrackedRowGone

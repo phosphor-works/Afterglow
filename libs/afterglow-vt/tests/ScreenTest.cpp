@@ -8,6 +8,8 @@
 
 #include <gtest/gtest.h>
 
+#include <random>
+
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
 
@@ -291,4 +293,225 @@ TEST(Reflow, ShortContinuationStillJoinsWrappedHistory)
     EXPECT_FALSE(s.absoluteRow(0).wrapped);
     EXPECT_EQ(rowText(t.t, 0), "next");
     EXPECT_EQ(rowText(t.t, 1), "prompt");
+}
+
+namespace {
+// Compares two screens cell by cell. Style ids and link ids are table
+// indexes, so the comparison resolves them.
+void expectSameGrid(const Screen& a, const Screen& b, const std::string& context)
+{
+    SCOPED_TRACE(context);
+    ASSERT_EQ(a.cols(), b.cols());
+    ASSERT_EQ(a.rows(), b.rows());
+    ASSERT_EQ(a.historySize(), b.historySize());
+    EXPECT_EQ(a.cursor.x, b.cursor.x);
+    EXPECT_EQ(a.cursor.y, b.cursor.y);
+    for (std::size_t i = 0; i < a.historySize() + std::size_t(a.rows()); ++i) {
+        const Row& ra = a.absoluteRow(i);
+        const Row& rb = b.absoluteRow(i);
+        ASSERT_EQ(ra.wrapped, rb.wrapped) << "row " << i;
+        for (int x = 0; x < a.cols(); ++x) {
+            const Cell& ca = ra.at(x);
+            const Cell& cb = rb.at(x);
+            ASSERT_EQ(ca.codepoint(), cb.codepoint()) << "row " << i << " col " << x;
+            ASSERT_EQ(ca.width(), cb.width()) << "row " << i << " col " << x;
+            ASSERT_EQ(ca.isSpacerHead(), cb.isSpacerHead()) << "row " << i << " col " << x;
+            ASSERT_TRUE(a.graphemeExtra(ra, x) == b.graphemeExtra(rb, x)) << "row " << i << " col " << x;
+            Style sa = a.styles().get(ca.styleId());
+            Style sb = b.styles().get(cb.styleId());
+            ASSERT_EQ(a.styles().linkUri(sa.link), b.styles().linkUri(sb.link)) << "row " << i << " col " << x;
+            sa.link = sb.link = 0;
+            ASSERT_TRUE(sa == sb) << "row " << i << " col " << x;
+        }
+    }
+    EXPECT_EQ(a.styles().liveCount(), b.styles().liveCount());
+    EXPECT_EQ(a.styles().liveLinks(), b.styles().liveLinks());
+}
+
+// A line of about @p cells cells with styled runs, hyperlinks, wide
+// characters and combining marks. It ends with the pen reset. Without
+// @p background, runs are underlined instead: a pen background fills the
+// rows that output scrolls in, and those fills depend on the width.
+std::string mixedLine(std::mt19937& rng, int cells, bool background)
+{
+    static const char* const Wide[] = {"\xe7\x95\x8c", "\xe6\x97\xa5", "\xed\x95\x9c", "\xf0\x9f\x98\x80"};
+    std::string out;
+    for (int n = 0; n < cells;) {
+        const unsigned pick = rng() % 100;
+        if (pick < 10) {
+            out += Wide[rng() % 4];
+            n += 2;
+        } else if (pick < 15) {
+            out += "e\xcc\x81"; // e + combining acute accent
+            ++n;
+        } else if (pick < 19) {
+            out += "\x1b[3" + std::to_string(rng() % 8) + (background ? ";4" + std::to_string(rng() % 8) : ";4") + "m";
+        } else if (pick < 21) {
+            out += "\x1b[1;3m";
+        } else if (pick < 23) {
+            out += "\x1b[0m";
+        } else if (pick < 24) {
+            out += "\x1b]8;;https://example.org/" + std::to_string(rng() % 3) + "\x1b\\";
+        } else if (pick < 25) {
+            out += "\x1b]8;;\x1b\\";
+        } else {
+            out.push_back(rng() % 6 == 0 ? ' ' : char('a' + rng() % 26));
+            ++n;
+        }
+    }
+    return out + "\x1b[0m\x1b]8;;\x1b\\";
+}
+} // namespace
+
+TEST(Reflow, LongWrappedLinesMatchOutputWrittenAtTheNewWidth)
+{
+    // Reflow must give what the same output gives when written at the new
+    // width: rewrapping keeps text, styles, links, graphemes, wide
+    // characters, the cursor and the history row count.
+    for (unsigned seed = 1; seed <= 40; ++seed) {
+        std::mt19937 rng{seed};
+        std::string data;
+        const int lines = 4 + int(rng() % 12);
+        for (int l = 0; l < lines; ++l) {
+            const int cells = rng() % 3 == 0 ? int(rng() % 40) : 80 + int(rng() % 900);
+            data += mixedLine(rng, cells, false) + "\r\n";
+        }
+        // A short last line: a cursor at a pending wrap is not part of this check.
+        data += mixedLine(rng, int(rng() % 200), false) + "\r\n$ ";
+        const int rows = 3 + int(rng() % 6);
+        RecordingHost host;
+        Terminal t(10 + int(rng() % 90), rows, host);
+        t.feed(data);
+        for (int step = 0; step < 4; ++step) {
+            const int cols = 3 + int(rng() % 120);
+            t.resize(cols, rows, 8, 16);
+            RecordingHost freshHost;
+            Terminal fresh(cols, rows, freshHost);
+            fresh.feed(data);
+            expectSameGrid(t.screen(), fresh.screen(),
+                           "seed " + std::to_string(seed) + " step " + std::to_string(step) + " cols "
+                               + std::to_string(cols));
+            if (testing::Test::HasFatalFailure()) {
+                return;
+            }
+        }
+    }
+}
+
+TEST(Reflow, LongWrappedLineRoundTripRestoresEveryCell)
+{
+    std::mt19937 rng{7};
+    std::string data;
+    for (int l = 0; l < 6; ++l) {
+        data += mixedLine(rng, 300 + l * 211, true) + "\r\n";
+    }
+    RecordingHost host;
+    Terminal t(50, 6, host);
+    t.feed(data + "$ ");
+    RecordingHost originalHost;
+    Terminal original(50, 6, originalHost);
+    original.feed(data + "$ ");
+    for (const int cols : {13, 97, 3, 49, 211, 50}) {
+        t.resize(cols, 6, 8, 16);
+    }
+    expectSameGrid(t.screen(), original.screen(), "after round trip");
+}
+
+TEST(Reflow, WideCharNeverSplitsAcrossWrappedRows)
+{
+    Term t(20, 3);
+    std::string line = "a";
+    for (int i = 0; i < 40; ++i) {
+        line += "\xe7\x95\x8c"; // a wide character
+    }
+    t.t.feed(line + "\r\n$ ");
+    for (const int cols : {9, 10, 7, 20}) {
+        t.t.resize(cols, 3, 8, 16);
+        const Screen& s = t.t.screen();
+        std::size_t wide = 0;
+        for (std::size_t i = 0; i < s.historySize() + std::size_t(s.rows()); ++i) {
+            const Row& r = s.absoluteRow(i);
+            for (int x = 0; x < cols; ++x) {
+                if (r.at(x).width() == 2) {
+                    ++wide;
+                    ASSERT_LT(x + 1, cols) << "a wide head in the last column, cols " << cols;
+                    EXPECT_TRUE(r.at(x + 1).isTail());
+                }
+            }
+            // A wide character that does not fit leaves a spacer head.
+            if (r.wrapped) {
+                const Cell& last = r.at(cols - 1);
+                EXPECT_TRUE(last.isTail() || last.isSpacerHead()) << "row " << i << ", cols " << cols;
+            }
+        }
+        EXPECT_EQ(wide, 40u) << "cols " << cols;
+    }
+}
+
+TEST(Reflow, StyleAndLinkRunAcrossWrapsKeepItsReferences)
+{
+    Term t(10, 3);
+    t.t.feed("\x1b[31;1m\x1b]8;;https://example.org/x\x1b\\");
+    t.t.feed(std::string(37, 'x'));
+    t.t.feed("\x1b]8;;\x1b\\\x1b[0m\r\n$ ");
+    const auto styles = t.t.screen().styles().liveCount();
+    const auto links = t.t.screen().styles().liveLinks();
+    for (const int cols : {7, 23, 3, 41, 10}) {
+        t.t.resize(cols, 3, 8, 16);
+        const Screen& s = t.t.screen();
+        int seen = 0;
+        for (std::size_t i = 0; i < s.historySize() + std::size_t(s.rows()); ++i) {
+            const Row& r = s.absoluteRow(i);
+            for (int x = 0; x < cols; ++x) {
+                if (r.at(x).codepoint() != U'x') {
+                    continue;
+                }
+                ++seen;
+                const Style& style = s.styles().get(r.at(x).styleId());
+                EXPECT_EQ(style.fg, Color::palette(1));
+                EXPECT_TRUE(style.has(Attr::Bold));
+                EXPECT_EQ(s.styles().linkUri(style.link), "https://example.org/x");
+            }
+        }
+        EXPECT_EQ(seen, 37) << "cols " << cols;
+        EXPECT_EQ(s.styles().liveCount(), styles) << "cols " << cols;
+        EXPECT_EQ(s.styles().liveLinks(), links) << "cols " << cols;
+    }
+}
+
+TEST(Reflow, CursorAndTrackedPositionsFollowLongWrappedLine)
+{
+    // Every character of the long line is different, so a position is
+    // checked by the character at it.
+    std::string line;
+    for (int i = 0; i < 300; ++i) {
+        appendUtf8(line, i % 25 == 7 ? char32_t(0x4E00 + i) : char32_t(0x100 + i)); // some wide
+    }
+    Term t(40, 4);
+    t.t.feed(line + "\r\n" + line + "\x1b[23D"); // the cursor moves back into the second line
+    Screen& s = t.t.screen();
+    const char32_t atCursor = s.row(s.cursor.y).at(s.cursor.x).codepoint();
+    ASSERT_NE(atCursor, 0u);
+    // Track cells in the wrapped rows of the first line.
+    std::vector<std::size_t> rows;
+    std::vector<int> columns;
+    std::vector<char32_t> expected;
+    for (const auto& [row, col] : {std::pair{1, 3}, std::pair{4, 0}, std::pair{6, 17}, std::pair{7, 38}}) {
+        const Cell& c = s.absoluteRow(std::size_t(row)).at(col);
+        if (c.isTail() || c.isSpacerHead() || c.isEmpty()) {
+            continue;
+        }
+        rows.push_back(std::size_t(row));
+        columns.push_back(col);
+        expected.push_back(c.codepoint());
+    }
+    ASSERT_GE(expected.size(), 3u);
+    for (const int cols : {17, 61, 9, 40}) {
+        s.resize(cols, 4, true, std::nullopt, &rows, &columns);
+        for (std::size_t k = 0; k < expected.size(); ++k) {
+            ASSERT_NE(rows[k], Screen::TrackedRowGone);
+            EXPECT_EQ(s.absoluteRow(rows[k]).at(columns[k]).codepoint(), expected[k]) << "cols " << cols;
+        }
+        EXPECT_EQ(s.row(s.cursor.y).at(s.cursor.x).codepoint(), atCursor) << "cols " << cols;
+    }
 }

@@ -7,6 +7,9 @@
 // With files (recorded output, such as kitten __benchmark__'s), replays
 // each and reports throughput in CPU time, the best of three runs, which
 // holds steady on a busy machine.
+//
+// With --reflow, fills 100,000 history rows with generated text, then
+// times repeated width and height changes of the primary screen.
 
 #include <AfterglowVt/Terminal.h>
 
@@ -16,9 +19,11 @@
 #include <iterator>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -119,10 +124,126 @@ void replay(const char* path)
     std::printf("%-26s %8.1f MB/s  (%zu MB, %.3f s CPU)\n", name, data.size() / best / 1e6, data.size() >> 20, best);
 }
 
+
+// Text for the reflow workloads. Long lines are soft-wrapped at every tested
+// width. Styled runs, hyperlinks, wide and combining characters exercise the
+// side tables and the wide-character boundary rule.
+std::string wrappedText(std::mt19937& rng, int len, bool rich)
+{
+    static const char* const Wide[] = {"日", "本", "語", "界", "한", "😀"};
+    std::string out;
+    int cells = 0;
+    while (cells < len) {
+        const unsigned pick = rich ? rng() % 100 : 99;
+        if (pick < 4) {
+            out += Wide[rng() % 6];
+            cells += 2;
+        } else if (pick < 7) {
+            out += "e\xcc\x81"; // e + combining acute
+            ++cells;
+        } else if (pick < 9) {
+            out += "\x1b[38;5;" + std::to_string(rng() % 256) + ";1m";
+        } else if (pick < 11) {
+            out += "\x1b[0m";
+        } else if (pick == 11) {
+            out += "\x1b]8;;https://example.org/" + std::to_string(rng() % 64) + "\x1b\\link\x1b]8;;\x1b\\";
+            cells += 4;
+        } else {
+            out.push_back(rng() % 7 == 0 ? ' ' : char('a' + rng() % 26));
+            ++cells;
+        }
+    }
+    return out + "\x1b[0m\r\n";
+}
+
+struct ReflowCase
+{
+    const char* name;
+    int shortPercent; // lines of 20-120 cells; the rest are long
+    int longMin;
+    int longMax;
+    bool rich;
+};
+
+std::string reflowData(const ReflowCase& c, std::size_t rows, int cols)
+{
+    std::mt19937 rng(7);
+    std::string out;
+    std::size_t made = 0;
+    while (made < rows) {
+        const bool isShort = int(rng() % 100) < c.shortPercent;
+        const int len = isShort ? 20 + int(rng() % 101) : c.longMin + int(rng() % unsigned(c.longMax - c.longMin + 1));
+        out += wrappedText(rng, len, c.rich);
+        made += std::size_t((len + cols - 1) / cols);
+    }
+    return out;
+}
+
+double percentile(std::vector<double> v, double p)
+{
+    std::sort(v.begin(), v.end());
+    return v[std::min(v.size() - 1, std::size_t(p * double(v.size() - 1) + 0.5))];
+}
+
+void reflowBench(const ReflowCase& c, int repeats)
+{
+    constexpr std::size_t History = 100000;
+    // Width and height steps of the native resize benchmark at 8x16 pixel cells.
+    const std::pair<int, int> sizes[] = {{180, 45}, {160, 50}, {140, 45}, {160, 50}, {180, 45}, {200, 50}};
+    const std::string data = reflowData(c, History + 50, 200);
+    std::vector<double> medians;
+    std::vector<double> p95s;
+    for (int round = 0; round < repeats; ++round) {
+        NullHost host;
+        AfterglowVt::TerminalOptions opts;
+        opts.maxScrollback = History;
+        AfterglowVt::Terminal t(200, 50, host, opts);
+        t.resize(200, 50, 8, 16);
+        constexpr std::size_t Chunk = 65536;
+        for (std::size_t i = 0; i < data.size(); i += Chunk) {
+            t.feed(std::string_view(data).substr(i, Chunk));
+        }
+        const std::size_t filled = t.screen().historySize();
+        std::vector<double> ms;
+        for (int pass = 0; pass < 4; ++pass) {
+            for (const auto& [cols, rows] : sizes) {
+                // CPU time, as for replays: steadier than wall time on a busy machine.
+                const double start = cpuSeconds();
+                t.resize(cols, rows, 8, 16);
+                ms.push_back((cpuSeconds() - start) * 1000.0);
+            }
+        }
+        medians.push_back(percentile(ms, 0.5));
+        p95s.push_back(percentile(ms, 0.95));
+        if (round == 0) {
+            std::printf("%-24s history %zu rows filled, %zu after resizes, %zu MB input\n", c.name, filled,
+                        t.screen().historySize(), data.size() >> 20);
+        }
+    }
+    std::printf("%-24s resize CPU median %8.2f ms  p95 %8.2f ms  (medians of %d runs, 24 resizes each)\n", c.name,
+                percentile(medians, 0.5), percentile(p95s, 0.5), repeats);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
+    if (argc > 1 && std::strcmp(argv[1], "--reflow") == 0) {
+        const int repeats = argc > 2 ? std::max(1, std::atoi(argv[2])) : 5;
+        const ReflowCase cases[] = {
+            {"short ascii 20-120", 100, 0, 0, false},
+            {"long ascii 300-3000", 0, 300, 3000, false},
+            {"long rich 300-3000", 0, 300, 3000, true},
+            {"mixed rich 50% long", 50, 300, 3000, true},
+        };
+        for (const auto& c : cases) {
+            if (argc > 3 && !std::strstr(c.name, argv[3])) {
+                continue;
+            }
+            reflowBench(c, repeats);
+        }
+        return 0;
+    }
     if (argc > 1) {
         for (int i = 1; i < argc; ++i) {
             replay(argv[i]);

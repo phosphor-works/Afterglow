@@ -134,8 +134,67 @@ Wrapped lines and lines wider than the new width still use full reflow.
 This removes repeated cell reconstruction from this workload.
 It does not remove the traversal of history rows.
 Long wrapped text can still cost more than these short lines.
+See [reflow of long wrapped lines](#reflow-of-long-wrapped-lines).
 These results do not establish a frame-time bound for all history content.
 The nested-compositor and timing limits below still apply.
+
+## Reflow of long wrapped lines
+
+Base commit: `3396c14`. Measurement date: 31 October 2026. Build type: `RelWithDebInfo`.
+This set uses the headless VT benchmark, not the native benchmark.
+It measures the `Terminal::resize` call only. It does not measure rendering or frame time.
+Run `afterglow_vtbench --reflow [runs] [case filter]` from the build's `tools/bench` directory.
+
+Each run fills a 200×50 terminal until it holds 100,000 history rows.
+The scrollback limit is 100,000 rows.
+The run then resizes to 180×45, 160×50, 140×45, 160×50, 180×45 and 200×50 four times.
+These steps match the native resize steps at 8×16 pixel cells.
+Each resize is timed in process CPU time, which is less sensitive to other load than elapsed time.
+A run gives the median and 95th percentile of its 24 resizes.
+Tables show the medians of five runs.
+The before and after runs use the same benchmark binary with the old and new library.
+The runs alternate between the two libraries.
+
+| Case | History lines |
+| --- | --- |
+| Short ASCII | 20 to 120 ASCII characters. Each line fits on one row at every tested width |
+| Long ASCII | 300 to 3,000 ASCII characters |
+| Long rich | 300 to 3,000 cells with about 4% wide characters, 3% combining marks, color and bold changes and 1% hyperlinks |
+| Mixed rich | Half short ASCII lines and half long rich lines |
+
+The generated text is the same in each run.
+The long cases fill 100,000 rows at 200 columns.
+Narrower widths need more rows, so the scrollback limit removes the oldest lines.
+After the first pass, the long cases hold about 71,000 rows at 200 columns.
+
+| Case | Median before (ms) | Median after (ms) | p95 before (ms) | p95 after (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Short ASCII | 18.70 | 9.69 | 22.73 | 12.03 |
+| Long ASCII | 171.92 | 59.94 | 220.29 | 65.66 |
+| Long rich | 348.29 | 140.12 | 461.94 | 168.89 |
+| Mixed rich | 326.42 | 134.24 | 397.84 | 150.98 |
+
+| Process peak RSS, one run (MiB) | Before | After |
+| --- | ---: | ---: |
+| Long ASCII | 555 | 185 |
+| Long rich | 763 | 305 |
+
+Reflow now rewraps one logical line at a time, directly from the old rows into the new rows.
+It no longer copies each line into a temporary buffer first.
+Lines that fit on one row also no longer get a temporary line record.
+It copies runs of narrow cells in one operation.
+Grapheme entries move between rows without new allocations.
+The old rows of a line are freed when the line is complete, which lowers peak memory.
+Only rows that can store blank cells after their content are compacted again.
+
+These numbers come from a shared 8-core machine with a load average between 11 and 23.
+Absolute values change with load. Compare the before and after columns of one table only.
+Reflow still rebuilds every row of a wrapped line. Each new row needs one allocation.
+Cost increases with the number of history cells.
+Grapheme clusters add cost, because reflow visits each stored cluster.
+Long rich history at this size still takes more than 100 ms of CPU for each resize.
+This is longer than one frame interval.
+The native benchmark was not repeated, so these results do not give frame service times.
 
 ## Workloads
 
