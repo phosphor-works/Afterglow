@@ -1,5 +1,11 @@
 /build*/
 /.cache/
 compile_commands.json
+__pycache__/
 
-/afterglow/tests/__pycache__/
+# Local state of coding agents. The checked-in Claude setup is .claude/settings.json,
+# .claude/hooks/, .claude/skills/ and .claude/agents/.
+/.Codex/
+/.claude/settings.local.json
+/.claude/audit-state.json
+/.claude/worktrees/
