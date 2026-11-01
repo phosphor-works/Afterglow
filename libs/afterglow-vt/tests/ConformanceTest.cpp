@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// The VT features esctest exercises, checked without the suite: reports,
-// rectangular and column editing, protection, reverse wrap, modes.
+// The VT features esctest exercises, checked without the suite: reports and
+// queries, rectangles, column editing, protection, reverse wrap, modes,
+// colours and their stacks, character sets, VT52 and key modifiers.
 
 #include "TestUtil.h"
 
 #include <gtest/gtest.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <string>
 
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
@@ -18,13 +23,21 @@ struct ResizingHost : RecordingHost
     bool requestResize(int, int) override { return true; }
 };
 
+/// As the esctest host runs it: screen readback (DECRQCRA) on.
+TerminalOptions conformanceOptions()
+{
+    TerminalOptions o;
+    o.allowScreenReadback = true;
+    return o;
+}
+
 template<typename Host = RecordingHost>
 struct Term
 {
     Host host;
     Terminal t;
-    Term(int cols, int rows)
-        : t(cols, rows, host)
+    Term(int cols, int rows, const TerminalOptions& options = conformanceOptions())
+        : t(cols, rows, host, options)
     {
         t.resize(cols, rows, 10, 20);
     }
@@ -48,6 +61,22 @@ TEST(Conformance, RectChecksum)
     EXPECT_EQ(t.take(), "\x1bP7!~00C3\x1b\\"); // 'a' + 'b'
     t.feed("\x1b[8;1;1;2;1;3*y");
     EXPECT_EQ(t.take(), "\x1bP8!~0082\x1b\\"); // 'b' + ' '
+}
+
+TEST(Conformance, RectChecksumIsOffUnlessTheHostAllowsIt)
+{
+    Term t(10, 4, TerminalOptions{});
+    t.feed("ab\x1b[7;1;1;1;1;2*y");
+    EXPECT_EQ(t.take(), "");
+}
+
+TEST(Conformance, RectChecksumDefaultsToTheWholePageOnTallPages)
+{
+    // 65536 rows: the omitted bottom must not wrap to 0 in 16 bits.
+    Term t(2, 4);
+    t.t.resize(2, 65536, 10, 20);
+    t.feed("a\x1b[1;1;1;1*y");
+    EXPECT_EQ(t.take(), "\x1bP1!~0041\x1b\\"); // 131071 spaces and 'a', in 16 bits
 }
 
 TEST(Conformance, FillEraseAndCopyRectangles)
@@ -387,4 +416,113 @@ TEST(Conformance, ModifyOtherKeysControl)
     EXPECT_EQ(t.take(), "\x1bP1$r>4;2m\x1b\\");
     t.feed("\x1b[>4n");
     EXPECT_EQ(t.t.modes().modifyOtherKeys, 0);
+}
+
+TEST(Conformance, BackspaceUndoesThePendingWrapWithReverseWrap)
+{
+    Term t(4, 2);
+    t.feed("\x1b[?45habcd\bX"); // the pending wrap goes; the cursor stays at the edge
+    EXPECT_EQ(rowText(t.t, 0), "abcX");
+}
+
+TEST(Conformance, ReverseWrapNeedsAutowrap)
+{
+    Term t(4, 4);
+    t.feed("\x1b[?7l\x1b[?1045h\x1b[3;1H\b");
+    EXPECT_EQ(t.t.screen().cursor.y, 2);
+    EXPECT_EQ(t.t.screen().cursor.x, 0);
+}
+
+TEST(Conformance, CursorBackWithReverseWrapStepsLikeBackspace)
+{
+    Term t(4, 4);
+    t.feed("\x1b[?45habcdef\x1b[3D"); // f, e, then into the wrapped row above
+    EXPECT_EQ(t.t.screen().cursor.y, 0);
+    EXPECT_EQ(t.t.screen().cursor.x, 3);
+    Term plain(4, 4);
+    plain.feed("\x1b[?7l\x1b[?45habcdef\x1b[3D"); // no autowrap: a plain move, clamped
+    EXPECT_EQ(plain.t.screen().cursor.y, 0);
+    EXPECT_EQ(plain.t.screen().cursor.x, 0);
+}
+
+TEST(Conformance, ColorStackSlotsStoreWithoutPushing)
+{
+    Term t(10, 2);
+    t.feed("\x1b]4;1;rgb:11/22/33\x1b\\\x1b[3#P"); // stored in slot 3, not pushed
+    t.feed("\x1b[#R");
+    EXPECT_EQ(t.take(), "\x1b[0;1#Q");
+    t.feed("\x1b]4;1;rgb:44/55/66\x1b\\\x1b[#Q\x1b]4;1;?\x1b\\"); // nothing pushed: nothing to pop
+    EXPECT_EQ(t.take(), "\x1b]4;1;rgb:4444/5555/6666\x1b\\");
+    t.feed("\x1b[3#Q\x1b]4;1;?\x1b\\\x1b[#R"); // restored, and still stored
+    EXPECT_EQ(t.take(), "\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b[0;1#Q");
+}
+
+TEST(Conformance, SendReceiveModeIsPermanentlySet)
+{
+    Term t(10, 2);
+    t.feed("\x1b[12$p"); // SRM set: no local echo, and it cannot change
+    EXPECT_EQ(t.take(), "\x1b[12;3$y");
+}
+
+TEST(Conformance, Vt52ModeHasNoControlSequences)
+{
+    Term t(20, 5);
+    t.feed("x\x1b[?2l\x1b[2J\x1b]2;title\x07");
+    EXPECT_EQ(rowText(t.t, 0), "x");
+    EXPECT_EQ(t.host.title, "");
+    t.feed("\x1b<\x1b[2J");
+    EXPECT_EQ(rowText(t.t, 0), "");
+}
+
+TEST(Conformance, ModifyOtherKeysResetsWithoutParameters)
+{
+    Term t(10, 2);
+    t.feed("\x1b[>4;2m");
+    EXPECT_EQ(t.t.modes().modifyOtherKeys, 2);
+    t.feed("\x1b[>m");
+    EXPECT_EQ(t.t.modes().modifyOtherKeys, 0);
+}
+
+TEST(Conformance, CursorRestoreKeepsOriginModeInsideTheMargins)
+{
+    Term t(10, 12);
+    t.feed("\x1b[5;10r\x1b[?6h\x1b" "7\x1b[8;10r\x1b" "8\x1b[6n");
+    EXPECT_EQ(t.take(), "\x1b[1;1R");
+}
+
+TEST(Conformance, CursorRestoreWithNothingSavedResetsCharsets)
+{
+    Term t(10, 2);
+    t.feed("\x1b(0\x1b" "8q");
+    EXPECT_EQ(rowText(t.t, 0), "q");
+}
+
+TEST(Conformance, PaletteResetsAndTitleLimit)
+{
+    Term t(10, 2);
+    t.feed("\x1b]4;1;#ff0000\x07\x1b]104;1\x07\x1b]4;1;?\x07");
+    EXPECT_EQ(t.take(), "\x1b]4;1;rgb:cccc/5555/5555\x07"); // the base palette's entry 1
+    t.feed("\x1b]4;2;#ff0000\x07\x1b]104\x07\x1b]4;2;?\x07"); // no list: every entry
+    EXPECT_EQ(t.take(), "\x1b]4;2;rgb:5555/cccc/5555\x07");
+    t.feed("\x1b]10;#123456\x07\x1b]110\x07\x1b]11;#123456\x07\x1b]111\x07");
+    EXPECT_EQ(t.t.defaultForeground(), TerminalOptions{}.defaultForeground);
+    EXPECT_EQ(t.t.defaultBackground(), TerminalOptions{}.defaultBackground);
+    t.feed("\x1b]2;" + std::string(4097, 't') + "\x07");
+    EXPECT_EQ(t.host.title, "");
+}
+
+TEST(Conformance, SixelGeometryFitsTheDecoder)
+{
+    // An 8K-sized page reports what decodeSixel takes, not its full size.
+    Term t(10, 2);
+    t.t.resize(400, 120, 20, 40);
+    t.feed("\x1b[?2;1S");
+    const std::string reply = t.take();
+    int width = 0;
+    int height = 0;
+    ASSERT_EQ(std::sscanf(reply.c_str(), "\x1b[?2;0;%d;%dS", &width, &height), 2) << reply;
+    EXPECT_LE(width, 10000);
+    EXPECT_LE(height, 10000);
+    EXPECT_LE(std::int64_t(width) * height, std::int64_t(4096) * 4096);
+    EXPECT_GT(std::int64_t(width) * height, std::int64_t(4000) * 4000); // scaled down, not to a sliver
 }

@@ -14,16 +14,30 @@ Item {
         if (visible) {
             input.text = controller.titlePrompt.text || ""
             input.selectAll()
-            Qt.callLater(() => { if (prompt.visible) input.forceActiveFocus() })
+            Qt.callLater(() => { if (prompt.visible) takeFocus() })
         }
+    }
+
+    function takeFocus() {
+        input.forceActiveFocus()
     }
 
     onVisibleChanged: syncVisibility()
     Component.onCompleted: Qt.callLater(syncVisibility)
 
+    // A second request while the prompt is open (a script renames another
+    // tab) changes the target: show that target's title, not the old text.
+    Connections {
+        target: prompt.controller
+        function onTitlePromptChanged() {
+            if (prompt.visible && prompt.controller.titlePrompt.open === true)
+                prompt.syncVisibility()
+        }
+    }
+
     Rectangle {
         anchors.fill: parent
-        color: "#59000000"
+        color: prompt.controller.scrimColor
         MouseArea {
             anchors.fill: parent
             onClicked: prompt.controller.cancelTitle()
@@ -43,6 +57,7 @@ Item {
             Label {
                 Layout.fillWidth: true
                 text: prompt.controller.titlePrompt.heading || ""
+                textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 font.bold: true
             }
@@ -52,7 +67,8 @@ Item {
                 placeholderText: qsTr("Empty follows the program's title")
                 Accessible.name: prompt.controller.titlePrompt.heading || qsTr("Title")
                 selectByMouse: true
-                maximumLength: 256
+                // Never cut the current title, which a script may have set longer.
+                maximumLength: Math.max(256, (prompt.controller.titlePrompt.text || "").length)
                 onAccepted: prompt.controller.answerTitle(text)
                 Keys.onEscapePressed: prompt.controller.cancelTitle()
             }

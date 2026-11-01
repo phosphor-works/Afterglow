@@ -74,6 +74,12 @@ inline bool base64DecodeAppend(std::string& out, std::string_view in, Base64Chec
         const std::int8_t v = table[*src];
         if (v < 0) {
             if (check == Base64Check::Lenient) {
+                if (*src == '=') {
+                    // Padding ends a quantum: its leftover bits are not data,
+                    // so a following segment starts on a byte boundary.
+                    acc = 0;
+                    bits = 0;
+                }
                 continue;
             }
             out.resize(start);
@@ -83,12 +89,8 @@ inline bool base64DecodeAppend(std::string& out, std::string_view in, Base64Chec
         bits += 6;
         if (bits >= 8) {
             bits -= 8;
-            if (dst == reinterpret_cast<unsigned char*>(out.data() + out.size())) {
-                // Stray characters made the estimate short (lenient only).
-                const std::size_t at = out.size();
-                out.resize(at + 64);
-                dst = reinterpret_cast<unsigned char*>(out.data() + at);
-            }
+            // n input characters give at most 3n/4 bytes, within the size
+            // reserved above: skipped characters only ever shorten the output.
             *dst++ = static_cast<unsigned char>((acc >> bits) & 0xFF);
         }
     }

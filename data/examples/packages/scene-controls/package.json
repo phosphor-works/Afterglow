@@ -1,1 +1,7 @@
-{"id":"scene-controls","version":"1.0.0","api_version":1,"state_version":1,"entry":"main","modules":{"main":"init.luau"}}
+{
+  "id": "scene-controls",
+  "version": "1.0.0",
+  "api_version": 1,
+  "entry": "main",
+  "modules": {"main": "init.luau"}
+}

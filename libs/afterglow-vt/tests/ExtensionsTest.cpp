@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// OSC extensions from other terminals and the shell world: OSC 133 extras,
-// VS Code's 633, iTerm2's 1337, systemd's 3008, OSC 52 reads, ConEmu's 9.
+// Extensions from other terminals and the shell world: OSC 133 extras, VS
+// Code's 633, iTerm2's 1337, systemd's 3008, OSC 52, ConEmu's 9, kitty's
+// multiple cursors and OSC 21 and 22, pixel reports, OSC 8 links, and the
+// OSC 72 and 5113 sessions handed to the host.
 
 #include "TestUtil.h"
+#include "../src/Base64.h"
 #include "../src/ITerm2.h"
 
+#include <AfterglowVt/Sixel.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <gtest/gtest.h>
@@ -120,6 +124,97 @@ TEST(Extensions, SystemdContexts)
     EXPECT_EQ(t.contexts().stack()[0].type, "remote");
     EXPECT_EQ(t.contexts().stack()[0].user, "deploy");
     EXPECT_EQ(t.contexts().stack()[0].hostname, "prod-1");
+}
+
+TEST(Extensions, RemoteHostReplacesOnlyItself)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    t.feed("\x1b]1337;RemoteHost=me@laptop\x07");
+    // What `afterglow ssh` reports, then the remote shell's own RemoteHost.
+    t.feed("\x1b]3008;start=s1;type=remote;targethost=prod\x1b\\");
+    t.feed("\x1b]1337;RemoteHost=me@prod\x07");
+    const auto& stack = t.contexts().stack();
+    ASSERT_EQ(stack.size(), 2u);
+    EXPECT_EQ(stack[0].id, "s1");
+    EXPECT_TRUE(stack[1].iterm2RemoteHost);
+    EXPECT_EQ(stack[1].hostname, "prod");
+    // The same RemoteHost at every prompt changes nothing.
+    const int changes = host.contextChanges;
+    t.feed("\x1b]1337;RemoteHost=me@prod\x07");
+    EXPECT_EQ(host.contextChanges, changes);
+    // No OSC 3008 id names the iTerm2 entry.
+    t.feed("\x1b]3008;end=iterm2-remote-host\x1b\\\x1b]3008;end=\x1b\\");
+    EXPECT_EQ(stack.size(), 2u);
+    t.feed("\x1b]3008;end=s1\x1b\\");
+    EXPECT_TRUE(stack.empty());
+}
+
+TEST(Extensions, ContextsRestartAndDepth)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    t.feed("\x1b]3008;start=a;type=shell\x1b\\\x1b]3008;start=b;type=command\x1b\\");
+    const int changes = host.contextChanges;
+    // Starting an open context again with the same fields ends only what is inside it.
+    t.feed("\x1b]3008;start=a;type=shell\x1b\\");
+    ASSERT_EQ(t.contexts().stack().size(), 1u);
+    EXPECT_EQ(host.contextChanges, changes + 1);
+    t.feed("\x1b]3008;start=a;type=shell\x1b\\");
+    EXPECT_EQ(host.contextChanges, changes + 1);
+    // At the depth limit the outermost context makes room, for RemoteHost too.
+    for (int i = 0; i < 70; ++i) {
+        t.feed("\x1b]3008;start=c" + std::to_string(i) + ";type=command\x1b\\");
+    }
+    EXPECT_EQ(t.contexts().stack().size(), ShellContexts::MaxDepth);
+    EXPECT_EQ(t.contexts().stack().front().id, "c6");
+    t.feed("\x1b]1337;RemoteHost=me@far\x07");
+    EXPECT_EQ(t.contexts().stack().size(), ShellContexts::MaxDepth);
+    EXPECT_TRUE(t.contexts().stack().back().iterm2RemoteHost);
+    // Fields are cut at 256 bytes without splitting a character.
+    t.feed("\x1b]3008;start=u;type=shell;user=" + std::string(255, 'a') + "\xc3\xa9\x1b\\");
+    EXPECT_EQ(t.contexts().stack().back().user, std::string(255, 'a'));
+}
+
+TEST(Extensions, LinkStringsHaveAMemoryBudget)
+{
+    StyleTable styles;
+    const std::string uri(8000, 'u');
+    std::vector<std::uint32_t> held;
+    for (std::size_t i = 0; i < StyleTable::MaxLinkBytes / uri.size(); ++i) {
+        const std::uint32_t link = styles.internLink(uri, {});
+        ASSERT_NE(link, 0u);
+        Style style;
+        style.link = link;
+        held.push_back(styles.acquire(style));
+    }
+    EXPECT_EQ(styles.internLink(uri, {}), 0u); // over the budget: no link, the text stays
+    // Released links free their share.
+    styles.release(held.back());
+    EXPECT_NE(styles.internLink(uri, {}), 0u);
+}
+
+TEST(Extensions, HostSessionsAreBoundedAndReset)
+{
+    struct Host : RecordingHost
+    {
+        std::vector<std::pair<int, std::string>> calls;
+        void terminalProtocol(int code, std::string_view payload) override { calls.emplace_back(code, payload); }
+    } host;
+    Terminal t(20, 4, host);
+    t.feed("\x1b]72;abc\x07");
+    t.feed("\x1b]72;" + std::string(8193, 'x') + "\x07");
+    t.feed("\x1b]5113;x\x07");
+    t.feed("\x1b]5113;" + std::string(16385, 'x') + "\x07");
+    ASSERT_EQ(host.calls.size(), 2u);
+    EXPECT_EQ(host.calls[0], (std::pair<int, std::string>{72, "abc"}));
+    EXPECT_EQ(host.calls[1], (std::pair<int, std::string>{5113, "x"}));
+    // A reset and the end of the program both end the sessions.
+    t.feed("\x1b" "c");
+    t.programExited();
+    ASSERT_EQ(host.calls.size(), 4u);
+    EXPECT_EQ(host.calls[2], (std::pair<int, std::string>{0, ""}));
+    EXPECT_EQ(host.calls[3], (std::pair<int, std::string>{0, ""}));
 }
 
 TEST(Extensions, ITerm2Commands)
@@ -246,13 +341,23 @@ TEST(Extensions, ConEmuCommands)
 
 TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
 {
-    struct Host : RecordingHost {
-        int count = 0; std::string name, data;
-        void downloadFile(std::string_view n, std::string_view d) override { ++count; name = n; data = d; }
+    struct Host : RecordingHost
+    {
+        int count = 0;
+        std::string name;
+        std::string data;
+        void downloadFile(std::string_view n, std::string_view d) override
+        {
+            ++count;
+            name = n;
+            data = d;
+        }
     } host;
     Terminal t(20, 4, host);
     t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=5:aGVsbG8=\x07");
-    ASSERT_EQ(host.count, 1); EXPECT_EQ(host.name, "test.txt"); EXPECT_EQ(host.data, "hello");
+    ASSERT_EQ(host.count, 1);
+    EXPECT_EQ(host.name, "test.txt");
+    EXPECT_EQ(host.data, "hello");
     t.feed("\x1b]1337;File=size=6:aGVsbG8=\x07");
     t.feed("\x1b]1337;File=size=99999999:aGVsbG8=\x07");
     t.feed("\x1b]1337;File=:aGVsbG8!\x07");
@@ -260,13 +365,25 @@ TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
     t.feed("\x1b]1337;MultipartFile=name=dGVzdC50eHQ=;size=5\x07\x1b]1337;FilePart=aGVs\x07");
     EXPECT_EQ(host.count, 1);
     t.feed("\x1b]1337;FilePart=bG8=\x07\x1b]1337;FileEnd\x07");
-    EXPECT_EQ(host.count, 2); EXPECT_EQ(host.data, "hello");
-    t.feed("\x1b]1337;FileEnd\x07"); EXPECT_EQ(host.count, 2);
+    EXPECT_EQ(host.count, 2);
+    EXPECT_EQ(host.data, "hello");
+    t.feed("\x1b]1337;FileEnd\x07");
+    EXPECT_EQ(host.count, 2);
+    // 8 MiB is the most a download may hold.
+    const std::string limit(8u * 1024 * 1024, 'x');
+    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size() + 1) + ":"
+           + detail::base64Encode(limit + "x") + "\x07");
+    EXPECT_EQ(host.count, 2);
+    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + detail::base64Encode(limit)
+           + "\x07");
+    ASSERT_EQ(host.count, 3);
+    EXPECT_EQ(host.data.size(), limit.size());
 }
 
 TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
 {
-    RecordingHost host; Terminal t(10, 5, host);
+    RecordingHost host;
+    Terminal t(10, 5, host);
     t.feed("\x1b[> q\x1b[c");
     EXPECT_TRUE(host.written.starts_with("\x1b[>1;2;3;29;30;40;100;101 q\x1b[?"));
     t.feed("\x1b[>1;2:2:3:99:99:4 q");
@@ -274,14 +391,41 @@ TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
     EXPECT_EQ(t.extraCursors().at({1, 2}), 1);
     t.feed("\x1b[>2;4:4:9:9:12 q");
     EXPECT_EQ(t.extraCursors().size(), 5u);
-    t.feed("\x1b[>0;2:2:3 q"); EXPECT_EQ(t.extraCursors().size(), 4u);
-    host.written.clear(); t.feed("\x1b[>100 q");
+    t.feed("\x1b[>0;2:2:3 q");
+    EXPECT_EQ(t.extraCursors().size(), 4u);
+    host.written.clear();
+    t.feed("\x1b[>100 q");
     EXPECT_EQ(host.written, "\x1b[>100;2:2:4:9;2:2:4:10;2:2:5:9;2:2:5:10 q");
-    t.feed("\x1b[5;1H\n\x1b[?25l"); EXPECT_EQ(t.extraCursors().size(), 4u);
-    t.feed("\x1b[>0;4 q"); EXPECT_TRUE(t.extraCursors().empty());
-    t.feed("\x1b[>29;0 q\x1b[?1049h"); EXPECT_TRUE(t.extraCursors().empty());
-    t.feed("\x1b[>1;0 q\x1b[2J"); EXPECT_TRUE(t.extraCursors().empty());
-    t.feed("\x1b[>1;0 q\x1b" "c"); EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[5;1H\n\x1b[?25l");
+    EXPECT_EQ(t.extraCursors().size(), 4u);
+    // Screen coordinates: a scroll does not move them.
+    EXPECT_EQ(t.extraCursors().count({3, 8}), 1u);
+    EXPECT_EQ(t.extraCursors().count({4, 9}), 1u);
+    t.feed("\x1b[>0;4 q");
+    EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[>29;0 q\x1b[?1049h");
+    EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[>1;0 q\x1b[2J");
+    EXPECT_TRUE(t.extraCursors().empty());
+    t.feed("\x1b[>1;0 q\x1b" "c");
+    EXPECT_TRUE(t.extraCursors().empty());
+}
+
+TEST(Extensions, ResizeClipsExtraCursorsToTheScreen)
+{
+    RecordingHost host;
+    Terminal t(10, 5, host);
+    t.feed("\x1b[>1;2:5:10 q\x1b[>1;2:2:2 q");
+    ASSERT_EQ(t.extraCursors().size(), 2u);
+    t.resize(5, 3, 0, 0);
+    ASSERT_EQ(t.extraCursors().size(), 1u);
+    EXPECT_EQ(t.extraCursors().count({1, 1}), 1u);
+    // The size the screen really takes: rows are clamped to 1,048,576 cells.
+    Terminal big(2, 600, host);
+    big.feed("\x1b[>1;2:551:1 q");
+    ASSERT_EQ(big.extraCursors().size(), 1u);
+    big.resize(2048, 600, 0, 0); // 512 rows at most
+    EXPECT_TRUE(big.extraCursors().empty());
 }
 
 TEST(Extensions, ExtraCursorColorsRoundTripAndReset)
@@ -322,12 +466,17 @@ TEST(Extensions, PixelReportsAndImagePercentagesUseWideGeometry)
     t.feed("\x1b[?2048h\x1b[14t\x1b[?2;1S");
     const auto pixels = std::to_string(32769LL * 65535);
     EXPECT_EQ(host.written, "\x1b[48;32769;2;" + pixels + ";131070t"
-        "\x1b[4;" + pixels + ";131070t\x1b[?2;0;131070;" + pixels + "S");
+        "\x1b[4;" + pixels + ";131070t"
+        // Sixel geometry: what an image may have, 10,000 a side and 4096x4096 in all.
+        "\x1b[?2;0;4096;4096S");
     detail::ITerm2File file;
-    file.width = "1px"; file.height = "100%"; file.preserveAspectRatio = false;
+    file.width = "1px";
+    file.height = "100%";
+    file.preserveAspectRatio = false;
     std::uint32_t w = 0, h = 0;
     ASSERT_TRUE(detail::iterm2ImageSize(file, 1, 1, 65535, 65535, 2, 32769, w, h));
-    EXPECT_EQ(w, 1u); EXPECT_EQ(h, 10000u);
+    EXPECT_EQ(w, 1u);
+    EXPECT_EQ(h, 10000u);
 }
 
 TEST(Extensions, PointerShapeStacksQueriesAndReset)
@@ -338,19 +487,32 @@ TEST(Extensions, PointerShapeStacksQueriesAndReset)
     EXPECT_EQ(host.written, "\x1b]22;0,text,text,1,1,0\x1b\\");
     t.feed("\x1b]22;pointer\x07\x1b]22;>wait,zoom-out\x07");
     EXPECT_EQ(host.pointer, "zoom-out");
-    t.feed("\x1b]22;<\x07"); EXPECT_EQ(host.pointer, "wait");
-    t.feed("\x1b[?1049h"); EXPECT_EQ(host.pointer, "");
-    t.feed("\x1b]22;copy\x07\x1b[?1049l"); EXPECT_EQ(host.pointer, "wait");
-    t.feed("\x1b]22;=cell,vertical-text\x07"); EXPECT_EQ(host.pointer, "vertical-text");
-    t.feed("\x1b]22;bogus\x07"); EXPECT_EQ(host.pointer, "vertical-text");
-    t.feed("\x1b]22;<\x07"); EXPECT_EQ(host.pointer, "pointer");
-    t.feed("\x1b]22;\x07"); EXPECT_EQ(host.pointer, "");
-    for (int i = 0; i < 40; ++i) t.feed("\x1b]22;>wait\x07");
-    for (int i = 0; i < 32; ++i) t.feed("\x1b]22;<\x07");
+    t.feed("\x1b]22;<\x07");
+    EXPECT_EQ(host.pointer, "wait");
+    t.feed("\x1b[?1049h");
     EXPECT_EQ(host.pointer, "");
-    t.feed("\x1b" "c\x1b[?1049h"); EXPECT_EQ(host.pointer, "");
+    t.feed("\x1b]22;copy\x07\x1b[?1049l");
+    EXPECT_EQ(host.pointer, "wait");
+    t.feed("\x1b]22;=cell,vertical-text\x07");
+    EXPECT_EQ(host.pointer, "vertical-text");
+    t.feed("\x1b]22;bogus\x07");
+    EXPECT_EQ(host.pointer, "vertical-text");
+    t.feed("\x1b]22;<\x07");
+    EXPECT_EQ(host.pointer, "pointer");
+    t.feed("\x1b]22;\x07");
+    EXPECT_EQ(host.pointer, "");
+    // A full stack discards its oldest entry: 40 pushes keep the last 32.
+    t.feed("\x1b]22;pointer\x07");
+    for (int i = 0; i < 40; ++i) t.feed("\x1b]22;>wait\x07");
+    for (int i = 0; i < 31; ++i) t.feed("\x1b]22;<\x07");
+    EXPECT_EQ(host.pointer, "wait");
+    t.feed("\x1b]22;<\x07");
+    EXPECT_EQ(host.pointer, "");
+    t.feed("\x1b" "c\x1b[?1049h");
+    EXPECT_EQ(host.pointer, "");
     host.written.clear();
-    t.feed("\x1b]22;?__current__\x07"); EXPECT_EQ(host.written, "\x1b]22;0\x07");
+    t.feed("\x1b]22;?__current__\x07");
+    EXPECT_EQ(host.written, "\x1b]22;0\x07");
 }
 
 TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
@@ -379,6 +541,7 @@ TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
     host.written.clear();
     t.feed("\x1b]21;transparent_background_color1=?;visual_bell=?;bad=x;1bad=?\x07");
     EXPECT_EQ(host.written, "\x1b]21;transparent_background_color1=rgb:12/34/56@0.25;visual_bell=rgb:00/ff/00;unknown=YmFk;unknown=MWJhZA\x07");
+    // rgbi components outside 0-1 are clamped, as kitty does (parse_single_intensity).
     t.feed("\x1b]21;cursor_text;selection_background;foreground=rgbi:-1/2/.5;transparent_background_color8=red@-1\x07");
     EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
     EXPECT_EQ(*t.selectionBackground(), (Rgb{40, 50, 60}));
@@ -389,4 +552,33 @@ TEST(Extensions, KittyColorControlNamesDynamicValuesAndStack)
     EXPECT_FALSE(t.transparentColors()[0]);
     EXPECT_FALSE(t.transparentColors()[7]);
     EXPECT_EQ(*t.cursorTextColor(), (Rgb{10, 20, 30}));
+}
+
+TEST(Extensions, SixelThroughTheTerminal)
+{
+    RecordingHost host;
+    Terminal t(20, 10, host);
+    t.resize(20, 10, 10, 20);
+    // The last image's pixel, as 0xAARRGGBB.
+    auto pixel = [&t](int x, int y) {
+        const Image& image = t.graphics().images().at(t.graphics().placements().back().imageId);
+        const ImageFrame& f = *image.frames.at(0);
+        const std::size_t i = (std::size_t(y) * f.width + std::size_t(x)) * 4;
+        const auto c = [&f, i](std::size_t k) { return std::uint32_t(f.rgba.at(i + k)); };
+        return (c(3) << 24) | (c(0) << 16) | (c(1) << 8) | c(2);
+    };
+    // 'A' sets only the second row of the sixel, so the image is two rows
+    // tall and its top pixel is unpainted.
+    // P2 0: unpainted pixels take the program's background (OSC 11).
+    t.feed("\x1b]11;#123456\x1b\\\x1bPq#1A\x1b\\");
+    EXPECT_EQ(pixel(0, 0), 0xFF123456u);
+    // P2 1: they stay transparent.
+    t.feed("\x1bP0;1q#1A\x1b\\");
+    EXPECT_EQ(pixel(0, 0) >> 24, 0u);
+    // Mode 1070 off: the palette carries over to the next image.
+    t.feed("\x1b[?1070l\x1bPq#5;2;100;0;0#5~\x1b\\\x1bPq#5~\x1b\\");
+    EXPECT_EQ(pixel(0, 0), 0xFFFF0000u);
+    // Mode 1070 on: each image starts from the default palette.
+    t.feed("\x1b[?1070h\x1bPq#5;2;100;0;0#5~\x1b\\\x1bPq#5~\x1b\\");
+    EXPECT_EQ(pixel(0, 0), 0xFF000000u | defaultSixelPalette()[5]);
 }

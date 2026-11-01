@@ -95,14 +95,19 @@ function script.on_user_var(ev)
     if ev.name == "phosphor" then return script.run_action(ev.value, ev) end
     return nil
 end
+-- Every pack that shows command heat takes it as a parameter, which eases
+-- from the value on screen. Signal 2 still marks the change for other packs.
+local HEATED = { ["phosphor-field"] = true, ["mesh-reactor"] = true, ["phosphor-frame"] = true }
 function script.on_result(ev)
     if not ev.ok or string.sub(ev.request_id, 1, 5) ~= "heat:" then return nil end
     local value = tonumber(string.sub(ev.request_id, 6))
-    for _, shader in ipairs(ev.data.shaders or {}) do
-        if (shader.shader == "phosphor-field" or shader.shader == "mesh-reactor") then
-            return afterglow.shader_parameters(ev.pane, shader.instance, {commandHeat=value}, "tab",
-                {duration_ms=650, curve="ease-in-out"})
+    local effects = {}
+    for _, shader in ipairs((ev.data and ev.data.shaders) or {}) do
+        if HEATED[shader.shader] then
+            table.insert(effects, afterglow.shader_parameters(ev.pane, shader.instance, {commandHeat=value}, "tab",
+                {duration_ms=650, curve="ease-in-out"}))
         end
     end
+    return effects
 end
 return script

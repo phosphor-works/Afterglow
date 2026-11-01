@@ -4,13 +4,24 @@
 import QtQuick
 import QtQuick.Controls as QQC
 
-// A program's status (OSC 7501) as a small mark: a spinner or progress arc
-// while working, a pulsing dot while blocked on the user, a check when done,
-// a cross on error. Hovering shows what the program reported.
+// A program's status (OSC 7501, or the progress of OSC 9;4) as a small mark:
+// a spinner or progress arc while working, a pulsing dot while blocked on the
+// user, a check when done, a cross on error. Where hoverable, hovering shows
+// what the program reported.
+//
+// Every change to the chrome draws a whole window frame, so the marks move in
+// steps a few times a second, not at the display rate. A status can last for
+// hours.
 Item {
     id: root
 
     required property QtObject controller
+    // False where the window does not pass the pointer here (the pane titles).
+    property bool hoverable: true
+    // The step of the spinner and the dot, and the time of one turn or pulse.
+    readonly property int stepInterval: 125
+    readonly property int spinPeriod: 1000
+    readonly property int pulsePeriod: 1400
 
     SystemPalette { id: systemPalette }
     property var status: ({})
@@ -22,6 +33,33 @@ Item {
     implicitWidth: visible ? 12 : 0
     implicitHeight: 12
 
+    // For screen readers, which cannot see the mark.
+    readonly property string description: {
+        let words = ""
+        if (state_ === "working")
+            words = progress >= 0 ? qsTr("Working, %1 percent").arg(progress) : qsTr("Working")
+        else if (state_ === "blocked")
+            words = qsTr("Waiting for input")
+        else if (state_ === "done")
+            words = qsTr("Done")
+        else if (state_ === "error")
+            words = qsTr("Failed")
+        const text = status && status.text ? status.text : ""
+        return text.length > 0 && words.length > 0 ? words + ". " + text : words
+    }
+    Accessible.role: Accessible.Indicator
+    Accessible.name: description
+
+    // Counts steps while something moves. Bound to the effective visibility,
+    // so a mark in a hidden tab bar asks for no frames.
+    property int step: 0
+    Timer {
+        interval: root.stepInterval
+        repeat: true
+        running: arc.visible && root.progress < 0 || dot.visible
+        onTriggered: ++root.step
+    }
+
     // Working: an arc, spinning while indeterminate.
     Canvas {
         id: arc
@@ -32,6 +70,8 @@ Item {
         onFractionChanged: requestPaint()
         onTintChanged: requestPaint()
         onVisibleChanged: requestPaint()
+        // A determinate arc starts at 12 o'clock, whatever turn the spinner was at.
+        rotation: root.progress < 0 ? (root.step * 360 * root.stepInterval / root.spinPeriod) % 360 : 0
         onPaint: {
             const ctx = getContext("2d")
             ctx.reset()
@@ -47,29 +87,19 @@ Item {
             ctx.arc(width / 2, height / 2, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * fraction)
             ctx.stroke()
         }
-        RotationAnimator on rotation {
-            running: arc.visible && root.progress < 0
-            from: 0
-            to: 360
-            duration: 900
-            loops: Animation.Infinite
-        }
     }
 
     // Blocked: a dot that breathes, so it reads as "waiting on you".
     Rectangle {
+        id: dot
         anchors.centerIn: parent
         width: 8
         height: 8
         radius: 4
         visible: root.state_ === "blocked"
         color: root.controller.warnColor
-        SequentialAnimation on opacity {
-            running: root.state_ === "blocked"
-            loops: Animation.Infinite
-            NumberAnimation { from: 1.0; to: 0.35; duration: 700; easing.type: Easing.InOutSine }
-            NumberAnimation { from: 0.35; to: 1.0; duration: 700; easing.type: Easing.InOutSine }
-        }
+        readonly property real phase: (root.step * root.stepInterval % root.pulsePeriod) / root.pulsePeriod
+        opacity: 0.675 + 0.325 * Math.cos(phase * 2 * Math.PI)
     }
 
     Text {
@@ -83,11 +113,12 @@ Item {
 
     HoverHandler {
         id: hover
+        enabled: root.hoverable
     }
 
     QQC.ToolTip {
         parent: root
-        visible: hover.hovered && text.length > 0
+        visible: root.hoverable && hover.hovered && text.length > 0
         text: root.status && root.status.text
             ? "<span>" + root.status.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>" : ""
     }

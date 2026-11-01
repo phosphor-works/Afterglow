@@ -3,6 +3,9 @@
 //
 // Bloom: gathers bright pixels from three rings around each pixel and adds
 // them back as a soft glow. Inner rings weigh more than outer ones.
+// The glow is added light: alpha stays as it was, so in the text and cursor
+// layers, which are transparent between glyphs, the glow adds to whatever is
+// drawn below them.
 
 vec4 pTerminal(vec2 uv)
 {

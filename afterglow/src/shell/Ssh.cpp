@@ -4,11 +4,16 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <cerrno>
 #include <csignal>
+#include <cstdio>
+#include <cstring>
+#include <fcntl.h>
 #include <optional>
 #include <string_view>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -53,45 +58,85 @@ struct IgnoredSignals {
     }
 };
 
-[[noreturn]] void exec(const QStringList& argv, const IgnoredSignals& signals, const QByteArray& term)
+int exitCode(int status)
+{
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 127;
+}
+
+// Ends the helper the way ssh ended. An interactive shell stops a loop only
+// when the foreground job died from SIGINT, so an exit status of 130 is not
+// the same. Signals that dump core are not passed on.
+int finish(int status, const IgnoredSignals& signals)
+{
+    if (WIFSIGNALED(status)) {
+        const int sig = WTERMSIG(status);
+        if (sig == SIGINT || sig == SIGHUP || sig == SIGTERM || sig == SIGPIPE || sig == SIGKILL) {
+            signals.restore();
+            struct sigaction fallback {};
+            fallback.sa_handler = SIG_DFL;
+            sigaction(sig, &fallback, nullptr);
+            sigset_t set;
+            sigemptyset(&set);
+            sigaddset(&set, sig);
+            sigprocmask(SIG_UNBLOCK, &set, nullptr);
+            kill(getpid(), sig);
+        }
+    }
+    return exitCode(status);
+}
+
+[[noreturn]] void exec(const QByteArrayList& argv, const IgnoredSignals& signals, const QByteArray& term)
 {
     signals.restore();
     if (!term.isEmpty() && qgetenv("TERM") != term) setenv("TERM", term.constData(), 1);
-    std::vector<QByteArray> storage;
-    for (const QString& arg : argv) storage.push_back(arg.toLocal8Bit());
+    QByteArrayList storage = argv;
     std::vector<char*> pointers;
     for (QByteArray& arg : storage) pointers.push_back(arg.data());
     pointers.push_back(nullptr);
     execvp(pointers.front(), pointers.data());
+    const int code = errno;
+    std::fprintf(stderr, "afterglow ssh: %s: %s\n", pointers.front(), std::strerror(code));
     _exit(127);
 }
 
+// ssh stopped (~^Z, or SIGTTIN in the background): stop with the same signal,
+// so the shell reports the job as it would report plain ssh.
+void stopLike(int sig)
+{
+    struct sigaction current {};
+    sigaction(sig, nullptr, &current);
+    kill(getpid(), current.sa_handler == SIG_DFL ? sig : SIGSTOP);
+}
+
+// ssh's wait status. The helper stops and continues with it.
 int wait(pid_t pid)
 {
     int status = 0;
     while (true) {
         if (waitpid(pid, &status, WUNTRACED) < 0) {
             if (errno == EINTR) continue;
-            return 127;
+            return 127 << 8; // as if it exited with 127
         }
         if (WIFSTOPPED(status)) {
-            // ssh suspended itself (~^Z): suspend with it so the shell sees the job stop.
-            kill(getpid(), SIGSTOP);
+            stopLike(WSTOPSIG(status));
             kill(pid, SIGCONT);
             continue;
         }
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        return status;
     }
 }
 
 struct Captured {
-    int status = 0;
+    int status = 0; ///< as waitpid reports it
     QByteArray output;
 };
 
 // Runs ARGV with INPUT on its standard input, collecting its standard output.
-// Standard error stays on the terminal, so ssh's prompts and errors show.
-std::optional<Captured> capture(const QStringList& argv, const IgnoredSignals& signals, const QByteArray& input = {})
+// Standard error stays on the terminal, so ssh's prompts and errors show,
+// unless QUIET discards it.
+std::optional<Captured> capture(const QByteArrayList& argv, const IgnoredSignals& signals, const QByteArray& input = {},
+                                bool quiet = false)
 {
     int out[2];
     int in[2];
@@ -109,6 +154,12 @@ std::optional<Captured> capture(const QStringList& argv, const IgnoredSignals& s
         dup2(in[0], STDIN_FILENO);
         dup2(out[1], STDOUT_FILENO);
         for (int fd : {out[0], out[1], in[0], in[1]}) close(fd);
+        if (quiet) {
+            if (const int null = open("/dev/null", O_WRONLY); null >= 0) {
+                dup2(null, STDERR_FILENO);
+                if (null != STDERR_FILENO) close(null);
+            }
+        }
         exec(argv, signals, {});
     }
     close(in[0]);
@@ -133,84 +184,190 @@ std::optional<Captured> capture(const QStringList& argv, const IgnoredSignals& s
     return result;
 }
 
+// An XDG base directory. The specification treats empty and relative values as unset.
+QString baseDirectory(const char* name)
+{
+    const QString value = qEnvironmentVariable(name);
+    return QDir::isAbsolutePath(value) ? value : QString();
+}
+
 QString stateFile()
 {
-    const QString state = qEnvironmentVariable("XDG_STATE_HOME", QDir::homePath() + QStringLiteral("/.local/state"));
+    QString state = baseDirectory("XDG_STATE_HOME");
+    if (state.isEmpty()) state = QDir::homePath() + QStringLiteral("/.local/state");
     return state + QStringLiteral("/afterglow/ssh-terminfo");
+}
+
+// The hosts the helper has tried, oldest first: one hash for each, and
+// " fallback" after the hash of a host that cannot take the entry.
+QStringList readCache(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    return QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+}
+
+// Puts LINE last, in place of the host's old line. The file is read again
+// just before the write, so a run that finished meanwhile keeps its host.
+void remember(const QString& path, const QString& hash, const QString& line)
+{
+    QStringList lines = readCache(path);
+    lines.removeIf([&hash](const QString& l) { return l.section(QLatin1Char(' '), 0, 0) == hash; });
+    lines.append(line);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile save(path);
+    if (!save.open(QIODevice::WriteOnly)) return;
+    save.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    save.write(lines.mid(std::max<qsizetype>(0, lines.size() - MaxCachedHosts)).join(QLatin1Char('\n')).toUtf8() + '\n');
+    save.commit();
+}
+
+// Who has the entry: the account, the address, the route there and the
+// entry's version. Only a hash is stored, so the file does not list hosts.
+QString cacheKey(const Config& config, const QByteArray& entry)
+{
+    // infocmp starts with a comment that names the file it read: the same
+    // entry from the build tree and from the installed database is one version.
+    QByteArray body;
+    for (const QByteArray& line : entry.split('\n')) {
+        if (!line.startsWith('#')) body += line + '\n';
+    }
+    const QString host = config.user + QLatin1Char('@') + config.hostname + QLatin1Char(':') + config.port
+        + QLatin1Char('\n') + config.proxyJump + QLatin1Char('\n') + config.proxyCommand + QLatin1Char('\n')
+        + QString::fromLatin1(QCryptographicHash::hash(body, QCryptographicHash::Sha256).toHex());
+    return QString::fromLatin1(QCryptographicHash::hash(host.toUtf8(), QCryptographicHash::Sha256).toHex());
+}
+
+// Options that let the install and the session share one connection, so the
+// user authenticates once.
+QByteArrayList sharing(const Config& config)
+{
+    QByteArrayList shared;
+    if (!config.controlPath) {
+        // Only in the private runtime directory: in a shared one, another
+        // user could create the socket first.
+        const QString runtime = baseDirectory("XDG_RUNTIME_DIR");
+        if (runtime.isEmpty()) return shared;
+        shared << "-o" << "ControlMaster=auto" << "-o"
+               << "ControlPath=" + QFile::encodeName(runtime) + "/afterglow-ssh-%C" << "-o" << "ControlPersist=10";
+    } else if (config.controlMaster && !config.controlPersist) {
+        // The user's own master would close with the install's command.
+        shared << "-o" << "ControlPersist=10";
+    }
+    return shared;
+}
+
+// An option word without -n: the install sends the entry on standard input.
+// VALUE_FOLLOWS tells whether the next word is this option's value.
+QByteArray withoutNullInput(const QByteArray& word, bool& valueFollows)
+{
+    valueFollows = false;
+    QByteArray kept = "-";
+    for (qsizetype c = 1; c < word.size(); ++c) {
+        const char flag = word[c];
+        if (FlagsWithValue.find(flag) != std::string_view::npos) {
+            valueFollows = c == word.size() - 1;
+            return kept + word.mid(c);
+        }
+        if (flag != 'n') kept += flag;
+    }
+    return kept.size() > 1 ? kept : QByteArray();
 }
 
 // ssh's own failure status, distinct from the remote command's.
 constexpr int SshFailed = 255;
 
-enum class Install { Installed, Unavailable, ConnectionFailed };
+enum class Install {
+    Installed,
+    Unavailable,      ///< no entry to send, or the host cannot take it
+    ConnectionFailed, ///< ssh could not connect: the session would fail the same way
+    Ended,            ///< ssh died from a signal, such as Ctrl+C at a password prompt
+};
 
-// Puts afterglow's terminfo entry on the host once per entry version. On
-// success OPTIONS gains the connection sharing the session should reuse.
-Install installTerminfo(const QStringList& args, const Arguments& parsed, const Config& config,
-                     const IgnoredSignals& signals, QStringList& options)
+struct InstallResult {
+    Install result = Install::Unavailable;
+    int status = 0; ///< the install's wait status, for Install::Ended
+};
+
+// Puts afterglow's terminfo entry on the host once per entry version. When
+// the install connects, OPTIONS gains the connection sharing the session reuses.
+InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parsed, const Config& config,
+                              const IgnoredSignals& signals, QByteArrayList& options)
 {
-    const auto source = capture({QStringLiteral("infocmp"), QStringLiteral("-0"), QStringLiteral("-x"), QStringLiteral("afterglow")}, signals);
-    if (!source || source->status != 0 || source->output.isEmpty()) return Install::Unavailable;
-    const QString key = config.user + QLatin1Char('@') + config.hostname + QLatin1Char(':') + config.port + QLatin1Char(' ')
-        + QString::fromLatin1(QCryptographicHash::hash(source->output, QCryptographicHash::Sha256).toHex().left(16));
-    QFile cache(stateFile());
-    QStringList hosts;
-    if (cache.open(QIODevice::ReadOnly)) {
-        hosts = QString::fromUtf8(cache.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        cache.close();
+    const auto source = capture({"infocmp", "-0", "-x", "afterglow"}, signals);
+    if (!source || source->status != 0 || source->output.isEmpty()) return {};
+    const QString key = cacheKey(config, source->output);
+    const QString path = stateFile();
+    const QStringList cached = readCache(path);
+    for (const QString& line : cached) {
+        if (line.section(QLatin1Char(' '), 0, 0) != key) continue;
+        // Hosts in use stay when the file is trimmed.
+        if (line != cached.last()) remember(path, key, line);
+        return {line == key ? Install::Installed : Install::Unavailable};
     }
-    if (hosts.contains(key)) return Install::Installed;
-    // One connection for the install and the session: the user authenticates once.
-    QStringList shared;
-    if (!config.controlPath) {
-        const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR", QDir::tempPath());
-        shared << QStringLiteral("-o") << QStringLiteral("ControlMaster=auto")
-               << QStringLiteral("-o") << QStringLiteral("ControlPath=") + runtime + QStringLiteral("/afterglow-ssh-%C")
-               << QStringLiteral("-o") << QStringLiteral("ControlPersist=10");
-    }
-    // The connection options and the destination, without a tty or the remote command.
-    QStringList install{QStringLiteral("ssh")};
+    const QByteArrayList shared = sharing(config);
+    // The connection options and the destination, without a tty, the remote command or -n.
+    QByteArrayList install{"ssh"};
     install << shared;
-    const int beforeDestination = parsed.destination > 0 && args[parsed.destination - 1] == QLatin1String("--")
-        ? parsed.destination - 1 : parsed.destination;
-    install << args.mid(0, beforeDestination) << QStringLiteral("-T") << args.mid(beforeDestination, parsed.destination + 1 - beforeDestination)
-            << QStringLiteral("sh -c 'command -v tic >/dev/null 2>&1 && mkdir -p \"$HOME/.terminfo\""
-                              " && tic -x -o \"$HOME/.terminfo\" - >/dev/null 2>&1'");
-    const auto installed = capture(install, signals, source->output);
-    // An unreachable host would fail the session the same way: report it once.
-    if (installed && installed->status == SshFailed) return Install::ConnectionFailed;
-    if (!installed || installed->status != 0) return Install::Unavailable;
-    options << shared;
-    hosts.append(key);
-    QDir().mkpath(QFileInfo(cache).absolutePath());
-    QSaveFile save(cache.fileName());
-    if (save.open(QIODevice::WriteOnly)) {
-        save.write(hosts.mid(std::max<qsizetype>(0, hosts.size() - MaxCachedHosts)).join(QLatin1Char('\n')).toUtf8() + '\n');
-        save.commit();
+    // A command-line value wins over the config, and the config's RemoteCommand
+    // would refuse the install's command.
+    if (config.remoteCommand) install << "-o" << "RemoteCommand=none";
+    bool isValue = false;
+    for (const int i : parsed.options) {
+        if (isValue) {
+            install << args[i];
+            isValue = false;
+        } else if (const QByteArray word = withoutNullInput(args[i], isValue); !word.isEmpty()) {
+            install << word;
+        }
     }
-    return Install::Installed;
+    install << "-T" << "--" << args[parsed.destination]
+            << "sh -c 'command -v tic >/dev/null 2>&1 && mkdir -p \"$HOME/.terminfo\""
+               " && tic -x -o \"$HOME/.terminfo\" - >/dev/null 2>&1"
+               " && { [ -e \"$HOME/.terminfo/a/afterglow\" ] || [ -e \"$HOME/.terminfo/61/afterglow\" ]; }'";
+    const auto installed = capture(install, signals, source->output);
+    if (!installed) return {};
+    if (WIFSIGNALED(installed->status)) return {Install::Ended, installed->status};
+    const int status = exitCode(installed->status);
+    if (status == SshFailed) return {Install::ConnectionFailed};
+    // It connected: the session reuses the connection either way, and a host
+    // without tic is not asked again.
+    options << shared;
+    remember(path, key, status == 0 ? key : key + QStringLiteral(" fallback"));
+    return {status == 0 ? Install::Installed : Install::Unavailable};
 }
 } // namespace
 
 Arguments parseArguments(const QStringList& args)
 {
     Arguments result;
+    // ssh parses options again after the destination, unless "--" came first.
     for (int i = 0; i < args.size(); ++i) {
         const QString& arg = args[i];
         if (arg == QLatin1String("--")) {
-            if (i + 1 < args.size()) result.destination = i + 1;
+            if (result.destination < 0) {
+                if (i + 1 < args.size()) result.destination = i + 1;
+                if (i + 2 < args.size()) result.command = i + 2;
+            } else if (i + 1 < args.size()) {
+                result.command = i + 1;
+            }
             break;
         }
         if (arg.size() < 2 || arg[0] != QLatin1Char('-')) {
+            if (result.destination >= 0) {
+                result.command = i;
+                break;
+            }
             result.destination = i;
-            break;
+            continue;
         }
+        result.options << i;
         for (qsizetype c = 1; c < arg.size(); ++c) {
             const char flag = arg[c].toLatin1();
             if (PassThroughFlags.find(flag) != std::string_view::npos) result.passThrough = true;
             if (NoSessionFlags.find(flag) != std::string_view::npos) result.noSession = true;
             if (FlagsWithValue.find(flag) != std::string_view::npos) {
-                if (c == arg.size() - 1) ++i; // the value is the next argument
+                if (c == arg.size() - 1 && i + 1 < args.size()) result.options << ++i; // the value is the next argument
                 break;
             }
         }
@@ -230,8 +387,13 @@ Config parseConfig(const QByteArray& resolved)
         else if (key == "hostname") config.hostname = value;
         else if (key == "user") config.user = value;
         else if (key == "port") config.port = value;
+        else if (key == "proxyjump") config.proxyJump = value;
+        else if (key == "proxycommand") config.proxyCommand = value;
         else if (key == "setenv") config.setEnv = true;
         else if (key == "controlpath") config.controlPath = value != QLatin1String("none");
+        else if (key == "controlmaster") config.controlMaster = value == QLatin1String("auto") || value == QLatin1String("autoask");
+        else if (key == "controlpersist") config.controlPersist = value != QLatin1String("no");
+        else if (key == "remotecommand") config.remoteCommand = value != QLatin1String("none");
     }
     return config;
 }
@@ -249,32 +411,39 @@ QByteArray contextEnd(const QString& id)
     return "\x1b]3008;end=" + clean(id).toUtf8() + "\x1b\\";
 }
 
-int run(const QStringList& args)
+int run(const QByteArrayList& args)
 {
+    // A pane names its foreground job by the process name when it asks before
+    // closing: the shell's ssh function runs this helper in ssh's place.
+    prctl(PR_SET_NAME, "ssh", 0, 0, 0);
     const IgnoredSignals signals;
-    const Arguments parsed = parseArguments(args);
-    QStringList options;
+    QStringList words;
+    for (const QByteArray& arg : args) words << QString::fromLocal8Bit(arg);
+    const Arguments parsed = parseArguments(words);
+    QByteArrayList options;
     QByteArray term = qgetenv("TERM");
     std::optional<Config> config;
     if (!parsed.passThrough && parsed.destination >= 0) {
-        // ssh resolves the destination itself; on failure it reports the error below.
-        const auto resolved = capture(QStringList{QStringLiteral("ssh"), QStringLiteral("-G")} + args, signals);
+        // ssh resolves the destination itself. On failure the session run
+        // below reports the error, so this one stays quiet.
+        const auto resolved = capture(QByteArrayList{"ssh", "-G"} + args, signals, {}, true);
         if (resolved && resolved->status == 0) config = parseConfig(resolved->output);
     }
     if (config) {
         if (term == "afterglow" && !parsed.noSession) {
-            const Install install = qgetenv("AFTERGLOW_SSH_TERMINFO") == "fallback"
-                ? Install::Unavailable : installTerminfo(args, parsed, *config, signals, options);
-            if (install == Install::ConnectionFailed) return SshFailed;
-            if (install == Install::Unavailable) term = "xterm-256color";
+            const InstallResult install = qgetenv("AFTERGLOW_SSH_TERMINFO") == "fallback"
+                ? InstallResult{} : installTerminfo(args, parsed, *config, signals, options);
+            if (install.result == Install::Ended) return finish(install.status, signals);
+            if (install.result == Install::ConnectionFailed) return SshFailed;
+            if (install.result == Install::Unavailable) term = "xterm-256color";
         }
         // Servers accept these only when their AcceptEnv allows it.
-        QStringList variables;
+        QByteArrayList variables;
         for (const char* name : {"COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"}) {
-            if (const QString value = qEnvironmentVariable(name); !value.isEmpty() && !value.contains(QLatin1Char(' ')))
-                variables << QString::fromLatin1(name) + QLatin1Char('=') + value;
+            if (const QByteArray value = qgetenv(name); !value.isEmpty() && !value.contains(' '))
+                variables << QByteArray(name) + '=' + value;
         }
-        if (!config->setEnv && !variables.isEmpty()) options << QStringLiteral("-o") << QStringLiteral("SetEnv=") + variables.join(QLatin1Char(' '));
+        if (!config->setEnv && !variables.isEmpty()) options << "-o" << "SetEnv=" + variables.join(' ');
     }
     const bool label = config && !parsed.noSession && isatty(STDOUT_FILENO);
     const QString id = QStringLiteral("afterglow-ssh-") + QString::number(getpid());
@@ -287,14 +456,14 @@ int run(const QStringList& args)
         }
     };
     if (label) send(contextStart(id, *config));
-    int status = 127;
+    int status = 127 << 8;
     if (const pid_t pid = fork(); pid == 0) {
-        exec(QStringList{QStringLiteral("ssh")} + options + args, signals, term);
+        exec(QByteArrayList{"ssh"} + options + args, signals, term);
     } else if (pid > 0) {
         status = wait(pid);
     }
     if (label) send(contextEnd(id));
-    return status;
+    return finish(status, signals);
 }
 
 } // namespace Afterglow::Ssh

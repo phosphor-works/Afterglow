@@ -26,12 +26,12 @@ int objectIndex() {
 
 // A model-space position in world space.
 vec3 objectPosition(vec3 position) {
-    return (uObjectMatrix[gl_InstanceIndex] * vec4(position, 1.0)).xyz;
+    return (uObjectMatrix[clamp(gl_InstanceIndex, 0, 63)] * vec4(position, 1.0)).xyz;
 }
 
 // A model-space normal in world space.
 vec3 objectNormal(vec3 normal) {
-    return normalize(mat3(uObjectNormalMatrix[gl_InstanceIndex]) * normal);
+    return normalize(mat3(uObjectNormalMatrix[clamp(gl_InstanceIndex, 0, 63)]) * normal);
 }
 #endif
 

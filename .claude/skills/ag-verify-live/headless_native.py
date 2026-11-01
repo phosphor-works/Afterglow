@@ -72,12 +72,13 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
                 if time.monotonic() > deadline:
                     sys.exit('KWin did not create its socket in 10 s')
                 time.sleep(0.05)
-            env.update(QT_QPA_PLATFORM='wayland', WAYLAND_DISPLAY=socket)
+            # The binary refuses to run outside a nested desktop with its own bus.
+            env.update(QT_QPA_PLATFORM='wayland', WAYLAND_DISPLAY=socket, AFTERGLOW_NATIVE_ISOLATED='1')
             if args.validation:
                 env.update(AFTERGLOW_VULKAN_VALIDATION='1', QT_LOGGING_RULES='qt.vulkan=true;afterglow.gpu=true')
             result = subprocess.run(
                 ['dbus-run-session', '--', str(binary), f'--gtest_filter={args.filter}'],
-                env=env, timeout=args.timeout + 10)
+                env=env, cwd=root, timeout=args.timeout + 10)
             code = result.returncode
         except subprocess.TimeoutExpired:
             print(f'Timed out after {args.timeout} s', file=sys.stderr)

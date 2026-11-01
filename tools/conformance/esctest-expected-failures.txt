@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: CC0-1.0
+
 # esctest2 tests afterglow is expected to fail, one per line, with the reason
 # in the section comment. tools/conformance/esctest.sh fails on anything else.
 
@@ -8,7 +11,7 @@ test_DA_0
 test_DA_NoParameter
 test_DECDSR_DSRKeyboard
 
-# Modes afterglow does not implement, reported as reset: keyboard lock, local echo, Hebrew keyboard, national replacement sets.
+# Modes afterglow does not implement: keyboard lock, Hebrew keyboard and national replacement sets are reported as reset, and send/receive (no local echo) as permanently set.
 test_DECRQM_ANSI_KAM
 test_DECRQM_ANSI_SRM
 test_DECRQM_DEC_DECHEBM

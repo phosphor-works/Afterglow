@@ -30,7 +30,7 @@ vec4 pTerminal(vec2 uv)
     // The sweep, on the lead's diagonal, rising to the right.
     float aspect = iResolution.x / iResolution.y;
     float diag = uv.x * aspect + (1.0 - uv.y) * 0.6;
-    float sweep = fract(iTime / p_glintEvery) * 3.0 - 0.5;
+    float sweep = timeCycle(p_glintEvery) * 3.0 - 0.5;
     float d = diag - sweep * (aspect + 0.6);
     float glint = exp(-d * d * 180.0) * p_glint;
     float glazeAge = ghAge(1);

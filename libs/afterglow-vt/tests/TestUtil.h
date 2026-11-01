@@ -6,6 +6,7 @@
 #include <AfterglowVt/Terminal.h>
 
 #include <string>
+#include <vector>
 
 namespace AfterglowVt::Test {
 
@@ -20,11 +21,29 @@ struct RecordingHost : ITerminalHost
     void bell() override { ++bells; }
     std::string notified;
     std::string pointer;
+    int pointerChanges = 0;
+    std::vector<std::string> commandsStarted;
+    std::vector<int> commandsFinished;
+    std::string cwd;
+    int cwdChanges = 0;
+    int contextChanges = 0;
     void notify(std::string_view title, std::string_view body) override
     {
         notified = std::string(title) + "|" + std::string(body);
     }
-    void pointerShapeChanged(std::string_view shape) override { pointer = shape; }
+    void pointerShapeChanged(std::string_view shape) override
+    {
+        pointer = shape;
+        ++pointerChanges;
+    }
+    void contextChanged() override { ++contextChanges; }
+    void commandStarted(std::string_view command) override { commandsStarted.emplace_back(command); }
+    void commandFinished(int exitCode) override { commandsFinished.push_back(exitCode); }
+    void workingDirectoryChanged(std::string_view directory) override
+    {
+        cwd = directory;
+        ++cwdChanges;
+    }
 };
 
 inline void appendUtf8(std::string& out, char32_t cp)

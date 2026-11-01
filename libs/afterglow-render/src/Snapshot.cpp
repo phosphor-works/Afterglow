@@ -4,6 +4,7 @@
 #include <AfterglowRender/Snapshot.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <unordered_map>
 #include <utility>
@@ -51,7 +52,39 @@ Rgb withContrast(Rgb fg, Rgb bg, double minimum)
     return mix(hi);
 }
 
+/// withContrast() for the pairs of one capture: most cells share a few.
+class ContrastCache
+{
+public:
+    explicit ContrastCache(double minimum) : m_minimum(minimum) {}
+    Rgb operator()(Rgb fg, Rgb bg)
+    {
+        const std::uint64_t key = (std::uint64_t(fg.r) << 40) | (std::uint64_t(fg.g) << 32) | (std::uint64_t(fg.b) << 24)
+            | (std::uint64_t(bg.r) << 16) | (std::uint64_t(bg.g) << 8) | bg.b;
+        if (m_hasLast && key == m_lastKey) return m_last;
+        auto [it, fresh] = m_results.try_emplace(key);
+        if (fresh) it->second = withContrast(fg, bg, m_minimum);
+        m_hasLast = true;
+        m_lastKey = key;
+        m_last = it->second;
+        return m_last;
+    }
+
+private:
+    double m_minimum;
+    std::unordered_map<std::uint64_t, Rgb> m_results;
+    bool m_hasLast = false;
+    std::uint64_t m_lastKey = 0;
+    Rgb m_last{};
+};
+
 } // namespace
+
+std::uint64_t PaneSnapshot::Identity::next() noexcept
+{
+    static std::atomic<std::uint64_t> counter{0};
+    return ++counter;
+}
 
 void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const SearchHighlight& search, int extra, bool reorder)
 {
@@ -77,7 +110,8 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     }
     defaultFg = packRgba(defFg);
     defaultBg = packRgba(defBg);
-    visualBellColor = t.visualBellColor() ? packRgba(*t.visualBellColor()) : packRgba(255, 255, 255);
+    visualBellColorSet = t.visualBellColor() != nullptr;
+    visualBellColor = visualBellColorSet ? packRgba(*t.visualBellColor()) : packRgba(255, 255, 255);
     hasTransparentBackgrounds = false;
     selectionForegroundColor = t.selectionForeground() ? packRgba(*t.selectionForeground()) : defaultBg;
     selectionBackgroundColor = t.selectionBackground() ? packRgba(*t.selectionBackground()) : defaultFg;
@@ -86,16 +120,29 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
     auto resolve = [&](Color c, Rgb fallback) -> Rgb {
         return c.isDefault() ? fallback : t.resolve(c, true);
     };
+    const TerminalOptions& options = t.options();
+    // A style's text and background colours, before selection and contrast.
+    auto resolveColors = [&](const Style& style) {
+        Rgb fg = resolve(style.fg, defFg);
+        if (options.boldIsBright && style.has(Attr::Bold) && style.fg.kind() == Color::Kind::Palette && style.fg.index() < 8) {
+            fg = t.paletteColor(style.fg.index() + 8);
+        }
+        Rgb bg = resolve(style.bg, defBg);
+        if (style.has(Attr::Inverse)) {
+            std::swap(fg, bg);
+        }
+        return std::pair{fg, bg};
+    };
 
     const bool hasSelection = selection && selection->validFor(scr);
-    const TerminalOptions& options = t.options();
     const Selection::Range range = hasSelection ? selection->range(scr, options.wordBoundaries) : Selection::Range{};
     const bool adjustContrast = options.minimumContrast > 1.0;
+    ContrastCache contrastFor(options.minimumContrast);
 
     const std::size_t top = scr.viewportTop();
     const int cw = t.cellWidth();
     const int ch = t.cellHeight();
-    images = t.graphics().visible(scr, cw, ch, extra);
+    images = t.graphics().visible(scr, cw, ch, extraRows);
     // Matches overlapping the viewport, found once instead of per cell.
     std::vector<int> visibleMatches;
     if (search.matches) {
@@ -108,6 +155,10 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             }
         }
     }
+    // Each row's highlight colour per column, painted once from the matches
+    // on that row rather than searched per cell. Painted last to first, so
+    // the first match that covers a cell wins.
+    std::vector<std::uint32_t> rowHighlight(visibleMatches.empty() ? 0 : std::size_t(cols));
     // Unicode placeholders continue from the placeholder to their left.
     auto colorId = [](Color c) -> std::uint32_t {
         return c.kind() == Color::Kind::Rgb ? (std::uint32_t(c.r()) << 16) | (std::uint32_t(c.g()) << 8) | c.b()
@@ -123,31 +174,30 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
         std::uint32_t prevPlacement = 0;
         int prevRow = 0;
         int prevCol = 0;
+        if (!rowHighlight.empty()) {
+            std::fill(rowHighlight.begin(), rowHighlight.end(), 0u);
+            for (auto it = visibleMatches.rbegin(); it != visibleMatches.rend(); ++it) {
+                const SearchMatch& m = (*search.matches)[std::size_t(*it)];
+                if (rowId < m.start.row || rowId > m.end.row) continue;
+                const int from = rowId == m.start.row ? std::max(0, m.start.col) : 0;
+                const int to = rowId == m.end.row ? std::min(cols - 1, m.end.col) : cols - 1;
+                const std::uint32_t color = *it == search.current ? search.currentColor : search.matchColor;
+                for (int x = from; x <= to; ++x) rowHighlight[std::size_t(x)] = color;
+            }
+        }
         for (int x = 0; x < cols; ++x) {
             const Cell& c = row.at(x);
             const Style& st = scr.styles().get(c.styleId());
+            const bool selected = hasSelection && range.contains(rowId, x);
             SnapshotCell& out = cells[std::size_t(y) * std::size_t(cols) + std::size_t(x)];
             out.logicalColumn = x;
             out.bidiLevel = 0;
 
-            Rgb fg = resolve(st.fg, defFg);
-            if (options.boldIsBright && st.has(Attr::Bold) && st.fg.kind() == Color::Kind::Palette && st.fg.index() < 8) {
-                fg = t.paletteColor(st.fg.index() + 8);
-            }
-            Rgb bg = resolve(st.bg, defBg);
-            bool bgDefault = st.bg.isDefault();
-            if (st.has(Attr::Inverse)) {
-                std::swap(fg, bg);
-                bgDefault = false;
-            }
-            std::uint32_t highlight = 0;
-            for (int i : visibleMatches) {
-                if (contains((*search.matches)[std::size_t(i)], rowId, x)) {
-                    highlight = i == search.current ? search.currentColor : search.matchColor;
-                    break;
-                }
-            }
-            if (hasSelection && range.contains(rowId, x)) {
+            auto [fg, bg] = resolveColors(st);
+            const bool bgDefault = st.bg.isDefault() && !st.has(Attr::Inverse) && !selected;
+            // The selection stays visible inside a match.
+            const std::uint32_t highlight = rowHighlight.empty() || selected ? 0 : rowHighlight[std::size_t(x)];
+            if (selected) {
                 // OSC 17/19 colours when set; otherwise the cell inverted.
                 const Rgb* selFg = t.selectionForeground();
                 const Rgb* selBg = t.selectionBackground();
@@ -155,10 +205,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
                 const Rgb invBg = fg;
                 fg = selFg ? *selFg : invFg;
                 bg = selBg ? *selBg : invBg;
-                bgDefault = false;
             }
             if (adjustContrast) {
-                fg = withContrast(fg, bg, options.minimumContrast);
+                fg = contrastFor(fg, bg);
             }
             hasBlinkingText |= st.has(Attr::Blink) && !c.isEmpty();
             std::uint8_t fgAlpha = 255;
@@ -174,8 +223,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             out.bg = bgDefault ? 0 : packRgba(bg);
             out.backgroundOverride = false;
             out.backgroundUsesWindowOpacity = false;
+            // A selection background stays opaque, even in a transparent colour.
             for (const auto& transparent : t.transparentColors()) {
-                if (transparent && transparent->color == bg) {
+                if (!selected && transparent && transparent->color == bg) {
                     out.backgroundOverride = true;
                     out.backgroundUsesWindowOpacity = transparent->opacity < 0;
                     out.bg = packRgba(bg, std::uint8_t(std::lround(std::max(0.0, transparent->opacity) * 255.0)));
@@ -187,9 +237,11 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
                 // Matches read as dark text on the highlight colour.
                 out.bg = highlight;
                 out.backgroundOverride = out.backgroundUsesWindowOpacity = false;
-                out.fg = packRgba(0x10, 0x10, 0x10);
+                // Concealed and faint text keep their opacity.
+                out.fg = (search.textColor & 0x00FFFFFFu) | (std::uint32_t(fgAlpha) << 24);
             }
-            out.underlineColor = st.underlineColor.isDefault() ? out.fg : packRgba(resolve(st.underlineColor, fg));
+            // An SGR 58 colour is concealed and faded with the text.
+            out.underlineColor = st.underlineColor.isDefault() ? out.fg : packRgba(resolve(st.underlineColor, fg), fgAlpha);
             out.attrs = st.attrs;
             out.underline = st.underline;
             out.width = std::uint8_t(c.width());
@@ -268,11 +320,7 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
         const auto resolved = shape == 29 ? cursorShape : shape == 1 ? CursorShape::Block
             : shape == 2 ? CursorShape::Bar : CursorShape::Underline;
         const auto& cell = scr.absoluteRow(top + std::size_t(y)).at(x);
-        const auto& style = scr.styles().get(cell.styleId());
-        auto fg = resolve(style.fg, defFg), bg = resolve(style.bg, defBg);
-        if (options.boldIsBright && style.has(Attr::Bold) && style.fg.kind() == Color::Kind::Palette && style.fg.index() < 8)
-            fg = t.paletteColor(style.fg.index() + 8);
-        if (style.has(Attr::Inverse)) std::swap(fg, bg);
+        const auto [fg, bg] = resolveColors(scr.styles().get(cell.styleId()));
         const auto color = [&](const ExtraCursorColor& spec, std::uint32_t main, Rgb reverse) {
             switch (spec.mode) {
             case ExtraCursorColor::Mode::Main: return main;
@@ -287,6 +335,9 @@ void PaneSnapshot::capture(const Terminal& t, const Selection* selection, const 
             : color(t.extraCursorTextColor(), cursorTextColor, bg);
         extraCursors.push_back({x, y, resolved, fill, text});
     }
+    // Placeholder slices join the placements in z order, as the renderer
+    // draws them in array order.
+    std::stable_sort(images.begin(), images.end(), [](const auto& a, const auto& b) { return a.z < b.z; });
     generation = t.generation();
     ++version;
     for (int i = 0; i < 256; ++i) {

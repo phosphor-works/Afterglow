@@ -25,6 +25,7 @@ Pack presets are read-only. Save creates a new UUID-named preset.
 Saved presets survive restart. Active script overrides do not.
 Apply a saved preset again after restart.
 Preset application starts from pack defaults.
+An edit keeps only the values that this package sets. It does not copy values that other scripts set.
 Reset releases this package's overrides and exposes other script or configuration values.
 
 The host validates all values. Edits animate for 350 ms.

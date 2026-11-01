@@ -8,6 +8,9 @@
 Afterglow reads `$XDG_CONFIG_HOME/afterglow/config.json`.
 The usual path is `~/.config/afterglow/config.json`.
 Afterglow reloads this file when it changes.
+A file that does not parse, or that does not hold a JSON object, keeps the current settings.
+A deleted file gives every setting its default.
+Afterglow logs unknown keys and values that it replaces with a default.
 
 The [configuration reference](CONFIGURATION.md) lists all keys, defaults and ranges.
 Group names and key names are case-sensitive.
@@ -30,6 +33,9 @@ Group names and key names are case-sensitive.
 | `--class` | Sets the Wayland application ID for window rules |
 | `--title` | Sets a fixed window title |
 | `--hold` | Keeps the window open after an `-e` program stops |
+| `-e`, `--execute` | Runs the rest of the command line instead of the shell |
+| `-d`, `--working-directory` | Starts in the given directory |
+| `--quick-terminal` | Shows or hides the quick terminal |
 
 ```sh
 afterglow -o Font.size=14 -o Colors.theme=afterglow-light
@@ -45,7 +51,23 @@ A development build or replacement executable starts a separate process.
 Tabs, menus, prompts and search use the desktop Qt style, palette and font.
 On Plasma, this requires `qqc2-desktop-style` and platform theme integration.
 `QT_QUICK_CONTROLS_STYLE` can select another installed style.
+The variable applies only when the launch starts a new process.
 Terminal fonts and colors have separate settings.
+
+## Fonts
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `Font.family` | empty | Font family of regular text. Empty uses the desktop's fixed-width font. |
+| `Font.size` | 0 | Size in points, from 4 to 96. 0 uses the size of the desktop's fixed-width font. |
+| `Font.features` | `calt`, `liga` | OpenType features in HarfBuzz syntax |
+| `Font.fallbackFamilies` | empty | Families that supply missing characters before the system fallback |
+| `Font.symbolMap` | empty | Families for codepoint ranges, such as Nerd Font symbols |
+
+If the family is not installed, fontconfig selects the nearest match.
+Without a desktop font setting, Afterglow uses the `monospace` alias at 11 points.
+Afterglow draws box drawing, block elements, Braille and the Powerline separators itself.
+`Font.symbolMap` does not change these characters.
 
 ## Font rendering
 
@@ -55,7 +77,7 @@ Terminal fonts and colors have separate settings.
 | `Font.hinting` | `none`, `light`, `full` | `light` |
 | `Font.gamma` | 0.5–3.0 | 1.0 |
 
-`none` gives monochrome glyph edges.
+`Font.antialiasing=none` gives monochrome glyph edges.
 Light hinting aligns glyphs vertically. Full hinting aligns both axes.
 RGB and BGR refer to the horizontal order of display subpixels.
 Select the order that agrees with your display.
@@ -79,12 +101,13 @@ Qt Quick renders the controls separately from terminal cells.
 
 ## Themes
 
-`Colors.theme` selects a theme. Theme colors replace the values in `Colors`.
-An empty theme name lets explicit `Colors` values apply.
+`Colors.theme` selects a theme. A theme replaces each color that it sets.
+Colors that it leaves out keep their `Colors` values.
+A theme without a divider color gets one between its background and text colors.
 
-Afterglow first searches `~/.config/afterglow/themes`.
-It then searches the installed `share/afterglow/themes` directory.
-The supplied themes are:
+Afterglow first searches `$XDG_CONFIG_HOME/afterglow/themes`.
+It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
+Last, it searches the supplied themes:
 
 | Family | Themes |
 | --- | --- |
@@ -105,7 +128,10 @@ The supplied themes are:
 
 The third-party palettes come from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) under the MIT license.
 Supported formats are Afterglow JSON, Ghostty themes and kitty themes.
-Afterglow JSON themes use the `Colors` keys.
+An Afterglow JSON theme is one object with color keys.
+The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground` and `divider`.
+`searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
+Afterglow logs other keys in a JSON theme.
 
 Use this value to follow the desktop preference:
 
@@ -113,8 +139,26 @@ Use this value to follow the desktop preference:
 {"Colors": {"theme": "light:afterglow-light,dark:nord"}}
 ```
 
-A theme value can also be a file path.
+A theme value can also be a file path. Either half of a `light:` and `dark:` value can be a path.
+A relative path starts at the directory of the configuration file.
 Afterglow monitors that path for changes, including deletion and replacement.
+A theme file that does not parse keeps its last colors until it parses again.
+
+## Transparency
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `Window.backgroundOpacity` | 1.0 | Opacity of the default background, from 0.05 to 1.0. Text stays opaque. |
+| `Window.blur` | `false` | Blurs the content behind a translucent background. This requires KWin. |
+
+## Motion
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `Animation.cursor` | `true` | The cursor glides between cells |
+| `Animation.scroll` | `true` | Scrolling eases instead of jumping by rows |
+
+`Animation.cursorCurve` and `Animation.scrollCurve` take a Phosphor curve spec, as `Animation.splitCurve` does.
 
 See [shaders](SHADERS.md) for audio, history and visual effects.
 See [bidirectional text](BIDI.md) for text direction settings.

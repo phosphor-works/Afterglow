@@ -47,12 +47,15 @@ public Q_SLOTS:
     Q_SCRIPTABLE void SetTitle(uint pane, const QString& title);
     Q_SCRIPTABLE void Signal(uint pane, int channel, double value);
     Q_SCRIPTABLE void Notify(uint pane, const QString& title, const QString& body);
+    /// copy, paste and select_all need Control.allowReadText.
     Q_SCRIPTABLE void RunAction(uint pane, const QString& action);
 
 Q_SIGNALS:
     Q_SCRIPTABLE void PaneCreated(uint pane);
     Q_SCRIPTABLE void PaneMoved(uint pane);
     Q_SCRIPTABLE void PaneClosed(uint pane);
+    /// Sent whatever Control.allowReadText says, like the titles ListPanes
+    /// returns, although a title can show the running command.
     Q_SCRIPTABLE void TitleChanged(uint pane, const QString& title);
     Q_SCRIPTABLE void Bell(uint pane);
     /// The command text is empty unless Control.allowReadText.

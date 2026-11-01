@@ -4,11 +4,12 @@
 #include <AfterglowVt/ProgramStatus.h>
 
 #include "Base64.h"
+#include "Utf8.h"
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <optional>
+#include <utility>
 
 namespace AfterglowVt {
 
@@ -16,7 +17,7 @@ namespace {
 
 // Limits from the specification. A report over any of them is discarded.
 constexpr std::size_t MaxSequence = 4096; // the whole OSC, introducer and terminator included
-constexpr std::size_t SequenceOverhead = 9; // ESC ] 7 5 0 1 ; and ESC '\'
+constexpr std::size_t Introducer = 7; // ESC ] 7 5 0 1 ;
 constexpr std::size_t MaxKey = 16;
 constexpr std::size_t MaxMsgEncoded = 2732;
 constexpr std::size_t MaxMsgDecoded = 2048;
@@ -36,52 +37,6 @@ std::string_view trim(std::string_view s)
         s.remove_suffix(1);
     }
     return s;
-}
-
-/// Valid UTF-8 with no C0, DEL or C1 control characters (newlines and tabs
-/// included): the text is shown outside the grid, on one line.
-bool isCleanUtf8(std::string_view s)
-{
-    std::size_t i = 0;
-    while (i < s.size()) {
-        const auto b = static_cast<unsigned char>(s[i]);
-        char32_t cp;
-        int extra;
-        if (b < 0x80) {
-            cp = b;
-            extra = 0;
-        } else if ((b & 0xE0) == 0xC0) {
-            cp = b & 0x1F;
-            extra = 1;
-        } else if ((b & 0xF0) == 0xE0) {
-            cp = b & 0x0F;
-            extra = 2;
-        } else if ((b & 0xF8) == 0xF0) {
-            cp = b & 0x07;
-            extra = 3;
-        } else {
-            return false;
-        }
-        if (i + std::size_t(extra) >= s.size() && extra > 0) {
-            return false; // truncated sequence
-        }
-        for (int k = 1; k <= extra; ++k) {
-            const auto c = static_cast<unsigned char>(s[i + std::size_t(k)]);
-            if ((c & 0xC0) != 0x80) {
-                return false;
-            }
-            cp = (cp << 6) | (c & 0x3F);
-        }
-        static constexpr char32_t MinForLength[] = {0, 0x80, 0x800, 0x10000};
-        if (cp < MinForLength[extra] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
-            return false;
-        }
-        if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)) {
-            return false;
-        }
-        i += std::size_t(extra) + 1;
-    }
-    return true;
 }
 
 bool validId(std::string_view id)
@@ -118,9 +73,9 @@ bool isDescendantOrSelf(std::string_view id, std::string_view ancestor)
 
 } // namespace
 
-ProgramStatus::Result ProgramStatus::apply(std::string_view body)
+ProgramStatus::Result ProgramStatus::apply(std::string_view body, std::size_t terminator)
 {
-    if (body.size() + SequenceOverhead > MaxSequence) {
+    if (body.size() + Introducer + terminator > MaxSequence) {
         return Result::Ignored;
     }
     if (trim(body) == "?") {
@@ -170,8 +125,7 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body)
     }
     if (*state == "clear") {
         m_nativeReports = true;
-        clear(id.value_or(std::string_view{}), !id);
-        return Result::Changed;
+        return clear(id.value_or(std::string_view{}), !id) ? Result::Changed : Result::Ignored;
     }
 
     StatusRecord r;
@@ -204,21 +158,21 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body)
         }
     }
     if (app) {
-        if (app->size() > MaxApp || !isCleanUtf8(*app)) {
+        if (app->size() > MaxApp || !detail::isCleanText(*app)) {
             return Result::Ignored;
         }
         r.app = std::string(*app);
     }
     if (title) {
         const auto decoded = title->size() <= MaxTitleEncoded ? detail::base64Decode(*title, detail::Base64Check::PaddingOptional) : std::nullopt;
-        if (!decoded || decoded->size() > MaxTitleDecoded || !isCleanUtf8(*decoded)) {
+        if (!decoded || decoded->size() > MaxTitleDecoded || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.title = *decoded;
     }
     if (msg) {
         const auto decoded = msg->size() <= MaxMsgEncoded ? detail::base64Decode(*msg, detail::Base64Check::PaddingOptional) : std::nullopt;
-        if (!decoded || decoded->size() > MaxMsgDecoded || !isCleanUtf8(*decoded)) {
+        if (!decoded || decoded->size() > MaxMsgDecoded || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.msg = *decoded;
@@ -256,6 +210,12 @@ bool ProgramStatus::applyLegacyProgress(int state, int progress)
     default:
         return false;
     }
+    // A repeat of the same report changes nothing.
+    if (!m_records.empty() && m_records.front().id.empty() && m_records.front().state == r.state
+        && m_records.front().progress == r.progress && m_records.front().kind == r.kind && m_records.front().app.empty()
+        && m_records.front().title.empty() && m_records.front().msg.empty()) {
+        return false;
+    }
     upsert(std::move(r));
     return true;
 }
@@ -269,13 +229,21 @@ void ProgramStatus::reset()
 
 bool ProgramStatus::endActivity()
 {
-    const auto before = m_records.size();
-    std::erase_if(m_records, [](const StatusRecord& r) {
+    // The next program may only speak ConEmu's progress.
+    m_nativeReports = false;
+    const auto ended = [](const StatusRecord& r) {
         return r.state == StatusState::Working || r.state == StatusState::Blocked || r.state == StatusState::Idle;
-    });
-    if (m_records.size() == before) {
+    };
+    if (std::none_of(m_records.begin(), m_records.end(), ended)) {
         return false;
     }
+    // A result that stays keeps the app it inherited from an ancestor that goes.
+    for (StatusRecord& r : m_records) {
+        if (!ended(r) && r.app.empty()) {
+            r.app = std::string(effectiveApp(r));
+        }
+    }
+    std::erase_if(m_records, ended);
     ++m_serial;
     return true;
 }
@@ -290,10 +258,10 @@ std::string_view ProgramStatus::effectiveApp(const StatusRecord& record) const
     while (!id.empty()) {
         const auto slash = id.rfind('/');
         id = slash == std::string_view::npos ? std::string_view{} : id.substr(0, slash);
-        for (const StatusRecord& r : m_records) {
-            if (r.id == id && !r.app.empty()) {
-                return r.app;
-            }
+        const auto it = std::lower_bound(m_records.begin(), m_records.end(), id,
+                                         [](const StatusRecord& r, std::string_view key) { return r.id < key; });
+        if (it != m_records.end() && it->id == id && !it->app.empty()) {
+            return it->app;
         }
     }
     return {};
@@ -321,14 +289,15 @@ void ProgramStatus::upsert(StatusRecord record)
     m_records.insert(it, std::move(record));
 }
 
-void ProgramStatus::clear(std::string_view id, bool all)
+bool ProgramStatus::clear(std::string_view id, bool all)
 {
-    if (all) {
-        m_records.clear();
-    } else {
-        std::erase_if(m_records, [id](const StatusRecord& r) { return isDescendantOrSelf(r.id, id); });
+    const std::size_t removed = all ? std::exchange(m_records, {}).size()
+                                    : std::erase_if(m_records, [id](const StatusRecord& r) { return isDescendantOrSelf(r.id, id); });
+    if (removed == 0) {
+        return false;
     }
     ++m_serial;
+    return true;
 }
 
 } // namespace AfterglowVt

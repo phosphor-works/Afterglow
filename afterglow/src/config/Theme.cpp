@@ -93,20 +93,27 @@ bool assign(Theme& theme, QString key, const QString& value)
 
 QString pick(const QString& spec, bool dark)
 {
-    if (!spec.contains(QLatin1Char(':')) || spec.contains(QLatin1Char('/'))) {
-        return spec.trimmed();
-    }
+    // Each comma part is looked at alone, so a half may be a path.
     QString light;
     QString darkName;
+    bool halves = false;
     for (const QString& part : spec.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
         const qsizetype colon = part.indexOf(QLatin1Char(':'));
+        if (colon < 0) {
+            continue;
+        }
         const QString which = part.left(colon).trimmed().toLower();
         const QString name = part.mid(colon + 1).trimmed();
         if (which == QLatin1String("light")) {
             light = name;
+            halves = true;
         } else if (which == QLatin1String("dark")) {
             darkName = name;
+            halves = true;
         }
+    }
+    if (!halves) {
+        return spec.trimmed();
     }
     if (dark) {
         return darkName.isEmpty() ? light : darkName;
@@ -114,49 +121,87 @@ QString pick(const QString& spec, bool dark)
     return light.isEmpty() ? darkName : light;
 }
 
+namespace {
+
+QString bundledDirectory()
+{
+#if defined(AFTERGLOW_BUILD_DIR) && defined(AFTERGLOW_INSTALLED_THEME_DIR)
+    // A build-tree binary reads the checkout; an installed one its own prefix,
+    // which need not be in XDG_DATA_DIRS.
+    const bool inBuild = QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath().startsWith(
+        QStringLiteral(AFTERGLOW_BUILD_DIR "/"));
+    return inBuild ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
+#elif defined(AFTERGLOW_SOURCE_THEME_DIR)
+    return QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR);
+#else
+    return {};
+#endif
+}
+
+} // namespace
+
 QStringList searchDirs()
 {
     QStringList dirs{QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
                      + QStringLiteral("/afterglow/themes")};
     dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("afterglow/themes"),
                                       QStandardPaths::LocateDirectory);
-#ifdef AFTERGLOW_SOURCE_THEME_DIR
-    dirs << QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR);
-#endif
+    if (const QString bundled = bundledDirectory(); !bundled.isEmpty()) {
+        dirs << bundled;
+    }
     dirs.removeDuplicates();
     return dirs;
 }
 
-QString locate(const QString& name, const QStringList& dirs)
+QStringList candidates(const QString& name, const QStringList& dirs, const QString& base)
 {
     if (name.isEmpty()) {
         return {};
     }
     if (name.contains(QLatin1Char('/'))) {
-        QString path = name;
-        if (path.startsWith(QLatin1String("~/"))) {
-            path = QDir::homePath() + path.mid(1);
+        QString path = name.startsWith(QLatin1String("~/")) ? QDir::homePath() + name.mid(1) : name;
+        // Relative to the config file, not to wherever Afterglow was started.
+        if (QDir::isRelativePath(path) && !base.isEmpty()) {
+            path = QDir(base).absoluteFilePath(path);
         }
-        return QFileInfo(path).isFile() ? path : QString();
+        return {QDir::cleanPath(path)};
     }
+    QStringList out;
     for (const QString& dir : dirs) {
         for (const QString& file : {name + QStringLiteral(".json"), name + QStringLiteral(".conf"), name}) {
-            const QString path = dir + QLatin1Char('/') + file;
-            if (QFileInfo(path).isFile()) {
-                return path;
-            }
+            out << dir + QLatin1Char('/') + file;
+        }
+    }
+    return out;
+}
+
+QString locate(const QString& name, const QStringList& dirs, const QString& base)
+{
+    for (const QString& path : candidates(name, dirs, base)) {
+        if (QFileInfo(path).isFile()) {
+            return path;
         }
     }
     return {};
 }
 
-std::optional<Theme> parse(const QByteArray& data, QString* error)
+std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* ignored)
 {
     Theme theme;
     int found = 0;
-    if (data.trimmed().startsWith('{')) {
+    QByteArray text = data;
+    // Some editors save UTF-8 with a byte-order mark.
+    if (text.startsWith("\xEF\xBB\xBF")) {
+        text.remove(0, 3);
+    }
+    auto ignore = [ignored](const QString& key) {
+        if (ignored) {
+            ignored->append(key);
+        }
+    };
+    if (text.trimmed().startsWith('{')) {
         QJsonParseError err{};
-        const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+        const QJsonDocument doc = QJsonDocument::fromJson(text, &err);
         if (err.error != QJsonParseError::NoError) {
             if (error) {
                 *error = err.errorString();
@@ -165,7 +210,7 @@ std::optional<Theme> parse(const QByteArray& data, QString* error)
         }
         const QJsonObject o = doc.object();
         for (auto it = o.begin(); it != o.end(); ++it) {
-            if (it.key() == QLatin1String("palette")) {
+            if (it.key().compare(QLatin1String("palette"), Qt::CaseInsensitive) == 0) {
                 const QJsonArray palette = it.value().toArray();
                 for (int i = 0; i < 16 && i < palette.size(); ++i) {
                     theme.palette[std::size_t(i)] = color(palette[i].toString());
@@ -176,15 +221,17 @@ std::optional<Theme> parse(const QByteArray& data, QString* error)
                 if (const double v = it.value().toDouble(-1); v >= 0 && v <= 1) {
                     theme.visualBellIntensity = v;
                 }
+            } else if (assign(theme, it.key(), it.value().toString())) {
+                ++found;
             } else {
-                found += assign(theme, it.key(), it.value().toString());
+                ignore(it.key());
             }
         }
     } else {
         // Ghostty writes "key = value"; kitty "key value".
         static const QRegularExpression Ghostty(QStringLiteral("^([\\w-]+)\\s*=\\s*(.*)$"));
         static const QRegularExpression Kitty(QStringLiteral("^([\\w-]+)\\s+(\\S+)"));
-        for (const QByteArray& raw : data.split('\n')) {
+        for (const QByteArray& raw : text.split('\n')) {
             const QString line = QString::fromUtf8(raw).trimmed();
             if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
                 continue;
@@ -193,8 +240,13 @@ std::optional<Theme> parse(const QByteArray& data, QString* error)
             if (!m.hasMatch()) {
                 m = Kitty.match(line);
             }
-            if (m.hasMatch()) {
-                found += assign(theme, m.captured(1), m.captured(2).trimmed());
+            if (!m.hasMatch()) {
+                continue;
+            }
+            if (assign(theme, m.captured(1), m.captured(2).trimmed())) {
+                ++found;
+            } else {
+                ignore(m.captured(1));
             }
         }
     }

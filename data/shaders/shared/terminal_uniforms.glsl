@@ -17,9 +17,13 @@
 // terminalPixel(uv) is the same point in canvas pixels. Canvas pixels are
 // device pixels, scaled down in a buffer pass with a bufferScale below 1.
 //
-// TIME. iTime wraps every 1024 seconds (iTimeHi holds the whole wraps), so read
-// it through fract(), sin() and the like. Events are given as ages in seconds
-// rather than as timestamps, so they need no clock arithmetic.
+// TIME. iTime wraps every 1024 seconds, and iTimeHi holds the seconds the
+// wraps removed, so iTimeHi + iTime is the full clock. sin(iTime * rate) and
+// fract(iTime / period) jump at each wrap unless the rate or the period fits
+// 1024 seconds a whole number of times. Read time through terminal_lib.glsl's
+// timeAngle(), timeCycle() and timeSeconds(), which stay continuous. Events
+// are given as ages in seconds rather than as timestamps, so they need no
+// clock arithmetic.
 
 #ifndef AFTERGLOW_TERMINAL_UNIFORMS_GLSL
 #define AFTERGLOW_TERMINAL_UNIFORMS_GLSL
@@ -30,7 +34,7 @@ layout(std140, binding = 0) uniform TerminalUniforms {
     float qt_Opacity;            // offset 64   always 1
     float iTime;                 // offset 68   seconds, wrapped every 1024 s
     float iTimeDelta;            // offset 72   seconds since the previous frame
-    int iFrame;                  // offset 76   frame counter; 0 after a buffer reset
+    int iFrame;                  // offset 76   frame counter; in a buffer pass, 0 after a buffer reset
     vec2 iResolution;            // offset 80   canvas size, canvas px
     int _appField0;              // offset 88   unused
     int _appField1;              // offset 92   unused
@@ -58,8 +62,9 @@ layout(std140, binding = 0) uniform TerminalUniforms {
     vec4 uPreviousCursorRect;    // offset 752  where it was before it last moved
     vec4 uCursorColor;           // offset 768  the cursor as drawn
     vec4 uPreviousCursorColor;   // offset 784
-    ivec4 uCursorState;          // offset 800  .x shape, .y previous shape (kCursor*),
-                                 //             .z visible, .w pane focused
+    ivec4 uCursorState;          // offset 800  .x shape, .y previous shape (kCursor*;
+                                 //             kCursorBlockHollow in an unfocused pane,
+                                 //             whatever the shape), .z visible, .w pane focused
     vec4 uEventAges;             // offset 816  seconds since: .x the cursor moved, .y focus changed
     vec4 uBackgroundColor;       // offset 832  theme background; .a is the window's background opacity
     vec4 uForegroundColor;       // offset 848  theme foreground
@@ -88,6 +93,5 @@ const int kCursorBlock = 0;
 const int kCursorBlockHollow = 1;
 const int kCursorBar = 2;
 const int kCursorUnderline = 3;
-const int kCursorLock = 4;
 
 #endif // AFTERGLOW_TERMINAL_UNIFORMS_GLSL

@@ -14,7 +14,11 @@
 #include <condition_variable>
 #include <mutex>
 #include <chrono>
+#include <csignal>
 #include <optional>
+#include <pwd.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace AfterglowPty;
 using Afterglow::ShellIntegration::prepare;
@@ -34,6 +38,7 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost {
     std::string pending;
     std::string command;
     int lastExit = -1;
+    std::optional<int> closed;
     void commandStarted(std::string_view value) override { command = value; }
     void commandFinished(int value) override { lastExit = value; }
     AfterglowVt::Terminal terminal{80, 24, *this};
@@ -49,10 +54,15 @@ struct Output : IPtyListener, AfterglowVt::ITerminalHost {
     void ptyData(std::string_view bytes) override {
         std::lock_guard lock(mutex); text += bytes; terminal.feed(bytes); changed.notify_all();
     }
-    void ptyClosed(int) override { changed.notify_all(); }
+    void ptyClosed(int status) override { std::lock_guard lock(mutex); closed = status; changed.notify_all(); }
     bool wait(std::string_view needle) {
         std::unique_lock lock(mutex);
         return changed.wait_for(lock, std::chrono::seconds(8), [&] { return text.find(needle) != std::string::npos; });
+    }
+    std::optional<int> waitClosed(std::chrono::milliseconds limit) {
+        std::unique_lock lock(mutex);
+        changed.wait_for(lock, limit, [&] { return closed.has_value(); });
+        return closed;
     }
     std::string take() { std::lock_guard lock(mutex); return std::exchange(text, {}); }
 };
@@ -100,9 +110,13 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
     ASSERT_TRUE(QFile::setPermissions(dir + "/helper", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
     SpawnOptions o;
     o.argv = {executable.toStdString(), login ? "-il" : "-i"};
+    // History and state stay in the temporary home, never the user's.
     o.environment = {{"HOME", dir.toStdString()}, {"XDG_CONFIG_HOME", dir.toStdString()},
+        {"XDG_DATA_HOME", (dir + "/data").toStdString()}, {"XDG_STATE_HOME", (dir + "/state").toStdString()},
+        {"XDG_CACHE_HOME", (dir + "/cache").toStdString()},
         {"TERM", "xterm-256color"}, {"AFTERGLOW_SHELL_INTEGRATION", "1"}, {"ZDOTDIR", dir.toStdString()},
         {"ENV", "/original/env"}, {"AFTERGLOW_SSH_HELPER", (dir + "/helper").toStdString()}};
+    o.unsetEnvironment = {"HISTFILE"};
     ASSERT_TRUE(prepare(o, true, root()));
     Output output; std::string error;
     o.deferStart = true;
@@ -137,9 +151,22 @@ TEST_P(InteractiveShell, UserStartupMarkersStatusAndResize)
         ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
         output.take();
     }
+    // The shell restores the variables the integration borrowed.
+    if (shell == "bash") {
+        ASSERT_TRUE(pty->write("printf 'ENV_%s_DONE\\n' \"$ENV\"\r"));
+        ASSERT_TRUE(output.wait("ENV_/original/env_DONE")) << output.take();
+        ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
+        output.take();
+    } else if (shell == "zsh") {
+        ASSERT_TRUE(pty->write("printf 'ZDOTDIR_%s_DONE\\n' \"$ZDOTDIR\"\r"));
+        ASSERT_TRUE(output.wait("ZDOTDIR_" + dir.toStdString() + "_DONE")) << output.take();
+        ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
+        output.take();
+    }
+    // The new size reaches the shell's terminal.
     output.resize(100, 40);
-    ASSERT_TRUE(pty->write("printf 'AFTER_%s_DONE\\n' resize\r"));
-    ASSERT_TRUE(output.wait("AFTER_resize_DONE")) << output.take();
+    ASSERT_TRUE(pty->write("stty size\r"));
+    ASSERT_TRUE(output.wait("40 100")) << output.take();
     ASSERT_TRUE(output.wait("\x1b]133;B")) << output.take();
     // Integrated shells run ssh through the helper.
     ASSERT_TRUE(pty->write("ssh -p 1 'prod host'\r"));
@@ -202,10 +229,125 @@ TEST(Pty, SpawnReportsExecAndWorkingDirectoryFailuresSynchronously)
     options.argv = {"/nonexistent/afterglow-test-program"};
     std::string error;
     EXPECT_EQ(Pty::spawn(options, output, &error), nullptr);
-    EXPECT_FALSE(error.empty());
+    EXPECT_NE(error.find("cannot run /nonexistent/afterglow-test-program"), std::string::npos) << error;
+    error.clear();
     options.argv = {"/bin/sh"};
     options.workingDirectory = "/nonexistent/afterglow-test-directory";
     EXPECT_EQ(Pty::spawn(options, output, &error), nullptr);
+    EXPECT_NE(error.find("cannot enter directory /nonexistent/afterglow-test-directory"), std::string::npos) << error;
+}
+
+TEST(Pty, ClosesWhenTheShellExitsWhileABackgroundJobHoldsTheTerminal)
+{
+    Output output;
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "sleep 30 & printf 'JOB=%s LAST_OUTPUT' $!; exit 3"};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, output);
+    ASSERT_NE(pty, nullptr);
+    output.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    const auto status = output.waitClosed(std::chrono::seconds(5));
+    ASSERT_TRUE(status.has_value()) << "the pane waited for the background job";
+    EXPECT_TRUE(WIFEXITED(*status) && WEXITSTATUS(*status) == 3) << *status;
+    const std::string text = output.take();
+    EXPECT_NE(text.find("LAST_OUTPUT"), std::string::npos) << text;
+    if (const auto job = text.find("JOB="); job != std::string::npos) kill(std::stoi(text.substr(job + 4)), SIGKILL);
+}
+
+TEST(Pty, KeepsTheLastValueOfARepeatedVariable)
+{
+    Output output;
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "printf 'COUNT=%s VALUE=%s DONE' \"$(env | grep -c '^AG_REPEATED=')\" \"$AG_REPEATED\""};
+    options.environment = {{"AG_REPEATED", "first"}, {"AG_REPEATED", "second"}};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, output);
+    ASSERT_NE(pty, nullptr);
+    output.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    EXPECT_TRUE(output.wait("COUNT=1 VALUE=second DONE")) << output.take();
+}
+
+TEST(Pty, DefaultShellFollowsTheChildEnvironment)
+{
+    SpawnOptions options;
+    options.environment = {{"SHELL", "/custom/first"}, {"SHELL", "/custom/zsh"}};
+    EXPECT_EQ(Pty::defaultShell(options), "/custom/zsh");
+    options.environment.clear();
+    options.unsetEnvironment = {"SHELL"};
+    const passwd* account = getpwuid(getuid());
+    EXPECT_EQ(Pty::defaultShell(options), account && account->pw_shell && *account->pw_shell ? account->pw_shell : "/bin/sh");
+}
+
+TEST(Pty, ChildStartsWithDefaultSignalsAndUtf8Erase)
+{
+    struct sigaction ignore {}, previous {};
+    ignore.sa_handler = SIG_IGN;
+    sigaction(SIGUSR1, &ignore, &previous);
+    Output status;
+    SpawnOptions options;
+    options.argv = {"/bin/cat", "/proc/self/status"};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, status);
+    sigaction(SIGUSR1, &previous, nullptr);
+    ASSERT_NE(pty, nullptr);
+    status.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    EXPECT_TRUE(status.wait("SigIgn:\t0000000000000000")) << status.take();
+    Output modes;
+    options.argv = {"/bin/sh", "-c", "stty -a; printf MODES_DONE"};
+    auto shell = Pty::spawn(options, modes);
+    ASSERT_NE(shell, nullptr);
+    modes.attach(shell.get());
+    ASSERT_TRUE(shell->start());
+    ASSERT_TRUE(modes.wait("MODES_DONE")) << modes.take();
+    const std::string text = modes.take();
+    EXPECT_NE(text.find(" iutf8"), std::string::npos) << text;
+}
+
+TEST(Pty, ReportsOnlyAWorkingDirectoryThatExists)
+{
+    QTemporaryDir root;
+    ASSERT_TRUE(root.isValid());
+    ASSERT_TRUE(QDir(root.path()).mkdir("gone"));
+    const QString gone = QDir(root.filePath("gone")).canonicalPath();
+    Output output;
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "printf READY; exec sleep 30"};
+    options.workingDirectory = gone.toStdString();
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, output);
+    ASSERT_NE(pty, nullptr);
+    output.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    ASSERT_TRUE(output.wait("READY"));
+    EXPECT_EQ(pty->currentWorkingDirectory(), gone.toStdString());
+    ASSERT_TRUE(QDir(root.path()).rmdir("gone"));
+    EXPECT_EQ(pty->currentWorkingDirectory(), "");
+}
+
+TEST(Pty, ClosingDoesNotWaitForAChildThatIgnoresHangup)
+{
+    Output output;
+    SpawnOptions options;
+    options.argv = {"/bin/sh", "-c", "trap '' HUP; printf READY; while :; do sleep 1; done"};
+    options.deferStart = true;
+    auto pty = Pty::spawn(options, output);
+    ASSERT_NE(pty, nullptr);
+    output.attach(pty.get());
+    ASSERT_TRUE(pty->start());
+    ASSERT_TRUE(output.wait("READY"));
+    const pid_t child = pty->pid();
+    const auto started = std::chrono::steady_clock::now();
+    pty.reset();
+    // The old destructor waited 100 ms before SIGKILL.
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(80));
+    // The child is still killed and reaped, off this thread.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (kill(child, 0) == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_NE(kill(child, 0), 0);
 }
 
 TEST(Pty, ExecutableSearchUsesChildPathAndWorkingDirectory)
@@ -255,9 +397,11 @@ struct FakeSsh {
     {
         file(dir.filePath("ssh"), "#!/bin/sh\n"
             "for a; do [ \"$a\" = -G ] && { printf 'host prod\\nuser alice\\nhostname 10.0.0.5\\nport 22\\n';"
-            " [ -n \"$FAKE_SETENV\" ] && echo 'setenv A=B'; exit 0; }; done\n"
+            " [ -n \"$FAKE_SETENV\" ] && echo 'setenv A=B';"
+            " [ -n \"$FAKE_REMOTECOMMAND\" ] && echo 'remotecommand tmux attach'; exit 0; }; done\n"
             "{ printf 'ARGS'; printf ' [%s]' \"$@\"; printf '\\nTERM=%s\\n' \"$TERM\"; } >> \"$FAKE_LOG\"\n"
-            "case \"$*\" in *tic*) cat > \"$FAKE_LOG.terminfo\"; exit \"${FAKE_TIC_STATUS:-0}\";; esac\n"
+            "case \"$*\" in *tic*) cat > \"$FAKE_LOG.terminfo\";"
+            " [ \"$FAKE_TIC_STATUS\" = int ] && kill -INT $$; exit \"${FAKE_TIC_STATUS:-0}\";; esac\n"
             "exit 7\n");
         QFile::setPermissions(dir.filePath("ssh"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         environment.set("PATH", dir.path().toUtf8() + ':' + qgetenv("PATH"));
@@ -310,6 +454,22 @@ TEST(Ssh, FindsTheDestinationPastOptionsAndTheirValues)
     EXPECT_FALSE(parseArguments({"-t", "prod"}).noSession);
 }
 
+TEST(Ssh, ReadsOptionsAfterTheDestinationUpToTheCommand)
+{
+    using Afterglow::Ssh::parseArguments;
+    const auto after = parseArguments({"prod", "-p", "2222"});
+    EXPECT_EQ(after.destination, 0);
+    EXPECT_EQ(after.command, -1);
+    EXPECT_EQ(after.options, QList<int>({1, 2}));
+    EXPECT_TRUE(parseArguments({"prod", "-N"}).noSession);
+    EXPECT_EQ(parseArguments({"-v", "prod", "uptime", "-N"}).command, 2);
+    EXPECT_FALSE(parseArguments({"-v", "prod", "uptime", "-N"}).noSession);
+    // "--" before the destination ends the options for good.
+    EXPECT_EQ(parseArguments({"--", "prod", "-N"}).command, 2);
+    EXPECT_FALSE(parseArguments({"--", "prod", "-N"}).noSession);
+    EXPECT_EQ(parseArguments({"prod", "-v", "--", "-N"}).command, 3);
+}
+
 TEST(Ssh, ReadsResolvedConfigAndLabelsThePane)
 {
     using namespace Afterglow::Ssh;
@@ -320,7 +480,16 @@ TEST(Ssh, ReadsResolvedConfigAndLabelsThePane)
     EXPECT_EQ(config.port, "2222");
     EXPECT_FALSE(config.setEnv);
     EXPECT_FALSE(config.controlPath);
+    EXPECT_FALSE(config.remoteCommand);
     EXPECT_TRUE(parseConfig("setenv A=B\ncontrolpath ~/.ssh/%C\n").controlPath);
+    const Config multiplexed = parseConfig("controlpath ~/.ssh/%C\ncontrolmaster auto\ncontrolpersist no\n"
+                                           "remotecommand tmux attach\nproxyjump bastion\n");
+    EXPECT_TRUE(multiplexed.controlMaster);
+    EXPECT_FALSE(multiplexed.controlPersist);
+    EXPECT_TRUE(multiplexed.remoteCommand);
+    EXPECT_EQ(multiplexed.proxyJump, "bastion");
+    EXPECT_FALSE(parseConfig("controlmaster false\ncontrolpersist 600\n").controlMaster);
+    EXPECT_TRUE(parseConfig("controlmaster false\ncontrolpersist 600\n").controlPersist);
     EXPECT_EQ(contextStart("id1", config), "\x1b]3008;start=id1;type=remote;targetuser=alice;targethost=prod\x1b\\");
     EXPECT_EQ(contextEnd("id1"), "\x1b]3008;end=id1\x1b\\");
     // Separators and escapes cannot reach the sequence.
@@ -363,7 +532,7 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     const QString shared = "[-o] [ControlMaster=auto] [-o] [ControlPath=" + ssh.dir.path() + "/afterglow-ssh-%C] [-o] [ControlPersist=10]";
     auto runs = ssh.take();
     ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
-    EXPECT_TRUE(runs[0].startsWith("ARGS " + shared + " [-p] [2222] [-T] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS " + shared + " [-p] [2222] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
     EXPECT_EQ(runs[2], "ARGS " + shared + " [-p] [2222] [prod]");
     EXPECT_EQ(runs[3], "TERM=afterglow");
     QFile entry(ssh.log() + ".terminfo");
@@ -372,18 +541,65 @@ TEST(Ssh, InstallsTheTerminfoEntryOnceOrFallsBack)
     // The host is remembered: the next session connects directly.
     EXPECT_EQ(Afterglow::Ssh::run({"-p", "2222", "prod"}), 7);
     EXPECT_EQ(ssh.take(), QStringList({"ARGS [-p] [2222] [prod]", "TERM=afterglow"}));
-    // A host without tic, or the fallback setting, gets xterm-256color.
+    // The cache names no host, and only its owner can read it.
+    QFile cache(ssh.dir.filePath("state/afterglow/ssh-terminfo"));
+    ASSERT_TRUE(cache.open(QIODevice::ReadOnly));
+    const QByteArray cached = cache.readAll();
+    EXPECT_FALSE(cached.contains("10.0.0.5") || cached.contains("alice")) << cached.toStdString();
+    EXPECT_FALSE(cache.permissions() & (QFile::ReadGroup | QFile::ReadOther));
+    // A host without tic, or the fallback setting, gets xterm-256color. The
+    // session reuses the install's connection, and the host is not asked again.
     ssh.environment.set("XDG_STATE_HOME", ssh.dir.filePath("other-state").toUtf8());
     ssh.environment.set("FAKE_TIC_STATUS", "1");
     EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
     runs = ssh.take();
     ASSERT_EQ(runs.size(), 4);
+    EXPECT_EQ(runs[2], "ARGS " + shared + " [prod]");
     EXPECT_EQ(runs[3], "TERM=xterm-256color");
+    EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
+    EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=xterm-256color"}));
     // An unreachable host fails once, without a second connection attempt.
+    ssh.environment.set("XDG_STATE_HOME", ssh.dir.filePath("third-state").toUtf8());
     ssh.environment.set("FAKE_TIC_STATUS", "255");
     EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 255);
     EXPECT_EQ(ssh.take().size(), 2);
     ssh.environment.set("AFTERGLOW_SSH_TERMINFO", "fallback");
     EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
     EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=xterm-256color"}));
+}
+
+TEST(Ssh, InstallsPastRemoteCommandWithLaterOptionsAndInput)
+{
+    FakeSsh ssh;
+    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    ssh.environment.set("TERM", "afterglow");
+    ssh.environment.set("FAKE_SETENV", "1");
+    ssh.environment.set("FAKE_REMOTECOMMAND", "1");
+    // Without a private runtime directory, no connection is shared.
+    ssh.environment.set("XDG_RUNTIME_DIR", "");
+    EXPECT_EQ(Afterglow::Ssh::run({"-nv", "prod", "-p", "2222"}), 7);
+    const auto runs = ssh.take();
+    ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
+    // The install drops -n, which would send it an empty entry.
+    EXPECT_TRUE(runs[0].startsWith("ARGS [-o] [RemoteCommand=none] [-v] [-p] [2222] [-T] [--] [prod] [sh -c "))
+        << runs[0].toStdString();
+    EXPECT_EQ(runs[2], "ARGS [-nv] [prod] [-p] [2222]");
+    EXPECT_EQ(runs[3], "TERM=afterglow");
+}
+
+TEST(Ssh, DiesFromCtrlCAtTheInstallPrompt)
+{
+    FakeSsh ssh;
+    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    ssh.environment.set("TERM", "afterglow");
+    ssh.environment.set("FAKE_TIC_STATUS", "int");
+    // A shell stops a loop only when its job died from SIGINT.
+    const pid_t child = fork();
+    if (child == 0) _exit(Afterglow::Ssh::run({"prod"}));
+    ASSERT_GT(child, 0);
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFSIGNALED(status) && WTERMSIG(status) == SIGINT) << status;
+    // No session starts after the interrupted install.
+    EXPECT_EQ(ssh.take().size(), 2);
 }

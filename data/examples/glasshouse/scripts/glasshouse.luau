@@ -10,6 +10,10 @@
 --   signal 2 heat    1 while a command runs, 0 after
 --   signal 3 ring    the bell
 --   signal 4 status  a program's status (OSC 7501): 1 working, 2 blocked, 3 error
+--
+-- The glass takes its heat from its `heat` parameter, not from signal 2: a
+-- transition starts from the heat on screen, so a short command cannot make
+-- the lamp jump to full heat when it finishes.
 
 local STRIKE, GLAZE, HEAT, RING, STATUS = 0, 1, 2, 3, 4
 
@@ -21,6 +25,9 @@ local NOTIFY_AFTER_MS = 20000
 local NOT_FAILED = { [130] = true, [-1] = true }
 
 local STATUS_LEVEL = { working = 1, blocked = 2, error = 3 }
+
+-- How long the lamp takes to warm while a command runs, and to cool after.
+local WARM_MS, COOL_MS = 5000, 2500
 
 local script = {}
 
@@ -36,12 +43,35 @@ script.metadata = {
     },
 }
 
+-- Heat goes to the glass through its parameter; on_result finds the instance.
+local function heat(pane, value)
+    return {
+        afterglow.signal(pane, HEAT, value),
+        afterglow.request("heat:" .. tostring(value), afterglow.shaders(pane)),
+    }
+end
+
+function script.on_result(ev)
+    if not ev.ok or string.sub(ev.request_id, 1, 5) ~= "heat:" then
+        return nil
+    end
+    local value = tonumber(string.sub(ev.request_id, 6)) or 0
+    local effects = {}
+    for _, shader in ipairs((ev.data and ev.data.shaders) or {}) do
+        if shader.shader == "glasshouse-glass" then
+            table.insert(effects, afterglow.shader_parameters(ev.pane, shader.instance, { heat = value }, "pane",
+                { duration_ms = value > 0 and WARM_MS or COOL_MS, curve = "ease-in-out" }))
+        end
+    end
+    return effects
+end
+
 function script.on_command_started(ev)
-    return afterglow.signal(ev.pane, HEAT, 1)
+    return heat(ev.pane, 1)
 end
 
 function script.on_command_finished(ev)
-    local effects = { afterglow.signal(ev.pane, HEAT, 0) }
+    local effects = heat(ev.pane, 0)
     if ev.exit_code ~= 0 and not NOT_FAILED[ev.exit_code] then
         table.insert(effects, afterglow.signal(ev.pane, STRIKE, ev.exit_code))
     elseif ev.exit_code == 0 and ev.duration_ms >= GLAZE_AFTER_MS then
@@ -49,7 +79,8 @@ function script.on_command_finished(ev)
     end
     if ev.duration_ms >= NOTIFY_AFTER_MS and not ev.pane.focused then
         local seconds = math.floor(ev.duration_ms / 1000)
-        local outcome = ev.exit_code == 0 and "finished" or ("failed (" .. ev.exit_code .. ")")
+        local failed = ev.exit_code ~= 0 and not NOT_FAILED[ev.exit_code]
+        local outcome = failed and ("failed (" .. ev.exit_code .. ")") or "finished"
         local what = ev.command ~= "" and ev.command or "A command"
         table.insert(effects, afterglow.notify(what, outcome .. " after " .. seconds .. " s"))
     end
@@ -81,7 +112,7 @@ function script.run_action(action, ev)
         return afterglow.signal(ev.pane, RING, 1)
     elseif action == "heat" then
         -- Warms as if a command were running; the next command cools it.
-        return afterglow.signal(ev.pane, HEAT, 1)
+        return heat(ev.pane, 1)
     end
     return nil
 end

@@ -15,7 +15,8 @@
 namespace Afterglow {
 
 /// Colours from a theme file. Each one is optional: what a theme leaves out
-/// keeps the value from the config.
+/// keeps the value from the config, except the divider, which a theme without
+/// one derives from its own background and foreground.
 struct Theme
 {
     std::optional<AfterglowVt::Rgb> foreground;
@@ -36,21 +37,31 @@ struct Theme
 namespace Themes {
 
 /// The theme name to use from @p spec: "name", or "light:a,dark:b" to follow
-/// the desktop's colour scheme (either half may be left out).
+/// the desktop's colour scheme (either half may be left out, and either may
+/// be a path). A spec without a light: or dark: part is one name or path.
 QString pick(const QString& spec, bool dark);
 
 /// Where themes live, most important first: the user's
-/// ~/.config/afterglow/themes, then the system's, then the bundled ones.
+/// ~/.config/afterglow/themes, then the XDG data directories' (from
+/// ~/.local/share on), then the bundled ones.
 QStringList searchDirs();
 
-/// The file for theme @p name in @p dirs: name.json, name.conf or name. A
-/// name with a slash is a path (~ for the home directory). Empty if missing.
-QString locate(const QString& name, const QStringList& dirs);
+/// Every file that could hold theme @p name, in search order: name.json,
+/// name.conf and name in each of @p dirs. A name with a slash is one path
+/// (~ for the home directory); a relative one is resolved against @p base,
+/// the config file's directory.
+QStringList candidates(const QString& name, const QStringList& dirs, const QString& base);
 
-/// Reads a theme: afterglow's JSON (the Colors keys), a Ghostty theme
-/// ("palette = 0=#1d1f21", "cursor-color = ...") or a kitty one ("color0
-/// #1d1f21", "cursor ..."). nullopt, with @p error set, if it has no colours.
-std::optional<Theme> parse(const QByteArray& data, QString* error = nullptr);
+/// The first of candidates() that is a file. Empty if none is.
+QString locate(const QString& name, const QStringList& dirs, const QString& base = {});
+
+/// Reads a theme: afterglow's JSON (one object with the colour keys
+/// foreground, background, cursor, cursorText, selectionForeground,
+/// selectionBackground, divider, the highlight colours and palette), a
+/// Ghostty theme ("palette = 0=#1d1f21", "cursor-color = ...") or a kitty
+/// one ("color0 #1d1f21", "cursor ..."). nullopt, with @p error set, if it
+/// has no colours. Keys it does not use go to @p ignored.
+std::optional<Theme> parse(const QByteArray& data, QString* error = nullptr, QStringList* ignored = nullptr);
 
 } // namespace Themes
 

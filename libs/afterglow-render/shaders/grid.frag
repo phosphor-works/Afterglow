@@ -13,9 +13,6 @@ layout(location = 0) out vec4 fragColor;
 
 layout(std140, binding = 0) uniform Frame {
     vec2 viewport;
-    vec2 grayAtlasSize;
-    vec2 colorAtlasSize;
-    float time;
     float textGamma;
 };
 
@@ -29,6 +26,7 @@ const uint KindUndercurl = 3u;
 const uint KindDotted = 4u;
 const uint KindDashed = 5u;
 const uint KindSubpixelGlyph = 6u;
+const uint KindLinearGlyph = 7u;
 
 vec4 premul(vec4 c, float coverage)
 {
@@ -42,6 +40,9 @@ void main()
         fragColor = premul(vColor, 1.0);
     } else if (vKind == KindGrayGlyph) {
         fragColor = premul(vColor, pow(texture(grayAtlas, vUv / vec2(textureSize(grayAtlas, 0))).r, 1.0 / textGamma));
+    } else if (vKind == KindLinearGlyph) {
+        // Fixed densities (shade characters): no text gamma.
+        fragColor = premul(vColor, texture(grayAtlas, vUv / vec2(textureSize(grayAtlas, 0))).r);
     } else if (vKind == KindSubpixelGlyph) {
         vec3 coverage = pow(texture(colorAtlas, vUv / vec2(textureSize(colorAtlas, 0))).rgb, vec3(1.0 / textGamma));
         fragColor = vec4(coverage * vColor.a, 0.0);

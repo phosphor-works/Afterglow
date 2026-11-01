@@ -6,7 +6,8 @@
 // checksums) go back to the command. No window, no GPU.
 //
 //   afterglow_headless [--cols N] [--rows N] [--dump] [--idle-dump DIR]
-//                      [--reply TEXT=KEYS]... -- command [args...]
+//                      [--reply TEXT=KEYS]... | [--responder CMD]
+//                      -- command [args...]
 //
 // --dump prints the final screen to stderr. For interactive programs
 // (vttest), --idle-dump writes the screen to DIR/0001.txt, 0002.txt... each
@@ -14,7 +15,9 @@
 // on the screen with KEYS (C escapes; "a|b|c" sends a, then b, then c on
 // later matches). --responder CMD instead runs "CMD SCREENFILE" at each
 // quiet moment and sends what it prints (C escapes; nothing sends nothing),
-// for scripted walks through menus. Exits with the command's status.
+// for scripted walks through menus; it cannot be combined with --reply.
+// Screen readback (DECRQCRA) is on, as the suites read the screen through it.
+// Exits with the command's status, or 2 when the runner itself fails.
 
 #include <AfterglowVt/Terminal.h>
 
@@ -26,6 +29,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -48,7 +52,7 @@ public:
     void writeToPty(std::string_view bytes) override
     {
         if (bytes.size() > MaxPending - (m_pending.size() - m_offset)) {
-            failed = true;
+            overflowed = true;
             return;
         }
         if (!pending()) m_progress = std::chrono::steady_clock::now();
@@ -65,6 +69,11 @@ public:
             m_offset += std::size_t(n);
             m_progress = std::chrono::steady_clock::now();
             if (!pending()) { m_pending.clear(); m_offset = 0; }
+        } else if (n < 0 && errno == EIO) {
+            // The program closed its side after a last query: nobody reads
+            // the reply. The read path sees the hangup and ends the run.
+            m_pending.clear();
+            m_offset = 0;
         } else if (n == 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) failed = true;
     }
     bool stalled() const
@@ -72,12 +81,13 @@ public:
         return pending() && std::chrono::steady_clock::now() - m_progress > std::chrono::seconds(5);
     }
     bool failed = false;
+    bool overflowed = false;
 
     // Size changes asked for by the program (DECCOLM, XTWINOPS) are granted,
     // as xterm does with window ops allowed; the pty follows.
     bool requestResize(int cols, int rows) override
     {
-        if (cols < 1 || cols > 1000 || rows < 1 || rows > 500) return false;
+        if (cols < MinCols || cols > 1000 || rows < 1 || rows > 500) return false;
         winsize ws{};
         ws.ws_col = std::uint16_t(cols);
         ws.ws_row = std::uint16_t(rows);
@@ -96,6 +106,8 @@ public:
 
     static constexpr int CellWidth = 10;
     static constexpr int CellHeight = 20;
+    /// The terminal core keeps at least two columns; the pty must agree.
+    static constexpr int MinCols = 2;
 
 private:
     static constexpr std::size_t MaxPending = 1024 * 1024;
@@ -105,11 +117,11 @@ private:
     std::chrono::steady_clock::time_point m_progress{};
 };
 
-bool dimension(const char* value, int maximum, int& result)
+bool dimension(const char* value, int minimum, int maximum, int& result)
 {
     const char* end = value + std::strlen(value);
     const auto parsed = std::from_chars(value, end, result);
-    return parsed.ec == std::errc{} && parsed.ptr == end && result >= 1 && result <= maximum;
+    return parsed.ec == std::errc{} && parsed.ptr == end && result >= minimum && result <= maximum;
 }
 
 std::string shellQuote(const std::string& value)
@@ -169,35 +181,47 @@ bool respond(const std::string& command, const std::string& path, std::string& o
     return ok && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
+void appendUtf8(std::string& out, char32_t c)
+{
+    if (c < 0x80) {
+        out += char(c);
+    } else if (c < 0x800) {
+        out += char(0xC0 | (c >> 6));
+        out += char(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+        out += char(0xE0 | (c >> 12));
+        out += char(0x80 | ((c >> 6) & 0x3F));
+        out += char(0x80 | (c & 0x3F));
+    } else {
+        out += char(0xF0 | (c >> 18));
+        out += char(0x80 | ((c >> 12) & 0x3F));
+        out += char(0x80 | ((c >> 6) & 0x3F));
+        out += char(0x80 | (c & 0x3F));
+    }
+}
+
+/// The screen as the user reads it, so that --reply text in CJK or with
+/// combining marks matches: wide tails are skipped, cluster marks kept.
 std::string screenText(const AfterglowVt::Terminal& terminal)
 {
     std::string out;
     const AfterglowVt::Screen& screen = terminal.screen();
     for (int y = 0; y < screen.rows(); ++y) {
-        std::string line;
         const AfterglowVt::Row& row = screen.row(y);
         for (int x = 0; x < screen.cols(); ++x) {
-            char32_t c = row.at(x).codepoint();
-            if (c == 0) {
-                c = ' ';
+            const AfterglowVt::Cell& cell = row.at(x);
+            if (cell.isTail()) {
+                continue;
             }
-            if (c < 0x80) {
-                line += char(c);
-            } else if (c < 0x800) {
-                line += char(0xC0 | (c >> 6));
-                line += char(0x80 | (c & 0x3F));
-            } else if (c < 0x10000) {
-                line += char(0xE0 | (c >> 12));
-                line += char(0x80 | ((c >> 6) & 0x3F));
-                line += char(0x80 | (c & 0x3F));
-            } else {
-                line += char(0xF0 | (c >> 18));
-                line += char(0x80 | ((c >> 12) & 0x3F));
-                line += char(0x80 | ((c >> 6) & 0x3F));
-                line += char(0x80 | (c & 0x3F));
+            if (cell.isMulticell() && (cell.multicellDx() != 0 || cell.multicellDy() != 0)) {
+                out += ' '; // a sized block's text is in its top-left cell
+                continue;
+            }
+            appendUtf8(out, cell.codepoint() == 0 ? U' ' : cell.codepoint());
+            for (char32_t extra : screen.graphemeExtra(row, x)) {
+                appendUtf8(out, extra);
             }
         }
-        out += line;
         out += '\n';
     }
     return out;
@@ -226,12 +250,19 @@ std::string unescape(const std::string& s)
         case 'e':
             out += '\x1b';
             break;
-        case 'x':
-            if (i + 2 < s.size() + 1) {
-                out += char(std::strtol(s.substr(i + 1, 2).c_str(), nullptr, 16));
+        case 'x': {
+            // Exactly two hex digits; anything else stays as written.
+            int value = 0;
+            const char* first = s.data() + i + 1;
+            if (i + 2 < s.size() && std::from_chars(first, first + 2, value, 16).ptr == first + 2
+                && std::isxdigit(static_cast<unsigned char>(first[0]))) {
+                out += char(value);
                 i += 2;
+            } else {
+                out += "\\x";
             }
             break;
+        }
         default:
             out += c;
             break;
@@ -246,6 +277,14 @@ struct Reply
     std::deque<std::string> keys;
 };
 
+void usage(const char* name)
+{
+    std::fprintf(stderr,
+                 "usage: %s [--cols N] [--rows N] [--dump] [--idle-dump DIR]\n"
+                 "       [--reply TEXT=KEYS]... | [--responder CMD] -- command [args...]\n",
+                 name);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -259,11 +298,11 @@ int main(int argc, char** argv)
     int i = 1;
     for (; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cols") && i + 1 < argc) {
-            if (!dimension(argv[++i], 1000, cols)) {
-                std::fprintf(stderr, "--cols must be an integer in 1..1000\n"); return 2;
+            if (!dimension(argv[++i], Host::MinCols, 1000, cols)) {
+                std::fprintf(stderr, "--cols must be an integer in 2..1000\n"); return 2;
             }
         } else if (!std::strcmp(argv[i], "--rows") && i + 1 < argc) {
-            if (!dimension(argv[++i], 500, rows)) {
+            if (!dimension(argv[++i], 1, 500, rows)) {
                 std::fprintf(stderr, "--rows must be an integer in 1..500\n"); return 2;
             }
         } else if (!std::strcmp(argv[i], "--dump")) {
@@ -294,12 +333,22 @@ int main(int argc, char** argv)
         } else if (!std::strcmp(argv[i], "--")) {
             ++i;
             break;
+        } else if (argv[i][0] == '-') {
+            // An unknown option, or a value option with nothing after it:
+            // never run it as the command.
+            std::fprintf(stderr, "unknown option or missing value: %s\n", argv[i]);
+            usage(argv[0]);
+            return 2;
         } else {
             break;
         }
     }
     if (i >= argc) {
-        std::fprintf(stderr, "usage: %s [--cols N] [--rows N] [--dump] -- command [args...]\n", argv[0]);
+        usage(argv[0]);
+        return 2;
+    }
+    if (!responder.empty() && !replies.empty()) {
+        std::fprintf(stderr, "--responder replaces --reply; give one of them\n");
         return 2;
     }
 
@@ -323,13 +372,16 @@ int main(int argc, char** argv)
         _exit(127);
     }
 
-    if (::fcntl(master, F_SETFL, O_NONBLOCK) < 0) {
+    // The responder runs while the command does: it must not hold the master.
+    if (::fcntl(master, F_SETFL, O_NONBLOCK) < 0 || ::fcntl(master, F_SETFD, FD_CLOEXEC) < 0) {
         std::perror("fcntl"); ::kill(child, SIGKILL); ::close(master);
         while (::waitpid(child, nullptr, 0) < 0 && errno == EINTR) {};
         return 2;
     }
     Host host(master);
-    AfterglowVt::Terminal terminal(cols, rows, host);
+    AfterglowVt::TerminalOptions options;
+    options.allowScreenReadback = true;
+    AfterglowVt::Terminal terminal(cols, rows, host, options);
     terminal.resize(cols, rows, CellWidth, CellHeight);
 
     char buf[65536];
@@ -348,16 +400,23 @@ int main(int argc, char** argv)
         if (fd < 0) failed = true;
         else { temporary.path = name; ::close(fd); }
     }
+    int status = 0;
+    bool reaped = false;
     for (;;) {
         if (failed) break;
         host.flush();
+        if (host.overflowed) {
+            std::fprintf(stderr, "PTY reply queue exceeded 1 MiB\n");
+            failed = true;
+            break;
+        }
         if (host.failed || host.stalled()) {
             std::fprintf(stderr, "PTY reply queue failed or stopped making progress\n");
             failed = true;
             break;
         }
         pollfd pfd{master, short(POLLIN | (host.pending() ? POLLOUT : 0)), 0};
-        const int ready = ::poll(&pfd, 1, interactive || host.pending() ? 300 : -1);
+        const int ready = ::poll(&pfd, 1, interactive || host.pending() ? 300 : 1000);
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;
@@ -365,7 +424,14 @@ int main(int argc, char** argv)
             failed = true; break;
         }
         if (ready == 0) {
-            if (host.pending()) continue;
+            // A background process can keep the pty open after the command
+            // exits, so the hangup never comes: quiet and exited ends the run.
+            const pid_t done = ::waitpid(child, &status, WNOHANG);
+            if (done == child) {
+                reaped = true;
+                break;
+            }
+            if (host.pending() || !interactive) continue;
             // Quiet: the program waits for input. Record the screen, answer.
             if (!changed) {
                 // Nothing new since the last answer (a prompt that does not
@@ -434,9 +500,8 @@ int main(int argc, char** argv)
         }
     }
     ::close(master);
-    if (failed) ::kill(child, SIGKILL);
-    int status = 0;
-    while (::waitpid(child, &status, 0) < 0) {
+    if (failed && !reaped) ::kill(child, SIGKILL);
+    while (!reaped && ::waitpid(child, &status, 0) < 0) {
         if (errno != EINTR) { std::perror("waitpid"); return 2; }
     }
     if (dumpScreen) {

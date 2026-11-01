@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Tab Switch: the tab transition. The new tab is this pass's input and the
-// tab being left comes from previousTabTexel(); both keep running. Four
-// styles share one camera, which at progress 0 shows the old tab exactly as
-// the window did and at progress 1 the new one:
+// tab being left comes from previousTabTexel(); both keep running. Every
+// style shows the old tab exactly as the window did at progress 0 and the new
+// one at progress 1. The cube and the page flip share one camera:
 //   0 cube       the tabs are neighbouring faces of a box that turns
 //   1 page flip  the old tab lifts off its edge like a page
 //   2 shatter    the old tab breaks into shards that fall in a wave
@@ -89,7 +89,7 @@ vec4 pageFlip(vec2 uv, float progress, float dir) {
     if (hitQuad(page, eye, d, t, pageUv, front)) {
         if (front) return previousTabTexel(pageUv) * vec4(vec3(light(page.normal)), 1.0);
         // The back of the page: the old tab showing faintly through.
-        return vec4(mix(backdrop().rgb, previousTabTexel(pageUv).rgb, 0.18), 1.0);
+        return mix(backdrop(), previousTabTexel(pageUv), 0.18);
     }
     // The new tab lies under the page, in its shadow while the page is up.
     vec3 under = eye + d * ((0.0 - eye.z) / d.z);
@@ -111,11 +111,14 @@ vec4 shatter(vec2 uv, float progress, float dir) {
     vec2 cell = res / vec2(Columns, rows);
     float p = clamp(progress, 0.0, 1.0);
     vec2 home = floor(pixel / cell);
-    // Shards only fall and drift a little: the pixel can show a shard from
-    // its own column or a neighbour, from its own row or any row above.
-    for (float row = home.y; row >= 0.0; row -= 1.0) {
-        for (float dx = -1.0; dx <= 1.0; dx += 1.0) {
-            vec2 id = vec2(home.x + dx, row);
+    // Shards fall and drift up to about two columns against the direction of
+    // travel, and a turning shard's corner can rise a little above its row:
+    // the pixel can show a shard from the row below or any row above, from one
+    // column behind to two columns ahead.
+    float ahead = dir < 0.0 ? -1.0 : 1.0;
+    for (float row = min(home.y + 1.0, rows - 1.0); row >= 0.0; row -= 1.0) {
+        for (float k = -1.0; k <= 2.0; k += 1.0) {
+            vec2 id = vec2(home.x + k * ahead, row);
             if (id.x < 0.0 || id.x >= Columns) continue;
             float r1 = hash(id), r2 = hash(id + 17.3), r3 = hash(id + 41.9);
             // A wave crosses the tab against the direction of travel.
@@ -134,7 +137,8 @@ vec4 shatter(vec2 uv, float progress, float dir) {
                 vec2 sourceUv = (center + q) / res;
                 float fade = 1.0 - smoothstep(0.65, 1.0, t);
                 float edge = mix(1.0, 0.7 + 0.3 * cos(spin * 2.0), p_shading);
-                return mix(terminalTexel(uv) * mix(0.35, 1.0, p), previousTabTexel(sourceUv) * vec4(vec3(edge), 1.0), fade);
+                vec4 below = terminalTexel(uv) * vec4(vec3(mix(0.35, 1.0, p)), 1.0);
+                return mix(below, previousTabTexel(sourceUv) * vec4(vec3(edge), 1.0), fade);
             }
         }
     }

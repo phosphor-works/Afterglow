@@ -5,13 +5,34 @@
 
 Afterglow shaders are Phosphor shader packs.
 A pack is a directory with `metadata.json` and GLSL stages.
-Each stage uses the terminal shader contract and defines `vec4 pTerminal(vec2 uv)`.
+Each stage uses the terminal shader contract. Each fragment stage defines `vec4 pTerminal(vec2 uv)`.
+See the [shader API](SHADER-API.md) for vertex and mesh stages.
 Configuration refers to packs by ID.
 The [shader API](SHADER-API.md) describes the contract.
 
+## Pack locations
+
+Afterglow reads packs from these directories.
+A pack in a later row replaces a pack with the same ID in an earlier row.
+
+| Directory | Contents |
+| --- | --- |
+| `data/shaders/` in the source tree | Bundled packs, in a development build only. |
+| `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
+| `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. |
+
+Put each pack in its own subdirectory, such as `~/.config/afterglow/shaders/my-pack/metadata.json`.
+Put include files that several packs share in a `shared/` subdirectory of the same directory.
+Afterglow looks for an include file in this order:
+
+1. The pack's own directory, for `#include "name.glsl"` only.
+2. The contract headers built into Afterglow, such as `terminal_lib.glsl`.
+3. The `shared/` subdirectory of each directory in the table, in table order.
+Script packages carry their own `shaders/` directory. See [packages](PACKAGES.md#shaders).
+
 ## Shader chains
 
-The `Shaders` configuration group contains five chains and the pane overview:
+The `Shaders` configuration group contains five chains and three event packs: the pane overview, the tab transition and the pane effects.
 
 | Chain | Input |
 | --- | --- |
@@ -46,12 +67,15 @@ Splitting and closing panes run `Shaders.paneEffects`. The default pack is Pane 
 Its `style` parameter chooses a hinge (0) or a picture tube (1).
 A new pane swings in from the edge it split from, or switches on like a tube.
 A closed pane falls back off its bottom edge, or switches off to a dot.
-`Animation.paneEffectDuration` sets the time. `Animation.splits=false` also turns the effects off.
+`Animation.paneEffectDuration` sets the time.
+`Animation.splits=false` turns off the open and close animations and the portal. The away frame and script pulses still show.
+Set `Shaders.paneEffects` to an empty string to turn off all pane effects.
 A pane whose shell moves to another host, user or container passes through a portal, such as after `afterglow ssh`.
-While it is away, a soft frame marks it: cyan for a remote host, red for an elevated user and magenta for a container.
+While it is away, a soft frame marks it in a palette color of the theme.
+The frame is bright cyan for a remote host, bright red for an elevated user and bright magenta for a container.
 The `portal` and `frame` parameters set their strength.
 
-[Phosphor](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
+[The Phosphor scene](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.
 
 ## Previous text and color
@@ -67,13 +91,13 @@ One requesting shader changes the window's intermediate targets and text history
 This doubles intermediate texture memory.
 It does not change display output or convert color spaces.
 The chain must tone-map its radiance before final output.
-Phosphor does this in its background lens pass, before text composition.
+The Phosphor scene does this in its `phosphor-lens` pass, before text composition.
 
 Packs support eight buffers, four image parameters, auxiliary depth output and a vertex stage.
 Mesh passes add imported or shader-generated triangles, instancing and hardware depth testing.
 [Mesh Reactor](../data/shaders/mesh-reactor/README.md) demonstrates this path.
 See the [shader API](SHADER-API.md) for pass order, coordinates, reset conditions and memory limits.
-[Depth trails](../data/shaders/depth-trails/README.md) demonstrates these interfaces.
+[Depth Trails](../data/shaders/depth-trails/README.md) demonstrates these interfaces.
 
 ## System audio
 
@@ -103,7 +127,7 @@ Use `afterglow -o Audio.enabled=false` to disable capture for one launch.
 | `getBass()`, `getMids()`, `getTreble()`, `getOverall()` | Smoothed RMS energy from 0 to 1. Also available as `uAudioLevels.xyzw`. |
 | `audioBar(int index)` | One of 64 mono logarithmic bands from 50 Hz to 10 kHz. Invalid indices return zero. |
 | `audioBarSmooth(float position)` | Interpolated spectrum at a position from 0 to 1. Pane coordinates have no effect. |
-| `iAudioSpectrumSize` | 64 for valid frames; otherwise zero. |
+| `iAudioSpectrumSize` | 64 for valid frames. Otherwise zero. |
 | `uAudioSpectrum` | A 64×1 R32F texture at binding 10. Use the helpers or `texelFetch`. |
 
 Bass uses bins 0–19. Mids use bins 20–47. Treble uses bins 48–63.
@@ -158,9 +182,10 @@ return afterglow.signals(ev.pane, {
 
 The host validates all values and targets before any change.
 Up to 128 panes receive the batch in one GUI-thread turn, with one timestamp.
+A scope with more than 128 panes rejects the complete batch with an error.
 Rendering sees the complete update. The batch uses one effect from the rate budget.
 A requested result lists the changed pane IDs in `data.panes`.
-The Phosphor example uses snapshots and tab batches, including when loaded after pane creation.
+The Phosphor scene uses snapshots and tab batches, including when loaded after pane creation.
 Background-tab commands do not increase the visible scene's activity.
 
 ### Parameters
@@ -184,10 +209,12 @@ The default scope is `pane`. Other scopes are `tab` and `window`.
 The host resolves targets when it applies the effect. New panes do not inherit the update.
 Window-layer effects require `window` scope. Their value belongs to the window and does not depend on pane focus.
 Other layers permit up to 128 target panes.
+A scope with more than 128 panes rejects the complete update with an error.
 Each update is atomic and uses one effect. Results include `data.panes`.
 
 Numbers must be finite. Integer parameters require integers. Boolean parameters require booleans.
 Colors require valid Qt color strings, such as `#ff0077`.
+An eight-digit color puts alpha first: `#AARRGGBB`, not `#RRGGBBAA`.
 Unknown names, unsupported types or slots, and values outside the range reject the complete update.
 Phosphor validates metadata and ranges. Script values are not clamped.
 Configuration loading uses Phosphor validation and defaults.
@@ -213,7 +240,7 @@ return afterglow.shader_parameters(ev.pane, instance.instance,
 ```
 
 Duration is 0–60000 ms. Zero applies the change immediately.
-Curves are `linear`, `ease-in-out` and the critically damped `spring`.
+Curves are `linear`, `ease-in-out` and the critically damped `spring`. The default curve is `ease-in-out`.
 Phosphor curve specs also work, such as `0.2,0,0,1` for a cubic Bézier or `spring:20,1` for a spring with angular frequency 20 and damping ratio 1.
 Curves that overshoot are rejected, such as elastic and bounce curves and springs with damping below 1.
 Duration is also the maximum spring lifetime.
@@ -224,6 +251,8 @@ Integers, booleans and images change at completion.
 Omitted parameters and empty-table resets release overrides immediately.
 Unload, rebuild, pane closure and transfer cancel owned transitions.
 Results confirm acceptance, not animation completion.
+Afterglow keeps at most 4,096 overrides, one for each script, instance and pane.
+An update past this limit fails with an error.
 Hidden windows catch up when they render again.
 
 [shader-parameters.luau](../data/examples/scripts/shader-parameters.luau) adds Bloom boost and reset actions.

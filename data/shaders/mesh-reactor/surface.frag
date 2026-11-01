@@ -17,7 +17,7 @@ vec3 environment(vec3 r,float roughness) {
 vec4 pTerminal(vec2 uv) {
     vec3 n=normalize(worldNormal),view=normalize(camera()-worldPosition);
     vec3 energy=energyColor();
-    float t=iTime*p_speed;
+    float t=sceneTime();
     float fresnel=pow(1.0-max(dot(n,view),0.0),5.0);
     vec3 light;
     if(material==0) {
@@ -37,7 +37,8 @@ vec4 pTerminal(vec2 uv) {
         light=vec3(0.014,0.023,0.04)+energy*(pool*0.16*shadow+grid*0.018+ring*0.20);
         light+=environment(reflect(-view,n),0.5)*0.07;
         float age=signalAge(3);
-        float shock=exp(-pow((radius-age*3.0)/0.10,2.0))*exp(-age);
+        float front=(radius-age*3.0)/0.10;
+        float shock=exp(-front*front)*exp(-age);
         if(signalValue(3)!=0.0) light+=energy*shock*0.9;
         light*=exp(-radius*0.13);
     } else if(material>=5 && material<=10) {
@@ -53,7 +54,8 @@ vec4 pTerminal(vec2 uv) {
         light+=vec3(0.10,0.16,0.23)*key*(1.0-grooves*0.35);
         light+=energy*(seam*0.40+pow(1.0-max(dot(n,view),0.0),3.0)*0.24);
         if(material!=1) {
-            float band=pow(max(cos(surfaceUV.x*TAU*3.0-iTime*0.35),0.0),28.0);
+            // 0.35 rad/s at the default speed, and still at speed 0.
+            float band=pow(max(cos(surfaceUV.x*TAU*3.0-t*0.875),0.0),28.0);
             light+=energy*(0.035+band*0.9)*(0.7+drive()*0.6);
         } else {
             // Recessed panel number strips and one status lamp per tile.

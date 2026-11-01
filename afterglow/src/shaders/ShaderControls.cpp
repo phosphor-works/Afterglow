@@ -21,14 +21,13 @@ std::shared_ptr<const PhosphorAnimation::Curve> transitionCurve(const PhosphorAn
 }
 } // namespace
 
-bool ShaderControls::advance(bool finish)
+bool ShaderControls::advance()
 {
     bool active = false;
     for (auto& item : m_overrides) {
         if (!item.transition) continue;
         auto& t = *item.transition;
-        if (finish) t.progress.finish();
-        else t.progress.advance();
+        t.progress.advance();
         const double progress = std::clamp(double(t.progress.value()), 0.0, 1.0);
         item.packed = t.target;
         if (t.progress.isAnimating()) {
@@ -197,7 +196,7 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
     for (const auto& configured : m_instances) countImages(configured.program->images());
     for (const auto& item : m_overrides) if (!matches(item)) countOverride(item);
     for (const auto& item : replacements) countOverride(item);
-    if (!values.isEmpty() && imageBytes > 256LL * 1024 * 1024)
+    if (!values.isEmpty() && imageBytes > ShaderLibrary::MaxDecodedImageBytes)
         return QStringLiteral("Shader images exceed the 256 MiB decoded-image budget");
     m_overrides.removeIf(matches);
     m_overrides.append(replacements);

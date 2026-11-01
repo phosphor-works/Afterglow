@@ -11,10 +11,12 @@
 #include <QDBusArgument>
 #include <QDBusConnection>
 #include <QDBusMetaType>
+#include <QBuffer>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
-#include <QDateTime>
+#include <QDBusServiceWatcher>
 #include <QIcon>
+#include <QImageReader>
 #include <QLoggingCategory>
 #include <QTimer>
 
@@ -58,10 +60,41 @@ QString fromUtf8(const std::string& s)
     return QString::fromUtf8(s.data(), qsizetype(s.size()));
 }
 
-/// Notification servers may read body markup: program text is plain.
-QString escapeMarkup(const QString& s)
+// Icons from programs are decoded on the GUI thread: a small file can
+// declare a huge image. Larger sides are refused before decoding.
+constexpr int MaxIconSide = 2048;
+constexpr int IconSide = 512; ///< what the notification gets
+constexpr int IconAllocationMiB = 16;
+
+// The formats OSC 99 icons may use, by their signature. Any other bytes would
+// reach whatever image plugins are installed (SVG, TIFF) on the GUI thread.
+QByteArray iconFormat(const QByteArray& bytes)
 {
-    return s.toHtmlEscaped();
+    if (bytes.startsWith("\x89PNG\r\n\x1a\n")) return QByteArrayLiteral("png");
+    if (bytes.startsWith("\xff\xd8\xff")) return QByteArrayLiteral("jpeg");
+    if (bytes.startsWith("GIF87a") || bytes.startsWith("GIF89a")) return QByteArrayLiteral("gif");
+    return {};
+}
+
+QImage decodeIcon(const std::string& data)
+{
+    QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
+    const QByteArray format = iconFormat(bytes);
+    if (format.isEmpty()) return {};
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer, format);
+    reader.setAllocationLimit(IconAllocationMiB);
+    // Reads only the header.
+    if (const QSize size = reader.size(); size.isValid()) {
+        if (size.width() > MaxIconSide || size.height() > MaxIconSide) return {};
+        if (size.width() > IconSide || size.height() > IconSide)
+            reader.setScaledSize(size.scaled(IconSide, IconSide, Qt::KeepAspectRatio).expandedTo(QSize(1, 1)));
+    }
+    QImage image = reader.read();
+    if (image.width() > IconSide || image.height() > IconSide)
+        image = image.scaled(IconSide, IconSide, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return image;
 }
 
 } // namespace
@@ -78,11 +111,32 @@ NotificationCenter& NotificationCenter::instance()
 
 NotificationCenter::NotificationCenter()
 {
+    m_clock.start();
     qDBusRegisterMetaType<NotificationImage>();
     QDBusConnection bus = QDBusConnection::sessionBus();
     bus.connect(Service, Path, Interface, QStringLiteral("ActionInvoked"), this, SLOT(onActionInvoked(uint,QString)));
     bus.connect(Service, Path, Interface, QStringLiteral("NotificationClosed"), this, SLOT(onClosed(uint,uint)));
     bus.connect(Service, Path, Interface, QStringLiteral("ActivationToken"), this, SLOT(onActivationToken(uint,QString)));
+    // A restarted server numbers its notifications again: ids held for the
+    // old one would replace or match another application's notification.
+    auto* watcher = new QDBusServiceWatcher(Service, bus, QDBusServiceWatcher::WatchForOwnerChange, this);
+    connect(watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, &NotificationCenter::forgetServer);
+    forgetServer();
+}
+
+void NotificationCenter::forgetServer()
+{
+    m_entries.clear();
+    // Markup in bodies is the server's choice: one without it shows tags and
+    // entities as text, so program text goes escaped only where it is read.
+    m_bodyMarkup = true;
+    const QDBusPendingCall call = notificationServer().asyncCall(Interface, QStringLiteral("GetCapabilities"), {});
+    auto* watcher = new QDBusPendingCallWatcher(call, this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher* w) {
+        w->deleteLater();
+        const QDBusPendingReply<QStringList> reply = *w;
+        if (!reply.isError()) m_bodyMarkup = reply.value().contains(QLatin1String("body-markup"));
+    });
 }
 
 std::string NotificationCenter::capabilities()
@@ -91,22 +145,30 @@ std::string NotificationCenter::capabilities()
            ":s=system,silent,error,warn,warning,info,question:u=0,1,2:w=1";
 }
 
+void NotificationCenter::track(const Pane* pane)
+{
+    if (!pane || m_tracked.contains(pane)) return;
+    m_tracked.insert(pane);
+    connect(pane, &QObject::destroyed, this, [this, pane, prefix = QString::number(pane->id()) + QLatin1Char(':')] {
+        m_tracked.remove(pane);
+        m_recent.remove(pane);
+        m_entries.removeIf([pane](const auto& it) { return it.value().owner == pane; });
+        m_inFlight.removeIf([pane](const auto& it) { return it.key().first == pane; });
+        for (auto it = m_iconCache.begin(); it != m_iconCache.end();) {
+            if (it.key().startsWith(prefix)) { m_iconCacheOrder.removeAll(it.key()); it = m_iconCache.erase(it); }
+            else ++it;
+        }
+    });
+}
+
 bool NotificationCenter::rateLimited(const Pane* pane)
 {
-    // At most 20 notifications in 10 seconds from one pane.
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (!m_recent.contains(pane) && pane) {
-        connect(pane, &QObject::destroyed, this, [this, pane, prefix = QString::number(pane->id()) + QLatin1Char(':')] {
-            m_recent.remove(pane);
-            for (auto it = m_iconCache.begin(); it != m_iconCache.end();) {
-                if (it.key().startsWith(prefix)) { m_iconCacheOrder.removeAll(it.key()); it = m_iconCache.erase(it); }
-                else ++it;
-            }
-        });
-    }
+    if (!pane || m_rateLimit <= 0) return false;
+    track(pane);
+    const qint64 now = m_clock.elapsed();
     QList<qint64>& recent = m_recent[pane];
-    recent.removeIf([now](qint64 t) { return now - t > 10000; });
-    if (recent.size() >= 20) {
+    recent.removeIf([now](qint64 t) { return now - t > RateWindowMs; });
+    if (recent.size() >= m_rateLimit) {
         return true;
     }
     recent.append(now);
@@ -119,7 +181,7 @@ uint NotificationCenter::idFor(const Pane* pane, const QString& clientId) const
         return 0; // without an id nothing is ever replaced
     }
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
-        if (it->pane == pane && it->clientId == clientId) {
+        if (it->owner == pane && it->clientId == clientId) {
             return it.key();
         }
     }
@@ -128,10 +190,18 @@ uint NotificationCenter::idFor(const Pane* pane, const QString& clientId) const
 
 void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const AfterglowVt::NotificationRequest& r)
 {
+    Q_UNUSED(window);
     using Kind = AfterglowVt::NotificationRequest::Kind;
+    track(pane);
     const QString clientId = fromUtf8(r.id);
+    const Key key{pane, clientId};
+    const auto pending = clientId.isEmpty() ? m_inFlight.end() : m_inFlight.find(key);
     if (r.kind == Kind::Close) {
-        if (const uint id = idFor(pane, clientId)) {
+        if (pending != m_inFlight.end()) {
+            // Applied once the server says which notification it is.
+            pending->close = true;
+            pending->next.reset();
+        } else if (const uint id = idFor(pane, clientId)) {
             close(id);
         }
         return;
@@ -139,16 +209,21 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
     if (r.kind == Kind::Alive) {
         QStringList open;
         for (const Entry& e : std::as_const(m_entries)) {
-            if (e.pane == pane && !e.clientId.isEmpty()) {
+            if (e.owner == pane && !e.clientId.isEmpty() && !open.contains(e.clientId)) {
                 open.append(e.clientId);
             }
+        }
+        for (auto it = m_inFlight.cbegin(); it != m_inFlight.cend(); ++it) {
+            if (it.key().first == pane && !it->close && !open.contains(it.key().second)) open.append(it.key().second);
         }
         const QString reply = QStringLiteral("\x1b]99;i=%1:p=alive;%2\x1b\\")
                                   .arg(clientId.isEmpty() ? QStringLiteral("0") : clientId, open.join(QLatin1Char(',')));
         pane->sendInput(reply.toStdString());
         return;
     }
-    if (rateLimited(pane)) {
+    // An update of a notification already on screen adds none.
+    const uint replaces = idFor(pane, clientId);
+    if (pending == m_inFlight.end() && !replaces && rateLimited(pane)) {
         return;
     }
 
@@ -174,13 +249,13 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
         }
     }
     QVariantMap hints{{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(r.urgency))}};
+    // OSC 99 types use the freedesktop category names ("im.received", "transfer.complete").
+    if (!r.types.empty()) hints.insert(QStringLiteral("category"), fromUtf8(r.types.front()));
     QImage image;
     if (!r.iconData.empty()) {
-        image = QImage::fromData(reinterpret_cast<const uchar*>(r.iconData.data()), int(r.iconData.size()));
-        if (!image.isNull() && (image.width() > 512 || image.height() > 512)) {
-            image = image.scaled(512, 512, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        }
+        image = decodeIcon(r.iconData);
         if (!image.isNull() && !r.iconCacheId.empty()) {
+            track(pane);
             const QString key = QString::number(pane->id()) + QLatin1Char(':') + fromUtf8(r.iconCacheId);
             m_iconCache.insert(key, image);
             m_iconCacheOrder.removeAll(key);
@@ -218,43 +293,71 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
         actions << QString::number(i + 1) << fromUtf8(r.buttons[i]);
     }
 
-    Entry entry;
-    entry.pane = pane;
-    Q_UNUSED(window);
-    entry.clientId = clientId;
-    entry.focusOnActivate = r.focusOnActivate;
-    entry.reportActivation = r.reportActivation;
-    entry.reportClose = r.reportClose;
-    const int timeout = r.expireMs < 0 ? -1 : r.expireMs;
-    notify(entry, idFor(pane, clientId), fromUtf8(r.title), escapeMarkup(fromUtf8(r.body)), iconName, actions, hints,
-           timeout, r.expireMs);
+    Request request;
+    request.entry.pane = pane;
+    request.entry.owner = pane;
+    request.entry.clientId = clientId;
+    request.entry.focusOnActivate = r.focusOnActivate;
+    request.entry.reportActivation = r.reportActivation;
+    request.entry.reportClose = r.reportClose;
+    request.title = fromUtf8(r.title);
+    request.body = fromUtf8(r.body); // may hold newlines, which the body shows as line breaks
+    request.icon = iconName;
+    request.actions = actions;
+    request.hints = hints;
+    request.timeout = r.expireMs < 0 ? -1 : r.expireMs;
+    request.expireMs = r.expireMs;
+    if (pending != m_inFlight.end()) {
+        // The newest update replaces any that waits, and undoes a close.
+        pending->next = request;
+        pending->close = false;
+        return;
+    }
+    send(request, replaces);
 }
 
 void NotificationCenter::showSimple(Pane* pane, TerminalWindow* window, const QString& title, const QString& body,
                                     int urgency)
 {
-    if (pane && rateLimited(pane)) {
+    Q_UNUSED(window);
+    if (rateLimited(pane)) {
         return;
     }
-    Entry entry;
-    entry.pane = pane;
-    Q_UNUSED(window);
-    notify(entry, 0, title, escapeMarkup(body), QString(), {QStringLiteral("default"), QString()},
-           {{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(urgency))}},
-           -1, -1);
+    showNotice(pane, title, body, urgency);
 }
 
-void NotificationCenter::notify(const Entry& entry, uint replaces, const QString& title, const QString& body,
-                                const QString& icon, const QStringList& actions, const QVariantMap& hints, int timeout,
-                                int expireMs)
+void NotificationCenter::showNotice(Pane* pane, const QString& title, const QString& body, int urgency)
 {
+    track(pane);
+    Request request;
+    request.entry.pane = pane;
+    request.entry.owner = pane;
+    request.title = title;
+    request.body = body;
+    request.actions = {QStringLiteral("default"), QString()};
+    request.hints = {{QStringLiteral("desktop-entry"), DesktopEntry}, {QStringLiteral("urgency"), QVariant::fromValue(uchar(urgency))}};
+    send(request, 0);
+}
+
+void NotificationCenter::send(const Request& request, uint replaces)
+{
+    const Key key{request.entry.owner, request.entry.clientId};
+    if (!request.entry.clientId.isEmpty()) m_inFlight.insert(key, {});
+    const QString body = m_bodyMarkup ? request.body.toHtmlEscaped() : request.body;
     const QDBusPendingCall call = notificationServer().asyncCall(Interface, QStringLiteral("Notify"),
-        {QStringLiteral("Afterglow"), replaces, icon.isEmpty() ? DesktopEntry : icon, title, body, actions, hints, timeout});
+        {QStringLiteral("Afterglow"), replaces, request.icon.isEmpty() ? DesktopEntry : request.icon, request.title, body,
+         request.actions, request.hints, request.timeout});
     auto* watcher = new QDBusPendingCallWatcher(call, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, entry, replaces, expireMs](QDBusPendingCallWatcher* w) {
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [this, key, entry = request.entry, replaces, expireMs = request.expireMs](QDBusPendingCallWatcher* w) {
         w->deleteLater();
         const QDBusPendingReply<uint> reply = *w;
+        // What the program asked for while this call was out.
+        const InFlight waiting = entry.clientId.isEmpty() ? InFlight{} : m_inFlight.take(key);
+        // The pane's state went with it; its address may already be another pane's.
+        if (entry.owner && !entry.pane) return;
         if (reply.isError()) {
+            if (waiting.next) send(*waiting.next, replaces);
             return;
         }
         const uint id = reply.value();
@@ -264,7 +367,11 @@ void NotificationCenter::notify(const Entry& entry, uint replaces, const QString
         Entry current = entry;
         current.generation = ++m_generation;
         m_entries.insert(id, current);
-        if (expireMs > 0) {
+        if (waiting.close) {
+            close(id);
+        } else if (waiting.next) {
+            send(*waiting.next, id);
+        } else if (expireMs > 0) {
             // The protocol promises closing after the time, whatever the server does.
             QTimer::singleShot(expireMs, this, [this, id, generation = current.generation] {
                 if (m_entries.contains(id) && m_entries.value(id).generation == generation) {
@@ -283,23 +390,31 @@ void NotificationCenter::close(uint id)
 
 void NotificationCenter::onActivationToken(uint id, const QString& token)
 {
-    // Lets the window take focus on Wayland when the notification is clicked.
-    if (m_entries.contains(id)) {
-        qputenv("XDG_ACTIVATION_TOKEN", token.toUtf8());
+    // Sent just before ActionInvoked. Kept for that click alone: in the
+    // environment it would reach every shell started later.
+    if (const auto it = m_entries.find(id); it != m_entries.end()) {
+        it->activationToken = token;
     }
 }
 
 void NotificationCenter::onActionInvoked(uint id, const QString& action)
 {
-    const auto it = m_entries.constFind(id);
-    if (it == m_entries.cend()) {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end()) {
         return;
     }
-    const Entry& e = *it;
+    const Entry e = *it;
+    it->activationToken.clear();
     const QString client = e.clientId.isEmpty() ? QStringLiteral("0") : e.clientId;
     if (action == QLatin1String("default")) {
         if (e.focusOnActivate && e.pane) {
-            if (auto* window = qobject_cast<TerminalWindow*>(e.pane->parent())) window->revealPane(e.pane);
+            if (auto* window = qobject_cast<TerminalWindow*>(e.pane->parent())) {
+                // Lets the window take focus on Wayland: Qt reads the token
+                // from the environment when the window asks to be activated.
+                if (!e.activationToken.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", e.activationToken.toUtf8());
+                window->revealPane(e.pane);
+                qunsetenv("XDG_ACTIVATION_TOKEN");
+            }
         }
         if (e.reportActivation && e.pane) {
             e.pane->sendInput(QStringLiteral("\x1b]99;i=%1;\x1b\\").arg(client).toStdString());

@@ -16,7 +16,10 @@ namespace AfterglowVt {
 /// https://uapi-group.org/specifications/specs/osc_context/
 struct ShellContext
 {
-    std::string id;
+    std::string id; ///< empty for the iTerm2 entry
+    /// The entry iTerm2's RemoteHost (OSC 1337) keeps, apart from the OSC 3008
+    /// ids, so that no OSC 3008 sequence can end or replace it.
+    bool iterm2RemoteHost = false;
     std::string type; ///< boot, container, vm, elevate, chpriv, subcontext, remote, shell, command, app, service, session
     std::string user;
     std::string hostname;
@@ -24,10 +27,12 @@ struct ShellContext
     std::string targetHost; ///< remote: where it connects
     std::string container;
     std::string vm;
+
+    bool operator==(const ShellContext&) const = default;
 };
 
-/// The open contexts, outermost first. Contexts nest: ending one ends any
-/// opened inside it.
+/// The open contexts, outermost first. Contexts nest: ending a context, or
+/// starting it again, ends the contexts opened inside it.
 class AFTERGLOWVT_EXPORT ShellContexts
 {
 public:
@@ -35,7 +40,9 @@ public:
 
     /// Applies an OSC 3008 payload. Returns true if the contexts changed.
     bool apply(std::string_view payload);
-    /// iTerm2's RemoteHost (OSC 1337): user@host, empty to clear.
+    /// iTerm2's RemoteHost (OSC 1337): user@host, empty to clear. It replaces
+    /// the previous one only, and becomes the innermost context. Returns true
+    /// if the contexts changed.
     bool setRemoteHost(std::string_view userAtHost);
     void clear() { m_stack.clear(); }
 

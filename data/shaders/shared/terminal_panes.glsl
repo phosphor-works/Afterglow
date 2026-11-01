@@ -3,8 +3,9 @@
 //
 // The panes of the window, and the pane overview, for TERMINAL shaders.
 // Every pass can read the block; it serves window shaders, which see the
-// whole window but not where its panes are, and the overview shader
-// (Shaders.overview), which runs only while the overview shows.
+// whole window but not where its panes are, the overview shader
+// (Shaders.overview), which runs only while the overview shows, and the tab
+// transition and pane effects shaders.
 //
 // Panes are cards in tab order, and in layout order within a tab: the order
 // of pane rotation and of the overview's arrow keys. While the overview is
@@ -38,12 +39,13 @@
 #define AFTERGLOW_TERMINAL_PANES_GLSL
 
 layout(std140, binding = 19) uniform TerminalPanes {
-    ivec4 uPaneState;      // offset 0     .x cards (0-32), .y focused card, .z highlighted card (-1 for none),
+    ivec4 uPaneState;      // offset 0     .x cards (0-32), .y focused card (-1 for none), .z highlighted card
+                           //              (-1 for none),
                            //              .w 1 while the overview is open, 0 while closed or closing
     vec4 uOverview;        // offset 16    .x how far the overview is open: 0 the flat window, 1 open
                            //                 (a spring can overshoot), .y the highlight's position in cards:
                            //                 fractional while it moves, and counting on past the last card
-                           //                 when it wraps round (take it modulo paneCount()), .z seconds since the overview
+                           //                 when it wraps around (take it modulo paneCount()), .z seconds since the overview
                            //                 opened or closed, .w seconds since the highlight moved
                            //                 (both 1e6 if never)
     ivec4 uTabState;       // offset 32    .x tabs with cards, .y the current tab's index
@@ -97,17 +99,23 @@ bool paneInCurrentTab(int pane) {
 vec4 paneTexel(int pane, vec2 uv) {
     pane = clamp(pane, 0, 31);
     vec4 source = uPaneSource[pane];
-    vec2 at = source.xy + clamp(uv, 0.0, 1.0) * source.zw;
     int kind = uPaneTab[pane].y;
+    // Stay half a texel inside the card: the sampler filters linearly, so a
+    // sample on the card's edge would take in the neighbouring pane or tile.
+    ivec2 size = kind == 1 ? textureSize(uTabImage, 0) : kind == 2 ? textureSize(uTabAtlas, 0) : textureSize(uTerminal, 0);
+    vec2 inset = min(0.5 / max(vec2(size), vec2(1.0)), source.zw * 0.5);
+    vec2 at = clamp(source.xy + clamp(uv, 0.0, 1.0) * source.zw, source.xy + inset, source.xy + source.zw - inset);
     if (kind == 1) return texture(uTabImage, at);
     if (kind == 2) return texture(uTabAtlas, at);
     return texture(uTerminal, at);
 }
 
+// -1 when no card is the focused pane.
 int focusedPane() {
     return uPaneState.y;
 }
 
+// -1 when no card is highlighted.
 int highlightedPane() {
     return uPaneState.z;
 }

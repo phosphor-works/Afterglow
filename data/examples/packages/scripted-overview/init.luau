@@ -3,8 +3,9 @@
 -- A package that ships a script and the shader it drives. Copy this folder
 -- into ~/.config/afterglow/scripts, run "Use Package Shaders…" to set
 -- Shaders.overview to scripted-overview.wall, and bind
--- "script:scripted-overview.open". The script owns the keyboard: a/d or h/l
--- move, w/s jump between tabs, Enter or Space chooses, q or Escape closes.
+-- "script:scripted-overview.open". The script owns the keyboard: a/d, h/l or
+-- the arrow keys move, w/s jump between tabs, Enter or Space chooses, q or
+-- Escape closes.
 local script = {}
 script.metadata = {
     name = "Scripted overview",
@@ -21,7 +22,7 @@ end
 function script.run_action(_, ev)
     if not ev.pane then return nil end
     local opened, err = afterglow.await(afterglow.overview(ev.pane, "open"))
-    if not opened then return afterglow.log(err.message) end
+    if not opened then return afterglow.notify("Scripted overview", err.message, ev.pane) end
     return afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close")
 end
 
@@ -48,7 +49,8 @@ function script.on_key(ev)
     local window = windowOf(ev)
     -- A click can close the overview without this script: give the keys back.
     if not window or not window.overview.open then return afterglow.end_key_mode() end
-    local key = ev.key
+    -- Letters arrive as typed: "A" with Caps Lock or Shift. Named keys keep their case.
+    local key = #ev.key == 1 and string.lower(ev.key) or ev.key
     if key == "a" or key == "h" or key == "Left" then return afterglow.overview_move(ev.pane, -1) end
     if key == "d" or key == "l" or key == "Right" then return afterglow.overview_move(ev.pane, 1) end
     if key == "w" or key == "s" then

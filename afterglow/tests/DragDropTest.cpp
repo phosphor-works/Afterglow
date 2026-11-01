@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "desktop/DragDrop.h"
+#include "desktop/FileDrop.h"
 #include <QDir>
 #include <QDropEvent>
 #include <QFile>
@@ -10,6 +11,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <gtest/gtest.h>
+#include <unistd.h>
 using namespace Afterglow;
 namespace {
 struct Dnd : testing::Test {
@@ -183,6 +185,76 @@ TEST_F(Dnd, ChunkedEnableAndReset)
     service.reset();
     EXPECT_FALSE(service.acceptsDrops());
     EXPECT_FALSE(service.offersDrags());
+}
+TEST_F(Dnd, RejectedFinalDropSendsLeave)
+{
+    service.handle("t=a;");
+    QMimeData mime;
+    mime.setText(QStringLiteral("unwanted"));
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    EXPECT_FALSE(event.isAccepted());
+    // Qt sends no leave event after a drop, so the client hears it here.
+    EXPECT_TRUE(contains("t=m:x=-1:y=-1"));
+}
+TEST_F(Dnd, DesktopMimeNamesAreFilteredBeforeTheyReachTheProgram)
+{
+    QMimeData mime;
+    mime.setText(QStringLiteral("hello"));
+    mime.setData(QStringLiteral("evil/\x1b\\inject"), "x");
+    mime.setData(QStringLiteral("spaced type/x"), "y");
+    enter(mime);
+    EXPECT_TRUE(contains("text/plain"));
+    EXPECT_FALSE(contains("inject"));
+    EXPECT_FALSE(contains("spaced"));
+}
+TEST_F(Dnd, ControlPayloadsAreBoundedAndReportedToTheirRole)
+{
+    service.handle("t=a:x=1;" + QByteArray(200, 'a'));
+    EXPECT_TRUE(contains("t=R"));
+    EXPECT_TRUE(contains("EINVAL"));
+    replies.clear();
+    service.handle("t=r:x=1;" + QByteArray(5000, 'a'));
+    EXPECT_TRUE(contains("EFBIG"));
+    EXPECT_FALSE(contains("t=E"));
+    replies.clear();
+    service.handle("t=m:m=1;" + QByteArray(4096, 'a'));
+    for (int n = 0; n < 40 && !contains("EFBIG"); ++n)
+        service.handle("m=1;" + QByteArray(4096, 'a'));
+    EXPECT_TRUE(contains("EFBIG"));
+    EXPECT_FALSE(contains("t=E"));
+}
+TEST_F(Dnd, FileUrlWithRemoteHostIsNotRead)
+{
+    QMimeData mime;
+    mime.setText(QStringLiteral("hello"));
+    mime.setUrls({ QUrl(QStringLiteral("file://server/etc/passwd")) });
+    enter(mime);
+    int stage = 0;
+    QObject::connect(&service, &DragDrop::reply, &service, [&](const QByteArray& b) {
+        if (b.contains("t=M"))
+            QTimer::singleShot(0, &service, [&] { service.handle("t=r:x=2;"); });
+        if (b.contains("t=r") && b.contains(";\x1b\\") && ++stage == 1)
+            QTimer::singleShot(0, &service, [&] { service.handle("t=r:x=2:y=1;"); });
+    });
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    EXPECT_FALSE(event.isAccepted());
+    EXPECT_TRUE(contains("EUNKNOWN"));
+}
+TEST(DndTree, LinksCannotLeaveTheTreeThroughOtherLinks)
+{
+    QTemporaryDir tree;
+    ASSERT_TRUE(tree.isValid());
+    const QString root = tree.path();
+    ASSERT_TRUE(QDir().mkpath(root + QStringLiteral("/1/a/b")));
+    EXPECT_TRUE(linkStaysInside(root + QStringLiteral("/1/a/b/s1"), "../..", root));
+    ASSERT_EQ(::symlink("../..", QFile::encodeName(root + QStringLiteral("/1/a/b/s1")).constData()), 0);
+    // Lexically "s1/../.." stays inside, but on disk it resolves above the tree.
+    EXPECT_FALSE(linkStaysInside(root + QStringLiteral("/1/a/b/s2"), "s1/../..", root));
+    EXPECT_FALSE(linkStaysInside(root + QStringLiteral("/1/a/b/s3"), "later/../..", root));
+    EXPECT_FALSE(linkStaysInside(root + QStringLiteral("/1/s4"), "../..", root));
+    EXPECT_TRUE(linkStaysInside(root + QStringLiteral("/1/a/b/s5"), "s1/a", root));
 }
 } // namespace
 int main(int argc, char** argv)

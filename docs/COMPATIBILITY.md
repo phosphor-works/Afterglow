@@ -11,8 +11,8 @@ The following table describes tested features. It does not claim complete xterm,
 
 | Feature | Supported behavior | Regression and interoperability fixture |
 | --- | --- | --- |
-| Kitty relative images | `P`, `Q`, signed `H`/`V`; parent movement; chained parents; cascade deletion; missing-parent, cycle and depth errors; virtual placeholder parents | `Graphics.Relative*` and transmit/placeholder pixel regressions; [moving-image client](../data/examples/compatibility/relative-images.py) |
-| Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursors*`, `Extensions.ExtraCursorColors*`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
+| Kitty relative images | `P`, `Q`, signed `H`/`V`; parent movement; chained parents; cascade deletion; missing-parent, cycle and depth errors; virtual placeholder parents | `Graphics.Relative*`, `Graphics.TransmitAndPlaceReportsInvalidRelativeParent` and transmit/placeholder pixel regressions; [moving-image client](../data/examples/compatibility/relative-images.py) |
+| Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursor*`, `Extensions.ExtraCursorColors*`, `Terminal.ExtraCursorsAreBounded`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
 | OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; explicit native Save dialog; cancellation; bounded data | `Extensions.Downloads*`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
 | IME context | Live cursor-row surrounding text, before/after text, UTF-16 position and cursor rectangle | `DesktopText.*`; [IME behavior](DESKTOP.md#input-methods-and-directionality) |
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI | `DesktopText.*`, `desktop_acceptance.py` |
@@ -22,9 +22,17 @@ The following table describes tested features. It does not claim complete xterm,
 ## Relative images
 
 Relative placement chains permit 32 parent links.
-Metadata limits are 4,096 images, 4,096 placements and 1,024 frames per image.
-Image data and pending transmissions have a 320 MiB limit.
-The configured store quota controls retained image data.
+
+The main screen and the alternate screen have separate image stores.
+Each store has these limits:
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Images | 4,096 | A Kitty command gets an `ENOSPC` error. |
+| Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel image removes the oldest placement. |
+| Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
+| Image data | `Graphics.quota`, 320 MiB by default | Afterglow deletes the oldest image without a placement, then the oldest image. |
+| Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
 
 An omitted parent placement ID selects the first matching placement at creation.
 Displayed Unicode placeholders determine a virtual parent's origin, including implied diacritics.
@@ -51,6 +59,7 @@ Capability queries return `1;2;3;29;30;40;100;101`. Clients must inspect the res
 
 CSI parsing permits 4,096 numeric parameters per sequence.
 An overflow rejects the complete command. Divide larger point sets across sequences.
+The terminal keeps at most 4,096 extra cursors. It ignores new positions after this limit.
 Full reset restores default colors. Clear and screen switches remove positions.
 Positions use screen coordinates and do not scroll with output.
 Cursors disappear while viewing scrollback. Resize clips positions to the screen.
@@ -60,6 +69,14 @@ With layer shaders, mixed cursor order requires one additional RGBA8 frame textu
 This costs approximately 7.9 MiB at 1080p or 31.6 MiB at 4K.
 A second cursor shader pass runs only when opposite drawing orders are required.
 Persistent cursor buffers retain separate history per layer within the shared allocation limit.
+
+## Notifications, links and shell contexts
+
+OSC 99 notification bodies can contain more than one line. Tabs become spaces.
+A base64 payload can be divided at any character between chunks.
+OSC 8 link text (URIs and ids) of each screen has a 16 MiB limit. Above it, new text prints without a link.
+OSC 3008 contexts form a stack. A `start` for a context that is open ends the contexts inside it.
+A terminal reset (RIS or the Reset command) keeps the context stack, as the [context specification](https://uapi-group.org/specifications/specs/osc_context/) requires.
 
 ## Downloads, input methods and bidirectional text
 
@@ -94,7 +111,7 @@ Support for a protocol does not imply support for every optional operation.
 Run focused tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Extensions.Multiple|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi'
+ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi'
 ```
 
 Run native acceptance:

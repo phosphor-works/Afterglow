@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "TestUtil.h"
+#include "../src/Base64.h"
 
 #include <gtest/gtest.h>
 
@@ -82,9 +83,62 @@ TEST(ProgramStatus, BadReportsAreDiscardedWhole)
         EXPECT_EQ(t.records()[0].state, good.state) << bad;
         EXPECT_EQ(t.records()[0].serial, good.serial) << bad;
     }
-    std::string huge = "\x1b]7501;state=done:msg=" + std::string(4100, 'A') + "\x1b\\";
-    t.feed(huge);
-    EXPECT_EQ(t.records()[0].state, StatusState::Working);
+}
+
+TEST(ProgramStatus, SizeLimits)
+{
+    ProgramStatus status;
+    auto repeat = [](std::string_view s, int n) {
+        std::string out;
+        for (int i = 0; i < n; ++i) {
+            out += s;
+        }
+        return out;
+    };
+    // msg: 2048 bytes decoded at most ("QUFB" is "AAA").
+    EXPECT_EQ(status.apply("state=done:msg=" + repeat("QUFB", 682) + "QUE="), ProgramStatus::Result::Changed);
+    EXPECT_EQ(status.records()[0].msg.size(), 2048u);
+    EXPECT_EQ(status.apply("state=working:msg=" + repeat("QUFB", 683)), ProgramStatus::Result::Ignored);
+    EXPECT_EQ(status.records()[0].state, StatusState::Done);
+    // The whole sequence: 4096 bytes with its 7-byte introducer and terminator.
+    const std::string body = "state=working:x=" + std::string(4072, 'a'); // 4088 bytes
+    EXPECT_EQ(status.apply(body, 2), ProgramStatus::Result::Ignored); // ST: 4097
+    EXPECT_EQ(status.apply(body, 1), ProgramStatus::Result::Changed); // BEL: 4096
+}
+
+TEST(ProgramStatus, TitleIsCheckedLikeMsg)
+{
+    Term t;
+    t.feed("\x1b]7501;state=blocked:title=QXBwbHk\x1b\\");
+    ASSERT_EQ(t.records().size(), 1u);
+    EXPECT_EQ(t.records()[0].title, "Apply");
+    const auto serial = t.records()[0].serial;
+    for (const std::string& bad : {
+             "state=done:title=" + detail::base64Encode(std::string(193, 'x')), // over 256 encoded bytes
+             "state=done:title=" + detail::base64Encode("a\nb"),
+             "state=done:msg=" + detail::base64Encode("ok\xe2\x80\xa8" "Approve? Press y"), // U+2028
+         }) {
+        t.feed("\x1b]7501;" + bad + "\x1b\\");
+        EXPECT_EQ(t.records()[0].serial, serial) << bad;
+    }
+    t.feed("\x1b]7501;state=done:title=" + detail::base64Encode(std::string(192, 'x')) + "\x1b\\");
+    EXPECT_EQ(t.records()[0].title.size(), 192u);
+}
+
+TEST(ProgramStatus, RepeatsThatChangeNothingAreSilent)
+{
+    Term t;
+    t.feed("\x1b]7501;state=clear\x1b\\\x1b]7501;state=clear\x1b\\");
+    EXPECT_EQ(t.host.changes, 0);
+    t.feed("\x1b]7501;state=working:id=a\x1b\\\x1b]7501;state=clear:id=b\x1b\\");
+    EXPECT_EQ(t.host.changes, 1);
+    t.feed("\x1b]7501;state=clear:id=a\x1b\\");
+    EXPECT_EQ(t.host.changes, 2);
+    t.t.programExited(); // lets ConEmu progress through again
+    t.feed("\x1b]9;4;1;30\x1b\\\x1b]9;4;1;30\x1b\\");
+    EXPECT_EQ(t.host.changes, 3);
+    t.feed("\x1b]9;4;1;31\x1b\\");
+    EXPECT_EQ(t.host.changes, 4);
 }
 
 TEST(ProgramStatus, HierarchyClearAndAppInheritance)
@@ -147,6 +201,24 @@ TEST(ProgramStatus, LegacyProgressUntilTheRealProtocol)
     // Once a program speaks OSC 7501, 9;4 no longer overwrites its records.
     t.feed("\x1b]7501;state=blocked:kind=question\x1b\\\x1b]9;4;1;50\x1b\\");
     EXPECT_EQ(t.records()[0].state, StatusState::Blocked);
+    // That lasts as long as the program: the next one may use 9;4 again.
+    t.feed("\x1b]7501;state=done\x1b\\\x1b]133;A\x1b\\");
+    const int changes = t.host.changes;
+    t.feed("\x1b]9;4;1;50\x1b\\");
+    ASSERT_EQ(t.records().size(), 1u);
+    EXPECT_EQ(t.records()[0].state, StatusState::Working);
+    EXPECT_EQ(t.records()[0].progress, 50);
+    EXPECT_EQ(t.host.changes, changes + 1);
+}
+
+TEST(ProgramStatus, ResultsKeepTheAppTheyInherited)
+{
+    Term t;
+    t.feed("\x1b]7501;state=working:app=cargo\x1b\\\x1b]7501;state=done:id=build\x1b\\");
+    t.feed("\x1b]133;A\x1b\\");
+    ASSERT_EQ(t.records().size(), 1u);
+    EXPECT_EQ(t.records()[0].id, "build");
+    EXPECT_EQ(t.t.programStatus().effectiveApp(t.records()[0]), "cargo");
 }
 
 TEST(ProgramStatus, RecordCapEvictsTheLeastRecentlyUpdated)
@@ -177,4 +249,20 @@ TEST(ProgramStatus, InvalidNativeReportDoesNotDisableLegacy)
     EXPECT_TRUE(status.applyLegacyProgress(1, 50));
     for (int i = 0; i < 300; ++i) status.apply("state=working:id=" + std::to_string(i));
     EXPECT_EQ(status.records().size(), ProgramStatus::MaxRecords);
+}
+
+TEST(ProgramStatus, RecordCapEvictsByUpdateNotByCreation)
+{
+    ProgramStatus status;
+    for (int i = 0; i < 256; ++i) {
+        status.apply("state=working:id=r" + std::to_string(i));
+    }
+    status.apply("state=done:id=r0"); // r0 is now the most recent
+    status.apply("state=working:id=r256");
+    auto has = [&](std::string_view id) {
+        return std::any_of(status.records().begin(), status.records().end(), [&](const auto& r) { return r.id == id; });
+    };
+    EXPECT_TRUE(has("r0"));
+    EXPECT_FALSE(has("r1"));
+    EXPECT_TRUE(has("r256"));
 }

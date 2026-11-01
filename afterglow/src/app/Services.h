@@ -17,7 +17,7 @@ class SettingsStore;
 class ShaderLibrary;
 
 /// What every window shares: one GPU device, the settings, the QML engine
-/// for the chrome, the shader library and the scripts.
+/// for the chrome, the shader library, the scripts and the audio analyzer.
 struct Services
 {
     AfterglowRender::GpuDevice& device;

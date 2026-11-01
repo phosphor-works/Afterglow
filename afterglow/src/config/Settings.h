@@ -6,9 +6,10 @@
 #include "Keybinds.h"
 #include "KeyModes.h"
 #include "../audio/AudioSettings.h"
-#include "../shaders/ShaderLibrary.h"
+#include "../shaders/ShaderRefs.h"
 
 #include <AfterglowRender/FontSet.h>
+#include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <PhosphorFsLoader/WatchedFileSet.h>
@@ -23,16 +24,20 @@
 namespace PhosphorConfig {
 class JsonBackend;
 class Store;
+struct Schema;
 } // namespace PhosphorConfig
 
 namespace Afterglow {
+
+struct Theme;
 
 struct WindowSettings
 {
     int padding = 6; ///< logical pixels around each pane's grid
     int initialColumns = 100;
     int initialRows = 30;
-    std::uint32_t dividerColor = 0xFF423A3A; ///< RGBA8 in memory order
+    static constexpr AfterglowVt::Rgb DefaultDivider{0x3a, 0x3a, 0x42};
+    std::uint32_t dividerColor = AfterglowRender::packRgba(DefaultDivider); ///< RGBA8 in memory order
     double unfocusedDim = 0.19;
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
@@ -142,17 +147,8 @@ struct HighlightColors
     bool operator==(const HighlightColors&) const = default;
 };
 
-/// Spectrum analysis behind the audio uniforms (Audio group). Kept beside
-/// AudioSettings, which holds the capture source.
-struct AudioTuning
-{
-    int framerate = 60; ///< spectrum updates per second
-    int smoothing = 65; ///< cava noise reduction, 0 (fast) to 100 (smooth)
-    double extraSmoothing = 0.2; ///< share of the previous frame kept on each update
-    int lowerCutoff = 50; ///< Hz
-    int higherCutoff = 10000; ///< Hz
-    bool operator==(const AudioTuning&) const = default;
-};
+/// The default Hints.patterns: file and line references, copied.
+QVariantList defaultHintPatterns();
 
 /// Everything afterglow reads from its config file.
 struct Settings
@@ -162,7 +158,6 @@ struct Settings
     WindowSettings window;
     AnimationSettings animation;
     AudioSettings audio;
-    AudioTuning audioTuning;
     QuickTerminalSettings quickTerminal;
     ControlSettings control;
     MouseSettings mouse;
@@ -200,8 +195,6 @@ struct Settings
     QString bellSound;
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
-    /// The theme file the colours came from; empty when none is set or found.
-    QString themePath;
     QString fileTransferPassword;
     /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString clipboardRead = QStringLiteral("ask");
@@ -214,13 +207,17 @@ struct Settings
     /// DECRQCRA checksum replies, which let any program read the screen back.
     bool allowScreenReadback = false;
     std::size_t graphicsQuota = std::size_t(320) << 20; ///< bytes of kitty images kept per terminal
-    QVariantList hintPatterns;
+    /// Each a map of pattern, action and command, checked when read.
+    QVariantList hintPatterns = defaultHintPatterns();
     KeyModes keyModes;
     Keybinds keybinds = Keybinds::defaults();
-    /// Shader references (pack ids or file paths) for each chain, applied in order.
-    ShaderLibrary::Refs shaders;
+    /// Shader references for each chain, applied in order: pack ids, or
+    /// "<package>.<pack>" for package packs.
+    ShaderRefs shaders{{}, {}, {}, {}, {}, QStringLiteral("pane-deck"), QStringLiteral("tab-switch"),
+                       QStringLiteral("pane-effects")};
     /// Reference -> { parameter: value }.
     QVariantMap shaderParams;
+    bool operator==(const Settings&) const = default;
 };
 
 /// The config file (~/.config/afterglow/config.json) on phosphor-config,
@@ -240,27 +237,44 @@ public:
     static QString defaultPath();
     /// Machine-readable reference generated from the runtime Phosphor schema.
     static QJsonObject reference();
+    /// Every group, key, default and validator.
+    static PhosphorConfig::Schema schema();
 
     const Settings& settings() const noexcept { return m_settings; }
     QString path() const { return m_path; }
+    /// What the last read could not use: a file that does not parse, unknown
+    /// keys, bad values, missing themes. Each is also logged.
+    QStringList problems() const { return m_fileProblems + m_readProblems; }
 
-    /// Re-reads the file. A file that does not parse keeps the current settings.
+    /// Re-reads the file. A file that cannot be read, does not parse or does
+    /// not hold a JSON object keeps the current settings; a deleted file
+    /// means every default.
     void reload();
-    /// Writes one key to the config file and reloads. Command-line overrides
-    /// keep winning over the file. False when the file cannot be written.
+    /// Writes one key to the config file and reloads. A value equal to the
+    /// default removes the key. Command-line overrides keep winning over the
+    /// file. False for an undeclared key, or when the file cannot be read
+    /// back (it would lose what it holds) or written.
     bool write(const QString& group, const QString& key, const QVariant& value);
 
     /// "Group.key=value" as an override; the value is JSON when it parses
-    /// (14, true, ["calt"]), else a string. Returns false if malformed.
+    /// (14, true, ["calt"]), else a string. Returns false if malformed or if
+    /// the schema has no such key.
     static bool addOverride(QJsonObject& overrides, const QString& assignment);
 
 Q_SIGNALS:
     /// Emitted after a reload changed anything; settings() holds the new values.
     void changed(const Settings& previous);
+    void problemsChanged(const QStringList& problems);
 
 private:
+    /// Parses the file once and hands the document to the backend. False,
+    /// with the reason in problems(), when the current settings must stay.
+    bool loadFile();
+    /// Reads the backend's document, emitting changed() if that changes anything.
+    void apply();
     void watch();
-    Settings read() const;
+    Settings read();
+    void setProblems(QStringList* list, const QStringList& problems);
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
 
@@ -269,6 +283,11 @@ private:
     std::unique_ptr<PhosphorConfig::JsonBackend> m_backend;
     std::unique_ptr<PhosphorConfig::Store> m_store;
     Settings m_settings;
+    /// The last theme that parsed, kept while its file is saved half-written.
+    QString m_themeFile;
+    std::shared_ptr<const Theme> m_theme;
+    QStringList m_fileProblems;
+    QStringList m_readProblems;
     PhosphorFsLoader::WatchedFileSet m_files; ///< the config file and its theme
 };
 

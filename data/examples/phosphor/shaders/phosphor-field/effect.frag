@@ -83,7 +83,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
     float t = time*p_speed;
     // Signal ages at this sample's moment, which the shutter can put slightly
     // in the past.
-    float lag = iTime-time;
+    float lag = timeSeconds()-time;
     float failureAge = max(0.0,phAge(0)-lag), successAge = max(0.0,phAge(1)-lag);
     float heat = p_commandHeat;
     float bass = bassDrive(), mids = midDrive(), treble = trebleDrive();
@@ -307,7 +307,8 @@ vec3 atmosphere(vec3 rd, float t, float heat) {
     return color;
 }
 vec3 traceScene(vec2 pixel, float shutter) {
-    float time = max(0.0,iTime-shutter), t = time*p_speed;
+    // The full clock, so the scene does not jump when iTime wraps.
+    float time = max(0.0,timeSeconds()-shutter), t = time*p_speed;
     float heat = p_commandHeat;
     vec2 uv = (pixel-uWindowSize*vec2(0.60,0.55))/uWindowSize.y;
     // The pointer anywhere in the window steers the one camera all panes share.
@@ -366,6 +367,7 @@ vec4 pTerminal(vec2 uv) {
     float empty = 1.0-smoothstep(0.01,0.08,length(base.rgb-uBackgroundColor.rgb*base.a));
     // Store scene-linear radiance in RGBA16F. The lens pass performs bloom
     // before tone mapping; glyphs are composited afterward and remain crisp.
-    vec3 linearBase = pow(max(base.rgb,vec3(0)),vec3(2.2));
+    // The transfer works on straight colour: undo and redo the premultiply.
+    vec3 linearBase = base.a > 0.0 ? pow(max(base.rgb/base.a,vec3(0)),vec3(2.2))*base.a : vec3(0);
     return vec4(linearBase+light*base.a*empty,base.a);
 }

@@ -13,8 +13,8 @@ namespace AfterglowRender::Sprites {
 /// between rows.
 bool isSprite(char32_t cp);
 
-/// Draws @p cp into @p canvas (Format_Alpha8, one cell). @p thickness is the
-/// light line width in pixels. Returns false if @p cp is not a sprite.
+/// Draws @p cp into @p canvas (Format_Alpha8, the sprite's cells). @p thickness
+/// is the light line width in pixels. Returns false if @p cp is not a sprite.
 bool draw(char32_t cp, QImage& canvas, int thickness);
 
 } // namespace AfterglowRender::Sprites

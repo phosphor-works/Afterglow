@@ -9,6 +9,7 @@
 #include <PhosphorShaders/CustomParamsKey.h>
 #include <PhosphorShaders/ShaderParamPreamble.h>
 #include <QImage>
+#include <cstddef>
 #include <vector>
 #include <QByteArray>
 #include <QHash>
@@ -115,12 +116,23 @@ struct alignas(16) TerminalPaneUniforms {
     float uPaneRect[MaxShaderPanes][4] {};
     float uPaneSource[MaxShaderPanes][4] {}; ///< uv rectangle in the card's source
     std::int32_t uPaneTab[MaxShaderPanes][4] {}; ///< tab, source (0 input, 1 tab, 2 atlas), index in tab
-    float uPaneLife[MaxShaderPanes][4] {}; ///< opening progress, the edge it opened from
+    float uPaneLife[MaxShaderPanes][4] {}; ///< opening progress, the edge it opened from, context progress, context
     float uClosedRect[4] {};
     float uClosed[4] {1.0f, 0.0f, 0.0f, 0.0f}; ///< closing progress, showing
     float uPanePulse[MaxShaderPanes][4] {}; ///< progress, effect, palette colour
 };
 static_assert(sizeof(TerminalPaneUniforms) == 2656);
+// The std140 offsets of terminal_panes.glsl: a reorder that keeps the size fails here.
+static_assert(offsetof(TerminalPaneUniforms, uOverview) == 16);
+static_assert(offsetof(TerminalPaneUniforms, uTabState) == 32);
+static_assert(offsetof(TerminalPaneUniforms, uTabTransition) == 48);
+static_assert(offsetof(TerminalPaneUniforms, uPaneRect) == 64);
+static_assert(offsetof(TerminalPaneUniforms, uPaneSource) == 576);
+static_assert(offsetof(TerminalPaneUniforms, uPaneTab) == 1088);
+static_assert(offsetof(TerminalPaneUniforms, uPaneLife) == 1600);
+static_assert(offsetof(TerminalPaneUniforms, uClosedRect) == 2112);
+static_assert(offsetof(TerminalPaneUniforms, uClosed) == 2128);
+static_assert(offsetof(TerminalPaneUniforms, uPanePulse) == 2144);
 struct ShaderGeometry {
     QByteArray vertexCode; ///< defines `vec4 pMesh()`, the Vulkan clip position, or its own main()
     QString directory; ///< resolves the vertex code's quoted includes
@@ -167,7 +179,8 @@ struct ShaderProgramSource
     std::array<QString, MaxShaderImages> imagePaths;
 };
 
-/// Sparse per-instance overrides; applied only while packing frame uniforms.
+/// Sparse per-instance overrides: parameters and colours are applied while
+/// packing frame uniforms, images when PostChain binds the textures.
 struct ShaderParameterValues
 {
     std::array<float, 32> params{};
@@ -206,6 +219,8 @@ class AFTERGLOWRENDER_EXPORT ShaderProgram
 {
 public:
     /// Compiles @p source. Returns nullptr and sets @p error on failure.
+    /// A final pass (this source) may not carry mesh geometry or a depth
+    /// output: those belong to buffer passes.
     static std::shared_ptr<ShaderProgram> compile(const ShaderProgramSource& source, QString* error);
     /// Copies the input through unchanged; ends a chain that has no window shader.
     static std::shared_ptr<ShaderProgram> passthrough();
@@ -218,17 +233,14 @@ public:
     /// The world and normal matrices of @p objects at @p time seconds, with
     /// @p params as the parameter values. Objects past MaxSceneObjects are ignored.
     static void sceneMatrices(const std::vector<ShaderSceneObject>& objects, const std::array<float, 32>& params,
-                              float time, TerminalSceneUniforms& out);
+                              double time, TerminalSceneUniforms& out);
 
-    const ShaderProgram* buffer() const noexcept { return m_buffers.empty() ? nullptr : m_buffers.front().get(); }
     const auto& buffers() const noexcept { return m_buffers; }
+    /// A buffer pass's settings (scale, format, filter, wrap, feedback). Its
+    /// code and geometry live in buffers()[i] and are not kept here.
     const ShaderBufferSource& bufferSettings(std::size_t i) const { return m_bufferSettings.at(i); }
     const auto& images() const noexcept { return m_images; }
     const auto& imagePaths() const noexcept { return m_imagePaths; }
-    bool bufferFeedback() const noexcept { return m_bufferFeedback; }
-    bool halfFloatBuffer() const noexcept { return m_halfFloatBuffer; }
-    float bufferScale() const noexcept { return m_bufferScale; }
-    bool bufferNearest() const noexcept { return m_bufferNearest; }
     const QShader& vertexShader() const noexcept { return m_vertexShader; }
     bool depthOutput() const noexcept { return m_depthOutput; }
     const ShaderGeometry& geometry() const noexcept { return m_geometry; }
@@ -246,6 +258,8 @@ public:
     /// The shader reads time or event ages, so the window must keep rendering frames.
     bool animated() const noexcept { return m_animated; }
     bool readsScrollback() const noexcept { return m_readsScrollback; }
+    /// Reads the pointer (iMouse or uWindowMouse): the window renders when it moves.
+    bool readsMouse() const noexcept { return m_readsMouse; }
     /// Includes terminal_history.glsl.
     bool readsPreviousText() const noexcept { return m_readsPreviousText; }
     /// Metadata `highDynamicRange`: retain highlights above 1 between passes.
@@ -258,14 +272,12 @@ public:
     const std::array<float, 64>& colors() const noexcept { return m_colors; }
 
 private:
+    static std::shared_ptr<ShaderProgram> compileStage(const ShaderProgramSource& source, QString* error, bool bufferPass);
+
     std::vector<std::shared_ptr<ShaderProgram>> m_buffers;
     std::vector<ShaderBufferSource> m_bufferSettings;
     std::array<QImage, MaxShaderImages> m_images;
     std::array<QString, MaxShaderImages> m_imagePaths;
-    bool m_bufferFeedback = false;
-    bool m_halfFloatBuffer = true;
-    float m_bufferScale = 1.0f;
-    bool m_bufferNearest = false;
     QShader m_shader;
     QShader m_vertexShader;
     bool m_depthOutput = false;
@@ -275,6 +287,7 @@ private:
     bool m_animated = false;
     bool m_readsPreviousText = false;
     bool m_readsScrollback = false;
+    bool m_readsMouse = false;
     bool m_requiresHdr = false;
     bool m_requiresAudio = false;
     bool m_windowBackground = false;

@@ -30,13 +30,19 @@ AudioController::AudioController(std::unique_ptr<PhosphorAudio::IAudioSpectrumPr
             [this](const QVector<float>& spectrum) {
         if (m_requested && m_settings.enabled && !m_consumers.isEmpty()) {
             m_stale.start();
+            m_cleared = spectrum.isEmpty();
             Q_EMIT spectrumChanged(spectrum);
         }
     });
+    // The analyzer stopped by itself (CAVA crashed or failed): the next
+    // visibility or configuration change starts it again, never a loop here.
     connect(m_provider.get(), &PhosphorAudio::IAudioSpectrumProvider::runningChanged, this, [this](bool running) {
-        if (!running) clear();
+        if (running) return;
+        m_requested = false;
+        clear();
     });
     connect(m_provider.get(), &PhosphorAudio::IAudioSpectrumProvider::errorOccurred, this, [this](const QString& message) {
+        m_requested = false;
         clear();
         qCWarning(lcAudio).noquote() << message;
     });
@@ -62,13 +68,13 @@ void AudioController::configure(const AudioSettings& settings)
         clear();
     }
     PhosphorAudio::SpectrumOptions options;
-    options.barCount = 64;
-    options.framerate = 60;
+    options.barCount = 64; // the bins of the shader contract's audio uniforms
+    options.framerate = settings.framerate;
     options.channelMode = PhosphorAudio::ChannelMode::MonoAverage;
-    options.noiseReduction = 65;
-    options.extraSmoothing = 0.2;
-    options.lowerCutoffHz = 50;
-    options.higherCutoffHz = 10000;
+    options.noiseReduction = settings.smoothing;
+    options.extraSmoothing = settings.extraSmoothing;
+    options.lowerCutoffHz = settings.lowerCutoff;
+    options.higherCutoffHz = settings.higherCutoff;
     options.inputMethod = PhosphorAudio::inputMethodFromSetting(settings.inputMethod);
     options.inputSource = settings.inputSource;
     m_provider->setOptions(options);
@@ -96,8 +102,6 @@ void AudioController::reconcile()
     if (wanted == m_requested) return;
     m_requested = wanted;
     if (wanted) {
-        // The provider reports missing CAVA or a failed backend once. Retry
-        // on a new visibility/configuration request, never in a respawn loop.
         m_provider->start();
     } else {
         m_provider->stop();
@@ -108,6 +112,8 @@ void AudioController::reconcile()
 void AudioController::clear()
 {
     m_stale.stop();
+    if (m_cleared) return;
+    m_cleared = true;
     Q_EMIT spectrumChanged({});
 }
 

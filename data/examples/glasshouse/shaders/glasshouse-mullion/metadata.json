@@ -2,13 +2,13 @@
     "id": "glasshouse-mullion",
     "name": "Glasshouse Mullion",
     "category": "Pane",
-    "description": "For the pane chain: splits meet at a leaded mullion (the window's own frame is Vitrail's). Focus arriving gilds the pane's mullions behind a hot tip. The bell sends a shock ring through the glass.",
+    "description": "In the pane chain, splits meet at a leaded mullion. The window's own frame is Vitrail's. Focus arriving gilds the pane's mullions behind a hot tip. The bell sends a shock ring through the glass.",
     "author": "afterglow, after Dsaquel's Glasshouse",
     "version": "2.0",
     "fragmentShader": "effect.frag",
     "parameters": [
-        { "id": "came", "name": "Mullion Half-Width (px)", "group": "Mullion", "type": "float", "default": 3.0, "min": 1.0, "max": 8.0 },
-        { "id": "gildTime", "name": "Gilding Time (seconds)", "group": "Mullion", "type": "float", "default": 0.6, "min": 0.1, "max": 3.0 },
-        { "id": "shock", "name": "Bell Shock", "group": "Bell", "type": "float", "default": 1.0, "min": 0.0, "max": 2.0 }
+        { "id": "came", "name": "Mullion half-width (px)", "group": "Mullion", "type": "float", "default": 3.0, "min": 1.0, "max": 8.0 },
+        { "id": "gildTime", "name": "Gilding time (seconds)", "group": "Mullion", "type": "float", "default": 0.6, "min": 0.1, "max": 3.0 },
+        { "id": "shock", "name": "Bell shock", "group": "Bell", "type": "float", "default": 1.0, "min": 0.0, "max": 2.0 }
     ]
 }

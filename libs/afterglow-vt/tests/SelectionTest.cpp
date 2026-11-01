@@ -115,3 +115,56 @@ TEST(Selection, WideTailStartAndBoundedUtf8)
     EXPECT_EQ(selection.text(t.t.screen(), DefaultWordBoundaries, 2, &truncated), "");
     EXPECT_TRUE(truncated);
 }
+
+TEST(Selection, KeyboardMovementSkipsWideTailsAndClampsHistory)
+{
+    Term t(6, 2);
+    t.t.feed("a\xe7\x95\x8c" "e\xcc\x81");
+    const auto& screen = t.t.screen();
+    SelectionPoint p{screen.rowsDropped(), 0};
+    p = moveSelectionCursor(screen, p, 1, 0);
+    EXPECT_EQ(p.col, 1);
+    p = moveSelectionCursor(screen, p, 1, 0);
+    EXPECT_EQ(p.col, 3);
+    p = moveSelectionCursor(screen, p, -1, 0);
+    EXPECT_EQ(p.col, 1);
+    const SelectionPoint top = moveSelectionCursor(screen, {screen.rowsDropped(), 0}, -1, -100);
+    EXPECT_EQ(top.row, screen.rowsDropped());
+    EXPECT_EQ(top.col, 0);
+    EXPECT_EQ(moveSelectionCursor(screen, p, 0, 100).row, screen.rowsDropped() + screen.totalRows() - 1);
+}
+
+TEST(Selection, WordCrossesTheSpacerHeadOfAWrappedWideCharacter)
+{
+    Term t(80, 3);
+    t.t.feed(std::string(79, 'a') + "\xe4\xb8\xad"); // 中 wraps; column 79 is a spacer head
+    ASSERT_TRUE(t.t.screen().row(0).cells[79].isSpacerHead());
+    const Selection sel = t.select(1, 0, 1, 0, SelectionMode::Word);
+    EXPECT_EQ(sel.text(t.t.screen()), std::string(79, 'a') + "\xe4\xb8\xad");
+}
+
+TEST(Selection, WordIsExpandedOnceWhenSelected)
+{
+    Term t(20, 3);
+    t.t.feed("abc");
+    const Selection sel = t.select(0, 1, 0, 1, SelectionMode::Word);
+    EXPECT_EQ(sel.text(t.t.screen()), "abc");
+    t.t.feed("def"); // output that later extends the word
+    EXPECT_EQ(sel.text(t.t.screen()), "abc");
+    Selection moved = sel;
+    moved.head.col = 4; // a new end expands again
+    EXPECT_EQ(moved.text(t.t.screen()), "abcdef");
+}
+
+TEST(Selection, RangeOfRowsThatAreGoneIsNotExpanded)
+{
+    Term t(20, 3);
+    Selection sel = t.select(0, 3, 0, 5, SelectionMode::Word);
+    sel.anchor.row += 1000;
+    sel.head.row += 1000;
+    const Selection::Range r = sel.range(t.t.screen());
+    EXPECT_EQ(r.start, sel.anchor);
+    EXPECT_EQ(r.end, sel.head);
+    sel.mode = SelectionMode::Line;
+    EXPECT_EQ(sel.range(t.t.screen()).start, sel.anchor);
+}

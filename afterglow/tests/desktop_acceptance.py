@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""D1 native AT-SPI text/selection and OSC 1337 save/cancel acceptance.
+"""Native AT-SPI text and selection, and OSC 1337 save and cancel acceptance.
 Requires python-dbus and the nested_desktop dependencies. Runs on a private bus.
 """
 import argparse
 import json
 import os
 import shlex
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +25,11 @@ args = parser.parse_args()
 binary = str(args.binary.resolve())
 if not args.private_bus:
     sys.exit(subprocess.call(['dbus-run-session', '--', sys.executable, '-u', __file__, binary, '--private-bus'] + (['--it2dl', str(args.it2dl.resolve())] if args.it2dl else [])))
+REGISTRY_PATHS = ('/usr/lib/at-spi2-registryd', '/usr/libexec/at-spi2-registryd',
+                  '/usr/lib/at-spi2-core/at-spi2-registryd', '/usr/libexec/at-spi2-core/at-spi2-registryd')
+registryd = next((path for path in REGISTRY_PATHS if os.access(path, os.X_OK)), shutil.which('at-spi2-registryd'))
+if not registryd:
+    sys.exit('at-spi2-registryd was not found')
 A = 'org.a11y.atspi.Accessible'
 T = 'org.a11y.atspi.Text'
 P = 'org.freedesktop.DBus.Properties'
@@ -35,15 +42,16 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
         'Control': {'allowReadText': True}, 'QuickTerminal': {'shortcut': ''},
         'Animation': {'cursor': False, 'scroll': False},
     }))
-    (root / '.bashrc').write_text("PS1='D1> '\nprintf 'ACCESSIBLE-READY\\n'\n")
-    with NestedDesktop(root) as desktop, open('/tmp/afterglow-d1-native.log', 'w') as log:
+    (root / '.bashrc').write_text("PS1='desktop> '\nprintf 'ACCESSIBLE-READY\\n'\n")
+    # Logs outlive the temporary root. A private directory avoids collisions in a shared /tmp.
+    logs = Path(tempfile.mkdtemp(prefix='afterglow-desktop-logs-'))
+    print('Logs:', logs)
+    def accessibility_bus():
+        address = dbus.Interface(dbus.SessionBus().get_object('org.a11y.Bus', '/org/a11y/bus'), 'org.a11y.Bus').GetAddress()
+        return address, dbus.bus.BusConnection(str(address))
+    with NestedDesktop(root) as desktop, open(logs / 'native.log', 'w') as log:
         env = dict(desktop.env, QT_LINUX_ACCESSIBILITY_ALWAYS_ON='1', QT_ACCESSIBILITY='1', QT_QPA_PLATFORMTHEME='generic', QT_LOGGING_TO_CONSOLE='1', QT_FORCE_STDERR_LOGGING='1')
-        session = dbus.SessionBus()
-        address = dbus.Interface(session.get_object('org.a11y.Bus', '/org/a11y/bus'), 'org.a11y.Bus').GetAddress()
-        bus = dbus.bus.BusConnection(str(address))
-        registry_process = subprocess.Popen(['/usr/lib/at-spi2-registryd'], env=dict(env, AT_SPI_BUS_ADDRESS=str(address)), stdout=log, stderr=subprocess.STDOUT)
-        wait_for(lambda: bus.name_has_owner('org.a11y.atspi.Registry'))
-        app = subprocess.Popen([binary, '--title', 'D1 native acceptance'], env=env, stdout=log, stderr=subprocess.STDOUT)
+        registry_process = app = None
         def ctl(*items):
             p = subprocess.run([binary, 'ctl', *map(str, items)], env=env, capture_output=True, text=True, timeout=10)
             if p.returncode: raise RuntimeError(p.stderr)
@@ -52,11 +60,13 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             try: return json.loads(ctl('ls', '--json'))
             except RuntimeError: return []
         try:
+            address, bus = accessibility_bus()
+            registry_process = subprocess.Popen([registryd], env=dict(env, AT_SPI_BUS_ADDRESS=str(address)), stdout=log, stderr=subprocess.STDOUT)
+            wait_for(lambda: bus.name_has_owner('org.a11y.atspi.Registry'))
+            app = subprocess.Popen([binary, '--title', 'Desktop acceptance'], env=env, stdout=log, stderr=subprocess.STDOUT)
             wait_for(panes)
             desktop.activate()
-            session = dbus.SessionBus()
-            address = dbus.Interface(session.get_object('org.a11y.Bus', '/org/a11y/bus'), 'org.a11y.Bus').GetAddress()
-            bus = dbus.bus.BusConnection(str(address))
+            address, bus = accessibility_bus()
             registry = bus.get_object('org.a11y.atspi.Registry', '/org/a11y/atspi/accessible/root')
             def terminals():
                 found = []
@@ -79,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             assert int(text.GetNSelections()) == 1
             assert text.RemoveSelection(0)
             cursor = int(dbus.Interface(terminal, P).Get(T, 'CaretOffset'))
-            assert content[:cursor].endswith('D1> '), (content, cursor)
+            assert content[:cursor].endswith('desktop> '), (content, cursor)
             rect = text.GetCharacterExtents(start, 0)
             assert int(rect[2]) > 0 and int(rect[3]) > 0
             assert int(text.GetOffsetAtPoint(int(rect[0]) + 1, int(rect[1]) + 1, 0)) == start
@@ -106,15 +116,20 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
                 assert dbus.Interface(obj, 'org.a11y.atspi.Action').DoAction(0)
             # A real protocol download; receiving alone must not write a file.
             fixture = root / 'download.sh'
-            fixture.write_text("printf '\\033]1337;File=name=ZDEtdGVzdC50eHQ=;size=5:aGVsbG8=\\007'\n")
+            offered = 'desktop-test.txt'
+            fixture.write_text("printf '\\033]1337;File=name=ZGVza3RvcC10ZXN0LnR4dA==;size=5:aGVsbG8=\\007'\n")
+            source = None
             if args.it2dl:
-                source = root / 'd1-test.txt'
+                source = root / offered
                 source.write_bytes(b'hello')
                 fixture.write_text(shlex.join(['bash', str(args.it2dl.resolve()), str(source)]) + '\n')
             def offer(): ctl('send-text', '--pane', panes()[0]['id'], shlex.join(['bash', str(fixture)]) + '\n')
             offer()
             press('cancel')
             wait_for(lambda: button('cancel') is None)
+            # The home directory, and every download directory in it, is under root.
+            written = [p for p in root.rglob(offered) if p != source]
+            assert not written, written
             assert not (root / 'accepted.txt').exists()
             time.sleep(.5)
             offer()
@@ -129,10 +144,11 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             assert destination.read_bytes() == b'hello'
             print('PASS: OSC 1337 cancellation and explicit save')
         finally:
-            import shutil
-            shutil.copyfile(root / 'kwin.log', '/tmp/afterglow-d1-kwin.log') if (root / 'kwin.log').exists() else None
-            registry_process.terminate()
-            registry_process.wait(timeout=5)
-            app.terminate()
-            try: app.wait(timeout=5)
-            except subprocess.TimeoutExpired: app.kill(); app.wait()
+            if (root / 'kwin.log').exists():
+                shutil.copyfile(root / 'kwin.log', logs / 'kwin.log')
+            for process in (registry_process, app):
+                if process is None:
+                    continue
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill(); process.wait()

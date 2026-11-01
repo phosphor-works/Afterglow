@@ -4,7 +4,7 @@
 # Project autosave
 
 This package periodically saves enabled projects and provides a native restore picker.
-It uses ideas from [resurrect.wezterm](https://github.com/StephenGemin/resurrect.wezterm).
+It uses ideas from [resurrect.wezterm](https://github.com/MLFlexer/resurrect.wezterm).
 It does not run WezTerm plugins.
 
 Install from the repository root:
@@ -14,7 +14,7 @@ mkdir -p ~/.config/afterglow/scripts
 cp -r data/examples/packages/project-autosave ~/.config/afterglow/scripts/
 ```
 
-For a custom configuration, use the adjacent `scripts/` directory.
+When you use a custom configuration file, use the `scripts/` directory beside that file.
 The package loads immediately. Installation does not enable autosave.
 
 ## Use autosave

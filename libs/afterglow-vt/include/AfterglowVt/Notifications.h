@@ -27,10 +27,10 @@ struct NotificationRequest
     Kind kind = Kind::Show;
     std::string id; ///< [A-Za-z0-9_+.-] only; empty when the program gave none
     std::string title; ///< UTF-8 without control characters
-    std::string body;
+    std::string body; ///< UTF-8 without control characters except newlines
     std::vector<std::string> buttons;
     std::vector<std::string> iconNames; ///< first one available wins
-    std::string iconData; ///< PNG, JPEG or GIF bytes
+    std::string iconData; ///< PNG, JPEG or GIF bytes; anything else is dropped
     std::string iconCacheId; ///< 'g': icon data to remember, or to reuse when iconData is empty
     std::string appName; ///< 'f'
     std::vector<std::string> types; ///< 't'
@@ -52,24 +52,34 @@ public:
     /// Feeds the OSC payload after "99;". On Ready, @p out holds the request;
     /// on Query, @p out.id holds the id to answer with.
     Result feed(std::string_view payload, NotificationRequest& out);
-    void reset() { m_pending.clear(); }
+    void reset();
 
     /// The reply to a capability query, given the host's capability list
     /// ("a=focus,report:c=1:...").
     static std::string queryReply(std::string_view id, std::string_view capabilities);
-    /// Strips an identifier down to the characters the protocol allows, so
-    /// it is safe to echo back.
-    static std::string sanitizeId(std::string_view id);
 
 private:
+    enum class Payload : std::uint8_t { Title, Body, Buttons, Icon };
     struct Pending
     {
         NotificationRequest request;
         std::string buttons; ///< U+2028-separated, split when complete
-        std::size_t bytes = 0;
+        /// Base64 characters short of a whole group, carried to the next
+        /// chunk: a sender may cut the encoded text anywhere.
+        std::string carry;
+        Payload carryPayload = Payload::Title;
         std::uint64_t serial = 0;
     };
-    std::unordered_map<std::string, Pending> m_pending;
+    using PendingMap = std::unordered_map<std::string, Pending>;
+
+    static std::string& target(Pending& p, Payload payload);
+    void erase(PendingMap::iterator it);
+
+    PendingMap m_pending;
+    /// Ids whose chunk failed: their later chunks are ignored up to the last
+    /// one, so the tail of a broken notification is not shown on its own.
+    std::vector<std::string> m_failed;
+    std::size_t m_pendingIconBytes = 0;
     std::uint64_t m_serial = 0;
 };
 

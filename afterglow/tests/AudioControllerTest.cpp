@@ -54,11 +54,12 @@ protected:
         source = provider.get();
         controller = std::make_unique<AudioController>(std::move(provider));
         QObject::connect(controller.get(), &AudioController::spectrumChanged, controller.get(),
-                         [this](const QVector<float>& frame) { spectrum = frame; });
+                         [this](const QVector<float>& frame) { spectrum = frame; ++emitted; });
     }
     static void flush() { QCoreApplication::processEvents(); }
     Provider* source = nullptr;
     QVector<float> spectrum;
+    int emitted = 0;
     std::unique_ptr<AudioController> controller;
 };
 } // namespace
@@ -84,7 +85,7 @@ TEST_F(Audio, CapturesOnlyWhileAtLeastOneConsumerNeedsIt)
     flush();
     EXPECT_FALSE(source->isRunning());
     EXPECT_TRUE(spectrum.isEmpty());
-    source->frame(1.0f); // A queued frame after stopping must be ignored.
+    source->frame(1.0f); // A frame after stopping must be ignored.
     EXPECT_TRUE(spectrum.isEmpty());
 }
 
@@ -98,6 +99,7 @@ TEST_F(Audio, CoalescesVisibilityChangesAndLiveReloadsSettings)
     controller->setActive(&window, true);
     flush();
     source->frame(0.5f);
+    ASSERT_FALSE(spectrum.isEmpty());
     AudioSettings settings;
     settings.enabled = false;
     settings.inputMethod = QStringLiteral("pulse");
@@ -155,6 +157,64 @@ TEST_F(Audio, ClearsStalledAndFailedCapture)
     Q_EMIT source->errorOccurred(QStringLiteral("test capture failure"));
     EXPECT_TRUE(spectrum.isEmpty());
     EXPECT_EQ(source->starts, 1);
+}
+
+TEST_F(Audio, RestartsAfterTheAnalyzerFailsWhileAConsumerStays)
+{
+    QObject window;
+    controller->setActive(&window, true);
+    flush();
+    EXPECT_EQ(source->starts, 1);
+    // CAVA failed while the window stayed visible.
+    Q_EMIT source->errorOccurred(QStringLiteral("test capture failure"));
+    QObject other;
+    controller->setActive(&other, true);
+    flush();
+    EXPECT_EQ(source->starts, 2);
+    // It also exited by itself.
+    source->running = false;
+    Q_EMIT source->runningChanged(false);
+    controller->setActive(&other, false);
+    flush();
+    EXPECT_EQ(source->starts, 3);
+    EXPECT_TRUE(source->isRunning());
+}
+
+TEST_F(Audio, SendsAnEmptySpectrumOnlyAfterAudio)
+{
+    QObject window;
+    controller->setActive(&window, true);
+    flush();
+    AudioSettings settings;
+    settings.inputSource = QStringLiteral("speakers.monitor");
+    controller->configure(settings);
+    flush();
+    EXPECT_EQ(emitted, 0);
+    source->frame(0.3f);
+    EXPECT_EQ(emitted, 1);
+    Q_EMIT source->errorOccurred(QStringLiteral("test capture failure"));
+    EXPECT_EQ(emitted, 2);
+    EXPECT_TRUE(spectrum.isEmpty());
+    controller->setActive(&window, false);
+    flush();
+    EXPECT_EQ(emitted, 2);
+}
+
+TEST_F(Audio, PassesTheTuningToTheAnalyzer)
+{
+    AudioSettings settings;
+    settings.framerate = 120;
+    settings.smoothing = 30;
+    settings.extraSmoothing = 0.5;
+    settings.lowerCutoff = 80;
+    settings.higherCutoff = 16000;
+    controller->configure(settings);
+    EXPECT_EQ(source->opts.framerate, 120);
+    EXPECT_EQ(source->opts.noiseReduction, 30);
+    EXPECT_DOUBLE_EQ(source->opts.extraSmoothing, 0.5);
+    EXPECT_EQ(source->opts.lowerCutoffHz, 80);
+    EXPECT_EQ(source->opts.higherCutoffHz, 16000);
+    EXPECT_EQ(source->opts.barCount, 64);
 }
 
 int main(int argc, char** argv)

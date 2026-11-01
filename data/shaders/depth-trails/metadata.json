@@ -1,6 +1,10 @@
 {
   "id": "depth-trails",
-  "name": "Depth trails",
+  "name": "Depth Trails",
+  "category": "Background",
+  "description": "A moving field with trails glows under the terminal. The pack is an example of buffer passes with feedback, a depth buffer, an image parameter and a vertex stage.",
+  "author": "afterglow",
+  "version": "1.0",
   "fragmentShader": "effect.frag",
   "vertexShader": "effect.vert",
   "multipass": true,

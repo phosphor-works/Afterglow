@@ -3,22 +3,17 @@
 #include "ScriptPackage.h"
 #include "ScriptFiles.h"
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
+#include <algorithm>
 #include <cmath>
-#include <functional>
 
 namespace Afterglow {
 namespace {
-bool identifier(const QString& name)
-{
-    static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    return re.match(name).hasMatch();
-}
+bool identifier(const QString& name) { return validScriptId(name); }
 bool version(const QString& name)
 {
     static const QRegularExpression re(QStringLiteral("\\A(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\z"));
@@ -37,6 +32,7 @@ struct Builder
 {
     ScriptPackage& out;
     QString root;
+    QString top; ///< the package directory as given, for module file names
     QString error;
     int bytes = 0;
     int modules = 0;
@@ -92,19 +88,32 @@ struct Builder
             if (!identifier(it.key()) || number < 4 || number > 255 || number != std::floor(number)) {
                 error = QStringLiteral("A pulse name maps to an effect number from 4 to 255"); return false;
             }
+            // The built-in names and plain numbers already select effects.
+            static const QRegularExpression digits(QStringLiteral("\\A[0-9]+\\z"));
+            if (it.key() == QLatin1String("portal") || it.key() == QLatin1String("flash")
+                || it.key() == QLatin1String("shake") || digits.match(it.key()).hasMatch()) {
+                error = QStringLiteral("Pulse name %1 is reserved").arg(it.key()); return false;
+            }
             out.pulses.insert(it.key(), int(number));
         }
         const auto shaders = manifest.value(QStringLiteral("shaders"));
         if (shaders.isUndefined()) return true;
         if (!shaders.isObject()) { error = QStringLiteral("shaders must be an object"); return false; }
         const auto declared = shaders.toObject();
-        const auto directory = path(base, declared.value(QStringLiteral("path")).toString(QStringLiteral("shaders")));
+        const auto declaredPath = declared.value(QStringLiteral("path"));
+        if (!declaredPath.isUndefined() && !declaredPath.isString()) { error = QStringLiteral("shaders.path must be a string"); return false; }
+        const auto directory = path(base, declaredPath.toString(QStringLiteral("shaders")));
         if (!error.isEmpty()) return false;
         if (!QFileInfo(directory).isDir()) { error = QStringLiteral("The shaders path is not a directory"); return false; }
         // Each pack carries the package's name, so packages cannot collide
-        // with each other or replace a bundled pack.
-        for (const auto& pack : QDir(directory).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
-            if (pack.fileName() == QLatin1String("shared")) continue;
+        // with each other or replace a bundled pack. The shader loader
+        // follows symlinked packs, so they pass the same checks.
+        for (const auto& pack : QDir(directory).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+            if (pack.fileName() == QLatin1String("shared")) continue; // the packs' include directory
+            if (pack.fileName() == QLatin1String("none")) {
+                error = QStringLiteral("Shader pack name none is reserved"); return false;
+            }
+            path(directory, pack.fileName());
             const auto metadata = json(path(directory, pack.fileName() + QStringLiteral("/metadata.json")));
             if (!error.isEmpty()) return false;
             const QString expected = id + QLatin1Char('.') + pack.fileName();
@@ -138,6 +147,7 @@ struct Builder
         const auto entry = manifest.value(QStringLiteral("entry")).toString();
         const auto declared = manifest.value(QStringLiteral("modules"));
         const auto dependencies = manifest.value(QStringLiteral("dependencies"));
+        if (!error.isEmpty()) return {}; // the manifest itself could not be read
         if (!identifier(id) || !version(release) || (!expected.isEmpty() && release != expected)
             || manifest.value(QStringLiteral("api_version")) != QJsonValue(1) || !identifier(entry) || !declared.isObject()
             || (dependencies.isUndefined() ? false : !dependencies.isObject())) {
@@ -162,9 +172,10 @@ struct Builder
             const auto declaredAssets = assets.toObject();
             for (auto it = declaredAssets.begin(); it != declaredAssets.end(); ++it) {
                 const auto file = path(base, it.value().toString());
+                if (!error.isEmpty()) return {};
                 const QFileInfo info(file);
                 assetBytes += info.size();
-                if (!error.isEmpty() || !identifier(it.key()) || !info.isFile() || info.size() > 4 * 1024 * 1024 || assetBytes > 16 * 1024 * 1024) {
+                if (!identifier(it.key()) || !info.isFile() || info.size() > 4 * 1024 * 1024 || assetBytes > 16 * 1024 * 1024) {
                     error = QStringLiteral("Invalid asset or asset size limit exceeded"); return {};
                 }
                 out.assets.insert(it.key(), file);
@@ -200,7 +211,14 @@ struct Builder
             const auto filename = path(base, it.value().toString());
             const auto source = read(filename, 256 * 1024);
             if (!error.isEmpty()) return {};
-            factories += "factories[" + aliases[it.key()] + "]=function()\nlocal require=resolver(" + mapping + ")\n" + source + "\nend\n";
+            // Locals named like the loader's own keep a module from replacing
+            // them by mistake. Each module starts on a line of its own, so its
+            // errors can be traced back to its file.
+            factories += "factories[" + aliases[it.key()] + "]=function(...)\nlocal require=resolver(" + mapping
+                + ") local factories, cache, loading, load, resolver\n";
+            const int lines = int(source.count('\n')) + (source.endsWith('\n') ? 0 : 1);
+            out.modules.append({int(factories.count('\n')) + 1, lines, QDir(top).relativeFilePath(filename)});
+            factories += source + "\nend\n";
         }
         loading.remove(base);
         return aliases[entry];
@@ -211,10 +229,10 @@ QString ScriptPackage::read(const QString& manifest, ScriptPackage& result)
 {
     result = {};
     const auto root = QFileInfo(manifest).absolutePath();
-    Builder builder{result, QFileInfo(root).canonicalFilePath(), {}, 0, 0, 0, {}, {}};
+    Builder builder{result, QFileInfo(root).canonicalFilePath(), root, {}, 0, 0, 0, {}, {}};
     const auto entry = builder.package(root, QStringLiteral("root"));
     if (!builder.error.isEmpty()) return builder.error;
-    result.source = R"(
+    const QByteArray loader = R"(
 local factories, cache, loading = {}, {}, {}
 local function load(id)
     if cache[id] ~= nil then return cache[id] end
@@ -234,8 +252,29 @@ local function resolver(aliases)
         return load(aliases[name])
     end
 end
-)" + builder.factories + "\nreturn load(" + entry + ")\n";
+)";
+    result.source = loader + builder.factories + "\nreturn load(" + entry + ")\n";
+    const int offset = int(loader.count('\n'));
+    for (auto& module : result.modules) module.line += offset;
     result.watched.removeDuplicates();
     return {};
+}
+QString ScriptPackage::locate(const QList<Module>& modules, const QString& message)
+{
+    // The chunk is named after the manifest; name the module file instead.
+    static const QRegularExpression position(QStringLiteral("package\\.json:(\\d+):"));
+    QString out;
+    qsizetype done = 0;
+    for (auto it = position.globalMatch(message); it.hasNext();) {
+        const auto match = it.next();
+        const int line = match.captured(1).toInt();
+        const auto module = std::find_if(modules.cbegin(), modules.cend(),
+            [line](const Module& m) { return line >= m.line && line < m.line + m.lines; });
+        if (module == modules.cend()) continue;
+        out += QStringView(message).mid(done, match.capturedStart() - done);
+        out += QStringLiteral("%1:%2:").arg(module->file).arg(line - module->line + 1);
+        done = match.capturedEnd();
+    }
+    return out + QStringView(message).mid(done);
 }
 }

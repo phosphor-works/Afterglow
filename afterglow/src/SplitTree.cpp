@@ -18,7 +18,8 @@ SplitTree::SplitTree(Pane* root)
 
 SplitTree::Node* SplitTree::find(Node* node, const Pane* pane) const
 {
-    if (!node) {
+    // Inner nodes hold no pane: null never names one of them.
+    if (!node || !pane) {
         return nullptr;
     }
     if (node->pane == pane) {
@@ -30,7 +31,7 @@ SplitTree::Node* SplitTree::find(Node* node, const Pane* pane) const
     return find(node->second.get(), pane);
 }
 
-void SplitTree::split(Pane* target, Pane* added, Direction direction, double fraction)
+void SplitTree::split(Pane* target, Pane* added, Direction direction, double fraction, int dividerWidth, const QSize& minimum)
 {
     Node* leaf = find(m_root.get(), target);
     if (!leaf || !leaf->pane) {
@@ -46,7 +47,14 @@ void SplitTree::split(Pane* target, Pane* added, Direction direction, double fra
     second->parent = leaf;
     leaf->pane = nullptr;
     leaf->vertical = direction == Direction::Down || direction == Direction::Up;
-    leaf->ratio = before ? fraction : 1.0 - fraction;
+    // A ratio of exactly 0 or 1 leaves an empty pane and does not save.
+    leaf->ratio = std::clamp(before ? fraction : 1.0 - fraction, 0.001, 0.999);
+    const int avail = (leaf->vertical ? leaf->rect.height() : leaf->rect.width()) - dividerWidth;
+    const int least = leaf->vertical ? minimum.height() : minimum.width();
+    if (least > 0 && avail >= 2 * least) {
+        leaf->ratio = std::clamp(leaf->ratio, double(least) / avail, 1.0 - double(least) / avail);
+    }
+    leaf->serial = m_nextSerial++;
     leaf->first = std::move(first);
     leaf->second = std::move(second);
 }
@@ -66,6 +74,9 @@ bool SplitTree::remove(Pane* pane)
     parent->pane = sibling->pane;
     parent->vertical = sibling->vertical;
     parent->ratio = sibling->ratio;
+    // The node now holds the sibling's split, not the one it held: a divider
+    // drag that started on the old split must not move this one.
+    parent->serial = sibling->serial;
     parent->first = std::move(sibling->first);
     parent->second = std::move(sibling->second);
     if (parent->first) {
@@ -163,7 +174,7 @@ bool SplitTree::resizePane(Pane* pane, Neighbour direction, int pixels, int divi
     const int available = (vertical ? target->rect.height() : target->rect.width()) - dividerWidth;
     const int offset = int(std::lround(available * target->ratio)) + (positive ? pixels : -pixels);
     const QPoint pos = target->rect.topLeft() + (vertical ? QPoint(0, offset) : QPoint(offset, 0));
-    dragDivider({{}, vertical, target->rect, target}, pos, dividerWidth, minimum);
+    dragDivider({{}, vertical, target->rect, target, target->serial}, pos, dividerWidth, minimum);
     return before != target->ratio;
 }
 
@@ -179,7 +190,7 @@ void SplitTree::layoutNode(Node* node, const QRect& area, int dividerWidth)
         const QRect a(area.x(), area.y(), area.width(), h1);
         const QRect d(area.x(), area.y() + h1, area.width(), dividerWidth);
         const QRect b(area.x(), d.bottom() + 1, area.width(), avail - h1);
-        m_dividers.push_back({d, true, area, node});
+        m_dividers.push_back({d, true, area, node, node->serial});
         layoutNode(node->first.get(), a, dividerWidth);
         layoutNode(node->second.get(), b, dividerWidth);
     } else {
@@ -188,7 +199,7 @@ void SplitTree::layoutNode(Node* node, const QRect& area, int dividerWidth)
         const QRect a(area.x(), area.y(), w1, area.height());
         const QRect d(area.x() + w1, area.y(), dividerWidth, area.height());
         const QRect b(d.right() + 1, area.y(), avail - w1, area.height());
-        m_dividers.push_back({d, false, area, node});
+        m_dividers.push_back({d, false, area, node, node->serial});
         layoutNode(node->first.get(), a, dividerWidth);
         layoutNode(node->second.get(), b, dividerWidth);
     }
@@ -207,13 +218,14 @@ std::optional<SplitTree::Divider> SplitTree::dividerAt(const QPoint& pos, int to
 void SplitTree::dragDivider(const Divider& divider, const QPoint& pos, int dividerWidth, const QSize& minimum)
 {
     if (m_zoomed) return;
-    // The node may be gone if the tree changed during the drag.
+    // The split may be gone if the tree changed during the drag, or another
+    // split may have taken its node's place when a pane closed.
     std::function<Node*(Node*)> find = [&](Node* n) -> Node* {
         if (!n || n->pane) {
             return nullptr;
         }
         if (n == divider.node) {
-            return n;
+            return n->serial == divider.serial ? n : nullptr;
         }
         if (Node* f = find(n->first.get())) {
             return f;
@@ -381,6 +393,7 @@ std::unique_ptr<SplitTree> SplitTree::restore(const QJsonObject& tree, const std
         else {
             node->vertical = value.value(QStringLiteral("direction")).toString() == QLatin1String("down");
             node->ratio = value.value(QStringLiteral("ratio")).toDouble();
+            node->serial = result->m_nextSerial++;
             node->first = decode(value.value(QStringLiteral("first")).toObject(), node.get());
             node->second = decode(value.value(QStringLiteral("second")).toObject(), node.get());
         }

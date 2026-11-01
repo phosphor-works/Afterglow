@@ -3,6 +3,7 @@
 #pragma once
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Selection.h>
+#include <QList>
 #include <QString>
 #include <QVector>
 
@@ -17,4 +18,12 @@ struct TerminalText {
     static TerminalText capture(const AfterglowVt::Screen&, const AfterglowVt::Selection* = nullptr, bool cursorRow = false,
                                 std::u32string_view wordBoundaries = AfterglowVt::DefaultWordBoundaries);
 };
+/// One accessible text change: at `position`, remove `removed`, then insert `inserted`.
+struct TextEdit {
+    int position = 0;
+    QString removed, inserted;
+};
+/// Edits that turn `before` into `after`, applied in order. A viewport that scrolled by
+/// whole lines gives a removal of the top lines and an insertion of the new text only.
+QList<TextEdit> textEdits(const QString& before, const QString& after);
 }

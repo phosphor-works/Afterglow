@@ -6,6 +6,7 @@
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
+#include <AfterglowVt/Search.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <QGuiApplication>
@@ -28,6 +29,12 @@ class NullHost : public AfterglowVt::ITerminalHost
 public:
     void writeToPty(std::string_view) override { }
 };
+
+/// The face FontSet picks for @p cp has a glyph for it (not a fallback .notdef).
+bool hasGlyph(FontSet& fonts, char32_t cp)
+{
+    return fonts.hasGlyph(fonts.faceFor(cp, StyleSlot::Regular, false), cp);
+}
 
 std::unique_ptr<GpuDevice> s_device;
 
@@ -133,6 +140,26 @@ WindowRenderer::Overview overviewAt(bool open, float amount, float position, std
     return overview;
 }
 
+// Named fields, so a struct that gains one does not warn (-Wmissing-field-initializers).
+WindowRenderer::OverviewTab tabOf(int index, std::vector<WindowRenderer::Pane> panes)
+{
+    WindowRenderer::OverviewTab tab;
+    tab.index = index;
+    tab.panes = std::move(panes);
+    return tab;
+}
+
+WindowRenderer::TabTransition switchFrom(float progress, float direction, WindowRenderer::OverviewTab from)
+{
+    WindowRenderer::TabTransition transition;
+    transition.active = true;
+    transition.progress = progress;
+    transition.direction = direction;
+    transition.startedAt = std::chrono::steady_clock::now();
+    transition.from = std::move(from);
+    return transition;
+}
+
 double contrastRatio(std::uint32_t a, std::uint32_t b)
 {
     auto lum = [](std::uint32_t c) {
@@ -219,7 +246,8 @@ TEST(Snapshot, WordSeparatorsShapeWordSelections)
     AfterglowVt::Selection sel = standard.word(0);
     standard.capture("", &sel);
     EXPECT_NE(standard.snapshot.at(2, 0).bg, 0u);
-    EXPECT_EQ(standard.snapshot.at(4, 0).bg, 0u); // ':' ends the word
+    EXPECT_EQ(standard.snapshot.at(3, 0).bg, 0u); // ':' ends the word and is not part of it
+    EXPECT_EQ(standard.snapshot.at(4, 0).bg, 0u);
     o.wordBoundaries = U" ";
     Captured custom(o);
     custom.capture("foo:bar");
@@ -452,6 +480,7 @@ TEST_F(FontRendering, IconsAndScaledTextWorkInEveryMode)
 {
     for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
         mode(aa);
+        if (!hasGlyph(*renderer->fonts().fonts, U'\uf015')) GTEST_SKIP() << "no font with Nerd Font icons";
         const QImage icon = sample(" \uf015 ");
         int ink = 0;
         for (int y = 0; y < ch; ++y) {
@@ -1136,8 +1165,10 @@ TEST_F(Render, TextHistoryDoesNotLeakAcrossPanesOrLayouts)
     const QSize frame(size.width() * 2, size.height());
     renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
     terminal->feed("\x1b[2J");
+    // Each pane captures into its own snapshot, as Pane does: an assignment
+    // would make a new snapshot identity, which is a new pane to the renderer.
     snapshot.capture(*terminal);
-    other = snapshot;
+    other.capture(*terminal);
     QImage img = renderer->renderToImage(frame, {left, right}, {}, 0xFF000000u);
     EXPECT_PIXEL(img, cellCenter(0, 0), qRgb(128, 0, 0));
     EXPECT_PIXEL(img, cellCenter(0, 0) + QPoint(size.width(), 0), qRgb(128, 0, 0));
@@ -1172,10 +1203,11 @@ TEST_F(Render, IconsTakeTwoCellsBeforeABlank)
         }
         return ink;
     };
-    const QImage spaced = render("\x1b[?25l\uf015 ");
-    if (inkIn(spaced, 0) == 0) {
+    // Without a Nerd Font the icon is the primary face's .notdef box.
+    if (!hasGlyph(*renderer->fonts().fonts, U'\uf015')) {
         GTEST_SKIP() << "no font with Nerd Font icons";
     }
+    const QImage spaced = render("\x1b[?25l\uf015 ");
     EXPECT_GT(inkIn(spaced, 1), 0);
     // Centred over both cells: about as much ink in each.
     const double ratio = double(inkIn(spaced, 0)) / std::max(1, inkIn(spaced, 1));
@@ -1213,27 +1245,6 @@ TEST_F(Render, BlockCursorLayerStaysUnderItsText)
     // A bar cursor goes over the text instead.
     const QImage bar = render("\x1b[6 q");
     EXPECT_PIXEL(bar, QPoint(0, ch / 2), qRgb(0, 255, 0));
-}
-
-int main(int argc, char** argv)
-{
-    ::testing::InitGoogleTest(&argc, argv);
-    // Vulkan needs a real platform; the offscreen QPA has no Vulkan support.
-    if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
-    }
-    QGuiApplication app(argc, argv);
-    if (QGuiApplication::platformName() == QLatin1String("wayland")) {
-        try {
-            s_device = std::make_unique<GpuDevice>(FontSpec{});
-            s_device->rhi(nullptr);
-        } catch (const std::exception&) {
-            s_device.reset();
-        }
-    }
-    const int result = RUN_ALL_TESTS();
-    s_device.reset();
-    return result;
 }
 
 TEST_F(Render, MultipleCursorsMixBlocksAndBeamsWithHiddenMainCursor)
@@ -1322,6 +1333,9 @@ TEST(Fonts, StaticStyleSlotsAndSymbolMappingsSelectStyledFaces)
     spec.regular.family = spec.bold.family = spec.italic.family = spec.boldItalic.family = "DejaVu Sans Mono";
     spec.symbolMap = {{U'A', U'Z', "DejaVu Sans Mono"}};
     FontSet fonts(spec, 1.0);
+    if (fonts.face(fonts.primary(StyleSlot::Regular)).path.find("DejaVu") == std::string::npos) {
+        GTEST_SKIP() << "DejaVu Sans Mono is not installed";
+    }
     EXPECT_NE(fonts.face(fonts.primary(StyleSlot::Regular)).path, fonts.face(fonts.primary(StyleSlot::Bold)).path);
     EXPECT_NE(fonts.face(fonts.primary(StyleSlot::Regular)).path, fonts.face(fonts.primary(StyleSlot::Italic)).path);
     const int regular = fonts.faceFor(U'A', StyleSlot::Regular, false);
@@ -1344,7 +1358,10 @@ TEST_F(Render, ArabicLigatureUsesLeftEdgeOfItsVisualCells)
     FrameBuilder::PaneParams params;
     params.rect = QRect(0, 0, Cols * cw, Rows * ch);
     auto& resources = renderer->fonts();
-    ASSERT_TRUE(builder.buildPane(snap, params, *resources.fonts, resources.glyphs, instances, ranges));
+    if (!hasGlyph(*resources.fonts, U'\u0644')) {
+        GTEST_SKIP() << "no font with Arabic letters";
+    }
+    builder.buildPane(snap, params, *resources.fonts, resources.glyphs, instances, ranges);
     std::vector<Instance> text;
     for (std::size_t i = ranges.textStart; i < ranges.cursorStart; ++i)
         if (instances[i].kind == std::uint32_t(InstanceKind::GrayGlyph)) text.push_back(instances[i]);
@@ -1412,7 +1429,8 @@ TEST_F(Render, VertexHookDeformsQuadUsingSharedParameters)
     renderer->setShaderChains(chains);
     const auto image = render("\x1b[?25l");
     EXPECT_PIXEL(image, cellCenter(10,2), qRgb(255,0,0));
-    EXPECT_PIXEL(image, cellCenter(1,2), qRgb(0,0,0));
+    // Outside the shrunk quad: the window's clear colour.
+    EXPECT_PIXEL(image, cellCenter(1,2), rgb(snapshot.defaultBg));
 }
 
 TEST_F(Render, ImageOverridesAreLiveAndDefaultsReturnWithoutRecompile)
@@ -1480,7 +1498,7 @@ TEST_F(Render, IntermediateWindowVertexPassClearsUncoveredPixelsEveryFrame)
     EXPECT_PIXEL(render("\x1b[?25l"),cellCenter(1,2),qRgb(255,0,0));
     renderer->setClockOverride(2);
     const auto image = render("");
-    EXPECT_PIXEL(image,cellCenter(1,2),qRgb(0,0,0));
+    EXPECT_PIXEL(image,cellCenter(1,2),rgb(snapshot.defaultBg));
     EXPECT_PIXEL(image,cellCenter(10,2),qRgb(255,0,0));
 }
 
@@ -1752,6 +1770,9 @@ TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
     pass.geometry.vertexCode = "vec4 pMesh(){return vec4(meshPosition,1);}";
     pass.code = "vec4 pTerminal(vec2 uv){return vec4(1,0,0,1);}";
     source.buffers = {pass};
+    // Green when the buffer is smaller than asked: it shrank to fit.
+    source.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return vec4(texture(iChannel0,uv).r,"
+                  "textureSize(iChannel0,0).x < int(iResolution.x) ? 1.0 : 0.0,0,1);}";
     auto program = ShaderProgram::compile(source, &error);
     ASSERT_TRUE(program) << error.toStdString();
     ShaderChains chains; chains.pane = {program};
@@ -1761,7 +1782,7 @@ TEST_F(Render, BufferOverBudgetRendersSmallerInsteadOfTransparent)
     WindowRenderer::Pane pane{&snapshot, {}};
     pane.params.rect = QRect(QPoint(), size);
     auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
-    EXPECT_PIXEL(image, QPoint(size.width()/2, size.height()/2), qRgb(255,0,0));
+    EXPECT_PIXEL(image, QPoint(size.width()/2, size.height()/2), qRgb(255,255,0));
     // A smaller pane fits again and renders at full size.
     pane.params.rect = QRect(QPoint(), QSize(512, 512));
     image = renderer->renderToImage(QSize(512, 512), {pane}, {}, 0xff000000u);
@@ -1845,7 +1866,10 @@ vec4 pTerminal(vec2 uv) {
     after.params.highlighted = true; // its tab is drawn at full resolution
     const auto now = std::chrono::steady_clock::now();
     // The current tab is tab 1: tab 0 comes first, tab 2 last.
-    renderer->setOverview({true, 1.0f, 2.0f, now, now, 1, {{0, {before}}, {2, {after}}}});
+    auto overview = overviewAt(true, 1.0f, 2.0f, now, now);
+    overview.currentTab = 1;
+    overview.otherTabs = {tabOf(0, {before}), tabOf(2, {after})};
+    renderer->setOverview(overview);
     const auto image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
     const int stripe = size.width() / 3, top = size.height() / 4, bottom = size.height() * 3 / 4;
     EXPECT_PIXEL(image, QPoint(stripe / 2, top), qRgb(0xC0, 0, 0));
@@ -1885,7 +1909,7 @@ vec4 pTerminal(vec2 uv) {
     auto image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
     EXPECT_FALSE(renderer->transitionShowing());
-    renderer->setTabTransition({true, 0.5f, -1.0f, std::chrono::steady_clock::now(), {3, {leaving}}});
+    renderer->setTabTransition(switchFrom(0.5f, -1.0f, tabOf(3, {leaving})));
     EXPECT_TRUE(renderer->animating());
     image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
@@ -1931,8 +1955,8 @@ vec4 pTerminal(vec2 uv) {
     auto image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
     EXPECT_PIXEL(image, inRight, qRgb(128, 128, 64));
-    // A tab switch takes precedence; with nothing moving the chain stops.
-    renderer->setTabTransition({true, 0.5f, 1.0f, std::chrono::steady_clock::now(), {1, {open}}});
+    // A tab switch takes precedence; an inactive chain does not run.
+    renderer->setTabTransition(switchFrom(0.5f, 1.0f, tabOf(1, {open})));
     EXPECT_FALSE(renderer->paneEffectsShowing());
     renderer->setTabTransition({});
     renderer->setPaneEffects({});
@@ -1997,19 +2021,78 @@ TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
 TEST(ShaderGeometry, RejectsExcessiveOrIncompleteDraws)
 {
     ShaderProgramSource source;
+    source.code="#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
+    ShaderBufferSource pass;
+    pass.code="vec4 pTerminal(vec2 uv){return vec4(1);}";
+    pass.geometry.vertexCode="vec4 pMesh(){return vec4(0);}";
+    QString error;
+    auto compileWith = [&](const ShaderBufferSource& buffer) { source.buffers = {buffer}; return ShaderProgram::compile(source, &error); };
+    for (int count : {0, 1, 4, 3*1024*1024+3}) {
+        pass.geometry.vertexCount=count;
+        EXPECT_FALSE(compileWith(pass));
+    }
+    pass.geometry.vertexCount=3;
+    pass.geometry.instances=4097;
+    EXPECT_FALSE(compileWith(pass));
+    pass.geometry.instances=1;
+    pass.geometry.vertices.resize(2);
+    EXPECT_FALSE(compileWith(pass));
+}
+
+TEST(ShaderGeometry, FinalPassRejectsMeshesAndDepthOutputs)
+{
+    ShaderProgramSource source;
     source.code="vec4 pTerminal(vec2 uv){return vec4(1);}";
     source.geometry.vertexCode="vec4 pMesh(){return vec4(0);}";
-    QString error;
-    for (int count : {0, 1, 4, 3*1024*1024+3}) {
-        source.geometry.vertexCount=count;
-        EXPECT_FALSE(ShaderProgram::compile(source,&error));
-    }
     source.geometry.vertexCount=3;
-    source.geometry.instances=4097;
+    QString error;
     EXPECT_FALSE(ShaderProgram::compile(source,&error));
-    source.geometry.instances=1;
-    source.geometry.vertices.resize(2);
+    EXPECT_FALSE(error.isEmpty());
+    source.geometry = {};
+    source.depthOutput = true;
     EXPECT_FALSE(ShaderProgram::compile(source,&error));
+    source.depthOutput = false;
+    EXPECT_TRUE(ShaderProgram::compile(source,&error)) << error.toStdString();
+}
+
+TEST(ShaderGeometry, ClockPointerAndTimeHelpersAreDetected)
+{
+    QString error;
+    auto compileBody = [&](const char* body) {
+        ShaderProgramSource source;
+        source.code = QByteArray("vec4 pTerminal(vec2 uv){") + body + "}";
+        auto program = ShaderProgram::compile(source, &error);
+        EXPECT_TRUE(program) << error.toStdString();
+        return program;
+    };
+    // iDate and the contract's time helpers animate, like iTime.
+    EXPECT_TRUE(compileBody("return vec4(fract(iDate.w));")->animated());
+    EXPECT_TRUE(compileBody("return vec4(sin(timeAngle(1.0)));")->animated());
+    EXPECT_FALSE(compileBody("return vec4(1);")->animated());
+    // A pack that reads only the pointer asks for frames when it moves.
+    auto pointer = compileBody("return vec4(iMouse.x > 0.0 ? 1.0 : 0.0);");
+    EXPECT_TRUE(pointer->readsMouse());
+    EXPECT_FALSE(pointer->animated());
+    ShaderChains chains;
+    chains.window = {pointer};
+    EXPECT_TRUE(chains.readsMouse());
+}
+
+TEST(ShaderGeometry, ObjAcceptsOptionalComponentsAndGivesFlatFacesANormal)
+{
+    ShaderGeometry geometry;
+    QString error;
+    // v with w, v with a vertex colour, vt with one and three components.
+    ASSERT_TRUE(ShaderProgram::loadObj("v 0 0 0 1\nv 1 0 0 0.5 0.5 0.5\nv 0 1 0\nvt 0.5\nvt 1 1 0\nf 1/1 2/2 3/1\n", geometry, &error))
+        << error.toStdString();
+    EXPECT_EQ(geometry.vertexCount, 3);
+    EXPECT_FLOAT_EQ(geometry.vertices[0].uv[0], 0.5f);
+    EXPECT_FLOAT_EQ(geometry.vertices[0].uv[1], 0.0f);
+    // A zero-area face without normals gets +Z, never a zero normal.
+    ASSERT_TRUE(ShaderProgram::loadObj("v 0 0 0\nv 1 1 1\nv 2 2 2\nf 1 2 3\n", geometry, &error)) << error.toStdString();
+    EXPECT_FLOAT_EQ(geometry.vertices[0].normal[2], 1.0f);
+    EXPECT_FALSE(ShaderProgram::loadObj("v 0 0\nf 1 1 1\n", geometry, &error));
+    EXPECT_TRUE(error.contains(QLatin1String("x y z")));
 }
 
 TEST_F(Render, MeshMultisamplingResolvesPartialEdgeCoverage)
@@ -2090,7 +2173,7 @@ TEST_F(Render, ShaderRegionsClipAnimatedBoundsToSurface)
     }
 }
 
-TEST_F(Render, ShaderCursorTracksRepeatedStyleOnlyTransitions)
+TEST_F(Render, ShaderCursorTracksStylesWithoutResettingItsAge)
 {
     ShaderChains chains;
     chains.window = {layerShader("cursor-styles", "fragColor = vec4(float(uCursorState.x)/4.0, float(uCursorState.y)/4.0, cursorAge()/10.0, 1.0);")};
@@ -2104,11 +2187,12 @@ TEST_F(Render, ShaderCursorTracksRepeatedStyleOnlyTransitions)
         const float time = float(i + 1);
         renderer->setClockOverride(time);
         auto image = render("\x1b[" + std::to_string(commands[i]) + " q");
-        const QRgb expected = qRgb(qRound(styles[i] * 255.0 / 4), qRound(previous * 255.0 / 4), 0);
+        // Only a move sets cursorAge(): the cursor never moved, so it reads
+        // as long ago (blue saturates) while the shapes still follow.
+        const QRgb expected = qRgb(qRound(styles[i] * 255.0 / 4), qRound(previous * 255.0 / 4), 255);
         EXPECT_PIXEL(image, cellCenter(10, 2), expected);
-        // An unchanged frame keeps the shapes and ages the change.
         renderer->setClockOverride(time + .5f);
-        EXPECT_PIXEL(render(""), cellCenter(10, 2), qRgb(qRed(expected), qGreen(expected), qRound(.5 * 255.0 / 10)));
+        EXPECT_PIXEL(render(""), cellCenter(10, 2), expected);
         previous = styles[i];
     }
 }
@@ -2129,17 +2213,240 @@ TEST_F(Render, ShaderCursorBoxMatchesDoubleWidthAndMulticellDrawing)
         FrameBuilder::Ranges ranges;
         std::vector<Instance> instances;
         auto& resources = renderer->fonts();
-        ASSERT_TRUE(builder.buildPane(snapshot, pane.params, *resources.fonts, resources.glyphs, instances, ranges));
+        builder.buildPane(snapshot, pane.params, *resources.fonts, resources.glyphs, instances, ranges);
         ASSERT_LT(ranges.cursorStart, instances.size());
         const auto& cursor = instances[ranges.cursorStart];
         EXPECT_EQ(QRectF(cursor.x, cursor.y, cursor.w, cursor.h), expected);
+        // QString::number ignores LC_NUMERIC; std::to_string would write 63,000000 in de_DE.
+        auto glsl = [](double v) { return QString::number(v, 'f', 3).toStdString(); };
         const std::string body = "fragColor = all(lessThan(abs(uCursorRect - vec4("
-            + std::to_string(expected.x()) + "," + std::to_string(expected.y()) + ","
-            + std::to_string(expected.width()) + "," + std::to_string(expected.height())
+            + glsl(expected.x()) + "," + glsl(expected.y()) + ","
+            + glsl(expected.width()) + "," + glsl(expected.height())
             + ")), vec4(0.1))) ? vec4(0,1,0,1) : vec4(1,0,0,1);";
         ShaderChains chains;
         chains.window = {layerShader("cursor-box", body.c_str())};
         renderer->setShaderChains(chains);
         EXPECT_PIXEL(renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg), cellCenter(10, 2), qRgb(0,255,0));
     }
+}
+
+TEST(Snapshot, SearchMatchesKeepConcealmentAndYieldToTheSelection)
+{
+    AfterglowVt::TerminalOptions o;
+    Captured c(o);
+    c.capture("\x1b[8mab\x1b[0m cd");
+    const auto matches = AfterglowVt::findAll(c.terminal.screen(), U"ab");
+    ASSERT_EQ(matches.size(), 1u);
+    SearchHighlight search{&matches, 0, packRgba(200, 0, 0), packRgba(0, 200, 0), packRgba(1, 2, 3)};
+    c.snapshot.capture(c.terminal, nullptr, search);
+    EXPECT_EQ(c.snapshot.at(0, 0).bg, packRgba(0, 200, 0)); // the current match
+    // The match's text colour, but concealed text stays concealed.
+    EXPECT_EQ(c.snapshot.at(0, 0).fg, packRgba(1, 2, 3, 0));
+    EXPECT_EQ(c.snapshot.at(2, 0).bg, 0u);
+    // A selected cell shows the selection, not the match.
+    AfterglowVt::Selection sel = c.word(0);
+    c.snapshot.capture(c.terminal, &sel, search);
+    EXPECT_NE(c.snapshot.at(0, 0).bg, packRgba(0, 200, 0));
+}
+
+TEST(Snapshot, UnderlineColourIsConcealedWithItsText)
+{
+    AfterglowVt::TerminalOptions o;
+    Captured c(o);
+    const SnapshotCell& cell = c.capture("\x1b[8;4;58:2::255:0:0mAB");
+    EXPECT_EQ(cell.underlineColor >> 24, 0u);
+    Captured faint(o);
+    EXPECT_EQ(faint.capture("\x1b[2;4;58:2::255:0:0mAB").underlineColor >> 24, 128u);
+}
+
+TEST(Snapshot, SelectionStaysOpaqueOverATransparentBackgroundColour)
+{
+    AfterglowVt::TerminalOptions o;
+    Captured c(o);
+    // The default foreground is the inverted selection's background.
+    c.capture("\x1b]21;transparent_background_color1=#d8d8d8@0\x07word");
+    AfterglowVt::Selection sel = c.word(0);
+    c.capture("", &sel);
+    EXPECT_FALSE(c.snapshot.at(0, 0).backgroundOverride);
+    EXPECT_EQ(c.snapshot.at(0, 0).bg >> 24, 255u);
+}
+
+TEST(Snapshot, CopiesAndAssignmentsTakeANewIdentity)
+{
+    PaneSnapshot a;
+    PaneSnapshot b = a;
+    EXPECT_NE(a.identity.value(), b.identity.value());
+    const auto before = b.identity.value();
+    b = a;
+    EXPECT_NE(b.identity.value(), before);
+    EXPECT_NE(b.identity.value(), a.identity.value());
+}
+
+TEST(GlyphCache, OversizedSpritesDrawNothingInsteadOfThrowing)
+{
+    FontSet fonts(FontSpec{}, 1.0);
+    GlyphCache cache;
+    // A device whose textures hold 64 pixels a side.
+    cache.beginFrame(1000, 64);
+    const GlyphEntry* huge = nullptr;
+    ASSERT_NO_THROW(huge = cache.sprite(fonts, U'\u2588', 49, 7));
+    ASSERT_NE(huge, nullptr);
+    EXPECT_TRUE(huge->empty);
+    const GlyphEntry* small = cache.sprite(fonts, U'\u2588');
+    ASSERT_NE(small, nullptr);
+    EXPECT_FALSE(small->empty);
+}
+
+TEST(GlyphCache, PagesUsedRecentlyStayAcrossManyRendersOverBudget)
+{
+    FontSet fonts(FontSpec{}, 1.0);
+    GlyphCache cache;
+    // Five full gray pages: 80 MiB, over the 64 MiB budget.
+    int x = 0, y = 0, width = 49;
+    while (cache.grayPageCount() < 5 && width > 0) {
+        while (cache.grayPage(cache.grayPageCount() - 1).allocate(128, 128, x, y)) {}
+        cache.beginFrame(std::numeric_limits<std::size_t>::max() / 2, 8192);
+        cache.sprite(fonts, U'\u2588', width--, 7); // a new size: a new entry, on a new page
+    }
+    ASSERT_GT(cache.bytes(), 64u * 1024 * 1024);
+    const auto epoch = cache.epoch();
+    // Other windows render many times in a fraction of a second: no page of
+    // this window is stale yet.
+    for (int i = 0; i < 10; ++i) cache.beginFrame(1000, 8192);
+    EXPECT_EQ(cache.epoch(), epoch);
+}
+
+TEST(GlyphCache, DashedLinesKeepEveryDashOrDrawSolid)
+{
+    for (float points : {4.0f, 6.0f, 8.0f, 11.0f, 14.0f}) {
+        FontSpec spec;
+        spec.sizePoints = points;
+        FontSet fonts(spec, 1.0);
+        GlyphCache cache;
+        const GlyphEntry* e = cache.sprite(fonts, U'\u2508'); // four light dashes
+        ASSERT_FALSE(e->empty);
+        const QImage& page = cache.grayPage(e->page).image();
+        const int row = e->v + e->height / 2;
+        int runs = 0;
+        bool inside = false;
+        for (int col = e->u; col < e->u + e->width; ++col) {
+            const bool ink = qGray(page.pixel(col, row)) > 0;
+            runs += ink && !inside;
+            inside = ink;
+        }
+        EXPECT_TRUE(runs == 4 || runs == 1) << points << " pt: " << runs << " runs";
+    }
+}
+
+TEST_F(Render, OversizedImagesAreNotUploaded)
+{
+    auto frame = std::make_shared<AfterglowVt::ImageFrame>();
+    const int limit = s_device->rhi()->resourceLimit(QRhi::TextureSizeMax);
+    frame->width = std::uint32_t(limit + 1);
+    frame->height = 1;
+    frame->rgba.assign(std::size_t(frame->width) * 4, 0xFF);
+    QRhiResourceUpdateBatch* updates = s_device->rhi()->nextResourceUpdateBatch();
+    std::uint64_t serial = 0;
+    EXPECT_EQ(s_device->imageTexture(frame, updates, serial), nullptr);
+    updates->release();
+}
+
+TEST_F(Render, KittyImagesFarBelowGoUnderCellBackgrounds)
+{
+    // A red pixel over two cells at z below INT32_MIN/2: the first cell has
+    // its own green background, which covers the image; the second does not.
+    const QImage img = render("\x1b[?25l\x1b[2;2H\x1b[42m \x1b[0m\x1b[2;2H"
+                              "\x1b_Ga=T,f=32,s=1,v=1,c=2,r=1,z=-1073741825,q=2;/wAA/w==\x1b\\");
+    EXPECT_PIXEL(img, cellCenter(1, 1), qRgb(0x55, 0xcc, 0x55));
+    EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(255, 0, 0), 40);
+}
+
+TEST_F(Render, DecorationsUnderABlockCursorTakeItsTextColour)
+{
+    // A struck-through blank under the focused block cursor: the line is drawn
+    // in the cursor's text colour, so it shows on the cursor.
+    const FontMetrics& m = renderer->fonts().fonts->metrics();
+    const QImage img = render("\x1b[2 q\x1b[9m \x1b[0m\x1b[1D");
+    const int y = int(std::lround(m.strikethroughPosition - m.underlineThickness / 2.0)) + m.underlineThickness / 2;
+    EXPECT_PIXEL(img, QPoint(cw / 2, y), rgb(snapshot.defaultBg));
+    EXPECT_PIXEL(img, QPoint(cw / 2, 1), rgb(snapshot.cursorColor));
+}
+
+TEST_F(Render, BlinkingTextHidesItsDecorationsInTheOffPhase)
+{
+    terminal->feed("\x1b[?25l\x1b[5;9;4m    ");
+    snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    pane.params.textBlinkOn = false;
+    const QImage off = renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg);
+    for (int y = 0; y < ch; ++y) EXPECT_PIXEL(off, QPoint(cw + cw / 2, y), rgb(snapshot.defaultBg));
+    pane.params.textBlinkOn = true;
+    const QImage on = renderer->renderToImage(size, {pane}, {}, snapshot.defaultBg);
+    int ink = 0;
+    for (int y = 0; y < ch; ++y) ink += on.pixel(cw + cw / 2, y) != rgb(snapshot.defaultBg);
+    EXPECT_GT(ink, 0);
+}
+
+TEST_F(Render, OverviewSurvivesAChangeOfLayerChainsWhileShown)
+{
+    // The tab image outlives a rebuild of the post textures (new layers):
+    // other tabs' cards still sample their own panes, not a stale target.
+    ShaderProgramSource source;
+    source.id = "cards";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    int card = min(int(uv.x * float(paneCount())), paneCount() - 1);
+    return vec4(paneTexel(card, vec2(0.5)).rgb, 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    other.defaultBg = 0xFF00C000u; // green
+    const QSize size(Cols * cw * 2, Rows * ch);
+    WindowRenderer::Pane current{&snapshot, {}};
+    current.params.rect = QRect(QPoint(), size);
+    current.params.focused = true;
+    WindowRenderer::Pane away = current;
+    away.snapshot = &other;
+    away.params.focused = false;
+    auto overview = overviewAt(true, 1.0f, 0.0f, Clock::now(), Clock::now());
+    overview.currentTab = 0;
+    overview.otherTabs = {tabOf(1, {away})};
+    ShaderChains chains;
+    chains.overview = {program};
+    renderer->setShaderChains(chains);
+    renderer->setOverview(overview);
+    const QPoint secondCard(size.width() * 3 / 4, size.height() / 2);
+    EXPECT_PIXEL(renderer->renderToImage(size, {current}, {}, 0xff000000u), secondCard, qRgb(0, 0xC0, 0));
+    chains.text = {layerShader("identity-text", "fragColor = terminalTexel(uv);")};
+    renderer->setShaderChains(chains);
+    renderer->setOverview(overview);
+    for (int frame = 0; frame < 2; ++frame)
+        EXPECT_PIXEL(renderer->renderToImage(size, {current}, {}, 0xff000000u), secondCard, qRgb(0, 0xC0, 0));
+}
+
+
+int main(int argc, char** argv)
+{
+    ::testing::InitGoogleTest(&argc, argv);
+    // Vulkan needs a real platform; the offscreen QPA has no Vulkan support.
+    if (qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+    QGuiApplication app(argc, argv);
+    if (QGuiApplication::platformName() == QLatin1String("wayland")) {
+        try {
+            s_device = std::make_unique<GpuDevice>(FontSpec{});
+            s_device->rhi(nullptr);
+        } catch (const std::exception&) {
+            s_device.reset();
+        }
+    }
+    const int result = RUN_ALL_TESTS();
+    s_device.reset();
+    return result;
 }

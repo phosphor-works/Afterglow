@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DragDrop.h"
+#include "FileDrop.h"
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QDir>
@@ -17,17 +18,18 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPointer>
+#include <QSet>
 #include <QStyleHints>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 #include <QWindow>
 #include <algorithm>
+#include <cmath>
 #include <deque>
 #include <fcntl.h>
 #include <functional>
 #include <map>
-#include <optional>
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -35,8 +37,33 @@
 namespace Afterglow {
 namespace {
     using Meta = QMap<QByteArray, QByteArray>;
-    constexpr qsizetype MaxData = 64 * 1024 * 1024;
-    constexpr qsizetype MaxTotal = 256 * 1024 * 1024;
+    // Protocol limits. They are fixed: a client cannot negotiate them.
+    constexpr qsizetype MaxData = 64 * 1024 * 1024; // one MIME type or one remote entry
+    constexpr qsizetype MaxTotal = 256 * 1024 * 1024; // cached source data, queued drop reads
+    constexpr qsizetype MaxRemoteBytes = 1024LL * 1024 * 1024;
+    constexpr int MaxRemoteEntries = 16384;
+    constexpr int MaxRemoteUris = 1024;
+    constexpr qsizetype MaxPathLength = 4096;
+    constexpr qsizetype MaxLinkTarget = 4096;
+    constexpr int MaxMimeTypes = 256;
+    constexpr qsizetype MaxMimeName = 255;
+    constexpr int MaxDirectoryEntries = 16384; // one listing
+    constexpr int MaxListedEntries = 65536; // every listing of one drop
+    constexpr std::size_t MaxDirectoryHandles = 256;
+    constexpr std::size_t MaxQueuedReads = 64;
+    constexpr std::size_t MaxPictures = 16;
+    constexpr int MaxPictureSide = 4096;
+    constexpr qsizetype MaxPacket = 4096;
+    constexpr qsizetype MaxCommand = 8192;
+    constexpr qsizetype MaxControlPayload = 128 * 1024; // reassembled MIME lists and ids
+    constexpr qsizetype MaxMachineId = 128;
+    constexpr qsizetype ReadChunk = 3072;
+    constexpr std::size_t MaxInputBacklog = 1024 * 1024;
+    constexpr int BacklogRetryMs = 5;
+    constexpr int RequestTimeoutMs = 30000;
+    constexpr int RemoteTimeoutMs = 120000;
+    // Drop targets such as file managers copy dropped files after the drag ends.
+    constexpr int FinishedTreeLifetimeMs = 10 * 60 * 1000;
     QByteArray machineId()
     {
         QFile file(QStringLiteral("/etc/machine-id"));
@@ -47,20 +74,22 @@ namespace {
                 file.readAll().trimmed(), "tty-dnd-protocol-machine-id", QCryptographicHash::Sha256)
                   .toHex();
     }
+    bool validMime(const QByteArray& mime)
+    {
+        return !mime.isEmpty() && mime.contains('/') && mime.size() <= MaxMimeName
+            && std::all_of(mime.begin(), mime.end(), [](unsigned char c) { return c > 32 && c < 127; });
+    }
     QStringList mimeList(const QByteArray& data)
     {
         QStringList result;
         for (const auto& mime : data.split(' ')) {
             if (mime.isEmpty())
                 continue;
-            if (!mime.contains('/') || mime.size() > 255)
+            if (!validMime(mime))
                 return { };
-            for (unsigned char c : mime)
-                if (c <= 32 || c >= 127)
-                    return { };
             if (!result.contains(QString::fromLatin1(mime)))
                 result.append(QString::fromLatin1(mime));
-            if (result.size() > 256)
+            if (result.size() > MaxMimeTypes)
                 return { };
         }
         return result;
@@ -76,9 +105,58 @@ namespace {
         }
         return result;
     }
+    // Types besides text/uri-list that desktop targets resolve as local files.
+    bool carriesUris(const QString& mime)
+    {
+        static const QStringList types { QStringLiteral("application/x-kde4-urilist"),
+            QStringLiteral("x-special/gnome-copied-files"), QStringLiteral("x-special/nautilus-clipboard"),
+            QStringLiteral("text/x-moz-url"), QStringLiteral("application/vnd.portal.filetransfer"),
+            QStringLiteral("application/vnd.portal.files") };
+        return types.contains(mime);
+    }
+    // A remote program can name only network URLs. Other schemes resolve on this computer.
+    bool remoteScheme(const QUrl& url)
+    {
+        const auto scheme = url.scheme().toLower();
+        return scheme == QLatin1String("http") || scheme == QLatin1String("https") || scheme == QLatin1String("ftp")
+            || scheme == QLatin1String("mailto");
+    }
+    bool receiverType(const QByteArray& type)
+    {
+        return type == "a" || type == "A" || type == "m" || type == "r";
+    }
+    QByteArray typeOf(const QByteArray& raw)
+    {
+        for (const auto& field : raw.split(':'))
+            if (field.startsWith("t="))
+                return field.mid(2);
+        return { };
+    }
+    // Writes one packet without keeping a descriptor open between packets.
+    bool appendFile(const QString& path, const QByteArray& bytes, bool create)
+    {
+        const auto raw = QFile::encodeName(path);
+        const int fd = ::open(raw.constData(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW | (create ? O_CREAT | O_EXCL : O_APPEND),
+            0666);
+        if (fd < 0)
+            return false;
+        qsizetype done = 0;
+        while (done < bytes.size()) {
+            const auto n = ::write(fd, bytes.constData() + done, std::size_t(bytes.size() - done));
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n <= 0) {
+                ::close(fd);
+                return false;
+            }
+            done += n;
+        }
+        return ::close(fd) == 0;
+    }
     class LazyMime : public QMimeData {
     public:
         QStringList names;
+        QList<int> indices;
         std::function<QByteArray(int)> fetch;
         QStringList formats() const override { return names; }
         bool hasFormat(const QString& type) const override { return names.contains(type); }
@@ -86,10 +164,10 @@ namespace {
     protected:
         QVariant retrieveData(const QString& type, QMetaType preferred) const override
         {
-            const auto index = names.indexOf(type);
-            if (index < 0)
+            const auto at = names.indexOf(type);
+            if (at < 0)
                 return { };
-            const auto data = fetch(int(index));
+            const auto data = fetch(indices[at]);
             if (type == QLatin1String("text/uri-list") && preferred.id() == QMetaType::QVariantList) {
                 QVariantList list;
                 for (const auto& url : uris(data))
@@ -102,16 +180,17 @@ namespace {
         }
     };
 } // namespace
-struct DragDrop::State {
+struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     QPointer<DragDrop> owner;
     bool accepting = false, offering = false, pressed = false, gesture = false, offered = false, started = false;
-    bool dropAnnounced = false;
+    bool starting = false, dropAnnounced = false;
     int sourceAction = 0;
-    bool hovering = false, dropped = false, finished = false, sameWindow = false, uriRead = false;
+    bool hovering = false, dropped = false, finished = false, localSource = false, uriRead = false;
     QPoint origin;
     QByteArray receiverId, sourceId, receiverMachine, sourceMachine;
-    QStringList dropMimes, sourceMimes, preferred;
-    const QMimeData* incoming = nullptr;
+    QStringList dropMimes, sourceMimes;
+    // The platform owns the drop data and can free it during the nested drop loop.
+    QPointer<const QMimeData> incoming;
     int allowed = 0, chosen = 0, finalAction = 0, sourceActions = 0;
     QPointer<QWindow> window;
     QPointer<QDrag> drag;
@@ -128,6 +207,9 @@ struct DragDrop::State {
         QStringList entries;
     };
     std::map<int, Directory> directories;
+    // Repeated requests for one directory share a listing.
+    std::map<QString, QStringList> listings;
+    int listedEntries = 0;
     int nextHandle = 2;
     QList<QUrl> dropUris;
     struct Read {
@@ -139,11 +221,12 @@ struct DragDrop::State {
     std::deque<Read> reads;
     qsizetype readBytes = 0;
     QTimer timer;
-    QElapsedTimer activity;
-    std::unique_ptr<QTemporaryDir> temporary;
+    QElapsedTimer dropActivity, sourceActivity;
+    std::function<std::size_t()> backlog;
+    std::unique_ptr<QTemporaryDir> temporary, finishedTree;
+    QTimer treeExpiry;
     struct Remote {
         QString path;
-        std::unique_ptr<QFile> file;
         QByteArray bytes;
         qint64 kind = -1;
         bool done = false;
@@ -151,27 +234,31 @@ struct DragDrop::State {
     std::map<QByteArray, Remote> remote;
     std::map<qint64, Directory> remoteDirs;
     std::set<int> requestedRoots;
+    QList<QUrl> remoteUrls;
     int remotePending = 0;
     qsizetype remoteBytes = 0;
     explicit State(DragDrop* o)
         : owner(o)
     {
         QObject::connect(&timer, &QTimer::timeout, owner, [this] { pump(); });
+        treeExpiry.setSingleShot(true);
+        QObject::connect(&treeExpiry, &QTimer::timeout, owner, [this] { finishedTree.reset(); });
     }
     static int number(const Meta& m, const char* key, int fallback = 0)
     {
         return m.contains(key) ? int(std::min<qint64>(m.value(key).toLongLong(), INT32_MAX)) : fallback;
     }
+    bool leftButton() const { return QGuiApplication::mouseButtons() & Qt::LeftButton; }
     void send(Meta m, const QByteArray& payload = { }, bool source = false)
     {
-        if (!m.contains("i") && m.value("t") != "q" && m.value("t") != "Q") {
+        if (!m.contains("i")) {
             const auto id = source ? sourceId : receiverId;
             if (!id.isEmpty())
                 m["i"] = id;
         }
         qsizetype offset = 0;
         do {
-            const auto part = payload.mid(offset, 4096);
+            const auto part = payload.mid(offset, MaxPacket);
             offset += part.size();
             m["m"] = offset < payload.size() ? "1" : "0";
             QByteArray bytes("\x1b]72;");
@@ -211,14 +298,25 @@ struct DragDrop::State {
             timer.stop();
         }
     }
+    // Reports an error on the channel of the role that sent the message.
+    void reject(const QByteArray& type, const QByteArray& error)
+    {
+        chunks.clear();
+        chunkData.clear();
+        if (receiverType(type))
+            dropError({ }, error);
+        else
+            sourceError(error);
+    }
     void clearDrop()
     {
         incoming = nullptr;
         hovering = dropped = finished = uriRead = false;
         dropUris.clear();
         dropMimes.clear();
-        preferred.clear();
         directories.clear();
+        listings.clear();
+        listedEntries = 0;
         reads.clear();
         readBytes = 0;
         timer.stop();
@@ -240,6 +338,7 @@ struct DragDrop::State {
         remote.clear();
         remoteDirs.clear();
         requestedRoots.clear();
+        remoteUrls.clear();
         remotePending = 0;
         remoteBytes = 0;
         temporary.reset();
@@ -258,7 +357,7 @@ struct DragDrop::State {
         receiverMachine.clear();
         sourceMachine.clear();
     }
-    bool spin(const std::function<bool()>& done, int timeout = 30000)
+    bool spin(const std::function<bool()>& done, int timeout = RequestTimeoutMs)
     {
         QElapsedTimer elapsed;
         elapsed.start();
@@ -285,22 +384,29 @@ struct DragDrop::State {
             timer.stop();
             return;
         }
+        // A slow reader (SSH) must not fill the PTY input queue.
+        if (backlog && backlog() > MaxInputBacklog) {
+            timer.start(BacklogRetryMs);
+            return;
+        }
+        if (timer.interval() != 0)
+            timer.start(0);
         auto& read = reads.front();
         QByteArray bytes;
         if (read.file) {
-            bytes = read.file->read(3072);
+            bytes = read.file->read(ReadChunk);
             if (read.file->error() != QFileDevice::NoError) {
                 const auto m = read.meta;
                 dropError(m, "EIO");
                 return;
             }
         } else {
-            bytes = read.bytes.mid(read.offset, 3072);
+            bytes = read.bytes.mid(read.offset, ReadChunk);
             read.offset += bytes.size();
         }
         if (!bytes.isEmpty()) {
             send(read.meta, bytes.toBase64());
-            activity.restart();
+            dropActivity.restart();
         } else {
             const auto meta = read.meta;
             readBytes -= read.bytes.size();
@@ -311,7 +417,7 @@ struct DragDrop::State {
     }
     void file(Meta m, const QString& path)
     {
-        if (sameWindow) {
+        if (localSource) {
             dropError(m, "EPERM");
             return;
         }
@@ -323,7 +429,7 @@ struct DragDrop::State {
         }
         m["X"] = "0";
         if (S_ISLNK(st.st_mode)) {
-            char buf[4096];
+            char buf[MaxLinkTarget];
             const auto n = ::readlink(raw.constData(), buf, sizeof buf);
             if (n < 0 || n == sizeof buf) {
                 dropError(m, "EIO");
@@ -332,34 +438,40 @@ struct DragDrop::State {
             m["X"] = "1";
             queue(m, QByteArray(buf, n));
         } else if (S_ISDIR(st.st_mode)) {
-            if (directories.size() >= 256) {
+            if (directories.size() >= MaxDirectoryHandles) {
                 dropError(m, "ENOMEM");
                 return;
             }
-            QDir dir(path);
-            if (!dir.isReadable()) {
-                dropError(m, "EPERM");
-                return;
-            }
-            QDirIterator iterator(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
-            QStringList entries;
-            QByteArray names;
-            while (iterator.hasNext()) {
-                iterator.next();
-                const auto info = iterator.fileInfo();
-                if (!info.isFile() && !info.isDir() && !info.isSymLink())
-                    continue;
-                if (entries.size() >= 16384) {
-                    dropError(m, "ENOMEM");
+            auto listing = listings.find(path);
+            if (listing == listings.end()) {
+                if (!QDir(path).isReadable()) {
+                    dropError(m, "EPERM");
                     return;
                 }
-                if (!entries.isEmpty())
+                QDirIterator iterator(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+                QStringList entries;
+                while (iterator.hasNext()) {
+                    iterator.next();
+                    const auto info = iterator.fileInfo();
+                    if (!info.isFile() && !info.isDir() && !info.isSymLink())
+                        continue;
+                    if (entries.size() >= MaxDirectoryEntries || listedEntries + entries.size() >= MaxListedEntries) {
+                        dropError(m, "ENOMEM");
+                        return;
+                    }
+                    entries.append(info.fileName());
+                }
+                listedEntries += int(entries.size());
+                listing = listings.emplace(path, entries).first;
+            }
+            QByteArray names;
+            for (const auto& entry : listing->second) {
+                if (!names.isEmpty())
                     names += '\0';
-                names += info.fileName().toUtf8();
-                entries.append(info.fileName());
+                names += entry.toUtf8();
             }
             const int handle = nextHandle++;
-            directories.emplace(handle, Directory { path, entries });
+            directories.emplace(handle, Directory { path, listing->second });
             m["X"] = QByteArray::number(handle);
             queue(m, names);
         } else if (S_ISREG(st.st_mode)) {
@@ -391,7 +503,7 @@ struct DragDrop::State {
             dropError(m, "EPERM");
             return;
         }
-        if (reads.size() >= 64) {
+        if (reads.size() >= MaxQueuedReads) {
             dropError(m, "EMFILE");
             return;
         }
@@ -435,15 +547,16 @@ struct DragDrop::State {
                 dropError(m, "ENOENT");
                 return;
             }
-            if (!dropUris[y - 1].isLocalFile()) {
+            const auto path = localFilePath(dropUris[y - 1]);
+            if (path.isEmpty()) {
                 dropError(m, "EUNKNOWN");
                 return;
             }
-            file(m, dropUris[y - 1].toLocalFile());
+            file(m, path);
             return;
         }
         auto bytes = incoming->data(mime);
-        if (bytes.size() > MaxTotal) {
+        if (bytes.size() > MaxData) {
             dropError(m, "ENOMEM");
             return;
         }
@@ -460,14 +573,14 @@ struct DragDrop::State {
     {
         const qint64 index = -qint64(number(m, "x")) - 1;
         const int kind = number(m, "y"), w = number(m, "X"), h = number(m, "Y");
-        if (index != int(pictures.size()) || pictures.size() >= 16) {
+        if (index != int(pictures.size()) || pictures.size() >= MaxPictures) {
             sourceError("EINVAL");
             return;
         }
         QImage image;
         if (kind == 24 || kind == 32) {
             const int stride = kind / 8;
-            if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || qint64(w) * h * stride != bytes.size()) {
+            if (w <= 0 || h <= 0 || w > MaxPictureSide || h > MaxPictureSide || qint64(w) * h * stride != bytes.size()) {
                 sourceError("EINVAL");
                 return;
             }
@@ -479,22 +592,26 @@ struct DragDrop::State {
             buffer.setData(bytes);
             buffer.open(QIODevice::ReadOnly);
             QImageReader reader(&buffer, "PNG");
-            if (reader.size().width() > 4096 || reader.size().height() > 4096) {
+            if (reader.size().width() > MaxPictureSide || reader.size().height() > MaxPictureSide) {
                 sourceError("EFBIG");
                 return;
             }
             image = reader.read();
         } else if (kind == 0) {
-            if (bytes.size() > 4096 || w < 0 || h < 0) {
+            if (bytes.size() > MaxPacket || w < 0 || h < 0) {
                 sourceError("EFBIG");
                 return;
             }
             QFont font = QGuiApplication::font();
             const double scale = h > 0 && w > 0 ? double(w) / h : 1.0;
-            font.setPointSizeF(std::clamp(font.pointSizeF() * scale, 1.0, 256.0));
+            // A font sized in pixels reports no point size.
+            if (font.pointSizeF() > 0)
+                font.setPointSizeF(std::clamp(font.pointSizeF() * scale, 1.0, 256.0));
+            else
+                font.setPixelSize(int(std::lround(std::clamp(font.pixelSize() * scale, 1.0, 340.0))));
             const QString text = QString::fromUtf8(bytes).replace(QLatin1Char('\n'), QLatin1Char(' '));
             QFontMetrics metrics(font);
-            const QSize size(std::min(4096, metrics.horizontalAdvance(text) + 8), metrics.height() + 8);
+            const QSize size(std::min(MaxPictureSide, metrics.horizontalAdvance(text) + 8), metrics.height() + 8);
             image = QImage(size, QImage::Format_ARGB32_Premultiplied);
             image.fill(QColor(0, 0, 0, std::clamp(number(m, "o"), 0, 1024) * 255 / 1024));
             QPainter painter(&image);
@@ -522,16 +639,16 @@ struct DragDrop::State {
     }
     QByteArray fetch(int index)
     {
-        if (sourceAction && !(QGuiApplication::mouseButtons() & Qt::LeftButton))
+        if (sourceAction && !leftButton())
             announceDrop();
         send({ { "t", "e" }, { "x", "1" }, { "y", QByteArray::number(index) } }, { }, true);
         if (!complete.contains(index) && !failed.contains(index)) {
             send({ { "t", "e" }, { "x", "5" }, { "y", QByteArray::number(index) } }, { }, true);
-            activity.restart();
+            sourceActivity.restart();
             spin(
                 [&] {
                     return complete.contains(index) || failed.contains(index) || failed.contains(-1) || !started
-                        || activity.elapsed() > 30000;
+                        || sourceActivity.elapsed() > RequestTimeoutMs;
                 },
                 0);
             if (started && !complete.contains(index) && !failed.contains(index) && !failed.contains(-1))
@@ -543,21 +660,37 @@ struct DragDrop::State {
     bool prepareRemote();
     void start()
     {
-        if (!offered || !gesture || !pressed || !window || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+        // Set when the start was queued; a second start is rejected until this one returns.
+        struct Done {
+            bool& flag;
+            ~Done() { flag = false; }
+        } done { starting };
+        if (!offered || !gesture || !pressed || !window || !leftButton()) {
             sourceError("EPERM");
             return;
         }
-        if (!sourceMachine.isEmpty() && sourceMachine != machineId() && !prepareRemote())
+        // Only a positive match proves a local source. A missing id is remote.
+        const auto local = machineId();
+        const bool remoteSource = sourceMachine.isEmpty() || local.isEmpty() || sourceMachine != local;
+        if (remoteSource && !prepareRemote())
             return;
-        if (!pressed || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+        if (!offered || !pressed || !window || !leftButton()) {
             sourceError("EPERM");
             return;
         }
         auto* operation = new QDrag(window);
         drag = operation;
         auto* mime = new LazyMime;
-        mime->names = sourceMimes;
-        mime->fetch = [this](int index) { return fetch(index); };
+        for (int n = 0; n < sourceMimes.size(); ++n)
+            if (!remoteSource || !carriesUris(sourceMimes[n])) {
+                mime->names.append(sourceMimes[n]);
+                mime->indices.append(n);
+            }
+        // The platform can ask for data after the pane, and this state, are gone.
+        mime->fetch = [weak = weak_from_this()](int index) {
+            const auto state = weak.lock();
+            return state ? state->fetch(index) : QByteArray();
+        };
         operation->setMimeData(mime);
         if (!pictures.empty())
             operation->setPixmap(pictures.front());
@@ -567,9 +700,15 @@ struct DragDrop::State {
         });
         started = true;
         send({ { "t", "E" } }, "OK", true);
+        // A refused reply resets the protocol synchronously.
+        if (!started) {
+            operation->deleteLater();
+            drag.clear();
+            return;
+        }
         QTimer dropMonitor;
         QObject::connect(&dropMonitor, &QTimer::timeout, owner, [this] {
-            if (sourceAction && !(QGuiApplication::mouseButtons() & Qt::LeftButton))
+            if (sourceAction && !leftButton())
                 announceDrop();
         });
         dropMonitor.start(10);
@@ -581,6 +720,10 @@ struct DragDrop::State {
             drag->deleteLater();
         drag.clear();
         pressed = false;
+        if (temporary) {
+            finishedTree = std::move(temporary);
+            treeExpiry.start(FinishedTreeLifetimeMs);
+        }
         clearSource();
     }
     void dispatch(Meta m, const QByteArray& payload);
@@ -589,13 +732,18 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
 {
     const int root = number(m, "x"), child = number(m, "y");
     const qint64 parent = m.value("Y").toLongLong(), kind = m.value("X").toLongLong();
-    if (!temporary || !requestedRoots.contains(root)) {
+    // A root entry has exactly one key, so every entry is announced and counted.
+    if (!temporary || started || !requestedRoots.contains(root) || (parent == 0 && child != 0)) {
         sourceError("EINVAL");
         return;
     }
     const auto key = QByteArray::number(root) + ':' + QByteArray::number(parent) + ':' + QByteArray::number(child);
     auto found = remote.find(key);
     if (found == remote.end()) {
+        if (remote.size() >= std::size_t(MaxRemoteEntries)) {
+            sourceError("EMFILE");
+            return;
+        }
         QString path;
         if (parent) {
             const auto dir = remoteDirs.find(parent);
@@ -605,13 +753,11 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
             }
             path = QDir(dir->second.path).filePath(dir->second.entries[child - 1]);
         } else {
-            const int uriIndex = int(sourceMimes.indexOf(QStringLiteral("text/uri-list")));
-            const auto urls = uris(data[uriIndex]);
-            if (root < 1 || root > urls.size()) {
+            if (root < 1 || root > remoteUrls.size()) {
                 sourceError("EINVAL");
                 return;
             }
-            QString name = QFileInfo(QDir::cleanPath(urls[root - 1].toLocalFile())).fileName();
+            QString name = QFileInfo(QDir::cleanPath(remoteUrls[root - 1].toLocalFile())).fileName();
             if (name.isEmpty())
                 name = QStringLiteral("directory");
             if (name == QLatin1String(".") || name == QLatin1String("..") || name.contains(QLatin1Char('/'))
@@ -623,19 +769,16 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
             QDir().mkpath(base);
             path = QDir(base).filePath(name);
         }
-        if (remote.size() >= 16384 || path.size() > 4096) {
-            sourceError("EMFILE");
+        if (path.size() > MaxPathLength) {
+            sourceError("ENAMETOOLONG");
             return;
         }
         Remote item;
         item.path = path;
         item.kind = kind;
-        if (kind == 0) {
-            item.file = std::make_unique<QFile>(path);
-            if (!item.file->open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
-                sourceError("EIO");
-                return;
-            }
+        if (kind == 0 && !appendFile(path, { }, true)) {
+            sourceError("EIO");
+            return;
         }
         found = remote.emplace(key, std::move(item)).first;
     }
@@ -645,17 +788,19 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
         return;
     }
     remoteBytes += bytes.size();
-    if (remoteBytes > 1024LL * 1024 * 1024) {
+    if (remoteBytes > MaxRemoteBytes) {
         sourceError("EFBIG");
         return;
     }
-    if (entry.file) {
-        if (entry.file->write(bytes) != bytes.size()) {
+    if (entry.kind == 0) {
+        if (!bytes.isEmpty() && !appendFile(entry.path, bytes, false)) {
             sourceError("EIO");
             return;
         }
     } else {
-        if (entry.bytes.size() + bytes.size() > MaxData) {
+        // A link holds one target. A listing holds names of at most 255 bytes.
+        const qsizetype limit = entry.kind == 1 ? MaxLinkTarget : qsizetype(MaxDirectoryEntries) * 256;
+        if (entry.bytes.size() + bytes.size() > limit) {
             sourceError("EFBIG");
             return;
         }
@@ -663,17 +808,14 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
     }
     if (!end)
         return;
-    if (entry.file) {
-        if (!entry.file->flush()) {
-            sourceError("EIO");
-            return;
-        }
-        entry.file->close();
-    } else if (entry.kind == 1) {
+    if (remotePending <= 0) {
+        sourceError("EINVAL");
+        return;
+    }
+    if (entry.kind == 1) {
         const QString target = QString::fromUtf8(entry.bytes);
-        const QString resolved = QDir::cleanPath(QDir(QFileInfo(entry.path).absolutePath()).filePath(target));
         if (target.isEmpty() || target.toUtf8() != entry.bytes || target.contains(QChar(0))
-            || QDir::isAbsolutePath(target) || !resolved.startsWith(temporary->path() + QLatin1Char('/'))) {
+            || QDir::isAbsolutePath(target) || !linkStaysInside(entry.path, entry.bytes, temporary->path())) {
             sourceError("EPERM");
             return;
         }
@@ -681,22 +823,24 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
             sourceError("EIO");
             return;
         }
-    } else {
-        if (remoteDirs.contains(entry.kind) || remoteDirs.size() >= 256 || !QDir().mkdir(entry.path)) {
+    } else if (entry.kind != 0) {
+        if (remoteDirs.contains(entry.kind) || remoteDirs.size() >= MaxDirectoryHandles || !QDir().mkdir(entry.path)) {
             sourceError("EINVAL");
             return;
         }
         QStringList names;
+        QSet<QString> seen;
         if (!entry.bytes.isEmpty())
             for (const auto& raw : entry.bytes.split('\0')) {
                 const QString name = QString::fromUtf8(raw);
                 if (name.isEmpty() || raw.size() > 255 || name.toUtf8() != raw || name.contains(QLatin1Char('/'))
-                    || name == QLatin1String(".") || name == QLatin1String("..") || names.contains(name)) {
+                    || name == QLatin1String(".") || name == QLatin1String("..") || seen.contains(name)) {
                     sourceError("EINVAL");
                     return;
                 }
+                seen.insert(name);
                 names.append(name);
-                if (names.size() + remotePending > 16384) {
+                if (names.size() + remotePending > MaxRemoteEntries) {
                     sourceError("EMFILE");
                     return;
                 }
@@ -704,6 +848,7 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
         remoteDirs.emplace(entry.kind, Directory { entry.path, names });
         remotePending += int(names.size());
     }
+    entry.bytes = QByteArray();
     entry.done = true;
     --remotePending;
 }
@@ -717,29 +862,46 @@ bool DragDrop::State::prepareRemote()
         return false;
     }
     const auto urls = uris(data[index]);
-    if (urls.size() > 1024) {
+    if (urls.size() > MaxRemoteUris) {
         sourceError("EMFILE");
         return false;
     }
+    for (const auto& url : urls)
+        if (!url.isLocalFile() && !remoteScheme(url)) {
+            sourceError("EPERM");
+            return false;
+        }
+    finishedTree.reset();
+    treeExpiry.stop();
     temporary = std::make_unique<QTemporaryDir>();
     if (!temporary->isValid()) {
         sourceError("EIO");
         return false;
     }
+    remoteUrls = urls;
     for (int n = 0; n < urls.size(); ++n)
         if (urls[n].isLocalFile()) {
             requestedRoots.insert(n + 1);
             ++remotePending;
             send({ { "t", "k" }, { "x", QByteArray::number(n + 1) } }, { }, true);
         }
-    activity.restart();
-    spin([&] { return remotePending == 0 || failed.contains(-1) || !offered || activity.elapsed() > 120000; }, 0);
-    if (remotePending && offered && !failed.contains(-1)) {
+    sourceActivity.restart();
+    spin(
+        [&] {
+            return remotePending == 0 || failed.contains(-1) || !offered || !pressed
+                || sourceActivity.elapsed() > RemoteTimeoutMs;
+        },
+        0);
+    if (failed.contains(-1) || !offered)
+        return false;
+    if (!pressed) {
+        sourceError("EPERM");
+        return false;
+    }
+    if (remotePending) {
         sourceError("ETIMEDOUT");
         return false;
     }
-    if (failed.contains(-1) || !offered)
-        return false;
     QByteArray replacement;
     for (int n = 0; n < urls.size(); ++n) {
         QUrl url = urls[n];
@@ -760,21 +922,18 @@ bool DragDrop::State::prepareRemote()
 void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
 {
     const auto type = m.value("t", "a");
-    if (type == "q" || type == "Q") {
-        Meta response { { "t", type } };
-        if (m.contains("i"))
-            response["i"] = m.value("i");
-        send(response);
-        return;
-    }
     if (type == "a") {
         if (m.contains("i"))
             receiverId = m.value("i");
         else if (number(m, "x") != 1)
             receiverId.clear();
-        if (number(m, "x") == 1)
+        if (number(m, "x") == 1) {
+            if (payload.size() > MaxMachineId) {
+                dropError(m, "EINVAL");
+                return;
+            }
             receiverMachine = payload;
-        else
+        } else
             accepting = true;
         return;
     }
@@ -789,7 +948,7 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
         const int action = number(m, "o");
         chosen = (action == 1 || action == 2) && (action & allowed) ? action : 0;
         if (!payload.isEmpty()) {
-            preferred = mimeList(payload);
+            const auto preferred = mimeList(payload);
             if (preferred.isEmpty() || std::any_of(preferred.begin(), preferred.end(), [&](const auto& mime) {
                     return !dropMimes.contains(mime);
                 }))
@@ -798,7 +957,7 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
         return;
     }
     if (type == "r") {
-        activity.restart();
+        dropActivity.restart();
         request(m);
         return;
     }
@@ -808,6 +967,10 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
         else if (number(m, "x") == 1)
             sourceId.clear();
         if (number(m, "x") == 1) {
+            if (payload.size() > MaxMachineId) {
+                sourceError("EINVAL");
+                return;
+            }
             offering = true;
             sourceMachine = payload;
             return;
@@ -820,10 +983,14 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
                 clearSource();
             return;
         }
-        if (!gesture || !pressed || started || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+        // The offer that a start or a remote copy uses must not change under it.
+        if (!gesture || !pressed || started || starting || temporary || !leftButton()) {
             sourceError("EPERM");
             return;
         }
+        // A new offer replaces the state of an earlier one, including its errors.
+        clearSource();
+        gesture = true;
         sourceMimes = mimeList(payload);
         sourceActions = number(m, "o");
         if (sourceMimes.isEmpty() || sourceActions < 1 || sourceActions > 3) {
@@ -835,11 +1002,12 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
     }
     if (type == "P") {
         if (number(m, "x") == -1) {
-            // Leave the parser callback before entering the platform drag loop.
-            if (started) {
+            if (started || starting || temporary) {
                 sourceError("EINVAL");
                 return;
             }
+            // Leave the parser callback before entering the platform drag loop.
+            starting = true;
             const auto state = owner->d;
             QTimer::singleShot(0, owner, [state] { state->start(); });
         } else if (drag) {
@@ -858,12 +1026,19 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
             offered = false;
             if (started)
                 QDrag::cancel();
-        } else
-            failed.insert(number(m, "y"));
+            return;
+        }
+        const int index = number(m, "y");
+        if (index < 0 || index >= sourceMimes.size()) {
+            sourceError("EINVAL");
+            return;
+        }
+        failed.insert(index);
         return;
     }
     if (type == "p" || type == "e" || type == "k") {
-        if ((type == "p" && (!offered || started)) || (type == "e" && !started) || (type == "k" && !temporary)) {
+        if ((type == "p" && (!offered || started || temporary)) || (type == "e" && !started)
+            || (type == "k" && !temporary)) {
             sourceError("EINVAL");
             return;
         }
@@ -923,6 +1098,7 @@ void DragDrop::abort()
         state->sourceError("ENOMEM");
     state->reset();
 }
+void DragDrop::setInputBacklog(std::function<std::size_t()> backlog) { d->backlog = std::move(backlog); }
 bool DragDrop::acceptsDrops() const { return d->accepting; }
 bool DragDrop::offersDrags() const { return d->offering; }
 QByteArray DragDrop::queryReply(const QByteArray& command)
@@ -947,15 +1123,16 @@ QByteArray DragDrop::queryReply(const QByteArray& command)
 void DragDrop::handle(const QByteArray& command)
 {
     const auto state = d;
-    if (command.size() > 8192) {
-        state->reset();
-        return;
-    }
     const auto separator = command.indexOf(';');
     const auto raw = separator < 0 ? command : command.left(separator);
     const auto payload = separator < 0 ? QByteArray() : command.mid(separator + 1);
-    if (payload.size() > 4096) {
-        state->sourceError("EFBIG");
+    if (command.size() > MaxCommand || payload.size() > MaxPacket) {
+        auto type = typeOf(raw);
+        if (type.isEmpty())
+            type = state->chunks.value("t", "a");
+        state->reject(type, "EFBIG");
+        if (command.size() > MaxCommand)
+            state->reset();
         return;
     }
     Meta m;
@@ -986,20 +1163,25 @@ void DragDrop::handle(const QByteArray& command)
         m[key] = value;
     }
     if (m.value("t") == "q" || m.value("t") == "Q") {
-        state->dispatch(m, payload);
+        // The PTY thread answers queries first. This path serves direct callers.
+        const auto response = queryReply(command);
+        if (!response.isEmpty())
+            Q_EMIT reply(response);
         return;
     }
-    if (m.value("t") == "e" || m.value("t") == "k" || !state->chunks.isEmpty())
-        state->activity.restart();
+    const auto chunkType = state->chunks.value("t", "a");
+    if (m.value("t") == "e" || m.value("t") == "k" || (!state->chunks.isEmpty() && !receiverType(chunkType)))
+        state->sourceActivity.restart();
+    if (!state->chunks.isEmpty() && receiverType(chunkType))
+        state->dropActivity.restart();
     if (!state->chunks.isEmpty()) {
         if (m.contains("i") && m.value("i") != state->chunks.value("i")) {
             state->reset();
             return;
         }
-        if (state->chunkData.size() + payload.size() > 4 * MaxData / 3 + 4) {
-            state->sourceError("EFBIG");
-            state->chunks.clear();
-            state->chunkData.clear();
+        const bool data = chunkType == "p" || chunkType == "e" || chunkType == "k";
+        if (state->chunkData.size() + payload.size() > (data ? 4 * MaxData / 3 + 4 : MaxControlPayload)) {
+            state->reject(chunkType, "EFBIG");
             return;
         }
         state->chunkData += payload;
@@ -1018,14 +1200,18 @@ void DragDrop::handle(const QByteArray& command)
     } else
         state->dispatch(m, payload);
 }
-void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QWindow* targetWindow)
+void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QWindow*)
 {
     const auto state = d;
     if (!state->accepting || state->dropped) {
         event->ignore();
         return;
     }
-    const auto names = event->mimeData()->formats();
+    // Other desktop clients name these types. They reach the program inside an OSC.
+    QStringList names;
+    for (const auto& format : event->mimeData()->formats())
+        if (names.size() < MaxMimeTypes && validMime(format.toUtf8()) && !names.contains(format))
+            names.append(format);
     const bool changed = !state->hovering || names != state->dropMimes;
     if (!state->hovering) {
         state->clearDrop();
@@ -1040,17 +1226,15 @@ void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QW
     if (final) {
         if (!state->chosen) {
             event->ignore();
+            // Qt sends no leave event after a drop.
+            state->send({ { "t", "m" }, { "x", "-1" }, { "y", "-1" } });
             state->clearDrop();
             return;
         }
         state->dropped = true;
-        state->sameWindow = false;
-        auto* source = event->source();
-        if (source) {
-            auto* sourceWindow = qobject_cast<QWindow*>(source);
-            state->sameWindow = sourceWindow && sourceWindow == targetWindow;
-        }
-        state->activity.start();
+        // Any drag from this process, from any window, names files that its program chose.
+        state->localSource = event->source() != nullptr;
+        state->dropActivity.start();
     }
     state->send(m, final || changed ? names.join(QLatin1Char(' ')).toUtf8() : QByteArray());
     if (!final && changed)
@@ -1058,7 +1242,8 @@ void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QW
     if (final) {
         state->spin(
             [&] {
-                return state->finished || !state->accepting || !state->dropped || state->activity.elapsed() > 30000;
+                return state->finished || !state->accepting || !state->dropped
+                    || state->dropActivity.elapsed() > RequestTimeoutMs;
             },
             0);
         if (state->finished && state->finalAction) {
@@ -1082,7 +1267,7 @@ void DragDrop::leave()
 }
 void DragDrop::press(QPoint position)
 {
-    if (d->offering && !d->started) {
+    if (d->offering && !d->started && !d->starting) {
         d->clearSource();
         d->pressed = true;
         d->origin = position;

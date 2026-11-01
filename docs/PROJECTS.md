@@ -19,6 +19,8 @@ Rotation keeps the layout shape and split ratios. Focus stays with the same pane
 ### Pane overview
 
 The pane overview shows the panes of every tab in the window as live cards, up to 32.
+Panes after the 32nd, in tab order, do not appear in the overview.
+The overview does not open when the focused pane is one of them.
 Each tab's cards form a group, in tab order. The focused pane starts highlighted.
 
 | Key | Function |
@@ -53,7 +55,7 @@ afterglow ctl detach-tab --pane 12
 ```
 
 A move can cross tab and window boundaries.
-Use target `0` with `new-tab` or `new-window`.
+Use target `0` with the placement `new-tab` or `new-window`, as in `afterglow ctl move-pane 0 new-tab --pane 12`.
 Luau supplies matching `move_pane` and `detach_tab` effects.
 Their results contain the pane snapshot and destination IDs.
 `on_pane_moved` reports the new location. A move does not cause creation or closure events.

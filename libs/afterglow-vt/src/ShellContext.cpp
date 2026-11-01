@@ -3,6 +3,8 @@
 
 #include <AfterglowVt/ShellContext.h>
 
+#include "Utf8.h"
+
 #include <algorithm>
 
 namespace AfterglowVt {
@@ -10,17 +12,24 @@ namespace AfterglowVt {
 namespace {
 
 constexpr std::size_t MaxField = 256;
-constexpr std::string_view RemoteHostId = "iterm2-remote-host";
 
 std::string field(std::string_view value)
 {
-    return std::string(value.substr(0, MaxField));
+    return std::string(detail::truncateUtf8(value, MaxField));
 }
 
-void eraseFrom(std::vector<ShellContext>& stack, std::string_view id)
+/// The OSC 3008 context with @p id; never the iTerm2 entry.
+auto findContext(std::vector<ShellContext>& stack, std::string_view id)
 {
-    const auto it = std::find_if(stack.begin(), stack.end(), [&](const ShellContext& c) { return c.id == id; });
-    stack.erase(it, stack.end());
+    return std::find_if(stack.begin(), stack.end(), [&](const ShellContext& c) { return !c.iterm2RemoteHost && c.id == id; });
+}
+
+void push(std::vector<ShellContext>& stack, ShellContext c)
+{
+    if (stack.size() >= ShellContexts::MaxDepth) {
+        stack.erase(stack.begin());
+    }
+    stack.push_back(std::move(c));
 }
 
 } // namespace
@@ -68,40 +77,53 @@ bool ShellContexts::apply(std::string_view payload)
     if (c.id.empty() || start == end) {
         return false;
     }
+    const auto it = findContext(m_stack, c.id);
     if (end) {
-        const std::size_t before = m_stack.size();
-        eraseFrom(m_stack, c.id);
-        return m_stack.size() != before;
+        const bool found = it != m_stack.end();
+        m_stack.erase(it, m_stack.end());
+        return found;
     }
-    // Starting an open context again updates it in place.
-    if (const auto it = std::find_if(m_stack.begin(), m_stack.end(), [&](const ShellContext& s) { return s.id == c.id; });
-        it != m_stack.end()) {
+    // Starting an open context again updates it in place, and ends the
+    // contexts opened inside it (the spec). The iTerm2 entry is not one.
+    if (it != m_stack.end()) {
+        const auto inner = std::remove_if(it + 1, m_stack.end(), [](const ShellContext& s) { return !s.iterm2RemoteHost; });
+        const bool ended = inner != m_stack.end();
+        m_stack.erase(inner, m_stack.end());
+        if (*it == c) {
+            return ended;
+        }
         *it = std::move(c);
         return true;
     }
-    if (m_stack.size() >= MaxDepth) {
-        m_stack.erase(m_stack.begin());
-    }
-    m_stack.push_back(std::move(c));
+    push(m_stack, std::move(c));
     return true;
 }
 
 bool ShellContexts::setRemoteHost(std::string_view userAtHost)
 {
-    const std::size_t before = m_stack.size();
-    eraseFrom(m_stack, RemoteHostId);
-    if (userAtHost.empty()) {
-        return m_stack.size() != before;
-    }
-    if (m_stack.size() >= MaxDepth) return m_stack.size() != before;
     ShellContext c;
-    c.id = std::string(RemoteHostId);
-    c.type = "remote";
-    const auto at = userAtHost.find('@');
-    c.user = field(at == std::string_view::npos ? std::string_view{} : userAtHost.substr(0, at));
-    c.hostname = field(at == std::string_view::npos ? userAtHost : userAtHost.substr(at + 1));
-    c.targetHost = c.hostname;
-    m_stack.push_back(std::move(c));
+    if (!userAtHost.empty()) {
+        c.iterm2RemoteHost = true;
+        c.type = "remote";
+        const auto at = userAtHost.find('@');
+        c.user = field(at == std::string_view::npos ? std::string_view{} : userAtHost.substr(0, at));
+        c.hostname = field(at == std::string_view::npos ? userAtHost : userAtHost.substr(at + 1));
+        c.targetHost = c.hostname;
+    }
+    const auto it = std::find_if(m_stack.begin(), m_stack.end(), [](const ShellContext& s) { return s.iterm2RemoteHost; });
+    if (it != m_stack.end() && *it == c) {
+        return false; // shell integration repeats it at every prompt
+    }
+    // Only the earlier RemoteHost goes: contexts opened after it, such as the
+    // one `afterglow ssh` reports, stay open.
+    const bool removed = it != m_stack.end();
+    if (removed) {
+        m_stack.erase(it);
+    }
+    if (userAtHost.empty()) {
+        return removed;
+    }
+    push(m_stack, std::move(c));
     return true;
 }
 

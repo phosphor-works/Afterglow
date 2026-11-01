@@ -34,8 +34,10 @@ vec4 pTerminal(vec2 uv)
     float outside = max(d.x, d.y);
     float coverage = 1.0 - smoothstep(-0.5, 1.0, outside);
 
-    // Brighter towards the head, gone at the tail, fading out over time.
+    // Brighter towards the head, dimmest at the tail, fading out over time.
     float alpha = coverage * mix(0.25, 1.0, along) * (1.0 - ease) * p_opacity;
-    color.rgb = mix(color.rgb, uCursorColor.rgb, alpha);
+    // uCursorColor is straight colour: mix toward it as an opaque premultiplied
+    // colour, so the streak also covers the transparent cursor layer.
+    color = mix(color, vec4(uCursorColor.rgb, 1.0), alpha);
     return color;
 }

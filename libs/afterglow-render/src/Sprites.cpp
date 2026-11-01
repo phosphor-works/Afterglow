@@ -124,10 +124,19 @@ void drawDashes(Canvas& c, bool vertical, bool heavy, int count, int t)
 {
     const int w = heavy ? t * 2 : t;
     const int len = vertical ? c.h : c.w;
-    const int gap = std::max(1, int(std::lround(double(len) / count * 0.3)));
+    // Each dash and each gap needs a pixel; a cell too narrow for that draws
+    // the line solid rather than losing dashes.
+    if (len < 2 * count) {
+        if (vertical) c.fill(c.w / 2 - w / 2, 0, c.w / 2 - w / 2 + w, len);
+        else c.fill(0, c.h / 2 - w / 2, len, c.h / 2 - w / 2 + w);
+        return;
+    }
     for (int i = 0; i < count; ++i) {
-        const int a = i * len / count + gap / 2;
-        const int b = (i + 1) * len / count - (gap - gap / 2);
+        const int start = i * len / count;
+        const int end = (i + 1) * len / count;
+        const int gap = std::clamp(int(std::lround(double(end - start) * 0.3)), 1, end - start - 1);
+        const int a = start + gap / 2;
+        const int b = end - (gap - gap / 2);
         if (vertical) {
             c.fill(c.w / 2 - w / 2, a, c.w / 2 - w / 2 + w, b);
         } else {

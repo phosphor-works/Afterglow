@@ -103,8 +103,10 @@ public:
     Pane* focusedPane() const { return m_focused; }
     /// Splits @p pane using @p options (empty command: the shell); returns the new pane.
     Pane* splitPane(Pane* pane, SplitTree::Direction direction, const PaneLaunchOptions& options, QString* error);
-    /// Opens a tab using @p options; returns its pane.
-    Pane* openTab(const PaneLaunchOptions& options, QString* error);
+    /// Opens a tab using @p options; returns its pane. With @p from, the tab
+    /// opens beside that pane's tab and inherits its directory; otherwise
+    /// beside the current tab, from the focused pane.
+    Pane* openTab(const PaneLaunchOptions& options, QString* error, Pane* from = nullptr);
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane.
     bool runAction(Pane* pane, Action action);
@@ -145,7 +147,7 @@ public:
     QString detachTabTo(Pane* pane, TerminalWindow* destination);
     bool swapPane(Pane* pane, SplitTree::Neighbour direction);
     bool rotatePanes(bool clockwise);
-    /// The pane overview: the tab's panes as live cards, drawn by Shaders.overview.
+    /// The pane overview: every tab's panes as live cards, drawn by Shaders.overview.
     bool openOverview();
     /// Lists the shader settings loaded script packages suggest and writes
     /// the chosen one to the config file.
@@ -155,9 +157,8 @@ public:
     Pane* overviewHighlight() const { return m_overview.open ? m_overview.highlighted.data() : nullptr; }
     /// A tab switch is animating (Shaders.tabTransition).
     bool tabSwitching() const { return m_tabTransition.progress.isAnimating(); }
-    /// Animation.splitCurve, resolved once per spec; the default spring when invalid.
-    std::shared_ptr<const PhosphorAnimation::Curve> splitCurve();
-
+    /// The overview deck's position and where it heads, in cards.
+    std::pair<qreal, qreal> overviewPosition() const { return {m_overview.position.value(), m_overview.positionTarget}; }
     /// Slides the quick terminal in or out (quick windows only).
     void toggleQuick();
 
@@ -197,11 +198,22 @@ private:
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     void bindPane(Pane* pane);
     void releasePaneUi(Pane* pane);
+    /// Closes the prompts and modes that belong to @p pane, which is going
+    /// away: its clipboard and paste prompts, title prompt, menu, URL mode
+    /// and selection drag. Prompts about other panes stay.
+    void dropPanePrompts(Pane* pane);
     void reparentPane(Pane* pane, TerminalWindow* destination);
+    /// After a swap or rotation: shows every pane again when the tab was
+    /// zoomed (@p wasZoomed), or lets the panes ease to their new places.
+    void settleRearrangement(bool wasZoomed);
     void removeTabShell(int index);
-    void finishTransfer();
+    /// Shows the current tab after panes or tabs arrived or left. The tab
+    /// that was current before (@p previousTab, by id, at @p previousIndex)
+    /// counts as left when another one shows now.
+    void finishTransfer(quint32 previousTab = 0, int previousIndex = -1);
     Pane* splitFocused(SplitTree::Direction direction, const QStringList& command = {}, const PaneLaunchOptions& options = {}, QString* error = nullptr);
-    Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr);
+    /// Opens a tab at @p at (beside the current tab when negative).
+    Pane* newTab(const QString& workingDirectory, const QStringList& command = {}, const QVariantMap& environment = {}, QString* error = nullptr, int at = -1);
     void switchTab(int index);
     void closeTab(int index);
     /// Closes tabs from the tab bar, menus and keys: asks first where a program runs.
@@ -221,10 +233,17 @@ private:
     void openTabMenu(int index, const QPointF& pos);
     void runTabMenuItem(int id);
     int tabOf(const Pane* pane) const;
-    /// Height of the tab bar in pixels; 0 when hidden by its configured policy.
-    int tabBarHeight() const;
-    /// Where the current tab's panes are laid out, in pixels.
-    QRect paneArea() const;
+    /// Height of the tab bar in pixels with @p tabCount tabs (the current
+    /// count when negative); 0 when hidden by its configured policy.
+    int tabBarHeight(int tabCount = -1) const;
+    /// Where the current tab's panes are laid out, in pixels, with
+    /// @p tabCount tabs (the current count when negative).
+    QRect paneArea(int tabCount = -1) const;
+    /// The smallest pane that splits, resizes and divider drags leave, in pixels.
+    QSize minimumPaneSize() const;
+    /// @p pane is drawn this frame: visible in the current tab, a card of
+    /// the overview, or in the tab a tab switch is leaving.
+    bool paneDrawn(const Pane* pane) const;
     void closePane(Pane* pane);
     void setFocusedPane(Pane* pane);
     void scheduleRender();
@@ -256,15 +275,35 @@ private:
     KeyModes::State m_keyMode;
     QTimer m_keyModeTimer;
     QElapsedTimer m_keyModeClock;
-    QSet<quint32> m_consumedKeys;
+    /// Presses the window took, by physical key, so their releases stay
+    /// here too. True when a shortcut took it: its auto-repeats run the
+    /// shortcut again. A mode or the chrome took the others, and their
+    /// auto-repeats go nowhere once the mode has closed.
+    QHash<quint32, bool> m_consumedKeys;
+    /// Presses that reached a pane's program, by physical key: the release
+    /// goes to that pane whatever has the keyboard by then.
+    QHash<quint32, QPointer<Pane>> m_sentKeys;
+    /// A mode holds the keyboard: the overview, URL mode, Unicode input,
+    /// copy mode or a script's key mode. Input-method text does not reach
+    /// the pane meanwhile.
+    bool keyboardModeActive() const;
+    /// Tells the input method to query the window again, after the keyboard
+    /// owner or the terminal's text changed.
+    void refreshInputMethod(Qt::InputMethodQueries queries = Qt::ImQueryAll);
+    /// Tells the input method when a mode starts or stops holding the keyboard.
+    void syncInputMethodEnabled();
+    bool m_modeHeldKeyboard = false; ///< keyboardModeActive() as the input method last heard
+    bool m_inputMethodDirty = false; ///< the focused pane's text changed since the last query
     bool performAction(Action action);
     void updateChrome();
+    /// The command palette's list: every action and the scripts' actions.
+    void updatePaletteActions();
     bool chromeVisible() const;
     /// Routes a pointer event to the chrome when it is over it (or the chrome
     /// holds a press). Returns true if the chrome took it.
     bool routePointerToChrome(QEvent* e, const QPointF& pos, bool press, bool release);
     void runSearch(const QString& query, int direction);
-    /// Finds the link under the pointer while Ctrl is held and underlines it.
+    /// Finds the link under the pointer while the link modifier is held and underlines it.
     void updateLinkHover();
     /// The pointer for where it is: a link hand, the program's shape, or the default.
     void applyPointerShape();
@@ -274,6 +313,11 @@ private:
     void ringBell(Pane* pane);
     /// Plays Terminal.bellSound, at most a few times a second.
     void playBellSound();
+    /// Starts the visual bell's flash over @p pane.
+    void flashPane(Pane* pane);
+    /// A key or input-method text went to the focused pane: the cursor
+    /// stops blinking for a moment and the pointer may hide.
+    void noteTyping();
 
     // Program status (OSC 7501)
     struct StatusView
@@ -281,7 +325,7 @@ private:
         QList<PaneStatusRecord> records; ///< cached, so drawing never locks the pane
         quint64 acknowledged = 0; ///< done and error records up to this serial were seen
         QHash<QString, int> lastStates; ///< id -> state, to notice changes worth a notification
-        qint64 lastNotification = 0;
+        QElapsedTimer lastNotification; ///< steady, so a clock change cannot silence it
     };
     std::unordered_map<const Pane*, StatusView> m_statusViews;
     void paneStatusChanged(Pane* pane);
@@ -304,20 +348,34 @@ private:
     void preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,
                      bool& holding, bool& animating);
     void applySettings(const Settings& previous);
+    /// The search highlight colours (Colors.searchMatch and the rest) for @p pane.
+    void applySearchColors(Pane* pane);
     void applyShaders();
     void applyWindowEffects();
     void setUpQuickTerminal();
-    void sendKey(QKeyEvent* e);
+    /// Moves the quick terminal @p offset pixels out from its screen edge
+    /// (negative is off screen).
+    void setQuickOffset(int offset);
+    QMetaObject::Connection m_quickScreenWatch; ///< the quick terminal's screen changing size
+    /// Encodes @p e for @p pane (the focused pane when null) and sends it.
+    void sendKey(QKeyEvent* e, Pane* pane = nullptr);
     void paste(QClipboard::Mode mode);
 
     // Clipboard protocol (OSC 5522)
     void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
     void answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& request, std::string_view oneTimePassword = {});
+    /// A program's clipboard write (OSC 52 or 5522), as Terminal.clipboardWrite says.
+    void clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequest& request);
+    void writeClipboard(Pane* pane, const AfterglowVt::ClipboardRequest& request);
     /// Pastes as OSC 5522 when the program asked for paste events.
     bool sendPasteEvent(QClipboard::Mode mode);
     struct ClipboardGrant
     {
         bool oneTime = false;
+        /// A paste's grant reads only the buffer that was pasted.
+        std::optional<bool> primary;
+        /// A paste's grant expires: the program reads right after the paste.
+        std::optional<std::chrono::steady_clock::time_point> expires;
     };
     /// Per pane: passwords the user allowed to read the clipboard.
     std::unordered_map<const Pane*, QHash<QByteArray, ClipboardGrant>> m_clipboardGrants;
@@ -325,6 +383,7 @@ private:
     {
         QPointer<Pane> pane;
         AfterglowVt::ClipboardRequest request;
+        bool write = false; ///< a write that Terminal.clipboardWrite "ask" holds
     };
     std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
@@ -364,6 +423,9 @@ private:
         QPointer<Pane> focused;
         QString title; ///< set by the user; empty follows the focused pane
     };
+    /// What the tab bar, scripts and D-Bus show for @p tab, whose shown pane
+    /// is @p focused: the user's title or the pane's, with script suffixes.
+    QString tabTitle(const Tab& tab, const Pane* focused) const;
     QString m_projectName;
     QString m_projectDirectory;
     std::vector<std::unique_ptr<Tab>> m_tabs;
@@ -376,7 +438,11 @@ private:
     double m_layoutDpr = 0;
     std::uint64_t m_layoutFontEpoch = 0;
     QPoint m_lastMouseCell{-1, -1};
+    QPointer<Pane> m_lastMousePane; ///< the pane m_lastMouseCell is in
     bool m_windowFocused = false;
+    /// Some pane drew a translucent background (a cell colour or a script's
+    /// opacity). It stays set, so content cannot rebuild the swapchain over and over.
+    bool m_contentTranslucent = false;
 
     std::unique_ptr<FrameClock> m_clock;
     bool m_quick = false;
@@ -384,11 +450,12 @@ private:
     bool m_quickShown = false;
     int m_quickHeight = 0;
     PhosphorAnimation::AnimatedValue<qreal> m_slide;
-    QString m_splitCurveSpec;
-    std::shared_ptr<const PhosphorAnimation::Curve> m_splitCurve;
     std::unordered_map<const Pane*, std::unique_ptr<PaneMotion>> m_motion;
     /// Where a pane just created by a split grows from.
     std::unordered_map<const Pane*, QRectF> m_growFrom;
+    /// Rows each pane's history has taken in, at the last frame: a view
+    /// that moved by as many rows was kept on its text, not scrolled.
+    std::unordered_map<const Pane*, std::uint64_t> m_historyRows;
 
     QTimer m_blinkTimer;
     QTimer m_textBlinkTimer; ///< SGR 5 blinking, running only while some shows
@@ -397,9 +464,12 @@ private:
     void updatePaneVisibility();
     bool m_blinkOn = true;
     double m_wheelAccumulator = 0;
+    QPointer<Pane> m_wheelPane; ///< the pane m_wheelAccumulator belongs to
     Qt::MouseButtons m_reportedButtons;
+    QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
+    bool m_overviewSwallowedPress = false; ///< the overview took a press: it takes its release
 
-    // Links under the pointer (Ctrl held).
+    // Links under the pointer (while the link modifier is held).
     QPointF m_pointer;
     /// A link on one row: an OSC 8 hyperlink run or a URL in the text.
     struct UrlSpan
@@ -443,7 +513,9 @@ private:
         bool open = false;
         QPointer<Pane> highlighted;
         QPointer<Pane> original; ///< focused when the overview opened
-        QPointer<Pane> zoomed; ///< zoomed when the overview opened
+        /// Each tab's zoomed pane when the overview opened: the overview
+        /// shows every pane, and closing zooms these tabs again.
+        std::vector<QPointer<Pane>> zoomed;
         PhosphorAnimation::AnimatedValue<qreal> amount; ///< 0 flat, 1 open
         PhosphorAnimation::AnimatedValue<qreal> position; ///< the highlight, counting on past the last card
         qreal positionTarget = 0; ///< where it heads: equals the highlighted index modulo the cards
@@ -457,7 +529,14 @@ private:
         std::shared_ptr<const PhosphorAnimation::Curve> curve;
     };
     CurveCache m_overviewCurve;
-    PhosphorAnimation::MotionSpec<qreal> motionSpec(const QString& spec, int durationMs, CurveCache& cache, const char* setting);
+    CurveCache m_splitCurve;
+    CurveCache m_cursorCurve;
+    CurveCache m_scrollCurve;
+    CurveCache m_bellCurve;
+    CurveCache m_quickCurve;
+    /// @p fallback is the setting's default, used when @p spec is not a curve.
+    PhosphorAnimation::MotionSpec<qreal> motionSpec(const QString& spec, int durationMs, CurveCache& cache, const char* setting,
+                                                    const QString& fallback = {});
     /// Another tab's panes for the renderer, prepared as visible panes are;
     /// only those in @p only when it is given.
     AfterglowRender::WindowRenderer::OverviewTab prepareOtherTab(int tab, const std::vector<Pane*>* only,
@@ -486,6 +565,8 @@ private:
         std::shared_ptr<AfterglowRender::PaneSnapshot> snapshot; ///< its last frame
         QRect rect;
         std::chrono::steady_clock::time_point at;
+        quint32 tab = 0; ///< the tab it closed in, by id
+        std::uint8_t backgroundAlpha = 255; ///< with the pane's script override
     };
     std::optional<ClosingPane> m_closingPane;
     struct PaneContext
@@ -524,9 +605,17 @@ private:
     /// The overview's cards: while it shows, every tab's panes in tab order,
     /// then layout order; otherwise the current tab's.
     std::vector<Pane*> overviewPanes() const;
+    /// True while the overview is open or still easing open or shut.
+    bool overviewShowing() const;
+    /// Applies the pane's script overrides (backgroundOpacity, cursorBlink)
+    /// over the window's @p backgroundAlpha, and returns all of them.
+    QVariantMap applyScriptOverrides(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, std::uint8_t backgroundAlpha) const;
     void layoutOtherTabs();
     /// Focuses @p chosen and closes; nullptr cancels back to the original pane.
     void closeOverview(Pane* chosen);
+    /// Zooms the tabs that were zoomed when the overview opened again, a
+    /// tab that holds @p target on the target.
+    void restoreOverviewZooms(Pane* target);
     /// Highlights card @p index, the short way round, or in @p direction (1
     /// forward, -1 back) when it is given.
     void moveOverview(int index, int direction = 0);
@@ -560,6 +649,9 @@ private:
     bool linkModifierHeld() const;
     QString m_menuLink; ///< the link the menu was opened on
     QStringList m_menuScriptActions; ///< menu id MenuScriptBase + i runs entry i
+    /// The pane the context menu was opened on: its items act on it, even
+    /// when the focus moved while the menu was open.
+    QPointer<Pane> m_menuPane;
     const Tab* m_menuTab = nullptr; ///< the tab a tab menu was opened on
     /// What the open title prompt renames: a pane, or (pane null) a tab.
     QPointer<Pane> m_titlePane;
@@ -571,6 +663,7 @@ private:
     QString m_fixedTitle; ///< afterglow --title
     bool m_holdNextPane = false; ///< afterglow --hold, for the first pane
     std::function<void()> m_pendingConfirm; ///< what a confirm prompt goes ahead with
+    QList<QPointer<Pane>> m_pendingConfirmPanes; ///< the panes the confirm prompt is about
     bool m_closeConfirmed = false; ///< the window may close without asking
     bool m_pointerHidden = false; ///< hidden while typing
     QElapsedTimer m_lastBellSound;
@@ -583,6 +676,7 @@ private:
     int m_clickCount = 0;
     QElapsedTimer m_lastClick;
     QPoint m_lastClickCell{-1, -1};
+    QPointer<Pane> m_lastClickPane; ///< the pane m_lastClickCell is in
 };
 
 } // namespace Afterglow

@@ -55,10 +55,10 @@ phosphor scene dark
 ```
 
 `--show` starts the demonstration in the first pane. `phosphor show` repeats it.
-The stages are idle, charge, fracture, recall, impulse and afterglow.
+The stages are idle, charge, fracture, recall, shock front and afterglow.
 The sequence uses the alternate screen. Completion or Ctrl+C restores the prompt.
 OSC 1337 user variables trigger real Luau actions.
-Ordinary commands charge the core. Failure fractures it. Success recalls its pieces.
+Ordinary commands charge the core. Failure fractures it. A success of 1.5 seconds or longer recalls its pieces.
 
 ## Scene controls
 
@@ -71,7 +71,7 @@ Install [scene-controls](../packages/scene-controls/README.md) in normal configu
 **Toggle contextual Phosphor exposure** enables one intensity decision each second from audio and history summaries.
 The host interpolates changes. Disable this option to release its overrides.
 Audio and history continue to affect the shader directly.
-Command activity uses host transitions. Impulses use shader timestamps.
+Command activity uses host transitions. Fracture, recall and shock fronts use signal timestamps.
 
 See [measurements](PERFORMANCE.md) before choosing a preset for 4K.
 Quality tiers specify sampling quality, not guaranteed frame rates.
@@ -91,7 +91,7 @@ PhosphorAudio and CAVA analyze system playback, as in PlasmaZones.
 | Individual bands | Illuminate panel indicators and orbital segments. |
 
 Audio and Luau operate together.
-Command failure fractures the core. Success recalls it. Bells create pressure waves.
+Command failure fractures the core. Success recalls it. Bells send shock fronts.
 Silence preserves normal scene animation.
 The lens adds bloom before text composition.
 
@@ -141,14 +141,16 @@ The command palette (**Ctrl+Shift+P**) also contains these actions:
 
 | Shortcut | Action | Signal |
 | --- | --- | --- |
-| Ctrl+Alt+1 | Fracture the core | 0 |
-| Ctrl+Alt+2 | Recall fragments | 1 |
-| Ctrl+Alt+3 | Send a pressure wave | 3 |
-| Ctrl+Alt+4 | Charge until the next command completes | 2 |
+| Ctrl+Alt+1 | Phosphor: fracture the core | 0 |
+| Ctrl+Alt+2 | Phosphor: recall the fragments | 1 |
+| Ctrl+Alt+3 | Phosphor: send a shock front | 3 |
+| Ctrl+Alt+4 | Phosphor: charge the core | 2 |
+
+The charge lasts until the next command completes.
 
 Use the palette if desktop shortcuts intercept these keys.
-The isolated process does not own the normal `afterglow ctl` service name.
-Use its internal actions when another Afterglow process is running.
+The demo process never owns the `afterglow ctl` service name.
+Use the palette or the shortcuts.
 
 ## Layers and signals
 
@@ -158,7 +160,7 @@ Use its internal actions when another Afterglow process is running.
 | `phosphor-lens` | background, after field | Three-scale HDR bloom, anamorphic scatter, filmic highlight compression, vignette and dithering. Runs before text composition. |
 | `phosphor-emission` | text | Colored glyph halos and retained afterimages. Current glyphs preserve color and position. |
 | `phosphor-cursor` | cursor | Tapered filaments during cursor movement. |
-| `phosphor-frame` | pane | Frame light, refractive pressure waves, trailing ripples and a narrow color fringe. |
+| `phosphor-frame` | pane | Frame light, refractive shock fronts, trailing ripples and a narrow color fringe. |
 
 The script reads `ev.terminal` snapshots and updates the event's tab with `afterglow.signals`.
 Each batch uses one timestamp across panes.
@@ -169,9 +171,9 @@ Each signal stores a value and its shader update time.
 
 | Channel | Meaning |
 | --- | --- |
-| 0 | Failed command exit code. Ctrl+C and unknown codes are ignored. |
+| 0 | Failed command exit code. Ctrl+C and unknown codes are ignored. Also 1 for program status `error`. |
 | 1 | Successful command duration in seconds, for commands lasting at least 1.5 seconds. Also used for program status `done`. |
-| 2 | 1 during a command; 0 after completion. |
+| 2 | 1 during a command. 0 after completion. |
 | 3 | Bell event. |
 | 4 | Program status: 1 working, 2 blocked, 3 error, 0 otherwise. |
 
@@ -236,10 +238,13 @@ Clear all shader chains for reduced motion.
 The developer renderer accepts `--frames N --fps N`.
 With multiple frames, `shot.png` becomes `shot-0000.png`, `shot-0001.png` and subsequent numbered files.
 Shader time and signal ages advance at the requested playback rate, independently of render speed.
-With the packs in the renderer's shader search path, run:
+The renderer finds packs in the shader search path. The Phosphor packs are not in it.
+Copy the packs, including `shared/`, into a separate configuration directory, and set `XDG_CONFIG_HOME` to it:
 
 ```sh
-afterglow_renderpng --background-shader phosphor-field \
+mkdir -p /tmp/phosphor-render/afterglow/shaders
+cp -r data/examples/phosphor/shaders/* /tmp/phosphor-render/afterglow/shaders/
+XDG_CONFIG_HOME=/tmp/phosphor-render afterglow_renderpng --background-shader phosphor-field \
     --background-shader phosphor-lens --dpr 2 --time 10 \
     --signal 0=1@0 --frames 48 --fps 24 input.ansi fracture.png
 ffmpeg -framerate 24 -i fracture-%04d.png -c:v libx264 -pix_fmt yuv420p fracture.mp4
@@ -257,5 +262,5 @@ The interactive launcher uses system playback automatically.
 Without this option, the renderer sums actual retained rows from the supplied panes.
 
 Command activity uses `commandHeat` and a 650 ms host transition.
-Fracture, recall and pressure-wave impulses use signal timestamps.
+Fracture, recall and shock fronts use signal timestamps.
 Install the shader pack and script together.

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ScriptTasks.h"
-#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -11,6 +10,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QThreadPool>
 #include <QTimer>
 #include <QtConcurrentRun>
 #include <QSemaphore>
@@ -30,13 +30,34 @@ int bounded(const QVariantMap& effect, const char* key, int fallback, int low, i
     const double value = effect.value(QLatin1String(key), fallback).toDouble();
     return std::isfinite(value) && value == std::floor(value) && value >= low && value <= high ? int(value) : -1;
 }
-QSemaphore fileSlots(8);
+constexpr int FileWorkers = 8;
+QSemaphore fileSlots(FileWorkers);
+// Reads that block in the kernel (a stalled network mount) keep their thread,
+// so they get their own pool and never starve the global one.
+QThreadPool* filePool()
+{
+    static QThreadPool* pool = [] {
+        auto* p = new QThreadPool;
+        p->setMaxThreadCount(FileWorkers);
+        return p;
+    }();
+    return pool;
+}
+/// Bytes cut at a byte limit, without a partial UTF-8 sequence at the end.
+QString utf8Prefix(const QByteArray& bytes, qsizetype limit)
+{
+    if (bytes.size() <= limit) return QString::fromUtf8(bytes);
+    qsizetype end = limit;
+    while (end > 0 && (static_cast<unsigned char>(bytes[end]) & 0xc0) == 0x80) --end;
+    return QString::fromUtf8(bytes.left(end));
+}
 }
 struct ScriptTasks::Task : QObject {
     QString owner, id;
     Completion complete;
     Event event;
     QProcess* process = nullptr;
+    qint64 group = 0; ///< the process group of a started job, which outlives its leader
     QByteArray output, errors;
     bool done = false, truncated = false;
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
@@ -54,10 +75,15 @@ void ScriptTasks::finish(Task* task, Result result, bool deliver)
     *task->cancelled = true;
     m_tasks[task->owner].remove(task->id);
     if (m_tasks[task->owner].isEmpty()) m_tasks.remove(task->owner);
-    if (task->process && task->process->state() != QProcess::NotRunning) {
-        const qint64 pid = task->process->processId();
-        if (pid > 0) ::kill(-pid_t(pid), SIGKILL);
-        task->process->kill();
+    // Children the job left behind stay in its group after a normal exit.
+    if (task->group > 0) ::kill(-pid_t(task->group), SIGKILL);
+    if (auto* process = task->process; process && process->state() != QProcess::NotRunning) {
+        // Deleting a running QProcess waits for it on this thread. Let it
+        // reap the killed process in the background instead.
+        process->disconnect(task);
+        process->setParent(nullptr);
+        connect(process, &QProcess::finished, process, &QObject::deleteLater);
+        process->kill();
     }
     result.data.insert(QStringLiteral("name"), task->id);
     auto complete = std::move(task->complete);
@@ -108,7 +134,8 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         return {};
     }
     if (kind == QLatin1String("watch_file")) {
-        const QString path = QFileInfo(e.value(QStringLiteral("path")).toString()).absoluteFilePath();
+        const QString path = e.value(QStringLiteral("path")).toString();
+        if (!QDir::isAbsolutePath(path)) return reject(QStringLiteral("watch_file requires an absolute path"));
         if (!QFileInfo(path).isFile()) return reject(QStringLiteral("watch_file requires an existing regular file"));
         auto* watcher = new PhosphorFsLoader::WatchedFileSet(task);
         watcher->setDebounceInterval(250);
@@ -127,11 +154,15 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     timer->start(timeout);
     if (kind == QLatin1String("read_file")) {
         const QString path = e.value(QStringLiteral("path")).toString();
-        if (path.isEmpty() || path.size() > 4096 || path.contains(QChar(0))) return reject(QStringLiteral("Invalid file path"));
-        if (!fileSlots.tryAcquire()) return reject(QStringLiteral("Too many file reads in flight"));
+        if (path.size() > 4096 || path.contains(QChar(0)) || !QDir::isAbsolutePath(path))
+            return reject(QStringLiteral("read_file needs an absolute path of at most 4096 characters"));
+        if (!fileSlots.tryAcquire()) {
+            finish(task, {}, false);
+            return failure("busy", QStringLiteral("Too many file reads in flight"));
+        }
         auto* watcher = new QFutureWatcher<Result>(task);
         connect(watcher, &QFutureWatcherBase::finished, task, [this, task, watcher] { finish(task, watcher->result()); });
-        watcher->setFuture(QtConcurrent::run([path, maxBytes, cancelled = task->cancelled] {
+        watcher->setFuture(QtConcurrent::run(filePool(), [path, maxBytes, cancelled = task->cancelled] {
             struct Release { ~Release() { fileSlots.release(); } } release;
             if (*cancelled) return failure("cancelled", QStringLiteral("Operation cancelled"));
             const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
@@ -162,10 +193,13 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     auto command = e.value(QStringLiteral("command")).toStringList();
     if (command.isEmpty() || command.size() > 64) return reject(QStringLiteral("exec needs an argv list of 1 to 64 strings"));
     for (const auto& arg : command) if (arg.size() > 4096 || arg.contains(QChar(0))) return reject(QStringLiteral("Invalid command argument"));
+    const QString cwd = e.value(QStringLiteral("cwd")).toString();
+    if (!cwd.isEmpty() && (cwd.contains(QChar(0)) || !QDir::isAbsolutePath(cwd)))
+        return reject(QStringLiteral("exec cwd must be an absolute path"));
     auto* process = new QProcess(task);
     task->process = process;
     process->setUnixProcessParameters(QProcess::UnixProcessFlag::CreateNewSession);
-    process->setWorkingDirectory(e.value(QStringLiteral("cwd")).toString());
+    process->setWorkingDirectory(cwd);
     auto environment = QProcessEnvironment::systemEnvironment();
     const auto overrides = e.value(QStringLiteral("env")).toMap();
     for (auto it = overrides.begin(); it != overrides.end(); ++it) {
@@ -174,8 +208,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     }
     process->setProcessEnvironment(environment);
     if (!command.front().contains(QLatin1Char('/'))) {
-        const QDir working(e.value(QStringLiteral("cwd")).toString().isEmpty() ? QDir::currentPath()
-            : e.value(QStringLiteral("cwd")).toString());
+        const QDir working(cwd.isEmpty() ? QDir::currentPath() : cwd);
         QStringList paths;
         const auto path = environment.contains(QStringLiteral("PATH")) ? environment.value(QStringLiteral("PATH"))
             : QStringLiteral("/bin:/usr/bin");
@@ -195,13 +228,20 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         const auto left = maxBytes - task->output.size() - task->errors.size();
         const auto bytes = process->read(left + 1);
         auto& target = stderrChannel ? task->errors : task->output;
-        target += bytes.left(left);
         if (bytes.size() > left) {
             task->truncated = true;
+            const auto cut = target.size() + left;
+            target += bytes;
+            const auto& other = stderrChannel ? task->output : task->errors;
+            const QString kept = utf8Prefix(target, cut);
+            const QString out = stderrChannel ? QString::fromUtf8(other) : kept;
+            const QString err = stderrChannel ? kept : QString::fromUtf8(other);
             finish(task, {QStringLiteral("Process output limit reached"),
-                {{QStringLiteral("stdout"), QString::fromUtf8(task->output)}, {QStringLiteral("stderr"), QString::fromUtf8(task->errors)},
-                 {QStringLiteral("truncated"), true}}, QStringLiteral("output_limit")});
+                {{QStringLiteral("stdout"), out}, {QStringLiteral("stderr"), err}, {QStringLiteral("truncated"), true}},
+                QStringLiteral("output_limit")});
+            return;
         }
+        target += bytes;
     };
     connect(process, &QProcess::readyReadStandardOutput, task, [read] { read(false); });
     connect(process, &QProcess::readyReadStandardError, task, [read] { read(true); });
@@ -216,6 +256,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
             {{QStringLiteral("stdout"), QString::fromUtf8(task->output)}, {QStringLiteral("stderr"), QString::fromUtf8(task->errors)},
              {QStringLiteral("exit_code"), code}, {QStringLiteral("truncated"), false}}, ok ? QString() : QStringLiteral("process_failed")});
     });
+    connect(process, &QProcess::started, task, [task] { task->group = task->process->processId(); });
     process->setProgram(command.takeFirst()); process->setArguments(command); process->start();
     process->closeWriteChannel();
     return {{}, {}, {}, true};

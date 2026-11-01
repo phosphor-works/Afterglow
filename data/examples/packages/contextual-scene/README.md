@@ -17,8 +17,15 @@ Background tabs do not contribute history.
 Unavailable or silent capture contributes zero audio.
 Queries observe existing capture without starting an analyzer.
 
-Optional `config.json` values are `base_intensity` (default 0.8) and `peak_intensity` (default 1.3).
+Create `config.json` beside `package.json` to change the exposure range:
+
+| Key | Default | Range |
+| --- | --- | --- |
+| `base_intensity` | 0.8 | 0 to 3 |
+| `peak_intensity` | 1.3 | `base_intensity` to 3 |
+
+A value outside its range is clamped to the nearest limit.
 The package starts disabled on each load. Disable it to release its overrides.
-It tracks up to eight windows with bounded jobs and timers.
+It tracks up to eight open windows with one timer.
 Phosphor command activity and timestamp impulses remain independent.
 The preset editor continues to control quality.

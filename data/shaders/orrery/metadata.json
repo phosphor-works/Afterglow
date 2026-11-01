@@ -2,12 +2,13 @@
     "id": "orrery",
     "name": "Orrery",
     "category": "Background",
-    "description": "A sun, an orbiting planet and its moon behind the terminal: a small example of a mesh pass with an object hierarchy.",
+    "description": "A sun, an orbiting planet and its moon behind the terminal. The pack is a small example of a mesh pass with an object hierarchy.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",
     "multipass": true,
     "bufferShaders": ["scene.frag"],
+    "bufferScale": 0.5,
     "geometryPasses": [
         {
             "vertexShader": "scene.vert",

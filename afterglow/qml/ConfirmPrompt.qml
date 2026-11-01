@@ -5,7 +5,9 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Keep the existing Enter/Escape answers while using desktop controls.
+// Asks to go ahead with something, such as closing a tab with running jobs.
+// Return accepts only while the panel itself has the focus, so Return on a
+// focused Cancel button cancels.
 Item {
     id: prompt
 
@@ -14,7 +16,11 @@ Item {
 
     function syncVisibility() {
         if (visible)
-            Qt.callLater(() => { if (prompt.visible) panel.forceActiveFocus() })
+            Qt.callLater(() => { if (prompt.visible) takeFocus() })
+    }
+
+    function takeFocus() {
+        panel.forceActiveFocus()
     }
 
     onVisibleChanged: syncVisibility()
@@ -22,7 +28,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: "#59000000"
+        color: prompt.controller.scrimColor
         MouseArea {
             anchors.fill: parent
             onClicked: prompt.controller.answerConfirm(false)
@@ -59,16 +65,20 @@ Item {
                 Button {
                     text: qsTr("Cancel")
                     onClicked: prompt.controller.answerConfirm(false)
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
                 }
                 Button {
                     text: prompt.spec.accept || qsTr("OK")
                     onClicked: prompt.controller.answerConfirm(true)
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
                 }
             }
         }
 
-        Keys.onReturnPressed: prompt.controller.answerConfirm(true)
-        Keys.onEnterPressed: prompt.controller.answerConfirm(true)
+        Keys.onReturnPressed: if (panel.Window.activeFocusItem === panel) prompt.controller.answerConfirm(true)
+        Keys.onEnterPressed: if (panel.Window.activeFocusItem === panel) prompt.controller.answerConfirm(true)
         Keys.onEscapePressed: prompt.controller.answerConfirm(false)
     }
 }

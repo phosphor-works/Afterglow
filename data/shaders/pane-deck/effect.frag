@@ -13,7 +13,6 @@
 // At overviewAmount() 0 the camera and every card coincide with the flat
 // window, so opening and closing start and end exactly on the window.
 
-#include <terminal_color.glsl>
 #include <terminal_panes.glsl>
 
 const float Pi = 3.14159265;
@@ -24,8 +23,8 @@ struct Card {
     vec3 normal;
     vec2 halfSize;
     vec4 rect;      // the pane in window px
-    float offset;   // signed distance from the highlight, in cards
-    float angle;    // its place round the carousel, in radians
+    float offset;   // signed distance from the highlight, in slots
+    float spacing;  // slots between two copies of the card round the ring
 };
 
 struct Camera {
@@ -124,7 +123,7 @@ Card card(int v, float a, float widest, Ring g) {
     c.normal = vec3(sin(yaw), 0.0, cos(yaw));
     c.rect = r;
     c.offset = k;
-    c.angle = theta;
+    c.spacing = g.slots;
     return c;
 }
 
@@ -177,7 +176,7 @@ vec4 shade(int i, Card c, vec2 local, bool front, float pixel, float a, out floa
     float shown = clamp(a, 0.0, 1.0);
     if (!front) {
         // The back of a card: a dark panel with a faint edge.
-        float edge = smoothstep(pixel * 2.0, 0.0, -sd);
+        float edge = 1.0 - smoothstep(0.0, pixel * 2.0, -sd);
         return vec4(vec3(0.03) + uThemeCursorColor.rgb * edge * 0.25, 1.0);
     }
     vec2 cardUv = local / (2.0 * c.halfSize) + 0.5;
@@ -191,11 +190,16 @@ vec4 shade(int i, Card c, vec2 local, bool front, float pixel, float a, out floa
     float focus = 1.0 - clamp(abs(c.offset), 0.0, 1.0);
     color.rgb *= mix(1.0, mix(p_sideBrightness, 1.0, focus), shown);
 
-    if (i == highlightedPane() && abs(c.offset) < 0.5 * float(paneCount())) {
+    // While the overview closes it has no highlight: the border stays on the
+    // pane it closes onto, which is focused by then, and fades with the deck.
+    int lit = overviewOpen() ? highlightedPane() : focusedPane();
+    // Only the nearest copy of the card round the ring, which is within half
+    // a round of the highlight.
+    if (i == lit && abs(c.offset) < 0.5 * c.spacing) {
         // A pulsing border in the theme's cursor colour.
         float width = c.halfSize.y * 0.018;
-        float ring = smoothstep(width + pixel, width, -sd) * shown;
-        float pulse = 0.8 + 0.2 * sin(iTime * 3.0);
+        float ring = (1.0 - smoothstep(width, width + pixel, -sd)) * shown;
+        float pulse = 0.8 + 0.2 * sin(timeAngle(3.0));
         color = mix(color, vec4(uThemeCursorColor.rgb, 1.0), ring * pulse);
     }
     if (i < 9) {
@@ -212,6 +216,13 @@ vec4 shade(int i, Card c, vec2 local, bool front, float pixel, float a, out floa
     return color;
 }
 
+// Adds light to a premultiplied colour. Alpha rises to cover the light, so
+// the colour stays valid over a translucent window.
+vec4 addLight(vec4 color, vec3 light) {
+    float a = clamp(max(color.a, max(light.r, max(light.g, light.b))), 0.0, 1.0);
+    return vec4(min(color.rgb + light, vec3(a)), a);
+}
+
 // The window behind the cards: blurred and dimmed as the deck opens.
 vec4 backdrop(vec2 uv, float a) {
     vec4 base = terminalTexel(uv);
@@ -219,8 +230,11 @@ vec4 backdrop(vec2 uv, float a) {
     if (radius < 0.5) return base;
     vec4 sum = base;
     const int Taps = 12;
+    // Each pixel turns the tap ring by its own interleaved-gradient-noise
+    // angle: a fixed ring prints sharp copies of the text, one per tap.
+    float turn = 6.2831853 * fract(52.9829189 * fract(dot(terminalPixel(uv), vec2(0.06711056, 0.00583715))));
     for (int k = 0; k < Taps; ++k) {
-        float angle = 6.2831853 * (float(k) + 0.5) / float(Taps);
+        float angle = turn + 6.2831853 * (float(k) + 0.5) / float(Taps);
         float ring = (k % 2 == 0) ? 1.0 : 0.5;
         sum += terminalTexel(uv + terminalUv(vec2(cos(angle), sin(angle)) * radius * ring));
     }
@@ -281,6 +295,9 @@ vec4 pTerminal(vec2 uv) {
         else { nextColor = color; nextCover = cover; }
     }
 
+    // An opaque card hides everything behind it: skip the blur and the floor.
+    if (nearCover * nearColor.a >= 0.999) return nearColor * nearCover;
+
     vec4 behind = backdrop(uv, shown);
     // The floor below the cards reflects them, fading with height and distance.
     float floorY = iResolution.y * (p_cardSize * 0.5 - 0.04 + 0.012);
@@ -314,10 +331,14 @@ vec4 pTerminal(vec2 uv) {
             float cover;
             vec4 color = shade(bestCard % n, c, local, front, pixel, a, cover);
             float height = (floorY - (p.y + r.y * t)) / (2.0 * c.halfSize.y);
-            mirrored = color * cover * pow(clamp(1.0 - height * 1.6, 0.0, 1.0), 2.0);
+            // Fade out toward the cut-off at 2.5 slots, so no reflection
+            // appears or vanishes in one frame as the deck turns.
+            float reach = 1.0 - smoothstep(1.5, 2.5, abs(c.offset));
+            mirrored = color * cover * pow(clamp(1.0 - height * 1.6, 0.0, 1.0), 2.0) * reach;
         }
         float fade = exp(-tf / (iResolution.y * 5.0));
-        behind.rgb = behind.rgb * mix(1.0, 0.75, shown) + mirrored.rgb * p_reflection * fade * shown;
+        behind.rgb *= mix(1.0, 0.75, shown);
+        behind = addLight(behind, mirrored.rgb * p_reflection * fade * shown);
     }
 
     vec4 under = nextColor * nextCover + behind * (1.0 - nextColor.a * nextCover);

@@ -107,11 +107,12 @@ void ChromeController::setPaneTitles(const QVariantList& titles)
     Q_EMIT paneTitlesChanged();
 }
 
-void ChromeController::askPaste(const QString& preview, int lines)
+void ChromeController::askPaste(const QString& preview, int lines, int hiddenBytes)
 {
     m_pasteConfirmOpen = true;
     m_pastePreview = preview;
     m_pasteLines = lines;
+    m_pasteHiddenBytes = hiddenBytes;
     Q_EMIT pasteConfirmChanged();
 }
 

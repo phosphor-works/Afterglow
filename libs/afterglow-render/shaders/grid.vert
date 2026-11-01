@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #version 440
 
-// One instanced quad per background run, glyph, decoration or cursor part.
+// One instanced quad per background run, glyph, decoration or cursor part;
+// with image.frag, per kitty image and for the chrome.
 layout(location = 0) in vec4 rect;   // x, y, w, h in framebuffer pixels (top-left origin)
-layout(location = 1) in vec4 uvRect; // atlas pixels, or shape parameters for procedural kinds
+layout(location = 1) in vec4 uvRect; // atlas pixels, shape parameters for procedural kinds, or normalized UVs for images and the chrome
 layout(location = 2) in vec4 color;  // straight RGBA
 layout(location = 3) in uint kind;
 
@@ -17,9 +18,6 @@ layout(location = 5) flat out vec2 vSize;
 
 layout(std140, binding = 0) uniform Frame {
     vec2 viewport;
-    vec2 grayAtlasSize;
-    vec2 colorAtlasSize;
-    float time;
     float textGamma;
 };
 

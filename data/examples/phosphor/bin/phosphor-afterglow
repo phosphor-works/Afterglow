@@ -67,7 +67,7 @@ def show():
         caption('04', 'RECALL', 'Every fragment finds its place.')
         time.sleep(2.2)
         effect('ring')
-        caption('05', 'IMPULSE', 'A pressure wave passes through the glass.')
+        caption('05', 'SHOCK FRONT', 'A shock front passes through the glass.')
         time.sleep(2.2)
         effect('cool')
         caption('06', 'AFTERGLOW', 'Move the pointer. Split a pane. Run it again.')
@@ -94,7 +94,7 @@ def launch(binary, mode, autoplay, mesh=False):
         if mesh:
             shutil.copytree(ROOT.parent.parent / 'shaders/mesh-reactor', app_home / 'shaders/mesh-reactor')
             config['Shaders']['background'] = ['mesh-reactor', 'phosphor-lens']
-            config['Shaders'].setdefault('params', {})['mesh-reactor'] = {'linearOutput': 1}
+            config['Shaders'].setdefault('params', {})['mesh-reactor'] = {'linearOutput': True}
         config['Terminal']['shell'] = str(ROOT / 'bin/phosphor-shell')
         config_path = app_home / 'config.json'
         config_path.write_text(json.dumps(config, indent=4) + '\n')
@@ -128,7 +128,9 @@ def main():
         else:
             show()
     except KeyboardInterrupt:
-        write('\033[0m\033]133;D;130\007\r\n')
+        # The demo shell's prompt reports the end of the command. In launch
+        # mode this is the user's own terminal, whose shell does the same.
+        write('\033[0m\r\n')
         return 130
     except (OSError, RuntimeError, ValueError) as error:
         print(f'phosphor-afterglow: {error}', file=sys.stderr)

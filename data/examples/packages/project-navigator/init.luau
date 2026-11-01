@@ -21,6 +21,19 @@ end
 local function notice(message, pane)
     return afterglow.notify("Project navigator", message, pane)
 end
+-- Cuts text to at most max bytes without splitting a UTF-8 sequence.
+local function trim(text, max)
+    if #text <= max then return text end
+    return string.sub(text, 1, utf8.offset(text, 0, max + 1) - 1)
+end
+-- The data of an awaited selector, nil when it is cancelled, or nil and a message
+-- when it could not open (another dialog in the window is "busy").
+local function choose(pane, title, items)
+    local choice, err = afterglow.await(afterglow.select(pane, title, items))
+    if choice then return choice end
+    if not err or err.code == "cancelled" then return nil end
+    return nil, err.message
+end
 -- Writes the history at the revision it was read. Returns an error message on failure.
 local function save()
     local written, err = afterglow.await(afterglow.state_write(saved, revision))
@@ -74,10 +87,14 @@ local function candidates(terminal)
     local failed = {}
     for i, job in ipairs(jobs) do
         local result = results[i + 1]
-        if result.ok and result.data.exit_code == 0 then
-            for _, path in ipairs(providers.parse(job.kind, result.data.stdout or "", home)) do add("directory", path) end
-        else
+        -- A provider that stopped at the output limit, or exited non-zero for a
+        -- missing root or an unreadable directory, still returns the complete
+        -- records it printed. Only a command that did not start is unavailable.
+        if not result.ok and result.error and result.error.code == "spawn_failed" then
             table.insert(failed, job.id)
+        else
+            local stdout = result.data and result.data.stdout or ""
+            for _, path in ipairs(providers.parse(job.kind, stdout, home)) do add("directory", path) end
         end
     end
     return entries, projects, failed
@@ -105,19 +122,22 @@ local function pick(pane, entries, failed)
         local label = item.kind == "project" and ("Layout: " .. item.value) or item.value
         if item.running then label = "[running] " .. label end
         if item.kind == "directory" and saved.favorites[item.value] then label = "★ " .. label end
-        table.insert(items, {id=id, title=string.sub(label, 1, 500)})
+        table.insert(items, {id=id, title=trim(label, 500)})
     end
     if #items == 0 then return nil, "No projects found. Configure roots or save a project layout first." end
     local title = "Navigate projects"
     if #failed > 0 then title ..= " (unavailable: " .. table.concat(failed, ", ") .. ")" end
-    local choice = afterglow.await(afterglow.select(pane, title, items))
-    if not choice then return nil end
+    local choice, problem = choose(pane, title, items)
+    if not choice then return nil, problem end
     if not choices[choice.id] then return nil, "Selection expired" end
     return choices[choice.id]
 end
 -- The layout to open the entry with, nil when the picker is cancelled, or nil and a message.
 local function layoutFor(pane, item, projects)
-    if item.kind == "project" or item.running then return saved.templates[item.value] end
+    -- A project opens its own layout, and a running directory is reused, so
+    -- neither asks. Without a stored template this is "", because nil means
+    -- that the picker was cancelled.
+    if item.kind == "project" or item.running then return saved.templates[item.value] or "" end
     local layouts, names = {{id="shell", title="Start a shell"}}, {shell=""}
     local previous = saved.templates[item.value]
     for i, name in ipairs(projects) do
@@ -128,14 +148,17 @@ local function layoutFor(pane, item, projects)
         if #layouts >= 100 then break end
     end
     if #layouts == 1 then return "" end
-    local choice = afterglow.await(afterglow.select(pane, "Layout for " .. providers.label(item.value), layouts))
-    if not choice then return nil end
+    local choice, problem = choose(pane, "Layout for " .. providers.label(item.value), layouts)
+    if not choice then return nil, problem end
     if names[choice.id] == nil then return nil, "Selection expired" end
     return names[choice.id]
 end
 local function favorite(pane, current)
     local path = providers.path(current, home)
     if not path then return notice("The current pane has no local directory.", pane) end
+    if #path > history.MaxKey then
+        return notice("This directory path is too long to save as a favorite (over 256 bytes).", pane)
+    end
     if not saved.favorites[path] then
         local count = 0
         for _ in pairs(saved.favorites) do count += 1 end
@@ -176,9 +199,9 @@ local function navigate(action, ev)
         if problem then return notice(problem, pane) end
         return nil
     end
-    local layout, expired = layoutFor(pane, item, projects)
+    local layout, failure = layoutFor(pane, item, projects)
     if layout == nil then
-        if expired then return notice(expired, pane) end
+        if failure then return notice(failure, pane) end
         return nil
     end
     return launch(pane, item, layout)

@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QRect>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <limits>
@@ -25,23 +26,25 @@ class FontSet;
 class AFTERGLOWRENDER_EXPORT AtlasPage
 {
 public:
+    /// A square page of @p initialSize that grows to @p maxSize.
     AtlasPage(QImage::Format format, int initialSize, int maxSize);
+    /// A page of exactly @p size that never grows, for one entry too large
+    /// for a shared page.
+    AtlasPage(QImage::Format format, QSize size);
 
     /// Reserves a w x h region (plus padding). Returns false when the page is
     /// at its maximum size and full.
     bool allocate(int w, int h, int& x, int& y);
-    void reset();
 
     QImage& image() noexcept { return m_image; }
     const QImage& image() const noexcept { return m_image; }
     int size() const noexcept { return m_image.width(); }
 
-    /// Region changed since the last takeDirty(); empty when nothing changed.
-    QRect takeDirty();
-    void markDirty(const QRect& r) { m_dirty = m_dirty.united(r); }
-    /// Bumped when the image is reallocated (grown or reset): the GPU texture
-    /// must be recreated and fully uploaded.
-    std::uint64_t layoutVersion() const noexcept { return m_layoutVersion; }
+    /// Regions changed since the last takeDirty(); empty when nothing
+    /// changed. Kept apart so an upload covers the new glyphs, not the
+    /// rectangle around every shelf they landed on.
+    std::vector<QRect> takeDirty();
+    void markDirty(const QRect& r);
 
 private:
     struct Shelf
@@ -57,8 +60,7 @@ private:
     QImage m_image;
     std::vector<Shelf> m_shelves;
     int m_nextY = 0;
-    QRect m_dirty;
-    std::uint64_t m_layoutVersion = 1;
+    std::vector<QRect> m_dirty;
 };
 
 struct GlyphEntry
@@ -75,7 +77,12 @@ struct GlyphEntry
     bool subpixel = false; ///< RGB coverage in the color atlas, with opaque alpha
 };
 
-/// Rasterised glyphs keyed by (face, glyph id, cell span).
+/// Rasterised glyphs, icons and sprites, keyed by face, glyph (or character),
+/// cell span, scale and coverage mode (grayscale entries for subpixel fonts
+/// are kept apart).
+///
+/// Lookups never return null. An entry the atlas cannot hold (wider or taller
+/// than the GPU allows, or scaled to nothing) is empty: nothing is drawn.
 class AFTERGLOWRENDER_EXPORT GlyphCache
 {
 public:
@@ -94,9 +101,9 @@ public:
     /// baseline, as for other glyphs.
     const GlyphEntry* icon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel = true);
 
-    /// A procedurally drawn cell (see Sprites.h), allocating atlas pages as needed.
-    /// The entry's top is the baseline, so it lands on the cell's top edge.
-    /// A procedurally drawn character, @p sx by @p sy cells large.
+    /// A procedurally drawn character (see Sprites.h), @p sx by @p sy cells
+    /// large, allocating atlas pages as needed. The entry's top is the
+    /// baseline, so it lands on the cell's top edge.
     const GlyphEntry* sprite(FontSet& fonts, char32_t cp, int sx = 1, int sy = 1);
 
     void reset();
@@ -107,23 +114,32 @@ public:
     AtlasPage& colorPage(std::size_t page = 0) noexcept { return *m_color[page]; }
     std::size_t grayPageCount() const noexcept { return m_gray.size(); }
     std::size_t colorPageCount() const noexcept { return m_color.size(); }
+    /// Called once per render of any window that shares the cache. Over the
+    /// byte budget, a page no render has used for StaleAfter discards the
+    /// whole cache (every page and entry) and bumps epoch().
     void beginFrame(std::size_t glyphBound, int textureLimit);
     void touchPage(bool color, std::size_t page);
     std::size_t bytes() const noexcept;
-
+    static constexpr std::chrono::milliseconds StaleAfter{1000};
 
 private:
-    bool rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel,
+    void rasterize(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, int scale16, bool allowSubpixel,
                    GlyphEntry& out);
-    bool rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel, GlyphEntry& out);
-    bool storeBitmap(const FT_Bitmap& bitmap, const FontSet& fonts, int left, int top, GlyphEntry& out);
+    void rasterizeIcon(FontSet& fonts, int face, std::uint32_t glyphId, int cellSpan, bool allowSubpixel, GlyphEntry& out);
+    /// Stores FreeType coverage; @p scale resizes it first (bitmap-only fonts
+    /// at a scaled size).
+    void storeBitmap(const FT_Bitmap& bitmap, const FontSet& fonts, int left, int top, GlyphEntry& out, float scale = 1.0f);
     /// Copies an 8-bit coverage bitmap into the gray atlas.
-    bool storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top, GlyphEntry& out);
+    void storeGray(const unsigned char* pixels, int width, int height, int pitch, int left, int top, GlyphEntry& out);
+    /// Whether one entry of @p width by @p height fits on a GPU texture.
+    bool fits(int width, int height) const noexcept { return width < m_textureLimit && height < m_textureLimit; }
 
     AtlasPage& allocate(bool color, int width, int height, int& x, int& y, std::uint32_t& page);
     std::vector<std::unique_ptr<AtlasPage>> m_gray;
     std::vector<std::unique_ptr<AtlasPage>> m_color;
     std::vector<std::uint64_t> m_grayUsed, m_colorUsed;
+    /// When each page was last used by a finished render.
+    std::vector<std::chrono::steady_clock::time_point> m_grayUsedAt, m_colorUsedAt;
     std::uint64_t m_frame = 0;
     std::size_t m_pageBound = std::numeric_limits<std::size_t>::max();
     int m_textureLimit = 4096;

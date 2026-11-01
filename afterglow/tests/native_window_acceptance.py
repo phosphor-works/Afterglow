@@ -3,25 +3,44 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Run real TerminalWindow integration tests in an isolated nested compositor."""
 import argparse
-import ctypes as C
 import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 from nested_desktop import NestedDesktop, wait_for
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
+parser.add_argument("--filter", help="gtest filter, for example 'NativeWindow.KittyDragAndDropClient'")
+# Below the CTest TIMEOUT, so that the runner reports a stall before CTest kills it.
+parser.add_argument("--timeout", type=int, default=110, help="seconds for the whole run")
+parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 args = parser.parse_args()
+binary = os.path.abspath(args.binary)
+if not args.private_bus:
+    # The nested KWin must not join the user's session bus.
+    command = [sys.executable, __file__, "--binary", binary, "--timeout", str(args.timeout), "--private-bus"]
+    if args.filter:
+        command += ["--filter", args.filter]
+    sys.exit(subprocess.call(["dbus-run-session", "--", *command]))
+deadline = time.monotonic() + args.timeout
+# Run the clean-up below on SIGTERM too: the binary is in its own session.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
 with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
     root = Path(temporary)
     with NestedDesktop(root) as desktop:
         marker = root / "drag-ready"
-        # Keep desktop portal activation outside this isolated input test.
-        env = dict(desktop.env, AFTERGLOW_NATIVE_DND_READY=str(marker),
-                   QT_QUICK_CONTROLS_STYLE="Basic", QT_QPA_PLATFORMTHEME="generic")
-        process = subprocess.Popen(["dbus-run-session", "--", os.path.abspath(args.binary)], env=env)
+        env = dict(desktop.env, AFTERGLOW_NATIVE_DND_READY=str(marker), AFTERGLOW_NATIVE_ISOLATED="1")
+        command = ["dbus-run-session", "--", binary]
+        if args.filter:
+            command.append("--gtest_filter=" + args.filter)
+        # Run in the temporary root: kitten leaves its .dnd-kitten-drop-* directories
+        # in the working directory. A new session lets the runner stop the binary and
+        # its private dbus-daemon together; dbus-run-session does not pass SIGTERM on.
+        process = subprocess.Popen(command, env=env, cwd=root, start_new_session=True)
         try:
             while process.poll() is None:
                 coordinates = []
@@ -33,58 +52,34 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
                     except (FileNotFoundError, ValueError):
                         return False
                     return len(coordinates) == 4
-                wait_for(ready, timeout=60)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(f"The native tests did not finish within {args.timeout} s")
+                wait_for(ready, timeout=remaining)
                 if len(coordinates) == 4:
                     marker.unlink(missing_ok=True)
                     Path(str(marker) + ".pressed").unlink(missing_ok=True)
-                    x, display = desktop.x, desktop.display
                     start_x, start_y, end_x, end_y = coordinates
                     # Feed only the nested compositor's X11 backend. KWin then
                     # generates real Wayland pointer serials and negotiates QDrag.
                     # Host XWayland may suppress XTest button events during grabs.
-                    class ButtonEvent(C.Structure):
-                        _fields_ = [("type", C.c_int), ("serial", C.c_ulong), ("send_event", C.c_int),
-                                    ("display", C.c_void_p), ("window", C.c_ulong), ("root", C.c_ulong),
-                                    ("subwindow", C.c_ulong), ("time", C.c_ulong), ("x", C.c_int),
-                                    ("y", C.c_int), ("x_root", C.c_int), ("y_root", C.c_int),
-                                    ("state", C.c_uint), ("button", C.c_uint), ("same_screen", C.c_int)]
-                    class MotionEvent(C.Structure):
-                        _fields_ = ButtonEvent._fields_[:-2] + [("is_hint", C.c_char), ("same_screen", C.c_int)]
-                    class XEvent(C.Union):
-                        _fields_ = [("button", ButtonEvent), ("motion", MotionEvent), ("padding", C.c_long * 24)]
-                    x.XSendEvent.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.POINTER(XEvent)]
-                    x.XTranslateCoordinates.argtypes = [C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int,
-                                                        C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_ulong)]
-                    def send(kind, px, py, held):
-                        event = XEvent()
-                        value = event.motion if kind == 6 else event.button
-                        value.type, value.display, value.window = kind, display, desktop.window
-                        value.root = x.XDefaultRootWindow(display)
-                        value.time = int(time.monotonic() * 1000) & 0xffffffff
-                        value.x, value.y = px, py
-                        rx, ry, child = C.c_int(), C.c_int(), C.c_ulong()
-                        assert x.XTranslateCoordinates(display, desktop.window, value.root, px, py,
-                                                       C.byref(rx), C.byref(ry), C.byref(child))
-                        value.x_root, value.y_root = rx.value, ry.value
-                        value.state, value.same_screen = (256 if held else 0), 1
-                        if kind != 6:
-                            value.button = 1
-                        mask = (1 << 6) | (1 << 13) if kind == 6 else (1 << (kind - 2))
-                        assert x.XSendEvent(display, desktop.window, 0, mask, C.byref(event))
-                        x.XFlush(display)
-                    send(6, start_x, start_y, False)
+                    desktop.pointer(6, start_x, start_y)
                     time.sleep(.1)
-                    send(4, start_x, start_y, False)
+                    desktop.pointer(4, start_x, start_y)
                     try:
                         wait_for(lambda: Path(str(marker) + ".pressed").exists(), timeout=5)
                         for step in range(1, 11):
-                            send(6, start_x + (end_x - start_x) * step // 10,
-                                 start_y + (end_y - start_y) * step // 10, True)
+                            desktop.pointer(6, start_x + (end_x - start_x) * step // 10,
+                                            start_y + (end_y - start_y) * step // 10, held=True)
                             time.sleep(.04)
                     finally:
-                        send(5, end_x, end_y, True)
+                        desktop.pointer(5, end_x, end_y, held=True)
             raise SystemExit(process.wait(timeout=30))
         finally:
             if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()

@@ -8,25 +8,27 @@
 #include <PhosphorShaders/ShaderIncludeResolver.h>
 #include <PhosphorShaders/ShaderRegistry.h>
 #include <PhosphorShaders/ShaderPresetStore.h>
-#include <QSaveFile>
-#include <QRegularExpression>
-#include <QSet>
-#include <QImageReader>
-#include <QBuffer>
-#include <QUuid>
 
+#include <QBuffer>
 #include <QColor>
-#include <algorithm>
-#include <cmath>
-#include <limits>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QImageReader>
 #include <QLoggingCategory>
+#include <QRegularExpression>
+#include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
+#include <QUuid>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
 
 Q_LOGGING_CATEGORY(lcShaders, "afterglow.shaders", QtInfoMsg)
 
@@ -34,9 +36,16 @@ namespace Afterglow {
 
 namespace {
 
-QString expandHome(const QString& path)
+using PhosphorFsLoader::AbsolutePathPolicy;
+using PhosphorShaders::ShaderIncludeResolver;
+
+/// At most @p limit bytes of @p path; false if it cannot be read or is longer.
+bool readCapped(const QString& path, qint64 limit, QByteArray& bytes)
 {
-    return path.startsWith(QLatin1String("~/")) ? QDir::homePath() + path.mid(1) : path;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    bytes = file.read(limit + 1);
+    return bytes.size() <= limit;
 }
 
 // Mirror the resolver's include search, retaining missing candidates as well
@@ -44,20 +53,26 @@ QString expandHome(const QString& path)
 void collectIncludes(const QString& source, const QString& dir, const QStringList& includeDirs,
                      QStringList& watched, QSet<QString>& seen, int depth = 0)
 {
-    if (depth > PhosphorShaders::ShaderIncludeResolver::MaxIncludeDepth) return;
+    if (depth > ShaderIncludeResolver::MaxIncludeDepth) return;
     static const QRegularExpression pattern(QStringLiteral(R"(^\s*#include\s+(["<])([^">]+)[">]\s*$)"));
     for (const auto& line : source.split(QLatin1Char('\n'))) {
         if (!line.contains(QLatin1String("#include"))) continue;
         const auto match = pattern.match(line);
         if (!match.hasMatch()) continue;
         const auto name = match.captured(2).trimmed();
-        if (name.isEmpty() || QFileInfo(name).fileName() == QLatin1String(PhosphorShaders::ShaderIncludeResolver::GeneratedPreambleInclude)) continue;
+        // The resolver refuses absolute names, so a pack cannot read any file it likes.
+        if (name.isEmpty() || QDir::isAbsolutePath(name)
+            || QFileInfo(name).fileName() == QLatin1String(ShaderIncludeResolver::GeneratedPreambleInclude)) continue;
         QStringList search;
         if (match.captured(1) == QLatin1String("\"")) search << dir;
         search << includeDirs;
         for (const auto& location : search) {
-            // The contract is built in and never changes.
-            if (location.isEmpty() || location.startsWith(QLatin1Char(':'))) continue;
+            if (location.isEmpty()) continue;
+            // The contract is built in and never changes; a hit there shadows the disk.
+            if (location.startsWith(QLatin1Char(':'))) {
+                if (QFileInfo(QDir(location).filePath(name)).isFile()) break;
+                continue;
+            }
             const auto candidate = QDir::cleanPath(QDir(location).absoluteFilePath(name));
             watched << candidate;
             const QFileInfo info(candidate);
@@ -66,9 +81,10 @@ void collectIncludes(const QString& source, const QString& dir, const QStringLis
             watched << resolved;
             if (!seen.contains(resolved)) {
                 seen.insert(resolved);
-                QFile file(resolved);
-                if (file.open(QIODevice::ReadOnly | QIODevice::Text))
-                    collectIncludes(QString::fromUtf8(file.readAll()), QFileInfo(resolved).absolutePath(), includeDirs, watched, seen, depth + 1);
+                // The resolver reports an oversized include; only watch it here.
+                QByteArray bytes;
+                if (readCapped(resolved, ShaderIncludeResolver::MaxIncludeBytes, bytes))
+                    collectIncludes(QString::fromUtf8(bytes), QFileInfo(resolved).absolutePath(), includeDirs, watched, seen, depth + 1);
             }
             break;
         }
@@ -87,25 +103,31 @@ void watchIncludes(const QByteArray& code, const QString& path, const QStringLis
 QString readStage(const QString& path, const QStringList& includes, QStringList& watched, QByteArray& code)
 {
     watched << path;
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return QStringLiteral("Cannot read shader: %1").arg(path);
-    code = file.readAll();
+    // Package packs are third-party files, read on the GUI thread.
+    if (!readCapped(path, ShaderIncludeResolver::MaxIncludeBytes, code))
+        return QStringLiteral("Cannot read shader, or it exceeds 1 MiB: %1").arg(path);
     watchIncludes(code, path, includes, watched);
     return {};
 }
 
-QString loadImageParameter(const QString& pack, const QString& value, QImage& image, QString& resolved)
+/// An image parameter's file. Under Reject (pack files, scripts, presets) the
+/// path must stay inside the pack; under Trust (the user's own config) an
+/// absolute or ~/ path may point anywhere.
+QString loadImageParameter(const QString& pack, const QString& value, AbsolutePathPolicy policy, QImage& image,
+                           QString& resolved)
 {
     if (value.isEmpty()) { image = {}; resolved.clear(); return {}; }
-    const auto path = expandHome(value);
+    const bool trusted = policy == AbsolutePathPolicy::Trust;
+    const auto path = trusted && value.startsWith(QLatin1String("~/")) ? QDir::homePath() + value.mid(1) : value;
     // Watched even when unreadable, so fixing the file recovers the shader.
     resolved = QFileInfo(QDir(pack).absoluteFilePath(path)).absoluteFilePath();
     constexpr qint64 MaxBytes = 16 * 1024 * 1024;
-    // Relative paths stay inside the pack; absolute ones come from the user.
     QString error;
-    const auto file = PhosphorFsLoader::readFileWithinDirectory(path, pack, PhosphorFsLoader::AbsolutePathPolicy::Trust,
-                                                                MaxBytes, &error);
-    if (!file) return QStringLiteral("Image must be a regular file of at most 16 MiB, inside the pack when relative: %1").arg(error);
+    const auto file = PhosphorFsLoader::readFileWithinDirectory(path, pack, policy, MaxBytes, &error);
+    if (!file) {
+        return trusted ? QStringLiteral("Image must be a regular file of at most 16 MiB, inside the pack when relative: %1").arg(error)
+                       : QStringLiteral("Image must be a regular file of at most 16 MiB inside the pack: %1").arg(error);
+    }
     auto bytes = file->bytes;
     QBuffer buffer(&bytes); buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer);
@@ -250,7 +272,7 @@ QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSour
         if (object.contains(QStringLiteral("objects"))) {
             if (object.contains(QStringLiteral("mesh")) || object.contains(QStringLiteral("vertexCount"))
                 || object.contains(QStringLiteral("instances")))
-                return QStringLiteral("Use objects, or mesh and vertexCount with instances, not both");
+                return QStringLiteral("Use objects, or use mesh or vertexCount with instances, not both");
             error = loadSceneObjects(pack, object.value(QStringLiteral("objects")).toArray(), scalarSlots, geometry, watched);
             if (!error.isEmpty()) return error;
         } else if (object.contains(QStringLiteral("mesh"))) {
@@ -272,7 +294,80 @@ bool isFileReference(const QString& ref)
         || ref.endsWith(QLatin1String(".frag"));
 }
 
+QString bundledDirectory()
+{
+#if defined(AFTERGLOW_BUILD_DIR) && defined(AFTERGLOW_INSTALLED_SHADER_DIR)
+    // A build-tree binary reads the checkout; an installed one its own prefix,
+    // which need not be in XDG_DATA_DIRS.
+    const bool inBuild = QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath().startsWith(
+        QStringLiteral(AFTERGLOW_BUILD_DIR "/"));
+    return inBuild ? QStringLiteral(AFTERGLOW_SOURCE_SHADER_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_SHADER_DIR);
+#elif defined(AFTERGLOW_SOURCE_SHADER_DIR)
+    return QStringLiteral(AFTERGLOW_SOURCE_SHADER_DIR);
+#else
+    return {};
+#endif
+}
+
+QString cacheKey(const QString& ref, const QVariantMap& overrides)
+{
+    return ref + QLatin1Char('\x1f') + QString::fromUtf8(QJsonDocument::fromVariant(overrides).toJson(QJsonDocument::Compact));
+}
+
+/// What a cached program was built from: each dependency's size and times, or
+/// its absence. Two change signals for one edit then rebuild once.
+QByteArray signature(const QStringList& paths)
+{
+    QByteArray out;
+    QSet<QString> seen;
+    for (const QString& path : paths) {
+        if (seen.contains(path)) continue;
+        seen.insert(path);
+        const QFileInfo info(path);
+        out += path.toUtf8() + '\0';
+        if (info.exists()) {
+            out += QByteArray::number(info.size()) + ':' + QByteArray::number(info.lastModified().toMSecsSinceEpoch()) + ':'
+                + QByteArray::number(info.metadataChangeTime().toMSecsSinceEpoch());
+        }
+        out += '\n';
+    }
+    return out;
+}
+
+using ShaderInfo = PhosphorShaders::ShaderRegistry::ShaderInfo;
+
+/// "<package>.<pack>" for a pack from a script package, else empty.
+QString packagedRef(const ShaderInfo& info, const QMap<QString, QString>& packages)
+{
+    const QString parent = QFileInfo(info.packDir).absolutePath();
+    for (auto it = packages.cbegin(); it != packages.cend(); ++it) {
+        if (QFileInfo(it.value()).absoluteFilePath() == parent) return it.key() + QLatin1Char('.') + QDir(info.packDir).dirName();
+    }
+    return {};
+}
+
 } // namespace
+
+/// The registry keys packs by a UUID derived from their id; configs name them
+/// by directory (normally the declared id), display name or that UUID. A
+/// package's packs answer only to "<package>.<pack>", the id the package
+/// loader required them to declare.
+struct ShaderLibrary::PackIndex
+{
+    QList<ShaderInfo> packs; ///< lowest priority first
+    QHash<QString, qsizetype> byRef; ///< directory name, UUID or "<package>.<pack>"
+    QHash<QString, qsizetype> byName; ///< case-folded display name
+
+    ShaderInfo find(const QString& ref) const
+    {
+        auto it = byRef.constFind(ref);
+        if (it == byRef.constEnd()) {
+            it = byName.constFind(ref.toCaseFolded());
+            if (it == byName.constEnd()) return {};
+        }
+        return packs.at(*it);
+    }
+};
 
 ShaderLibrary::ShaderLibrary(QObject* parent)
     : QObject(parent)
@@ -282,9 +377,9 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
 {
     // Lowest priority first: bundled, then system, then the user's own packs.
     QStringList dirs;
-#ifdef AFTERGLOW_SOURCE_SHADER_DIR
-    dirs << QStringLiteral(AFTERGLOW_SOURCE_SHADER_DIR);
-#endif
+    if (const QString bundled = bundledDirectory(); !bundled.isEmpty()) {
+        dirs << bundled;
+    }
     const QStringList system =
         QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("afterglow/shaders"),
                                   QStandardPaths::LocateDirectory);
@@ -302,10 +397,10 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
     m_presets->load(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
         + QStringLiteral("/afterglow/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
     buildRegistry();
+    // The registry watches the packs too: whichever reports an edit first
+    // rebuilds, and the other finds nothing left to drop.
     connect(&m_files, &PhosphorFsLoader::WatchedFileSet::filesChanged, this, [this] {
-        m_cache.clear();
-        m_failed.clear();
-        Q_EMIT changed();
+        if (invalidate()) Q_EMIT changed();
     });
 }
 
@@ -315,23 +410,49 @@ void ShaderLibrary::buildRegistry()
 {
     // The registry cannot drop a search path, so a change of packages builds a new one.
     m_registry = std::make_unique<PhosphorShaders::ShaderRegistry>();
-    m_includeDirs.clear();
     for (const QString& d : m_baseDirectories) {
         m_registry->addSearchPath(d);
-        m_includeDirs << d + QStringLiteral("/shared");
     }
     for (const QString& d : std::as_const(m_packageShaders)) {
         m_registry->addSearchPath(d);
-        m_includeDirs << d + QStringLiteral("/shared");
     }
     m_registry->refresh();
     seedPresets();
+    reindex();
     connect(m_registry.get(), &PhosphorShaders::ShaderRegistry::shadersChanged, this, [this] {
         seedPresets();
-        m_cache.clear();
-        m_failed.clear();
-        Q_EMIT changed();
+        reindex();
+        if (invalidate()) Q_EMIT changed();
     });
+}
+
+void ShaderLibrary::reindex()
+{
+    auto index = std::make_unique<PackIndex>();
+    auto priority = [this](const ShaderInfo& info) {
+        const QString parent = QFileInfo(info.packDir).absolutePath();
+        for (qsizetype i = 0; i < m_baseDirectories.size(); ++i) {
+            if (QFileInfo(m_baseDirectories[i]).absoluteFilePath() == parent) return i;
+        }
+        // Package packs: their namespaced references never meet a base pack's.
+        return m_baseDirectories.size();
+    };
+    auto packs = m_registry->availableShaders();
+    std::stable_sort(packs.begin(), packs.end(),
+                     [&](const ShaderInfo& a, const ShaderInfo& b) { return priority(a) < priority(b); });
+    // Later, more important packs overwrite the names that earlier ones took.
+    for (const ShaderInfo& info : std::as_const(packs)) {
+        const qsizetype i = index->packs.size();
+        index->packs << info;
+        if (const QString packaged = packagedRef(info, m_packageShaders); !packaged.isEmpty()) {
+            index->byRef.insert(packaged, i);
+            continue;
+        }
+        index->byRef.insert(QDir(info.packDir).dirName(), i);
+        index->byRef.insert(info.id, i);
+        index->byName.insert(info.name.toCaseFolded(), i);
+    }
+    m_index = std::move(index);
 }
 
 void ShaderLibrary::setPackageShaders(const QMap<QString, QString>& directories)
@@ -341,6 +462,7 @@ void ShaderLibrary::setPackageShaders(const QMap<QString, QString>& directories)
     buildRegistry();
     m_cache.clear();
     m_failed.clear();
+    m_overBudget.clear();
     Q_EMIT changed();
 }
 
@@ -351,43 +473,42 @@ void ShaderLibrary::refreshWatches()
     m_files.setPaths(paths);
 }
 
-
-namespace {
-/// The registry keys packs by a UUID derived from their id; configs name them
-/// by directory (normally the declared id), display name or that UUID.
-/// "<package>.<pack>" for a pack from a script package, else empty.
-QString packagedRef(const PhosphorShaders::ShaderRegistry::ShaderInfo& info, const QMap<QString, QString>& packages)
+bool ShaderLibrary::invalidate()
 {
-    const QString parent = QFileInfo(info.packDir).absolutePath();
-    for (auto it = packages.cbegin(); it != packages.cend(); ++it) {
-        if (QFileInfo(it.value()).absoluteFilePath() == parent) return it.key() + QLatin1Char('.') + QDir(info.packDir).dirName();
+    bool dropped = false;
+    const auto keys = m_dependencies.keys();
+    for (const QString& key : keys) {
+        const QString ref = key.section(QLatin1Char('\x1f'), 0, 0);
+        if (signature(m_dependencies.value(key)) == m_signatures.value(key)
+            && m_index->find(ref).packDir == m_resolved.value(key)) continue;
+        // Bitwise: each must be dropped, whichever held it.
+        dropped |= m_cache.remove(key) | m_failed.remove(key) | m_overBudget.remove(key);
+        m_signatures.remove(key);
     }
-    return {};
+    return dropped;
 }
 
-PhosphorShaders::ShaderRegistry::ShaderInfo findPack(const PhosphorShaders::ShaderRegistry& registry, const QString& ref,
-                                                     const QMap<QString, QString>& packages)
+QStringList ShaderLibrary::includeDirs(const QString& packDir) const
 {
-    for (const auto& info : registry.availableShaders()) {
-        // A package's packs answer only to "<package>.<pack>", the id the
-        // package loader required them to declare.
-        const QString packaged = packagedRef(info, packages);
-        if (!packaged.isEmpty() ? packaged == ref
-                                : (QDir(info.packDir).dirName() == ref || info.id == ref || info.name.compare(ref, Qt::CaseInsensitive) == 0)) {
-            return info;
-        }
+    QStringList dirs;
+    const QString parent = QFileInfo(packDir).absolutePath();
+    for (const QString& d : m_packageShaders) {
+        if (QFileInfo(d).absoluteFilePath() == parent) dirs << d + QStringLiteral("/shared");
     }
-    return {};
+    for (auto it = m_baseDirectories.crbegin(); it != m_baseDirectories.crend(); ++it) {
+        dirs << *it + QStringLiteral("/shared");
+    }
+    return dirs;
 }
-} // namespace
 
 QStringList ShaderLibrary::packIds() const
 {
     QStringList ids;
-    for (const auto& info : m_registry->availableShaders()) {
+    for (const auto& info : m_index->packs) {
         const QString packaged = packagedRef(info, m_packageShaders);
         ids << (packaged.isEmpty() ? QDir(info.packDir).dirName() : packaged);
     }
+    ids.removeDuplicates();
     ids.sort();
     return ids;
 }
@@ -399,7 +520,7 @@ void ShaderLibrary::seedPresets()
 
 QVariantList ShaderLibrary::presets(const QString& ref) const
 {
-    const auto info = findPack(*m_registry, ref, m_packageShaders);
+    const auto info = m_index->find(ref);
     QVariantList result;
     if (!info.isValid()) return result;
     result.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("@defaults")}, {QStringLiteral("name"), QStringLiteral("Pack defaults")}, {QStringLiteral("read_only"), true}});
@@ -409,7 +530,7 @@ QVariantList ShaderLibrary::presets(const QString& ref) const
 }
 QString ShaderLibrary::presetParameters(const QString& ref, const QString& id, QVariantMap& values) const
 {
-    const auto info = findPack(*m_registry, ref, m_packageShaders);
+    const auto info = m_index->find(ref);
     if (!info.isValid()) return QStringLiteral("Shader has no preset metadata");
     QVariantMap candidate;
     for (const auto& p : parameters(ref)) {
@@ -437,13 +558,23 @@ QString ShaderLibrary::savePreset(const QString& ref, const QString& name, const
     AfterglowRender::ShaderParameterValues packed;
     const auto error = validateParameters(ref, values, packed);
     if (!error.isEmpty()) return error;
-    const auto info = findPack(*m_registry, ref, m_packageShaders);
+    const auto info = m_index->find(ref);
+    // Images inside the pack are stored relative to it, so the preset still
+    // works when the pack moves (a rebuilt checkout, a reinstalled package).
+    QVariantMap stored = values;
+    for (const auto& p : info.parameters) {
+        if (p.type != QLatin1String("image") && p.type != QLatin1String("texture")) continue;
+        const QString path = stored.value(p.id).toString();
+        if (!QDir::isAbsolutePath(path)) continue;
+        const QString relative = QDir(info.packDir).relativeFilePath(path);
+        if (!relative.startsWith(QLatin1String(".."))) stored.insert(p.id, relative);
+    }
     const auto directory = m_presets->directoryFor(PhosphorShaders::ShaderFamily::Surface);
     if (QDir(directory).entryList({QStringLiteral("*.json")}, QDir::Files).size() >= 128)
         return QStringLiteral("At most 128 user presets can be stored");
     PhosphorShaders::ShaderPreset preset;
     preset.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    preset.name = name.trimmed(); preset.packId = info.id; preset.params = values;
+    preset.name = name.trimmed(); preset.packId = info.id; preset.params = stored;
     if (!QDir().mkpath(directory)) return QStringLiteral("Cannot create preset directory");
     QSaveFile file(directory + QLatin1Char('/') + preset.id + QStringLiteral(".json"));
     const auto bytes = QJsonDocument(preset.toJson()).toJson();
@@ -457,7 +588,7 @@ QString ShaderLibrary::savePreset(const QString& ref, const QString& name, const
 QVariantList ShaderLibrary::parameters(const QString& ref) const
 {
     QVariantList result;
-    for (const auto& p : findPack(*m_registry, ref, m_packageShaders).parameters) {
+    for (const auto& p : m_index->find(ref).parameters) {
         const bool supported = p.slot >= 0 && (((p.type == QLatin1String("image") || p.type == QLatin1String("texture")) && p.slot < AfterglowRender::MaxShaderImages)
             || (p.type == QLatin1String("color") && p.slot < 16)
             || ((p.type == QLatin1String("float") || p.type == QLatin1String("int") || p.type == QLatin1String("bool")) && p.slot < 32));
@@ -474,7 +605,7 @@ QVariantList ShaderLibrary::parameters(const QString& ref) const
 QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap& values,
                                          AfterglowRender::ShaderParameterValues& packed) const
 {
-    const auto info = findPack(*m_registry, ref, m_packageShaders);
+    const auto info = m_index->find(ref);
     if (!info.isValid()) return QStringLiteral("Shader has no parameter metadata");
     AfterglowRender::ShaderParameterValues candidate;
     for (auto it = values.begin(); it != values.end(); ++it) {
@@ -505,7 +636,9 @@ QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap&
         if (!values.contains(p.id)) continue;
         const auto v = validated.value(p.id);
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
-            const auto error = loadImageParameter(info.packDir, v.toString(), candidate.images[p.slot], candidate.imagePaths[p.slot]);
+            // Scripts, presets and pack defaults reach only the pack's own files.
+            const auto error = loadImageParameter(info.packDir, v.toString(), AbsolutePathPolicy::Reject,
+                                                  candidate.images[p.slot], candidate.imagePaths[p.slot]);
             if (!error.isEmpty()) return error;
             candidate.imageMask |= std::uint8_t(1u << p.slot);
         } else if (p.type == QLatin1String("color")) {
@@ -525,35 +658,58 @@ QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap&
 AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVariantMap& params)
 {
     AfterglowRender::ShaderChains chains;
-    auto cacheKey = [&](const QString& ref) {
-        return ref + QLatin1Char('\x1f')
-            + QString::fromUtf8(QJsonDocument::fromVariant(params.value(ref).toMap()).toJson(QJsonDocument::Compact));
-    };
     QSet<QString> desired;
+    QSet<QString> named;
     const QStringList overview = refs.overview.isEmpty() ? QStringList{} : QStringList{refs.overview};
     const QStringList tabTransition = refs.tabTransition.isEmpty() ? QStringList{} : QStringList{refs.tabTransition};
     const QStringList paneEffects = refs.paneEffects.isEmpty() ? QStringList{} : QStringList{refs.paneEffects};
     for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window, overview, tabTransition, paneEffects})
-        for (const auto& ref : chain) desired.insert(cacheKey(ref));
+        for (const auto& ref : chain) {
+            desired.insert(cacheKey(ref, params.value(ref).toMap()));
+            named.insert(ref);
+        }
+    // Each window builds the same chains: say what the config gets wrong once.
+    if (const QString check = QString::fromUtf8(QJsonDocument::fromVariant(params).toJson(QJsonDocument::Compact))
+            + QStringList(named.values()).join(QLatin1Char('\x1f'));
+        check != m_paramsChecked) {
+        m_paramsChecked = check;
+        for (auto it = params.begin(); it != params.end(); ++it) {
+            if (it.value().typeId() != QMetaType::QVariantMap)
+                qCWarning(lcShaders).noquote() << "Shaders.params:" << it.key() << "must be an object of parameter values";
+            else if (!named.contains(it.key()))
+                qCWarning(lcShaders).noquote() << "Shaders.params:" << it.key()
+                                               << "is not a reference in any shader chain, so its values apply nowhere";
+        }
+    }
     // Configuration changes must release old decoded assets and compiled packs.
     m_cache.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
     m_failed.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
     m_dependencies.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
+    m_signatures.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
+    m_resolved.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
+    // Budget pressure is transient: a new set of packs may fit, so try again.
+    if (desired != m_desired) {
+        m_desired = desired;
+        m_overBudget.clear();
+    }
     QSet<qint64> images;
     qint64 imageBytes = 0;
     auto add = [&](const QStringList& from, std::vector<AfterglowRender::ShaderProgramPtr>& to) {
         for (const QString& ref : from) {
-            if (auto p = load(ref, params.value(ref).toMap())) {
+            const QVariantMap overrides = params.value(ref).toMap();
+            const QString key = cacheKey(ref, overrides);
+            if (m_overBudget.contains(key)) continue;
+            if (auto p = load(ref, overrides)) {
                 auto candidate = images;
                 qint64 bytes = imageBytes;
                 for (const auto& image : p->images()) if (!image.isNull() && !candidate.contains(image.cacheKey())) {
                     candidate.insert(image.cacheKey()); bytes += image.sizeInBytes();
                 }
-                if (bytes > 256LL * 1024 * 1024) {
-                    const auto error = QStringLiteral("Configured images exceed the 256 MiB decoded-image budget");
-                    qCWarning(lcShaders) << ref << error;
-                    // Budget pressure is transient: retry after other packs are removed.
-                    m_cache.remove(cacheKey(ref));
+                if (bytes > MaxDecodedImageBytes) {
+                    qCWarning(lcShaders) << ref << "Configured images exceed the 256 MiB decoded-image budget";
+                    // Not compiled again for every window and change until the set of packs changes.
+                    m_cache.remove(key);
+                    m_overBudget.insert(key);
                     continue;
                 }
                 images = std::move(candidate); imageBytes = bytes;
@@ -575,47 +731,61 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
 
 AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const QVariantMap& overrides)
 {
-    const QString key = ref + QLatin1Char('\x1f')
-        + QString::fromUtf8(QJsonDocument::fromVariant(overrides).toJson(QJsonDocument::Compact));
+    const QString key = cacheKey(ref, overrides);
     if (auto it = m_cache.constFind(key); it != m_cache.constEnd()) {
         return *it;
     }
     if (m_failed.contains(key)) {
         return nullptr;
     }
-
     auto& watched = m_dependencies[key];
     watched.clear();
+    auto program = compile(key, ref, overrides, watched);
+    m_signatures.insert(key, signature(watched));
+    m_resolved.insert(key, m_index->find(ref).packDir);
+    return program;
+}
+
+AfterglowRender::ShaderProgramPtr ShaderLibrary::compile(const QString& key, const QString& ref, const QVariantMap& overrides,
+                                                         QStringList& watched)
+{
     auto fail = [&](const QString& error) {
         qCWarning(lcShaders).noquote() << ref << ":" << error;
         m_failed.insert(key, error);
         return nullptr;
     };
-    if (isFileReference(ref)) {
-        return fail(QStringLiteral("shaders are packs, referenced by id: put the shader in a directory with a "
-                                   "metadata.json under ~/.config/afterglow/shaders"));
-    }
-    const PhosphorShaders::ShaderRegistry::ShaderInfo info = findPack(*m_registry, ref, m_packageShaders);
+    const ShaderInfo info = m_index->find(ref);
     if (!info.isValid()) {
+        // A package pack may be named "<package>.glsl", so only a reference
+        // that names no pack is taken for a file.
+        if (isFileReference(ref)) {
+            return fail(QStringLiteral("shaders are packs, referenced by id: put the shader in a directory with a "
+                                       "metadata.json under ~/.config/afterglow/shaders"));
+        }
         return fail(QStringLiteral("no shader pack named \"%1\" (available: %2)")
                         .arg(ref, packIds().join(QStringLiteral(", "))));
     }
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        if (std::none_of(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); }))
+            qCWarning(lcShaders).noquote() << ref << ": Shaders.params sets" << it.key() << "but the pack has no such parameter";
+    }
     if (info.bufferShaderPaths.size() > AfterglowRender::MaxShaderBuffers) return fail(QStringLiteral("Too many buffer passes"));
+    const QStringList includes = includeDirs(info.packDir);
     AfterglowRender::ShaderProgramSource src;
     src.id = ref;
     src.directory = info.packDir;
-    src.includeDirs = m_includeDirs;
+    src.includeDirs = includes;
     src.useDepthBuffer = info.useDepthBuffer;
     watched << QDir(info.packDir).filePath(QStringLiteral("metadata.json"));
-    if (const auto error = readStage(info.sourcePath, m_includeDirs, watched, src.code); !error.isEmpty()) return fail(error);
+    if (const auto error = readStage(info.sourcePath, includes, watched, src.code); !error.isEmpty()) return fail(error);
     if (!info.vertexShaderPath.isEmpty()) {
-        if (const auto error = readStage(info.vertexShaderPath, m_includeDirs, watched, src.vertexCode); !error.isEmpty())
+        if (const auto error = readStage(info.vertexShaderPath, includes, watched, src.vertexCode); !error.isEmpty())
             return fail(error);
     }
     for (int index = 0; index < info.bufferShaderPaths.size(); ++index) {
         const auto bufferPath = info.bufferShaderPaths[index];
         AfterglowRender::ShaderBufferSource pass;
-        if (const auto error = readStage(bufferPath, m_includeDirs, watched, pass.code); !error.isEmpty()) return fail(error);
+        if (const auto error = readStage(bufferPath, includes, watched, pass.code); !error.isEmpty()) return fail(error);
         pass.directory = QFileInfo(bufferPath).absolutePath();
         pass.feedback = info.bufferFeedback;
         pass.halfFloat = info.halfFloatBuffers;
@@ -635,7 +805,7 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
     for (const auto& p : info.parameters)
         if (p.slot >= 0 && p.slot < 32 && (p.type == QLatin1String("float") || p.type == QLatin1String("int")))
             scalarSlots.insert(p.id, p.slot);
-    if (const auto error = loadPackMetadata(info.packDir, src, m_includeDirs, scalarSlots, watched); !error.isEmpty())
+    if (const auto error = loadPackMetadata(info.packDir, src, includes, scalarSlots, watched); !error.isEmpty())
         return fail(error);
     src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();
     // Defaults, overlaid with the config's values, in phosphor's slot layout.
@@ -647,7 +817,9 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
         const QVariant v = validated.value(p.id, p.defaultValue);
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
             if (p.slot >= AfterglowRender::MaxShaderImages) continue;
-            const auto error = loadImageParameter(info.packDir, v.toString(), src.images[p.slot], src.imagePaths[p.slot]);
+            // The user's config may name any image; the pack's own default stays inside it.
+            const auto policy = overrides.contains(p.id) ? AbsolutePathPolicy::Trust : AbsolutePathPolicy::Reject;
+            const auto error = loadImageParameter(info.packDir, v.toString(), policy, src.images[p.slot], src.imagePaths[p.slot]);
             watched << src.imagePaths[p.slot];
             if (!error.isEmpty()) return fail(error);
         } else if (p.type == QLatin1String("color")) {

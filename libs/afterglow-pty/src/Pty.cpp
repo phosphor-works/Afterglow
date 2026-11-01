@@ -5,11 +5,15 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <system_error>
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <sstream>
+#include <system_error>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -17,17 +21,24 @@
 #include <pwd.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 extern char** environ;
 
 namespace AfterglowPty {
 
-std::string Pty::defaultShell()
+std::string Pty::defaultShell(const SpawnOptions& options)
 {
-    if (const char* s = std::getenv("SHELL"); s && *s) {
-        return s;
+    const auto set = std::find_if(options.environment.rbegin(), options.environment.rend(),
+                                  [](const auto& kv) { return kv.first == "SHELL"; });
+    if (set != options.environment.rend()) {
+        if (!set->second.empty()) return set->second;
+    } else if (std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), "SHELL")
+               == options.unsetEnvironment.end()) {
+        if (const char* s = std::getenv("SHELL"); s && *s) return s;
     }
     if (const passwd* pw = getpwuid(getuid()); pw && pw->pw_shell && *pw->pw_shell) {
         return pw->pw_shell;
@@ -54,6 +65,138 @@ winsize makeWinsize(int cols, int rows, int pw, int ph)
     return ws;
 }
 
+// What the child reports through the exec pipe before it gives up.
+enum ExecStage : int { EnterDirectory, RunProgram };
+
+// How long spawn() waits for exec on the caller's thread. A child stuck in
+// chdir or execve on a hung mount must not freeze the GUI.
+constexpr int ExecWaitMs = 2000;
+
+// Reaps the children of closed terminals off the owner's thread. A shell that
+// saves its history on SIGHUP, or one stuck on a hung mount, must not freeze
+// the GUI while its pane closes.
+class Reaper
+{
+public:
+    static Reaper& instance()
+    {
+        static Reaper reaper;
+        return reaper;
+    }
+
+    void adopt(pid_t child)
+    {
+        kill(child, SIGHUP);
+        std::unique_lock lock(m_mutex);
+        m_children.push_back({child, Clock::now() + Grace});
+        if (!m_thread.joinable()) {
+            try {
+                m_thread = std::thread([this] { run(); });
+            } catch (const std::system_error&) {
+                m_children.pop_back();
+                lock.unlock();
+                reapHere(child);
+                return;
+            }
+        }
+        m_wake.notify_one();
+    }
+
+    // At exit, children in their grace period get the rest of it, then
+    // SIGKILL. None is waited for after that.
+    ~Reaper()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_exiting = true;
+        }
+        m_wake.notify_one();
+        if (m_thread.joinable()) m_thread.join();
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    // A child's time to leave on SIGHUP before SIGKILL.
+    static constexpr auto Grace = std::chrono::milliseconds(100);
+    static constexpr auto Interval = std::chrono::milliseconds(5);
+
+    struct Child
+    {
+        pid_t pid;
+        Clock::time_point killAt;
+        bool killed = false;
+    };
+
+    static void reapHere(pid_t child)
+    {
+        int status = 0;
+        for (auto end = Clock::now() + Grace; Clock::now() < end;) {
+            if (waitChild(child, &status, WNOHANG) != 0) return;
+            std::this_thread::sleep_for(Interval);
+        }
+        kill(child, SIGKILL);
+        waitChild(child, &status, 0);
+    }
+
+    void run()
+    {
+        std::unique_lock lock(m_mutex);
+        while (true) {
+            const auto now = Clock::now();
+            std::erase_if(m_children, [now](Child& c) {
+                int status = 0;
+                if (waitChild(c.pid, &status, WNOHANG) != 0) return true;
+                if (!c.killed && now >= c.killAt) {
+                    kill(c.pid, SIGKILL);
+                    c.killed = true;
+                }
+                return false;
+            });
+            const bool graceful = std::any_of(m_children.begin(), m_children.end(), [](const Child& c) { return !c.killed; });
+            // A child that survives SIGKILL (stuck in the kernel) is left to init at exit.
+            if (m_exiting && !graceful) return;
+            if (m_children.empty()) {
+                m_wake.wait(lock, [this] { return m_exiting || !m_children.empty(); });
+            } else {
+                m_wake.wait_for(lock, graceful ? Interval : Grace);
+            }
+        }
+    }
+
+    std::mutex m_mutex;
+    std::condition_variable m_wake;
+    std::vector<Child> m_children;
+    bool m_exiting = false;
+    std::thread m_thread;
+};
+
+// /proc/PID/cwd when it is a directory that exists. A removed directory reads
+// as "PATH (deleted)", and a new pane cannot start there.
+std::optional<std::string> directoryOf(pid_t pid)
+{
+    std::error_code ec;
+    const auto link = std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/cwd", ec);
+    if (ec || !std::filesystem::is_directory(link, ec)) return std::nullopt;
+    return link.string();
+}
+
+// Whether PID belongs to SESSION. The foreground group's leader may have
+// exited, and its PID may now be another process's.
+bool inSession(pid_t pid, pid_t session)
+{
+    std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+    std::string line;
+    std::getline(stat, line);
+    // The command name in parentheses can hold spaces: fields follow the last ')'.
+    const auto name = line.rfind(')');
+    if (name == std::string::npos) return false;
+    std::istringstream fields(line.substr(name + 1));
+    char state = 0;
+    long parent = 0, group = 0, owner = 0;
+    fields >> state >> parent >> group >> owner;
+    return fields && owner == session;
+}
+
 } // namespace
 
 std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& listener, std::string* error)
@@ -62,7 +205,7 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     // threaded process only async-signal-safe calls are allowed.
     std::vector<std::string> args = options.argv;
     if (args.empty()) {
-        args.push_back(defaultShell());
+        args.push_back(defaultShell(options));
     }
     std::vector<char*> argv;
     for (std::string& a : args) {
@@ -70,24 +213,29 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     }
     argv.push_back(nullptr);
 
+    // One entry per name, the last value given: programs disagree on which
+    // of two entries counts (getenv takes the first, Bash the last).
+    std::vector<const std::pair<std::string, std::string>*> overrides;
+    for (auto it = options.environment.rbegin(); it != options.environment.rend(); ++it) {
+        if (std::none_of(overrides.begin(), overrides.end(), [&](const auto* kv) { return kv->first == it->first; }))
+            overrides.push_back(&*it);
+    }
+    std::reverse(overrides.begin(), overrides.end());
+
     std::vector<std::string> envStore;
     for (char** e = environ; *e; ++e) {
         const std::string_view entry(*e);
         const auto eq = entry.find('=');
         const std::string_view key = entry.substr(0, eq);
-        bool overridden = std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), key) != options.unsetEnvironment.end();
-        for (const auto& kv : options.environment) {
-            if (kv.first == key) {
-                overridden = true;
-                break;
-            }
-        }
+        const bool overridden =
+            std::find(options.unsetEnvironment.begin(), options.unsetEnvironment.end(), key) != options.unsetEnvironment.end()
+            || std::any_of(overrides.begin(), overrides.end(), [key](const auto* kv) { return kv->first == key; });
         if (!overridden) {
             envStore.emplace_back(entry);
         }
     }
-    for (const auto& kv : options.environment) {
-        envStore.push_back(kv.first + "=" + kv.second);
+    for (const auto* kv : overrides) {
+        envStore.push_back(kv->first + "=" + kv->second);
     }
     std::vector<char*> envp;
     for (std::string& e : envStore) {
@@ -156,47 +304,78 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     }
 
     if (pid == 0) {
-        // Child.
+        // Child. Signals the launcher ignored stay ignored across exec: give
+        // the program the defaults it expects.
         sigset_t all;
         sigemptyset(&all);
         sigprocmask(SIG_SETMASK, &all, nullptr);
-        for (int sig : {SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGALRM, SIGPIPE}) {
-            signal(sig, SIG_DFL);
+        struct sigaction fallback {};
+        fallback.sa_handler = SIG_DFL;
+        for (int sig = 1; sig < NSIG; ++sig) {
+            if (sig != SIGKILL && sig != SIGSTOP) sigaction(sig, &fallback, nullptr);
+        }
+        // Canonical-mode programs (cat, read, password prompts) erase whole
+        // UTF-8 characters only with IUTF8, which a new pty lacks.
+        if (termios t{}; tcgetattr(STDIN_FILENO, &t) == 0) {
+            t.c_iflag |= IUTF8;
+            tcsetattr(STDIN_FILENO, TCSANOW, &t);
         }
         close(execPipe[0]);
         if (execPipe[1] > 3) close_range(3, unsigned(execPipe[1] - 1), 0);
         close_range(unsigned(execPipe[1] + 1), ~0U, 0);
-        auto failed = [&] {
-            const int code = errno;
+        auto failed = [&](int stage) {
+            const int report[2] = {stage, errno};
             ssize_t sent;
-            do { sent = ::write(execPipe[1], &code, sizeof code); } while (sent < 0 && errno == EINTR);
+            do { sent = ::write(execPipe[1], report, sizeof report); } while (sent < 0 && errno == EINTR);
             _exit(127);
         };
-        if (!cwd.empty() && chdir(cwd.c_str()) != 0) failed();
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0) failed(EnterDirectory);
         bool denied = false;
         for (auto& executable : executables) {
             execve(executable.c_str(), argv.data(), envp.data());
             if (errno == ENOEXEC) {
                 shellArgv[1] = executable.data();
                 execve("/bin/sh", shellArgv.data(), envp.data());
-                failed();
+                failed(RunProgram);
             }
+            // The search goes on past these, as execvp's does.
             if (errno == EACCES) denied = true;
-            else if (errno != ENOENT && errno != ENOTDIR) failed();
+            else if (errno != ENOENT && errno != ENOTDIR && errno != ESTALE && errno != ENODEV && errno != ETIMEDOUT)
+                failed(RunProgram);
         }
         if (denied) errno = EACCES;
-        failed();
+        failed(RunProgram);
     }
 
     close(execPipe[1]);
-    int execError = 0;
-    ssize_t received;
-    do { received = ::read(execPipe[0], &execError, sizeof execError); } while (received < 0 && errno == EINTR);
-    const int readError = errno;
-    close(execPipe[0]);
-    auto result = std::unique_ptr<Pty>(new Pty(master, wakeFd, pid, listener));
+    int pidFd = -1;
+#ifdef SYS_pidfd_open
+    pidFd = int(syscall(SYS_pidfd_open, pid, 0));
+#endif
+    // The pipe closes at exec, or carries the stage and errno of a failure.
+    pollfd execReport{execPipe[0], POLLIN, 0};
+    int ready;
+    do { ready = poll(&execReport, 1, ExecWaitMs); } while (ready < 0 && errno == EINTR);
+    int report[2] = {0, 0};
+    ssize_t received = 0;
+    int readError = 0;
+    if (ready != 0) {
+        do { received = ::read(execPipe[0], report, sizeof report); } while (received < 0 && errno == EINTR);
+        readError = errno;
+        close(execPipe[0]);
+        execPipe[0] = -1;
+    }
+    auto result = std::unique_ptr<Pty>(new Pty(master, wakeFd, pidFd, pid, listener));
+    // Still in exec: the reader thread takes the report, and a failed child
+    // reaches the owner as an exit with status 127.
+    result->m_execFd = execPipe[0];
     if (received != 0) {
-        if (error) *error = std::string("failed to start process: ") + std::strerror(received > 0 ? execError : readError);
+        if (error) {
+            const std::string reason = std::strerror(received == sizeof report ? report[1] : readError);
+            *error = received == sizeof report && report[0] == EnterDirectory
+                ? "cannot enter directory " + cwd + ": " + reason
+                : "cannot run " + args.front() + ": " + reason;
+        }
         return nullptr;
     }
     const int flags = fcntl(master, F_GETFL);
@@ -208,8 +387,8 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     return result;
 }
 
-Pty::Pty(int masterFd, int wakeFd, pid_t pid, IPtyListener& listener)
-    : m_master(masterFd), m_wakeFd(wakeFd), m_pid(pid), m_listener(listener)
+Pty::Pty(int masterFd, int wakeFd, int pidFd, pid_t pid, IPtyListener& listener)
+    : m_master(masterFd), m_wakeFd(wakeFd), m_pidFd(pidFd), m_pid(pid), m_listener(listener)
 {
 }
 
@@ -244,26 +423,12 @@ void Pty::stop()
 Pty::~Pty()
 {
     stop();
-    const pid_t child = m_pid.load();
-    if (child > 0) {
-        int status = 0;
-        if (waitChild(child, &status, WNOHANG) == 0) {
-            kill(child, SIGHUP);
-            // Give the child a moment to leave on SIGHUP before forcing it.
-            for (int i = 0; i < 20; ++i) {
-                if (waitChild(child, &status, WNOHANG) != 0) {
-                    break;
-                }
-                usleep(5000);
-                if (i == 19) {
-                    kill(child, SIGKILL);
-                    waitChild(child, &status, 0);
-                }
-            }
-        }
-    }
+    // Closing the master hangs up the terminal, which also sends the shell SIGHUP.
     close(m_master);
     close(m_wakeFd);
+    if (m_pidFd >= 0) close(m_pidFd);
+    if (m_execFd >= 0) close(m_execFd);
+    if (const pid_t child = m_pid.load(); child > 0) Reaper::instance().adopt(child);
 }
 
 bool Pty::write(std::string_view bytes)
@@ -283,6 +448,12 @@ bool Pty::write(std::string_view bytes)
     return true;
 }
 
+std::size_t Pty::pendingInput() const
+{
+    std::lock_guard lock(m_writeMutex);
+    return m_pendingBytes;
+}
+
 void Pty::resize(int cols, int rows, int pixelWidth, int pixelHeight)
 {
     winsize ws = makeWinsize(cols, rows, pixelWidth, pixelHeight);
@@ -291,13 +462,13 @@ void Pty::resize(int cols, int rows, int pixelWidth, int pixelHeight)
 
 std::string Pty::currentWorkingDirectory() const
 {
-    std::error_code ec;
-    const auto p = std::filesystem::read_symlink("/proc/" + std::to_string(tcgetpgrp(m_master)) + "/cwd", ec);
-    if (!ec) {
-        return p.string();
+    // forkpty makes the child a session leader: its PID is the session ID.
+    const pid_t child = m_pid.load();
+    if (child <= 0) return {};
+    if (const pid_t group = tcgetpgrp(m_master); group > 0 && group != child && inSession(group, child)) {
+        if (auto directory = directoryOf(group)) return *directory;
     }
-    const auto own = std::filesystem::read_symlink("/proc/" + std::to_string(m_pid.load()) + "/cwd", ec);
-    return ec ? std::string() : own.string();
+    return directoryOf(child).value_or(std::string());
 }
 
 std::string Pty::foregroundProcess() const
@@ -333,7 +504,13 @@ bool Pty::flushPending()
         } else if (n < 0 && errno == EINTR) {
             continue;
         } else {
-            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) m_accepting.store(false);
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                // The child side is gone (EIO). Input stops here; output the
+                // child wrote before it left can still be read.
+                m_accepting.store(false);
+                m_pending.clear();
+                m_pendingBytes = m_pendingOffset = 0;
+            }
             break;
         }
     }
@@ -344,23 +521,43 @@ void Pty::run()
 {
     std::vector<char> buf(std::size_t(1) << 16);
     bool wantWrite = false;
-    bool closed = false;
+    bool closed = false; // nothing more is read from the terminal
+    bool exited = false; // the child has exited (pidfd)
 
     while (!m_stop.load()) {
-        pollfd fds[2] = {
+        pollfd fds[4] = {
             // A hung-up fd reports POLLHUP even with no events requested, so
             // drop it from the set once closed instead of spinning on it.
             {closed ? -1 : m_master, short(POLLIN | (wantWrite ? POLLOUT : 0)), 0},
             {m_wakeFd, POLLIN, 0},
+            {exited ? -1 : m_pidFd, POLLIN, 0},
+            {m_execFd, POLLIN, 0},
         };
-        const int timeout = closed ? 100 : -1;
-        if (poll(fds, 2, timeout) < 0) {
+        // Without a pidfd, look for the child's exit every 100 ms once the terminal hung up.
+        const int timeout = closed && m_pidFd < 0 ? 100 : -1;
+        if (poll(fds, 4, timeout) < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            break;
+            // The thread cannot wait on the terminal any more: report it
+            // closed, so the pane does not stay on a dead terminal.
+            m_accepting.store(false);
+            int status = 0;
+            const pid_t child = m_pid.load();
+            const bool reaped = waitChild(child, &status, WNOHANG) == child;
+            if (reaped) m_pid = -1;
+            m_listener.ptyClosed(reaped ? status : -1);
+            return;
         }
 
+        if (fds[3].revents) {
+            // A late exec failure: the child exits with 127, which the reap reports.
+            int report[2];
+            ssize_t n;
+            do { n = ::read(m_execFd, report, sizeof report); } while (n < 0 && errno == EINTR);
+            close(m_execFd);
+            m_execFd = -1;
+        }
         if (fds[1].revents & POLLIN) {
             std::uint64_t v;
             [[maybe_unused]] const auto n = ::read(m_wakeFd, &v, sizeof v);
@@ -368,8 +565,40 @@ void Pty::run()
                 wantWrite = flushPending();
             }
         }
+        if (fds[2].revents & POLLIN) {
+            exited = true;
+        }
 
-        if (!m_accepting.load()) closed = true;
+        if (!closed) {
+            if (fds[0].revents & POLLOUT) {
+                wantWrite = flushPending();
+            }
+            // After the child exits, take what it wrote before it left. A
+            // background job may still hold the terminal open: its later
+            // output is not waited for.
+            if (fds[0].revents & POLLIN || exited) {
+                // A finite batch prevents continuous output starving stop().
+                for (int reads = 0; reads < 16 && !m_stop.load(); ++reads) {
+                    const ssize_t n = ::read(m_master, buf.data(), buf.size());
+                    if (n > 0) {
+                        m_listener.ptyData(std::string_view(buf.data(), std::size_t(n)));
+                        continue;
+                    }
+                    if (n < 0 && errno == EINTR) {
+                        continue;
+                    }
+                    if (n < 0 && errno == EAGAIN) {
+                        break;
+                    }
+                    closed = true; // EIO or EOF: the child side is gone
+                    break;
+                }
+            } else if (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                closed = true;
+            }
+            if (exited) closed = true;
+        }
+
         if (closed) {
             m_accepting.store(false);
             int status = 0;
@@ -380,33 +609,7 @@ void Pty::run()
                 m_listener.ptyClosed(reaped == child ? status : -1);
                 return;
             }
-            continue;
         }
-
-        if (fds[0].revents & POLLOUT) {
-            wantWrite = flushPending();
-        }
-        if (fds[0].revents & POLLIN) {
-            // A finite batch prevents continuous output starving stop().
-            for (int reads = 0; reads < 16 && !m_stop.load(); ++reads) {
-                const ssize_t n = ::read(m_master, buf.data(), buf.size());
-                if (n > 0) {
-                    m_listener.ptyData(std::string_view(buf.data(), std::size_t(n)));
-                    continue;
-                }
-                if (n < 0 && errno == EINTR) {
-                    continue;
-                }
-                if (n < 0 && errno == EAGAIN) {
-                    break;
-                }
-                closed = true; // EIO or EOF: the child side is gone
-                break;
-            }
-        } else if (fds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
-            closed = true;
-        }
-        if (closed) m_accepting.store(false);
     }
     m_accepting.store(false);
 }

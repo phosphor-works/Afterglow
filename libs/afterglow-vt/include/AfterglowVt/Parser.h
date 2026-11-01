@@ -5,8 +5,9 @@
 
 #include <AfterglowVt/Unicode.h>
 
-#include <cstddef>
+#include <algorithm>
 #include <bitset>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -14,7 +15,9 @@
 namespace AfterglowVt {
 
 /// CSI / DCS parameters. A ':' separator marks the following value as a
-/// sub-parameter of the one before it (SGR 4:3, 38:2::r:g:b).
+/// sub-parameter of the one before it (SGR 4:3, 38:2::r:g:b). Only the
+/// first @c count entries are valid: the parser does not clear the rest
+/// between sequences.
 struct Params
 {
     static constexpr int Max = 4096;
@@ -159,7 +162,10 @@ private:
         // Anywhere transitions.
         if (b == 0x18 || b == 0x1A) { // CAN, SUB
             abortString();
-            m_utf8Needed = 0;
+            if (m_utf8Needed != 0) {
+                m_utf8Needed = 0;
+                m_handler.print(Unicode::ReplacementCharacter);
+            }
             m_handler.execute(b);
             m_state = State::Ground;
             return;
@@ -210,7 +216,9 @@ private:
             } else if (b < 0x30) {
                 collect(b);
             } else if (b < 0x7F) {
-                m_handler.escDispatch(m_inter, b);
+                if (!m_inter.overflow) { // too many intermediates: the whole sequence goes
+                    m_handler.escDispatch(m_inter, b);
+                }
                 m_state = State::Ground;
             } else if (b >= 0x80) {
                 m_state = State::Ground;
@@ -282,8 +290,10 @@ private:
                 } else {
                     m_state = State::DcsIgnore;
                 }
-            } else {
+            } else if (b < 0x80) {
                 hookDcs(b);
+            } else {
+                m_state = State::DcsIgnore; // no final byte above 0x7E, as in CSI
             }
             break;
         case State::DcsIntermediate:
@@ -291,7 +301,7 @@ private:
                 // ignored
             } else if (b < 0x30) {
                 collect(b);
-            } else if (b < 0x40) {
+            } else if (b < 0x40 || b >= 0x80) {
                 m_state = State::DcsIgnore;
             } else {
                 hookDcs(b);
@@ -385,14 +395,13 @@ private:
     void pushParam()
     {
         if (m_params.count < Params::Max) {
-            if (m_nextIsSub) {
-                m_params.subMask.set(std::size_t(m_params.count));
-            }
-            if (m_paramActive) {
-                m_params.givenMask.set(std::size_t(m_params.count));
-            }
+            // Both bits are written: clearSequence() leaves stale ones behind.
+            m_params.subMask.set(std::size_t(m_params.count), m_nextIsSub);
+            m_params.givenMask.set(std::size_t(m_params.count), m_paramActive);
             m_params.values[m_params.count++] = m_current;
-        } else { m_params.overflow = true; }
+        } else {
+            m_params.overflow = true;
+        }
         m_current = 0;
         m_paramActive = false;
         m_sawSeparator = true;
@@ -506,18 +515,32 @@ private:
         default:
             return;
         }
-        m_string.clear();
+        releaseString();
     }
 
     void abortString()
     {
-        m_string.clear();
+        releaseString();
         m_stringOverflow = false;
+    }
+
+    /// Empties the payload buffer, and frees it after a large string (a
+    /// sixel image) so that each pane does not keep up to 64 MiB.
+    void releaseString()
+    {
+        if (m_string.capacity() > KeptStringCapacity) {
+            std::string().swap(m_string);
+        } else {
+            m_string.clear();
+        }
     }
 
     void clearSequence()
     {
-        m_params = Params{};
+        // Runs on every ESC: resetting all of Params would clear about 9 KiB.
+        // Readers stop at count, and pushParam() writes every field it sets.
+        m_params.count = 0;
+        m_params.overflow = false;
         m_inter = Intermediates{};
         m_current = 0;
         m_paramActive = false;
@@ -535,6 +558,7 @@ private:
     bool m_sawSeparator = false;
     bool m_nextIsSub = false;
 
+    static constexpr std::size_t KeptStringCapacity = std::size_t(1) << 20;
     std::string m_string;
     bool m_stringIsApc = false;
     bool m_stringOverflow = false;

@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -99,7 +100,7 @@ struct Modes
     bool visibilityReports = false; ///< 2033: report visibility changes
     bool sizeReports = false; ///< 2048: report resizes in band
     /// xterm modifyOtherKeys: 0 off, 1 keys without a legacy encoding,
-    /// 2 every modified key (except Shift with non-letters).
+    /// 2 every modified key (except Shift alone on a printable key other than space).
     std::uint8_t modifyOtherKeys = 0;
     bool sixelDisplay = false; ///< DECSDM (80): images at the top left, no scrolling
     bool sixelPrivateColors = true; ///< 1070: each image starts from the default palette
@@ -117,8 +118,11 @@ struct Modes
     std::uint8_t kittyKeyboard = 0;
 };
 
-/// Callbacks out of the terminal. Invoked synchronously from Terminal::feed(),
-/// on whatever thread feeds it, while the caller holds its terminal lock.
+/// Callbacks out of the terminal. Invoked synchronously, while the caller
+/// holds its terminal lock, from Terminal::feed() and also from reset(),
+/// clearScreenAndHistory(), programExited(), resize(), setOptions() and
+/// setVisible(): on whatever thread calls those. A host whose callbacks emit
+/// signals must not let a receiver on the calling thread take that lock again.
 class ITerminalHost
 {
 public:
@@ -126,6 +130,9 @@ public:
     /// Bytes the terminal answers with (device reports, colour queries).
     virtual void writeToPty(std::string_view bytes) = 0;
     virtual void titleChanged(std::string_view) { }
+    /// The directory a program reported, when it changes: OSC 7 gives its
+    /// file:// URI as sent (the host decides whether the host name is local);
+    /// OSC 9;9, OSC 633 P;Cwd and OSC 1337 CurrentDir give a plain path.
     virtual void workingDirectoryChanged(std::string_view) { }
     virtual void bell() { }
     /// OSC 52 write. @p selection is the target list ("c", "p", "s"...).
@@ -160,8 +167,9 @@ public:
     virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
     /// Host-side file transfer and drag-and-drop commands; code 0 resets sessions.
     virtual void terminalProtocol(int code, std::string_view payload) {}
-    /// A program asks for a new size in cells (DECCOLM, XTWINOPS 8). Return
-    /// true to let the terminal take that size; the host then follows it.
+    /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
+    /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
+    /// the terminal take that size; the host then follows it.
     virtual bool requestResize(int cols, int rows) { return false; }
     /// Size of the display the terminal is on, in pixels, for XTWINOPS
     /// reports and maximum sizes. Return false if unknown.
@@ -216,6 +224,15 @@ struct TerminalOptions
     /// The cursor DECSCUSR 0 and a reset return to.
     CursorShape cursorShape = CursorShape::Block;
     bool cursorBlink = true;
+    /// DECRQCRA answers with checksums. A 1x1 rectangle gives a cell's
+    /// character, so a program could read back the whole screen. Test hosts
+    /// turn it on; off, the request is ignored.
+    bool allowScreenReadback = false;
+    /// Bytes of image data each screen's store keeps (kitty, sixel, iTerm2).
+    std::size_t graphicsQuota = GraphicsStore::DefaultQuota;
+    /// Kitty graphics may read files, temporary files and shared memory
+    /// (t=f, t=t, t=s). Off, such transmissions are refused.
+    bool graphicsFileTransfer = true;
     bool operator==(const TerminalOptions&) const = default;
 };
 
@@ -233,7 +250,9 @@ public:
     void feed(std::string_view bytes);
 
     /// Applies new defaults to a running terminal (live config reload).
-    /// Colours set by the application (OSC 4/10/11/12) are replaced.
+    /// Colours set by the application (OSC 4/10/11/12/17/19 and OSC 21) are
+    /// replaced and the XTPUSHCOLORS stack is emptied. The cursor shape and
+    /// blink a program chose stay unless the configured ones changed.
     void setOptions(const TerminalOptions& options);
 
     /// @param cellWidth, cellHeight cell size in pixels, reported by CSI 14/16 t.
@@ -250,6 +269,9 @@ public:
     const ExtraCursorColor& extraCursorColor() const { return m_extraCursorColor; }
     const ExtraCursorColor& extraCursorTextColor() const { return m_extraCursorTextColor; }
     const std::map<std::pair<int, int>, int>& extraCursors() const { return m_extraCursors; }
+    /// Kitty extra cursors kept; more are ignored. Each one is a map node and
+    /// a query reply entry, and a 9-byte sequence can ask for a million.
+    static constexpr std::size_t MaxExtraCursors = 4096;
     CursorShape cursorShape() const noexcept { return m_cursorShape; }
 
     /// Bumped on every state change the renderer could see.
@@ -301,7 +323,7 @@ public:
         return props.width == 1 && props.ambiguous && m_options.ambiguousWide ? 2 : props.width;
     }
 
-    /// Kitty graphics state of the active screen.
+    /// Image state (kitty, sixel, iTerm2) of the active screen.
     const GraphicsStore& graphics() const noexcept { return m_graphics[m_modes.altScreen ? 1 : 0]; }
 
     /// What programs report doing (OSC 7501). Records belong to the terminal,
@@ -349,7 +371,10 @@ public:
     void reset();
     /// The user's clear: the screen and its history emptied, the cursor home.
     /// While a full-screen program has the alternate screen, only the main
-    /// screen's history goes, as the program owns what is shown.
+    /// screen's history goes, as the program owns what is shown. The screen
+    /// is erased as ED 2 erases it, under the program's settings: cells it
+    /// protected with SPA stay, its background colour fills, and with origin
+    /// mode on, home is the top left of its margins.
     void clearScreenAndHistory();
 
 private:
@@ -368,7 +393,6 @@ private:
 
     // Operations.
     Cursor& cursor() noexcept { return m_active->cursor; }
-    Region scrollRegion() const noexcept;
     std::uint32_t acquireFill();
     void releaseFill(std::uint32_t id);
 
@@ -402,6 +426,7 @@ private:
     void scrollUp(int n);
     void scrollDown(int n);
     void repeatLast(int n);
+    void repeatInserting(char32_t cp, int n);
     void setTopBottomMargins(int top, int bottom);
     void setLeftRightMargins(int left, int right);
     void saveCursor();
@@ -428,6 +453,10 @@ private:
     /// Keeps the cursor in the left half of a double-width line.
     void clampToLine();
     int lineRight(int right) const;
+    /// The last column text written at @p x on @p row can reach: the right
+    /// margin (or the page edge right of it), within a double-width line's
+    /// visible half.
+    int rightEdge(const Row& row, int x) const;
     void vt52Dispatch(std::uint8_t final);
     void reverseWrapStep();
     void setColumnMode(bool wide);
@@ -437,6 +466,7 @@ private:
     void selectGraphicRendition(const Params& params);
     void setMode(const Params& params, bool priv, bool on);
     void setDecMode(int mode, bool on);
+    void setMouseFormat(MouseFormat format, bool on);
     int decModeState(int mode) const;
     int ansiModeState(int mode) const;
     void reportMode(const Params& params, bool priv);
@@ -468,7 +498,7 @@ private:
     /// SPA (ISO) to protect something decides.
     enum class Protection : std::uint8_t { Off, Dec, Iso };
     Protection m_protection = Protection::Off;
-    int m_attributeChangeExtent = 0; ///< DECSACE, reported only
+    int m_attributeChangeExtent = 0; ///< DECSACE: whether DECCARA/DECRARA cover a stream or a rectangle
     std::unordered_map<int, bool> m_savedDecModes; ///< XTSAVE
     void setExtraCursors(const Params&);
     ExtraCursorColor m_extraCursorColor, m_extraCursorTextColor;
@@ -533,8 +563,12 @@ private:
         bool hasSelectionFg, hasSelectionBg;
         ProtocolColors protocol;
     };
+    /// xterm's model: ten slots, and a level that plain pushes and pops move.
+    /// A push or pop with a slot number stores or restores that slot only.
     static constexpr std::size_t MaxColorStack = 10;
-    std::vector<SavedColors> m_colorStack;
+    std::array<std::optional<SavedColors>, MaxColorStack> m_colorSlots;
+    std::size_t m_colorLevel = 0;
+    void clearColorStack();
 
     /// Shell integration (OSC 133): what the cursor is in, and whether the
     /// shell repaints its prompt after a resize (redraw=0 opts out).
@@ -553,7 +587,7 @@ private:
     void semanticPrompt(std::string_view args);
     void vscodeShellIntegration(std::string_view args);
     void iterm2(std::string_view args, bool bel);
-    /// Shows an iTerm2 file: @p args as given with File=, @p base64 its data.
+    /// Shows or downloads an iTerm2 file: @p args as given with File=, @p base64 its data.
     void iterm2File(std::string_view args, std::string_view base64);
     void setWorkingDirectory(std::string_view path);
     std::optional<std::size_t> redrawablePromptStart() const;
@@ -571,7 +605,7 @@ private:
     int m_lastX = -1;
     int m_lastY = -1;
 
-    // Kitty graphics, one store per screen.
+    // Images (kitty, sixel, iTerm2), one store per screen.
     GraphicsStore m_graphics[2];
 
     ProgramStatus m_programStatus;
@@ -583,6 +617,7 @@ private:
     // Kitty keyboard flag stacks, one per screen as the protocol requires.
     std::vector<std::uint8_t> m_kittyStack[2];
     std::vector<std::string> m_pointerStacks[2];
+    std::string m_reportedPointerShape; ///< what the host last heard; empty is the default
     void pointerShape(std::string_view command, bool bel);
     void syncPointerShape();
     void kittyKeyboard(const Params& params, char marker);

@@ -25,8 +25,12 @@ Item {
         if (visible) {
             input.text = ""
             list.currentIndex = 0
-            Qt.callLater(() => { if (commandPalette.visible) input.forceActiveFocus() })
+            Qt.callLater(() => { if (commandPalette.visible) takeFocus() })
         }
+    }
+
+    function takeFocus() {
+        input.forceActiveFocus()
     }
 
     onVisibleChanged: syncVisibility()
@@ -39,7 +43,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: "#59000000"
+        color: commandPalette.controller.scrimColor
         MouseArea {
             anchors.fill: parent
             onClicked: commandPalette.controller.paletteOpen = false
@@ -101,6 +105,24 @@ Item {
                     policy: ScrollBar.AsNeeded
                 }
 
+                // The pointer picks a row only when it moves. Hover alone would
+                // also change when the keys scroll rows under a still pointer,
+                // and the selection would jump back to the row under it.
+                HoverHandler {
+                    id: pointer
+                    property point last: Qt.point(-1, -1)
+                    onPointChanged: {
+                        const at = point.scenePosition
+                        if (!hovered || (at.x === last.x && at.y === last.y))
+                            return
+                        last = at
+                        const p = list.mapFromItem(null, at.x, at.y)
+                        const row = list.indexAt(p.x + list.contentX, p.y + list.contentY)
+                        if (row >= 0)
+                            list.currentIndex = row
+                    }
+                }
+
                 Label {
                     anchors.centerIn: parent
                     width: parent.width
@@ -130,10 +152,6 @@ Item {
                     focusPolicy: Qt.NoFocus
                     rightPadding: shortcut.width + 24
                     rightInset: leftInset
-                    onHoveredChanged: {
-                        if (hovered)
-                            list.currentIndex = index
-                    }
                     onClicked: commandPalette.run(index)
                     Accessible.description: modelData.shortcut
 

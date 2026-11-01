@@ -9,17 +9,26 @@ unset AFTERGLOW_ORIGINAL_ZDOTDIR AFTERGLOW_ORIGINAL_ZDOTDIR_SET
 # Let zsh read the real profile, rc and login files in their normal order.
 [[ -r ${ZDOTDIR-$HOME}/.zshenv ]] && source "${ZDOTDIR-$HOME}/.zshenv"
 [[ -o interactive && ${AFTERGLOW_SHELL_INTEGRATION-} != 0 ]] || return
+# Set while the prompt carries afterglow's marks, not a framework's own.
+typeset -gi __afterglow_marks=0
 __afterglow_preexec() {
     emulate -L zsh
-    printf '\033]133;C\007'
+    (( __afterglow_marks )) && printf '\033]133;C\007'
 }
 __afterglow_precmd() {
     local result=$?
     emulate -L zsh
-    printf '\033]133;D;%d\007' "$result"
     local begin=$'%{\e]133;A;redraw=1\a%}' end=$'%{\e]133;B\a%}'
     PS1=${PS1#"$begin"}; PS1=${PS1%"$end"}
-    PS1=$begin$PS1$end
+    # Checked at each prompt: frameworks such as powerlevel10k set the prompt,
+    # and their own OSC 133/633 marks, in precmd hooks that run before this one.
+    if [[ $PS1 == *']133;'* || $PS1 == *']633;'* ]]; then
+        __afterglow_marks=0
+    else
+        (( __afterglow_marks )) && printf '\033]133;D;%d\007' "$result"
+        PS1=$begin$PS1$end
+        __afterglow_marks=1
+    fi
     local LC_ALL=C path_text=$PWD encoded='' char hex
     integer i
     for ((i=1; i<=${#path_text}; i++)); do
@@ -35,13 +44,14 @@ __afterglow_precmd() {
 __afterglow_setup() {
     # Defer until user prompt frameworks have loaded.
     precmd_functions=(${precmd_functions:#__afterglow_setup})
+    # .zshrc, read after .zshenv, can turn the integration off.
+    [[ ${AFTERGLOW_SHELL_INTEGRATION-} == 0 ]] && return
     # ssh through `afterglow ssh`, unless the user already wraps it.
     if [[ -n ${AFTERGLOW_SSH_HELPER-} ]] && (( ! $+functions[ssh] && ! $+aliases[ssh] )); then
         ssh() {
             if [[ -x $AFTERGLOW_SSH_HELPER ]]; then "$AFTERGLOW_SSH_HELPER" ssh "$@"; else command ssh "$@"; fi
         }
     fi
-    [[ $PS1 == *']133;'* || $PS1 == *']633;'* ]] && return
     preexec_functions+=(__afterglow_preexec)
     precmd_functions+=(__afterglow_precmd)
     __afterglow_precmd

@@ -37,16 +37,16 @@ vec4 pTerminal(vec2 uv)
     if (shown && p_glow > 0.0) {
         // The halo, breathing slowly.
         vec2 dd = (pixel - centre) / (uCellSize.y * 1.6);
-        float halo = exp(-dot(dd, dd) * 4.0) * (1.0 - cur.a) * (0.85 + 0.15 * sin(iTime * 2.4)) * p_glow;
+        float halo = exp(-dot(dd, dd) * 4.0) * (1.0 - cur.a) * (0.85 + 0.15 * sin(timeAngle(2.4))) * p_glow;
         c = w.ink ? c + vec4(w.leaf, 1.0) * halo * 0.25 : c + vec4(mix(w.lamp, w.hot, 0.3) * halo * 0.6, 0.0);
     }
 
-    // Sparks from a jump.
+    // Sparks from a jump, only from a cursor that shows.
     float age = cursorAge();
     vec2 from = previousCursorCenter();
     float jump = distance(from, centre);
-    if (p_sparks > 0.0 && age < p_sparkLife * 1.5 && jump > uCellSize.x * 1.5) {
-        float seed = floor((iTime - age) * 13.0);
+    if (shown && p_sparks > 0.0 && age < p_sparkLife * 1.5 && jump > uCellSize.x * 1.5) {
+        float seed = floor(ghSetTime(age) * 13.0);
         vec2 path = (centre - from) / max(jump, 1.0);
         vec2 side = vec2(-path.y, path.x);
         for (int i = 0; i < 24; ++i) {

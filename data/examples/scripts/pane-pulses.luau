@@ -2,11 +2,12 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Copy into ~/.config/afterglow/scripts. Needs Shaders.paneEffects.
 -- Pulses panes: a red flash when a command fails, a green portal when a
--- command of ten seconds or more succeeds, and a shake on the bell.
+-- command of ten seconds or more succeeds, and a shake on the bell. Ctrl+C
+-- (130) is not a failure, and -1 means that the shell gave no exit code.
 return {
     metadata = { name = "Pane pulses" },
     on_command_finished = function(ev)
-        if ev.exit_code > 0 then
+        if ev.exit_code > 0 and ev.exit_code ~= 130 then
             return afterglow.pulse(ev.pane, "flash", { color = 1, duration_ms = 700 })
         end
         if ev.exit_code == 0 and ev.duration_ms >= 10000 then

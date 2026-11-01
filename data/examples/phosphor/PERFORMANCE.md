@@ -18,7 +18,7 @@ They do not certify other GPUs or compare Afterglow with other terminals.
 | Desktop | Qt 6.12.0, KDE/KWin Wayland. |
 | Build | RelWithDebInfo. |
 | Font | Monaspace Neon Var, renderer default 11-point size, DPR 1. |
-| Power | 225 W GPU limit; normal desktop power management. No locked clocks or exclusive GPU access. |
+| Power | 225 W GPU limit. Normal desktop power management. No locked clocks or exclusive GPU access. |
 
 `afterglow_renderpng` rendered exact 1920×1080 and 3840×2160 framebuffers.
 Each scene used the same 120×40 terminal contents, time of 10 seconds and simulated 30 Hz animation.
@@ -49,7 +49,7 @@ The GPU also drove the desktop, at 21–39% utilization before the run.
 | Quiet | 18.17 / 20.85 | 195 | 57.33 / 61.37 | 585 |
 | Balanced | 24.65 / 26.89 | 195 | 81.39 / 86.65 | 585 |
 | Cinematic | 37.89 / 40.22 | 195 | 125.70 / 136.15 | 603 |
-| Balanced + Feedback glow on text | 25.78 / 28.58 | 207 | 82.35 / 89.04 | 621 |
+| Balanced + Feedback Glow on text | 25.78 / 28.58 | 207 | 82.35 / 89.04 | 621 |
 | Mesh Reactor alone | 6.77 / 9.04 | 226 | 21.77 / 26.95 | 709 |
 | Mesh scene (`--mesh` launcher chain) | 11.24 / 13.99 | 244 | 34.28 / 38.72 | 773 |
 | Mesh scene, two panes | 11.62 / 16.33 | 308 | 35.22 / 42.52 | 1029 |
@@ -70,19 +70,13 @@ Short-run timing differences do not establish an optimization.
 Run from the repository root:
 
 ```sh
-cmake -S . -B build -DAFTERGLOW_BUILD_TOOLS=ON
-cmake --build build -j4
-ctest --test-dir build --output-on-failure -j4
-python3 afterglow/tests/shader_parameters_smoke.py build/afterglow/afterglow
-python3 afterglow/tests/scene_acceptance.py build/afterglow/afterglow
 python3 tools/render/scene_benchmark.py build/tools/render/afterglow_renderpng /tmp/afterglow-scene-benchmark
 ```
 
-Native tests require KWin, X11 or XWayland, XTest and ImageMagick.
-The combined scene test also requires CAVA, pactl and paplay.
 The benchmark's NVIDIA memory sampler is optional.
 Other GPUs still produce timings, with memory marked unavailable.
 The tool does not substitute whole-machine GPU memory.
+[Shader scenes](../../../docs/TESTING.md#shader-scenes) gives the scene tests and their requirements.
 
 ## Measurement limits
 

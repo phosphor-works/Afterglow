@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <array>
+
+typedef struct _FcFontSet FcFontSet;
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -121,7 +123,8 @@ public:
     /// Face index for a style slot (always 0-3).
     int primary(StyleSlot slot) const noexcept { return int(slot); }
     const Face& face(int index) const noexcept { return *m_faces[std::size_t(index)]; }
-    int faceCount() const noexcept { return int(m_faces.size()); }
+    /// Face @p index has a glyph for @p cp (not its .notdef).
+    bool hasGlyph(int index, char32_t cp) const noexcept;
 
     /// Face to draw @p cp with in @p slot: the primary face when it has the
     /// glyph, otherwise a fontconfig fallback. @p preferColor asks for colour
@@ -140,7 +143,11 @@ public:
 
 private:
     int loadFace(const std::string& path, int index, const FontStyleSpec* axes);
+    /// Loads a fallback or symbol face for @p slot once. A face without
+    /// variation axes looks the same in every slot, so all slots share it.
+    int loadSharedFace(const std::string& path, int index, StyleSlot slot);
     int findFallback(char32_t cp, bool color, StyleSlot slot);
+    const FontStyleSpec& styleFor(StyleSlot slot) const noexcept;
     void computeMetrics();
     void releaseFaces() noexcept;
 
@@ -154,6 +161,10 @@ private:
     std::unordered_map<std::uint64_t, int> m_fallbackCache;
     std::array<std::vector<int>, 4> m_fallbackFaces; ///< the spec's fallback families, loaded
     std::array<std::vector<int>, 4> m_symbolFaces; ///< per symbol map entry; -1 when not installed
+    /// Every installed font in fontconfig's order for a slot (index slot * 2
+    /// + colour), sorted once: sorting per missing character took
+    /// milliseconds each.
+    std::array<FcFontSet*, 8> m_fallbackOrder{};
     std::vector<hb_feature_t> m_features;
     FontMetrics m_metrics;
 };

@@ -8,6 +8,12 @@
 #include <QStandardPaths>
 
 namespace Afterglow {
+namespace {
+/// A project keeps titles this long (ProjectStore::validate); a longer
+/// one would make the whole save fail.
+constexpr qsizetype ProjectTitleLimit = 256;
+}
+
 QJsonObject TerminalWindow::projectLayout() const
 {
     QJsonArray tabs;
@@ -20,10 +26,10 @@ QJsonObject TerminalWindow::projectLayout() const
             if (cwd.isEmpty()) cwd = p->launchDirectory();
             if (cwd.isEmpty()) cwd = QDir::homePath();
             return QJsonObject{{QStringLiteral("id"), QString::number(p->id())}, {QStringLiteral("cwd"), cwd},
-                               {QStringLiteral("title"), p->userTitle()},
+                               {QStringLiteral("title"), p->userTitle().left(ProjectTitleLimit)},
                                {QStringLiteral("command"), QJsonArray::fromStringList(p->launchCommand())}};
         });
-        tabs.append(QJsonObject{{QStringLiteral("id"), QString::number(tab.id)}, {QStringLiteral("title"), tab.title},
+        tabs.append(QJsonObject{{QStringLiteral("id"), QString::number(tab.id)}, {QStringLiteral("title"), tab.title.left(ProjectTitleLimit)},
                                 {QStringLiteral("active_pane"), QString::number(focused->id())}, {QStringLiteral("tree"), tree}});
     }
     return {{QStringLiteral("version"), 1}, {QStringLiteral("active_tab"), QString::number(activeTabId())},

@@ -13,15 +13,16 @@ mkdir -p ~/.config/afterglow/scripts
 cp -r data/examples/packages/tab-status ~/.config/afterglow/scripts/
 ```
 
-For a custom configuration, use the adjacent `scripts/` directory.
-The active pane supplies each tab's title and status within a few seconds.
+When you use a custom configuration file, use the `scripts/` directory beside that file.
+The active pane of each tab adds a suffix to the tab title.
+The focused pane also sets the status label.
 Run a command, change directory or switch panes to see changes.
 **Toggle tab and repository status** enables or disables the display.
 The choice survives restart. The keybind token is `script:tab-status.toggle`.
 
 ## Configuration
 
-Create `config.json` beside `package.json` to change component order:
+Create `config.json` beside `package.json` to change the defaults:
 
 ```json
 {
@@ -41,24 +42,36 @@ Create `config.json` beside `package.json` to change component order:
 | `exit` | `ok` or `exit N` after command completion. |
 | `context` | Remote or root identity supplied by the shell. |
 
+| Key | Default | Description |
+| --- | --- | --- |
+| `segments` | All five components | Component names in display order. Only the first eight names are read. Unknown names among them are ignored. |
+| `separator` | `"  \|  "` | Text between components. At most 16 bytes are used. Control characters become spaces. |
+| `tab_title` | `true` | Adds the directory basename and the running command to the tab title. |
+| `git` | `true` | Shows the `git` component. `false` stops all Git queries. |
+| `git_refresh_seconds` | `15` | Time that a Git result stays cached. The range is 5 to 300 seconds. A value outside the range is clamped. |
+
 Command and exit components require shell integration.
-Unknown component names are ignored. Up to eight components are displayed.
 
 ## Refresh and limits
 
-The package refreshes one tab each second and rotates across all tabs.
+The focused pane refreshes each second.
+The other tabs refresh in rotation, one tab each second.
 Git runs asynchronously without shell interpolation or optional index locks.
+Git runs with `core.fsmonitor` turned off, so a repository cannot start its file monitor command.
+Git still reads the configuration of each repository.
+Set `git` to `false` before you open directories that you do not trust.
 Each query has a two-second timeout and a 16 KiB output limit.
-Results remain cached for 15 seconds by default. The permitted range is 5–300 seconds.
+Results remain cached for 15 seconds by default.
 Command completion invalidates that directory's cache.
 Missing Git, non-repositories and failed or oversized queries omit the Git component.
-Remote-context panes do not query local Git for reported directories.
+Remote-context panes do not query Git for the local directory.
 The package does not perform network Git operations.
 
 Text uses the system theme through Qt controls.
 The package does not add component colors, icons, powerline shapes or custom tab widgets.
 These features require additional UI contribution interfaces.
-Avoid multiple packages that replace the same tab title or status.
+Tab suffixes and status text from several packages add to each other.
+Use one package that sets them.
 
 Remove `scripts/tab-status/` to uninstall.
 The host removes the timer, Git job and UI contributions.

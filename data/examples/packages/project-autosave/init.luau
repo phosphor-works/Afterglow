@@ -10,7 +10,6 @@ local script={metadata={name="Project autosave",actions={
 local saved, flow, cursor = {enabled={}}, nil, 0
 local queue, saving, savingPane = {}, false, nil
 local function notice(text,pane) return afterglow.notify("Project autosave",text,pane) end
-local function request(id,effect) return afterglow.request(id,effect) end
 function script.on_load(ev)
     saved=projects.normalize(ev.storage.value)
     local interval=math.floor(math.clamp(tonumber(ev.package.config.interval_seconds) or 60,10,3600))*1000
@@ -22,7 +21,7 @@ local function next_save(state)
         for _,w in ipairs(projects.candidates(state,saved.enabled)) do
             if w.id==target.id and w.project==target.project then
                 saving=true;savingPane=w.active_pane
-                return request("autosaved",afterglow.save_project(w.active_pane,w.project,true))
+                return afterglow.request("autosaved",afterglow.save_project(w.active_pane,w.project,true))
             end
         end
     end
@@ -45,7 +44,7 @@ function script.run_action(action,ev)
     local name=projects.current(ev)
     if action~="restore" and not name then return notice("Use Save Project to name this window first.",ev.pane) end
     flow={action=action,pane=ev.pane.id,name=name}
-    return request("state",afterglow.state_read())
+    return afterglow.request("state",afterglow.state_read())
 end
 function script.on_result(ev)
     if ev.request_id=="autosaved" then
@@ -66,18 +65,18 @@ function script.on_result(ev)
     end
     if ev.request_id=="state" then
         saved=projects.normalize(ev.data.value)
-        if flow.action=="save" then return request("saved",afterglow.save_project(flow.pane,flow.name,true)) end
-        if flow.action=="restore" then return request("listed",afterglow.list_projects()) end
+        if flow.action=="save" then return afterglow.request("saved",afterglow.save_project(flow.pane,flow.name,true)) end
+        if flow.action=="restore" then return afterglow.request("listed",afterglow.list_projects()) end
         flow.value=projects.normalize(saved)
         if flow.action=="enable" then
             local count=0;for _ in pairs(flow.value.enabled) do count+=1 end
             if count>=100 and not saved.enabled[flow.name] then return finish("Autosave limit reached (100 projects).") end
             flow.value.enabled[flow.name]=true
         else flow.value.enabled[flow.name]=nil end
-        return request("configured",afterglow.state_write(flow.value,ev.data.revision))
+        return afterglow.request("configured",afterglow.state_write(flow.value,ev.data.revision))
     elseif ev.request_id=="configured" then
         saved=projects.normalize(ev.data.value)
-        if flow.action=="enable" then return request("saved",afterglow.save_project(flow.pane,flow.name,true)) end
+        if flow.action=="enable" then return afterglow.request("saved",afterglow.save_project(flow.pane,flow.name,true)) end
         return finish("Autosave disabled for "..flow.name)
     elseif ev.request_id=="saved" then return finish("Saved "..flow.name)
     elseif ev.request_id=="listed" then
@@ -89,11 +88,11 @@ function script.on_result(ev)
             end
         end
         if #items==0 then return finish("No autosaved projects. Save a project and enable autosave first.") end
-        return request("chosen",afterglow.select(flow.pane,"Restore autosaved project",items))
+        return afterglow.request("chosen",afterglow.select(flow.pane,"Restore autosaved project",items))
     elseif ev.request_id=="chosen" then
         local name=flow.choices[ev.data.id]
         if not name then return finish() end
-        return request("restored",afterglow.open_project(name))
+        return afterglow.request("restored",afterglow.open_project(name))
     elseif ev.request_id=="restored" then return finish() end
 end
 return script

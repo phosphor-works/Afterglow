@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <vector>
 
 namespace AfterglowVt::detail {
 
@@ -109,17 +110,56 @@ bool iterm2ImageSize(const ITerm2File& file, std::uint32_t naturalW, std::uint32
             h = naturalH;
         }
     }
-    w = std::min(w, MaxSide);
-    h = std::min(h, MaxSide);
-    if (w * h > MaxPixels) {
-        const double shrink = std::sqrt(MaxPixels / (w * h));
+    if (file.preserveAspectRatio) {
+        // One factor for both sides, so the limits keep the shape.
+        const double shrink = std::min({1.0, MaxSide / w, MaxSide / h, std::sqrt(MaxPixels / (w * h))});
         w *= shrink;
         h *= shrink;
+    } else {
+        w = std::min(w, MaxSide);
+        h = std::min(h, MaxSide);
+        if (w * h > MaxPixels) {
+            const double shrink = std::sqrt(MaxPixels / (w * h));
+            w *= shrink;
+            h *= shrink;
+        }
     }
     width = std::uint32_t(std::max(1.0, std::round(w)));
     height = std::uint32_t(std::max(1.0, std::round(h)));
     return true;
 }
+
+namespace {
+
+/// The source pixels one output pixel reads along one axis, with weights:
+/// the covered span when shrinking (area average), the two nearest pixels
+/// when enlarging (linear).
+struct Taps
+{
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+    double weight[2] = {1, 1}; ///< for the linear case; the span weighs 1 each
+};
+
+Taps axisTaps(std::uint32_t out, double scale, std::uint32_t size)
+{
+    Taps t;
+    if (scale > 1.0) {
+        t.first = std::min(size - 1, std::uint32_t(out * scale));
+        const auto last = std::min(size, std::uint32_t(std::ceil((out + 1) * scale)));
+        t.count = std::max(1u, last - t.first);
+        return t;
+    }
+    const double f = std::max(0.0, (out + 0.5) * scale - 0.5);
+    t.first = std::min(size - 1, std::uint32_t(f));
+    const double frac = t.first + 1 < size ? f - t.first : 0.0;
+    t.count = t.first + 1 < size ? 2 : 1;
+    t.weight[0] = 1 - frac;
+    t.weight[1] = frac;
+    return t;
+}
+
+} // namespace
 
 ImageFrame scaleFrame(const ImageFrame& in, std::uint32_t width, std::uint32_t height)
 {
@@ -129,63 +169,43 @@ ImageFrame scaleFrame(const ImageFrame& in, std::uint32_t width, std::uint32_t h
     ImageFrame out;
     out.width = width;
     out.height = height;
-    out.gapMs = in.gapMs;
     out.rgba.assign(std::size_t(width) * height * 4, 0);
     const double sx = double(in.width) / width;
     const double sy = double(in.height) / height;
-    auto src = [&](std::uint32_t x, std::uint32_t y) { return &in.rgba[(std::size_t(y) * in.width + x) * 4]; };
+    // Each axis picks its own filter, so a shrink along one and an
+    // enlargement along the other stay smooth on both.
+    const bool spanX = sx > 1.0;
+    const bool spanY = sy > 1.0;
+    std::vector<Taps> columns(width);
+    for (std::uint32_t x = 0; x < width; ++x) {
+        columns[x] = axisTaps(x, sx, in.width);
+    }
     for (std::uint32_t y = 0; y < height; ++y) {
+        const Taps ty = axisTaps(y, sy, in.height);
         for (std::uint32_t x = 0; x < width; ++x) {
+            const Taps& tx = columns[x];
             double acc[4] = {0, 0, 0, 0};
-            if (sx > 1.0 || sy > 1.0) {
-                // Average the source pixels this one covers, weighted by alpha.
-                const auto x0 = std::uint32_t(x * sx);
-                const auto x1 = std::max(x0 + 1, std::min(in.width, std::uint32_t(std::ceil((x + 1) * sx))));
-                const auto y0 = std::uint32_t(y * sy);
-                const auto y1 = std::max(y0 + 1, std::min(in.height, std::uint32_t(std::ceil((y + 1) * sy))));
-                double n = 0;
-                for (std::uint32_t yy = y0; yy < y1; ++yy) {
-                    for (std::uint32_t xx = x0; xx < x1; ++xx) {
-                        const std::uint8_t* p = src(xx, yy);
-                        const double a = p[3] / 255.0;
-                        acc[0] += p[0] * a;
-                        acc[1] += p[1] * a;
-                        acc[2] += p[2] * a;
-                        acc[3] += a;
-                        n += 1;
-                    }
-                }
-                const double alpha = acc[3] / n;
-                std::uint8_t* d = &out.rgba[(std::size_t(y) * width + x) * 4];
-                for (int c = 0; c < 3; ++c) {
-                    d[c] = std::uint8_t(acc[3] > 0 ? std::clamp(acc[c] / acc[3], 0.0, 255.0) : 0);
-                }
-                d[3] = std::uint8_t(std::lround(alpha * 255.0));
-            } else {
-                // Bilinear between the four nearest source pixels.
-                const double fx = std::max(0.0, (x + 0.5) * sx - 0.5);
-                const double fy = std::max(0.0, (y + 0.5) * sy - 0.5);
-                const auto ix = std::min(in.width - 1, std::uint32_t(fx));
-                const auto iy = std::min(in.height - 1, std::uint32_t(fy));
-                const auto jx = std::min(in.width - 1, ix + 1);
-                const auto jy = std::min(in.height - 1, iy + 1);
-                const double tx = fx - ix;
-                const double ty = fy - iy;
-                const std::uint8_t* q[4] = {src(ix, iy), src(jx, iy), src(ix, jy), src(jx, jy)};
-                const double wgt[4] = {(1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty};
-                for (int k = 0; k < 4; ++k) {
-                    const double a = q[k][3] / 255.0 * wgt[k];
-                    acc[0] += q[k][0] * a;
-                    acc[1] += q[k][1] * a;
-                    acc[2] += q[k][2] * a;
+            double total = 0;
+            for (std::uint32_t j = 0; j < ty.count; ++j) {
+                const double wy = spanY ? 1.0 : ty.weight[j];
+                const std::uint8_t* row = &in.rgba[std::size_t(ty.first + j) * in.width * 4];
+                for (std::uint32_t i = 0; i < tx.count; ++i) {
+                    const double w = wy * (spanX ? 1.0 : tx.weight[i]);
+                    const std::uint8_t* p = row + std::size_t(tx.first + i) * 4;
+                    // Weighted by alpha, so transparent pixels lend no colour.
+                    const double a = p[3] / 255.0 * w;
+                    acc[0] += p[0] * a;
+                    acc[1] += p[1] * a;
+                    acc[2] += p[2] * a;
                     acc[3] += a;
+                    total += w;
                 }
-                std::uint8_t* d = &out.rgba[(std::size_t(y) * width + x) * 4];
-                for (int c = 0; c < 3; ++c) {
-                    d[c] = std::uint8_t(acc[3] > 0 ? std::clamp(acc[c] / acc[3], 0.0, 255.0) : 0);
-                }
-                d[3] = std::uint8_t(std::lround(std::clamp(acc[3], 0.0, 1.0) * 255.0));
             }
+            std::uint8_t* d = &out.rgba[(std::size_t(y) * width + x) * 4];
+            for (int c = 0; c < 3; ++c) {
+                d[c] = std::uint8_t(acc[3] > 0 ? std::clamp(acc[c] / acc[3], 0.0, 255.0) : 0);
+            }
+            d[3] = std::uint8_t(std::lround(std::clamp(total > 0 ? acc[3] / total : 0.0, 0.0, 1.0) * 255.0));
         }
     }
     return out;

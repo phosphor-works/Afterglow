@@ -9,8 +9,13 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <cstdint>
 #include <functional>
 #include <optional>
+
+namespace AfterglowVt {
+enum class StatusState : std::uint8_t;
+}
 
 namespace Afterglow {
 
@@ -34,7 +39,7 @@ struct PaneInfo
     /// Where the shell runs when not here as you ("root", "deploy@prod-1");
     /// not part of the D-Bus pane structure.
     QString context;
-    quint32 tabId = 0; ///< stable within this process; tab remains the legacy index
+    quint32 tabId = 0; ///< stable within this process, unlike the tab's position (tab)
 };
 
 /// What afterglow lets other programs (D-Bus) and scripts (Luau) do: one
@@ -58,10 +63,15 @@ public:
 
     QList<PaneInfo> panes() const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
+    /// The focused pane of the active window, else of the window that was
+    /// active last: `afterglow ctl` run from another program's window.
+    std::optional<quint32> focusedPane() const;
     /// Windows and tabs, including each window's active tab and pane.
     QVariantMap state() const;
     static QVariantMap paneMap(const PaneInfo& pane);
     static bool isStructuralAction(const QString& action);
+    /// The name of a program status state (OSC 7501): idle, working, done, blocked or error.
+    static QString statusStateName(AfterglowVt::StatusState state);
 
     QString openDirectory(const QString& cwd, const QString& layout, QVariantMap& result);
     void setScriptDiagnostics(std::function<QVariantList()> read) { m_scriptDiagnostics = std::move(read); }
@@ -72,13 +82,12 @@ public:
     QString movePane(quint32 pane, quint32 target, const QString& placement, QVariantMap& result);
     QString detachTab(quint32 pane, QVariantMap& result);
     QString sendText(quint32 pane, const QString& text);
-    /// Honours Control.allowReadText unless @p trusted (afterglow itself).
-    QString readText(quint32 pane, TextScope scope, QString& out, bool trusted = false);
+    /// Honours Control.allowReadText.
+    QString readText(quint32 pane, TextScope scope, QString& out);
     /// Bounded script query, subject to Scripts.allowReadText.
     QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result);
     QString semanticRegions(quint32 pane, QVariantMap& result);
     QString readRegion(quint32 pane, const QString& region, int limit, QVariantMap& result);
-    QString split(quint32 pane, bool right, const QStringList& command, quint32& created);
     QString split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
@@ -94,7 +103,7 @@ public:
     QString signalsBatch(quint32 pane, const QString& scope, const QVariantList& values, QVariantList& updated);
     QString notify(quint32 pane, const QString& title, const QString& body);
     QString copy(const QString& text);
-    /// http, https and mailto only.
+    /// http, https and mailto only: a script cannot be asked first.
     QString openUrl(const QString& url);
     /// A keybind action by its config name (split_right, new_tab...), or a
     /// script action as "script:<script id>.<action id>".
@@ -142,13 +151,18 @@ private:
     void projectDialog(Pane* pane, bool save);
     void attachPane(TerminalWindow* window, Pane* pane);
     Pane* find(quint32 id, TerminalWindow** window = nullptr) const;
+    static PaneInfo describe(TerminalWindow* window, Pane* pane);
+    /// Shows a window made by m_newWindow as Window.startMode asks.
+    void showNew(TerminalWindow* window) const;
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
     ScriptActionRunner m_scriptActions;
     std::function<QVariantList()> m_scriptDiagnostics;
     QList<QPointer<TerminalWindow>> m_windows;
+    QPointer<TerminalWindow> m_lastActive;
     QHash<quint32, QPair<quint32, quint32>> m_closingPanes;
+    QHash<quint32, QPair<QString, QString>> m_status; ///< the state and text last sent for each pane
 };
 
 } // namespace Afterglow

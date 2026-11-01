@@ -81,3 +81,94 @@ TEST(Sixel, BlankRunsAndBandsAreBoundedAndOverflowRejectsWholeImage)
     EXPECT_FALSE(decodeSixel("~" + std::string(2000, '-'), 1, 0, palette, frame));
     EXPECT_FALSE(decodeSixel("~!10000~", 1, 0, palette, frame));
 }
+
+TEST(Sixel, BlankRunPastTheWidthLimitIsRejectedWithNothingAfterIt)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    EXPECT_FALSE(decodeSixel("~!10000?", 1, 0, palette, frame));
+    // readParams caps a count at 2^20: many such runs would overflow an int
+    // position if the bound regressed.
+    std::string runs = "~";
+    for (int i = 0; i < 2100; ++i) {
+        runs += "!1048576?";
+    }
+    EXPECT_FALSE(decodeSixel(runs + "~", 1, 0, palette, frame));
+}
+
+TEST(Sixel, PixelAreaIsCapped)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    // Both sides under 10,000, the area over 4096 x 4096.
+    EXPECT_FALSE(decodeSixel("\"1;1;5000;4000#0~", 1, 0, palette, frame));
+    EXPECT_TRUE(decodeSixel("\"1;1;4096;4096#0~", 1, 0, palette, frame));
+    EXPECT_EQ(frame.width, 4096u);
+    EXPECT_EQ(frame.height, 4096u);
+}
+
+TEST(Sixel, WideImageWithoutRasterAttributesDecodes)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    // Growing the width must not double the height: 1,025 x 6 fits easily.
+    ASSERT_TRUE(decodeSixel("#1" + std::string(1025, '~'), 1, 0, palette, frame));
+    EXPECT_EQ(frame.width, 1025u);
+    EXPECT_EQ(frame.height, 6u);
+    // 3,000 x 3,100 is within the cap as well.
+    std::string tall = "#1";
+    for (int band = 0; band < 516; ++band) {
+        tall += "!3000~-";
+    }
+    tall += "!3000~"; // 517 bands: 3,102 rows
+    ASSERT_TRUE(decodeSixel(tall, 1, 0, palette, frame));
+    EXPECT_EQ(frame.width, 3000u);
+    EXPECT_EQ(frame.height, 3102u);
+}
+
+TEST(Sixel, LastBandCountsOnlyItsLitRows)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    // 682 full bands reach row 4,092; the last band lights four rows: exactly 4,096.
+    std::string data = "\"1;1;4096;4096#1";
+    for (int band = 0; band < 682; ++band) {
+        data += "!4096~-";
+    }
+    data += "!4096N";
+    ASSERT_TRUE(decodeSixel(data, 1, 0, palette, frame));
+    EXPECT_EQ(frame.height, 4096u);
+    // An image the full 10,000 rows high, with one line feed after it.
+    std::string tall = "#1";
+    for (int band = 0; band < 1666; ++band) {
+        tall += "~-";
+    }
+    tall += "N-";
+    ASSERT_TRUE(decodeSixel(tall, 1, 0, palette, frame));
+    EXPECT_EQ(frame.height, 10000u);
+}
+
+TEST(Sixel, RasterAttributesAloneGiveTheImageItsSize)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    ASSERT_TRUE(decodeSixel("\"1;1;8;8", 1, 0x123456, palette, frame));
+    EXPECT_EQ(frame.width, 8u);
+    EXPECT_EQ(frame.height, 8u);
+    EXPECT_EQ(pixel(frame, 7, 7), 0u); // P2=1: transparent
+    ASSERT_TRUE(decodeSixel("\"1;1;8;8", 0, 0x123456, palette, frame));
+    EXPECT_EQ(pixel(frame, 7, 7), 0xFF123456u);
+}
+
+TEST(Sixel, RepaintingTheSameBandHasALimit)
+{
+    auto palette = defaultSixelPalette();
+    ImageFrame frame;
+    std::string data = "#1!10000~";
+    for (int i = 0; i < 1200; ++i) {
+        data += "$!10000~"; // 60,000 pixel writes each, for 8 bytes
+    }
+    EXPECT_FALSE(decodeSixel(data, 1, 0, palette, frame));
+    // A few passes over the same pixels, as colour encoders do, are fine.
+    EXPECT_TRUE(decodeSixel("#1!100~$#2!100~$#3!100~", 1, 0, palette, frame));
+}

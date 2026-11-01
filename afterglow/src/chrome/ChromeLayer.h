@@ -51,18 +51,17 @@ public:
     std::uint64_t serial() const noexcept { return m_serial; }
 
     /// True if the chrome handles the pointer at @p pos (window coordinates).
-    bool wantsPointer(const QPointF& pos) const;
+    /// @p event, when given, lets the chrome leave wheel events to the panes
+    /// where it takes only presses (the history scrollbar).
+    bool wantsPointer(const QPointF& pos, const QEvent* event = nullptr) const;
     /// Sends an input event to the QML scene.
     void deliver(QEvent* event);
     void queryInputMethod(QInputMethodQueryEvent* event) const;
-    QQuickWindow* quickWindow() const { return m_window.get(); }
     QQuickItem* rootItem() const { return m_root; }
     QQuickItem* focusedItem() const;
     /// The pointer the chrome asks for at @p pos (logical pixels): the
     /// cursor of the topmost item there that sets one, an arrow otherwise.
     QCursor cursorAt(const QPointF& pos) const;
-    /// Releases GPU resources before the window's surface goes away.
-    void releaseResources();
 
 Q_SIGNALS:
     /// The scene needs rendering; the host schedules a frame.
@@ -70,6 +69,9 @@ Q_SIGNALS:
 
 private:
     bool initialize();
+    /// Frees the render target and the texture. The destructor calls it
+    /// after it invalidates the scene graph.
+    void releaseResources();
 
     AfterglowRender::GpuDevice& m_device;
     QWindow* m_host;
@@ -83,6 +85,7 @@ private:
     std::unique_ptr<QRhiRenderPassDescriptor> m_renderPass;
     std::unique_ptr<QRhiTextureRenderTarget> m_target;
     QSize m_size;
+    QSize m_failedSize;
     qreal m_dpr = 0;
     bool m_dirty = true;
     bool m_initialized = false;

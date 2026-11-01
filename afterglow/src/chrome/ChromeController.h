@@ -39,6 +39,8 @@ class ChromeController : public QObject
     Q_PROPERTY(bool pasteConfirmOpen READ pasteConfirmOpen NOTIFY pasteConfirmChanged)
     Q_PROPERTY(QString pastePreview READ pastePreview NOTIFY pasteConfirmChanged)
     Q_PROPERTY(int pasteLines READ pasteLines NOTIFY pasteConfirmChanged)
+    Q_PROPERTY(int pasteHiddenBytes READ pasteHiddenBytes NOTIFY pasteConfirmChanged)
+    Q_PROPERTY(QColor scrimColor READ scrimColor CONSTANT)
     Q_PROPERTY(bool clipboardPromptOpen READ clipboardPromptOpen NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QString clipboardPromptText READ clipboardPromptText NOTIFY clipboardPromptChanged)
     Q_PROPERTY(QString clipboardPromptName READ clipboardPromptName NOTIFY clipboardPromptChanged)
@@ -49,7 +51,13 @@ class ChromeController : public QObject
 public:
     using QObject::QObject;
     QVariantMap scriptDialog() const { return m_scriptDialog; }
-    void setScriptDialog(const QVariantMap& value) { m_scriptDialog = value; Q_EMIT scriptDialogChanged(); }
+    void setScriptDialog(const QVariantMap& value)
+    {
+        if (m_scriptDialog != value) {
+            m_scriptDialog = value;
+            Q_EMIT scriptDialogChanged();
+        }
+    }
     Q_INVOKABLE void answerScriptDialog(bool accepted, const QString& value) { Q_EMIT scriptDialogAnswered(accepted, value); }
     QString scriptStatus() const { return m_scriptStatus; }
     void setScriptStatus(const QString& value) { if (m_scriptStatus != value) { m_scriptStatus = value; Q_EMIT scriptStatusChanged(); } }
@@ -67,13 +75,14 @@ public:
     int currentTab() const { return m_currentTab; }
     int tabBarHeight() const { return m_tabBarHeight; }
     void setTabs(const QStringList& titles, int current, int barHeight);
-    /// Per tab: { state, progress, text } of its most pressing program status,
-    /// or an empty map.
+    /// Per tab: { state, progress, text, priority } of its most pressing
+    /// program status, or an empty map.
     QVariantList tabStatus() const { return m_tabStatus; }
     /// URL mode: [{ x, y (logical pixels), label, typed (characters matched) }].
     QVariantList urlHints() const { return m_urlHints; }
     void setUrlHints(const QVariantList& hints);
-    /// Unicode input: { active, text (hex typed), preview, x, y }.
+    /// Unicode input: { active, text (hex typed), preview, x, y (below the
+    /// cursor), top (the cursor's top) }.
     QVariantMap unicodeInput() const { return m_unicodeInput; }
     void setUnicodeInput(const QVariantMap& state);
     void setTabStatus(const QVariantList& status);
@@ -103,17 +112,22 @@ public:
     QString searchStatus() const { return m_searchStatus; }
     void setSearchStatus(const QString& status);
 
-    /// [{ x, y, width, height (logical pixels), title, focused }] per split.
+    /// [{ x, y, width, height (logical pixels), title, focused, status,
+    /// context, contextKind }] per split.
     QVariantList paneTitles() const { return m_paneTitles; }
     void setPaneTitles(const QVariantList& titles);
 
     bool pasteConfirmOpen() const { return m_pasteConfirmOpen; }
     QString pastePreview() const { return m_pastePreview; }
     int pasteLines() const { return m_pasteLines; }
+    /// The bytes of the paste that the preview leaves out.
+    int pasteHiddenBytes() const { return m_pasteHiddenBytes; }
     /// Asks whether to paste text a shell would run line by line.
-    void askPaste(const QString& preview, int lines);
+    void askPaste(const QString& preview, int lines, int hiddenBytes = 0);
 
-    /// True while the chrome takes keyboard input instead of the terminal.
+    /// The colour that dims the window behind a prompt.
+    QColor scrimColor() const { return QColor(0, 0, 0, 0x59); }
+
     bool clipboardPromptOpen() const { return m_clipboardPromptOpen; }
     QString clipboardPromptText() const { return m_clipboardPromptText; }
     /// The program's name when it can be remembered, else empty.
@@ -143,6 +157,7 @@ public:
     void askConfirm(const QString& heading, const QString& body, const QString& accept);
     Q_INVOKABLE void answerConfirm(bool accepted);
 
+    /// True while the chrome takes keyboard input instead of the terminal.
     bool wantsKeyboard() const
     {
         return m_paletteOpen || m_searchOpen || m_pasteConfirmOpen || m_clipboardPromptOpen || contextMenuOpen()
@@ -159,7 +174,8 @@ public:
     /// The tab's menu, at @p x, @p y (logical pixels).
     Q_INVOKABLE void tabMenu(int index, qreal x, qreal y) { Q_EMIT tabMenuRequested(index, QPointF(x, y)); }
     Q_INVOKABLE void runAction(int id);
-    /// @p direction: 0 to search again from the current match, 1 next, -1 previous.
+    /// @p direction: 1 next, -1 previous, 0 search. A new query selects the last
+    /// match in the buffer; direction 0 with the same query stays on the current match.
     Q_INVOKABLE void search(const QString& query, int direction) { Q_EMIT searchRequested(query, direction); }
     Q_INVOKABLE void answerPaste(bool paste);
     /// 0 deny, 1 allow once, 2 always allow this program.
@@ -232,6 +248,7 @@ private:
     bool m_pasteConfirmOpen = false;
     QString m_pastePreview;
     int m_pasteLines = 0;
+    int m_pasteHiddenBytes = 0;
     QVariantMap m_contextMenu;
     QVariantMap m_titlePrompt;
     QVariantMap m_confirmPrompt;

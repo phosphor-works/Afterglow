@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 status is-interactive; or return
+# This runs after config.fish, which can turn the integration off.
+test "$AFTERGLOW_SHELL_INTEGRATION" = 0; and return
 set -q __afterglow_loaded; and return
 set -g __afterglow_loaded 1
 # ssh through `afterglow ssh`, unless the user already wraps it.

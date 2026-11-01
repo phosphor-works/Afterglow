@@ -115,8 +115,10 @@ float ghAge(int channel)
     return signalAge(channel);
 }
 
-// When a signal was set, on the wrapped iTime clock, to seed its pattern.
-float ghSetAt(int channel)
+// When an event `age` seconds old happened, on a 1024 s cycle, to seed its
+// pattern. iTime - age is exact, and mod() keeps it the same when iTime wraps
+// during the event, so the pattern holds still for the event's whole life.
+float ghSetTime(float age)
 {
-    return iTime - signalAge(channel);
+    return mod(iTime - age, 1024.0);
 }

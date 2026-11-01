@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <QCoreApplication>
 #include <QJsonObject>
 #include <QStringList>
 
@@ -8,6 +9,8 @@ namespace Afterglow {
 /// Versioned launch layouts, stored next to the active configuration.
 class ProjectStore
 {
+    Q_DECLARE_TR_FUNCTIONS(ProjectStore)
+
 public:
     explicit ProjectStore(QString directory) : m_directory(std::move(directory)) {}
     static bool validName(const QString& name);

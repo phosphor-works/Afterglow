@@ -33,8 +33,8 @@ void parseITerm2Args(std::string_view args, ITerm2File& out);
 bool iterm2ImageSize(const ITerm2File& file, std::uint32_t naturalW, std::uint32_t naturalH, int cellW, int cellH,
                      int cols, int rows, std::uint32_t& width, std::uint32_t& height);
 
-/// Resamples straight-alpha RGBA: area averaging when shrinking, bilinear
-/// when enlarging.
+/// Resamples straight-alpha RGBA. Each axis averages the covered area when
+/// it shrinks and interpolates linearly when it grows.
 ImageFrame scaleFrame(const ImageFrame& in, std::uint32_t width, std::uint32_t height);
 
 } // namespace AfterglowVt::detail

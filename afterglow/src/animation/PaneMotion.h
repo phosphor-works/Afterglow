@@ -12,7 +12,7 @@
 namespace Afterglow {
 
 /// A pane's animated presentation: where it is drawn, where its cursor is
-/// drawn, and its scroll position in fractional rows.
+/// drawn, its scroll position in fractional rows, and its visual bell.
 struct PaneMotion
 {
     PhosphorAnimation::AnimatedValue<QRectF> rect;

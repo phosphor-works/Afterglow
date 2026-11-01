@@ -60,11 +60,27 @@ struct AFTERGLOWVT_EXPORT Selection
 
     /// False when the selection is inactive or belongs to an older layout.
     bool validFor(const Screen& screen) const noexcept;
+    /// Expects validFor(): when the rows are gone the ends come back as they
+    /// are, not expanded. A word selection is expanded once and remembered
+    /// until its ends, the screen's layout or the boundaries change.
     Range range(const Screen& screen, std::u32string_view wordBoundaries = DefaultWordBoundaries) const;
     /// The selected text, UTF-8. Soft-wrapped rows join without a newline and
     /// trailing blanks of each line are dropped.
     std::string text(const Screen& screen, std::u32string_view wordBoundaries = DefaultWordBoundaries,
                      std::size_t maxBytes = std::numeric_limits<std::size_t>::max(), bool* truncated = nullptr) const;
+
+private:
+    /// The last word expansion. Callers hold the pane lock, as for the rest.
+    struct WordCache
+    {
+        const Screen* screen = nullptr;
+        std::uint64_t epoch = 0;
+        SelectionPoint anchor;
+        SelectionPoint head;
+        std::u32string boundaries;
+        Range range;
+    };
+    mutable WordCache m_word;
 };
 
 } // namespace AfterglowVt

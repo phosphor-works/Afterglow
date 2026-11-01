@@ -10,15 +10,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcGpu, "afterglow.gpu", QtInfoMsg)
 
 namespace AfterglowRender {
-
-namespace {
-GpuDevice* s_instance = nullptr;
-}
 
 GpuDevice::GpuDevice(const FontSpec& fontSpec, QObject* parent)
     : QObject(parent)
@@ -34,7 +32,6 @@ GpuDevice::GpuDevice(const FontSpec& fontSpec, QObject* parent)
     if (!m_vulkan.create()) {
         throw std::runtime_error("failed to create the Vulkan instance");
     }
-    s_instance = this;
 }
 
 GpuDevice::~GpuDevice()
@@ -48,7 +45,6 @@ GpuDevice::~GpuDevice()
     delete m_imageSampler;
     delete m_sampler;
     m_rhi.reset();
-    s_instance = nullptr;
 }
 
 void GpuDevice::setAudioSpectrum(std::span<const float> spectrum)
@@ -93,11 +89,6 @@ void GpuDevice::prepareAudio(QRhiResourceUpdateBatch* updates)
     }
 }
 
-GpuDevice* GpuDevice::instance()
-{
-    return s_instance;
-}
-
 QRhi* GpuDevice::rhi(QWindow* window)
 {
     if (m_rhi) {
@@ -114,10 +105,10 @@ QRhi* GpuDevice::rhi(QWindow* window)
 
     m_sampler = m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
                                   QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
-    m_sampler->create();
+    if (!m_sampler->create()) throw std::runtime_error("failed to create the atlas sampler");
     m_imageSampler = m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
                                        QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
-    m_imageSampler->create();
+    if (!m_imageSampler->create()) throw std::runtime_error("failed to create the image sampler");
     return m_rhi.get();
 }
 
@@ -135,8 +126,18 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
         m_imageTextures.erase(it);
     }
     const QSize size(int(frame->width), int(frame->height));
-    QRhiTexture* tex = m_rhi->newTexture(QRhiTexture::RGBA8, size);
-    tex->create();
+    const int limit = m_rhi->resourceLimit(QRhi::TextureSizeMax);
+    std::unique_ptr<QRhiTexture> created;
+    if (!size.isEmpty() && size.width() <= limit && size.height() <= limit) {
+        created.reset(m_rhi->newTexture(QRhiTexture::RGBA8, size));
+        if (!created->create()) created.reset();
+    }
+    if (!created) {
+        if (!std::exchange(m_imageLimitWarned, true))
+            qCWarning(lcGpu) << "An image of" << size << "does not fit on the GPU (limit" << limit << "pixels); it is not drawn";
+        return nullptr;
+    }
+    QRhiTexture* tex = created.release();
     const QImage img(frame->rgba.data(), size.width(), size.height(), size.width() * 4, QImage::Format_RGBA8888);
     updates->uploadTexture(tex, img);
     ImageTexture entry{frame, tex, ++m_textureSerial};
@@ -147,6 +148,18 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
 
 void GpuDevice::pruneImageTextures()
 {
+    // Font sets for a pixel ratio no window uses any more (a window moved to
+    // another screen, a scale that changed).
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = m_fonts.begin(); it != m_fonts.end();) {
+        if (now - it->second->lastUsed > FontResourcesUnusedFor) {
+            for (auto* texture : it->second->grayTextures) delete texture;
+            for (auto* texture : it->second->colorTextures) delete texture;
+            it = m_fonts.erase(it);
+        } else {
+            ++it;
+        }
+    }
     // QRhi defers the native release until in-flight frames are done with it.
     for (auto it = m_imageTextures.begin(); it != m_imageTextures.end();) {
         if (it->second.frame.expired()) {
@@ -163,9 +176,12 @@ FontResources& GpuDevice::fontResources(double devicePixelRatio)
     const int key = int(std::lround(devicePixelRatio * 100.0));
     auto& slot = m_fonts[key];
     if (!slot) {
-        slot = std::make_unique<FontResources>();
-        slot->fonts = std::make_unique<FontSet>(m_fontSpec, devicePixelRatio);
+        // Stored only once the fonts loaded: a throw leaves no half-made entry.
+        auto made = std::make_unique<FontResources>();
+        made->fonts = std::make_unique<FontSet>(m_fontSpec, devicePixelRatio);
+        slot = std::move(made);
     }
+    slot->lastUsed = std::chrono::steady_clock::now();
     return *slot;
 }
 
@@ -187,12 +203,20 @@ void GpuDevice::prepareAtlases(FontResources& res, QRhiResourceUpdateBatch* upda
                 res.textureGeneration = ++m_textureSerial;
                 page.markDirty(page.image().rect());
             }
-            const QRect dirty = page.takeDirty();
-            if (dirty.isEmpty()) continue;
-            QRhiTextureSubresourceUploadDescription sub(page.image());
-            sub.setSourceTopLeft(dirty.topLeft()); sub.setSourceSize(dirty.size());
-            sub.setDestinationTopLeft(dirty.topLeft());
-            updates->uploadTexture(texture, QRhiTextureUploadDescription({0, 0, sub}));
+            const std::vector<QRect> dirty = page.takeDirty();
+            if (dirty.empty()) continue;
+            // One entry per new region, not their bounding box across shelves.
+            std::vector<QRhiTextureUploadEntry> entries;
+            entries.reserve(dirty.size());
+            for (const QRect& rect : dirty) {
+                QRhiTextureSubresourceUploadDescription sub(page.image());
+                sub.setSourceTopLeft(rect.topLeft()); sub.setSourceSize(rect.size());
+                sub.setDestinationTopLeft(rect.topLeft());
+                entries.emplace_back(0, 0, sub);
+            }
+            QRhiTextureUploadDescription description;
+            description.setEntries(entries.begin(), entries.end());
+            updates->uploadTexture(texture, description);
         }
     };
     upload(false); upload(true);
@@ -209,6 +233,16 @@ void GpuDevice::releaseFontResources()
 
 void GpuDevice::setFontSpec(const FontSpec& spec)
 {
+    FontSpec sameGamma = spec;
+    sameGamma.gamma = m_fontSpec.gamma;
+    const bool gammaSame = spec.gamma == m_fontSpec.gamma || (std::isnan(spec.gamma) && std::isnan(m_fontSpec.gamma));
+    if (sameGamma == m_fontSpec) {
+        if (gammaSame) return;
+        // Gamma is read per frame (the grid's uniforms): nothing to rebuild.
+        m_fontSpec = spec;
+        Q_EMIT fontsChanged();
+        return;
+    }
     m_fontSpec = spec;
     // Textures may still be referenced by in-flight frames; QRhi defers the
     // actual release until the GPU is done with them.

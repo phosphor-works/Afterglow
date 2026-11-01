@@ -4,6 +4,7 @@
 #include <AfterglowVt/Sixel.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <vector>
 
@@ -13,6 +14,10 @@ namespace {
 
 constexpr int MaxSide = 10000;
 constexpr std::size_t MaxPixels = std::size_t(4096) * 4096;
+/// Pixel writes one image may make. '$' repaints a band from its start, so
+/// without a limit a short string could repaint the same pixels forever.
+/// Encoders write each pixel once per colour pass that sets it.
+constexpr std::size_t MaxPaint = 4 * MaxPixels;
 
 std::uint32_t percentRgb(int r, int g, int b)
 {
@@ -104,6 +109,9 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
     int usedH = 0;
     int rasterW = 0;
     int rasterH = 0;
+    // Grows the pixel store to at least w x h. Only the side that needs it
+    // grows, doubled to amortise the copies; the exact size is the fallback
+    // when the doubled one would pass the pixel cap.
     auto ensure = [&](int w, int h) {
         if (w <= allocW && h <= allocH) {
             return true;
@@ -111,10 +119,16 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
         if (w > MaxSide || h > MaxSide) {
             return false;
         }
-        const int nw = std::max(allocW, std::min(MaxSide, std::max(w, allocW * 2)));
-        const int nh = std::max(allocH, std::min(MaxSide, std::max(h, allocH * 2)));
-        if (std::size_t(nw) * std::size_t(nh) > MaxPixels) {
+        const int needW = std::max(w, allocW);
+        const int needH = std::max(h, allocH);
+        if (std::size_t(needW) * std::size_t(needH) > MaxPixels) {
             return false;
+        }
+        int nw = w > allocW ? std::min(MaxSide, std::max(w, allocW * 2)) : allocW;
+        int nh = h > allocH ? std::min(MaxSide, std::max(h, allocH * 2)) : allocH;
+        if (std::size_t(nw) * std::size_t(nh) > MaxPixels) {
+            nw = needW;
+            nh = needH;
         }
         std::vector<std::uint32_t> grown(std::size_t(nw) * std::size_t(nh), 0);
         for (int y = 0; y < allocH; ++y) {
@@ -125,29 +139,40 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
         allocH = nh;
         return true;
     };
-
     int x = 0;
     int band = 0;
     std::uint32_t color = palette[0] | 0xFF000000u;
-    bool overflow = false;
+    std::size_t painted = 0;
+    // Paints the set bits of one sixel over n columns from x. A band needs
+    // only the rows up to its highest set bit.
+    auto paint = [&](int bits, int n) {
+        const int rows = std::bit_width(unsigned(bits));
+        if (band + rows > MaxSide) {
+            return false;
+        }
+        painted += std::size_t(std::popcount(unsigned(bits))) * std::size_t(n);
+        if (painted > MaxPaint || !ensure(x + n, band + rows)) {
+            return false;
+        }
+        for (int k = 0; k < rows; ++k) {
+            if (bits & (1 << k)) {
+                std::uint32_t* row = &pixels[std::size_t(band + k) * std::size_t(allocW)];
+                std::fill(row + x, row + x + n, color);
+            }
+        }
+        usedH = std::max(usedH, band + rows);
+        usedW = std::max(usedW, x + n);
+        return true;
+    };
+
     std::size_t i = 0;
-    while (i < data.size() && !overflow) {
+    while (i < data.size()) {
         const char c = data[i];
         if (c >= '?' && c <= '~') {
-            if (x >= MaxSide || band > MaxSide - 6) return false;
+            if (x >= MaxSide) return false;
             const int bits = c - '?';
-            if (bits != 0) {
-                if (!ensure(x + 1, band + 6)) {
-                    overflow = true;
-                    break;
-                }
-                for (int k = 0; k < 6; ++k) {
-                    if (bits & (1 << k)) {
-                        pixels[std::size_t(band + k) * std::size_t(allocW) + std::size_t(x)] = color;
-                        usedH = std::max(usedH, band + k + 1);
-                    }
-                }
-                usedW = std::max(usedW, x + 1);
+            if (bits != 0 && !paint(bits, 1)) {
+                return false;
             }
             ++x;
             ++i;
@@ -159,20 +184,9 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             if (i < data.size() && data[i] >= '?' && data[i] <= '~') {
                 const int bits = data[i] - '?';
                 n = std::max(n, 1);
-                if (n > MaxSide - x || band > MaxSide - 6) return false;
-                if (bits != 0) {
-                    if (!ensure(x + n, band + 6)) {
-                        overflow = true;
-                        break;
-                    }
-                    for (int k = 0; k < 6; ++k) {
-                        if (bits & (1 << k)) {
-                            std::uint32_t* row = &pixels[std::size_t(band + k) * std::size_t(allocW)];
-                            std::fill(row + x, row + x + n, color);
-                            usedH = std::max(usedH, band + k + 1);
-                        }
-                    }
-                    usedW = std::max(usedW, x + n);
+                if (n > MaxSide - x) return false;
+                if (bits != 0 && !paint(bits, n)) {
+                    return false;
                 }
                 x += n;
                 ++i;
@@ -189,21 +203,24 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             }
             color = palette[std::size_t(reg)] | 0xFF000000u;
         } else if (c == '"') {
-            // Raster attributes: " Pan ; Pad ; Ph ; Pv
+            // Raster attributes: " Pan ; Pad ; Ph ; Pv. The size only sets
+            // the image's extent: nothing is allocated until pixels arrive.
             ++i;
             int params[4] = {1, 1, 0, 0};
             readParams(data, i, params, 4);
             rasterW = std::clamp(params[2], 0, MaxSide);
             rasterH = std::clamp(params[3], 0, MaxSide);
-            if (rasterW > 0 && rasterH > 0 && !ensure(rasterW, rasterH)) {
-                overflow = true;
+            if (std::size_t(rasterW) * std::size_t(rasterH) > MaxPixels) {
+                return false;
             }
         } else if (c == '$') {
             x = 0;
             ++i;
         } else if (c == '-') {
+            // One line feed past the last paintable band is harmless (many
+            // encoders end with one); more would only run up the counter.
             x = 0;
-            if (band > MaxSide - 6) return false;
+            if (band >= MaxSide) return false;
             band += 6;
             ++i;
         } else {
@@ -211,20 +228,26 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
         }
     }
 
-    if (overflow) return false;
     const int width = std::max(usedW, rasterW);
     const int height = std::max(usedH, rasterH);
-    if (width <= 0 || height <= 0 || !ensure(width, height)) {
+    if (width <= 0 || height <= 0 || std::size_t(width) * std::size_t(height) > MaxPixels) {
         return false;
     }
     out.width = std::uint32_t(width);
     out.height = std::uint32_t(height);
-    out.rgba.resize(std::size_t(width) * std::size_t(height) * 4);
-    const std::uint32_t fill = p2 == 1 ? 0 : (background | 0xFF000000u);
-    for (int y = 0; y < height; ++y) {
-        for (int px = 0; px < width; ++px) {
-            std::uint32_t v = pixels[std::size_t(y) * std::size_t(allocW) + std::size_t(px)];
+    // Zeroed is transparent: with P2 = 1 only the painted area needs a pass.
+    out.rgba.assign(std::size_t(width) * std::size_t(height) * 4, 0);
+    const bool transparent = p2 == 1;
+    const std::uint32_t fill = background | 0xFF000000u;
+    const int rows = transparent ? std::min(height, usedH) : height;
+    const int cols = transparent ? std::min(width, usedW) : width;
+    for (int y = 0; y < rows; ++y) {
+        for (int px = 0; px < cols; ++px) {
+            std::uint32_t v = y < allocH && px < allocW ? pixels[std::size_t(y) * std::size_t(allocW) + std::size_t(px)] : 0;
             if (v == 0) {
+                if (transparent) {
+                    continue;
+                }
                 v = fill;
             }
             std::uint8_t* d = &out.rgba[(std::size_t(y) * std::size_t(width) + std::size_t(px)) * 4];

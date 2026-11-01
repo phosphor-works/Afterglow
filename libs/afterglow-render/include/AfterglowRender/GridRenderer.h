@@ -34,7 +34,6 @@ class QRhiTextureRenderTarget;
 class QRhiCommandBuffer;
 class QRhiRenderTarget;
 class QRhiResourceUpdateBatch;
-class QColor;
 class QRhiSwapChain;
 class QWindow;
 typedef struct hb_buffer_t hb_buffer_t;
@@ -70,6 +69,9 @@ enum class InstanceKind : std::uint32_t {
     Dotted = 4,
     Dashed = 5,
     SubpixelGlyph = 6,
+    /// Gray atlas coverage drawn as is, without the text gamma: shade
+    /// characters are fixed densities, not antialiased edges.
+    LinearGlyph = 7,
 };
 
 /// Turns pane snapshots into instances: background runs, shaped text,
@@ -133,7 +135,9 @@ public:
 
     /// Where each layer's instances start, relative to the pane's first:
     /// backgrounds (the default background first), then text and
-    /// decorations, then the cursor.
+    /// decorations, then the cursor (a block cursor and the extra cursors of
+    /// its shape group), then from cursorOtherStart the extra cursors of the
+    /// other shape group.
     struct Ranges
     {
         std::size_t textStart = 0;
@@ -145,7 +149,8 @@ public:
 
     /// Appends the pane's instances. Atlas pages grow with the visible working
     /// set; allocation failures throw before a partial frame can be submitted.
-    bool buildPane(const PaneSnapshot& snap, const PaneParams& params, FontSet& fonts, GlyphCache& glyphs,
+    /// A glyph the atlas cannot hold is left out.
+    void buildPane(const PaneSnapshot& snap, const PaneParams& params, FontSet& fonts, GlyphCache& glyphs,
                    std::vector<Instance>& out, Ranges& ranges);
 
     void clearShapeCache() { m_shapeCache.clear(); }
@@ -177,13 +182,18 @@ private:
 
     std::uint64_t m_shapeFont = 0;
     std::unordered_map<ShapeKey, std::vector<ShapedGlyph>, ShapeKeyHash> m_shapeCache;
+    ShapeKey m_lookup; ///< reused for lookups, so a cache hit copies no text
     std::u32string m_runText;
     std::vector<int> m_runColumns;
+    std::vector<int> m_columns;
+    std::vector<std::uint32_t> m_clusters;
     hb_buffer_t* m_hbBuffer = nullptr;
 };
 
-/// One window's swapchain and pipeline on the shared GpuDevice. All panes of
-/// the window are drawn in a single render pass.
+/// One window's swapchain and pipelines on the shared GpuDevice. Without
+/// shaders all panes of the window are drawn in one render pass; with them
+/// the grid (or each layer) goes to offscreen textures that PostChain runs
+/// its passes over.
 class AFTERGLOWRENDER_EXPORT WindowRenderer
 {
 public:
@@ -223,13 +233,18 @@ public:
 
     /// Post-processing shaders: over each layer, each pane and the whole window.
     void setShaderChains(ShaderChains chains);
-    /// A shader animates over time: the host keeps scheduling frames.
+    /// The host keeps scheduling frames while this is true: an always-on
+    /// shader animates, the scrollback count eases, the overview or a tab
+    /// transition shows, or a pane effect moves.
     bool animating() const;
-    /// Another tab's panes, for the overview.
+    /// Another tab's panes, for the overview or the tab a switch leaves.
     struct OverviewTab
     {
         int index = 0;
         std::vector<Pane> panes; ///< laid out in the window, like the current tab's
+        /// Solid rectangles drawn over the panes, as render() takes them for
+        /// the current tab (split dividers, focus dimming).
+        std::vector<std::pair<QRect, std::uint32_t>> overlays;
     };
     /// The pane overview for terminal_panes.glsl, eased by the host. The
     /// overview chain runs while it is open and until it has closed.
@@ -241,7 +256,9 @@ public:
         std::optional<std::chrono::steady_clock::time_point> changedAt; ///< opened or closed
         std::optional<std::chrono::steady_clock::time_point> movedAt; ///< the highlight moved
         int currentTab = 0; ///< the index of the tab render() draws
-        /// Other tabs, drawn into their own images while the overview shows.
+        /// Other tabs, each drawn in turn into the shared tab image and shrunk
+        /// into a tile of the atlas; the highlighted pane's tab keeps the full
+        /// image.
         std::vector<OverviewTab> otherTabs;
     };
     void setOverview(Overview overview) { m_overview = std::move(overview); }
@@ -280,14 +297,18 @@ public:
     /// @p overlayTexture, if given, is a premultiplied full-window texture
     /// (the chrome) drawn over everything; @p overlaySerial changes whenever
     /// that texture object is replaced.
-    void render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
+    /// Returns false when nothing was presented (no surface, a swapchain out
+    /// of date, a lost device): the host must schedule another frame.
+    bool render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
                 std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
 
+    /// Shader time (iTime) for the following frames instead of the wall
+    /// clock, for reproducible renders; unset returns to the clock. Event
+    /// ages (signals, the overview, tab switches) still come from their
+    /// steady_clock stamps.
+    void setClockOverride(std::optional<double> seconds) { m_clockOverride = seconds; }
     /// Renders the panes into an image instead of the window, through the
     /// same passes and post-processing. For tests and visual checks.
-    /// Shader time for the following frames instead of the wall clock, for
-    /// reproducible renders; unset returns to the clock.
-    void setClockOverride(std::optional<float> seconds) { m_clockOverride = seconds; }
     QImage renderToImage(const QSize& size, const std::vector<Pane>& panes,
                          const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor);
 
@@ -327,9 +348,12 @@ private:
 
     struct ImageDraw
     {
+        /// Kitty z: below INT32_MIN/2 under non-default cell backgrounds,
+        /// below 0 under the text, else over it.
+        enum class Layer { UnderCells, BelowText, AboveText };
         std::uint32_t instance;
         AfterglowVt::FramePtr frame;
-        bool belowText;
+        Layer layer;
     };
     struct DrawRange
     {
@@ -341,6 +365,7 @@ private:
         bool cursorBelowText;
         QRect scissor;
         std::vector<ImageDraw> images;
+        std::uint32_t overlayFirst = 0, overlayEnd = 0; ///< another tab's overlays
     };
     QRhiShaderResourceBindings* imageBindings(QRhiTexture* texture, std::uint64_t serial);
 
@@ -354,7 +379,7 @@ private:
     std::unique_ptr<QRhiTextureRenderTarget> m_offscreenTarget;
     std::unique_ptr<QRhiRenderPassDescriptor> m_offscreenPass;
     qreal m_devicePixelRatio = 1.0;
-    std::optional<float> m_clockOverride;
+    std::optional<double> m_clockOverride;
     std::optional<std::uint64_t> m_scrollbackLinesOverride;
     double m_easedScrollbackLines = 0;
     bool m_scrollbackInitialized = false;
@@ -363,12 +388,17 @@ private:
     TabTransition m_transition;
     PaneEffects m_effects;
     PipelineSet m_postPipelines;
-    QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
+    std::optional<std::uint64_t> m_postPipelinePass; ///< PostChain::renderPassGeneration() they were made for
     std::unique_ptr<class PostChain> m_post;
+    bool m_postWasActive = false;
+    std::uint64_t m_lastPostFrame = 0; ///< m_frameCounter of the last frame with post-processing
     QPointF m_mouse;
     QElapsedTimer m_clock;
-    float m_lastFrameTime = 0;
+    double m_lastFrameTime = 0;
     int m_shaderFrame = 0;
+    /// A pane's cursor and focus history for shaders. Cursor rectangles are
+    /// in content pixels, before the scroll shift. Times are shader seconds;
+    /// -1e6 means never, so a pane that first appears reads no recent change.
     struct CursorTrack
     {
         QRectF cursor;
@@ -377,12 +407,12 @@ private:
         QColor previousColor;
         int style = 0;
         int previousStyle = 0;
-        float changeTime = 0;
+        double changeTime = -1e6;
         bool focused = false;
-        float focusTime = 0;
+        double focusTime = -1e6;
         std::uint64_t seenFrame = 0;
     };
-    std::unordered_map<const PaneSnapshot*, CursorTrack> m_cursorTracks;
+    std::unordered_map<std::uint64_t, CursorTrack> m_cursorTracks; ///< by PaneSnapshot::identity
     std::vector<std::unique_ptr<QRhiShaderResourceBindings>> m_pageBindings;
     std::unique_ptr<QRhiBuffer> m_uniforms;
     std::unique_ptr<QRhiBuffer> m_instances;
@@ -410,7 +440,7 @@ private:
         std::uint64_t snapshotVersion = 0;
         std::uint64_t fontEpoch = 0;
         std::uint64_t glyphEpoch = 0;
-        const FontSet* fonts = nullptr;
+        std::uint64_t fontIdentity = 0; ///< FontSet::identity(): a new set can reuse an address
         QRect rect;
         QPoint origin;
         bool focused = false;
@@ -429,7 +459,7 @@ private:
         FrameBuilder::Ranges ranges;
         std::uint64_t seenFrame = 0;
     };
-    std::unordered_map<const PaneSnapshot*, PaneCache> m_paneCache;
+    std::unordered_map<std::uint64_t, PaneCache> m_paneCache; ///< by PaneSnapshot::identity
     std::vector<Instance> m_scratch;
 };
 

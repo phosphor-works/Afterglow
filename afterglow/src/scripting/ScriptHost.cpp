@@ -6,6 +6,7 @@
 #include "ScriptFiles.h"
 #include "ScriptPackage.h"
 #include "ScriptState.h"
+#include "../config/Keybinds.h"
 #include <QCryptographicHash>
 #include <QJsonDocument>
 
@@ -13,20 +14,21 @@
 #include <PhosphorScripting/LuauEngine.h>
 #include <PhosphorScripting/LuauWatchdog.h>
 
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QLoggingCategory>
-#include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <limits>
-#include <map>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcScripts, "afterglow.scripts", QtInfoMsg)
 
@@ -44,6 +46,7 @@ struct ScriptHost::Script
     QString path;
     QByteArray source;
     bool package = false;
+    QList<ScriptPackage::Module> modules; ///< a package's module files, for error positions
     QVariantMap packageInfo;
     QString shaderDirectory;
     QVariantMap suggests;
@@ -84,8 +87,6 @@ namespace {
 
 /// Request IDs the prelude's await runtime gives the effects a handler waits for.
 const QString AwaitPrefix = QStringLiteral("afterglow.await:");
-constexpr int MaxSleeping = 16;
-constexpr int MaxSleepMs = 600000;
 
 /// A pulse's effect: a name packs share, or a number a pack defines.
 int pulseEffect(const QString& name)
@@ -98,10 +99,43 @@ int pulseEffect(const QString& name)
     return ok && number >= 1 && number <= 255 ? number : 0;
 }
 
-bool validId(const QString& id)
+bool number(const QVariant& v)
 {
-    static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    return re.match(id).hasMatch();
+    return v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int || v.typeId() == QMetaType::LongLong;
+}
+
+/// A whole number in [low, high].
+bool integer(const QVariant& v, double low, double high)
+{
+    const double d = v.toDouble();
+    return number(v) && std::isfinite(d) && d == std::floor(d) && d >= low && d <= high;
+}
+
+/// What a handler returned, as Luau names it.
+QString luauType(const QVariant& value)
+{
+    switch (value.typeId()) {
+    case QMetaType::Bool: return QStringLiteral("boolean");
+    case QMetaType::Int: case QMetaType::LongLong: case QMetaType::Double: return QStringLiteral("number");
+    case QMetaType::QString: return QStringLiteral("string");
+    default: return QStringLiteral("value");
+    }
+}
+
+/// Text from a script, safe for a log line: bounded, and with no control
+/// characters that could drive the terminal that shows the log.
+QString loggable(QString text, int limit)
+{
+    if (text.size() > limit) {
+        text.truncate(limit);
+        if (text.back().isHighSurrogate()) text.chop(1);
+        text += QStringLiteral("…");
+    }
+    for (QChar& c : text) {
+        const char16_t u = c.unicode();
+        if ((u < 0x20 && u != u'\t') || (u >= 0x7f && u < 0xa0)) c = QChar::ReplacementCharacter;
+    }
+    return text;
 }
 
 QString str(const QVariantMap& m, const char* key)
@@ -184,9 +218,12 @@ const EffectKind Kinds[] = {
     {"shader_parameters", true, false, {"instance", "scope"}, false},
 };
 
-bool number(const QVariant& v)
+/// Kinds outside the effect budget. A sleep is bounded by MaxSleeping and its
+/// result counts as one. Ending a key mode or cancelling a task only gives
+/// something back, and must work when a burst has spent the budget.
+bool budgetFree(const QString& kind)
 {
-    return v.typeId() == QMetaType::Double || v.typeId() == QMetaType::Int || v.typeId() == QMetaType::LongLong;
+    return kind == QLatin1String("sleep") || kind == QLatin1String("end_key_mode") || kind == QLatin1String("cancel");
 }
 
 bool validSignal(const QVariant& channel, const QVariant& value)
@@ -256,7 +293,22 @@ void ScriptHost::setEnabled(bool enabled)
         return;
     }
     m_enabled = enabled;
-    if (enabled) {
+    if (m_scanning) {
+        // A scan's own effects changed the setting (a reload_config action in
+        // on_load). The directory set is still inside that scan, so it must
+        // not be destroyed or replaced until the scan has returned.
+        QTimer::singleShot(0, this, [this] { applyEnabled(); });
+        return;
+    }
+    applyEnabled();
+}
+
+void ScriptHost::applyEnabled()
+{
+    if (m_enabled == bool(m_directories)) {
+        return;
+    }
+    if (m_enabled) {
         // The set scans now and again on every change, recovering watches
         // for directories that do not exist yet.
         m_directories = std::make_unique<PhosphorFsLoader::WatchedDirectorySet>(
@@ -276,35 +328,42 @@ void ScriptHost::reload()
 
 QStringList ScriptHost::performScan(const QStringList& directories)
 {
+    const bool outer = !m_scanning;
+    m_scanning = true;
+    struct Done { bool& scanning; bool outer; ~Done() { if (outer) scanning = false; } } done{m_scanning, outer};
     std::vector<ScriptPtr> loaded;
     QStringList watched;
+    QHash<QString, Memo> memos;
     m_loadErrors.clear();
+    m_superseded.clear();
+    m_stateFailures.clear();
     if (m_enabled) {
-        // id -> path, later directories winning.
-        std::map<QString, std::pair<int, QString>> chosen;
-        int priority = 0;
+        // Every script file and package folder, lowest priority first. A
+        // package follows the files of its directory, so it wins an id clash
+        // with a file there, as a later directory wins over an earlier one.
+        QStringList candidates;
         for (const QString& dir : directories) {
             const QFileInfoList files = QDir(dir).entryInfoList({QStringLiteral("*.luau")}, QDir::Files | QDir::Readable,
                                                                 QDir::Name);
             for (const QFileInfo& f : files) {
                 if (!f.fileName().endsWith(QLatin1String(".d.luau"))) {
                     watched << f.absoluteFilePath();
-                    chosen[f.completeBaseName()] = {priority, f.absoluteFilePath()};
+                    candidates << f.absoluteFilePath();
                 }
             }
-            for (const auto& folder : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
+            // A symlinked package (a checkout linked in) loads like any other:
+            // its paths are checked against where the link points.
+            for (const auto& folder : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
                 watched << folder.absoluteFilePath();
                 const auto manifest = folder.absoluteFilePath() + QStringLiteral("/package.json");
-                if (QFileInfo::exists(manifest)) chosen[folder.fileName()] = {priority, manifest};
+                if (QFileInfo::exists(manifest)) candidates << manifest;
             }
-            ++priority;
         }
-        std::vector<std::pair<QString, std::pair<int, QString>>> ordered(chosen.begin(), chosen.end());
-        std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
-            return a.second.first < b.second.first;
-        });
-        for (const auto& [base, entry] : ordered) {
-            const auto& path = entry.second;
+        // Highest priority first, so a candidate whose id a winner already
+        // holds is known to lose without running its code again.
+        QHash<QString, QString> holders; // id -> path
+        for (auto it = candidates.crbegin(); it != candidates.crend(); ++it) {
+            const QString& path = *it;
             ScriptPackage package;
             const bool isPackage = QFileInfo(path).fileName() == QLatin1String("package.json");
             QByteArray source;
@@ -312,34 +371,72 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             if (isPackage) {
                 failure = ScriptPackage::read(path, package);
                 watched << package.watched;
-                if (failure.isEmpty() && package.id != base) failure = QStringLiteral("Package id must match its directory name");
+                if (failure.isEmpty() && package.id != QFileInfo(path).absoluteDir().dirName())
+                    failure = QStringLiteral("Package id must match its directory name");
                 source = package.source;
+                // Everything a running instance copied from the manifest: a
+                // change to any of it must replace the instance.
+                QVariantMap pulses;
+                for (auto p = package.pulses.cbegin(); p != package.pulses.cend(); ++p) pulses.insert(p.key(), p.value());
                 const QVariantMap identity{{QStringLiteral("id"), package.id}, {QStringLiteral("version"), package.version},
-                    {QStringLiteral("state_version"), package.stateVersion}, {QStringLiteral("assets"), package.assets}, {QStringLiteral("config"), package.config}};
+                    {QStringLiteral("state_version"), package.stateVersion}, {QStringLiteral("assets"), package.assets},
+                    {QStringLiteral("config"), package.config}, {QStringLiteral("shaders"), package.shaderDirectory},
+                    {QStringLiteral("packs"), package.shaderPacks}, {QStringLiteral("suggests"), package.suggests},
+                    {QStringLiteral("pulses"), pulses}};
                 source += "\n-- metadata: " + QCryptographicHash::hash(QJsonDocument::fromVariant(identity).toJson(), QCryptographicHash::Sha256).toHex();
             } else {
-                failure = readScriptFile(path, 1024 * 1024, source);
+                failure = readScriptFile(path, MaxScriptBytes, source);
+            }
+            // A package's load also reads its stored state.
+            QByteArray stamp = QCryptographicHash::hash(source, QCryptographicHash::Sha256);
+            if (isPackage) {
+                const QFileInfo state(QDir(m_stateDirectory).filePath(package.id + QStringLiteral(".json")));
+                stamp += QByteArray::number(state.exists() ? state.size() : -1) + ':'
+                    + QByteArray::number(state.lastModified().toMSecsSinceEpoch());
             }
             auto same = std::find_if(m_scripts.begin(), m_scripts.end(),
                                      [&](const ScriptPtr& s) { return s->path == path && s->source == source; });
+            const auto memo = m_memos.constFind(path);
+            const bool known = memo != m_memos.cend() && memo->stamp == stamp;
             ScriptPtr script;
-            if (failure.isEmpty()) script = same != m_scripts.end() ? *same : load(path, source, isPackage ? &package : nullptr);
-            else { m_loadErrors[path] = failure; qCWarning(lcScripts).noquote() << path << failure; }
+            if (!failure.isEmpty()) {
+                m_loadErrors[path] = failure;
+                qCWarning(lcScripts).noquote() << path << failure;
+            } else if (same != m_scripts.end()) {
+                script = *same;
+            } else if (known && !memo->error.isEmpty()) {
+                m_loadErrors[path] = memo->error; // unchanged and still broken
+                memos.insert(path, *memo);
+            } else if (known && holders.contains(memo->id)) {
+                m_superseded.insert(path, holders.value(memo->id)); // unchanged and still superseded
+                memos.insert(path, *memo);
+                continue;
+            } else {
+                script = load(path, source, isPackage ? &package : nullptr);
+                if (!script) memos.insert(path, {stamp, {}, m_loadErrors.value(path)});
+            }
             if (!script) {
+                if (isPackage && m_stateFailures.contains(path)) {
+                    // Fixing or removing the state file retries the package.
+                    watched << m_stateDirectory << QDir(m_stateDirectory).filePath(package.id + QStringLiteral(".json"));
+                }
                 // A broken edit keeps its last working instance and resources.
                 const auto old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) { return s->path == path; });
                 if (old == m_scripts.end()) continue;
                 script = *old;
             }
-            auto clash = std::find_if(loaded.begin(), loaded.end(), [&](const ScriptPtr& s) { return s->id == script->id; });
-            if (clash != loaded.end()) {
-                qCWarning(lcScripts) << path << "uses the id" << script->id << "of" << (*clash)->path << "and replaces it";
-                *clash = script;
-            } else {
-                loaded.push_back(script);
+            if (const auto holder = holders.constFind(script->id); holder != holders.cend()) {
+                qCWarning(lcScripts) << path << "uses the id" << script->id << "of" << *holder << "and is not loaded";
+                m_superseded.insert(path, *holder);
+                memos.insert(path, {stamp, script->id, {}});
+                continue;
             }
+            holders.insert(script->id, path);
+            loaded.push_back(script);
         }
+        std::reverse(loaded.begin(), loaded.end());
     }
+    m_memos = std::move(memos);
     // Commit migrations only for the selected replacement, after compilation and
     // initialization succeeded. A conflict retains the old live instance.
     for (auto it = loaded.begin(); it != loaded.end();) {
@@ -351,25 +448,52 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             if (!error.isEmpty()) {
                 m_loadErrors[script->path] = error;
                 qCWarning(lcScripts).noquote() << script->id << "migration not committed:" << error;
-                const auto old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) { return s->path == script->path; });
+                // The live instance keeps running: the one at this path, or
+                // the one with this id that a higher-priority path replaced.
+                auto old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) { return s->path == script->path; });
+                if (old == m_scripts.end()) {
+                    old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) {
+                        return s->id == script->id && std::find(loaded.begin(), loaded.end(), s) == loaded.end();
+                    });
+                }
                 if (old == m_scripts.end()) { it = loaded.erase(it); continue; }
                 script = *old;
             } else { script->storage = committed; script->migrateState = false; }
         }
         ++it;
     }
-    QList<ScriptAction> before = actions();
+    const QList<ScriptAction> before = actions();
     const auto previous = m_scripts;
     for (const auto& script : previous) {
         if (std::find(loaded.begin(), loaded.end(), script) == loaded.end()) retire(script);
     }
     m_scripts = std::move(loaded);
-    for (const auto& script : m_scripts) {
+    // A package's packs exist before its on_load effects run, which may use them.
+    publishPackageShaders();
+    // Iterates a copy: an on_load effect can rescan, or turn scripting off.
+    const auto current = m_scripts;
+    for (const auto& script : current) {
         if (std::find(previous.begin(), previous.end(), script) == previous.end()) {
-            if (script->package) { script->callTimeoutMs = ActionTimeoutMs; applyResult(script, script->initialEffects, 0); }
-            else emitOwned(script, QStringLiteral("on_load"), {}, 0);
+            if (script->package) {
+                script->callTimeoutMs = ActionTimeoutMs;
+                const QVariant effects = std::exchange(script->initialEffects, QVariant());
+                applyResult(script, effects, 0);
+            } else {
+                emitOwned(script, QStringLiteral("on_load"), {}, 0);
+            }
         }
     }
+    announceActions(before);
+    for (const ScriptPtr& s : m_scripts) {
+        watched << s->path; // editors that save in place change only the file
+    }
+    publishPackageShaders(); // an on_load can have failed and disabled its package
+    watched.removeDuplicates();
+    return watched;
+}
+
+void ScriptHost::announceActions(const QList<ScriptAction>& before)
+{
     const QList<ScriptAction> after = actions();
     const bool changed = before.size() != after.size()
         || !std::equal(before.cbegin(), before.cend(), after.cbegin(),
@@ -377,9 +501,10 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     if (changed) {
         Q_EMIT actionsChanged();
     }
-    for (const ScriptPtr& s : m_scripts) {
-        watched << s->path; // editors that save in place change only the file
-    }
+}
+
+void ScriptHost::publishPackageShaders()
+{
     QMap<QString, QString> shaders;
     for (const ScriptPtr& s : m_scripts) {
         if (!s->shaderDirectory.isEmpty() && !s->disabled) shaders.insert(s->id, s->shaderDirectory);
@@ -388,8 +513,15 @@ QStringList ScriptHost::performScan(const QStringList& directories)
         m_packageShaders = shaders;
         Q_EMIT packageShadersChanged(m_packageShaders);
     }
-    watched.removeDuplicates();
-    return watched;
+}
+
+void ScriptHost::disable(const ScriptPtr& script)
+{
+    const QList<ScriptAction> before = actions();
+    script->disabled = true;
+    retire(script);
+    announceActions(before);
+    publishPackageShaders();
 }
 
 ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& source, const ScriptPackage* package) const
@@ -410,6 +542,7 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     // the first line, so error positions keep their line numbers.
     script->module = script->engine->loadModule(chunk, "return afterglow.__wrap((function(...) " + source + "\nend)(...))", &error);
     if (script->module < 0) {
+        if (package) error = ScriptPackage::locate(package->modules, error);
         m_loadErrors[path] = error;
         qCWarning(lcScripts).noquote() << path << "did not load:" << error;
         return nullptr;
@@ -424,7 +557,7 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     if (script->id.isEmpty()) {
         script->id = QFileInfo(path).completeBaseName();
     }
-    if (!validId(script->id)) {
+    if (!validScriptId(script->id)) {
         m_loadErrors[path] = QStringLiteral("Invalid script id");
         qCWarning(lcScripts) << path << "has an unusable id" << script->id << "(letters, digits, _ and - only)";
         return nullptr;
@@ -436,22 +569,30 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         script->name = script->id;
     }
     const bool runs = script->engine->hasFunction(script->module, QStringLiteral("run_action"));
+    QSet<QString> actionIds;
     for (const QVariant& v : meta.value(QStringLiteral("actions")).toList()) {
         const QVariantMap a = v.toMap();
         const QString id = str(a, "id");
-        if (!validId(id)) {
-            qCWarning(lcScripts) << path << "has an action with an unusable id" << id;
+        const QString title = str(a, "title");
+        // The same rules as set_actions.
+        if (!validScriptId(id) || actionIds.contains(id) || title.size() > 512) {
+            qCWarning(lcScripts) << path << "has an action with an unusable or repeated id, or a long title:" << id;
             continue;
         }
         if (!runs) {
             qCWarning(lcScripts) << path << "lists actions but has no run_action function";
             break;
         }
-        const QString title = str(a, "title");
+        if (script->actions.size() >= MaxActions) {
+            qCWarning(lcScripts) << path << "lists more than" << MaxActions << "actions";
+            break;
+        }
+        actionIds.insert(id);
         script->actions.append({script->id + QLatin1Char('.') + id, title.isEmpty() ? id : title});
     }
     if (package) {
         script->package = true;
+        script->modules = package->modules;
         script->shaderDirectory = package->shaderDirectory;
         script->suggests = package->suggests;
         script->pulses = package->pulses;
@@ -460,13 +601,16 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
             {QStringLiteral("api_version"), 1}, {QStringLiteral("assets"), package->assets}, {QStringLiteral("home"), QDir::homePath()}, {QStringLiteral("config"), package->config}};
         error = ScriptState(m_stateDirectory).read(script->id, script->storage);
         if (error.isEmpty() && script->storage.version > script->stateVersion) error = QStringLiteral("Stored state is newer than this package");
+        if (!error.isEmpty()) m_stateFailures.insert(path);
         if (error.isEmpty() && script->storage.version > 0 && script->storage.version < script->stateVersion) {
             if (!script->engine->hasFunction(script->module, QStringLiteral("migrate"))) error = QStringLiteral("State migration function is missing");
             else {
                 const auto migrated = script->invoke(QStringLiteral("migrate"),
                     {script->storage.value, script->storage.version, script->stateVersion}, ActionTimeoutMs);
-                if (migrated.status != LuauEngine::CallStatus::Ok || migrated.result.typeId() != QMetaType::QVariantMap)
-                    error = QStringLiteral("Migration failed: ") + migrated.message;
+                if (migrated.status != LuauEngine::CallStatus::Ok)
+                    error = QStringLiteral("Migration failed: ") + ScriptPackage::locate(package->modules, migrated.message);
+                else if (migrated.result.typeId() != QMetaType::QVariantMap)
+                    error = QStringLiteral("Migration must return an object table");
                 else {
                     script->storage.value = migrated.result.toMap();
                     error = ScriptState::validate(script->storage.value);
@@ -479,7 +623,8 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
                 {QStringLiteral("revision"), script->storage.revision + (script->migrateState ? 1 : 0)}};
             const auto initialized = script->invoke(QStringLiteral("on_load"),
                 {QVariantMap{{QStringLiteral("terminal"), state()}, {QStringLiteral("package"), script->packageInfo}, {QStringLiteral("storage"), storage}}}, ActionTimeoutMs);
-            if (initialized.status != LuauEngine::CallStatus::Ok) error = QStringLiteral("Initialization failed: ") + initialized.message;
+            if (initialized.status != LuauEngine::CallStatus::Ok)
+                error = QStringLiteral("Initialization failed: ") + ScriptPackage::locate(package->modules, initialized.message);
             else script->initialEffects = initialized.result;
         }
         if (!error.isEmpty()) { m_loadErrors[path] = error; qCWarning(lcScripts).noquote() << path << error; return nullptr; }
@@ -516,7 +661,7 @@ QVariantList ScriptHost::diagnostics() const
     QSet<QString> active;
     for (const auto& script : m_scripts) {
         active.insert(script->path);
-        result << QVariantMap{{QStringLiteral("id"), script->id}, {QStringLiteral("path"), script->path},
+        result << QVariantMap{{QStringLiteral("id"), script->id}, {QStringLiteral("name"), script->name}, {QStringLiteral("path"), script->path},
             {QStringLiteral("version"), script->packageInfo.value(QStringLiteral("version"))},
             {QStringLiteral("status"), script->disabled ? QStringLiteral("disabled") : m_loadErrors.contains(script->path) ? QStringLiteral("last-good") : QStringLiteral("active")},
             {QStringLiteral("error"), m_loadErrors.value(script->path)},
@@ -532,6 +677,9 @@ QVariantList ScriptHost::diagnostics() const
     }
     for (auto it = m_loadErrors.begin(); it != m_loadErrors.end(); ++it) if (!active.contains(it.key()))
         result << QVariantMap{{QStringLiteral("path"), it.key()}, {QStringLiteral("status"), QStringLiteral("failed")}, {QStringLiteral("error"), it.value()}};
+    for (auto it = m_superseded.begin(); it != m_superseded.end(); ++it)
+        result << QVariantMap{{QStringLiteral("path"), it.key()}, {QStringLiteral("status"), QStringLiteral("superseded")},
+                              {QStringLiteral("error"), QStringLiteral("Its id belongs to %1").arg(it.value())}};
     return result;
 }
 
@@ -566,7 +714,7 @@ bool ScriptHost::runAction(const QString& token, quint32 pane)
     // Copied: a reload during the call must not free the script under it.
     const std::vector<ScriptPtr> scripts = m_scripts;
     for (const ScriptPtr& s : scripts) {
-        if (s->id != id || s->disabled) {
+        if (s->id != id || s->disabled || s->retiring) {
             continue;
         }
         auto it = std::find_if(s->actions.cbegin(), s->actions.cend(), [&](const ScriptAction& a) { return a.token == token; });
@@ -575,7 +723,7 @@ bool ScriptHost::runAction(const QString& token, quint32 pane)
         }
         QVariantMap ev{{QStringLiteral("terminal"), state()}};
         if (pane) {
-            ev.insert(QStringLiteral("pane"), m_callbacks.paneInfo ? m_callbacks.paneInfo(pane) : QVariantMap{});
+            ev.insert(QStringLiteral("pane"), eventPane(pane));
         }
         call(s, QStringLiteral("run_action"), {token.mid(dot + 1), ev}, ActionTimeoutMs, pane);
         return true;
@@ -587,7 +735,9 @@ void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint3
 {
     for (const ScriptPtr& script : m_scripts) {
         if (script->owner == owner) {
-            emitOwned(script, handler, std::move(event), pane);
+            // A copy: a reload during the call must not free the script under it.
+            const ScriptPtr target = script;
+            emitOwned(target, handler, std::move(event), pane);
             return;
         }
     }
@@ -595,29 +745,52 @@ void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint3
 
 void ScriptHost::dispatch(const QString& handler, quint32 pane, QVariantMap event)
 {
-    if (m_scripts.empty()) {
+    // Copied: a reload during a call must not free the script under it. The
+    // snapshot is built only when some script handles the event, because
+    // terminal output can raise events (titles) faster than anyone reads them.
+    std::vector<ScriptPtr> targets;
+    for (const ScriptPtr& s : m_scripts) {
+        if (!s->disabled && !s->retiring && s->engine->hasFunction(s->module, handler)) targets.push_back(s);
+    }
+    if (targets.empty()) {
         return;
     }
     event.insert(QStringLiteral("terminal"), state());
-    if (!event.contains(QStringLiteral("pane"))) {
-        QVariantMap info = m_callbacks.paneInfo ? m_callbacks.paneInfo(pane) : QVariantMap{};
-        if (info.isEmpty()) {
-            info.insert(QStringLiteral("id"), pane); // closed already
-        }
-        event.insert(QStringLiteral("pane"), info);
+    if (pane && !event.contains(QStringLiteral("pane"))) {
+        event.insert(QStringLiteral("pane"), eventPane(pane));
     }
-    const std::vector<ScriptPtr> scripts = m_scripts;
-    for (const ScriptPtr& s : scripts) {
-        if (!s->disabled && s->engine->hasFunction(s->module, handler)) {
-            call(s, handler, {event}, EventTimeoutMs, pane);
-        }
+    for (const ScriptPtr& s : targets) {
+        // An earlier call can disable or replace a later script.
+        if (s->disabled || s->retiring || !admitCallback(*s)) continue;
+        call(s, handler, {event}, EventTimeoutMs, pane);
     }
+}
+
+QVariantMap ScriptHost::eventPane(quint32 pane) const
+{
+    QVariantMap info = m_callbacks.paneInfo ? m_callbacks.paneInfo(pane) : QVariantMap{};
+    if (info.isEmpty()) {
+        info.insert(QStringLiteral("id"), pane); // closed already
+    }
+    return info;
+}
+
+bool ScriptHost::admitCallback(Script& script)
+{
+    const qint64 now = m_clock.elapsed();
+    while (!script.callbacks.empty() && now - script.callbacks.front() >= 1000) script.callbacks.pop_front();
+    if (int(script.callbacks.size()) >= MaxCallbacksPerSecond) {
+        ++script.droppedCallbacks;
+        return false;
+    }
+    script.callbacks.push_back(now);
+    return true;
 }
 
 QVariantMap ScriptHost::state() const
 {
     QVariantMap snapshot = m_callbacks.state ? m_callbacks.state() : QVariantMap{};
-    snapshot.insert(QStringLiteral("version"), StateVersion);
+    snapshot.insert(QStringLiteral("version"), SnapshotVersion);
     for (const char* key : {"windows", "tabs", "panes"}) {
         if (!snapshot.contains(QLatin1String(key))) {
             snapshot.insert(QLatin1String(key), QVariantList{});
@@ -645,12 +818,11 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 {
     if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()
         || !script->engine->hasFunction(script->module, handler)) return;
-    const qint64 now = m_clock.elapsed();
-    while (!script->callbacks.empty() && now - script->callbacks.front() >= 1000) script->callbacks.pop_front();
-    if (script->callbacks.size() >= 64) { ++script->droppedCallbacks; return; }
-    script->callbacks.push_back(now);
+    // Keys come from the user, at the keyboard's rate. Dropping one would
+    // leave a key mode on while its keys vanish.
+    if (handler != QLatin1String("on_key") && !admitCallback(*script)) return;
     event.insert(QStringLiteral("terminal"), state());
-    if (pane && m_callbacks.paneInfo) event.insert(QStringLiteral("pane"), m_callbacks.paneInfo(pane));
+    if (pane) event.insert(QStringLiteral("pane"), eventPane(pane));
     call(script, handler, {event}, EventTimeoutMs, pane);
 }
 
@@ -662,20 +834,16 @@ void ScriptHost::call(const ScriptPtr& script, const QString& function, const QV
     if (out.status != LuauEngine::CallStatus::Ok) {
         const QString why = out.status == LuauEngine::CallStatus::TimedOut
             ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
-            : out.message;
+            : ScriptPackage::locate(script->modules, out.message);
         ++script->handlerErrors;
         if (m_callbacks.failed) m_callbacks.failed(script->owner);
         const QString name = function == QLatin1String("__resume") ? QStringLiteral("a handler after await") : function;
         script->lastError = name + QStringLiteral(": ") + why;
         qCWarning(lcScripts).noquote() << script->id << name << "failed:" << why;
         if (++script->failures >= MaxFailures) {
-            script->disabled = true;
-            retire(script);
             qCWarning(lcScripts).noquote() << script->id << "is disabled after" << MaxFailures
                                            << "failures in a row, until its file changes";
-            if (!script->actions.isEmpty()) {
-                Q_EMIT actionsChanged();
-            }
+            disable(script);
         }
         return;
     }
@@ -711,11 +879,14 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, qu
             if (script->disabled || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
                 break;
             }
+            if (!v.isValid()) {
+                continue; // a nil in the list, as in {cond and effect or nil, other}
+            }
             applyEffect(script, v.toMap(), eventPane);
         }
         return;
     }
-    const QString error = QStringLiteral("a handler returned a %1, not effects").arg(QString::fromLatin1(result.typeName()));
+    const QString error = QStringLiteral("a handler returned a %1, not effects").arg(luauType(result));
     qCWarning(lcScripts).noquote() << script->id << error;
     ++script->effectErrors;
     script->lastError = error;
@@ -729,6 +900,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     for (const EffectKind& k : Kinds) {
         if (kind == QLatin1String(k.kind)) {
             info = &k;
+            break;
         }
     }
     // Rebuilt from the known fields only, with their types settled.
@@ -759,6 +931,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         for (const char* key : info->strings) {
             effect.insert(QLatin1String(key), str(raw, key));
         }
+        if (str(effect, "cwd").contains(QChar::Null)) error = QStringLiteral("cwd must be a string without NUL");
         if (info->command) {
             effect.insert(QStringLiteral("command"), command(raw.value(QStringLiteral("command"))));
         }
@@ -815,6 +988,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             if (const int number = script->pulses.value(str(effect, "effect")); number > 0)
                 effect.insert(QStringLiteral("effect"), QString::number(number));
         }
+        if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
+            if (!integer(raw.value(QStringLiteral("max_bytes"), 65536), 1, 1024 * 1024))
+                error = QStringLiteral("max_bytes must be a whole number from 1 to 1048576");
+        }
         if (kind == QLatin1String("shader_parameters") || kind == QLatin1String("shader_preset")) {
             const auto values = raw.value(QStringLiteral("values"));
             const auto scope = effect.value(QStringLiteral("scope")).toString();
@@ -828,7 +1005,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             if (transition.isValid() && transition.typeId() != QMetaType::QVariantMap)
                 error = QStringLiteral("Transition must be an object table");
             effect.insert(QStringLiteral("transition"), transition.toMap());
-            effect.insert(QStringLiteral("values"), values);
+            if (kind == QLatin1String("shader_parameters")) effect.insert(QStringLiteral("values"), values);
         }
         if (kind == QLatin1String("state_write")) {
             const auto value = raw.value(QStringLiteral("value"));
@@ -847,22 +1024,31 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         }
         if (kind == QLatin1String("move_pane")) {
             const double target = effect.value(QStringLiteral("target"), 0).toDouble();
+            const QString placement = str(effect, "placement");
+            const bool beside = placement == QLatin1String("left") || placement == QLatin1String("right")
+                || placement == QLatin1String("up") || placement == QLatin1String("down");
+            const bool away = placement == QLatin1String("new-tab") || placement == QLatin1String("new-window");
             if (!std::isfinite(target) || target < 0 || target > std::numeric_limits<quint32>::max() || target != std::floor(target))
                 error = QStringLiteral("target must be a pane ID or zero");
+            else if (!beside && !away)
+                error = QStringLiteral("placement must be left, right, up, down, new-tab or new-window");
+            else if (beside == (target == 0))
+                error = QStringLiteral("left, right, up and down need a target pane. new-tab and new-window take none");
         }
         if (kind == QLatin1String("set_actions") || kind == QLatin1String("select")) {
             const auto key = kind == QLatin1String("select") ? QStringLiteral("items") : QStringLiteral("actions");
             const auto entries = raw.value(key).toList();
-            const int limit = kind == QLatin1String("select") ? 500 : 32;
+            const int limit = kind == QLatin1String("select") ? 500 : MaxActions;
             QVariantList checked;
             QSet<QString> ids;
             if (kind == QLatin1String("set_actions") && !script->engine->hasFunction(script->module, QStringLiteral("run_action"))) error = QStringLiteral("set_actions requires run_action");
             if (entries.size() > limit) error = QStringLiteral("Too many entries");
+            if (kind == QLatin1String("select") && entries.isEmpty()) error = QStringLiteral("A selector needs at least one item");
             for (const auto& item : entries) {
                 const auto map = item.toMap();
                 const auto id = str(map, "id"), title = str(map, "title");
                 if (id.isEmpty() || id.size() > 64 || title.size() > 512 || ids.contains(id)
-                    || (kind == QLatin1String("set_actions") && !validId(id))) { error = QStringLiteral("Invalid or duplicate entry"); break; }
+                    || (kind == QLatin1String("set_actions") && !validScriptId(id))) { error = QStringLiteral("Invalid or duplicate entry"); break; }
                 ids.insert(id); checked << QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("title"), title.isEmpty() ? id : title}};
             }
             effect.insert(key, checked);
@@ -928,22 +1114,21 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("Key mode label exceeds 160 characters");
         } else if (kind == QLatin1String("overview") && !QStringList{QStringLiteral("open"), QStringLiteral("close"), QStringLiteral("choose")}.contains(str(effect, "operation"))) {
             error = QStringLiteral("overview operation must be open, close or choose");
-        } else if (kind == QLatin1String("overview_move") && !(std::abs(effect.value(QStringLiteral("step")).toDouble()) <= 32
-                                                              && effect.value(QStringLiteral("target")).toDouble() >= 0)) {
-            error = QStringLiteral("overview_move needs a pane or a step of at most 32 cards");
+        } else if (kind == QLatin1String("overview_move") && !(integer(effect.value(QStringLiteral("step"), 0), -32, 32)
+                                                              && integer(effect.value(QStringLiteral("target"), 0), 0, std::numeric_limits<quint32>::max()))) {
+            error = QStringLiteral("overview_move needs a pane or a whole step of at most 32 cards");
         } else if (kind == QLatin1String("pulse") && pulseEffect(str(effect, "effect")) == 0) {
             error = QStringLiteral("pulse effect must be portal, flash, shake or a number from 1 to 255");
         } else if (kind == QLatin1String("pulse") && !(effect.value(QStringLiteral("duration_ms")).toDouble() >= 50
                                                       && effect.value(QStringLiteral("duration_ms")).toDouble() <= 10000
-                                                      && effect.value(QStringLiteral("color")).toDouble() >= 0
-                                                      && effect.value(QStringLiteral("color")).toDouble() <= 255)) {
+                                                      && integer(effect.value(QStringLiteral("color")), 0, 255))) {
             error = QStringLiteral("pulse needs 50 to 10000 ms and a palette colour from 0 to 255");
-        } else if (kind == QLatin1String("sleep") && !validRequest) {
+        } else if (kind == QLatin1String("sleep") && !request.startsWith(AwaitPrefix)) {
             error = QStringLiteral("sleep must be awaited: use afterglow.sleep");
         } else if (kind == QLatin1String("sleep") && !(effect.value(QStringLiteral("delay_ms")).toDouble() >= 0
                                                       && effect.value(QStringLiteral("delay_ms")).toDouble() <= MaxSleepMs)) {
             error = QStringLiteral("sleep needs 0 to %1 ms").arg(MaxSleepMs);
-        } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(QLatin1String("script:"))) {
+        } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
             error = QStringLiteral("scripts cannot run script actions");
         } else if (kind == QLatin1String("signal")
                    && !validSignal(effect.value(QStringLiteral("channel")), effect.value(QStringLiteral("value")))) {
@@ -951,7 +1136,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (info->pane && (!m_callbacks.paneInfo || m_callbacks.paneInfo(effect.value(QStringLiteral("pane")).toUInt()).isEmpty())) {
             result.code = QStringLiteral("no_pane");
             error = QStringLiteral("no pane %1").arg(effect.value(QStringLiteral("pane")).toUInt());
-        } else if (!withinBudget(*script, structural)) {
+        } else if (!budgetFree(kind) && !withinBudget(*script, structural)) {
             ++script->droppedEffects;
             result.code = QStringLiteral("rate_limited");
             error = QStringLiteral("Too many effects. %1 dropped").arg(kind);
@@ -980,33 +1165,30 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                     });
             }
         } else if (kind == QLatin1String("log")) {
-            qCInfo(lcScripts).noquote() << script->id + QLatin1Char(':') << effect.value(QStringLiteral("message")).toString();
+            qCInfo(lcScripts).noquote() << script->id + QLatin1Char(':')
+                                        << loggable(effect.value(QStringLiteral("message")).toString(), MaxLogCharacters);
         } else if (kind == QLatin1String("set_actions")) {
-            script->actions.clear();
+            QList<ScriptAction> actions;
             for (const auto& value : effect.value(QStringLiteral("actions")).toList()) {
                 const auto item = value.toMap();
-                script->actions.append({script->id + QLatin1Char('.') + str(item, "id"), str(item, "title")});
+                actions.append({script->id + QLatin1Char('.') + str(item, "id"), str(item, "title")});
             }
-            Q_EMIT actionsChanged();
+            const QList<ScriptAction> before = this->actions();
+            script->actions = actions;
+            announceActions(before);
         } else if (kind == QLatin1String("timer") || kind == QLatin1String("cancel") || kind == QLatin1String("exec")
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
-            result = m_tasks->apply(script->owner, effect,
-                [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs](EffectResult finished) {
-                    if (auto script = weak.lock()) {
-                        if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
-                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane, timeout);
-                    }
-                }, [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event) {
+            result = m_tasks->apply(script->owner, effect, completion(script, request, kind, eventPane),
+                [this, weak = std::weak_ptr<Script>(script), eventPane](const QString& handler, QVariantMap event) {
                     if (auto script = weak.lock()) emitOwned(script, handler, std::move(event), eventPane);
                 });
         } else if (m_callbacks.applyOwned || m_callbacks.apply) {
-            result = m_callbacks.applyOwned ? m_callbacks.applyOwned(script->owner, effect,
-                [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs](EffectResult finished) {
-                    if (auto script = weak.lock()) {
-                        if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
-                        if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane, timeout);
-                    }
-                }) : m_callbacks.apply(effect);
+            if (kind == QLatin1String("pulse")) {
+                // Named or numbered, the window takes the effect's number.
+                effect.insert(QStringLiteral("effect"), QString::number(pulseEffect(str(effect, "effect"))));
+            }
+            result = m_callbacks.applyOwned ? m_callbacks.applyOwned(script->owner, effect, completion(script, request, kind, eventPane))
+                                            : m_callbacks.apply(effect);
             if (!result.error.isEmpty() && result.code.isEmpty()) {
                 result.code = QStringLiteral("operation_failed");
             }
@@ -1026,12 +1208,23 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     }
 }
 
+std::function<void(ScriptHost::EffectResult)> ScriptHost::completion(const ScriptPtr& script, const QString& request,
+                                                                     const QString& kind, quint32 eventPane)
+{
+    return [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs](EffectResult finished) {
+        if (auto script = weak.lock()) {
+            if (!finished.error.isEmpty()) { ++script->effectErrors; script->lastError = finished.error; }
+            if (!request.isEmpty()) queueResult(script, request, kind, finished, eventPane, timeout);
+        }
+    };
+}
+
 void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
                              const EffectResult& result, quint32 eventPane, int timeoutMs)
 {
     // An awaited result resumes its handler, under that handler's time limit.
     const QString handler = request.startsWith(AwaitPrefix) ? QStringLiteral("__resume") : QStringLiteral("on_result");
-    if (script->disabled || !script->engine->hasFunction(script->module, handler)) {
+    if (script->disabled || script->retiring || !script->engine->hasFunction(script->module, handler)) {
         return;
     }
     const qint64 now = m_clock.elapsed();
@@ -1043,10 +1236,8 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
         script->lastError = QStringLiteral("Too many operation results");
         // Include refusals in this budget: a handler that retries a rejected
         // request from on_result must not create an endless queued feedback loop.
-        script->disabled = true;
-        retire(script);
         qCWarning(lcScripts) << script->id << "disabled: too many operation results";
-        Q_EMIT actionsChanged();
+        disable(script);
         return;
     }
     script->results.push_back(now);
@@ -1069,12 +1260,8 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
             return;
         }
         event.insert(QStringLiteral("terminal"), state());
-        QVariantMap pane = m_callbacks.paneInfo ? m_callbacks.paneInfo(eventPane) : QVariantMap{};
         if (eventPane) {
-            if (pane.isEmpty()) {
-                pane.insert(QStringLiteral("id"), eventPane);
-            }
-            event.insert(QStringLiteral("pane"), pane);
+            event.insert(QStringLiteral("pane"), this->eventPane(eventPane));
         }
         call(script, handler, {event}, handler == QLatin1String("on_result") ? EventTimeoutMs : timeoutMs, eventPane);
     });

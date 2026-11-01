@@ -13,6 +13,8 @@ float noise3(vec3 p) {
                mix(mix(hash31(q+vec3(0,0,1)),hash31(q+vec3(1,0,1)),f.x),
                    mix(hash31(q+vec3(0,1,1)),hash31(q+vec3(1,1,1)),f.x),f.y),f.z);
 }
+// The scene clock: the full clock, so nothing jumps when iTime wraps.
+float sceneTime() { return timeSeconds()*p_speed; }
 float history() { return 1.0-exp(-max(uScrollback.z,0.0)/4000.0); }
 float drive() { return p_audio*smoothstep(0.01,0.8,getBass()); }
 float rupture() {

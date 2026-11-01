@@ -18,7 +18,7 @@ QStringList Control::projectNames() const { return projects().names(); }
 QString Control::saveProject(quint32 id, const QString& name, bool overwrite, QVariantMap& result)
 {
     TerminalWindow* window = nullptr;
-    if (!find(id, &window)) return QStringLiteral("Pane closed");
+    if (!find(id, &window)) return QStringLiteral("no pane %1").arg(id);
     const auto error = projects().save(name, window->projectLayout(), overwrite);
     if (!error.isEmpty()) return error;
     window->setProjectName(name);
@@ -27,7 +27,7 @@ QString Control::saveProject(quint32 id, const QString& name, bool overwrite, QV
 }
 QString Control::openProject(const QString& name, bool newInstance, QVariantMap& result)
 {
-    if (!ProjectStore::validName(name)) return QStringLiteral("Invalid project name");
+    if (!ProjectStore::validName(name)) return QStringLiteral("invalid project name");
     if (!newInstance) for (const auto& window : m_windows) {
         if (!window || window->projectName() != name || !window->focusedPane()) continue;
         focus(window->focusedPane()->id());
@@ -37,9 +37,15 @@ QString Control::openProject(const QString& name, bool newInstance, QVariantMap&
     QJsonObject document;
     if (const auto error = projects().read(name, document); !error.isEmpty()) return error;
     auto* window = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
-    if (!window) return QStringLiteral("Cannot create project window");
+    if (!window) return QStringLiteral("cannot open a window");
     window->setProjectName(name);
     result = window->restoreProject(document);
+    // A window that restored nothing stays hidden and keeps afterglow running.
+    if (const QString error = result.value(QStringLiteral("error")).toString(); !error.isEmpty()) {
+        window->deleteLater();
+        result.clear();
+        return error;
+    }
     result.insert(QStringLiteral("name"), name);
     const auto warnings = result.value(QStringLiteral("warnings")).toStringList();
     if (!warnings.isEmpty() && window->focusedPane())
@@ -52,10 +58,10 @@ QString Control::openDirectory(const QString& requested, const QString& layout, 
     QString path = requested;
     if (path == QLatin1String("~") || path.startsWith(QLatin1String("~/"))) path = QDir::homePath() + path.mid(1);
     if (!QDir::isAbsolutePath(path) || path.contains(QChar::Null) || path.size() > 4096)
-        return QStringLiteral("Project directory must be absolute or start with ~/");
+        return QStringLiteral("project directory must be absolute or start with ~/");
     path = QFileInfo(path).canonicalFilePath();
     if (path.isEmpty() || !QFileInfo(path).isDir() || ::access(QFile::encodeName(path).constData(), X_OK) != 0)
-        return QStringLiteral("Project directory is unavailable");
+        return QStringLiteral("project directory is unavailable");
     for (const auto& window : m_windows) {
         if (!window || window->projectDirectory() != path || !window->focusedPane()) continue;
         focus(window->focusedPane()->id());
@@ -81,10 +87,15 @@ QString Control::openDirectory(const QString& requested, const QString& layout, 
         document.insert(QStringLiteral("tabs"), tabs);
     }
     auto* window = m_newWindow ? m_newWindow(path, {}, !layout.isEmpty()) : nullptr;
-    if (!window) return QStringLiteral("Cannot create project window");
+    if (!window) return QStringLiteral("cannot open a window");
     window->setProjectDirectory(path);
     if (layout.isEmpty()) result = {{QStringLiteral("window_id"), window->id()}, {QStringLiteral("reused"), false}};
     else result = window->restoreProject(document);
+    if (const QString error = result.value(QStringLiteral("error")).toString(); !error.isEmpty()) {
+        window->deleteLater();
+        result.clear();
+        return error;
+    }
     result.insert(QStringLiteral("cwd"), path);
     if (window->focusedPane()) {
         result.insert(QStringLiteral("pane_id"), window->focusedPane()->id());
@@ -111,7 +122,7 @@ void Control::projectDialog(Pane* pane, bool save)
         report(window->showScriptDialog(owner, pane, model, [this, guard, report, owner](QString error, QVariantMap data) {
             if (!guard || !error.isEmpty()) return;
             const auto name = data.value(QStringLiteral("text")).toString();
-            if (!ProjectStore::validName(name)) { report(QStringLiteral("Invalid name: use 1–64 letters, digits, underscores or hyphens")); return; }
+            if (!ProjectStore::validName(name)) { report(QStringLiteral("Use 1–64 letters, digits, underscores or hyphens for the project name")); return; }
             const auto write = [this, guard, name, report](bool overwrite) {
                 if (!guard) return;
                 QVariantMap result;

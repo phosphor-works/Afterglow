@@ -6,6 +6,8 @@
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -20,8 +22,7 @@ struct SearchMatch
 };
 
 /// Finds every occurrence of @p needle in the screen's history and active
-/// area, oldest first. Matches span soft-wrapped rows. Smart case: the search
-/// ignores case unless @p needle contains an upper-case letter.
+/// area, oldest first: searchText() over the whole screen, with smart case.
 AFTERGLOWVT_EXPORT std::vector<SearchMatch> findAll(const Screen& screen, std::u32string_view needle,
                                                     std::size_t limit = 100000);
 

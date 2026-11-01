@@ -5,7 +5,10 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Asks before a program reads the clipboard (OSC 5522).
+// Asks before a program reads the clipboard (OSC 52 or OSC 5522). A program
+// can open this prompt while the user types, so nothing here allows on a key
+// typed for the shell: Deny holds the focus, Return answers only the button
+// that has it, and "a" counts only when pressed on its own.
 Item {
     id: prompt
 
@@ -14,7 +17,11 @@ Item {
 
     function syncVisibility() {
         if (visible)
-            Qt.callLater(() => { if (prompt.visible) panel.forceActiveFocus() })
+            Qt.callLater(() => { if (prompt.visible) takeFocus() })
+    }
+
+    function takeFocus() {
+        deny.forceActiveFocus()
     }
 
     onVisibleChanged: syncVisibility()
@@ -22,7 +29,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: "#59000000"
+        color: prompt.controller.scrimColor
         MouseArea {
             anchors.fill: parent
             onClicked: prompt.controller.answerClipboard(0)
@@ -55,35 +62,40 @@ Item {
                 spacing: 8
                 Button {
                     text: qsTr("Allow once")
-                    highlighted: true
                     onClicked: prompt.controller.answerClipboard(1)
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
                 }
+                // The text above already names the program. A plain label keeps
+                // a name from the terminal out of the mnemonic and rich text steps.
                 Button {
                     visible: prompt.canRemember
-                    width: Math.min(implicitWidth, parent.width)
-                    readonly property string literalTitle: qsTr("Always allow %1").arg(prompt.controller.clipboardPromptName)
-                    text: "<span>" + literalTitle.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>"
-                    Accessible.name: literalTitle
+                    text: qsTr("Always allow")
                     onClicked: prompt.controller.answerClipboard(2)
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
                 }
                 Button {
+                    id: deny
                     text: qsTr("Deny")
+                    highlighted: true
                     onClicked: prompt.controller.answerClipboard(0)
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
                 }
             }
             Label {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: prompt.canRemember ? qsTr("Enter to allow once, A to always allow, Escape to deny")
-                                         : qsTr("Enter to allow once, Escape to deny")
+                text: prompt.canRemember ? qsTr("Tab chooses a button and Enter presses it. A always allows. Escape denies.")
+                                         : qsTr("Tab chooses a button and Enter presses it. Escape denies.")
             }
         }
 
-        Keys.onReturnPressed: prompt.controller.answerClipboard(1)
-        Keys.onEnterPressed: prompt.controller.answerClipboard(1)
         Keys.onEscapePressed: prompt.controller.answerClipboard(0)
         Keys.onPressed: event => {
-            if (event.key === Qt.Key_A && prompt.canRemember) {
+            if (event.key === Qt.Key_A && prompt.canRemember && !event.isAutoRepeat
+                && (event.modifiers & ~Qt.KeypadModifier) === Qt.NoModifier) {
                 prompt.controller.answerClipboard(2)
                 event.accepted = true
             }

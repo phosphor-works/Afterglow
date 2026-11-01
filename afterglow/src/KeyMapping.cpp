@@ -7,6 +7,8 @@
 
 #include <QKeyEvent>
 
+#include <xkbcommon/xkbcommon-keysyms.h>
+
 namespace Afterglow {
 
 using AfterglowVt::Key;
@@ -30,6 +32,16 @@ std::uint8_t mapModifiers(Qt::KeyboardModifiers mods)
 }
 
 namespace {
+
+/// Keypad digits and operators: keypad keys whatever their text, which Ctrl
+/// can turn into a control character. The navigation keys that NumLock off
+/// gives are not among them.
+bool keypadSymbolKey(int qtKey)
+{
+    return (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9) || qtKey == Qt::Key_Period || qtKey == Qt::Key_Comma
+        || qtKey == Qt::Key_Slash || qtKey == Qt::Key_Asterisk || qtKey == Qt::Key_Minus || qtKey == Qt::Key_Plus
+        || qtKey == Qt::Key_Equal || qtKey == Qt::Key_Enter;
+}
 
 Key keypadKey(int qtKey)
 {
@@ -89,9 +101,49 @@ Key keypadKey(int qtKey)
 
 namespace {
 
-/// Modifier and lock keys by xkb keycode (evdev code + 8), so left and right
-/// are told apart.
-Key modifierKey(quint32 keycode)
+/// Modifier and lock keys by the keysym the active layout gives the key, so
+/// a remapped key (caps:escape, ctrl:nocaps) reports what it became.
+Key modifierKeyFromKeysym(std::uint32_t keysym)
+{
+    switch (keysym) {
+    case XKB_KEY_Shift_L:
+        return Key::LeftShift;
+    case XKB_KEY_Shift_R:
+        return Key::RightShift;
+    case XKB_KEY_Control_L:
+        return Key::LeftControl;
+    case XKB_KEY_Control_R:
+        return Key::RightControl;
+    case XKB_KEY_Alt_L:
+    case XKB_KEY_Meta_L:
+        return Key::LeftAlt;
+    case XKB_KEY_Alt_R:
+    case XKB_KEY_Meta_R:
+    case XKB_KEY_ISO_Level3_Shift: // AltGr, as the keycode table had it
+        return Key::RightAlt;
+    case XKB_KEY_Super_L:
+        return Key::LeftSuper;
+    case XKB_KEY_Super_R:
+        return Key::RightSuper;
+    case XKB_KEY_Caps_Lock:
+        return Key::CapsLock;
+    case XKB_KEY_Num_Lock:
+        return Key::NumLock;
+    case XKB_KEY_Scroll_Lock:
+        return Key::ScrollLock;
+    case XKB_KEY_Print:
+        return Key::PrintScreen;
+    case XKB_KEY_Pause:
+        return Key::Pause;
+    case XKB_KEY_Menu:
+        return Key::Menu;
+    default:
+        return Key::Text;
+    }
+}
+
+/// The same keys by xkb keycode (evdev code + 8), for when there is no keymap.
+Key modifierKeyFromKeycode(quint32 keycode)
 {
     switch (keycode) {
     case 50:
@@ -127,6 +179,39 @@ Key modifierKey(quint32 keycode)
     }
 }
 
+/// Whether Qt's key agrees that @p key is the modifier or lock key it names.
+bool qtKeyMatches(Key key, int qtKey)
+{
+    switch (key) {
+    case Key::LeftShift:
+    case Key::RightShift:
+        return qtKey == Qt::Key_Shift;
+    case Key::LeftControl:
+    case Key::RightControl:
+        return qtKey == Qt::Key_Control;
+    case Key::LeftAlt:
+    case Key::RightAlt:
+        return qtKey == Qt::Key_Alt || qtKey == Qt::Key_AltGr || qtKey == Qt::Key_Meta;
+    case Key::LeftSuper:
+    case Key::RightSuper:
+        return qtKey == Qt::Key_Super_L || qtKey == Qt::Key_Super_R || qtKey == Qt::Key_Meta;
+    case Key::CapsLock:
+        return qtKey == Qt::Key_CapsLock;
+    case Key::NumLock:
+        return qtKey == Qt::Key_NumLock;
+    case Key::ScrollLock:
+        return qtKey == Qt::Key_ScrollLock;
+    case Key::PrintScreen:
+        return qtKey == Qt::Key_Print;
+    case Key::Pause:
+        return qtKey == Qt::Key_Pause;
+    case Key::Menu:
+        return qtKey == Qt::Key_Menu;
+    default:
+        return false;
+    }
+}
+
 char32_t firstCodepoint(const QString& s)
 {
     if (s.isEmpty()) {
@@ -157,7 +242,13 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     }
     const int k = e->key();
 
-    if (const Key mk = modifierKey(e->nativeScanCode()); mk != Key::Text) {
+    // The layout decides what a key is: a keycode table would call a Caps
+    // Lock remapped to Escape Caps Lock, and send nothing for it.
+    const std::uint32_t keysym = xkb.keysym(e->nativeScanCode());
+    const Key mk = keysym != XKB_KEY_NoSymbol ? modifierKeyFromKeysym(keysym)
+        : qtKeyMatches(modifierKeyFromKeycode(e->nativeScanCode()), k) ? modifierKeyFromKeycode(e->nativeScanCode())
+                                                                        : Key::Text;
+    if (mk != Key::Text) {
         out.key = mk;
         return out;
     }
@@ -175,9 +266,9 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
 
     if (e->modifiers() & Qt::KeypadModifier) {
         const Key kp = keypadKey(k);
-        // With NumLock off the keypad sends navigation keys and no text; those
-        // fall through to the regular mapping below.
-        if (kp != Key::Text && (!textStorage.isEmpty() || kp == Key::KeypadEnter)) {
+        // With NumLock off the keypad sends navigation keys (Qt reports Home,
+        // Down…); those fall through to the regular mapping below.
+        if (kp != Key::Text && keypadSymbolKey(k)) {
             out.key = kp;
             return out;
         }
@@ -241,11 +332,26 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
             // The layout's unshifted character; Qt's key() is the shifted
             // symbol for punctuation (Shift+1 reports '!').
             out.unshifted = xkb.unshiftedCodepoint(e->nativeScanCode());
+            char32_t shifted = xkb.shiftedCodepoint(e->nativeScanCode());
+            // Ctrl+C under a Cyrillic or Greek layout is still ^C: control
+            // characters come from the Latin layout, as Qt's shortcuts do.
+            if ((e->modifiers() & Qt::ControlModifier) && out.unshifted >= 0x80) {
+                if (const auto latin = xkb.latinCodepoints(e->nativeScanCode()); latin.first != 0) {
+                    out.unshifted = latin.first;
+                    shifted = latin.second;
+                }
+            }
             if (out.unshifted == 0 && k >= 0x20 && k < 0x7F) {
                 out.unshifted = (k >= 'A' && k <= 'Z') ? char32_t(k - 'A' + 'a') : char32_t(k);
             }
             if (e->modifiers() & Qt::ShiftModifier) {
+                // With Ctrl the text is a control character: take the shifted
+                // character from the layout, or from Qt's key.
                 out.shifted = firstCodepoint(text);
+                if (!out.shifted || (e->modifiers() & Qt::ControlModifier)) {
+                    out.shifted = shifted >= 0x20 && shifted != 0x7F ? shifted
+                        : k >= 0x20 && k < 0x7F ? char32_t(k) : out.shifted;
+                }
             }
         }
         break;

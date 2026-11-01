@@ -21,6 +21,12 @@ Rectangular selections report their encompassing range.
 Behavior depends on the desktop's AT-SPI service and screen reader.
 The acceptance test checks public AT-SPI interfaces. It does not certify every screen reader.
 
+When output scrolls the viewport, the text-change events remove the lines that left the top and insert only the new text.
+A screen reader that speaks inserted text then reads the new output, not the whole viewport.
+
+`Control.allowReadText` does not apply to accessibility clients.
+AT-SPI is a separate D-Bus bus. Any client on it can read the viewport text while accessibility is active, as with other toolkits.
+
 ## Input methods and directionality
 
 Preedit text preserves grapheme clusters.
@@ -49,7 +55,13 @@ Paths use the normal bracketed-paste encoder. Afterglow does not append Enter.
 Drops are disabled while a native terminal prompt owns keyboard input or the target is held after exit.
 
 Each drop permits 256 local paths and 1 MiB of quoted UTF-8 text, including separators.
-Remote URLs, relative paths and names with control characters reject the entire drop.
+These items reject the entire drop:
+
+- Remote URLs, and `file` URLs with a host other than `localhost`.
+- Relative paths.
+- Names with control characters (C0, DEL or C1) or format characters such as bidirectional overrides.
+
+Quotes and backslashes in a name are escaped outside the single quotes, so Bash, Zsh and Fish read the same path.
 A local path dropped into SSH remains a local path. The drop does not upload a file.
 Use `scp` or another transfer tool for uploads.
 
@@ -60,6 +72,8 @@ Downloads use `inline=0`, which is also the default.
 Choose a destination and select Save, or cancel the request.
 Afterglow writes nothing before Save.
 The interface supports iTerm2 `it2dl` and SSH transports that pass OSC sequences through.
+
+From a source checkout, run the example client:
 
 ```sh
 python3 data/examples/compatibility/download.py /path/to/report.txt
@@ -77,21 +91,8 @@ Afterglow does not open or execute received files automatically.
 
 ## Native acceptance coverage
 
-Build the native test target:
-
-```sh
-cmake --build build --target afterglow_native_tests
-```
-
-Run the suite in an isolated nested KWin desktop:
-
-```sh
-python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/afterglow_native_tests
-```
-
-The runner requires X11 or XWayland, nested KWin, D-Bus and XTest.
-It selects the Basic control style and generic Qt platform theme to isolate input tests from desktop portal activation.
-It sends pointer events to the nested compositor's X11 backend.
+[Native window tests](TESTING.md#native-window-tests) gives the commands that build and run the suite.
+The runner sends pointer events to the nested compositor's X11 backend.
 The compositor produces Wayland pointer events and negotiates a real Qt `QDrag`.
 The test filename contains Unicode and an apostrophe.
 The test checks the quoted path received by the PTY.
@@ -99,7 +100,7 @@ The test checks the quoted path received by the PTY.
 The suite also checks these behaviors:
 
 - Composition, commit and focused-editor input-method queries.
-- Accessible controls and zoom visibility.
+- Accessible controls and the focused chrome editor.
 - Bidirectional pointer selection.
 - Pane launch failures, launch options and close identity.
 - Paste confirmation ownership and keyboard acceptance.
@@ -116,9 +117,11 @@ Afterglow accepts the [Kitty file-transfer protocol](https://sw.kovidgoyal.net/k
 A terminal program can send or receive files through its terminal connection, including an SSH connection.
 
 Afterglow asks for permission before a transfer accesses files.
-For a receive request, the dialog lists the requested source paths.
+For a receive request, the dialog lists the requested source paths. It shows the first 100 paths and the number of other paths.
 For a send request, permission allows the program to create or replace destination files.
 Approval applies to one transfer session.
+Each pane shows one permission dialog at a time. A new session gets `EBUSY` while a dialog is open.
+After you deny a session, new sessions in that pane get `EPERM` for 10 seconds.
 
 Run these commands on the computer where the terminal program runs:
 
@@ -143,11 +146,24 @@ Set `Terminal.fileTransferPassword` only when a shared secret must replace the p
 Pass the same secret to `kitten transfer --permissions-bypass`.
 An empty setting always requires permission.
 
-Each pane permits eight sessions and 16,384 files per session.
-Individual data packets contain at most 4,096 decoded bytes.
-Input and output queues each have a 16 MiB limit.
-An exceeded limit stops the affected work. It does not authorize more filesystem access.
+| Resource | Limit | At the limit |
+| --- | --- | --- |
+| Sessions per pane | 8 | The new session gets `EBUSY`. |
+| Files per session | 16,384 | The file gets `EINVAL`. A receive listing gets `EFBIG`. |
+| Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. A delta upload holds two. |
+| Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
+| Decoded data per packet | 4,096 bytes | The file fails with an error status. |
+| Command size | 16,384 bytes | Every transfer in the pane is cancelled with `ENOMEM`. |
+| Input queue, output queue | 16 MiB each | Every transfer in the pane is cancelled with `ENOMEM`. |
+| Path length, name length | 4,096 bytes, 255 bytes | The request is refused. |
+| Receive listing depth | 128 directory levels | The deeper entry gets `EFBIG`. |
+| Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
+| Requested paths waiting for permission per pane | 4 MiB | The session gets `ENOMEM`. |
+| Delta buffers per pane | 64 MiB | The file gets `ENOMEM`. |
+
+A limit never authorizes more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
+Delta data for a receive transfer is written to a temporary file in the cache directory, `$XDG_CACHE_HOME/afterglow`.
 
 Kitty 0.49.2 can omit empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.
@@ -172,12 +188,20 @@ kitten dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
 A program must enable the protocol before it receives drag events.
 A source offer requires a physical left-button drag gesture.
 Afterglow rejects file reads before a drop occurs.
-It also rejects remote file reads for a drag that starts and ends in the same window.
+It also rejects file reads for a drag that starts in any Afterglow window.
+Desktop MIME type names that are not printable ASCII are not sent to the program.
 Programs without protocol support retain the quoted-path paste behavior for local file drops.
 
-Remote source files use a temporary directory until the desktop drag finishes.
+A drag source is local only when its machine id matches this computer.
+Afterglow copies the files of every other source, including a source without a machine id, into a temporary directory.
+The drop target receives paths in that directory, not the paths that the program named.
+A remote source can also name `http`, `https`, `ftp` and `mailto` URLs. Other schemes reject the drag with `EPERM`.
+Afterglow removes other file-list types, such as `application/x-kde4-urilist`, from a remote drag.
+Drop targets often copy files after the drag ends, so the directory remains for 10 minutes.
+The next remote drag or closing the pane removes it earlier.
 Relative symbolic links must remain inside that directory.
 Afterglow rejects absolute links and links that escape the temporary directory.
+A `..` component is accepted only after a real directory, not after a link.
 
 | Resource | Limit |
 | --- | --- |
@@ -186,6 +210,11 @@ Afterglow rejects absolute links and links that escape the temporary directory.
 | Cached MIME data per drag | 256 MiB |
 | Remote source data per drag | 1 GiB |
 | Remote source entries | 16,384 |
+| URIs in a remote drag | 1,024 |
+| Remote path length | 4,096 characters |
+| Remote symbolic link target | 4,096 bytes |
+| Entries in one dropped directory listing | 16,384 |
+| Directory entries listed per drop | 65,536 |
 | Open directory handles | 256 |
 | Queued read requests | 64 |
 | Thumbnail count | 16 |

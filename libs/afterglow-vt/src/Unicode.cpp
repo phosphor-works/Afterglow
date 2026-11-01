@@ -41,11 +41,6 @@ Props props(char32_t cp) noexcept
     return p;
 }
 
-int width(char32_t cp) noexcept
-{
-    return (packedFor(cp) >> 7) & 3;
-}
-
 const char* ucdVersion() noexcept
 {
     return UcdVersion;

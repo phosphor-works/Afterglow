@@ -42,6 +42,7 @@ private:
     QTimer m_reconcile;
     QTimer m_stale;
     bool m_requested = false;
+    bool m_cleared = true; ///< the last spectrum sent was empty
 };
 
 } // namespace Afterglow

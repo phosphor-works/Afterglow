@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ProjectStore.h"
-#include "SplitTree.h"
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <gtest/gtest.h>
 
@@ -42,13 +42,31 @@ TEST(ProjectStore, RejectsUnsafeNamesCorruptFilesAndSymlinks)
     broken.write("{bad"); broken.close();
     QJsonObject output;
     EXPECT_FALSE(store.read("broken", output).isEmpty());
-    ASSERT_TRUE(QFile::link(broken.fileName(), dir.filePath("link.json")));
+    // The link points at a valid project: only the symlink rule refuses it.
+    ASSERT_TRUE(store.save("dev", project(), false).isEmpty());
+    ASSERT_TRUE(QFile::link(dir.filePath("dev.json"), dir.filePath("link.json")));
+    ASSERT_TRUE(store.read("dev", output).isEmpty());
     EXPECT_FALSE(store.read("link", output).isEmpty());
     EXPECT_FALSE(store.save("link", project(), true).isEmpty());
     EXPECT_FALSE(store.names().contains("link"));
-    ASSERT_TRUE(broken.open(QIODevice::WriteOnly));
-    broken.write(QByteArray(1024 * 1024 + 1, ' ')); broken.close();
-    EXPECT_FALSE(store.read("broken", output).isEmpty());
+    // A valid project padded past 1 MiB with whitespace, which JSON allows:
+    // only the size rule refuses it.
+    QFile padded(dir.filePath("padded.json"));
+    ASSERT_TRUE(padded.open(QIODevice::WriteOnly));
+    padded.write(QJsonDocument(project()).toJson(QJsonDocument::Compact) + QByteArray(1024 * 1024, ' ')); padded.close();
+    EXPECT_FALSE(store.read("padded", output).isEmpty());
+}
+TEST(ProjectStore, ReadNamesAJsonRootThatIsNotAnObject)
+{
+    QTemporaryDir dir;
+    ProjectStore store(dir.path());
+    QFile file(dir.filePath("list.json"));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("[1, 2]"); file.close();
+    QJsonObject output;
+    const QString error = store.read("list", output);
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_FALSE(error.contains("no error occurred")) << error.toStdString();
 }
 TEST(ProjectStore, RejectsInvalidVersionsIdentitiesRatiosAndCommands)
 {
@@ -82,20 +100,50 @@ TEST(ProjectStore, BoundsTreesBeforeAnyPaneIsCreated)
     auto tabs = doc["tabs"].toArray(); tabs.append(tabs.first()); doc["tabs"] = tabs;
     EXPECT_FALSE(ProjectStore::validate(doc).isEmpty());
 }
-TEST(SplitTree, LayoutRoundTripRetainsNestedRatios)
+TEST(ProjectStore, BoundsAcceptTheLimitsAndRejectOnePast)
 {
-    auto* a = reinterpret_cast<Pane*>(1); auto* b = reinterpret_cast<Pane*>(2); auto* c = reinterpret_cast<Pane*>(3);
-    SplitTree original(a);
-    original.split(a, b, SplitTree::Direction::Right);
-    original.split(b, c, SplitTree::Direction::Down);
-    original.layout(QRect(0, 0, 1200, 800), 2);
-    ASSERT_TRUE(original.resizePane(a, SplitTree::Neighbour::Right, 100, 2, QSize(40, 20)));
-    original.layout(QRect(0, 0, 1200, 800), 2);
-    auto encode = [](Pane* p) { return QJsonObject{{"id", QString::number(reinterpret_cast<quintptr>(p))}}; };
-    const auto saved = original.snapshot(encode);
-    auto restored = SplitTree::restore(saved, [](const QJsonObject& p) { return reinterpret_cast<Pane*>(p["id"].toString().toULongLong()); });
-    restored->layout(QRect(0, 0, 1200, 800), 2);
-    EXPECT_EQ(restored->snapshot(encode), saved);
-    for (auto* p : {a,b,c}) EXPECT_EQ(restored->rectOf(p), original.rectOf(p));
-    EXPECT_EQ(restored->paneCount(), 3);
+    // Depth 16 is accepted, 17 is not.
+    const auto chain = [](int depth) {
+        auto root = pane();
+        for (int i = 0; i < depth; ++i) root = {{"direction", "down"}, {"ratio", 0.5}, {"first", root}, {"second", pane(QString::number(i))}};
+        return root;
+    };
+    EXPECT_TRUE(ProjectStore::validate(project(chain(16))).isEmpty());
+    EXPECT_FALSE(ProjectStore::validate(project(chain(17))).isEmpty());
+    // 32 panes are accepted, 33 are not: a balanced tree stays within the depth.
+    const auto balanced = [](int count) {
+        QJsonArray level;
+        for (int i = 0; i < count; ++i) level.append(i == 0 ? pane() : pane(QString::number(i)));
+        while (level.size() > 1) {
+            QJsonArray next;
+            for (qsizetype i = 0; i < level.size(); i += 2) {
+                if (i + 1 < level.size()) next.append(QJsonObject{{"direction", "right"}, {"ratio", 0.5}, {"first", level[i]}, {"second", level[i + 1]}});
+                else next.append(level[i]);
+            }
+            level = next;
+        }
+        return level.first().toObject();
+    };
+    EXPECT_TRUE(ProjectStore::validate(project(balanced(32))).isEmpty());
+    EXPECT_FALSE(ProjectStore::validate(project(balanced(33))).isEmpty());
+    // 16 tabs are accepted, 17 are not; each tab has its own ids.
+    const auto tabs = [](int count) {
+        QJsonArray list;
+        for (int i = 0; i < count; ++i) {
+            const QString id = QString::number(i);
+            list.append(QJsonObject{{"id", id}, {"title", id}, {"active_pane", id}, {"tree", pane(id)}});
+        }
+        return QJsonObject{{"version", 1}, {"active_tab", "0"}, {"tabs", list}};
+    };
+    EXPECT_TRUE(ProjectStore::validate(tabs(16)).isEmpty());
+    EXPECT_FALSE(ProjectStore::validate(tabs(17)).isEmpty());
+    // A repeated tab id alone, then a repeated pane id alone.
+    auto doc = tabs(2);
+    auto list = doc["tabs"].toArray();
+    auto second = list[1].toObject(); second["id"] = "0"; list[1] = second; doc["tabs"] = list;
+    EXPECT_FALSE(ProjectStore::validate(doc).isEmpty());
+    doc = tabs(2);
+    list = doc["tabs"].toArray();
+    second = list[1].toObject(); second["tree"] = pane("0"); second["active_pane"] = "0"; list[1] = second; doc["tabs"] = list;
+    EXPECT_FALSE(ProjectStore::validate(doc).isEmpty());
 }

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 
 struct wl_keyboard;
 struct xkb_context;
@@ -23,9 +24,17 @@ class XkbKeyboard
 public:
     static XkbKeyboard& instance();
 
-    bool available() const noexcept { return m_state != nullptr; }
     /// The unshifted character for an xkb keycode in the active layout group, or 0.
     char32_t unshiftedCodepoint(std::uint32_t keycode) const;
+    /// The character with Shift (shift level 1) in the active layout group, or 0.
+    char32_t shiftedCodepoint(std::uint32_t keycode) const;
+    /// The unshifted and shifted characters in the first layout group where
+    /// the key gives an ASCII character, or zeros. Ctrl combinations use it
+    /// while a non-Latin layout is active, as Qt does for shortcuts.
+    std::pair<char32_t, char32_t> latinCodepoints(std::uint32_t keycode) const;
+    /// The unshifted keysym in the active layout group, or 0 (XKB_KEY_NoSymbol)
+    /// without a keymap. Remapped keys (caps:escape) report what they became.
+    std::uint32_t keysym(std::uint32_t keycode) const;
     bool capsLock() const;
     bool numLock() const;
 
@@ -34,6 +43,7 @@ public:
 
 private:
     XkbKeyboard();
+    char32_t codepoint(std::uint32_t keycode, std::uint32_t layout, std::uint32_t level) const;
     ~XkbKeyboard();
 
     static void onKeymap(void* data, wl_keyboard*, std::uint32_t format, int fd, std::uint32_t size);

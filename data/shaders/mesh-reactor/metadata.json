@@ -1,7 +1,10 @@
 {
   "id": "mesh-reactor",
   "name": "Mesh Reactor",
-  "description": "A segmented containment core with bevelled armor, plasma, orbiting emitters, a lit chamber and audio, history and Luau response.",
+  "category": "Background",
+  "description": "A segmented containment core with bevelled armour, plasma and orbiting emitters in a lit chamber. Audio, scrollback history and Luau scripts drive it.",
+  "author": "afterglow",
+  "version": "1.0",
   "fragmentShader": "effect.frag",
   "highDynamicRange": true,
   "windowBackground": true,
@@ -54,10 +57,8 @@
     {
       "id": "linearOutput",
       "name": "Linear output for an external lens pass",
-      "type": "float",
-      "default": 0,
-      "min": 0,
-      "max": 1
+      "type": "bool",
+      "default": false
     }
   ],
   "bufferScale": 0.75,

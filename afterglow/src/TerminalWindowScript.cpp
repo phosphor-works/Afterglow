@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TerminalWindow.h"
 #include "chrome/ChromeController.h"
+#include "app/NotificationCenter.h"
 #include "scripting/ScriptHost.h"
 #include <AfterglowRender/GpuDevice.h>
 #include <QKeyEvent>
@@ -14,7 +15,15 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
 {
     if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("Another dialog is already open");
     if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
+    // Another script's key mode would take the dialog's keys from the user.
+    if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
+    // The dialog takes the keyboard: no mode is left behind it.
     stopCopyMode(); cancelKeyMode(); stopUrlMode();
+    closeOverview(nullptr);
+    if (m_unicodeInput) {
+        m_unicodeInput.reset();
+        showUnicodeInput();
+    }
     if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
     setFocusedPane(pane);
     m_scriptDialog = ScriptDialog{owner, pane, std::move(reply)};
@@ -145,8 +154,10 @@ QVariantMap scriptKeyEvent(const QKeyEvent* e)
         {Qt::Key_Insert, QStringLiteral("Insert")}, {Qt::Key_Home, QStringLiteral("Home")}, {Qt::Key_End, QStringLiteral("End")},
         {Qt::Key_PageUp, QStringLiteral("PageUp")}, {Qt::Key_PageDown, QStringLiteral("PageDown")}, {Qt::Key_Space, QStringLiteral("Space")}};
     QString text = e->text();
-    // Control characters (Ctrl+A) report the key, not the character.
-    if (std::any_of(text.cbegin(), text.cend(), [](QChar c) { return c.category() == QChar::Other_Control; })) text.clear();
+    // With Ctrl, or as a control character (Ctrl+A), the key is reported
+    // and the text is empty, as the docs promise: Ctrl+1 is not "1" typed.
+    if ((e->modifiers() & Qt::ControlModifier)
+        || std::any_of(text.cbegin(), text.cend(), [](QChar c) { return c.category() == QChar::Other_Control; })) text.clear();
     QString key = names.value(e->key());
     if (key.isEmpty() && e->key() >= Qt::Key_F1 && e->key() <= Qt::Key_F35) key = QStringLiteral("F%1").arg(e->key() - Qt::Key_F1 + 1);
     if (key.isEmpty()) key = !text.isEmpty() ? text : QKeySequence(e->key()).toString(QKeySequence::PortableText).toLower();
@@ -161,6 +172,19 @@ QVariantMap scriptKeyEvent(const QKeyEvent* e)
 bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e)
 {
     if (!m_scriptKeyMode) return false;
+    // The user's way out, which no script can take.
+    if (m_settings.settings().keybinds.match(e) == Action::EndScriptKeyMode) {
+        performAction(Action::EndScriptKeyMode);
+        return true;
+    }
+    // A modifier on its own is not a key for on_key: it comes with the key it changes.
+    switch (e->key()) {
+    case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta:
+    case Qt::Key_AltGr: case Qt::Key_CapsLock: case Qt::Key_NumLock: case Qt::Key_Super_L: case Qt::Key_Super_R:
+        return true;
+    default:
+        break;
+    }
     Pane* pane = m_scriptKeyMode->pane ? m_scriptKeyMode->pane.data() : m_focused.data();
     Q_EMIT scriptKey(m_scriptKeyMode->owner, pane ? pane->id() : 0, scriptKeyEvent(e));
     return true;
@@ -171,6 +195,10 @@ QString TerminalWindow::startScriptKeyMode(const QString& owner, Pane* pane, con
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("A dialog has the keyboard");
     stopCopyMode(); cancelKeyMode(); stopUrlMode();
+    if (m_unicodeInput) {
+        m_unicodeInput.reset();
+        showUnicodeInput();
+    }
     m_scriptKeyMode = ScriptKeyMode{owner, label.left(160), pane};
     updateKeyMode();
     return {};
@@ -185,8 +213,11 @@ void TerminalWindow::endScriptKeyMode(const QString& owner)
 
 QVariantMap TerminalWindow::overviewState() const
 {
+    // Every tab's cards while it is open; the current tab's otherwise, even
+    // while it is still easing shut.
     QVariantList cards;
-    for (Pane* pane : overviewPanes()) cards.append(pane->id());
+    for (Pane* pane : overviewPanes())
+        if (m_overview.open || tabOf(pane) == m_currentTab) cards.append(pane->id());
     return {{QStringLiteral("open"), m_overview.open},
             {QStringLiteral("highlighted"), m_overview.open && m_overview.highlighted ? m_overview.highlighted->id() : 0},
             {QStringLiteral("cards"), cards}};
@@ -196,6 +227,9 @@ QString TerminalWindow::scriptOverview(Pane* pane, const QString& operation, QVa
 {
     if (operation == QLatin1String("open")) {
         if (!m_overview.open) {
+            // Refuse before moving the user's focus for an overview that cannot open.
+            if (!m_overviewAvailable || m_scriptDialog || m_controller->wantsKeyboard())
+                return QStringLiteral("The overview is not available");
             if (pane && pane != m_focused) revealPane(pane);
             if (!openOverview()) return QStringLiteral("The overview is not available");
         }
@@ -256,9 +290,13 @@ bool TerminalWindow::usePackageShaders()
                 QStringList chain = key == QLatin1String("background") ? now.shaders.background : key == QLatin1String("text") ? now.shaders.text
                     : key == QLatin1String("cursor") ? now.shaders.cursor : key == QLatin1String("pane") ? now.shaders.pane : now.shaders.window;
                 if (!chain.contains(ref)) chain.append(ref);
-                value = chain;
+                // The schema keeps chains as lists of variants.
+                value = QVariant(QVariantList(chain.cbegin(), chain.cend()));
             }
-            m_settings.write(QStringLiteral("Shaders"), key, value);
+            if (!m_settings.write(QStringLiteral("Shaders"), key, value)) {
+                NotificationCenter::instance().showNotice(m_focused, tr("Could not use the package shaders"),
+                                                          tr("Shaders.%1 could not be written to the config file.").arg(key));
+            }
         });
     return error.isEmpty();
 }

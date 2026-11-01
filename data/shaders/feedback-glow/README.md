@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: 2026 fuddlesworth -->
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# Feedback glow
+# Feedback Glow
 
 This example retains bright pixels in a half-resolution buffer with linear light.
 The image pass adds an afterimage and preserves current glyphs.

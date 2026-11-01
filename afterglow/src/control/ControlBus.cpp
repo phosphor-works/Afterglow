@@ -13,6 +13,12 @@
 
 namespace Afterglow {
 
+namespace {
+// D-Bus refuses messages over 128 MiB, and the bus may drop a connection
+// that sends one. Text is sent as UTF-8.
+constexpr qsizetype MaxTextReply = 96 * 1024 * 1024;
+} // namespace
+
 QDBusArgument& operator<<(QDBusArgument& arg, const PaneInfo& p)
 {
     arg.beginStructure();
@@ -109,11 +115,7 @@ QList<PaneInfo> ControlBus::ListPanes()
 
 uint ControlBus::FocusedPane()
 {
-    for (const PaneInfo& p : m_control.panes()) {
-        if (p.focused) {
-            return p.id;
-        }
-    }
+    if (const auto pane = m_control.focusedPane()) return *pane;
     fail(QStringLiteral("no focused pane"));
     return 0;
 }
@@ -132,6 +134,10 @@ QString ControlBus::GetText(uint pane, const QString& scope)
     }
     QString out;
     if (fail(m_control.readText(pane, *s, out))) {
+        return {};
+    }
+    if (out.toUtf8().size() > MaxTextReply) {
+        fail(QStringLiteral("the %1 text exceeds the D-Bus message limit").arg(scope));
         return {};
     }
     return out;
@@ -185,6 +191,13 @@ void ControlBus::Notify(uint pane, const QString& title, const QString& body)
 
 void ControlBus::RunAction(uint pane, const QString& action)
 {
+    // Selecting, copying and pasting move pane text to the clipboard and into
+    // other panes: the same reading that GetText needs permission for.
+    if (!m_settings.settings().control.allowReadText
+        && (action == QLatin1String("copy") || action == QLatin1String("paste") || action == QLatin1String("select_all"))) {
+        fail(QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action));
+        return;
+    }
     fail(m_control.runAction(pane, action));
 }
 

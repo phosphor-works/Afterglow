@@ -8,7 +8,7 @@ It uses ideas from [sessionizer.wezterm](https://github.com/mikkasendke/sessioni
 It uses native selectors, asynchronous jobs, project layouts and persistent state.
 
 Copy this complete directory into `~/.config/afterglow/scripts/project-navigator/`.
-For custom configuration, use its adjacent `scripts/` directory.
+When you use a custom configuration file, use the `scripts/` directory beside that file.
 With the `/usr` installation prefix, examples are installed in `/usr/share/afterglow/examples/packages/project-navigator/`.
 Loading the package does not run commands.
 
@@ -48,14 +48,17 @@ Create `config.json` beside `package.json` to override the defaults:
 
 `fd` discovers Git repositories, including worktrees with `.git` files.
 `zoxide query --list` supplies frequently used directories.
-Both commands are optional. The picker title reports missing commands.
+Both commands are optional. The picker title reports commands that could not start.
 Configured roots, saved layouts, favorites and history remain available.
-Providers run concurrently with a five-second timeout and bounded output.
+Providers run concurrently with a five-second timeout and a 128 KiB output limit.
+A provider that fails or reaches the output limit still supplies the complete paths that it printed.
 Limits are eight roots and 400 choices.
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
 
 Favorites, the last 50 projects and layout choices survive reloads/restarts.
+The package keeps layout choices for favorites and recent directories only.
+Favorites and layout choices accept paths of up to 256 bytes.
 Storage is scoped to `project-navigator`, under
 `state/scripts/project-navigator.json` beside the active configuration. Schema 2
 includes a migration example from schema 1's arrays of favorite/recent paths.
@@ -74,22 +77,29 @@ a private D-Bus session and temporary config/state, then closes its windows.
 
 ## Walkthrough: reuse a split layout across repositories
 
-1. Open two or three terminal splits. Choose **Save Project** in the command
-   palette and name the layout `development`.
-2. Choose **Navigate projects**, type part of a repository path, then press Enter.
+1. Open two or three terminal splits.
+2. Choose **Save Project** in the command palette.
+3. Name the layout `development`.
+4. Choose **Navigate projects**.
+5. Type part of a repository path.
    With `fd` installed, Git repositories beneath the configured roots appear
    automatically. Roots themselves remain usable without discovery tools.
-3. Choose `development` in the **Layout for …** picker. A new window opens with
+6. Press Enter.
+7. Choose `development` in the **Layout for …** picker. A new window opens with
    the saved split structure, and every pane starts in the chosen repository.
    Explicit commands saved with the layout run again. Commands typed into an
    interactive shell are not recorded as launch commands.
-4. Choose **Toggle favorite project directory** in the new window. Open the
-   navigator again: that directory is marked with a star and `[running]`.
-5. Select another repository and apply a layout. **Previous project** returns
-   to the earlier directory. Selecting a running directory reuses its window
-   and running processes.
-6. Restart Afterglow. Favorites and recent directories remain in the picker.
-   Selecting a directory offers its last-used layout first.
+8. Choose **Toggle favorite project directory** in the new window.
+9. Open the navigator again.
+   That directory is marked with a star and `[running]`.
+10. Select another repository.
+11. Choose a layout for it.
+12. Choose **Previous project**.
+    Afterglow returns to the earlier directory. Selecting a running directory
+    reuses its window and running processes.
+13. Restart Afterglow.
+    Favorites and recent directories remain in the picker.
+    Selecting a directory offers its last-used layout first.
 
 A directory opens directly into a shell when no saved layouts exist. Save a
 layout first to exercise the multi-pane workflow. To add periodic saves and

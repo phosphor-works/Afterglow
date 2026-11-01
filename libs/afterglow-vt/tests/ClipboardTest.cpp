@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "TestUtil.h"
+#include "../src/Base64.h"
 
 #include <gtest/gtest.h>
 
@@ -13,7 +14,12 @@ namespace {
 struct ClipHost : RecordingHost
 {
     std::vector<ClipboardRequest> requests;
+    std::vector<std::pair<std::string, std::string>> osc52Writes;
     bool supported = true;
+    void clipboardWrite(std::string_view selection, std::string_view data) override
+    {
+        osc52Writes.emplace_back(selection, data);
+    }
     bool clipboardRequest(const ClipboardRequest& r) override
     {
         requests.push_back(r);
@@ -49,9 +55,9 @@ TEST(Clipboard, WriteAssemblesTypesAndAliases)
 {
     Term t;
     t.feed("\x1b]5522;type=write:id=w\x1b\\");
-    // "hello world" split across packets not on 4-byte boundaries.
-    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGVsbG8g\x1b\\");
-    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;d29ybGQ=\x1b\\");
+    // "hello world" split inside a base64 group: only the whole stream is padded.
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGVsb\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;G8gd29ybGQ=\x1b\\");
     t.feed("\x1b]5522;type=walias:mime=dGV4dC9wbGFpbg==;VVRGOF9TVFJJTkcgU1RSSU5H\x1b\\"); // UTF8_STRING STRING
     t.feed("\x1b]5522;type=wdata:mime=dGV4dC9odG1s;PGI+aGk8L2I+\x1b\\"); // text/html "<b>hi</b>"
     EXPECT_TRUE(t.host.requests.empty());
@@ -66,6 +72,7 @@ TEST(Clipboard, WriteAssemblesTypesAndAliases)
     ASSERT_EQ(r.aliases.size(), 2u);
     EXPECT_EQ(r.aliases[0].first, "UTF8_STRING");
     EXPECT_EQ(r.aliases[0].second, "text/plain");
+    EXPECT_EQ(r.aliases[1], (std::pair<std::string, std::string>{"STRING", "text/plain"}));
     EXPECT_TRUE(t.host.written.empty()); // the host replies DONE
 }
 
@@ -115,4 +122,102 @@ TEST(Clipboard, PasteEventsModeIsReported)
     t.feed("\x1b[?5522$p\x1b[?5522h\x1b[?5522$p");
     EXPECT_EQ(t.host.written, "\x1b[?5522;2$y\x1b[?5522;1$y");
     EXPECT_TRUE(t.t.modes().pasteEvents);
+}
+
+TEST(Clipboard, PaddingEndsATypesStream)
+{
+    Term t;
+    t.feed("\x1b]5522;type=write:id=w\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=w\x1b\\");
+    t.feed("\x1b]5522;type=wdata\x1b\\");
+    EXPECT_TRUE(t.host.requests.empty());
+}
+
+TEST(Clipboard, ATypeSentInTwoRunsIsInvalid)
+{
+    Term t;
+    t.feed("\x1b]5522;type=write:id=w\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGVs\x1b\\"); // text/plain "hel"
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9odG1s;PGI+\x1b\\"); // text/html "<b>"
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;bG8h\x1b\\"); // text/plain "lo!"
+    t.feed("\x1b]5522;type=wdata\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=w\x1b\\");
+    EXPECT_TRUE(t.host.requests.empty());
+}
+
+TEST(Clipboard, OversizedMetadataOnAReadLeavesTheWriteAlone)
+{
+    Term t;
+    t.feed("\x1b]5522;type=write:id=w\x1b\\");
+    t.feed("\x1b]5522;type=read:x=" + std::string(16384, 'a') + ";Lg==\x1b\\");
+    EXPECT_TRUE(t.host.written.empty());
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\\x1b]5522;type=wdata\x1b\\");
+    ASSERT_EQ(t.host.requests.size(), 1u);
+    EXPECT_EQ(t.host.requests[0].data[0].second, "hi");
+    // On a write packet it fails the write.
+    t.feed("\x1b]5522;type=write:id=v\x1b\\");
+    t.feed("\x1b]5522;type=wdata:x=" + std::string(16384, 'a') + ";aGk=\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EFBIG:id=v\x1b\\");
+}
+
+TEST(Clipboard, NamesAndTypesMustBePlainText)
+{
+    Term t;
+    // A name with a newline would forge a line in the permission prompt.
+    t.feed("\x1b]5522;type=read:pw=eA==:name=" + detail::base64Encode("make\nVerified by Afterglow")
+           + ";dGV4dC9wbGFpbg==\x1b\\");
+    // A type with a control character or a space.
+    t.feed("\x1b]5522;type=read;" + detail::base64Encode("text/plain\x1b[1m") + "\x1b\\");
+    EXPECT_TRUE(t.host.requests.empty());
+    t.feed("\x1b]5522;type=write:id=w\x1b\\\x1b]5522;type=wdata:mime=" + detail::base64Encode("text/\tplain")
+           + ";aGk=\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=w\x1b\\");
+    t.host.written.clear();
+    t.feed("\x1b]5522;type=write:id=a\x1b\\\x1b]5522;type=walias:mime=dGV4dC9wbGFpbg==;"
+           + detail::base64Encode("STR\x7fING") + "\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=a\x1b\\");
+}
+
+TEST(Clipboard, APasswordWithoutANameIsNoPassword)
+{
+    Term t;
+    t.feed("\x1b]5522;type=read:pw=c2VjcmV0;dGV4dC9wbGFpbg==\x1b\\");
+    ASSERT_EQ(t.host.requests.size(), 1u);
+    EXPECT_TRUE(t.host.requests[0].password.empty());
+    EXPECT_TRUE(t.host.requests[0].name.empty());
+}
+
+TEST(Clipboard, Osc52WritesPassTheirDataThrough)
+{
+    Term t;
+    t.feed("\x1b]52;c;aGk=\x07");
+    t.feed("\x1b]52;;aGk=\x07");
+    t.feed("\x1b]52;p;\x07");
+    ASSERT_EQ(t.host.osc52Writes.size(), 3u);
+    EXPECT_EQ(t.host.osc52Writes[0], (std::pair<std::string, std::string>{"c", "aGk="}));
+    EXPECT_EQ(t.host.osc52Writes[1], (std::pair<std::string, std::string>{"", "aGk="}));
+    EXPECT_EQ(t.host.osc52Writes[2], (std::pair<std::string, std::string>{"p", ""})); // clears
+}
+
+TEST(Clipboard, ResetDropsAWriteInProgress)
+{
+    Term t;
+    t.feed("\x1b]5522;type=write:id=w\x1b\\\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\");
+    t.feed("\x1b" "c\x1b]5522;type=wdata\x1b\\");
+    EXPECT_TRUE(t.host.requests.empty());
+}
+
+TEST(Clipboard, AWriteHoldsAtMost64Types)
+{
+    Term t;
+    t.feed("\x1b]5522;type=write:id=w\x1b\\");
+    for (int i = 0; i <= 64; ++i) {
+        t.feed("\x1b]5522;type=wdata:mime=" + detail::base64Encode("type/" + std::to_string(i)) + ";aGk=\x1b\\");
+    }
+    EXPECT_TRUE(t.host.written.empty());
+    t.feed("\x1b]5522;type=wdata\x1b\\"); // the 65th type
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EFBIG:id=w\x1b\\");
+    EXPECT_TRUE(t.host.requests.empty());
 }

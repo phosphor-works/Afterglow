@@ -10,7 +10,8 @@
 #
 # Settings are merged into ~/.config/afterglow/config.json with jq; what you
 # have set elsewhere stays. The file is replaced atomically, and left alone
-# if anything fails.
+# if anything fails. A symlinked config.json is written through the link and
+# keeps its mode.
 set -Eeuo pipefail
 
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -21,20 +22,25 @@ merge() (
     command -v jq >/dev/null || { echo "glasshouse-afterglow: needs jq" >&2; exit 1; }
     mkdir -p "$conf"
     [ -s "$config" ] || echo '{}' > "$config"
-    local tmp
-    tmp="$(mktemp "$config.XXXXXX")"
+    # Replace the file the link points to, so a dotfile manager's link stays.
+    local target tmp
+    target="$(readlink -f "$config")"
+    tmp="$(mktemp "$target.XXXXXX")"
     trap 'rm -f "$tmp"' EXIT
-    jq -s 'reduce .[] as $part ({}; . * $part)' "$config" "$@" > "$tmp"
-    mv "$tmp" "$config"
+    jq -s 'reduce .[] as $part ({}; . * $part)' "$target" "$@" > "$tmp"
+    chmod --reference="$target" "$tmp"
+    mv "$tmp" "$target"
 )
 
 case "${1:-}" in
 install)
-    mkdir -p "$conf/shaders" "$conf/scripts"
-    for pack in "$here"/shaders/*/; do
+    mkdir -p "$conf/shaders/shared" "$conf/scripts"
+    for pack in "$here"/shaders/glasshouse-*/; do
         rm -rf "$conf/shaders/$(basename "$pack")"
         cp -r "$pack" "$conf/shaders/"
     done
+    # shared/ holds the user's own include files too: add ours, keep the rest.
+    cp "$here/shaders/shared/glasshouse.glsl" "$conf/shaders/shared/"
     cp "$here/scripts/glasshouse.luau" "$conf/scripts/"
     merge "$here/config/glasshouse.json" "$here/config/world-dark.json"
     echo "Glasshouse installed into $conf"
@@ -46,7 +52,7 @@ world)
     esac
     ;;
 *)
-    sed -n '4,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

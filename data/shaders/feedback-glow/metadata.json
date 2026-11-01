@@ -1,8 +1,10 @@
 {
   "id": "feedback-glow",
-  "name": "Feedback glow",
+  "name": "Feedback Glow",
+  "category": "Pane",
   "description": "A bounded linear-light afterimage of bright terminal pixels.",
-  "author": "Phosphor Works",
+  "author": "afterglow",
+  "version": "1.0",
   "fragmentShader": "effect.frag",
   "multipass": true,
   "bufferShaders": ["buffer.frag"],

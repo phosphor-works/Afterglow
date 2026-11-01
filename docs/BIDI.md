@@ -52,7 +52,6 @@ Clear and redraw existing content after a mode change.
 ## Verification and a manual check
 
 `Bidi.*` tests cover Hebrew order, mapping round trips, wide characters, combining marks, soft wraps and application-grid exclusions.
-`SnapshotCursor.*` tests cover extra-cursor colors.
 Terminal tests cover directional-control retention and logical copy.
 These tests do not cover every shell, editor, font or IME combination.
 

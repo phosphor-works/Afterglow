@@ -4,7 +4,8 @@
 #include <AfterglowVt/Input.h>
 #include <AfterglowVt/Terminal.h>
 
-#include <algorithm>
+#include "Utf8.h"
+
 #include <cstdio>
 
 namespace AfterglowVt {
@@ -48,12 +49,22 @@ std::string tildeKey(int number, std::uint8_t mods)
     return "\x1b[" + std::to_string(number) + ";" + std::to_string(modParam(mods)) + "~";
 }
 
-std::string ss3Key(char final, std::uint8_t mods)
+std::string ss3Key(char final, std::uint8_t mods, const Modes& modes)
 {
+    if (modes.vt52) {
+        // VT52: ESC alone for PF1-PF4, ESC ? for the application keypad.
+        return std::string(final >= 'P' && final <= 'S' ? "\x1b" : "\x1b?") + final;
+    }
     if (mods == 0) {
         return std::string("\x1bO") + final;
     }
     return "\x1b[1;" + std::to_string(modParam(mods)) + final;
+}
+
+/// xterm's modifyOtherKeys form: CSI 27 ; modifiers ; code ~.
+std::string otherKey(char32_t code, std::uint8_t mods)
+{
+    return "\x1b[27;" + std::to_string(modParam(mods)) + ";" + std::to_string(std::uint32_t(code)) + "~";
 }
 
 std::string withAlt(std::string s, std::uint8_t mods)
@@ -103,22 +114,52 @@ int ctrlCode(char32_t c)
     }
 }
 
-void appendUtf8(std::string& out, char32_t cp)
+char32_t firstCodepoint(std::string_view utf8)
 {
-    if (cp < 0x80) {
-        out.push_back(char(cp));
-    } else if (cp < 0x800) {
-        out.push_back(char(0xC0 | (cp >> 6)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else if (cp < 0x10000) {
-        out.push_back(char(0xE0 | (cp >> 12)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else {
-        out.push_back(char(0xF0 | (cp >> 18)));
-        out.push_back(char(0x80 | ((cp >> 12) & 0x3F)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
+    if (utf8.empty()) {
+        return 0;
+    }
+    const auto b0 = static_cast<unsigned char>(utf8[0]);
+    if (b0 < 0x80) {
+        return b0;
+    }
+    const int len = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+    if (int(utf8.size()) < len) {
+        return 0;
+    }
+    char32_t cp = b0 & (0x7F >> len);
+    for (int i = 1; i < len; ++i) {
+        cp = (cp << 6) | (static_cast<unsigned char>(utf8[std::size_t(i)]) & 0x3F);
+    }
+    return cp;
+}
+
+/// The main key a keypad navigation key stands for in legacy encodings.
+Key withoutKeypad(Key k)
+{
+    switch (k) {
+    case Key::KeypadLeft:
+        return Key::Left;
+    case Key::KeypadRight:
+        return Key::Right;
+    case Key::KeypadUp:
+        return Key::Up;
+    case Key::KeypadDown:
+        return Key::Down;
+    case Key::KeypadPageUp:
+        return Key::PageUp;
+    case Key::KeypadPageDown:
+        return Key::PageDown;
+    case Key::KeypadHome:
+        return Key::Home;
+    case Key::KeypadEnd:
+        return Key::End;
+    case Key::KeypadInsert:
+        return Key::Insert;
+    case Key::KeypadDelete:
+        return Key::Delete;
+    default:
+        return k;
     }
 }
 
@@ -129,7 +170,12 @@ namespace {
 std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
 {
     const std::uint8_t m = e.mods & ~Mod::Locks;
-    switch (e.key) {
+    // modifyOtherKeys for Return, Tab, Backspace and Escape follows xterm's
+    // ModifyOtherKeys (input.c): level 1 leaves Alt to the ESC prefix and the
+    // modifiers these keys already have a legacy form for.
+    const int other = modes.modifyOtherKeys;
+    const std::uint8_t level1 = m & ~Mod::Alt;
+    switch (withoutKeypad(e.key)) {
     case Key::Up:
         return cursorKey('A', m, modes);
     case Key::Down:
@@ -151,13 +197,13 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
     case Key::PageDown:
         return tildeKey(6, m);
     case Key::F1:
-        return ss3Key('P', m);
+        return ss3Key('P', m, modes);
     case Key::F2:
-        return ss3Key('Q', m);
+        return ss3Key('Q', m, modes);
     case Key::F3:
-        return ss3Key('R', m);
+        return ss3Key('R', m, modes);
     case Key::F4:
-        return ss3Key('S', m);
+        return ss3Key('S', m, modes);
     case Key::F5:
         return tildeKey(15, m);
     case Key::F6:
@@ -175,22 +221,39 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
     case Key::F12:
         return tildeKey(24, m);
     case Key::Enter:
+        if ((other == 1 && level1 != 0) || (other == 2 && m != 0)) {
+            return otherKey(13, m);
+        }
         return withAlt(modes.newline ? "\r\n" : "\r", m);
     case Key::Tab:
+        // Shift+Tab has its own legacy form, CSI Z.
+        if ((other == 1 && (level1 & ~Mod::Shift) != 0) || (other == 2 && (m & ~Mod::Shift) != 0)) {
+            return otherKey(9, m);
+        }
         if (m & Mod::Shift) {
-            return "\x1b[Z";
+            return withAlt("\x1b[Z", m);
         }
         return withAlt("\t", m);
     case Key::Backspace: {
         // DECBKM swaps which of BS and DEL the key and Ctrl+key send.
         const bool bs = ((m & Mod::Ctrl) != 0) != modes.backarrowSendsBs;
+        if (other == 2 && (m & ~Mod::Ctrl) != 0) {
+            return otherKey(bs ? 8 : 127, m);
+        }
         return withAlt(bs ? "\x08" : "\x7f", m);
     }
     case Key::Escape:
+        if ((other == 1 && level1 != 0 && level1 != Mod::Ctrl && level1 != Mod::Shift) || (other == 2 && m != 0)) {
+            return otherKey(27, m);
+        }
         return withAlt("\x1b", m);
+    case Key::Menu:
+        return tildeKey(29, m);
+    case Key::KeypadBegin:
+        return cursorKey('E', m, modes);
     case Key::KeypadEnter:
         if (modes.keypadApp) {
-            return ss3Key('M', m);
+            return ss3Key('M', m, modes);
         }
         return withAlt(modes.newline ? "\r\n" : "\r", m);
     case Key::Text:
@@ -201,7 +264,7 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
             static constexpr char Finals[] = "pqrstuvwxynojmkMX";
             const int idx = int(e.key) - int(Key::Keypad0);
             if (idx >= 0 && idx < int(sizeof Finals) - 1) {
-                return ss3Key(Finals[idx], m);
+                return ss3Key(Finals[idx], m, modes);
             }
         }
         return withAlt(std::string(e.text), m);
@@ -213,19 +276,20 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
     // CSI 27 ; mods ; code ~ (xterm's format, as foot does it).
     if (modes.modifyOtherKeys != 0 && (m & (Mod::Shift | Mod::Alt | Mod::Ctrl | Mod::Super)) != 0) {
         char32_t ch = (m & Mod::Shift) && e.shifted ? e.shifted : e.unshifted;
-        if (ch == 0 && !e.text.empty()) {
-            ch = char32_t(static_cast<unsigned char>(e.text[0]));
+        if (ch == 0) {
+            ch = firstCodepoint(e.text);
         }
         const bool ctrl = (m & Mod::Ctrl) != 0;
         const char32_t base = e.unshifted ? e.unshifted : ch;
         const bool legacyCtrl = ctrl && ctrlCode(base) >= 0;
         bool level2 = false;
         if (modes.modifyOtherKeys == 2) {
-            // Anything beyond Shift, or Shift on a letter, is encoded.
-            level2 = (m & ~Mod::Shift) != 0 || (base >= U'a' && base <= U'z');
+            // Anything beyond Shift. Shift alone already shows in the
+            // character it types, except on space (xterm).
+            level2 = (m & ~Mod::Shift) != 0 || base == U' ';
         }
         if (ch != 0 && (level2 || (ctrl && !legacyCtrl))) {
-            return "\x1b[27;" + std::to_string(modParam(m)) + ";" + std::to_string(std::uint32_t(ch)) + "~";
+            return otherKey(ch, m);
         }
     }
     if (m & Mod::Ctrl) {
@@ -244,7 +308,7 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
     }
     if ((m & Mod::Alt) && e.unshifted != 0) {
         std::string s;
-        appendUtf8(s, e.unshifted);
+        detail::appendUtf8(s, e.unshifted);
         return withAlt(std::move(s), m);
     }
     return {};
@@ -382,8 +446,15 @@ bool kittyFunctional(Key k, KittyKey& out)
     case Key::RightSuper:
         out = {57450, 'u'};
         return true;
+    case Key::KeypadBegin:
+        out = {1, 'E'};
+        return true;
     default:
         break;
+    }
+    if (k >= Key::KeypadSeparator && k <= Key::KeypadDelete) {
+        out = {57416u + std::uint32_t(int(k) - int(Key::KeypadSeparator)), 'u'};
+        return true;
     }
     if (k >= Key::Keypad0 && k <= Key::KeypadEqual) {
         out = {57399u + std::uint32_t(int(k) - int(Key::Keypad0)), 'u'};
@@ -398,26 +469,6 @@ bool isModifierKey(Key k)
         && k != Key::ScrollLock;
 }
 
-char32_t firstCodepoint(std::string_view utf8)
-{
-    if (utf8.empty()) {
-        return 0;
-    }
-    const auto b0 = static_cast<unsigned char>(utf8[0]);
-    if (b0 < 0x80) {
-        return b0;
-    }
-    const int len = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
-    if (int(utf8.size()) < len) {
-        return 0;
-    }
-    char32_t cp = b0 & (0x7F >> len);
-    for (int i = 1; i < len; ++i) {
-        cp = (cp << 6) | (static_cast<unsigned char>(utf8[std::size_t(i)]) & 0x3F);
-    }
-    return cp;
-}
-
 void appendTextCodepoints(std::string& out, std::string_view utf8)
 {
     bool first = true;
@@ -427,8 +478,8 @@ void appendTextCodepoints(std::string& out, std::string_view utf8)
         const std::size_t len = b0 < 0x80 ? 1 : b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
         const char32_t cp = firstCodepoint(utf8.substr(i, len));
         i += len;
-        if (cp < 0x20 || cp == 0x7F) {
-            continue;
+        if (detail::isControl(cp)) {
+            continue; // associated text holds no C0 or C1 control (the spec)
         }
         if (!first) {
             out += ':';
@@ -438,8 +489,9 @@ void appendTextCodepoints(std::string& out, std::string_view utf8)
     }
 }
 
-std::string encodeKittyKey(const KeyEvent& e, std::uint8_t flags)
+std::string encodeKittyKey(const KeyEvent& e, const Modes& modes)
 {
+    const std::uint8_t flags = modes.kittyKeyboard;
     const bool reportAll = flags & KittyFlag::ReportAllKeys;
     if (e.action == KeyAction::Release && !(flags & KittyFlag::ReportEvents)) {
         return {};
@@ -448,7 +500,10 @@ std::string encodeKittyKey(const KeyEvent& e, std::uint8_t flags)
         return {};
     }
 
-    // Lock states are only reported alongside "report all keys".
+    // Lock states are only reported alongside "report all keys". The spec
+    // reports them for keys that make no text in disambiguate mode too; they
+    // are left out there on purpose, since programs that only want to tell
+    // keys apart would read NumLock+Up as a different key from Up.
     const std::uint8_t mods = reportAll ? e.mods : std::uint8_t(e.mods & ~Mod::Locks);
     const std::uint8_t activeMods = mods & ~Mod::Locks;
     const bool producesText = !e.text.empty() && e.key != Key::Enter && e.key != Key::Tab && e.key != Key::Backspace;
@@ -468,22 +523,24 @@ std::string encodeKittyKey(const KeyEvent& e, std::uint8_t flags)
     }
 
     // Plain typing stays plain text unless every key is to be reported.
-    const bool keypadText = e.key >= Key::Keypad0 && e.key <= Key::KeypadEqual && e.key != Key::KeypadEnter
-                            && producesText;
+    const bool keypadText = ((e.key >= Key::Keypad0 && e.key <= Key::KeypadEqual) || e.key == Key::KeypadSeparator)
+                            && e.key != Key::KeypadEnter && producesText;
     if (!reportAll && (!functional || keypadText) && (activeMods & ~Mod::Shift) == 0) {
         return e.action == KeyAction::Release ? std::string() : std::string(e.text);
     }
-    // Enter, Tab and Backspace keep their legacy bytes when unmodified, so a
-    // shell stays usable after a program exits without restoring the flags.
-    if (!reportAll && activeMods == 0
-        && (e.key == Key::Enter || e.key == Key::Tab || e.key == Key::Backspace)) {
-        if (e.action == KeyAction::Release) {
-            return {};
-        }
-        return e.key == Key::Enter ? "\r" : e.key == Key::Tab ? "\t" : "\x7f";
+    // Enter, Tab and Backspace have no release events without "report all
+    // keys", modified or not. Unmodified, they keep their legacy bytes (LNM
+    // and DECBKM included), so a shell stays usable after a program exits
+    // without restoring the flags.
+    const bool legacyKey = e.key == Key::Enter || e.key == Key::Tab || e.key == Key::Backspace;
+    if (!reportAll && legacyKey && e.action == KeyAction::Release) {
+        return {};
+    }
+    if (!reportAll && legacyKey && activeMods == 0) {
+        return encodeLegacyKey(e, modes);
     }
 
-    const int modParam = 1 + mods;
+    const int modifierParam = 1 + mods;
     const int event = e.action == KeyAction::Repeat ? 2 : e.action == KeyAction::Release ? 3 : 1;
     const bool withEvent = (flags & KittyFlag::ReportEvents) && event != 1;
 
@@ -494,15 +551,15 @@ std::string encodeKittyKey(const KeyEvent& e, std::uint8_t flags)
 
     std::string out = "\x1b[";
     const bool letterFinal = kk.final != 'u' && kk.final != '~';
-    if (!(letterFinal && kk.number == 1 && modParam == 1 && !withEvent)) {
+    if (!(letterFinal && kk.number == 1 && modifierParam == 1 && !withEvent)) {
         out += std::to_string(kk.number);
     }
     if (kk.final == 'u' && (flags & KittyFlag::ReportAlternates) && !functional && (mods & Mod::Shift) && e.shifted != 0
         && std::uint32_t(e.shifted) != kk.number) {
         out += ':' + std::to_string(std::uint32_t(e.shifted));
     }
-    if (modParam != 1 || withEvent || !text.empty()) {
-        out += ';' + std::to_string(modParam);
+    if (modifierParam != 1 || withEvent || !text.empty()) {
+        out += ';' + std::to_string(modifierParam);
         if (withEvent) {
             out += ':' + std::to_string(event);
         }
@@ -519,7 +576,7 @@ std::string encodeKittyKey(const KeyEvent& e, std::uint8_t flags)
 std::string encodeKey(const KeyEvent& e, const Modes& modes)
 {
     if (modes.kittyKeyboard != 0) {
-        return encodeKittyKey(e, modes.kittyKeyboard);
+        return encodeKittyKey(e, modes);
     }
     if (e.action == KeyAction::Release || isModifierKey(e.key)) {
         return {};
@@ -591,7 +648,10 @@ std::string encodeMouse(const MouseEvent& e, const Modes& modes)
         }
     }
 
+    // A release reports button 3 with the modifiers still in it (xterm's
+    // BtnCode); SGR names the button and ends with 'm' instead.
     const bool release = e.action == MouseAction::Release;
+    const int releaseCode = 3 | (cb & 0x1C);
     char buf[64];
     int n = 0;
     switch (modes.mouseFormat) {
@@ -602,7 +662,7 @@ std::string encodeMouse(const MouseEvent& e, const Modes& modes)
         n = std::snprintf(buf, sizeof buf, "\x1b[<%d;%d;%d%c", cb, e.pixelX + 1, e.pixelY + 1, release ? 'm' : 'M');
         return std::string(buf, std::size_t(n));
     case MouseFormat::Urxvt:
-        n = std::snprintf(buf, sizeof buf, "\x1b[%d;%d;%dM", (release ? 3 : cb) + 32, e.col + 1, e.row + 1);
+        n = std::snprintf(buf, sizeof buf, "\x1b[%d;%d;%dM", (release ? releaseCode : cb) + 32, e.col + 1, e.row + 1);
         return std::string(buf, std::size_t(n));
     case MouseFormat::Utf8: {
         const int x = e.col + 1 + 32;
@@ -611,9 +671,9 @@ std::string encodeMouse(const MouseEvent& e, const Modes& modes)
             return {};
         }
         std::string s = "\x1b[M";
-        s.push_back(char((release ? 3 : cb) + 32));
-        appendUtf8(s, char32_t(x));
-        appendUtf8(s, char32_t(y));
+        s.push_back(char((release ? releaseCode : cb) + 32));
+        detail::appendUtf8(s, char32_t(x));
+        detail::appendUtf8(s, char32_t(y));
         return s;
     }
     case MouseFormat::X10: {
@@ -623,7 +683,7 @@ std::string encodeMouse(const MouseEvent& e, const Modes& modes)
             return {};
         }
         std::string s = "\x1b[M";
-        s.push_back(char((release ? 3 : cb) + 32));
+        s.push_back(char((release ? releaseCode : cb) + 32));
         s.push_back(char(x));
         s.push_back(char(y));
         return s;
@@ -637,24 +697,31 @@ std::string encodePaste(std::string_view text, const Modes& modes)
     std::string body;
     body.reserve(text.size());
     for (std::size_t i = 0; i < text.size(); ++i) {
-        const char c = text[i];
+        const auto c = static_cast<unsigned char>(text[i]);
         if (c == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
             continue;
         }
-        body.push_back(c == '\n' ? '\r' : c);
+        if (c == '\n' || c == '\r') {
+            body.push_back('\r');
+            continue;
+        }
+        // Other controls are dropped: one could run a command in a line
+        // editor (bash binds C-o to operate-and-get-next) with no newline for
+        // the unsafe-paste prompt to catch. C1 controls in UTF-8
+        // (U+0080-U+009F) are C2 80 to C2 9F.
+        const bool c1 = c == 0xC2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) >= 0x80
+            && static_cast<unsigned char>(text[i + 1]) <= 0x9F;
+        if (c1) {
+            ++i;
+        } else if (c == '\t' || (c >= 0x20 && c != 0x7F)) {
+            body.push_back(char(c));
+        }
     }
     if (!modes.bracketedPaste) {
         return body;
     }
-    constexpr std::string_view End = "\x1b[201~";
-    std::string sanitized;
-    sanitized.reserve(body.size());
-    for (char c : body) {
-        sanitized.push_back(c);
-        if (sanitized.ends_with(End)) sanitized.resize(sanitized.size() - End.size());
-    }
-    body = std::move(sanitized);
-    return "\x1b[200~" + body + std::string(End);
+    // Without ESC the text cannot hold the end marker.
+    return "\x1b[200~" + body + "\x1b[201~";
 }
 
 std::string encodeFocus(bool focused, const Modes& modes)

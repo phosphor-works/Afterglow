@@ -58,12 +58,30 @@ struct SearchHighlight
     int current = -1;
     std::uint32_t matchColor = 0;
     std::uint32_t currentColor = 0;
+    std::uint32_t textColor = packRgba(0x10, 0x10, 0x10); ///< text inside a match
 };
 
 /// What the renderer needs from one terminal, copied under the terminal lock
 /// so shaping and drawing run without holding it. Colours are resolved.
 struct AFTERGLOWRENDER_EXPORT PaneSnapshot
 {
+    /// A number no other snapshot object has had, for renderer caches: an
+    /// address can come back for a new pane. A copy or an assignment takes a
+    /// new number too, because its content is not the original's any more.
+    class Identity
+    {
+    public:
+        Identity() : m_value(next()) {}
+        Identity(const Identity&) : m_value(next()) {}
+        Identity& operator=(const Identity&) { m_value = next(); return *this; }
+        std::uint64_t value() const noexcept { return m_value; }
+
+    private:
+        static std::uint64_t next() noexcept;
+        std::uint64_t m_value;
+    };
+    Identity identity;
+
     int cols = 0;
     int rows = 0;
     /// Retained primary-screen history, even while an alternate screen is active.
@@ -77,7 +95,8 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
     std::uint32_t defaultFg = 0;
     std::uint32_t defaultBg = 0;
     bool hasTransparentBackgrounds = false;
-    std::uint32_t visualBellColor = 0;
+    std::uint32_t visualBellColor = 0; ///< OSC 21 visual_bell_color, else white
+    bool visualBellColorSet = false; ///< a program set visualBellColor (OSC 21)
     std::uint32_t selectionForegroundColor = 0;
     std::uint32_t selectionBackgroundColor = 0;
 
@@ -119,7 +138,15 @@ struct AFTERGLOWRENDER_EXPORT PaneSnapshot
         return std::size_t(y) < lineSizes.size() ? lineSizes[std::size_t(y)] : AfterglowVt::LineSize::Single;
     }
 
-    /// @param selection drawn with inverted colours when valid for the active screen.
+    /// Copies the visible screen of @p terminal.
+    /// @param selection drawn when valid for the active screen: in the OSC 17
+    ///        and 19 selection colours when set, otherwise with the cell's
+    ///        colours swapped. A selected cell shows the selection, not a
+    ///        search match.
+    /// @param search matches drawn in their highlight colours.
+    /// @param extraRows rows below the viewport to capture as well, for
+    ///        scrolling by part of a row; clamped to the scrollback offset.
+    /// @param reorder applies bidirectional reordering (applyBidi()).
     void capture(const AfterglowVt::Terminal& terminal, const AfterglowVt::Selection* selection = nullptr,
                  const SearchHighlight& search = {}, int extraRows = 0, bool reorder = true);
 };

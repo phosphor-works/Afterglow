@@ -61,15 +61,17 @@ public:
     static std::string writeStatus(std::string_view status, std::string_view id);
 
 private:
+    Result fail(std::string_view status, std::string& reply);
+    bool flush(std::string& reply);
+
     bool m_writing = false;
     bool m_failed = false; ///< after an error, packets are ignored until the next write
     ClipboardRequest m_write;
     std::string m_mime; ///< the type being received
-    std::string m_encoded; ///< its base64 so far, decoded when the type changes
-    std::size_t m_total = 0; ///< cumulative encoded bytes
-    std::size_t m_decoded = 0;
-
-    bool flush(std::string& reply);
+    std::string m_part; ///< its data so far, decoded as it arrives
+    std::string m_carry; ///< base64 characters short of a whole group
+    bool m_padded = false; ///< its base64 ended with padding: no more data may follow
+    std::size_t m_decoded = 0; ///< data of the types before it
 };
 
 } // namespace AfterglowVt

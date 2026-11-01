@@ -18,8 +18,15 @@ Pane {
     function syncVisibility() {
         if (visible) {
             query.selectAll()
-            Qt.callLater(() => { if (bar.visible) query.forceActiveFocus() })
+            // Closing the bar cleared the matches: search the kept query again.
+            if (query.text.length > 0)
+                bar.controller.search(query.text, 0)
+            Qt.callLater(() => { if (bar.visible) takeFocus() })
         }
+    }
+
+    function takeFocus() {
+        query.forceActiveFocus()
     }
 
     onVisibleChanged: syncVisibility()
@@ -42,8 +49,11 @@ Pane {
             Keys.onEnterPressed: event => bar.controller.search(text, (event.modifiers & Qt.ShiftModifier) ? -1 : 1)
         }
 
+        // The buttons take the focus only from Tab, so a click leaves the
+        // keyboard in the query.
         ToolButton {
-            text: qsTr(".*")
+            focusPolicy: Qt.TabFocus
+            text: ".*"
             checkable: true
             checked: bar.controller.searchRegex
             Accessible.name: qsTr("Regular expression")
@@ -60,6 +70,7 @@ Pane {
         }
 
         ToolButton {
+            focusPolicy: Qt.TabFocus
             icon.name: "go-up"
             text: qsTr("Previous match")
             display: AbstractButton.IconOnly
@@ -68,6 +79,7 @@ Pane {
             ToolTip.text: text
         }
         ToolButton {
+            focusPolicy: Qt.TabFocus
             icon.name: "go-down"
             text: qsTr("Next match")
             display: AbstractButton.IconOnly
@@ -76,6 +88,7 @@ Pane {
             ToolTip.text: text
         }
         ToolButton {
+            focusPolicy: Qt.TabFocus
             icon.name: "dialog-close"
             text: qsTr("Close search")
             display: AbstractButton.IconOnly

@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <clocale>
+#include <string>
+#include <vector>
+
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
 
@@ -118,6 +122,7 @@ TEST(Terminal, StylesAreReleased)
     for (int i = 0; i < 50; ++i) {
         t.feed("\x1b[38;5;" + std::to_string(i) + "mX");
     }
+    ASSERT_GT(t.t.screen().styles().liveCount(), 1u); // the cells hold styles now
     t.feed("\x1b[0m\x1b[2J");
     // Only the default style and nothing else stays live once all cells are erased.
     EXPECT_EQ(t.t.screen().styles().liveCount(), 1u);
@@ -293,7 +298,7 @@ TEST(Terminal, KittyKeyboardStack)
 TEST(Terminal, SetOptionsAppliesLive)
 {
     Term t(10, 2);
-    t.feed("\x1b]11;#000000\x07\x1b[5 q");
+    t.feed("\x1b]11;#000000\x07\x1b[1 q"); // a blinking block
     TerminalOptions o;
     o.defaultBackground = Rgb{1, 2, 3};
     o.cursorShape = CursorShape::Bar;
@@ -301,7 +306,8 @@ TEST(Terminal, SetOptionsAppliesLive)
     o.maxScrollback = 1;
     t.t.setOptions(o);
     EXPECT_EQ(t.t.defaultBackground(), (Rgb{1, 2, 3}));
-    EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
+    EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar); // the configured cursor changed
+    EXPECT_FALSE(t.t.modes().cursorBlink);
     t.feed("\x1b[2 q\x1b[0 q"); // DECSCUSR 0 returns to the configured cursor
     EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
     EXPECT_FALSE(t.t.modes().cursorBlink);
@@ -418,8 +424,11 @@ TEST(Terminal, RepeatLastCharacterRuns)
 TEST(Terminal, BatchedPrintingMatchesBytewise)
 {
     // Fed whole, text takes the batched fast paths (ASCII runs, decoded
-    // UTF-8 runs, simple characters); fed a byte at a time it takes the
-    // state machine and print(). The screens must come out the same.
+    // UTF-8 runs, simple characters). Fed a byte at a time, multi-byte UTF-8
+    // and anything after a broken sequence take the state machine and
+    // print(); ASCII still takes the run path, one byte long. Strings (OSC,
+    // DCS, APC) take the payload fast path whole and the state machine byte
+    // by byte. The screens must come out the same.
     const std::string inputs[] = {
         "plain ascii that wraps past the edge of this narrow terminal\r\n",
         "Ελληνικά кириллица 日本語の文字 한국어 \xed\x95\x9c\xea\xb8\x80 wide at the edge: 中中中中中中中中中中中\r\n",
@@ -429,6 +438,7 @@ TEST(Terminal, BatchedPrintingMatchesBytewise)
         "\x1b[31mred \xc3\xa9t\xc3\xa9\x1b[0m \x1b[1mbold \xce\xb1\xce\xb2\x1b[m\r\n",
         "bad \xc3 \xe2\x82 \xed\xa0\x80 \xc0\xaf \xf4\x90\x80\x80 \xff end\r\n",
         "\x1b[4h insert \xc3\xa9\xc3\xa9 \x1b[4l \x1b(0lqqk\x1b(B mixed\r\n",
+        "\x1b]2;title\x1b\\\x1bP$qm\x1b\\\x1b_Ga=q,i=1;AAAA\x1b\\\x1b]8;;https://x.example\x07link\x1b]8;;\x07\r\n",
     };
     for (const std::string& input : inputs) {
         RecordingHost hostA;
@@ -447,8 +457,17 @@ TEST(Terminal, BatchedPrintingMatchesBytewise)
                 ASSERT_EQ(a.codepoint(), b.codepoint()) << input << " at " << x << "," << y;
                 ASSERT_EQ(a.width(), b.width()) << input << " at " << x << "," << y;
                 ASSERT_EQ(a.hasGrapheme(), b.hasGrapheme()) << input << " at " << x << "," << y;
+                ASSERT_EQ(a.isSpacerHead(), b.isSpacerHead()) << input << " at " << x << "," << y;
+                ASSERT_EQ(whole.screen().styles().get(a.styleId()), bytewise.screen().styles().get(b.styleId()))
+                    << input << " at " << x << "," << y;
+                ASSERT_EQ(whole.screen().graphemeExtra(whole.screen().row(y), x),
+                          bytewise.screen().graphemeExtra(bytewise.screen().row(y), x))
+                    << input << " at " << x << "," << y;
             }
+            ASSERT_EQ(whole.screen().row(y).wrapped, bytewise.screen().row(y).wrapped) << input << " row " << y;
         }
+        EXPECT_EQ(hostA.written, hostB.written) << input;
+        EXPECT_EQ(hostA.title, hostB.title) << input;
         EXPECT_EQ(whole.screen().cursor.x, bytewise.screen().cursor.x) << input;
         EXPECT_EQ(whole.screen().cursor.y, bytewise.screen().cursor.y) << input;
     }
@@ -487,6 +506,12 @@ TEST(Terminal, BidiControlsAreRetainedAndCopiedOnlyForBidiShellContent)
         terminal.feed("\x1b[?1049l\x1b[2J\x1b[H\x1b[?1000h" + control + "y");
         EXPECT_EQ(terminal.screen().row(0).at(0).codepoint(), U'y');
     }
+    // Bidi off: the control takes no cell, as everywhere else.
+    RecordingHost host;
+    Terminal off(20, 3, host);
+    off.feed("\xe2\x80\xae" "abc");
+    EXPECT_EQ(off.screen().row(0).at(0).codepoint(), U'a');
+    EXPECT_EQ(off.text(Terminal::TextScope::All), "abc");
 }
 
 TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
@@ -539,4 +564,487 @@ TEST(Terminal, KeycapWidensAndSemanticEndIncludesRightmostCell)
     EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "12345");
     t.t.resize(3, 3, 10, 20);
     EXPECT_EQ(t.t.semanticRegionText(t.t.semanticRegions().back().id), "12345");
+}
+
+TEST(Terminal, ReloadKeepsTheProgramsCursorAndDropsItsColours)
+{
+    Term t(10, 2);
+    t.feed("\x1b[6 q"); // a steady bar, as vim's insert mode asks
+    t.feed("\x1b]17;#102030\x07\x1b]4;1;#ff0000\x07\x1b[#P\x1b]4;1;#00ff00\x07");
+    TerminalOptions o = t.t.options();
+    o.maxScrollback = 5; // unrelated to the cursor and the colours
+    t.t.setOptions(o);
+    EXPECT_EQ(t.t.cursorShape(), CursorShape::Bar);
+    EXPECT_FALSE(t.t.modes().cursorBlink);
+    EXPECT_EQ(t.t.selectionBackground(), nullptr);
+    const Rgb base = t.t.paletteColor(1);
+    t.feed("\x1b[#Q"); // the stack went with the reload: nothing to pop
+    EXPECT_EQ(t.t.paletteColor(1), base);
+}
+
+TEST(Terminal, MulticellWalkBelowTheScrollRegionEnds)
+{
+    // The lower half of a full-width row of blocks on the last row, below
+    // the scroll region: index() cannot move, so after its one wrap the walk
+    // crosses the same row again and erases the block that does not fit.
+    for (const bool bytewise : {false, true}) {
+        Term t(80, 24);
+        const std::string in = "\x1b[23;1H\x1b]66;s=2;" + std::string(40, 'A') + "\x1b\\\x1b[1;10r\x1b[24;1HB";
+        if (bytewise) {
+            for (char c : in) {
+                t.feed(std::string_view(&c, 1));
+            }
+        } else {
+            t.feed(in);
+        }
+        EXPECT_EQ(rowText(t.t, 23), std::string(78, ' ') + "B");
+        EXPECT_FALSE(t.t.screen().row(22).at(78).isMulticell());
+        EXPECT_FALSE(t.t.screen().row(23).at(78).isMulticell());
+        EXPECT_TRUE(t.t.screen().row(23).at(0).isMulticell()); // the blocks it walked past stay
+    }
+}
+
+namespace {
+/// A 1x1 kitty image placed at the cursor (RGB, so no decoder is needed).
+constexpr std::string_view KittyPixel = "\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\";
+} // namespace
+
+TEST(Terminal, ResetDuringACommandKeepsItsFinish)
+{
+    // RIS (as `reset` sends it) in the middle of a command: the shell's D
+    // still finishes the command.
+    Term t(20, 4);
+    t.feed("\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07\x1b" "c\x1b]133;D;0\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsFinished, std::vector<int>{0});
+}
+
+TEST(Terminal, CommandFinishesWhileTheAlternateScreenIsActive)
+{
+    // A full-screen program killed without leaving 1049 keeps its exit code.
+    Term t(20, 4);
+    t.feed("\x1b]133;C\x07\x1b[?1049h\x1b]133;D;137\x07\x1b]133;A\x07");
+    EXPECT_EQ(t.host.commandsFinished, std::vector<int>{137});
+}
+
+TEST(Terminal, CommandWithoutInputMarkIsEmpty)
+{
+    Term t(20, 6);
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+    t.feed("\x1b]133;A\x07$  \x1b]133;C\x07"); // no B in this cycle
+    ASSERT_EQ(t.host.commandsStarted.size(), 2u);
+    EXPECT_EQ(t.host.commandsStarted[0], "ls");
+    EXPECT_EQ(t.host.commandsStarted[1], "");
+}
+
+TEST(Terminal, EncodedCommandLinesLoseControlBytes)
+{
+    Term t(20, 4);
+    t.feed("\x1b]133;C;cmdline_url=%1b%5d2%3bx%07%0aecho%-1\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 1u);
+    EXPECT_EQ(t.host.commandsStarted[0], "]2;x\necho%-1"); // ESC and BEL gone; "%-1" is no escape
+    t.feed("\x1b]633;E;a\\x1bb\\x-1\x07\x1b]133;D\x07\x1b]633;C\x07");
+    ASSERT_EQ(t.host.commandsStarted.size(), 2u);
+    EXPECT_EQ(t.host.commandsStarted[1], "ab\\x-1");
+}
+
+TEST(Terminal, WorkingDirectoryReportsOnlyChanges)
+{
+    Term t(20, 4);
+    t.feed("\x1b]7;file://host/tmp\x07\x1b]7;file://host/tmp\x07");
+    EXPECT_EQ(t.host.cwd, "file://host/tmp"); // OSC 7 passes its URI on as sent
+    EXPECT_EQ(t.host.cwdChanges, 1);
+    t.feed("\x1b]633;P;Cwd=/a\\x0ab\x07"); // a path with a control byte is refused whole
+    EXPECT_EQ(t.host.cwd, "file://host/tmp");
+    t.feed("\x1b]1337;CurrentDir=/srv\x07");
+    EXPECT_EQ(t.host.cwd, "/srv");
+    EXPECT_EQ(t.host.cwdChanges, 2);
+}
+
+TEST(Terminal, SavedCursorFollowsReflow)
+{
+    // vim on the alternate screen while the window widens: leaving it, the
+    // cursor goes back to the prompt it left, wherever reflow put it.
+    Term t(10, 5);
+    t.feed("abcdefghijKLMNO\r\n$ ");
+    t.feed("\x1b[?1049h");
+    t.t.resize(20, 5, 8, 16);
+    t.feed("\x1b[?1049l");
+    const Cursor& cursor = t.t.screen().cursor;
+    EXPECT_EQ(rowText(t.t, cursor.y), "$");
+    EXPECT_EQ(cursor.x, 2);
+}
+
+TEST(Terminal, ScreenSwitchCarriesThePendingWrap)
+{
+    Term t(80, 24);
+    t.feed("\x1b[?1049h\x1b[1;80HZ\x1b[?1049l\x1b[5;5H\x1b[?1049hW");
+    EXPECT_EQ(t.t.screen().row(4).at(4).codepoint(), U'W');
+    Term primary(80, 24);
+    primary.feed("\x1b[1;80HX\x1b[?47h\x1b[5;5H\x1b[1m\x1b[?47lY");
+    EXPECT_EQ(primary.t.screen().row(4).at(4).codepoint(), U'Y');
+    // The rendition is the terminal's, not a screen's.
+    const auto& styles = primary.t.screen().styles();
+    EXPECT_TRUE(styles.get(primary.t.screen().row(4).at(4).styleId()).has(Attr::Bold));
+}
+
+TEST(Terminal, ClearForgetsTheLastPrintedCell)
+{
+    Term t(10, 3);
+    t.feed("e");
+    t.t.clearScreenAndHistory();
+    t.feed("\xcc\x81"); // a combining mark with nothing before the cursor
+    EXPECT_FALSE(t.t.screen().row(0).at(0).hasGrapheme());
+    EXPECT_EQ(t.t.text(Terminal::TextScope::All), "");
+}
+
+TEST(Terminal, NoPromptRedrawWithoutScrollback)
+{
+    // Without history nothing reflows, so there is no prompt to wait for.
+    Term t(10, 3, 0);
+    t.feed("\x1b]133;A\x07$ ");
+    t.t.resize(12, 3, 8, 16);
+    EXPECT_FALSE(t.t.promptRedrawPending());
+    Term kept(10, 3);
+    kept.feed("\x1b]133;A\x07$ ");
+    kept.t.resize(12, 3, 8, 16);
+    EXPECT_TRUE(kept.t.promptRedrawPending());
+}
+
+TEST(Terminal, ResizeWithoutScrollbackDoesNotReflow)
+{
+    Term t(10, 3, 0);
+    t.t.resize(10, 3, 8, 16);
+    t.feed("0123456789AB\x1b]133;A\x07");
+    t.feed(KittyPixel);
+    t.t.resize(5, 3, 8, 16);
+    EXPECT_EQ(rowText(t.t, 0), "01234");
+    EXPECT_EQ(t.t.graphics().placements().size(), 1u);
+    EXPECT_EQ(t.t.semanticRegions().size(), 1u);
+}
+
+TEST(Terminal, MouseFormatResetsOnlyItsOwn)
+{
+    Term t(10, 2);
+    t.feed("\x1b[?1000h\x1b[?1006h\x1b[?1015l");
+    EXPECT_EQ(t.t.modes().mouseFormat, MouseFormat::Sgr);
+    t.feed("\x1b[?1005l\x1b[?1016l");
+    EXPECT_EQ(t.t.modes().mouseFormat, MouseFormat::Sgr);
+    t.feed("\x1b[?1006l");
+    EXPECT_EQ(t.t.modes().mouseFormat, MouseFormat::X10);
+    t.feed("\x1b[?1015h\x1b[?1015l");
+    EXPECT_EQ(t.t.modes().mouseFormat, MouseFormat::X10);
+}
+
+TEST(Terminal, DoubleWidthLinesKeepTheCursorVisible)
+{
+    // Moves that land in the hidden right half come back into the visible one.
+    Term t(80, 4);
+    t.feed("\x1b#6\x1b[10I"); // CHT
+    EXPECT_LE(t.t.screen().cursor.x, 39);
+    t.feed("\xe3\x81\x82"); // a wide character at the edge of the visible half
+    EXPECT_NE(t.t.screen().row(0).at(79).width(), 2);
+    Term wrap(80, 4);
+    wrap.feed("\x1b#6\x1b[2;1H\x1b[?1045h\bA"); // reverse wrap into the line above
+    EXPECT_EQ(wrap.t.screen().row(0).at(39).codepoint(), U'A');
+    EXPECT_TRUE(wrap.t.screen().row(0).at(79).isEmpty());
+    Term restore(80, 4);
+    restore.feed("\x1b[1;70H\x1b" "7\x1b#6\x1b" "8"); // DECRC onto a line made double width since
+    EXPECT_LE(restore.t.screen().cursor.x, 39);
+}
+
+TEST(Terminal, Vs16WideningRespectsInsertMarginsAndDoubleWidth)
+{
+    const std::string heart = "\xe2\x9d\xa4\xef\xb8\x8f";
+    Term insert(10, 2);
+    insert.feed("abc\x1b[1G\x1b[4h" + heart);
+    EXPECT_EQ(insert.t.screen().row(0).at(0).width(), 2);
+    EXPECT_EQ(insert.t.screen().row(0).at(2).codepoint(), U'a'); // shifted, not overwritten
+    EXPECT_EQ(insert.t.screen().row(0).at(4).codepoint(), U'c');
+    Term margins(80, 2);
+    margins.feed("\x1b[?69h\x1b[1;10s\x1b[1;21H" + heart + "A"); // right of the margin
+    EXPECT_EQ(margins.t.screen().row(0).at(22).codepoint(), U'A');
+    EXPECT_FALSE(margins.t.screen().row(0).wrapped);
+    Term doubled(80, 2);
+    doubled.feed("\x1b#6\x1b[1;40H" + heart); // the visible half's last cell: no room
+    EXPECT_EQ(doubled.t.screen().row(0).at(39).width(), 1);
+}
+
+TEST(Terminal, ColumnModeReportsTheWidthTheHostGave)
+{
+    Term t(80, 4);
+    t.t.resize(80, 4, 10, 20);
+    t.feed("\x1b[?40h");
+    t.feed(KittyPixel);
+    t.feed("\x1b[>2;2:1:1 q\x1b[?3h\x1b[?3$p"); // the host refuses every resize
+    EXPECT_EQ(t.t.cols(), 80);
+    EXPECT_EQ(t.host.written.substr(t.host.written.rfind("\x1b[?3;")), "\x1b[?3;2$y");
+    // The page was cleared: its image and extra cursors went with the text.
+    EXPECT_TRUE(t.t.graphics().placements().empty());
+    EXPECT_TRUE(t.t.extraCursors().empty());
+}
+
+TEST(Terminal, HistoryClearsKeepImagesOnTheScreen)
+{
+    Term t(10, 3);
+    t.t.resize(10, 3, 10, 20);
+    t.feed(KittyPixel);
+    t.feed("\x1b[3J"); // ED 3: the saved lines only
+    EXPECT_EQ(t.t.graphics().placements().size(), 1u);
+    t.feed("\r\n\r\n\r\n\r\n\x1b[3J"); // now in history: it goes
+    EXPECT_TRUE(t.t.graphics().placements().empty());
+    t.feed(KittyPixel);
+    t.feed("\r\n\r\n\r\n\r\n\x1b]1337;ClearScrollback\x07");
+    EXPECT_TRUE(t.t.graphics().placements().empty());
+    t.feed(KittyPixel);
+    t.feed("\r\n\r\n\r\n\r\n\x1b[?1049h");
+    t.t.clearScreenAndHistory();
+    t.feed("\x1b[?1049l");
+    EXPECT_TRUE(t.t.graphics().placements().empty());
+}
+
+TEST(Terminal, PointerShapeReportsOnlyChanges)
+{
+    Term t(10, 2);
+    t.feed("\x1b]22;=bogus\x07\x1b]22;=bogus\x07");
+    EXPECT_EQ(t.host.pointerChanges, 0);
+    t.feed("\x1b]22;pointer\x07\x1b]22;=pointer\x07");
+    EXPECT_EQ(t.host.pointerChanges, 1);
+    EXPECT_EQ(t.host.pointer, "pointer");
+}
+
+TEST(Terminal, ExtraCursorsAreBounded)
+{
+    Term t(100, 50);
+    t.feed("\x1b[>1;4 q"); // 5,000 cells
+    EXPECT_EQ(t.t.extraCursors().size(), Terminal::MaxExtraCursors);
+    std::string repeated = "\x1b[>2";
+    for (int i = 0; i < 4000; ++i) {
+        repeated += ";4";
+    }
+    t.feed(repeated + " q"); // thousands of full-screen groups: one pass
+    EXPECT_EQ(t.t.extraCursors().size(), Terminal::MaxExtraCursors);
+    EXPECT_EQ(t.t.extraCursors().begin()->second, 2);
+    t.feed("\x1b[>0;4:1:1:1:100 q"); // erase the top row
+    EXPECT_EQ(t.t.extraCursors().count({0, 0}), 0u);
+    t.feed("\x1b[>0;4 q");
+    EXPECT_TRUE(t.t.extraCursors().empty());
+}
+
+TEST(Terminal, ResizeClipsExtraCursorsToTheClampedSize)
+{
+    Term t(10, 5);
+    t.feed("\x1b[>1;2:1:2 q"); // row 1, column 2
+    t.t.resize(1, 5, 8, 16); // one column becomes two
+    EXPECT_EQ(t.t.extraCursors().size(), 1u);
+}
+
+TEST(Terminal, ListRepliesAreBounded)
+{
+    Term t(10, 2);
+    std::string queries = "\x1b]4";
+    for (int i = 0; i < 300; ++i) {
+        queries += ";" + std::to_string(i % 256) + ";?";
+    }
+    t.feed(queries + "\x07");
+    auto replies = [&](std::string_view marker) {
+        std::size_t count = 0;
+        for (std::size_t pos = t.host.written.find(marker); pos != std::string::npos;
+             pos = t.host.written.find(marker, pos + 1)) {
+            ++count;
+        }
+        return count;
+    };
+    EXPECT_EQ(replies("\x1b]4;"), 256u);
+    t.host.written.clear();
+    std::string names = "\x1bP+q";
+    for (int i = 0; i < 300; ++i) {
+        names += "544E;";
+    }
+    t.feed(names + "544E\x1b\\");
+    EXPECT_EQ(replies("\x1bP1+r"), 256u);
+    t.host.written.clear();
+    t.feed("\x1b]22;?" + std::string(5000, ',') + "\x07"); // over its limit: no reply at all
+    t.feed("\x1b]21" + std::string(70000, ';') + "\x07");
+    EXPECT_EQ(t.host.written, "");
+}
+
+TEST(Terminal, CapabilityRepliesNeverEchoControlBytes)
+{
+    Term t(10, 2);
+    t.feed("\x1bP+q4141\r touch /tmp/pwned\r\x1b\\\x1bP+q414\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1bP0+r\x1b\\\x1bP0+r\x1b\\");
+    t.host.written.clear();
+    t.feed("\x1bP+q5365\x1b\\"); // Se: back to the configured cursor
+    EXPECT_EQ(t.host.written, "\x1bP1+r5365=1B5B302071\x1b\\");
+}
+
+TEST(Terminal, ClipboardReadReplyEchoesOnlySelectionLetters)
+{
+    Term t(10, 2);
+    t.feed("\x1b]52;c\x7f\xc3\xa9;?\x07");
+    EXPECT_EQ(t.host.written, "\x1b]52;c;\x07");
+    t.host.written.clear();
+    t.feed("\x1b]52;\x7f;?\x07");
+    EXPECT_EQ(t.host.written, "\x1b]52;c;\x07");
+}
+
+TEST(Terminal, NotificationBodiesAreBounded)
+{
+    Term t(10, 2);
+    t.feed("\x1b]9;" + std::string(70000, 'x') + "\x07");
+    t.feed("\x1b]777;notify;t;" + std::string(70000, 'x') + "\x07");
+    EXPECT_EQ(t.host.notified, "");
+}
+
+TEST(Terminal, OscNumberMustBeWhole)
+{
+    Term t(10, 2);
+    t.feed("\x1b]2x;bad\x07");
+    EXPECT_EQ(t.host.title, "");
+}
+
+TEST(Terminal, DecimalValuesIgnoreTheLocale)
+{
+    // A comma-decimal locale must not change how rgbi: and opacities read.
+    const char* locales[] = {"de_DE.UTF-8", "de_DE.utf8", "fr_FR.UTF-8", "fr_FR.utf8"};
+    const std::string previous = std::setlocale(LC_NUMERIC, nullptr);
+    for (const char* name : locales) {
+        if (std::setlocale(LC_NUMERIC, name)) {
+            break;
+        }
+    }
+    Term t(10, 2);
+    t.feed("\x1b]4;1;rgbi:0.5/0.5/0.5\x07\x1b]4;1;?\x07");
+    t.feed("\x1b]21;transparent_background_color1=#102030@0.25\x07\x1b]21;transparent_background_color1=?\x07");
+    std::setlocale(LC_NUMERIC, previous.c_str());
+    EXPECT_EQ(t.host.written, "\x1b]4;1;rgb:8080/8080/8080\x07\x1b]21;transparent_background_color1=rgb:10/20/30@0.25\x07");
+}
+
+TEST(Terminal, RepeatShowsTheCharacterAsDrawn)
+{
+    Term t(10, 2);
+    t.feed("q\x1b(0\x1b[2b\x1b(B");
+    EXPECT_EQ(rowText(t.t, 0), "qqq"); // printed before the switch: repeats as printed
+}
+
+TEST(Terminal, RepeatInInsertModeShiftsOnce)
+{
+    Term t(10, 3);
+    t.feed("0123456789\x1b[H\x1b[4ha\x1b[3b");
+    EXPECT_EQ(rowText(t.t, 0), "aaaa012345");
+    // More than the line holds: the rest wraps as printing would.
+    Term wrap(4, 3);
+    wrap.feed("xy\x1b[H\x1b[4ha\x1b[5b\x1b[4l");
+    EXPECT_EQ(rowText(wrap.t, 0), "aaaa");
+    EXPECT_EQ(rowText(wrap.t, 1), "aa");
+}
+
+TEST(Terminal, SizedTextIgnoresCharsets)
+{
+    Term t(10, 2);
+    t.feed("\x1b(0\x1b]66;s=1;q\x1b\\\x1b(B");
+    EXPECT_EQ(rowText(t.t, 0), "q");
+}
+
+TEST(Terminal, SizedBlocksMakeTheirLinesSingleWidth)
+{
+    Term t(80, 4);
+    t.feed("\x1b#6\x1b[1;38H\x1b]66;w=4;X\x1b\\");
+    EXPECT_EQ(t.t.screen().row(0).lineSize, LineSize::Single);
+}
+
+TEST(Terminal, RectangleCopyClipsAndSkipsBlocks)
+{
+    Term t(10, 4);
+    t.feed("\xe3\x81\x82\xe3\x82\x99\x1b[1;1;1;2;1;1;10;1$v"); // あ with a mark, copied to the last column
+    EXPECT_FALSE(t.t.screen().row(0).at(9).hasGrapheme());
+    EXPECT_EQ(t.t.screen().row(0).at(9).codepoint(), 0u);
+    Term blocks(10, 4);
+    blocks.feed("\x1b]66;s=2;X\x1b\\\x1b[1;1;2;2;1;1;5;1$v");
+    EXPECT_FALSE(blocks.t.screen().row(0).at(4).isMulticell());
+    EXPECT_EQ(blocks.t.screen().row(0).at(4).codepoint(), 0u);
+    Term overlap(4, 4);
+    overlap.feed("a\r\nb\r\nc\x1b[1;1;2;1;1;2;1;1$v"); // rows 1-2 down by one
+    EXPECT_EQ(rowText(overlap.t, 0), "a");
+    EXPECT_EQ(rowText(overlap.t, 1), "a");
+    EXPECT_EQ(rowText(overlap.t, 2), "b");
+}
+
+TEST(Terminal, OutOfRangeColoursAreIgnored)
+{
+    Term t(10, 2);
+    t.feed("\x1b[31m\x1b[38;5;300mA\x1b[38;2;256;0;0mB\x1b[38:2::1:2:300mC");
+    const auto& s = t.t.screen();
+    for (int x = 0; x < 3; ++x) {
+        EXPECT_EQ(s.styles().get(s.row(0).at(x).styleId()).fg, Color::palette(1)) << x;
+    }
+}
+
+TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
+{
+    Term t(10, 3);
+    t.t.resize(10, 3, 10, 20);
+    t.feed("\x1b[>8u");
+    t.feed(KittyPixel);
+    t.feed("\x1b[?1049h\x1b[>8u");
+    t.feed(KittyPixel);
+    t.feed("\x1b" "c");
+    t.host.written.clear();
+    t.feed("\x1b[?u\x1b[?1049h\x1b[?u");
+    EXPECT_TRUE(t.t.graphics().images().empty());
+    t.feed("\x1b[?1049l");
+    EXPECT_TRUE(t.t.graphics().images().empty());
+    EXPECT_EQ(t.host.written, "\x1b[?0u\x1b[?0u");
+}
+
+TEST(Terminal, BellsRingOnlyForBel)
+{
+    Term t(10, 2);
+    t.feed("\x07");
+    EXPECT_EQ(t.host.bells, 1);
+    t.feed("\x1b]2;t\x07"); // a BEL that ends a string
+    EXPECT_EQ(t.host.bells, 1);
+    t.feed("\x1b]1337;RequestAttention=yes\x07");
+    EXPECT_EQ(t.host.bells, 2);
+    t.feed("\x1b]1337;RequestAttention=no\x07");
+    EXPECT_EQ(t.host.bells, 2);
+}
+
+TEST(Terminal, KittyKeyboardStackLimitsAndModes)
+{
+    Term t(10, 2);
+    t.feed("\x1b[>1u");
+    for (int i = 0; i < 64; ++i) {
+        t.feed("\x1b[>2u");
+    }
+    t.feed("\x1b[<64u\x1b[?u"); // the first entry fell off the 64-deep stack
+    EXPECT_EQ(t.host.written, "\x1b[?0u");
+    t.host.written.clear();
+    t.feed("\x1b[=15u\x1b[=4;3u\x1b[?u"); // mode 3 clears bits
+    EXPECT_EQ(t.host.written, "\x1b[?11u");
+}
+
+TEST(Terminal, GraphemeClustersAreBounded)
+{
+    Term t(10, 2);
+    std::string marks = "e";
+    for (int i = 0; i < 40; ++i) {
+        marks += "\xcc\x81";
+    }
+    t.feed(marks);
+    EXPECT_EQ(t.t.screen().graphemeExtra(t.t.screen().row(0), 0).size(), 32u);
+    EXPECT_EQ(t.t.screen().cursor.x, 1);
+}
+
+TEST(Terminal, ResetKeepsShellContexts)
+{
+    // The uapi context spec: a reset sequence leaves the context stack alone.
+    Term t(10, 2);
+    t.feed("\x1b]3008;start=a;type=shell\x1b\\");
+    ASSERT_EQ(t.t.contexts().stack().size(), 1u);
+    const int changes = t.host.contextChanges;
+    t.feed("\x1b" "c");
+    EXPECT_EQ(t.t.contexts().stack().size(), 1u);
+    EXPECT_EQ(t.host.contextChanges, changes);
 }

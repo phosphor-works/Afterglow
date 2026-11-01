@@ -17,19 +17,25 @@
 #include <hb.h>
 
 #include <QColor>
+#include <QDateTime>
 #include <QFile>
+#include <QHash>
+#include <QLoggingCategory>
+#include <QSet>
 #include <QWindow>
 #include <rhi/qrhi.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <span>
-#include <QSet>
 #include <stdexcept>
 
 #ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
 #include <QtWaylandClient/private/qwaylandwindow_p.h>
 #endif
+
+Q_DECLARE_LOGGING_CATEGORY(lcRender)
 
 namespace AfterglowRender {
 
@@ -59,7 +65,7 @@ void recoverFailedWaylandFrame(QWindow* window)
     auto* platform = dynamic_cast<QtWaylandClient::QWaylandWindow*>(window->handle());
     if (platform && WaylandFrameState::active(platform)) {
         platform->endFrame();
-        qWarning("Recovered Qt 6.12.0 Wayland surface lock after failed Vulkan beginFrame");
+        qCWarning(lcRender, "Recovered Qt 6.12.0 Wayland surface lock after failed Vulkan beginFrame");
     }
 }
 #endif
@@ -103,13 +109,17 @@ QRectF cursorBox(const PaneSnapshot& s, const FontMetrics& m, std::optional<QPoi
     return box;
 }
 
+/// A built-in shader, read from the resources once: pipelines are made again
+/// on every change of shader chains and of the post render pass.
 QShader loadShader(const QString& path)
 {
+    static QHash<QString, QShader> loaded;
+    if (auto it = loaded.constFind(path); it != loaded.cend()) return *it;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         throw std::runtime_error("missing shader " + path.toStdString());
     }
-    return QShader::fromSerialized(f.readAll());
+    return *loaded.insert(path, QShader::fromSerialized(f.readAll()));
 }
 
 } // namespace
@@ -128,7 +138,9 @@ FrameBuilder::~FrameBuilder()
 
 std::size_t FrameBuilder::ShapeKeyHash::operator()(const ShapeKey& k) const noexcept
 {
-    return std::hash<std::u32string>{}(k.text) ^ (std::size_t(k.face) * 0x9E3779B97F4A7C15ull) ^ std::size_t(k.slot) ^ (std::size_t(k.script) << 3) ^ std::size_t(k.rtl);
+    // slot takes bits 0-1, rtl bit 2, the script from bit 3.
+    return std::hash<std::u32string>{}(k.text) ^ (std::size_t(k.face) * 0x9E3779B97F4A7C15ull) ^ std::size_t(k.slot)
+        ^ (std::size_t(k.rtl) << 2) ^ (std::size_t(k.script) << 3);
 }
 
 const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts, int face, int slot,
@@ -138,8 +150,12 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
         m_shapeCache.clear();
         m_shapeFont = fonts.identity();
     }
-    ShapeKey key{face, slot, rtl, script, text};
-    if (auto it = m_shapeCache.find(key); it != m_shapeCache.end()) {
+    m_lookup.face = face;
+    m_lookup.slot = slot;
+    m_lookup.rtl = rtl;
+    m_lookup.script = script;
+    m_lookup.text.assign(text); // reuses its capacity: no allocation on a hit
+    if (auto it = m_shapeCache.find(m_lookup); it != m_shapeCache.end()) {
         return it->second;
     }
     if (m_shapeCache.size() > 16384) {
@@ -174,7 +190,7 @@ const std::vector<FrameBuilder::ShapedGlyph>& FrameBuilder::shape(FontSet& fonts
                           float(pos[i].y_offset) / 64.0f, pen + float(pos[i].x_offset) / 64.0f});
         pen += float(pos[i].x_advance) / 64.0f;
     }
-    return m_shapeCache.emplace(std::move(key), std::move(glyphs)).first->second;
+    return m_shapeCache.emplace(m_lookup, std::move(glyphs)).first->second;
 }
 
 namespace {
@@ -201,7 +217,7 @@ bool isIcon(char32_t cp)
 
 } // namespace
 
-bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet& fonts, GlyphCache& glyphs,
+void FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet& fonts, GlyphCache& glyphs,
                              std::vector<Instance>& out, Ranges& ranges)
 {
     const FontMetrics& m = fonts.metrics();
@@ -233,15 +249,24 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // Text under a block cursor takes the background colour once it has arrived.
     const bool cursorSettled = (cursorPos - cellPos).manhattanLength() < 0.5;
     bool recolorUnderCursor = blockCursor && cursorSettled;
-    std::vector<std::optional<std::uint32_t>> extraBlocks;
-    if (drawExtraCursors && !s.extraCursors.empty()) {
-        extraBlocks.resize(std::size_t(s.cols) * s.rows);
+    // Cells under extra block cursors and their text colour, sorted by cell
+    // index: a few entries, looked up by binary search.
+    std::vector<std::pair<std::size_t, std::uint32_t>> extraBlocks;
+    if (drawExtraCursors) {
         for (const auto& c : s.extraCursors) if (c.shape == AfterglowVt::CursorShape::Block && c.x >= 0 && c.x < s.cols && c.y >= 0 && c.y < s.rows) {
             const int width = std::max(1, int(s.at(c.x, c.y).width));
-            for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx) extraBlocks[std::size_t(c.y) * s.cols + c.x + dx] = c.textColor;
+            for (int dx = 0; dx < width && c.x + dx < s.cols; ++dx) extraBlocks.emplace_back(std::size_t(c.y) * s.cols + c.x + dx, c.textColor);
         }
+        // The first cursor listed for a cell wins, as before.
+        std::stable_sort(extraBlocks.begin(), extraBlocks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     }
-    auto extraBlock = [&](int x, int y) { return !extraBlocks.empty() && y < s.rows && x < s.cols && extraBlocks[std::size_t(y) * s.cols + x].has_value(); };
+    auto extraBlock = [&](int x, int y) -> std::optional<std::uint32_t> {
+        if (extraBlocks.empty() || y >= s.rows || x >= s.cols) return std::nullopt;
+        const std::size_t index = std::size_t(y) * s.cols + x;
+        const auto it = std::lower_bound(extraBlocks.begin(), extraBlocks.end(), index,
+                                         [](const auto& entry, std::size_t i) { return entry.first < i; });
+        return it != extraBlocks.end() && it->first == index ? std::optional(it->second) : std::nullopt;
+    };
     const QRectF box = cursorBox(s, m, p.cursorPosition).translated(ox, oy);
     const float curX = float(box.x()), curY = float(box.y());
     const float curW = float(box.width()), curH = float(box.height());
@@ -249,6 +274,14 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                         || s.at(s.cursorX, s.cursorY).mcScale != 0)) {
         recolorUnderCursor = false;
     }
+    // The colour of text and decorations in cell (x, y), which a settled block
+    // cursor or an extra block cursor replaces.
+    auto colorAt = [&](int x, int y, std::uint32_t color) {
+        if (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan) return s.cursorTextColor;
+        if (const auto extra = extraBlock(x, y)) return *extra;
+        return color;
+    };
+    auto hidden = [&](const SnapshotCell& cell) { return hideBlinking && (cell.attrs & BlinkAttr); };
 
     // Pushes a glyph quad clipped vertically to [top, bottom), its texture
     // coordinates cut to match (double-height halves).
@@ -281,6 +314,14 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
         return color;
     };
+    // The face for a cell's text, chosen for what cellText() shapes.
+    auto faceOf = [&](const SnapshotCell& cell, int width) {
+        return fonts.faceFor(displayCodepoint(cell.cp), slotFor(cell.attrs), isColorText(cell, width));
+    };
+    // Shade characters keep their density whatever the text gamma.
+    auto spriteKind = [](char32_t cp) {
+        return std::uint32_t(cp >= 0x2591 && cp <= 0x2593 ? InstanceKind::LinearGlyph : InstanceKind::GrayGlyph);
+    };
     auto cellText = [&s](const SnapshotCell& cell) {
         std::u32string text(1, displayCodepoint(cell.cp));
         if (cell.grapheme) {
@@ -291,17 +332,14 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     // Draws text at @p scale16 sixteenths of the base size with its pen at
     // (@p x, @p baseline), squashed vertically by @p vstretch and clipped.
     auto drawScaled = [&](int face, StyleSlot slot, const std::u32string& text, float x, float baseline, int scale16,
-                          float vstretch, std::uint32_t color, int cellSpan, float clipTop, float clipBottom) -> bool {
+                          float vstretch, std::uint32_t color, int cellSpan, float clipTop, float clipBottom) {
         if (alphaOf(color) == 0) {
-            return true;
+            return;
         }
         const float f = float(scale16) / 16.0f;
         const auto& shaped = shape(fonts, face, int(slot), text);
         for (const ShapedGlyph& g : shaped) {
             const GlyphEntry* e = glyphs.glyph(fonts, face, g.glyphId, cellSpan, scale16, p.allowSubpixel);
-            if (!e) {
-                return false;
-            }
             if (e->empty) {
                 continue;
             }
@@ -326,7 +364,6 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             }
             pushClipped(inst, clipTop, clipBottom);
         }
-        return true;
     };
 
     auto background = [&](const SnapshotCell& cell) {
@@ -374,37 +411,32 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             const float bandTop = lineSize == AfterglowVt::LineSize::DoubleBottom ? rowTop - float(ch) : rowTop;
             for (int x = 0; x < s.cols / 2; ++x) {
                 const SnapshotCell& c = s.at(x, y);
-                if (c.width == 0 || c.cp == 0 || alphaOf(c.fg) == 0 || (hideBlinking && (c.attrs & BlinkAttr))) {
+                if (c.width == 0 || c.cp == 0 || alphaOf(c.fg) == 0 || hidden(c)) {
                     continue;
                 }
                 const float cx = ox + float(2 * x * cw);
                 if (c.grapheme == 0 && Sprites::isSprite(c.cp)) {
                     const GlyphEntry* e = glyphs.sprite(fonts, c.cp, 2, tall ? 2 : 1);
-                    if (!e) {
-                        return false;
-                    }
                     if (!e->empty) {
                         pushClipped({cx, tall ? bandTop : rowTop, float(e->width), float(e->height), float(e->u),
                                      float(e->v), float(e->u + e->width), float(e->v + e->height), c.fg,
-                                     std::uint32_t(InstanceKind::GrayGlyph), e->page},
+                                     spriteKind(c.cp), e->page},
                                     rowTop, rowTop + float(ch));
                     }
                     continue;
                 }
                 const StyleSlot slot = slotFor(c.attrs);
-                const int face = fonts.faceFor(c.cp, slot, isColorText(c, c.width));
+                const int face = faceOf(c, c.width);
                 const float lineBaseline = tall ? bandTop + float(2 * m.baseline) : baseline;
-                if (!drawScaled(face, slot, cellText(c), cx, lineBaseline, 32, tall ? 1.0f : 0.5f, c.fg,
-                                std::max<int>(1, c.width), rowTop, rowTop + float(ch))) {
-                    return false;
-                }
+                drawScaled(face, slot, cellText(c), cx, lineBaseline, 32, tall ? 1.0f : 0.5f, c.fg,
+                           std::max<int>(1, c.width), rowTop, rowTop + float(ch));
             }
             continue;
         }
         int x = 0;
         while (x < s.cols) {
             const SnapshotCell& c = s.at(x, y);
-            if (c.width == 0 || c.cp == 0 || (hideBlinking && (c.attrs & BlinkAttr))) {
+            if (c.width == 0 || c.cp == 0 || hidden(c)) {
                 ++x;
                 continue;
             }
@@ -427,22 +459,18 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     const float ax = bx + (halign == 1 ? bw - aw : halign == 2 ? (bw - aw) / 2 : 0.0f);
                     const float ay = by + (valign == 1 ? bh - ah : valign == 2 ? (bh - ah) / 2 : 0.0f);
                     const StyleSlot slot = slotFor(c.attrs);
-                    const bool color = isColorText(c, c.mcWidth >= 2 ? 2 : 1);
-                    const int face = fonts.faceFor(c.cp, slot, color);
+                    const int face = faceOf(c, c.mcWidth >= 2 ? 2 : 1);
                     const int scale16 = std::max(1, int(std::lround(f * 16.0f)));
                     if (c.grapheme == 0 && Sprites::isSprite(c.cp) && frac == 1.0f) {
                         const GlyphEntry* e = glyphs.sprite(fonts, c.cp, c.mcScale * c.mcWidth, c.mcScale);
-                        if (!e) {
-                            return false;
-                        }
                         if (!e->empty && alphaOf(c.fg) != 0) {
                             out.push_back({bx, by, float(e->width), float(e->height), float(e->u), float(e->v),
                                            float(e->u + e->width), float(e->v + e->height), c.fg,
-                                           std::uint32_t(InstanceKind::GrayGlyph), e->page});
+                                           spriteKind(c.cp), e->page});
                         }
-                    } else if (!drawScaled(face, slot, cellText(c), ax, ay + float(m.baseline) * f, scale16, 1.0f, c.fg,
-                                           c.mcWidth, -NoClip, NoClip)) {
-                        return false;
+                    } else {
+                        drawScaled(face, slot, cellText(c), ax, ay + float(m.baseline) * f, scale16, 1.0f, c.fg,
+                                   c.mcWidth, -NoClip, NoClip);
                     }
                 }
                 ++x;
@@ -451,72 +479,65 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             if (c.grapheme == 0 && Sprites::isSprite(c.cp)) {
                 if (alphaOf(c.fg) != 0) {
                     const GlyphEntry* e = glyphs.sprite(fonts, c.cp);
-                    if (!e) {
-                        return false;
-                    }
                     if (!e->empty) {
-                        std::uint32_t color = c.fg;
-                        if (extraBlock(x, y) || (recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan)) {
-                            color = recolorUnderCursor && y == s.cursorY && x >= s.cursorX && x < s.cursorX + cursorSpan
-                                ? s.cursorTextColor : *extraBlocks[std::size_t(y) * s.cols + x];
-                        }
                         const float sx = ox + float(x * cw);
                         out.push_back({sx, baseline - float(e->top), float(e->width), float(e->height), float(e->u),
-                                       float(e->v), float(e->u + e->width), float(e->v + e->height), color,
-                                       std::uint32_t(InstanceKind::GrayGlyph), e->page});
+                                       float(e->v), float(e->u + e->width), float(e->v + e->height), colorAt(x, y, c.fg),
+                                       spriteKind(c.cp), e->page});
                     }
                 }
                 ++x;
                 continue;
             }
 
-            auto faceOf = [&](const SnapshotCell& cell) {
-                bool color = cell.width == 2 && AfterglowVt::Unicode::props(cell.cp).extendedPictographic;
-                if (!color && cell.grapheme) {
-                    const std::u32string& extra = s.graphemes[cell.grapheme - 1];
-                    color = extra.find(AfterglowVt::Unicode::VariationSelector16) != std::u32string::npos;
-                }
-                return fonts.faceFor(displayCodepoint(cell.cp), slotFor(cell.attrs), color);
-            };
-
             const StyleSlot slot = slotFor(c.attrs);
-            const int face = faceOf(c);
+            const int face = faceOf(c, c.width);
             const bool rtl = (c.bidiLevel & 1) != 0;
+            // Cells that end a run (below) also end the search for the
+            // run's script, so rows split by sprites stay linear.
+            auto endsRun = [&](const SnapshotCell& n) {
+                return n.cp == 0 || n.mcScale != 0 || hidden(n) || slotFor(n.attrs) != slot
+                    || (n.grapheme == 0 && Sprites::isSprite(n.cp)) || n.bidiLevel != c.bidiLevel;
+            };
             auto script = strongScript(c.cp);
             for (int probe = x + 1; !script && probe < s.cols; ++probe) {
                 const auto& next = s.at(probe, y);
-                if (next.bidiLevel != c.bidiLevel || directionControl(next.cp)) break;
+                if (next.width == 0) continue;
+                if (endsRun(next) || directionControl(next.cp)) break;
                 script = strongScript(next.cp);
             }
 
             m_runText.clear();
             m_runColumns.clear();
             int end = x;
-            std::vector<int> columns;
+            m_columns.clear();
             while (end < s.cols) {
                 const SnapshotCell& n = s.at(end, y);
                 if (n.width == 0) {
                     ++end;
                     continue;
                 }
-                if (n.cp == 0 || n.mcScale != 0 || (hideBlinking && (n.attrs & BlinkAttr)) || slotFor(n.attrs) != slot || (n.grapheme == 0 && Sprites::isSprite(n.cp))
-                    || n.bidiLevel != c.bidiLevel
-                    || (end != x && (faceOf(n) != face || directionControl(c.cp) || directionControl(n.cp)
+                if (endsRun(n)
+                    || (end != x && (faceOf(n, n.width) != face || directionControl(c.cp) || directionControl(n.cp)
                         || (strongScript(n.cp) && script && strongScript(n.cp) != script)))) {
                     break;
                 }
-                columns.push_back(end);
+                m_columns.push_back(end);
                 ++end;
             }
-            if (rtl) std::reverse(columns.begin(), columns.end());
-            for (int column : columns) {
+            if (rtl) std::reverse(m_columns.begin(), m_columns.end());
+            for (int column : m_columns) {
                 const auto& cell = s.at(column, y);
-                const auto text = cellText(cell);
-                for (char32_t cp : text) { m_runText.push_back(cp); m_runColumns.push_back(column); }
+                m_runText.push_back(displayCodepoint(cell.cp));
+                m_runColumns.push_back(column);
+                if (cell.grapheme) {
+                    for (char32_t cp : s.graphemes[cell.grapheme - 1]) { m_runText.push_back(cp); m_runColumns.push_back(column); }
+                }
             }
 
             const auto& shaped = shape(fonts, face, int(slot), m_runText, rtl, script);
-            std::vector<std::uint32_t> clusters;
+            auto& clusters = m_clusters;
+            clusters.clear();
             for (const auto& glyph : shaped) clusters.push_back(glyph.cluster);
             clusters.push_back(std::uint32_t(m_runText.size()));
             std::sort(clusters.begin(), clusters.end());
@@ -535,14 +556,10 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                     }
                 }
                 const SnapshotCell& cell = s.at(col, y);
-                std::uint32_t color = cell.fg;
-                if (alphaOf(color) == 0) {
+                if (alphaOf(cell.fg) == 0) {
                     continue;
                 }
-                if (extraBlock(col, y) || (recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan)) {
-                    color = recolorUnderCursor && y == s.cursorY && col >= s.cursorX && col < s.cursorX + cursorSpan
-                        ? s.cursorTextColor : *extraBlocks[std::size_t(y) * s.cols + col];
-                }
+                const std::uint32_t color = colorAt(col, y, cell.fg);
                 // Icons (Nerd Font symbols) are fitted to the grid: two cells
                 // when the next one is blank, as prompts expect, else one.
                 const bool icon = cell.grapheme == 0 && isIcon(cell.cp);
@@ -555,9 +572,6 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                 }
                 const GlyphEntry* e = icon ? glyphs.icon(fonts, face, g.glyphId, span, p.allowSubpixel)
                                            : glyphs.glyph(fonts, face, g.glyphId, span, 16, p.allowSubpixel);
-                if (!e) {
-                    return false;
-                }
                 if (e->empty) {
                     continue;
                 }
@@ -582,47 +596,57 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
         }
     }
 
-    // Decorations.
-    const float th = float(m.underlineThickness);
+    // Decorations, in the colour the cell's text is drawn in (a block cursor
+    // recolours both), and hidden with blinking text in its off phase.
     for (int y = 0; y < drawRows; ++y) {
         const float rowTop = oy + float(y * ch);
         const AfterglowVt::LineSize lineSize = s.lineSize(y);
         if (lineSize == AfterglowVt::LineSize::DoubleTop) {
             continue; // decorations belong to the bottom half
         }
+        // Double-width lines double horizontally; the bottom half of a
+        // double-height line also doubles vertically, measured from the top
+        // of the character, one row up.
         const int xs = lineSize == AfterglowVt::LineSize::Single ? 1 : 2;
+        const int ys = lineSize == AfterglowVt::LineSize::DoubleBottom ? 2 : 1;
+        const float lineTop = ys == 2 ? rowTop - float(ch) : rowTop;
+        const float lineBottom = rowTop + float(ch);
+        const float th = float(m.underlineThickness * ys);
+        const float uy = lineTop + float(m.underlinePosition * ys);
         const int cols = lineSize == AfterglowVt::LineSize::Single ? s.cols : s.cols / 2;
+        const float cellW = float(xs * cw);
+        auto underlineOf = [&](int x) {
+            const SnapshotCell& c = s.at(x, y);
+            return c.mcScale != 0 || hidden(c) ? UnderlineStyle::None : c.underline;
+        };
         int x = 0;
         while (x < cols) {
-            const SnapshotCell& c = s.at(x, y);
-            const UnderlineStyle ul = c.mcScale != 0 ? UnderlineStyle::None : c.underline;
+            const UnderlineStyle ul = underlineOf(x);
             if (ul == UnderlineStyle::None) {
                 ++x;
                 continue;
             }
+            const std::uint32_t color = colorAt(x, y, s.at(x, y).underlineColor);
             int end = x + 1;
-            while (end < cols && s.at(end, y).mcScale == 0 && s.at(end, y).underline == ul
-                   && s.at(end, y).underlineColor == c.underlineColor) {
+            while (end < cols && underlineOf(end) == ul && colorAt(end, y, s.at(end, y).underlineColor) == color) {
                 ++end;
             }
-            const float rx = ox + float(x * xs * cw);
-            const float rw = float((end - x) * xs * cw);
-            const float uy = rowTop + float(m.underlinePosition);
-            const std::uint32_t color = c.underlineColor;
+            const float rx = ox + float(x) * cellW;
+            const float rw = float(end - x) * cellW;
             switch (ul) {
             case UnderlineStyle::Single:
                 solid(rx, std::round(uy - th / 2), rw, th, color);
                 break;
             case UnderlineStyle::Double: {
-                const float top = std::min(std::round(uy - th), rowTop + float(ch) - 3 * th);
+                const float top = std::min(std::round(uy - th), lineBottom - 3 * th);
                 solid(rx, top, rw, th, color);
                 solid(rx, top + 2 * th, rw, th, color);
                 break;
             }
             case UnderlineStyle::Curly: {
-                const float h = std::max(3 * th, std::round(float(ch) * 0.15f));
-                const float top = std::min(std::round(uy - h / 2), rowTop + float(ch) - h);
-                out.push_back({rx, top, rw, h, th, float(cw), 0, 0, color, std::uint32_t(InstanceKind::Undercurl)});
+                const float h = std::max(3 * th, std::round(float(ch * ys) * 0.15f));
+                const float top = std::min(std::round(uy - h / 2), lineBottom - h);
+                out.push_back({rx, top, rw, h, th, cellW, 0, 0, color, std::uint32_t(InstanceKind::Undercurl)});
                 break;
             }
             case UnderlineStyle::Dotted:
@@ -630,7 +654,7 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
                                std::uint32_t(InstanceKind::Dotted)});
                 break;
             case UnderlineStyle::Dashed:
-                out.push_back({rx, std::round(uy - th / 2), rw, th, std::max(2.0f, float(cw) / 2), 0, 0, 0, color,
+                out.push_back({rx, std::round(uy - th / 2), rw, th, std::max(2.0f, cellW / 2), 0, 0, 0, color,
                                std::uint32_t(InstanceKind::Dashed)});
                 break;
             case UnderlineStyle::None:
@@ -638,23 +662,23 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
             }
             x = end;
         }
-        for (int cx = 0; cx < cols && xs == 1; ++cx) {
+        for (int cx = 0; cx < cols; ++cx) {
             const SnapshotCell& c = s.at(cx, y);
-            if (c.mcScale != 0) {
+            if (c.mcScale != 0 || hidden(c)) {
                 continue;
             }
+            const float left = ox + float(cx) * cellW;
+            const std::uint32_t fg = colorAt(cx, y, c.fg);
             const bool hovered = (p.hoveredLink != 0 && c.link == p.hoveredLink)
                 || (y == p.hoverRow && c.logicalColumn >= p.hoverColStart && c.logicalColumn <= p.hoverColEnd);
             if (hovered && c.underline == UnderlineStyle::None) {
-                solid(ox + float(cx * cw), std::round(rowTop + float(m.underlinePosition) - th / 2), float(cw), th,
-                      c.fg);
+                solid(left, std::round(uy - th / 2), cellW, th, fg);
             }
             if ((c.attrs & Strikethrough) && alphaOf(c.fg) != 0) {
-                solid(ox + float(cx * cw), std::round(rowTop + float(m.strikethroughPosition) - th / 2), float(cw), th,
-                      c.fg);
+                solid(left, std::round(lineTop + float(m.strikethroughPosition * ys) - th / 2), cellW, th, fg);
             }
             if ((c.attrs & Overline) && alphaOf(c.fg) != 0) {
-                solid(ox + float(cx * cw), rowTop, float(cw), th, c.fg);
+                solid(left, lineTop, cellW, th, fg);
             }
         }
     }
@@ -697,7 +721,6 @@ bool FrameBuilder::buildPane(const PaneSnapshot& s, const PaneParams& p, FontSet
     ranges.cursorOtherStart = out.size();
     if (drawExtraCursors) for (const auto& c : s.extraCursors)
         if ((c.shape == AfterglowVt::CursorShape::Block) != blockCursor) extraCursor(c);
-    return true;
 }
 
 // --- WindowRenderer --------------------------------------------------------
@@ -795,7 +818,7 @@ void WindowRenderer::releaseSwapChain()
         m_post->release();
     }
     m_postPipelines = {};
-    m_postPipelinePass = nullptr;
+    m_postPipelinePass.reset();
     m_swapPipelines = {};
     m_imageBindings.clear();
     m_pageBindings.clear();
@@ -827,13 +850,14 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
     // Chains may opt into a different offscreen format. Do not rely on the
     // descriptor address changing: an allocator can reuse the same address.
     m_postPipelines = {};
-    m_postPipelinePass = nullptr;
+    m_postPipelinePass.reset();
     if (!chains.readsScrollback()) {
         m_scrollbackInitialized = false;
         m_scrollbackSettling = false;
     }
-    if (chains.empty() && chains.overview.empty() && chains.tabTransition.empty() && chains.paneEffects.empty()) {
+    if (chains.empty()) {
         m_post.reset();
+        m_postWasActive = false;
         return;
     }
     if (!m_post) {
@@ -877,10 +901,10 @@ void WindowRenderer::ensureBindings(FontResources& res)
 void WindowRenderer::initResources(FontResources& res)
 {
     QRhi* rhi = m_device.rhi();
-    m_uniforms.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 32));
-    m_uniforms->create();
+    m_uniforms.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 16));
+    if (!m_uniforms->create()) throw std::runtime_error("grid uniform buffer allocation failed");
     m_instances.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, sizeof(Instance) * 8192));
-    m_instances->create();
+    if (!m_instances->create()) throw std::runtime_error("grid instance buffer allocation failed");
     ensureBindings(res);
 }
 
@@ -948,20 +972,36 @@ QRhiShaderResourceBindings* WindowRenderer::imageBindings(QRhiTexture* texture, 
             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture,
                                                       m_device.imageSampler()),
         });
-        b.srb->create();
+        if (!b.srb->create()) throw std::runtime_error("image binding allocation failed");
     }
     b.lastUsed = m_frameCounter;
     return b.srb.get();
 }
 
-void WindowRenderer::render(const std::vector<Pane>& panes,
+namespace {
+
+const char* frameOpName(QRhi::FrameOpResult result)
+{
+    switch (result) {
+    case QRhi::FrameOpSuccess: return "success";
+    case QRhi::FrameOpError: return "error";
+    case QRhi::FrameOpSwapChainOutOfDate: return "swapchain out of date";
+    case QRhi::FrameOpDeviceLost: return "device lost";
+    }
+    return "unknown";
+}
+
+} // namespace
+
+bool WindowRenderer::render(const std::vector<Pane>& panes,
                             const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
                             QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
     m_completedGpuSeconds = 0;
     if (!m_hasSwapChain) {
-        return;
+        return false;
     }
+    bool presented = false;
     QRhi* rhi = m_device.rhi();
     Target target;
     target.size = m_swapChain->currentPixelSize();
@@ -984,7 +1024,13 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
             }
             r = begin();
         }
-        if (r != QRhi::FrameOpSuccess) return nullptr;
+        if (r != QRhi::FrameOpSuccess) {
+            // Out of date twice is a resize in progress; anything else stops
+            // rendering, and nothing in Afterglow recovers a lost device.
+            if (r != QRhi::FrameOpSwapChainOutOfDate)
+                qCWarning(lcRender, "Vulkan beginFrame failed: %s", frameOpName(r));
+            return nullptr;
+        }
         target.size = m_swapChain->currentPixelSize();
         auto* cb = m_swapChain->currentFrameCommandBuffer();
         if (m_gpuTimingEnabled) m_completedGpuSeconds = cb->lastCompletedGpuTime();
@@ -993,12 +1039,19 @@ void WindowRenderer::render(const std::vector<Pane>& panes,
     target.renderTarget = [this] { return m_swapChain->currentFrameRenderTarget(); };
     target.renderPass = m_renderPass.get();
     target.pipelines = &m_swapPipelines;
-    target.end = [this, rhi] {
+    target.end = [this, rhi, &presented] {
         const auto result = rhi->endFrame(m_swapChain.get());
-        if (result == QRhi::FrameOpSuccess) ++m_submittedFrames;
-        else if (result == QRhi::FrameOpSwapChainOutOfDate) m_hasSwapChain = false;
+        if (result == QRhi::FrameOpSuccess) {
+            ++m_submittedFrames;
+            presented = true;
+        } else if (result == QRhi::FrameOpSwapChainOutOfDate) {
+            m_hasSwapChain = false;
+        } else {
+            qCWarning(lcRender, "Vulkan endFrame failed: %s", frameOpName(result));
+        }
     };
     renderTo(target, panes, overlays, clearColor, overlayTexture, overlaySerial);
+    return presented;
 }
 
 QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>& panes,
@@ -1009,14 +1062,17 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
     if (!m_offscreenTexture || m_offscreenTexture->pixelSize() != size) {
         m_offscreenPipelines = {};
         m_offscreenTarget.reset();
+        // Pipelines made for the old descriptor must not match a new one at
+        // the same address.
+        if (m_post && m_offscreenPass) m_post->forgetPass(m_offscreenPass.get());
         m_offscreenPass.reset();
         m_offscreenTexture.reset(
             rhi->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource));
-        m_offscreenTexture->create();
+        if (!m_offscreenTexture->create()) throw std::runtime_error("offscreen texture allocation failed");
         m_offscreenTarget.reset(rhi->newTextureRenderTarget({m_offscreenTexture.get()}));
         m_offscreenPass.reset(m_offscreenTarget->newCompatibleRenderPassDescriptor());
         m_offscreenTarget->setRenderPassDescriptor(m_offscreenPass.get());
-        m_offscreenTarget->create();
+        if (!m_offscreenTarget->create()) throw std::runtime_error("offscreen target allocation failed");
     }
     QRhiReadbackResult readback;
     QRhiCommandBuffer* cb = nullptr;
@@ -1060,8 +1116,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         m_fontEpoch = m_device.fontEpoch();
     }
 
-    // While the overview shows, other tabs' panes are built too; they are
-    // drawn into their own targets, after the visible panes.
+    // Panes outside the current tab are built too, after the visible ones:
+    // overview cards of other tabs, the tab a switch leaves, or a closing
+    // pane. Each is drawn in turn into PostChain::tabImageTarget().
     const bool transition = m_post && transitionShowing() && !m_transition.from.panes.empty();
     const bool ghost = m_post && paneEffectsShowing() && m_effects.closing.has_value();
     const bool otherTabs = (m_post && overviewShowing() && !m_overview.otherTabs.empty()) || transition || ghost;
@@ -1073,6 +1130,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         bool sharp; ///< holds the highlighted pane: kept at full resolution
         int tile = -1;
         bool card = true; ///< an overview card; a tab being left is not
+        const std::vector<std::pair<QRect, std::uint32_t>>* overlays = nullptr;
     };
     std::vector<TabSlice> slices;
     if (transition || ghost) {
@@ -1083,11 +1141,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         if (transition) combined.insert(combined.end(), m_transition.from.panes.begin(), m_transition.from.panes.end());
         else combined.push_back(*m_effects.closing);
         slice.end = combined.size();
+        if (transition) slice.overlays = &m_transition.from.overlays;
         slices.push_back(slice);
     } else if (otherTabs) {
         combined = panes;
         for (const OverviewTab& tab : m_overview.otherTabs) {
             TabSlice slice{tab.index, combined.size(), 0, false};
+            slice.overlays = &tab.overlays;
             for (const Pane& pane : tab.panes) {
                 combined.push_back(pane);
                 slice.sharp |= pane.params.highlighted;
@@ -1105,17 +1165,41 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
     }
     res.glyphs.beginFrame(glyphBound, rhi->resourceLimit(QRhi::TextureSizeMax));
+    // Which chains run this frame, before anything reads active(): the panes
+    // below choose subpixel text by it, and prepare() sizes for it.
+    if (m_post) {
+        m_post->setOverviewShowing(overviewShowing());
+        m_post->setTransitionShowing(transitionShowing());
+        // Pane effects also run, first, under the overview and a tab switch.
+        m_post->setPaneEffectsShowing(m_effects.active);
+    }
+    const bool post = m_post && m_post->active();
+    if (m_post && !post && m_postWasActive) {
+        // The last event ended: free what only the chains used (window-sized
+        // textures, buffers, copies). Pipelines stay for the next one.
+        m_post->releaseIdle();
+    }
+    m_postWasActive = post;
+    if (!post || !m_post->readsScrollback()) {
+        // Nothing eases the count while no chain reads it.
+        m_scrollbackSettling = false;
+        m_scrollbackInitialized = false;
+    }
     {
         m_frame.clear();
         m_ranges.clear();
         for (const Pane& pane : drawn) {
             const auto first = std::uint32_t(m_frame.size());
             FrameBuilder::PaneParams pp = pane.params;
-            pp.allowSubpixel = pp.allowSubpixel && !m_translucent && !(m_post && m_post->active())
+            pp.allowSubpixel = pp.allowSubpixel && !m_translucent && !post
                 && pp.backgroundAlpha == 255 && !pane.snapshot->hasTransparentBackgrounds;
-            PaneCache& cache = m_paneCache[pane.snapshot];
+            // Blink phases that cannot change what is drawn do not rebuild the pane.
+            const bool cursorBlinks = pp.cursorBlinkOverride < 0 ? pane.snapshot->cursorBlink : pp.cursorBlinkOverride != 0;
+            if (!pp.focused || !cursorBlinks) pp.cursorBlinkOn = true;
+            if (!pane.snapshot->hasBlinkingText) pp.textBlinkOn = true;
+            PaneCache& cache = m_paneCache[pane.snapshot->identity.value()];
             const bool reusable = cache.snapshotVersion == pane.snapshot->version && cache.fontEpoch == m_fontEpoch
-                && cache.glyphEpoch == res.glyphs.epoch() && cache.fonts == res.fonts.get() && cache.rect == pp.rect
+                && cache.glyphEpoch == res.glyphs.epoch() && cache.fontIdentity == res.fonts->identity() && cache.rect == pp.rect
                 && cache.origin == pp.contentOrigin && cache.focused == pp.focused && cache.blinkOn == pp.cursorBlinkOn && cache.textBlinkOn == pp.textBlinkOn
                 && cache.cursorBlinkOverride == pp.cursorBlinkOverride
                 && cache.cursorPosition == pp.cursorPosition && cache.scrollShift == pp.scrollShift
@@ -1125,15 +1209,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             if (!reusable) {
                 m_scratch.clear();
                 FrameBuilder::Ranges ranges;
-                if (!m_builder.buildPane(*pane.snapshot, pp, *res.fonts, res.glyphs, m_scratch, ranges)) {
-                    throw std::runtime_error("glyph rasterization failed");
-                }
+                m_builder.buildPane(*pane.snapshot, pp, *res.fonts, res.glyphs, m_scratch, ranges);
                 cache.instances.swap(m_scratch);
                 cache.ranges = ranges;
                 cache.snapshotVersion = pane.snapshot->version;
                 cache.fontEpoch = m_fontEpoch;
                 cache.glyphEpoch = res.glyphs.epoch();
-                cache.fonts = res.fonts.get();
+                cache.fontIdentity = res.fonts->identity();
                 cache.rect = pp.rect;
                 cache.origin = pp.contentOrigin;
                 cache.focused = pp.focused;
@@ -1158,7 +1240,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
 
     }
     for (const auto& instance : m_frame) {
-        if (instance.kind == std::uint32_t(InstanceKind::GrayGlyph)) res.glyphs.touchPage(false, instance.atlasPage);
+        if (instance.kind == std::uint32_t(InstanceKind::GrayGlyph) || instance.kind == std::uint32_t(InstanceKind::LinearGlyph))
+            res.glyphs.touchPage(false, instance.atlasPage);
         if (instance.kind == std::uint32_t(InstanceKind::ColorGlyph) || instance.kind == std::uint32_t(InstanceKind::SubpixelGlyph))
             res.glyphs.touchPage(true, instance.atlasPage);
     }
@@ -1174,8 +1257,22 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                                float(img.height), float(img.srcX) / fw, float(img.srcY) / fh,
                                float(img.srcX + img.srcW) / fw, float(img.srcY + img.srcH) / fh,
                                packRgba(255, 255, 255), std::uint32_t(InstanceKind::Solid)});
-            m_ranges[i].images.push_back({index, img.frame, img.z < 0});
+            const auto layer = img.z < INT32_MIN / 2 ? ImageDraw::Layer::UnderCells
+                : img.z < 0                          ? ImageDraw::Layer::BelowText
+                                                     : ImageDraw::Layer::AboveText;
+            m_ranges[i].images.push_back({index, img.frame, layer});
         }
+    }
+    // Other tabs' overlays (dividers, dimming) go with their panes.
+    for (const TabSlice& slice : slices) {
+        if (!slice.overlays || slice.overlays->empty() || slice.begin == slice.end) continue;
+        DrawRange& last = m_ranges[slice.end - 1];
+        last.overlayFirst = std::uint32_t(m_frame.size());
+        for (const auto& [rect, color] : *slice.overlays) {
+            m_frame.push_back({float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 0, 0, 0, 0,
+                               color, std::uint32_t(InstanceKind::Solid)});
+        }
+        last.overlayEnd = std::uint32_t(m_frame.size());
     }
     const auto overlayFirst = std::uint32_t(m_frame.size());
     const QSize framePx = target.size;
@@ -1193,9 +1290,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     }
 
 
-    QRhiResourceUpdateBatch* updates = rhi->nextResourceUpdateBatch();
+    // Staged with the frame: if it fails before the first pass, these uploads
+    // (already taken from the atlases and the image cache) still happen.
+    QRhiResourceUpdateBatch* updates = frame.stage(rhi->nextResourceUpdateBatch());
     m_device.prepareAtlases(res, updates);
-    if (m_post && m_post->audioReactive()) {
+    if (post && m_post->audioReactive()) {
         m_device.prepareAudio(updates);
     }
     // Image textures upload in this frame's batch, before the pass begins.
@@ -1229,43 +1328,36 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         const int w = px.width() / atlasColumns, h = px.height() / atlasRows;
         return QRect((tile % atlasColumns) * w, (tile / atlasColumns) * h, w, h);
     };
-    const float uniforms[8] = {
+    // The Frame block of grid.vert and grid.frag. Gamma is read from the
+    // device: changing it alone does not rebuild the fonts.
+    const float gamma = m_device.fontSpec().gamma;
+    const float uniforms[4] = {
         float(px.width()),
         float(px.height()),
-        float(res.glyphs.grayPage().size()),
-        float(res.glyphs.grayPage().size()),
-        float(res.glyphs.colorPage().size()),
-        float(res.glyphs.colorPage().size()),
+        std::isfinite(gamma) ? std::clamp(gamma, 0.5f, 3.0f) : 1.0f,
         0.0f,
-        std::isfinite(res.fonts->spec().gamma) ? std::clamp(res.fonts->spec().gamma, 0.5f, 3.0f) : 1.0f,
     };
     updates->updateDynamicBuffer(m_uniforms.get(), 0, sizeof uniforms, uniforms);
 
     const auto bytes = quint32(m_frame.size() * sizeof(Instance));
     if (bytes > m_instances->size()) {
         m_instances.reset(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::VertexBuffer, bytes + bytes / 2));
-        m_instances->create();
+        if (!m_instances->create()) throw std::runtime_error("grid instance buffer allocation failed");
     }
     if (bytes > 0) {
         updates->updateDynamicBuffer(m_instances.get(), 0, bytes, m_frame.data());
     }
 
     // With shaders, the grid goes to an offscreen texture first.
-    if (m_post) {
-        m_post->setOverviewShowing(overviewShowing());
-        m_post->setTransitionShowing(transitionShowing());
-        m_post->setPaneEffectsShowing(paneEffectsShowing());
-    }
-    const bool post = m_post && m_post->active();
     QRhiRenderTarget* gridTarget = target.renderTarget();
     QRhiRenderPassDescriptor* gridPass = target.renderPass;
     PipelineSet* gridPipelines = target.pipelines;
     if (post) {
         gridTarget = m_post->prepare(px);
         gridPass = m_post->renderPass();
-        if (m_postPipelinePass != gridPass) {
+        if (m_postPipelinePass != m_post->renderPassGeneration()) {
             m_postPipelines = {};
-            m_postPipelinePass = gridPass;
+            m_postPipelinePass = m_post->renderPassGeneration();
         }
         gridPipelines = &m_postPipelines;
     }
@@ -1276,26 +1368,22 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
 
     const QColor clear = premultipliedClear(clearColor);
     const QRhiCommandBuffer::VertexInput input(m_instances.get(), 0);
-    // QRhi scissors use a bottom-left origin.
-    auto scissor = [&px](const QRect& rc) {
-        const QRect c = rc.intersected(QRect(QPoint(0, 0), px));
-        return QRhiScissor(c.x(), px.height() - (c.y() + c.height()), c.width(), c.height());
-    };
+    auto scissor = [&px](const QRect& rc) { return scissorFor(rc, px); };
     auto bindGrid = [&] {
         cb->setGraphicsPipeline(gridPipelines->grid.get());
         cb->setViewport({0, 0, float(px.width()), float(px.height())});
         cb->setShaderResources(m_pageBindings.front().get());
         cb->setVertexInput(0, 1, &input);
     };
-    auto drawImages = [&](const DrawRange& range, bool below) {
+    auto drawImages = [&](const DrawRange& range, ImageDraw::Layer layer) {
         bool bound = false;
         for (const ImageDraw& draw : range.images) {
-            if (draw.belowText != below) {
+            if (draw.layer != layer) {
                 continue;
             }
             const auto it = m_pendingImages.find(draw.frame.get());
-            if (it == m_pendingImages.end()) {
-                continue;
+            if (it == m_pendingImages.end() || !it->second.first) {
+                continue; // a frame the GPU cannot hold is not drawn
             }
             QRhiShaderResourceBindings* srb = imageBindings(it->second.first, it->second.second);
             if (!gridPipelines->image) {
@@ -1312,6 +1400,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         if (bound) {
             bindGrid();
         }
+        return bound;
     };
     auto drawChrome = [&] {
         if (!overlayTexture) {
@@ -1358,8 +1447,22 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                       double(r.width()) / px.width(), double(r.height()) / px.height());
     };
     if (post) {
-        const float now = m_clockOverride.value_or(float(m_clock.nsecsElapsed()) / 1e9f);
-        time = ShaderFrameTime{now, m_shaderFrame > 0 ? now - m_lastFrameTime : 0.0f, m_shaderFrame++};
+        const double now = m_clockOverride.value_or(double(m_clock.nsecsElapsed()) / 1e9);
+        // The first frame after frames without shaders (between events, or
+        // while hidden) has no meaningful delta, and the cursor and focus
+        // history is stale: start both again.
+        const bool resumed = m_lastPostFrame + 1 != m_frameCounter;
+        m_lastPostFrame = m_frameCounter;
+        if (resumed) m_cursorTracks.clear();
+        double delta = m_shaderFrame > 0 && !resumed ? now - m_lastFrameTime : 0.0;
+        // The wall clock can stall (a hidden window, a slow frame); preview
+        // clocks step exactly as asked.
+        if (!m_clockOverride) delta = std::clamp(delta, 0.0, 0.1);
+        time = ShaderFrameTime{now, float(delta), m_shaderFrame};
+        if (m_shaderFrame < INT_MAX) ++m_shaderFrame;
+        const QDateTime date = QDateTime::currentDateTime(); // once per frame, for every pass
+        time.date = {float(date.date().year()), float(date.date().month()), float(date.date().day()),
+                     float(date.time().msecsSinceStartOfDay()) / 1000.0f};
         m_lastFrameTime = now;
         const FontMetrics& m = res.fonts->metrics();
         double combinedLines = 0;
@@ -1396,12 +1499,14 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             st.cellSize = QSizeF(m.cellWidth, m.cellHeight);
             st.backgroundOpacity = float(pane.params.backgroundAlpha) / 255.0f;
             st.mouse = m_mouse;
+            // Tracked before the scroll shift, so smooth scrolling is not a cursor move.
             const QRectF cursor = cursorBox(snap, m).translated(pane.params.contentOrigin);
+            const QPointF shift(0, -double(pane.params.scrollShift));
             const int style = !pane.params.focused                                         ? 1
                               : snap.cursorShape == AfterglowVt::CursorShape::Bar          ? 2
                               : snap.cursorShape == AfterglowVt::CursorShape::Underline    ? 3
                                                                                            : 0;
-            CursorTrack& track = m_cursorTracks[&snap];
+            CursorTrack& track = m_cursorTracks[snap.identity.value()];
             const QColor color = toColor(snap.cursorColor);
             if (track.seenFrame == 0) {
                 track.cursor = track.previous = cursor;
@@ -1409,22 +1514,30 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 track.style = track.previousStyle = style;
                 track.focused = pane.params.focused;
             }
-            if (cursor != track.cursor || color != track.color || style != track.style) {
+            // Only a move sets the previous rectangle and the age: a shape or
+            // colour change right after a jump keeps "where it was before it
+            // last moved". Colour and shape keep their own previous values.
+            if (cursor != track.cursor) {
                 track.previous = track.cursor;
-                track.previousColor = track.color;
-                track.previousStyle = track.style;
                 track.cursor = cursor;
-                track.color = color;
                 track.changeTime = now;
             }
-            track.style = style;
+            if (color != track.color) {
+                track.previousColor = track.color;
+                track.color = color;
+            }
+            if (style != track.style) {
+                track.previousStyle = track.style;
+                track.style = style;
+            }
             if (pane.params.focused != track.focused) {
                 track.focused = pane.params.focused;
                 track.focusTime = now;
             }
             track.seenFrame = m_frameCounter;
-            st.cursor = track.cursor;
-            st.previousCursor = track.previous;
+            // Where the cursor is drawn: the same shift as the text.
+            st.cursor = track.cursor.translated(shift);
+            st.previousCursor = track.previous.translated(shift);
             st.cursorColor = track.color;
             st.previousCursorColor = track.previousColor;
             st.cursorStyle = track.style;
@@ -1436,7 +1549,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             const auto wall = std::chrono::steady_clock::now();
             for (std::size_t i = 0; i < st.signals.size(); ++i) {
                 const FrameBuilder::PaneParams::Signal& sig = pane.params.signals[i];
-                const float age = sig.at ? std::chrono::duration<float>(wall - *sig.at).count() : 1e6f;
+                const double age = sig.at ? std::chrono::duration<double>(wall - *sig.at).count() : 1e6;
                 st.signals[i] = {sig.value, now - age};
             }
             st.shaderParameters = pane.params.shaderParameters;
@@ -1465,7 +1578,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                     uv = QRectF(tile.x() + uv.x() * tile.width(), tile.y() + uv.y() * tile.height(),
                                 uv.width() * tile.width(), uv.height() * tile.height());
                 }
-                cards.push_back({slice.tab, indexInTab++, r, slice.sharp ? 1 : 2, uv, false, drawn[i].params.highlighted});
+                const auto& params = drawn[i].params;
+                cards.push_back({slice.tab, indexInTab++, r, slice.sharp ? 1 : 2, uv, false, params.highlighted,
+                                 params.openProgress, params.openEdge, params.context, params.contextProgress,
+                                 params.pulseProgress, params.pulseEffect, params.pulseColor});
             }
         }
         // Cards in tab order, then layout order within each tab.
@@ -1527,9 +1643,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         // under it: blended over the translucent clear colour, its alpha
         // would compound (0.9 over 0.9 is 0.99).
         cb->setGraphicsPipeline(gridPipelines->fill.get());
+        cb->draw(4, 1, 0, range.first);
+        // Kitty images below INT32_MIN/2 go between the pane fill and the
+        // cell backgrounds, which cover them where a cell has its own colour.
+        if (drawImages(range, ImageDraw::Layer::UnderCells)) cb->setGraphicsPipeline(gridPipelines->fill.get());
         // Cell backgrounds replace the pane fill too, including transparent
         // colors. Blending them over that fill would lose their opacity.
-        cb->draw(4, range.textStart - range.first, 0, range.first);
+        if (range.textStart > range.first + 1) cb->draw(4, range.textStart - range.first - 1, 0, range.first + 1);
     };
     auto drawSpan = [&](std::uint32_t from, std::uint32_t to) {
         // Preserve glyph order (including overlaps and combining marks),
@@ -1564,20 +1684,25 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             cb->draw(4, overlayEnd - overlayFirst, 0, overlayFirst);
         }
     };
+    // The order the layer composite also gives: backgrounds, images below the
+    // text, a block cursor, text, other cursors, images above the text.
     auto drawRange = [&](const DrawRange& range) {
-        if (range.scissor.isEmpty()) {
-            return;
+        if (!range.scissor.isEmpty()) {
+            cb->setScissor(scissor(range.scissor));
+            drawBackgrounds(range);
+            drawImages(range, ImageDraw::Layer::BelowText);
+            cb->setScissor(scissor(range.scissor));
+            if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+            else drawSpan(range.cursorOtherStart, range.end);
+            drawSpan(range.textStart, range.cursorStart);
+            if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+            else drawSpan(range.cursorOtherStart, range.end);
+            drawImages(range, ImageDraw::Layer::AboveText);
         }
-        cb->setScissor(scissor(range.scissor));
-        drawBackgrounds(range);
-        if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-        else drawSpan(range.cursorOtherStart, range.end);
-        drawImages(range, true);
-        cb->setScissor(scissor(range.scissor));
-        drawSpan(range.textStart, range.cursorStart);
-        if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-        else drawSpan(range.cursorOtherStart, range.end);
-        drawImages(range, false);
+        if (range.overlayEnd > range.overlayFirst) {
+            cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
+            cb->draw(4, range.overlayEnd - range.overlayFirst, 0, range.overlayFirst);
+        }
     };
 
     if (post && m_post->layered()) {
@@ -1591,12 +1716,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             {PostChain::Layer::Background,
              [&](const DrawRange& range) {
                  drawBackgrounds(range);
-                 drawImages(range, true);
+                 drawImages(range, ImageDraw::Layer::BelowText);
              }},
             {PostChain::Layer::Text,
              [&](const DrawRange& range) {
                  drawSpan(range.textStart, range.cursorStart);
-                 drawImages(range, false);
+                 drawImages(range, ImageDraw::Layer::AboveText);
              }},
             {PostChain::Layer::Cursor, [&](const DrawRange& range) { drawSpan(range.cursorStart, range.cursorOtherStart); }},
             {PostChain::Layer::OtherCursor, [&](const DrawRange& range) { drawSpan(range.cursorOtherStart, range.end); }},
@@ -1625,8 +1750,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         drawOverlays();
         frame.endPass();
     } else {
-        // One pass: backgrounds, a block cursor, images below the text, text,
-        // other cursors, images above.
+        // One pass, in drawRange()'s order.
         frame.beginPass(gridTarget, clear, {1.0f, 0}, updates);
         bindGrid();
         for (const DrawRange& range : visible) drawRange(range);
@@ -1636,8 +1760,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
     }
     if (post && !slices.empty()) {
-        // Other tabs for the overview: each into the tab target, then shrunk
-        // into its atlas tile. The highlighted pane's tab goes last and stays.
+        // Panes outside the current tab (overview cards of other tabs, the tab
+        // a switch leaves, a closing pane): each slice into the tab target in
+        // turn, then a card's tab is shrunk into its atlas tile. The
+        // highlighted pane's tab, or the full-size image, goes last and stays.
         QRhiTextureRenderTarget* tabTarget = m_post->tabImageTarget();
         std::stable_partition(slices.begin(), slices.end(), [](const TabSlice& slice) { return !slice.sharp; });
         for (const TabSlice& slice : slices) {
@@ -1649,7 +1775,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
     }
     if (post) {
-        m_post->record(frame, regions, windowState, time, target.renderTarget(), target.renderPass);
+        m_post->record(frame, regions, windowState, time, target.renderTarget(), target.renderPass, clear);
     }
     drawChrome();
     frame.endPass(target.finalUpdates ? target.finalUpdates() : nullptr);

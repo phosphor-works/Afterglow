@@ -4,7 +4,6 @@
 #include <AfterglowVt/Screen.h>
 
 #include <algorithm>
-#include <unordered_map>
 #include <vector>
 
 namespace AfterglowVt {
@@ -212,6 +211,22 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
             writeCell(r, x + dx, cp, styleId, 1); // erases blocks in the way
         }
     }
+    // A block's text (kitty's w=N renders a whole string in N cells) may use
+    // what is left of its rows' grapheme budget: as much as every cell of a
+    // row could hold one by one. Each row keeps a copy, so the tightest row
+    // sets the length, and scrollback stays bounded by rows x cols.
+    std::size_t keep = extra.size();
+    for (int dy = 0; dy < params.scale && keep > MaxGraphemeExtra; ++dy) {
+        const Row& r = row(y + dy);
+        std::size_t used = 0;
+        if (r.graphemes) {
+            for (const auto& [col, text] : *r.graphemes) {
+                used += text.size();
+            }
+        }
+        const std::size_t budget = std::size_t(m_cols) * MaxGraphemeExtra;
+        keep = std::min(keep, std::max(MaxGraphemeExtra, budget > used ? budget - used : 0));
+    }
     for (int dy = 0; dy < params.scale; ++dy) {
         Row& r = row(y + dy);
         for (int dx = 0; dx < cols; ++dx) {
@@ -225,7 +240,7 @@ void Screen::writeMulticell(int y, int x, char32_t cp, std::u32string_view extra
         (*r.multicell)[std::uint16_t(x)] = params;
         if (!extra.empty()) {
             if (!r.graphemes) r.graphemes = std::make_unique<GraphemeMap>();
-            (*r.graphemes)[std::uint16_t(x)] = std::u32string(extra.substr(0, 4095));
+            (*r.graphemes)[std::uint16_t(x)] = std::u32string(extra.substr(0, keep));
             r.cells[std::size_t(x)].setHasGrapheme(true);
         }
     }
@@ -240,15 +255,38 @@ void Screen::eraseMulticell(int y, int x, bool spaces)
     }
     const int left = x - c.multicellDx();
     const int top = y - c.multicellDy();
-    const MulticellParams* p = multicellParams(start, x);
-    const MulticellParams params = p ? *p : MulticellParams{std::uint8_t(c.multicellDy() + 1), std::uint8_t(c.multicellDx() + 1)};
-    for (int dy = 0; dy < params.scale; ++dy) {
+    int rows = 0;
+    int cols = 0;
+    if (const MulticellParams* p = multicellParams(start, x)) {
+        rows = p->scale;
+        cols = p->columns();
+    } else {
+        // The parameters are lost: measure the block by its cells, down from
+        // its top row and right from its left column.
+        int yy = std::max(top, 0);
+        for (; yy < m_rowCount; ++yy) {
+            const Cell& below = row(yy).at(left);
+            if (!below.isMulticell() || below.multicellDx() != 0 || below.multicellDy() != yy - top) {
+                break;
+            }
+        }
+        rows = yy - top;
+        while (left + cols < m_cols) {
+            const Cell& next = start.at(left + cols);
+            if (!next.isMulticell() || next.multicellDx() != cols || next.multicellDy() != c.multicellDy()) {
+                break;
+            }
+            ++cols;
+        }
+        rows = std::max(rows, c.multicellDy() + 1);
+    }
+    for (int dy = 0; dy < rows; ++dy) {
         const int yy = top + dy;
         if (yy < 0 || yy >= m_rowCount) {
             continue;
         }
         Row& r = row(yy);
-        for (int dx = 0; dx < params.columns() && left + dx < m_cols; ++dx) {
+        for (int dx = 0; dx < cols && left + dx < m_cols; ++dx) {
             Cell& cell = r.cells[std::size_t(left + dx)];
             if (cell.isMulticell() && cell.multicellDx() == dx && cell.multicellDy() == dy) {
                 clearCell(r, left + dx, StyleTable::DefaultId);
@@ -269,7 +307,12 @@ void Screen::eraseMulticellAt(Row& r, int x)
         eraseMulticell(y, x);
         return;
     }
-    // A history row: only its own part of the block is here.
+    eraseMulticellInRow(r, x);
+}
+
+void Screen::eraseMulticellInRow(Row& r, int x)
+{
+    // Only this row's part of the block: the rest is elsewhere, or gone.
     const Cell c = r.cells[std::size_t(x)];
     const int left = x - c.multicellDx();
     const MulticellParams* p = multicellParams(r, x);
@@ -284,7 +327,7 @@ void Screen::eraseMulticellAt(Row& r, int x)
     }
 }
 
-void Screen::eraseMulticellsCrossing(int top, int bottom, int left, int right)
+void Screen::eraseMulticellsCrossing(int top, int bottom, int left, int right, int split)
 {
     std::vector<std::pair<int, int>> doomed;
     for (int y = std::max(top, 0); y <= std::min(bottom, m_rowCount - 1); ++y) {
@@ -299,7 +342,8 @@ void Screen::eraseMulticellsCrossing(int top, int bottom, int left, int right)
             const int blockRight = col + params.columns() - 1;
             const bool inside = blockTop >= top && blockBottom <= bottom && col >= left && blockRight <= right;
             const bool touches = blockRight >= left && col <= right;
-            if (touches && !inside) {
+            const bool cut = blockTop < split && blockBottom >= split;
+            if (touches && (!inside || cut)) {
                 doomed.emplace_back(y, col);
             }
         }
@@ -359,7 +403,10 @@ void Screen::insertCells(Row& row, int x, int right, int n, std::uint32_t fillSt
             }
         }
     }
-    breakWideAt(row, x, fillStyleId);
+    // A glyph that starts at x moves whole; only one that x cuts in half breaks.
+    if (row.cells[std::size_t(x)].isTail()) {
+        breakWideAt(row, x, fillStyleId);
+    }
     breakWideAt(row, right, fillStyleId);
 
     for (int i = right - n + 1; i <= right; ++i) {
@@ -399,10 +446,15 @@ void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillSt
         }
     }
     breakWideAt(row, x, fillStyleId);
-    if (x + n <= right) {
+    // The first cell kept moves to x: a glyph starting there moves whole, and
+    // only a tail (its head deleted) is left without a partner.
+    if (x + n <= right && row.cells[std::size_t(x + n)].isTail()) {
         breakWideAt(row, x + n, fillStyleId);
     }
-    breakWideAt(row, right + 1, fillStyleId);
+    // Past the margin only a tail matters: its head inside is about to move.
+    if (right + 1 < m_cols && row.cells[std::size_t(right + 1)].isTail()) {
+        breakWideAt(row, right + 1, fillStyleId);
+    }
 
     for (int i = x; i < x + n; ++i) {
         clearCell(row, i, StyleTable::DefaultId);
@@ -410,6 +462,8 @@ void Screen::deleteCells(Row& row, int x, int right, int n, std::uint32_t fillSt
     for (int i = x; i + n <= right; ++i) {
         m_styles.release(row.cells[std::size_t(i)].styleId());
         row.cells[std::size_t(i)] = row.cells[std::size_t(i + n)];
+        // A spacer head belongs in the last column only; moved, it is a blank.
+        row.cells[std::size_t(i)].setSpacerHead(false);
         m_styles.retain(row.cells[std::size_t(i)].styleId());
         moveGrapheme(row, i + n, i);
     }
@@ -436,6 +490,8 @@ void Screen::copyRowSpan(Row& dst, const Row& src, int left, int right)
         }
         m_styles.release(d.styleId());
         d = src.cells[std::size_t(x)];
+        // A spacer head marks this row's own wrap; the copy keeps no such mark.
+        d.setSpacerHead(false);
         m_styles.retain(d.styleId());
         if (d.hasGrapheme()) {
             const std::u32string_view extra = graphemeExtra(src, x);
@@ -556,6 +612,17 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
         // row moving up one. Nothing can cross the screen's own edges, and
         // the row ids stay with their content, so images scroll with it.
         for (int k = 0; k < n; ++k) {
+            // Blocks leave with the row like rows that go into history: the
+            // part below stays. Erased here, at the top, the row cannot reach
+            // into the rows it lands next to at the bottom.
+            Row& leaving = m_rows.front();
+            if (leaving.multicell) {
+                for (int x = 0; x < m_cols; ++x) {
+                    if (leaving.cells[std::size_t(x)].isMulticell()) {
+                        eraseMulticellInRow(leaving, x);
+                    }
+                }
+            }
             m_rows.push_back(std::move(m_rows.front()));
             m_rows.pop_front();
             ++m_rowsDropped;
@@ -564,8 +631,10 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
         return;
     }
 
-    // Blocks the region boundary cuts cannot move with it.
-    eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right);
+    // Blocks the region boundary cuts cannot move with it, and neither can
+    // those the scroll splits between the rows leaving and the rows staying:
+    // a part left behind would point outside the region.
+    eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right, r.top + n);
     if (fullWidth) {
         auto first = m_rows.begin() + std::ptrdiff_t(historySize()) + r.top;
         std::rotate(first, first + n, first + height);
@@ -592,7 +661,7 @@ void Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
     }
     const bool fullWidth = r.left == 0 && r.right == m_cols - 1;
 
-    eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right);
+    eraseMulticellsCrossing(r.top, r.bottom, r.left, r.right, r.bottom - n + 1);
     if (fullWidth) {
         auto first = m_rows.begin() + std::ptrdiff_t(historySize()) + r.top;
         std::rotate(first, first + (height - n), first + height);
@@ -653,16 +722,51 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
     if (cols == m_cols && rows == m_rowCount) {
         return;
     }
-    ++m_layoutEpoch;
-    if (reflow && m_maxScrollback > 0 && cols != m_cols) {
+    if (cols != m_cols) {
+        // Only a width change can move content between rows. A height change
+        // keeps every stable id on its row, so selections and searches stay.
+        ++m_layoutEpoch;
+    }
+    if (reflow && cols != m_cols) {
+        // The saved cursor and the top of a scrolled-back viewport follow
+        // their cells like the caller's positions; they go last in the list.
+        std::vector<std::size_t> rowsTracked = trackedRows ? *trackedRows : std::vector<std::size_t>{};
+        std::vector<int> columnsTracked = trackedColumns ? *trackedColumns : std::vector<int>(rowsTracked.size(), 0);
+        const std::size_t own = rowsTracked.size();
+        rowsTracked.push_back(hasSavedCursor ? historySize() + std::size_t(std::clamp(savedCursor.y, 0, m_rowCount - 1))
+                                             : TrackedRowGone);
+        // A pending wrap sits after the last character, not on it.
+        columnsTracked.push_back(std::clamp(savedCursor.x, 0, m_cols - 1) + (savedCursor.pendingWrap ? 1 : 0));
+        rowsTracked.push_back(m_viewportOffset > 0 ? viewportTop() : TrackedRowGone);
+        columnsTracked.push_back(0);
+
         flattenMulticells(); // blocks cannot reflow; their text can
-        resizeReflow(cols, rows, promptStart, trackedRows, trackedColumns);
+        resizeReflow(cols, rows, promptStart, &rowsTracked, &columnsTracked);
+
+        if (const std::size_t top = rowsTracked[own + 1]; top != TrackedRowGone) {
+            m_viewportOffset = top < historySize() ? historySize() - top : 0;
+        }
+        if (const std::size_t saved = rowsTracked[own]; saved != TrackedRowGone) {
+            savedCursor.y = saved < historySize() ? 0 : int(saved - historySize());
+            const int col = columnsTracked[own];
+            savedCursor.pendingWrap = savedCursor.pendingWrap && col >= cols;
+            savedCursor.x = std::min(col, cols - 1);
+        } else {
+            savedCursor.pendingWrap = false;
+        }
+        if (trackedRows) {
+            rowsTracked.resize(own);
+            *trackedRows = std::move(rowsTracked);
+        }
+        if (trackedColumns) {
+            columnsTracked.resize(own);
+            *trackedColumns = std::move(columnsTracked);
+        }
     } else {
         resizeNoReflow(cols, rows, trackedRows, trackedColumns);
     }
     cursor.x = std::clamp(cursor.x, 0, m_cols - 1);
     cursor.y = std::clamp(cursor.y, 0, m_rowCount - 1);
-    cursor.pendingWrap = false;
     savedCursor.x = std::clamp(savedCursor.x, 0, m_cols - 1);
     savedCursor.y = std::clamp(savedCursor.y, 0, m_rowCount - 1);
 }
@@ -685,8 +789,14 @@ void Screen::truncateRow(Row& row, int cols)
 void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns)
 {
     const std::uint64_t droppedBefore = m_rowsDropped;
+    if (cols != m_cols) {
+        // The cursor keeps its column; a wrap pending at the old edge is not
+        // at the new one.
+        cursor.pendingWrap = false;
+        savedCursor.pendingWrap = false;
+    }
     if (cols < m_cols) {
-        // Blocks the new width or height would cut are erased.
+        // Blocks the new width would cut are erased.
         std::vector<std::pair<int, int>> doomed;
         for (int y = 0; y < m_rowCount; ++y) {
             const Row& r = row(y);
@@ -707,6 +817,10 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
         for (std::size_t i = 0; i < m_rows.size(); ++i) {
             Row& r = m_rows[i];
             truncateRow(r, cols);
+            // A spacer head marks the last column only: wider, it is a blank.
+            if (cols > m_cols && r.cells.size() >= std::size_t(m_cols)) {
+                r.cells[std::size_t(m_cols - 1)].setSpacerHead(false);
+            }
             if (i >= history) {
                 r.cells.resize(std::size_t(cols)); // the active area is always full width
             }
@@ -716,18 +830,27 @@ void Screen::resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracke
 
     if (rows < m_rowCount) {
         int excess = m_rowCount - rows;
-        // Drop blank rows below the cursor first, then push rows into history.
+        // Drop blank rows below the cursor first. Then push rows into history
+        // only as far as the cursor's row needs to stay on the screen, and
+        // drop the rest from the bottom, as reflow does: the cursor stays on
+        // its own line.
         while (excess > 0 && m_rowCount - 1 > cursor.y && rowIsBlank(m_rows.back())) {
             m_rows.pop_back();
             --m_rowCount;
             --excess;
         }
-        for (int k = 0; k < excess; ++k) {
+        const int intoHistory = std::clamp(cursor.y + 1 - rows, 0, excess);
+        for (int k = intoHistory; k < excess; ++k) {
+            releaseRow(m_rows.back());
+            m_rows.pop_back();
+            --m_rowCount;
+        }
+        for (int k = 0; k < intoHistory; ++k) {
             compact(m_rows[historySize() + std::size_t(k)]); // top rows become history
         }
-        m_rowCount -= excess;
-        cursor.y -= excess;
-        savedCursor.y -= excess;
+        m_rowCount -= intoHistory;
+        cursor.y -= intoHistory;
+        savedCursor.y -= intoHistory;
     } else if (rows > m_rowCount) {
         const int grow = rows - m_rowCount;
         const int pulled = int(std::min<std::size_t>(std::size_t(grow), historySize()));
@@ -762,6 +885,11 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     const std::size_t reflowEnd = keepPrompt ? *promptStart : m_rows.size();
     const std::size_t promptRows = keepPrompt ? cursorAbs - *promptStart + 1 : 0;
     const bool trackCursor = !keepPrompt;
+    // A pending wrap puts the cursor after the last character printed: it
+    // follows that position, and is pending again if the position lands
+    // right after a full row.
+    const bool wasPending = cursor.pendingWrap && trackCursor;
+    bool cursorAtEdge = false;
 
     // Tracked rows are remembered as a cell offset within their logical line
     // and mapped back to rows while rewrapping. Rows of a kept prompt keep
@@ -844,6 +972,10 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
         const std::size_t lineStart = out.size();
         out.emplace_back();
         bool linePrompt = false;
+        // DEC double width or height: kept when the line is one row that
+        // still fits at half the new width; otherwise it becomes single size.
+        const LineSize lineSize = first.lineSize;
+        const bool singleRow = !first.wrapped || i + 1 == reflowEnd;
         std::size_t off = 0; // cells of the line read so far
         int col = 0;
         int headCol = -1; // a wide head that waits for its tail
@@ -939,7 +1071,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             }
             if (trackCursor && j == cursorAbs) {
                 cursorHere = true;
-                cursorOffset = off + std::size_t(cursor.x);
+                cursorOffset = off + std::size_t(cursor.x) + (wasPending ? 1 : 0);
             }
             const Cell* cells = r.cells.data();
             const int stored = int(r.cells.size());
@@ -1001,6 +1133,7 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             if (c == std::size_t(cols)) {
                 // Right after content that exactly fills the row: stay on it.
                 c = std::size_t(cols) - 1;
+                cursorAtEdge = true;
             }
             while (c >= std::size_t(cols)) {
                 c -= std::size_t(cols);
@@ -1015,6 +1148,9 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
             cursorCol = int(c);
         }
         out[lineStart].promptStart = linePrompt;
+        if (lineSize != LineSize::Single && singleRow && out.size() - lineStart == 1 && col <= cols / 2) {
+            out[lineStart].lineSize = lineSize;
+        }
         for (; i <= j; ++i) {
             m_rows[i] = Row{};
         }
@@ -1063,8 +1199,9 @@ void Screen::resizeReflow(int cols, int rows, std::optional<std::size_t> promptS
     m_cols = cols;
     m_rowCount = rows;
     cursor.y = int(cursorRow - (m_rows.size() - std::size_t(rows)));
+    cursor.pendingWrap = wasPending && (cursorAtEdge || cursorCol >= cols);
     cursor.x = std::min(cursorCol, cols - 1);
-    m_viewportOffset = 0;
+    m_viewportOffset = 0; // resize() restores a scrolled-back position
     const std::uint64_t droppedBefore = m_rowsDropped;
     trimHistory();
     const std::size_t dropped = std::size_t(m_rowsDropped - droppedBefore);

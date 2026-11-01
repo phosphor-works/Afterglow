@@ -15,7 +15,7 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QDir>
-#include <QMessageBox>
+#include <QWindow>
 #include <QStringList>
 #include <QImage>
 #include <QImageReader>
@@ -86,13 +86,24 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
     AfterglowPty::SpawnOptions opts = options;
-    // Lets `afterglow ctl` run in the pane act on that pane by default.
+    // The configured and launch values win over afterglow's own, and a name
+    // they unset stays unset; each name appears once.
+    const auto named = [&opts](const std::string& name) {
+        return std::any_of(opts.environment.begin(), opts.environment.end(), [&](const auto& kv) { return kv.first == name; })
+            || std::find(opts.unsetEnvironment.begin(), opts.unsetEnvironment.end(), name) != opts.unsetEnvironment.end();
+    };
+    const auto offer = [&](const std::string& name, const std::string& value) {
+        if (!named(name)) opts.environment.emplace_back(name, value);
+    };
+    // Lets `afterglow ctl` run in the pane act on that pane by default: always ours.
+    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
+    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
     opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
     opts.cols = cols;
     opts.rows = rows;
     opts.pixelWidth = cols * cellWidth;
     opts.pixelHeight = rows * cellHeight;
-    opts.environment.emplace_back("TERM", term.toStdString());
+    offer("TERM", term.toStdString());
     if (term == QLatin1String("afterglow")) {
         // Our own entry: point ncurses at it, ahead of the system databases
         // (the trailing ':' keeps the defaults).
@@ -105,11 +116,11 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
         if (const QByteArray existing = qgetenv("TERMINFO_DIRS"); !existing.isEmpty()) {
             dirs << QString::fromLocal8Bit(existing);
         }
-        opts.environment.emplace_back("TERMINFO_DIRS", (dirs.join(QLatin1Char(':')) + QLatin1Char(':')).toStdString());
+        offer("TERMINFO_DIRS", (dirs.join(QLatin1Char(':')) + QLatin1Char(':')).toStdString());
     }
-    opts.environment.emplace_back("COLORTERM", "truecolor");
-    opts.environment.emplace_back("TERM_PROGRAM", "afterglow");
-    opts.environment.emplace_back("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);
+    offer("COLORTERM", "truecolor");
+    offer("TERM_PROGRAM", "afterglow");
+    offer("TERM_PROGRAM_VERSION", AFTERGLOW_VERSION);
     std::string err;
     opts.deferStart = true;
     if (m_pty) m_pty->stop();
@@ -164,7 +175,12 @@ bool Pane::sendInput(std::string_view bytes)
     }
     if (m_scrollOnInput) {
         std::lock_guard lock(m_mutex);
-        m_terminal.resetViewport();
+        if (m_terminal.screen().viewportOffset() != 0) {
+            m_terminal.resetViewport();
+            // The snap shows now, not with the next output: input a program
+            // does not echo draws nothing else.
+            QMetaObject::invokeMethod(this, [this] { Q_EMIT contentChanged(); }, Qt::QueuedConnection);
+        }
     }
     const bool accepted = m_pty->write(bytes);
     if (!accepted) reportInputFailure();
@@ -203,8 +219,9 @@ bool Pane::refreshSnapshot(int extraRows)
         if (m_searchActive && m_searchEpoch == m_terminal.screen().layoutEpoch() && m_searchAlt == m_terminal.modes().altScreen) {
             highlight.matches = &m_searchMatches;
             highlight.current = m_searchCurrent;
-            highlight.matchColor = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
-            highlight.currentColor = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
+            highlight.matchColor = m_searchColors.match;
+            highlight.currentColor = m_searchColors.current;
+            highlight.textColor = m_searchColors.text;
         }
         m_snapshot.capture(m_terminal, selectionHere ? &m_selection : nullptr, highlight, extraRows, false);
         applyPreedit();
@@ -312,7 +329,10 @@ void Pane::beginCopyMode()
                     screen.viewportOffset() ? 0 : screen.cursor.x};
     m_copyCursor = AfterglowVt::moveSelectionCursor(screen, m_copyCursor, 0, 0);
     m_copyMode = true; m_copySelecting = false;
-    m_selection = {m_copyCursor, m_copyCursor, AfterglowVt::SelectionMode::Normal, screen.layoutEpoch(), true};
+    m_selection = {};
+    m_selection.anchor = m_selection.head = m_copyCursor;
+    m_selection.layoutEpoch = screen.layoutEpoch();
+    m_selection.active = true;
     m_selectionOnAltScreen = m_terminal.modes().altScreen;
     ++m_selectionSerial;
 }
@@ -398,7 +418,8 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
         {
             std::lock_guard lock(m_mutex);
             if (m_terminal.screen().layoutEpoch() != job->epoch || m_terminal.modes().altScreen != job->alt) {
-                result.matches.clear(); result.error = "Layout changed. Search again";
+                // search() below sees the change and starts again.
+                result.matches.clear();
             }
             std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
             m_searchMatches = std::move(result.matches);
@@ -529,7 +550,8 @@ void Pane::applyPreedit()
         c.underline = AfterglowVt::UnderlineStyle::Single;
         c.underlineColor = s.defaultFg;
         if (cluster.size() > 1) {
-            s.graphemes.push_back(cluster);
+            // Graphemes hold the codepoints after cp, as captured cells do.
+            s.graphemes.push_back(cluster.substr(1));
             c.grapheme = std::uint32_t(s.graphemes.size());
         }
         c.link = 0;
@@ -600,6 +622,14 @@ void Pane::setSignals(const QList<QPair<int, float>>& values, std::chrono::stead
     Q_EMIT shaderSignalsChanged();
 }
 
+void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint32_t text)
+{
+    std::lock_guard lock(m_mutex);
+    if (m_searchColors.match == match && m_searchColors.current == current && m_searchColors.text == text) return;
+    m_searchColors = {match, current, text};
+    ++m_selectionSerial; // the next snapshot draws the highlights again
+}
+
 void Pane::setUserTitle(const QString& title)
 {
     QString shown;
@@ -607,6 +637,8 @@ void Pane::setUserTitle(const QString& title)
         std::lock_guard lock(m_mutex);
         m_userTitle = title;
         shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
+        if (shown == m_shownTitle) return;
+        m_shownTitle = shown;
     }
     Q_EMIT titleUpdated(shown);
 }
@@ -678,28 +710,67 @@ void Pane::writeToPty(std::string_view bytes)
     if (m_pty && !m_pty->write(bytes)) reportInputFailure();
 }
 
+bool Pane::writeReply(const QByteArray& bytes)
+{
+    // A protocol reply is not typing: it leaves the view where it is.
+    if (!m_pty || m_held.load()) return false;
+    if (!m_pty->write(std::string_view(bytes.constData(), std::size_t(bytes.size())))) {
+        reportInputFailure();
+        return false;
+    }
+    return true;
+}
+
 void Pane::titleChanged(std::string_view title)
 {
+    // pty thread, terminal locked. Programs set the same title at every prompt.
     m_title = QString::fromUtf8(title.data(), qsizetype(title.size()));
-    Q_EMIT titleUpdated(m_userTitle.isEmpty() ? m_title : m_userTitle);
+    const QString shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
+    if (shown == m_shownTitle) return;
+    m_shownTitle = shown;
+    Q_EMIT titleUpdated(shown);
+}
+
+void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
+{
+    // pty thread: one queued delivery at a time, so a burst of output (a
+    // binary file full of BEL bytes) cannot flood the GUI thread.
+    if (queued.exchange(true)) return;
+    QMetaObject::invokeMethod(this, [&queued, deliver = std::move(deliver)] {
+        queued = false;
+        deliver();
+    }, Qt::QueuedConnection);
 }
 
 void Pane::bell()
 {
-    Q_EMIT bellRang();
+    queueOnce(m_bellQueued, [this] { Q_EMIT bellRang(); });
 }
 
 void Pane::clipboardWrite(std::string_view selection, std::string_view data)
 {
+    // pty thread, terminal locked. A burst of writes sets the clipboard once,
+    // to the last text, instead of once for each sequence.
     const QByteArray decoded = QByteArray::fromBase64(QByteArray(data.data(), qsizetype(data.size())));
     const QString text = QString::fromUtf8(decoded);
     // xterm targets: 'c' clipboard, 'p'/'s' primary selection. Empty means the clipboard.
     if (selection.empty() || selection.find('c') != std::string_view::npos) {
-        Q_EMIT clipboardWriteRequested(text, false);
+        m_pendingClipboard = text;
     }
     if (selection.find_first_of("ps") != std::string_view::npos) {
-        Q_EMIT clipboardWriteRequested(text, true);
+        m_pendingPrimary = text;
     }
+    queueOnce(m_clipboardQueued, [this] {
+        std::optional<QString> clipboard;
+        std::optional<QString> primary;
+        {
+            std::lock_guard lock(m_mutex);
+            clipboard.swap(m_pendingClipboard);
+            primary.swap(m_pendingPrimary);
+        }
+        if (clipboard) Q_EMIT clipboardWriteRequested(*clipboard, false);
+        if (primary) Q_EMIT clipboardWriteRequested(*primary, true);
+    });
 }
 
 namespace {
@@ -719,6 +790,14 @@ bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector
     return true;
 }
 
+/// The formats a program may send as an image. Other Qt image plugins (SVG,
+/// TIFF, PSD, RAW…) are large parsers that remote output should not reach.
+bool imageFormatAllowed(const QByteArray& format)
+{
+    static const QByteArrayList allowed{"png", "jpeg", "jpg", "gif", "bmp", "webp"};
+    return allowed.contains(format.toLower());
+}
+
 bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t& width,
                         std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
@@ -726,7 +805,12 @@ bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t
     QByteArray bytes = QByteArray::fromRawData(data.data(), qsizetype(data.size()));
     QBuffer input(&bytes);
     if (!input.open(QIODevice::ReadOnly)) return false;
-    QImageReader reader(&input, format);
+    QByteArray detected(format);
+    if (detected.isEmpty()) {
+        detected = QImageReader::imageFormat(&input);
+        if (!imageFormatAllowed(detected)) return false;
+    }
+    QImageReader reader(&input, detected);
     const QSize size = reader.size();
     if (!size.isValid() || size.isEmpty() || size.width() > 10000 || size.height() > 10000
         || std::uint64_t(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
@@ -748,7 +832,7 @@ bool Pane::decodePng(std::string_view png, std::uint32_t& width, std::uint32_t& 
 
 bool Pane::decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    // Whatever Qt reads; an animation shows its first frame.
+    // The common formats by their content; an animation shows its first frame.
     return decodeBoundedImage(data, "", width, height, rgba);
 }
 
@@ -796,9 +880,11 @@ void Pane::contextChanged()
     if (kind.isEmpty() && !label.isEmpty()) {
         kind = otherHost ? QStringLiteral("remote") : QStringLiteral("elevated");
     }
+    // A container named like this host has no label, and then no kind.
+    if (label.isEmpty()) kind.clear();
     if (label != m_contextLabel || kind != m_contextKind) {
         m_contextLabel = label;
-        m_contextKind = label.isEmpty() ? QString() : kind;
+        m_contextKind = kind;
         Q_EMIT contextUpdated();
     }
 }
@@ -807,6 +893,9 @@ void Pane::userVarChanged(std::string_view name, std::string_view value)
 {
     const QString n = QString::fromUtf8(name.data(), qsizetype(name.size()));
     const QString v = QString::fromUtf8(value.data(), qsizetype(value.size()));
+    if (const auto it = m_userVars.constFind(n); it != m_userVars.constEnd() && *it == v) {
+        return; // shells set the same values at every prompt
+    }
     if (m_userVars.size() >= 256 && !m_userVars.contains(n)) {
         return; // enough
     }
@@ -824,12 +913,6 @@ QString Pane::contextKind() const
 {
     std::lock_guard lock(m_mutex);
     return m_contextKind;
-}
-
-QHash<QString, QString> Pane::userVars() const
-{
-    std::lock_guard lock(m_mutex);
-    return m_userVars;
 }
 
 void Pane::tickAnimations()
@@ -862,7 +945,16 @@ void Pane::notify(std::string_view title, std::string_view body)
 
 void Pane::pointerShapeChanged(std::string_view shape)
 {
-    Q_EMIT pointerShapeRequested(QString::fromUtf8(shape.data(), qsizetype(shape.size())));
+    // pty thread, terminal locked: only the last shape of a burst matters.
+    m_pendingPointerShape = QString::fromUtf8(shape.data(), qsizetype(shape.size()));
+    queueOnce(m_pointerShapeQueued, [this] {
+        QString shape;
+        {
+            std::lock_guard lock(m_mutex);
+            shape = std::exchange(m_pendingPointerShape, QString());
+        }
+        Q_EMIT pointerShapeRequested(shape);
+    });
 }
 
 void Pane::desktopNotification(const AfterglowVt::NotificationRequest& request)
@@ -883,7 +975,7 @@ std::string Pane::notificationCapabilities()
 
 void Pane::flash()
 {
-    Q_EMIT flashRequested();
+    queueOnce(m_flashQueued, [this] { Q_EMIT flashRequested(); });
 }
 
 void Pane::programStatusChanged()
@@ -960,7 +1052,7 @@ void Pane::holdStartFailure()
 {
     {
         std::lock_guard lock(m_mutex);
-        m_terminal.feed("\r\n[Unable to start a process. Check the project/configuration. Press any key to close.]\r\n");
+        m_terminal.feed("\r\n[Unable to start a process. Check the project or the configuration. Press any key to close.]\r\n");
         m_held.store(true);
     }
     Q_EMIT contentChanged();
@@ -982,8 +1074,21 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
 {
     // Bound the entire application's pending payloads, including queued GUI work.
     static std::atomic_bool busy{false};
-    if (busy.exchange(true)) return;
-    auto lease = std::shared_ptr<void>(nullptr, [](void*) { busy.store(false); });
+    static std::atomic_bool dropNoticed{false};
+    if (busy.exchange(true)) {
+        // Say so once while the dialog is open, not once for each file.
+        if (!dropNoticed.exchange(true)) {
+            QMetaObject::invokeMethod(this, [this] {
+                NotificationCenter::instance().showSimple(this, nullptr, tr("Download not saved"),
+                    tr("A program sent a file while another file was waiting to be saved."));
+            }, Qt::QueuedConnection);
+        }
+        return;
+    }
+    auto lease = std::shared_ptr<void>(nullptr, [](void*) {
+        dropNoticed.store(false);
+        busy.store(false);
+    });
     const QByteArray bytes(data.data(), qsizetype(data.size()));
     QString suggested = QString::fromUtf8(name.data(), qsizetype(name.size()));
     suggested.replace(QLatin1Char('\\'), QLatin1Char('/'));
@@ -999,13 +1104,22 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->setFileMode(QFileDialog::AnyFile);
         dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         dialog->selectFile(clean);
+        // On Wayland a dialog with no transient parent is not attached to the window.
+        if (auto* window = qobject_cast<QWindow*>(parent())) {
+            dialog->winId();
+            dialog->windowHandle()->setTransientParent(window);
+        }
         // Keep the lease until the dialog is destroyed, including on cancellation.
         connect(dialog, &QObject::destroyed, [lease] {});
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);
-        connect(dialog, &QFileDialog::fileSelected, dialog, [bytes, dialog](const QString& path) {
+        connect(dialog, &QFileDialog::fileSelected, dialog, [bytes](const QString& path) {
             QSaveFile file(path);
             if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
-                QMessageBox::warning(dialog, tr("Download failed"), file.errorString());
+                // Not a modal box parented to the dialog: the dialog deletes
+                // itself when the pane closes, which would end a nested loop
+                // inside it.
+                NotificationCenter::instance().showSimple(nullptr, nullptr, tr("Download failed"),
+                                                          QStringLiteral("%1: %2").arg(path, file.errorString()));
             }
         });
         dialog->open();
@@ -1020,7 +1134,7 @@ FileTransfer* Pane::fileTransfers()
         m_fileTransfers = std::make_unique<FileTransfer>();
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
-            if (!sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())))) m_fileTransfers->reset();
+            if (!writeReply(bytes)) m_fileTransfers->reset();
         });
     }
     return m_fileTransfers.get();
@@ -1030,7 +1144,7 @@ DragDrop* Pane::dragDrop()
     if (!m_dragDrop) {
         m_dragDrop = std::make_unique<DragDrop>();
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
-            if (!sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())))) m_dragDrop->reset();
+            if (!writeReply(bytes)) m_dragDrop->reset();
         });
     }
     return m_dragDrop.get();

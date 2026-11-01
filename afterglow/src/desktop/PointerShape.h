@@ -3,11 +3,10 @@
 #pragma once
 
 #include <QCursor>
-#include <QGuiApplication>
 #include <QHash>
 #include <QPainter>
-#include <QPalette>
 #include <QPixmapCache>
+#include <QtMath>
 
 namespace Afterglow {
 inline QCursor protocolPointer(const QString& name, qreal scale)

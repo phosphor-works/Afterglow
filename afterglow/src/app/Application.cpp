@@ -3,6 +3,9 @@
 
 #include "Application.h"
 
+#include "NotificationCenter.h"
+#include "WindowStart.h"
+
 #include <QIcon>
 #include <QStandardPaths>
 #include "../scripting/ScriptControl.h"
@@ -24,7 +27,8 @@ namespace Afterglow {
 
 namespace {
 const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
-}
+
+} // namespace
 
 Application::Application(const QString& configPath, const QJsonObject& overrides)
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
@@ -56,6 +60,7 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
         m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
     });
     m_audio.configure(m_settings.settings().audio);
+    NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit);
     QStringList iconPaths = QIcon::themeSearchPaths();
     for (const auto& path : QStandardPaths::locateAll(QStandardPaths::GenericDataLocation,
             QStringLiteral("icons"), QStandardPaths::LocateDirectory))
@@ -83,16 +88,20 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
         }
         m_scripts.setEnabled(m_settings.settings().scripts);
         QTimer::singleShot(0, &m_scripts, [this] { m_scripts.dispatch(QStringLiteral("on_config_changed"), 0); });
-        if (m_settings.settings().audio != previous.audio) {
-            m_audio.configure(m_settings.settings().audio);
+        if (const AudioSettings& audio = m_settings.settings().audio; audio != previous.audio) {
+            m_audio.configure(audio);
         }
+        NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit);
     });
 
     // Hidden windows (a tucked-away quick terminal) still count as open.
     QGuiApplication::setQuitOnLastWindowClosed(false);
 
-    QDBusConnection::sessionBus().registerObject(QLatin1String(ObjectPath), this,
-                                                 QDBusConnection::ExportScriptableSlots);
+    // A LaunchQueue from main() may hold the path: it hands it over when it replays.
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.objectRegisteredAt(QLatin1String(ObjectPath))) {
+        bus.registerObject(QLatin1String(ObjectPath), this, QDBusConnection::ExportScriptableSlots);
+    }
     bindShortcuts();
 }
 
@@ -100,6 +109,9 @@ Application::~Application()
 {
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
+    // The scripts go before Control: its callbacks into them must not outlive them.
+    m_control.setScriptActionRunner({});
+    m_control.setScriptDiagnostics({});
 }
 
 void Application::bindShortcuts()
@@ -134,30 +146,36 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     connect(window, &TerminalWindow::newWindowRequested, this,
             [this](const QString& cwd) { newWindow({cwd, {}, false, false, {}, false}); });
     connect(window, &QObject::destroyed, this, &Application::quitWhenNoWindowsRemain, Qt::QueuedConnection);
-    if (!options.quick && !options.empty) {
+    if (!options.quick) {
+        // Before the first show, also for the empty windows that ctl,
+        // scripts, projects and moved panes fill and show later.
         const WindowSettings& ws = m_settings.settings().window;
         window->setFlag(Qt::FramelessWindowHint, !ws.decorations);
-        switch (ws.startMode) {
-        case WindowSettings::StartMode::Maximized:
-            window->showMaximized();
-            break;
-        case WindowSettings::StartMode::Fullscreen:
-            window->showFullScreen();
-            break;
-        case WindowSettings::StartMode::Normal:
-            window->show();
-            break;
-        }
+        if (!options.empty) showForStartMode(*window, ws);
     }
     return window;
 }
 
-void Application::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+QString Application::openForwarded(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
     TerminalWindow* w = newWindow({workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
                                    options.value(QStringLiteral("title")).toString(),
                                    options.value(QStringLiteral("hold")).toBool()});
-    if (w) w->requestActivate();
+    if (!w) return QStringLiteral("cannot start %1").arg(command.isEmpty() ? QStringLiteral("the shell") : command.first());
+    // Qt reads the token from the environment when the window asks for focus.
+    const QByteArray token = options.value(QStringLiteral("activationToken")).toString().toUtf8();
+    if (!token.isEmpty()) qputenv("XDG_ACTIVATION_TOKEN", token);
+    w->requestActivate();
+    // An unused token must not reach the shells of later panes.
+    if (!token.isEmpty()) qunsetenv("XDG_ACTIVATION_TOKEN");
+    return {};
+}
+
+void Application::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+{
+    if (const QString error = openForwarded(workingDirectory, command, options); !error.isEmpty() && calledFromDBus()) {
+        sendErrorReply(QDBusError::Failed, error);
+    }
 }
 
 void Application::ToggleQuickTerminal()
@@ -172,6 +190,45 @@ void Application::quitWhenNoWindowsRemain()
 {
     if (TerminalWindow::windows().isEmpty()) {
         QGuiApplication::quit();
+    }
+}
+
+} // namespace Afterglow
+
+namespace Afterglow {
+
+LaunchQueue::LaunchQueue(QObject* parent)
+    : QObject(parent)
+{
+    m_registered = QDBusConnection::sessionBus().registerObject(QLatin1String(Application::ObjectPath), this,
+                                                                QDBusConnection::ExportScriptableSlots);
+}
+
+void LaunchQueue::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+{
+    setDelayedReply(true);
+    m_calls.append({message(), false, workingDirectory, command, options});
+}
+
+void LaunchQueue::ToggleQuickTerminal()
+{
+    setDelayedReply(true);
+    m_calls.append({message(), true, {}, {}, {}});
+}
+
+void LaunchQueue::replay(Application& application)
+{
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (m_registered) {
+        bus.unregisterObject(QLatin1String(Application::ObjectPath));
+        m_registered = false;
+        bus.registerObject(QLatin1String(Application::ObjectPath), &application, QDBusConnection::ExportScriptableSlots);
+    }
+    for (const Call& call : std::exchange(m_calls, {})) {
+        QString error;
+        if (call.quick) application.ToggleQuickTerminal();
+        else error = application.openForwarded(call.workingDirectory, call.command, call.options);
+        bus.send(error.isEmpty() ? call.message.createReply() : call.message.createErrorReply(QDBusError::Failed, error));
     }
 }
 

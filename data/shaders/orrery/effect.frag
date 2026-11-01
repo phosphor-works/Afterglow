@@ -10,5 +10,5 @@ vec4 pTerminal(vec2 uv) {
     vec4 scene = texture(iChannel0, uv); // linear light, premultiplied
     vec3 color = scene.a > 0.0 ? linearToSrgb(min(scene.rgb / scene.a * p_brightness, vec3(1.0))) : vec3(0.0);
     float cover = scene.a * 0.9;
-    return vec4(color * cover + background.rgb * (1.0 - cover), max(background.a, cover));
+    return vec4(color * cover + background.rgb * (1.0 - cover), cover + background.a * (1.0 - cover));
 }

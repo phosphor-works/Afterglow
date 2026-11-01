@@ -5,6 +5,9 @@
 
 #include <QRect>
 #include <QJsonObject>
+#include <QSize>
+
+#include <cstdint>
 
 #include <functional>
 #include <memory>
@@ -29,12 +32,16 @@ public:
         bool vertical = false; ///< separates top from bottom (a horizontal line)
         QRect area; ///< the split's whole rectangle
         const void* node = nullptr; ///< identifies the split for dragDivider()
+        std::uint64_t serial = 0; ///< with node: a split that took over the node's place is another split
     };
 
     explicit SplitTree(Pane* root);
 
-    /// Splits @p target, placing @p added on the @p direction side of it.
-    void split(Pane* target, Pane* added, Direction direction, double fraction = 0.5);
+    /// Splits @p target, placing @p added on the @p direction side of it. With
+    /// a @p minimum, both sides keep at least that size within the target's
+    /// last layout rectangle.
+    void split(Pane* target, Pane* added, Direction direction, double fraction = 0.5, int dividerWidth = 0,
+               const QSize& minimum = {});
     /// Removes @p pane; its sibling takes the freed space. Returns false if
     /// the pane was the last one.
     bool remove(Pane* pane);
@@ -81,6 +88,7 @@ private:
         std::unique_ptr<Node> second;
         Node* parent = nullptr;
         QRect rect;
+        std::uint64_t serial = 0; ///< changes when the node becomes another split
     };
 
     Node* find(Node* node, const Pane* pane) const;
@@ -91,6 +99,7 @@ private:
     std::unique_ptr<Node> m_root;
     std::vector<Divider> m_dividers;
     Pane* m_zoomed = nullptr;
+    std::uint64_t m_nextSerial = 1;
 };
 
 } // namespace Afterglow

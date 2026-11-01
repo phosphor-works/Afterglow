@@ -98,6 +98,11 @@ class AFTERGLOWVT_EXPORT StyleTable
 public:
     static constexpr std::uint32_t DefaultId = 0;
     static constexpr std::uint32_t MaxId = (1u << 24) - 1;
+    /// The URI and id bytes that live links may hold together. A link
+    /// without an id is a new entry every time, and a cell in scrollback
+    /// keeps it alive, so without a budget a program could hold far more
+    /// memory through links than through text.
+    static constexpr std::size_t MaxLinkBytes = 16 * 1024 * 1024;
 
     StyleTable();
 
@@ -129,11 +134,13 @@ public:
 
     /// Interns an OSC 8 hyperlink for use in a Style. A link lives as long as
     /// some live style refers to it. Links with the same id and URI share an
-    /// entry, so a link split across lines stays one link.
+    /// entry, so a link split across lines stays one link. Returns 0 (no
+    /// link) when a new entry would pass MaxLinkBytes.
     std::uint32_t internLink(std::string_view uri, std::string_view id);
     std::string_view linkUri(std::uint32_t link) const noexcept;
     std::string_view linkId(std::uint32_t link) const noexcept { return link < m_links.size() ? m_links[link].id : std::string_view{}; }
     std::size_t liveLinks() const noexcept { return m_linkLookup.size(); }
+    std::size_t linkBytes() const noexcept { return m_linkBytes; }
 
 private:
     struct Link
@@ -149,6 +156,7 @@ private:
     std::vector<Link> m_links{Link{}}; // index 0 is "no link"
     std::vector<std::uint32_t> m_freeLinks;
     std::unordered_map<std::string, std::uint32_t> m_linkLookup;
+    std::size_t m_linkBytes = 0;
 
     std::vector<Style> m_styles;
     std::vector<std::uint32_t> m_refs;

@@ -108,8 +108,6 @@ public:
     void eraseMulticell(int y, int x, bool spaces = false);
     /// The parameters of the block a multicell cell belongs to.
     const MulticellParams* multicellParams(const Row& row, int x) const;
-    /// Turns blocks into plain text at their top-left cell (before reflow).
-    void flattenMulticells();
 
     /// Inserts @p n blank cells at @p x, shifting [x, right] to the right.
     void insertCells(Row& row, int x, int right, int n, std::uint32_t fillStyleId);
@@ -126,8 +124,11 @@ public:
     /// Changes the history limit, trimming the oldest rows if needed.
     void setMaxScrollback(std::size_t rows);
 
-    /// Resizes the grid. With @p reflow, soft-wrapped lines are rewrapped to the
-    /// new width and the cursor follows its character.
+    /// Resizes the grid. With @p reflow (the primary screen), soft-wrapped
+    /// lines are rewrapped to the new width, and the cursor, the saved cursor
+    /// and a scrolled-back viewport follow their characters. Without it rows
+    /// are clipped or padded in place. A pending wrap survives a change of
+    /// height only, or a rewrap that leaves the cursor after a full row.
     ///
     /// @p promptStart is the absolute row where the shell prompt under the
     /// cursor begins, when the shell redraws its prompt on resize. Rows from
@@ -136,8 +137,9 @@ public:
     /// width) lands back on the prompt start when it repaints.
     ///
     /// @p trackedRows, if given, holds absolute row indices of things anchored
-    /// to rows (image placements). They are rewritten to where those rows end
-    /// up, or to TrackedRowGone if the row no longer exists.
+    /// to rows (image placements, OSC 133 marks, semantic region ends). They
+    /// are rewritten to where those rows end up, or to TrackedRowGone if the
+    /// row no longer exists.
     /// Optional matching columns preserve cell positions, including wide tails and end-exclusive boundaries.
     void resize(int cols, int rows, bool reflow, std::optional<std::size_t> promptStart = std::nullopt,
                 std::vector<std::size_t>* trackedRows = nullptr, std::vector<int>* trackedColumns = nullptr);
@@ -151,7 +153,7 @@ public:
     void resetViewport() noexcept { m_viewportOffset = 0; }
     /// Absolute index of the first row shown in the viewport.
     std::size_t viewportTop() const noexcept { return historySize() - m_viewportOffset; }
-    /// Cells stored for history rows (trailing blanks are not), for memory statistics.
+    /// Cells stored for history rows (trailing blanks are not).
     std::size_t historyCells() const noexcept;
 
     // Stable row ids ---------------------------------------------------------
@@ -160,8 +162,9 @@ public:
     /// rowsDropped() + its absolute index; it survives scrolling and history
     /// trimming (resize reflow starts a new numbering, see layoutEpoch()).
     std::uint64_t rowsDropped() const noexcept { return m_rowsDropped; }
-    /// Changes whenever a resize rebuilds the rows; stable ids from an older
-    /// epoch no longer refer to the same content.
+    /// Changes whenever a resize changes the width (and reflow rebuilds the
+    /// rows); stable ids from an older epoch no longer refer to the same
+    /// content. A change of height keeps the epoch.
     std::uint64_t layoutEpoch() const noexcept { return m_layoutEpoch; }
     /// Absolute index for a stable id, or -1 if that row is gone.
     long long absoluteIndexOf(std::uint64_t stableId) const noexcept
@@ -173,6 +176,8 @@ public:
     }
 
 private:
+    /// Turns blocks into plain text at their top-left cell (before reflow).
+    void flattenMulticells();
     void releaseRow(Row& row) noexcept;
     /// Drops a history row's trailing blank cells and returns the memory.
     static void compact(Row& row);
@@ -185,8 +190,11 @@ private:
     int visibleIndexOf(const Row& row) const noexcept;
     /// Erases the block at @p x of @p row, wherever the row is.
     void eraseMulticellAt(Row& row, int x);
-    /// Erases blocks in rows top..bottom that also reach outside the region.
-    void eraseMulticellsCrossing(int top, int bottom, int left, int right);
+    /// Erases only @p row's part of the block at @p x.
+    void eraseMulticellInRow(Row& row, int x);
+    /// Erases blocks in rows top..bottom that also reach outside the region,
+    /// or that have rows on both sides of row @p split.
+    void eraseMulticellsCrossing(int top, int bottom, int left, int right, int split);
     void trimHistory();
     void truncateRow(Row& row, int cols);
     void resizeNoReflow(int cols, int rows, std::vector<std::size_t>* tracked, std::vector<int>* trackedColumns);

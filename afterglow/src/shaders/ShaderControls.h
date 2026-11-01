@@ -11,7 +11,8 @@ class ShaderControls
 public:
     explicit ShaderControls(ShaderLibrary& library) : m_library(library) {}
     void setClock(PhosphorAnimation::IMotionClock* clock) { m_clock = clock; }
-    bool advance(bool finish = false);
+    /// Moves transitions on; true while any is still running.
+    bool advance();
     void rebuild(AfterglowRender::ShaderChains& chains);
     QVariantList describe(quint32 pane) const;
     QString update(const QString& owner, const QList<quint32>& panes, const QString& instance,

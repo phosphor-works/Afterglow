@@ -36,7 +36,8 @@ vec4 pTerminal(vec2 uv) {
     vec3 radiance = c.rgb+bloom*(p_bloom/24.0)+streak*(p_streak/8.0);
     vec2 centred = (phWindow(fragCoord)/uWindowSize-0.5)*vec2(1.0,0.7);
     radiance *= 1.0-0.20*dot(centred,centred);
-    vec3 rgb = pow(filmic(radiance),vec3(1.0/2.2));
+    // The transfer works on straight colour: the light takes the frame's alpha.
+    vec3 rgb = c.a > 0.0 ? pow(filmic(radiance/c.a),vec3(1.0/2.2))*c.a : vec3(0);
     if (phLight()) {
         vec3 background = pow(uBackgroundColor.rgb,vec3(2.2))*c.a;
         vec3 scene = pow(filmic(max(c.rgb-background,vec3(0))+bloom*(p_bloom/24.0)

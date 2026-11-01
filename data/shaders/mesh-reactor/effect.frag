@@ -5,7 +5,7 @@
 vec3 chamber(vec2 uv) {
     // Centred, aspect-corrected, y up.
     vec2 p=(uv-0.5)*vec2(uWindowSize.x/uWindowSize.y,-1.0);
-    float t=iTime*p_speed;
+    float t=sceneTime();
     vec3 cyan=vec3(0.015,0.12,0.20),violet=vec3(0.11,0.015,0.20);
     float n=noise3(vec3(p*3.0,t*0.025));
     float cloud=noise3(vec3(p*6.0+vec2(n),t*0.04));
@@ -25,9 +25,14 @@ vec3 chamber(vec2 uv) {
     return c;
 }
 vec4 pTerminal(vec2 uv) {
+    // The background layer keeps its cell backgrounds, selections, images and
+    // the window's opacity. The scene shows where the window background does.
+    vec4 base=terminalTexel(uv);
+    float empty=1.0-smoothstep(0.01,0.08,length(base.rgb-uBackgroundColor.rgb*base.a));
     vec2 windowUV=(uTerminalRect.xy+uv*uTerminalRect.zw)/uWindowSize;
     vec4 scene=texture(iChannel0,uv);
-    // Resolve isolated subpixel edges when the driver has no two-sample MSAA.
+    // Soften isolated subpixel edges on every pixel: two-sample MSAA leaves
+    // some, and a device without it falls back to one sample.
     vec2 texel=1.0/vec2(textureSize(iChannel0,0));
     vec4 n=texture(iChannel0,uv+vec2(0,texel.y));
     vec4 s=texture(iChannel0,uv-vec2(0,texel.y));
@@ -48,8 +53,8 @@ vec4 pTerminal(vec2 uv) {
     if(p_linearOutput<0.5) radiance+=glow;
     float vignette=1.0-0.36*smoothstep(0.18,0.8,length(windowUV-0.5));
     radiance*=p_exposure*vignette;
-    if(p_linearOutput>0.5) return vec4(radiance,1);
+    if(p_linearOutput>0.5) return vec4(mix(toLinearPremultiplied(base).rgb,radiance*base.a,empty),base.a);
     // ACES fitted display curve; preserve bright cyan and warm metal edges.
     vec3 mapped=clamp((radiance*(2.51*radiance+0.03))/(radiance*(2.43*radiance+0.59)+0.14),0.0,1.0);
-    return vec4(linearToSrgb(mapped),1);
+    return vec4(mix(base.rgb,linearToSrgb(mapped)*base.a,empty),base.a);
 }

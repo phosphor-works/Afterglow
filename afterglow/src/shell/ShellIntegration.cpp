@@ -33,7 +33,7 @@ bool prepare(AfterglowPty::SpawnOptions& o, bool enabled, const QString& root)
 {
     if (!enabled || env(o, "AFTERGLOW_SHELL_INTEGRATION") == "0") return false;
     auto args = o.argv;
-    if (args.empty()) args.push_back(AfterglowPty::Pty::defaultShell());
+    if (args.empty()) args.push_back(AfterglowPty::Pty::defaultShell(o));
     const QString shell = QFileInfo(QString::fromStdString(args.front())).fileName();
     if (shell != QLatin1String("bash") && shell != QLatin1String("zsh") && shell != QLatin1String("fish")) return false;
     // Scripts, -c, explicit startup overrides and unusual modes retain their exact semantics.

@@ -29,7 +29,9 @@ vec4 pTerminal(vec2 uv) {
     if (r.y - p.y < edge) { edge = r.y - p.y; along = r.x + r.y + r.x - p.x; }
     if (p.x < edge) { edge = p.x; along = 2.0 * r.x + r.y + r.y - p.y; }
     float line = exp(-phSq((edge - 1.5) / 0.9));
-    float heat = phHeat();
+    // A parameter the script moves with a transition: a signal's value and
+    // age would jump when a short command ends or a pane opens.
+    float heat = clamp(p_commandHeat, 0.0, 1.0);
     float focused = paneFocused() ? 1.0 : 0.20;
     float perimeter = 2.0 * (r.x + r.y);
     float successAge = phAge(1);
@@ -39,7 +41,7 @@ vec4 pTerminal(vec2 uv) {
     float sweep = exp(-phSq(delta / (uCellSize.y * 3.5))) * exp(-age * 0.8);
     float tail = step(delta, 0.0) * exp(delta / (uCellSize.y * 9.0)) * exp(-age * 1.5);
     float failure = exp(-phAge(0) * 3.5);
-    float blocked = signalValue(4) == 2.0 ? 0.10 + 0.04 * sin(iTime * 3.0) : 0.0;
+    float blocked = signalValue(4) == 2.0 ? 0.10 + 0.04 * sin(timeAngle(3.0)) : 0.0;
     vec3 tint = mix(phTint(along / perimeter), phRose, max(failure, blocked));
     float strength = line * (focused * 0.18 + heat * 0.18 + sweep * 0.8 + tail * 0.35 + failure * 0.65 + blocked);
     strength += exp(-edge / 9.0) * (sweep * 0.10 + failure * 0.06);

@@ -119,7 +119,8 @@ bool ChromeLayer::initialize()
 
 void ChromeLayer::renderIfNeeded(const QSize& pixelSize)
 {
-    if (pixelSize.isEmpty() || !initialize()) {
+    // A size that failed is not tried again until the window changes size.
+    if (pixelSize.isEmpty() || pixelSize == m_failedSize || !initialize()) {
         return;
     }
     if (pixelSize != m_size || !m_texture) {
@@ -128,13 +129,24 @@ void ChromeLayer::renderIfNeeded(const QSize& pixelSize)
         m_target.reset();
         m_renderPass.reset();
         m_texture.reset(rhi->newTexture(QRhiTexture::RGBA8, pixelSize, 1, QRhiTexture::RenderTarget));
-        m_texture->create();
+        if (!m_texture->create()) {
+            qCWarning(lcChrome) << "could not create the chrome texture at" << pixelSize << "; drawing no chrome";
+            releaseResources();
+            m_failedSize = pixelSize;
+            return;
+        }
         m_target.reset(rhi->newTextureRenderTarget({m_texture.get()}));
         m_renderPass.reset(m_target->newCompatibleRenderPassDescriptor());
         m_target->setRenderPassDescriptor(m_renderPass.get());
-        m_target->create();
+        if (!m_target->create()) {
+            qCWarning(lcChrome) << "could not create the chrome render target at" << pixelSize << "; drawing no chrome";
+            releaseResources();
+            m_failedSize = pixelSize;
+            return;
+        }
         m_window->setRenderTarget(QQuickRenderTarget::fromRhiRenderTarget(m_target.get()));
         m_size = pixelSize;
+        m_failedSize = QSize();
         ++m_serial;
         m_dirty = true;
     }
@@ -163,15 +175,16 @@ QRhiTexture* ChromeLayer::texture() const
     return m_initialized ? m_texture.get() : nullptr;
 }
 
-bool ChromeLayer::wantsPointer(const QPointF& pos) const
+bool ChromeLayer::wantsPointer(const QPointF& pos, const QEvent* event) const
 {
     if (!m_root) {
         return false;
     }
-    // Chrome.qml declares wantsPointer(x: real, y: real): bool; the types must match.
+    // Chrome.qml declares wantsPointer(x: real, y: real, wheel: bool): bool; the types must match.
+    const bool wheel = event && event->type() == QEvent::Wheel;
     bool result = false;
     QMetaObject::invokeMethod(m_root, "wantsPointer", Q_RETURN_ARG(bool, result), Q_ARG(double, pos.x()),
-                              Q_ARG(double, pos.y()));
+                              Q_ARG(double, pos.y()), Q_ARG(bool, wheel));
     return result;
 }
 

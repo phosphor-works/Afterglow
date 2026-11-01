@@ -3,7 +3,6 @@
 #pragma once
 #include "ScriptHost.h"
 #include <QHash>
-#include <QPointer>
 
 namespace Afterglow {
 /// Owns nonblocking work for each loaded script instance.

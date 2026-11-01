@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -133,6 +134,7 @@ TEST(Parser, DcsAndApc)
 {
     Fixture f;
     f.p.feed("\x1bP>|data\x1b\\\x1b_Gf=100;AAAA\x1b\\");
+    ASSERT_GE(f.r.events.size(), 3u);
     EXPECT_EQ(f.r.events[0], "dcs >| data");
     EXPECT_EQ(f.r.events[2], "apc Gf=100;AAAA");
 }
@@ -163,7 +165,114 @@ TEST(Parser, ResetRecoversFromUnterminatedOverflow)
     const std::string chunk(1024 * 1024, 'a');
     for (std::size_t i = 0; i <= Parser<Recorder>::MaxStringPayload / chunk.size(); ++i) f.p.feed(chunk);
     f.p.reset();
+    // Ground again: text prints instead of joining the dropped string.
+    f.p.feed("x");
+    EXPECT_EQ(f.r.printed, U"x");
     f.p.feed("\x1b]2;recovered\x07");
     ASSERT_EQ(f.r.events.size(), 1u);
     EXPECT_EQ(f.r.events.front(), "osc 2;recovered bel");
+}
+
+TEST(Parser, ResetDropsAPartialUtf8Sequence)
+{
+    Fixture f;
+    f.p.feed("\xE2");
+    f.p.reset();
+    f.p.feed("x");
+    EXPECT_EQ(f.r.printed, U"x"); // no U+FFFD for the dropped lead byte
+}
+
+TEST(Parser, OverlongStringsAreDroppedWhole)
+{
+    // An OSC or DCS past the payload limit is never dispatched cut short,
+    // even when it ends normally.
+    const std::string big(Parser<Recorder>::MaxStringPayload + 1, 'a');
+    Fixture f;
+    f.p.feed("\x1b]2;");
+    f.p.feed(big);
+    f.p.feed("\x07");
+    EXPECT_TRUE(f.r.events.empty());
+    f.p.feed("\x1bPq");
+    f.p.feed(big);
+    f.p.feed("\x1b\\");
+    for (const std::string& e : f.r.events) {
+        EXPECT_FALSE(e.starts_with("dcs")) << e.substr(0, 20);
+    }
+    f.r.events.clear();
+    f.p.feed("\x1b]2;ok\x07");
+    ASSERT_EQ(f.r.events.size(), 1u);
+    EXPECT_EQ(f.r.events[0], "osc 2;ok bel");
+}
+
+TEST(Parser, CsiParameterCountAndValueBounds)
+{
+    std::string exact = "\x1b[";
+    for (int i = 0; i < Params::Max - 1; ++i) {
+        exact += "1;";
+    }
+    Fixture f;
+    f.p.feed(exact + "1m");
+    ASSERT_EQ(f.r.events.size(), 1u);
+    EXPECT_EQ(std::count(f.r.events[0].begin(), f.r.events[0].end(), ';'), Params::Max - 1);
+    f.r.events.clear();
+    f.p.feed(exact + "1;1m"); // one more: the whole sequence goes
+    EXPECT_TRUE(f.r.events.empty());
+    f.p.feed("\x1b[70000;65536m"); // values saturate
+    ASSERT_EQ(f.r.events.size(), 1u);
+    EXPECT_EQ(f.r.events[0], "csi 65535;65535m");
+    f.r.events.clear();
+    f.p.feed("\x1b[1$$$p"); // a third intermediate overflows
+    EXPECT_TRUE(f.r.events.empty());
+}
+
+TEST(Parser, ParameterFlagsDoNotLeakIntoTheNextSequence)
+{
+    // clearSequence() keeps the old bits; each parameter writes its own.
+    Fixture f;
+    f.p.feed("\x1b[1:2:3m\x1b[4;5;6m\x1b[;7m");
+    ASSERT_EQ(f.r.events.size(), 3u);
+    EXPECT_EQ(f.r.events[0], "csi 1:2:3m");
+    EXPECT_EQ(f.r.events[1], "csi 4;5;6m");
+    EXPECT_EQ(f.r.events[2], "csi 0;7m");
+}
+
+TEST(Parser, StringsSplitAcrossFeedsMatchWholeOnes)
+{
+    // The payload fast path and the per-byte path must agree, including an
+    // ST split between its ESC and its backslash.
+    const std::string input = "\x1b]2;title\x1b\\\x1bP$qm\x1b\\\x1b_Ga=q,i=1;AAAA\x1b\\\x1b]8;;u\x07";
+    Fixture whole;
+    whole.p.feed(input);
+    Fixture bytewise;
+    for (char c : input) {
+        bytewise.p.feed(std::string_view(&c, 1));
+    }
+    EXPECT_EQ(whole.r.events, bytewise.r.events);
+    EXPECT_EQ(whole.r.events.front(), "osc 2;title st");
+}
+
+TEST(Parser, EscWithTooManyIntermediatesIsDropped)
+{
+    Fixture f;
+    f.p.feed("\x1b(((B\x1b(B");
+    ASSERT_EQ(f.r.events.size(), 1u);
+    EXPECT_EQ(f.r.events[0], "esc (B");
+}
+
+TEST(Parser, CancelEndsAPartialUtf8SequenceWithReplacement)
+{
+    for (const char* cancel : {"\x18", "\x1a"}) {
+        Fixture f;
+        f.p.feed(std::string("\xE2\x82") + cancel + "x");
+        EXPECT_EQ(f.r.printed, U"\uFFFDx");
+    }
+}
+
+TEST(Parser, DcsFinalByteAboveAsciiIsIgnored)
+{
+    Fixture f;
+    f.p.feed("\x1bP1\xC3" "data\x1b\\\x1bP$\xC3" "data\x1b\\");
+    for (const std::string& e : f.r.events) {
+        EXPECT_FALSE(e.starts_with("dcs")) << e;
+    }
 }

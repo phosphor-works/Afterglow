@@ -2,7 +2,7 @@
     "id": "tab-switch",
     "name": "Tab Switch",
     "category": "Transition",
-    "description": "Animates switching tabs: a turning cube, a page flip, a shatter or a slide. The tab being left keeps running until the new one has arrived.",
+    "description": "When you switch tabs, the tab being left turns away on a cube, lifts like a page, breaks into shards or slides out. It keeps running until the new tab has arrived.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",

@@ -3,12 +3,10 @@
 #include "ScriptState.h"
 #include "ScriptFiles.h"
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLockFile>
-#include <QRegularExpression>
 #include <QSaveFile>
 #include <cmath>
 #include <limits>
@@ -16,14 +14,14 @@
 namespace Afterglow {
 namespace {
 constexpr int MaxBytes = 256 * 1024;
-bool validId(const QString& id)
-{
-    static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    return re.match(id).hasMatch();
-}
+/// The file wraps the value in a small envelope, so the value has 1 KiB less.
+constexpr int MaxValueBytes = MaxBytes - 1024;
 bool validValue(const QVariant& value, int depth, int& count)
 {
-    if (depth > 16 || ++count > 8192) return false;
+    if (++count > 8192) return false;
+    // At most 16 nested tables, the top-level object included.
+    const bool table = value.typeId() == QMetaType::QVariantMap || value.typeId() == QMetaType::QVariantList;
+    if (table && depth >= 16) return false;
     switch (value.typeId()) {
     case QMetaType::QVariantMap: {
         const auto map = value.toMap();
@@ -46,13 +44,13 @@ QString ScriptState::validate(const QVariantMap& value)
 {
     int count = 0;
     if (!validValue(value, 0, count)) return QStringLiteral("State needs JSON-compatible values within depth/size limits");
-    if (QJsonDocument::fromVariant(value).toJson(QJsonDocument::Compact).size() > MaxBytes - 1024)
-        return QStringLiteral("State exceeds 256 KiB");
+    if (QJsonDocument::fromVariant(value).toJson(QJsonDocument::Compact).size() > MaxValueBytes)
+        return QStringLiteral("State exceeds 255 KiB");
     return {};
 }
 QString ScriptState::read(const QString& id, Snapshot& result) const
 {
-    if (!validId(id)) return QStringLiteral("Invalid script identity");
+    if (!validScriptId(id)) return QStringLiteral("Invalid script identity");
     const auto path = QDir(m_directory).filePath(id + QStringLiteral(".json"));
     const QFileInfo info(path);
     if (info.isSymLink()) return QStringLiteral("State symlinks are not supported");
@@ -67,7 +65,8 @@ QString ScriptState::read(const QString& id, Snapshot& result) const
     const auto revision = object.value(QStringLiteral("revision"));
     if (parse.error != QJsonParseError::NoError || object.value(QStringLiteral("format")) != QJsonValue(1)
         || !object.value(QStringLiteral("value")).isObject() || schema.toInt() < 1 || schema.toInt() > 10000
-        || schema.toDouble() != schema.toInt() || revision.toInt() < 1 || revision.toDouble() != revision.toInt())
+        || schema.toDouble() != schema.toInt() || revision.toInt() < 1 || revision.toDouble() != revision.toInt()
+        || revision.toInt() == std::numeric_limits<int>::max()) // a write could never follow it
         return QStringLiteral("Invalid state file. Original file preserved");
     const auto value = object.value(QStringLiteral("value")).toObject().toVariantMap();
     if (const auto error = validate(value); !error.isEmpty()) return error;
@@ -76,7 +75,7 @@ QString ScriptState::read(const QString& id, Snapshot& result) const
 }
 QString ScriptState::write(const QString& id, int version, int expectedRevision, const QVariantMap& value, Snapshot& result) const
 {
-    if (!validId(id) || version < 1 || version > 10000 || expectedRevision < 0 || expectedRevision == std::numeric_limits<int>::max())
+    if (!validScriptId(id) || version < 1 || version > 10000 || expectedRevision < 0 || expectedRevision == std::numeric_limits<int>::max())
         return QStringLiteral("Invalid state identity/version/revision");
     if (const auto error = validate(value); !error.isEmpty()) return error;
     if (!QDir().mkpath(m_directory)) return QStringLiteral("Cannot create state directory");

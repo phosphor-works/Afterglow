@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QObject>
 #include <QStringList>
+#include <functional>
 #include <memory>
 
 namespace Afterglow {
@@ -18,6 +19,9 @@ public:
     void reset();
     void abort();
     void setPassword(const QString& password);
+    /// Reports the bytes that wait in the PTY input queue. Called on the GUI thread.
+    /// Outgoing data pauses while it is large.
+    void setInputBacklog(std::function<std::size_t()> backlog);
 Q_SIGNALS:
     void sessionClosed(const QString& token);
     void reply(const QByteArray& bytes);

@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
 
@@ -101,7 +103,9 @@ TEST(TextSizing, EraseAndEditTakeWholeBlocks)
         EXPECT_FALSE(t.at(0, y).isMulticell());
         EXPECT_FALSE(t.at(1, y).isMulticell());
     }
-    t.feed("\x1b[1;1H\x1b]66;s=2;a\x07\x1b[1;1H\x1b[P"); // DCH through it
+    t.feed("\x1b[1;1H\x1b]66;s=2;a\x07");
+    ASSERT_TRUE(t.at(0, 1).isMulticell()); // the block is back before the DCH
+    t.feed("\x1b[1;1H\x1b[P"); // DCH through it
     EXPECT_FALSE(t.at(0, 1).isMulticell());
 }
 
@@ -185,4 +189,20 @@ TEST(TextSizing, ExplicitBlockPreservesLongTextAndRejectsOverlongUtf8)
     t.t.reset();
     t.feed("\x1b]66;w=2;\xc1\xa1\a");
     EXPECT_EQ(t.at(0, 0).codepoint(), Unicode::ReplacementCharacter);
+}
+
+TEST(TextSizing, MetadataAndTextAreBounded)
+{
+    Term t(20, 3);
+    t.feed("\x1b]66;w=2;" + std::string(4097, 'a') + "\x07"); // text over 4,096 bytes: dropped
+    EXPECT_TRUE(t.at(0, 0).isEmpty());
+    t.feed("\x1b]66;s=8;X\x07"); // scale out of range: plain text
+    EXPECT_FALSE(t.at(0, 0).isMulticell());
+    EXPECT_EQ(t.at(0, 0).codepoint(), U'X');
+    t.feed("\x1b[2;1H\x1b]66;n=2:d=2:w=1;Y\x07"); // a fraction of one or more: full size
+    ASSERT_TRUE(t.at(0, 1).isMulticell());
+    const MulticellParams* params = t.t.screen().multicellParams(t.t.screen().row(1), 0);
+    ASSERT_NE(params, nullptr);
+    EXPECT_EQ(params->num, 0);
+    EXPECT_EQ(params->den, 0);
 }

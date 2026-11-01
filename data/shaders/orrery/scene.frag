@@ -10,7 +10,9 @@ layout(location = 2) flat in int object;
 vec4 pTerminal(vec2 uv) {
     vec3 n = normalize(worldNormal);
     if (object == 0) {
-        float rim = pow(1.0 - abs(n.z), 2.0);
+        // Brightest where the surface turns away from the camera (scene.vert's eye).
+        vec3 toEye = normalize(vec3(0.0, 3.2, 9.5) - worldPosition);
+        float rim = pow(1.0 - abs(dot(n, toEye)), 2.0);
         return vec4(vec3(1.0, 0.62, 0.22) * (1.4 + rim * 1.2), 1.0);
     }
     vec3 base = object == 2 ? vec3(0.18, 0.42, 0.85) : vec3(0.55, 0.55, 0.58);

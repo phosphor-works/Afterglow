@@ -58,8 +58,22 @@ def transfer(relay, arguments):
             if found:
                 reaped = True
                 assert os.waitstatus_to_exitcode(status) == 0, transcript[-4000:].decode(errors="replace")
-                # finish is asynchronous; let the relay commit before EOF.
-                time.sleep(0.1)
+                # The last packets (finish) can arrive after the last read. Read to EOF.
+                while True:
+                    try:
+                        data = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        data = b""
+                    if not data:
+                        break
+                    transcript += data
+                    buffer += data
+                for match in re.finditer(rb"\x1b\]5113;(.*?)(?:\x1b\\|\x07)", buffer, re.S):
+                    helper.stdin.write(base64.b64encode(match[1]) + b"\n")
+                # EOF ends the relay after it handles every packet. Drain its replies meanwhile.
+                helper.communicate(timeout=10)
                 return
         raise AssertionError("Kitten transfer timed out:\n" + transcript[-6000:].decode(errors="replace"))
     finally:
@@ -70,8 +84,9 @@ def transfer(relay, arguments):
             except ProcessLookupError:
                 pass
         os.close(master)
-        helper.stdin.close()
-        helper.wait(timeout=5)
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=5)
 
 
 def main():
@@ -90,6 +105,10 @@ def main():
         os.link(source / "file", source / "hardlink")
         (source / "nested").mkdir()
         (source / "nested" / "empty").touch()
+        # Directory metadata is applied by finish, after the children exist.
+        modified = 1_600_000_000
+        os.chmod(source / "nested", 0o750)
+        os.utime(source / "nested", (modified, modified))
         for direction in ("send", "receive"):
             destination = root / direction
             destination.mkdir()
@@ -99,6 +118,10 @@ def main():
             assert (copied / "symlink").is_symlink()
             assert (copied / "symlink").read_bytes() == contents
             assert (copied / "file").stat().st_ino == (copied / "hardlink").stat().st_ino
+            if direction == "send":
+                nested = (copied / "nested").stat()
+                assert nested.st_mode & 0o777 == 0o750, oct(nested.st_mode)
+                assert int(nested.st_mtime) == modified, nested.st_mtime
             empty = copied / "nested" / "empty"
             if direction == "receive" and not empty.exists() and args.allow_client_empty_file_bug:
                 print("Client omitted an empty received file (known kitten 0.49.2 bug).", flush=True)

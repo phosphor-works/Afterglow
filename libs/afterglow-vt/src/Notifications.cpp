@@ -4,54 +4,25 @@
 #include <AfterglowVt/Notifications.h>
 
 #include "Base64.h"
+#include "Utf8.h"
 
 #include <algorithm>
-#include <array>
 #include <charconv>
-#include <optional>
 
 namespace AfterglowVt {
 
 namespace {
 
-constexpr std::size_t MaxChunkEncoded = 4096;
+// The spec caps a chunk at 4096 encoded bytes. Twice that is accepted, to be
+// lenient with senders that miscount.
+constexpr std::size_t MaxChunkData = 2 * 4096;
 constexpr std::size_t MaxMetadata = 4096;
 constexpr std::size_t MaxText = 64 * 1024; // title, body and buttons together
 constexpr std::size_t MaxIcon = 4 * 1024 * 1024;
 constexpr std::size_t MaxPending = 32;
-
-/// Escape-code safe UTF-8: valid, and no C0, DEL or C1 controls.
-bool isSafeText(std::string_view s)
-{
-    std::size_t i = 0;
-    while (i < s.size()) {
-        const auto b = static_cast<unsigned char>(s[i]);
-        const int extra = b < 0x80 ? 0 : (b & 0xE0) == 0xC0 ? 1 : (b & 0xF0) == 0xE0 ? 2 : (b & 0xF8) == 0xF0 ? 3 : -1;
-        if (extra < 0) {
-            return false;
-        }
-        char32_t cp = extra == 0 ? b : b & (0x3F >> extra);
-        for (int k = 1; k <= extra; ++k) {
-            if (i + std::size_t(k) >= s.size()) {
-                return false;
-            }
-            const auto c = static_cast<unsigned char>(s[i + std::size_t(k)]);
-            if ((c & 0xC0) != 0x80) {
-                return false;
-            }
-            cp = (cp << 6) | (c & 0x3F);
-        }
-        static constexpr char32_t MinForLength[] = {0, 0x80, 0x800, 0x10000};
-        if (cp < MinForLength[extra] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
-            return false;
-        }
-        if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)) {
-            return false;
-        }
-        i += std::size_t(extra) + 1;
-    }
-    return true;
-}
+// Icon data that all half-sent notifications hold together.
+constexpr std::size_t MaxPendingIcon = 8 * 1024 * 1024;
+constexpr std::size_t MaxField = 256; // app name, icon names, sound, types
 
 std::vector<std::string> splitButtons(std::string_view s)
 {
@@ -72,19 +43,31 @@ std::vector<std::string> splitButtons(std::string_view s)
     return out;
 }
 
-} // namespace
-
-std::string NotificationAssembler::sanitizeId(std::string_view id)
+/// Decodes an encoded chunk that continues @p carry onto @p out. The spec
+/// lets a sender cut the encoded text anywhere, so characters short of a
+/// whole group stay in @p carry for the next chunk, unless the chunk ends
+/// with padding.
+bool decodeChunk(std::string& carry, std::string_view data, std::string& out)
 {
-    std::string out;
-    for (char c : id.substr(0, 128)) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
-            || c == '+' || c == '.') {
-            out += c;
-        }
+    std::string joined = carry;
+    joined += data;
+    const std::size_t whole = joined.ends_with('=') ? joined.size() : joined.size() / 4 * 4;
+    if (!detail::base64DecodeAppend(out, std::string_view(joined).substr(0, whole), detail::Base64Check::PaddingOptional)) {
+        return false;
     }
-    return out;
+    carry = joined.substr(whole);
+    return true;
 }
+
+/// The formats the protocol allows for icon data. Anything else would reach
+/// whatever image plugin the desktop side has installed.
+bool isIconFormat(std::string_view data)
+{
+    return data.starts_with("\x89PNG\r\n\x1a\n") || data.starts_with("\xFF\xD8\xFF") || data.starts_with("GIF87a")
+        || data.starts_with("GIF89a");
+}
+
+} // namespace
 
 std::string NotificationAssembler::queryReply(std::string_view id, std::string_view capabilities)
 {
@@ -96,9 +79,37 @@ std::string NotificationAssembler::queryReply(std::string_view id, std::string_v
     return r;
 }
 
+void NotificationAssembler::reset()
+{
+    m_pending.clear();
+    m_failed.clear();
+    m_pendingIconBytes = 0;
+}
+
+std::string& NotificationAssembler::target(Pending& p, Payload payload)
+{
+    switch (payload) {
+    case Payload::Title:
+        return p.request.title;
+    case Payload::Body:
+        return p.request.body;
+    case Payload::Buttons:
+        return p.buttons;
+    case Payload::Icon:
+        break;
+    }
+    return p.request.iconData;
+}
+
+void NotificationAssembler::erase(PendingMap::iterator it)
+{
+    m_pendingIconBytes -= it->second.request.iconData.size();
+    m_pending.erase(it);
+}
+
 NotificationAssembler::Result NotificationAssembler::feed(std::string_view payload, NotificationRequest& out)
 {
-    if (payload.size() > MaxMetadata + 1 + MaxChunkEncoded * 2) {
+    if (payload.size() > MaxMetadata + 1 + MaxChunkData) {
         return Result::Ignored;
     }
     const auto semi = payload.find(';');
@@ -107,7 +118,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     }
     const std::string_view metadata = payload.substr(0, semi);
     const std::string_view data = payload.substr(semi + 1);
-    if (data.size() > MaxChunkEncoded * 2) {
+    if (data.size() > MaxChunkData) {
         return Result::Ignored;
     }
 
@@ -126,7 +137,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             const std::string_view value = kv.substr(2);
             switch (key) {
             case 'i':
-                id = sanitizeId(value);
+                id = detail::sanitizeId(value);
                 break;
             case 'p':
                 type = value;
@@ -165,25 +176,93 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
         }
         return Result::Ready;
     }
-    const bool known = type == "title" || type == "body" || type == "buttons" || type == "icon";
-    if (!known) {
+    Payload kind = Payload::Title;
+    if (type == "title") {
+        kind = Payload::Title;
+    } else if (type == "body") {
+        kind = Payload::Body;
+    } else if (type == "buttons") {
+        kind = Payload::Buttons;
+    } else if (type == "icon") {
+        kind = Payload::Icon;
+    } else {
+        return Result::Ignored;
+    }
+
+    if (const auto failed = std::find(m_failed.begin(), m_failed.end(), id); failed != m_failed.end()) {
+        if (done) {
+            m_failed.erase(failed);
+        }
         return Result::Ignored;
     }
 
     auto it = m_pending.find(id);
-    if (it == m_pending.end()) {
-        if (m_pending.size() >= MaxPending) {
-            // Too many half-sent notifications: drop the oldest.
-            auto oldest = std::min_element(m_pending.begin(), m_pending.end(),
-                                           [](const auto& a, const auto& b) { return a.second.serial < b.second.serial; });
-            m_pending.erase(oldest);
+    Pending* existing = it == m_pending.end() ? nullptr : &it->second;
+    // A bad chunk ends its own notification and nothing else, and the rest
+    // of it is ignored rather than shown as a new one.
+    auto reject = [&]() {
+        if (it != m_pending.end()) {
+            erase(it);
         }
-        it = m_pending.emplace(id, Pending{}).first;
-        it->second.request.id = id;
+        if (!done) {
+            if (m_failed.size() >= MaxPending) {
+                m_failed.erase(m_failed.begin());
+            }
+            m_failed.push_back(id);
+        }
+        return Result::Ignored;
+    };
+
+    // Check the chunk before it changes any state.
+    const bool base64 = encoded || kind == Payload::Icon;
+    std::string carry;
+    std::string flushed; // what an earlier payload left in the carry, completed now
+    if (existing && !existing->carry.empty()) {
+        if (base64 && existing->carryPayload == kind) {
+            carry = existing->carry;
+        } else if (!detail::base64DecodeAppend(flushed, existing->carry, detail::Base64Check::PaddingOptional)) {
+            return reject();
+        }
     }
-    Pending& p = it->second;
-    p.serial = ++m_serial;
-    NotificationRequest& r = p.request;
+    std::string text;
+    if (base64) {
+        if (!decodeChunk(carry, data, text)) {
+            return reject();
+        }
+    } else {
+        text = std::string(data);
+    }
+    const Payload flushedKind = existing ? existing->carryPayload : kind;
+    auto added = [&](Payload p) { return (flushedKind == p ? flushed.size() : 0) + (kind == p ? text.size() : 0); };
+    const std::size_t iconBytes = (existing ? existing->request.iconData.size() : 0) + added(Payload::Icon);
+    const std::size_t textBytes =
+        (existing ? existing->request.title.size() + existing->request.body.size() + existing->buttons.size() : 0)
+        + added(Payload::Title) + added(Payload::Body) + added(Payload::Buttons);
+    if (iconBytes > MaxIcon || textBytes > MaxText
+        || (!done && m_pendingIconBytes + added(Payload::Icon) > MaxPendingIcon)) {
+        return reject();
+    }
+
+    // A notification complete in one chunk is never stored, so it cannot
+    // evict a half-sent one.
+    Pending single;
+    Pending* p = existing;
+    if (!p) {
+        if (done) {
+            p = &single;
+        } else {
+            if (m_pending.size() >= MaxPending) {
+                // Too many half-sent notifications: drop the oldest.
+                erase(std::min_element(m_pending.begin(), m_pending.end(),
+                                       [](const auto& a, const auto& b) { return a.second.serial < b.second.serial; }));
+            }
+            it = m_pending.emplace(id, Pending{}).first;
+            p = &it->second;
+        }
+        p->request.id = id;
+    }
+    p->serial = ++m_serial;
+    NotificationRequest& r = p->request;
 
     // Metadata of every chunk applies; later values win.
     for (const auto& [key, value] : keys) {
@@ -211,19 +290,19 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             break;
         }
         case 'c':
-            r.reportClose = value == "1";
+            r.reportClose = !value.empty() && value != "0";
             break;
         case 'f':
-            if (std::string s = decoded(); isSafeText(s)) {
-                r.appName = s.substr(0, 256);
+            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s)) {
+                r.appName = detail::truncateUtf8(s, MaxField);
             }
             break;
         case 'g':
-            r.iconCacheId = sanitizeId(value);
+            r.iconCacheId = detail::sanitizeId(value);
             break;
         case 'n':
-            if (std::string s = decoded(); isSafeText(s) && !s.empty() && r.iconNames.size() < 16) {
-                r.iconNames.push_back(s.substr(0, 256));
+            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.iconNames.size() < 16) {
+                r.iconNames.emplace_back(detail::truncateUtf8(s, MaxField));
             }
             break;
         case 'o':
@@ -232,13 +311,13 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
                                               : NotificationRequest::Occasion::Always;
             break;
         case 's':
-            if (std::string s = decoded(); isSafeText(s) && !s.empty()) {
-                r.sound = s.substr(0, 256);
+            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s)) {
+                r.sound = detail::truncateUtf8(s, MaxField);
             }
             break;
         case 't':
-            if (std::string s = decoded(); isSafeText(s) && !s.empty() && r.types.size() < 16) {
-                r.types.push_back(s.substr(0, 256));
+            if (std::string s = decoded(); !s.empty() && detail::isCleanText(s) && r.types.size() < 16) {
+                r.types.emplace_back(detail::truncateUtf8(s, MaxField));
             }
             break;
         case 'u': {
@@ -259,46 +338,50 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     }
 
     // The chunk's payload.
-    std::string text;
-    if (encoded || type == "icon") {
-        auto decoded = detail::base64Decode(data, detail::Base64Check::PaddingOptional);
-        if (!decoded) {
-            m_pending.erase(it);
-            return Result::Ignored;
-        }
-        text = std::move(*decoded);
-    } else {
-        text = std::string(data);
+    target(*p, flushedKind) += flushed;
+    target(*p, kind) += text;
+    if (p != &single) {
+        m_pendingIconBytes += added(Payload::Icon);
     }
-    p.bytes += text.size();
-    if (type == "icon") {
-        if (r.iconData.size() + text.size() > MaxIcon) {
-            m_pending.erase(it);
-            return Result::Ignored;
-        }
-        r.iconData += text;
-    } else {
-        if (!isSafeText(text) || r.title.size() + r.body.size() + p.buttons.size() + text.size() > MaxText) {
-            m_pending.erase(it);
-            return Result::Ignored;
-        }
-        std::string& target = type == "title" ? r.title : type == "body" ? r.body : p.buttons;
-        if (target.size() + text.size() > MaxText) {
-            m_pending.erase(it);
-            return Result::Ignored;
-        }
-        target += text;
-    }
-
+    p->carry = std::move(carry);
+    p->carryPayload = kind;
     if (!done) {
         return Result::Pending;
     }
+
+    // The last chunk. A chunk may end inside a character, so the text is
+    // checked whole, after the carry is complete.
+    if (!p->carry.empty()) {
+        std::string tail;
+        if (!detail::base64DecodeAppend(tail, p->carry, detail::Base64Check::PaddingOptional)) {
+            return reject();
+        }
+        target(*p, p->carryPayload) += tail;
+    }
+    if (p != &single) {
+        m_pendingIconBytes -= r.iconData.size();
+    }
     out = std::move(r);
-    out.buttons = splitButtons(p.buttons);
-    m_pending.erase(it);
+    const std::string buttons = std::move(p->buttons);
+    if (p != &single) {
+        m_pending.erase(it);
+    }
+    // Tabs in a body become spaces; newlines stay, the body is shown on several lines.
+    std::replace(out.body.begin(), out.body.end(), '\t', ' ');
+    if (!detail::isCleanText(out.title, detail::TextAllow::LineSeparators)
+        || !detail::isCleanText(out.body, detail::TextAllow::Newline | detail::TextAllow::LineSeparators)
+        || !detail::isCleanText(buttons, detail::TextAllow::LineSeparators)) {
+        return Result::Ignored;
+    }
+    out.buttons = splitButtons(buttons);
+    if (!isIconFormat(out.iconData)) {
+        out.iconData.clear();
+    }
     if (out.title.empty()) {
-        out.title = std::move(out.body); // no title: the body becomes it
+        // No title: the body becomes it, on one line.
+        out.title = std::move(out.body);
         out.body.clear();
+        std::replace(out.title.begin(), out.title.end(), '\n', ' ');
     }
     if (out.title.empty()) {
         return Result::Ignored; // neither title nor body

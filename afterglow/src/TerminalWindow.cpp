@@ -17,6 +17,7 @@
 #include "shell/ShellIntegration.h"
 
 #include "app/NotificationCenter.h"
+#include "control/Control.h"
 
 #include "KeyMapping.h"
 #include "chrome/ChromeController.h"
@@ -57,6 +58,7 @@
 #include <QInputMethod>
 #include <QInputMethodEvent>
 #include <QInputMethodQueryEvent>
+#include <QLocale>
 #include <QPlatformSurfaceEvent>
 #include <QRegularExpression>
 #include <QScreen>
@@ -66,7 +68,9 @@
 #include <utility>
 #include <QStyleHints>
 
+#include <array>
 #include <cmath>
+#include <cstring>
 
 Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
 
@@ -97,21 +101,72 @@ namespace {
 QList<TerminalWindow*> s_windows;
 
 constexpr int TabBarLogicalHeight = 30;
+/// The history scrollbar's width; Chrome.qml draws it this wide.
+constexpr int ScrollbarLogicalWidth = 12;
+/// The bell sound plays at most this often.
+constexpr qint64 BellSoundIntervalMs = 250;
+/// A pane's status notifications come at most this often.
+constexpr qint64 StatusNotificationIntervalMs = 3000;
+/// Labels for at most this many distinct matches (show_hints).
+constexpr std::size_t MaxHints = 1000;
+/// show_last_output hands the pager at most this much.
+constexpr std::size_t LastOutputLimit = 1024 * 1024;
+/// A clipboard reply (OSC 52, or each type of an OSC 5522 read) carries at most this much.
+constexpr qsizetype MaxClipboardReply = 8 * 1024 * 1024;
+/// A paste larger than this would not fit the PTY's input queue (32 MiB).
+constexpr qsizetype MaxPaste = 16 * 1024 * 1024;
+/// A paste event's password reads the clipboard only this soon after the paste.
+constexpr std::chrono::seconds PasteGrantLifetime{10};
 
-/// A critically damped spring: fast, with no overshoot. @p omega sets the speed.
+/// The same motion for another value type.
 template<typename T>
-PhosphorAnimation::MotionSpec<T> springSpec(PhosphorAnimation::IMotionClock* clock, qreal omega)
+PhosphorAnimation::MotionSpec<T> specFor(const PhosphorAnimation::MotionSpec<qreal>& spec)
 {
-    PhosphorAnimation::MotionSpec<T> spec;
-    spec.clock = clock;
-    spec.profile.curve = std::make_shared<PhosphorAnimation::Spring>(omega, 1.0);
-    spec.retargetPolicy = PhosphorAnimation::RetargetPolicy::PreserveVelocity;
-    return spec;
+    PhosphorAnimation::MotionSpec<T> out;
+    out.clock = spec.clock;
+    out.profile = spec.profile;
+    out.retargetPolicy = spec.retargetPolicy;
+    out.maxLifetimeMs = spec.maxLifetimeMs;
+    return out;
 }
 
-constexpr qreal CursorSpeed = 48.0;
-constexpr qreal SplitSpeed = 22.0;
-constexpr qreal ScrollSpeed = 26.0;
+/// Truncates UTF-8 @p bytes to at most @p limit bytes without splitting a character.
+QByteArray truncatedUtf8(QByteArray bytes, qsizetype limit)
+{
+    if (bytes.size() <= limit) return bytes;
+    qsizetype end = limit;
+    while (end > 0 && (std::uint8_t(bytes[end]) & 0xC0) == 0x80) --end;
+    bytes.truncate(end);
+    return bytes;
+}
+
+/// Program-supplied text shown outside the grid: drop bidirectional
+/// overrides and invisible formatting, which could disguise it. At most
+/// @p limit UTF-16 units, without splitting a surrogate pair.
+QString sanitizedText(const QString& s, qsizetype limit)
+{
+    QString out;
+    out.reserve(std::min(s.size(), limit));
+    for (const QChar c : s) {
+        const char16_t u = c.unicode();
+        const bool invisible = (u >= 0x200B && u <= 0x200F) || (u >= 0x202A && u <= 0x202E)
+            || (u >= 0x2060 && u <= 0x2069) || u == 0xFEFF || u == 0x061C || u == 0x00AD
+            || u == 0x2028 || u == 0x2029; // line and paragraph separators break the one-line text
+        if (!invisible) {
+            out.append(c);
+        }
+    }
+    if (out.size() > limit) {
+        out.truncate(out.at(limit).isLowSurrogate() ? limit - 1 : limit);
+    }
+    return out;
+}
+
+/// The key's place on the keyboard, the same for its press, repeats and release.
+quint32 physicalKeyOf(const QKeyEvent* e)
+{
+    return e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
+}
 
 int mouseButtonCode(Qt::MouseButton b)
 {
@@ -169,12 +224,16 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     setFormat(surfaceFormat);
     setTitle(QStringLiteral("afterglow"));
     m_renderer = std::make_unique<AfterglowRender::WindowRenderer>(device, this);
+    // No pointer over the window until it moves there (the shader contract's "outside").
+    m_renderer->setMousePosition(QPointF(-1, -1));
 
     const auto& m = m_renderer->fonts().fonts->metrics();
     const double dpr = devicePixelRatio();
     const WindowSettings& ws = m_settings.settings().window;
     const int pad = int(std::lround(ws.padding * dpr));
-    const QSize initial(ws.initialColumns * m.cellWidth + 2 * pad, ws.initialRows * m.cellHeight + 2 * pad);
+    // The rows asked for, below a tab bar that always shows.
+    const QSize initial(ws.initialColumns * m.cellWidth + 2 * pad,
+                        ws.initialRows * m.cellHeight + 2 * pad + tabBarHeight(1));
     resize(int(std::lround(initial.width() / dpr)), int(std::lround(initial.height() / dpr)));
 
     m_clock = std::make_unique<FrameClock>(this);
@@ -194,6 +253,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(m_controller, &ChromeController::closeTabRequested, this, [this](int index) { requestCloseTabs({index}); });
     connect(m_controller, &ChromeController::confirmPromptChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::confirmAnswered, this, [this](bool accepted) {
+        m_pendingConfirmPanes.clear();
         const std::function<void()> close = std::exchange(m_pendingConfirm, {});
         if (accepted && close) {
             close();
@@ -213,7 +273,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         }
         performAction(Action(id));
     });
-    connect(&m_scripts, &ScriptHost::actionsChanged, this, &TerminalWindow::updateChrome);
+    connect(&m_scripts, &ScriptHost::actionsChanged, this, &TerminalWindow::updatePaletteActions);
     connect(m_controller, &ChromeController::historyRequested, this, [this](double position) {
         if (m_focused) m_focused->scrollHistory(position);
         scheduleRender();
@@ -229,6 +289,14 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(m_controller, &ChromeController::paletteOpenChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::contextMenuChanged, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::titlePromptChanged, this, &TerminalWindow::scheduleRender);
+    // The window stays the focus object while the chrome takes the keyboard,
+    // so the input method hears of the switch only when asked to query again.
+    for (auto changed : {&ChromeController::paletteOpenChanged, &ChromeController::searchOpenChanged,
+                         &ChromeController::contextMenuChanged, &ChromeController::titlePromptChanged,
+                         &ChromeController::confirmPromptChanged, &ChromeController::pasteConfirmChanged,
+                         &ChromeController::clipboardPromptChanged, &ChromeController::scriptDialogChanged}) {
+        connect(m_controller, changed, this, [this] { refreshInputMethod(); });
+    }
     connect(m_controller, &ChromeController::titleAnswered, this, [this](const QString& title) {
         if (m_titlePane) {
             m_titlePane->setUserTitle(title);
@@ -246,6 +314,10 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         m_titleTab = nullptr;
     });
     connect(m_controller, &ChromeController::menuItemActivated, this, [this](int id) {
+        // The items act on the pane the menu was opened on; when it has
+        // gone, the pane items go with it.
+        const QPointer<Pane> pane = std::exchange(m_menuPane, {});
+        const bool paneAlive = pane && tabOf(pane) >= 0;
         if (id == MenuOpenLink) {
             openLink(m_menuLink);
         } else if (id == MenuCopyLink) {
@@ -253,11 +325,15 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         } else if (id >= TabMenuRename) {
             runTabMenuItem(id);
         } else if (id >= MenuScriptBase) {
-            if (id - MenuScriptBase < m_menuScriptActions.size()) {
-                m_scripts.runAction(m_menuScriptActions[id - MenuScriptBase], m_focused ? m_focused->id() : 0);
+            if (id - MenuScriptBase < m_menuScriptActions.size() && paneAlive) {
+                m_scripts.runAction(m_menuScriptActions[id - MenuScriptBase], pane->id());
             }
+        } else if (paneAlive) {
+            runAction(pane, Action(id));
         } else {
-            performAction(Action(id));
+            constexpr std::array windowItems{Action::CommandPalette, Action::RenameTab, Action::NewTab, Action::CloseTab,
+                                             Action::NewWindow, Action::CloseWindow, Action::OpenConfig, Action::ReloadConfig};
+            if (std::find(windowItems.begin(), windowItems.end(), Action(id)) != windowItems.end()) performAction(Action(id));
         }
     });
     connect(m_controller, &ChromeController::pasteConfirmChanged, this, &TerminalWindow::scheduleRender);
@@ -268,12 +344,17 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
             return;
         }
         const AfterglowVt::ClipboardRequest& r = pending->request;
+        if (pending->write) {
+            if (answer != 0) writeClipboard(pending->pane, r);
+            else if (!r.osc52) pending->pane->sendInput(AfterglowVt::ClipboardAssembler::writeStatus("EPERM", r.id));
+            return;
+        }
         if (answer == 0) {
             pending->pane->sendInput(r.osc52 ? r.osc52Reply({}) : AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
             return;
         }
         if (answer == 2 && !r.password.empty() && !r.name.empty()) {
-            m_clipboardGrants[pending->pane][QByteArray::fromStdString(r.password)] = ClipboardGrant{false};
+            m_clipboardGrants[pending->pane][QByteArray::fromStdString(r.password)] = ClipboardGrant{};
         }
         answerClipboardRead(pending->pane, r);
     });
@@ -288,6 +369,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         }
     });
     connect(this, &TerminalWindow::tabsChanged, this, &TerminalWindow::updateChrome);
+    updatePaletteActions();
 
     connect(&m_shaders, &ShaderLibrary::changed, this, &TerminalWindow::applyShaders);
     applyShaders();
@@ -305,7 +387,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
 
-    m_textBlinkTimer.setInterval(500);
+    m_textBlinkTimer.setInterval(m_settings.settings().textBlinkInterval);
     connect(&m_textBlinkTimer, &QTimer::timeout, this, [this] {
         m_textBlinkOn = !m_textBlinkOn;
         scheduleRender();
@@ -316,6 +398,11 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         m_blinkOn = !m_blinkOn;
         if (m_focused && scriptOverrides(m_focused).value(QStringLiteral("cursorBlink"), m_focused->snapshot().cursorBlink).toBool() && (m_focused->snapshot().cursorVisible || !m_focused->snapshot().extraCursors.empty())) {
             scheduleRender();
+        } else {
+            // A steady cursor needs no ticks; renderNow starts them again
+            // when the focused pane's cursor blinks.
+            m_blinkTimer.stop();
+            m_blinkOn = true;
         }
     });
 
@@ -349,21 +436,27 @@ QList<TerminalWindow*> TerminalWindow::windows()
 void TerminalWindow::bindPane(Pane* pane)
 {
     connect(pane, &Pane::inputRejected, this, [this, pane] {
-        NotificationCenter::instance().showSimple(pane, this, QStringLiteral("Terminal input rejected"),
+        NotificationCenter::instance().showNotice(pane, QStringLiteral("Terminal input rejected"),
             QStringLiteral("The program closed or its input queue is full."));
     });
     connect(pane, &QObject::destroyed, this, [this, pane] {
+        // Every table keyed by the pane: a new pane at the same address
+        // must not inherit an entry (a tab close deletes panes without closePane).
         m_motion.erase(pane);
         m_growFrom.erase(pane);
+        m_historyRows.erase(pane);
         m_clipboardGrants.erase(pane);
+        m_paneOpening.remove(pane);
+        m_paneContext.remove(pane);
+        m_paneOrigin.remove(pane);
+        m_panePulse.remove(pane);
         if (m_statusViews.erase(pane) > 0) {
             publishLauncherStatus();
         }
     });
     connect(pane, &Pane::flashRequested, this, [this, guard = QPointer<Pane>(pane)] {
         if (guard) {
-            motion(guard).bell.start(1.0, 0.0, springSpec<qreal>(m_clock.get(), 14.0));
-            scheduleRender();
+            flashPane(guard);
         }
     });
     connect(pane, &Pane::statusChanged, this, [this, guard = QPointer<Pane>(pane)] {
@@ -375,11 +468,21 @@ void TerminalWindow::bindPane(Pane* pane)
         if (pane == m_focused && m_controller->searchOpen()) m_controller->setSearchStatus(status);
         scheduleRender();
     });
-    connect(pane, &Pane::contentChanged, this, &TerminalWindow::scheduleRender);
     connect(pane, &Pane::contentChanged, this, [this, pane] {
-        if (pane == m_focused && isActive()) QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
+        // Hints point at text that just changed: they go (show_hints).
+        if (m_urlMode.active && m_urlMode.generation && pane == m_urlMode.pane
+            && pane->withTerminal([](Terminal& t) { return t.generation(); }) != m_urlMode.generation) {
+            stopUrlMode();
+        }
+        // The input method reads the text again once per frame, not per output batch.
+        if (pane == m_focused) m_inputMethodDirty = true;
+        // A pane nobody can see is drawn when it shows: its tab becoming
+        // current or the overview opening asks for that frame.
+        if (paneDrawn(pane)) scheduleRender();
     });
-    connect(pane, &Pane::shaderSignalsChanged, this, &TerminalWindow::scheduleRender);
+    connect(pane, &Pane::shaderSignalsChanged, this, [this, pane] {
+        if (paneDrawn(pane)) scheduleRender();
+    });
     connect(pane, &Pane::contextUpdated, this, [this, pane] {
         if (pane == m_focused) {
             updateTitle();
@@ -396,22 +499,37 @@ void TerminalWindow::bindPane(Pane* pane)
         const QString outcome = exitCode == 0 ? QStringLiteral("finished")
             : exitCode < 0                    ? QStringLiteral("ended")
                                               : QStringLiteral("failed (exit %1)").arg(exitCode);
-        NotificationCenter::instance().showSimple(guard, this, what, QStringLiteral("%1 after %2 s").arg(outcome).arg(ms / 1000));
+        const QString after = ms < 1000 ? QStringLiteral("%1 ms").arg(ms) : QStringLiteral("%1 s").arg(double(ms) / 1000.0, 0, 'f', 1);
+        NotificationCenter::instance().showNotice(guard, what, QStringLiteral("%1 after %2").arg(outcome, after));
     });
     connect(pane, &QObject::destroyed, this, [this, pane] { m_notifyOnFinish.remove(pane); });
     connect(pane, &Pane::titleUpdated, this, [this, pane] {
         if (pane == m_focused) {
             updateTitle();
         }
-        Q_EMIT tabsChanged();
+        // Only the pane a tab shows names that tab; other titles show only
+        // as split labels, which the next frame draws.
+        const int index = tabOf(pane);
+        const Pane* shown = index < 0 ? nullptr : index == m_currentTab ? m_focused.data() : m_tabs[std::size_t(index)]->focused.data();
+        if (pane == shown && m_tabs[std::size_t(index)]->title.isEmpty()) {
+            Q_EMIT tabsChanged();
+        } else if (paneDrawn(pane)) {
+            scheduleRender();
+        }
     });
     connect(pane, &Pane::closed, this, [this, guard = QPointer<Pane>(pane)] {
         if (guard) {
             closePane(guard);
         }
     });
-    connect(pane, &Pane::clipboardWriteRequested, this, [](const QString& text, bool primary) {
-        QGuiApplication::clipboard()->setText(text, primary ? QClipboard::Selection : QClipboard::Clipboard);
+    connect(pane, &Pane::clipboardWriteRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& text, bool primary) {
+        if (!guard) return;
+        AfterglowVt::ClipboardRequest write;
+        write.kind = AfterglowVt::ClipboardRequest::Kind::Write;
+        write.osc52 = true;
+        write.primary = primary;
+        write.data = {{"text/plain;charset=utf-8", text.toStdString()}};
+        clipboardWrite(guard, write);
     });
     connect(pane, &Pane::bellRang, this, [this, guard = QPointer<Pane>(pane)] {
         if (guard) {
@@ -453,19 +571,29 @@ void TerminalWindow::bindPane(Pane* pane)
             });
     connect(pane, &Pane::terminalProtocolRequested, this, [this, guard = QPointer<Pane>(pane)](int code, const QByteArray& payload) {
         if (!guard) return;
-        auto* files = guard->fileTransfers();
-        files->setPassword(m_settings.settings().fileTransferPassword);
-        if (code == 0) { files->reset(); guard->dragDrop()->reset(); }
-        else if (code == -1) { files->abort(); guard->dragDrop()->abort(); }
+        if (code == 0) { guard->fileTransfers()->reset(); guard->dragDrop()->reset(); }
+        else if (code == -1) { guard->fileTransfers()->abort(); guard->dragDrop()->abort(); }
         else if (code == 72) guard->dragDrop()->handle(payload);
-        else if (code == 5113) files->handle(payload);
+        else if (code == 5113) {
+            // The transfer worker starts with the first OSC 5113 message, not with the pane.
+            auto* files = guard->fileTransfers();
+            files->setPassword(m_settings.settings().fileTransferPassword);
+            files->handle(payload);
+        }
     });
     connect(pane, &Pane::fileTransferPermissionRequested, this,
-            [this, guard = QPointer<FileTransfer>(pane->fileTransfers())](const QString& token, bool writing, const QStringList& paths) {
-        auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"),
-            writing ? tr("Allow this terminal program to write files on this computer? Existing files can be replaced.")
-                    : tr("Allow this terminal program to read the requested files on this computer?"),
-            QMessageBox::Yes | QMessageBox::No);
+            [this, pane = QPointer<Pane>(pane)](const QString& token, bool writing, const QStringList& paths) {
+        // Asked by the transfer itself, so the worker exists already.
+        const QPointer<FileTransfer> guard = pane ? pane->fileTransfers() : nullptr;
+        QString question = writing ? tr("Allow this terminal program to write files on this computer? Existing files can be replaced.")
+                                   : tr("Allow this terminal program to read the requested files on this computer?");
+        if (!writing && !paths.isEmpty()) {
+            // A remote program can name any file: the paths are part of the question.
+            constexpr qsizetype Shown = 5;
+            question += QLatin1Char('\n') + QStringList(paths.mid(0, Shown)).join(QLatin1Char('\n'));
+            if (paths.size() > Shown) question += QLatin1Char('\n') + tr("and %n more", nullptr, int(paths.size() - Shown));
+        }
+        auto* dialog = new QMessageBox(QMessageBox::Question, tr("File transfer"), question, QMessageBox::Yes | QMessageBox::No);
         connect(this, &QObject::destroyed, dialog, &QDialog::reject);
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setTextFormat(Qt::PlainText);
@@ -492,9 +620,11 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
 {
     auto* pane = new Pane(m_settings.settings().terminal, this);
     bindPane(pane);
+    applySearchColors(pane);
     pane->setLaunch(workingDirectory, command);
     AfterglowPty::SpawnOptions opts;
-    opts.workingDirectory = workingDirectory.toStdString();
+    // The child starts in its home directory rather than failing in one that is gone.
+    opts.workingDirectory = (!workingDirectory.isEmpty() && QFileInfo(workingDirectory).isDir() ? workingDirectory : QDir::homePath()).toStdString();
     opts.environment = m_settings.settings().environment;
     for (auto it = environment.cbegin(); it != environment.cend(); ++it) {
         const auto name = it.key().toStdString();
@@ -515,12 +645,18 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         opts.argv = {shell.toStdString()};
     }
     ShellIntegration::prepare(opts, m_settings.settings().shellIntegration);
-    // Integrated shells wrap ssh when the helper is named; a launch's own values win.
+    // Integrated shells wrap ssh when the helper is named; a launch's own
+    // values win, including one that removes the variable.
+    const auto launchSets = [&](const char* name) {
+        return std::any_of(opts.environment.begin(), opts.environment.end(), [&](const auto& e) { return e.first == name; })
+            || std::find(opts.unsetEnvironment.begin(), opts.unsetEnvironment.end(), name) != opts.unsetEnvironment.end();
+    };
     const auto offer = [&](const char* name, const QString& value) {
-        if (std::none_of(opts.environment.begin(), opts.environment.end(), [&](const auto& e) { return e.first == name; }))
-            opts.environment.emplace_back(name, value.toStdString());
+        if (!launchSets(name)) opts.environment.emplace_back(name, value.toStdString());
     };
     if (m_settings.settings().sshIntegration) offer("AFTERGLOW_SSH_HELPER", QCoreApplication::applicationFilePath());
+    // Off: a helper inherited from the afterglow that started this one goes too.
+    else if (!launchSets("AFTERGLOW_SSH_HELPER")) opts.unsetEnvironment.emplace_back("AFTERGLOW_SSH_HELPER");
     offer("AFTERGLOW_SSH_TERMINFO", m_settings.settings().sshTerminfo);
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect content = contentRect(area);
@@ -532,12 +668,12 @@ Pane* TerminalWindow::createPane(const QString& workingDirectory, const QRect& a
         if (failure) *failure = error;
         if (fallback) {
             // A project must remain inspectable even if its configured shell fails.
-            AfterglowPty::SpawnOptions fallback;
-            fallback.argv = {"/bin/sh"};
-            fallback.workingDirectory = QDir::homePath().toStdString();
-            fallback.environment = m_settings.settings().environment;
+            AfterglowPty::SpawnOptions rescue;
+            rescue.argv = {"/bin/sh"};
+            rescue.workingDirectory = QDir::homePath().toStdString();
+            rescue.environment = m_settings.settings().environment;
             pane->setHold(true);
-            if (!pane->start(fallback, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error))
+            if (!pane->start(rescue, m_settings.settings().term, cols, rows, m.cellWidth, m.cellHeight, &error))
                 pane->holdStartFailure();
         } else {
             delete pane;
@@ -556,15 +692,27 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
     if (m_splits->zoomedPane()) {
         setPaneZoom(nullptr);
         relayout();
+    } else if (m_layoutSize.isEmpty()) {
+        // Not laid out since the last split, or never drawn: the rectangles
+        // below would be empty, and the shell would start at 2x1.
+        relayout();
     }
     // Start the new shell at the size its requested share of the split will have.
     QRect area = m_splits->rectOf(m_focused);
     const int divider = std::max(1, int(std::lround(devicePixelRatio())));
     const bool sideways = direction == SplitTree::Direction::Right || direction == SplitTree::Direction::Left;
+    // Both panes keep the size that resizes and divider drags keep.
+    const int available = (sideways ? area.width() : area.height()) - divider;
+    const int smallest = sideways ? minimumPaneSize().width() : minimumPaneSize().height();
+    if (available < 2 * smallest) {
+        if (error) *error = QStringLiteral("There is not enough room to split this pane");
+        return nullptr;
+    }
+    const double fraction = std::clamp(options.fraction, double(smallest) / available, 1.0 - double(smallest) / available);
     if (sideways) {
-        area.setWidth(int((area.width() - divider) * options.fraction));
+        area.setWidth(int(available * fraction));
     } else {
-        area.setHeight(int((area.height() - divider) * options.fraction));
+        area.setHeight(int(available * fraction));
     }
     Pane* added = createPane(options.cwd.isEmpty() ? startDirectory(m_focused->workingDirectory()) : options.cwd, area, command, error, options.environment);
     if (!added) return nullptr;
@@ -584,7 +732,7 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
         m_growFrom[added] = QRectF(old.left(), old.top(), old.width(), 0);
         break;
     }
-    m_splits->split(m_focused, added, direction, options.fraction);
+    m_splits->split(m_focused, added, direction, fraction, divider, minimumPaneSize());
     // It opens from the edge it shares with the pane it split from.
     const int edge = direction == SplitTree::Direction::Right ? 1 : direction == SplitTree::Direction::Down ? 2
         : direction == SplitTree::Direction::Left ? 3 : 4;
@@ -601,6 +749,10 @@ void TerminalWindow::closePane(Pane* pane)
     Q_EMIT paneClosing(pane->id(), tabIdOf(pane), id());
     const int index = tabOf(pane);
     if (m_scriptDialog && m_scriptDialog->pane == pane) finishScriptDialog(false, {});
+    dropPanePrompts(pane);
+    // The closing frame keeps the opacity a script gave the pane.
+    AfterglowRender::FrameBuilder::PaneParams last;
+    applyScriptOverrides(pane, last, std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255)));
     m_shaderControls.removePane(pane->id());
     std::erase_if(m_scriptAppearance, [pane](const auto& item) { return item.pane == pane; });
     if (index < 0) {
@@ -619,8 +771,10 @@ void TerminalWindow::closePane(Pane* pane)
         return;
     }
     if (paneEffectsAllowed() && !drawn.isEmpty())
-        m_closingPane = ClosingPane{std::make_shared<AfterglowRender::PaneSnapshot>(pane->snapshot()), drawn, std::chrono::steady_clock::now()};
-    if (tab.focused == pane || (index == m_currentTab && m_focused == pane)) {
+        m_closingPane = ClosingPane{std::make_shared<AfterglowRender::PaneSnapshot>(pane->snapshot()), drawn,
+                                    std::chrono::steady_clock::now(), tab.id, last.backgroundAlpha};
+    // The current tab's focus is m_focused; a background tab's is its saved one.
+    if (index == m_currentTab ? m_focused == pane : tab.focused == pane) {
         Pane* next = nullptr;
         tab.splits->forEachPane([&next](Pane* p, const QRect&) {
             if (!next) {
@@ -633,9 +787,39 @@ void TerminalWindow::closePane(Pane* pane)
         }
     }
     pane->deleteLater();
+    m_dividerDrag.reset(); // the dividers moved
     updatePaneVisibility();
     m_layoutSize = QSize();
+    // The tab may show another pane's title now, and lost the pane's script suffix.
+    Q_EMIT tabsChanged();
     scheduleRender();
+}
+
+void TerminalWindow::dropPanePrompts(Pane* pane)
+{
+    // The prompt's reply would go to a pane that is leaving: drop it unanswered.
+    if (m_pendingClipboardRead && m_pendingClipboardRead->pane == pane) {
+        m_pendingClipboardRead.reset();
+        m_controller->answerClipboard(0);
+    }
+    if (m_pendingPastePane == pane) m_controller->answerPaste(false);
+    if (m_titlePane == pane) {
+        m_controller->cancelTitle();
+        m_titlePane = nullptr;
+    }
+    if (m_menuPane == pane) {
+        m_controller->closeContextMenu();
+        m_menuPane = nullptr;
+    }
+    if (m_urlMode.pane == pane) stopUrlMode();
+    if (m_selectionPane == pane) {
+        m_selectionPane = nullptr;
+        m_autoScroll.stop();
+    }
+    if (m_reportedPane == pane) {
+        m_reportedPane = nullptr;
+        m_reportedButtons = Qt::NoButton;
+    }
 }
 
 // --- tabs ------------------------------------------------------------------
@@ -650,7 +834,7 @@ int TerminalWindow::tabOf(const Pane* pane) const
     return -1;
 }
 
-int TerminalWindow::tabBarHeight() const
+int TerminalWindow::tabBarHeight(int tabCount) const
 {
     const int height = int(std::lround(TabBarLogicalHeight * devicePixelRatio()));
     switch (m_settings.settings().window.tabBar) {
@@ -661,42 +845,68 @@ int TerminalWindow::tabBarHeight() const
     case WindowSettings::TabBar::Auto:
         break;
     }
-    return m_tabs.size() > 1 ? height : 0;
+    return (tabCount < 0 ? int(m_tabs.size()) : tabCount) > 1 ? height : 0;
 }
 
-QRect TerminalWindow::paneArea() const
+QRect TerminalWindow::paneArea(int tabCount) const
 {
     const QSize px = m_renderer->pixelSize().isEmpty()
         ? (size() * devicePixelRatio())
         : m_renderer->pixelSize();
-    const int bar = tabBarHeight();
+    const int bar = tabBarHeight(tabCount);
     return QRect(0, bar, px.width(), std::max(0, px.height() - bar));
 }
 
-Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command, const QVariantMap& environment, QString* error)
+QSize TerminalWindow::minimumPaneSize() const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
+    return QSize(4 * m.cellWidth + 2 * pad, 2 * m.cellHeight + 2 * pad);
+}
+
+bool TerminalWindow::paneDrawn(const Pane* pane) const
+{
+    const int index = tabOf(pane);
+    if (index < 0) return false;
+    if (index == m_currentTab) return m_splits && m_splits->isVisible(pane);
+    if (overviewShowing()) return true;
+    return m_tabTransition.progress.isAnimating() && m_tabs[std::size_t(index)]->id == m_tabTransition.from;
+}
+
+QString TerminalWindow::tabTitle(const Tab& tab, const Pane* focused) const
+{
+    QString title = !tab.title.isEmpty() ? tab.title : focused ? focused->title() : QString();
+    for (const auto& item : m_scriptAppearance)
+        if (item.pane && tab.splits && tab.splits->contains(item.pane) && !item.tab.isEmpty()) title += QStringLiteral(" · ") + item.tab;
+    return title;
+}
+
+Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList& command, const QVariantMap& environment,
+                             QString* error, int at)
 {
     // A new tab opens beside the current one.
-    const int at = m_tabs.empty() ? 0 : m_currentTab + 1;
-    if (m_splits && m_currentTab < int(m_tabs.size())) {
-        m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
-    }
-    m_tabs.insert(m_tabs.begin() + at, std::make_unique<Tab>());
-    Tab& tab = *m_tabs[std::size_t(at)];
-    // Size the shell for the area it will get, with the tab bar if it now shows.
-    Pane* first = createPane(workingDirectory, paneArea(), command, error, environment);
+    if (at < 0 || at > int(m_tabs.size())) at = m_tabs.empty() ? 0 : m_currentTab + 1;
+    // Size the shell for the area it will get, with the tab bar if it now
+    // shows. The pane exists before its tab, so no tab is ever without a tree.
+    Pane* first = createPane(workingDirectory, paneArea(int(m_tabs.size()) + 1), command, error, environment);
     if (!first) {
-        m_tabs.erase(m_tabs.begin() + at);
         return nullptr;
     }
-    tab.splits = std::make_unique<SplitTree>(first);
-    tab.focused = first;
+    auto created = std::make_unique<Tab>();
+    created->splits = std::make_unique<SplitTree>(first);
+    created->focused = first;
+    Tab& tab = *created;
     const bool hadTab = m_splits != nullptr;
-    const int from = m_currentTab; // inserted after it, so its index holds
-    m_splits = nullptr; // the current tab's index moved; nothing to save
+    const int from = m_currentTab;
+    if (hadTab) m_tabs[std::size_t(from)]->focused = m_focused;
+    m_tabs.insert(m_tabs.begin() + at, std::move(created));
+    const int previous = hadTab && at <= from ? from + 1 : from; // the current tab's index after the insert
+    if (hadTab) m_currentTab = previous;
+    m_splits = nullptr; // saved above; switchTab must not save again
     switchTab(at);
     if (hadTab) {
-        startTabTransition(from, at);
-        Q_EMIT tabSwitched(m_tabs[std::size_t(from)]->id, tab.id, 1);
+        startTabTransition(previous, at);
+        Q_EMIT tabSwitched(m_tabs[std::size_t(previous)]->id, tab.id, at > previous ? 1 : -1);
     }
     return first;
 }
@@ -720,7 +930,7 @@ quint32 TerminalWindow::tabIdOf(const Pane* pane) const
 
 quint32 TerminalWindow::activeTabId() const
 {
-    return m_currentTab < int(m_tabs.size()) ? m_tabs[std::size_t(m_currentTab)]->id : 0;
+    return m_currentTab >= 0 && m_currentTab < int(m_tabs.size()) ? m_tabs[std::size_t(m_currentTab)]->id : 0;
 }
 
 QList<TerminalWindow::TabInfo> TerminalWindow::tabs() const
@@ -729,8 +939,7 @@ QList<TerminalWindow::TabInfo> TerminalWindow::tabs() const
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
         const Tab& tab = *m_tabs[i];
         const Pane* pane = int(i) == m_currentTab ? m_focused.data() : tab.focused.data();
-        out.append({tab.id, int(i), pane ? pane->id() : 0,
-                    tab.title.isEmpty() && pane ? pane->title() : tab.title});
+        out.append({tab.id, int(i), pane ? pane->id() : 0, tabTitle(tab, pane)});
     }
     return out;
 }
@@ -742,10 +951,12 @@ Pane* TerminalWindow::splitPane(Pane* pane, SplitTree::Direction direction, cons
     return splitFocused(direction, options.command, options, error);
 }
 
-Pane* TerminalWindow::openTab(const PaneLaunchOptions& options, QString* error)
+Pane* TerminalWindow::openTab(const PaneLaunchOptions& options, QString* error, Pane* from)
 {
-    return newTab(options.cwd.isEmpty() ? startDirectory(focusedDirectory()) : options.cwd,
-                  options.command, options.environment, error);
+    const int beside = from ? tabOf(from) : -1;
+    const QString inherited = beside >= 0 ? from->workingDirectory() : focusedDirectory();
+    return newTab(options.cwd.isEmpty() ? startDirectory(inherited) : options.cwd, options.command, options.environment, error,
+                  beside >= 0 ? beside + 1 : -1);
 }
 
 QString TerminalWindow::focusedDirectory() const
@@ -755,9 +966,11 @@ QString TerminalWindow::focusedDirectory() const
 
 QString TerminalWindow::startDirectory(const QString& inherited) const
 {
+    // A pane whose directory is unknown or gone hands on the home directory.
+    const QString fallback = !inherited.isEmpty() && QFileInfo(inherited).isDir() ? inherited : QDir::homePath();
     const QString setting = m_settings.settings().window.workingDirectory;
     if (setting.isEmpty() || setting == QLatin1String("inherit")) {
-        return inherited;
+        return fallback;
     }
     if (setting == QLatin1String("home")) {
         return QDir::homePath();
@@ -769,7 +982,7 @@ QString TerminalWindow::startDirectory(const QString& inherited) const
         return path;
     }
     qCWarning(lcWindow).noquote() << "workingDirectory" << setting << "is not a directory";
-    return inherited;
+    return fallback;
 }
 
 void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what, std::function<void()> close)
@@ -791,6 +1004,8 @@ void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what
         names = jobs.mid(0, jobs.size() - 1).join(QStringLiteral(", ")) + QStringLiteral(" and ") + names;
     }
     m_pendingConfirm = std::move(close);
+    m_pendingConfirmPanes.clear();
+    for (Pane* p : panes) m_pendingConfirmPanes.append(p);
     m_controller->askConfirm(QStringLiteral("Close %1?").arg(what),
                              QStringLiteral("%1 %2 still running, and closing ends %3.")
                                  .arg(names, jobs.size() == 1 ? QStringLiteral("is") : QStringLiteral("are"),
@@ -801,24 +1016,35 @@ void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what
 void TerminalWindow::requestCloseTabs(const QList<int>& indices)
 {
     QList<Pane*> panes;
-    QList<const Tab*> tabs;
+    QList<quint32> tabs;
+    int first = -1;
     for (int i : indices) {
         if (i >= 0 && i < int(m_tabs.size())) {
-            tabs << m_tabs[std::size_t(i)].get();
+            if (first < 0) first = i;
+            tabs << m_tabs[std::size_t(i)]->id;
             m_tabs[std::size_t(i)]->splits->forEachPane([&panes](Pane* p, const QRect&) { panes << p; });
         }
     }
     if (tabs.isEmpty()) {
         return;
     }
-    const QString what = tabs.size() > 1           ? QStringLiteral("%1 tabs").arg(tabs.size())
-                         : int(m_tabs.size()) == 1 ? QStringLiteral("this window")
-                                                   : QStringLiteral("this tab");
-    // By tab, not index: tabs may move or close while the prompt is open.
+    QString what = QStringLiteral("this tab");
+    if (tabs.size() > 1) {
+        what = QStringLiteral("%1 tabs").arg(tabs.size());
+    } else if (m_tabs.size() == 1) {
+        what = QStringLiteral("this window");
+    } else if (first != m_currentTab) {
+        // Not the tab on screen: name it.
+        const Tab& tab = *m_tabs[std::size_t(first)];
+        const QString title = tabTitle(tab, tab.focused.data());
+        if (!title.isEmpty()) what = QStringLiteral("the tab “%1”").arg(sanitizedText(title, 80));
+    }
+    // By tab id, not index or address: tabs may move, close or be replaced
+    // while the prompt is open.
     confirmClose(panes, what, [this, tabs] {
-        for (const Tab* tab : tabs) {
+        for (const quint32 id : tabs) {
             for (std::size_t i = 0; i < m_tabs.size(); ++i) {
-                if (m_tabs[i].get() == tab) {
+                if (m_tabs[i]->id == id) {
                     closeTab(int(i));
                     break;
                 }
@@ -843,6 +1069,9 @@ void TerminalWindow::switchTab(int index)
     if (index < 0 || index >= int(m_tabs.size())) {
         return;
     }
+    if (index == m_currentTab && m_splits) {
+        return; // already shown: switching would snap its animations
+    }
     if (m_splits && m_currentTab < int(m_tabs.size())) {
         m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     }
@@ -852,6 +1081,10 @@ void TerminalWindow::switchTab(int index)
     m_currentTab = index;
     Tab& tab = *m_tabs[std::size_t(index)];
     m_splits = tab.splits.get();
+    if (!tab.focused) {
+        // A restored project may name no active pane: never show a tab with no focus.
+        m_splits->forEachPane([&tab](Pane* p, const QRect&) { if (!tab.focused) tab.focused = p; });
+    }
     // Panes appear where they are: no easing from where they were when the
     // tab was last shown (the window may have changed size since).
     m_splits->forEachPane([this](Pane* p, const QRect&) {
@@ -884,6 +1117,7 @@ void TerminalWindow::closeTab(int index)
         return;
     }
     const Tab* closing = m_tabs[std::size_t(index)].get();
+    const quint32 closingId = closing->id;
     if (m_titleTab == closing) {
         m_controller->cancelTitle();
         m_titleTab = nullptr;
@@ -891,7 +1125,11 @@ void TerminalWindow::closeTab(int index)
     if (m_menuTab == closing) {
         m_menuTab = nullptr;
     }
-    m_tabs[std::size_t(index)]->splits->forEachPane([this](Pane* p, const QRect&) { Q_EMIT paneClosing(p->id(), tabIdOf(p), id()); p->deleteLater(); });
+    m_tabs[std::size_t(index)]->splits->forEachPane([this](Pane* p, const QRect&) {
+        Q_EMIT paneClosing(p->id(), tabIdOf(p), id());
+        dropPanePrompts(p);
+        p->deleteLater();
+    });
     m_tabs.erase(m_tabs.begin() + index);
     if (index != m_currentTab) {
         // A tab in the background: the current one is untouched.
@@ -906,7 +1144,10 @@ void TerminalWindow::closeTab(int index)
     // The tab that slides into its place, or the new last one.
     m_splits = nullptr; // gone; switchTab must not save into it
     m_focused = nullptr;
-    switchTab(std::min(index, int(m_tabs.size()) - 1));
+    const int next = std::min(index, int(m_tabs.size()) - 1);
+    switchTab(next);
+    // A switch for scripts and D-Bus, from a tab that no longer exists.
+    Q_EMIT tabSwitched(closingId, m_tabs[std::size_t(next)]->id, next < index ? -1 : 1);
 }
 
 void TerminalWindow::moveTab(int from, int to)
@@ -1011,6 +1252,7 @@ void TerminalWindow::openTabMenu(int index, const QPointF& pos)
         return;
     }
     m_menuTab = m_tabs[std::size_t(index)].get();
+    m_menuPane = nullptr; // a tab menu has no pane items
     const int count = int(m_tabs.size());
     auto entry = [](int id, const QString& title, const char* icon, bool enabled = true) {
         return QVariant(QVariantMap{{QStringLiteral("id"), id},
@@ -1042,17 +1284,31 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     // Close while the old pane still owns the search and its pending job.
     m_controller->setSearchOpen(false);
     if (m_focused) m_focused->clearSearch();
-    if (m_focused && m_windowFocused) {
+    // A pane that left its tree (its program exited) has no reader for the report.
+    if (m_focused && m_windowFocused && tabOf(m_focused) >= 0) {
         Pane* old = m_focused;
         old->sendInput(old->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
     }
     if (m_focused) {
         m_focused->setPreedit({}, 0);
     }
-    QGuiApplication::inputMethod()->reset();
+    // The input method is the application's: reset it only for this window's composition.
+    if (isActive()) QGuiApplication::inputMethod()->reset();
     stopCopyMode();
     cancelKeyMode();
+    // Hints and Unicode input act on the focused pane: they do not carry over.
+    if ((m_urlMode.active || m_hintCancel) && m_urlMode.pane != pane) stopUrlMode();
+    if (m_unicodeInput) {
+        m_unicodeInput.reset();
+        showUnicodeInput();
+    }
     m_focused = pane;
+    // The current tab's saved focus follows, so code that reads it (a pane
+    // closing, a transfer) never finds an older pane.
+    if (pane && m_splits && m_currentTab >= 0 && m_currentTab < int(m_tabs.size())
+        && m_tabs[std::size_t(m_currentTab)]->splits.get() == m_splits && m_splits->contains(pane)) {
+        m_tabs[std::size_t(m_currentTab)]->focused = pane;
+    }
     if (m_splits && m_splits->zoomedPane() && m_splits->contains(pane)) {
         setPaneZoom(pane);
     }
@@ -1113,10 +1369,9 @@ bool TerminalWindow::resizeFocused(SplitTree::Neighbour direction)
     if (m_splits->zoomedPane()) setPaneZoom(nullptr);
     relayout();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
-    const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
     const bool vertical = direction == SplitTree::Neighbour::Up || direction == SplitTree::Neighbour::Down;
     const bool changed = m_splits->resizePane(m_focused, direction, 2 * (vertical ? metrics.cellHeight : metrics.cellWidth),
-        std::max(1, int(std::lround(devicePixelRatio()))), QSize(4 * metrics.cellWidth + 2 * pad, 2 * metrics.cellHeight + 2 * pad));
+        std::max(1, int(std::lround(devicePixelRatio()))), minimumPaneSize());
     m_layoutSize = QSize();
     scheduleRender();
     return changed;
@@ -1150,6 +1405,8 @@ void TerminalWindow::relayout()
     const QSize px = m_renderer->pixelSize();
     const double dpr = devicePixelRatio();
     m_splits->layout(paneArea(), std::max(1, int(std::lround(dpr))));
+    // Hint labels sit on cells that may have moved.
+    if (m_urlMode.active) stopUrlMode();
     const auto& m = m_renderer->fonts().fonts->metrics();
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         if (r.isEmpty()) return; // hidden by zoom: retain the PTY's existing size
@@ -1172,7 +1429,7 @@ void TerminalWindow::renderNow()
     bool sliding = false;
     if (m_quick && m_slide.isAnimating()) {
         m_slide.advance();
-        PhosphorWayland::LayerSurface::get(this)->setMargins(QMargins(0, int(std::lround(m_slide.value())), 0, 0));
+        setQuickOffset(int(std::lround(m_slide.value())));
         sliding = m_slide.isAnimating();
         if (!sliding && !m_quickShown) {
             hide();
@@ -1193,6 +1450,7 @@ void TerminalWindow::renderNow()
     const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     bool anyBlinkingText = false;
+    bool focusedCursorBlinks = false;
     m_anyPaneAway = false;
     advanceOverview(animating);
     // The overview shader draws the cards: fade the unfocused dim out under it.
@@ -1233,14 +1491,15 @@ void TerminalWindow::renderNow()
             m_anyPaneAway |= context != 0;
             animating |= wp.params.contextProgress < 1.0f;
         }
-        const auto overrides = scriptOverrides(p);
         wp.params.cursorBlinkOn = m_blinkOn;
-        wp.params.cursorBlinkOverride = overrides.contains(QStringLiteral("cursorBlink"))
-            ? int(overrides.value(QStringLiteral("cursorBlink")).toBool()) : -1;
         wp.params.textBlinkOn = m_textBlinkOn;
+        applyScriptOverrides(p, wp.params, backgroundAlpha);
         anyBlinkingText |= p->snapshot().hasBlinkingText;
-        wp.params.backgroundAlpha = overrides.contains(QStringLiteral("backgroundOpacity"))
-            ? std::uint8_t(std::lround(overrides.value(QStringLiteral("backgroundOpacity")).toDouble() * 255)) : backgroundAlpha;
+        if (p == m_focused) {
+            const auto& snap = p->snapshot();
+            const bool blinks = wp.params.cursorBlinkOverride >= 0 ? wp.params.cursorBlinkOverride != 0 : snap.cursorBlink;
+            focusedCursorBlinks = blinks && (snap.cursorVisible || !snap.extraCursors.empty());
+        }
         if (m_hover.pane == p) {
             wp.params.hoveredLink = m_hover.link;
             wp.params.hoverRow = m_hover.row;
@@ -1250,6 +1509,7 @@ void TerminalWindow::renderNow()
         panes.push_back(wp);
         const QRect shown = wp.params.rect;
         if (multiple && p != m_focused) {
+            const auto overrides = scriptOverrides(p);
             const double paneDim = overrides.contains(QStringLiteral("unfocusedDim"))
                 ? overrides.value(QStringLiteral("unfocusedDim")).toDouble() : m_settings.settings().window.unfocusedDim;
             if (const auto alpha = std::uint8_t(std::lround(paneDim * (1.0 - overviewAmount) * 255)); alpha > 0)
@@ -1257,7 +1517,13 @@ void TerminalWindow::renderNow()
         }
         if (PaneMotion& pm = motion(p); pm.bell.isAnimating()) {
             pm.bell.advance();
-            overlays.emplace_back(shown, (p->snapshot().visualBellColor & 0x00ffffffu) | (std::uint32_t(std::clamp(pm.bell.value(), 0.0, 1.0) * 46) << 24));
+            // A colour the program set (OSC 21) wins over the theme's.
+            const auto& snap = p->snapshot();
+            const HighlightColors& colors = m_settings.settings().colors;
+            const std::uint32_t rgb = snap.visualBellColorSet ? snap.visualBellColor
+                                                              : packRgba(colors.visualBell.r, colors.visualBell.g, colors.visualBell.b);
+            const double strength = std::clamp(pm.bell.value(), 0.0, 1.0) * std::clamp(colors.visualBellIntensity, 0.0, 1.0);
+            overlays.emplace_back(shown, (rgb & 0x00ffffffu) | (std::uint32_t(std::lround(strength * 255)) << 24));
             animating |= pm.bell.isAnimating();
         }
         // Dividers follow the drawn edges, so they move with split animations.
@@ -1273,7 +1539,7 @@ void TerminalWindow::renderNow()
     // The overview shows other tabs' panes too, each prepared like a visible one.
     AfterglowRender::WindowRenderer::Overview overview{m_overview.open, float(m_overview.amount.value()),
         float(m_overview.position.value()), m_overview.changedAt, m_overview.movedAt, m_currentTab, {}};
-    if (m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3) {
+    if (overviewShowing()) {
         const auto cards = overviewPanes();
         for (int tab = 0; tab < int(m_tabs.size()); ++tab) {
             if (tab == m_currentTab) continue;
@@ -1306,11 +1572,17 @@ void TerminalWindow::renderNow()
     m_controller->setPaneTitles(titles);
     QVariantMap history;
     const WindowSettings& windowSettings = m_settings.settings().window;
-    if (m_focused && windowSettings.scrollbar != WindowSettings::Scrollbar::Never) {
+    const auto focusedEntry = std::find_if(panes.begin(), panes.end(), [this](const auto& wp) {
+        return m_focused && wp.snapshot == &m_focused->snapshot();
+    });
+    // The bar sits on the pane as drawn (it moves with split animations), not over the overview's cards.
+    if (focusedEntry != panes.end() && windowSettings.scrollbar != WindowSettings::Scrollbar::Never
+        && !m_renderer->overviewShowing()) {
         history = m_focused->historyPosition();
-        const QRectF rect = QRectF(m_splits->rectOf(m_focused));
-        history.insert(QStringLiteral("x"), rect.right() / devicePixelRatio() - 12);
+        const QRectF rect = QRectF(focusedEntry->params.rect);
+        history.insert(QStringLiteral("x"), rect.right() / devicePixelRatio() - ScrollbarLogicalWidth);
         history.insert(QStringLiteral("y"), rect.top() / devicePixelRatio());
+        history.insert(QStringLiteral("width"), ScrollbarLogicalWidth);
         history.insert(QStringLiteral("height"), rect.height() / devicePixelRatio());
         history.insert(QStringLiteral("fade"), windowSettings.scrollbar == WindowSettings::Scrollbar::Auto);
         history.insert(QStringLiteral("hideDelay"), windowSettings.scrollbarHideDelay);
@@ -1318,16 +1590,26 @@ void TerminalWindow::renderNow()
     m_controller->setHistory(history);
     const std::uint32_t clearRgb = m_focused ? m_focused->snapshot().defaultBg : packRgba(0, 0, 0);
     const std::uint32_t clear = (clearRgb & 0x00FFFFFFu) | (std::uint32_t(backgroundAlpha) << 24);
+    // Translucency needs a new swapchain. Once content asks for it (a
+    // translucent cell background, a script's opacity), it stays: output
+    // scrolling such cells in and out must not rebuild the swapchain each
+    // time. The new swapchain is made here, so this frame still draws.
+    if (!m_contentTranslucent && std::any_of(panes.begin(), panes.end(), [](const auto& pane) {
+            return pane.params.backgroundAlpha < 255 || pane.snapshot->hasTransparentBackgrounds;
+        })) {
+        m_contentTranslucent = true;
+        m_renderer->setTranslucent(true);
+        if (!m_renderer->ensureSwapChain()) {
+            scheduleRender();
+            return;
+        }
+    }
     QRhiTexture* chrome = nullptr;
     if (chromeVisible()) {
-        updateChrome();
         // Qt Quick records its own offscreen frame, so this precedes ours.
         m_chrome->renderIfNeeded(m_renderer->pixelSize());
         chrome = m_chrome->texture();
     }
-    m_renderer->setTranslucent(backgroundAlpha < 255 || std::any_of(panes.begin(), panes.end(), [](const auto& pane) {
-        return pane.snapshot->hasTransparentBackgrounds;
-    }));
     m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
     if (anyBlinkingText && !m_textBlinkTimer.isActive()) {
         m_textBlinkTimer.start();
@@ -1335,9 +1617,16 @@ void TerminalWindow::renderNow()
         m_textBlinkTimer.stop();
         m_textBlinkOn = true;
     }
+    // The blink timer runs only while the focused cursor blinks; it stops itself otherwise.
+    if (focusedCursorBlinks && m_windowFocused && !m_blinkTimer.isActive()) {
+        m_blinkTimer.start();
+    }
     if (const QRectF imeRect = inputMethodCursorRect(); imeRect != m_reportedImeRect && isActive()) {
         m_reportedImeRect = imeRect;
         QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle);
+    }
+    if (std::exchange(m_inputMethodDirty, false) && isActive()) {
+        QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
     }
     updateTerminalAccessibility(this);
     if (animating || sliding || m_renderer->animating()) {
@@ -1362,20 +1651,6 @@ PaneMotion& TerminalWindow::motion(const Pane* pane)
     return *slot;
 }
 
-std::shared_ptr<const PhosphorAnimation::Curve> TerminalWindow::splitCurve()
-{
-    const QString& spec = m_settings.settings().animation.splitCurve;
-    if (!m_splitCurve || spec != m_splitCurveSpec) {
-        m_splitCurveSpec = spec;
-        m_splitCurve = m_shaders.curves().tryCreate(spec);
-        if (!m_splitCurve) {
-            qCWarning(lcWindow).noquote() << "Animation.splitCurve" << spec << "is not a curve; using the default spring";
-            m_splitCurve = std::make_shared<PhosphorAnimation::Spring>(SplitSpeed, 1.0);
-        }
-    }
-    return m_splitCurve;
-}
-
 void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowRender::FrameBuilder::PaneParams& params,
                                  bool& holding, bool& animating)
 {
@@ -1386,14 +1661,14 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
 
     // Where the pane is drawn: its layout rectangle, or on the way there.
     const QRectF rectTarget(layoutRect);
-    auto rectSpec = springSpec<QRectF>(m_clock.get(), SplitSpeed);
-    rectSpec.profile.curve = splitCurve();
-    rectSpec.profile.duration = anim.splitDuration;
+    const auto rectSpec = specFor<QRectF>(motionSpec(anim.splitCurve, anim.splitDuration, m_splitCurve, "Animation.splitCurve",
+                                                     AnimationSettings{}.splitCurve));
     if (!m.rectKnown) {
         m.rectKnown = true;
         m.rectTarget = rectTarget;
         const auto grow = m_growFrom.find(pane);
-        if (anim.splits && grow != m_growFrom.end()) {
+        // Not while the overview shows: its cards do not grow out of a split.
+        if (anim.splits && grow != m_growFrom.end() && !overviewShowing()) {
             m.rect.start(grow->second, rectTarget, rectSpec);
         } else {
             m.rect.start(rectTarget, rectTarget, rectSpec);
@@ -1416,12 +1691,29 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     const QRect shown = m.rect.value().toRect();
 
     // Scrolling: the terminal shows whole rows; the rest is a pixel shift.
-    const std::size_t offset = pane->withTerminal([](Terminal& t) { return t.screen().viewportOffset(); });
+    const auto [offset, written] = pane->withTerminal([](Terminal& t) {
+        const auto& screen = t.screen();
+        return std::pair{screen.viewportOffset(), std::uint64_t(screen.rowsDropped() + screen.historySize())};
+    });
+    std::uint64_t& seen = m_historyRows[pane];
+    const std::uint64_t added = written >= seen ? written - seen : 0;
+    seen = written;
     if (offset != m.appliedOffset) {
-        // Moved by something else (typing, output, a prompt jump): follow it.
-        m.scroll.cancel();
-        m.scrollValue = qreal(offset);
-        m.scrollTarget = qreal(offset);
+        const qint64 moved = qint64(offset) - qint64(m.appliedOffset);
+        if (m.scroll.isAnimating() && moved > 0 && std::uint64_t(moved) == added) {
+            // Output entered the history while the view is scrolled back, and
+            // the terminal moved the view by as much to keep it on the same
+            // text: the easing goes on from the shifted place.
+            m.scrollValue = m.scroll.value() + qreal(moved);
+            m.scrollTarget += qreal(moved);
+            m.scroll.start(m.scrollValue, m.scrollTarget, motionSpec(anim.scrollCurve, anim.scrollDuration, m_scrollCurve,
+                                                                     "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
+        } else {
+            // Moved by something else (typing, a prompt jump): follow it.
+            m.scroll.cancel();
+            m.scrollValue = qreal(offset);
+            m.scrollTarget = qreal(offset);
+        }
         m.appliedOffset = offset;
     }
     if (m.scroll.isAnimating()) {
@@ -1444,13 +1736,15 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     // The cursor glides from cell to cell.
     const AfterglowRender::PaneSnapshot& snap = pane->snapshot();
     const QPointF cellTarget(snap.cursorX * metrics.cellWidth, snap.cursorY * metrics.cellHeight);
-    const auto cursorSpec = springSpec<QPointF>(m_clock.get(), CursorSpeed);
+    const auto cursorSpec = specFor<QPointF>(motionSpec(anim.cursorCurve, anim.cursorDuration, m_cursorCurve,
+                                                        "Animation.cursorCurve", AnimationSettings{}.cursorCurve));
     const bool glide = anim.cursor && snap.cursorVisible;
     // Typing and deleting move the cursor a cell at a time: those moves are
     // immediate, or the cursor would trail behind fast keystrokes. Only
-    // jumps (another row, or further along it) glide.
+    // jumps (another row, or further along it) glide. No move at all is
+    // not a small move: it would restart a glide that is under way.
     const QPointF step = cellTarget - m.cursorTarget;
-    const bool smallMove = std::abs(step.y()) < 0.5 && std::abs(step.x()) <= 2.0 * metrics.cellWidth;
+    const bool smallMove = cellTarget != m.cursorTarget && std::abs(step.y()) < 0.5 && std::abs(step.x()) <= 2.0 * metrics.cellWidth;
     if (!m.cursorKnown || !glide || smallMove) {
         m.cursorKnown = true;
         m.cursorTarget = cellTarget;
@@ -1480,17 +1774,21 @@ void TerminalWindow::scrollPane(Pane* pane, double rows, bool animate)
         return;
     }
     PaneMotion& m = motion(pane);
+    // Hint labels sit on the rows the view had.
+    if (m_urlMode.active && m_urlMode.pane == pane) stopUrlMode();
     const auto history = double(pane->withTerminal([](Terminal& t) { return t.screen().historySize(); }));
     const double base = m.scroll.isAnimating() ? m.scrollTarget : m.scrollValue;
     const double target = std::clamp(base + rows, 0.0, history);
     m.scrollTarget = target;
-    if (!animate || !m_settings.settings().animation.scroll) {
+    const AnimationSettings& anim = m_settings.settings().animation;
+    if (!animate || !anim.scroll) {
         m.scroll.cancel();
         m.scrollValue = target;
     } else if (m.scroll.isAnimating()) {
         m.scroll.retarget(target, PhosphorAnimation::RetargetPolicy::PreserveVelocity);
     } else {
-        m.scroll.start(m.scrollValue, target, springSpec<qreal>(m_clock.get(), ScrollSpeed));
+        m.scroll.start(m.scrollValue, target, motionSpec(anim.scrollCurve, anim.scrollDuration, m_scrollCurve,
+                                                         "Animation.scrollCurve", AnimationSettings{}.scrollCurve));
     }
     scheduleRender();
 }
@@ -1509,7 +1807,8 @@ bool TerminalWindow::event(QEvent* e)
         if (m_controller->wantsKeyboard()) { m_chrome->queryInputMethod(q); return true; }
         const Qt::InputMethodQueries queries = q->queries();
         if (queries & Qt::ImEnabled) {
-            q->setValue(Qt::ImEnabled, !m_controller->wantsKeyboard());
+            // A mode that holds the keyboard takes plain keys, not composed text.
+            q->setValue(Qt::ImEnabled, !keyboardModeActive());
         }
         if (queries & Qt::ImCursorRectangle) {
             q->setValue(Qt::ImCursorRectangle, inputMethodCursorRect());
@@ -1533,6 +1832,12 @@ bool TerminalWindow::event(QEvent* e)
             m_chrome->deliver(e);
             return true;
         }
+        // The overview, hints, copy mode, Unicode input and script key modes
+        // own the keyboard: composed text must not slip past them to the shell.
+        if (keyboardModeActive()) {
+            ime->accept();
+            return true;
+        }
         // Terminal output is not an editable document. Never translate arbitrary
         // IME replacement ranges into destructive shell keystrokes.
         if (ime->replacementStart() != 0 || ime->replacementLength() != 0) {
@@ -1547,6 +1852,7 @@ bool TerminalWindow::event(QEvent* e)
             }
             if (!ime->commitString().isEmpty()) {
                 m_focused->clearSelection();
+                noteTyping();
                 m_focused->sendInput(ime->commitString().toUtf8().toStdString());
             }
             int caret = int(ime->preeditString().size());
@@ -1565,6 +1871,12 @@ bool TerminalWindow::event(QEvent* e)
     case QEvent::DragMove:
     case QEvent::Drop: {
         auto* drop = static_cast<QDropEvent*>(e);
+        if (overviewShowing()) {
+            // The cards are not where the layout puts the panes: no drop target.
+            for (auto* pane : panes()) pane->dragDrop()->leave();
+            drop->ignore();
+            return true;
+        }
         Pane* target = m_splits ? m_splits->paneAt((drop->position() * devicePixelRatio()).toPoint()) : nullptr;
         for (auto* pane : panes()) if (pane != target) pane->dragDrop()->leave();
         if (target && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
@@ -1593,6 +1905,12 @@ bool TerminalWindow::event(QEvent* e)
         for (auto* pane : panes()) pane->dragDrop()->leave();
         e->accept();
         return true;
+    case QEvent::Leave:
+        // Packs read a position outside the window as "no pointer".
+        m_renderer->setMousePosition(QPointF(-1, -1));
+        m_hover = {};
+        scheduleRender();
+        break;
     case QEvent::PlatformSurface:
         if (static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType()
             == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
@@ -1633,6 +1951,10 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
     }
     if (isExposed()) {
         renderNow();
+    } else if (m_textBlinkTimer.isActive()) {
+        // Nothing draws while hidden: blinking text waits for the next frame.
+        m_textBlinkTimer.stop();
+        m_textBlinkOn = true;
     }
     updatePaneVisibility();
 }
@@ -1640,11 +1962,16 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
 void TerminalWindow::updatePaneVisibility()
 {
     const bool shown = isExposed() && windowState() != Qt::WindowMinimized;
+    // The overview draws other tabs' panes as live cards: they can be seen too.
+    const std::vector<Pane*> cards = overviewShowing() ? overviewPanes() : std::vector<Pane*>{};
     for (std::size_t i = 0; i < m_tabs.size(); ++i) {
-        const bool visible = shown && int(i) == m_currentTab;
+        const bool current = int(i) == m_currentTab;
         const SplitTree* tree = m_tabs[i]->splits.get();
-        tree->forEachPane([visible, tree](Pane* p, const QRect&) {
-            p->withTerminal([visible, tree, p](Terminal& t) { t.setVisible(visible && tree->isVisible(p)); });
+        if (!tree) continue;
+        tree->forEachPane([&](Pane* p, const QRect&) {
+            const bool visible = shown
+                && ((current && tree->isVisible(p)) || std::find(cards.begin(), cards.end(), p) != cards.end());
+            p->withTerminal([visible](Terminal& t) { t.setVisible(visible); });
         });
     }
 }
@@ -1672,6 +1999,11 @@ void TerminalWindow::focusOutEvent(QFocusEvent*)
     m_windowFocused = false;
     m_blinkTimer.stop();
     m_blinkOn = true;
+    // The link modifier's release may go to another window.
+    if (!m_hover.url.isEmpty() || m_hover.pane) {
+        m_hover = {};
+        applyPointerShape();
+    }
     if (m_focused) {
         m_focused->sendInput(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
     }
@@ -1688,10 +2020,30 @@ void TerminalWindow::updateKeyMode()
 {
     m_controller->setKeyMode(m_scriptKeyMode ? m_scriptKeyMode->label
                              : m_overview.open ? tr("Panes · arrows choose · Enter or 1–9 focus · Esc cancel")
-                             : m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy") : m_keyMode.label());
+                             : m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy · Esc to cancel") : m_keyMode.label());
     m_keyModeTimer.stop();
     if (m_keyMode.active()) m_keyModeTimer.start(int(std::max(qint64(1), m_keyMode.deadline - m_keyModeClock.elapsed())));
+    // The overview, copy mode and script key modes start and end here.
+    syncInputMethodEnabled();
     scheduleRender();
+}
+
+bool TerminalWindow::keyboardModeActive() const
+{
+    return m_overview.open || m_urlMode.active || m_unicodeInput || m_scriptKeyMode || m_copyPane;
+}
+
+void TerminalWindow::refreshInputMethod(Qt::InputMethodQueries queries)
+{
+    if (isActive()) QGuiApplication::inputMethod()->update(queries);
+}
+
+void TerminalWindow::syncInputMethodEnabled()
+{
+    if (const bool held = keyboardModeActive(); held != m_modeHeldKeyboard) {
+        m_modeHeldKeyboard = held;
+        refreshInputMethod(Qt::ImEnabled);
+    }
 }
 
 bool TerminalWindow::handleShortcut(QKeyEvent* e)
@@ -1699,12 +2051,12 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     const auto result = m_settings.settings().keyModes.press(e, m_keyMode, m_keyModeClock.elapsed());
     updateKeyMode();
     if (result.consumed) {
-        if (result.target.startsWith(QStringLiteral("text:")) && m_focused) {
+        if (result.target.startsWith(QLatin1String("text:")) && m_focused) {
             const QByteArray bytes = Keybinds::unescape(result.target.mid(5));
             m_focused->clearSelection();
             m_focused->sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())));
-        } else if (result.target.startsWith(QStringLiteral("script:"))) {
-            m_scripts.runAction(result.target.mid(7), m_focused ? m_focused->id() : 0);
+        } else if (result.target.startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
+            m_scripts.runAction(result.target.mid(qsizetype(std::strlen(Keybinds::ScriptPrefix))), m_focused ? m_focused->id() : 0);
         } else {
             for (Action action : Keybinds::allActions()) {
                 if (Keybinds::token(action) == result.target) { performAction(action); break; }
@@ -1715,7 +2067,13 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     const Keybinds& kb = m_settings.settings().keybinds;
     const Action action = kb.match(e);
     if (action != Action::None) {
-        return performAction(action);
+        // These keep their key even when there is nothing to do: the
+        // encoded chord would reach the shell as a control byte (the
+        // overview's Ctrl+Shift+D as EOF, a rotation's as ESC or GS).
+        constexpr std::array keepsKey{Action::PaneOverview, Action::RotatePanesClockwise, Action::RotatePanesCounterclockwise,
+                                      Action::SwapLeft, Action::SwapRight, Action::SwapUp, Action::SwapDown,
+                                      Action::UsePackageShaders, Action::TogglePaneZoom};
+        return performAction(action) || std::find(keepsKey.begin(), keepsKey.end(), action) != keepsKey.end();
     }
     if (const QByteArray text = kb.matchText(e); !text.isEmpty()) {
         if (!m_focused) {
@@ -1788,17 +2146,19 @@ bool TerminalWindow::performAction(Action action)
     case Action::ResizeDown:
         return resizeFocused(SplitTree::Neighbour::Down);
     case Action::SplitRight:
-        splitFocused(SplitTree::Direction::Right);
-        return true;
     case Action::SplitDown:
-        splitFocused(SplitTree::Direction::Down);
-        return true;
     case Action::SplitLeft:
-        splitFocused(SplitTree::Direction::Left);
+    case Action::SplitUp: {
+        const SplitTree::Direction direction = action == Action::SplitRight ? SplitTree::Direction::Right
+            : action == Action::SplitDown                                   ? SplitTree::Direction::Down
+            : action == Action::SplitLeft                                   ? SplitTree::Direction::Left
+                                                                            : SplitTree::Direction::Up;
+        QString error;
+        if (m_focused && !splitFocused(direction, {}, {}, &error)) {
+            NotificationCenter::instance().showNotice(m_focused, tr("Could not split the pane"), error);
+        }
         return true;
-    case Action::SplitUp:
-        splitFocused(SplitTree::Direction::Up);
-        return true;
+    }
     case Action::ClearScreen:
         if (m_focused) {
             m_focused->clearSelection();
@@ -1844,8 +2204,8 @@ bool TerminalWindow::performAction(Action action)
     case Action::GotoTab6:
     case Action::GotoTab7:
     case Action::GotoTab8:
-        if (m_tabs.size() < 2) {
-            return false; // the key goes to the program
+        if (m_tabs.size() < 2 || int(action) - int(Action::GotoTab1) >= int(m_tabs.size())) {
+            return false; // no such tab: the key goes to the program
         }
         switchTab(int(action) - int(Action::GotoTab1));
         return true;
@@ -1882,8 +2242,18 @@ bool TerminalWindow::performAction(Action action)
     case Action::NewWindow:
         Q_EMIT newWindowRequested(focusedDirectory());
         return true;
-    case Action::NewTab:
-        newTab(startDirectory(focusedDirectory()));
+    case Action::NewTab: {
+        QString error;
+        if (!newTab(startDirectory(focusedDirectory()), {}, {}, &error)) {
+            NotificationCenter::instance().showNotice(m_focused, tr("Could not open a tab"), error);
+        }
+        return true;
+    }
+    case Action::EndScriptKeyMode:
+        // Always ends a script's key mode, so no script can keep the keyboard.
+        if (!m_scriptKeyMode) return false;
+        m_scriptKeyMode.reset();
+        updateKeyMode();
         return true;
     case Action::CloseTab:
         requestCloseTabs({m_currentTab});
@@ -1909,22 +2279,34 @@ bool TerminalWindow::performAction(Action action)
     case Action::ShowHints: startHints(); return true;
     case Action::ShowLastOutput: {
         if (!m_focused) return false;
+        // Handled from here on: a failure is a notification, not a key for the program.
+        const auto fail = [this](const QString& title, const QString& body) {
+            NotificationCenter::instance().showNotice(m_focused, title, body);
+            return true;
+        };
         auto command = QProcess::splitCommand(m_settings.settings().pager);
-        if (command.isEmpty() || QStandardPaths::findExecutable(command.front()).isEmpty()) return false;
-        const auto output = m_focused->readText(Terminal::TextScope::LastOutput, 1024 * 1024);
+        if (command.isEmpty() || QStandardPaths::findExecutable(command.front()).isEmpty()) {
+            return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
+                                                          : tr("The pager %1 was not found.").arg(command.front()));
+        }
+        const auto output = m_focused->readText(Terminal::TextScope::LastOutput, LastOutputLimit);
         if (!output.value(QStringLiteral("available")).toBool()) {
-            NotificationCenter::instance().showSimple(m_focused, this, tr("No command output"), tr("Shell integration has not recorded a command yet."));
-            return false;
+            return fail(tr("No command output"), tr("Shell integration has not recorded a command yet."));
         }
         auto file = std::make_unique<QTemporaryFile>();
         const QByteArray bytes = output.value(QStringLiteral("text")).toString().toUtf8();
-        if (!file->open() || file->write(bytes) != bytes.size() || !file->flush()) return false;
-        if (output.value(QStringLiteral("truncated")).toBool()) file->write("\n[Afterglow: output limited to 1 MiB]\n");
+        if (!file->open() || file->write(bytes) != bytes.size() || !file->flush()) {
+            return fail(tr("Could not show the output"), tr("The temporary file could not be written."));
+        }
+        if (output.value(QStringLiteral("truncated")).toBool()) {
+            file->write(QStringLiteral("\n[Afterglow: output limited to %1]\n").arg(QLocale::c().formattedDataSize(qint64(LastOutputLimit))).toUtf8());
+        }
         const QString path = file->fileName();
         file->close();
         command << path;
-        Pane* created = newTab(focusedDirectory(), command);
-        if (!created) return false;
+        QString error;
+        Pane* created = newTab(focusedDirectory(), command, {}, &error);
+        if (!created) return fail(tr("Could not show the output"), error);
         file->setParent(created);
         file.release();
         return true;
@@ -1961,10 +2343,10 @@ bool TerminalWindow::performAction(Action action)
         scheduleRender();
         return true;
     case Action::FontBigger:
-        m_device.adjustFontSize(1.0f);
+        m_device.adjustFontSize(float(m_settings.settings().fontSizeStep));
         return true;
     case Action::FontSmaller:
-        m_device.adjustFontSize(-1.0f);
+        m_device.adjustFontSize(-float(m_settings.settings().fontSizeStep));
         return true;
     case Action::FontReset:
         m_device.setFontSpec(m_settings.settings().font);
@@ -2031,10 +2413,7 @@ void TerminalWindow::updateChrome()
     QVariantList tabContexts;
     for (const auto& tab : m_tabs) {
         Pane* focused = tab->splits.get() == m_splits ? m_focused : tab->focused;
-        QString title = !tab->title.isEmpty() ? tab->title : focused ? focused->title() : QString();
-        for (const auto& item : m_scriptAppearance)
-            if (item.pane && tab->splits->contains(item.pane) && !item.tab.isEmpty()) title += QStringLiteral(" · ") + item.tab;
-        titles.append(title);
+        titles.append(tabTitle(*tab, focused));
         tabContexts.append(QVariantMap{{QStringLiteral("label"), focused ? focused->contextLabel() : QString()},
                                        {QStringLiteral("kind"), focused ? focused->contextKind() : QString()}});
         // The tab shows the most pressing status among its panes.
@@ -2051,20 +2430,20 @@ void TerminalWindow::updateChrome()
     m_controller->setTabStatus(tabStatus);
     m_controller->setTabContexts(tabContexts);
 
-    if (m_focused) {
-        const auto& snap = m_focused->snapshot();
-        if (snap.cols > 0) {
-            // Status colours from the palette's bright green, yellow and red.
-            const auto& pal = m_settings.settings().terminal.basePalette;
-            m_controller->setStatusColors(QColor(pal[10].r, pal[10].g, pal[10].b), QColor(pal[11].r, pal[11].g, pal[11].b),
-                                          QColor(pal[9].r, pal[9].g, pal[9].b));
-        }
-    }
+    // Status colours from the palette's bright green, yellow and red.
+    const auto& pal = m_settings.settings().terminal.basePalette;
+    m_controller->setStatusColors(QColor(pal[10].r, pal[10].g, pal[10].b), QColor(pal[11].r, pal[11].g, pal[11].b),
+                                  QColor(pal[9].r, pal[9].g, pal[9].b));
+}
 
+void TerminalWindow::updatePaletteActions()
+{
     QVariantList actions;
     const Keybinds& kb = m_settings.settings().keybinds;
     for (Action a : Keybinds::allActions()) {
-        if (a == Action::CommandPalette) {
+        // The palette cannot run itself, and while a script holds the keys
+        // the palette cannot open: its chord is the only way.
+        if (a == Action::CommandPalette || a == Action::EndScriptKeyMode) {
             continue;
         }
         actions.append(QVariantMap{{QStringLiteral("id"), int(a)},
@@ -2116,18 +2495,25 @@ void TerminalWindow::ringBell(Pane* pane)
         alert(0);
     }
     if (bell == Settings::Bell::Visual || bell == Settings::Bell::Both) {
-        motion(pane).bell.start(1.0, 0.0, springSpec<qreal>(m_clock.get(), 14.0));
-        scheduleRender();
+        flashPane(pane);
     }
     if (bell != Settings::Bell::None) {
         playBellSound();
     }
 }
 
+void TerminalWindow::flashPane(Pane* pane)
+{
+    const AnimationSettings& anim = m_settings.settings().animation;
+    motion(pane).bell.start(1.0, 0.0, motionSpec(anim.bellCurve, anim.bellDuration, m_bellCurve, "Animation.bellCurve",
+                                                 AnimationSettings{}.bellCurve));
+    if (paneDrawn(pane)) scheduleRender();
+}
+
 void TerminalWindow::playBellSound()
 {
     const QString sound = m_settings.settings().bellSound;
-    if (sound.isEmpty() || (m_lastBellSound.isValid() && m_lastBellSound.elapsed() < 250)) {
+    if (sound.isEmpty() || (m_lastBellSound.isValid() && m_lastBellSound.elapsed() < BellSoundIntervalMs)) {
         return;
     }
     m_lastBellSound.start();
@@ -2145,16 +2531,37 @@ void TerminalWindow::playBellSound()
 
 void TerminalWindow::openLink(const QString& url)
 {
-    QStringList command = QProcess::splitCommand(m_settings.settings().links.openWith);
-    if (command.isEmpty()) {
-        QDesktopServices::openUrl(QUrl(url));
+    // A target comes from the terminal and its text can hide it. It must be
+    // a URL with a scheme: that also keeps it from passing for an option of
+    // the Links.openWith program ("-P", "--script=...").
+    const QUrl target(url);
+    if (!target.isValid() || target.scheme().isEmpty()) {
+        qCWarning(lcWindow).noquote() << "not opening" << url << "(not a URL with a scheme)";
         return;
     }
-    const QString program = command.takeFirst();
-    command << url;
-    if (!QProcess::startDetached(program, command)) {
-        qCWarning(lcWindow).noquote() << "could not run" << program << "to open" << url;
+    const auto open = [this, target, url = url.trimmed()] {
+        QStringList command = QProcess::splitCommand(m_settings.settings().links.openWith);
+        if (command.isEmpty()) {
+            QDesktopServices::openUrl(target);
+            return;
+        }
+        const QString program = command.takeFirst();
+        command << url;
+        if (!QProcess::startDetached(program, command)) {
+            qCWarning(lcWindow).noquote() << "could not run" << program << "to open" << target.toDisplayString();
+        }
+    };
+    if (m_settings.settings().links.schemes.contains(target.scheme().toLower())) {
+        open();
+        return;
     }
+    // Other schemes start other programs: the user sees the whole target first.
+    m_pendingConfirm = open;
+    m_pendingConfirmPanes.clear();
+    m_controller->askConfirm(QStringLiteral("Open this link?"),
+                             QStringLiteral("The link opens with the handler for “%1:”. Its target is %2")
+                                 .arg(sanitizedText(target.scheme(), 40), sanitizedText(target.toDisplayString(), 400)),
+                             QStringLiteral("Open"));
 }
 
 bool TerminalWindow::linkModifierHeld() const
@@ -2173,7 +2580,13 @@ void TerminalWindow::revealPane(Pane* pane)
         switchTab(tab);
     }
     setFocusedPane(pane);
-    show();
+    if (m_quick) {
+        // A quick terminal slides in from its edge; a plain show() would map
+        // it at the offset it slid out to, off screen but with the keyboard.
+        if (!m_quickShown) toggleQuick();
+    } else {
+        show();
+    }
     raise();
     requestActivate();
     scheduleRender();
@@ -2199,39 +2612,9 @@ int statusPriority(const PaneStatusRecord& r, quint64 acknowledged)
     return 0;
 }
 
-QString statusStateName(AfterglowVt::StatusState s)
-{
-    using AfterglowVt::StatusState;
-    switch (s) {
-    case StatusState::Working:
-        return QStringLiteral("working");
-    case StatusState::Blocked:
-        return QStringLiteral("blocked");
-    case StatusState::Done:
-        return QStringLiteral("done");
-    case StatusState::Error:
-        return QStringLiteral("error");
-    case StatusState::Idle:
-        break;
-    }
-    return QStringLiteral("idle");
-}
-
-/// Program-supplied text shown outside the grid: drop bidirectional
-/// overrides and invisible formatting, which could disguise it.
 QString sanitizedStatusText(const QString& s)
 {
-    QString out;
-    out.reserve(s.size());
-    for (const QChar c : s) {
-        const char16_t u = c.unicode();
-        const bool invisible = (u >= 0x200B && u <= 0x200F) || (u >= 0x202A && u <= 0x202E)
-            || (u >= 0x2060 && u <= 0x2069) || u == 0xFEFF || u == 0x061C || u == 0x00AD;
-        if (!invisible) {
-            out.append(c);
-        }
-    }
-    return out.left(300);
+    return sanitizedText(s, 300);
 }
 
 QString statusDescription(const PaneStatusRecord& r)
@@ -2302,9 +2685,9 @@ void TerminalWindow::paneStatusChanged(Pane* pane)
         if (attention->state == AfterglowVt::StatusState::Blocked && !isActive()) {
             alert(0);
         }
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (m_settings.settings().notifications && now - view.lastNotification >= 3000) {
-            view.lastNotification = now;
+        if (m_settings.settings().notifications
+            && (!view.lastNotification.isValid() || view.lastNotification.elapsed() >= StatusNotificationIntervalMs)) {
+            view.lastNotification.start();
             const QString source = statusSource(*attention);
             NotificationCenter::instance().showSimple(pane, this, source.isEmpty() ? pane->title() : source,
                                                       statusDescription(*attention),
@@ -2357,10 +2740,10 @@ QVariantMap TerminalWindow::statusSummary(const Pane* pane) const
     }
     const QString source = statusSource(*pick);
     const QString description = statusDescription(*pick);
-    return {{QStringLiteral("state"), statusStateName(pick->state)},
+    return {{QStringLiteral("state"), Control::statusStateName(pick->state)},
             {QStringLiteral("progress"), pick->progress},
             {QStringLiteral("priority"), best},
-            {QStringLiteral("text"), source.isEmpty() ? description : source + QStringLiteral(" \u2014 ") + description}};
+            {QStringLiteral("text"), source.isEmpty() ? description : description + QStringLiteral(" (") + source + QLatin1Char(')')}};
 }
 
 void TerminalWindow::publishLauncherStatus()
@@ -2389,7 +2772,10 @@ void TerminalWindow::publishLauncherStatus()
     QDBusMessage signal = QDBusMessage::createSignal(QStringLiteral("/com/phosphorworks/Afterglow"),
                                                      QStringLiteral("com.canonical.Unity.LauncherEntry"),
                                                      QStringLiteral("Update"));
-    signal << QStringLiteral("application://com.phosphorworks.Afterglow.desktop")
+    // --class changes the desktop file name, and the launcher entry with it.
+    const QString desktopFile = QGuiApplication::desktopFileName().isEmpty() ? QStringLiteral("com.phosphorworks.Afterglow")
+                                                                             : QGuiApplication::desktopFileName();
+    signal << QStringLiteral("application://%1.desktop").arg(desktopFile)
            << QVariantMap{{QStringLiteral("progress"), progress >= 0 ? progress / 100.0 : 0.0},
                           {QStringLiteral("progress-visible"), progress >= 0},
                           {QStringLiteral("urgent"), urgent}};
@@ -2466,9 +2852,13 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     };
     const QVariant separator = QVariantMap{{QStringLiteral("separator"), true}};
     const bool pane = m_focused != nullptr;
+    m_menuPane = m_focused;
 
     QVariantList items;
-    m_menuLink = linkAt(m_focused, pos).url;
+    // Only a link under the pointer: not one at the focused pane's edge,
+    // where a click on a divider would clamp to.
+    Pane* under = m_splits ? m_splits->paneAt((pos * devicePixelRatio()).toPoint()) : nullptr;
+    m_menuLink = under == m_focused ? linkAt(m_focused, pos).url : QString();
     if (!m_menuLink.isEmpty()) {
         items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
               << entry(MenuCopyLink, QStringLiteral("Copy Link Address"), "insert-link") << separator;
@@ -2478,7 +2868,11 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
                              .toMap();
     notify.insert(QStringLiteral("checked"), pane && m_notifyOnFinish.contains(m_focused.data()));
     items << action(Action::Copy, QStringLiteral("Copy"), "edit-copy", pane && m_focused->hasSelection())
-          << action(Action::Paste, QStringLiteral("Paste"), "edit-paste", !QGuiApplication::clipboard()->text().isEmpty())
+          // The offered types, not the text: reading it would wait on the source application.
+          << action(Action::Paste, QStringLiteral("Paste"), "edit-paste", [] {
+                 const QMimeData* data = QGuiApplication::clipboard()->mimeData();
+                 return data && data->hasText();
+             }())
           << action(Action::SelectAll, QStringLiteral("Select All"), "edit-select-all", pane)
           << action(Action::Search, QStringLiteral("Find\u2026"), "edit-find") << notify
           << action(Action::CommandPalette, QStringLiteral("Command Palette\u2026"), "system-run") << separator
@@ -2503,6 +2897,8 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     m_menuScriptActions.clear();
     QVariantList scripts;
     for (const ScriptHost::ScriptAction& a : m_scripts.actions()) {
+        // Ids from TabMenuRename on are the tab menu's.
+        if (MenuScriptBase + m_menuScriptActions.size() >= TabMenuRename) break;
         scripts << entry(MenuScriptBase + int(m_menuScriptActions.size()), a.title, "",
                          kb.bindingsOfScript(a.token).value(0));
         m_menuScriptActions.append(a.token);
@@ -2621,23 +3017,27 @@ void TerminalWindow::startHints()
     watcher->setFuture(QtConcurrent::run([snapshot = std::move(snapshot), patterns, cancelled, firstRow] {
         std::vector<UrlHint> hints;
         QSet<QString> seen;
+        // Matches repeat, and only distinct ones get labels: ask for as many
+        // matches as the text could hold, and stop at the labels.
+        const std::size_t characters = snapshot.characters + 1;
         for (const auto& value : patterns) {
-            if (*cancelled || hints.size() >= 1000) break;
+            if (*cancelled || hints.size() >= MaxHints) break;
             const auto pattern = value.toMap();
             const QString action = pattern.value(QStringLiteral("action"), QStringLiteral("copy")).toString();
             const auto command = pattern.value(QStringLiteral("command")).toStringList();
             if (action != QLatin1String("copy") && action != QLatin1String("open") && action != QLatin1String("command")) continue;
             if (action == QLatin1String("command") && (command.isEmpty() || command.size() > 32)) continue;
-            const auto result = AfterglowVt::searchText(snapshot, pattern.value(QStringLiteral("pattern")).toString().toStdU32String(), true, *cancelled, 1000 - hints.size());
+            const auto result = AfterglowVt::searchText(snapshot, pattern.value(QStringLiteral("pattern")).toString().toStdU32String(), true, *cancelled, characters, false);
             if (!result.error.empty()) qCWarning(lcWindow) << "hint pattern:" << QString::fromStdString(result.error);
             for (const auto& match : result.matches) {
+                if (hints.size() >= MaxHints) break;
                 QString text;
                 for (const auto& line : snapshot.lines) {
-                    if (line.cells.empty() || line.cells.back().end < match.start || line.cells.front().start > match.end) continue;
+                    if (line.cells.empty() || line.cells.back().end() < match.start || line.cells.front().start() > match.end) continue;
                     const auto begin = std::lower_bound(line.cells.begin(), line.cells.end(), match.start,
-                        [](const auto& cell, const auto& point) { return cell.end < point; });
+                        [](const auto& cell, const auto& point) { return cell.end() < point; });
                     const auto end = std::upper_bound(begin, line.cells.end(), match.end,
-                        [](const auto& point, const auto& cell) { return point < cell.start; });
+                        [](const auto& point, const auto& cell) { return point < cell.start(); });
                     text += QString::fromStdU32String(line.text.substr(std::size_t(begin - line.cells.begin()), std::size_t(end - begin)));
                 }
                 if (text.isEmpty() || seen.contains(text)) continue;
@@ -2653,13 +3053,17 @@ void TerminalWindow::startUrlMode(bool copy)
 {
     stopCopyMode();
     cancelKeyMode();
+    stopUrlMode(); // hints still being found would replace these labels
     if (!m_focused) {
         return;
     }
     const AfterglowRender::PaneSnapshot& snap = m_focused->snapshot();
+    const bool detectUrls = m_settings.settings().links.detectUrls;
     std::vector<UrlHint> hints;
     for (int y = 0; y < snap.rows; ++y) {
         for (const UrlSpan& s : findUrls(snap, y)) {
+            // Plain-text URLs only when Links.detectUrls asks for them.
+            if (s.link == 0 && !detectUrls) continue;
             hints.push_back({QString(), s.url, y, s.colStart});
         }
     }
@@ -2671,10 +3075,11 @@ void TerminalWindow::activateHints(std::vector<UrlHint> hints, bool copy)
     if (hints.empty()) {
         return;
     }
-    // Labels from the home row first, all the same length so none is a
-    // prefix of another.
-    static const QString Alphabet = QStringLiteral("asdfjklghqweruiopzxcvbnmty");
+    // Labels from Links.hintAlphabet (the home row first), all the same
+    // length so none is a prefix of another.
+    const QString Alphabet = m_settings.settings().links.hintAlphabet;
     const int k = int(Alphabet.size());
+    if (k < 2) return; // the setting keeps two letters at least
     int length = 1;
     for (long long capacity = k; capacity < (long long)hints.size(); capacity *= k) {
         ++length;
@@ -2690,6 +3095,7 @@ void TerminalWindow::activateHints(std::vector<UrlHint> hints, bool copy)
     }
     m_urlMode = UrlMode{true, copy, m_focused, std::move(hints), QString()};
     showUrlHints();
+    syncInputMethodEnabled();
 }
 
 void TerminalWindow::stopUrlMode()
@@ -2697,6 +3103,7 @@ void TerminalWindow::stopUrlMode()
     if (m_hintCancel) { *m_hintCancel = true; m_hintCancel.reset(); }
     m_urlMode = UrlMode{};
     m_controller->setUrlHints({});
+    syncInputMethodEnabled();
     scheduleRender();
 }
 
@@ -2760,20 +3167,36 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
         const QString action = exact->action;
         const QStringList configuredCommand = exact->command;
         const bool copy = m_urlMode.copy;
+        // The pane the hints were found in, not whichever has the focus now.
+        const QString directory = m_urlMode.pane ? m_urlMode.pane->workingDirectory() : QString();
         stopUrlMode();
         if (action == QLatin1String("command") || action == QLatin1String("open")) {
             QString path = url, line = QStringLiteral("1"), column = QStringLiteral("1");
             static const QRegularExpression location(QStringLiteral(R"(^(.*?):(\d+)(?::(\d+))?$)"));
             const auto match = location.match(path);
             if (match.hasMatch()) { path = match.captured(1); line = match.captured(2); if (!match.captured(3).isEmpty()) column = match.captured(3); }
-            if (path.startsWith(QStringLiteral("~/"))) path.replace(0, 1, QDir::homePath());
-            if (QFileInfo(path).isRelative()) path = QDir(focusedDirectory()).absoluteFilePath(path);
+            if (path.startsWith(QLatin1String("~/"))) path.replace(0, 1, QDir::homePath());
+            if (QFileInfo(path).isRelative()) path = QDir(directory).absoluteFilePath(path);
             if (action == QLatin1String("open")) QDesktopServices::openUrl(QUrl::fromLocalFile(path));
             else {
-                QStringList args = configuredCommand;
-                for (QString& arg : args) arg.replace(QStringLiteral("{match}"), url).replace(QStringLiteral("{path}"), path)
-                    .replace(QStringLiteral("{line}"), line).replace(QStringLiteral("{column}"), column);
-                if (!args.isEmpty()) { const QString program = args.takeFirst(); QProcess::startDetached(program, args, focusedDirectory()); }
+                // One pass over each argument: text that a match brings in
+                // ("{line}" in a file name) is not a placeholder.
+                static const QRegularExpression placeholder(QStringLiteral(R"(\{(match|path|line|column)\})"));
+                QStringList args;
+                for (const QString& arg : configuredCommand) {
+                    QString out;
+                    qsizetype last = 0;
+                    for (auto it = placeholder.globalMatch(arg); it.hasNext();) {
+                        const auto m = it.next();
+                        out += arg.mid(last, m.capturedStart() - last);
+                        const QString name = m.captured(1);
+                        out += name == QLatin1String("match") ? url : name == QLatin1String("path") ? path
+                             : name == QLatin1String("line")  ? line : column;
+                        last = m.capturedEnd();
+                    }
+                    args << out + arg.mid(last);
+                }
+                if (!args.isEmpty()) { const QString program = args.takeFirst(); QProcess::startDetached(program, args, directory); }
             }
         } else if (copy || action == QLatin1String("copy")) {
             QGuiApplication::clipboard()->setText(url);
@@ -2788,6 +3211,7 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
 
 void TerminalWindow::showUnicodeInput()
 {
+    syncInputMethodEnabled();
     if (!m_unicodeInput) {
         m_controller->setUnicodeInput({});
         scheduleRender();
@@ -2802,6 +3226,7 @@ void TerminalWindow::showUnicodeInput()
                                    {QStringLiteral("text"), m_unicodeInput->toUpper()},
                                    {QStringLiteral("preview"), valid ? QString::fromUcs4(&c, 1) : QString()},
                                    {QStringLiteral("x"), cursor.x()},
+                                   {QStringLiteral("top"), cursor.y()},
                                    {QStringLiteral("y"), cursor.bottom()}});
     scheduleRender();
 }
@@ -2847,7 +3272,7 @@ bool TerminalWindow::routePointerToChrome(QEvent* e, const QPointF& pos, bool pr
         m_chromeGrab = false;
         return false;
     }
-    if (m_chromeGrab || m_chrome->wantsPointer(pos)) {
+    if (m_chromeGrab || m_chrome->wantsPointer(pos, e)) {
         m_chrome->deliver(e);
         if (press) {
             m_chromeGrab = true;
@@ -2886,28 +3311,46 @@ void TerminalWindow::applySettings(const Settings& previous)
             p->setOptions(now.terminal);
         }
     }
+    if (now.colors != previous.colors) {
+        for (Pane* p : findChildren<Pane*>()) {
+            applySearchColors(p);
+        }
+    }
     if (now.scrollOnOutput != previous.scrollOnOutput || now.scrollOnInput != previous.scrollOnInput) {
         for (Pane* p : findChildren<Pane*>()) {
             p->setScrollPolicy(now.scrollOnOutput, now.scrollOnInput);
         }
     }
     m_blinkTimer.setInterval(now.cursorBlinkInterval);
+    m_textBlinkTimer.setInterval(now.textBlinkInterval);
     if (now.window.backgroundOpacity != previous.window.backgroundOpacity || now.window.blur != previous.window.blur) {
         applyWindowEffects();
     }
-    if (m_quick && now.quickTerminal.height != previous.quickTerminal.height) {
+    if (m_quick
+        && (now.quickTerminal.height != previous.quickTerminal.height || now.quickTerminal.position != previous.quickTerminal.position
+            || now.quickTerminal.screen != previous.quickTerminal.screen)) {
         setUpQuickTerminal();
     }
     m_layoutSize = QSize(); // padding may have changed
     updateChrome();
+    updatePaletteActions(); // the bindings shown beside the actions
     scheduleRender();
+}
+
+void TerminalWindow::applySearchColors(Pane* pane)
+{
+    const HighlightColors& c = m_settings.settings().colors;
+    pane->setSearchColors(packRgba(c.searchMatch.r, c.searchMatch.g, c.searchMatch.b),
+                          packRgba(c.searchCurrentMatch.r, c.searchCurrentMatch.g, c.searchCurrentMatch.b),
+                          packRgba(c.searchMatchText.r, c.searchMatchText.g, c.searchMatchText.b));
 }
 
 void TerminalWindow::applyWindowEffects()
 {
     const WindowSettings& w = m_settings.settings().window;
     const bool translucent = w.backgroundOpacity < 1.0;
-    m_renderer->setTranslucent(translucent);
+    // Content that was translucent once keeps the swapchain translucent (see renderNow).
+    m_renderer->setTranslucent(translucent || m_contentTranslucent);
     // Blur needs the native window; before that, exposeEvent applies it.
     if (handle()) {
         KWindowEffects::enableBlurBehind(this, translucent && w.blur);
@@ -2920,18 +3363,35 @@ void TerminalWindow::applyWindowEffects()
 void TerminalWindow::setUpQuickTerminal()
 {
     using PhosphorWayland::LayerSurface;
-    const QScreen* screen = QGuiApplication::primaryScreen();
+    const QuickTerminalSettings& quick = m_settings.settings().quickTerminal;
+    // The output it names, or the primary one when it names none or one that is not there.
+    QScreen* screen = QGuiApplication::primaryScreen();
+    for (QScreen* candidate : QGuiApplication::screens()) {
+        if (!quick.screen.isEmpty() && candidate->name() == quick.screen) screen = candidate;
+    }
     const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, 1280, 800);
-    m_quickHeight = int(std::lround(avail.height() * m_settings.settings().quickTerminal.height));
+    m_quickHeight = int(std::lround(avail.height() * quick.height));
     LayerSurface* surface = LayerSurface::get(this);
     surface->setLayer(LayerSurface::LayerTop);
-    surface->setAnchors(LayerSurface::Anchors(LayerSurface::AnchorTop | LayerSurface::AnchorLeft
-                                              | LayerSurface::AnchorRight));
+    const auto edge = quick.position == QuickTerminalSettings::Position::Bottom ? LayerSurface::AnchorBottom : LayerSurface::AnchorTop;
+    surface->setAnchors(LayerSurface::Anchors(edge | LayerSurface::AnchorLeft | LayerSurface::AnchorRight));
     surface->setKeyboardInteractivity(LayerSurface::KeyboardInteractivityOnDemand);
     surface->setScope(QStringLiteral("afterglow-quick-terminal"));
     surface->setExclusiveZone(0);
     surface->setDesiredSize(QSize(0, m_quickHeight));
+    if (screen) surface->setScreen(screen);
+    // Margins from an earlier edge would push it off the new one.
+    setQuickOffset(m_quickShown && !m_slide.isAnimating() ? 0 : -m_quickHeight);
     resize(avail.width(), m_quickHeight);
+    // A resolution change or a panel moving changes the space it fills.
+    disconnect(m_quickScreenWatch);
+    if (screen) m_quickScreenWatch = connect(screen, &QScreen::availableGeometryChanged, this, &TerminalWindow::setUpQuickTerminal);
+}
+
+void TerminalWindow::setQuickOffset(int offset)
+{
+    const bool bottom = m_settings.settings().quickTerminal.position == QuickTerminalSettings::Position::Bottom;
+    PhosphorWayland::LayerSurface::get(this)->setMargins(bottom ? QMargins(0, 0, 0, offset) : QMargins(0, offset, 0, 0));
 }
 
 void TerminalWindow::toggleQuick()
@@ -2939,13 +3399,14 @@ void TerminalWindow::toggleQuick()
     if (!m_quick) {
         return;
     }
-    const bool animate = m_settings.settings().quickTerminal.animate;
-    const auto spec = springSpec<qreal>(m_clock.get(), SplitSpeed);
+    const QuickTerminalSettings& quick = m_settings.settings().quickTerminal;
+    const bool animate = quick.animate;
+    const auto spec = motionSpec(quick.curve, quick.duration, m_quickCurve, "QuickTerminal.curve", QuickTerminalSettings{}.curve);
     const qreal hidden = -qreal(m_quickHeight);
     m_quickShown = !m_quickShown;
     if (m_quickShown) {
         if (!isVisible()) {
-            PhosphorWayland::LayerSurface::get(this)->setMargins(QMargins(0, animate ? int(hidden) : 0, 0, 0));
+            setQuickOffset(animate ? int(hidden) : 0);
             show();
         }
         requestActivate();
@@ -3001,32 +3462,46 @@ bool TerminalWindow::copyModeKey(QKeyEvent* e)
 void TerminalWindow::keyPressEvent(QKeyEvent* e)
 {
     if (!m_splits) return;
-    const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
-    if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
-    if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
-    if (scriptKeyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
-    if (m_overview.open) {
-        m_consumedKeys.insert(physicalKey);
+    const quint32 physicalKey = physicalKeyOf(e);
+    const bool repeat = e->isAutoRepeat();
+    const auto taken = m_consumedKeys.constFind(physicalKey);
+    const bool repeatOfTaken = repeat && taken != m_consumedKeys.constEnd();
+    const bool repeatOfShortcut = repeatOfTaken && *taken;
+    if (!repeat) {
+        m_consumedKeys.remove(physicalKey);
+        m_sentKeys.remove(physicalKey);
+    }
+    // A prompt that opened over a mode (a clipboard request, a script's
+    // dialog) takes the keys, as copy mode already lets it.
+    const bool chrome = m_controller->wantsKeyboard();
+    // The held chord that opened a mode or a prompt does not act in it:
+    // its repeats would close the overview, copy mode or the palette again.
+    if (repeatOfShortcut && (chrome || keyboardModeActive())) return;
+    if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey, false); return; }
+    if (!chrome && scriptKeyModeKey(e)) { m_consumedKeys.insert(physicalKey, false); return; }
+    if (!chrome && m_overview.open) {
+        m_consumedKeys.insert(physicalKey, false);
         overviewKey(e);
         return;
     }
-    if (m_urlMode.active) {
-        m_consumedKeys.insert(physicalKey);
+    if (!chrome && m_urlMode.active) {
+        m_consumedKeys.insert(physicalKey, false);
         urlModeKey(e);
         return;
     }
-    if (m_unicodeInput) {
-        m_consumedKeys.insert(physicalKey);
+    if (!chrome && m_unicodeInput) {
+        m_consumedKeys.insert(physicalKey, false);
         unicodeInputKey(e);
         return;
     }
     if (e->key() == Qt::Key_Control || e->key() == Qt::Key_Shift || e->key() == Qt::Key_Alt) {
         updateLinkHover();
     }
-    if (m_controller->wantsKeyboard()) {
-        m_consumedKeys.insert(physicalKey);
+    if (chrome) {
+        m_consumedKeys.insert(physicalKey, false);
         cancelKeyMode();
-        // The palette and search keybinds still toggle while the chrome has the keyboard.
+        // The palette keybind still closes the palette, and the search
+        // keybind still moves to search, while the chrome has the keyboard.
         const Action a = m_settings.settings().keybinds.match(e);
         if (!m_scriptDialog && (a == Action::CommandPalette || a == Action::Search)) {
             performAction(a);
@@ -3035,24 +3510,21 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         m_chrome->deliver(e);
         return;
     }
+    // A mode or a prompt took this key's press and closed on it (Enter on a
+    // card, a hint's last letter): its repeats must not reach the shell.
+    if (repeatOfTaken && !repeatOfShortcut) return;
     if (handleShortcut(e)) {
-        m_consumedKeys.insert(physicalKey);
+        m_consumedKeys.insert(physicalKey, true);
         return;
     }
+    // A shortcut's key that repeats into no shortcut (a key mode ended) stays here.
+    if (repeatOfShortcut) return;
     sendKey(e);
 }
 
 void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
 {
-    const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
-    if (m_consumedKeys.contains(physicalKey)) {
-        if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
-        if (m_controller->wantsKeyboard()) m_chrome->deliver(e);
-        return;
-    }
-    if (m_urlMode.active || m_unicodeInput || m_overview.open || m_scriptKeyMode) {
-        return; // the mode took the press
-    }
+    const quint32 physicalKey = physicalKeyOf(e);
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
     if ((e->key() == Qt::Key_Control && linkModifier == Qt::ControlModifier)
         || (e->key() == Qt::Key_Shift && linkModifier == Qt::ShiftModifier)
@@ -3062,40 +3534,62 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
         applyPointerShape();
         scheduleRender();
     }
-    if (m_controller->wantsKeyboard()) {
-        m_chrome->deliver(e);
+    // The press reached a program: so does its release, whatever has the
+    // keyboard now and whichever pane has the focus. Auto-repeat comes as
+    // release/press pairs; only the real release counts.
+    if (const auto sent = m_sentKeys.constFind(physicalKey); sent != m_sentKeys.constEnd()) {
+        if (!e->isAutoRepeat()) {
+            const QPointer<Pane> pane = *sent;
+            m_sentKeys.erase(sent);
+            if (pane && tabOf(pane) >= 0) sendKey(e, pane);
+        }
         return;
     }
-    // Auto-repeat comes as release/press pairs; only the press carries it.
-    if (!e->isAutoRepeat()) {
-        sendKey(e);
+    if (m_consumedKeys.contains(physicalKey)) {
+        if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
+        if (m_controller->wantsKeyboard()) m_chrome->deliver(e);
+        return;
+    }
+    // A press this window never saw (the focus came here with the key
+    // held): no program gets a release for it.
+    if (m_controller->wantsKeyboard()) {
+        m_chrome->deliver(e);
     }
 }
 
-void TerminalWindow::sendKey(QKeyEvent* e)
+void TerminalWindow::sendKey(QKeyEvent* e, Pane* pane)
 {
-    if (!m_focused) {
+    Pane* target = pane ? pane : m_focused.data();
+    if (!target) {
         return;
     }
     QByteArray storage;
     const AfterglowVt::KeyEvent ev = mapKeyEvent(e, storage);
-    const std::string bytes = m_focused->withTerminal([&ev](Terminal& t) { return AfterglowVt::encodeKey(ev, t.modes()); });
+    const std::string bytes = target->withTerminal([&ev](Terminal& t) { return AfterglowVt::encodeKey(ev, t.modes()); });
     if (bytes.empty()) {
         return;
     }
-    if (ev.action != AfterglowVt::KeyAction::Release && m_focused->isHeld()) {
-        closePane(m_focused); // --hold: its program has ended; any key closes it
+    if (ev.action != AfterglowVt::KeyAction::Release && target->isHeld()) {
+        // --hold: its program has ended; any key closes it. The press is not
+        // recorded, so its release does not reach the pane focused next.
+        closePane(target);
         return;
     }
     if (ev.action != AfterglowVt::KeyAction::Release) {
-        m_focused->clearSelection();
-        restartBlink();
-        if (m_settings.settings().hideMouseWhileTyping && !m_pointerHidden) {
-            m_pointerHidden = true;
-            setCursor(Qt::BlankCursor);
-        }
+        target->clearSelection();
+        noteTyping();
+        m_sentKeys.insert(physicalKeyOf(e), target);
     }
-    m_focused->sendInput(bytes);
+    target->sendInput(bytes);
+}
+
+void TerminalWindow::noteTyping()
+{
+    restartBlink();
+    if (m_settings.settings().hideMouseWhileTyping && !m_pointerHidden) {
+        m_pointerHidden = true;
+        setCursor(Qt::BlankCursor);
+    }
 }
 
 void TerminalWindow::copyOnSelect(Pane* pane)
@@ -3127,65 +3621,75 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
 {
     using AfterglowVt::ClipboardAssembler;
     QClipboard* clipboard = QGuiApplication::clipboard();
+    if (r.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
+        if (r.primary && !clipboard->supportsSelection()) {
+            pane->sendInput(ClipboardAssembler::writeStatus("ENOSYS", r.id));
+            return;
+        }
+        clipboardWrite(pane, r);
+        return;
+    }
+    // Who asks, in words the program cannot disguise, and where the pane is
+    // when it is not the one the user looks at.
+    const auto who = [this, pane](const QString& name) {
+        QString text = sanitizedText(!name.isEmpty() ? name : !pane->title().isEmpty() ? pane->title() : tr("A program"), 80);
+        if (const int tab = tabOf(pane); tab != m_currentTab) text += tr(" in tab %1").arg(tab + 1);
+        else if (pane != m_focused) text += tr(" in another split");
+        return text;
+    };
+    const QString buffer = r.primary ? tr("primary selection") : tr("clipboard");
+    const QString policy = m_settings.settings().clipboardRead;
     if (r.osc52) {
         // An OSC 52 read: no name or password to remember a grant by, so
         // the setting decides, or the user does each time.
-        const QString policy = m_settings.settings().clipboardRead;
-        if (policy == QLatin1String("deny") || (r.primary && !clipboard->supportsSelection()) || m_pendingClipboardRead) {
+        if (policy == QLatin1String("deny") || (r.primary && !clipboard->supportsSelection())) {
             pane->sendInput(r.osc52Reply({}));
         } else if (policy == QLatin1String("allow")) {
             answerClipboardRead(pane, r);
+        } else if (m_pendingClipboardRead) {
+            pane->sendInput(r.osc52Reply({})); // one prompt at a time
         } else {
             m_pendingClipboardRead = PendingClipboardRead{pane, r};
-            const QString who = pane->title().isEmpty() ? tr("A program") : pane->title();
-            m_controller->askClipboard(
-                tr("%1 wants to read the %2.").arg(who, r.primary ? tr("primary selection") : tr("clipboard")), {});
-            if (pane != m_focused || !isActive()) {
-                revealPane(pane);
-            }
+            m_controller->askClipboard(tr("%1 wants to read the %2.").arg(who({}), buffer), {});
+            // The prompt shows here; the window does not jump forward for a program.
+            if (!isActive()) alert(0);
         }
         return;
     }
     if (r.primary && !clipboard->supportsSelection()) {
-        pane->sendInput(r.kind == AfterglowVt::ClipboardRequest::Kind::Read ? ClipboardAssembler::readStatus("ENOSYS", r)
-                                                                             : ClipboardAssembler::writeStatus("ENOSYS", r.id));
+        pane->sendInput(ClipboardAssembler::readStatus("ENOSYS", r));
         return;
     }
-    if (r.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
-        // Writes are allowed, as OSC 52 writes are.
-        auto* data = new QMimeData;
-        QHash<QString, QByteArray> byType;
-        for (const auto& [mime, bytes] : r.data) {
-            byType.insert(QString::fromStdString(mime), QByteArray::fromStdString(bytes));
-        }
-        for (const auto& [alias, target] : r.aliases) {
-            if (const auto it = byType.constFind(QString::fromStdString(target)); it != byType.cend()) {
-                byType.insert(QString::fromStdString(alias), *it);
-            }
-        }
-        for (auto it = byType.cbegin(); it != byType.cend(); ++it) {
-            data->setData(it.key(), it.value());
-        }
-        clipboard->setMimeData(data, r.primary ? QClipboard::Selection : QClipboard::Clipboard);
-        pane->sendInput(ClipboardAssembler::writeStatus("DONE", r.id));
-        return;
-    }
-
     // Listing the types needs no permission.
     if (r.mimes.size() == 1 && r.mimes[0] == ".") {
         answerClipboardRead(pane, r);
+        return;
+    }
+    if (policy == QLatin1String("deny")) {
+        pane->sendInput(ClipboardAssembler::readStatus("EPERM", r));
         return;
     }
     auto& grants = m_clipboardGrants[pane];
     const QByteArray password = QByteArray::fromStdString(r.password);
     if (!password.isEmpty()) {
         if (const auto it = grants.find(password); it != grants.end()) {
-            if (it->oneTime) {
+            const ClipboardGrant grant = *it;
+            if (grant.oneTime) {
                 grants.erase(it);
             }
-            answerClipboardRead(pane, r);
-            return;
+            // A paste's password reads what was pasted, soon after: not the
+            // other buffer, and not whatever the user copies later.
+            const bool expired = grant.expires && std::chrono::steady_clock::now() > *grant.expires;
+            const bool otherBuffer = grant.primary && *grant.primary != r.primary;
+            if (!expired && !otherBuffer) {
+                answerClipboardRead(pane, r);
+                return;
+            }
         }
+    }
+    if (policy == QLatin1String("allow")) {
+        answerClipboardRead(pane, r);
+        return;
     }
     if (m_pendingClipboardRead) {
         pane->sendInput(ClipboardAssembler::readStatus("EBUSY", r));
@@ -3196,25 +3700,69 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
     for (const std::string& m : r.mimes) {
         types.append(QString::fromStdString(m));
     }
-    const QString name = r.password.empty() ? QString() : QString::fromStdString(r.name).left(80);
-    const QString who = name.isEmpty() ? (pane->title().isEmpty() ? tr("A program") : pane->title()) : name;
+    const QString name = r.password.empty() ? QString() : sanitizedText(QString::fromStdString(r.name), 80);
     m_pendingClipboardRead = PendingClipboardRead{pane, r};
     m_controller->askClipboard(tr("%1 wants to read the %2 (%3).")
-                                   .arg(who, r.primary ? tr("primary selection") : tr("clipboard"),
-                                        types.join(QStringLiteral(", ")).left(200)),
+                                   .arg(who(name), buffer, sanitizedText(types.join(QStringLiteral(", ")), 200)),
                                name);
-    if (pane != m_focused || !isActive()) {
-        revealPane(pane);
+    if (!isActive()) alert(0);
+}
+
+void TerminalWindow::clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequest& r)
+{
+    using AfterglowVt::ClipboardAssembler;
+    switch (m_settings.settings().clipboardWrite) {
+    case Settings::Permission::Allow:
+        writeClipboard(pane, r);
+        return;
+    case Settings::Permission::Deny:
+        if (!r.osc52) pane->sendInput(ClipboardAssembler::writeStatus("EPERM", r.id));
+        return;
+    case Settings::Permission::Ask:
+        break;
     }
+    if (m_pendingClipboardRead) {
+        if (!r.osc52) pane->sendInput(ClipboardAssembler::writeStatus("EBUSY", r.id));
+        return;
+    }
+    const QString who = sanitizedText(pane->title().isEmpty() ? tr("A program") : pane->title(), 80);
+    m_pendingClipboardRead = PendingClipboardRead{pane, r, true};
+    m_controller->askClipboard(tr("%1 wants to replace the %2.").arg(who, r.primary ? tr("primary selection") : tr("clipboard")), {});
+    if (!isActive()) alert(0);
+}
+
+void TerminalWindow::writeClipboard(Pane* pane, const AfterglowVt::ClipboardRequest& r)
+{
+    using AfterglowVt::ClipboardAssembler;
+    QClipboard* clipboard = QGuiApplication::clipboard();
+    const QClipboard::Mode mode = r.primary ? QClipboard::Selection : QClipboard::Clipboard;
+    if (r.osc52) {
+        clipboard->setText(r.data.empty() ? QString() : QString::fromStdString(r.data.front().second), mode);
+        return;
+    }
+    auto* data = new QMimeData;
+    QHash<QString, QByteArray> byType;
+    for (const auto& [mime, bytes] : r.data) {
+        byType.insert(QString::fromStdString(mime), QByteArray::fromStdString(bytes));
+    }
+    for (const auto& [alias, target] : r.aliases) {
+        if (const auto it = byType.constFind(QString::fromStdString(target)); it != byType.cend()) {
+            byType.insert(QString::fromStdString(alias), *it);
+        }
+    }
+    for (auto it = byType.cbegin(); it != byType.cend(); ++it) {
+        data->setData(it.key(), it.value());
+    }
+    clipboard->setMimeData(data, mode);
+    pane->sendInput(ClipboardAssembler::writeStatus("DONE", r.id));
 }
 
 void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& r, std::string_view oneTimePassword)
 {
     using AfterglowVt::ClipboardAssembler;
     if (r.osc52) {
-        const QByteArray text = QGuiApplication::clipboard()->text(r.primary ? QClipboard::Selection : QClipboard::Clipboard)
-                                    .toUtf8()
-                                    .left(8 * 1024 * 1024);
+        const QByteArray text = truncatedUtf8(
+            QGuiApplication::clipboard()->text(r.primary ? QClipboard::Selection : QClipboard::Clipboard).toUtf8(), MaxClipboardReply);
         pane->sendInput(r.osc52Reply(std::string_view(text.constData(), std::size_t(text.size()))));
         return;
     }
@@ -3244,11 +3792,19 @@ void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::Clipboar
         } else {
             continue;
         }
+        if (bytes.size() > MaxClipboardReply) {
+            // Too large for one reply: say so, rather than send part of it.
+            pane->sendInput(ClipboardAssembler::readStatus("EFBIG", r, oneTimePassword));
+            return;
+        }
         out += ClipboardAssembler::readData(mime, std::string_view(bytes.constData(), std::size_t(bytes.size())), r,
                                             oneTimePassword);
     }
     out += ClipboardAssembler::readStatus("DONE", r, oneTimePassword);
-    pane->sendInput(out);
+    if (!pane->sendInput(out)) {
+        // The input queue refused it whole: the program still gets an end.
+        pane->sendInput(ClipboardAssembler::readStatus("EIO", r, oneTimePassword));
+    }
 }
 
 bool TerminalWindow::sendPasteEvent(QClipboard::Mode mode)
@@ -3256,9 +3812,15 @@ bool TerminalWindow::sendPasteEvent(QClipboard::Mode mode)
     if (!m_focused || !m_focused->withTerminal([](Terminal& t) { return t.modes().pasteEvents; })) {
         return false;
     }
-    // The program gets the list of types and a one-time password to read them.
+    // The program gets the list of types and a one-time password to read
+    // them: from the buffer that was pasted, for a short time. A new paste
+    // replaces the passwords of earlier ones the program did not use.
+    auto& grants = m_clipboardGrants[m_focused];
+    for (auto it = grants.begin(); it != grants.end();) {
+        it = it->oneTime ? grants.erase(it) : std::next(it);
+    }
     const QByteArray password = QUuid::createUuid().toByteArray(QUuid::WithoutBraces);
-    m_clipboardGrants[m_focused][password] = ClipboardGrant{true};
+    grants[password] = ClipboardGrant{true, mode == QClipboard::Selection, std::chrono::steady_clock::now() + PasteGrantLifetime};
     AfterglowVt::ClipboardRequest listing;
     listing.primary = mode == QClipboard::Selection;
     listing.mimes = {"."};
@@ -3278,14 +3840,30 @@ void TerminalWindow::paste(QClipboard::Mode mode)
     if (text.isEmpty()) {
         return;
     }
+    if (text.size() > MaxPaste) {
+        // The PTY would refuse it whole, with a message about a full queue.
+        NotificationCenter::instance().showNotice(m_focused, tr("Paste too large"),
+            tr("The text is %1, and a paste holds at most %2.")
+                .arg(QLocale().formattedDataSize(text.size()), QLocale().formattedDataSize(MaxPaste)));
+        return;
+    }
     // Any raw line terminator can execute input without bracketed paste.
     const bool bracketed = m_focused->withTerminal([](Terminal& t) { return t.modes().bracketedPaste; });
     if (m_settings.settings().confirmUnsafePaste && !bracketed && (text.contains('\n') || text.contains('\r'))) {
         m_pendingPaste = text;
         m_pendingPastePane = m_focused;
         const QByteArray normalized = QByteArray(text).replace("\r\n", "\n").replace('\r', '\n');
-        const QString preview = QString::fromUtf8(normalized.left(4000));
-        m_controller->askPaste(preview, int(normalized.count('\n')) + 1);
+        // The preview shows what a shell would get: control characters as
+        // their pictures, cut on a character, with how much it leaves out.
+        const QByteArray shown = truncatedUtf8(normalized, 4000);
+        QString preview;
+        for (const QChar c : QString::fromUtf8(shown)) {
+            const char16_t u = c.unicode();
+            preview += u == u'\n' ? c : u < 0x20 ? QChar(char16_t(0x2400 + u)) : u == 0x7F ? QChar(char16_t(0x2421)) : c;
+        }
+        // "command\n" is one line, not two.
+        const int lines = int(normalized.count('\n')) + (normalized.endsWith('\n') ? 0 : 1);
+        m_controller->askPaste(preview, std::max(1, lines), int(normalized.size() - shown.size()));
         return;
     }
     const std::string bytes = m_focused->withTerminal([&text](Terminal& t) {
@@ -3319,11 +3897,12 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
         return false;
     }
     const QPoint cell = cellAt(pane, pos);
-    if (action == int(AfterglowVt::MouseAction::Motion) && cell == m_lastMouseCell
+    if (action == int(AfterglowVt::MouseAction::Motion) && cell == m_lastMouseCell && pane == m_lastMousePane
         && modes.mouseFormat != AfterglowVt::MouseFormat::SgrPixels) {
         return true;
     }
     m_lastMouseCell = cell;
+    m_lastMousePane = pane;
 
     AfterglowVt::MouseEvent ev;
     ev.button = button < 0 ? AfterglowVt::MouseButton::None : AfterglowVt::MouseButton(button);
@@ -3354,7 +3933,9 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
     if (!m_splits) return;
     if (m_overview.open) {
-        // The cards are where the shader draws them: a click takes the one in front.
+        // The cards are where the shader draws them: a click takes the one
+        // in front. Its release is the overview's too.
+        m_overviewSwallowedPress = true;
         closeOverview(e->button() == Qt::LeftButton ? m_overview.highlighted.data() : nullptr);
         return;
     }
@@ -3390,6 +3971,8 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (e->button() == Qt::LeftButton) m_focused->dragDrop()->press(e->position().toPoint());
     const int code = mouseButtonCode(e->button());
     if (code >= 0 && sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Press), e->modifiers())) {
+        // Its motion and release go to this pane even if the focus moves meanwhile.
+        if (m_reportedButtons == Qt::NoButton) m_reportedPane = m_focused;
         m_reportedButtons |= e->button();
         return;
     }
@@ -3436,13 +4019,14 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     // Count clicks on the same cell for word (2) and line (3) selection.
     const QPoint cell = cellAt(m_focused, e->position());
     const int interval = QGuiApplication::styleHints()->mouseDoubleClickInterval();
-    if (m_lastClick.isValid() && m_lastClick.elapsed() < interval && cell == m_lastClickCell) {
+    if (m_lastClick.isValid() && m_lastClick.elapsed() < interval && cell == m_lastClickCell && m_focused == m_lastClickPane) {
         m_clickCount = m_clickCount % 3 + 1;
     } else {
         m_clickCount = 1;
     }
     m_lastClick.start();
     m_lastClickCell = cell;
+    m_lastClickPane = m_focused;
 
     AfterglowVt::SelectionMode mode = AfterglowVt::SelectionMode::Normal;
     if (m_clickCount == 2) {
@@ -3488,7 +4072,10 @@ void TerminalWindow::updateSelectionDrag()
 
 void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 {
-    if (m_overview.open || m_overview.amount.isAnimating()) return;
+    // Only the press the overview took has its release taken too; any other
+    // release ends what its press started (a drag, a reported button, a
+    // selection), even when the overview opened or closed in between.
+    if (std::exchange(m_overviewSwallowedPress, false)) return;
     if (e->button() == Qt::LeftButton) for (auto* pane : panes()) pane->dragDrop()->release();
     if (m_dividerDrag && e->button() == Qt::LeftButton) {
         m_dividerDrag.reset();
@@ -3500,13 +4087,21 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     if (m_reportedButtons & e->button()) {
         m_reportedButtons &= ~e->button();
         const int code = mouseButtonCode(e->button());
-        sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Release), e->modifiers());
+        // To the program that got the press. It was reported, so the
+        // release is too: Shift only keeps new presses from the program.
+        const QPointer<Pane> pane = m_reportedPane;
+        if (m_reportedButtons == Qt::NoButton) m_reportedPane = nullptr;
+        if (pane && tabOf(pane) >= 0) {
+            sendMouse(pane, e->position(), code, int(AfterglowVt::MouseAction::Release), e->modifiers() & ~Qt::ShiftModifier);
+        }
         return;
     }
     if (e->button() == Qt::LeftButton && m_selectionPane) {
         m_autoScroll.stop();
         if (m_selectionPane->hasSelection()) {
             copyOnSelect(m_selectionPane);
+        } else if (overviewShowing()) {
+            m_selectionPane->clearSelection(); // the click was not on the pane as drawn now
         } else {
             m_selectionPane->clearSelection();
             const bool plain = !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier));
@@ -3525,23 +4120,52 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 void TerminalWindow::moveCursorToClick(Pane* pane, const QPointF& pos)
 {
     // The shell asked (OSC 133 click_events) for clicks on its command line
-    // to move the cursor: as many arrow keys as cells between there and here.
+    // to move the cursor: as many arrow keys as characters between there
+    // and here. A line editor moves by character, not by cell.
     const QPoint cell = cellAt(pane, pos);
     const std::string keys = pane->withTerminal([&cell](Terminal& t) -> std::string {
         if (!t.promptTakesClicks() || t.screen().viewportOffset() != 0
             || t.modes().mouseTracking != AfterglowVt::MouseTracking::None) {
             return {};
         }
-        const auto& cur = t.screen().cursor;
+        const auto& screen = t.screen();
+        const auto& cur = screen.cursor;
         // Only on the prompt's own lines: from where it starts to the bottom.
         int promptRow = cur.y;
-        while (promptRow > 0 && !t.screen().row(promptRow).promptStart) {
+        while (promptRow > 0 && !screen.row(promptRow).promptStart) {
             --promptRow;
         }
         if (cell.y() < promptRow) {
             return {};
         }
-        const long delta = long(cell.y() - cur.y) * t.cols() + (cell.x() - cur.x);
+        // Where a row's text ends: a wrapped row runs on into the next; a
+        // row that ends in a line break stops after its last character,
+        // and the break itself is one more character.
+        const auto contentEnd = [&screen, &t](int y) {
+            const auto& row = screen.row(y);
+            if (row.wrapped) return t.cols();
+            int end = t.cols();
+            while (end > 0 && row.at(end - 1).codepoint() == 0) --end;
+            return end;
+        };
+        const auto characters = [&screen](int y, int from, int to) {
+            long n = 0;
+            for (int x = std::max(0, from); x < to; ++x) n += screen.row(y).at(x).isTail() ? 0 : 1;
+            return n;
+        };
+        // Count from the earlier position to the later one, in reading order.
+        const bool forward = cell.y() > cur.y || (cell.y() == cur.y && cell.x() > cur.x);
+        QPoint from(cur.x, cur.y), to = cell;
+        if (!forward) std::swap(from, to);
+        if (!screen.row(to.y()).wrapped) to.setX(std::min(to.x(), std::max(contentEnd(to.y()), to.y() == cur.y ? cur.x : 0)));
+        long delta = 0;
+        for (int y = from.y(); y <= to.y(); ++y) {
+            const int start = y == from.y() ? from.x() : 0;
+            const int end = y == to.y() ? to.x() : contentEnd(y);
+            delta += characters(y, start, end);
+            if (y < to.y() && !screen.row(y).wrapped) ++delta; // the line break
+        }
+        if (!forward) delta = -delta;
         if (delta == 0 || std::labs(delta) > long(t.cols()) * t.rows()) {
             return {};
         }
@@ -3565,12 +4189,14 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     m_pointerHidden = false;
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
+    // The overview draws cards, not the layout: no hover, selection or reports.
+    if (m_overview.open) return;
     const QPoint px = (e->position() * devicePixelRatio()).toPoint();
+    if (m_dividerDrag && !(e->buttons() & Qt::LeftButton)) {
+        m_dividerDrag.reset(); // its release went elsewhere
+    }
     if (m_dividerDrag) {
-        const auto& m = m_renderer->fonts().fonts->metrics();
-        const int pad = int(std::lround(m_settings.settings().window.padding * devicePixelRatio()));
-        m_splits->dragDivider(*m_dividerDrag, px, std::max(1, int(std::lround(devicePixelRatio()))),
-                              QSize(4 * m.cellWidth + 2 * pad, 2 * m.cellHeight + 2 * pad));
+        m_splits->dragDivider(*m_dividerDrag, px, std::max(1, int(std::lround(devicePixelRatio()))), minimumPaneSize());
         m_layoutSize = QSize();
         scheduleRender();
         return;
@@ -3616,7 +4242,17 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     } else if (m_reportedButtons & Qt::RightButton) {
         code = 2;
     }
-    sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
+    if (code >= 0) {
+        // A drag reports to the pane that got the press, clamped to its grid.
+        if (m_reportedPane && tabOf(m_reportedPane) >= 0) {
+            sendMouse(m_reportedPane, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
+        }
+        return;
+    }
+    // Hover reports only over the focused pane itself, not clamped from another.
+    if (m_splits->paneAt(px) == m_focused) {
+        sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
+    }
 }
 
 void TerminalWindow::wheelEvent(QWheelEvent* e)
@@ -3650,6 +4286,11 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
             scrollPane(p, e->pixelDelta().y() * devicePixelRatio() / cell, false);
             return;
         }
+    }
+    // Part of a notch over one pane does not carry over to another.
+    if (p != m_wheelPane) {
+        m_wheelPane = p;
+        m_wheelAccumulator = 0;
     }
     m_wheelAccumulator += e->angleDelta().y() / 120.0;
     const int steps = int(m_wheelAccumulator);

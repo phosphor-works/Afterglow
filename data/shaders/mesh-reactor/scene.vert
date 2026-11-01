@@ -11,7 +11,7 @@ vec4 pMesh() {
     int cell=gl_VertexIndex/6;
     ivec2 corner=corners[gl_VertexIndex%6];
     vec2 uv=vec2(ivec2(cell%192,cell/192)+corner)/vec2(192,64);
-    float u=uv.x*TAU, v=uv.y*TAU, t=iTime*p_speed;
+    float u=uv.x*TAU, v=uv.y*TAU, t=sceneTime();
     material=gl_InstanceIndex;
     surfaceUV=uv;
     seed=float(material)*0.17;

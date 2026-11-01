@@ -41,31 +41,32 @@ public:
         Query, ///< the feature-detection query; answer with queryReply()
     };
 
-    /// Applies one report: the OSC payload after "7501;".
-    Result apply(std::string_view body);
+    /// Applies one report: the OSC payload after "7501;", sent with a
+    /// terminator of @p terminator bytes (2 for ST, 1 for BEL).
+    Result apply(std::string_view body, std::size_t terminator = 2);
     static std::string_view queryReply() { return "?"; }
 
-    /// ConEmu progress (OSC 9;4;st;pr) mapped to the root record, until the
-    /// first OSC 7501 report shows the program speaks the real protocol.
-    /// Returns true if records changed.
+    /// ConEmu progress (OSC 9;4;st;pr) mapped to the root record, until an
+    /// OSC 7501 report shows the program speaks the real protocol. The next
+    /// program (after endActivity()) may use it again. Returns true if
+    /// records changed.
     bool applyLegacyProgress(int state, int progress);
 
     /// RIS: every record goes, and legacy progress is mapped again.
     void reset();
     /// A new prompt began or the program exited: what was in flight is over.
-    /// Working, blocked and idle records go; done and error stay to be seen.
-    /// Returns true if records changed.
+    /// Working, blocked and idle records go; done and error stay to be seen,
+    /// with the app they inherited. Returns true if records changed.
     bool endActivity();
 
     /// Records in id order (the root first).
     const std::vector<StatusRecord>& records() const noexcept { return m_records; }
     /// The record's app, or its nearest ancestor's.
     std::string_view effectiveApp(const StatusRecord& record) const;
-    std::uint64_t generation() const noexcept { return m_serial; }
 
 private:
     void upsert(StatusRecord record);
-    void clear(std::string_view id, bool all);
+    bool clear(std::string_view id, bool all);
 
     std::vector<StatusRecord> m_records;
     std::uint64_t m_serial = 0;

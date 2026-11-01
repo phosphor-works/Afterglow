@@ -36,6 +36,16 @@ void PaneSnapshot::applyBidi(const AfterglowVt::Terminal& terminal)
     for (std::size_t i = 0; i < cells.size(); ++i) logicalToVisual[i] = int(i % std::size_t(cols));
     struct Group { int column, width; FriBidiStrIndex first; };
     struct Line { std::size_t row; FriBidiStrIndex first, length; std::vector<Group> groups; };
+    // Reused by every paragraph.
+    std::vector<FriBidiChar> characters;
+    std::vector<Line> lines;
+    std::vector<FriBidiCharType> types;
+    std::vector<FriBidiBracketType> brackets;
+    std::vector<FriBidiLevel> levels;
+    std::vector<FriBidiStrIndex> map;
+    std::vector<SnapshotCell> reordered;
+    std::vector<int> rowMap;
+    std::vector<bool> used;
     for (std::size_t visible = top; visible < bottom;) {
         auto start = visible;
         while (start > 0 && screen.absoluteRow(start - 1).wrapped && visible - start < maxLines) --start;
@@ -48,8 +58,8 @@ void PaneSnapshot::applyBidi(const AfterglowVt::Terminal& terminal)
             if (visible < bottom) ++visible;
             continue;
         }
-        std::vector<FriBidiChar> characters;
-        std::vector<Line> lines;
+        characters.clear();
+        lines.clear();
         bool grid = false;
         for (auto rowIndex = start; rowIndex < end && !grid; ++rowIndex) {
             const auto& row = screen.absoluteRow(rowIndex);
@@ -82,23 +92,29 @@ void PaneSnapshot::applyBidi(const AfterglowVt::Terminal& terminal)
         visible = std::min(end, bottom);
         if (grid || characters.empty()) continue;
         const auto count = FriBidiStrIndex(characters.size());
-        std::vector<FriBidiCharType> types(characters.size());
-        std::vector<FriBidiBracketType> brackets(characters.size());
-        std::vector<FriBidiLevel> levels(characters.size());
+        types.resize(characters.size());
+        brackets.resize(characters.size());
+        levels.resize(characters.size());
         fribidi_get_bidi_types(characters.data(), count, types.data());
+        // Without right-to-left text, Arabic numbers or explicit embeddings an
+        // LTR or automatic paragraph keeps logical order: the identity map
+        // above is already right.
+        if (mode != BidiMode::RightToLeft && std::none_of(types.begin(), types.end(), [](FriBidiCharType type) {
+                return FRIBIDI_IS_RTL(type) || type == FRIBIDI_TYPE_AN || FRIBIDI_IS_EXPLICIT(type) || FRIBIDI_IS_ISOLATE(type);
+            })) continue;
         fribidi_get_bracket_types(characters.data(), count, types.data(), brackets.data());
         FriBidiParType direction = mode == BidiMode::LeftToRight ? FRIBIDI_PAR_LTR
             : mode == BidiMode::RightToLeft ? FRIBIDI_PAR_RTL : FRIBIDI_PAR_ON;
         if (!fribidi_get_par_embedding_levels_ex(types.data(), brackets.data(), count, &direction, levels.data())) continue;
-        std::vector<FriBidiStrIndex> map(characters.size());
+        map.resize(characters.size());
         std::iota(map.begin(), map.end(), 0);
         for (const auto& line : lines) {
             if (line.row < top || line.row >= bottom) continue;
             if (!fribidi_reorder_line(0, types.data(), line.length, line.first, direction, levels.data(), nullptr, map.data())) continue;
             const auto offset = (line.row - top) * std::size_t(cols);
-            std::vector<SnapshotCell> reordered;
-            reordered.reserve(std::size_t(cols));
-            std::vector<bool> used(line.groups.size());
+            reordered.clear();
+            rowMap.assign(std::size_t(cols), 0);
+            used.assign(line.groups.size(), false);
             for (auto i = line.first; i < line.first + line.length; ++i) {
                 const auto logical = map[std::size_t(i)];
                 const auto it = std::upper_bound(line.groups.begin(), line.groups.end(), logical,
@@ -112,11 +128,15 @@ void PaneSnapshot::applyBidi(const AfterglowVt::Terminal& terminal)
                     auto cell = cells[offset + group.column + dx];
                     cell.logicalColumn = group.column + dx;
                     cell.bidiLevel = levels[std::size_t(group.first)];
-                    logicalToVisual[offset + group.column + dx] = int(reordered.size());
+                    rowMap[std::size_t(group.column + dx)] = int(reordered.size());
                     reordered.push_back(cell);
                 }
             }
-            if (reordered.size() == std::size_t(cols)) std::copy(reordered.begin(), reordered.end(), cells.begin() + offset);
+            // The cells and the map change together or not at all.
+            if (reordered.size() == std::size_t(cols)) {
+                std::copy(reordered.begin(), reordered.end(), cells.begin() + offset);
+                std::copy(rowMap.begin(), rowMap.end(), logicalToVisual.begin() + offset);
+            }
         }
     }
     cursorX = visualColumn(cursorX, cursorY);

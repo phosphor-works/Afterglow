@@ -8,6 +8,7 @@
 // behind a hot tip and cools to the keyline. Signal 3 (the bell) sends a
 // shock ring through the glass, bending it as it passes.
 
+#include <terminal_panes.glsl>
 #include "glasshouse.glsl"
 
 vec4 pTerminal(vec2 uv)
@@ -43,7 +44,13 @@ vec4 pTerminal(vec2 uv)
     float tol = 2.0;
     bool left = uTerminalRect.x > tol;
     bool right = uTerminalRect.x + uTerminalRect.z < uWindowSize.x - tol;
-    bool top = uTerminalRect.y > uCellSize.y * 3.0; // below another pane, not the tab bar
+    // The top edge is shared when another pane of the tab starts higher up,
+    // whatever the tab bar's height.
+    float firstRow = uTerminalRect.y;
+    for (int i = 0; i < paneCount(); ++i) {
+        if (paneInCurrentTab(i)) firstRow = min(firstRow, paneRect(i).y);
+    }
+    bool top = uTerminalRect.y > firstRow + tol;
     bool bottom = uTerminalRect.y + uTerminalRect.w < uWindowSize.y - tol;
     vec2 p = pixel;
     float edge = 1e4;
@@ -85,5 +92,7 @@ vec4 pTerminal(vec2 uv)
             c = ghLightUp(w, c, gold, keyline * 0.15);
         }
     }
-    return clamp(c, 0.0, 1.0);
+    // Premultiplied: light added over a translucent window stops at its alpha.
+    c.a = clamp(c.a, 0.0, 1.0);
+    return vec4(clamp(c.rgb, vec3(0.0), vec3(c.a)), c.a);
 }

@@ -85,8 +85,8 @@ int main(int argc, char** argv)
     }
     // afterglow ssh ...: ssh with the remote side prepared, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {
-        QStringList args;
-        for (int i = 2; i < argc; ++i) args << QString::fromLocal8Bit(argv[i]);
+        QByteArrayList args;
+        for (int i = 2; i < argc; ++i) args << QByteArray(argv[i]);
         return Afterglow::Ssh::run(args);
     }
     // The quick terminal is a layer surface; this shell integration also gives
@@ -146,7 +146,18 @@ int main(int argc, char** argv)
                                  QStringLiteral("[command...]"));
     parser.process(app);
 
-    if (QGuiApplication::platformName() != QLatin1String("wayland")) {
+    // Handled before Qt starts when it is the only argument.
+    if (parser.isSet(QStringLiteral("config-reference"))) {
+        qCritical("afterglow: --config-reference takes no other arguments");
+        return 1;
+    }
+    if (!parser.isSet(execOption) && !parser.positionalArguments().isEmpty()) {
+        qCritical("afterglow: use -e to run a program: afterglow -e %s",
+                  qPrintable(parser.positionalArguments().join(QLatin1Char(' '))));
+        return 1;
+    }
+    // Any QtWayland platform (wayland, wayland-egl) has the Wayland interface.
+    if (!app.nativeInterface<QNativeInterface::QWaylandApplication>()) {
         qCritical("afterglow runs on Wayland only (platform is %s)", qPrintable(QGuiApplication::platformName()));
         return 1;
     }

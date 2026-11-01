@@ -18,6 +18,7 @@
 #include <cmath>
 #include <algorithm>
 #include <atomic>
+#include <set>
 #include <stdexcept>
 
 Q_LOGGING_CATEGORY(lcFont, "afterglow.font", QtInfoMsg)
@@ -138,10 +139,12 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
         // and return an unimplemented-feature error for this optional setting.
         FT_Library_SetLcdFilter(m_ft, FT_LCD_FILTER_DEFAULT);
         FcInit();
+        // FcInit() does nothing once fontconfig is loaded: pick up fonts
+        // installed since (it is cheap when nothing changed).
+        FcInitBringUptoDate();
 
-        const FontStyleSpec* styleSpecs[4] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
         for (int slot = 0; slot < 4; ++slot) {
-            const FontStyleSpec* s = styleSpecs[slot];
+            const FontStyleSpec* s = &styleFor(StyleSlot(slot));
             const FcMatch m = matchFamily(s->family, true, *s);
             if (m.path.empty()) {
                 throw std::runtime_error("no font found for family " + s->family);
@@ -157,19 +160,18 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
             qCInfo(lcFont) << "slot" << slot << s->family.c_str() << "->" << m.path.c_str();
         }
 
+        std::set<std::string> warned; // each missing family once, not once per slot
         for (int slot = 0; slot < 4; ++slot) {
-            const auto& style = *styleSpecs[slot];
+            const auto& style = styleFor(StyleSlot(slot));
             auto loadStyled = [&](const std::string& family) {
                 const FcMatch match = matchFamily(family, false, style);
-                if (!match.exact) {
-                    qCWarning(lcFont) << "font family" << family.c_str() << "is not installed";
+                // A fontconfig alias ("emoji", "monospace") never names a font itself.
+                if (!match.exact && !isGenericFamily(family)) {
+                    if (warned.insert(family).second)
+                        qCWarning(lcFont) << "font family" << family.c_str() << "is not installed";
                     return -1;
                 }
-                const auto key = match.path + '#' + std::to_string(match.index) + '#' + std::to_string(slot);
-                if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) return it->second;
-                const int face = loadFace(match.path, match.index, &style);
-                if (face >= 0) m_faceByPath.emplace(key, face);
-                return face;
+                return loadSharedFace(match.path, match.index, StyleSlot(slot));
             };
             for (const auto& entry : m_spec.symbolMap) m_symbolFaces[slot].push_back(loadStyled(entry.family));
             for (const auto& family : m_spec.fallbackFamilies) {
@@ -198,8 +200,44 @@ FontSet::FontSet(const FontSpec& spec, double devicePixelRatio)
 
 FontSet::~FontSet()
 {
+    for (FcFontSet* set : m_fallbackOrder) {
+        if (set) FcFontSetDestroy(set);
+    }
     releaseFaces();
     FT_Done_FreeType(m_ft);
+}
+
+bool FontSet::hasGlyph(int index, char32_t cp) const noexcept
+{
+    return FT_Get_Char_Index(m_faces[std::size_t(index)]->ft, cp) != 0;
+}
+
+const FontStyleSpec& FontSet::styleFor(StyleSlot slot) const noexcept
+{
+    switch (slot) {
+    case StyleSlot::Regular: break;
+    case StyleSlot::Bold: return m_spec.bold;
+    case StyleSlot::Italic: return m_spec.italic;
+    case StyleSlot::BoldItalic: return m_spec.boldItalic;
+    }
+    return m_spec.regular;
+}
+
+int FontSet::loadSharedFace(const std::string& path, int index, StyleSlot slot)
+{
+    auto keyFor = [&](int keySlot) { return path + '#' + std::to_string(index) + '#' + std::to_string(keySlot); };
+    const auto shared = keyFor(-1);
+    if (auto it = m_faceByPath.find(shared); it != m_faceByPath.end()) return it->second;
+    const auto key = keyFor(int(slot));
+    if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) return it->second;
+    const int face = loadFace(path, index, &styleFor(slot));
+    if (face >= 0) {
+        m_faceByPath.emplace(key, face);
+        // Axes apply only to a variable face; any other is the same in every
+        // slot, so its glyphs are rasterised and cached once.
+        if (!FT_HAS_MULTIPLE_MASTERS(m_faces[std::size_t(face)]->ft)) m_faceByPath.emplace(shared, face);
+    }
+    return face;
 }
 
 void FontSet::releaseFaces() noexcept
@@ -354,27 +392,31 @@ int FontSet::faceFor(char32_t cp, StyleSlot slot, bool preferColor)
 
 int FontSet::findFallback(char32_t cp, bool color, StyleSlot slot)
 {
-    const FontStyleSpec* styles[] = {&m_spec.regular, &m_spec.bold, &m_spec.italic, &m_spec.boldItalic};
-    const auto& style = *styles[int(slot)];
+    const auto& style = styleFor(slot);
     for (int idx : m_fallbackFaces[int(slot)]) {
         const Face& f = *m_faces[std::size_t(idx)];
         if ((!color || f.color) && FT_Get_Char_Index(f.ft, cp) != 0) {
             return idx;
         }
     }
-    FcPattern* pat = FcPatternCreate();
-    FcCharSet* cs = FcCharSetCreate();
-    FcCharSetAddChar(cs, cp);
-    FcPatternAddCharSet(pat, FC_CHARSET, cs);
-    if (color) {
-        FcPatternAddBool(pat, FC_COLOR, FcTrue);
+    // Fontconfig's order for the slot, without the character: its charset
+    // criterion only moves fonts that have the character ahead of those that
+    // do not, so the first font here that has it is the one a per-character
+    // sort would pick. Untrimmed, since fonts are skipped below.
+    FcFontSet*& set = m_fallbackOrder[std::size_t(int(slot) * 2 + (color ? 1 : 0))];
+    if (!set) {
+        FcPattern* pat = FcPatternCreate();
+        if (color) {
+            FcPatternAddBool(pat, FC_COLOR, FcTrue);
+        }
+        FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(style.family.c_str()));
+        matchStyle(pat, style);
+        FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+        FcDefaultSubstitute(pat);
+        FcResult result;
+        set = FcFontSort(nullptr, pat, FcFalse, nullptr, &result);
+        FcPatternDestroy(pat);
     }
-    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(style.family.c_str()));
-    matchStyle(pat, style);
-    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
-    FcDefaultSubstitute(pat);
-    FcResult result;
-    FcFontSet* set = FcFontSort(nullptr, pat, FcTrue, nullptr, &result);
     int found = -1;
     if (set) {
         for (int i = 0; i < set->nfont && found < 0; ++i) {
@@ -400,21 +442,9 @@ int FontSet::findFallback(char32_t cp, bool color, StyleSlot slot)
                 continue;
             }
             FcPatternGetInteger(set->fonts[i], FC_INDEX, 0, &index);
-            const std::string path = reinterpret_cast<const char*>(file);
-            const std::string key = path + '#' + std::to_string(index) + '#' + std::to_string(int(slot));
-            if (auto it = m_faceByPath.find(key); it != m_faceByPath.end()) {
-                found = it->second;
-            } else {
-                found = loadFace(path, index, &style);
-                if (found >= 0) {
-                    m_faceByPath.emplace(key, found);
-                }
-            }
+            found = loadSharedFace(reinterpret_cast<const char*>(file), index, slot);
         }
-        FcFontSetDestroy(set);
     }
-    FcCharSetDestroy(cs);
-    FcPatternDestroy(pat);
     return found;
 }
 

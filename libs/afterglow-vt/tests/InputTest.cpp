@@ -6,10 +6,6 @@
 
 #include <gtest/gtest.h>
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#endif
-
 using namespace AfterglowVt;
 
 namespace {
@@ -22,6 +18,17 @@ KeyEvent key(Key k, std::uint8_t mods = 0, std::string_view text = {}, char32_t 
     e.text = text;
     e.unshifted = unshifted;
     e.action = action;
+    return e;
+}
+
+MouseEvent mouse(MouseButton button, MouseAction action, int col, int row, std::uint8_t mods = 0)
+{
+    MouseEvent e;
+    e.button = button;
+    e.action = action;
+    e.col = col;
+    e.row = row;
+    e.mods = mods;
     return e;
 }
 } // namespace
@@ -77,7 +84,7 @@ TEST(Input, ControlAndAltText)
 TEST(Input, MouseSgr)
 {
     Modes m;
-    MouseEvent e{MouseButton::Left, MouseAction::Press, 0, 4, 2};
+    MouseEvent e = mouse(MouseButton::Left, MouseAction::Press, 4, 2);
     EXPECT_EQ(encodeMouse(e, m), "");
     m.mouseTracking = MouseTracking::Normal;
     m.mouseFormat = MouseFormat::Sgr;
@@ -91,12 +98,93 @@ TEST(Input, MouseSgr)
     EXPECT_EQ(encodeMouse(e, m), "\x1b[<35;5;3M");
 }
 
-TEST(Input, PasteIsBracketedAndSanitized)
+TEST(Input, MouseLegacyFormats)
+{
+    Modes m;
+    m.mouseTracking = MouseTracking::Normal;
+    m.mouseFormat = MouseFormat::X10;
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Left, MouseAction::Press, 222, 0), m), "\x1b[M \xff!");
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Left, MouseAction::Press, 223, 0), m), "");
+    // A release keeps its modifiers (xterm's BtnCode): 3 + Ctrl (16), + 32.
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Left, MouseAction::Release, 0, 0, Mod::Ctrl), m), "\x1b[M3!!");
+    m.mouseFormat = MouseFormat::Utf8;
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Left, MouseAction::Press, 2014, 0), m), "\x1b[M \xdf\xbf!");
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Left, MouseAction::Press, 2015, 0), m), "");
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Left, MouseAction::Release, 0, 0, Mod::Shift), m), "\x1b[M'!!");
+    m.mouseFormat = MouseFormat::Urxvt;
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Right, MouseAction::Press, 9, 4), m), "\x1b[34;10;5M");
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Right, MouseAction::Release, 9, 4), m), "\x1b[35;10;5M");
+    EXPECT_EQ(encodeMouse(mouse(MouseButton::Right, MouseAction::Release, 9, 4, Mod::Alt), m), "\x1b[43;10;5M");
+    m.mouseFormat = MouseFormat::SgrPixels;
+    MouseEvent pixels = mouse(MouseButton::Left, MouseAction::Press, 9, 4);
+    pixels.pixelX = 99;
+    pixels.pixelY = 41;
+    EXPECT_EQ(encodeMouse(pixels, m), "\x1b[<0;100;42M");
+}
+
+TEST(Input, PasteFoldsNewlines)
 {
     Modes m;
     EXPECT_EQ(encodePaste("a\nb", m), "a\rb");
+    EXPECT_EQ(encodePaste("a\r\nb\rc", m), "a\rb\rc");
     m.bracketedPaste = true;
-    EXPECT_EQ(encodePaste("x\x1b[201~y", m), "\x1b[200~xy\x1b[201~");
+    EXPECT_EQ(encodePaste("a\r\nb", m), "\x1b[200~a\rb\x1b[201~");
+}
+
+TEST(Input, PasteDropsControlCharacters)
+{
+    Modes m;
+    // C-o would run the line in bash without a newline for the prompt to see.
+    EXPECT_EQ(encodePaste("echo pwned\x0f", m), "echo pwned");
+    EXPECT_EQ(encodePaste("a\tb\x7f\x03\x1b[A", m), "a\tb[A");
+    // C1 in UTF-8 (U+0085) goes, other text stays.
+    EXPECT_EQ(encodePaste("x\xc2\x85y\xc3\xa9\xc2\xa0", m), "xy\xc3\xa9\xc2\xa0");
+    m.bracketedPaste = true;
+    // Without ESC the end marker cannot appear in the text.
+    EXPECT_EQ(encodePaste("x\x1b[201~y", m), "\x1b[200~x[201~y\x1b[201~");
+}
+
+TEST(Input, FocusEventsOnlyWhenEnabled)
+{
+    Modes m;
+    EXPECT_EQ(encodeFocus(true, m), "");
+    m.focusEvents = true;
+    EXPECT_EQ(encodeFocus(true, m), "\x1b[I");
+    EXPECT_EQ(encodeFocus(false, m), "\x1b[O");
+}
+
+TEST(Input, LegacyMenuAndAltShiftTab)
+{
+    Modes m;
+    EXPECT_EQ(encodeKey(key(Key::Menu), m), "\x1b[29~");
+    EXPECT_EQ(encodeKey(key(Key::Menu, Mod::Ctrl), m), "\x1b[29;5~");
+    EXPECT_EQ(encodeKey(key(Key::Tab, Mod::Shift | Mod::Alt), m), "\x1b\x1b[Z");
+}
+
+TEST(Input, Vt52KeypadAndFunctionKeys)
+{
+    Modes m;
+    m.vt52 = true;
+    EXPECT_EQ(encodeKey(key(Key::F1), m), "\x1bP");
+    EXPECT_EQ(encodeKey(key(Key::F4), m), "\x1bS");
+    m.keypadApp = true;
+    EXPECT_EQ(encodeKey(key(Key::Keypad0, 0, "0"), m), "\x1b?p");
+    EXPECT_EQ(encodeKey(key(Key::KeypadEnter), m), "\x1b?M");
+}
+
+TEST(Input, KeypadNavigationKeys)
+{
+    Modes m;
+    // Legacy: the main keys' bytes.
+    EXPECT_EQ(encodeKey(key(Key::KeypadLeft), m), "\x1b[D");
+    EXPECT_EQ(encodeKey(key(Key::KeypadDelete), m), "\x1b[3~");
+    EXPECT_EQ(encodeKey(key(Key::KeypadBegin), m), "\x1b[E");
+    // Kitty: keys of their own.
+    m.kittyKeyboard = KittyFlag::Disambiguate;
+    EXPECT_EQ(encodeKey(key(Key::KeypadLeft), m), "\x1b[57417u");
+    EXPECT_EQ(encodeKey(key(Key::KeypadDelete), m), "\x1b[57426u");
+    EXPECT_EQ(encodeKey(key(Key::KeypadSeparator, 0, ","), m), ",");
+    EXPECT_EQ(encodeKey(key(Key::KeypadBegin, Mod::Shift), m), "\x1b[1;2E");
 }
 
 TEST(Input, ReleasesAndModifierKeysAreSilentInLegacyMode)
@@ -135,6 +223,32 @@ TEST(Input, KittyEventTypes)
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "", U'c', KeyAction::Release), m), "\x1b[99;5:3u");
     // plain text has no release event without "report all keys"
     EXPECT_EQ(encodeKey(key(Key::Text, 0, "a", U'a', KeyAction::Release), m), "");
+    // Enter, Tab and Backspace have none either, even when modified.
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Shift), m), "\x1b[13;2u");
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Shift, {}, 0, KeyAction::Release), m), "");
+    EXPECT_EQ(encodeKey(key(Key::Tab, Mod::Ctrl, {}, 0, KeyAction::Release), m), "");
+    EXPECT_EQ(encodeKey(key(Key::Backspace, Mod::Alt, {}, 0, KeyAction::Release), m), "");
+    m.kittyKeyboard |= KittyFlag::ReportAllKeys;
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Shift, {}, 0, KeyAction::Release), m), "\x1b[13;2:3u");
+}
+
+TEST(Input, KittyUnmodifiedEnterAndBackspaceFollowLnmAndDecbkm)
+{
+    Modes m;
+    m.kittyKeyboard = KittyFlag::Disambiguate;
+    m.newline = true;
+    EXPECT_EQ(encodeKey(key(Key::Enter), m), "\r\n");
+    m.backarrowSendsBs = true;
+    EXPECT_EQ(encodeKey(key(Key::Backspace), m), "\x08");
+}
+
+TEST(Input, KittyAssociatedTextHasNoControls)
+{
+    Modes m;
+    m.kittyKeyboard = KittyFlag::Disambiguate | KittyFlag::ReportAllKeys | KittyFlag::ReportText;
+    // U+0085 (NEL) is a C1 control: the event keeps its key code, without text.
+    EXPECT_EQ(encodeKey(key(Key::Text, 0, "\xC2\x85", U'x'), m), "\x1b[120u");
+    EXPECT_EQ(encodeKey(key(Key::Text, 0, "\xC3\xA9", 0xE9), m), "\x1b[233;1;233u");
 }
 
 TEST(Input, KittyReportAllKeysWithText)
@@ -162,26 +276,60 @@ TEST(Input, ModifyOtherKeys)
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "1", U'1'), m), "\x1b[27;5;49~");
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, ";", U';'), m), "\x1b[27;5;59~");
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::Alt, "x", U'x'), m), "\x1bx");
+    // A key with no unshifted character uses the code point of its text.
+    EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "\xC3\xA9", 0), m), "\x1b[27;5;233~");
     m.modifyOtherKeys = 2;
-    // Level 2: every modified key except Shift with a non-letter.
+    // Level 2: every modified key, except Shift alone on a printable key.
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::Ctrl, "a", U'a'), m), "\x1b[27;5;97~");
     EXPECT_EQ(encodeKey(key(Key::Text, Mod::Alt, "x", U'x'), m), "\x1b[27;3;120~");
     KeyEvent shiftA = key(Key::Text, Mod::Shift, "A", U'a');
     shiftA.shifted = U'A';
-    EXPECT_EQ(encodeKey(shiftA, m), "\x1b[27;2;65~");
+    EXPECT_EQ(encodeKey(shiftA, m), "A");
     KeyEvent shiftComma = key(Key::Text, Mod::Shift, "<", U',');
     shiftComma.shifted = U'<';
     EXPECT_EQ(encodeKey(shiftComma, m), "<");
+    KeyEvent shiftSpace = key(Key::Text, Mod::Shift, " ", U' ');
+    shiftSpace.shifted = U' ';
+    EXPECT_EQ(encodeKey(shiftSpace, m), "\x1b[27;2;32~");
     EXPECT_EQ(encodeKey(key(Key::Text, 0, "a", U'a'), m), "a");
 }
 
-TEST(Input, NestedPasteTerminatorsCannotReappearAfterRemoval)
+TEST(Input, ModifyOtherKeysCoversReturnTabBackspaceAndEscape)
+{
+    Modes m;
+    m.modifyOtherKeys = 1;
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Shift), m), "\x1b[27;2;13~");
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Ctrl), m), "\x1b[27;5;13~");
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Alt), m), "\x1b\r"); // Alt keeps its ESC prefix
+    EXPECT_EQ(encodeKey(key(Key::Tab, Mod::Ctrl), m), "\x1b[27;5;9~");
+    EXPECT_EQ(encodeKey(key(Key::Tab, Mod::Shift), m), "\x1b[Z");
+    EXPECT_EQ(encodeKey(key(Key::Backspace, Mod::Shift), m), "\x7f");
+    EXPECT_EQ(encodeKey(key(Key::Escape, Mod::Ctrl), m), "\x1b");
+    EXPECT_EQ(encodeKey(key(Key::Escape, Mod::Ctrl | Mod::Shift), m), "\x1b[27;6;27~");
+    m.modifyOtherKeys = 2;
+    EXPECT_EQ(encodeKey(key(Key::Enter, Mod::Alt), m), "\x1b[27;3;13~");
+    EXPECT_EQ(encodeKey(key(Key::Tab, Mod::Shift), m), "\x1b[Z");
+    EXPECT_EQ(encodeKey(key(Key::Tab, Mod::Ctrl | Mod::Shift), m), "\x1b[27;6;9~");
+    EXPECT_EQ(encodeKey(key(Key::Backspace, Mod::Ctrl), m), "\x08");
+    EXPECT_EQ(encodeKey(key(Key::Backspace, Mod::Shift), m), "\x1b[27;2;127~");
+    EXPECT_EQ(encodeKey(key(Key::Escape, Mod::Ctrl), m), "\x1b[27;5;27~");
+    EXPECT_EQ(encodeKey(key(Key::Enter), m), "\r");
+}
+
+TEST(Input, NestedPasteTerminatorsCannotForm)
 {
     Modes modes;
     modes.bracketedPaste = true;
-    EXPECT_EQ(encodePaste("a\x1b[20\x1b[201~1~b", modes), "\x1b[200~ab\x1b[201~");
+    EXPECT_EQ(encodePaste("a\x1b[20\x1b[201~1~b", modes), "\x1b[200~a[20[201~1~b\x1b[201~");
     std::string nested;
-    for (int i = 0; i < 10000; ++i) nested += "\x1b[20";
-    for (int i = 0; i < 10000; ++i) nested += "1~";
-    EXPECT_EQ(encodePaste(nested, modes), "\x1b[200~\x1b[201~");
+    std::string expected;
+    for (int i = 0; i < 10000; ++i) {
+        nested += "\x1b[20";
+        expected += "[20";
+    }
+    for (int i = 0; i < 10000; ++i) {
+        nested += "1~";
+        expected += "1~";
+    }
+    EXPECT_EQ(encodePaste(nested, modes), "\x1b[200~" + expected + "\x1b[201~");
 }

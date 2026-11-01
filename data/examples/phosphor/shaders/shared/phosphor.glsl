@@ -24,11 +24,6 @@ vec4 phText(vec2 p) {
     return terminalTexel(terminalUv(p));
 }
 
-float phHeat() {
-    float age = phAge(2);
-    return signalValue(2) > 0.5 ? 1.0 - exp(-age * 4.0) : exp(-age * 2.5);
-}
-
 // Light on dark glass, coloured pigment on pale glass. Preserve opacity.
 vec4 phIlluminate(vec4 c, vec3 tint, float strength) {
     strength = clamp(strength, 0.0, 0.8);

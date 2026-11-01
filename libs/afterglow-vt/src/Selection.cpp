@@ -4,30 +4,13 @@
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Selection.h>
 
+#include "Utf8.h"
+
 #include <algorithm>
 
 namespace AfterglowVt {
 
 namespace {
-
-void appendUtf8(std::string& out, char32_t cp)
-{
-    if (cp < 0x80) {
-        out.push_back(char(cp));
-    } else if (cp < 0x800) {
-        out.push_back(char(0xC0 | (cp >> 6)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else if (cp < 0x10000) {
-        out.push_back(char(0xE0 | (cp >> 12)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else {
-        out.push_back(char(0xF0 | (cp >> 18)));
-        out.push_back(char(0x80 | ((cp >> 12) & 0x3F)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    }
-}
 
 /// Walks cells across soft-wrapped rows.
 struct CellWalker
@@ -43,21 +26,44 @@ struct CellWalker
         const Cell& c = row().at(col);
         return c.isTail() ? 0xFFFFFFFF : c.codepoint();
     }
+    // A spacer head (the blank a wrapped wide character left in the last
+    // column) is not a cell of the line, as text() and reflow agree: the
+    // walk steps over it.
+    bool spacer() const { return row().at(col).isSpacerHead(); }
     bool prev()
     {
-        if (col > 0) {
-            --col;
-            return true;
-        }
-        if (abs > 0 && scr->absoluteRow(std::size_t(abs - 1)).wrapped) {
-            --abs;
-            col = scr->cols() - 1;
-            return true;
-        }
-        return false;
+        do {
+            if (!step(-1)) {
+                return false;
+            }
+        } while (spacer());
+        return true;
     }
     bool next()
     {
+        do {
+            if (!step(1)) {
+                return false;
+            }
+        } while (spacer());
+        return true;
+    }
+
+private:
+    bool step(int dir)
+    {
+        if (dir < 0) {
+            if (col > 0) {
+                --col;
+                return true;
+            }
+            if (abs > 0 && scr->absoluteRow(std::size_t(abs - 1)).wrapped) {
+                --abs;
+                col = scr->cols() - 1;
+                return true;
+            }
+            return false;
+        }
         if (col + 1 < scr->cols()) {
             ++col;
             return true;
@@ -112,6 +118,9 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     Range r;
     r.start = std::min(anchor, head);
     r.end = std::max(anchor, head);
+    if (screen.absoluteIndexOf(r.start.row) < 0 || screen.absoluteIndexOf(r.end.row) < 0) {
+        return r; // the rows are gone: nothing to expand (callers check validFor first)
+    }
     const std::uint64_t base = screen.rowsDropped();
     const int lastCol = screen.cols() - 1;
     r.start.col = std::clamp(r.start.col, 0, lastCol);
@@ -126,6 +135,12 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
         r.blockRight = std::clamp(std::max(anchor.col, head.col), 0, lastCol);
         break;
     case SelectionMode::Word: {
+        // The walk crosses every soft-wrapped row of the word, and the
+        // renderer asks for the range each frame: expand once per selection.
+        if (m_word.screen == &screen && m_word.epoch == screen.layoutEpoch() && m_word.anchor == anchor
+            && m_word.head == head && m_word.boundaries == boundaries) {
+            return m_word.range;
+        }
         CellWalker s{&screen, screen.absoluteIndexOf(r.start.row), r.start.col};
         const bool startWord = isWordChar(s.cp(), boundaries);
         for (CellWalker probe = s; probe.prev() && isWordChar(probe.cp(), boundaries) == startWord && startWord;) {
@@ -162,6 +177,9 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
         if (screen.absoluteRow(std::size_t(a)).at(r.end.col + 1).isTail()) {
             ++r.end.col;
         }
+    }
+    if (mode == SelectionMode::Word) {
+        m_word = {&screen, screen.layoutEpoch(), anchor, head, std::u32string(boundaries), r};
     }
     return r;
 }
@@ -201,9 +219,9 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
                 || (c.isMulticell() && (c.multicellDx() != 0 || c.multicellDy() != 0))) {
                 continue;
             }
-            appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());
+            detail::appendUtf8(line, c.isEmpty() ? U' ' : c.codepoint());
             for (char32_t e : screen.graphemeExtra(row, x)) {
-                appendUtf8(line, e);
+                detail::appendUtf8(line, e);
             }
         }
         const bool joinsNext = !r.block && row.wrapped && a < last;

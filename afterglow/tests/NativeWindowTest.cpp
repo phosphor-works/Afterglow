@@ -8,6 +8,7 @@
 #include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
 #include "config/Keybinds.h"
+#include "KeyMapping.h"
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -31,6 +32,12 @@
 #include <QKeyEvent>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QThreadPool>
+#include <QScopeGuard>
+#include <QStandardPaths>
+#include <cstdio>
+#include <functional>
+#include <mutex>
 #include <thread>
 #include <gtest/gtest.h>
 using namespace Afterglow;
@@ -39,6 +46,46 @@ void drain(int ms = 100) {
     QElapsedTimer timer; timer.start();
     do { QCoreApplication::processEvents(); QThread::msleep(2); } while (timer.elapsed() < ms);
 }
+// Waits until @p condition holds or @p ms pass, and returns the condition.
+// A PTY echo, a search or a D-Bus round trip has no fixed time.
+bool waitFor(const std::function<bool()>& condition, int ms = 3000) {
+    QElapsedTimer timer; timer.start();
+    while (!condition() && timer.elapsed() < ms) drain(10);
+    return condition();
+}
+// Expects the window to stop asking for frames once nothing moves.
+void expectIdle(TerminalWindow* window) {
+    drain(1500);
+    const auto frames = window->submittedFrames();
+    drain(300);
+    EXPECT_EQ(window->submittedFrames(), frames) << "the window still renders with nothing moving";
+}
+// QML errors print a warning and leave the test green. The handler keeps them,
+// and every test fails that produced one.
+std::mutex qmlErrorsMutex;
+QStringList qmlErrors;
+QtMessageHandler previousHandler = nullptr;
+void recordQmlErrors(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    const bool fromQml = message.contains(QLatin1String(".qml:"))
+        || (context.file && QByteArray(context.file).endsWith(".qml"));
+    if (type == QtWarningMsg && fromQml
+        && (message.contains(QLatin1String("TypeError")) || message.contains(QLatin1String("ReferenceError"))
+            || message.contains(QLatin1String("Cannot assign")))) {
+        std::lock_guard lock(qmlErrorsMutex);
+        qmlErrors.append(message);
+    }
+    if (previousHandler) previousHandler(type, context, message);
+}
+QStringList takeQmlErrors() {
+    std::lock_guard lock(qmlErrorsMutex);
+    return std::exchange(qmlErrors, {});
+}
+// The drag and drop tests need real compositor input and kitten.
+#define REQUIRE_NATIVE_DND(ready)                                                                                 \
+    const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");                                    \
+    if (ready.isEmpty()) GTEST_SKIP() << "Run through native_window_acceptance.py for real compositor input"
+#define REQUIRE_KITTEN()                                                                                          \
+    if (QStandardPaths::findExecutable(QStringLiteral("kitten")).isEmpty()) GTEST_SKIP() << "kitten is not installed"
 QList<QQuickItem*> visualDescendants(QQuickItem* root) {
     QList<QQuickItem*> result;
     for (auto* child : root->childItems()) {
@@ -47,6 +94,12 @@ QList<QQuickItem*> visualDescendants(QQuickItem* root) {
     }
     return result;
 }
+// An overlay takes the keyboard one event-loop turn after it shows, and the
+// chrome itself loads on the first frame that needs it.
+bool chromeFocusReady(ChromeLayer* layer) {
+    auto* focus = layer->focusedItem();
+    return focus && focus->hasActiveFocus() && focus->isVisible() && focus != focus->window()->contentItem();
+}
 class NativeWindow : public ::testing::Test {
 protected:
     QTemporaryDir directory;
@@ -54,8 +107,11 @@ protected:
     TerminalWindow* window = nullptr;
     void SetUp() override {
         ASSERT_TRUE(directory.isValid());
+        takeQmlErrors();
+        // No cursor blink, so a window with nothing moving renders no frames.
         application = std::make_unique<Application>(directory.filePath(QStringLiteral("afterglow.conf")),
-            QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}}});
+            QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
+                        {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}}});
         WindowOptions options;
         options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
         window = application->newWindow(options);
@@ -64,7 +120,12 @@ protected:
         window->show();
         drain(200);
     }
-    void TearDown() override { application.reset(); drain(); }
+    void TearDown() override {
+        application.reset();
+        drain();
+        const auto errors = takeQmlErrors();
+        EXPECT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+    }
 };
 TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     auto* original = window->focusedPane();
@@ -101,8 +162,9 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     EXPECT_EQ(detached->tabIdOf(original), tabId);
     EXPECT_EQ(window->panes(), QList<Pane*>{other});
     original->sendInput("printf 'detached-process-alive\\n'\n");
-    drain(150);
-    EXPECT_TRUE(original->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("detached-process-alive")));
+    EXPECT_TRUE(waitFor([&] {
+        return original->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("detached-process-alive"));
+    }));
     auto* background = window->openTab(launch, nullptr);
     ASSERT_NE(background, nullptr);
     window->revealPane(other);
@@ -215,11 +277,12 @@ TEST_F(NativeWindow, LaunchOptionsAndClosedIdentity) {
     qunsetenv("AFTERGLOW_REMOVE_TEST");
     ASSERT_TRUE(error.isEmpty()) << error.toStdString();
     ASSERT_NE(created, 0u);
-    drain(150);
     auto* added = window->focusedPane();
     EXPECT_EQ(added->id(), created);
+    EXPECT_TRUE(waitFor([&] {
+        return added->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-options|unset"));
+    }));
     EXPECT_EQ(added->workingDirectory(), directory.path());
-    EXPECT_TRUE(added->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-options|unset")));
     EXPECT_LT(window->accessiblePaneRect(added).width(), window->accessiblePaneRect(original).width() / 2);
     const quint32 tab = window->tabIdOf(added), win = window->id();
     QVariantList closed;
@@ -237,13 +300,20 @@ TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition) {
     launch.command = {QStringLiteral("/bin/cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
+    first->setUserTitle(QStringLiteral("first title"));
+    second->setUserTitle(QStringLiteral("second title"));
     for (auto* pane : {first, second}) {
         window->revealPane(pane);
         ASSERT_TRUE(window->runAction(pane, Action::TogglePaneZoom));
-        drain();
+        // The zoom animates: wait for the label to reach the zoomed size.
+        drain(600);
         auto* chrome = window->findChild<ChromeController*>();
         ASSERT_NE(chrome, nullptr);
-        EXPECT_EQ(chrome->paneTitles().size(), 1);
+        ASSERT_EQ(chrome->paneTitles().size(), 1);
+        const auto entry = chrome->paneTitles().front().toMap();
+        EXPECT_EQ(entry.value(QStringLiteral("title")).toString(), pane->title());
+        // The zoomed pane fills the window, the label's rectangle with it.
+        EXPECT_GT(entry.value(QStringLiteral("width")).toDouble(), window->width() * 0.9);
         ASSERT_TRUE(window->runAction(pane, Action::TogglePaneZoom));
     }
 }
@@ -258,17 +328,17 @@ TEST_F(NativeWindow, PasteConfirmationRetainsOriginalPane) {
     ASSERT_TRUE(window->runAction(first, Action::Paste));
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_TRUE(chrome->pasteConfirmOpen());
-    drain();
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
-    ASSERT_NE(layer->focusedItem(), nullptr);
-    EXPECT_TRUE(layer->focusedItem()->isVisible());
+    // Return pastes only once the panel holds the keyboard.
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     window->revealPane(second);
     QKeyEvent accept(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &accept);
     EXPECT_FALSE(chrome->pasteConfirmOpen());
-    drain(150);
-    EXPECT_TRUE(first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one")));
+    EXPECT_TRUE(waitFor([&] {
+        return first->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one"));
+    }));
     EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("original-pane-line-one")));
 }
 TEST_F(NativeWindow, PasteConfirmsRawLineTerminatorsAndHonorsBracketedMode) {
@@ -314,7 +384,12 @@ TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
     for (auto* item : visualDescendants(layer->rootItem())) {
         if (item->property("literalTitle").toString() != title) continue;
         found = true;
-        EXPECT_EQ(item->property("text").toString(), QStringLiteral("<span>") + title.toHtmlEscaped() + QStringLiteral("</span>"));
+        // Each entity carries an extra "&" for the label's mnemonic step.
+        QString escaped = title;
+        escaped.replace(QLatin1Char('&'), QStringLiteral("&&amp;"))
+            .replace(QLatin1Char('<'), QStringLiteral("&&lt;"))
+            .replace(QLatin1Char('>'), QStringLiteral("&&gt;"));
+        EXPECT_EQ(item->property("text").toString(), QStringLiteral("<span>") + escaped + QStringLiteral("</span>"));
         auto* accessible = QAccessible::queryAccessibleInterface(item);
         ASSERT_NE(accessible, nullptr);
         EXPECT_EQ(accessible->text(QAccessible::Name), title);
@@ -340,9 +415,8 @@ TEST_F(NativeWindow, FocusUpdatesTabTitleAndRetiresPreviousSearch) {
     const auto original = first->snapshot().at(0, 0).bg;
     chrome->setSearchOpen(true);
     chrome->search(QStringLiteral("needle"), 0);
-    drain(200);
+    ASSERT_TRUE(waitFor([&] { return chrome->searchStatus() == QStringLiteral("1 of 1"); })) << chrome->searchStatus().toStdString();
     first->refreshSnapshot();
-    ASSERT_EQ(chrome->searchStatus(), QStringLiteral("1 of 1"));
     EXPECT_NE(first->snapshot().at(0, 0).bg, original);
     window->revealPane(second);
     EXPECT_EQ(chrome->tabTitles().front(), QStringLiteral("second"));
@@ -356,6 +430,8 @@ TEST_F(NativeWindow, FocusUpdatesTabTitleAndRetiresPreviousSearch) {
     chrome->setSearchOpen(true);
     chrome->search(QStringLiteral("needle"), 0);
     window->revealPane(second);
+    // Let the search finish and its watcher report, then check.
+    QThreadPool::globalInstance()->waitForDone(2000);
     drain();
     first->refreshSnapshot();
     EXPECT_EQ(first->snapshot().at(0, 0).bg, original);
@@ -494,13 +570,11 @@ TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate) {
         });
     });
     statusOutput.join();
-    drain(200);
-    ASSERT_FALSE(observer.updates.isEmpty());
+    ASSERT_TRUE(waitFor([&] { return !observer.updates.isEmpty(); }));
     EXPECT_TRUE(observer.updates.last().value(QStringLiteral("progress-visible")).toBool());
     observer.updates.clear();
     delete contributor;
-    drain();
-    ASSERT_FALSE(observer.updates.isEmpty());
+    ASSERT_TRUE(waitFor([&] { return !observer.updates.isEmpty(); }));
     EXPECT_FALSE(observer.updates.last().value(QStringLiteral("progress-visible")).toBool());
     EXPECT_FALSE(observer.updates.last().value(QStringLiteral("urgent")).toBool());
 }
@@ -513,12 +587,24 @@ TEST_F(NativeWindow, InputMethodPreservesGraphemesAndCommitsToPty) {
     pane->refreshSnapshot();
     const auto& snapshot = pane->snapshot();
     EXPECT_EQ(snapshot.cursorX, 2);
-    EXPECT_TRUE(std::any_of(snapshot.graphemes.begin(), snapshot.graphemes.end(), [](const auto& g) { return g == U"é"; }));
-    EXPECT_TRUE(std::any_of(snapshot.graphemes.begin(), snapshot.graphemes.end(), [](const auto& g) { return g == U"👩‍💻"; }));
+    // A cell's text is its codepoint and then the extra ones in graphemes, as
+    // the renderer reads it: the first codepoint must not repeat.
+    const auto cellText = [&](const AfterglowRender::SnapshotCell& cell) {
+        std::u32string text(1, cell.cp);
+        if (cell.grapheme > 0 && cell.grapheme <= snapshot.graphemes.size()) text += snapshot.graphemes[cell.grapheme - 1];
+        return text;
+    };
+    const auto shows = [&](std::u32string_view wanted) {
+        return std::any_of(snapshot.cells.begin(), snapshot.cells.end(), [&](const auto& cell) { return cell.cp && cellText(cell) == wanted; });
+    };
+    EXPECT_TRUE(shows(U"e\u0301"));
+    EXPECT_TRUE(shows(U"\U0001F469\u200D\U0001F4BB"));
+    EXPECT_FALSE(shows(U"ee\u0301"));
     QInputMethodEvent commit; commit.setCommitString(QStringLiteral("native-ime-accepted\n"));
     QCoreApplication::sendEvent(window, &commit);
-    drain(200);
-    EXPECT_TRUE(pane->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-ime-accepted")));
+    EXPECT_TRUE(waitFor([&] {
+        return pane->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-ime-accepted"));
+    }));
 }
 TEST_F(NativeWindow, InputMethodQueriesFollowChromeEditor) {
     auto* chrome = window->findChild<ChromeController*>();
@@ -555,8 +641,10 @@ TEST_F(NativeWindow, ChromeButtonsReceiveKeyReleases) {
     EXPECT_FALSE(button->property("pressed").toBool());
     EXPECT_TRUE(chrome->searchRegex());
 }
-TEST_F(NativeWindow, AccessibleChromeAndZoomVisibility) {
+TEST_F(NativeWindow, AccessibleChromeExposesFocusedEditor) {
     QAccessible::setActive(true);
+    // Later tests must not run with accessibility on.
+    const auto inactive = qScopeGuard([] { QAccessible::setActive(false); });
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     chrome->setSearchOpen(true);
@@ -613,23 +701,28 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     QByteArray png; QBuffer buffer(&png); buffer.open(QIODevice::WriteOnly); ASSERT_TRUE(image.save(&buffer, "PNG"));
     request.iconData.assign(png.constData(), std::size_t(png.size()));
     auto& center = NotificationCenter::instance();
-    center.handle(first, window, request); drain(60);
-    ASSERT_EQ(server.count, 1);
+    center.handle(first, window, request);
+    ASSERT_TRUE(waitFor([&] { return server.count == 1; }));
     EXPECT_EQ(server.appName, QStringLiteral("Afterglow"));
     EXPECT_EQ(server.appIcon, QStringLiteral("com.phosphorworks.Afterglow"));
     EXPECT_EQ(server.desktopEntry, QStringLiteral("com.phosphorworks.Afterglow"));
+    EXPECT_FALSE(server.images.last().isEmpty());
     EXPECT_LE(server.images.last().height(), 512);
     request.expireMs = 2000;
     request.iconData.clear();
-    center.handle(first, window, request); drain(60);
+    center.handle(first, window, request);
+    ASSERT_TRUE(waitFor([&] { return server.count == 2; }));
     EXPECT_FALSE(server.images.last().isEmpty());
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     auto* second = window->splitPane(first, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(second, nullptr);
     request.id = "another-pane";
-    center.handle(second, window, request); drain(160);
+    center.handle(second, window, request);
+    ASSERT_TRUE(waitFor([&] { return server.count == 3; }));
     EXPECT_TRUE(server.images.last().isEmpty());
+    // Past the 200 ms expiry of the notice that was replaced.
+    drain(250);
     EXPECT_EQ(server.closes, 0);
     bus.unregisterObject(QStringLiteral("/org/freedesktop/Notifications"));
     bus.unregisterService(QStringLiteral("org.freedesktop.Notifications"));
@@ -657,8 +750,7 @@ public:
     }
 };
 TEST_F(NativeWindow, NativeWaylandFileDrop) {
-    const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");
-    ASSERT_FALSE(ready.isEmpty()) << "Run through native_window_acceptance.py for real compositor input";
+    REQUIRE_NATIVE_DND(ready);
     window->showFullScreen();
     drain(300);
     const QString path = directory.filePath(QString::fromUtf8("drag's café.txt"));
@@ -679,7 +771,7 @@ TEST_F(NativeWindow, NativeWaylandFileDrop) {
     ASSERT_TRUE(sender.completed);
     EXPECT_EQ(sender.result, Qt::CopyAction);
     ASSERT_TRUE(window->focusedPane()->sendInput("\n"));
-    drain(200);
+    waitFor([&] { return window->focusedPane()->text(AfterglowVt::Terminal::TextScope::Screen).contains(QString::fromUtf8("café.txt")); });
     const auto text = window->focusedPane()->text(AfterglowVt::Terminal::TextScope::Screen);
     EXPECT_TRUE(text.contains(QString::fromUtf8("café.txt"))) << text.toStdString();
     EXPECT_TRUE(text.contains(QStringLiteral("'\\''"))) << text.toStdString();
@@ -702,28 +794,34 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
     destination->show();
     ASSERT_TRUE(window->movePaneTo(original, destination, destination->focusedPane(), SplitTree::Direction::Right).isEmpty());
     original->fileTransfers()->handle("ac=send;id=moved");
-    drain(150);
     QList<QMessageBox*> prompts;
-    for (auto* widget : QApplication::topLevelWidgets())
-        if (auto* box = qobject_cast<QMessageBox*>(widget); box && box->isVisible() && box->windowTitle() == QStringLiteral("File transfer")) prompts.append(box);
+    waitFor([&] {
+        prompts.clear();
+        for (auto* widget : QApplication::topLevelWidgets())
+            if (auto* box = qobject_cast<QMessageBox*>(widget); box && box->isVisible() && box->windowTitle() == QStringLiteral("File transfer")) prompts.append(box);
+        return !prompts.isEmpty();
+    });
     ASSERT_EQ(prompts.size(), 1);
     EXPECT_EQ(prompts.front()->windowHandle()->transientParent(), destination);
     prompts.front()->reject(); drain(50);
 }
 
 TEST_F(NativeWindow, KittyDragAndDropClient) {
-    const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");
-    ASSERT_FALSE(ready.isEmpty());
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
     const QString source = directory.filePath(QStringLiteral("source.txt"));
     const QString destination = directory.filePath(QStringLiteral("dropped.txt"));
     QFile file(source); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write("Native Kitty drag and drop\n"); file.close();
     PaneLaunchOptions options;
     options.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drag"), QStringLiteral("text/plain:") + source,
                        QStringLiteral("--drop"), QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
+    // kitten makes a temporary directory where it runs: keep it in the fixture's.
+    options.cwd = directory.path();
     auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
     PaneLaunchOptions receiverOptions;
     receiverOptions.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drop"),
                                QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
+    receiverOptions.cwd = directory.path();
     auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
     ASSERT_NE(receiver, nullptr);
     window->showFullScreen();
@@ -752,8 +850,8 @@ TEST_F(NativeWindow, KittyDragAndDropClient) {
 
 
 TEST_F(NativeWindow, KittyRemoteDragDirectory) {
-    const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");
-    ASSERT_FALSE(ready.isEmpty());
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
     const QString source = directory.filePath(QStringLiteral("remote"));
     const QString destination = directory.filePath(QStringLiteral("received"));
     ASSERT_TRUE(QDir().mkpath(source + QStringLiteral("/nested")));
@@ -763,9 +861,12 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
     ASSERT_EQ(::symlink("nested/file", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
     PaneLaunchOptions options;
     options.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), source};
+    // kitten makes a temporary directory where it runs: keep it in the fixture's.
+    options.cwd = directory.path();
     auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
     PaneLaunchOptions receiverOptions;
     receiverOptions.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")};
+    receiverOptions.cwd = directory.path();
     auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
     ASSERT_NE(receiver, nullptr);
     window->showFullScreen();
@@ -849,16 +950,6 @@ TEST_F(NativeWindow, BidiPointerSelectionAndAccessibleGeometryUseVisualCells) {
     EXPECT_EQ(pane->selectedText(),QString::fromUtf8("אב"));
 }
 
-}
-int main(int argc, char** argv)
-{
-    QApplication app(argc, argv);
-    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-
-#include "NativeWindowTest.moc"
 
 TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     auto* first = window->focusedPane();
@@ -895,8 +986,11 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     EXPECT_EQ(window->overviewHighlight(), first); // wraps
     press(Qt::Key_Left);
     EXPECT_EQ(window->overviewHighlight(), third);
-    // Keys never reach the shells while the overview is open.
+    // Keys never reach the shells while the overview is open. The second and
+    // third panes echo, so a key that got through would show at once.
     press(Qt::Key_X, QStringLiteral("x"));
+    EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('x')));
+    EXPECT_FALSE(third->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('x')));
     press(Qt::Key_Return);
     EXPECT_FALSE(window->overviewOpen());
     EXPECT_EQ(window->focusedPane(), third);
@@ -904,10 +998,12 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     EXPECT_TRUE(window->accessiblePaneRect(first).isEmpty());
     EXPECT_FALSE(window->accessiblePaneRect(third).isEmpty());
     EXPECT_TRUE(chrome->keyMode().isEmpty());
+    expectIdle(window);
     // Escape cancels back to the focused pane; a digit chooses directly.
     ASSERT_TRUE(window->runAction(third, Action::PaneOverview));
     press(Qt::Key_Right);
     press(Qt::Key_Escape);
+    EXPECT_FALSE(window->overviewOpen());
     EXPECT_EQ(window->focusedPane(), third);
     ASSERT_TRUE(window->runAction(third, Action::PaneOverview));
     press(Qt::Key_2, QStringLiteral("2"));
@@ -966,10 +1062,13 @@ TEST_F(NativeWindow, TabSwitchAnimatesAndSettles) {
     while (window->tabSwitching() && clock.elapsed() < 3000) drain();
     EXPECT_FALSE(window->tabSwitching());
     EXPECT_EQ(window->focusedPane(), second);
+    expectIdle(window);
     // Switching back runs again; the overview suppresses it.
     window->revealPane(first);
     EXPECT_TRUE(window->tabSwitching());
     while (window->tabSwitching() && clock.elapsed() < 6000) drain();
+    EXPECT_FALSE(window->tabSwitching());
+    expectIdle(window);
     ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
     window->revealPane(second);
     EXPECT_FALSE(window->tabSwitching());
@@ -1015,6 +1114,8 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
     EXPECT_EQ(state.value(QStringLiteral("cards")).toList().size(), 2);
     press(Qt::Key_Right); // to the script, not the overview
     EXPECT_EQ(window->overviewHighlight(), second);
+    ASSERT_EQ(keys.size(), 4);
+    EXPECT_EQ(keys.last().value(QStringLiteral("key")), QStringLiteral("Right"));
     ASSERT_TRUE(window->scriptOverviewMove(second, nullptr, 1, state).isEmpty());
     EXPECT_EQ(state.value(QStringLiteral("highlighted")).toUInt(), first->id());
     ASSERT_TRUE(window->scriptOverview(second, QStringLiteral("choose"), state).isEmpty());
@@ -1028,6 +1129,8 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
     EXPECT_EQ(keys.size(), seen);
     // Pulses and tab switches.
     EXPECT_TRUE(window->pulsePane(first, 2, 400, 1).isEmpty());
+    // The pulse lasts 400 ms; then the window stops asking for frames.
+    expectIdle(window);
     QList<std::pair<quint32, quint32>> switches;
     QObject::connect(window, &TerminalWindow::tabSwitched, window, [&](quint32 from, quint32 to, int direction) {
         EXPECT_EQ(direction, 1);
@@ -1038,3 +1141,415 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
     ASSERT_EQ(switches.size(), 1);
     EXPECT_NE(switches[0].first, switches[0].second);
 }
+
+// Finds the visible chrome item whose text property is @p text.
+QQuickItem* chromeItemWithText(ChromeLayer* layer, const QString& text) {
+    for (auto* item : visualDescendants(layer->rootItem()))
+        if (item->isVisible() && item->property("text").toString() == text) return item;
+    return nullptr;
+}
+void sendKey(TerminalWindow* window, int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+             const QString& text = {}, bool autoRepeat = false) {
+    QKeyEvent down(QEvent::KeyPress, key, modifiers, text, autoRepeat);
+    QCoreApplication::sendEvent(window, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, modifiers, text, autoRepeat);
+    QCoreApplication::sendEvent(window, &up);
+}
+
+TEST_F(NativeWindow, ReturnOnAFocusedButtonAnswersThatButton) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    int confirmed = -1;
+    QObject::connect(chrome, &ChromeController::confirmAnswered, window, [&](bool accepted) { confirmed = accepted; });
+    chrome->askConfirm(QStringLiteral("Close tab?"), QStringLiteral("Body"), QStringLiteral("Close"));
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    auto* cancel = chromeItemWithText(layer, QStringLiteral("Cancel"));
+    ASSERT_NE(cancel, nullptr);
+    cancel->forceActiveFocus();
+    sendKey(window, Qt::Key_Return);
+    EXPECT_FALSE(chrome->confirmPromptOpen());
+    EXPECT_EQ(confirmed, 0);
+}
+
+TEST_F(NativeWindow, ReturnInThePastePreviewDoesNotPaste) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    chrome->askPaste(QStringLiteral("one\ntwo"), 2);
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    QQuickItem* preview = nullptr;
+    for (auto* item : visualDescendants(layer->rootItem()))
+        if (item->property("readOnly").toBool() && item->property("text").toString() == QStringLiteral("one\ntwo")) preview = item;
+    ASSERT_NE(preview, nullptr);
+    preview->forceActiveFocus();
+    sendKey(window, Qt::Key_Return);
+    EXPECT_TRUE(chrome->pasteConfirmOpen());
+    sendKey(window, Qt::Key_Escape);
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+}
+
+TEST_F(NativeWindow, ClipboardPromptDeniesOnTypedReturnAndPlainA) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    QList<int> answers;
+    QObject::connect(chrome, &ChromeController::clipboardAnswered, window, [&](int answer) { answers << answer; });
+    // Return typed for the shell lands on Deny, which holds the focus.
+    chrome->askClipboard(QStringLiteral("A program wants to read the clipboard"), QString());
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    sendKey(window, Qt::Key_Return);
+    ASSERT_EQ(answers, QList<int>{0});
+    // "a" always allows only when pressed on its own.
+    chrome->askClipboard(QStringLiteral("A program wants to read the clipboard"), QStringLiteral("a&b <c>"));
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    EXPECT_NE(chromeItemWithText(layer, QStringLiteral("Always allow")), nullptr);
+    sendKey(window, Qt::Key_A, Qt::ControlModifier, QStringLiteral("\x01"));
+    sendKey(window, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"), true);
+    EXPECT_TRUE(chrome->clipboardPromptOpen());
+    sendKey(window, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    EXPECT_FALSE(chrome->clipboardPromptOpen());
+    EXPECT_EQ(answers, (QList<int>{0, 2}));
+}
+
+TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    chrome->setSearchOpen(true);
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    chrome->openContextMenu({10, 10}, {QVariantMap{{QStringLiteral("id"), 1}, {QStringLiteral("title"), QStringLiteral("Item")}}});
+    drain();
+    chrome->closeContextMenu();
+    // The search field keeps its scoped focus while the menu is open, so
+    // focusedItem() finds it at once; the keys reach it only with active focus.
+    ASSERT_TRUE(waitFor([&] {
+        return chromeFocusReady(layer)
+            && layer->focusedItem()->property("placeholderText").toString() == QStringLiteral("Search");
+    }));
+    sendKey(window, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    EXPECT_TRUE(layer->focusedItem()->property("text").toString().endsWith(QLatin1Char('a')));
+    sendKey(window, Qt::Key_Escape);
+    EXPECT_FALSE(chrome->searchOpen());
+}
+
+TEST_F(NativeWindow, ReopenedSearchFindsTheKeptQueryAgain) {
+    auto* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    pane->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b[2J\x1b[Hneedle"); });
+    chrome->setSearchOpen(true);
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    layer->focusedItem()->setProperty("text", QStringLiteral("needle"));
+    ASSERT_TRUE(waitFor([&] { return chrome->searchStatus() == QStringLiteral("1 of 1"); })) << chrome->searchStatus().toStdString();
+    chrome->setSearchOpen(false);
+    EXPECT_TRUE(chrome->searchStatus().isEmpty());
+    chrome->setSearchOpen(true);
+    EXPECT_TRUE(waitFor([&] { return chrome->searchStatus() == QStringLiteral("1 of 1"); })) << chrome->searchStatus().toStdString();
+}
+
+TEST_F(NativeWindow, TitlePromptFollowsANewRequest) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    chrome->askTitle(QStringLiteral("Tab title"), QStringLiteral("first"));
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    EXPECT_EQ(layer->focusedItem()->property("text").toString(), QStringLiteral("first"));
+    chrome->askTitle(QStringLiteral("Split title"), QStringLiteral("second"));
+    EXPECT_TRUE(waitFor([&] { return layer->focusedItem()->property("text").toString() == QStringLiteral("second"); }));
+}
+
+TEST_F(NativeWindow, PaneTitleLabelsSurviveTitleChanges) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
+    drain(600);
+    auto* layer = window->findChild<ChromeLayer*>();
+    const auto labels = [&] {
+        QList<QQuickItem*> found;
+        for (auto* item : visualDescendants(layer->rootItem()))
+            if (item->property("scrollbarSpace").isValid()) found.append(item);
+        return found;
+    };
+    const auto before = labels();
+    ASSERT_EQ(before.size(), 2);
+    first->setUserTitle(QStringLiteral("renamed"));
+    drain();
+    EXPECT_EQ(labels(), before);
+}
+
+} // namespace
+
+TEST_F(NativeWindow, OverviewReopenedWhileClosingTurnsTheShortWay) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_NE(window->splitPane(second, SplitTree::Direction::Down, launch, nullptr), nullptr);
+    window->revealPane(first);
+    drain();
+    auto send = [&](int key) {
+        QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &down);
+        QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &up);
+    };
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    drain();
+    // Seven steps round three cards: the position counts on past two turns.
+    for (int step = 0; step < 7; ++step) {
+        send(Qt::Key_Right);
+        drain(20);
+    }
+    drain(400);
+    send(Qt::Key_Escape);
+    ASSERT_FALSE(window->overviewOpen());
+    // Reopen within the closing motion: the deck turns at most half round.
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    const auto [position, target] = window->overviewPosition();
+    EXPECT_LE(std::abs(target - position), 1.5) << position << " -> " << target;
+    send(Qt::Key_Escape);
+    expectIdle(window);
+}
+
+TEST_F(NativeWindow, OverviewRestoresTheZoomOnTheTabItCameFrom) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    window->revealPane(first);
+    drain();
+    ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    drain();
+    auto* other = window->focusedPane();
+    ASSERT_NE(other, first);
+    window->revealPane(first);
+    drain();
+    ASSERT_TRUE(window->accessiblePaneRect(second).isEmpty()); // zoomed on first
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    drain();
+    // Every pane of the zoomed tab is a card while the overview shows.
+    EXPECT_FALSE(window->accessiblePaneRect(second).isEmpty());
+    // Something else switches tabs while the overview is open (a notification
+    // click, afterglow ctl focus); Escape returns to the first tab.
+    window->revealPane(other);
+    drain();
+    ASSERT_TRUE(window->overviewOpen());
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &escape);
+    drain();
+    EXPECT_FALSE(window->overviewOpen());
+    EXPECT_EQ(window->focusedPane(), first);
+    EXPECT_TRUE(window->accessiblePaneRect(second).isEmpty()) << "the first tab lost its zoom";
+    EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
+}
+
+TEST_F(NativeWindow, OverviewWaitsWhileTheChromeHasTheKeyboard) {
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    chrome->setSearchOpen(true);
+    drain();
+    EXPECT_FALSE(window->openOverview());
+    EXPECT_FALSE(window->overviewOpen());
+    chrome->setSearchOpen(false);
+    drain();
+    EXPECT_TRUE(window->openOverview());
+    EXPECT_TRUE(window->overviewOpen());
+}
+
+TEST_F(NativeWindow, PaneCoalescesBellsAndRepeatedTitlesAndUserVars) {
+    auto* pane = window->focusedPane();
+    int bells = 0;
+    int titles = 0;
+    int vars = 0;
+    QObject::connect(pane, &Pane::bellRang, pane, [&] { ++bells; });
+    QObject::connect(pane, &Pane::titleUpdated, pane, [&] { ++titles; });
+    QObject::connect(pane, &Pane::userVarUpdated, pane, [&] { ++vars; });
+    // A burst of BEL bytes is one bell for the GUI thread, not one per byte.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\a\a\a\a\a\a\a\a"); });
+    drain();
+    EXPECT_EQ(bells, 1);
+    // cat writes the input back: the same title and user variable, twice.
+    // The line end lets the canonical-mode PTY hand the line to cat.
+    const std::string_view twice = "\x1b]2;same\x07\x1b]2;same\x07"
+                                   "\x1b]1337;SetUserVar=k=dg==\x07\x1b]1337;SetUserVar=k=dg==\x07\n";
+    ASSERT_TRUE(pane->sendInput(twice));
+    ASSERT_TRUE(waitFor([&] { return pane->title() == QStringLiteral("same") && vars > 0; }));
+    drain(200);
+    EXPECT_EQ(titles, 1);
+    EXPECT_EQ(vars, 1);
+    pane->setUserTitle(QStringLiteral("mine"));
+    pane->setUserTitle(QStringLiteral("mine"));
+    EXPECT_EQ(titles, 2);
+}
+
+TEST_F(NativeWindow, KeyMappingKeepsKeypadAndShiftedKeysUnderCtrl) {
+    QByteArray storage;
+    // Ctrl turns keypad 2 into NUL: it is still keypad 2 (xkb keycode 88).
+    const QKeyEvent keypad(QEvent::KeyPress, Qt::Key_2, Qt::ControlModifier | Qt::KeypadModifier, 88, 0, 0,
+                           QString(QChar(0)));
+    EXPECT_EQ(mapKeyEvent(&keypad, storage).key, AfterglowVt::Key::Keypad2);
+    // Ctrl+Shift+A: the text is ^A, the shifted key is still A (keycode 38).
+    const QKeyEvent letter(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier, 38, 0, 0,
+                           QString(QChar(1)));
+    const auto mapped = mapKeyEvent(&letter, storage);
+    EXPECT_EQ(mapped.key, AfterglowVt::Key::Text);
+    EXPECT_EQ(mapped.unshifted, U'a');
+    EXPECT_EQ(mapped.shifted, U'A');
+}
+
+// --- window-core: focus, keys, clipboard prompts, splits and menus ---------
+
+TEST_F(NativeWindow, FocusStaysWhenAnUnfocusedPaneExitsOrABackgroundTabLeaves) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
+    ASSERT_NE(third, nullptr);
+    ASSERT_EQ(window->focusedPane(), third);
+    // The first pane's program ends: the tab entered with it focused, but
+    // the focus is on the third now and stays there.
+    window->requestClosePane(first);
+    drain();
+    EXPECT_EQ(window->focusedPane(), third);
+    // A background tab leaves for another window: the focus stays too.
+    auto* background = window->openTab(launch, nullptr);
+    ASSERT_NE(background, nullptr);
+    window->revealPane(third);
+    ASSERT_EQ(window->focusedPane(), third);
+    WindowOptions empty;
+    empty.empty = true;
+    auto* destination = application->newWindow(empty);
+    ASSERT_NE(destination, nullptr);
+    ASSERT_TRUE(window->detachTabTo(background, destination).isEmpty());
+    drain();
+    EXPECT_EQ(window->focusedPane(), third);
+    EXPECT_EQ(destination->panes(), QList<Pane*>{background});
+}
+
+TEST_F(NativeWindow, KeyRepeatsOfAKeyThatClosedAModeStayOutOfTheShell) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    window->revealPane(first);
+    drain();
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    ASSERT_TRUE(window->overviewOpen());
+    // "2" chooses the second card and closes the overview. The key stays
+    // down: Wayland repeats it as release and press pairs, then releases it.
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier, QStringLiteral("2"));
+    QCoreApplication::sendEvent(window, &down);
+    ASSERT_FALSE(window->overviewOpen());
+    ASSERT_EQ(window->focusedPane(), second);
+    for (int i = 0; i < 3; ++i) {
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_2, Qt::NoModifier, QStringLiteral("2"), true);
+        QCoreApplication::sendEvent(window, &up);
+        QKeyEvent again(QEvent::KeyPress, Qt::Key_2, Qt::NoModifier, QStringLiteral("2"), true);
+        QCoreApplication::sendEvent(window, &again);
+    }
+    QKeyEvent up(QEvent::KeyRelease, Qt::Key_2, Qt::NoModifier, QStringLiteral("2"));
+    QCoreApplication::sendEvent(window, &up);
+    // A new press does reach the shell.
+    sendKey(window, Qt::Key_Y, Qt::NoModifier, QStringLiteral("y"));
+    sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    EXPECT_TRUE(waitFor([&] { return second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('y')); }));
+    EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('2')));
+}
+
+TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* background = window->openTab(launch, nullptr);
+    ASSERT_NE(background, nullptr);
+    window->revealPane(first);
+    drain();
+    const quint32 tab = window->activeTabId();
+    auto* chrome = window->findChild<ChromeController*>();
+    // The request originates on the PTY thread; its GUI receiver reads the pane title under the pane mutex.
+    std::thread request([background] {
+        background->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b]52;c;?\x07"); });
+    });
+    request.join();
+    ASSERT_TRUE(waitFor([&] { return chrome->clipboardPromptOpen(); }));
+    // The prompt names where the program is; the user's tab and focus stay.
+    EXPECT_EQ(window->activeTabId(), tab);
+    EXPECT_EQ(window->focusedPane(), first);
+    EXPECT_TRUE(chrome->clipboardPromptText().contains(QStringLiteral("tab 2")));
+    chrome->answerClipboard(0);
+}
+
+TEST_F(NativeWindow, ScriptKeyModeEndsWithItsReservedChord) {
+    auto* chrome = window->findChild<ChromeController*>();
+    int keys = 0;
+    QObject::connect(window, &TerminalWindow::scriptKey, window, [&](const QString&, quint32, const QVariantMap&) { ++keys; });
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), window->focusedPane(), QStringLiteral("Script keys")).isEmpty());
+    // A modifier on its own is not a key for the script.
+    sendKey(window, Qt::Key_Shift, Qt::ShiftModifier);
+    EXPECT_EQ(keys, 0);
+    sendKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(keys, 0);
+    EXPECT_TRUE(chrome->keyMode().isEmpty());
+}
+
+TEST_F(NativeWindow, SplitsKeepTheMinimumSizeAndStartShellsAtTheirSizeBeforeAFrame) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions narrow;
+    narrow.command = {QStringLiteral("/bin/cat")};
+    narrow.fraction = 0.0005;
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, narrow, nullptr);
+    ASSERT_NE(second, nullptr);
+    // No frame in between: the layout of the first split is not drawn yet.
+    PaneLaunchOptions half;
+    half.command = {QStringLiteral("/bin/cat")};
+    auto* third = window->splitPane(second, SplitTree::Direction::Down, half, nullptr);
+    ASSERT_NE(third, nullptr);
+    EXPECT_GE(second->cols(), 4);
+    EXPECT_GE(third->cols(), 4);
+    EXPECT_GT(third->rows(), 2);
+    drain();
+    EXPECT_GE(window->accessiblePaneRect(second).width(), 4);
+}
+
+TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    drain(300);
+    auto* chrome = window->findChild<ChromeController*>();
+    const QPointF at = window->mapFromGlobal(window->accessiblePaneRect(first).center());
+    QMouseEvent press(QEvent::MouseButtonPress, at, window->mapToGlobal(at), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, window->mapToGlobal(at), Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &release);
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    // The focus moves while the menu is open (a script, D-Bus, a clipboard request).
+    window->revealPane(second);
+    chrome->activateMenuItem(int(Action::RenamePane));
+    chrome->answerTitle(QStringLiteral("menu-pane"));
+    EXPECT_EQ(first->userTitle(), QStringLiteral("menu-pane"));
+    EXPECT_NE(second->userTitle(), QStringLiteral("menu-pane"));
+}
+
+int main(int argc, char** argv)
+{
+    // These tests open windows and send desktop-wide D-Bus signals (the
+    // launcher entry). Run them only inside the nested desktop of a runner.
+    if (qEnvironmentVariableIsEmpty("AFTERGLOW_NATIVE_ISOLATED")) {
+        std::fprintf(stderr, "Run these tests through native_window_acceptance.py or the ag-verify-live "
+                             "headless_native.py runner, which isolate the compositor and the session bus.\n");
+        return 2;
+    }
+    previousHandler = qInstallMessageHandler(recordQmlErrors);
+    QApplication app(argc, argv);
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+
+#include "NativeWindowTest.moc"

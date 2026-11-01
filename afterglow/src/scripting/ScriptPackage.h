@@ -3,6 +3,7 @@
 #pragma once
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QVariantMap>
 #include <QStringList>
 
@@ -24,6 +25,16 @@ struct ScriptPackage
     QVariantMap suggests;
     /// Pulse effects its packs draw, by name: afterglow.pulse(pane, name).
     QHash<QString, int> pulses;
+    /// Where each module's source starts in the generated chunk, for error positions.
+    struct Module
+    {
+        int line;
+        int lines;
+        QString file; ///< relative to the package directory
+    };
+    QList<Module> modules;
     static QString read(const QString& manifest, ScriptPackage& result);
+    /// @p message with positions in the generated chunk named by module file and line.
+    static QString locate(const QList<Module>& modules, const QString& message);
 };
 }

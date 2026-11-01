@@ -12,6 +12,14 @@ local function paneId(pane)
     return pane
 end
 
+-- A missing value must fail the handler, not reach the shell or the clipboard as "nil".
+local function required(value, helper, what)
+    if value == nil then
+        error(helper .. " needs " .. what, 3)
+    end
+    return tostring(value)
+end
+
 local function list(value)
     if value == nil then
         return {}
@@ -29,15 +37,19 @@ end
 local AwaitPrefix = "afterglow.await:"
 local MaxWaiting = 16 -- handlers waiting at once, per script
 local MaxBatch = 16 -- effects in one await_all
+-- Effects waited for at once, per script. Below the host's 64 pending results,
+-- so waiting handlers alone cannot make it disable the script.
+local MaxOutstanding = 48
 local Yield = {} -- marks the runtime's own yields
 local flows = {} -- waiting handlers by flow ID
 local waiting = 0
+local outstanding = 0
 local nextFlow = 0
 local current = nil -- the handler coroutine running now
 
-local function checkEffect(effect, level)
+local function checkEffect(effect, caller, level)
     if type(effect) ~= "table" or type(effect.kind) ~= "string" then
-        error("afterglow.await expects an effect, such as afterglow.select(...)", level)
+        error(caller, level)
     end
 end
 
@@ -71,28 +83,37 @@ local function drive(co, ...)
             error("a handler can pause only through afterglow.await", 0)
         end
         local effects, many = r[3], r[4]
-        if waiting < MaxWaiting then
-            nextFlow += 1
-            waiting += 1
-            local id = tostring(nextFlow)
-            flows[id] = { co = co, many = many, remaining = #effects, results = {} }
+        local count = #effects
+        if waiting < MaxWaiting and outstanding + count <= MaxOutstanding then
+            local id = tostring(nextFlow + 1)
             local out = {}
             for i, effect in ipairs(effects) do
                 local tagged = table.clone(effect)
                 tagged.request_id = AwaitPrefix .. id .. ":" .. i
                 out[i] = tagged
             end
+            -- Registered only once the effects are built: a time limit inside
+            -- the loop must not leave a flow that no result resumes.
+            nextFlow += 1
+            waiting += 1
+            outstanding += count
+            flows[id] = { co = co, many = many, count = count, remaining = count, results = {} }
             return out
         end
-        local busy = { ok = false, error = { code = "busy", message = "Too many handlers are waiting" } }
+        -- A new table for each effect, so changing one result changes no other.
+        local function busy(effect)
+            return { ok = false, kind = effect.kind, request_id = "", data = {},
+                error = { code = "busy", message = "Too many handlers are waiting" } }
+        end
         if many then
             local all = {}
-            for i = 1, #effects do
-                all[i] = busy
+            for i, effect in ipairs(effects) do
+                all[i] = busy(effect)
             end
             r = resumeIn(co, all)
         else
-            r = resumeIn(co, nil, busy.error, busy)
+            local event = busy(effects[1])
+            r = resumeIn(co, nil, event.error, event)
         end
     end
 end
@@ -102,11 +123,13 @@ local function resume(ev)
     local id, index = string.match(ev.request_id or "", "^afterglow%.await:(%d+):(%d+)$")
     local flow = id and flows[id]
     index = tonumber(index)
-    if not flow or flow.results[index] ~= nil then
+    -- A request ID the script made up must not complete a flow early.
+    if not flow or index < 1 or index > flow.count or flow.results[index] ~= nil then
         return nil
     end
     flow.results[index] = ev
     flow.remaining -= 1
+    outstanding -= 1
     if flow.remaining > 0 then
         return nil
     end
@@ -126,7 +149,7 @@ local direct = { migrate = true, on_unload = true }
 -- handler coroutines, and its other fields read through unchanged.
 local function wrap(module)
     if type(module) ~= "table" then
-        return module
+        return module -- the engine refuses such a module; nothing to wrap
     end
     local cache = {}
     return setmetatable({}, {
@@ -136,7 +159,9 @@ local function wrap(module)
             elseif key == "__waiting" then
                 return waiting
             end
-            local value = module[key]
+            -- rawget: the host's lookups must never run the script's own
+            -- __index, which has no time limit outside a handler call.
+            local value = rawget(module, key)
             if type(value) ~= "function" or direct[key] then
                 return value
             end
@@ -154,24 +179,33 @@ afterglow = {
     __wrap = wrap,
     -- Waits for one effect. Returns its data, or nil and the error, then the result event.
     await = function(effect)
-        checkEffect(effect, 3)
+        checkEffect(effect, "afterglow.await expects an effect, such as afterglow.select(...)", 3)
         return suspend({ effect }, false)
     end,
     -- Waits for several effects, applied in order. Returns their result events in that order.
     await_all = function(effects)
+        local usage = "afterglow.await_all expects a list of at most " .. MaxBatch .. " effects"
         if type(effects) ~= "table" or #effects > MaxBatch then
-            error("afterglow.await_all expects a list of at most " .. MaxBatch .. " effects", 2)
+            error(usage, 2)
         end
+        local count = 0
         for _, effect in ipairs(effects) do
-            checkEffect(effect, 3)
+            checkEffect(effect, usage, 3)
+            count += 1
         end
-        if #effects == 0 then
+        if count ~= #effects then
+            error(usage .. ", with no holes", 2)
+        end
+        if count == 0 then
             return {}
         end
         return suspend(effects, true)
     end,
     -- Waits ms milliseconds, at most 600000.
     sleep = function(ms)
+        if type(ms) ~= "number" then
+            error("afterglow.sleep expects a number of milliseconds", 2)
+        end
         return suspend({ { kind = "sleep", delay_ms = ms } }, false)
     end,
     open_directory = function(cwd, layout) return {kind="open_directory", cwd=cwd, layout=layout or ""} end,
@@ -189,6 +223,9 @@ afterglow = {
     end,
     detach_tab = function(pane) return {kind="detach_tab", pane=paneId(pane)} end,
     timer = function(name, delay_ms, repeat_ms)
+        if type(delay_ms) ~= "number" then
+            error("afterglow.timer expects a delay in milliseconds", 2)
+        end
         return {kind="timer", name=name, delay_ms=delay_ms, repeat_ms=repeat_ms or 0}
     end,
     cancel = function(name) return {kind="cancel", name=name} end,
@@ -222,9 +259,12 @@ afterglow = {
         local id = anchor == nil and state.active_pane or paneId(anchor)
         local tab, window = state.active_tab, state.active_window
         if anchor ~= nil then
-            tab, window = 0, 0 -- a stale anchor must not fall back to the active tab
+            local found = false
             for _, pane in ipairs(state.panes) do
-                if pane.id == id then tab, window = pane.tab_id, pane.window; break end
+                if pane.id == id then tab, window, found = pane.tab_id, pane.window, true; break end
+            end
+            if not found then
+                return out -- a stale anchor must not fall back to the active objects
             end
         end
         for _, pane in ipairs(state.panes) do
@@ -241,10 +281,10 @@ afterglow = {
         return out
     end,
     send_text = function(pane, text)
-        return { kind = "send_text", pane = paneId(pane), text = tostring(text) }
+        return { kind = "send_text", pane = paneId(pane), text = required(text, "afterglow.send_text", "text") }
     end,
     notify = function(title, body, pane)
-        return { kind = "notify", title = tostring(title), body = body and tostring(body) or "", pane = paneId(pane) }
+        return { kind = "notify", title = required(title, "afterglow.notify", "a title"), body = body and tostring(body) or "", pane = paneId(pane) }
     end,
     split = function(pane, direction, command, options)
         return { kind = "split", pane = paneId(pane), direction = direction or "right", command = list(command), options = options or {} }
@@ -265,13 +305,13 @@ afterglow = {
         return { kind = "set_title", pane = paneId(pane), title = tostring(title or "") }
     end,
     copy = function(text)
-        return { kind = "copy", text = tostring(text) }
+        return { kind = "copy", text = required(text, "afterglow.copy", "text") }
     end,
     open_url = function(url)
-        return { kind = "open_url", url = tostring(url) }
+        return { kind = "open_url", url = required(url, "afterglow.open_url", "a URL") }
     end,
     action = function(pane, name)
-        return { kind = "action", pane = paneId(pane), name = tostring(name) }
+        return { kind = "action", pane = paneId(pane), name = required(name, "afterglow.action", "an action name") }
     end,
     scene_state = function(pane) return {kind="scene_state", pane=paneId(pane)} end,
     shader_presets = function(pane, instance) return {kind="shader_presets", pane=paneId(pane), instance=instance} end,

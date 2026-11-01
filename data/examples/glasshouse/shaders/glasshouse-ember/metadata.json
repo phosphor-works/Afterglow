@@ -2,7 +2,7 @@
     "id": "glasshouse-ember",
     "name": "Glasshouse Ember",
     "category": "Cursor",
-    "description": "For the cursor layer: the cursor glows like the Glasshouse lamp. When it jumps, sparks fly from its path, streaking and falling as Vitrail's do.",
+    "description": "The cursor glows like the Glasshouse lamp in the cursor layer. When it jumps, sparks fly from its path, streaking and falling as Vitrail's do.",
     "author": "afterglow, after Dsaquel's Glasshouse",
     "version": "2.0",
     "fragmentShader": "effect.frag",
@@ -27,7 +27,7 @@
         },
         {
             "id": "sparkLife",
-            "name": "Spark Life (seconds)",
+            "name": "Spark life (seconds)",
             "group": "Cursor",
             "type": "float",
             "default": 0.45,

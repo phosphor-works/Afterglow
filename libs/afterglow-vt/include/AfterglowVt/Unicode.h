@@ -52,7 +52,6 @@ inline constexpr char32_t VariationSelector16 = 0xFE0F;
 inline constexpr char32_t ReplacementCharacter = 0xFFFD;
 
 AFTERGLOWVT_EXPORT Props props(char32_t cp) noexcept;
-AFTERGLOWVT_EXPORT int width(char32_t cp) noexcept;
 AFTERGLOWVT_EXPORT const char* ucdVersion() noexcept;
 
 /// Incremental grapheme cluster boundary detection (UAX #29, extended clusters).

@@ -36,7 +36,7 @@ class ScriptHostTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        ASSERT_TRUE(system.isValid() && user.isValid());
+        ASSERT_TRUE(system.isValid() && user.isValid() && stateDir.isValid() && files.isValid());
         ScriptHost::Callbacks c;
         for (quint32 pane : {7u, 8u, 9u}) {
             paneState.insert(pane, {{QStringLiteral("id"), pane}, {QStringLiteral("window"), pane == 9 ? 2 : 1},
@@ -46,6 +46,7 @@ protected:
         }
         c.paneInfo = [this](quint32 pane) { return paneState.value(pane); };
         c.state = [this] {
+            ++snapshots;
             QVariantList panes;
             for (const auto& p : std::as_const(paneState)) panes.append(p);
             return QVariantMap{{QStringLiteral("panes"), panes}, {QStringLiteral("active_window"), 1},
@@ -70,7 +71,8 @@ protected:
             return apply(effect);
         };
         host = std::make_unique<ScriptHost>(c);
-        host->setStateDirectory(user.filePath("state"));
+        // Beside the configuration in production, so outside the search path.
+        host->setStateDirectory(stateDir.path());
         QObject::connect(host.get(), &ScriptHost::effectApplied, host.get(),
                          [this](const QString&, const QVariantMap& e, const QString& error) { rec.results.append({e, error}); });
         host->setSearchPaths({system.path(), user.path()});
@@ -98,6 +100,9 @@ protected:
     QVariantList windows, tabs;
     QTemporaryDir system;
     QTemporaryDir user;
+    QTemporaryDir stateDir;
+    QTemporaryDir files; ///< files that tests change, outside the search path
+    int snapshots = 0; ///< how often the host built a terminal snapshot
     Recorder rec;
     QMap<quint32, QVariantMap> paneState;
     std::function<ScriptHost::EffectResult(const QVariantMap&)> applyHook;
@@ -120,6 +125,8 @@ return s
     write(user, QStringLiteral("afterglow.d.luau"), "this is not code");
     host->setEnabled(true);
     EXPECT_EQ(host->scriptIds(), QStringList{QStringLiteral("greeter")});
+    // The declarations file is not loaded, so it is not even a failure.
+    EXPECT_EQ(host->diagnostics().size(), 1);
     const auto actions = host->actions();
     ASSERT_EQ(actions.size(), 1);
     EXPECT_EQ(actions[0].token, QStringLiteral("greeter.hi"));
@@ -567,8 +574,8 @@ return s
     paneState[8].insert(QStringLiteral("tab"), 3);
     host->dispatch(QStringLiteral("on_bell"), 7);
     ASSERT_EQ(rec.applied.size(), 2);
+    // The second call's assert on panes[1].title is what shows the copy was detached.
     EXPECT_EQ(rec.applied[1].value(QStringLiteral("text")), QStringLiteral("2"));
-    EXPECT_EQ(paneState[7].value(QStringLiteral("title")), QStringLiteral("fish"));
 }
 
 TEST_F(ScriptHostTest, CreationResultsAreQueuedAndDeliveredOnlyToTheirOwner)
@@ -826,7 +833,8 @@ TEST(ScriptTasksTest, ProcessesReportSuccessFailureLimitsAndCancellationOnce)
     EXPECT_EQ(results["limit"][0].code, QStringLiteral("output_limit"));
     EXPECT_LE(results["limit"][0].data["stdout"].toString().size(), 128);
     EXPECT_EQ(results["cancel"][0].code, QStringLiteral("cancelled"));
-    QCoreApplication::processEvents();
+    // The killed processes report finished later: that must not complete them again.
+    await([] { return false; }, 200);
     for (const auto& values : results) EXPECT_EQ(values.size(), 1);
 }
 
@@ -934,6 +942,12 @@ end }
     host->setEnabled(true); host->dispatch("on_bell", 7);
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("override"));
+    // The prompt and set_actions never reach apply even when accepted, so check them here.
+    EXPECT_FALSE(bool(pendingReply));
+    EXPECT_TRUE(host->actions().isEmpty());
+    ASSERT_EQ(rec.results.size(), 7);
+    for (int i = 0; i < 6; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    EXPECT_TRUE(rec.results[6].second.isEmpty());
 }
 
 
@@ -981,7 +995,7 @@ return {
 
 TEST_F(ScriptHostTest, BuildInspectorExtractsDiagnosticsIntoASelector)
 {
-    QFile example(QStringLiteral(AFTERGLOW_PHOSPHOR_SCRIPTS) + QStringLiteral("/../../scripts/build-inspector.luau"));
+    QFile example(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS) + QStringLiteral("/build-inspector.luau"));
     ASSERT_TRUE(example.open(QIODevice::ReadOnly));
     write(user, "inspector.luau", example.readAll());
     applyHook = [](const QVariantMap& effect) -> ScriptHost::EffectResult {
@@ -1001,13 +1015,6 @@ TEST_F(ScriptHostTest, BuildInspectorExtractsDiagnosticsIntoASelector)
     EXPECT_TRUE(items[1].toMap()["title"].toString().startsWith("lib/other.cpp:7:"));
 }
 
-int main(int argc, char** argv)
-{
-    QCoreApplication app(argc, argv);
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-
 TEST_F(ScriptHostTest, ProjectHelpersPreserveExplicitIntentAndResults)
 {
     write(user, QStringLiteral("projects.luau"), R"(
@@ -1019,6 +1026,7 @@ end }
     host->setEnabled(true);
     host->dispatch(QStringLiteral("on_bell"), 7);
     ASSERT_EQ(rec.applied.size(), 5);
+    for (const auto& result : rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
     EXPECT_EQ(rec.applied[0].value("pane").toUInt(), 7u);
     EXPECT_EQ(rec.applied[0].value("name").toString(), QStringLiteral("dev"));
     EXPECT_TRUE(rec.applied[0].value("overwrite").toBool());
@@ -1077,7 +1085,7 @@ return {on_bell=function() return afterglow.copy(count.next()) end}
     host->setEnabled(true);
     host->dispatch("on_bell",7); ASSERT_EQ(rec.applied.size(),1); EXPECT_EQ(rec.applied.last().value("text"),"1");
     write(user,"bundle/counter.luau","broken syntax !"); host->reload();
-    host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"2");
+    host->dispatch("on_bell",7); ASSERT_FALSE(rec.applied.isEmpty()); EXPECT_EQ(rec.applied.last().value("text"),"2");
     write(user,"bundle/counter.luau","return {next=function() return 'fixed' end}"); host->reload();
     host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"fixed");
 }
@@ -1094,7 +1102,7 @@ end,on_bell=function() return afterglow.copy("original") end}
 )");
     host->setEnabled(true);
     ScriptState::Snapshot stored;
-    ScriptState store(user.filePath("state"));
+    ScriptState store(stateDir.path());
     ASSERT_TRUE(store.read("bundle",stored).isEmpty()); ASSERT_EQ(stored.version,1);
     manifest(2);
     write(user,"bundle/init.luau",R"(
@@ -1102,7 +1110,7 @@ return {migrate=function(value,from,to) assert(from==1 and to==2); return {count
 on_load=function(ev) error("broken initialization") end}
 )");
     host->reload();
-    host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"original");
+    host->dispatch("on_bell",7); ASSERT_FALSE(rec.applied.isEmpty()); EXPECT_EQ(rec.applied.last().value("text"),"original");
     ASSERT_TRUE(store.read("bundle",stored).isEmpty()); EXPECT_EQ(stored.version,1);
     write(user,"bundle/init.luau",R"(
 return {migrate=function(value,from,to) return {count=value.count+1} end,
@@ -1125,6 +1133,10 @@ TEST_F(ScriptHostTest, PackagesRejectMissingDependenciesAndCycles)
     host->reload(); host->dispatch("on_bell",7); ASSERT_FALSE(rec.applied.isEmpty()); EXPECT_EQ(rec.applied.last().value("text"),"dependency");
     write(user,"bundle/vendor/lib/lib.luau","return require('main')");
     host->reload(); host->dispatch("on_bell",7); EXPECT_EQ(rec.applied.last().value("text"),"dependency");
+    // The cycle is found, not a stack overflow that happens to fail the load too.
+    bool reported = false;
+    for (const auto& entry : host->diagnostics()) reported |= entry.toMap()["error"].toString().contains("cycle");
+    EXPECT_TRUE(reported);
 }
 
 TEST_F(ScriptHostTest, NavigatorLaunchesChosenLayoutAndPersistsFavoritesAcrossReload)
@@ -1154,12 +1166,13 @@ TEST_F(ScriptHostTest, NavigatorLaunchesChosenLayoutAndPersistsFavoritesAcrossRe
     EXPECT_TRUE(launched);
     ASSERT_TRUE(host->runAction("project-navigator.favorite",7));
     for (int i=0;i<5;++i) QCoreApplication::processEvents();
-    ScriptState::Snapshot stored; ScriptState store(user.filePath("state"));
+    ScriptState::Snapshot stored; ScriptState store(stateDir.path());
     ASSERT_TRUE(store.read("project-navigator",stored).isEmpty());
     EXPECT_TRUE(stored.value.value("favorites").toMap().value("/tmp/navigator-project").toBool());
     EXPECT_EQ(stored.value.value("templates").toMap().value("/tmp/navigator-project"),"dev");
     host->setEnabled(false); host->setEnabled(true);
     EXPECT_EQ(host->scriptIds(),QStringList{"project-navigator"});
+    ASSERT_FALSE(host->diagnostics().isEmpty());
     EXPECT_EQ(host->diagnostics().first().toMap().value("status"),"active");
     for (const auto& result : rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
@@ -1192,6 +1205,7 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
     write(user,"project-navigator/config.json",R"({"roots":["/tmp"],"fd":true,"zoxide":false})");
     QFile provider(user.filePath("project-navigator/providers.luau")); ASSERT_TRUE(provider.open(QIODevice::ReadOnly));
     auto source=provider.readAll(); provider.close();
+    ASSERT_TRUE(source.contains("command={\"fd\""));
     source.replace("command={\"fd\"", "command={\"afterglow-nonexistent-fd-test\"");
     write(user,"project-navigator/providers.luau",source);
     auto pane=paneState[7];pane["cwd"]="/tmp";paneState[7]=pane;
@@ -1214,7 +1228,7 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
     ASSERT_TRUE(host->runAction("project-navigator.favorite",7));
     for (int i=0;i<5;++i) QCoreApplication::processEvents();
     ScriptState::Snapshot stored;
-    ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-navigator",stored).isEmpty());
+    ASSERT_TRUE(ScriptState(stateDir.path()).read("project-navigator",stored).isEmpty());
     EXPECT_TRUE(stored.value.value("favorites").toMap().value("/tmp").toBool());
 }
 
@@ -1222,7 +1236,7 @@ TEST_F(ScriptHostTest, PackageReloadAndRemovalRetireJobsTimersWatchesAndUi)
 {
     QDir().mkpath(user.filePath("lifecycle"));
     write(user, "lifecycle/package.json", R"({"id":"lifecycle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
-    write(user, "watched", "original");
+    write(files, "watched", "original");
     write(user, "lifecycle/init.luau", R"(
 local generation
 return {
@@ -1241,10 +1255,10 @@ return {
 }
 )");
     auto config = [&](int generation) {
-        QJsonObject value{{"generation",generation},{"pid",user.filePath("pid")},{"watch",user.filePath("watched")}};
+        QJsonObject value{{"generation",generation},{"pid",files.filePath("pid")},{"watch",files.filePath("watched")}};
         write(user,"lifecycle/config.json",QJsonDocument(value).toJson());
     };
-    auto pid = [&]() { QFile file(user.filePath("pid")); return file.open(QIODevice::ReadOnly) ? file.readAll().trimmed().toLongLong() : 0; };
+    auto pid = [&]() { QFile file(files.filePath("pid")); return file.open(QIODevice::ReadOnly) ? file.readAll().trimmed().toLongLong() : 0; };
     auto wait = [](const std::function<bool()>& condition) {
         QElapsedTimer timer; timer.start();
         do { QCoreApplication::processEvents(); QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
@@ -1267,7 +1281,7 @@ return {
         EXPECT_EQ(cleaned.size(),generation);
         obsoleteReply({{},{{"text","obsolete"}}, {}});
         rec.applied.clear();
-        write(user,"watched",QByteArray::number(generation));
+        write(files,"watched",QByteArray::number(generation));
         const auto marker=QStringLiteral("watch-%1").arg(generation);
         ASSERT_TRUE(wait([&]{return std::any_of(rec.applied.begin(),rec.applied.end(),[&](const auto& e){return e.value("text")==marker;});}));
         for (const auto& effect:rec.applied) {
@@ -1283,7 +1297,7 @@ return {
     EXPECT_TRUE(host->actions().isEmpty());
     EXPECT_TRUE(host->diagnostics().isEmpty());
     rec.applied.clear();
-    write(user,"watched","after removal");
+    write(files,"watched","after removal");
     QElapsedTimer quiet;quiet.start();
     while(quiet.elapsed()<600) {QCoreApplication::processEvents();QThread::msleep(5);}
     EXPECT_TRUE(rec.applied.isEmpty());
@@ -1308,7 +1322,7 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
     EXPECT_TRUE(rec.applied.isEmpty());
     ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump();
     ScriptState::Snapshot value;
-    ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-autosave",value).isEmpty());
+    ASSERT_TRUE(ScriptState(stateDir.path()).read("project-autosave",value).isEmpty());
     EXPECT_TRUE(value.value.value("enabled").toMap().value("dev").toBool());
     ASSERT_GE(rec.applied.size(),1);
     EXPECT_EQ(rec.applied.first().value("kind"),"save_project");
@@ -1321,6 +1335,7 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
     rec.applied.clear();host->dispatch("on_timer",0,{{"name","autosave"}});pump();
     EXPECT_TRUE(rec.applied.isEmpty());windows.removeLast();
     ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump();
+    ASSERT_FALSE(rec.applied.isEmpty());
     ASSERT_EQ(rec.applied.last().value("kind"),"open_project");
     EXPECT_EQ(rec.applied.last().value("name"),"dev");
     EXPECT_FALSE(rec.applied.last().value("new_instance").toBool());
@@ -1369,8 +1384,13 @@ return {on_load=function()
  assert(s.git("fatal: not a repository")=="")
  local text,title=s.render({cwd="/tmp/project",command="",context="remote"},"main",1,{segments={"context","cwd","unknown","exit"},separator=" | ",tab_title=false})
  assert(text=="remote | project | exit 1" and title=="")
- local bounded=s.render({cwd=string.rep("x",1000),command=string.rep("y",1000)},"",nil,{})
+ local long={cwd=string.rep("x",1000),command=string.rep("y",1000)}
+ local commands={}
+ for i=1,8 do commands[i]="command" end
+ local bounded=s.render(long,"",nil,{segments=commands})
  assert(#bounded<=500)
+ local _,boundedTitle=s.render(long,"",nil,{})
+ assert(#boundedTitle<=120)
  return afterglow.copy("segments passed")
 end}
 )");
@@ -1391,6 +1411,7 @@ TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
     };
     auto pump=[] {for(int i=0;i<12;++i)QCoreApplication::processEvents();};
     host->setEnabled(true);ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump();
+    ASSERT_FALSE(rec.applied.isEmpty());
     EXPECT_EQ(rec.applied.last().value("kind"),"notify");
     EXPECT_EQ(rec.applied.last().value("body"),"Disk unavailable");
     fail=false;rec.applied.clear();
@@ -1400,7 +1421,7 @@ TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
     ASSERT_EQ(rec.applied.size(),2);EXPECT_EQ(rec.applied.last().value("kind"),"select");
     ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump();
     ScriptState::Snapshot stored;
-    ASSERT_TRUE(ScriptState(user.filePath("state")).read("project-autosave",stored).isEmpty());
+    ASSERT_TRUE(ScriptState(stateDir.path()).read("project-autosave",stored).isEmpty());
     EXPECT_FALSE(stored.value.value("enabled").toMap().contains("dev"));
 }
 
@@ -1466,7 +1487,7 @@ TEST_F(ScriptHostTest, SearchDirectoryPriorityWinsOverMetadataIdFilenameOrder)
     EXPECT_EQ(host->actions()[0].token, QStringLiteral("same.user"));
 }
 
-TEST_F(ScriptHostTest, LaunchOptionsPreserveEnvironmentSizeAndAllDirections)
+TEST_F(ScriptHostTest, LaunchOptionsPreserveEnvironmentSizeAndDirection)
 {
     write(user, "launch.luau", R"(
 return {on_bell=function(ev)
@@ -1483,6 +1504,11 @@ end}
     EXPECT_DOUBLE_EQ(options["size"].toDouble(),0.3);
     EXPECT_EQ(options["env"].toMap()["REMOVE"].typeId(),QMetaType::Bool);
     EXPECT_FALSE(options["env"].toMap()["REMOVE"].toBool());
+    EXPECT_EQ(rec.applied[0]["direction"].toString(),"left");
+    EXPECT_EQ(rec.applied[1]["direction"].toString(),"up");
+    EXPECT_EQ(rec.applied[2]["options"].toMap()["env"].toMap()["VALUE"].toString(),"tab");
+    EXPECT_EQ(rec.applied[3]["kind"].toString(),"new_window");
+    EXPECT_EQ(rec.applied[3]["options"].toMap()["cwd"].toString(),"/tmp");
 }
 
 TEST_F(ScriptHostTest, InvalidLaunchAndEnvironmentOptionsNeverReachHost)
@@ -1522,6 +1548,7 @@ return {on_bell=function() error("handler failed") end,
 )");
     host->setEnabled(true);
     host->dispatch("on_bell",7); host->dispatch("on_focus",7); host->dispatch("on_title",7);
+    ASSERT_FALSE(host->diagnostics().isEmpty());
     const auto stats=host->diagnostics().first().toMap();
     EXPECT_EQ(stats["calls"].toULongLong(),3);
     EXPECT_EQ(stats["handler_errors"].toULongLong(),1);
@@ -1615,6 +1642,7 @@ return {
     EXPECT_EQ(rec.applied[1]["items"].toList().front().toMap()["id"], "42");
     EXPECT_EQ(rec.applied[3]["kind"], "copy");
     EXPECT_EQ(rec.applied[3]["text"], "7:42:output");
+    ASSERT_FALSE(host->diagnostics().isEmpty());
     EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
     EXPECT_EQ(host->diagnostics().first().toMap()["handler_errors"].toULongLong(), 0u);
 }
@@ -1671,7 +1699,8 @@ return {
         afterglow.sleep(60)
         return afterglow.copy("woke")
     end,
-    on_focus = function() return {{kind = "sleep", delay_ms = 10}, afterglow.request("long", {kind = "sleep", delay_ms = 600001})} end,
+    on_focus = function() return {{kind = "sleep", delay_ms = 10}, afterglow.request("long", {kind = "sleep", delay_ms = 10})} end,
+    on_title = function() afterglow.sleep(600001) end,
 }
 )");
     host->setEnabled(true);
@@ -1688,7 +1717,10 @@ return {
     host->dispatch("on_focus", 7);
     ASSERT_EQ(rec.results.size(), 2);
     EXPECT_TRUE(rec.results[0].second.contains("awaited"));
-    EXPECT_TRUE(rec.results[1].second.contains("600000"));
+    EXPECT_TRUE(rec.results[1].second.contains("awaited")); // a request ID of its own is not a wait
+    host->dispatch("on_title", 7);
+    ASSERT_EQ(rec.results.size(), 3);
+    EXPECT_TRUE(rec.results[2].second.contains("600000"));
 }
 
 TEST_F(ScriptHostTest, WaitingHandlersAreBoundedAndReported)
@@ -1704,6 +1736,7 @@ return {
 )");
     host->setEnabled(true);
     for (int i = 0; i < 17; ++i) host->dispatch("on_bell", 7);
+    ASSERT_FALSE(host->diagnostics().isEmpty());
     EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 16);
     ASSERT_FALSE(rec.applied.isEmpty());
     EXPECT_EQ(rec.applied.last()["text"], "busy");
@@ -1721,6 +1754,7 @@ return {
 )");
     host->setEnabled(true);
     EXPECT_FALSE(host->scriptIds().contains("toplevel"));
+    ASSERT_TRUE(host->scriptIds().contains("misuse"));
     for (const char* handler : {"on_bell", "on_focus", "on_title"}) host->dispatch(handler, 7);
     QStringList errors;
     for (const auto& entry : host->diagnostics()) {
@@ -1741,7 +1775,7 @@ return {
     run_action = function()
         afterglow.sleep(0)
         local t = os.clock()
-        while os.clock() - t < 0.05 do end -- 50 ms: within an action's 100 ms
+        while os.clock() - t < 0.035 do end -- 35 ms: over an event's 20 ms, well within an action's 100 ms
         afterglow.sleep(0)
         error("after the second await")
     end,
@@ -1749,7 +1783,9 @@ return {
 )");
     host->setEnabled(true);
     ASSERT_TRUE(host->runAction("resumed.spin", 7));
-    ASSERT_TRUE(await([&] { return host->diagnostics().first().toMap()["handler_errors"].toULongLong() == 1; }));
+    ASSERT_TRUE(await([&] {
+        return !host->diagnostics().isEmpty() && host->diagnostics().first().toMap()["handler_errors"].toULongLong() == 1;
+    }));
     const auto stats = host->diagnostics().first().toMap();
     EXPECT_TRUE(stats["last_error"].toString().startsWith("a handler after await:")) << stats["last_error"].toString().toStdString();
     EXPECT_TRUE(stats["last_error"].toString().contains("after the second await"));
@@ -1798,11 +1834,11 @@ return {
     ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }));
     EXPECT_EQ(rec.applied.last()["text"], "revision 1");
     ScriptState::Snapshot stored;
-    ASSERT_TRUE(ScriptState(user.filePath("state")).read("counter", stored).isEmpty());
+    ASSERT_TRUE(ScriptState(stateDir.path()).read("counter", stored).isEmpty());
     EXPECT_EQ(stored.value["launches"].toInt(), 1);
 }
 
-TEST_F(ScriptHostTest, KeyModesNeedOnKeyAndKeysReachOnlyTheirOwner)
+TEST_F(ScriptHostTest, KeyModesNeedOnKeyAndKeysForNobodyAreDropped)
 {
     write(user, "keys.luau", R"(
 return {
@@ -1854,7 +1890,7 @@ return {
     QStringList kinds;
     for (const auto& e : rec.applied) kinds << e["kind"].toString();
     EXPECT_EQ(kinds, QStringList({"overview", "overview_move", "pulse"}));
-    EXPECT_EQ(rec.applied[2]["effect"], "flash");
+    EXPECT_EQ(rec.applied[2]["effect"], "2"); // flash, by number
     EXPECT_EQ(rec.applied[2]["color"].toInt(), 1);
     EXPECT_EQ(rec.applied[2]["duration_ms"].toInt(), 600);
     int refused = 0;
@@ -1907,10 +1943,625 @@ return { on_bell = function(ev) return {afterglow.pulse(ev.pane, "ripple"), afte
     host->dispatch("on_bell", 7);
     ASSERT_EQ(rec.applied.size(), 2);
     EXPECT_EQ(rec.applied[0]["effect"], "7");
-    EXPECT_EQ(rec.applied[1]["effect"], "flash");
+    EXPECT_EQ(rec.applied[1]["effect"], "2"); // flash
     // Removing a package withdraws its shaders.
     QDir(user.filePath("ripples")).removeRecursively();
     host->reload();
     ASSERT_EQ(announced.size(), 2);
     EXPECT_EQ(announced[1].keys(), QStringList({"scripted-overview"}));
+}
+
+TEST_F(ScriptHostTest, HostLookupsNeverRunTheModulesIndex)
+{
+    // A "strict module" metatable would loop or raise outside any time limit.
+    write(user, "strict.luau", R"(
+local s = {on_bell = function() return afterglow.copy("bell") end}
+return setmetatable(s, {__index = function() while true do end end})
+)");
+    host->setEnabled(true);
+    ASSERT_TRUE(host->scriptIds().contains("strict"));
+    QElapsedTimer clock;
+    clock.start();
+    host->dispatch("on_focus", 7); // not defined: the lookup must not reach __index
+    host->dispatch("on_bell", 7);
+    EXPECT_LT(clock.elapsed(), 1000);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], "bell");
+}
+
+TEST_F(ScriptHostTest, SelfReferencingResultsAreCutNotExpanded)
+{
+    write(user, "cycle.luau", R"(
+return {
+    on_bell = function()
+        local e = afterglow.copy("cycle")
+        e.a = e; e.b = e
+        return e
+    end,
+    on_focus = function()
+        local t = {}
+        for i = 1, 40 do t = {a = t, b = t} end -- 2^40 paths through shared tables
+        return {afterglow.copy("shared"), t}
+    end,
+}
+)");
+    host->setEnabled(true);
+    QElapsedTimer clock;
+    clock.start();
+    host->dispatch("on_bell", 7);
+    host->dispatch("on_focus", 7);
+    EXPECT_LT(clock.elapsed(), 2000);
+    ASSERT_FALSE(rec.applied.isEmpty());
+    EXPECT_EQ(rec.applied[0]["text"], "cycle");
+}
+
+TEST_F(ScriptHostTest, TurningScriptsOffFromAnEffectIsSafe)
+{
+    write(user, "first.luau", "return {on_bell = function() return {afterglow.copy('off'), afterglow.copy('after')} end}");
+    write(user, "second.luau", "return {on_bell = function() return afterglow.copy('second') end}");
+    // A reload_config action that turns scripting off runs inside the call.
+    applyHook = [this](const QVariantMap& e) {
+        if (e["text"] == QLatin1String("off")) host->setEnabled(false);
+        return ScriptHost::EffectResult{};
+    };
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    EXPECT_TRUE(host->scriptIds().isEmpty());
+    QStringList texts;
+    for (const auto& e : rec.applied) texts << e["text"].toString();
+    EXPECT_FALSE(texts.contains("after"));
+    EXPECT_FALSE(texts.contains("second"));
+}
+
+TEST_F(ScriptHostTest, TurningScriptsOffDuringAScanWaitsForTheScan)
+{
+    write(user, "loader.luau", "return {on_load = function() return afterglow.copy('off') end}");
+    applyHook = [this](const QVariantMap& e) {
+        if (e["text"] == QLatin1String("off")) host->setEnabled(false);
+        return ScriptHost::EffectResult{};
+    };
+    host->setEnabled(true); // on_load runs inside the directory set's own scan
+    EXPECT_FALSE(host->isEnabled());
+    ASSERT_TRUE(await([&] { return host->scriptIds().isEmpty(); }));
+    applyHook = {};
+    host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(), QStringList{"loader"});
+}
+
+TEST_F(ScriptHostTest, PackageManifestChangesReplaceTheInstance)
+{
+    QDir().mkpath(user.filePath("ripples/shaders/rings"));
+    auto manifest = [&](int number) {
+        write(user, "ripples/package.json", QStringLiteral(R"({"id":"ripples","version":"1.0.0","api_version":1,"entry":"main",
+            "modules":{"main":"init.luau"},"shaders":{"path":"shaders"},"pulses":{"ripple":%1}})").arg(number).toUtf8());
+    };
+    write(user, "ripples/shaders/rings/metadata.json", R"({"id":"ripples.rings","name":"Rings","fragmentShader":"effect.frag"})");
+    write(user, "ripples/init.luau", "return { on_bell = function(ev) return afterglow.pulse(ev.pane, 'ripple') end }");
+    manifest(7);
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    manifest(9);
+    host->reload();
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[0]["effect"], "7");
+    EXPECT_EQ(rec.applied[1]["effect"], "9");
+}
+
+TEST_F(ScriptHostTest, EventsHaveACallbackBudgetAndNoSnapshotWithoutAHandler)
+{
+    write(user, "titles.luau", "return {on_title = function() return nil end}");
+    host->setEnabled(true);
+    const int before = snapshots;
+    for (int i = 0; i < 10; ++i) host->dispatch("on_bell", 7);
+    EXPECT_EQ(snapshots, before); // nobody handles on_bell
+    for (int i = 0; i < ScriptHost::MaxCallbacksPerSecond + 6; ++i) host->dispatch("on_title", 7);
+    ASSERT_FALSE(host->diagnostics().isEmpty());
+    const auto stats = host->diagnostics().first().toMap();
+    EXPECT_EQ(stats["calls"].toULongLong(), quint64(ScriptHost::MaxCallbacksPerSecond));
+    EXPECT_EQ(stats["dropped_callbacks"].toULongLong(), 6u);
+}
+
+TEST_F(ScriptHostTest, RuntimeDisableWithdrawsPackageShadersAndActions)
+{
+    QDir().mkpath(user.filePath("broken/shaders/wall"));
+    write(user, "broken/package.json", R"({"id":"broken","version":"1.0.0","api_version":1,"entry":"main",
+        "modules":{"main":"init.luau"},"shaders":{"path":"shaders"}})");
+    write(user, "broken/shaders/wall/metadata.json", R"({"id":"broken.wall","name":"Wall","fragmentShader":"effect.frag"})");
+    write(user, "broken/init.luau", R"(
+return {metadata = {actions = {{id = "go"}}}, run_action = function() end, on_bell = function() error("broken") end}
+)");
+    QList<QMap<QString, QString>> announced;
+    QObject::connect(host.get(), &ScriptHost::packageShadersChanged, host.get(),
+                     [&](const QMap<QString, QString>& dirs) { announced << dirs; });
+    int actionChanges = 0;
+    QObject::connect(host.get(), &ScriptHost::actionsChanged, host.get(), [&] { ++actionChanges; });
+    host->setEnabled(true);
+    ASSERT_EQ(announced.size(), 1);
+    EXPECT_TRUE(announced[0].contains("broken"));
+    for (int i = 0; i < ScriptHost::MaxFailures; ++i) host->dispatch("on_bell", 7);
+    EXPECT_TRUE(host->isDisabled("broken"));
+    ASSERT_EQ(announced.size(), 2);
+    EXPECT_TRUE(announced[1].isEmpty());
+    EXPECT_EQ(actionChanges, 2); // loaded, then withdrawn
+}
+
+TEST_F(ScriptHostTest, PackageShadersExistBeforeOnLoadEffects)
+{
+    QDir().mkpath(user.filePath("early/shaders/wall"));
+    write(user, "early/package.json", R"({"id":"early","version":"1.0.0","api_version":1,"entry":"main",
+        "modules":{"main":"init.luau"},"shaders":{"path":"shaders"}})");
+    write(user, "early/shaders/wall/metadata.json", R"({"id":"early.wall","name":"Wall","fragmentShader":"effect.frag"})");
+    write(user, "early/init.luau", "return {on_load = function() return afterglow.copy('loaded') end}");
+    QStringList published;
+    QObject::connect(host.get(), &ScriptHost::packageShadersChanged, host.get(),
+                     [&](const QMap<QString, QString>& dirs) { published = dirs.keys(); });
+    bool seen = false;
+    applyHook = [&](const QVariantMap& e) {
+        if (e["text"] == QLatin1String("loaded")) seen = published.contains("early");
+        return ScriptHost::EffectResult{};
+    };
+    host->setEnabled(true);
+    EXPECT_TRUE(seen);
+}
+
+TEST_F(ScriptHostTest, PackageErrorsNameTheModuleFileAndLine)
+{
+    QDir().mkpath(user.filePath("lines"));
+    write(user, "lines/package.json", R"({"id":"lines","version":"1.0.0","api_version":1,"entry":"main",
+        "modules":{"main":"init.luau","util":"util.luau"}})");
+    write(user, "lines/init.luau", "local util = require('util')\nreturn {on_bell = function() util.fail() end}");
+    write(user, "lines/util.luau", "local u = {}\nfunction u.fail()\n    error('deliberate')\nend\nreturn u");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_FALSE(host->diagnostics().isEmpty());
+    const auto error = host->diagnostics().first().toMap()["last_error"].toString();
+    EXPECT_TRUE(error.contains("util.luau:3:")) << error.toStdString();
+    EXPECT_FALSE(error.contains("package.json:"));
+}
+
+TEST_F(ScriptHostTest, PackageModulesTakeVarargsAndCannotReplaceTheLoader)
+{
+    QDir().mkpath(user.filePath("loader"));
+    write(user, "loader/package.json", R"({"id":"loader","version":"1.0.0","api_version":1,"entry":"main",
+        "modules":{"main":"init.luau","util":"util.luau"}})");
+    // A forgotten "local" must not reach the loader's own variables.
+    write(user, "loader/util.luau", "local name = ...\ncache = {}\nfunction load() return {} end\nreturn {value = 1}");
+    write(user, "loader/init.luau", R"(
+local a, b = require("util"), require("util")
+assert(a == b and a.value == 1)
+return {on_bell = function() return afterglow.copy(tostring(require("util") == a)) end}
+)");
+    host->setEnabled(true);
+    ASSERT_EQ(host->scriptIds(), QStringList{"loader"});
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], "true");
+}
+
+TEST_F(ScriptHostTest, ForgedAwaitIdsCannotResumeAFlowEarly)
+{
+    write(user, "forged.luau", R"(
+return {
+    on_bell = function(ev)
+        local reply = afterglow.await(afterglow.prompt(ev.pane, "Name"))
+        return afterglow.copy(reply and reply.text or "nothing")
+    end,
+    on_focus = function(ev)
+        return {afterglow.request("afterglow.await:1:99", afterglow.focus(ev.pane)),
+                afterglow.request("afterglow.await:1:0", afterglow.focus(ev.pane))}
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(bool(pendingReply));
+    host->dispatch("on_focus", 7);
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    for (const auto& e : rec.applied) EXPECT_NE(e["kind"], "copy");
+    pendingReply({{}, {{"text", "real"}}, {}});
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty() && rec.applied.last()["kind"] == "copy"; }));
+    EXPECT_EQ(rec.applied.last()["text"], "real");
+}
+
+TEST_F(ScriptHostTest, EventsWithoutAPaneHaveNoPaneAndClosedPanesKeepTheirId)
+{
+    write(user, "panes.luau", R"(
+return {
+    on_config_changed = function(ev) return afterglow.copy(ev.pane == nil and "none" or "fake") end,
+    on_bell = function() return afterglow.timer("later", 5) end,
+    on_timer = function(ev) return afterglow.log("pane " .. tostring(ev.pane and ev.pane.id)) end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_config_changed", 0);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], "none");
+    host->dispatch("on_bell", 8);
+    paneState.remove(8); // closes before the timer fires
+    ASSERT_TRUE(await([&] {
+        return std::any_of(rec.results.begin(), rec.results.end(), [](const auto& r) { return r.first["message"] == "pane 8"; });
+    }));
+}
+
+TEST_F(ScriptHostTest, UnchangedActionListsAnnounceNothing)
+{
+    write(user, "actions.luau", R"(
+return {
+    run_action = function() end,
+    on_bell = function() return afterglow.set_actions({{id = "one", title = "One"}}) end,
+}
+)");
+    host->setEnabled(true);
+    int changes = 0;
+    QObject::connect(host.get(), &ScriptHost::actionsChanged, host.get(), [&] { ++changes; });
+    host->dispatch("on_bell", 7);
+    host->dispatch("on_bell", 7);
+    EXPECT_EQ(changes, 1);
+}
+
+TEST_F(ScriptHostTest, MetadataActionsFollowTheSetActionsRules)
+{
+    QByteArray actions;
+    for (int i = 0; i < 40; ++i) actions += "{id='a" + QByteArray::number(i) + "'},";
+    write(user, "many.luau", "return {metadata = {actions = {{id='a0'}, " + actions + "{id='long', title=string.rep('x', 513)}}},"
+                             " run_action = function() end}");
+    host->setEnabled(true);
+    const auto list = host->actions();
+    ASSERT_EQ(list.size(), ScriptHost::MaxActions);
+    QSet<QString> tokens;
+    for (const auto& a : list) tokens.insert(a.token);
+    EXPECT_EQ(tokens.size(), ScriptHost::MaxActions);
+}
+
+TEST_F(ScriptHostTest, EffectChecksRefuseBadShapesBeforeTheHost)
+{
+    write(user, "shapes.luau", R"(
+return { on_bell = function(ev)
+    return {
+        afterglow.select(ev.pane, "Nothing", {}),
+        afterglow.read_text(ev.pane, "screen", 0),
+        afterglow.read_region(ev.pane, "1", 2 * 1024 * 1024),
+        afterglow.overview_move(ev.pane, 1.5),
+        afterglow.overview_move(ev.pane, 0, 7.5),
+        afterglow.pulse(ev.pane, "flash", {color = 4.5}),
+        afterglow.move_pane(ev.pane),
+        afterglow.move_pane(ev.pane, 8, "rigth"),
+        afterglow.move_pane(ev.pane, 8, "new-tab"),
+        afterglow.new_tab(ev.pane, "/tmp\0evil"),
+        {nil, afterglow.copy("after a hole")},
+        afterglow.split(ev.pane), afterglow.split(ev.pane), afterglow.split(ev.pane),
+    }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    QStringList kinds;
+    for (const auto& e : rec.applied) kinds << e["kind"].toString();
+    // The refused moves used no structural slot, so all three splits apply.
+    EXPECT_EQ(kinds, QStringList({"split", "split", "split"}));
+    ASSERT_EQ(rec.results.size(), 14);
+    for (int i = 0; i < 10; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    EXPECT_EQ(rec.results[10].second, "unknown effect \"\"");
+}
+
+TEST_F(ScriptHostTest, NilEntriesInReturnedListsAreSkipped)
+{
+    write(user, "holes.luau", R"(
+return { on_bell = function(ev)
+    local failed = false
+    return {failed and afterglow.pulse(ev.pane, "flash") or nil, afterglow.copy("kept")}
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], "kept");
+    ASSERT_FALSE(host->diagnostics().isEmpty());
+    EXPECT_EQ(host->diagnostics().first().toMap()["effect_errors"].toULongLong(), 0u);
+}
+
+TEST_F(ScriptHostTest, ReleasingEffectsWorkWhenTheBudgetIsSpent)
+{
+    write(user, "spent.luau", QStringLiteral(R"(
+return {
+    on_bell = function(ev)
+        local out = {}
+        for i = 1, %1 do out[i] = afterglow.set_title(ev.pane, "t") end
+        table.insert(out, afterglow.cancel("nothing"))
+        table.insert(out, afterglow.end_key_mode())
+        return out
+    end,
+}
+)").arg(ScriptHost::MaxEffectsPerSecond).toUtf8());
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.results.size(), ScriptHost::MaxEffectsPerSecond + 2);
+    EXPECT_TRUE(rec.results[ScriptHost::MaxEffectsPerSecond].second.isEmpty()); // cancel
+    EXPECT_TRUE(rec.results.last().second.isEmpty()); // end_key_mode
+    EXPECT_EQ(rec.applied.last()["kind"], "end_key_mode");
+}
+
+TEST_F(ScriptHostTest, SleepsDoNotSpendTheEffectBudget)
+{
+    write(user, "poll.luau", R"(
+return { on_bell = function(ev)
+    local first, second = {}, {}
+    for i = 1, 16 do first[i] = afterglow.set_title(ev.pane, "t") end
+    for i = 1, 4 do second[i] = afterglow.set_title(ev.pane, "t") end
+    afterglow.await_all(first)
+    afterglow.await_all(second) -- the 20 effects of this second are spent
+    local _, err = afterglow.sleep(0)
+    return afterglow.log(err and err.code or "slept")
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(await([&] {
+        return std::any_of(rec.results.begin(), rec.results.end(), [](const auto& r) { return r.first["kind"] == "log"; });
+    }));
+    for (const auto& r : rec.results) {
+        if (r.first["kind"] == "sleep") {
+            EXPECT_TRUE(r.second.isEmpty()) << r.second.toStdString();
+        }
+        if (r.first["kind"] == "log") {
+            EXPECT_EQ(r.first["message"], "slept");
+        }
+    }
+}
+
+TEST_F(ScriptHostTest, BrokenSourcesDoNotRunAgainOnUnrelatedRescans)
+{
+    write(user, "spin.luau", "while true do end\nreturn {}");
+    host->setEnabled(true); // the module load times out once
+    write(user, "other.luau", "return {}");
+    QElapsedTimer clock;
+    clock.start();
+    host->reload();
+    EXPECT_LT(clock.elapsed(), 500);
+    EXPECT_TRUE(host->scriptIds().contains("other"));
+    bool failed = false;
+    for (const auto& entry : host->diagnostics()) {
+        const auto map = entry.toMap();
+        if (map["path"].toString().endsWith("spin.luau")) failed = map["status"] == "failed" && !map["error"].toString().isEmpty();
+    }
+    EXPECT_TRUE(failed);
+}
+
+TEST_F(ScriptHostTest, ScriptsWithDifferentIdsLoadDespiteTheSameFileName)
+{
+    write(system, "notify.luau", "return {metadata = {id = 'notify'}}");
+    write(user, "notify.luau", "return {metadata = {id = 'my-notify'}}");
+    write(user, "same.luau", "return {metadata = {id = 'pkg'}}");
+    QDir().mkpath(user.filePath("pkg"));
+    write(user, "pkg/package.json", R"({"id":"pkg","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "pkg/init.luau", "return {}");
+    host->setEnabled(true);
+    auto ids = host->scriptIds();
+    ids.sort();
+    EXPECT_EQ(ids, QStringList({"my-notify", "notify", "pkg"}));
+    // The file that lost its id to the package is reported, not silently skipped.
+    bool superseded = false;
+    for (const auto& entry : host->diagnostics()) {
+        const auto map = entry.toMap();
+        if (map["path"].toString().endsWith("same.luau")) superseded = map["status"] == "superseded";
+    }
+    EXPECT_TRUE(superseded);
+}
+
+TEST_F(ScriptHostTest, SymlinkedPackageDirectoriesLoad)
+{
+    QTemporaryDir checkout;
+    write(checkout, "package.json", R"({"id":"linked","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(checkout, "init.luau", "return {on_bell = function() return afterglow.copy('linked') end}");
+    ASSERT_TRUE(QFile::link(checkout.path(), user.filePath("linked")));
+    host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(), QStringList{"linked"});
+}
+
+TEST_F(ScriptHostTest, PackageIdentityRulesAreReported)
+{
+    QDir().mkpath(user.filePath("wrong-dir"));
+    write(user, "wrong-dir/package.json", R"({"id":"other","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "wrong-dir/init.luau", "return {}");
+    QDir().mkpath(user.filePath("entry"));
+    write(user, "entry/package.json", R"({"id":"entry","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "entry/init.luau", "return {metadata = {id = 'different'}}");
+    host->setEnabled(true);
+    EXPECT_TRUE(host->scriptIds().isEmpty());
+    QStringList errors;
+    for (const auto& entry : host->diagnostics()) errors << entry.toMap()["error"].toString();
+    EXPECT_TRUE(errors.contains("Package id must match its directory name")) << errors.join(", ").toStdString();
+    EXPECT_TRUE(errors.contains("Entry metadata id differs from manifest")) << errors.join(", ").toStdString();
+}
+
+TEST_F(ScriptHostTest, PackageStateRefusalsAndMigrationAreReported)
+{
+    QDir().mkpath(user.filePath("stored"));
+    write(user, "stored/package.json", R"({"id":"stored","version":"1.0.0","api_version":1,"state_version":2,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "stored/init.luau", "return {}");
+    ScriptState::Snapshot saved;
+    // Newer state than the package: refused.
+    ASSERT_TRUE(ScriptState(stateDir.path()).write("stored", 3, 0, {{"x", 1}}, saved).isEmpty());
+    host->setEnabled(true);
+    EXPECT_TRUE(host->scriptIds().isEmpty());
+    QStringList errors;
+    for (const auto& entry : host->diagnostics()) errors << entry.toMap()["error"].toString();
+    EXPECT_TRUE(errors.contains("Stored state is newer than this package"));
+    // Older state and no migrate function: refused.
+    host->setEnabled(false);
+    QFile::remove(stateDir.filePath("stored.json"));
+    ASSERT_TRUE(ScriptState(stateDir.path()).write("stored", 1, 0, {{"x", 1}}, saved).isEmpty());
+    host->setEnabled(true);
+    errors.clear();
+    for (const auto& entry : host->diagnostics()) errors << entry.toMap()["error"].toString();
+    EXPECT_TRUE(errors.contains("State migration function is missing"));
+    // A migration that returns no object says so.
+    write(user, "stored/init.luau", "return {migrate = function() return 5 end}");
+    host->reload();
+    errors.clear();
+    for (const auto& entry : host->diagnostics()) errors << entry.toMap()["error"].toString();
+    EXPECT_TRUE(errors.contains("Migration must return an object table"));
+}
+
+TEST_F(ScriptHostTest, NavigatorMigratesSchemaOneHistory)
+{
+    installPackage("project-navigator");
+    write(user, "project-navigator/config.json", R"({"roots":[],"fd":false,"zoxide":false})");
+    QFile state(stateDir.filePath("project-navigator.json"));
+    QDir().mkpath(stateDir.path());
+    ASSERT_TRUE(state.open(QIODevice::WriteOnly));
+    state.write(R"({"format":1,"version":1,"revision":1,"value":{"favorites":["/a"],"recent":["/b"]}})");
+    state.close();
+    host->setEnabled(true);
+    ASSERT_EQ(host->scriptIds(), QStringList{"project-navigator"});
+    ScriptState::Snapshot stored;
+    ASSERT_TRUE(ScriptState(stateDir.path()).read("project-navigator", stored).isEmpty());
+    EXPECT_EQ(stored.version, 2);
+    EXPECT_TRUE(stored.value["favorites"].toMap()["/a"].toBool());
+    const auto recent = stored.value["recent"].toList();
+    ASSERT_FALSE(recent.isEmpty());
+    EXPECT_EQ(recent[0].toMap()["kind"], "directory");
+    EXPECT_EQ(recent[0].toMap()["value"], "/b");
+}
+
+TEST_F(ScriptHostTest, UnloadEffectsAreIgnored)
+{
+    write(user, "unload.luau", "return {on_unload = function() return afterglow.copy('ignored') end}");
+    host->setEnabled(true);
+    write(user, "unload.luau", "return {}");
+    host->reload();
+    host->setEnabled(false);
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    EXPECT_EQ(cleaned.size(), 2);
+}
+
+TEST_F(ScriptHostTest, ReadFileHelperResultsReachOnResultByTaskName)
+{
+    write(files, "note.txt", "hello");
+    write(user, "reader.luau", QStringLiteral(R"(
+return {
+    on_bell = function() return afterglow.read_file("note", "%1") end,
+    on_result = function(ev) return afterglow.copy(ev.request_id .. ":" .. ev.data.text) end,
+}
+)").arg(files.filePath("note.txt")).toUtf8());
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }));
+    EXPECT_EQ(rec.applied[0]["text"], "note:hello");
+}
+
+TEST_F(ScriptHostTest, ExamplePackagesLoad)
+{
+    const QDir examples(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES));
+    const auto names = examples.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const auto& name : names) installPackage(name);
+    host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds().size(), names.size());
+    for (const auto& entry : host->diagnostics()) {
+        const auto status = entry.toMap()["status"].toString();
+        EXPECT_TRUE(status == "active") << entry.toMap()["path"].toString().toStdString() << ": "
+                                        << entry.toMap()["error"].toString().toStdString();
+    }
+}
+
+TEST_F(ScriptHostTest, ExampleScriptsCreatePulseAndNotify)
+{
+    for (const char* name : {"create-and-title.luau", "pane-pulses.luau", "notify-slow-commands.luau"})
+        ASSERT_TRUE(QFile::copy(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS) + "/" + name, user.filePath(name)));
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if (e["kind"] == QLatin1String("split")) return {{}, {{"pane", QVariantMap{{"id", 8}}}, {"pane_id", 8}}, {}};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("create-and-title.split", 7));
+    ASSERT_TRUE(await([&] { return rec.applied.size() == 2; }));
+    EXPECT_EQ(rec.applied[0]["kind"], "split");
+    EXPECT_DOUBLE_EQ(rec.applied[0]["options"].toMap()["size"].toDouble(), 0.35);
+    EXPECT_EQ(rec.applied[1]["kind"], "set_title");
+    EXPECT_EQ(rec.applied[1]["pane"].toUInt(), 8u);
+    rec.applied.clear();
+    host->dispatch("on_command_finished", 9, {{"command", "make"}, {"exit_code", 2}, {"duration_ms", 12000}});
+    QStringList kinds;
+    for (const auto& e : rec.applied) kinds << e["kind"].toString();
+    kinds.sort();
+    EXPECT_EQ(kinds, QStringList({"notify", "pulse"}));
+    for (const auto& e : rec.applied) {
+        if (e["kind"] == "pulse") { EXPECT_EQ(e["effect"], "2"); EXPECT_EQ(e["color"].toInt(), 1); }
+        if (e["kind"] == "notify") { EXPECT_EQ(e["pane"].toUInt(), 9u); EXPECT_EQ(e["body"], "failed (2) after 12 s"); }
+    }
+    rec.applied.clear();
+    host->dispatch("on_command_finished", 9, {{"command", "sleep"}, {"exit_code", 130}, {"duration_ms", 100}});
+    EXPECT_TRUE(rec.applied.isEmpty()); // Ctrl+C is not a failure
+}
+
+TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
+{
+    installPackage("tab-status");
+    write(user, "tab-status/config.json", R"({"git":true})");
+    paneState[7]["cwd"] = files.path();
+    paneState[7]["context"] = "";
+    tabs = {QVariantMap{{"active_pane", 7}}};
+    host->setEnabled(true);
+    host->dispatch("on_timer", 0, {{"name", "refresh"}});
+    for (int i = 0; i < 6; ++i) QCoreApplication::processEvents();
+    QStringList command;
+    for (const auto& r : rec.results) if (r.first["kind"] == "exec") command = r.first["command"].toStringList();
+    ASSERT_GE(command.size(), 3);
+    EXPECT_EQ(command.mid(0, 3), QStringList({"git", "-c", "core.fsmonitor=false"}));
+}
+
+TEST_F(ScriptHostTest, NavigatorOpensAProjectWithoutAskingForALayout)
+{
+    installPackage("project-navigator");
+    write(user, "project-navigator/config.json", R"({"roots":[],"fd":false,"zoxide":false})");
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        const auto kind = e.value("kind").toString();
+        if (kind == "list_projects") return {{}, {{"names", QStringList{"dev"}}}, {}};
+        if (kind == "select") {
+            if (e.value("title").toString().startsWith("Layout for")) return {{}, {{"id", "shell"}}, {}};
+            for (const auto& item : e.value("items").toList())
+                if (item.toMap().value("title").toString() == "Layout: dev") return {{}, {{"id", item.toMap().value("id")}}, {}};
+        }
+        return {};
+    };
+    paneState[7]["cwd"] = "/tmp";
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("project-navigator.open", 7));
+    ASSERT_TRUE(await([&] {
+        return std::any_of(rec.applied.begin(), rec.applied.end(), [](const auto& e) { return e.value("kind") == "open_project"; });
+    }));
+    for (const auto& e : rec.applied) {
+        if (e.value("kind") == "open_project") {
+            EXPECT_EQ(e.value("name"), "dev");
+        }
+        if (e.value("kind") == "select") {
+            EXPECT_FALSE(e.value("title").toString().startsWith("Layout for"));
+        }
+    }
+}
+
+TEST_F(ScriptHostTest, SceneControlsEscapeShowsNoNotice)
+{
+    installPackage("scene-controls");
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if (e["kind"] == QLatin1String("shaders"))
+            return {{}, {{"shaders", QVariantList{QVariantMap{{"instance", "i"}, {"shader", "bloom"}, {"layer", "pane"},
+                {"parameters", QVariantList{QVariantMap{{"id", "strength"}, {"name", "Strength"}, {"type", "float"}, {"supported", true}}}},
+                {"values", QVariantMap{{"strength", 0.5}}}}}}}, {}};
+        if (e["kind"] == QLatin1String("select")) return {"Dialog cancelled", {}, "cancelled"};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("scene-controls.open", 7));
+    for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
+    for (const auto& e : rec.applied) EXPECT_NE(e["kind"], "notify");
+}
+
+int main(int argc, char** argv)
+{
+    QCoreApplication app(argc, argv);
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }

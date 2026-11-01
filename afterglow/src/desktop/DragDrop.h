@@ -3,6 +3,7 @@
 #pragma once
 #include <QObject>
 #include <QPoint>
+#include <functional>
 #include <memory>
 class QWindow;
 class QDropEvent;
@@ -17,6 +18,8 @@ public:
     void handle(const QByteArray& command);
     void reset();
     void abort();
+    /// Reports the bytes that wait in the PTY input queue. Drop data pauses while it is large.
+    void setInputBacklog(std::function<std::size_t()> backlog);
     bool acceptsDrops() const;
     bool offersDrags() const;
     void drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QWindow* window);

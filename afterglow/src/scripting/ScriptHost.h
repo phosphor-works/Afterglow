@@ -6,7 +6,9 @@
 #include <PhosphorFsLoader/IScanStrategy.h>
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -31,11 +33,14 @@ struct ScriptPackage;
 /// Luau scripts that react to terminal events and add actions. Each script
 /// runs in its own sandboxed engine with a heap cap and a time limit per
 /// call. Handlers do not touch the terminal: they return effects, which the
-/// host checks, rate limits and hands to @ref Callbacks::apply.
+/// host checks and rate limits. It keeps state, sleeps, logs and actions
+/// itself, gives timers, processes and file reads to its tasks, and hands
+/// the rest to @ref Callbacks::applyOwned or @ref Callbacks::apply.
 ///
 /// Scripts load from the search path, lowest priority first; a script with
-/// the same id in a later directory replaces the earlier one. Files ending in
-/// .d.luau are type definitions and are skipped. Edits reload on the fly.
+/// the same id in a later directory, or a package beside a file with the same
+/// id, replaces the other one. Files ending in .d.luau are type definitions and
+/// are skipped. Edits reload on the fly.
 class ScriptHost : public QObject, private PhosphorFsLoader::IScanStrategy
 {
     Q_OBJECT
@@ -76,11 +81,21 @@ public:
     static constexpr int ActionTimeoutMs = 100;
     static constexpr int MaxFailures = 5; ///< in a row, before a script is disabled
     static constexpr int MaxEffectsPerSecond = 20;
-    static constexpr int MaxStructuralPer10s = 3; ///< splits, tabs, windows and closes
+    /// Effects that create, close or move panes, tabs and windows (Kinds[]
+    /// marks them), and the generic actions that do.
+    static constexpr int MaxStructuralPer10s = 3;
     static constexpr int MaxEffectsPerCall = 64;
+    static constexpr int MaxActions = 32; ///< palette actions of one script
     static constexpr int MaxPendingResults = 64;
     static constexpr int MaxResultsPerSecond = 64;
-    static constexpr int StateVersion = 1;
+    /// Handler calls for one script each second: events, timers and watchers.
+    static constexpr int MaxCallbacksPerSecond = 64;
+    static constexpr int MaxSleeping = 16;
+    static constexpr int MaxSleepMs = 600000;
+    static constexpr int MaxLogCharacters = 2048;
+    static constexpr qint64 MaxScriptBytes = 1024 * 1024; ///< a single-file script
+    /// The version of the terminal snapshot in ev.terminal, not of package state.
+    static constexpr int SnapshotVersion = 1;
     static constexpr std::size_t MemoryCapBytes = 16u * 1024 * 1024;
 
     explicit ScriptHost(Callbacks callbacks, QObject* parent = nullptr);
@@ -93,11 +108,13 @@ public:
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
     /// Rescans the search path now instead of waiting for a file change.
+    /// A test hook: the application relies on the file watches.
     void reload();
 
+    /// The loaded scripts' ids. A test hook; users see diagnostics().
     QStringList scriptIds() const;
     QVariantList diagnostics() const;
-    /// Whether a script stopped running after repeated failures.
+    /// Whether a script stopped running after repeated failures. A test hook.
     bool isDisabled(const QString& id) const;
     QList<ScriptAction> actions() const;
     /// The shader directories of loaded packages, by package ID.
@@ -118,7 +135,8 @@ Q_SIGNALS:
     void actionsChanged();
     /// Loaded packages' shader directories changed (packageShaders()).
     void packageShadersChanged(const QMap<QString, QString>& directories);
-    /// After every effect, with the error if it was refused or failed.
+    /// After every effect, with the error if it was refused or failed. Tests
+    /// observe effects through it.
     void effectApplied(const QString& script, const QVariantMap& effect, const QString& error);
 
 private:
@@ -133,7 +151,20 @@ private:
     QVariantMap state() const;
     void queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
                      const EffectResult& result, quint32 eventPane, int timeoutMs);
+    /// Where a deferred effect's completion goes: counted, then queued as its result.
+    std::function<void(EffectResult)> completion(const ScriptPtr& script, const QString& request,
+                                                 const QString& kind, quint32 eventPane);
     bool withinBudget(Script& script, bool structural);
+    /// Counts a handler call against the script's callback budget.
+    bool admitCallback(Script& script);
+    /// The event's pane: its record, or only its id once it has closed.
+    QVariantMap eventPane(quint32 pane) const;
+    /// Stops a script at run time and withdraws what it contributes.
+    void disable(const ScriptPtr& script);
+    void announceActions(const QList<ScriptAction>& before);
+    void publishPackageShaders();
+    /// Creates or drops the directory set to match m_enabled.
+    void applyEnabled();
     /// Loads the scripts in @p directories, lowest priority first, and
     /// returns the files and package folders to watch.
     QStringList performScan(const QStringList& directories) override;
@@ -147,7 +178,20 @@ private:
     QStringList m_searchPaths;
     QString m_stateDirectory;
     mutable QMap<QString, QString> m_loadErrors;
+    /// What the last scan learned about a source it did not keep: why it
+    /// failed, or which id it has when another script took that id. A rescan
+    /// does not run the same source again.
+    struct Memo
+    {
+        QByteArray stamp;
+        QString id;
+        QString error;
+    };
+    QHash<QString, Memo> m_memos;
+    QMap<QString, QString> m_superseded; ///< path -> the path of the script that took its id
+    mutable QSet<QString> m_stateFailures; ///< packages that failed on their stored state
     bool m_enabled = false;
+    bool m_scanning = false;
     std::vector<ScriptPtr> m_scripts;
     QMap<QString, QString> m_packageShaders;
     QElapsedTimer m_clock;

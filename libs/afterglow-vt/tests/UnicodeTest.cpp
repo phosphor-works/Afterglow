@@ -27,15 +27,18 @@ std::vector<std::u32string> segment(std::u32string_view text)
 
 TEST(Unicode, Widths)
 {
-    EXPECT_EQ(width(U'a'), 1);
-    EXPECT_EQ(width(U'中'), 2); // CJK
-    EXPECT_EQ(width(U'́'), 0); // combining acute
-    EXPECT_EQ(width(U'‍'), 0); // ZWJ
-    EXPECT_EQ(width(U'\U0001F600'), 2); // emoji, presentation by default
-    EXPECT_EQ(width(U'❤'), 1); // heart: text presentation by default
-    EXPECT_EQ(width(U'­'), 1); // soft hyphen
-    EXPECT_EQ(width(U'ᅠ'), 0); // Hangul medial vowel filler
+    EXPECT_EQ(props(U'a').width, 1);
+    EXPECT_EQ(props(U'中').width, 2); // CJK
+    EXPECT_EQ(props(U'́').width, 0); // combining acute
+    EXPECT_EQ(props(U'‍').width, 0); // ZWJ
+    EXPECT_EQ(props(U'\U0001F600').width, 2); // emoji, presentation by default
+    EXPECT_EQ(props(U'❤').width, 1); // heart: text presentation by default
+    EXPECT_EQ(props(U'­').width, 1); // soft hyphen
+    EXPECT_EQ(props(U'ᅠ').width, 0); // Hangul medial vowel filler
     EXPECT_TRUE(props(U'❤').widensWithVs16);
+    // Past the last code point: the replacement character's width.
+    EXPECT_EQ(props(char32_t(0x110000)).width, props(ReplacementCharacter).width);
+    EXPECT_EQ(props(char32_t(0xFFFFFFFF)).width, props(ReplacementCharacter).width);
     EXPECT_STREQ(ucdVersion(), "17.0.0");
 }
 

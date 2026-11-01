@@ -8,6 +8,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 
+#include <algorithm>
 #include <optional>
 
 namespace Afterglow {
@@ -98,7 +99,8 @@ const ActionInfo Actions[] = {
     {Action::FocusRight, "focus_right", "Focus Split Right", {"Ctrl+Shift+Right"}},
     {Action::FocusUp, "focus_up", "Focus Split Above", {"Ctrl+Shift+Up"}},
     {Action::FocusDown, "focus_down", "Focus Split Below", {"Ctrl+Shift+Down"}},
-    {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", {"Ctrl+Shift+="}},
+    // Not Ctrl+Shift+=: on most layouts that chord types "+", so it is Ctrl++ (font_bigger).
+    {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", {"Ctrl+Shift+Alt+="}},
     {Action::TogglePaneZoom, "toggle_pane_zoom", "Toggle Pane Zoom", {"Ctrl+Shift+Return"}},
     {Action::ResizeLeft, "resize_left", "Resize Split Left", {"Ctrl+Shift+Alt+Left"}},
     {Action::ResizeRight, "resize_right", "Resize Split Right", {"Ctrl+Shift+Alt+Right"}},
@@ -122,8 +124,19 @@ const ActionInfo Actions[] = {
     {Action::UnicodeInput, "unicode_input", "Insert Unicode Character", {"Ctrl+Shift+U"}},
 };
 
-constexpr Qt::KeyboardModifiers RelevantMods =
-    Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
+QString keyText(int combo)
+{
+    return QKeySequence(QKeyCombination::fromCombined(combo)).toString(QKeySequence::PortableText);
+}
+
+int hexDigit(QChar c)
+{
+    const char16_t u = c.unicode();
+    if (u >= '0' && u <= '9') return u - '0';
+    if (u >= 'a' && u <= 'f') return u - 'a' + 10;
+    if (u >= 'A' && u <= 'F') return u - 'A' + 10;
+    return -1;
+}
 
 } // namespace
 
@@ -175,12 +188,23 @@ QVariantMap Keybinds::defaultMap()
 
 Keybinds Keybinds::defaults()
 {
-    return fromMap(defaultMap());
+    // Settings holds one per instance; parsing ~75 sequences each time is waste.
+    static const Keybinds Defaults = fromMap(defaultMap());
+    return Defaults;
+}
+
+bool Keybinds::usesLeader(const QString& sequence)
+{
+    const QString text = sequence.trimmed();
+    if (!text.startsWith(QLatin1String("Leader"), Qt::CaseInsensitive)) return false;
+    const QString rest = text.mid(6).trimmed();
+    return rest.isEmpty() || rest.startsWith(QLatin1Char(','));
 }
 
 std::optional<int> Keybinds::parse(const QString& sequence, const QString& target, QStringList* errors)
 {
-    if (sequence.trimmed().isEmpty() || sequence.startsWith(QStringLiteral("Leader,"))) {
+    // Leader sequences belong to KeyModes, even a bare "Leader".
+    if (sequence.trimmed().isEmpty() || usesLeader(sequence)) {
         return std::nullopt;
     }
     const QKeySequence seq = QKeySequence::fromString(sequence, QKeySequence::PortableText);
@@ -194,66 +218,88 @@ std::optional<int> Keybinds::parse(const QString& sequence, const QString& targe
     return QKeyCombination(seq[0].keyboardModifiers() & RelevantMods, seq[0].key()).toCombined();
 }
 
-void Keybinds::bind(Action action, const QString& sequence, QStringList* errors)
+void Keybinds::unbind(int combo)
 {
-    if (const auto combo = parse(sequence, token(action), errors)) {
-        m_byKey.insert(*combo, action);
+    if (m_byKey.remove(combo) + m_scriptByKey.remove(combo) + m_textByKey.remove(combo) > 0) {
+        m_order.removeAll(combo);
     }
 }
 
 Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
 {
+    auto error = [errors](const QString& text) {
+        if (errors) errors->append(text);
+    };
+    auto sequencesOf = [&](const QString& target, const QVariant& v) {
+        if (v.typeId() == QMetaType::QString) return QStringList{v.toString()};
+        QStringList out;
+        if (v.typeId() == QMetaType::QStringList) return v.toStringList();
+        if (v.typeId() == QMetaType::QVariantList) {
+            for (const QVariant& item : v.toList()) {
+                if (item.typeId() == QMetaType::QString) out << item.toString();
+                else error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
+            }
+            return out;
+        }
+        error(QStringLiteral("binding for %1 must be a key string or a list of them").arg(target));
+        return out;
+    };
+
     Keybinds kb;
-    for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
-        bool known = it.key().startsWith(QStringLiteral("table:")) || it.key() == QLatin1String("pop_key_table");
-        for (const ActionInfo& a : Actions) {
-            if (it.key() == QLatin1String(a.token)) {
-                known = true;
+    // Defaults first: a key the config binds explicitly then takes the key
+    // away from the default that held it, whatever the table order.
+    for (const ActionInfo& a : Actions) {
+        if (map.contains(QLatin1String(a.token))) continue;
+        for (const char* d : a.defaults) {
+            if (const auto combo = parse(QString::fromLatin1(d), QLatin1String(a.token), errors)) {
+                kb.unbind(*combo);
+                kb.m_byKey.insert(*combo, a.action);
+                kb.m_order << *combo;
             }
-        }
-        if (!known && it.key().startsWith(QLatin1String(ScriptPrefix))) {
-            const QVariant v = it.value();
-            const QStringList seqs = v.typeId() == QMetaType::QString ? QStringList{v.toString()} : v.toStringList();
-            for (const QString& s : seqs) {
-                if (const auto combo = parse(s, it.key(), errors)) {
-                    kb.m_scriptByKey.insert(*combo, it.key().mid(int(qstrlen(ScriptPrefix))));
-                }
-            }
-            known = true;
-        }
-        if (!known && it.key().startsWith(QLatin1String(TextPrefix))) {
-            const QByteArray bytes = unescape(it.key().mid(int(qstrlen(TextPrefix))));
-            if (bytes.isEmpty()) {
-                if (errors) {
-                    errors->append(QStringLiteral("\"%1\" sends nothing. Check its escapes").arg(it.key()));
-                }
-            } else {
-                const QVariant v = it.value();
-                const QStringList seqs = v.typeId() == QMetaType::QString ? QStringList{v.toString()} : v.toStringList();
-                for (const QString& s : seqs) {
-                    if (const auto combo = parse(s, it.key(), errors)) {
-                        kb.m_textByKey.insert(*combo, bytes);
-                    }
-                }
-            }
-            known = true;
-        }
-        if (!known && errors) {
-            errors->append(QStringLiteral("unknown action \"%1\"").arg(it.key()));
         }
     }
-    for (const ActionInfo& a : Actions) {
-        const QString key = QLatin1String(a.token);
-        if (!map.contains(key)) {
-            for (const char* d : a.defaults) {
-                kb.bind(a.action, QString::fromLatin1(d), errors);
+    QHash<int, QString> explicitOwner;
+    auto claim = [&](const QString& sequence, const QString& target) -> std::optional<int> {
+        const auto combo = parse(sequence, target, errors);
+        if (!combo) return std::nullopt;
+        if (const auto owner = explicitOwner.constFind(*combo); owner != explicitOwner.constEnd()) {
+            if (*owner != target) {
+                error(QStringLiteral("%1 binds %2, which %3 already uses").arg(target, keyText(*combo), *owner));
             }
-            continue;
+            return std::nullopt;
         }
-        const QVariant v = map.value(key);
-        const QStringList seqs = v.typeId() == QMetaType::QString ? QStringList{v.toString()} : v.toStringList();
-        for (const QString& s : seqs) {
-            kb.bind(a.action, s, errors);
+        explicitOwner.insert(*combo, target);
+        kb.unbind(*combo);
+        kb.m_order << *combo;
+        return combo;
+    };
+    for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
+        const QString& target = it.key();
+        // Key tables and their exit live in KeyModes.
+        if (target.startsWith(QLatin1String(TablePrefix)) || target == QLatin1String("pop_key_table")) continue;
+        const auto action = std::find_if(std::begin(Actions), std::end(Actions),
+                                          [&](const ActionInfo& a) { return target == QLatin1String(a.token); });
+        if (action != std::end(Actions)) {
+            for (const QString& s : sequencesOf(target, it.value())) {
+                if (const auto combo = claim(s, target)) kb.m_byKey.insert(*combo, action->action);
+            }
+        } else if (target.startsWith(QLatin1String(ScriptPrefix))) {
+            for (const QString& s : sequencesOf(target, it.value())) {
+                if (const auto combo = claim(s, target)) {
+                    kb.m_scriptByKey.insert(*combo, target.mid(int(qstrlen(ScriptPrefix))));
+                }
+            }
+        } else if (target.startsWith(QLatin1String(TextPrefix))) {
+            const QByteArray bytes = unescape(target.mid(int(qstrlen(TextPrefix))));
+            if (bytes.isEmpty()) {
+                error(QStringLiteral("\"%1\" sends nothing. Check its escapes").arg(target));
+                continue;
+            }
+            for (const QString& s : sequencesOf(target, it.value())) {
+                if (const auto combo = claim(s, target)) kb.m_textByKey.insert(*combo, bytes);
+            }
+        } else {
+            error(QStringLiteral("unknown action \"%1\"").arg(target));
         }
     }
     return kb;
@@ -261,15 +307,30 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
 
 QList<int> Keybinds::combinations(const QKeyEvent* event)
 {
-    constexpr auto modsMask = Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
-    const auto mods = event->modifiers() & modsMask;
-    QList<int> result{QKeyCombination(mods, Qt::Key(event->key())).toCombined()};
-    const char32_t base = XkbKeyboard::instance().unshiftedCodepoint(event->nativeScanCode());
+    const auto mods = event->modifiers() & RelevantMods;
+    const int key = event->key();
+    QList<int> result{QKeyCombination(mods, Qt::Key(key)).toCombined()};
+    auto add = [&result](Qt::KeyboardModifiers m, int k) {
+        const int combined = QKeyCombination(m, Qt::Key(k)).toCombined();
+        if (!result.contains(combined)) result << combined;
+    };
+    // Qt reports Shift+Tab as Backtab, while bindings name it Shift+Tab.
+    if (key == Qt::Key_Backtab) add(mods | Qt::ShiftModifier, Qt::Key_Tab);
+    const XkbKeyboard& xkb = XkbKeyboard::instance();
+    char32_t base = xkb.unshiftedCodepoint(event->nativeScanCode());
+    // On a Cyrillic or Greek layout, "H" in a key table means the key that
+    // types h on the first Latin layout, as Qt does for Ctrl shortcuts.
+    if (base < 0x20 || base >= 0x7F) base = xkb.latinCodepoints(event->nativeScanCode()).first;
+    int baseKey = 0;
     if (base >= 0x20 && base < 0x7F) {
-        const int key = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
-        const int combined = QKeyCombination(mods, Qt::Key(key)).toCombined();
-        if (combined != result.front()) result << combined;
+        baseKey = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
+        add(mods, baseKey);
     }
+    // A symbol that needs Shift on this layout ("%" is Shift+5 on a US one)
+    // also matches a binding that names the symbol alone. A letter's key is
+    // the same with and without Shift, so Ctrl+Shift+A never matches Ctrl+A.
+    const bool symbol = key > 0x20 && key < 0x7F && !(key >= Qt::Key_A && key <= Qt::Key_Z);
+    if ((mods & Qt::ShiftModifier) && symbol && key != baseKey) add(mods & ~Qt::ShiftModifier, key);
     return result;
 }
 template<typename T>
@@ -317,14 +378,22 @@ QByteArray Keybinds::unescape(const QString& text)
         if (++i >= text.size()) {
             return {};
         }
+        // Exactly @p digits hex digits: no "0x" prefix, sign or space.
         auto hex = [&](int digits) -> std::optional<char32_t> {
-            bool ok = false;
-            const uint v = text.mid(i + 1, digits).toUInt(&ok, 16);
-            if (!ok || text.mid(i + 1, digits).size() != digits) {
+            const QString part = text.mid(i + 1, digits);
+            if (part.size() != digits) {
                 return std::nullopt;
             }
+            char32_t v = 0;
+            for (const QChar c : part) {
+                const int d = hexDigit(c);
+                if (d < 0) {
+                    return std::nullopt;
+                }
+                v = v * 16 + char32_t(d);
+            }
             i += digits;
-            return char32_t(v);
+            return v;
         };
         switch (text[i].unicode()) {
         case 'e':
@@ -372,24 +441,22 @@ QByteArray Keybinds::unescape(const QString& text)
 QStringList Keybinds::bindingsOfScript(const QString& action) const
 {
     QStringList out;
-    for (auto it = m_scriptByKey.constBegin(); it != m_scriptByKey.constEnd(); ++it) {
-        if (it.value() == action) {
-            out.append(QKeySequence(QKeyCombination::fromCombined(it.key())).toString(QKeySequence::NativeText));
+    for (int combo : m_order) {
+        if (const auto it = m_scriptByKey.constFind(combo); it != m_scriptByKey.constEnd() && *it == action) {
+            out.append(QKeySequence(QKeyCombination::fromCombined(combo)).toString(QKeySequence::NativeText));
         }
     }
-    out.sort();
     return out;
 }
 
 QStringList Keybinds::bindingsOf(Action action) const
 {
     QStringList out;
-    for (auto it = m_byKey.constBegin(); it != m_byKey.constEnd(); ++it) {
-        if (it.value() == action) {
-            out.append(QKeySequence(QKeyCombination::fromCombined(it.key())).toString(QKeySequence::NativeText));
+    for (int combo : m_order) {
+        if (const auto it = m_byKey.constFind(combo); it != m_byKey.constEnd() && *it == action) {
+            out.append(QKeySequence(QKeyCombination::fromCombined(combo)).toString(QKeySequence::NativeText));
         }
     }
-    out.sort();
     return out;
 }
 

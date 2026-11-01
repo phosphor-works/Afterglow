@@ -44,8 +44,8 @@ __afterglow_prompt() {
     local begin='\[\e]133;A;redraw=1\a\]' end='\[\e]133;B\a\]'
     PS1=${PS1#"$begin"}; PS1=${PS1%"$end"}
     PS1=$begin$PS1$end
-    local start=$'\e]133;C\a'
-    PS0=$start${PS0#"$start"}
+    local start=$'\e]133;C\a' current=${PS0-}
+    PS0=$start${current#"$start"}
     local LC_ALL=C path=$PWD encoded='' char hex i
     for ((i=0; i<${#path}; i++)); do
         char=${path:i:1}
@@ -57,5 +57,11 @@ __afterglow_prompt() {
     printf '\033]7;file://%s\007' "$encoded"
     return "$__afterglow_status"
 }
-# Array expansion preserves both scalar commands and existing array entries.
-PROMPT_COMMAND=(__afterglow_before_prompt "${PROMPT_COMMAND[@]}" __afterglow_prompt)
+# The user's commands stay in element 0, where tools such as bash-preexec edit
+# PROMPT_COMMAND as a string. Bash before 5.1 runs element 0 only.
+PROMPT_COMMAND[0]=__afterglow_before_prompt${PROMPT_COMMAND[0]:+$'\n'${PROMPT_COMMAND[0]}}
+if (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )); then
+    PROMPT_COMMAND+=(__afterglow_prompt)
+else
+    PROMPT_COMMAND[0]+=$'\n'__afterglow_prompt
+fi

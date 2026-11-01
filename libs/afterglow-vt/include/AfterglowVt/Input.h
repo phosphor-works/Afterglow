@@ -74,6 +74,21 @@ enum class Key : std::uint8_t {
     RightControl,
     RightAlt,
     RightSuper,
+    // The keypad's other keys: the separator, and with NumLock off the
+    // navigation keys. Legacy encodings send them as the main keys; the kitty
+    // protocol tells them apart.
+    KeypadSeparator,
+    KeypadLeft,
+    KeypadRight,
+    KeypadUp,
+    KeypadDown,
+    KeypadPageUp,
+    KeypadPageDown,
+    KeypadHome,
+    KeypadEnd,
+    KeypadInsert,
+    KeypadDelete,
+    KeypadBegin,
 };
 
 enum class KeyAction : std::uint8_t { Press, Repeat, Release };
@@ -116,8 +131,10 @@ struct MouseEvent
 /// string when the mode does not report it.
 AFTERGLOWVT_EXPORT std::string encodeMouse(const MouseEvent& event, const Modes& modes);
 
-/// Wraps pasted text for the terminal: bracketed paste markers when enabled,
-/// and the end marker stripped from the payload so a paste cannot escape.
+/// Prepares pasted text for the terminal. CRLF and LF become CR. Control
+/// characters other than HT, CR and LF (C0, DEL and C1) are dropped, so a
+/// paste cannot run a line editor command or end a bracketed paste early.
+/// Bracketed paste markers surround the text when the mode is on.
 AFTERGLOWVT_EXPORT std::string encodePaste(std::string_view text, const Modes& modes);
 
 AFTERGLOWVT_EXPORT std::string encodeFocus(bool focused, const Modes& modes);

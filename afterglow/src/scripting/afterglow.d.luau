@@ -17,11 +17,15 @@
 --   function script.run_action(action: string, ev: ActionEvent): Effects? ... end
 --   return script
 --
--- Handlers run sandboxed with a short time limit and no access to files or
--- processes. They return an effect, a list of effects, or nil, and can wait
+-- Handlers run sandboxed with a short time limit and no direct access to files
+-- or processes. They return an effect, a list of effects, or nil, and can wait
 -- for an effect's result with afterglow.await. Actions appear
 -- in the command palette and bind in Keybinds.bindings as
 -- "script:<id>.<action>".
+--
+-- A helper that takes a pane targets the event's pane when the pane is nil.
+-- In an event without a pane (on_load, on_config_changed, an action run with
+-- no pane) such an effect fails: pass ev.terminal.active_pane instead.
 
 export type LaunchOptions = { cwd: string?, env: {[string]: string | false}?, size: number? }
 
@@ -103,6 +107,8 @@ export type OperationData = {
     text: string?, truncated: boolean?, available: boolean?, name: string?,
     stdout: string?, stderr: string?, exit_code: number?, id: string?, title: string?,
     pane: Pane?, pane_id: number?, tab_id: number?, window_id: number?, panes: { number }?,
+    -- Overview results.
+    open: boolean?, highlighted: number?, cards: { number }?,
     -- Durable state results; revision must be supplied to the next state_write.
     value: {[string]: any}?, version: number?, revision: number?,
     -- Project listing and launch/restore results.
@@ -116,7 +122,9 @@ export type ResultEvent = {
     data: OperationData,
     error: OperationError?,
     pane: (Pane | { id: number })?,
-    terminal: State, -- fresh at delivery; data describes the earlier operation
+    -- Fresh at delivery; data describes the earlier operation. Absent from the
+    -- busy result that afterglow.await gives when too many handlers wait.
+    terminal: State,
 }
 export type SignalValue = { channel: number, value: number }
 
@@ -124,7 +132,7 @@ export type Effect = { kind: string, request_id: string? }
 export type Effects = Effect | { Effect }
 
 -- Handlers a script may define, all optional:
---   on_pane_created(ev: PaneEvent)        on_pane_closed(ev: ClosedPaneEvent)
+--   on_pane_closed(ev: ClosedPaneEvent)
 --   on_pane_moved(ev: PaneEvent) -- same pane ID, new window/tab in the snapshot
 --   on_focus(ev: PaneEvent)               on_bell(ev: PaneEvent)
 --   on_title(ev: TitleEvent)              on_status(ev: StatusEvent)
@@ -140,7 +148,7 @@ export type Effects = Effect | { Effect }
 --   on_config_changed(ev: ActionEvent)
 --   on_timer(ev: ActionEvent & { name: string })
 --   on_file_changed(ev: ActionEvent & { name: string, path: string, exists: boolean })
---   on_result(ev: ResultEvent) -- only for effects wrapped in afterglow.request
+--   on_result(ev: ResultEvent) -- for effects with a request_id: afterglow.request, exec and read_file
 
 export type PackageLoadEvent = {
     terminal: State,
@@ -159,12 +167,12 @@ declare afterglow: {
     await: (effect: Effect) -> (any?, OperationError?, ResultEvent),
     -- Applies 0-16 effects in order and waits for all: their result events, in order.
     await_all: (effects: { Effect }) -> { ResultEvent },
-    -- Waits 0-600000 ms.
+    -- Waits 0-600000 ms. Each sleep is a result: see the result limits.
     sleep: (ms: number) -> (any?, OperationError?, ResultEvent),
     -- id: 1-64 characters. Results are queued to the originating script instance.
     request: (id: string, effect: Effect) -> Effect,
-    -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     semantic_regions: (pane: PaneRef) -> Effect,
+    -- Result data: {text: string, truncated: boolean, available: boolean}; max 1 MiB.
     read_region: (pane: PaneRef, region: string, max_bytes: number?) -> Effect,
     read_text: (pane: PaneRef, scope: ("screen" | "scrollback" | "last-output" | "selection")?, max_bytes: number?) -> Effect,
     -- Package-local JSON object; writes use the revision returned by state_read.
@@ -174,11 +182,14 @@ declare afterglow: {
     save_project: (pane: PaneRef, name: string, overwrite: boolean?) -> Effect,
     open_project: (name: string, newInstance: boolean?) -> Effect,
     list_projects: () -> Effect,
+    -- left, right, up and down need a target; new-tab and new-window take none.
     move_pane: (pane: PaneRef, target: PaneRef?, placement: ("left" | "right" | "up" | "down" | "new-tab" | "new-window")?) -> Effect,
     detach_tab: (pane: PaneRef) -> Effect,
     timer: (name: string, delay_ms: number, repeat_ms: number?) -> Effect,
     cancel: (name: string) -> Effect,
+    -- cwd is an absolute path; without one the process runs in Afterglow's working directory.
     exec: (name: string, command: { string }, options: { env: {[string]: string | false}?, cwd: string?, timeout_ms: number?, max_bytes: number? }?) -> Effect,
+    -- path is absolute.
     read_file: (name: string, path: string, options: { timeout_ms: number?, max_bytes: number? }?) -> Effect,
     watch_file: (name: string, path: string) -> Effect,
     set_actions: (actions: { { id: string, title: string } }) -> Effect,
@@ -187,7 +198,7 @@ declare afterglow: {
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
     send_text: (pane: PaneRef, text: string) -> Effect,
-    -- pane defaults to the event's pane
+    -- pane defaults to the event's pane; an event without one needs it given
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,
     split: (pane: PaneRef, direction: ("right" | "down" | "left" | "up")?, command: (string | { string })?, options: LaunchOptions?) -> Effect,
     new_tab: (pane: PaneRef, cwd: string?, command: (string | { string })?, options: LaunchOptions?) -> Effect,
@@ -198,7 +209,6 @@ declare afterglow: {
     copy: (text: string) -> Effect,
     open_url: (url: string) -> Effect, -- http, https and mailto
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
-    -- sets uSignal[channel] (0-7) on the pane's shaders: the value, and its age from now
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
     scene_state: (pane: PaneRef) -> Effect,
@@ -207,6 +217,7 @@ declare afterglow: {
     save_shader_preset: (pane: PaneRef, instance: string, name: string) -> Effect,
     -- Replaces this script's overrides; {} resets. Window effects require window scope.
     shader_parameters: (pane: PaneRef, instance: string, values: {[string]: number | boolean | string}, scope: ("pane" | "tab" | "window")?, transition: ShaderTransition?) -> Effect,
+    -- sets uSignal[channel] (0-7) on the pane's shaders: the value, and its age from now
     signal: (pane: PaneRef, channel: number, value: number?) -> Effect,
     -- One effect, 1-8 unique channels, at most 128 panes. Defaults to anchor's tab.
     signals: (pane: PaneRef, values: { SignalValue }, scope: ("pane" | "tab" | "window")?) -> Effect,
@@ -218,5 +229,5 @@ declare afterglow: {
     overview: (pane: PaneRef, operation: ("open" | "close" | "choose")?) -> Effect,
     overview_move: (pane: PaneRef, step: number?, target: PaneRef?) -> Effect,
     -- Plays over the pane in Shaders.paneEffects. color is a palette index (default 4).
-    pulse: (pane: PaneRef, effect: ("portal" | "flash" | "shake" | string), options: { duration_ms: number?, color: number? }?) -> Effect,
+    pulse: (pane: PaneRef, effect: ("portal" | "flash" | "shake" | string | number), options: { duration_ms: number?, color: number? }?) -> Effect,
 }

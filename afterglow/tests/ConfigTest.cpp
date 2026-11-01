@@ -6,6 +6,8 @@
 
 #include <AfterglowRender/Snapshot.h>
 
+#include <PhosphorConfig/Schema.h>
+
 #include <QDir>
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -14,6 +16,8 @@
 #include <QKeyEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
 
@@ -37,21 +41,38 @@ bool same(Rgb a, Rgb b)
     return a.r == b.r && a.g == b.g && a.b == b.b;
 }
 
-/// A config directory of its own, so the user's themes stay out of it.
+/// Config and data directories of its own, so the user's themes stay out of it.
 class ConfigTest : public ::testing::Test
 {
 protected:
+    static constexpr const char* Variables[] = {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_DATA_DIRS"};
+
     void SetUp() override
     {
-        wasSet = qEnvironmentVariableIsSet("XDG_CONFIG_HOME");
-        previous = qgetenv("XDG_CONFIG_HOME");
         ASSERT_TRUE(m_home.isValid());
+        for (const char* name : Variables) {
+            m_saved.append({name, qEnvironmentVariableIsSet(name), qgetenv(name)});
+        }
         qputenv("XDG_CONFIG_HOME", m_home.path().toUtf8());
+        qputenv("XDG_DATA_HOME", m_home.filePath(QStringLiteral("data-home")).toUtf8());
+        qputenv("XDG_DATA_DIRS", m_home.filePath(QStringLiteral("data-dirs")).toUtf8());
     }
 
-    void TearDown() override { if (wasSet) qputenv("XDG_CONFIG_HOME", previous); else qunsetenv("XDG_CONFIG_HOME"); }
-    bool wasSet = false;
-    QByteArray previous;
+    void TearDown() override
+    {
+        for (const auto& [name, wasSet, value] : m_saved) {
+            if (wasSet) qputenv(name, value);
+            else qunsetenv(name);
+        }
+    }
+
+    struct Saved
+    {
+        const char* name;
+        bool wasSet;
+        QByteArray value;
+    };
+    QList<Saved> m_saved;
 
     QString write(const QString& name, const QByteArray& content)
     {
@@ -62,8 +83,25 @@ protected:
         return path;
     }
 
+    QByteArray read(const QString& path)
+    {
+        QFile f(path);
+        EXPECT_TRUE(f.open(QIODevice::ReadOnly));
+        return f.readAll();
+    }
+
     QTemporaryDir m_home;
 };
+
+bool mentions(const QStringList& problems, const QString& text)
+{
+    return std::any_of(problems.begin(), problems.end(), [&](const QString& p) { return p.contains(text); });
+}
+
+QKeyEvent press(int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier, bool autoRepeat = false)
+{
+    return QKeyEvent(QEvent::KeyPress, key, modifiers, QString(), autoRepeat);
+}
 
 } // namespace
 
@@ -77,6 +115,9 @@ TEST(Themes, PicksTheHalfForTheColourScheme)
     EXPECT_EQ(Themes::pick(QStringLiteral("light:paper"), true), QStringLiteral("paper"));
     // Paths are names, colons and all.
     EXPECT_EQ(Themes::pick(QStringLiteral("~/themes/a:b"), true), QStringLiteral("~/themes/a:b"));
+    // Either half may be a path.
+    EXPECT_EQ(Themes::pick(QStringLiteral("light:~/t/a.conf,dark:nord"), false), QStringLiteral("~/t/a.conf"));
+    EXPECT_EQ(Themes::pick(QStringLiteral("light:~/t/a.conf,dark:nord"), true), QStringLiteral("nord"));
 }
 
 TEST(Themes, ReadsGhosttyThemes)
@@ -150,8 +191,11 @@ TEST(Themes, BundledThemesLoad)
         ASSERT_FALSE(path.isEmpty()) << name.toStdString();
         QFile f(path);
         ASSERT_TRUE(f.open(QIODevice::ReadOnly));
-        const auto theme = Themes::parse(f.readAll());
+        QStringList ignored;
+        const auto theme = Themes::parse(f.readAll(), nullptr, &ignored);
         ASSERT_TRUE(theme) << name.toStdString();
+        // A misspelt key would be dropped without a word.
+        EXPECT_TRUE(ignored.isEmpty()) << name.toStdString() << ": " << ignored.join(QLatin1Char(' ')).toStdString();
         EXPECT_TRUE(theme->foreground && theme->background)
             << name.toStdString();
         for (const auto& c : theme->palette) {
@@ -167,14 +211,15 @@ TEST_F(ConfigTest, ThemeColoursReplaceTheConfigs)
     const Settings& s = store.settings();
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0xf6, 0xf5, 0xf2}));
     EXPECT_TRUE(s.terminal.selectionBackground == Rgb(0xc9, 0xd6, 0xee));
-    EXPECT_TRUE(s.themePath.endsWith(QStringLiteral("afterglow-light.json")));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)
 {
+    // The same name as a bundled theme, whose background is #1c1c1c.
     QDir().mkpath(m_home.path() + QStringLiteral("/afterglow/themes"));
-    write(QStringLiteral("afterglow/themes/mine"), "background = #000000\nforeground = #ffffff\n");
-    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "mine"}})");
+    write(QStringLiteral("afterglow/themes/afterglow-dark"), "background = #000000\nforeground = #ffffff\n");
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "afterglow-dark"}})");
     SettingsStore store(config);
     const Settings& s = store.settings();
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0, 0, 0}));
@@ -187,10 +232,10 @@ TEST_F(ConfigTest, MissingThemeKeepsTheConfigsColours)
     const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "no-such-theme", "background": "#123456"}})");
     SettingsStore store(config);
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x12, 0x34, 0x56}));
-    EXPECT_TRUE(store.settings().themePath.isEmpty());
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("no-such-theme")));
 }
 
-TEST_F(ConfigTest, ReadsTheNewerSettings)
+TEST_F(ConfigTest, ReadsFontColorTerminalAndWindowSettings)
 {
     const QString config = write(QStringLiteral("config.json"), R"({
         "Font": {"fallbackFamilies": ["Symbols Nerd Font", ""], "cellHeight": 1.2, "cellWidth": 9},
@@ -246,7 +291,7 @@ TEST(Keybinds, TextBindingsSendTheirBytes)
     EXPECT_EQ(kb.match(&press), Action::None);
 }
 
-TEST_F(ConfigTest, ReadsTheTierTwoSettings)
+TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
 {
     const QString config = write(QStringLiteral("config.json"), R"({
         "Font": {"symbolMap": {"U+E000-U+F8FF,U+2500": "Symbols Nerd Font Mono", "U+zz": "Broken", "U+41": ""},
@@ -451,8 +496,8 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
 
 TEST(Keybinds, SupplementaryUnicodeSurvivesLiteralAndEscapedBindings)
 {
-    EXPECT_EQ(Keybinds::unescape(QString::fromUtf8("a🙂é\\n")),QByteArray("a🙂é\n"));
-    EXPECT_EQ(Keybinds::unescape(QStringLiteral("\\uD83D\\uDE42")),QByteArray("🙂"));
+    EXPECT_EQ(Keybinds::unescape(QString::fromUtf8("a🙂é\\n")), QByteArray("a🙂é\n"));
+    EXPECT_EQ(Keybinds::unescape(QStringLiteral("\\uD83D\\uDE42")), QByteArray("🙂"));
     EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\uD83D")).isEmpty());
     EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\uDE42")).isEmpty());
     EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\uD83D\\u0041")).isEmpty());
@@ -460,62 +505,77 @@ TEST(Keybinds, SupplementaryUnicodeSurvivesLiteralAndEscapedBindings)
 
 TEST_F(ConfigTest, BidiAndScriptReadPolicyHaveExplicitDefaultsAndOverrides)
 {
-    const auto path=write(QStringLiteral("options.json"),"{}");
+    const auto path = write(QStringLiteral("options.json"), "{}");
     SettingsStore defaults(path);
-    EXPECT_EQ(defaults.settings().terminal.bidi,AfterglowVt::BidiMode::Off);
+    EXPECT_EQ(defaults.settings().terminal.bidi, AfterglowVt::BidiMode::Off);
     EXPECT_TRUE(defaults.settings().scriptsAllowReadText);
-    SettingsStore configured(path,QJsonObject{
-        {QStringLiteral("Terminal"),QJsonObject{{QStringLiteral("bidi"),QStringLiteral("rtl")}}},
-        {QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("allowReadText"),false}}}});
-    EXPECT_EQ(configured.settings().terminal.bidi,AfterglowVt::BidiMode::RightToLeft);
+    SettingsStore configured(path, QJsonObject{
+        {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("bidi"), QStringLiteral("rtl")}}},
+        {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("allowReadText"), false}}}});
+    EXPECT_EQ(configured.settings().terminal.bidi, AfterglowVt::BidiMode::RightToLeft);
     EXPECT_FALSE(configured.settings().scriptsAllowReadText);
 }
 
 TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
 {
-    int argc=1; char name[]="config-test"; char* argv[]={name,nullptr};
+    int argc = 1;
+    char name[] = "config-test";
+    char* argv[] = {name, nullptr};
     std::unique_ptr<QCoreApplication> app;
-    if (!QCoreApplication::instance()) app=std::make_unique<QCoreApplication>(argc,argv);
-    const auto theme=m_home.filePath(QStringLiteral("new/sub/theme.json"));
-    const auto config=write(QStringLiteral("watch.json"),QJsonDocument(QJsonObject{
-        {QStringLiteral("Colors"),QJsonObject{{QStringLiteral("theme"),theme},{QStringLiteral("foreground"),QStringLiteral("#112233")}}}
+    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    const auto theme = m_home.filePath(QStringLiteral("new/sub/theme.json"));
+    const auto config = write(QStringLiteral("watch.json"), QJsonDocument(QJsonObject{
+        {QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}, {QStringLiteral("foreground"), QStringLiteral("#112233")}}}
     }).toJson());
     SettingsStore store(config);
-    auto waitFor=[&](Rgb color) {
-        QElapsedTimer timer; timer.start();
-        do { QCoreApplication::processEvents(); QThread::msleep(5);
-            if(same(store.settings().terminal.defaultForeground,color)) return true;
-        } while(timer.elapsed()<2500);
+    auto waitFor = [&](Rgb color) {
+        QElapsedTimer timer;
+        timer.start();
+        do {
+            QCoreApplication::processEvents();
+            QThread::msleep(5);
+            if (same(store.settings().terminal.defaultForeground, color)) return true;
+        } while (timer.elapsed() < 2500);
         return false;
     };
-    auto replace=[&](const QByteArray& value) {
-        QSaveFile file(theme); EXPECT_TRUE(file.open(QIODevice::WriteOnly));
-        EXPECT_EQ(file.write(value),value.size()); EXPECT_TRUE(file.commit());
+    auto replace = [&](const QByteArray& value) {
+        QSaveFile file(theme);
+        EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+        EXPECT_EQ(file.write(value), value.size());
+        EXPECT_TRUE(file.commit());
     };
     ASSERT_TRUE(QDir().mkpath(QFileInfo(theme).absolutePath()));
-    replace("{\"foreground\":\"#445566\"}"); ASSERT_TRUE(waitFor({0x44,0x55,0x66}));
-    replace("{\"foreground\":\"#778899\"}"); ASSERT_TRUE(waitFor({0x77,0x88,0x99}));
-    ASSERT_TRUE(QFile::remove(theme)); ASSERT_TRUE(waitFor({0x11,0x22,0x33}));
-    replace("{\"foreground\":\"#aabbcc\"}"); ASSERT_TRUE(waitFor({0xaa,0xbb,0xcc}));
-    const auto other=write(QStringLiteral("other.json"),"{\"foreground\":\"#123456\"}");
-    QFile file(config); ASSERT_TRUE(file.open(QIODevice::WriteOnly|QIODevice::Truncate));
-    file.write(QJsonDocument(QJsonObject{{QStringLiteral("Colors"),QJsonObject{{QStringLiteral("theme"),other}}}}).toJson());
-    file.close(); ASSERT_TRUE(waitFor({0x12,0x34,0x56}));
+    replace("{\"foreground\":\"#445566\"}");
+    ASSERT_TRUE(waitFor({0x44, 0x55, 0x66}));
+    replace("{\"foreground\":\"#778899\"}");
+    ASSERT_TRUE(waitFor({0x77, 0x88, 0x99}));
+    ASSERT_TRUE(QFile::remove(theme));
+    ASSERT_TRUE(waitFor({0x11, 0x22, 0x33}));
+    replace("{\"foreground\":\"#aabbcc\"}");
+    ASSERT_TRUE(waitFor({0xaa, 0xbb, 0xcc}));
+    const auto other = write(QStringLiteral("other.json"), "{\"foreground\":\"#123456\"}");
+    QFile file(config);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), other}}}}).toJson());
+    file.close();
+    ASSERT_TRUE(waitFor({0x12, 0x34, 0x56}));
     // Old-theme edits must not reload the active settings after switching.
-    int changed=0; QObject::connect(&store,&SettingsStore::changed,&store,[&]{++changed;});
+    // Wait several debounce periods (100 ms each), so a late reload shows.
+    int changed = 0;
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changed; });
     replace("{\"foreground\":\"#ffffff\"}");
-    QElapsedTimer timer;timer.start(); while(timer.elapsed()<300) {QCoreApplication::processEvents();QThread::msleep(5);}
-    EXPECT_EQ(changed,0);
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 500) {
+        QCoreApplication::processEvents();
+        QThread::msleep(5);
+    }
+    EXPECT_EQ(changed, 0);
 }
 
-TEST(Config, WritesOneKeyAndKeepsTheRest)
+TEST_F(ConfigTest, WritesOneKeyAndKeepsTheRest)
 {
-    QTemporaryDir dir;
-    const QString path = dir.filePath("config.json");
-    QFile file(path);
-    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
-    file.write(R"({"Font": {"size": 15}, "Shaders": {"window": ["bloom"]}})");
-    file.close();
+    const QString path = write(QStringLiteral("config.json"), R"({"Font": {"size": 15}, "Shaders": {"window": ["bloom"]}})");
     SettingsStore store(path);
     ASSERT_TRUE(store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("scripted-overview.wall")));
     EXPECT_EQ(store.settings().shaders.overview, QStringLiteral("scripted-overview.wall"));
@@ -542,6 +602,11 @@ TEST_F(ConfigTest, SecurityPoliciesDefaultAndOverride)
     const Settings& c = custom.settings();
     EXPECT_TRUE(c.allowScreenReadback);
     EXPECT_EQ(c.graphicsFileTransfer, Settings::Permission::Deny);
+    // The terminal core enforces them, so they reach its options.
+    EXPECT_TRUE(c.terminal.allowScreenReadback);
+    EXPECT_FALSE(c.terminal.graphicsFileTransfer);
+    EXPECT_FALSE(d.terminal.allowScreenReadback);
+    EXPECT_TRUE(d.terminal.graphicsFileTransfer);
     EXPECT_EQ(c.clipboardWrite, Settings::Permission::Ask);
     // Trimmed, lower case, without the colon or repeats.
     EXPECT_EQ(c.links.schemes, (QStringList{QStringLiteral("https"), QStringLiteral("gemini")}));
@@ -701,12 +766,12 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     EXPECT_EQ(d.links.hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty"));
     EXPECT_EQ(d.quickTerminal.position, QuickTerminalSettings::Position::Top);
     EXPECT_TRUE(d.quickTerminal.screen.isEmpty());
-    EXPECT_EQ(d.audioTuning, AudioTuning{});
-    EXPECT_EQ(d.audioTuning.framerate, 60);
-    EXPECT_EQ(d.audioTuning.smoothing, 65);
-    EXPECT_DOUBLE_EQ(d.audioTuning.extraSmoothing, 0.2);
-    EXPECT_EQ(d.audioTuning.lowerCutoff, 50);
-    EXPECT_EQ(d.audioTuning.higherCutoff, 10000);
+    EXPECT_EQ(d.audio, AudioSettings{});
+    EXPECT_EQ(d.audio.framerate, 60);
+    EXPECT_EQ(d.audio.smoothing, 65);
+    EXPECT_DOUBLE_EQ(d.audio.extraSmoothing, 0.2);
+    EXPECT_EQ(d.audio.lowerCutoff, 50);
+    EXPECT_EQ(d.audio.higherCutoff, 10000);
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Graphics": {"quota": 64},
@@ -717,15 +782,16 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     })"));
     const Settings& c = custom.settings();
     EXPECT_EQ(c.graphicsQuota, std::size_t(64) << 20);
+    EXPECT_EQ(c.terminal.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.notificationRateLimit, 0);
     EXPECT_EQ(c.links.hintAlphabet, QStringLiteral("qwer"));
     EXPECT_EQ(c.quickTerminal.position, QuickTerminalSettings::Position::Bottom);
     EXPECT_EQ(c.quickTerminal.screen, QStringLiteral("DP-1"));
-    EXPECT_EQ(c.audioTuning.framerate, 144); // clamped
-    EXPECT_EQ(c.audioTuning.smoothing, 30);
-    EXPECT_DOUBLE_EQ(c.audioTuning.extraSmoothing, 0.95); // clamped
-    EXPECT_EQ(c.audioTuning.lowerCutoff, 20); // clamped
-    EXPECT_EQ(c.audioTuning.higherCutoff, 12000);
+    EXPECT_EQ(c.audio.framerate, 144); // clamped
+    EXPECT_EQ(c.audio.smoothing, 30);
+    EXPECT_DOUBLE_EQ(c.audio.extraSmoothing, 0.95); // clamped
+    EXPECT_EQ(c.audio.lowerCutoff, 20); // clamped
+    EXPECT_EQ(c.audio.higherCutoff, 12000);
 
     // Repeated letters, a single letter and non-letters fall back to the default.
     for (const char* alphabet : {"aab", "a", "ab1"}) {
@@ -735,4 +801,439 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     SettingsStore quotaFloor(write(QStringLiteral("quota.json"), R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}})"));
     EXPECT_EQ(quotaFloor.settings().graphicsQuota, std::size_t(16) << 20);
     EXPECT_EQ(quotaFloor.settings().notificationRateLimit, 0);
+}
+
+TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
+{
+    // PhosphorConfig::Store asserts this in debug builds; release builds would not notice.
+    const PhosphorConfig::Schema schema = SettingsStore::schema();
+    for (auto group = schema.groups.cbegin(); group != schema.groups.cend(); ++group) {
+        for (const auto& key : group.value()) {
+            if (!key.defaultValue.isValid() || key.expectedType == QMetaType::UnknownType) continue;
+            EXPECT_EQ(key.defaultValue.typeId(), int(key.expectedType)) << (group.key() + QLatin1Char('.') + key.key).toStdString();
+        }
+    }
+}
+
+TEST_F(ConfigTest, StructDefaultsAgreeWithTheSchema)
+{
+    SettingsStore store(write(QStringLiteral("default.json"), "{}"));
+    const Settings defaults;
+    EXPECT_EQ(store.settings().shaders, defaults.shaders);
+    EXPECT_EQ(store.settings().hintPatterns, defaults.hintPatterns);
+    EXPECT_EQ(store.settings().keybinds, defaults.keybinds);
+    EXPECT_EQ(store.settings().window, defaults.window);
+    EXPECT_EQ(store.settings().terminal.cursorShape, defaults.terminal.cursorShape);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, ReloadThatChangesNothingEmitsNothing)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    SettingsStore store(path);
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changes; });
+    store.reload();
+    EXPECT_EQ(changes, 0);
+    // A write emits once; the watcher's reload of the same file adds nothing.
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    store.reload();
+    EXPECT_EQ(changes, 1);
+    EXPECT_EQ(store.settings().window.padding, 12);
+}
+
+TEST_F(ConfigTest, WriteKeepsAFileThatDoesNotParse)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    SettingsStore store(path);
+    write(QStringLiteral("config.json"), R"({"Window": {"padding": 10)");
+    EXPECT_FALSE(store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("pane-deck")));
+    EXPECT_EQ(read(path), QByteArray(R"({"Window": {"padding": 10)"));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not parse")));
+}
+
+TEST_F(ConfigTest, WriteKeepsEditsNotReloadedYetAndLeavesOverridesOut)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Font": {"size": 15}})");
+    QJsonObject overrides;
+    ASSERT_TRUE(SettingsStore::addOverride(overrides, QStringLiteral("Window.initialRows=40")));
+    SettingsStore store(path, overrides);
+    // Saved within the watcher's debounce: not reloaded yet.
+    write(QStringLiteral("config.json"), R"({"Font": {"size": 16}})");
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 9));
+    const QJsonObject file = QJsonDocument::fromJson(read(path)).object();
+    EXPECT_EQ(file.value(QStringLiteral("Font")).toObject().value(QStringLiteral("size")).toInt(), 16);
+    EXPECT_EQ(file.value(QStringLiteral("Window")).toObject().value(QStringLiteral("padding")).toInt(), 9);
+    EXPECT_FALSE(file.value(QStringLiteral("Window")).toObject().contains(QStringLiteral("initialRows")));
+    EXPECT_EQ(store.settings().window.initialRows, 40);
+    EXPECT_FLOAT_EQ(store.settings().font.sizePoints, 16.0f);
+}
+
+TEST_F(ConfigTest, WriteRefusesUndeclaredKeys)
+{
+    const QString path = write(QStringLiteral("config.json"), "{}");
+    SettingsStore store(path);
+    EXPECT_FALSE(store.write(QStringLiteral("Font"), QStringLiteral("sise"), 14));
+    EXPECT_EQ(read(path), QByteArray("{}"));
+}
+
+TEST_F(ConfigTest, ReloadKeepsSettingsUnlessTheFileIsGone)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    SettingsStore store(path);
+    write(QStringLiteral("config.json"), "[]");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 9);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("JSON object")));
+    // A later write must not turn the file into one key.
+    EXPECT_FALSE(store.write(QStringLiteral("Window"), QStringLiteral("initialRows"), 40));
+    EXPECT_EQ(read(path), QByteArray("[]"));
+    // Deleted: the defaults.
+    ASSERT_TRUE(QFile::remove(path));
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, WindowSettings{}.padding);
+    EXPECT_TRUE(store.problems().isEmpty());
+}
+
+TEST_F(ConfigTest, FirstRunFileIsPrivate)
+{
+    const QString path = m_home.filePath(QStringLiteral("fresh/config.json"));
+    SettingsStore store(path);
+    ASSERT_TRUE(QFile::exists(path));
+    const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
+    EXPECT_EQ(QFile::permissions(path) & others, QFileDevice::Permissions{});
+}
+
+TEST_F(ConfigTest, EnumKeysTakeOnlyTheirChoicesInAnyCase)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"cursorShape": "BAR", "bell": "Visual",
+                                                                              "copyOnSelect": "none", "clipboardRead": "DENY"}})"));
+    const Settings& s = store.settings();
+    EXPECT_EQ(s.terminal.cursorShape, AfterglowVt::CursorShape::Bar);
+    EXPECT_EQ(s.bell, Settings::Bell::Visual);
+    // No aliases: "none" is not a choice, so the default.
+    EXPECT_EQ(s.copyOnSelect, Settings::CopyOnSelect::Primary);
+    EXPECT_EQ(s.clipboardRead, QStringLiteral("deny"));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.copyOnSelect must be one of")));
+}
+
+TEST_F(ConfigTest, MalformedValuesAndUnknownKeysAreReported)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Shaders": {"pane": "bloom"}, "Window": {"tabBar": "sometimes"},
+        "Colors": {"divider": "nope", "palette": ["#000000", "nope"]}, "Font": {"sise": 3}, "Fonts": {}})"));
+    const QStringList problems = store.problems();
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Shaders.pane must be a list")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Window.tabBar must be one of")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.divider is not a color")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.palette[1] is not a color")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("unknown setting Font.sise")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("unknown setting group Fonts")));
+    EXPECT_TRUE(store.settings().shaders.pane.isEmpty());
+}
+
+TEST_F(ConfigTest, HintPatternsAreCheckedWhenRead)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Hints": {"patterns": [
+        {"pattern": "a+", "action": "copy"},
+        {"pattern": ""},
+        {"pattern": "b+", "action": "run"},
+        {"pattern": "c+", "action": "command", "command": []},
+        {"pattern": "d+", "action": "command", "command": ["kate", "{path}"]},
+        "e+"]}})"));
+    const QVariantList patterns = store.settings().hintPatterns;
+    ASSERT_EQ(patterns.size(), 2);
+    EXPECT_EQ(patterns[0].toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("a+"));
+    EXPECT_EQ(patterns[1].toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("d+"));
+    for (int i : {1, 2, 3, 5}) {
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.patterns[%1]").arg(i))) << i;
+    }
+
+    QJsonArray many;
+    for (int i = 0; i < 17; ++i) many.append(QJsonObject{{QStringLiteral("pattern"), QStringLiteral("x%1").arg(i)}});
+    SettingsStore capped(write(QStringLiteral("many.json"),
+                               QJsonDocument(QJsonObject{{QStringLiteral("Hints"), QJsonObject{{QStringLiteral("patterns"), many}}}}).toJson()));
+    EXPECT_EQ(capped.settings().hintPatterns.size(), 16);
+    EXPECT_TRUE(mentions(capped.problems(), QStringLiteral("first 16")));
+}
+
+TEST_F(ConfigTest, EnvironmentValuesMustBeStrings)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"env": {"EDITOR": "nvim", "N": 5, "Z": null}}})"));
+    ASSERT_EQ(store.settings().environment.size(), 1u);
+    EXPECT_EQ(store.settings().environment[0].first, "EDITOR");
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.N")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.Z")));
+}
+
+TEST_F(ConfigTest, FamiliesAndShaderReferencesAreTrimmed)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"family": "Iosevka", "boldFamily": " ", "italicFamily": " Mono "},
+                                                                 "Shaders": {"pane": [" bloom", ""]}})"));
+    const Settings& s = store.settings();
+    EXPECT_EQ(s.font.bold.family, "Iosevka");
+    EXPECT_EQ(s.font.italic.family, "Mono");
+    EXPECT_EQ(s.shaders.pane, QStringList{QStringLiteral("bloom")});
+}
+
+TEST(Overrides, RejectUnknownKeys)
+{
+    QJsonObject o;
+    EXPECT_FALSE(SettingsStore::addOverride(o, QStringLiteral("Font.sise=14")));
+    EXPECT_FALSE(SettingsStore::addOverride(o, QStringLiteral("Fonts.size=14")));
+    EXPECT_TRUE(o.isEmpty());
+}
+
+TEST_F(ConfigTest, RelativeThemePathsStartAtTheConfigDirectory)
+{
+    QDir().mkpath(m_home.filePath(QStringLiteral("mine")));
+    write(QStringLiteral("mine/theme.json"), R"({"foreground": "#010203"})");
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "mine/theme.json"}})"));
+    EXPECT_TRUE(same(store.settings().terminal.defaultForeground, {1, 2, 3}));
+    EXPECT_EQ(Themes::candidates(QStringLiteral("mine/theme.json"), {}, m_home.path()),
+              QStringList{m_home.filePath(QStringLiteral("mine/theme.json"))});
+}
+
+TEST_F(ConfigTest, ThemeThatStopsParsingKeepsItsColours)
+{
+    const QString theme = write(QStringLiteral("theme.json"), R"({"foreground": "#445566"})");
+    const QString config = write(QStringLiteral("config.json"),
+                                 QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme},
+                                     {QStringLiteral("foreground"), QStringLiteral("#112233")}}}}).toJson());
+    SettingsStore store(config);
+    ASSERT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
+    write(QStringLiteral("theme.json"), R"({"foreground": )");
+    store.reload();
+    EXPECT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Keeping its last colors")));
+    // Gone is gone: the config's own colours.
+    ASSERT_TRUE(QFile::remove(theme));
+    store.reload();
+    EXPECT_TRUE(same(store.settings().terminal.defaultForeground, {0x11, 0x22, 0x33}));
+}
+
+TEST(Themes, ReadsByteOrderMarksAnyCasePaletteAndReportsIgnoredKeys)
+{
+    const auto bom = Themes::parse("\xEF\xBB\xBF{\"foreground\": \"#010203\"}");
+    ASSERT_TRUE(bom);
+    EXPECT_TRUE(bom->foreground == Rgb(1, 2, 3));
+    const auto palette = Themes::parse(R"({"Palette": ["#0a0b0c"]})");
+    ASSERT_TRUE(palette);
+    EXPECT_TRUE(palette->palette[0] == Rgb(0x0a, 0x0b, 0x0c));
+    QStringList ignored;
+    ASSERT_TRUE(Themes::parse(R"({"foreground": "#000000", "selectionBackgroud": "#111111"})", nullptr, &ignored));
+    EXPECT_EQ(ignored, QStringList{QStringLiteral("selectionBackgroud")});
+}
+
+TEST(Keybinds, ExplicitBindingsTakeKeysFromDefaults)
+{
+    QStringList errors;
+    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("split_right"), QStringLiteral("Ctrl+Shift+C")}}, &errors);
+    EXPECT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+    const QKeyEvent copy = press(Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(kb.match(&copy), Action::SplitRight);
+    EXPECT_TRUE(kb.bindingsOf(Action::Copy).isEmpty());
+    // A text binding wins over a default action too.
+    const Keybinds text = Keybinds::fromMap({{QStringLiteral("text:\\x1b\\r"), QStringLiteral("Ctrl+Shift+C")}});
+    EXPECT_EQ(text.match(&copy), Action::None);
+    EXPECT_EQ(text.matchText(&copy), QByteArray("\x1b\r"));
+}
+
+TEST(Keybinds, TwoExplicitBindingsOfOneKeyAreAnError)
+{
+    QStringList errors;
+    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("split_right"), QStringLiteral("Ctrl+Shift+C")},
+                                           {QStringLiteral("copy"), QStringLiteral("Ctrl+Shift+C")}},
+                                          &errors);
+    EXPECT_EQ(errors.size(), 1);
+    // The first in key order keeps it.
+    const QKeyEvent copy = press(Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(kb.match(&copy), Action::Copy);
+}
+
+TEST(Keybinds, BindingsMustBeStringsOrLists)
+{
+    QStringList errors;
+    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("copy"), 5}}, &errors);
+    EXPECT_EQ(errors.size(), 1);
+    EXPECT_TRUE(kb.bindingsOf(Action::Copy).isEmpty());
+}
+
+TEST(Keybinds, HexEscapesNeedExactlyTheirDigits)
+{
+    EXPECT_EQ(Keybinds::unescape(QStringLiteral("\\x41\\u0042")), QByteArray("AB"));
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\u0x41")).isEmpty());
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\x+1")).isEmpty());
+    EXPECT_TRUE(Keybinds::unescape(QStringLiteral("\\x 1")).isEmpty());
+}
+
+TEST(Keybinds, ShiftTabMatchesBacktab)
+{
+    // Qt reports Shift+Tab as Backtab.
+    const QKeyEvent backtab = press(Qt::Key_Backtab, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(Keybinds::defaults().match(&backtab), Action::PreviousTab);
+}
+
+TEST(Keybinds, ShiftedSymbolsMatchBindingsWithoutShift)
+{
+    // Ctrl++ on a US layout is Ctrl+Shift+=, which Qt reports as Ctrl+Shift+Plus.
+    const Keybinds kb = Keybinds::defaults();
+    const QKeyEvent plus = press(Qt::Key_Plus, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(kb.match(&plus), Action::FontBigger);
+    const QKeyEvent equalize = press(Qt::Key_Equal, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    EXPECT_EQ(kb.match(&equalize), Action::EqualizeSplits);
+    // Letters keep their Shift: Ctrl+Shift+A is not Ctrl+A.
+    const Keybinds letters = Keybinds::fromMap({{QStringLiteral("new_tab"), QStringLiteral("Ctrl+A")}});
+    const QKeyEvent shiftA = press(Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_NE(letters.match(&shiftA), Action::NewTab);
+}
+
+TEST(Keybinds, BindingsOfKeepTheConfigOrder)
+{
+    const Keybinds kb = Keybinds::fromMap({{QStringLiteral("font_bigger"), QStringList{QStringLiteral("Ctrl+Z"), QStringLiteral("Ctrl+A")}}});
+    const QStringList expected{QKeySequence(QStringLiteral("Ctrl+Z")).toString(QKeySequence::NativeText),
+                               QKeySequence(QStringLiteral("Ctrl+A")).toString(QKeySequence::NativeText)};
+    EXPECT_EQ(kb.bindingsOf(Action::FontBigger), expected);
+}
+
+namespace {
+KeyModes modesFor(const QVariantMap& bindings, const QVariantMap& tables, const QString& leader, QStringList* errors)
+{
+    return KeyModes::fromConfig(bindings, tables, leader, 1000, 5000, Keybinds::fromMap(bindings, errors), errors);
+}
+} // namespace
+
+TEST(KeyModes, TableOutlivesAPrefixThatTimedOut)
+{
+    QStringList errors;
+    const auto modes = modesFor({{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}},
+                                {{QStringLiteral("resize"), QVariantMap{{QStringLiteral("split_right"), QStringLiteral("G, G")}}}}, {}, &errors);
+    ASSERT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+    KeyModes::State state;
+    const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
+    const QKeyEvent r = press(Qt::Key_R);
+    const QKeyEvent g = press(Qt::Key_G);
+    modes.press(&leader, state, 0);
+    modes.press(&r, state, 100);
+    EXPECT_TRUE(modes.press(&g, state, 200).consumed);
+    EXPECT_EQ(state.deadline, 1200); // the prefix runs out first
+    KeyModes::expire(state, 1300);
+    EXPECT_TRUE(state.prefix.isEmpty());
+    EXPECT_EQ(state.table, QStringLiteral("resize"));
+    EXPECT_EQ(state.deadline, 5200);
+    modes.press(&g, state, 1400);
+    EXPECT_EQ(modes.press(&g, state, 1500).target, QStringLiteral("split_right"));
+    EXPECT_EQ(state.table, QStringLiteral("resize"));
+}
+
+TEST(KeyModes, ModifierAndLockKeysKeepAPendingSequence)
+{
+    QStringList errors;
+    const auto modes = modesFor({{QStringLiteral("split_right"), QStringLiteral("Leader, E")}}, {}, QStringLiteral("Ctrl+Space"), &errors);
+    KeyModes::State state;
+    const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
+    modes.press(&leader, state, 0);
+    for (int key : {Qt::Key_AltGr, Qt::Key_Super_L, Qt::Key_CapsLock, Qt::Key_NumLock}) {
+        const QKeyEvent modifier = press(key);
+        EXPECT_TRUE(modes.press(&modifier, state, 10).consumed) << key;
+        EXPECT_TRUE(state.active()) << key;
+    }
+    const QKeyEvent e = press(Qt::Key_E);
+    EXPECT_EQ(modes.press(&e, state, 20).target, QStringLiteral("split_right"));
+}
+
+TEST(KeyModes, ShiftedSymbolsAndKeypadKeysMatchSequences)
+{
+    QStringList errors;
+    const auto modes = modesFor({{QStringLiteral("split_right"), QStringLiteral("Leader, %")},
+                                 {QStringLiteral("split_down"), QStringLiteral("Leader, Num+1")}},
+                                {}, QStringLiteral("Ctrl+Space"), &errors);
+    EXPECT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+    KeyModes::State state;
+    const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
+    const QKeyEvent percent = press(Qt::Key_Percent, Qt::ShiftModifier);
+    const QKeyEvent one = press(Qt::Key_1, Qt::KeypadModifier);
+    modes.press(&leader, state, 0);
+    EXPECT_EQ(modes.press(&percent, state, 10).target, QStringLiteral("split_right"));
+    modes.press(&leader, state, 20);
+    EXPECT_EQ(modes.press(&one, state, 30).target, QStringLiteral("split_down"));
+}
+
+TEST(KeyModes, PopKeyTableOutsideATableIsAnError)
+{
+    QStringList errors;
+    const auto modes = modesFor({{QStringLiteral("pop_key_table"), QStringLiteral("Escape")}}, {}, {}, &errors);
+    EXPECT_TRUE(mentions(errors, QStringLiteral("pop_key_table works only inside a key table")));
+    KeyModes::State state;
+    const QKeyEvent escape = press(Qt::Key_Escape);
+    EXPECT_FALSE(modes.press(&escape, state, 0).consumed);
+}
+
+TEST(KeyModes, BareLeaderInAnyCaseBindsAnAction)
+{
+    QStringList errors;
+    const auto modes = modesFor({{QStringLiteral("command_palette"), QStringLiteral("leader")},
+                                 {QStringLiteral("split_right"), QStringLiteral(" LEADER, E")}},
+                                {}, QStringLiteral("Ctrl+B"), &errors);
+    // A bare Leader and a Leader sequence share their first key.
+    EXPECT_TRUE(mentions(errors, QStringLiteral("ambiguous")));
+    QStringList single;
+    const auto alone = modesFor({{QStringLiteral("command_palette"), QStringLiteral("Leader")}}, {}, QStringLiteral("Ctrl+B"), &single);
+    EXPECT_TRUE(single.isEmpty()) << single.join(QLatin1Char('\n')).toStdString();
+    KeyModes::State state;
+    const QKeyEvent leader = press(Qt::Key_B, Qt::ControlModifier);
+    EXPECT_EQ(alone.press(&leader, state, 0).target, QStringLiteral("command_palette"));
+
+    QStringList lower;
+    const auto sequence = modesFor({{QStringLiteral("split_right"), QStringLiteral(" leader, E")}}, {}, QStringLiteral("Ctrl+B"), &lower);
+    EXPECT_TRUE(lower.isEmpty()) << lower.join(QLatin1Char('\n')).toStdString();
+    const QKeyEvent e = press(Qt::Key_E);
+    sequence.press(&leader, state, 0);
+    EXPECT_EQ(sequence.press(&e, state, 10).target, QStringLiteral("split_right"));
+    EXPECT_EQ(sequence.bindingsOf(QStringLiteral("split_right")),
+              QStringList{QKeySequence(QStringLiteral("Ctrl+B, E")).toString(QKeySequence::NativeText)});
+}
+
+TEST(KeyModes, SequencesOfMoreThanFourKeysAreRejected)
+{
+    QStringList errors;
+    modesFor({{QStringLiteral("split_right"), QStringLiteral("Ctrl+A, B, C, D, E")},
+              {QStringLiteral("split_down"), QStringLiteral("Ctrl+A, B, C, Ctrl+,")}},
+             {}, {}, &errors);
+    ASSERT_EQ(errors.size(), 1) << errors.join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(errors[0].contains(QStringLiteral("more than 4 keys")));
+}
+
+TEST(KeyModes, RootMistakesAreReportedOnce)
+{
+    for (const QVariantMap& bindings : {QVariantMap{{QStringLiteral("no_such_action"), QStringLiteral("Ctrl+X")}},
+                                        QVariantMap{{QStringLiteral("copy"), QStringLiteral("Ctrl+Nope")}},
+                                        QVariantMap{{QStringLiteral("text:\\z"), QStringLiteral("Ctrl+Return")}}}) {
+        QStringList errors;
+        modesFor(bindings, {}, {}, &errors);
+        EXPECT_EQ(errors.size(), 1) << errors.join(QLatin1Char('\n')).toStdString();
+    }
+}
+
+TEST(KeyModes, TablesCanBindEscapeAndHoldingTheirKeyTypesNothing)
+{
+    QStringList errors;
+    const auto modes = modesFor({{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}},
+                                {{QStringLiteral("resize"), QVariantMap{{QStringLiteral("split_right"), QStringLiteral("Escape")},
+                                                                        {QStringLiteral("resize_left"), QStringLiteral("H")}}}},
+                                {}, &errors);
+    ASSERT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+    KeyModes::State state;
+    const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
+    const QKeyEvent r = press(Qt::Key_R);
+    const QKeyEvent heldR = press(Qt::Key_R, Qt::NoModifier, true);
+    const QKeyEvent escape = press(Qt::Key_Escape);
+    const QKeyEvent heldH = press(Qt::Key_H, Qt::NoModifier, true);
+    modes.press(&leader, state, 0);
+    modes.press(&r, state, 10);
+    EXPECT_TRUE(modes.press(&heldR, state, 20).consumed);
+    EXPECT_EQ(state.table, QStringLiteral("resize"));
+    // A held table key repeats its action.
+    EXPECT_EQ(modes.press(&heldH, state, 30).target, QStringLiteral("resize_left"));
+    EXPECT_EQ(modes.press(&escape, state, 40).target, QStringLiteral("split_right"));
+    EXPECT_EQ(state.table, QStringLiteral("resize"));
 }

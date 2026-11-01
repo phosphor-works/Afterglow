@@ -6,6 +6,8 @@
 Afterglow supports single `.luau` files and local packages.
 A package is a directory inside `scripts/` beside the active configuration file.
 The directory contains a `package.json` manifest.
+The directory can be a symlink, for example to a Git checkout.
+Afterglow checks the package paths against the directory that the symlink points to.
 
 ## Manifest
 
@@ -39,16 +41,20 @@ Cycles and undeclared imports cause an error.
 | Packages in one package tree | 16 |
 | Modules | 64 |
 | Each source file | 256 KiB |
+| Each JSON file: `package.json`, `config.json`, a pack's `metadata.json` | 64 KiB |
 | Total source, manifest and configuration data | 1 MiB |
+
+A package over a limit does not load. `afterglow ctl scripts` shows the error.
+An error in a module names the module file and its line.
 
 ## Configuration and assets
 
-An optional `config.json` beside the manifest replaces its corresponding `config` values.
+An optional `config.json` beside the manifest adds or replaces top-level `config` values.
 `on_load(ev)` receives `ev.package` and `ev.storage`.
 
 | Object | Contents |
 | --- | --- |
-| `ev.package` | ID, version, API version, home path, configuration and asset paths |
+| `ev.package` | ID, version, API version, user home directory (`home`), configuration and asset paths |
 | `ev.storage` | Stored value, schema version and revision |
 
 Assets can be themes, shader presets or images.
@@ -57,7 +63,7 @@ Asset declarations supply paths. They do not activate a theme or shader.
 Paths and symlinks must remain inside the package root.
 
 Afterglow monitors source files, dependency manifests and configuration together.
-A change replaces the complete instance.
+A change replaces the complete instance. This includes a change to `shaders` or `pulses`.
 Compilation, initialization or migration errors keep the previous working instance.
 
 ## Saved state
@@ -83,13 +89,17 @@ Read the current state before you merge changes and try again.
 
 | State limit | Value |
 | --- | --- |
-| Encoded size | 256 KiB |
-| Nesting depth | 16 |
-| Values | 8192 |
+| Encoded size of the value | 255 KiB |
+| Nesting depth, the top-level object included | 16 |
+| Values, tables and the top-level object included | 8192 |
+| Each string | 65,536 characters |
+| Each object key | 256 characters |
+| Each number | Finite, magnitude at most 9,007,199,254,740,991 (2^53 − 1) |
 
+A `state_write` over a limit fails with `state_error` and writes nothing.
 The top-level value must be a JSON-compatible object table.
 Nested lists are permitted.
-Nonfinite numbers, unsupported values, symlinks and corrupt files cause an error.
+Unsupported values, symlinks and corrupt files cause an error.
 Afterglow keeps corrupt data for manual recovery.
 Single-file scripts use schema version 1 and the same state effects.
 
@@ -97,6 +107,8 @@ Single-file scripts use schema version 1 and the same state effects.
 
 Increase `state_version` when the stored structure changes.
 Export `migrate(value, oldVersion, newVersion)` to return the new object.
+Afterglow calls `migrate` once, from the stored version to the current `state_version`.
+Handle every older version in that one call.
 Migration and `on_load` each use the 100 ms action deadline.
 
 Afterglow validates migration output before activation.
@@ -114,7 +126,7 @@ A package can ship shader packs with the script that uses them.
 
 ```json
 {
-  "id": "scripted-overview",
+  "id": "my-extension",
   "shaders": {"path": "shaders", "suggests": {"overview": "wall"}},
   "pulses": {"ripple": 4}
 }
@@ -122,7 +134,11 @@ A package can ship shader packs with the script that uses them.
 
 `shaders.path` names a directory inside the package. The default is `shaders`.
 Each directory in it is a shader pack. It can contain 1 to 16 packs.
-A pack's `metadata.json` must declare the ID `<package>.<pack>`, such as `scripted-overview.wall`.
+A pack directory name has 1 to 64 letters, digits, `_` or `-`.
+The directory `shared` holds files that packs include. It is not a pack.
+The name `none` is reserved.
+A pack's `metadata.json` must declare the ID `<package>.<pack>`, such as `my-extension.wall`.
+A symlinked pack must point inside the package, and passes the same checks.
 Configuration refers to the pack by that ID only.
 So a package cannot collide with another package or replace a bundled pack.
 
@@ -138,6 +154,8 @@ It writes the one you select to the configuration file. A chain key gains the pa
 
 `pulses` names effect numbers from 4 to 255 that the package's packs draw.
 `afterglow.pulse(pane, "ripple")` then plays effect 4.
+A pulse name uses letters, digits, `_` and `-`. It cannot be only digits.
+The names `portal`, `flash` and `shake` are reserved.
 The [scripted overview](../data/examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
 
 ## Reload and removal
@@ -146,9 +164,11 @@ The [scripted overview](../data/examples/packages/scripted-overview/README.md) s
 afterglow ctl scripts
 ```
 
-This command lists active, disabled, failed and last-good instances.
+This command lists active, disabled, failed, last-good and superseded instances.
 It includes paths, errors and execution counters.
 Correct the file to try loading it again.
+A package that failed on its stored state loads again when you correct or remove `state/scripts/<id>.json`.
+A disabled package loads again when its source or configuration changes.
 
 Module memory survives a reload when the source does not change.
 Replacement, removal and process exit remove that memory.

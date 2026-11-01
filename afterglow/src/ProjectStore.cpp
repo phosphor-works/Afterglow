@@ -58,10 +58,10 @@ bool ProjectStore::validName(const QString& name)
 }
 QString ProjectStore::validate(const QJsonObject& document)
 {
-    if (document.value(QStringLiteral("version")) != QJsonValue(1)) return QStringLiteral("Unsupported project version (expected 1)");
+    if (document.value(QStringLiteral("version")) != QJsonValue(1)) return tr("Unsupported project version (expected 1)");
     const auto tabsValue = document.value(QStringLiteral("tabs"));
     if (!tabsValue.isArray() || tabsValue.toArray().isEmpty() || tabsValue.toArray().size() > 16)
-        return QStringLiteral("A project needs 1–16 tabs");
+        return tr("A project needs 1–16 tabs");
     QSet<QString> tabs, panes;
     for (const auto value : tabsValue.toArray()) {
         const auto tab = value.toObject();
@@ -70,11 +70,11 @@ QString ProjectStore::validate(const QJsonObject& document)
         if (!identity(id) || tabs.contains(id.toString()) || !string(tab.value(QStringLiteral("title")), 256)
             || !tree(tab.value(QStringLiteral("tree")), panes, local, 0)
             || !local.contains(tab.value(QStringLiteral("active_pane")).toString()))
-            return QStringLiteral("Invalid project tab/tree, duplicate identity or pane limit (32 panes, depth 16)");
+            return tr("Invalid tab or split tree, a duplicate ID, or more than 32 panes or depth 16");
         tabs.insert(id.toString());
     }
-    if (!tabs.contains(document.value(QStringLiteral("active_tab")).toString())) return QStringLiteral("Invalid active project tab");
-    if (QJsonDocument(document).toJson(QJsonDocument::Compact).size() > MaxBytes) return QStringLiteral("Project exceeds 1 MiB");
+    if (!tabs.contains(document.value(QStringLiteral("active_tab")).toString())) return tr("Invalid active project tab");
+    if (QJsonDocument(document).toJson(QJsonDocument::Compact).size() > MaxBytes) return tr("Project exceeds 1 MiB");
     return {};
 }
 QStringList ProjectStore::names() const
@@ -86,31 +86,32 @@ QStringList ProjectStore::names() const
 }
 QString ProjectStore::read(const QString& name, QJsonObject& document) const
 {
-    if (!validName(name)) return QStringLiteral("Use 1–64 letters, digits, underscores or hyphens for the project name");
+    if (!validName(name)) return tr("Use 1–64 letters, digits, underscores or hyphens for the project name");
     const auto path = QDir(m_directory).filePath(name + QStringLiteral(".json"));
     const QFileInfo info(path);
-    if (info.isSymLink() || !info.isFile() || info.size() > MaxBytes) return QStringLiteral("Project is missing, not a regular file, or exceeds 1 MiB");
+    if (info.isSymLink() || !info.isFile() || info.size() > MaxBytes) return tr("Project is missing, not a regular file, or exceeds 1 MiB");
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return file.errorString();
     const auto bytes = file.read(MaxBytes + 1);
-    if (bytes.size() > MaxBytes) return QStringLiteral("Project exceeds 1 MiB");
+    if (bytes.size() > MaxBytes) return tr("Project exceeds 1 MiB");
     QJsonParseError parse;
     const auto json = QJsonDocument::fromJson(bytes, &parse);
-    if (parse.error != QJsonParseError::NoError || !json.isObject()) return QStringLiteral("Invalid project JSON: ") + parse.errorString();
+    if (parse.error != QJsonParseError::NoError) return tr("Invalid project JSON: %1").arg(parse.errorString());
+    if (!json.isObject()) return tr("The project file does not hold a JSON object");
     const auto error = validate(json.object());
     if (error.isEmpty()) document = json.object();
     return error;
 }
 QString ProjectStore::save(const QString& name, const QJsonObject& document, bool overwrite) const
 {
-    if (!validName(name)) return QStringLiteral("Use 1–64 letters, digits, underscores or hyphens for the project name");
+    if (!validName(name)) return tr("Use 1–64 letters, digits, underscores or hyphens for the project name");
     if (const auto error = validate(document); !error.isEmpty()) return error;
-    if (!QDir().mkpath(m_directory)) return QStringLiteral("Cannot create project directory");
+    if (!QDir().mkpath(m_directory)) return tr("Cannot create project directory");
     QLockFile lock(QDir(m_directory).filePath(QStringLiteral(".save.lock")));
-    if (!lock.tryLock(0)) return QStringLiteral("Another project save is in progress");
+    if (!lock.tryLock(0)) return tr("Another project save is in progress");
     const auto path = QDir(m_directory).filePath(name + QStringLiteral(".json"));
-    if (QFileInfo(path).isSymLink()) return QStringLiteral("Cannot replace a project symlink");
-    if (!overwrite && QFileInfo::exists(path)) return QStringLiteral("Project already exists. Confirm replacement or choose another name");
+    if (QFileInfo(path).isSymLink()) return tr("Cannot replace a project symlink");
+    if (!overwrite && QFileInfo::exists(path)) return tr("Project already exists. Confirm replacement or choose another name");
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) return file.errorString();
     const auto bytes = QJsonDocument(document).toJson(QJsonDocument::Compact);

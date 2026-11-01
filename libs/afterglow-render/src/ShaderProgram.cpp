@@ -160,8 +160,14 @@ bool ShaderProgram::loadObj(const QByteArray& data, ShaderGeometry& geometry, QS
         const auto fields = line.split(' ');
         const auto type = fields.front();
         if (type == "v" || type == "vn" || type == "vt") {
-            const int components = type == "vt" ? 2 : 3;
-            if (fields.size() != components + 1) return fail("OBJ needs XYZ positions/normals and UV coordinates");
+            // v x y z, with an optional w or an RGB vertex colour (ignored);
+            // vn x y z; vt u, with optional v and w (w ignored).
+            const qsizetype count = fields.size() - 1;
+            if (type == "v" && count != 3 && count != 4 && count != 6)
+                return fail("OBJ positions need x y z, optionally w or r g b");
+            if (type == "vn" && count != 3) return fail("OBJ normals need x y z");
+            if (type == "vt" && (count < 1 || count > 3)) return fail("OBJ texture coordinates need u, optionally v and w");
+            const int components = type == "vt" ? int(std::min<qsizetype>(count, 2)) : 3;
             float values[3]{};
             for (int i = 0; i < components; ++i) {
                 bool ok = false; values[i] = fields[i + 1].toFloat(&ok);
@@ -197,7 +203,10 @@ bool ShaderProgram::loadObj(const QByteArray& data, ShaderGeometry& geometry, QS
                 }
             }
             const auto point = [&](int i) { const auto* p = triangle[i].position; return QVector3D(p[0], p[1], p[2]); };
-            const auto normal = QVector3D::crossProduct(point(1) - point(0), point(2) - point(0)).normalized();
+            // A face of zero area has no direction: give it +Z rather than a
+            // zero normal, which normalize() turns into NaN.
+            auto normal = QVector3D::crossProduct(point(1) - point(0), point(2) - point(0)).normalized();
+            if (normal.isNull()) normal = QVector3D(0, 0, 1);
             for (int i = 0; i < 3; ++i) {
                 if (!hasNormal[i]) { triangle[i].normal[0] = normal.x(); triangle[i].normal[1] = normal.y(); triangle[i].normal[2] = normal.z(); }
                 vertices.push_back(triangle[i]);
@@ -213,7 +222,7 @@ bool ShaderProgram::loadObj(const QByteArray& data, ShaderGeometry& geometry, QS
 }
 
 void ShaderProgram::sceneMatrices(const std::vector<ShaderSceneObject>& objects, const std::array<float, 32>& params,
-                                  float time, TerminalSceneUniforms& out)
+                                  double time, TerminalSceneUniforms& out)
 {
     std::array<QMatrix4x4, MaxSceneObjects> world;
     const auto count = std::min<std::size_t>(objects.size(), MaxSceneObjects);
@@ -239,6 +248,17 @@ void ShaderProgram::sceneMatrices(const std::vector<ShaderSceneObject>& objects,
 
 std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource& source, QString* error)
 {
+    return compileStage(source, error, false);
+}
+
+std::shared_ptr<ShaderProgram> ShaderProgram::compileStage(const ShaderProgramSource& source, QString* error, bool bufferPass)
+{
+    // PostChain draws a final pass on targets with one colour attachment and
+    // no depth: a mesh or a second output there fails pipeline creation.
+    if (!bufferPass && (!source.geometry.vertexCode.isEmpty() || source.depthOutput)) {
+        if (error) *error = QStringLiteral("Meshes and depth outputs need a buffer pass");
+        return nullptr;
+    }
     const auto& buffers = source.buffers;
     if (buffers.size() > MaxShaderBuffers) { if (error) *error = QStringLiteral("Too many buffer passes"); return nullptr; }
     for (const auto& buffer : buffers) {
@@ -311,8 +331,10 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     program->m_geometry = geometry;
     program->m_id = source.id;
     static const QRegularExpression usesTime(QStringLiteral(
-        "\\b(?:iTime|iTimeDelta|iTimeHi|iFrame|uEventAges|uSignal|cursorAge|focusAge|signalAge)\\b"));
+        "\\b(?:iTime|iTimeDelta|iTimeHi|iFrame|iDate|uEventAges|uSignal|cursorAge|focusAge|signalAge"
+        "|timeAngle|timeCycle|timeSeconds)\\b"));
     static const QRegularExpression usesScrollback(QStringLiteral("\\buScrollback\\b"));
+    static const QRegularExpression usesMouse(QStringLiteral("\\b(?:iMouse|uWindowMouse)\\b"));
     const QString expanded = fragment + QLatin1Char('\n') + vertex;
     const QString author = authorText(expanded);
     program->m_readsPreviousText = includesModule(expanded, QLatin1String("AFTERGLOW_TERMINAL_HISTORY_GLSL"));
@@ -320,6 +342,7 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
     program->m_requiresHdr = source.highDynamicRange;
     program->m_windowBackground = source.windowBackground;
     program->m_readsScrollback = author.contains(usesScrollback);
+    program->m_readsMouse = author.contains(usesMouse);
     program->m_animated = author.contains(usesTime) || program->m_readsPreviousText;
     // Spinning objects move without the shader reading time.
     for (const auto& object : geometry.objects)
@@ -341,21 +364,20 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compile(const ShaderProgramSource&
         bufferSource.code = settings.code;
         bufferSource.geometry = settings.geometry;
         bufferSource.depthOutput = source.useDepthBuffer || settings.depthBuffer;
-        auto buffer = compile(bufferSource, error);
+        auto buffer = compileStage(bufferSource, error, true);
         if (!buffer) return nullptr;
         program->m_animated |= settings.feedback || buffer->animated();
         program->m_readsPreviousText |= buffer->readsPreviousText();
         program->m_readsScrollback |= buffer->readsScrollback();
+        program->m_readsMouse |= buffer->readsMouse();
         program->m_requiresAudio |= buffer->requiresAudio();
         program->m_buffers.push_back(std::move(buffer));
-        program->m_bufferSettings.push_back(settings);
-    }
-    if (!buffers.empty()) {
-        const auto& first = buffers.front();
-        program->m_bufferFeedback = first.feedback;
-        program->m_halfFloatBuffer = first.halfFloat;
-        program->m_bufferScale = first.scale;
-        program->m_bufferNearest = first.nearest;
+        // The compiled pass holds the code and geometry; instance() copies
+        // the settings for every occurrence, so keep them small.
+        auto stored = settings;
+        stored.geometry = {};
+        stored.code.clear();
+        program->m_bufferSettings.push_back(std::move(stored));
     }
     return program;
 }

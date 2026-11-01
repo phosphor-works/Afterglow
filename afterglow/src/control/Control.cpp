@@ -6,6 +6,7 @@
 #include "../Pane.h"
 #include "../TerminalWindow.h"
 #include "../app/NotificationCenter.h"
+#include "../app/WindowStart.h"
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
 
@@ -28,9 +29,27 @@ Control::Control(SettingsStore& settings, WindowFactory newWindow, QObject* pare
 {
 }
 
+namespace {
+QString noPane(quint32 id)
+{
+    return QStringLiteral("no pane %1").arg(id);
+}
+
+// At most LIMIT UTF-16 units, without splitting a surrogate pair.
+QString leftWhole(const QString& text, qsizetype limit)
+{
+    if (text.size() <= limit) return text;
+    return text.left(limit > 0 && text.at(limit - 1).isHighSurrogate() ? limit - 1 : limit);
+}
+} // namespace
+
 void Control::attachWindow(TerminalWindow* window)
 {
+    m_windows.removeAll(nullptr);
     m_windows.append(window);
+    connect(window, &QWindow::activeChanged, this, [this, guard = QPointer<TerminalWindow>(window)] {
+        if (guard && guard->isActive()) m_lastActive = guard;
+    });
     connect(window, &TerminalWindow::paneClosing, this, [this](quint32 pane, quint32 tab, quint32 window) {
         m_closingPanes.insert(pane, {tab, window});
     });
@@ -61,6 +80,7 @@ void Control::attachPane(TerminalWindow* window, Pane* pane)
 {
     const quint32 id = pane->id();
     connect(pane, &QObject::destroyed, this, [this, id] {
+        m_status.remove(id);
         const auto identity = m_closingPanes.take(id);
         Q_EMIT paneClosedDetailed(id, identity.first, identity.second);
         Q_EMIT paneClosed(id);
@@ -81,18 +101,21 @@ void Control::attachPane(TerminalWindow* window, Pane* pane)
         if (!guard) {
             return;
         }
-        // The newest record's state and text stand for the pane.
+        // The newest record's state and text stand for the pane. A record
+        // also changes for progress alone, which this signal does not carry.
         QString state;
         QString text;
         quint64 serial = 0;
         for (const PaneStatusRecord& r : guard->status()) {
             if (r.serial >= serial) {
                 serial = r.serial;
-                static const char* const Names[] = {"idle", "working", "done", "blocked", "error"};
-                state = QString::fromLatin1(Names[int(r.state)]);
+                state = statusStateName(r.state);
                 text = r.message.isEmpty() ? r.title : r.message;
             }
         }
+        const QPair<QString, QString> current{state, text};
+        if (const auto last = m_status.constFind(id); last != m_status.cend() && *last == current) return;
+        m_status.insert(id, current);
         Q_EMIT statusChanged(id, state, text);
     });
     Q_UNUSED(window);
@@ -117,6 +140,13 @@ Pane* Control::find(quint32 id, TerminalWindow** window) const
     return nullptr;
 }
 
+PaneInfo Control::describe(TerminalWindow* w, Pane* p)
+{
+    return PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->workingDirectory(),
+                    p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p,
+                    p->contextLabel(), w->tabIdOf(p)};
+}
+
 QList<PaneInfo> Control::panes() const
 {
     QList<PaneInfo> out;
@@ -125,9 +155,7 @@ QList<PaneInfo> Control::panes() const
             continue;
         }
         for (Pane* p : w->panes()) {
-            out.append(PaneInfo{p->id(), w->id(), w->tabIndexOf(p), p->title(), p->workingDirectory(),
-                                p->runningCommand(), p->cols(), p->rows(), w->isActive() && w->focusedPane() == p,
-                                p->contextLabel(), w->tabIdOf(p)});
+            out.append(describe(w, p));
         }
     }
     return out;
@@ -135,12 +163,37 @@ QList<PaneInfo> Control::panes() const
 
 std::optional<PaneInfo> Control::paneInfo(quint32 id) const
 {
-    for (const PaneInfo& p : panes()) {
-        if (p.id == id) {
-            return p;
-        }
+    // Each pane's directory and size cost syscalls and its lock: describe only this one.
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? std::optional(describe(window, pane)) : std::nullopt;
+}
+
+std::optional<quint32> Control::focusedPane() const
+{
+    for (const QPointer<TerminalWindow>& w : m_windows) {
+        if (w && w->isActive() && w->focusedPane()) return w->focusedPane()->id();
     }
+    if (m_lastActive && m_lastActive->focusedPane()) return m_lastActive->focusedPane()->id();
     return std::nullopt;
+}
+
+QString Control::statusStateName(AfterglowVt::StatusState state)
+{
+    using AfterglowVt::StatusState;
+    switch (state) {
+    case StatusState::Working:
+        return QStringLiteral("working");
+    case StatusState::Blocked:
+        return QStringLiteral("blocked");
+    case StatusState::Done:
+        return QStringLiteral("done");
+    case StatusState::Error:
+        return QStringLiteral("error");
+    case StatusState::Idle:
+        break;
+    }
+    return QStringLiteral("idle");
 }
 
 QVariantMap Control::paneMap(const PaneInfo& p)
@@ -195,13 +248,6 @@ bool Control::isStructuralAction(const QString& action)
     return false;
 }
 
-namespace {
-QString noPane(quint32 id)
-{
-    return QStringLiteral("no pane %1").arg(id);
-}
-} // namespace
-
 QString Control::sendText(quint32 id, const QString& text)
 {
     Pane* p = find(id);
@@ -211,9 +257,9 @@ QString Control::sendText(quint32 id, const QString& text)
     return p->sendInput(text.toStdString()) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
-QString Control::readText(quint32 id, TextScope scope, QString& out, bool trusted)
+QString Control::readText(quint32 id, TextScope scope, QString& out)
 {
-    if (!trusted && !m_settings.settings().control.allowReadText) {
+    if (!m_settings.settings().control.allowReadText) {
         return QStringLiteral("reading pane text is off (Control.allowReadText)");
     }
     Pane* p = find(id);
@@ -241,7 +287,7 @@ QString Control::readText(quint32 id, TextScope scope, QString& out, bool truste
 QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QVariantMap& result)
 {
     if (!m_settings.settings().scriptsAllowReadText)
-        return QStringLiteral("Script text queries are disabled (Scripts.allowReadText)");
+        return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
     if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
     auto* pane = find(id);
     if (!pane) return noPane(id);
@@ -262,7 +308,7 @@ QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QV
 QString Control::semanticRegions(quint32 id, QVariantMap& result)
 {
     if (!m_settings.settings().scriptsAllowReadText)
-        return QStringLiteral("Script text queries are disabled (Scripts.allowReadText)");
+        return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
     auto* pane = find(id);
     if (!pane) return noPane(id);
     result = pane->semanticRegions();
@@ -272,11 +318,11 @@ QString Control::semanticRegions(quint32 id, QVariantMap& result)
 QString Control::readRegion(quint32 id, const QString& region, int limit, QVariantMap& result)
 {
     if (!m_settings.settings().scriptsAllowReadText)
-        return QStringLiteral("Script text queries are disabled (Scripts.allowReadText)");
+        return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
     if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
     bool ok = false;
     const auto regionId = region.toULongLong(&ok);
-    if (!ok || !regionId || QString::number(regionId) != region) return QStringLiteral("Invalid region ID");
+    if (!ok || !regionId || QString::number(regionId) != region) return QStringLiteral("invalid region ID");
     auto* pane = find(id);
     if (!pane) return noPane(id);
     result = pane->readRegion(regionId, std::size_t(limit));
@@ -314,10 +360,6 @@ QString launchOptions(const QString& cwd, const QStringList& command, const QVar
     }
     return {};
 }
-}
-QString Control::split(quint32 id, bool right, const QStringList& command, quint32& created)
-{
-    return split(id, right ? QStringLiteral("right") : QStringLiteral("down"), command, {}, created);
 }
 QString Control::split(quint32 id, const QString& direction, const QStringList& command, const QVariantMap& input, quint32& created)
 {
@@ -371,7 +413,7 @@ QString Control::newWindow(const QString& cwd, const QStringList& command, const
     auto* added = window->openTab(options, &error);
     if (!added) { window->deleteLater(); return error.isEmpty() ? QStringLiteral("cannot start program") : error; }
     created = added->id();
-    window->show();
+    showNew(window);
     return {};
 }
 
@@ -403,7 +445,7 @@ QString Control::setTitle(quint32 id, const QString& title)
     if (!p) {
         return noPane(id);
     }
-    p->setUserTitle(title.left(256));
+    p->setUserTitle(leftWhole(title, 256));
     return {};
 }
 
@@ -435,7 +477,7 @@ QString Control::signalsBatch(quint32 id, const QString& scope, const QVariantLi
         return QStringLiteral("signal scope must be pane, tab or window");
     }
     if (values.isEmpty() || values.size() > Pane::SignalCount) {
-        return QStringLiteral("a signal batch needs 1 to 8 channels");
+        return QStringLiteral("a signal batch needs 1 to %1 channels").arg(Pane::SignalCount);
     }
     QList<QPair<int, float>> channels;
     QSet<int> seen;
@@ -475,18 +517,17 @@ QString Control::signalsBatch(quint32 id, const QString& scope, const QVariantLi
 
 QString Control::notify(quint32 id, const QString& title, const QString& body)
 {
-    TerminalWindow* w = nullptr;
-    Pane* p = find(id, &w);
+    Pane* p = find(id);
     if (!p) {
         return noPane(id);
     }
-    NotificationCenter::instance().showSimple(p, w, title.left(256), body.left(2048));
+    NotificationCenter::instance().showNotice(p, leftWhole(title, 256), leftWhole(body, 2048));
     return {};
 }
 
 QString Control::copy(const QString& text)
 {
-    QGuiApplication::clipboard()->setText(text.left(1 << 22));
+    QGuiApplication::clipboard()->setText(leftWhole(text, 1 << 22));
     return {};
 }
 
@@ -549,13 +590,13 @@ QString Control::scriptDialog(const QString& owner, quint32 id, const QVariantMa
 {
     TerminalWindow* window = nullptr;
     auto* pane = find(id, &window);
-    return pane ? window->showScriptDialog(owner, pane, effect, std::move(reply)) : QStringLiteral("Pane closed");
+    return pane ? window->showScriptDialog(owner, pane, effect, std::move(reply)) : noPane(id);
 }
 QString Control::scriptAppearance(const QString& owner, quint32 id, const QVariantMap& effect)
 {
     TerminalWindow* window = nullptr;
     auto* pane = find(id, &window);
-    return pane ? window->setScriptAppearance(owner, pane, effect) : QStringLiteral("Pane closed");
+    return pane ? window->setScriptAppearance(owner, pane, effect) : noPane(id);
 }
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {
@@ -574,9 +615,13 @@ QString Control::scriptKeyMode(const QString& owner, quint32 id, const QString& 
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
     if (!pane) return noPane(id);
-    // One key mode per script: starting one elsewhere ends the old one.
-    for (auto other : m_windows) if (other && other != window) other->endScriptKeyMode(owner);
-    return window->startScriptKeyMode(owner, pane, label);
+    // One key mode per script: starting one elsewhere ends the old one, but
+    // only once the new one holds the keyboard.
+    const QString error = window->startScriptKeyMode(owner, pane, label);
+    if (error.isEmpty()) {
+        for (auto other : m_windows) if (other && other != window) other->endScriptKeyMode(owner);
+    }
+    return error;
 }
 
 void Control::endScriptKeyMode(const QString& owner)
@@ -598,7 +643,7 @@ QString Control::overviewMove(quint32 id, quint32 target, int step, QVariantMap&
     if (!pane) return noPane(id);
     TerminalWindow* targetWindow = nullptr;
     Pane* to = target ? find(target, &targetWindow) : nullptr;
-    if (target && (!to || targetWindow != window)) return QStringLiteral("That pane is not in this window's overview");
+    if (target && (!to || targetWindow != window)) return QStringLiteral("pane %1 is not in this window's overview").arg(target);
     return window->scriptOverviewMove(pane, to, step, result);
 }
 
@@ -623,24 +668,26 @@ QString Control::movePane(quint32 id, quint32 target, const QString& placement, 
 {
     TerminalWindow *source = nullptr, *destination = nullptr;
     auto* pane = find(id, &source);
-    if (!pane) return QStringLiteral("Pane closed");
+    if (!pane) return noPane(id);
     Pane* beside = target ? find(target, &destination) : nullptr;
-    if (target && !beside) return QStringLiteral("Target pane closed");
+    if (target && !beside) return noPane(target);
     SplitTree::Direction direction = SplitTree::Direction::Right;
     if (placement == QLatin1String("left")) direction = SplitTree::Direction::Left;
     else if (placement == QLatin1String("up")) direction = SplitTree::Direction::Up;
     else if (placement == QLatin1String("down")) direction = SplitTree::Direction::Down;
     else if (placement != QLatin1String("right") && placement != QLatin1String("new-tab") && placement != QLatin1String("new-window"))
-        return QStringLiteral("Invalid pane placement");
+        return QStringLiteral("placement must be left, right, up, down, new-tab or new-window");
     const bool newTab = placement == QLatin1String("new-tab");
     const bool newWindow = placement == QLatin1String("new-window");
-    if ((newTab || newWindow) && target) return QStringLiteral("New destinations require target 0");
-    if (!newTab && !newWindow && !beside) return QStringLiteral("A target pane is required");
-    if (pane == beside) return QStringLiteral("Cannot move a pane beside itself");
+    if ((newTab || newWindow) && target) return QStringLiteral("new-tab and new-window need target 0");
+    if (!newTab && !newWindow && !beside) return QStringLiteral("a target pane is required");
+    if (pane == beside) return QStringLiteral("cannot move a pane beside itself");
     if (newTab) destination = source;
     if (newWindow) destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
-    if (!destination) return QStringLiteral("Cannot create destination window");
+    if (!destination) return QStringLiteral("cannot open a window");
     const auto error = source->movePaneTo(pane, destination, beside, direction);
+    // A window made for the move must not stay hidden and keep afterglow running.
+    if (!error.isEmpty() && newWindow) destination->deleteLater();
     if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
     return error;
 }
@@ -649,12 +696,18 @@ QString Control::detachTab(quint32 id, QVariantMap& result)
 {
     TerminalWindow* source = nullptr;
     auto* pane = find(id, &source);
-    if (!pane) return QStringLiteral("Pane closed");
+    if (!pane) return noPane(id);
     auto* destination = m_newWindow ? m_newWindow({}, {}, true) : nullptr;
-    if (!destination) return QStringLiteral("Cannot create destination window");
+    if (!destination) return QStringLiteral("cannot open a window");
     const auto error = source->detachTabTo(pane, destination);
+    if (!error.isEmpty()) destination->deleteLater();
     if (error.isEmpty()) if (const auto info = paneInfo(id)) result = paneMap(*info);
     return error;
+}
+
+void Control::showNew(TerminalWindow* window) const
+{
+    showForStartMode(*window, m_settings.settings().window);
 }
 
 } // namespace Afterglow

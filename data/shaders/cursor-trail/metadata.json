@@ -27,7 +27,7 @@
         },
         {
             "id": "minDistance",
-            "name": "Minimum Jump (cells)",
+            "name": "Minimum jump (cells)",
             "group": "Trail",
             "type": "float",
             "default": 1.5,

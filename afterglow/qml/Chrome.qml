@@ -15,8 +15,13 @@ Item {
 
     SystemPalette { id: systemPalette }
 
+    // How long the history scrollbar takes to fade in or out.
+    readonly property int scrollbarFade: 200
+
     // Called by the host for every pointer event: true if the chrome takes it.
-    function wantsPointer(x: real, y: real): bool {
+    // The history scrollbar does not take the wheel, so the wheel over it still
+    // scrolls the pane or reaches the program.
+    function wantsPointer(x: real, y: real, wheel: bool): bool {
         if (scriptDialog.active) return true
         if (contextMenu.visible || titlePrompt.visible || confirmPrompt.visible)
             return true
@@ -24,7 +29,7 @@ Item {
             return true
         if (commandPalette.visible || pasteConfirm.visible || root.controller.clipboardPromptOpen)
             return true
-        if (historyScroll.visible) {
+        if (historyScroll.visible && !wheel) {
             const p = historyScroll.mapFromItem(root, x, y)
             if (historyScroll.contains(p)) return true
         }
@@ -35,12 +40,35 @@ Item {
         return false
     }
 
-    // Split labels: a small title in each pane's top-right corner.
+    // A new overlay can open over another and take the focus. When it closes,
+    // the focus goes back to the topmost overlay still open; otherwise that
+    // overlay would keep the keyboard with no item to take the keys.
+    function restoreFocus(): void {
+        const overlays = [contextMenu, scriptDialog.item, confirmPrompt, titlePrompt, commandPalette,
+                          pasteConfirm, clipboardPrompt, searchBar]
+        for (const overlay of overlays) {
+            if (overlay && overlay.visible) {
+                overlay.takeFocus()
+                return
+            }
+        }
+    }
+    function overlayClosed(open: bool): void {
+        if (!open)
+            Qt.callLater(root.restoreFocus)
+    }
+
+    // Split labels: a small title in each pane's top-right corner. By count,
+    // not by the list: the list changes on every frame of a split animation,
+    // and a new list would make every label (and its spinner) again.
     Repeater {
-        model: root.controller.paneTitles
+        model: root.controller.paneTitles.length
         delegate: Rectangle {
-            required property var modelData
-            x: modelData.x + modelData.width - width - 8
+            required property int index
+            readonly property var modelData: root.controller.paneTitles[index] || ({ x: 0, y: 0, width: 0, height: 0, title: "" })
+            // Keep clear of the history scrollbar on the focused pane.
+            readonly property real scrollbarSpace: modelData.focused && historyScroll.visible ? historyScroll.width : 0
+            x: modelData.x + modelData.width - width - 8 - scrollbarSpace
             y: modelData.y + 6
             width: Math.min(label.implicitWidth + 16 + (paneStatus.visible ? paneStatus.width + 6 : 0)
                             + (paneContext.visible ? paneContext.width + 6 : 0), modelData.width * 0.5)
@@ -54,6 +82,8 @@ Item {
             StatusIndicator {
                 id: paneStatus
                 controller: root.controller
+                // The window passes the pointer here only for the scrollbar.
+                hoverable: false
                 status: parent.modelData.status || ({})
                 anchors.left: parent.left
                 anchors.leftMargin: 6
@@ -89,7 +119,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width - 16 - (paneStatus.visible ? paneStatus.width + 2 : 0) - (paneContext.visible ? paneContext.width + 4 : 0)
                 horizontalAlignment: Text.AlignHCenter
-                text: parent.modelData.title.length > 0 ? parent.modelData.title : "shell"
+                text: (parent.modelData.title || "").length > 0 ? parent.modelData.title : qsTr("Shell")
                 textFormat: Text.PlainText
                 elide: Text.ElideMiddle
                 color: systemPalette.windowText
@@ -111,8 +141,11 @@ Item {
         x: root.controller.history.x || 0
         y: root.controller.history.y || 0
         height: root.controller.history.height || 0
-        width: 12
+        width: root.controller.history.width || 0
         orientation: Qt.Vertical
+        // The Basic and Fusion handles show only while active or always on.
+        // Whether the bar shows at all is up to visible and opacity below.
+        policy: QQC.ScrollBar.AlwaysOn
         size: root.controller.history.size === undefined ? 1 : root.controller.history.size
         visible: size < 1
         active: hovered || pressed
@@ -124,7 +157,7 @@ Item {
         property bool revealed: false
         property real fromBottom: 0
         opacity: !fades || revealed || hovered || pressed ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: root.scrollbarFade; easing.type: Easing.OutCubic } }
         Timer {
             id: hideTimer
             interval: root.controller.history.hideDelay === undefined ? 1200 : root.controller.history.hideDelay
@@ -165,6 +198,7 @@ Item {
         anchors.right: root.right
         anchors.margins: 8
         visible: root.controller.searchOpen
+        onVisibleChanged: root.overlayClosed(visible)
     }
 
     // URL mode: a label to type over each link.
@@ -174,7 +208,6 @@ Item {
             required property var modelData
             x: modelData.x
             y: modelData.y
-            z: 50
             width: hintText.implicitWidth + 8
             height: hintText.implicitHeight + 2
             radius: 3
@@ -184,8 +217,11 @@ Item {
                 anchors.centerIn: parent
                 textFormat: Text.StyledText
                 // Typed letters dimmed, the rest bold.
-                text: "<span style='color:#80000000'>" + parent.modelData.label.substring(0, parent.modelData.typed)
-                      + "</span><b>" + parent.modelData.label.substring(parent.modelData.typed) + "</b>"
+                function escaped(text: string): string {
+                    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                }
+                text: "<span style='color:#80000000'>" + escaped(parent.modelData.label.substring(0, parent.modelData.typed))
+                      + "</span><b>" + escaped(parent.modelData.label.substring(parent.modelData.typed)) + "</b>"
                 color: "#000000"
                 font.family: "monospace"
                 font.pixelSize: 12
@@ -193,12 +229,16 @@ Item {
         }
     }
 
-    // Unicode input: the code being typed and what it makes.
+    // Unicode input: the code being typed and what it makes. Below the
+    // cursor, or above it when the cursor is on the last rows; always inside
+    // the window.
     Rectangle {
         visible: root.controller.unicodeInput.active === true
-        z: 60
-        x: root.controller.unicodeInput.x || 0
-        y: (root.controller.unicodeInput.y || 0) + 4
+        readonly property real below: (root.controller.unicodeInput.y || 0) + 4
+        readonly property real above: (root.controller.unicodeInput.top === undefined
+                                       ? below - 4 : root.controller.unicodeInput.top) - height - 4
+        x: Math.max(0, Math.min(root.controller.unicodeInput.x || 0, root.width - width))
+        y: below + height <= root.height ? below : Math.max(0, above)
         width: unicodeRow.implicitWidth + 16
         height: unicodeRow.implicitHeight + 10
         radius: 6
@@ -228,15 +268,20 @@ Item {
         anchors.right: root.right
         anchors.margins: 12
         visible: root.controller.keyMode.length > 0
-        width: keyModeLabel.implicitWidth + 16
+        width: Math.min(keyModeLabel.implicitWidth + 16, root.width * 0.6)
         height: keyModeLabel.implicitHeight + 16
         color: systemPalette.highlight
         radius: 4
+        // The label says how to leave the mode: only the window knows which
+        // keys do (a script key mode sees Escape itself).
         QQC.Label {
             id: keyModeLabel
-            anchors.centerIn: keyModeBadge
-            text: qsTr("%1 · Esc to cancel").arg(root.controller.keyMode)
+            anchors.fill: keyModeBadge
+            anchors.margins: 8
+            horizontalAlignment: Text.AlignHCenter
+            text: root.controller.keyMode
             textFormat: Text.PlainText
+            elide: Text.ElideRight
             color: systemPalette.highlightedText
         }
     }
@@ -263,9 +308,11 @@ Item {
     }
 
     ClipboardPrompt {
+        id: clipboardPrompt
         controller: root.controller
         anchors.fill: root
         visible: root.controller.clipboardPromptOpen
+        onVisibleChanged: root.overlayClosed(visible)
     }
 
     PasteConfirm {
@@ -273,6 +320,7 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.pasteConfirmOpen
+        onVisibleChanged: root.overlayClosed(visible)
     }
 
     CommandPalette {
@@ -280,6 +328,7 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.paletteOpen
+        onVisibleChanged: root.overlayClosed(visible)
     }
 
     TitlePrompt {
@@ -287,6 +336,7 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.titlePrompt.open === true
+        onVisibleChanged: root.overlayClosed(visible)
     }
 
     ConfirmPrompt {
@@ -294,12 +344,14 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.confirmPrompt.open === true
+        onVisibleChanged: root.overlayClosed(visible)
     }
 
     Loader {
         id: scriptDialog
         anchors.fill: root
         active: root.controller.scriptDialog.open === true
+        onActiveChanged: root.overlayClosed(active)
         sourceComponent: Component { ScriptDialog { controller: root.controller } }
     }
 
@@ -308,5 +360,6 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.contextMenu.open === true
+        onVisibleChanged: root.overlayClosed(visible)
     }
 }

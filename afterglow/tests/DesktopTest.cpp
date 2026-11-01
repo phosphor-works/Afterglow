@@ -54,6 +54,26 @@ TEST(FileDrop, QuotesPathsWithoutExecutingCommands)
     EXPECT_TRUE(droppedFiles(&mime).isEmpty());
 }
 
+TEST(FileDrop, BackslashCannotUnbalanceFishQuotes)
+{
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/x\\")), QUrl::fromLocalFile(QStringLiteral("/tmp/(echo INJECTED)"))});
+    // Every backslash and quote is escaped outside the quotes, so bash, zsh and fish agree.
+    EXPECT_EQ(droppedFiles(&mime), QStringLiteral("'/tmp/x'\\\\'' '/tmp/(echo INJECTED)'"));
+}
+TEST(FileDrop, RemoteHostsAndFormatCharactersAreRejected)
+{
+    QMimeData mime;
+    mime.setUrls({QUrl(QStringLiteral("file://server/share/a"))});
+    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    EXPECT_TRUE(localFilePath(QUrl(QStringLiteral("file://server/share/a"))).isEmpty());
+    EXPECT_EQ(localFilePath(QUrl(QStringLiteral("file://localhost/tmp/a"))), QStringLiteral("/tmp/a"));
+    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a") + QChar(0x202e) + QStringLiteral("txt.sh"))});
+    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+    mime.setUrls({QUrl::fromLocalFile(QStringLiteral("/tmp/a") + QChar(0x9b) + QStringLiteral("b"))});
+    EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+}
+
 TEST(FileDrop, BoundsEncodedBytesIncludingSeparators)
 {
     QMimeData mime;
@@ -65,4 +85,33 @@ TEST(FileDrop, BoundsEncodedBytesIncludingSeparators)
     const QString half = QStringLiteral("/") + QString(524285, QLatin1Char('x'));
     mime.setUrls({QUrl::fromLocalFile(half), QUrl::fromLocalFile(half)});
     EXPECT_TRUE(droppedFiles(&mime).isEmpty());
+}
+
+TEST(DesktopText, ScrolledViewportReportsOnlyRemovedAndNewLines)
+{
+    const auto edits = textEdits(QStringLiteral("one\ntwo\n$ "), QStringLiteral("two\n$ ls\nfile"));
+    ASSERT_EQ(edits.size(), 2);
+    EXPECT_EQ(edits[0].position, 0);
+    EXPECT_EQ(edits[0].removed, QStringLiteral("one\n"));
+    EXPECT_TRUE(edits[0].inserted.isEmpty());
+    EXPECT_EQ(edits[1].position, 6);
+    EXPECT_TRUE(edits[1].removed.isEmpty());
+    EXPECT_EQ(edits[1].inserted, QStringLiteral("ls\nfile"));
+}
+TEST(DesktopText, EditsTrimSharedPrefixAndSuffix)
+{
+    const auto edits = textEdits(QStringLiteral("abc\nxyz"), QStringLiteral("abc\nx1yz"));
+    ASSERT_EQ(edits.size(), 1);
+    EXPECT_EQ(edits[0].position, 5);
+    EXPECT_TRUE(edits[0].removed.isEmpty());
+    EXPECT_EQ(edits[0].inserted, QStringLiteral("1"));
+    EXPECT_TRUE(textEdits(QStringLiteral("same"), QStringLiteral("same")).isEmpty());
+}
+TEST(DesktopText, EditsNeverSplitSurrogatePairs)
+{
+    const auto edits = textEdits(QString::fromUtf8("a\xf0\x9f\x98\x80"), QString::fromUtf8("a\xf0\x9f\x98\x81"));
+    ASSERT_EQ(edits.size(), 1);
+    EXPECT_EQ(edits[0].position, 1);
+    EXPECT_EQ(edits[0].removed, QString::fromUtf8("\xf0\x9f\x98\x80"));
+    EXPECT_EQ(edits[0].inserted, QString::fromUtf8("\xf0\x9f\x98\x81"));
 }

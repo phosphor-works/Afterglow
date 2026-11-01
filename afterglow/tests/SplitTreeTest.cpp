@@ -3,6 +3,9 @@
 
 #include "SplitTree.h"
 
+#include <QJsonObject>
+#include <QString>
+
 #include <gtest/gtest.h>
 
 using Afterglow::Pane;
@@ -187,4 +190,73 @@ TEST(SplitTree, RotationCyclesPanesThroughAnUnchangedLayout)
     EXPECT_EQ(tree.rectOf(fake(2)), slots[1]);
     EXPECT_EQ(tree.rectOf(fake(3)), slots[2]);
     EXPECT_EQ(tree.paneCount(), 3);
+}
+
+TEST(SplitTree, LayoutRoundTripRetainsNestedRatios)
+{
+    SplitTree original(fake(1));
+    original.split(fake(1), fake(2), SplitTree::Direction::Right);
+    original.split(fake(2), fake(3), SplitTree::Direction::Down);
+    original.layout(QRect(0, 0, 1200, 800), 2);
+    ASSERT_TRUE(original.resizePane(fake(1), SplitTree::Neighbour::Right, 100, 2, QSize(40, 20)));
+    original.layout(QRect(0, 0, 1200, 800), 2);
+    const auto encode = [](Pane* p) {
+        return QJsonObject{{QStringLiteral("id"), QString::number(reinterpret_cast<quintptr>(p))}};
+    };
+    const auto saved = original.snapshot(encode);
+    auto restored = SplitTree::restore(saved, [](const QJsonObject& p) {
+        return reinterpret_cast<Pane*>(p[QStringLiteral("id")].toString().toULongLong());
+    });
+    ASSERT_NE(restored, nullptr);
+    restored->layout(QRect(0, 0, 1200, 800), 2);
+    EXPECT_EQ(restored->snapshot(encode), saved);
+    for (std::uintptr_t n : {1, 2, 3}) EXPECT_EQ(restored->rectOf(fake(n)), original.rectOf(fake(n)));
+    EXPECT_EQ(restored->paneCount(), 3);
+}
+
+TEST(SplitTree, NullIsNeverAPane)
+{
+    SplitTree t(fake(1));
+    t.split(fake(1), fake(2), SplitTree::Direction::Right);
+    t.layout(QRect(0, 0, 201, 100), 1);
+    // Inner nodes hold no pane: null must not match the root split.
+    EXPECT_FALSE(t.contains(nullptr));
+    EXPECT_TRUE(t.rectOf(nullptr).isNull());
+    EXPECT_FALSE(t.resizePane(nullptr, SplitTree::Neighbour::Right, 10, 1, QSize(10, 10)));
+    t.split(nullptr, fake(3), SplitTree::Direction::Down);
+    EXPECT_EQ(t.paneCount(), 2);
+}
+
+TEST(SplitTree, DividerDragStopsWhenAnotherSplitTakesItsPlace)
+{
+    // 1 | (2 / 3): the right side is a vertical split.
+    SplitTree t(fake(1));
+    t.split(fake(1), fake(2), SplitTree::Direction::Right);
+    t.split(fake(2), fake(3), SplitTree::Direction::Down);
+    t.layout(QRect(0, 0, 201, 101), 1);
+    const auto d = t.dividerAt(QPoint(100, 50), 0);
+    ASSERT_TRUE(d.has_value());
+    ASSERT_FALSE(d->vertical);
+    // Closing pane 1 moves the (2 / 3) split into the root node's place.
+    ASSERT_TRUE(t.remove(fake(1)));
+    t.layout(QRect(0, 0, 201, 101), 1);
+    const QRect before = t.rectOf(fake(2));
+    t.dragDivider(*d, QPoint(150, 80), 1, QSize(10, 10));
+    t.layout(QRect(0, 0, 201, 101), 1);
+    EXPECT_EQ(t.rectOf(fake(2)), before);
+}
+
+TEST(SplitTree, SplitKeepsBothSidesAtTheMinimum)
+{
+    SplitTree t(fake(1));
+    t.layout(QRect(0, 0, 201, 100), 1);
+    t.split(fake(1), fake(2), SplitTree::Direction::Right, 0.0004, 1, QSize(40, 20));
+    t.layout(QRect(0, 0, 201, 100), 1);
+    EXPECT_EQ(t.rectOf(fake(2)).width(), 40);
+    // Without a minimum, a fraction too small to keep still saves as a ratio below 1.
+    SplitTree u(fake(1));
+    u.split(fake(1), fake(2), SplitTree::Direction::Down, 1e-17);
+    const auto ratio = u.snapshot([](Pane*) { return QJsonObject{}; })[QStringLiteral("ratio")].toDouble();
+    EXPECT_GT(ratio, 0.0);
+    EXPECT_LT(ratio, 1.0);
 }

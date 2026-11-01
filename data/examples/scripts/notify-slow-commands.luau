@@ -19,7 +19,8 @@ function script.on_command_finished(ev)
         return nil
     end
     local seconds = math.floor(ev.duration_ms / 1000)
-    local outcome = ev.exit_code == 0 and "finished" or ("failed (" .. ev.exit_code .. ")")
+    -- -1: the shell reported no exit code, so the result is unknown.
+    local outcome = ev.exit_code > 0 and ("failed (" .. ev.exit_code .. ")") or "finished"
     return afterglow.notify(ev.command ~= "" and ev.command or "Command", outcome .. " after " .. seconds .. " s")
 end
 

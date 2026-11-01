@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "ShaderRefs.h"
+
 #include <AfterglowRender/PostChain.h>
 #include <AfterglowRender/ShaderProgram.h>
 
@@ -10,6 +12,7 @@
 
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -30,29 +33,23 @@ namespace Afterglow {
 /// Terminal shader packs by id: Phosphor shader packs (a directory with
 /// metadata.json and its stages) written against the terminal contract in
 /// data/shaders/shared. Packs come from ~/.config/afterglow/shaders, the system
-/// data directories and the bundled packs. Compiled programs are cached and
-/// rebuilt when their files change.
+/// data directories and the bundled packs, and from loaded script packages'
+/// shaders/ directories as "<package>.<pack>". When two packs answer to one
+/// name, the user's wins over the system's, and the system's over the bundled.
+/// Compiled programs are cached and rebuilt when their files change.
 class ShaderLibrary : public QObject
 {
     Q_OBJECT
 
 public:
+    /// Decoded images that the configured chains, or the script overrides of
+    /// one window, may hold at once.
+    static constexpr qint64 MaxDecodedImageBytes = 256LL * 1024 * 1024;
+
     explicit ShaderLibrary(QObject* parent = nullptr);
     ~ShaderLibrary() override;
 
-    /// Shader references for each chain (see AfterglowRender::ShaderChains).
-    struct Refs
-    {
-        QStringList background;
-        QStringList text;
-        QStringList cursor;
-        QStringList pane;
-        QStringList window;
-        QString overview; ///< the pane overview; empty for none
-        QString tabTransition; ///< tab switches; empty for none
-        QString paneEffects; ///< panes opening and closing; empty for none
-        bool operator==(const Refs&) const = default;
-    };
+    using Refs = ShaderRefs;
     /// Compiles the configured chains. Shaders that fail are logged and skipped.
     /// @p params maps a reference to its parameter overrides.
     AfterglowRender::ShaderChains build(const Refs& refs, const QVariantMap& params);
@@ -65,17 +62,32 @@ public:
     QString presetParameters(const QString& ref, const QString& id, QVariantMap& values) const;
     QString savePreset(const QString& ref, const QString& name, const QVariantMap& values, QVariantMap& result);
     QVariantList parameters(const QString& ref) const;
+    /// Checks values that a script or a preset sends. Image paths must stay
+    /// inside the pack: only the config file can name an image elsewhere.
     QString validateParameters(const QString& ref, const QVariantMap& values,
                                AfterglowRender::ShaderParameterValues& packed) const;
     /// Curves for parameter transitions.
     const PhosphorAnimation::CurveRegistry& curves() const { return *m_curves; }
 
 Q_SIGNALS:
-    /// A pack or shader file changed on disk; chains should be rebuilt.
+    /// A configured pack or one of its files changed on disk, or script
+    /// packages loaded or unloaded: chains should be rebuilt. Rebuilding
+    /// retires every script override.
     void changed();
 
 private:
+    struct PackIndex;
+
     AfterglowRender::ShaderProgramPtr load(const QString& ref, const QVariantMap& params);
+    AfterglowRender::ShaderProgramPtr compile(const QString& key, const QString& ref, const QVariantMap& params,
+                                              QStringList& watched);
+    /// The shared/ directories a pack's includes search, most important first:
+    /// its own package's, then the user's, the system's and the bundled.
+    QStringList includeDirs(const QString& packDir) const;
+    /// Drops cached and failed programs whose files changed or whose
+    /// reference now names another pack. True if it dropped any.
+    bool invalidate();
+    void reindex();
 
     void seedPresets();
     void refreshWatches();
@@ -84,13 +96,18 @@ private:
     QMap<QString, QString> m_packageShaders; ///< script packages' pack directories, by package ID
     /// A registry over the base directories and the packages' directories.
     void buildRegistry();
+    std::unique_ptr<PackIndex> m_index; ///< references to packs, by priority
     std::unique_ptr<PhosphorShaders::ShaderPresetStore> m_presets;
     std::unique_ptr<PhosphorAnimation::CurveRegistry> m_curves;
-    QStringList m_includeDirs;
     PhosphorFsLoader::WatchedFileSet m_files;
     QHash<QString, QStringList> m_dependencies; // cache key -> resolved and missing candidate paths
+    QHash<QString, QByteArray> m_signatures; // cache key -> the state of its dependencies when loaded
+    QHash<QString, QString> m_resolved; // cache key -> the pack directory its reference named
     QHash<QString, AfterglowRender::ShaderProgramPtr> m_cache;
     QHash<QString, QString> m_failed; // cache key -> error, so a broken shader is reported once
+    QSet<QString> m_desired; // cache keys of the last build
+    QSet<QString> m_overBudget; // keys of m_desired dropped for the image budget, not loaded again
+    QString m_paramsChecked; // the Shaders.params and references last checked for unused entries
 };
 
 } // namespace Afterglow

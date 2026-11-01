@@ -1,6 +1,9 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 local history = {}
+-- State refuses object keys over 256 characters, so favorites and templates
+-- keep only paths of at most 256 bytes. Recent entries are values, not keys.
+history.MaxKey = 256
 local function entry(value)
     return type(value) == "table" and (value.kind == "directory" or value.kind == "project")
         and type(value.value) == "string" and #value.value > 0 and #value.value <= 4096
@@ -11,7 +14,7 @@ function history.normalize(value)
     local count = 0
     if type(value.favorites) == "table" then
         for path, pinned in pairs(value.favorites) do
-            if type(path) == "string" and #path <= 4096 and pinned == true and count < 100 then
+            if type(path) == "string" and #path <= history.MaxKey and pinned == true and count < 100 then
                 result.favorites[path] = true; count += 1
             end
         end
@@ -21,11 +24,16 @@ function history.normalize(value)
             if entry(item) and #result.recent < 50 then table.insert(result.recent, {kind=item.kind, value=item.value}) end
         end
     end
-    count = 0
+    -- Templates only for listed directories: at most 150, so no cap drops the
+    -- one just stored. A shell ("") is the default and needs no entry.
+    local listed = table.clone(result.favorites)
+    for _, item in ipairs(result.recent) do
+        if item.kind == "directory" and #item.value <= history.MaxKey then listed[item.value] = true end
+    end
     if type(value.templates) == "table" then
         for path, layout in pairs(value.templates) do
-            if type(path) == "string" and #path <= 4096 and type(layout) == "string" and #layout <= 64 and count < 100 then
-                result.templates[path]=layout; count+=1
+            if listed[path] and type(layout) == "string" and #layout > 0 and #layout <= 64 then
+                result.templates[path] = layout
             end
         end
     end
@@ -48,7 +56,9 @@ function history.remember(value, item, layout)
         if (old.kind ~= item.kind or old.value ~= item.value) and #recent < 50 then table.insert(recent,old) end
     end
     value.recent=recent
-    if item.kind == "directory" and layout ~= nil then value.templates[item.value]=layout end
+    if item.kind == "directory" and layout ~= nil then
+        if layout == "" then value.templates[item.value] = nil else value.templates[item.value] = layout end
+    end
     return history.normalize(value)
 end
 return history

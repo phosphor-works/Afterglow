@@ -9,7 +9,6 @@
 #include <Qt>
 
 class QKeyEvent;
-class QInputEvent;
 
 namespace Afterglow {
 

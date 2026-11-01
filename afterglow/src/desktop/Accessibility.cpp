@@ -4,11 +4,10 @@
 #include "../TerminalWindow.h"
 #include <QAccessibleObject>
 #include <QGuiApplication>
-#include <QQuickWindow>
 #include <QQuickItem>
 #include <QPointer>
+#include <optional>
 #include <private/qaccessiblequickitem_p.h>
-#include <algorithm>
 
 namespace Afterglow {
 namespace {
@@ -19,9 +18,18 @@ TerminalWindow* owner(Pane* pane)
 }
 class AccessiblePane final : public QAccessibleObject, public QAccessibleTextInterface {
 public:
-    explicit AccessiblePane(Pane* p) : QAccessibleObject(p) {}
+    explicit AccessiblePane(Pane* p) : QAccessibleObject(p) {
+        m_output = QObject::connect(p, &Pane::contentChanged, p, [this] { m_cached.reset(); });
+    }
+    ~AccessiblePane() override { QObject::disconnect(m_output); }
     Pane* pane() const { return qobject_cast<Pane*>(object()); }
-    TerminalText snapshot() const { return pane()->accessibleText(); }
+    // A query loop asks for each character in turn. One capture serves it until the
+    // content changes or the next frame refreshes it.
+    TerminalText snapshot() const {
+        if (!m_cached) m_cached = pane()->accessibleText();
+        return *m_cached;
+    }
+    void invalidate() { m_cached.reset(); }
     QWindow* window() const override { return owner(pane()); }
     QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(window()); }
     QAccessibleInterface* child(int) const override { return nullptr; }
@@ -38,7 +46,7 @@ public:
     QAccessible::State state() const override {
         QAccessible::State s;
         auto* w = owner(pane());
-        s.focusable = true; s.selectableText = true; s.multiLine = true;
+        s.selectableText = true; s.multiLine = true;
         s.readOnly = true; s.invisible = !w || !w->isVisible() || w->accessiblePaneRect(pane()).isEmpty();
         s.focusable = !s.invisible;
         s.focused = w && w->isActive() && w->focusedPane() == pane();
@@ -69,9 +77,15 @@ public:
         if (start == end) { removeSelection(0); return; }
         pane()->startSelection(s.cells[start], AfterglowVt::SelectionMode::Normal, true);
         pane()->extendSelection(s.cells[end - 1]);
-        pane()->contentChanged();
+        m_cached.reset();
+        Q_EMIT pane()->contentChanged();
     }
-    void removeSelection(int index) override { if (index == 0) { pane()->clearSelection(); pane()->contentChanged(); } }
+    void removeSelection(int index) override {
+        if (index != 0 || snapshot().selectionStart < 0) return;
+        pane()->clearSelection();
+        m_cached.reset();
+        Q_EMIT pane()->contentChanged();
+    }
     QRect characterRect(int offset) const override {
         const auto s = snapshot();
         if (offset < 0 || offset >= s.cells.size()) return {};
@@ -96,14 +110,19 @@ public:
         *start = 0; *end = count; return QStringLiteral("read-only:true;");
     }
     void notify() {
-        const auto next = snapshot();
-        if (next.text != previous.text) {
-            int prefix = 0;
-            while (prefix < next.text.size() && prefix < previous.text.size() && next.text[prefix] == previous.text[prefix]) ++prefix;
-            // Do not split a UTF-16 surrogate pair at the event boundary.
-            if (prefix && prefix < next.text.size() && next.text[prefix].isLowSurrogate()) --prefix;
-            QAccessibleTextUpdateEvent event(pane(), prefix, previous.text.mid(prefix), next.text.mid(prefix));
-            QAccessible::updateAccessibility(&event);
+        m_cached = pane()->accessibleText();
+        const auto next = *m_cached;
+        for (const auto& edit : textEdits(previous.text, next.text)) {
+            if (edit.inserted.isEmpty()) {
+                QAccessibleTextRemoveEvent event(pane(), edit.position, edit.removed);
+                QAccessible::updateAccessibility(&event);
+            } else if (edit.removed.isEmpty()) {
+                QAccessibleTextInsertEvent event(pane(), edit.position, edit.inserted);
+                QAccessible::updateAccessibility(&event);
+            } else {
+                QAccessibleTextUpdateEvent event(pane(), edit.position, edit.removed, edit.inserted);
+                QAccessible::updateAccessibility(&event);
+            }
         }
         if (next.cursor != previous.cursor) {
             QAccessibleTextCursorEvent event(pane(), next.cursor); QAccessible::updateAccessibility(&event);
@@ -114,6 +133,9 @@ public:
         previous = next;
     }
     TerminalText previous;
+private:
+    mutable std::optional<TerminalText> m_cached;
+    QMetaObject::Connection m_output;
 };
 class AccessibleWindow final : public QAccessibleObject {
 public:
@@ -174,8 +196,12 @@ void installTerminalAccessibility()
 void updateTerminalAccessibility(TerminalWindow* w)
 {
     if (!QAccessible::isActive()) return;
-    for (auto* p : w->panes()) if (w->tabIdOf(p) == w->activeTabId()) {
-        if (auto* a = dynamic_cast<AccessiblePane*>(QAccessible::queryAccessibleInterface(p))) a->notify();
+    for (auto* p : w->panes()) {
+        auto* a = dynamic_cast<AccessiblePane*>(QAccessible::queryAccessibleInterface(p));
+        if (!a) continue;
+        // Background tabs and panes hidden by zoom are not in the tree and send no events.
+        if (w->tabIdOf(p) == w->activeTabId() && !w->accessiblePaneRect(p).isEmpty()) a->notify();
+        else a->invalidate();
     }
 }
 }

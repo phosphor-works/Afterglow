@@ -29,6 +29,12 @@ QQC.ToolBar {
     property real dragX: 0
     // Set for the frame a move lands in, so tabs take their new places at once.
     property bool settling: false
+    // How long the strip scrolls and a tab slides to its new place.
+    readonly property int scrollDuration: 120
+    readonly property int slideDuration: 140
+    // What revealCurrent last saw, so a title change alone does not scroll.
+    property int revealedTab: -1
+    property int revealedCount: -1
     // Double-clicks, from two presses: the window passes both on as presses.
     property double lastPress: 0
     property int lastPressTab: -2
@@ -69,9 +75,26 @@ QQC.ToolBar {
             strip.contentX = left + tabWidth - strip.width
     }
 
+    // Scroll to the current tab when it or the number of tabs changes. Titles
+    // also emit tabsChanged, and they must not undo the user's wheel scroll.
     Connections {
         target: bar.controller
-        function onTabsChanged() { Qt.callLater(bar.revealCurrent) }
+        function onTabsChanged() {
+            const current = bar.controller.currentTab
+            const count = bar.controller.tabTitles.length
+            if (current === bar.revealedTab && count === bar.revealedCount)
+                return
+            bar.revealedTab = current
+            bar.revealedCount = count
+            Qt.callLater(bar.revealCurrent)
+        }
+    }
+    // The delegates are made again when the count changes, and a drag under
+    // way gets neither its release nor a cancel.
+    onCountChanged: {
+        dragFrom = -1
+        dragTo = -1
+        settling = false
     }
     onWidthChanged: Qt.callLater(revealCurrent)
 
@@ -97,7 +120,7 @@ QQC.ToolBar {
 
         Behavior on contentX {
             enabled: bar.dragFrom < 0
-            NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+            NumberAnimation { duration: bar.scrollDuration; easing.type: Easing.OutCubic }
         }
 
         WheelHandler {
@@ -118,6 +141,7 @@ QQC.ToolBar {
 
                 required property int index
                 readonly property string title: bar.controller.tabTitles[index] || ""
+                readonly property string shownTitle: title.length > 0 ? title : qsTr("Shell")
                 readonly property bool current: index === bar.controller.currentTab
                 readonly property bool dragged: index === bar.dragFrom
                 readonly property bool hovered: body.containsMouse || closeButton.hovered
@@ -129,7 +153,7 @@ QQC.ToolBar {
 
                 Behavior on x {
                     enabled: !tab.dragged && !bar.settling
-                    NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                    NumberAnimation { duration: bar.slideDuration; easing.type: Easing.OutCubic }
                 }
 
                 QQC.TabButton {
@@ -137,7 +161,8 @@ QQC.ToolBar {
                     checked: tab.current
                     down: tab.dragged || body.pressed
                     focusPolicy: Qt.NoFocus
-                    Accessible.name: tab.title || qsTr("Shell")
+                    Accessible.name: tab.shownTitle
+                    Accessible.description: status.description
                     onClicked: bar.controller.activateTab(tab.index)
                 }
 
@@ -200,7 +225,7 @@ QQC.ToolBar {
                     anchors.verticalCenterOffset: 1
                     anchors.leftMargin: contextChip.visible || status.visible ? 6 : 14
                     anchors.rightMargin: 4
-                    text: tab.title.length > 0 ? tab.title : "afterglow"
+                    text: tab.shownTitle
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
                     color: bar.ink

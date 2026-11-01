@@ -21,8 +21,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 namespace Afterglow {
 
@@ -39,12 +41,12 @@ struct PaneStatusRecord
     quint64 serial = 0;
 };
 
-/// One terminal: the emulator state, the child process on its pty, and the
-/// snapshot the window renders from. The pty thread feeds the terminal under
-/// m_mutex; everything else runs on the GUI thread.
 class FileTransfer;
 class DragDrop;
 
+/// One terminal: the emulator state, the child process on its pty, and the
+/// snapshot the window renders from. The pty thread feeds the terminal under
+/// m_mutex; everything else runs on the GUI thread.
 class Pane : public QObject, private AfterglowVt::ITerminalHost, private AfterglowPty::IPtyListener
 {
     Q_OBJECT
@@ -104,11 +106,14 @@ public:
     const QString& launchDirectory() const { return m_launchDirectory; }
     void setLaunch(const QString& cwd, const QStringList& command) { m_launchDirectory = cwd; m_launchCommand = command; }
     void setLaunchedProgram(const QString& name) { m_launchedProgram = name; }
-    /// Keeps the pane open when its program exits, until a key is pressed
-    /// (afterglow --hold).
+    /// Keeps the pane open after an unsuccessful exit, until a key is
+    /// pressed (the fallback panes of a restored project).
     void setHoldOnFailure(bool hold) { m_holdOnFailure = hold; }
+    /// Keeps the pane open whenever its program exits, until a key is
+    /// pressed (afterglow --hold).
     void setHold(bool hold) { m_hold = hold; }
-    /// The program exited and the pane is held open: a key press closes it.
+    /// No process could start: shows a notice and holds the pane open until
+    /// a key is pressed.
     void holdStartFailure();
     bool isHeld() const { return m_held.load(); }
     /// Whether output and input jump a scrolled-back pane to the bottom.
@@ -124,8 +129,6 @@ public:
     QString contextLabel() const;
     /// What kind of context the label is: elevated, remote, container, or empty.
     QString contextKind() const;
-    /// Values programs set with iTerm2's SetUserVar.
-    QHash<QString, QString> userVars() const;
 
     /// Values for this pane's shaders (uSignal), set by scripts and the
     /// control interface. GUI thread.
@@ -136,10 +139,14 @@ public:
     const Signals& shaderSignals() const noexcept { return m_signals; }
 
     // Search (GUI thread).
-    /// Runs or steps a search and scrolls the match into view. @p direction:
-    /// 0 searches afresh from the bottom of the viewport, 1 next, -1 previous.
+    /// Runs or steps a search and scrolls the match into view. A new query
+    /// selects the last match in the buffer; @p direction 0 with the same
+    /// query stays on the current match, 1 goes to the next, -1 the previous.
     void search(const QString& query, int direction, bool regex = false);
     void clearSearch();
+    /// Colours of search matches, the current match and the text in a match,
+    /// packed RGBA (Colors.searchMatch and its neighbours).
+    void setSearchColors(std::uint32_t match, std::uint32_t current, std::uint32_t text);
 
     /// Text being composed by an input method, drawn over the grid at the
     /// cursor until it is committed. @p cursor is its caret, in UTF-16 code units.
@@ -152,7 +159,8 @@ public:
     /// Returns false when there is none that way.
     bool jumpToPrompt(int direction);
 
-    // Selection (GUI thread). Points are cells in the current viewport.
+    // Selection (GUI thread). Points are absolute rows (history included);
+    // selectionPointAt turns a cell of the current viewport into one.
     AfterglowVt::SelectionPoint selectionPointAt(int col, int row) const;
     void startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow);
     void extendSelection(AfterglowVt::SelectionPoint head);
@@ -203,8 +211,20 @@ Q_SIGNALS:
 private:
     // ITerminalHost (pty thread, m_mutex held)
     void writeToPty(std::string_view bytes) override;
+    /// Writes a protocol reply (file transfer, drag and drop) from the GUI
+    /// thread without snapping the view. False when the pty refused it.
+    bool writeReply(const QByteArray& bytes);
     void reportInputFailure();
     std::atomic_bool m_inputFailureQueued{false};
+    /// Queues @p deliver to the GUI thread unless one is already queued.
+    void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
+    std::atomic_bool m_bellQueued{false};
+    std::atomic_bool m_flashQueued{false};
+    std::atomic_bool m_clipboardQueued{false};
+    std::atomic_bool m_pointerShapeQueued{false};
+    std::optional<QString> m_pendingClipboard; ///< guarded by m_mutex
+    std::optional<QString> m_pendingPrimary; ///< guarded by m_mutex
+    QString m_pendingPointerShape; ///< guarded by m_mutex
     void titleChanged(std::string_view title) override;
     void bell() override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
@@ -257,6 +277,7 @@ private:
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
     QString m_title;
+    QString m_shownTitle; ///< the last title announced, guarded by m_mutex
 
     bool m_copyMode = false;
     bool m_copySelecting = false;
@@ -281,6 +302,12 @@ private:
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
+    struct SearchColors
+    {
+        std::uint32_t match = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
+        std::uint32_t current = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
+        std::uint32_t text = AfterglowRender::packRgba(0x10, 0x10, 0x10);
+    } m_searchColors; ///< guarded by m_mutex
     std::u32string m_preedit;
     int m_preeditCursor = 0;
     void applyPreedit();

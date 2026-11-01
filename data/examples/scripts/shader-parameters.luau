@@ -3,8 +3,8 @@
 -- Example: Shaders.pane = ["bloom"] in config.json.
 return {
     metadata = { name = "Live shader parameters", actions = {
-        { id = "boost", title = "Boost Bloom in current tab" },
-        { id = "reset", title = "Reset Bloom in current tab" },
+        { id = "boost", title = "Boost Bloom in this tab or window" },
+        { id = "reset", title = "Reset Bloom in this tab or window" },
     } },
     run_action = function(action, ev)
         if not ev.pane then return nil end

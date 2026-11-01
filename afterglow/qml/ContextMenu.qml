@@ -6,8 +6,9 @@ import QtQuick.Controls as QQC
 
 // The right-click menu, with submenus. Each open panel is a level: the menu
 // itself, then a submenu beside the row that opened it, and so on. Panels
-// keep inside the window, flipping left or up near an edge. Clicking outside
-// closes everything; the keyboard works on the innermost panel.
+// keep inside the window, flipping left or up near an edge, and a panel
+// taller than the window scrolls. Clicking outside closes everything; the
+// keyboard works on the innermost panel.
 //
 // Items: { id, title, shortcut, icon, enabled, checked, items (a submenu) }
 // or { separator: true }.
@@ -20,6 +21,19 @@ Item {
     property var levels: []
     // The highlighted row of each level, -1 for none.
     property var currents: []
+    // How long the pointer rests on a submenu row before it opens.
+    readonly property int submenuDelay: 160
+
+    // One entry per open level. The panels follow this model, so opening or
+    // closing a submenu adds or removes one panel and keeps the others (with
+    // their rows and hover state) as they are.
+    ListModel { id: panelModel }
+    onLevelsChanged: {
+        while (panelModel.count > levels.length)
+            panelModel.remove(panelModel.count - 1)
+        while (panelModel.count < levels.length)
+            panelModel.append({})
+    }
 
     function syncVisibility() {
         if (visible) {
@@ -27,7 +41,7 @@ Item {
             levels = [{ items: at.items || [], left: at.x || 0, right: at.x || 0, top: at.y || 0, root: true }]
             currents = [-1]
             hoverTimer.stop()
-            Qt.callLater(() => { if (menu.visible) keys.forceActiveFocus() })
+            Qt.callLater(() => { if (menu.visible) takeFocus() })
         } else {
             levels = []
             currents = []
@@ -36,6 +50,10 @@ Item {
 
     onVisibleChanged: syncVisibility()
     Component.onCompleted: syncVisibility()
+
+    function takeFocus() {
+        keys.forceActiveFocus()
+    }
 
     function itemAt(level: int, index: int): var {
         return level < levels.length ? levels[level].items[index] : undefined
@@ -89,6 +107,9 @@ Item {
             i = (i + direction + items.length) % items.length
             if (selectable(level, i)) {
                 setCurrent(level, i)
+                const panel = panels.itemAt(level)
+                if (panel)
+                    panel.reveal(i)
                 return
             }
         }
@@ -110,7 +131,7 @@ Item {
         id: hoverTimer
         property int level: -1
         property int index: -1
-        interval: 160
+        interval: menu.submenuDelay
         onTriggered: {
             const item = menu.itemAt(level, index)
             if (item && item.items && menu.selectable(level, index))
@@ -136,7 +157,7 @@ Item {
 
     Repeater {
         id: panels
-        model: menu.levels.length
+        model: panelModel
 
         delegate: QQC.Pane {
             id: panel
@@ -159,9 +180,20 @@ Item {
                 return rows.itemAt(i)
             }
 
+            // Scrolls row @p i into view when the panel is shorter than its rows.
+            function reveal(i: int) {
+                const row = rows.itemAt(i)
+                if (!row)
+                    return
+                if (row.y < scroller.contentY)
+                    scroller.contentY = row.y
+                else if (row.y + row.height > scroller.contentY + scroller.height)
+                    scroller.contentY = row.y + row.height - scroller.height
+            }
+
             z: level
             width: Math.min(Math.max(spec.root ? 220 : 180, wanted), menu.width - 8)
-            height: column.implicitHeight + 10
+            height: Math.min(column.implicitHeight + 10, menu.height - 8)
             x: spec.right + width + 4 <= menu.width ? spec.right : Math.max(4, spec.left - width)
             y: spec.root ? (spec.top + height + 4 <= menu.height ? spec.top : Math.max(4, spec.top - height))
                          : Math.max(4, Math.min(spec.top, menu.height - height - 4))
@@ -173,75 +205,88 @@ Item {
                 acceptedButtons: Qt.AllButtons
             }
 
-            Column {
-                id: column
-                width: parent.width
+            Flickable {
+                id: scroller
+                anchors.fill: parent
+                contentWidth: width
+                contentHeight: column.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                interactive: contentHeight > height
+                QQC.ScrollBar.vertical: QQC.ScrollBar {}
 
-                Repeater {
-                    id: rows
-                    model: panel.spec.items
+                Column {
+                    id: column
+                    width: scroller.width
 
-                    delegate: Item {
-                        id: entry
+                    Repeater {
+                        id: rows
+                        model: panel.spec.items
 
-                        required property int index
-                        required property var modelData
-                        readonly property bool separator: modelData.separator === true
-                        readonly property bool usable: !separator && modelData.enabled !== false
-                        readonly property bool submenu: !separator && modelData.items !== undefined
-                        readonly property bool current: menu.currents[panel.level] === index
+                        delegate: Item {
+                            id: entry
 
-                        width: column.width
-                        height: separator ? divider.implicitHeight : menuItem.implicitHeight
+                            required property int index
+                            required property var modelData
+                            readonly property bool separator: modelData.separator === true
+                            readonly property bool usable: !separator && modelData.enabled !== false
+                            readonly property bool submenu: !separator && modelData.items !== undefined
+                            readonly property bool current: menu.currents[panel.level] === index
 
-                        QQC.MenuSeparator {
-                            id: divider
-                            visible: entry.separator
-                            width: parent.width
-                        }
+                            width: column.width
+                            height: separator ? divider.implicitHeight : menuItem.implicitHeight
 
-                        QQC.MenuItem {
-                            id: menuItem
-                            visible: !entry.separator
-                            width: parent.width
-                            enabled: entry.usable
-                            highlighted: entry.current && entry.usable
-                            focusPolicy: Qt.NoFocus
-                            // Keep the native icon/check layout while treating titles literally.
-                            readonly property string literalTitle: entry.modelData.title || ""
-                            text: "<span>" + literalTitle.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</span>"
-                            Accessible.name: literalTitle
-                            icon.name: entry.modelData.icon || ""
-                            checkable: entry.modelData.checked !== undefined
-                            checked: entry.modelData.checked === true
-                            rightPadding: shortcut.implicitWidth + 24
-                            Accessible.description: entry.modelData.shortcut || ""
-                            onTriggered: menu.activate(panel.level, entry.index)
-
-                            QQC.Label {
-                                id: shortcut
-                                anchors.right: parent.right
-                                anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: entry.submenu ? "›" : (entry.modelData.shortcut || "")
-                                textFormat: Text.PlainText
+                            QQC.MenuSeparator {
+                                id: divider
+                                visible: entry.separator
+                                width: parent.width
                             }
-                        }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            enabled: !entry.separator
-                            hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            onEntered: {
-                                menu.setCurrent(panel.level, entry.usable ? entry.index : -1)
-                                hoverTimer.level = panel.level
-                                hoverTimer.index = entry.index
-                                hoverTimer.restart()
+                            QQC.MenuItem {
+                                id: menuItem
+                                visible: !entry.separator
+                                width: parent.width
+                                enabled: entry.usable
+                                highlighted: entry.current && entry.usable
+                                focusPolicy: Qt.NoFocus
+                                // Keep the native icon/check layout while treating titles literally.
+                                // The label drops "&" as a mnemonic marker before the rich
+                                // text step, so each entity carries an extra "&" for it.
+                                readonly property string literalTitle: entry.modelData.title || ""
+                                text: "<span>" + literalTitle.replace(/&/g, "&&amp;").replace(/</g, "&&lt;").replace(/>/g, "&&gt;") + "</span>"
+                                Accessible.name: literalTitle
+                                icon.name: entry.modelData.icon || ""
+                                checkable: entry.modelData.checked !== undefined
+                                checked: entry.modelData.checked === true
+                                rightPadding: shortcut.implicitWidth + 24
+                                Accessible.description: entry.modelData.shortcut || ""
+                                onTriggered: menu.activate(panel.level, entry.index)
+
+                                QQC.Label {
+                                    id: shortcut
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: entry.submenu ? "›" : (entry.modelData.shortcut || "")
+                                    textFormat: Text.PlainText
+                                }
                             }
-                            onClicked: {
-                                hoverTimer.stop()
-                                menu.activate(panel.level, entry.index)
+
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: !entry.separator
+                                hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onEntered: {
+                                    menu.setCurrent(panel.level, entry.usable ? entry.index : -1)
+                                    hoverTimer.level = panel.level
+                                    hoverTimer.index = entry.index
+                                    hoverTimer.restart()
+                                }
+                                onClicked: {
+                                    hoverTimer.stop()
+                                    menu.activate(panel.level, entry.index)
+                                }
                             }
                         }
                     }

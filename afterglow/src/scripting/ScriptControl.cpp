@@ -97,10 +97,8 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                                             int(e.value(QStringLiteral("step")).toDouble()), data);
             }
             if (kind == QLatin1String("pulse")) {
-                const QString effect = s("effect");
-                const int number = effect == QLatin1String("portal") ? 1 : effect == QLatin1String("flash") ? 2
-                    : effect == QLatin1String("shake") ? 3 : effect.toInt();
-                return control.pulse(pane, number, int(e.value(QStringLiteral("duration_ms")).toDouble()),
+                // ScriptHost has turned a pulse name into its number.
+                return control.pulse(pane, s("effect").toInt(), int(e.value(QStringLiteral("duration_ms")).toDouble()),
                                      int(e.value(QStringLiteral("color")).toDouble()));
             }
             return QStringLiteral("unknown effect \"%1\"").arg(kind);
@@ -117,6 +115,11 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                                                std::function<void(ScriptHost::EffectResult)> complete) -> ScriptHost::EffectResult {
         const auto kind = e.value(QStringLiteral("kind")).toString();
         const auto pane = e.value(QStringLiteral("pane")).toUInt();
+        // A dialog or key mode is refused because another holds the window,
+        // or because the pane has just gone.
+        auto refusal = [&control, pane](const QString& error) {
+            return error.isEmpty() ? QString() : control.paneInfo(pane) ? QStringLiteral("busy") : QStringLiteral("no_pane");
+        };
         if (kind == QLatin1String("shaders") || kind == QLatin1String("shader_parameters")
             || kind == QLatin1String("shader_presets") || kind == QLatin1String("shader_preset")
             || kind == QLatin1String("save_shader_preset") || kind == QLatin1String("scene_state")) {
@@ -128,11 +131,11 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             const auto error = control.scriptDialog(owner, pane, e, [complete = std::move(complete)](QString error, QVariantMap data) {
                 complete({error, data, error.isEmpty() ? QString() : QStringLiteral("cancelled")});
             });
-            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("busy"), error.isEmpty()};
+            return {error, {}, refusal(error), error.isEmpty()};
         }
         if (kind == QLatin1String("key_mode")) {
             const auto error = control.scriptKeyMode(owner, pane, e.value(QStringLiteral("label")).toString());
-            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("busy")};
+            return {error, {}, refusal(error)};
         }
         if (kind == QLatin1String("end_key_mode")) {
             control.endScriptKeyMode(owner);

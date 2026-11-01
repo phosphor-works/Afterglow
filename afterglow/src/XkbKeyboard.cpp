@@ -33,9 +33,18 @@ XkbKeyboard& XkbKeyboard::instance()
 
 XkbKeyboard::XkbKeyboard()
 {
-    auto* wayland = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+    // Tests and tools call this without a QGuiApplication.
+    auto* gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance());
+    auto* wayland = gui ? gui->nativeInterface<QNativeInterface::QWaylandApplication>() : nullptr;
     if (!wayland || !wayland->seat()) {
         qCWarning(lcXkb) << "no Wayland seat; kitty keyboard reports use Qt's key codes";
+        return;
+    }
+    // Asking a seat that never had a keyboard for one is a protocol error that
+    // ends the connection. Qt binds its own keyboard only when the seat has
+    // the capability, so its keyboard stands for the capability.
+    if (!wayland->keyboard()) {
+        qCWarning(lcXkb) << "the Wayland seat has no keyboard; kitty keyboard reports use Qt's key codes";
         return;
     }
     m_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -102,20 +111,57 @@ void XkbKeyboard::onModifiers(void* data, wl_keyboard*, std::uint32_t, std::uint
     }
 }
 
+char32_t XkbKeyboard::codepoint(std::uint32_t keycode, std::uint32_t layout, std::uint32_t level) const
+{
+    const xkb_keysym_t* syms = nullptr;
+    if (!m_keymap || xkb_keymap_key_get_syms_by_level(m_keymap, keycode, layout, level, &syms) < 1) {
+        return 0;
+    }
+    return char32_t(xkb_keysym_to_utf32(syms[0]));
+}
+
 char32_t XkbKeyboard::unshiftedCodepoint(std::uint32_t keycode) const
 {
     if (!m_state) {
         return 0;
     }
     const xkb_layout_index_t group = xkb_state_key_get_layout(m_state, keycode);
-    if (group == XKB_LAYOUT_INVALID) {
+    return group == XKB_LAYOUT_INVALID ? 0 : codepoint(keycode, group, 0);
+}
+
+char32_t XkbKeyboard::shiftedCodepoint(std::uint32_t keycode) const
+{
+    if (!m_state) {
         return 0;
     }
+    const xkb_layout_index_t group = xkb_state_key_get_layout(m_state, keycode);
+    return group == XKB_LAYOUT_INVALID ? 0 : codepoint(keycode, group, 1);
+}
+
+std::pair<char32_t, char32_t> XkbKeyboard::latinCodepoints(std::uint32_t keycode) const
+{
+    if (!m_keymap) {
+        return {0, 0};
+    }
+    const xkb_layout_index_t layouts = xkb_keymap_num_layouts_for_key(m_keymap, keycode);
+    for (xkb_layout_index_t layout = 0; layout < layouts; ++layout) {
+        const char32_t base = codepoint(keycode, layout, 0);
+        if (base >= 0x20 && base < 0x7F) return {base, codepoint(keycode, layout, 1)};
+    }
+    return {0, 0};
+}
+
+std::uint32_t XkbKeyboard::keysym(std::uint32_t keycode) const
+{
+    if (!m_state) {
+        return XKB_KEY_NoSymbol;
+    }
+    const xkb_layout_index_t group = xkb_state_key_get_layout(m_state, keycode);
     const xkb_keysym_t* syms = nullptr;
-    if (xkb_keymap_key_get_syms_by_level(m_keymap, keycode, group, 0, &syms) < 1) {
-        return 0;
+    if (group == XKB_LAYOUT_INVALID || xkb_keymap_key_get_syms_by_level(m_keymap, keycode, group, 0, &syms) < 1) {
+        return XKB_KEY_NoSymbol;
     }
-    return char32_t(xkb_keysym_to_utf32(syms[0]));
+    return syms[0];
 }
 
 bool XkbKeyboard::capsLock() const
