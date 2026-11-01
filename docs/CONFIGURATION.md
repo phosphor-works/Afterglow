@@ -11,11 +11,17 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `bellCurve` | `"spring:14,1"` |  | Fade of the visual bell flash: a Phosphor curve spec, as for splitCurve |
+| `bellDuration` | `150` | 16–5000 | Duration of the visual bell fade in milliseconds for curves other than springs |
 | `cursor` | `true` |  | Animate cursor movement between cells. |
+| `cursorCurve` | `"spring:48,1"` |  | Cursor motion between cells: a Phosphor curve spec, as for splitCurve |
+| `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs |
 | `overviewCurve` | `"spring:12,0.82"` |  | Pane overview motion: a Phosphor curve spec, as for splitCurve. The default spring overshoots slightly |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs |
 | `paneEffectDuration` | `420` | 16–5000 | Milliseconds a pane takes to open or close in Shaders.paneEffects |
 | `scroll` | `true` |  | Animate scrolling between rows. |
+| `scrollCurve` | `"spring:26,1"` |  | Scroll motion: a Phosphor curve spec, as for splitCurve |
+| `scrollDuration` | `150` | 16–5000 | Duration of scroll motion in milliseconds for curves other than springs |
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves |
 | `splits` | `true` |  | Animate split opening, closing and resizing. |
@@ -27,8 +33,13 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `enabled` | `true` |  | Analyze system playback when a visible shader requests audio. Requires cava. |
+| `extraSmoothing` | `0.2` | 0–0.95 | Part of the previous spectrum kept on each update, after noise reduction. A value of 0 turns it off. |
+| `framerate` | `60` | 30–144 | Spectrum updates per second. |
+| `higherCutoff` | `10000` | 1000–20000 | Highest analyzed frequency in hertz. |
 | `inputMethod` | `"auto"` | `"auto"`, `"pipewire"`, `"pulse"` | Audio capture backend |
 | `inputSource` | `"auto"` |  | Playback source for capture. The auto value follows the default output. |
+| `lowerCutoff` | `50` | 20–500 | Lowest analyzed frequency in hertz. |
+| `smoothing` | `65` | 0–100 | Noise reduction of the spectrum analyzer. A value of 0 is fast and jumpy. 100 is slow and smooth. |
 
 ## Colors
 
@@ -42,10 +53,15 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `foreground` | `"#d8d8d8"` |  | Default text color. |
 | `minimumContrast` | `1` | 1–21 | Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors. 4.5 is the WCAG AA normal-text threshold. |
 | `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
+| `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. |
+| `searchMatch` | `"#e5c07b"` |  | Background color of search matches. |
+| `searchMatchText` | `"#101010"` |  | Text color of search matches. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
 | `theme` | `""` |  | Theme name from ~/.config/afterglow/themes or bundled themes: afterglow-dark and afterglow-light. Use light:NAME,dark:NAME to follow the desktop. Theme colors replace explicit colors. Supports Afterglow JSON, Ghostty and Kitty themes. |
 | `unfocusedDim` | `0.19` | 0–1 | Darkening amount for unfocused splits. |
+| `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
+| `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
 
 ## Control
 
@@ -65,16 +81,23 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `cellHeight` | `1` | 0.5–3 | Row-height multiplier relative to font metrics. A value of 1.2 adds 20 percent to the row height. |
 | `cellWidth` | `1` | 0.5–3 | Column-width multiplier relative to font metrics. |
 | `fallbackFamilies` | `[]` |  | Fallback families in priority order. These supply missing characters before system fallback. |
-| `family` | `"Monaspace Neon Var"` |  | Regular text font family |
-| `features` | `["calt", "liga", "ss01", "ss02", "ss03", "ss04", "ss05", "ss06", "ss07", "ss08", "ss09", "ss10"]` |  | OpenType features in HarfBuzz syntax: calt, liga, ss01, cv01=2, -liga |
+| `family` | `""` |  | Regular text font family. An empty value uses the desktop's fixed-width font. |
+| `features` | `["calt", "liga"]` |  | OpenType features in HarfBuzz syntax: calt, liga, ss01, cv01=2, -liga |
 | `gamma` | `1` | 0.5–3 | Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage. |
 | `hinting` | `"light"` | `"none"`, `"light"`, `"full"` | Glyph hinting mode. The none mode preserves outlines. The light mode aligns vertical positions only. The full mode aligns both axes. |
 | `italicFamily` | `""` |  | Italic font family. An empty value uses family. |
 | `italicSlant` | `-11` | -90–90 | Slant of italic text (variable fonts) |
-| `size` | `11` | 4–96 | Size in points |
+| `size` | `0` | 0–96 | Size in points, from 4 to 96. A value of 0 uses the size of the desktop's fixed-width font. |
+| `sizeStep` | `1` | 0.1–12 | Points that the font_bigger and font_smaller actions add or remove. |
 | `symbolMap` | `{}` |  | Preferred families for codepoint ranges. Example: { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box and powerline shapes itself. |
 | `weight` | `400` | 100–900 | Regular font weight. Used for static font matching and variable font axes. |
-| `width` | `100` | 50–200 | Width axis (Monaspace: 100-125) |
+| `width` | `100` | 50–200 | Width axis of variable fonts. A value of 100 is the normal width. Each font limits it to its own range. |
+
+## Graphics
+
+| Key | Default | Range or choices | Meaning |
+| --- | --- | --- | --- |
+| `quota` | `320` | 16–4096 | Mebibytes of Kitty graphics images that each pane keeps. The oldest images go first when it is full. |
 
 ## Hints
 
@@ -97,8 +120,10 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
+| `hintAlphabet` | `"asdfjklghqweruiopzxcvbnmty"` |  | Letters that label hints, the easiest to reach first. It needs two or more letters, each one time. Other values use the default. |
 | `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
 | `openWith` | `""` |  | Command for opening links. The URL is appended. An empty value uses the desktop browser. |
+| `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
 ## Mouse
 
@@ -107,12 +132,22 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | Middle-click action. Paste the primary selection, paste the clipboard, or do nothing. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | Right-click action. The copy-or-paste action copies an existing selection or pastes otherwise. The extend action extends the selection. |
 
+## Notifications
+
+| Key | Default | Range or choices | Meaning |
+| --- | --- | --- | --- |
+| `rateLimit` | `20` | 0–1000 | Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. Notices from Afterglow itself do not count. |
+
 ## QuickTerminal
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `animate` | `true` |  | Animate quick-terminal opening and closing. |
+| `curve` | `"spring:22,1"` |  | Quick terminal slide: a Phosphor curve spec, as for Animation.splitCurve |
+| `duration` | `150` | 16–5000 | Duration of the quick terminal slide in milliseconds for curves other than springs |
 | `height` | `0.4` | 0.1–1 | Height as a fraction of the screen |
+| `position` | `"top"` | `"top"`, `"bottom"` | Screen edge the quick terminal slides from. |
+| `screen` | `""` |  | Output that shows the quick terminal, such as DP-1. An empty or unknown name uses the primary screen. |
 | `shortcut` | `"Meta+&#96;"` |  | Global shortcut to show or hide the quick terminal. An empty value disables the shortcut. |
 
 ## Scripts
@@ -140,11 +175,13 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `allowScreenReadback` | `false` |  | Answer DECRQCRA checksum requests. These let any program in the pane read the screen back. |
 | `ambiguousWide` | `false` |  | Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. |
 | `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | none, attention (mark the window urgent), visual (flash the pane) or both |
 | `bellSound` | `""` |  | Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file. |
 | `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional paragraph layout mode. Application grids retain logical order. |
 | `clipboardRead` | `"ask"` | `"ask"`, `"allow"`, `"deny"` | Programs reading the clipboard (OSC 52): ask, allow or deny |
+| `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
 | `confirmClose` | `true` |  | Ask before closing a split, tab or window where a program is running |
 | `confirmUnsafePaste` | `true` |  | Ask before pasting several lines into a program that would run them |
 | `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Copy new selections to primary, both primary and clipboard, or neither with off. |
@@ -153,6 +190,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | block, underline or bar |
 | `env` | `{}` |  | Variables added to the shell's environment, e.g. { "EDITOR": "nvim" } |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. Empty always asks for approval. |
+| `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Kitty graphics that a program sends as a file, a temporary file or shared memory. Images sent inline always work. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
 | `notifications` | `true` |  | Show desktop notifications programs send (OSC 9, OSC 777) |
 | `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. |
@@ -165,6 +203,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells: label the pane with the host and offer COLORTERM and TERM_PROGRAM |
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | When TERM is afterglow, install its terminfo entry on each ssh host, or use xterm-256color there instead |
 | `term` | `"xterm-256color"` |  | TERM for child programs |
+| `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
 | `wordSeparators` | `"&#96;\"'│\|:;,()[]{}<>"` |  | Characters that end a word for double-click selection, besides spaces |
 
 ## Window
@@ -197,6 +236,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `copy` | `"Ctrl+Shift+C"` |
 | `copy_mode` | `"Ctrl+Shift+Space"` |
 | `detach_tab` | `[]` |
+| `end_script_key_mode` | `"Ctrl+Shift+Escape"` |
 | `equalize_splits` | `"Ctrl+Shift+="` |
 | `focus_down` | `"Ctrl+Shift+Down"` |
 | `focus_left` | `"Ctrl+Shift+Left"` |

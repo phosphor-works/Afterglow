@@ -19,9 +19,9 @@ typedef struct hb_feature_t hb_feature_t;
 
 namespace AfterglowRender {
 
-/// One font style slot. Variable axes are applied when the font has them
-/// (Monaspace Var: wght 200-800, wdth 100-125, slnt -11-0), so every slot
-/// can point at a different family for font mixing.
+/// One font style slot. Variable axes (wght, wdth, slnt) are applied when
+/// the font has them, within the ranges it declares, so every slot can point
+/// at a different family for font mixing.
 struct FontStyleSpec
 {
     std::string family;
@@ -52,15 +52,15 @@ enum class Antialiasing : std::uint8_t { Grayscale, None, Rgb, Bgr };
 
 struct FontSpec
 {
+    /// The application resolves the desktop's fixed-width font and size into
+    /// these; the defaults are fontconfig's monospace alias at 11 points.
     float sizePoints = 11.0f;
-    FontStyleSpec regular{"Monaspace Neon Var", 400, 100, 0};
-    FontStyleSpec bold{"Monaspace Neon Var", 700, 100, 0};
-    FontStyleSpec italic{"Monaspace Neon Var", 400, 100, -11};
-    FontStyleSpec boldItalic{"Monaspace Neon Var", 700, 100, -11};
+    FontStyleSpec regular{"monospace", 400, 100, 0};
+    FontStyleSpec bold{"monospace", 700, 100, 0};
+    FontStyleSpec italic{"monospace", 400, 100, -11};
+    FontStyleSpec boldItalic{"monospace", 700, 100, -11};
     /// OpenType features in HarfBuzz syntax: "calt", "liga", "ss01", "cv01=2", "-liga".
-    /// calt carries Monaspace texture healing; ss01-ss10 are its coding ligature sets.
-    std::vector<std::string> features{"calt", "liga", "ss01", "ss02", "ss03", "ss04", "ss05",
-                                      "ss06", "ss07", "ss08", "ss09", "ss10"};
+    std::vector<std::string> features{"calt", "liga"};
     /// Families tried, in order, for characters the style's own font lacks,
     /// before fontconfig's choice.
     std::vector<std::string> fallbackFamilies;

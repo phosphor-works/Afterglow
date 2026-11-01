@@ -25,6 +25,11 @@ struct Theme
     std::optional<AfterglowVt::Rgb> selectionForeground;
     std::optional<AfterglowVt::Rgb> selectionBackground;
     std::optional<AfterglowVt::Rgb> divider;
+    std::optional<AfterglowVt::Rgb> searchMatch;
+    std::optional<AfterglowVt::Rgb> searchCurrentMatch;
+    std::optional<AfterglowVt::Rgb> searchMatchText;
+    std::optional<AfterglowVt::Rgb> visualBell;
+    std::optional<double> visualBellIntensity; ///< 0-1
     std::array<std::optional<AfterglowVt::Rgb>, 16> palette;
 };
 

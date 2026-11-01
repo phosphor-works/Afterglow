@@ -73,6 +73,15 @@ bool assign(Theme& theme, QString key, const QString& value)
         target = &theme.selectionBackground;
     } else if (key == QLatin1String("divider")) {
         target = &theme.divider;
+    } else if (key == QLatin1String("searchmatch") || key == QLatin1String("search_match")) {
+        target = &theme.searchMatch;
+    } else if (key == QLatin1String("searchcurrentmatch") || key == QLatin1String("search_current_match")) {
+        target = &theme.searchCurrentMatch;
+    } else if (key == QLatin1String("searchmatchtext") || key == QLatin1String("search_match_text")) {
+        target = &theme.searchMatchText;
+    } else if (key == QLatin1String("visualbell") || key == QLatin1String("visual_bell")
+               || key == QLatin1String("visual_bell_color")) {
+        target = &theme.visualBell;
     } else {
         return false;
     }
@@ -161,6 +170,11 @@ std::optional<Theme> parse(const QByteArray& data, QString* error)
                 for (int i = 0; i < 16 && i < palette.size(); ++i) {
                     theme.palette[std::size_t(i)] = color(palette[i].toString());
                     found += theme.palette[std::size_t(i)].has_value();
+                }
+            } else if (it.key() == QLatin1String("visualBellIntensity")) {
+                // A number, not a colour: it alone does not make a theme.
+                if (const double v = it.value().toDouble(-1); v >= 0 && v <= 1) {
+                    theme.visualBellIntensity = v;
                 }
             } else {
                 found += assign(theme, it.key(), it.value().toString());

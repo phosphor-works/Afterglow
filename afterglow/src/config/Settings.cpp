@@ -6,16 +6,19 @@
 
 #include <AfterglowRender/Snapshot.h>
 
+#include <PhosphorAudio/AudioDefaults.h>
 #include <PhosphorConfig/JsonBackend.h>
 #include <PhosphorConfig/Schema.h>
 #include <PhosphorConfig/Store.h>
 
 #include <QColor>
+#include <cmath>
 #include <limits>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -44,6 +47,8 @@ const QString AudioGroup = QStringLiteral("Audio");
 const QString ScriptsGroup = QStringLiteral("Scripts");
 const QString MouseGroup = QStringLiteral("Mouse");
 const QString LinksGroup = QStringLiteral("Links");
+const QString GraphicsGroup = QStringLiteral("Graphics");
+const QString NotificationsGroup = QStringLiteral("Notifications");
 
 /// "U+E000-U+F8FF,U+2500" as inclusive ranges; nullopt if any part is malformed.
 std::optional<std::vector<std::pair<char32_t, char32_t>>> parseCodepointRanges(const QString& spec)
@@ -78,9 +83,11 @@ QVariant clampInt(const QVariant& v, int lo, int hi)
     return std::clamp(v.toInt(), lo, hi);
 }
 
-QVariant clampDouble(const QVariant& v, double lo, double hi)
+/// NaN and infinities become @p def: std::clamp would pass NaN through.
+QVariant clampDouble(const QVariant& v, double def, double lo, double hi)
 {
-    return std::clamp(v.toDouble(), lo, hi);
+    const double d = v.toDouble();
+    return std::isfinite(d) ? std::clamp(d, lo, hi) : def;
 }
 
 QVariant validColor(const QVariant& v, const QString& fallback)
@@ -97,7 +104,7 @@ KeyDef intKey(const QString& key, int def, int lo, int hi, const QString& descri
 KeyDef doubleKey(const QString& key, double def, double lo, double hi, const QString& description)
 {
     return {key, def, QMetaType::Double, description,
-            [lo, hi](const QVariant& v) { return clampDouble(v, lo, hi); }};
+            [def, lo, hi](const QVariant& v) { return clampDouble(v, def, lo, hi); }};
 }
 
 KeyDef stringKey(const QString& key, const QString& def, const QString& description)
@@ -123,6 +130,31 @@ KeyDef colorKey(const QString& key, const QString& def, const QString& descripti
     return {key, def, QMetaType::QString, description, [def](const QVariant& v) { return validColor(v, def); }};
 }
 
+QVariantList stringList(const QStringList& strings)
+{
+    QVariantList out;
+    for (const QString& s : strings) {
+        out.append(s);
+    }
+    return out;
+}
+
+/// The desktop's fixed-width font, for Font.family "" and Font.size 0.
+/// Without a GUI application (or a platform theme that names one), fontconfig's
+/// monospace alias at 11 points.
+std::pair<QString, double> desktopFixedFont()
+{
+    QString family;
+    double size = 0;
+    if (qGuiApp) {
+        const QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        family = font.family().trimmed();
+        size = font.pointSizeF();
+    }
+    return {family.isEmpty() ? QStringLiteral("monospace") : family,
+            std::isfinite(size) && size > 0 ? size : AfterglowRender::FontSpec{}.sizePoints};
+}
+
 QStringList defaultPalette()
 {
     AfterglowVt::TerminalOptions o;
@@ -136,24 +168,37 @@ QStringList defaultPalette()
 PhosphorConfig::Schema buildSchema()
 {
     const AfterglowRender::FontSpec font;
-    QStringList features;
+    QVariantList features;
     for (const std::string& f : font.features) {
         features.append(QString::fromStdString(f));
     }
+    const LinkSettings links;
+    const HighlightColors highlights;
+    const AudioTuning audio;
 
     const QString wordSeparators = QString::fromStdU32String(std::u32string(AfterglowVt::DefaultWordBoundaries));
 
     PhosphorConfig::Schema schema;
     schema.version = 1;
     schema.groups[Font] = {
-        stringKey(QStringLiteral("family"), QString::fromStdString(font.regular.family), QStringLiteral("Regular text font family")),
+        stringKey(QStringLiteral("family"), {},
+                  QStringLiteral("Regular text font family. An empty value uses the desktop's fixed-width font.")),
         stringKey(QStringLiteral("boldFamily"), {}, QStringLiteral("Bold font family. An empty value uses family.")),
         stringKey(QStringLiteral("italicFamily"), {}, QStringLiteral("Italic font family. An empty value uses family.")),
         stringKey(QStringLiteral("boldItalicFamily"), {}, QStringLiteral("Bold italic font family. An empty value uses the italic family.")),
-        doubleKey(QStringLiteral("size"), font.sizePoints, 4, 96, QStringLiteral("Size in points")),
+        {QStringLiteral("size"), 0.0, QMetaType::Double,
+         QStringLiteral("Size in points, from 4 to 96. A value of 0 uses the size of the desktop's fixed-width font."),
+         [](const QVariant& v) {
+             const double d = v.toDouble();
+             return QVariant(!std::isfinite(d) || d <= 0 ? 0.0 : std::clamp(d, 4.0, 96.0));
+         }},
+        doubleKey(QStringLiteral("sizeStep"), 1.0, 0.1, 12.0,
+                  QStringLiteral("Points that the font_bigger and font_smaller actions add or remove.")),
         intKey(QStringLiteral("weight"), 400, 100, 900, QStringLiteral("Regular font weight. Used for static font matching and variable font axes.")),
         intKey(QStringLiteral("boldWeight"), 700, 100, 900, QStringLiteral("Bold font weight. Used for static font matching and variable font axes.")),
-        doubleKey(QStringLiteral("width"), 100, 50, 200, QStringLiteral("Width axis (Monaspace: 100-125)")),
+        doubleKey(QStringLiteral("width"), 100, 50, 200,
+                  QStringLiteral("Width axis of variable fonts. A value of 100 is the normal width. Each font limits it to its own "
+                                 "range.")),
         doubleKey(QStringLiteral("italicSlant"), -11, -90, 90, QStringLiteral("Slant of italic text (variable fonts)")),
         {QStringLiteral("features"), features, QMetaType::QVariantList,
          QStringLiteral("OpenType features in HarfBuzz syntax: calt, liga, ss01, cv01=2, -liga")},
@@ -197,6 +242,14 @@ PhosphorConfig::Schema buildSchema()
         doubleKey(QStringLiteral("minimumContrast"), 1.0, 1.0, 21.0,
                   QStringLiteral("Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors. 4.5 is the "
                                  "WCAG AA normal-text threshold.")),
+        colorKey(QStringLiteral("searchMatch"), hex(highlights.searchMatch), QStringLiteral("Background color of search matches.")),
+        colorKey(QStringLiteral("searchCurrentMatch"), hex(highlights.searchCurrentMatch),
+                 QStringLiteral("Background color of the current search match.")),
+        colorKey(QStringLiteral("searchMatchText"), hex(highlights.searchMatchText), QStringLiteral("Text color of search matches.")),
+        colorKey(QStringLiteral("visualBell"), hex(highlights.visualBell),
+                 QStringLiteral("Color of the visual bell flash. A color that a program sets with OSC 21 replaces it.")),
+        doubleKey(QStringLiteral("visualBellIntensity"), highlights.visualBellIntensity, 0, 1,
+                  QStringLiteral("Opacity of the visual bell flash when it starts. A value of 0 hides the flash.")),
     };
     schema.groups[Terminal] = {
         enumKey(QStringLiteral("bidi"), QStringLiteral("off"),
@@ -258,6 +311,8 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Hide the pointer while typing. Pointer movement shows it again.")},
         intKey(QStringLiteral("scrollLines"), 3, 1, 50, QStringLiteral("Number of rows scrolled for each mouse-wheel notch.")),
         intKey(QStringLiteral("cursorBlinkInterval"), 530, 100, 5000, QStringLiteral("Duration in milliseconds for each visible and hidden cursor phase.")),
+        intKey(QStringLiteral("textBlinkInterval"), 500, 100, 5000,
+               QStringLiteral("Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5).")),
         {QStringLiteral("scrollOnOutput"), false, QMetaType::Bool,
          QStringLiteral("Scroll to the bottom when new output arrives.")},
         {QStringLiteral("scrollOnInput"), true, QMetaType::Bool, QStringLiteral("Scroll to the bottom on typing or paste.")},
@@ -281,6 +336,15 @@ PhosphorConfig::Schema buildSchema()
          {{QStringLiteral("ask"), QStringLiteral("ask")},
           {QStringLiteral("allow"), QStringLiteral("allow")},
           {QStringLiteral("deny"), QStringLiteral("deny")}}},
+        enumKey(QStringLiteral("clipboardWrite"), QStringLiteral("allow"),
+                QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write."),
+                {QStringLiteral("allow"), QStringLiteral("ask"), QStringLiteral("deny")}),
+        enumKey(QStringLiteral("graphicsFileTransfer"), QStringLiteral("allow"),
+                QStringLiteral("Kitty graphics that a program sends as a file, a temporary file or shared memory. Images sent "
+                               "inline always work."),
+                {QStringLiteral("allow"), QStringLiteral("deny")}),
+        {QStringLiteral("allowScreenReadback"), false, QMetaType::Bool,
+         QStringLiteral("Answer DECRQCRA checksum requests. These let any program in the pane read the screen back.")},
     };
     schema.groups[Window] = {
         intKey(QStringLiteral("padding"), 6, 0, 200, QStringLiteral("Space around the grid in logical pixels")),
@@ -329,12 +393,35 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("modifier"), QStringLiteral("ctrl"),
                 QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link."),
                 {QStringLiteral("ctrl"), QStringLiteral("shift"), QStringLiteral("alt"), QStringLiteral("none")}),
+        {QStringLiteral("schemes"), stringList(links.schemes), QMetaType::QVariantList,
+         QStringLiteral("URL schemes that open without a prompt. Links with other schemes ask first.")},
+        {QStringLiteral("hintAlphabet"), links.hintAlphabet, QMetaType::QString,
+         QStringLiteral("Letters that label hints, the easiest to reach first. It needs two or more letters, each one time. "
+                        "Other values use the default."),
+         [def = links.hintAlphabet](const QVariant& v) {
+             const QString letters = v.toString().toLower().remove(QLatin1Char(' '));
+             for (qsizetype i = 0; i < letters.size(); ++i) {
+                 if (!letters[i].isLetter() || letters[i].isSurrogate() || letters.indexOf(letters[i]) != i) {
+                     return QVariant(def);
+                 }
+             }
+             return QVariant(letters.size() >= 2 ? letters : def);
+         }},
     };
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), 0.4, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen")),
         stringKey(QStringLiteral("shortcut"), QStringLiteral("Meta+`"),
                   QStringLiteral("Global shortcut to show or hide the quick terminal. An empty value disables the shortcut.")),
         {QStringLiteral("animate"), true, QMetaType::Bool, QStringLiteral("Animate quick-terminal opening and closing.")},
+        stringKey(QStringLiteral("curve"), QStringLiteral("spring:22,1"),
+                  QStringLiteral("Quick terminal slide: a Phosphor curve spec, as for Animation.splitCurve")),
+        intKey(QStringLiteral("duration"), 150, 16, 5000,
+               QStringLiteral("Duration of the quick terminal slide in milliseconds for curves other than springs")),
+        enumKey(QStringLiteral("position"), QStringLiteral("top"), QStringLiteral("Screen edge the quick terminal slides from."),
+                {QStringLiteral("top"), QStringLiteral("bottom")}),
+        stringKey(QStringLiteral("screen"), {},
+                  QStringLiteral("Output that shows the quick terminal, such as DP-1. An empty or unknown name uses the primary "
+                                 "screen.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), true, QMetaType::Bool,
@@ -355,6 +442,19 @@ PhosphorConfig::Schema buildSchema()
                 {QStringLiteral("auto"), QStringLiteral("pipewire"), QStringLiteral("pulse")}),
         stringKey(QStringLiteral("inputSource"), QStringLiteral("auto"),
                   QStringLiteral("Playback source for capture. The auto value follows the default output.")),
+        intKey(QStringLiteral("framerate"), audio.framerate, PhosphorAudio::Defaults::MinFramerate,
+               PhosphorAudio::Defaults::MaxFramerate, QStringLiteral("Spectrum updates per second.")),
+        intKey(QStringLiteral("smoothing"), audio.smoothing, PhosphorAudio::Defaults::MinNoiseReduction,
+               PhosphorAudio::Defaults::MaxNoiseReduction,
+               QStringLiteral("Noise reduction of the spectrum analyzer. A value of 0 is fast and jumpy. 100 is slow and smooth.")),
+        doubleKey(QStringLiteral("extraSmoothing"), audio.extraSmoothing, PhosphorAudio::Defaults::MinExtraSmoothing,
+                  PhosphorAudio::Defaults::MaxExtraSmoothing,
+                  QStringLiteral("Part of the previous spectrum kept on each update, after noise reduction. A value of 0 turns it "
+                                 "off.")),
+        intKey(QStringLiteral("lowerCutoff"), audio.lowerCutoff, PhosphorAudio::Defaults::MinLowerCutoffHz,
+               PhosphorAudio::Defaults::MaxLowerCutoffHz, QStringLiteral("Lowest analyzed frequency in hertz.")),
+        intKey(QStringLiteral("higherCutoff"), audio.higherCutoff, PhosphorAudio::Defaults::MinHigherCutoffHz,
+               PhosphorAudio::Defaults::MaxHigherCutoffHz, QStringLiteral("Highest analyzed frequency in hertz.")),
     };
     schema.groups[Animation] = {
         {QStringLiteral("cursor"), true, QMetaType::Bool, QStringLiteral("Animate cursor movement between cells.")},
@@ -376,6 +476,27 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Duration of tab switches in milliseconds for curves other than springs")),
         intKey(QStringLiteral("paneEffectDuration"), 420, 16, 5000,
                QStringLiteral("Milliseconds a pane takes to open or close in Shaders.paneEffects")),
+        stringKey(QStringLiteral("cursorCurve"), QStringLiteral("spring:48,1"),
+                  QStringLiteral("Cursor motion between cells: a Phosphor curve spec, as for splitCurve")),
+        intKey(QStringLiteral("cursorDuration"), 150, 16, 5000,
+               QStringLiteral("Duration of cursor motion in milliseconds for curves other than springs")),
+        stringKey(QStringLiteral("scrollCurve"), QStringLiteral("spring:26,1"),
+                  QStringLiteral("Scroll motion: a Phosphor curve spec, as for splitCurve")),
+        intKey(QStringLiteral("scrollDuration"), 150, 16, 5000,
+               QStringLiteral("Duration of scroll motion in milliseconds for curves other than springs")),
+        stringKey(QStringLiteral("bellCurve"), QStringLiteral("spring:14,1"),
+                  QStringLiteral("Fade of the visual bell flash: a Phosphor curve spec, as for splitCurve")),
+        intKey(QStringLiteral("bellDuration"), 150, 16, 5000,
+               QStringLiteral("Duration of the visual bell fade in milliseconds for curves other than springs")),
+    };
+    schema.groups[GraphicsGroup] = {
+        intKey(QStringLiteral("quota"), 320, 16, 4096,
+               QStringLiteral("Mebibytes of Kitty graphics images that each pane keeps. The oldest images go first when it is full.")),
+    };
+    schema.groups[NotificationsGroup] = {
+        intKey(QStringLiteral("rateLimit"), 20, 0, 1000,
+               QStringLiteral("Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. "
+                              "Notices from Afterglow itself do not count.")),
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), QVariantList{}, QMetaType::QVariantList,
@@ -549,7 +670,17 @@ Settings SettingsStore::read() const
 
     // Font
     auto& f = s.font;
-    const QString family = st.read<QString>(Font, QStringLiteral("family"));
+    QString family = st.read<QString>(Font, QStringLiteral("family")).trimmed();
+    double size = st.read<double>(Font, QStringLiteral("size"));
+    if (family.isEmpty() || size <= 0) {
+        const auto [desktopFamily, desktopSize] = desktopFixedFont();
+        if (family.isEmpty()) {
+            family = desktopFamily;
+        }
+        if (size <= 0) {
+            size = desktopSize;
+        }
+    }
     const QString bold = st.read<QString>(Font, QStringLiteral("boldFamily"));
     const QString italic = st.read<QString>(Font, QStringLiteral("italicFamily"));
     const QString boldItalic = st.read<QString>(Font, QStringLiteral("boldItalicFamily"));
@@ -559,7 +690,7 @@ Settings SettingsStore::read() const
     const float slant = float(st.read<double>(Font, QStringLiteral("italicSlant")));
     const std::string fam = family.toStdString();
     const std::string italicFam = italic.isEmpty() ? fam : italic.toStdString();
-    f.sizePoints = float(st.read<double>(Font, QStringLiteral("size")));
+    f.sizePoints = float(size);
     f.regular = {fam, weight, width, 0};
     f.bold = {bold.isEmpty() ? fam : bold.toStdString(), boldWeight, width, 0};
     f.italic = {italicFam, weight, width, slant};
@@ -597,6 +728,7 @@ Settings SettingsStore::read() const
     f.gamma = float(st.read<double>(Font, QStringLiteral("gamma")));
     f.cellHeightScale = float(st.read<double>(Font, QStringLiteral("cellHeight")));
     f.cellWidthScale = float(st.read<double>(Font, QStringLiteral("cellWidth")));
+    s.fontSizeStep = st.read<double>(Font, QStringLiteral("sizeStep"));
 
     // Colours
     auto& t = s.terminal;
@@ -621,6 +753,12 @@ Settings SettingsStore::read() const
     t.selectionForeground = optionalColor("selectionForeground");
     t.selectionBackground = optionalColor("selectionBackground");
     AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), {0x3a, 0x3a, 0x42});
+    auto& hl = s.colors;
+    hl.searchMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchMatch")), hl.searchMatch);
+    hl.searchCurrentMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchCurrentMatch")), hl.searchCurrentMatch);
+    hl.searchMatchText = toRgb(st.read<QString>(Colors, QStringLiteral("searchMatchText")), hl.searchMatchText);
+    hl.visualBell = toRgb(st.read<QString>(Colors, QStringLiteral("visualBell")), hl.visualBell);
+    hl.visualBellIntensity = st.read<double>(Colors, QStringLiteral("visualBellIntensity"));
 
     // A theme's colours replace the ones above.
     if (const QString spec = st.read<QString>(Colors, QStringLiteral("theme")).trimmed(); !spec.isEmpty()) {
@@ -657,6 +795,11 @@ Settings SettingsStore::read() const
             if (theme->selectionBackground) {
                 t.selectionBackground = theme->selectionBackground;
             }
+            hl.searchMatch = theme->searchMatch.value_or(hl.searchMatch);
+            hl.searchCurrentMatch = theme->searchCurrentMatch.value_or(hl.searchCurrentMatch);
+            hl.searchMatchText = theme->searchMatchText.value_or(hl.searchMatchText);
+            hl.visualBell = theme->visualBell.value_or(hl.visualBell);
+            hl.visualBellIntensity = theme->visualBellIntensity.value_or(hl.visualBellIntensity);
             // Themes from other terminals have no divider: a fifth of the way
             // from the background to the text suits light and dark alike.
             auto mix = [](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) / 5); };
@@ -700,6 +843,7 @@ Settings SettingsStore::read() const
     s.hideMouseWhileTyping = st.read<bool>(Terminal, QStringLiteral("hideMouseWhileTyping"));
     s.scrollLines = st.read<int>(Terminal, QStringLiteral("scrollLines"));
     s.cursorBlinkInterval = st.read<int>(Terminal, QStringLiteral("cursorBlinkInterval"));
+    s.textBlinkInterval = st.read<int>(Terminal, QStringLiteral("textBlinkInterval"));
     s.scrollOnOutput = st.read<bool>(Terminal, QStringLiteral("scrollOnOutput"));
     s.scrollOnInput = st.read<bool>(Terminal, QStringLiteral("scrollOnInput"));
     t.ambiguousWide = st.read<bool>(Terminal, QStringLiteral("ambiguousWide"));
@@ -713,6 +857,16 @@ Settings SettingsStore::read() const
     }
     s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
     s.clipboardRead = st.read<QString>(Terminal, QStringLiteral("clipboardRead"));
+    const QString clipboardWrite = st.read<QString>(Terminal, QStringLiteral("clipboardWrite"));
+    s.clipboardWrite = clipboardWrite == QLatin1String("ask")    ? Settings::Permission::Ask
+                       : clipboardWrite == QLatin1String("deny") ? Settings::Permission::Deny
+                                                                 : Settings::Permission::Allow;
+    s.graphicsFileTransfer = st.read<QString>(Terminal, QStringLiteral("graphicsFileTransfer")) == QLatin1String("deny")
+        ? Settings::Permission::Deny
+        : Settings::Permission::Allow;
+    s.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
+    s.graphicsQuota = std::size_t(st.read<int>(GraphicsGroup, QStringLiteral("quota"))) << 20;
+    s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
 
     // Window
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));
@@ -745,6 +899,18 @@ Settings SettingsStore::read() const
                        : modifier == QLatin1String("alt") ? Qt::AltModifier
                        : modifier == QLatin1String("none") ? Qt::NoModifier
                                                            : Qt::ControlModifier;
+    s.links.schemes.clear();
+    for (const QVariant& v : st.read<QVariantList>(LinksGroup, QStringLiteral("schemes"))) {
+        // "https:" and "HTTPS" name the same scheme as "https".
+        QString scheme = v.toString().trimmed().toLower();
+        if (scheme.endsWith(QLatin1Char(':'))) {
+            scheme.chop(1);
+        }
+        if (!scheme.isEmpty() && !s.links.schemes.contains(scheme)) {
+            s.links.schemes.append(scheme);
+        }
+    }
+    s.links.hintAlphabet = st.read<QString>(LinksGroup, QStringLiteral("hintAlphabet"));
     const QString tabBar = st.read<QString>(Window, QStringLiteral("tabBar"));
     s.window.tabBar = tabBar == QLatin1String("always") ? WindowSettings::TabBar::Always
                       : tabBar == QLatin1String("never") ? WindowSettings::TabBar::Never
@@ -757,6 +923,12 @@ Settings SettingsStore::read() const
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
     s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));
+    s.quickTerminal.curve = st.read<QString>(Quick, QStringLiteral("curve")).trimmed();
+    s.quickTerminal.duration = st.read<int>(Quick, QStringLiteral("duration"));
+    s.quickTerminal.position = st.read<QString>(Quick, QStringLiteral("position")) == QLatin1String("bottom")
+        ? QuickTerminalSettings::Position::Bottom
+        : QuickTerminalSettings::Position::Top;
+    s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
@@ -769,6 +941,11 @@ Settings SettingsStore::read() const
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));
     s.audio.inputSource = st.read<QString>(AudioGroup, QStringLiteral("inputSource"));
+    s.audioTuning.framerate = st.read<int>(AudioGroup, QStringLiteral("framerate"));
+    s.audioTuning.smoothing = st.read<int>(AudioGroup, QStringLiteral("smoothing"));
+    s.audioTuning.extraSmoothing = st.read<double>(AudioGroup, QStringLiteral("extraSmoothing"));
+    s.audioTuning.lowerCutoff = st.read<int>(AudioGroup, QStringLiteral("lowerCutoff"));
+    s.audioTuning.higherCutoff = st.read<int>(AudioGroup, QStringLiteral("higherCutoff"));
 
     // Animation
     s.animation.cursor = st.read<bool>(Animation, QStringLiteral("cursor"));
@@ -781,6 +958,12 @@ Settings SettingsStore::read() const
     s.animation.tabCurve = st.read<QString>(Animation, QStringLiteral("tabCurve")).trimmed();
     s.animation.tabDuration = st.read<int>(Animation, QStringLiteral("tabDuration"));
     s.animation.paneEffectDuration = st.read<int>(Animation, QStringLiteral("paneEffectDuration"));
+    s.animation.cursorCurve = st.read<QString>(Animation, QStringLiteral("cursorCurve")).trimmed();
+    s.animation.cursorDuration = st.read<int>(Animation, QStringLiteral("cursorDuration"));
+    s.animation.scrollCurve = st.read<QString>(Animation, QStringLiteral("scrollCurve")).trimmed();
+    s.animation.scrollDuration = st.read<int>(Animation, QStringLiteral("scrollDuration"));
+    s.animation.bellCurve = st.read<QString>(Animation, QStringLiteral("bellCurve")).trimmed();
+    s.animation.bellDuration = st.read<int>(Animation, QStringLiteral("bellDuration"));
 
     // Shaders
     auto shaderList = [&st](const char* key) {

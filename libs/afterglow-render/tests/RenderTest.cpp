@@ -119,6 +119,20 @@ struct Captured
     }
 };
 
+using Clock = std::chrono::steady_clock;
+
+WindowRenderer::Overview overviewAt(bool open, float amount, float position, std::optional<Clock::time_point> changedAt,
+                                    std::optional<Clock::time_point> movedAt = {})
+{
+    WindowRenderer::Overview overview;
+    overview.open = open;
+    overview.amount = amount;
+    overview.position = position;
+    overview.changedAt = changedAt;
+    overview.movedAt = movedAt;
+    return overview;
+}
+
 double contrastRatio(std::uint32_t a, std::uint32_t b)
 {
     auto lum = [](std::uint32_t c) {
@@ -1785,16 +1799,16 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_FALSE(renderer->overviewShowing());
     // Open: two panes, the right one highlighted, half open, the highlight at pane 1.
     const auto now = std::chrono::steady_clock::now();
-    renderer->setOverview({true, 0.5f, 1.0f, now, now});
+    renderer->setOverview(overviewAt(true, 0.5f, 1.0f, now, now));
     EXPECT_TRUE(renderer->overviewShowing());
     EXPECT_TRUE(renderer->animating());
     image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
     EXPECT_PIXEL(image, rightCenter, qRgb(255, 128, 191));
     EXPECT_PIXEL(image, leftCenter, qRgb(0, 128, 191));
     // Closing keeps it running until the amount reaches zero.
-    renderer->setOverview({false, 0.25f, 1.0f, now, now});
+    renderer->setOverview(overviewAt(false, 0.25f, 1.0f, now, now));
     EXPECT_TRUE(renderer->overviewShowing());
-    renderer->setOverview({false, 0.0f, 1.0f, now, now});
+    renderer->setOverview(overviewAt(false, 0.0f, 1.0f, now, now));
     EXPECT_FALSE(renderer->overviewShowing());
     image = renderer->renderToImage(frame, {left, right}, {}, 0xff000000u);
     EXPECT_PIXEL(image, rightCenter, rgb(other.defaultBg));
@@ -1877,7 +1891,7 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
     EXPECT_PIXEL(image, inRight, qRgb(128, 255, 255));
     // The overview takes precedence over a switch.
-    renderer->setOverview({true, 1.0f, 0.0f, std::chrono::steady_clock::now(), {}});
+    renderer->setOverview(overviewAt(true, 1.0f, 0.0f, Clock::now()));
     EXPECT_FALSE(renderer->transitionShowing());
     renderer->setOverview({});
     renderer->setTabTransition({});

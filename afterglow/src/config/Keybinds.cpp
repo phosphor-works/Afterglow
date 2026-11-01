@@ -59,6 +59,7 @@ const ActionInfo Actions[] = {
     {Action::DetachTab, "detach_tab", "Detach Tab to New Window", {}},
     {Action::SaveProject, "save_project", "Save Project", {}},
     {Action::SwitchProject, "switch_project", "Switch Project", {}},
+    {Action::EndScriptKeyMode, "end_script_key_mode", "End Script Key Mode", {"Ctrl+Shift+Escape"}},
     {Action::SplitRight, "split_right", "Split Right", {"Ctrl+Shift+E"}},
     {Action::SplitDown, "split_down", "Split Down", {"Ctrl+Shift+O"}},
     {Action::SplitLeft, "split_left", "Split Left", {}},

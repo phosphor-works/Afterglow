@@ -19,6 +19,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
+
 using namespace Afterglow;
 using AfterglowVt::Rgb;
 
@@ -439,7 +442,10 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     const auto groups = Afterglow::SettingsStore::reference().value(QStringLiteral("groups")).toObject();
     const auto font = groups.value(QStringLiteral("Font")).toObject();
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
-    EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 4);
+    // 0 is the desktop's size; other sizes run from 4 to 96.
+    EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 0);
+    EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("maximum")).toInt(), 96);
+    EXPECT_TRUE(font.value(QStringLiteral("family")).toObject().value(QStringLiteral("default")).toString().isEmpty());
     EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
 }
 
@@ -517,4 +523,216 @@ TEST(Config, WritesOneKeyAndKeepsTheRest)
     EXPECT_EQ(store.settings().font.sizePoints, 15.0f);
     SettingsStore reread(path);
     EXPECT_EQ(reread.settings().shaders.overview, QStringLiteral("scripted-overview.wall"));
+}
+
+TEST_F(ConfigTest, SecurityPoliciesDefaultAndOverride)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const Settings& d = defaults.settings();
+    EXPECT_FALSE(d.allowScreenReadback);
+    EXPECT_EQ(d.graphicsFileTransfer, Settings::Permission::Allow);
+    EXPECT_EQ(d.clipboardWrite, Settings::Permission::Allow);
+    EXPECT_EQ(d.links.schemes, (QStringList{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"),
+                                            QStringLiteral("ftp"), QStringLiteral("file")}));
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({
+        "Terminal": {"allowScreenReadback": true, "graphicsFileTransfer": "DENY", "clipboardWrite": "ask"},
+        "Links": {"schemes": [" HTTPS ", "gemini:", "", "https"]}
+    })"));
+    const Settings& c = custom.settings();
+    EXPECT_TRUE(c.allowScreenReadback);
+    EXPECT_EQ(c.graphicsFileTransfer, Settings::Permission::Deny);
+    EXPECT_EQ(c.clipboardWrite, Settings::Permission::Ask);
+    // Trimmed, lower case, without the colon or repeats.
+    EXPECT_EQ(c.links.schemes, (QStringList{QStringLiteral("https"), QStringLiteral("gemini")}));
+
+    // Not a choice: the default. graphicsFileTransfer has no ask.
+    SettingsStore invalid(write(QStringLiteral("invalid.json"), R"({"Terminal": {"graphicsFileTransfer": "ask", "clipboardWrite": "maybe"}})"));
+    EXPECT_EQ(invalid.settings().graphicsFileTransfer, Settings::Permission::Allow);
+    EXPECT_EQ(invalid.settings().clipboardWrite, Settings::Permission::Allow);
+}
+
+TEST(Keybinds, EndScriptKeyModeHasADefaultChord)
+{
+    const Keybinds kb = Keybinds::defaults();
+    EXPECT_EQ(Keybinds::token(Action::EndScriptKeyMode), QStringLiteral("end_script_key_mode"));
+    const QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
+    EXPECT_EQ(kb.match(&press), Action::EndScriptKeyMode);
+    const Keybinds moved = Keybinds::fromMap({{QStringLiteral("end_script_key_mode"), QStringLiteral("Ctrl+Alt+Q")}});
+    EXPECT_EQ(moved.match(&press), Action::None);
+    const QKeyEvent other(QEvent::KeyPress, Qt::Key_Q, Qt::ControlModifier | Qt::AltModifier);
+    EXPECT_EQ(moved.match(&other), Action::EndScriptKeyMode);
+}
+
+TEST_F(ConfigTest, FontFollowsTheDesktopUntilSet)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const AfterglowRender::FontSpec& d = defaults.settings().font;
+    EXPECT_FALSE(d.regular.family.empty());
+    EXPECT_EQ(d.bold.family, d.regular.family);
+    EXPECT_GT(d.sizePoints, 0.0f);
+    if (!qGuiApp) {
+        // No platform theme to ask: fontconfig's alias at 11 points.
+        EXPECT_EQ(d.regular.family, "monospace");
+        EXPECT_FLOAT_EQ(d.sizePoints, 11.0f);
+    }
+    EXPECT_EQ(d.features, (std::vector<std::string>{"calt", "liga"}));
+    EXPECT_DOUBLE_EQ(defaults.settings().fontSizeStep, 1.0);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Font": {"family": " Iosevka ", "size": 13.5, "sizeStep": 0.5,
+                                                                           "features": ["-liga"]}})"));
+    const AfterglowRender::FontSpec& c = custom.settings().font;
+    EXPECT_EQ(c.regular.family, "Iosevka");
+    EXPECT_EQ(c.boldItalic.family, "Iosevka");
+    EXPECT_FLOAT_EQ(c.sizePoints, 13.5f);
+    EXPECT_EQ(c.features, std::vector<std::string>{"-liga"});
+    EXPECT_DOUBLE_EQ(custom.settings().fontSizeStep, 0.5);
+
+    // Below the range clamps to 4. Negative sizes mean the desktop's, as 0 does.
+    SettingsStore small(write(QStringLiteral("small.json"), R"({"Font": {"size": 2, "sizeStep": 50}})"));
+    EXPECT_FLOAT_EQ(small.settings().font.sizePoints, 4.0f);
+    EXPECT_DOUBLE_EQ(small.settings().fontSizeStep, 12.0);
+    SettingsStore negative(write(QStringLiteral("negative.json"), R"({"Font": {"size": -3}})"));
+    EXPECT_FLOAT_EQ(negative.settings().font.sizePoints, d.sizePoints);
+}
+
+TEST(Config, DoubleKeysRejectNonFiniteValues)
+{
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("config.json"));
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("{}");
+    file.close();
+    // Overrides are not parsed from text, so they can carry what JSON cannot.
+    const QJsonObject overrides{{QStringLiteral("Font"),
+                                 QJsonObject{{QStringLiteral("size"), std::numeric_limits<double>::quiet_NaN()},
+                                             {QStringLiteral("gamma"), std::numeric_limits<double>::infinity()}}}};
+    SettingsStore store(path, overrides);
+    EXPECT_TRUE(std::isfinite(store.settings().font.sizePoints));
+    EXPECT_GT(store.settings().font.sizePoints, 0.0f);
+    EXPECT_FLOAT_EQ(store.settings().font.gamma, 1.0f); // the default, not the maximum
+}
+
+TEST_F(ConfigTest, AnimationCurvesAndTextBlinkDefaultAndOverride)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const Settings& d = defaults.settings();
+    EXPECT_EQ(d.animation.cursorCurve, QStringLiteral("spring:48,1"));
+    EXPECT_EQ(d.animation.scrollCurve, QStringLiteral("spring:26,1"));
+    EXPECT_EQ(d.animation.bellCurve, QStringLiteral("spring:14,1"));
+    EXPECT_EQ(d.animation.cursorDuration, 150);
+    EXPECT_EQ(d.quickTerminal.curve, QStringLiteral("spring:22,1"));
+    EXPECT_EQ(d.quickTerminal.duration, 150);
+    EXPECT_EQ(d.textBlinkInterval, 500);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({
+        "Animation": {"cursorCurve": " 0.2,0,0,1 ", "cursorDuration": 90, "scrollCurve": "spring:10,0.8",
+                      "bellCurve": "elastic-out", "bellDuration": 99999, "scrollDuration": 1},
+        "QuickTerminal": {"curve": "spring:30,1", "duration": 300},
+        "Terminal": {"textBlinkInterval": 10}
+    })"));
+    const Settings& c = custom.settings();
+    EXPECT_EQ(c.animation.cursorCurve, QStringLiteral("0.2,0,0,1"));
+    EXPECT_EQ(c.animation.cursorDuration, 90);
+    EXPECT_EQ(c.animation.scrollCurve, QStringLiteral("spring:10,0.8"));
+    EXPECT_EQ(c.animation.scrollDuration, 16); // clamped
+    EXPECT_EQ(c.animation.bellCurve, QStringLiteral("elastic-out"));
+    EXPECT_EQ(c.animation.bellDuration, 5000); // clamped
+    EXPECT_EQ(c.quickTerminal.curve, QStringLiteral("spring:30,1"));
+    EXPECT_EQ(c.quickTerminal.duration, 300);
+    EXPECT_EQ(c.textBlinkInterval, 100); // clamped
+}
+
+TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const HighlightColors& d = defaults.settings().colors;
+    EXPECT_TRUE(same(d.searchMatch, {0xe5, 0xc0, 0x7b}));
+    EXPECT_TRUE(same(d.searchCurrentMatch, {0xff, 0x8c, 0x42}));
+    EXPECT_TRUE(same(d.searchMatchText, {0x10, 0x10, 0x10}));
+    EXPECT_TRUE(same(d.visualBell, {0xff, 0xff, 0xff}));
+    EXPECT_DOUBLE_EQ(d.visualBellIntensity, 0.18);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Colors": {
+        "searchMatch": "#010203", "searchCurrentMatch": "#040506", "searchMatchText": "not a colour",
+        "visualBell": "#ff0000", "visualBellIntensity": 3}})"));
+    const HighlightColors& c = custom.settings().colors;
+    EXPECT_TRUE(same(c.searchMatch, {1, 2, 3}));
+    EXPECT_TRUE(same(c.searchCurrentMatch, {4, 5, 6}));
+    EXPECT_TRUE(same(c.searchMatchText, {0x10, 0x10, 0x10})); // invalid: the default
+    EXPECT_TRUE(same(c.visualBell, {0xff, 0, 0}));
+    EXPECT_DOUBLE_EQ(c.visualBellIntensity, 1.0); // clamped
+
+    // A theme's colours replace the config's; what it leaves out stays.
+    QDir().mkpath(m_home.path() + QStringLiteral("/afterglow/themes"));
+    write(QStringLiteral("afterglow/themes/marks.json"),
+          R"({"background": "#000000", "searchMatch": "#111111", "visualBell": "#222222", "visualBellIntensity": 0.5})");
+    SettingsStore themed(write(QStringLiteral("themed.json"),
+                               R"({"Colors": {"theme": "marks", "searchMatch": "#010203", "searchCurrentMatch": "#040506"}})"));
+    const HighlightColors& t = themed.settings().colors;
+    EXPECT_TRUE(same(t.searchMatch, {0x11, 0x11, 0x11}));
+    EXPECT_TRUE(same(t.searchCurrentMatch, {4, 5, 6}));
+    EXPECT_TRUE(same(t.visualBell, {0x22, 0x22, 0x22}));
+    EXPECT_DOUBLE_EQ(t.visualBellIntensity, 0.5);
+}
+
+TEST(Themes, ReadsHighlightColours)
+{
+    const auto json = Themes::parse(R"({"searchCurrentMatch": "#123456", "searchMatchText": "#000000",
+                                        "visualBellIntensity": 2})");
+    ASSERT_TRUE(json);
+    EXPECT_TRUE(json->searchCurrentMatch == Rgb(0x12, 0x34, 0x56));
+    EXPECT_TRUE(json->searchMatchText == Rgb(0, 0, 0));
+    EXPECT_FALSE(json->visualBellIntensity.has_value()); // out of range
+    const auto kitty = Themes::parse("visual_bell_color #abcdef\n");
+    ASSERT_TRUE(kitty);
+    EXPECT_TRUE(kitty->visualBell == Rgb(0xab, 0xcd, 0xef));
+    // An intensity alone is not a theme.
+    EXPECT_FALSE(Themes::parse(R"({"visualBellIntensity": 0.4})"));
+}
+
+TEST_F(ConfigTest, LimitsDefaultAndOverride)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    const Settings& d = defaults.settings();
+    EXPECT_EQ(d.graphicsQuota, std::size_t(320) << 20);
+    EXPECT_EQ(d.notificationRateLimit, 20);
+    EXPECT_EQ(d.links.hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty"));
+    EXPECT_EQ(d.quickTerminal.position, QuickTerminalSettings::Position::Top);
+    EXPECT_TRUE(d.quickTerminal.screen.isEmpty());
+    EXPECT_EQ(d.audioTuning, AudioTuning{});
+    EXPECT_EQ(d.audioTuning.framerate, 60);
+    EXPECT_EQ(d.audioTuning.smoothing, 65);
+    EXPECT_DOUBLE_EQ(d.audioTuning.extraSmoothing, 0.2);
+    EXPECT_EQ(d.audioTuning.lowerCutoff, 50);
+    EXPECT_EQ(d.audioTuning.higherCutoff, 10000);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({
+        "Graphics": {"quota": 64},
+        "Notifications": {"rateLimit": 0},
+        "Links": {"hintAlphabet": "Q W E R"},
+        "QuickTerminal": {"position": "bottom", "screen": " DP-1 "},
+        "Audio": {"framerate": 500, "smoothing": 30, "extraSmoothing": 0.99, "lowerCutoff": 5, "higherCutoff": 12000}
+    })"));
+    const Settings& c = custom.settings();
+    EXPECT_EQ(c.graphicsQuota, std::size_t(64) << 20);
+    EXPECT_EQ(c.notificationRateLimit, 0);
+    EXPECT_EQ(c.links.hintAlphabet, QStringLiteral("qwer"));
+    EXPECT_EQ(c.quickTerminal.position, QuickTerminalSettings::Position::Bottom);
+    EXPECT_EQ(c.quickTerminal.screen, QStringLiteral("DP-1"));
+    EXPECT_EQ(c.audioTuning.framerate, 144); // clamped
+    EXPECT_EQ(c.audioTuning.smoothing, 30);
+    EXPECT_DOUBLE_EQ(c.audioTuning.extraSmoothing, 0.95); // clamped
+    EXPECT_EQ(c.audioTuning.lowerCutoff, 20); // clamped
+    EXPECT_EQ(c.audioTuning.higherCutoff, 12000);
+
+    // Repeated letters, a single letter and non-letters fall back to the default.
+    for (const char* alphabet : {"aab", "a", "ab1"}) {
+        SettingsStore bad(write(QStringLiteral("bad.json"), QByteArray(R"({"Links": {"hintAlphabet": ")") + alphabet + "\"}}"));
+        EXPECT_EQ(bad.settings().links.hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty")) << alphabet;
+    }
+    SettingsStore quotaFloor(write(QStringLiteral("quota.json"), R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}})"));
+    EXPECT_EQ(quotaFloor.settings().graphicsQuota, std::size_t(16) << 20);
+    EXPECT_EQ(quotaFloor.settings().notificationRateLimit, 0);
 }
