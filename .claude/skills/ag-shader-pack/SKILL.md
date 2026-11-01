@@ -81,8 +81,8 @@ ring and the grid), and the wrap point of anything that loops.
 A window chain shades every pixel of the window, every frame, while it runs. Measure with `--timings` at
 `--pixels 3840x2160`, before and after, and put both numbers in the commit message. Work per pixel that loops over
 all panes or cards is the usual cost. Find the few candidates first, then shade only those. Reading `iTime` makes the
-window render continuously. Event ages (`cursorAge()`, `focusAge()`, `signalAge()`, `uSignal`) keep it rendering for
-`settleSeconds` after each event, so read them only when the effect needs them.
+window render continuously. Event ages (`cursorAge()`, `focusAge()`, `signalAge()`, `uEventAges`, `uSignal`) keep it
+rendering for `settleSeconds` after each event, so read them only when the effect needs them.
 
 ## Done
 

@@ -146,7 +146,7 @@ So a package cannot collide with another package or replace a bundled pack.
 
 The packs are available while the package is loaded.
 They reload when they change, and disappear when you remove or disable the package.
-A configuration that names a missing pack shows a configuration problem and skips the pack, as for any pack.
+A configuration that names a missing pack shows a notice, logs a warning and skips the pack, as for any pack.
 
 A package never changes the configuration file by itself.
 `shaders.suggests` maps `Shaders` keys to the package's packs.

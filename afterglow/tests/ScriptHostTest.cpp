@@ -1263,7 +1263,7 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
             selected=true;
             EXPECT_TRUE(e.value("title").toString().contains("fd-1 not started")) << e.value("title").toString().toStdString();
             EXPECT_FALSE(e.value("items").toList().isEmpty());
-            return {"Dialog cancelled",{},"cancelled"};
+            return {"Dialog canceled",{},"cancelled"};
         }
         return {};
     };
@@ -1300,7 +1300,7 @@ TEST_F(ScriptHostTest, NavigatorNamesAProviderThatTimedOut)
         if (e.value("kind") == "list_projects") return {{}, {{"names", QStringList{"dev"}}}, {}};
         if (e.value("kind") == "select") {
             title = e.value("title").toString();
-            return {"Dialog cancelled", {}, "cancelled"};
+            return {"Dialog canceled", {}, "cancelled"};
         }
         return {};
     };
@@ -2855,7 +2855,7 @@ TEST_F(ScriptHostTest, SceneControlsEscapeShowsNoNotice)
             return {{}, {{"shaders", QVariantList{QVariantMap{{"instance", "i"}, {"shader", "bloom"}, {"layer", "pane"},
                 {"parameters", QVariantList{QVariantMap{{"id", "strength"}, {"name", "Strength"}, {"type", "float"}, {"supported", true}}}},
                 {"values", QVariantMap{{"strength", 0.5}}}}}}}, {}};
-        if (e["kind"] == QLatin1String("select")) return {"Dialog cancelled", {}, "cancelled"};
+        if (e["kind"] == QLatin1String("select")) return {"Dialog canceled", {}, "cancelled"};
         return {};
     };
     host->setEnabled(true);

@@ -443,7 +443,9 @@ Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
 
 `semantic_regions` returns up to 1024 retained shell regions in chronological order.
-A region goes when its start row is deleted, or when a resize drops it below the cursor.
+Afterglow removes a region when a line deletion, a scroll in a scroll region or a resize destroys its start row.
+It also removes a completed region when its end row is destroyed.
+A start row that leaves the history does not remove the region (see `start_trimmed`).
 Each region has these fields:
 
 | Field | Meaning |

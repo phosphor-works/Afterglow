@@ -65,8 +65,8 @@ Item {
     // Later: the overlay sets itself up (and a Loader makes its item) first.
     // A hidden item keeps the active focus, so the walk would find a closed
     // prompt's button when that prompt opens again and leave it there ("Allow
-    // once" instead of Deny). Now, before the walk: the root holds the keys
-    // while nothing is open, and a visible focused button stays as it is.
+    // once" instead of Deny). So the focus leaves a hidden item first, and a
+    // visible focused button keeps it.
     function overlayChanged(): void {
         const focus = root.Window.activeFocusItem
         if (focus && !focus.visible) root.forceActiveFocus()

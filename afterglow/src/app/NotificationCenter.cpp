@@ -365,10 +365,11 @@ void NotificationCenter::send(const Request& request, uint replaces)
             [this, key, entry = request.entry, replaces, expireMs = request.expireMs, server = m_server](QDBusPendingCallWatcher* w) {
         w->deleteLater();
         const QDBusPendingReply<uint> reply = *w;
+        // The pane's state went with it. Its address may already be another
+        // pane's, so the key may name that pane's entry: leave it alone.
+        if (entry.owner && !entry.pane) return;
         // What the program asked for while this call was out.
         const InFlight waiting = entry.clientId.isEmpty() ? InFlight{} : m_inFlight.take(key);
-        // The pane's state went with it; its address may already be another pane's.
-        if (entry.owner && !entry.pane) return;
         // The server changed while the call was out: its answer and REPLACES
         // name nothing now, and the new server may give them to another
         // application's notification.
@@ -396,9 +397,12 @@ void NotificationCenter::send(const Request& request, uint replaces)
                 connect(owner, &QDBusPendingCallWatcher::finished, this,
                         [this, key, entry, replaces, server](QDBusPendingCallWatcher* w) {
                     w->deleteLater();
-                    const InFlight settled = m_inFlight.take(key);
                     if (entry.owner && !entry.pane) return;
+                    const InFlight settled = m_inFlight.take(key);
                     const bool gone = server != m_server || w->isError();
+                    // forgetServer() dropped the old ids of a server that left. When the
+                    // bus could not answer, the old id goes here, or idFor() keeps two.
+                    if (gone && server == m_server && replaces != 0) m_entries.remove(replaces);
                     if (settled.close) {
                         if (!gone && replaces != 0) close(replaces);
                     } else if (settled.next) {

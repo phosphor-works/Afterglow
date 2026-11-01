@@ -514,6 +514,9 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
             positions[i].row = m_primary->rowsDropped() - 1;
         }
     }
+    // Output without its end would run on to the cursor: as a completed region
+    // does, it goes with its end.
+    if (m_outputEnd.valid && destroyed[2]) destroyed[1] = true;
     std::size_t index = 0;
     for (auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
         const auto i = index++;
@@ -1815,6 +1818,8 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
             if (const auto to = scroll.map({mark->row, mark->col})) {
                 mark->row = to->row;
             } else {
+                // Output without its end would run on to the cursor.
+                if (mark == &m_outputEnd) m_outputStart = {};
                 *mark = {};
             }
         }

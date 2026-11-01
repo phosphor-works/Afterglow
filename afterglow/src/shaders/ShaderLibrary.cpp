@@ -354,6 +354,29 @@ QString packagedRef(const ShaderInfo& info, const QMap<QString, QString>& packag
     return {};
 }
 
+/// Why @p v cannot be a value of @p p, or empty. Phosphor checks only the
+/// range, after a conversion that accepts strings, rounds a fraction for an
+/// int and passes NaN, so the type and finiteness come first, for every
+/// source of values alike.
+QString valueTypeProblem(const PhosphorShaders::ShaderRegistry::ParameterInfo& p, const QVariant& v)
+{
+    const auto type = v.metaType().id();
+    if (p.type == QLatin1String("float") || p.type == QLatin1String("int")) {
+        const double n = v.toDouble();
+        if ((type != QMetaType::Double && type != QMetaType::Int && type != QMetaType::LongLong)
+            || !std::isfinite(n) || std::abs(n) > std::numeric_limits<float>::max()
+            || (p.type == QLatin1String("int") && (n != std::floor(n) || n < std::numeric_limits<int>::min() || n > std::numeric_limits<int>::max())))
+            return QStringLiteral("Parameter %1 needs a finite %2").arg(p.id, p.type);
+    } else if (p.type == QLatin1String("bool")) {
+        if (type != QMetaType::Bool) return QStringLiteral("Parameter %1 needs a boolean").arg(p.id);
+    } else if (p.type == QLatin1String("color")) {
+        if (type != QMetaType::QString || !QColor(v.toString()).isValid()) return QStringLiteral("Parameter %1 needs a color string").arg(p.id);
+    } else if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
+        if (type != QMetaType::QString) return QStringLiteral("Image parameter needs a path string");
+    } else return QStringLiteral("Unsupported parameter type: %1").arg(p.type);
+    return {};
+}
+
 } // namespace
 
 /// The registry keys packs by a UUID derived from their id; configs name them
@@ -641,21 +664,7 @@ QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap&
     for (auto it = values.begin(); it != values.end(); ++it) {
         const auto p = std::find_if(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); });
         if (p == info.parameters.end()) return QStringLiteral("Unknown shader parameter: %1").arg(it.key());
-        const QVariant& v = it.value();
-        const auto type = v.metaType().id();
-        if (p->type == QLatin1String("float") || p->type == QLatin1String("int")) {
-            const double n = v.toDouble();
-            if ((type != QMetaType::Double && type != QMetaType::Int && type != QMetaType::LongLong)
-                || !std::isfinite(n) || std::abs(n) > std::numeric_limits<float>::max()
-                || (p->type == QLatin1String("int") && (n != std::floor(n) || n < std::numeric_limits<int>::min() || n > std::numeric_limits<int>::max())))
-                return QStringLiteral("Parameter %1 needs a finite %2").arg(it.key(), p->type);
-        } else if (p->type == QLatin1String("bool")) {
-            if (type != QMetaType::Bool) return QStringLiteral("Parameter %1 needs a boolean").arg(it.key());
-        } else if (p->type == QLatin1String("color")) {
-            if (type != QMetaType::QString || !QColor(v.toString()).isValid()) return QStringLiteral("Parameter %1 needs a color string").arg(it.key());
-        } else if (p->type == QLatin1String("image") || p->type == QLatin1String("texture")) {
-            if (type != QMetaType::QString) return QStringLiteral("Image parameter needs a path string");
-        } else return QStringLiteral("Unsupported parameter type: %1").arg(p->type);
+        if (const QString problem = valueTypeProblem(*p, it.value()); !problem.isEmpty()) return problem;
         const bool image = p->type == QLatin1String("image") || p->type == QLatin1String("texture");
         if (p->slot < 0 || p->slot >= (image ? AfterglowRender::MaxShaderImages : p->type == QLatin1String("color") ? 16 : 32))
             return QStringLiteral("Parameter has no supported uniform slot");
@@ -840,13 +849,14 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, c
         if (std::none_of(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); }))
             notes << QStringLiteral("Shaders.params.%1.%2: the pack has no such parameter").arg(ref, it.key());
     }
-    // Phosphor decides which values the pack accepts (in range, a colour, a truth value).
+    // The same rule as for scripts and D-Bus: the type here, the range by Phosphor.
     // Each value is asked alone, so that one wrong value does not reject the others.
     // A rejected value gives the pack's default.
     QSet<QString> rejected;
     for (const auto& p : info.parameters) {
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture") || !overrides.contains(p.id)) continue;
-        if (m_registry->validateParams(info.id, QVariantMap{{p.id, overrides.value(p.id)}})) continue;
+        const QVariant v = overrides.value(p.id);
+        if (valueTypeProblem(p, v).isEmpty() && m_registry->validateParams(info.id, QVariantMap{{p.id, v}})) continue;
         rejected.insert(p.id);
         notes << QStringLiteral("Shaders.params.%1.%2: the pack does not accept this value, so it uses its default")
                      .arg(ref, p.id);

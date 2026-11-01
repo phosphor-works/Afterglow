@@ -425,10 +425,19 @@ TEST_F(ShaderControlsTest, ConfiguredValuesThatApplyNowhereAreProblems)
     EXPECT_EQ(library.problems(), problems);
     library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("count"), 3}}}});
     EXPECT_TRUE(library.problems().isEmpty()) << library.problems().join(QLatin1Char('\n')).toStdString();
-    // Phosphor accepts these in a form that is not their native type: no problem.
+    // A JSON number is a double: a whole one is an int.
+    library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("count"), 3.0}}}});
+    EXPECT_TRUE(library.problems().isEmpty()) << library.problems().join(QLatin1Char('\n')).toStdString();
+    // The same rule as for scripts and D-Bus: Phosphor alone would accept these.
     const QVariantMap loose{{QStringLiteral("enabled"), 1}, {QStringLiteral("count"), QStringLiteral("3")}};
     ASSERT_EQ(library.build(refs, {{QStringLiteral("types"), loose}}).background.size(), 1u);
-    EXPECT_TRUE(library.problems().isEmpty()) << library.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_EQ(library.problems().filter(QStringLiteral("the pack does not accept")).size(), 2)
+        << library.problems().join(QLatin1Char('\n')).toStdString();
+    for (const QVariant& fraction : {QVariant(1.6), QVariant(QStringLiteral("nan"))}) {
+        library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("count"), fraction}}}});
+        EXPECT_EQ(library.problems().filter(QStringLiteral("types.count: the pack does not accept")).size(), 1)
+            << fraction.toString().toStdString();
+    }
     // A pack that fails on its images lists only that, not the values it never used.
     QVariantMap broken = wrong;
     broken.insert(QStringLiteral("photo"), 5);

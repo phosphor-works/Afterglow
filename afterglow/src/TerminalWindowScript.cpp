@@ -45,12 +45,12 @@ void TerminalWindow::finishScriptDialog(bool accepted, const QString& value)
     m_controller->setScriptDialog({});
     QVariantMap data;
     QString error;
-    if (!accepted || !pending.pane) error = QStringLiteral("Dialog cancelled");
+    if (!accepted || !pending.pane) error = QStringLiteral("Dialog canceled");
     else if (model.value(QStringLiteral("kind")) == QLatin1String("select")) {
         for (const auto& item : model.value(QStringLiteral("items")).toList()) {
             if (item.toMap().value(QStringLiteral("id")).toString() == value) { data = item.toMap(); break; }
         }
-        if (data.isEmpty()) error = QStringLiteral("Dialog cancelled");
+        if (data.isEmpty()) error = QStringLiteral("Dialog canceled");
     } else data.insert(QStringLiteral("text"), value.left(4096));
     if (pending.reply) pending.reply(error, data);
     scheduleRender();

@@ -572,6 +572,34 @@ TEST(Terminal, ShellMarksBelowTheCursorThatAResizeDropsAreGoneNotTrimmed)
     EXPECT_EQ(rowText(h.t, 0), "3");
     EXPECT_EQ(h.t.text(Terminal::TextScope::LastOutput), "");
     EXPECT_TRUE(h.t.semanticRegions().empty());
+
+    // A reflow pops the rows below the cursor in the same way.
+    Term r(10, 6);
+    r.feed("top\x1b[5;1H\x1b]133;C\aout\x1b[1;4H");
+    r.t.resize(8, 2, 10, 20);
+    EXPECT_EQ(r.t.text(Terminal::TextScope::LastOutput), "");
+    EXPECT_TRUE(r.t.semanticRegions().empty());
+}
+
+TEST(Terminal, CompletedOutputGoesWithItsEnd)
+{
+    // Output whose end is destroyed while its start stays would run on to
+    // the cursor and take in what the shell prints next.
+    const char* output = "\x1b]133;C\aa\r\nb\r\nc\r\nd\x1b]133;D;0\a\x1b[2;1H";
+    Term resized(10, 6);
+    resized.feed(output);
+    ASSERT_FALSE(resized.t.text(Terminal::TextScope::LastOutput).empty());
+    resized.t.resize(10, 2, 10, 20);
+    resized.feed("$ ls");
+    EXPECT_EQ(resized.t.text(Terminal::TextScope::LastOutput), "");
+    EXPECT_TRUE(resized.t.semanticRegions().empty());
+
+    // The same when a line deletion takes the end row.
+    Term deleted(10, 6);
+    deleted.feed(output);
+    deleted.feed("\x1b[3M$ ls");
+    EXPECT_EQ(deleted.t.text(Terminal::TextScope::LastOutput), "");
+    EXPECT_TRUE(deleted.t.semanticRegions().empty());
 }
 
 TEST(Terminal, SemanticRegionsKeepTheNewest1024)
