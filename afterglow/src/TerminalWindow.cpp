@@ -609,6 +609,7 @@ void TerminalWindow::closePane(Pane* pane)
     }
     Tab& tab = *m_tabs[std::size_t(index)];
     m_paneOpening.remove(pane);
+    m_paneContext.remove(pane);
     // Its last frame stays on screen while it closes.
     const QRect drawn = index == m_currentTab && tab.splits->isVisible(pane) ? motion(pane).rect.value().toRect() : QRect();
     if (!tab.splits->remove(pane)) {
@@ -1184,6 +1185,7 @@ void TerminalWindow::renderNow()
     const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     bool anyBlinkingText = false;
+    m_anyPaneAway = false;
     advanceOverview(animating);
     // The overview shader draws the cards: fade the unfocused dim out under it.
     const double overviewAmount = std::clamp(m_overview.amount.value(), 0.0, 1.0);
@@ -1197,6 +1199,24 @@ void TerminalWindow::renderNow()
         if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
             wp.params.openProgress = paneEffectProgress(opening->at);
             wp.params.openEdge = opening->edge;
+        }
+        {
+            // A change of host, user or container animates; the first sighting does not.
+            const QString kind = p->contextKind();
+            const int context = kind == QLatin1String("remote") ? 1 : kind == QLatin1String("elevated") ? 2
+                : kind == QLatin1String("container") ? 3 : 0;
+            auto known = m_paneContext.find(p);
+            if (known == m_paneContext.end()) {
+                known = m_paneContext.insert(p, {context, std::chrono::steady_clock::now() - std::chrono::hours(1)});
+            } else if (known->kind != context && paneEffectsAllowed()) {
+                *known = {context, std::chrono::steady_clock::now()};
+            } else {
+                known->kind = context;
+            }
+            wp.params.context = context;
+            wp.params.contextProgress = paneEffectProgress(known->at);
+            m_anyPaneAway |= context != 0;
+            animating |= wp.params.contextProgress < 1.0f;
         }
         const auto overrides = scriptOverrides(p);
         wp.params.cursorBlinkOn = m_blinkOn;

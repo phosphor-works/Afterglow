@@ -2,14 +2,16 @@
     "id": "pane-effects",
     "name": "Pane Effects",
     "category": "Transition",
-    "description": "Animates panes as they split open and close: a hinge that swings them in and lets them fall away, or a picture tube that switches them on and off.",
+    "description": "Animates panes as they split open and close: a hinge that swings them in and lets them fall away, or a picture tube that switches them on and off. A pane that moves to another host passes through a portal and keeps a coloured frame.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",
     "parameters": [
         {"id": "style", "name": "Style (0 hinge, 1 tube)", "group": "Panes", "type": "int", "default": 0, "min": 0, "max": 1},
         {"id": "shading", "name": "Shading", "group": "Panes", "type": "float", "default": 0.6, "min": 0.0, "max": 1.0},
-        {"id": "glow", "name": "Tube glow", "group": "Panes", "type": "float", "default": 1.0, "min": 0.0, "max": 2.0}
+        {"id": "glow", "name": "Tube glow", "group": "Panes", "type": "float", "default": 1.0, "min": 0.0, "max": 2.0},
+        {"id": "portal", "name": "Portal when a pane changes host", "group": "Context", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0},
+        {"id": "frame", "name": "Frame while away from here", "group": "Context", "type": "float", "default": 0.45, "min": 0.0, "max": 1.0}
     ],
     "presets": {
         "Hinge": {"style": 0},

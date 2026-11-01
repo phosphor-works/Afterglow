@@ -46,6 +46,9 @@ Its `style` parameter chooses a hinge (0) or a picture tube (1).
 A new pane swings in from the edge it split from, or switches on like a tube.
 A closed pane falls back off its bottom edge, or switches off to a dot.
 `Animation.paneEffectDuration` sets the time. `Animation.splits=false` also turns the effects off.
+A pane whose shell moves to another host, user or container passes through a portal, such as after `afterglow ssh`.
+While it is away, a soft frame marks it: cyan for a remote host, red for an elevated user and magenta for a container.
+The `portal` and `frame` parameters set their strength.
 
 [Phosphor](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.

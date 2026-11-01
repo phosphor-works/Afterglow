@@ -29,6 +29,9 @@
 // from which edge. A closed pane's last frame stays in uTabImage, at its old
 // place, while it closes: read it with closingPaneTexel(). The progress of
 // both is linear over Animation.paneEffectDuration; shaders ease it.
+// A pane whose shell moves to another host, user or container (OSC 3008,
+// such as afterglow ssh) changes context; the shader also runs on frames drawn
+// while any pane is away from here, so it can mark those panes.
 
 #ifndef AFTERGLOW_TERMINAL_PANES_GLSL
 #define AFTERGLOW_TERMINAL_PANES_GLSL
@@ -52,7 +55,10 @@ layout(std140, binding = 19) uniform TerminalPanes {
     ivec4 uPaneTab[32];    // offset 1088  .x its tab's index, .y source: 0 the input, 1 uTabImage,
                            //              2 uTabAtlas, .z its index within its tab
     vec4 uPaneLife[32];    // offset 1600  .x how far it has opened: 0 just split, 1 open, .y the edge it
-                           //              opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom
+                           //              opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom,
+                           //              .z how far its last context change has run: 0 just changed,
+                           //              1 settled, .w its context: 0 here, 1 remote, 2 elevated,
+                           //              3 a container
     vec4 uClosedRect;      // offset 2112  the pane closing, in window px (x, y, w, h)
     vec4 uClosed;          // offset 2128  .x how far it has closed: 0 just closed, 1 gone, .y 1 while it shows
 };                         // total 2144 bytes
@@ -137,6 +143,16 @@ float paneOpening(int pane) {
 
 int paneOpenEdge(int pane) {
     return int(uPaneLife[clamp(pane, 0, 31)].y + 0.5);
+}
+
+// 0 here, 1 remote, 2 elevated, 3 a container.
+int paneContext(int pane) {
+    return int(uPaneLife[clamp(pane, 0, 31)].w + 0.5);
+}
+
+// How far the pane's last context change has run: 0 just changed, 1 settled.
+float paneContextChange(int pane) {
+    return uPaneLife[clamp(pane, 0, 31)].z;
 }
 
 bool closingPaneActive() {

@@ -1912,7 +1912,7 @@ vec4 pTerminal(vec2 uv) {
     ghost.snapshot = &closed;
     ghost.params.rect = QRect(QPoint(), QSize(size.width() / 2, size.height()));
     const QPoint inLeft(size.width() / 4, size.height() / 2), inRight(size.width() * 3 / 4, size.height() / 2);
-    renderer->setPaneEffects({true, ghost, 0.25f});
+    renderer->setPaneEffects({true, true, ghost, 0.25f});
     EXPECT_TRUE(renderer->paneEffectsShowing());
     auto image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
@@ -1925,6 +1925,33 @@ vec4 pTerminal(vec2 uv) {
     open.params.openProgress = 1.0f;
     image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
     EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
+}
+
+TEST_F(Render, PaneContextReachesPaneEffects)
+{
+    ShaderProgramSource source;
+    source.id = "context";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    return vec4(paneContextChange(0), float(paneContext(0)) / 4.0, paneInCurrentTab(0) ? 1.0 : 0.0, 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.paneEffects = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    pane.params.context = 1;
+    pane.params.contextProgress = 0.5f;
+    // A pane away from here keeps the chain on without asking for new frames.
+    renderer->setPaneEffects({true, false, std::nullopt, 1.0f});
+    EXPECT_TRUE(renderer->paneEffectsShowing());
+    EXPECT_FALSE(renderer->animating());
+    const auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, QPoint(size.width() / 2, size.height() / 2), qRgb(128, 64, 255));
 }
 
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)

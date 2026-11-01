@@ -286,6 +286,7 @@ While it shows, the cards are the panes of every tab, up to 32.
 | `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
 | `paneOpening(i)`, `paneOpenEdge(i)` | How far a new pane has opened, and the edge it opened from. |
+| `paneContext(i)`, `paneContextChange(i)` | Where the pane's shell runs, and how far its last change has run. |
 | `closingPaneActive()`, `closingPaneProgress()`, `closingPaneRect()`, `closingPaneTexel(uv)` | A closed pane, while it closes. |
 
 `paneTexel()` reads the current tab's panes from the pass input.
@@ -319,6 +320,9 @@ Afterglow runs it after the window chain while a pane opens or closes, unless th
 `closingPaneProgress()` runs from 0, just closed, to 1, gone.
 Both progress values are linear over `Animation.paneEffectDuration`. The pack eases them.
 At progress 1, draw the input unchanged.
+`paneContext(i)` is where the pane's shell runs: 0 here, 1 remote, 2 elevated or 3 a container.
+`paneContextChange(i)` runs from 0, just changed, to 1, settled. It follows OSC 3008 contexts, such as those `afterglow ssh` reports.
+While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
 [Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube.
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
 

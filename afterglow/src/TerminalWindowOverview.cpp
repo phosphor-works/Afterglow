@@ -112,9 +112,14 @@ void TerminalWindow::advancePaneEffects(bool& animating)
     AfterglowRender::WindowRenderer::PaneEffects effects;
     for (auto it = m_paneOpening.begin(); it != m_paneOpening.end();) {
         if (paneEffectProgress(it->at) >= 1.0f) it = m_paneOpening.erase(it);
-        else { effects.active = true; ++it; }
+        else { effects.active = effects.moving = true; ++it; }
     }
     if (m_closingPane && paneEffectProgress(m_closingPane->at) >= 1.0f) m_closingPane.reset();
+    // Context changes animate, and panes away from here keep their mark.
+    for (const auto& context : std::as_const(m_paneContext)) {
+        if (paneEffectProgress(context.at) < 1.0f) effects.active = effects.moving = true;
+    }
+    if (m_anyPaneAway && m_paneEffectsAvailable) effects.active = true;
     if (m_closingPane) {
         AfterglowRender::WindowRenderer::Pane ghost;
         ghost.snapshot = m_closingPane->snapshot.get();
@@ -124,9 +129,9 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         ghost.params.backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
         effects.closing = ghost;
         effects.closingProgress = paneEffectProgress(m_closingPane->at);
-        effects.active = true;
+        effects.active = effects.moving = true;
     }
-    animating |= effects.active;
+    animating |= effects.moving;
     m_renderer->setPaneEffects(std::move(effects));
 }
 

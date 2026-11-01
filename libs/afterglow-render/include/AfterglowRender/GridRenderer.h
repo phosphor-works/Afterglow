@@ -120,6 +120,10 @@ public:
         /// opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom.
         float openProgress = 1.0f;
         int openEdge = 0;
+        /// Where its shell runs: 0 here, 1 remote, 2 elevated, 3 a container;
+        /// and how far the last change has run (1 when settled).
+        int context = 0;
+        float contextProgress = 1.0f;
     };
 
     /// Where each layer's instances start, relative to the pane's first:
@@ -255,6 +259,7 @@ public:
     struct PaneEffects
     {
         bool active = false;
+        bool moving = false; ///< something animates; a static mark needs no new frames
         std::optional<Pane> closing;
         float closingProgress = 1; ///< 0 just closed, 1 gone
     };

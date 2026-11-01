@@ -458,6 +458,13 @@ private:
         std::chrono::steady_clock::time_point at;
     };
     std::optional<ClosingPane> m_closingPane;
+    struct PaneContext
+    {
+        int kind = 0; ///< 0 here, 1 remote, 2 elevated, 3 a container
+        std::chrono::steady_clock::time_point at; ///< when it last changed
+    };
+    QHash<const Pane*, PaneContext> m_paneContext;
+    bool m_anyPaneAway = false; ///< this frame: some visible pane is not here
     bool m_paneEffectsAvailable = false; ///< Shaders.paneEffects compiled
     bool paneEffectsAllowed() const;
     /// How far an effect that started at @p at has run, 0 to 1.

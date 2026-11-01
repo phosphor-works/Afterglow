@@ -845,7 +845,7 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
 bool WindowRenderer::animating() const
 {
     return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing() || transitionShowing()
-        || paneEffectsShowing();
+        || (paneEffectsShowing() && m_effects.moving);
 }
 
 bool WindowRenderer::overviewShowing() const
@@ -1346,6 +1346,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         bool highlighted;
         float openProgress = 1.0f;
         int openEdge = 0;
+        int context = 0;
+        float contextProgress = 1.0f;
     };
     std::vector<Card> cards;
     auto toUv = [&px](const QRect& r) {
@@ -1436,7 +1438,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
             st.shaderParameters = pane.params.shaderParameters;
             cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect),
-                             pane.params.focused, pane.params.highlighted, pane.params.openProgress, pane.params.openEdge});
+                             pane.params.focused, pane.params.highlighted, pane.params.openProgress, pane.params.openEdge,
+                             pane.params.context, pane.params.contextProgress});
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;
@@ -1477,6 +1480,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             paneBlock.uPaneTab[index][2] = card.indexInTab;
             paneBlock.uPaneLife[index][0] = card.openProgress;
             paneBlock.uPaneLife[index][1] = float(card.openEdge);
+            paneBlock.uPaneLife[index][2] = card.contextProgress;
+            paneBlock.uPaneLife[index][3] = float(card.context);
             paneBlock.uPaneState[0] = index + 1;
             if (card.focused) paneBlock.uPaneState[1] = index;
             if (card.highlighted) paneBlock.uPaneState[2] = index;

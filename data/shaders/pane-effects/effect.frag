@@ -9,6 +9,12 @@
 //   1 tube   panes switch on and off like a picture tube: a bright line that
 //            opens into the picture, and the picture squeezing back to a dot
 // Progress is linear; each style eases it. At progress 1 nothing changes.
+//
+// In both styles, a pane whose shell moves to another host, user or container
+// passes through a portal: a ring sweeps out across it, refracting the text
+// at its edge, and closes back in when it returns. While it is away, a soft
+// frame in the context's colour marks it: cyan for a remote host, red for an
+// elevated user, magenta for a container.
 
 #include <terminal_panes.glsl>
 
@@ -134,8 +140,49 @@ vec4 tubeStyle(vec2 pixel, vec2 uv) {
     return color;
 }
 
+vec3 contextColor(int context) {
+    return context == 2 ? paletteColor(9) : context == 3 ? paletteColor(13) : paletteColor(14);
+}
+
+// Portals and frames for panes away from here, over what the style drew.
+vec4 contextMarks(vec2 pixel, vec4 color) {
+    for (int i = 0; i < paneCount(); ++i) {
+        if (!paneInCurrentTab(i)) continue;
+        int context = paneContext(i);
+        float p = paneContextChange(i);
+        if (context == 0 && p >= 1.0) continue;
+        vec4 r = paneRect(i);
+        if (!inside(pixel, r)) continue;
+        bool away = context != 0;
+        // Returning home closes the portal in the theme's cursor colour.
+        vec3 tint = away ? contextColor(context) : uThemeCursorColor.rgb;
+        // The frame grows in as the pane leaves and fades as it returns.
+        float settled = away ? smoothstep(0.0, 1.0, p) : 1.0 - smoothstep(0.0, 1.0, p);
+        float edge = min(min(pixel.x - r.x, r.x + r.z - pixel.x), min(pixel.y - r.y, r.y + r.w - pixel.y));
+        float frame = exp(-edge / 10.0) * p_frame * settled;
+        color.rgb += tint * frame * color.a;
+        if (p < 1.0 && p_portal > 0.0) {
+            // The ring opens from the pane's centre as it leaves, and closes
+            // back to it as it returns.
+            vec2 center = r.xy + r.zw * 0.5;
+            float reach = length(r.zw) * 0.55;
+            float eased = 1.0 - pow(1.0 - p, 3.0);
+            float radius = reach * (away ? eased : 1.0 - eased);
+            float band = min(r.z, r.w) * 0.06;
+            vec2 offset = pixel - center;
+            float distance = length(offset);
+            float ring = exp(-pow((distance - radius) / band, 2.0)) * (1.0 - p) * p_portal;
+            vec2 bent = pixel - normalize(offset + 1e-4) * ring * band * 0.6;
+            vec4 refracted = terminalTexel(clamp(bent, r.xy, r.xy + r.zw - 1.0) / iResolution);
+            color = mix(color, refracted, min(ring * 2.0, 1.0));
+            color.rgb += tint * ring * max(color.a, 0.5);
+        }
+    }
+    return color;
+}
+
 vec4 pTerminal(vec2 uv) {
     vec2 pixel = terminalPixel(uv);
-    if (int(p_style + 0.5) == 1) return tubeStyle(pixel, uv);
-    return hingeStyle(pixel, uv);
+    vec4 color = int(p_style + 0.5) == 1 ? tubeStyle(pixel, uv) : hingeStyle(pixel, uv);
+    return contextMarks(pixel, color);
 }

@@ -114,6 +114,8 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("pane-effects"), QStringLiteral("Pane effects shader for --open-progress and --close-progress."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("open-progress"), QStringLiteral("The last pane is opening, 0 to 1, from --open-edge."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("open-edge"), QStringLiteral("The edge it opens from: 1 left (default), 2 top, 3 right, 4 bottom."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("context"), QStringLiteral("The last pane's context: 0 here, 1 remote, 2 elevated, 3 container."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("context-progress"), QStringLiteral("How far its context change has run, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("close-progress"), QStringLiteral("The last pane has closed, 0 to 1, leaving its frame on a blue background."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
@@ -422,14 +424,20 @@ int main(int argc, char** argv)
     if (parser.isSet(QStringLiteral("open-progress")) && !panes.empty()) {
         panes.back().params.openProgress = parser.value(QStringLiteral("open-progress")).toFloat();
         panes.back().params.openEdge = parser.isSet(QStringLiteral("open-edge")) ? parser.value(QStringLiteral("open-edge")).toInt() : 1;
-        renderer.setPaneEffects({true, std::nullopt, 1.0f});
+        renderer.setPaneEffects({true, true, std::nullopt, 1.0f});
+    }
+    if (parser.isSet(QStringLiteral("context")) && !panes.empty()) {
+        panes.back().params.context = parser.value(QStringLiteral("context")).toInt();
+        panes.back().params.contextProgress = parser.isSet(QStringLiteral("context-progress"))
+            ? parser.value(QStringLiteral("context-progress")).toFloat() : 1.0f;
+        renderer.setPaneEffects({true, true, std::nullopt, 1.0f});
     }
     if (parser.isSet(QStringLiteral("close-progress")) && panes.size() > 1) {
         closed.defaultBg = 0xFF5A2A10u; // blue
         auto ghost = panes.back();
         ghost.snapshot = &closed;
         panes.pop_back();
-        renderer.setPaneEffects({true, ghost, parser.value(QStringLiteral("close-progress")).toFloat()});
+        renderer.setPaneEffects({true, true, ghost, parser.value(QStringLiteral("close-progress")).toFloat()});
     }
     if (parser.isSet(QStringLiteral("tab-transition"))) {
         for (auto& copy : tabSnapshots) copy.defaultBg = 0xFF5A2A10u; // the tab being left: blue

@@ -65,6 +65,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A pane overview that shows the panes of every tab as live 3D cards to choose from, drawn by a replaceable shader pack.
 - Animated tab switches, drawn by a replaceable shader pack: a turning cube, a page flip, a shatter or a slide.
 - Panes that swing in on a hinge or switch on like a picture tube as they split, and fall away or switch off as they close.
+- A portal across a pane whose shell moves to another host, user or container, and a coloured frame while it is away.
 - Pane and tab moves between tabs and windows. A drag outside the tab bar detaches a tab into a new window.
 - Saved projects that store a window's tabs, splits, directories and launch arguments.
 - A quick terminal on a Wayland layer surface, toggled by a global shortcut.
