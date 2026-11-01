@@ -584,6 +584,60 @@ TEST(Graphics, ChildOfAClippedImageMovesWithTheRows)
     EXPECT_EQ(child->y, 20);
 }
 
+TEST(Graphics, ChildOfAClippedImageIsCutLikeItsParent)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=10,v=40,i=1,q=2", b64(rgba(10, 40, 0, 0, 0))));
+    t.t.feed(apc("a=t,f=32,s=10,v=20,i=2,q=2", b64(rgba(10, 20, 0, 0, 0))));
+    t.t.feed(apc("a=t,f=32,s=10,v=40,i=3,q=2", b64(rgba(10, 40, 0, 0, 0))));
+    t.t.feed("\x1b[2;5r\x1b[2;1H"); // rows 1 to 4
+    t.t.feed(apc("a=p,i=1,p=1,C=1,q=2")); // rows 1 and 2
+    t.t.feed(apc("a=p,i=2,p=1,P=1,Q=1,H=2,q=2")); // row 1, column 2
+    t.t.feed(apc("a=p,i=3,p=1,P=1,Q=1,H=4,q=2")); // rows 1 and 2, column 4
+    t.t.feed("\x1b[5;1H\n"); // row 1 leaves at the top margin
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    auto find = [&](std::uint32_t id) {
+        return std::find_if(vis.begin(), vis.end(), [id](const auto& v) { return v.imageId == id; });
+    };
+    // The one-row child left with its only row: it does not cover row 0.
+    EXPECT_EQ(find(2), vis.end());
+    const auto parent = find(1);
+    ASSERT_NE(parent, vis.end());
+    EXPECT_EQ(parent->y, 20);
+    EXPECT_EQ(parent->height, 20);
+    EXPECT_EQ(parent->srcY, 20);
+    const auto tall = find(3);
+    ASSERT_NE(tall, vis.end());
+    EXPECT_EQ(tall->x, 40);
+    EXPECT_EQ(tall->y, 20);
+    EXPECT_EQ(tall->height, 20);
+    EXPECT_EQ(tall->srcY, 20);
+    EXPECT_EQ(tall->srcH, 20);
+    EXPECT_EQ(t.g().placements().size(), 2u);
+}
+
+TEST(Graphics, ChildIsCutAtTheBottomMarginAndGoesWithItsParent)
+{
+    Term t(20, 6);
+    t.t.feed(apc("a=t,f=32,s=10,v=20,i=1,q=2", b64(rgba(10, 20, 0, 0, 0))));
+    t.t.feed(apc("a=t,f=32,s=10,v=40,i=2,q=2", b64(rgba(10, 40, 0, 0, 0))));
+    t.t.feed("\x1b[2;5r\x1b[3;1H"); // rows 1 to 4
+    t.t.feed(apc("a=p,i=1,p=1,C=1,q=2")); // row 2
+    t.t.feed(apc("a=p,i=2,p=1,P=1,Q=1,V=1,q=2")); // rows 3 and 4
+    t.t.feed("\x1b[2;1H\x1bM"); // RI at the top margin: row 4 leaves at the bottom
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) { return v.imageId == 2; });
+    ASSERT_NE(child, vis.end());
+    EXPECT_EQ(child->y, 80);
+    EXPECT_EQ(child->height, 20);
+    EXPECT_EQ(child->srcY, 0);
+    EXPECT_EQ(child->srcH, 20);
+    // The parent leaves at the top; the child's row is still inside, but it
+    // hangs from the parent.
+    t.t.feed("\x1b[3S");
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
 TEST(Graphics, DownwardRegionScrollClipsAnImageAtTheBottomMargin)
 {
     Term t(20, 6);

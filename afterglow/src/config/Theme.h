@@ -62,14 +62,18 @@ QString locate(const QString& name, const QStringList& dirs, const QString& base
 /// different colour with no warning.
 bool isColorName(const QString& name);
 
+/// Whether @p data is an Afterglow JSON theme rather than a Ghostty or kitty
+/// one: parse() decides the format by the content, not the file name.
+bool isJson(const QByteArray& data);
+
 /// Reads a theme: afterglow's JSON (one object with the colour keys
 /// foreground, background, cursor, cursorText, selectionForeground,
 /// selectionBackground, divider, the highlight colours and palette), a
 /// Ghostty theme ("palette = 0=#1d1f21", "cursor-color = ...") or a kitty
 /// one ("color0 #1d1f21", "cursor ..."). nullopt, with @p error set, if it
 /// has no colours. Keys it does not use go to @p ignored; keys it uses whose
-/// value is not a colour (or, for visualBellIntensity, not 0-1) go to
-/// @p invalid, palette entries as "palette[3]".
+/// value is not a colour (or, for visualBellIntensity, not 0-1; for palette,
+/// not an array) go to @p invalid, palette entries as "palette[3]".
 std::optional<Theme> parse(const QByteArray& data, QString* error = nullptr, QStringList* ignored = nullptr,
                            QStringList* invalid = nullptr);
 

@@ -159,6 +159,8 @@ The states of `StatusChanged` are `idle`, `working`, `done`, `blocked` and `erro
 | `\xHH` | The code point U+00HH, sent as UTF-8. Two hexadecimal digits are necessary. |
 
 To send text that starts with `--`, put it after `--`: `afterglow ctl send-text -- --stdin`.
+Only `send-text`, `set-title`, `notify`, `split`, `new-tab` and `new-window` read words after `--`.
+The other commands stop with a usage error when you give such words.
 
 ## References
 

@@ -399,12 +399,41 @@ TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
     // which would then be read as the user's own trusted path.
     EXPECT_TRUE(fresh.build(refs, {{QStringLiteral("missing-default"), QVariantMap{{QStringLiteral("photo"), 5}}}})
                     .background.empty());
-    EXPECT_TRUE(fresh.problems().filter(QStringLiteral("not an image path")).size() == 1);
+    EXPECT_EQ(fresh.problems().filter(QStringLiteral("not an image path")).size(), 1);
     // A configured image that fails too still fails the pack.
     EXPECT_TRUE(fresh.build(refs, {{QStringLiteral("missing-default"),
                                       QVariantMap{{QStringLiteral("photo"), dir + QStringLiteral("/absent.png")}}}})
                     .background.empty());
     EXPECT_TRUE(QDir(dir).removeRecursively());
+}
+
+TEST_F(ShaderControlsTest, ConfiguredValuesThatApplyNowhereAreProblems)
+{
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("types")};
+    const QVariantMap wrong{{QStringLiteral("cuont"), 3}, {QStringLiteral("count"), 99},
+                            {QStringLiteral("tint"), QStringLiteral("not a colour")}, {QStringLiteral("enabled"), true}};
+    // The pack still draws, with its defaults where the values were wrong.
+    ASSERT_EQ(library.build(refs, {{QStringLiteral("types"), wrong}}).background.size(), 1u);
+    const QStringList problems = library.problems();
+    EXPECT_EQ(problems.filter(QStringLiteral("Shaders.params.types.cuont: the pack has no such parameter")).size(), 1);
+    EXPECT_EQ(problems.filter(QStringLiteral("Shaders.params.types.count: the pack does not accept")).size(), 1);
+    EXPECT_EQ(problems.filter(QStringLiteral("Shaders.params.types.tint: the pack does not accept")).size(), 1);
+    EXPECT_TRUE(problems.filter(QStringLiteral("types.enabled")).isEmpty());
+    // The program is cached by its values: the same config reports them again.
+    library.build(refs, {{QStringLiteral("types"), wrong}});
+    EXPECT_EQ(library.problems(), problems);
+    library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("count"), 3}}}});
+    EXPECT_TRUE(library.problems().isEmpty()) << library.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ShaderControlsTest, AMissingPackIsOneShortProblem)
+{
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("no-such-pack")};
+    EXPECT_TRUE(library.build(refs, {}).background.empty());
+    // The list of every pack stays in the log, out of the notice.
+    EXPECT_EQ(library.problems(), QStringList{QStringLiteral("shader no-such-pack: no shader pack named \"no-such-pack\"")});
 }
 
 TEST_F(ShaderControlsTest, PresetsStoreImagesRelativeToThePack)

@@ -195,6 +195,12 @@ int runCtl(int argc, char** argv)
         trailing = args.mid(dash + 1);
         args = args.mid(0, dash);
     }
+    // Only these read words after "--": elsewhere they would be dropped unseen.
+    static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"), QStringLiteral("new-tab"),
+                                              QStringLiteral("send-text"), QStringLiteral("set-title"), QStringLiteral("notify")};
+    if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
+        return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
+    }
     auto takeFlag = [&args](const QString& flag) { return args.removeAll(flag) > 0; };
     auto takeValue = [&args](const QString& flag) -> std::optional<QString> {
         const qsizetype i = args.indexOf(flag);

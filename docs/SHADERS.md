@@ -21,7 +21,7 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
 | `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. |
 
-A binary that runs from the build tree moves `data/shaders/` of its checkout below the XDG data directories in this order.
+A binary that runs from the build tree puts the checkout's `data/shaders/` after the XDG data directories in this table.
 Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
 Your own packs in `~/.config/afterglow/shaders/` still replace the packs of the checkout.
 
@@ -32,7 +32,7 @@ Afterglow looks for an include file in this order:
 1. The pack's own directory, for `#include "name.glsl"` only.
 2. The contract headers built into Afterglow, such as `terminal_lib.glsl`.
 3. For a pack in a script package, the `shared/` subdirectory of the package's `shaders/` directory.
-4. The `shared/` subdirectory of each directory in the table, in reverse table order: your own directory first, then the installed and bundled directories.
+4. The `shared/` subdirectory of each directory in the table, in reverse table order, starting with your own directory.
 
 Afterglow uses the first file that it finds.
 Script packages carry their own `shaders/` directory. See [packages](PACKAGES.md#shaders).

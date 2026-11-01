@@ -66,17 +66,10 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
 
 std::unique_ptr<TerminalWindow::Tab> TerminalWindow::removeTabShell(int index)
 {
+    // Before the tab leaves m_tabs: the prompts' signals run their handlers
+    // at once, and those may walk the tabs.
+    dropTabPrompts(m_tabs[std::size_t(index)]->id);
     auto tab = std::move(m_tabs[std::size_t(index)]);
-    // A prompt or a menu for the tab that leaves has nothing to act on here.
-    const quint32 removed = tab->id;
-    if (m_titleTab == removed) {
-        m_controller->cancelTitle();
-        m_titleTab = 0;
-    }
-    if (m_menuTab == removed) {
-        m_controller->closeContextMenu();
-        m_menuTab = 0;
-    }
     m_splits = nullptr;
     m_tabs.erase(m_tabs.begin() + index);
     if (index < m_currentTab) --m_currentTab;

@@ -155,6 +155,32 @@ TEST_F(Transfer, ReadRequiresApprovalAndStreamsContent)
     }));
 }
 
+// A sysfs attribute states st_size 4096 and holds a few bytes: QFile::atEnd()
+// stays false after the last read, so the end must come from the empty read.
+TEST_F(Transfer, ReadOfFileShorterThanItsStatedSizeEnds)
+{
+    const QString name = QStringLiteral("/sys/devices/system/cpu/online");
+    QFile probe(name);
+    struct stat st { };
+    if (::stat(QFile::encodeName(name).constData(), &st) || !probe.open(QIODevice::ReadOnly)
+        || probe.readAll().size() >= st.st_size)
+        GTEST_SKIP() << "needs a sysfs file whose stated size exceeds its contents";
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + b64(name.toUtf8()));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    ASSERT_TRUE(waitFor(
+        [&] { return std::any_of(replies.begin(), replies.end(), [](auto b) { return b.contains("ac=file"); }); }));
+    send("ac=file;fid=plain;n=" + b64(name.toUtf8()));
+    send("ac=file;fid=zipped;zip=zlib;n=" + b64(name.toUtf8()));
+    for (const char* fid : { "plain", "zipped" })
+        EXPECT_TRUE(waitFor([&] {
+            return std::any_of(replies.begin(), replies.end(),
+                [&](auto b) { return b.contains("ac=end_data") && b.contains(";fid=" + QByteArray(fid) + ";"); });
+        })) << fid;
+}
+
 TEST_F(Transfer, EmptyFileIsCommittedBeforeSuccessWithoutFinish)
 {
     ASSERT_TRUE(start());

@@ -10,6 +10,7 @@
     "separator": "  |  ",
     "tab_title": true,
     "git": true,
+    "git_changes": false,
     "git_refresh_seconds": 15
   }
 }

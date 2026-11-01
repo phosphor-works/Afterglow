@@ -36,7 +36,8 @@ namespace Afterglow {
 /// data/shaders/shared. Packs come from ~/.config/afterglow/shaders, the system
 /// data directories and the bundled packs, and from loaded script packages'
 /// shaders/ directories as "<package>.<pack>". When two packs answer to one
-/// name, the user's wins over the system's, and the system's over the bundled.
+/// name, the user's wins over the system's, and the system's over the bundled
+/// (a build-tree binary puts the checkout's packs above the system's).
 /// A pack compiles once and is cached until its files change; the config's
 /// parameter values are applied over a copy, so changing them does not
 /// compile it again.
@@ -72,7 +73,8 @@ public:
     /// Curves for parameter transitions.
     const PhosphorAnimation::CurveRegistry& curves() const { return *m_curves; }
     /// What the last build() could not use, one line each: Shaders.params
-    /// entries that apply nowhere, and configured packs that do not draw
+    /// entries that apply nowhere (no such shader, parameter or acceptable
+    /// value), and configured packs that do not draw
     /// (no such pack, a compile error, an image, the image budget). Each is
     /// also logged, with the full compile log.
     QStringList problems() const { return m_problems; }
@@ -137,6 +139,7 @@ private:
     QHash<QString, QString> m_resolved; // cache key -> the pack directory its reference named
     QHash<QString, AfterglowRender::ShaderProgramPtr> m_cache;
     QHash<QString, QString> m_failed; // cache key -> error, so a broken shader is reported once
+    QHash<QString, QStringList> m_valueProblems; // cache key -> Shaders.params values its pack did not take
     QSet<QString> m_desired; // cache keys of the last build
     QSet<QString> m_overBudget; // keys of m_desired dropped for the image budget, not loaded again
     QString m_paramsChecked; // the Shaders.params and references last checked for unused entries

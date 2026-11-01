@@ -273,6 +273,10 @@ bool ChromeLayer::initialize()
     m_window->setGraphicsDevice(QQuickGraphicsDevice::fromRhi(rhi));
     if (!m_control->initialize()) {
         qCWarning(lcChrome) << "Qt Quick could not initialise on the shared device; running without chrome";
+        // Nothing will draw the scene: drop it, so that the pointer and clicks
+        // over where the chrome would be go to the panes.
+        delete m_root;
+        m_root = nullptr;
         m_failed = true;
         return false;
     }

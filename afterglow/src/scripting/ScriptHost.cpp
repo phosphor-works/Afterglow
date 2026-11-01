@@ -82,16 +82,11 @@ struct ScriptHost::Script
         maxCallNs = std::max(maxCallNs, lastCallNs);
         totalCallNs += lastCallNs;
         // The await runtime registers a flow before the engine converts the
-        // effects it waits for. When they are too large to convert (an error,
-        // or with an older engine an invalid result), no result will resume
-        // the flow, and it would hold a waiting slot for good.
-        const bool lost = outcome.status != LuauEngine::CallStatus::Ok || !outcome.result.isValid();
-        if (lost && engine->moduleField(module, flows).toLongLong() > flowsBefore) {
+        // effects it waits for. When the call fails after that (the effects
+        // are too large to convert), no result will resume the flow, and it
+        // would hold a waiting slot for good.
+        if (outcome.status != LuauEngine::CallStatus::Ok && engine->moduleField(module, flows).toLongLong() > flowsBefore) {
             engine->callModule(module, QStringLiteral("__abandon"), {flowsBefore}, timeoutMs);
-            if (outcome.status == LuauEngine::CallStatus::Ok) {
-                outcome.status = LuauEngine::CallStatus::Error;
-                outcome.message = QStringLiteral("result too large");
-            }
         }
         return outcome;
     }
@@ -356,10 +351,10 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     m_loadErrors.clear();
     const auto wasSuperseded = std::exchange(m_superseded, {});
     m_stateFailures.clear();
-    // Warns once, when a path starts to lose its id, not on every rescan.
+    QHash<QString, QString> supersededIds; // path -> the id it lost, for the warning
     auto supersede = [&](const QString& path, const QString& id, const QString& holder) {
-        if (!wasSuperseded.contains(path)) qCWarning(lcScripts) << path << "uses the id" << id << "of" << holder << "and is not loaded";
         m_superseded.insert(path, holder);
+        supersededIds.insert(path, id);
     };
     if (m_enabled) {
         // Every script file and package folder, lowest priority first. A
@@ -492,6 +487,13 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             } else { script->storage = committed; script->migrateState = false; }
         }
         ++it;
+    }
+    // Warns once, when a path starts to lose its id, not on every rescan; and
+    // only now, since a failed commit above keeps a superseded path running.
+    for (auto it = m_superseded.cbegin(); it != m_superseded.cend(); ++it) {
+        if (!wasSuperseded.contains(it.key()))
+            qCWarning(lcScripts) << it.key() << "uses the id" << supersededIds.value(it.key()) << "of" << it.value()
+                                 << "and is not loaded";
     }
     const QList<ScriptAction> before = actions();
     const auto previous = m_scripts;

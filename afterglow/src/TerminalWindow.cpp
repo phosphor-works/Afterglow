@@ -823,6 +823,18 @@ void TerminalWindow::closePane(Pane* pane)
     scheduleRender();
 }
 
+void TerminalWindow::dropTabPrompts(quint32 tabId)
+{
+    if (m_titleTab == tabId) {
+        m_titleTab = 0;
+        m_controller->cancelTitle();
+    }
+    if (m_menuTab == tabId) {
+        m_menuTab = 0;
+        m_controller->closeContextMenu();
+    }
+}
+
 void TerminalWindow::dropPanePrompts(Pane* pane)
 {
     // The prompt's reply would go to a pane that is leaving: drop it unanswered.
@@ -1152,13 +1164,7 @@ void TerminalWindow::closeTab(int index)
         return;
     }
     const quint32 closingId = m_tabs[std::size_t(index)]->id;
-    if (m_titleTab == closingId) {
-        m_controller->cancelTitle();
-        m_titleTab = 0;
-    }
-    if (m_menuTab == closingId) {
-        m_menuTab = 0;
-    }
+    dropTabPrompts(closingId);
     m_tabs[std::size_t(index)]->splits->forEachPane([this](Pane* p, const QRect&) {
         Q_EMIT paneClosing(p->id(), tabIdOf(p), id());
         dropPanePrompts(p);
@@ -1330,7 +1336,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
         m_focused->setPreedit({}, 0);
     }
     // The input method is the application's: reset it only for this window's composition.
-    if (isActive()) QGuiApplication::inputMethod()->reset();
+    if (isActive() && !m_keepComposition) QGuiApplication::inputMethod()->reset();
     stopCopyMode();
     cancelKeyMode();
     // Hints and Unicode input act on the focused pane: they do not carry over.
@@ -1606,9 +1612,11 @@ void TerminalWindow::renderNow()
     }
     // A swapchain out of date presented nothing: the frame is owed, and output
     // that arrives later may never ask for it. A failed frame (a lost device)
-    // is not retried: every retry would fail the same way and spin the loop.
-    if (m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial())
-        == AfterglowRender::WindowRenderer::FrameResult::Retry)
+    // is not retried, not even for an animation: every retry would fail the
+    // same way and spin the loop.
+    using FrameResult = AfterglowRender::WindowRenderer::FrameResult;
+    const FrameResult frame = m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
+    if (frame == FrameResult::Retry)
         scheduleRender();
     updateAudioCapture();
     if (anyBlinkingText && !m_textBlinkTimer.isActive()) {
@@ -1629,7 +1637,7 @@ void TerminalWindow::renderNow()
         QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
     }
     updateTerminalAccessibility(this);
-    if (animating || sliding || m_renderer->animating()) {
+    if (frame != FrameResult::Failed && (animating || sliding || m_renderer->animating())) {
         scheduleRender(); // something is moving: keep frames coming
     }
 
@@ -1838,7 +1846,13 @@ bool TerminalWindow::event(QEvent* e)
             ime->accept();
             return true;
         }
-        if (!ime->commitString().isEmpty() || !ime->preeditString().isEmpty()) finishOverviewReveal();
+        if (!ime->commitString().isEmpty() || !ime->preeditString().isEmpty()) {
+            // The composition began after the overview closed (opening it
+            // reset the input method), so it is for the chosen card.
+            const bool was = std::exchange(m_keepComposition, true);
+            finishOverviewReveal();
+            m_keepComposition = was;
+        }
         // Terminal output is not an editable document. Never translate arbitrary
         // IME replacement ranges into destructive shell keystrokes.
         if (ime->replacementStart() != 0 || ime->replacementLength() != 0) {

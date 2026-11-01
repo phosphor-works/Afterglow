@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
 
@@ -239,4 +241,42 @@ TEST(Clipboard, AWriteHoldsAtMost64Types)
     t.feed("\x1b]5522;type=wdata\x1b\\"); // the end reports the 65th type
     EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EFBIG:id=w\x1b\\");
     EXPECT_TRUE(t.host.requests.empty());
+}
+
+TEST(Clipboard, WriteLimitCountsSmallChunksAcrossTypes)
+{
+    // The assembler directly: the limit is its own, and 128 MiB in OSC
+    // sequences would only time the parser.
+    ClipboardAssembler a;
+    ClipboardRequest out;
+    std::string reply;
+    const std::string plain = "type=wdata:mime=" + detail::base64Encode("text/plain") + ";";
+    const std::string html = "type=wdata:mime=" + detail::base64Encode("text/html") + ";";
+    ASSERT_EQ(a.feed("type=write:id=w", out, reply), ClipboardAssembler::Result::Pending);
+    // text/plain: all but 3,000 bytes of the limit, in large chunks.
+    constexpr std::size_t Rest = 3000;
+    const std::size_t first = ClipboardAssembler::MaxWrite - Rest;
+    ASSERT_EQ(first % 3, 2u); // whole groups, then one padded group of two bytes
+    const std::string chunk(4u << 20, 'A');
+    std::size_t groups = (first - 2) / 3;
+    while (groups > 0) {
+        const std::size_t n = std::min(groups, chunk.size() / 4);
+        ASSERT_EQ(a.feed(plain + chunk.substr(0, n * 4), out, reply), ClipboardAssembler::Result::Pending);
+        groups -= n;
+    }
+    ASSERT_EQ(a.feed(plain + "AAA=", out, reply), ClipboardAssembler::Result::Pending);
+    // text/html: the rest, in chunks of one to three characters, reaches the limit exactly.
+    std::size_t fed = 0;
+    for (std::size_t i = 0; fed < Rest / 3 * 4; ++i) {
+        const std::size_t n = std::min<std::size_t>(1 + i % 3, Rest / 3 * 4 - fed);
+        ASSERT_EQ(a.feed(html + std::string(n, 'A'), out, reply), ClipboardAssembler::Result::Pending) << fed;
+        fed += n;
+    }
+    EXPECT_TRUE(reply.empty());
+    // One more group goes over, whichever chunk completes it.
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_EQ(a.feed(html + "A", out, reply), ClipboardAssembler::Result::Pending);
+    }
+    EXPECT_EQ(a.feed(html + "A", out, reply), ClipboardAssembler::Result::Error);
+    EXPECT_EQ(reply, "\x1b]5522;type=write:status=EFBIG:id=w\x1b\\");
 }

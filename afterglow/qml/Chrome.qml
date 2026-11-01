@@ -17,6 +17,9 @@ Item {
 
     // How long the history scrollbar takes to fade in or out.
     readonly property int scrollbarFade: 200
+    // The most each bottom badge takes while both show: half of what the
+    // three 12 px margins leave, so they never overlap.
+    readonly property real badgeShare: Math.max(0, (width - 36) / 2)
 
     // Called by the host for every pointer event: true if the chrome takes it.
     // The history scrollbar does not take the wheel, so the wheel over it still
@@ -49,6 +52,11 @@ Item {
                           titlePrompt, commandPalette, searchBar]
         for (const overlay of overlays) {
             if (overlay && overlay.visible) {
+                // The keys are in it already (Tab reached Cancel): an overlay
+                // that changes below must not move them back to the default.
+                for (let item = root.Window.activeFocusItem; item; item = item.parent) {
+                    if (item === overlay) return
+                }
                 overlay.takeFocus()
                 return
             }
@@ -58,6 +66,9 @@ Item {
     function overlayChanged(): void {
         Qt.callLater(root.restoreFocus)
     }
+    // An overlay can be open before the scene is made, which runs in the
+    // background: no visibility change then gives it the keyboard.
+    Component.onCompleted: root.overlayChanged()
 
     // Split labels: a small title in each pane's top-right corner. By count,
     // not by the list: the list changes on every frame of a split animation,
@@ -269,7 +280,7 @@ Item {
         anchors.right: root.right
         anchors.margins: 12
         visible: root.controller.keyMode.length > 0
-        width: Math.min(keyModeLabel.implicitWidth + 16, root.width * (scriptStatusBadge.visible ? 0.48 : 0.6))
+        width: Math.min(keyModeLabel.implicitWidth + 16, scriptStatusBadge.visible ? root.badgeShare : root.width * 0.6)
         height: keyModeLabel.implicitHeight + 16
         color: systemPalette.highlight
         radius: 4
@@ -293,7 +304,7 @@ Item {
         anchors.left: root.left
         anchors.margins: 12
         visible: root.controller.scriptStatus.length > 0
-        width: Math.min(scriptStatusLabel.implicitWidth + 16, root.width * (keyModeBadge.visible ? 0.48 : 0.6))
+        width: Math.min(scriptStatusLabel.implicitWidth + 16, keyModeBadge.visible ? root.badgeShare : root.width * 0.6)
         height: scriptStatusLabel.implicitHeight + 12
         color: systemPalette.window
         radius: 4
@@ -329,6 +340,9 @@ Item {
         anchors.fill: root
         active: root.controller.scriptDialog.open === true
         onActiveChanged: root.overlayChanged()
+        // Made inside the background incubation, the item can come after
+        // the activation: restoreFocus needs it.
+        onLoaded: root.overlayChanged()
         sourceComponent: Component { ScriptDialog { controller: root.controller } }
     }
 

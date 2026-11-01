@@ -80,7 +80,7 @@ wrong, and points to the skills that hold the procedures.
 | Task | Command |
 | --- | --- |
 | Build | `cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `ctest --test-dir build --output-on-failure -j6` (about 500, all pass) |
+| Unit and renderer tests | `ctest --test-dir build --output-on-failure -j6` (about 850, all pass) |
 | Native window tests | `python3 .claude/skills/ag-verify-live/headless_native.py` |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |

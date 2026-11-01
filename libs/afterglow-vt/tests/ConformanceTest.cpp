@@ -174,6 +174,41 @@ TEST(Conformance, ExtendedReverseWrapCrossesLinesAndTopMargin)
     EXPECT_EQ(t.t.screen().cursor.y, 0);
 }
 
+TEST(Conformance, SoftResetClearsCursorsSavedCursorMarginsAndProtection)
+{
+    Term t(20, 6);
+    t.feed("\x1b[>1;0 q"); // an extra cursor at the cursor
+    ASSERT_FALSE(t.t.extraCursors().empty());
+    t.feed("\x1b[!p");
+    EXPECT_TRUE(t.t.extraCursors().empty());
+
+    // The saved cursor goes, and the style its pen held is released.
+    t.feed("\x1b[3;5H\x1b[31m\x1b" "7\x1b[0m");
+    ASSERT_GT(t.t.screen().styles().liveCount(), 1u);
+    t.feed("\x1b[!p\x1b" "8X"); // DECRC with nothing saved: home, default rendition
+    EXPECT_EQ(t.t.screen().row(0).at(0).codepoint(), U'X');
+    EXPECT_EQ(t.t.screen().row(0).at(0).styleId(), StyleTable::DefaultId);
+    t.feed("\x1b[2J");
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 1u);
+
+    // Margins, with DECLRMM.
+    t.feed("\x1b[2;3r\x1b[?69h\x1b[2;4s");
+    t.take();
+    t.feed("\x1b[!p\x1bP$qr\x1b\\\x1bP$qs\x1b\\\x1b[?69$p");
+    EXPECT_EQ(t.take(), "\x1bP1$r1;6r\x1b\\\x1bP1$r1;20s\x1b\\\x1b[?69;2$y");
+
+    // Protection: a cell ISO protection kept from EL is erased after DECSTR.
+    Term iso(6, 1);
+    iso.feed("\x1bVa\x1b[1;1H\x1b[K");
+    ASSERT_EQ(rowText(iso.t, 0), "a");
+    iso.feed("\x1b[!p\x1b[1;1H\x1b[K");
+    EXPECT_EQ(rowText(iso.t, 0), "");
+    // DEC protection: DECSCA's pen goes, so DECSEL erases what follows.
+    Term dec(6, 1);
+    dec.feed("\x1b[1\"q\x1b[!pc\x1b[1;1H\x1b[?K");
+    EXPECT_EQ(rowText(dec.t, 0), "");
+}
+
 TEST(Conformance, BackspaceFromPendingWrap)
 {
     Term t(4, 2);

@@ -1169,9 +1169,9 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
     m_eventTimes.fill(-1e6);
     auto noteEvents = [this](const ShaderRegionState& state) {
         auto newest = [](double& kind, double at) { kind = std::max(kind, at); };
-        newest(m_eventTimes[0], state.cursorChangeTime);
-        newest(m_eventTimes[1], state.focusChangeTime);
-        for (const auto& signal : state.signals) newest(m_eventTimes[2], signal.at);
+        newest(m_eventTimes[eventAgeIndex(CursorAge)], state.cursorChangeTime);
+        newest(m_eventTimes[eventAgeIndex(FocusAge)], state.focusChangeTime);
+        for (const auto& signal : state.signals) newest(m_eventTimes[eventAgeIndex(SignalAge)], signal.at);
     };
     for (const ShaderRegionState& state : panes) noteEvents(state);
     noteEvents(window);

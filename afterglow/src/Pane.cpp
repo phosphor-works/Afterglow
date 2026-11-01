@@ -681,17 +681,29 @@ void Pane::setUserTitle(const QString& title)
 
 QString Pane::text(AfterglowVt::Terminal::TextScope scope)
 {
-    std::lock_guard lock(m_mutex);
-    return QString::fromStdString(m_terminal.text(scope));
+    std::string text;
+    {
+        std::lock_guard lock(m_mutex);
+        text = m_terminal.text(scope);
+    }
+    // Converted after the lock: the reader thread waits on it.
+    return QString::fromStdString(text);
 }
 
 QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit)
 {
-    std::lock_guard lock(m_mutex);
+    std::string text;
     bool truncated = false;
-    const auto text = m_terminal.text(scope, limit, &truncated);
+    bool available = true;
+    {
+        std::lock_guard lock(m_mutex);
+        text = m_terminal.text(scope, limit, &truncated);
+        available = scope != AfterglowVt::Terminal::TextScope::LastOutput || m_terminal.hasCommandOutput();
+    }
+    // Converted after the lock: the text can be many megabytes, and the
+    // reader thread waits on the lock.
     return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("truncated"), truncated},
-            {QStringLiteral("available"), scope != AfterglowVt::Terminal::TextScope::LastOutput || m_terminal.hasCommandOutput()}};
+            {QStringLiteral("available"), available}};
 }
 
 QString Pane::runningCommand() const
@@ -970,7 +982,7 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
             m_copySelecting = false;
             if (m_copyMode) {
                 // Copy mode keeps its cursor: the selection starts there again.
-                m_selection.anchor = m_selection.head = m_copyCursor;
+                m_selection.start(m_copyCursor, m_selection.mode, m_selection.layoutEpoch, true);
             } else {
                 m_selection.active = false;
             }

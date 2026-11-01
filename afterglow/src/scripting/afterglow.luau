@@ -141,23 +141,27 @@ local function resume(ev)
     return drive(flow.co, if ev.ok then ev.data else nil, ev.error, ev)
 end
 
--- Afterglow calls this when it cannot take the effects that a call returned
--- (too large to convert) after that call registered a flow: no result will
--- ever resume it. A synchronous call registers at most one flow, the one
--- after @since. Returns whether it dropped one.
+-- Afterglow calls this when a call that registered flows failed, for example
+-- because its effects were too large to convert: none of those effects reached
+-- the host, so no result will ever resume the flows after @since. A handler
+-- that calls afterglow.__wrap itself can register more than one. Returns
+-- whether it dropped any.
 local function abandon(since)
     if type(since) ~= "number" then
         return false
     end
-    local id = tostring(since + 1)
-    local flow = flows[id]
-    if flow == nil then
-        return false
+    local dropped = false
+    for n = since + 1, nextFlow do
+        local id = tostring(n)
+        local flow = flows[id]
+        if flow ~= nil then
+            flows[id] = nil
+            waiting -= 1
+            outstanding -= flow.remaining
+            dropped = true
+        end
     end
-    flows[id] = nil
-    waiting -= 1
-    outstanding -= flow.remaining
-    return true
+    return dropped
 end
 
 -- Handlers that must return at once: a migration returns state, and effects

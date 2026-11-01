@@ -1649,47 +1649,34 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
     const std::uint64_t lastRow =
         screen.rowsDropped() + screen.historySize() + std::uint64_t(std::max(0, screen.rows() - 1));
     const bool cutBelow = scroll.delta > 0 || scroll.bottom < lastRow;
-    const long long regionPixels = (static_cast<long long>(scroll.bottom - scroll.top) + 1) * ch;
-    std::vector<char> gone(m_placements.size(), 0);
-    std::vector<long long> anchorShift; // rows a clipped anchor moved down, for its children
-    bool changed = false;
-    for (std::size_t i = 0; i < m_placements.size(); ++i) {
-        Placement& p = m_placements[i];
-        if (p.parentImage || p.isVirtual) continue;
-        const SelectionPoint anchor{p.row, p.col};
-        if (!scroll.contains(anchor)) continue;
-        changed = true;
+    const long long regionRows = static_cast<long long>(scroll.bottom - scroll.top) + 1;
+    const long long regionPixels = regionRows * ch;
+    // Cuts @p p, whose top-left cell is @p rel rows below the region's top
+    // after the move, to the rows still inside the region. Returns the row
+    // that cell moves to, or nullopt when nothing of @p p remains.
+    auto clip = [&](Placement& p, long long rel) -> std::optional<long long> {
         const auto img = m_images.find(p.imageId);
         const DisplaySize size = img != m_images.end() && cw > 0 && ch > 0 ? displaySize(p, img->second, cw, ch)
                                                                            : DisplaySize{0, 0};
         const SourceRect src = img != m_images.end() ? sourceRect(p, img->second) : SourceRect{};
         if (size.width <= 0 || size.height <= 0 || src.width <= 0 || src.height <= 0) {
             // Nothing to measure its rows by: it is its top-left cell.
-            if (const auto moved = scroll.map(anchor)) p.row = moved->row;
-            else gone[i] = 1;
-            continue;
+            if (rel < 0 || rel >= regionRows) return std::nullopt;
+            return rel;
         }
-        // Pixels relative to the region's top edge, after the move.
-        const long long rel = static_cast<long long>(p.row - scroll.top) + scroll.delta;
         const long long y0 = rel * ch + p.offsetY;
         const long long cutTop = std::max(0LL, -y0);
         const long long cutBottom = cutBelow ? std::max(0LL, y0 + size.height - regionPixels) : 0;
         const long long kept = size.height - cutTop - cutBottom;
-        if (kept <= 0) {
-            gone[i] = 1;
-            continue;
-        }
+        if (kept <= 0) return std::nullopt;
         long long anchorRel = rel;
         if (rel < 0) {
-            // The anchor left the top: the first row still shown becomes it.
+            // The top-left cell left the top: the first row still shown becomes it.
             const long long top = y0 + cutTop;
             anchorRel = top / ch;
             p.offsetY = int(top - anchorRel * ch);
-            if (anchorShift.empty()) anchorShift.assign(m_placements.size(), 0);
-            anchorShift[i] = anchorRel - rel;
         }
-        p.row = scroll.top + std::uint64_t(anchorRel);
-        if (cutTop == 0 && cutBottom == 0) continue;
+        if (cutTop == 0 && cutBottom == 0) return anchorRel;
         // The source shrinks in proportion. Rounding down keeps at least one
         // source row, and at most a fraction of one more than is shown.
         const long long srcTop = cutTop * src.height / size.height;
@@ -1702,18 +1689,74 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
         p.displayWidth = std::uint32_t(size.width);
         p.displayHeight = std::uint32_t(kept);
         if (p.rows > 0) p.rows = kept % ch == 0 ? int(kept / ch) : 0;
+        return anchorRel;
+    };
+
+    enum class State : std::uint8_t { Unknown, Visiting, Still, Moved, Gone };
+    std::vector<State> state(m_placements.size(), State::Unknown);
+    // For a moved placement: its top-left row relative to the region's top,
+    // after the move and before the cut, and where the cut left it.
+    std::vector<long long> movedRow(m_placements.size(), 0);
+    std::vector<long long> keptRow(m_placements.size(), 0);
+    bool changed = false;
+    bool children = false;
+    for (std::size_t i = 0; i < m_placements.size(); ++i) {
+        Placement& p = m_placements[i];
+        if (p.parentImage) {
+            children = true;
+            continue;
+        }
+        const SelectionPoint anchor{p.row, p.col};
+        if (p.isVirtual || !scroll.contains(anchor)) {
+            state[i] = State::Still;
+            continue;
+        }
+        changed = true;
+        movedRow[i] = static_cast<long long>(p.row - scroll.top) + scroll.delta;
+        const auto kept = clip(p, movedRow[i]);
+        if (!kept) {
+            state[i] = State::Gone;
+            continue;
+        }
+        keptRow[i] = *kept;
+        p.row = scroll.top + std::uint64_t(*kept);
+        state[i] = State::Moved;
     }
     if (!changed) return;
-    if (!anchorShift.empty()) {
-        // A child hangs from its parent's anchor cell: it keeps its place
-        // when that anchor moves down to the region's top.
+    if (children) {
+        // A child moves with its parent's cells and is cut like a root image.
+        // Its origin stays where the move took it, so its offset changes by
+        // as much as its parent's origin moved down in the cut. A child of a
+        // placement that went goes with it.
         Origins origins(*this, screen, Origins::Rows::Active);
-        for (Placement& p : m_placements) {
-            if (const auto parent = origins.parentOf(p); parent && anchorShift[*parent] != 0) {
-                p.relativeY = int(std::clamp<long long>(p.relativeY - anchorShift[*parent], INT_MIN, INT_MAX));
+        auto resolve = [&](auto& self, std::size_t i) -> State {
+            if (state[i] == State::Visiting) return State::Still; // a cycle; place() refuses them
+            if (state[i] != State::Unknown) return state[i];
+            state[i] = State::Visiting;
+            Placement& p = m_placements[i];
+            const auto parent = origins.parentOf(p);
+            const State up = parent ? self(self, *parent) : State::Still;
+            if (up != State::Moved) {
+                state[i] = up == State::Gone ? State::Gone : State::Still;
+                return state[i];
             }
+            movedRow[i] = movedRow[*parent] + p.relativeY;
+            const auto kept = clip(p, movedRow[i]);
+            if (!kept) {
+                state[i] = State::Gone;
+                return state[i];
+            }
+            keptRow[i] = *kept;
+            p.relativeY = int(std::clamp<long long>(*kept - keptRow[*parent], INT_MIN, INT_MAX));
+            state[i] = State::Moved;
+            return state[i];
+        };
+        for (std::size_t i = 0; i < m_placements.size(); ++i) {
+            if (m_placements[i].parentImage) resolve(resolve, i);
         }
     }
+    std::vector<char> gone(m_placements.size(), 0);
+    for (std::size_t i = 0; i < m_placements.size(); ++i) gone[i] = state[i] == State::Gone;
     eraseFlagged(m_placements, gone);
     settle();
 }

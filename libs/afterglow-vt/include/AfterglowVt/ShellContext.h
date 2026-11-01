@@ -38,13 +38,14 @@ class AFTERGLOWVT_EXPORT ShellContexts
 public:
     static constexpr std::size_t MaxDepth = 64;
 
-    /// Applies an OSC 3008 payload. Returns true if the contexts changed.
+    /// Applies an OSC 3008 payload. A field that is not clean text is
+    /// dropped; a sequence whose id is not clean does nothing. Returns true
+    /// if the contexts changed.
     bool apply(std::string_view payload);
     /// iTerm2's RemoteHost (OSC 1337): user@host, empty to clear. A new or
     /// changed one replaces the previous one only, and becomes the innermost
     /// context; an identical repeat changes nothing. A value that is not clean
-    /// text is ignored, as is an OSC 3008 field that is not. Returns true if
-    /// the contexts changed.
+    /// text is ignored. Returns true if the contexts changed.
     bool setRemoteHost(std::string_view userAtHost);
     void clear() { m_stack.clear(); }
 

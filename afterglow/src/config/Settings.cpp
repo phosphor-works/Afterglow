@@ -357,7 +357,7 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("How glyph outlines align to the pixel grid. The none mode preserves outlines. The light mode aligns vertical positions only. "
                                "The full mode aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
-                QStringLiteral("How glyph edges are smoothed. Subpixel modes use grayscale when transparency or shaders are active. Pane "
+                QStringLiteral("How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane "
                                "effects are shaders, and they run while a pane is remote or in another context.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
@@ -617,7 +617,7 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as "
                         "cursor-trail or bloom.")},
         {QStringLiteral("window"), stringList(d.shaders.window), QMetaType::QVariantList,
-         QStringLiteral("Shaders run over the whole window, across splits, after the pane shaders.")},
+         QStringLiteral("Shaders run over the whole window, across panes, after the pane shaders.")},
         stringKey(QStringLiteral("overview"), d.shaders.overview,
                   QStringLiteral("Shader that draws the pane overview (pane_overview). An empty value turns the overview off.")),
         stringKey(QStringLiteral("tabTransition"), d.shaders.tabTransition,
@@ -861,8 +861,11 @@ bool SettingsStore::ensureFile()
         qCWarning(lcConfig).noquote() << "cannot create" << m_path << "-" << file.errorString();
         return false;
     }
-    if (file.write("{}\n") < 0) {
+    // An empty file does not parse, and write() refuses to replace a file
+    // that does not parse: remove a half-made one rather than leave it.
+    if (file.write("{}\n") < 0 || !file.flush()) {
         qCWarning(lcConfig).noquote() << "cannot write" << m_path << "-" << file.errorString();
+        file.remove();
         return false;
     }
     return true;
@@ -1050,18 +1053,22 @@ Settings SettingsStore::read()
             QStringList ignored;
             QStringList invalid;
             std::optional<Theme> parsed;
+            bool json = false;
             if (!file.open(QIODevice::ReadOnly)) {
                 error = file.errorString();
             } else {
-                parsed = Themes::parse(file.readAll(), &error, &ignored, &invalid);
+                const QByteArray data = file.readAll();
+                json = Themes::isJson(data);
+                parsed = Themes::parse(data, &error, &ignored, &invalid);
             }
             if (parsed) {
                 theme = std::make_shared<const Theme>(*parsed);
                 m_themeFile = path;
                 m_theme = theme;
                 // Ghostty and Kitty files hold much else (Kitty's "cursor none"
-                // among it); Afterglow's own should not.
-                if (path.endsWith(QLatin1String(".json"))) {
+                // among it); Afterglow's own should not. The content, not the
+                // file name, says which it is: locate() also finds "mine".
+                if (json) {
                     if (!ignored.isEmpty()) {
                         problem(QStringLiteral("theme %1 has keys Afterglow does not use: %2")
                                     .arg(name, ignored.join(QStringLiteral(", "))));

@@ -61,6 +61,8 @@ Assets can be themes, shader presets or images.
 Limits are 32 local files, 4 MiB for each file and 16 MiB in total.
 Asset declarations supply paths. They do not activate a theme or shader.
 Paths and symlinks must remain inside the package root.
+This applies to modules, dependencies, assets, `config.json`, the shader directory, the pack directories and their `metadata.json` files.
+Afterglow does not check the stages and includes that a shader pack reads.
 
 Afterglow monitors source files, dependency manifests and configuration together.
 A change replaces the complete instance. This includes a change to `shaders` or `pulses`.

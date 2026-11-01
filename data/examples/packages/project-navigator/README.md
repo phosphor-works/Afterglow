@@ -48,7 +48,7 @@ Create `config.json` beside `package.json` to override the defaults:
 
 `fd` discovers Git repositories, including worktrees with `.git` files.
 `zoxide query --list` supplies frequently used directories.
-Both commands are optional. The picker title names each provider that gave no output, and why.
+Both commands are optional. The picker title names each provider that did not start, timed out or was refused, and why.
 For example, `(unavailable: fd-1 timed out)` or `(unavailable: zoxide not started)`.
 Configured roots, saved layouts, favorites and history remain available.
 Providers run concurrently with a five-second timeout and a 128 KiB output limit.
@@ -114,7 +114,7 @@ and [tab-status](../tab-status/README.md) packages.
 Edits to `config.json`, modules and the manifest reload the package as a unit.
 An invalid edit leaves the last working version active. `afterglow ctl scripts`
 shows `last-good` and the error. Correct the edit to recover. Open dialogs and
-provider jobs from a successfully replaced version are cancelled.
+provider jobs from a successfully replaced version are canceled.
 
 Remove the `scripts/project-navigator/` directory to uninstall. Its actions,
 open selector and jobs are removed automatically. Favorites/history stay in

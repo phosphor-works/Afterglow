@@ -3,7 +3,7 @@
 
 # Tab and repository status
 
-This package shows directory, Git status, command, exit result and remote context in native tab and status controls.
+This package shows directory, Git branch, command, exit result and remote context in native tab and status controls.
 It uses ideas from [tabline.wez](https://github.com/michaelbrusegard/tabline.wez).
 
 Install from the repository root:

@@ -61,8 +61,8 @@ struct Host : AfterglowVt::ITerminalHost
 };
 
 /// With bracketed paste on, the paste is wrapped once and cannot end early.
-/// In both modes the text holds no control but HT and CR (decision 5: LF
-/// becomes CR), no DEL and no C1.
+/// In both modes the text holds no control but HT and CR (LF becomes CR, as
+/// encodePaste folds it), no DEL and no C1.
 void checkPaste(std::string_view text, bool bracketed)
 {
     AfterglowVt::Modes modes;

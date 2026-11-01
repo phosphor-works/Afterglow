@@ -68,7 +68,7 @@ grep -c "warning:" <scratchpad>/build.log
 ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 500 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 850 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.

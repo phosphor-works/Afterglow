@@ -135,7 +135,7 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("split"), QStringLiteral("Show the terminal twice, side by side. The left pane has focus.")});
     parser.addOption({QStringLiteral("grid"), QStringLiteral("Show the terminal in a grid of COLSxROWS panes. The first pane has focus."), QStringLiteral("size")});
     parser.addOption({QStringLiteral("package"), QStringLiteral("A script package folder whose shaders load as <package>.<pack> (repeatable)."), QStringLiteral("dir")});
-    parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open (or closing, with --overview-closing)."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview, counting every tab (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("overview-closing"), QStringLiteral("The overview is closing onto the --highlight card, at --overview-amount.")});

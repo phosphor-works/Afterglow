@@ -299,7 +299,6 @@ Item {
 
     Item {
         id: keys
-        focus: menu.visible
         readonly property int level: menu.levels.length - 1
         Keys.onUpPressed: menu.step(level, -1)
         Keys.onDownPressed: menu.step(level, 1)

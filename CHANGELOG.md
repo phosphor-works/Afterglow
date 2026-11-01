@@ -49,7 +49,6 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - 33 bundled themes: Afterglow, Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
 - `light:NAME,dark:NAME` theme pairs that follow the desktop color scheme.
 - Search match and visual bell colors, set in `Colors` or by a theme.
-- `show_last_output` opens the last command's output in a pager, up to `Terminal.lastOutputLimit` (1 MiB by default).
 - Colors as SVG names or in hex. A color in eight-digit hex is refused, because it does not say where the alpha is.
 
 ### Shell integration
@@ -58,7 +57,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Prompt, command and exit-status markers (OSC 133 and OSC 633).
 - The working directory from OSC 7, OSC 9;9, OSC 633 and iTerm2 `CurrentDir`. New tabs and splits start there when it is on this host.
 - A pane closes when its shell exits, also while a background job holds the terminal.
-- Command navigation, last-command output in a pager, and command status in tab and pane labels.
+- Command navigation, last-command output in a pager up to `Terminal.lastOutputLimit` (1 MiB by default), and command status in tab and pane labels.
 - Terminal contexts (OSC 3008) for remote and elevated sessions, and program status reports (OSC 7501).
 - `afterglow ssh`, which integrated shells use for `ssh`. It labels the pane with the remote host and installs the `afterglow` terminfo entry on the host when needed.
 

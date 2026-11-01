@@ -1029,7 +1029,8 @@ vec4 pTerminal(vec2 uv) { return vec4(audioBar(0), 0.0, 1.0, 1.0); })";
     const QSize size(Cols * cw, Rows * ch);
     WindowRenderer::Pane pane{&snapshot, {}};
     pane.params.rect = QRect(QPoint(), size);
-    // Closed: the window chain runs and the audio slot gets a real texture.
+    // Closed: the window chain runs, and the audio slot binds the input
+    // texture, because no spectrum texture exists yet.
     QImage image = fresh.renderToImage(size, {pane}, {}, 0xff000000u);
     EXPECT_PIXEL(image, cellCenter(1, 0), qRgb(255, 0, 0));
     EXPECT_EQ(device.audioTexture(), nullptr);

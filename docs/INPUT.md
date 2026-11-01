@@ -142,7 +142,7 @@ A resize during capture cancels the search.
 
 `show_last_output` opens marked command output in a new tab.
 It uses `Terminal.pager`, which defaults to `less -R`.
-`Terminal.lastOutputLimit` sets the output limit in KiB. The default is 1024 (1 MiB).
+`Terminal.lastOutputLimit` sets the output limit in KiB, from 1 to 65536. The default is 1024 (1 MiB).
 A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
 The pager command uses arguments without shell expansion.
@@ -192,6 +192,7 @@ Afterglow also ignores a pattern without `pattern` or with an unknown action, an
 Hint patterns are case-sensitive.
 Type a label to select it. Press Escape to cancel.
 `Hints.alphabet` sets the letters of the labels, the easiest to reach first.
+It needs two or more different letters. Other values use the default.
 A pane content change, a scroll of the pane or a change of the layout cancels the hints.
 
 ## Links and URL hints
@@ -307,6 +308,7 @@ If the host has no `tic`, or the local `infocmp` cannot read the entry, the sess
 Set `Terminal.sshTerminfo` to `fallback` to always use `xterm-256color` on remote hosts and install nothing.
 
 `ssh -G`, `ssh -V`, `ssh -Q` and `ssh -O` reach `ssh` unchanged.
-Runs with `-N`, `-W` or `-f` do not install the entry or change the pane label.
+Runs with `-N`, `-W`, `-f` or `-s` do not install the entry or change the pane label.
+The same applies when the SSH configuration sets `SessionType none`, `SessionType subsystem` or `ForkAfterAuthentication yes`.
 An existing `ssh` function or alias takes precedence over the integration.
 Set `Terminal.sshIntegration=false` to run `ssh` directly.

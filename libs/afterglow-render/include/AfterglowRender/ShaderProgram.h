@@ -18,6 +18,7 @@
 #include <rhi/qshader.h>
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <memory>
 
@@ -77,6 +78,12 @@ enum class ShaderWrap { Clamp, Repeat, Mirror };
 /// kind i of PostChain's newest event times.
 enum EventAge : unsigned { CursorAge = 1u << 0, FocusAge = 1u << 1, SignalAge = 1u << 2 };
 inline constexpr int EventAgeKinds = 3;
+/// The slot of PostChain's newest event times that holds this kind.
+inline constexpr std::size_t eventAgeIndex(EventAge kind)
+{
+    return std::size_t(std::countr_zero(unsigned(kind)));
+}
+static_assert(eventAgeIndex(SignalAge) + 1 == std::size_t(EventAgeKinds), "EventAgeKinds counts every EventAge bit");
 /// Triangle geometry. Empty vertices select procedural generation with gl_VertexIndex.
 struct ShaderMeshVertex {
     float position[3];

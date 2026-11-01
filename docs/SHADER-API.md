@@ -101,9 +101,9 @@ The next event of that kind starts the frames again.
 | --- | --- |
 | `cursorAge()` | The cursor moved. |
 | `focusAge()` | The pane focus changed. |
-| `signalAge()` | A script set a signal. |
+| `signalAge()` | A signal was set by a script, `afterglow ctl signal` or D-Bus. |
 | `uEventAges` | The cursor moved, or the pane focus changed. |
-| `uSignal` | A script set a signal. |
+| `uSignal` | A signal was set by a script, `afterglow ctl signal` or D-Bus. |
 
 Set `settleSeconds` to the time that the effect needs to finish at the largest parameter values.
 If the value is too short, the effect stops before its end. At the next redraw, it jumps to its current state.
@@ -436,7 +436,8 @@ These changes reset history:
 Live parameter updates retain history.
 Focus changes can reset window-scoped buffers because their terminal context changes.
 Chain removal, window destruction or GPU resource release destroys the buffers.
-The buffers are also destroyed when no chain runs after a frame in which one ran, for example when the last overview, tab transition or pane effect ends and no other chain is set.
+Afterglow also destroys the buffers when no chain runs after a frame in which one ran.
+This happens, for example, when the last overview, tab transition or pane effect ends and no other chain is set.
 
 ## Memory limits
 

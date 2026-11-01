@@ -67,8 +67,13 @@ ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& co
     }
     const PhosphorDBus::Client remote(bus, owner.value(), QLatin1String(Afterglow::Application::ObjectPath));
     const QString iface = QLatin1String(Afterglow::Application::ServiceName);
-    const QDBusMessage reply = quick ? remote.syncCall(iface, QStringLiteral("ToggleQuickTerminal"))
-                                     : remote.syncCall(iface, QStringLiteral("NewWindow"), {cwd, command, options});
+    // The owner is this executable, so it answers once its event loop runs.
+    // A timeout would start a second instance next to a slow one (the QtDBus
+    // default is 25 s): wait as long as any startup can take.
+    constexpr int ForwardTimeoutMs = 120'000;
+    const QDBusMessage reply = quick
+        ? remote.syncCall(iface, QStringLiteral("ToggleQuickTerminal"), {}, ForwardTimeoutMs)
+        : remote.syncCall(iface, QStringLiteral("NewWindow"), {cwd, command, options}, ForwardTimeoutMs);
     if (reply.type() != QDBusMessage::ErrorMessage) return ForwardResult::Forwarded;
     // The instance got the request and could not open the window (a bad -e
     // program): starting another process would fail the same way.

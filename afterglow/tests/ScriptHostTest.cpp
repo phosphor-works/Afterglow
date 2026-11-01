@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QThread>
 #include <QSaveFile>
@@ -1915,6 +1916,32 @@ return {
     EXPECT_TRUE(host->scriptIds().contains("large"));
 }
 
+TEST_F(ScriptHostTest, AwaitTooLargeToConvertFreesEveryFlowTheCallRegistered)
+{
+    // afterglow.__wrap is reachable from a handler: a call through it waits
+    // too, so one failed call can leave more than one flow behind.
+    write(user, "nested.luau", R"(
+return {
+    metadata = {actions = {{id = "large", title = "Large"}}},
+    run_action = function(action, ev)
+        afterglow.__wrap({h = function() afterglow.await(afterglow.log("inner")) end}).h()
+        local wide = {}
+        for _ = 1, 20 do
+            wide = {wide, wide}
+        end
+        local effect = afterglow.log("large")
+        effect.extra = wide
+        afterglow.await(effect)
+    end,
+}
+)");
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("nested.large", 7));
+    const auto stats = host->diagnostics().first().toMap();
+    EXPECT_EQ(stats["handler_errors"].toULongLong(), 1u);
+    EXPECT_EQ(stats["waiting"].toInt(), 0);
+}
+
 TEST_F(ScriptHostTest, ReplacementDropsWaitingHandlersAndOnResultStillWorks)
 {
     write(user, "replace.luau", R"(
@@ -2688,6 +2715,21 @@ TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
 {
     const QString gitProgram = QStandardPaths::findExecutable("git");
     if (gitProgram.isEmpty()) GTEST_SKIP() << "git is not installed";
+    // Only the fixture's config: the developer's global core.fsmonitor=true, for
+    // one, would start a daemon on the repository that outlives the test. The
+    // package's git inherits these too.
+    const std::pair<const char*, QByteArray> isolated[] = {{"GIT_CONFIG_NOSYSTEM", "1"}, {"GIT_CONFIG_GLOBAL", "/dev/null"}};
+    std::vector<std::optional<QByteArray>> saved;
+    for (const auto& [name, value] : isolated) {
+        saved.push_back(qEnvironmentVariableIsSet(name) ? std::optional(qgetenv(name)) : std::nullopt);
+        qputenv(name, value);
+    }
+    const auto restore = qScopeGuard([&] {
+        for (std::size_t i = 0; i < saved.size(); ++i) {
+            if (saved[i]) qputenv(isolated[i].first, *saved[i]);
+            else qunsetenv(isolated[i].first);
+        }
+    });
     // A repository whose own config names a clean filter for every file, with an
     // index entry whose timestamp no longer matches: comparing the work tree runs it.
     const QString repository = files.filePath("repository");

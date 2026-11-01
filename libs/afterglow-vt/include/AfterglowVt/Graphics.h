@@ -113,9 +113,9 @@ struct Placement
     std::uint32_t parentImage = 0, parentPlacement = 0;
     int relativeX = 0, relativeY = 0; ///< signed cell offsets from parent
     bool isVirtual = false; ///< for Unicode placeholders, not drawn directly
-    /// Pixels to draw an internal image at, when that differs from its frame
-    /// (iTerm2 sizes are scaled by the renderer, not stored scaled). 0: the
-    /// frame's size.
+    /// Explicit display size in pixels: an iTerm2 image drawn larger than its
+    /// stored frame (the renderer scales it), or a placement a region scroll
+    /// cut. 0: the source rectangle's size.
     std::uint32_t displayWidth = 0;
     std::uint32_t displayHeight = 0;
 };
@@ -206,9 +206,9 @@ public:
     /// Rows below the screen's last row are not cut by an upward scroll: they
     /// come into view as it moves, as with a line feed into the history.
     /// The cell size measures the rows an image covers; 0 counts only its
-    /// top row, which goes when it leaves. Virtual placements follow their
-    /// placeholder cells, and relative children their parents, so neither is
-    /// moved here.
+    /// top row, which goes when it leaves. A relative child moves with its
+    /// parent and is cut the same way; it goes with its parent. Virtual
+    /// placements follow their placeholder cells, so they are not moved here.
     void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight);
 
     void clear();

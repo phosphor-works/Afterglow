@@ -38,6 +38,7 @@
 #include <QThreadPool>
 #include <QScopeGuard>
 #include <QStandardPaths>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <mutex>
@@ -393,9 +394,12 @@ TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
     ASSERT_NE(layer->rootItem(), nullptr);
     // What is drawn, not only the property: as markup the title would lay
     // out as a short bold "A&B" and an image, far narrower than its source.
+    // A menu style that does not strip the mnemonic "&" would draw the extra
+    // "&" of each escaped entity, wider than the source.
     const auto drawsLiterally = [&title](const QQuickItem* item) {
         const QFont font = item->property("font").value<QFont>();
-        return item->property("implicitWidth").toDouble() >= 0.9 * QFontMetricsF(font).horizontalAdvance(title);
+        const qreal advance = QFontMetricsF(font).horizontalAdvance(title);
+        return std::abs(item->property("implicitWidth").toDouble() - advance) <= 0.1 * advance;
     };
     int literalLabels = 0;
     for (auto* item : visualDescendants(layer->rootItem())) {
@@ -527,10 +531,10 @@ TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
     for (int i = 0; i < 3; ++i)
         entries.append(QVariantMap{{QStringLiteral("id"), 40000 + i}, {QStringLiteral("title"), QString::number(i)}});
     chrome->openContextMenu({10, 10}, entries);
-    drain();
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &up);
-    auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer->rootItem(), nullptr);
     QString selected;
     for (auto* item : visualDescendants(layer->rootItem()))
@@ -540,20 +544,27 @@ TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
 }
 
 TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
+    // Each overlay opens after the scene is made, and while it is still being
+    // made in the background: the overlay is then open when the scene completes.
+    for (const bool settled : {true, false})
     for (const auto& kind : {QStringLiteral("title"), QStringLiteral("palette"), QStringLiteral("search"),
-                             QStringLiteral("paste"), QStringLiteral("clipboard"), QStringLiteral("confirm")}) {
-        SCOPED_TRACE(kind.toStdString());
+                             QStringLiteral("paste"), QStringLiteral("clipboard"), QStringLiteral("confirm"),
+                             QStringLiteral("script")}) {
+        SCOPED_TRACE(kind.toStdString() + (settled ? " after the scene is made" : " while the scene is made"));
         WindowOptions options;
         options.command = {QStringLiteral("/bin/cat")};
         auto* fresh = application->newWindow(options);
         ASSERT_NE(fresh, nullptr);
-        drain();
+        if (settled) drain();
         auto* chrome = fresh->findChild<ChromeController*>();
         if (kind == QLatin1String("title")) chrome->askTitle(QStringLiteral("Title"), QStringLiteral("existing title"));
         else if (kind == QLatin1String("palette")) chrome->setPaletteOpen(true);
         else if (kind == QLatin1String("search")) chrome->setSearchOpen(true);
         else if (kind == QLatin1String("paste")) chrome->askPaste(QStringLiteral("one\ntwo"), 2);
         else if (kind == QLatin1String("clipboard")) chrome->askClipboard(QStringLiteral("Read clipboard"), QString());
+        else if (kind == QLatin1String("script"))
+            chrome->setScriptDialog({{QStringLiteral("open"), true}, {QStringLiteral("kind"), QStringLiteral("prompt")},
+                                     {QStringLiteral("title"), QStringLiteral("Script")}});
         else chrome->askConfirm(QStringLiteral("Confirm"), QStringLiteral("Body"), QStringLiteral("Accept"));
         auto* layer = fresh->findChild<ChromeLayer*>();
         const auto ready = [&] {
@@ -577,8 +588,13 @@ TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
         if (kind == QLatin1String("palette") || kind == QLatin1String("search")) {
             EXPECT_TRUE(layer->focusedItem()->property("placeholderText").isValid());
         }
-        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
-        QCoreApplication::sendEvent(fresh, &escape);
+        if (kind == QLatin1String("script")) {
+            // The window, which closes a script dialog, did not open this one.
+            chrome->setScriptDialog({});
+        } else {
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QCoreApplication::sendEvent(fresh, &escape);
+        }
         EXPECT_FALSE(chrome->wantsKeyboard());
         delete fresh;
     }
@@ -686,8 +702,8 @@ TEST_F(NativeWindow, AccessibleChromeExposesFocusedEditor) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     chrome->setSearchOpen(true);
-    // The chrome scene loads at the first frame that shows it, which on a
-    // new window can come later than a fixed wait.
+    // The chrome scene is made in the background and may not be ready
+    // yet, which on a new window can take longer than a fixed wait.
     ASSERT_TRUE(waitFor([&] { return window->accessibleChrome() != nullptr; }));
     drain();
     auto* root = window->accessibleRoot();
@@ -1216,6 +1232,26 @@ TEST_F(NativeWindow, ReturnOnAFocusedButtonAnswersThatButton) {
     EXPECT_EQ(confirmed, 0);
 }
 
+TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    QList<bool> answers;
+    QObject::connect(chrome, &ChromeController::pasteAnswered, window, [&](bool paste) { answers << paste; });
+    chrome->askPaste(QStringLiteral("one\ntwo"), 2);
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    auto* cancel = chromeItemWithText(layer, QStringLiteral("Cancel"));
+    ASSERT_NE(cancel, nullptr);
+    cancel->forceActiveFocus();
+    // A keybind, D-Bus or a script opens the search under the prompt: the
+    // keys must not go back to the panel, where Return pastes.
+    chrome->setSearchOpen(true);
+    drain();
+    EXPECT_TRUE(cancel->hasActiveFocus());
+    sendKey(window, Qt::Key_Return);
+    EXPECT_FALSE(chrome->pasteConfirmOpen());
+    EXPECT_EQ(answers, QList<bool>{false});
+}
+
 TEST_F(NativeWindow, ReturnInThePastePreviewDoesNotPaste) {
     auto* chrome = window->findChild<ChromeController*>();
     auto* layer = window->findChild<ChromeLayer*>();
@@ -1307,7 +1343,7 @@ TEST_F(NativeWindow, PaneTitleLabelsSurviveTitleChanges) {
     auto* layer = window->findChild<ChromeLayer*>();
     const auto labels = [&] {
         QList<QQuickItem*> found;
-        if (!layer->rootItem()) return found; // the chrome loads on the first frame that needs it
+        if (!layer->rootItem()) return found; // the scene is made in the background and may not be ready yet
         for (auto* item : visualDescendants(layer->rootItem()))
             if (item->property("scrollbarSpace").isValid()) found.append(item);
         return found;
@@ -1729,8 +1765,8 @@ TEST_F(NativeWindow, SplitsKeepTheMinimumSizeAndStartShellsAtTheirSizeBeforeAFra
     EXPECT_GE(second->cols(), 4);
     EXPECT_GE(third->cols(), 4);
     EXPECT_GT(third->rows(), 2);
-    // The next frame lays the splits out. The first frame with pane titles
-    // also builds the chrome scene, which takes longer than a fixed wait.
+    // The next frame lays the splits out. The chrome scene is made in the
+    // background and may not be ready yet, which takes longer than a fixed wait.
     ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(second).isEmpty(); }));
     EXPECT_GE(window->accessiblePaneRect(second).width(), 4);
 }
@@ -1755,6 +1791,22 @@ TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn) {
     chrome->answerTitle(QStringLiteral("menu-pane"));
     EXPECT_EQ(first->userTitle(), QStringLiteral("menu-pane"));
     EXPECT_NE(second->userTitle(), QStringLiteral("menu-pane"));
+}
+
+TEST_F(NativeWindow, ATabThatClosesTakesItsTabMenuWithIt) {
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line")};
+    auto* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    drain();
+    ASSERT_EQ(window->tabs().size(), 2);
+    auto* chrome = window->findChild<ChromeController*>();
+    chrome->tabMenu(1, 50, 15);
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    // Its program ends: the tab closes, and a menu left open would act on nothing.
+    other->sendInput("\n");
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
+    EXPECT_FALSE(chrome->contextMenuOpen());
 }
 
 // --- window wave 2: pane callbacks, directories, replies, overview ---------

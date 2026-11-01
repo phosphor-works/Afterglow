@@ -94,6 +94,7 @@ private:
     bool rateLimited(const Pane* pane);
     void track(const Pane* pane);
     void forgetServer();
+    void queryCapabilities();
 
 private Q_SLOTS:
     void onActionInvoked(uint id, const QString& action);
@@ -109,7 +110,7 @@ private:
     int m_rateLimit = 20;
     bool m_bodyMarkup = true; ///< the server reads markup in bodies (GetCapabilities)
     quint64 m_generation = 0;
-    quint64 m_server = 0; ///< counts server changes: an id from an earlier server names nothing
+    quint64 m_server = 0; ///< counts servers that went away: an id from an earlier one names nothing
     QHash<QString, QImage> m_iconCache; ///< OSC 99 'g' ids
     QStringList m_iconCacheOrder;
 };

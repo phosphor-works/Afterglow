@@ -285,7 +285,10 @@ public:
 
     const std::string& title() const noexcept { return m_title; }
     const std::string& workingDirectory() const noexcept { return m_cwd; }
-    /// The newest 1024 retained OSC 133 regions, including trimmed descriptors.
+    /// OSC 133 regions kept; the oldest goes when a new one begins.
+    static constexpr std::size_t MaxSemanticRegions = 1024;
+    /// The newest MaxSemanticRegions retained OSC 133 regions, including
+    /// trimmed descriptors.
     std::vector<SemanticRegion> semanticRegions() const;
     std::optional<std::string> semanticRegionText(std::uint64_t id, std::size_t maxBytes = 1024 * 1024,
                                                   bool* truncated = nullptr) const;

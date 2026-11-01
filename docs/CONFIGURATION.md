@@ -74,7 +74,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How glyph edges are smoothed. Subpixel modes use grayscale when transparency or shaders are active. Pane effects are shaders, and they run while a pane is remote or in another context. |
+| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane effects are shaders, and they run while a pane is remote or in another context. |
 | `boldFamily` | `""` |  | Font family of bold text. An empty value uses family. |
 | `boldItalicFamily` | `""` |  | Font family of bold italic text. An empty value uses the italic family. |
 | `boldWeight` | `700` | 100–900 | Weight of bold text. It selects a static font and sets the weight axis of a variable font. |
@@ -169,7 +169,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. |
 | `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once. |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text. |
-| `window` | `[]` |  | Shaders run over the whole window, across splits, after the pane shaders. |
+| `window` | `[]` |  | Shaders run over the whole window, across panes, after the pane shaders. |
 
 ## Terminal
 

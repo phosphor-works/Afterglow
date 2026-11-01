@@ -203,6 +203,9 @@ private:
     /// away: its clipboard and paste prompts, title prompt, menu, URL mode
     /// and selection drag. Prompts about other panes stay.
     void dropPanePrompts(Pane* pane);
+    /// Cancels the title prompt and closes the tab menu when they belong to
+    /// tab @p tabId, which is going away: they would have nothing to act on.
+    void dropTabPrompts(quint32 tabId);
     void reparentPane(Pane* pane, TerminalWindow* destination);
     /// After a swap or rotation: shows every pane again when the tab was
     /// zoomed (@p wasZoomed), or lets the panes ease to their new places.
@@ -298,6 +301,9 @@ private:
     void syncInputMethodEnabled();
     bool m_modeHeldKeyboard = false; ///< keyboardModeActive() as the input method last heard
     bool m_inputMethodDirty = false; ///< the focused pane's text changed since the last query
+    /// A focus change made by an input method event: the composition it
+    /// carries is for the new pane, so setFocusedPane does not reset it.
+    bool m_keepComposition = false;
     bool performAction(Action action);
     void updateChrome();
     /// The command palette's list: every action and the scripts' actions.
@@ -546,7 +552,8 @@ private:
         std::optional<std::chrono::steady_clock::time_point> changedAt;
         std::optional<std::chrono::steady_clock::time_point> movedAt;
         /// A card in another tab was chosen: its tab shows once the close
-        /// has finished, so the cards never move with the current tab.
+        /// has finished, so the cards never move with the current tab, or at
+        /// the first input or focus change before that.
         QPointer<Pane> reveal;
         bool revealing = false; ///< showing the chosen card's tab, which needs no tab transition
         bool wasShowing = false; ///< showing at the last frame

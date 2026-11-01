@@ -44,7 +44,9 @@ namespace {
     constexpr int MaxDepth = 128;
     constexpr qsizetype MaxRequestBytes = 4 * 1024 * 1024; // requested paths of all receive sessions
     constexpr qsizetype MaxRsyncBuffer = 16 * 1024 * 1024; // one signature or one literal
-    constexpr qsizetype DeltaStep = 1024 * 1024; // file bytes one pump() reads for a delta
+    // File bytes after which one pump() stops scanning a delta. A refill
+    // before that check reads up to two blocks (32 MiB at most) more.
+    constexpr qsizetype DeltaStep = 1024 * 1024;
     constexpr std::size_t MaxPendingBytes = 64 * 1024 * 1024; // every rsync buffer of the pane
     constexpr qsizetype DeliveryWindow = 65536;
     constexpr std::size_t MaxInputBacklog = 1024 * 1024;
@@ -290,7 +292,8 @@ struct FileTransfer::Worker {
     };
     // The delta of a file against the receiver's signature, built as pump()
     // asks for data: a large file needs no copy on disk, and the worker,
-    // which serves every session of the pane, never stalls on one file.
+    // which serves every session of the pane, handles uploads and messages
+    // between steps. Outgoing streams are one queue: the next file waits.
     struct Delta {
         std::unique_ptr<QFile> basis;
         // Stays charged to the pane's rsync budget until the stream ends. It
@@ -1322,7 +1325,10 @@ QByteArray FileTransfer::Worker::read(Stream& item, bool& error, bool& atEnd)
     if (!item.delta) {
         QByteArray data = item.source->read(MaxPacketData);
         error = item.source->error() != QFileDevice::NoError;
-        atEnd = item.source->atEnd();
+        // Sources are regular files, where an empty read is the end. atEnd()
+        // alone compares with st_size, which a file in /sys or /proc states
+        // larger than what it holds: the stream would never end.
+        atEnd = item.source->atEnd() || data.isEmpty();
         return data;
     }
     if (!item.delta->produce(item.generated, MaxPacketData)) {

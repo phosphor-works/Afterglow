@@ -426,7 +426,8 @@ void TerminalWindow::closeOverview(Pane* chosen)
     if (target && tabOf(target) != m_currentTab) {
         // Cards sit beside the current tab's panes: switching tabs now would
         // move every card by the part of the way the overview has not opened.
-        // The tab switches once the close has finished (advanceOverview).
+        // The tab switches once the close has finished (advanceOverview), or
+        // at the first input or focus change before that (finishOverviewReveal).
         if (isExposed()) m_overview.reveal = target;
         else revealPane(target);
     } else if (target) {
@@ -446,7 +447,8 @@ void TerminalWindow::closeOverview(Pane* chosen)
     }
     m_overview.changedAt = std::chrono::steady_clock::now();
     // The card it closes onto stays highlighted until the close ends
-    // (advanceOverview): in another tab, focus moves only then.
+    // (advanceOverview): in another tab, focus moves only then, or at the
+    // first input or focus change before that.
     m_overview.highlighted = target;
     m_overview.original = nullptr;
     // A script key mode that drove the overview goes with it, so its next
@@ -551,10 +553,12 @@ void TerminalWindow::advanceOverview(bool& animating)
     if (m_overview.wasShowing && !showing) {
         // The close has finished: other tabs' cards are hidden again, and
         // the chosen card's tab shows. Not inside this frame, which has
-        // started on the current tab's layout.
-        QMetaObject::invokeMethod(this, [this, pane = std::exchange(m_overview.reveal, nullptr)] {
+        // started on the current tab's layout. The reveal stays pending until
+        // then: input that the event loop delivers before this queued call
+        // must still reach the chosen card (finishOverviewReveal).
+        QMetaObject::invokeMethod(this, [this] {
             updatePaneVisibility();
-            if (pane && !overviewShowing() && tabOf(pane) >= 0) revealOverviewChoice(pane);
+            if (!overviewShowing()) finishOverviewReveal();
         }, Qt::QueuedConnection);
     }
     if (!showing) m_overview.highlighted = nullptr;

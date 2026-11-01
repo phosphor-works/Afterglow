@@ -66,7 +66,7 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Animation frames | `--time S`, `--frames N --fps F` |
 | Parameters | `--param my-pack:style=1` |
 | Several panes | `--split`, `--grid 3x2` |
-| Overview | `--overview pane-deck --tabs 3 --highlight 4 --overview-position 3.5` |
+| Overview | `--overview pane-deck --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6` |
 | Tab switch | `--tab-transition tab-switch --transition-progress 0.4 --transition-direction -1` |
 | Pane effects | `--pane-effects pane-effects --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` |
 | Audio | `--audio-bands 0.8,0.4,0.2` |
@@ -80,8 +80,9 @@ ring and the grid), and the wrap point of anything that loops.
 
 A window chain shades every pixel of the window, every frame, while it runs. Measure with `--timings` at
 `--pixels 3840x2160`, before and after, and put both numbers in the commit message. Work per pixel that loops over
-all panes or cards is the usual cost. Find the few candidates first, then shade only those. Reading `iTime`, event
-ages or signals makes the window render continuously, so read them only when the effect needs them.
+all panes or cards is the usual cost. Find the few candidates first, then shade only those. Reading `iTime` makes the window render
+continuously. Event ages and signals keep it rendering for `settleSeconds` after each event, so read them only when the
+effect needs them.
 
 ## Done
 

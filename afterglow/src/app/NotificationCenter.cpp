@@ -119,15 +119,26 @@ NotificationCenter::NotificationCenter()
     bus.connect(Service, Path, Interface, QStringLiteral("ActivationToken"), this, SLOT(onActivationToken(uint,QString)));
     // A restarted server numbers its notifications again: ids held for the
     // old one would replace or match another application's notification.
+    // Only a server that goes away takes its ids with it: one that takes a
+    // free name (D-Bus activation by our own Notify) answers that call with
+    // a valid id, which must not be dropped.
     auto* watcher = new QDBusServiceWatcher(Service, bus, QDBusServiceWatcher::WatchForOwnerChange, this);
-    connect(watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, &NotificationCenter::forgetServer);
-    forgetServer();
+    connect(watcher, &QDBusServiceWatcher::serviceOwnerChanged, this,
+            [this](const QString&, const QString& oldOwner, const QString&) {
+        if (!oldOwner.isEmpty()) forgetServer();
+        queryCapabilities();
+    });
+    queryCapabilities();
 }
 
 void NotificationCenter::forgetServer()
 {
     m_entries.clear();
     ++m_server;
+}
+
+void NotificationCenter::queryCapabilities()
+{
     // Markup in bodies is the server's choice: one without it shows tags and
     // entities as text, so program text goes escaped only where it is read.
     m_bodyMarkup = true;
@@ -362,7 +373,12 @@ void NotificationCenter::send(const Request& request, uint replaces)
             return;
         }
         if (reply.isError()) {
-            if (waiting.next) send(*waiting.next, replaces);
+            // A server that left without answering may be gone before the bus
+            // says so: its ids then name nothing for the server that follows.
+            const QDBusError::ErrorType error = reply.error().type();
+            const bool gone = error == QDBusError::NoReply || error == QDBusError::ServiceUnknown
+                              || error == QDBusError::Disconnected;
+            if (waiting.next) send(*waiting.next, gone ? 0 : replaces);
             return;
         }
         const uint id = reply.value();

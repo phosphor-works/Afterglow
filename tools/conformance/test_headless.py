@@ -56,7 +56,9 @@ with tempfile.TemporaryDirectory() as directory:
     except (OSError, ValueError):
         pass
 
-child = "import os,tty; tty.setraw(0); os.write(1,b'PROBE'); assert os.read(0,1)==b'x'"
+# The children check the reply with an exit status, not assert: they run
+# with this environment, and PYTHONOPTIMIZE would drop an assert and its read.
+child = "import os,tty; tty.setraw(0); os.write(1,b'PROBE'); raise SystemExit(os.read(0,1)!=b'x')"
 # Prints nothing until PROBE is on screen: the runner may ask before any output arrives.
 responder = shlex.join([sys.executable, "-c",
                         "import pathlib,sys; print('x' if 'PROBE' in pathlib.Path(sys.argv[1]).read_text() else '')"])
@@ -64,10 +66,12 @@ run(["--responder", responder], child)
 with tempfile.TemporaryDirectory(prefix="afterglow ' quoted ") as directory:
     run(["--idle-dump", directory, "--responder", responder], child)
     check(list(pathlib.Path(directory).glob("*.txt")), "--idle-dump wrote no screen")
-run(["--responder", "exit 7"], child, 2)
+run(["--responder", "exit 7"], child, 2, stderr="responder failed")
 run(["--responder", shlex.join([sys.executable, "-c", "print('x' * 2000000)"])], child, 2,
     stderr="responder output exceeded 1 MiB")
-run(["--responder", shlex.join([sys.executable, "-c", "import os,time; os.close(1); time.sleep(30)"])], child, 2)
+run(["--responder", shlex.join([sys.executable, "-c", "import os,time; os.close(1); time.sleep(30)"])], child, 2,
+    stderr="responder timed out")
 # --reply matches the screen as read: a wide character is one character.
-run(["--reply", "中文=x"], "import os,tty; tty.setraw(0); os.write(1,'中文'.encode()); assert os.read(0,1)==b'x'")
+run(["--reply", "中文=x"],
+    "import os,tty; tty.setraw(0); os.write(1,'中文'.encode()); raise SystemExit(os.read(0,1)!=b'x')")
 print("PASS: options, exit status, bounded PTY replies, responder paths, failures and timeouts")

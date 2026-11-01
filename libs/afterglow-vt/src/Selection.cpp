@@ -134,13 +134,17 @@ bool Selection::followScroll(const RegionScroll& scroll) noexcept
         return true;
     }
     // Only a full-width region moves whole rows; anything less splits the
-    // selected text between cells that moved and cells that stayed.
+    // selected text between cells that moved and cells that stayed. The
+    // caller may reuse the ends it clears (copy mode puts both on its
+    // cursor), so the last word expansion goes too: its rows moved.
     if (!scroll.fullWidth || first < scroll.top || last > scroll.bottom) {
+        m_word = {};
         return false;
     }
     const auto movedAnchor = scroll.map(anchor);
     const auto movedHead = scroll.map(head);
     if (!movedAnchor || !movedHead) {
+        m_word = {};
         return false;
     }
     anchor = *movedAnchor;

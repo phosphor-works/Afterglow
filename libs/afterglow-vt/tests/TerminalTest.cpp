@@ -846,6 +846,15 @@ TEST(Terminal, DoubleWidthLinesKeepTheCursorVisible)
     vt52.feed("\x1b<\x1b[3;70H\x1b[?2l\x1b" "A"); // and up onto it
     EXPECT_EQ(vt52.t.screen().cursor.y, 1);
     EXPECT_LE(vt52.t.screen().cursor.x, 39);
+    // 47 keeps each screen's line sizes while the screens share the cursor.
+    Term alternate(80, 4);
+    alternate.feed("\x1b[?47h\x1b#6\x1b[?47l\x1b[1;71H\x1b[?47h"); // onto the alternate screen's double-width line
+    EXPECT_TRUE(alternate.t.modes().altScreen);
+    EXPECT_EQ(alternate.t.screen().cursor.x, 39);
+    Term primary(80, 4);
+    primary.feed("\x1b#6\x1b[?47h\x1b[1;71H\x1b[?47l"); // and back onto the primary screen's
+    EXPECT_FALSE(primary.t.modes().altScreen);
+    EXPECT_EQ(primary.t.screen().cursor.x, 39);
 }
 
 TEST(Terminal, Vs16WideningRespectsInsertMarginsAndDoubleWidth)
@@ -917,18 +926,25 @@ TEST(Terminal, ExtraCursorsAreBounded)
     for (int i = 0; i < 4000; ++i) {
         repeated += ";4";
     }
-    t.feed(repeated + " q"); // thousands of full-screen groups count once
+    t.feed(repeated + " q"); // thousands of full-screen groups change the shape
     EXPECT_EQ(t.t.extraCursors().size(), Terminal::MaxExtraCursors);
     EXPECT_EQ(t.t.extraCursors().begin()->second, 2);
     t.feed("\x1b[>0;4:1:1:1:100 q"); // erase the top row
     EXPECT_EQ(t.t.extraCursors().count({0, 0}), 0u);
     t.feed("\x1b[>0;4 q");
     EXPECT_TRUE(t.t.extraCursors().empty());
+    // At the limit the rectangles nearest the top win, not the first given.
+    t.feed("\x1b[>1;4:42:1:50:100;4:1:1:41:100 q");
+    EXPECT_EQ(t.t.extraCursors().size(), Terminal::MaxExtraCursors);
+    EXPECT_EQ(t.t.extraCursors().count({0, 0}), 1u);
+    EXPECT_EQ(t.t.extraCursors().count({45, 0}), 0u);
 }
 
-TEST(Terminal, RepeatedExtraCursorGroupsOnASmallScreenCountOnce)
+TEST(Terminal, RepeatedAndOverlappingExtraCursorGroupsKeepTheirMeaning)
 {
-    // 1,920 cells: the cursor limit never stops the walk here.
+    // Sorting and merging the groups must not change the cursors they set.
+    // 1,920 cells: the cursor limit never stops the walk here. The cost of
+    // the repeats is measured by afterglow_vtbench --stress, not here.
     Term t(80, 24);
     std::string repeated = "\x1b[>1";
     for (int i = 0; i < 400; ++i) { // 3,601 parameters, under the parser's limit

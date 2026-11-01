@@ -207,6 +207,8 @@ Run `afterglow_vtbench --stress [CASE]` from the build's `tools/bench` directory
 Each case feeds its setup before the clock starts.
 Then it feeds one input many times, in 64 KiB chunks, as the PTY reader does.
 The time is process CPU time, the best of three runs.
+After each run, the case checks the state that its input must leave, for example a cursor in every cell.
+A case that fails this check prints an error and the command exits with status 1.
 
 | Case name | Terminal | Setup | Repeated input |
 | --- | --- | --- | --- |
@@ -220,15 +222,15 @@ Thus no sequence stops at the limit.
 
 Measurement: 1 November 2026, `RelWithDebInfo`, a shared 8-core machine with a load average of about 16.
 `fd1124a` examined every retained OSC 133 region on each scroll of a region on the main screen.
-The next commit keeps an upper bound on the rows of the regions.
+`e564a2f` keeps an upper bound on the rows of the regions.
 When every region is above the scroll region, the terminal does not examine them.
 
-| Case name | `fd1124a` (µs) | With the bound (µs) | Throughput with the bound (MB/s) |
-| --- | ---: | ---: | ---: |
-| `region lf, no regions` | 0.40 for each line feed | 0.40 | 128.5 |
-| `region lf, 1024 regions` | 2.29 for each line feed | 0.41 | 125.9 |
-| `cursors 80x24, one group repeated` | 233 for each sequence | 235 | 34.8 |
-| `cursors 80x24, distinct rects` | 1,637 for each sequence | 1,599 | 6.4 |
+| Case name | Unit | `fd1124a` (µs) | `e564a2f` (µs) | `e564a2f` throughput (MB/s) |
+| --- | --- | ---: | ---: | ---: |
+| `region lf, no regions` | Line feed | 0.40 | 0.40 | 128.5 |
+| `region lf, 1024 regions` | Line feed | 2.29 | 0.41 | 125.9 |
+| `cursors 80x24, one group repeated` | Sequence | 233 | 235 | 34.8 |
+| `cursors 80x24, distinct rects` | Sequence | 1,637 | 1,599 | 6.4 |
 
 An extra-cursor sequence visits each cell of each different rectangle once.
 It also compares each existing cursor with each rectangle.

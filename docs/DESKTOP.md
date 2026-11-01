@@ -164,7 +164,9 @@ An empty setting always requires permission.
 A limit never authorizes more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
 Afterglow makes the delta data for a receive transfer in small steps while it sends the data.
-It writes no temporary copy of the delta, and other transfers in the pane continue during a large delta.
+It writes no temporary copy of the delta.
+Uploads and other messages in the pane continue during a large delta.
+Files that Afterglow sends wait in turn.
 
 Kitty 0.49.2 can omit empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.

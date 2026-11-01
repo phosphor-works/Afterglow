@@ -1186,6 +1186,31 @@ TEST_F(ConfigTest, ThemeValuesThatAreNotColorsAreNotCalledUnusedKeys)
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x10, 0x10, 0x10}));
 }
 
+TEST_F(ConfigTest, JsonThemeWithoutTheJsonExtensionReportsItsKeys)
+{
+    // locate() finds a bare "mine" too; the content says it is JSON.
+    const QString theme = write(QStringLiteral("mine"), R"({"foreground": "#445566", "selectionBackgroud": "#111111"})");
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}})
+                                  .toJson()));
+    EXPECT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("keys Afterglow does not use: selectionBackgroud")));
+}
+
+TEST(Themes, JsonKeysMatchInAnyCaseAndAPaletteThatIsNotAListIsInvalid)
+{
+    QStringList ignored;
+    QStringList invalid;
+    const auto theme = Themes::parse(R"({"foreground": "#000000", "VisualBellIntensity": 0.25, "palette": "#ffffff"})",
+                                     nullptr, &ignored, &invalid);
+    ASSERT_TRUE(theme);
+    EXPECT_EQ(theme->visualBellIntensity.value_or(-1), 0.25);
+    EXPECT_TRUE(ignored.isEmpty());
+    EXPECT_EQ(invalid, QStringList{QStringLiteral("palette")});
+    EXPECT_TRUE(Themes::isJson("\xEF\xBB\xBF  {}"));
+    EXPECT_FALSE(Themes::isJson("foreground = #000000\n"));
+}
+
 TEST(Themes, ReadsByteOrderMarksAnyCasePaletteAndReportsIgnoredKeys)
 {
     const auto bom = Themes::parse("\xEF\xBB\xBF{\"foreground\": \"#010203\"}");

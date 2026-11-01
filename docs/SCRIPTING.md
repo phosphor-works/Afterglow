@@ -69,7 +69,7 @@ The list must not contain `nil` entries. A list with a gap causes an error.
 ```lua
 local results = afterglow.await_all({
     afterglow.exec("branch", {"git", "branch", "--show-current"}, {cwd = ev.pane.cwd}),
-    afterglow.exec("status", {"git", "status", "--short"}, {cwd = ev.pane.cwd}),
+    afterglow.exec("commit", {"git", "rev-parse", "--short", "HEAD"}, {cwd = ev.pane.cwd}),
 })
 local branch = if results[1].ok then results[1].data.stdout else nil
 ```
@@ -165,7 +165,7 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Handler failures in a row | 5 | The script is disabled |
 | Handler calls (events, timers, watchers) | 64 each second | Afterglow drops the call |
 | Effects in one returned list | 64 | No effect applies |
-| Values in a returned table, nested tables included | 262,144 | The call fails, and a handler that waits does not wait |
+| Values in a returned table, nested tables included | 262,144 | The call fails. A handler that waits for these effects stops |
 | Applied effects | 20 each second | `rate_limited` |
 | Structural effects | 3 each 10 seconds | `rate_limited` |
 | Queued results | 64 | The script is disabled |
@@ -384,7 +384,7 @@ Key releases are not reported.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
 When the chosen pane is in another tab, that tab shows after the overview has closed.
 `overview_move(pane, step)` moves the highlight by `step` cards. `step` is a whole number from -32 to 32.
-`overview_move(pane, 0, target)` highlights the pane `target`. `target` is a pane ID.
+`overview_move(pane, 0, target)` highlights the pane `target`. `target` is a pane record or ID.
 Results contain the overview: `open`, `highlighted` and `cards`.
 The snapshot's window records contain the same `overview` table.
 `cards` lists the pane IDs of every tab in tab order while the overview is open, otherwise the panes of the current tab.

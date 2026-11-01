@@ -185,6 +185,29 @@ TEST(Selection, NewSelectionForgetsTheLastWordExpansion)
     EXPECT_EQ(sel.text(t.t.screen()), "foobarbaz");
 }
 
+TEST(Selection, SelectionThatCannotFollowAScrollForgetsTheWordExpansion)
+{
+    Term t(20, 24);
+    t.t.feed("foo bar\r\nfoobarbaz qux");
+    const Screen& screen = t.t.screen();
+    ASSERT_EQ(screen.rowsDropped() + screen.historySize(), 0u);
+    Selection sel;
+    const SelectionPoint at{0, 0};
+    sel.start(at, SelectionMode::Word, screen.layoutEpoch(), true);
+    EXPECT_EQ(sel.text(screen), "foo");
+    t.t.feed("\x1b[1;10r\x1b[10;1H\n"); // row 0 leaves the region, the next row moves up into it
+    RegionScroll scroll;
+    scroll.top = 0;
+    scroll.bottom = 9;
+    scroll.right = 19;
+    scroll.delta = -1;
+    EXPECT_FALSE(sel.followScroll(scroll));
+    // Copy mode puts both ends on its cursor, which stays at the region's top.
+    sel.anchor = at;
+    sel.head = at;
+    EXPECT_EQ(sel.text(screen), "foobarbaz");
+}
+
 TEST(Selection, RangeOfRowsThatAreGoneIsNotExpanded)
 {
     Term t(20, 3);

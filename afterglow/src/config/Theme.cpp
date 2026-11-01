@@ -99,6 +99,12 @@ Assigned assign(Theme& theme, QString key, const QString& value)
     return set(*target, value);
 }
 
+QByteArray withoutByteOrderMark(const QByteArray& data)
+{
+    // Some editors save UTF-8 with a byte-order mark.
+    return data.startsWith("\xEF\xBB\xBF") ? data.mid(3) : data;
+}
+
 } // namespace
 
 bool isColorName(const QString& name)
@@ -206,15 +212,16 @@ QString locate(const QString& name, const QStringList& dirs, const QString& base
     return {};
 }
 
+bool isJson(const QByteArray& data)
+{
+    return withoutByteOrderMark(data).trimmed().startsWith('{');
+}
+
 std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* ignored, QStringList* invalid)
 {
     Theme theme;
     int found = 0;
-    QByteArray text = data;
-    // Some editors save UTF-8 with a byte-order mark.
-    if (text.startsWith("\xEF\xBB\xBF")) {
-        text.remove(0, 3);
-    }
+    const QByteArray text = withoutByteOrderMark(data);
     auto count = [&](Assigned assigned, const QString& key) {
         if (assigned == Assigned::Set) {
             ++found;
@@ -222,7 +229,7 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
             list->append(key);
         }
     };
-    if (text.trimmed().startsWith('{')) {
+    if (isJson(text)) {
         QJsonParseError err{};
         const QJsonDocument doc = QJsonDocument::fromJson(text, &err);
         if (err.error != QJsonParseError::NoError) {
@@ -234,13 +241,19 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
         const QJsonObject o = doc.object();
         for (auto it = o.begin(); it != o.end(); ++it) {
             if (it.key().compare(QLatin1String("palette"), Qt::CaseInsensitive) == 0) {
+                if (!it.value().isArray()) {
+                    if (invalid) {
+                        invalid->append(it.key());
+                    }
+                    continue;
+                }
                 const QJsonArray palette = it.value().toArray();
                 for (int i = 0; i < 16 && i < palette.size(); ++i) {
                     theme.palette[std::size_t(i)] = color(palette[i].toString());
                     count(theme.palette[std::size_t(i)] ? Assigned::Set : Assigned::Invalid,
                           QStringLiteral("palette[%1]").arg(i));
                 }
-            } else if (it.key() == QLatin1String("visualBellIntensity")) {
+            } else if (it.key().compare(QLatin1String("visualBellIntensity"), Qt::CaseInsensitive) == 0) {
                 // A number, not a colour: it alone does not make a theme.
                 if (const double v = it.value().toDouble(-1); v >= 0 && v <= 1) {
                     theme.visualBellIntensity = v;

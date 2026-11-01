@@ -38,6 +38,17 @@ constexpr int MaxRepliesPerSequence = 256;
 /// OSC 7 URI of a path up to PATH_MAX fits).
 constexpr std::size_t MaxWorkingDirectory = 8192;
 
+/// The row a resize gives a semantic mark whose row left the screen while no
+/// history row was dropped yet. No scroll region contains it.
+constexpr std::uint64_t GoneMarkRow = UINT64_MAX;
+
+/// @p row as an upper bound for Terminal::m_semanticRegionsLastRow: a gone
+/// row raises nothing, or every region scroll would walk the regions again.
+std::uint64_t boundRow(std::uint64_t row)
+{
+    return row == GoneMarkRow ? 0 : row;
+}
+
 std::array<Rgb, 256> buildPalette(const std::array<Rgb, 16>& base)
 {
     std::array<Rgb, 256> p{};
@@ -498,7 +509,7 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
         if (mapped != Screen::TrackedRowGone) {
             positions[i] = {m_primary->rowsDropped() + mapped, columns[imageAnchors + i]};
         } else if (positions[i].row >= m_primary->rowsDropped()) {
-            positions[i].row = m_primary->rowsDropped() ? m_primary->rowsDropped() - 1 : UINT64_MAX;
+            positions[i].row = m_primary->rowsDropped() ? m_primary->rowsDropped() - 1 : GoneMarkRow;
         }
     }
     std::size_t index = 0;
@@ -511,7 +522,7 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     for (auto& region : m_semanticRegions) {
         region.start = positions[index++];
         region.end = positions[index++];
-        m_semanticRegionsLastRow = std::max({m_semanticRegionsLastRow, region.start.row, region.end.row});
+        m_semanticRegionsLastRow = std::max({m_semanticRegionsLastRow, boundRow(region.start.row), boundRow(region.end.row)});
     }
     anchors.resize(imageAnchors);
     columns.resize(imageAnchors);
@@ -1807,7 +1818,7 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
                     region.end.row = end->row;
                 }
                 region.start.row = start->row;
-                last = std::max({last, region.start.row, region.end.row});
+                last = std::max({last, boundRow(region.start.row), boundRow(region.end.row)});
                 return false;
             });
             m_semanticRegionsLastRow = last;
@@ -1920,6 +1931,9 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
                 m_alternate->eraseRow(m_alternate->row(y), StyleTable::DefaultId);
             }
         }
+        // 47 and 1047 keep the screen's line sizes: the shared column can be
+        // in the hidden half of a double-width line.
+        clampToLine();
     } else {
         if (clear) {
             m_graphics[1].clearPlacements(*m_alternate, true);
@@ -1947,6 +1961,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
                 primaryPen.link = m_primary->styles().internLink(source.linkUri(primaryPen.link), source.linkId(primaryPen.link));
             }
             m_primary->setPen(primaryPen);
+            clampToLine();
         }
     }
     m_lastX = -1;
@@ -4057,7 +4072,7 @@ void Terminal::beginSemanticRegion(SemanticZoneKind kind)
     region.start = region.end = {mark.row, mark.col};
     m_semanticRegionsLastRow = std::max(m_semanticRegionsLastRow, mark.row);
     region.open = true;
-    if (m_semanticRegions.size() == 1024) m_semanticRegions.erase(m_semanticRegions.begin());
+    if (m_semanticRegions.size() == MaxSemanticRegions) m_semanticRegions.erase(m_semanticRegions.begin());
     m_semanticRegions.push_back(region);
 }
 
@@ -4949,11 +4964,13 @@ void Terminal::setExtraCursors(const Params& p)
         return;
     }
 
-    // Every group of one sequence applies the same shape, so their order does
-    // not matter: gather the cells as rectangles (0-based, inclusive), then
-    // change the cursors once. Repeated groups count once, and each cell gets
-    // at most one map operation, so a screen smaller than the cursor limit
-    // cannot be walked again for every group.
+    // Every group of one sequence applies the same shape: gather the cells as
+    // rectangles (0-based, inclusive), sort them, then change the cursors
+    // once. Repeated groups count once, and each cell gets at most one map
+    // operation, so a screen smaller than the cursor limit cannot be walked
+    // again for every group. The order shows only at the cursor limit: the
+    // cells kept are those of the rectangles that start nearest the top, then
+    // the left, not the first ones given.
     struct Rect
     {
         int top, left, bottom, right;
@@ -5018,16 +5035,20 @@ void Terminal::setExtraCursors(const Params& p)
                 value = shape;
             }
         }
-        // New cursors up to the limit; the rest are ignored.
-        std::vector<bool> seen(std::size_t(rows()) * std::size_t(cols()), false);
+        // New cursors up to the limit; the rest are ignored. One rectangle
+        // names each cell once, so only several need the bitmap.
+        std::vector<bool> seen(rects.size() > 1 ? std::size_t(rows()) * std::size_t(cols()) : 0, false);
         for (const Rect& r : rects) {
             for (int y = r.top; y <= r.bottom && m_extraCursors.size() < MaxExtraCursors; ++y) {
                 for (int x = r.left; x <= r.right && m_extraCursors.size() < MaxExtraCursors; ++x) {
-                    auto cell = seen[std::size_t(y) * std::size_t(cols()) + std::size_t(x)];
-                    if (!cell) {
+                    if (!seen.empty()) {
+                        auto cell = seen[std::size_t(y) * std::size_t(cols()) + std::size_t(x)];
+                        if (cell) {
+                            continue;
+                        }
                         cell = true;
-                        m_extraCursors.try_emplace({y, x}, shape);
                     }
+                    m_extraCursors.try_emplace({y, x}, shape);
                 }
             }
         }

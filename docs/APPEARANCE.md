@@ -15,7 +15,7 @@ Afterglow shows a notice and logs a warning for unknown keys and for values that
 The file holds only the values that differ from the defaults.
 Afterglow does not create it on the first start.
 Afterglow creates it when it saves a setting for the first time, for example the shaders that a script package suggests.
-The `open_config` action creates an empty file if there is no file.
+The `open_config` action creates a file that holds an empty JSON object if there is no file.
 Only your user can read the file that Afterglow creates.
 
 The [configuration reference](CONFIGURATION.md) lists all keys, defaults and ranges.
