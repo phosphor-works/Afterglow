@@ -15,6 +15,9 @@
 // at its edge, and closes back in when it returns. While it is away, a soft
 // frame in the context's colour marks it: cyan for a remote host, red for an
 // elevated user, magenta for a container.
+//
+// Scripts play pulses over a pane with afterglow.pulse(): a portal ring, a
+// flash or a shake, in a palette colour.
 
 #include <terminal_panes.glsl>
 
@@ -140,6 +143,22 @@ vec4 tubeStyle(vec2 pixel, vec2 uv) {
     return color;
 }
 
+// A ring sweeping out from the pane's centre, refracting what it crosses.
+vec4 portalRing(vec2 pixel, vec4 r, float p, vec3 tint, vec4 color, bool outward) {
+    vec2 center = r.xy + r.zw * 0.5;
+    float reach = length(r.zw) * 0.55;
+    float eased = 1.0 - pow(1.0 - p, 3.0);
+    float radius = reach * (outward ? eased : 1.0 - eased);
+    float band = min(r.z, r.w) * 0.06;
+    vec2 offset = pixel - center;
+    float ring = exp(-pow((length(offset) - radius) / band, 2.0)) * (1.0 - p);
+    vec2 bent = pixel - normalize(offset + 1e-4) * ring * band * 0.6;
+    vec4 refracted = terminalTexel(clamp(bent, r.xy, r.xy + r.zw - 1.0) / iResolution);
+    color = mix(color, refracted, min(ring * 2.0, 1.0));
+    color.rgb += tint * ring * max(color.a, 0.5);
+    return color;
+}
+
 vec3 contextColor(int context) {
     return context == 2 ? paletteColor(9) : context == 3 ? paletteColor(13) : paletteColor(14);
 }
@@ -161,21 +180,34 @@ vec4 contextMarks(vec2 pixel, vec4 color) {
         float edge = min(min(pixel.x - r.x, r.x + r.z - pixel.x), min(pixel.y - r.y, r.y + r.w - pixel.y));
         float frame = exp(-edge / 10.0) * p_frame * settled;
         color.rgb += tint * frame * color.a;
-        if (p < 1.0 && p_portal > 0.0) {
-            // The ring opens from the pane's centre as it leaves, and closes
-            // back to it as it returns.
-            vec2 center = r.xy + r.zw * 0.5;
-            float reach = length(r.zw) * 0.55;
-            float eased = 1.0 - pow(1.0 - p, 3.0);
-            float radius = reach * (away ? eased : 1.0 - eased);
-            float band = min(r.z, r.w) * 0.06;
-            vec2 offset = pixel - center;
-            float distance = length(offset);
-            float ring = exp(-pow((distance - radius) / band, 2.0)) * (1.0 - p) * p_portal;
-            vec2 bent = pixel - normalize(offset + 1e-4) * ring * band * 0.6;
-            vec4 refracted = terminalTexel(clamp(bent, r.xy, r.xy + r.zw - 1.0) / iResolution);
-            color = mix(color, refracted, min(ring * 2.0, 1.0));
-            color.rgb += tint * ring * max(color.a, 0.5);
+        // The ring opens from the pane's centre as it leaves, and closes back
+        // to it as it returns.
+        if (p < 1.0 && p_portal > 0.0) color = mix(color, portalRing(pixel, r, p, tint, color, away), p_portal);
+    }
+    return color;
+}
+
+// Scripts' pulses.
+vec4 pulses(vec2 pixel, vec4 color) {
+    for (int i = 0; i < paneCount(); ++i) {
+        float p = panePulse(i);
+        if (p >= 1.0 || !paneInCurrentTab(i)) continue;
+        vec4 r = paneRect(i);
+        if (!inside(pixel, r)) continue;
+        int effect = panePulseEffect(i);
+        vec3 tint = panePulseColor(i);
+        if (effect == 1) {
+            color = portalRing(pixel, r, p, tint, color, true);
+        } else if (effect == 2) {
+            // A flash that lights the pane and fades, strongest at the edges.
+            float edge = min(min(pixel.x - r.x, r.x + r.z - pixel.x), min(pixel.y - r.y, r.y + r.w - pixel.y));
+            float light = (1.0 - p) * (1.0 - p) * (0.35 + 0.65 * exp(-edge / 24.0));
+            color.rgb = mix(color.rgb, tint * max(color.a, 0.5), light * 0.7);
+        } else if (effect == 3) {
+            // A sideways shake that settles.
+            float shift = sin(p * 42.0) * 9.0 * (1.0 - p) * (1.0 - p);
+            vec2 source = clamp(pixel - vec2(shift, 0.0), r.xy, r.xy + r.zw - 1.0);
+            color = terminalTexel(source / iResolution);
         }
     }
     return color;
@@ -184,5 +216,5 @@ vec4 contextMarks(vec2 pixel, vec4 color) {
 vec4 pTerminal(vec2 uv) {
     vec2 pixel = terminalPixel(uv);
     vec4 color = int(p_style + 0.5) == 1 ? tubeStyle(pixel, uv) : hingeStyle(pixel, uv);
-    return contextMarks(pixel, color);
+    return pulses(pixel, contextMarks(pixel, color));
 }

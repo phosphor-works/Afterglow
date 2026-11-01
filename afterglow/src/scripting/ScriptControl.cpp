@@ -91,6 +91,18 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("action")) {
                 return control.runAction(pane, s("name"));
             }
+            if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
+            if (kind == QLatin1String("overview_move")) {
+                return control.overviewMove(pane, e.value(QStringLiteral("target")).toUInt(),
+                                            int(e.value(QStringLiteral("step")).toDouble()), data);
+            }
+            if (kind == QLatin1String("pulse")) {
+                const QString effect = s("effect");
+                const int number = effect == QLatin1String("portal") ? 1 : effect == QLatin1String("flash") ? 2
+                    : effect == QLatin1String("shake") ? 3 : effect.toInt();
+                return control.pulse(pane, number, int(e.value(QStringLiteral("duration_ms")).toDouble()),
+                                     int(e.value(QStringLiteral("color")).toDouble()));
+            }
             return QStringLiteral("unknown effect \"%1\"").arg(kind);
         }();
         if (error.isEmpty() && created) {
@@ -118,6 +130,14 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             });
             return {error, {}, error.isEmpty() ? QString() : QStringLiteral("busy"), error.isEmpty()};
         }
+        if (kind == QLatin1String("key_mode")) {
+            const auto error = control.scriptKeyMode(owner, pane, e.value(QStringLiteral("label")).toString());
+            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("busy")};
+        }
+        if (kind == QLatin1String("end_key_mode")) {
+            control.endScriptKeyMode(owner);
+            return {};
+        }
         if (kind == QLatin1String("status") || kind == QLatin1String("override")) {
             const auto error = control.scriptAppearance(owner, pane, e);
             return {error, {}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
@@ -125,6 +145,8 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         return apply(e);
     };
     c.cleanup = [&control](const QString& owner) { control.clearScriptOwner(owner); };
+    // A failing script never keeps the keyboard.
+    c.failed = [&control](const QString& owner) { control.endScriptKeyMode(owner); };
     return c;
 }
 
@@ -135,7 +157,17 @@ void connectScriptEvents(ScriptHost& host, Control& control)
     };
     constexpr auto Queued = Qt::QueuedConnection;
     QObject::connect(&control, &Control::paneMoved, &host, on("on_pane_moved"), Queued);
-    QObject::connect(&control, &Control::paneCreated, &host, on("on_pane_created"), Queued);
+    QObject::connect(&control, &Control::paneCreated, &host, [&host, &control](quint32 pane) {
+        // A split says where it came from; the origin is known once the split finishes.
+        host.dispatch(QStringLiteral("on_pane_created"), pane, control.paneOrigin(pane));
+    }, Queued);
+    QObject::connect(&control, &Control::scriptKey, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& key) {
+        host.dispatchTo(owner, QStringLiteral("on_key"), pane, key);
+    }, Queued);
+    QObject::connect(&control, &Control::tabSwitched, &host, [&host](quint32 pane, quint32 from, quint32 to, int direction) {
+        host.dispatch(QStringLiteral("on_tab_switch"), pane,
+                      {{QStringLiteral("from_tab"), from}, {QStringLiteral("to_tab"), to}, {QStringLiteral("direction"), direction}});
+    }, Queued);
     QObject::connect(&control, &Control::paneClosedDetailed, &host,
         [&host](quint32 pane, quint32 tab, quint32 window) {
             host.dispatch(QStringLiteral("on_pane_closed"), pane,

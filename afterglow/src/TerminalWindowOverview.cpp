@@ -120,6 +120,11 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         if (paneEffectProgress(context.at) < 1.0f) effects.active = effects.moving = true;
     }
     if (m_anyPaneAway && m_paneEffectsAvailable) effects.active = true;
+    for (auto it = m_panePulse.begin(); it != m_panePulse.end();) {
+        const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - it->at).count();
+        if (seconds * 1000.0f >= float(it->durationMs)) it = m_panePulse.erase(it);
+        else { effects.active = effects.moving = true; ++it; }
+    }
     if (m_closingPane) {
         AfterglowRender::WindowRenderer::Pane ghost;
         ghost.snapshot = m_closingPane->snapshot.get();

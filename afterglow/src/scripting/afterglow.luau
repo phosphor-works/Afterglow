@@ -294,4 +294,18 @@ afterglow = {
     log = function(message)
         return { kind = "log", message = tostring(message) }
     end,
+    -- Sends the window's keys to on_key until end_key_mode. label shows in the window.
+    key_mode = function(pane, label) return { kind = "key_mode", pane = paneId(pane), label = label or "" } end,
+    end_key_mode = function() return { kind = "end_key_mode" } end,
+    -- operation: "open", "close" (back to where it was) or "choose" (the highlighted pane).
+    overview = function(pane, operation) return { kind = "overview", pane = paneId(pane), operation = operation or "open" } end,
+    -- Moves the highlight to target, or by step cards.
+    overview_move = function(pane, step, target)
+        return { kind = "overview_move", pane = paneId(pane), step = step or 0, target = target and paneId(target) or 0 }
+    end,
+    -- effect: "portal", "flash", "shake", or a number a pack defines (4-255).
+    pulse = function(pane, effect, options)
+        local o = options or {}
+        return { kind = "pulse", pane = paneId(pane), effect = tostring(effect), duration_ms = o.duration_ms or 600, color = o.color or 4 }
+    end,
 }

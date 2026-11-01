@@ -104,6 +104,13 @@ public:
     QString scriptDialog(const QString& owner, quint32 pane, const QVariantMap& effect, ScriptReply reply);
     QString scriptAppearance(const QString& owner, quint32 pane, const QVariantMap& effect);
     void clearScriptOwner(const QString& owner);
+    QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
+    void endScriptKeyMode(const QString& owner);
+    QString overview(quint32 pane, const QString& operation, QVariantMap& result);
+    QString overviewMove(quint32 pane, quint32 target, int step, QVariantMap& result);
+    QString pulse(quint32 pane, int effect, int durationMs, int color);
+    /// Where a pane split from: {"split_from": pane ID, "edge": 1-4}, empty when it did not.
+    QVariantMap paneOrigin(quint32 pane) const;
     QString scriptShader(const QString& owner, quint32 pane, const QVariantMap& effect, QVariantMap& result);
 
     static QString scopeName(TextScope scope);
@@ -125,6 +132,10 @@ Q_SIGNALS:
     void userVarChanged(quint32 pane, const QString& name, const QString& value);
     /// Where the pane's shell runs changed (OSC 3008, RemoteHost).
     void contextChanged(quint32 pane, const QString& context);
+    /// A key for the script holding a window's key mode.
+    void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
+    /// A window's current tab changed; @p pane is the new tab's focused pane.
+    void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 
 private:
     ProjectStore projects() const;

@@ -42,6 +42,10 @@ void Control::attachWindow(TerminalWindow* window)
         if (!error.isEmpty()) notify(pane->id(), QStringLiteral("Move failed"), error);
     });
     connect(window, &TerminalWindow::paneCreated, this, [this, window](Pane* p) { attachPane(window, p); });
+    connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
+    connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
+        Q_EMIT tabSwitched(window->focusedPane() ? window->focusedPane()->id() : 0, from, to, direction);
+    });
     connect(window, &TerminalWindow::focusedPaneChanged, this, [this](Pane* p) {
         if (p) {
             Q_EMIT focusChanged(p->id());
@@ -159,7 +163,8 @@ QVariantMap Control::state() const
         }
         const quint32 focused = w->focusedPane() ? w->focusedPane()->id() : 0;
         windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("project_directory"), w->projectDirectory()}, {QStringLiteral("focused"), w->isActive()},
-                                   {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused}});
+                                   {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused},
+                                   {QStringLiteral("overview"), w->overviewState()}});
         for (const auto& tab : w->tabs()) {
             tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},
                                     {QStringLiteral("index"), tab.index}, {QStringLiteral("title"), tab.title},
@@ -562,6 +567,56 @@ QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMa
 void Control::clearScriptOwner(const QString& owner)
 {
     for (auto window : m_windows) if (window) window->clearScriptOwner(owner);
+}
+
+QString Control::scriptKeyMode(const QString& owner, quint32 id, const QString& label)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    if (!pane) return noPane(id);
+    // One key mode per script: starting one elsewhere ends the old one.
+    for (auto other : m_windows) if (other && other != window) other->endScriptKeyMode(owner);
+    return window->startScriptKeyMode(owner, pane, label);
+}
+
+void Control::endScriptKeyMode(const QString& owner)
+{
+    for (auto window : m_windows) if (window) window->endScriptKeyMode(owner);
+}
+
+QString Control::overview(quint32 id, const QString& operation, QVariantMap& result)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? window->scriptOverview(pane, operation, result) : noPane(id);
+}
+
+QString Control::overviewMove(quint32 id, quint32 target, int step, QVariantMap& result)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    if (!pane) return noPane(id);
+    TerminalWindow* targetWindow = nullptr;
+    Pane* to = target ? find(target, &targetWindow) : nullptr;
+    if (target && (!to || targetWindow != window)) return QStringLiteral("That pane is not in this window's overview");
+    return window->scriptOverviewMove(pane, to, step, result);
+}
+
+QString Control::pulse(quint32 id, int effect, int durationMs, int color)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? window->pulsePane(pane, effect, durationMs, color) : noPane(id);
+}
+
+QVariantMap Control::paneOrigin(quint32 id) const
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    if (!pane) return {};
+    const auto origin = window->paneOrigin(pane);
+    if (!origin.from) return {};
+    return {{QStringLiteral("split_from"), origin.from}, {QStringLiteral("edge"), origin.edge}};
 }
 
 QString Control::movePane(quint32 id, quint32 target, const QString& placement, QVariantMap& result)

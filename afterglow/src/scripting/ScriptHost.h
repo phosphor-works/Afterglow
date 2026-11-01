@@ -62,6 +62,8 @@ public:
         /// Owned UI/override operations. Completion is used only when deferred=true.
         std::function<EffectResult(const QString& owner, const QVariantMap&, std::function<void(EffectResult)>)> applyOwned;
         std::function<void(const QString& owner)> cleanup;
+        /// A handler of the owner failed: whatever it holds must not trap the user.
+        std::function<void(const QString& owner)> failed;
     };
 
     struct ScriptAction
@@ -105,6 +107,8 @@ public:
     /// Calls @p handler (on_command_finished...) in every script that has it.
     /// The event's "pane" is filled in from @p pane.
     void dispatch(const QString& handler, quint32 pane, QVariantMap event = {});
+    /// Calls @p handler in the script instance @p owner only (on_key).
+    void dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event = {});
 
 Q_SIGNALS:
     void actionsChanged();

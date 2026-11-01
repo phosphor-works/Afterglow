@@ -974,3 +974,67 @@ TEST_F(NativeWindow, TabSwitchAnimatesAndSettles) {
     window->revealPane(second);
     EXPECT_FALSE(window->tabSwitching());
 }
+
+TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(window->paneOrigin(second).from, first->id());
+    EXPECT_EQ(window->paneOrigin(second).edge, 1);
+    drain();
+    QList<QVariantMap> keys;
+    QObject::connect(window, &TerminalWindow::scriptKey, window, [&](const QString& owner, quint32, const QVariantMap& key) {
+        if (owner == QLatin1String("script@1")) keys << key;
+    });
+    auto press = [&](int key, Qt::KeyboardModifiers mods = Qt::NoModifier, const QString& text = {}) {
+        QKeyEvent down(QEvent::KeyPress, key, mods, text);
+        QCoreApplication::sendEvent(window, &down);
+        QKeyEvent up(QEvent::KeyRelease, key, mods, text);
+        QCoreApplication::sendEvent(window, &up);
+        drain();
+    };
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), second, QStringLiteral("Script keys")).isEmpty());
+    EXPECT_EQ(chrome->keyMode(), QStringLiteral("Script keys"));
+    EXPECT_FALSE(window->startScriptKeyMode(QStringLiteral("other@2"), second, {}).isEmpty());
+    press(Qt::Key_Left);
+    press(Qt::Key_A, Qt::ControlModifier, QStringLiteral("\x01"));
+    press(Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
+    ASSERT_EQ(keys.size(), 3);
+    EXPECT_EQ(keys[0].value(QStringLiteral("key")), QStringLiteral("Left"));
+    EXPECT_EQ(keys[1].value(QStringLiteral("key")), QStringLiteral("a"));
+    EXPECT_TRUE(keys[1].value(QStringLiteral("ctrl")).toBool());
+    EXPECT_EQ(keys[1].value(QStringLiteral("text")), QString());
+    EXPECT_EQ(keys[2].value(QStringLiteral("text")), QStringLiteral("q"));
+    // The script drives the overview while it holds the keys.
+    QVariantMap state;
+    ASSERT_TRUE(window->scriptOverview(second, QStringLiteral("open"), state).isEmpty());
+    EXPECT_TRUE(state.value(QStringLiteral("open")).toBool());
+    EXPECT_EQ(state.value(QStringLiteral("cards")).toList().size(), 2);
+    press(Qt::Key_Right); // to the script, not the overview
+    EXPECT_EQ(window->overviewHighlight(), second);
+    ASSERT_TRUE(window->scriptOverviewMove(second, nullptr, 1, state).isEmpty());
+    EXPECT_EQ(state.value(QStringLiteral("highlighted")).toUInt(), first->id());
+    ASSERT_TRUE(window->scriptOverview(second, QStringLiteral("choose"), state).isEmpty());
+    EXPECT_FALSE(state.value(QStringLiteral("open")).toBool());
+    EXPECT_EQ(window->focusedPane(), first);
+    // Ending the mode, or the script going away, returns the keys.
+    window->clearScriptOwner(QStringLiteral("script@1"));
+    EXPECT_TRUE(chrome->keyMode().isEmpty());
+    const int seen = keys.size();
+    press(Qt::Key_Left);
+    EXPECT_EQ(keys.size(), seen);
+    // Pulses and tab switches.
+    EXPECT_TRUE(window->pulsePane(first, 2, 400, 1).isEmpty());
+    QList<std::pair<quint32, quint32>> switches;
+    QObject::connect(window, &TerminalWindow::tabSwitched, window, [&](quint32 from, quint32 to, int direction) {
+        EXPECT_EQ(direction, 1);
+        switches.append({from, to});
+    });
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    drain();
+    ASSERT_EQ(switches.size(), 1);
+    EXPECT_NE(switches[0].first, switches[0].second);
+}

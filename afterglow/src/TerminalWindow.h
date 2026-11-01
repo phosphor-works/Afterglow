@@ -113,6 +113,27 @@ public:
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
     void clearScriptOwner(const QString& owner);
     QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
+    /// A script's key mode: the window's keys go to the script's on_key until
+    /// it ends the mode, fails or unloads. One script at a time.
+    QString startScriptKeyMode(const QString& owner, Pane* pane, const QString& label);
+    void endScriptKeyMode(const QString& owner);
+    /// Scripts drive the pane overview: "open", "close" (back to where it
+    /// was) or "choose" (the highlighted pane); and move its highlight to
+    /// @p target, or by @p step cards when no target is given.
+    QString scriptOverview(Pane* pane, const QString& operation, QVariantMap& result);
+    QString scriptOverviewMove(Pane* pane, Pane* target, int step, QVariantMap& result);
+    /// The overview for scripts: open, highlighted and its cards, by pane ID.
+    QVariantMap overviewState() const;
+    /// Plays effect @p effect over the pane in Shaders.paneEffects.
+    QString pulsePane(Pane* pane, int effect, int durationMs, int color);
+    /// Where a pane split from, and the edge it shares with that pane
+    /// (1 left, 2 top, 3 right, 4 bottom); zeros otherwise.
+    struct PaneOrigin
+    {
+        quint32 from = 0;
+        int edge = 0;
+    };
+    PaneOrigin paneOrigin(const Pane* pane) const { return m_paneOrigin.value(pane); }
 
     QJsonObject projectLayout() const;
     QVariantMap restoreProject(const QJsonObject& document);
@@ -148,6 +169,10 @@ Q_SIGNALS:
     void transferRequested(Pane* pane, bool wholeTab);
     void projectRequested(Pane* pane, bool save);
     void focusedPaneChanged(Pane* pane);
+    /// A key for the script that holds the key mode.
+    void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
+    /// The current tab changed; @p direction is 1 toward the right.
+    void tabSwitched(quint32 fromTab, quint32 toTab, int direction);
 
 protected:
     bool event(QEvent* e) override;
@@ -207,6 +232,8 @@ private:
     bool handleShortcut(QKeyEvent* e);
     void updateKeyMode();
     bool copyModeKey(QKeyEvent* e);
+    /// Hands the key to the script holding the key mode, if one does.
+    bool scriptKeyModeKey(QKeyEvent* e);
     void stopCopyMode();
     QPointer<Pane> m_copyPane;
     struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; };
@@ -464,6 +491,22 @@ private:
         std::chrono::steady_clock::time_point at; ///< when it last changed
     };
     QHash<const Pane*, PaneContext> m_paneContext;
+    QHash<const Pane*, PaneOrigin> m_paneOrigin;
+    struct PanePulse
+    {
+        std::chrono::steady_clock::time_point at;
+        int durationMs = 0;
+        int effect = 0;
+        int color = 0;
+    };
+    QHash<const Pane*, PanePulse> m_panePulse;
+    struct ScriptKeyMode
+    {
+        QString owner;
+        QString label;
+        QPointer<Pane> pane;
+    };
+    std::optional<ScriptKeyMode> m_scriptKeyMode;
     bool m_anyPaneAway = false; ///< this frame: some visible pane is not here
     bool m_paneEffectsAvailable = false; ///< Shaders.paneEffects compiled
     bool paneEffectsAllowed() const;

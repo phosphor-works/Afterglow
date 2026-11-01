@@ -84,6 +84,17 @@ const QString AwaitPrefix = QStringLiteral("afterglow.await:");
 constexpr int MaxSleeping = 16;
 constexpr int MaxSleepMs = 600000;
 
+/// A pulse's effect: a name packs share, or a number a pack defines.
+int pulseEffect(const QString& name)
+{
+    if (name == QLatin1String("portal")) return 1;
+    if (name == QLatin1String("flash")) return 2;
+    if (name == QLatin1String("shake")) return 3;
+    bool ok = false;
+    const int number = name.toInt(&ok);
+    return ok && number >= 1 && number <= 255 ? number : 0;
+}
+
 bool validId(const QString& id)
 {
     static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
@@ -157,6 +168,11 @@ const EffectKind Kinds[] = {
     {"log", false, false, {"message"}, false},
     {"signal", true, false, {}, false, {"channel", "value"}},
     {"signals", true, false, {"scope"}, false},
+    {"key_mode", true, false, {"label"}, false},
+    {"end_key_mode", false, false, {}, false},
+    {"overview", true, false, {"operation"}, false},
+    {"overview_move", true, false, {}, false, {"target", "step"}},
+    {"pulse", true, false, {"effect"}, false, {"duration_ms", "color"}},
     {"shaders", true, false, {}, false},
     {"shader_presets", true, false, {"instance"}, false},
     {"shader_preset", true, false, {"instance", "preset", "scope"}, false},
@@ -540,6 +556,16 @@ bool ScriptHost::runAction(const QString& token, quint32 pane)
     return false;
 }
 
+void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event)
+{
+    for (const ScriptPtr& script : m_scripts) {
+        if (script->owner == owner) {
+            emitOwned(script, handler, std::move(event), pane);
+            return;
+        }
+    }
+}
+
 void ScriptHost::dispatch(const QString& handler, quint32 pane, QVariantMap event)
 {
     if (m_scripts.empty()) {
@@ -611,6 +637,7 @@ void ScriptHost::call(const ScriptPtr& script, const QString& function, const QV
             ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
             : out.message;
         ++script->handlerErrors;
+        if (m_callbacks.failed) m_callbacks.failed(script->owner);
         const QString name = function == QLatin1String("__resume") ? QStringLiteral("a handler after await") : function;
         script->lastError = name + QStringLiteral(": ") + why;
         qCWarning(lcScripts).noquote() << script->id << name << "failed:" << why;
@@ -863,6 +890,22 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                    && effect.value(QStringLiteral("direction")) != QLatin1String("left")
                    && effect.value(QStringLiteral("direction")) != QLatin1String("up")) {
             error = QStringLiteral("split direction must be right, down, left or up");
+        } else if (kind == QLatin1String("key_mode") && !script->engine->hasFunction(script->module, QStringLiteral("on_key"))) {
+            error = QStringLiteral("key_mode requires an on_key handler");
+        } else if (kind == QLatin1String("key_mode") && str(effect, "label").size() > 160) {
+            error = QStringLiteral("Key mode label exceeds 160 characters");
+        } else if (kind == QLatin1String("overview") && !QStringList{QStringLiteral("open"), QStringLiteral("close"), QStringLiteral("choose")}.contains(str(effect, "operation"))) {
+            error = QStringLiteral("overview operation must be open, close or choose");
+        } else if (kind == QLatin1String("overview_move") && !(std::abs(effect.value(QStringLiteral("step")).toDouble()) <= 32
+                                                              && effect.value(QStringLiteral("target")).toDouble() >= 0)) {
+            error = QStringLiteral("overview_move needs a pane or a step of at most 32 cards");
+        } else if (kind == QLatin1String("pulse") && pulseEffect(str(effect, "effect")) == 0) {
+            error = QStringLiteral("pulse effect must be portal, flash, shake or a number from 1 to 255");
+        } else if (kind == QLatin1String("pulse") && !(effect.value(QStringLiteral("duration_ms")).toDouble() >= 50
+                                                      && effect.value(QStringLiteral("duration_ms")).toDouble() <= 10000
+                                                      && effect.value(QStringLiteral("color")).toDouble() >= 0
+                                                      && effect.value(QStringLiteral("color")).toDouble() <= 255)) {
+            error = QStringLiteral("pulse needs 50 to 10000 ms and a palette colour from 0 to 255");
         } else if (kind == QLatin1String("sleep") && !validRequest) {
             error = QStringLiteral("sleep must be awaited: use afterglow.sleep");
         } else if (kind == QLatin1String("sleep") && !(effect.value(QStringLiteral("delay_ms")).toDouble() >= 0

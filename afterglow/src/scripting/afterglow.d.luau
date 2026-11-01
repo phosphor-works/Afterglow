@@ -39,7 +39,9 @@ export type Pane = {
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
 }
 
-export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number, active_pane: number }
+-- The pane overview: cards are pane IDs in tab order while it shows, else the current tab's.
+export type Overview = { open: boolean, highlighted: number, cards: { number } }
+export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number, active_pane: number, overview: Overview }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
 -- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
 -- Zero active IDs mean that no terminal window currently has keyboard focus.
@@ -67,6 +69,12 @@ export type StatusEvent = { pane: Pane, state: string, text: string, terminal: S
 export type ActionEvent = { pane: Pane?, terminal: State } -- the targeted pane, if any
 export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
+-- A split also says which pane it split from and the edge they share: 1 left, 2 top, 3 right, 4 bottom.
+export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? }
+export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }
+-- key: "a", "A", "Enter", "Escape", "Left", "F5"...; text: what it types, "" for control keys.
+export type KeyEvent = { pane: Pane?, key: string, text: string, ctrl: boolean, shift: boolean, alt: boolean,
+    meta: boolean, ["repeat"]: boolean, terminal: State }
 
 -- curve: "linear", "ease-in-out", "spring" or a Phosphor curve spec such as "0.2,0,0,1" or "spring:20,1"
 export type ShaderTransition = { duration_ms: number, curve: string? }
@@ -123,6 +131,8 @@ export type Effects = Effect | { Effect }
 --   on_command_started(ev: CommandStartedEvent)
 --   on_command_finished(ev: CommandFinishedEvent)
 --   on_user_var(ev: UserVarEvent)            on_context(ev: ContextEvent)
+--   on_pane_created(ev: PaneCreatedEvent)    on_tab_switch(ev: TabSwitchEvent)
+--   on_key(ev: KeyEvent) -- only while this script holds a key mode
 --   run_action(action: string, ev: ActionEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
 -- returns a new state object. Migration/init failures retain the old instance.
@@ -201,4 +211,12 @@ declare afterglow: {
     -- One effect, 1-8 unique channels, at most 128 panes. Defaults to anchor's tab.
     signals: (pane: PaneRef, values: { SignalValue }, scope: ("pane" | "tab" | "window")?) -> Effect,
     log: (message: string) -> Effect,
+    -- The window's keys go to on_key until end_key_mode, a handler error or unload.
+    key_mode: (pane: PaneRef, label: string?) -> Effect,
+    end_key_mode: () -> Effect,
+    -- Result data: the Overview.
+    overview: (pane: PaneRef, operation: ("open" | "close" | "choose")?) -> Effect,
+    overview_move: (pane: PaneRef, step: number?, target: PaneRef?) -> Effect,
+    -- Plays over the pane in Shaders.paneEffects. color is a palette index (default 4).
+    pulse: (pane: PaneRef, effect: ("portal" | "flash" | "shake" | string), options: { duration_ms: number?, color: number? }?) -> Effect,
 }

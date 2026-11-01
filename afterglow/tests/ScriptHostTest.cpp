@@ -60,6 +60,7 @@ protected:
             return applyHook ? applyHook(e) : ScriptHost::EffectResult{};
         };
         c.cleanup = [this](const QString& owner) { cleaned << owner; };
+        c.failed = [this](const QString& owner) { failedOwners << owner; };
         c.applyOwned = [this, apply = c.apply](const QString&, const QVariantMap& effect, std::function<void(ScriptHost::EffectResult)> complete) {
             if (effect.value(QStringLiteral("kind")) == QLatin1String("prompt")) {
                 pendingReply = std::move(complete);
@@ -96,6 +97,7 @@ protected:
     QMap<quint32, QVariantMap> paneState;
     std::function<ScriptHost::EffectResult(const QVariantMap&)> applyHook;
     QStringList cleaned;
+    QStringList failedOwners;
     std::function<void(ScriptHost::EffectResult)> pendingReply;
     std::unique_ptr<ScriptHost> host;
 };
@@ -1793,4 +1795,83 @@ return {
     ScriptState::Snapshot stored;
     ASSERT_TRUE(ScriptState(user.filePath("state")).read("counter", stored).isEmpty());
     EXPECT_EQ(stored.value["launches"].toInt(), 1);
+}
+
+TEST_F(ScriptHostTest, KeyModesNeedOnKeyAndKeysReachOnlyTheirOwner)
+{
+    write(user, "keys.luau", R"(
+return {
+    on_bell = function(ev) return afterglow.key_mode(ev.pane, "Keys") end,
+    on_key = function(ev) return afterglow.copy(ev.key) end,
+}
+)");
+    write(user, "other.luau", R"(
+return {
+    on_focus = function(ev) return afterglow.key_mode(ev.pane, "No handler") end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_FALSE(rec.applied.isEmpty());
+    EXPECT_EQ(rec.applied.last()["kind"], "key_mode");
+    EXPECT_EQ(rec.applied.last()["label"], "Keys");
+    // A script without on_key cannot take the keyboard.
+    rec.results.clear();
+    host->dispatch("on_focus", 7);
+    ASSERT_FALSE(rec.results.isEmpty());
+    EXPECT_TRUE(rec.results.last().second.contains("on_key"));
+    // A key for nobody is dropped.
+    const int before = rec.applied.size();
+    host->dispatchTo("nobody@1", "on_key", 7, {{"key", "a"}});
+    EXPECT_EQ(rec.applied.size(), before);
+}
+
+TEST_F(ScriptHostTest, OverviewAndPulseEffectsAreValidatedBeforeTheHost)
+{
+    write(user, "fx.luau", R"(
+return {
+    on_bell = function(ev)
+        return {
+            afterglow.overview(ev.pane, "open"),
+            afterglow.overview(ev.pane, "explode"),
+            afterglow.overview_move(ev.pane, 1),
+            afterglow.overview_move(ev.pane, 99),
+            afterglow.pulse(ev.pane, "flash", {color = 1}),
+            afterglow.pulse(ev.pane, "melt"),
+            afterglow.pulse(ev.pane, "7", {duration_ms = 20000}),
+            afterglow.pulse(ev.pane, "300"),
+        }
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    QStringList kinds;
+    for (const auto& e : rec.applied) kinds << e["kind"].toString();
+    EXPECT_EQ(kinds, QStringList({"overview", "overview_move", "pulse"}));
+    EXPECT_EQ(rec.applied[2]["effect"], "flash");
+    EXPECT_EQ(rec.applied[2]["color"].toInt(), 1);
+    EXPECT_EQ(rec.applied[2]["duration_ms"].toInt(), 600);
+    int refused = 0;
+    for (const auto& result : rec.results) refused += result.second.isEmpty() ? 0 : 1;
+    EXPECT_EQ(refused, 5);
+}
+
+TEST_F(ScriptHostTest, HandlerFailuresReleaseWhatTheScriptHolds)
+{
+    write(user, "fails.luau", R"(
+return {
+    on_bell = function() error("broken") end,
+    on_key = function(ev) return afterglow.copy(ev.key .. ":" .. ev.pane.id) end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(failedOwners.size(), 1);
+    EXPECT_TRUE(failedOwners[0].startsWith("fails@"));
+    // on_key reaches the named owner, and nobody else.
+    host->dispatchTo(failedOwners[0], "on_key", 7, {{"key", "a"}});
+    host->dispatchTo("someone@0", "on_key", 7, {{"key", "b"}});
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], "a:7");
 }

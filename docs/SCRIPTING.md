@@ -158,7 +158,7 @@ A queued event can describe an earlier command than the snapshot.
 
 | Record | Fields |
 | --- | --- |
-| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory` |
+| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview` |
 | Tab | `id`, `window`, `index`, `title`, `active`, `active_pane` |
 | Pane | `id`, `window`, `tab_id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `focused`, `context` |
 
@@ -189,8 +189,13 @@ end
 ## Events and lifecycle
 
 Pane events include `on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell` and `on_title`.
-Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var` and `on_context`.
+Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context` and `on_tab_switch`.
 These events contain the applicable pane and terminal snapshot.
+
+A split's `on_pane_created` also contains `split_from`, the pane it split from, and `edge`.
+`edge` is the side the two panes share: 1 left, 2 top, 3 right or 4 bottom.
+`on_tab_switch` contains `from_tab`, `to_tab` and `direction`, 1 toward a tab on the right and -1 toward one on the left.
+Its pane is the new tab's focused pane.
 
 `run_action(action, ev)` handles declared palette and key actions.
 `on_load`, `on_unload` and `on_config_changed` handle lifecycle changes.
@@ -253,6 +258,42 @@ The latest script value for each field takes priority over configuration.
 Removal exposes the next owner's value or the configured value.
 An empty table clears the owner's values.
 Unload and pane closure remove all contributions.
+
+## Key modes
+
+`key_mode(pane, label?)` sends the keys of the pane's window to the script's `on_key` handler.
+The keys do not reach the shell. The window shows the label.
+A script needs an `on_key` handler to start a key mode.
+One script at a time holds a window's keyboard. Another script's request returns `busy`.
+
+`on_key` receives `key`, `text`, `ctrl`, `shift`, `alt`, `meta` and `repeat`.
+`key` is the typed character, such as `a` or `A`, or a name: `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Space`, `Left`, `Right`, `Up`, `Down` or `F1` to `F35`.
+With Ctrl, `key` is the letter, and `text` is empty.
+`end_key_mode()` gives the keyboard back.
+A handler error, disable, replacement or removal of the script also ends its key mode.
+Key releases are not reported.
+
+## Pane overview
+
+`overview(pane, operation)` drives the pane overview of the pane's window.
+`open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
+`overview_move(pane, step)` moves the highlight by `step` cards. `overview_move(pane, 0, target)` highlights the pane `target`.
+Results contain the overview: `open`, `highlighted` and `cards`.
+The snapshot's window records contain the same `overview` table. `cards` lists pane IDs in tab order while the overview shows.
+
+Combine these effects with a key mode to replace the overview's keys.
+The [overview example](../data/examples/scripts/overview-keys.luau) moves with a, d, w and s.
+A click still closes the overview, so check `overview.open` in `on_key` and end the key mode when it is false.
+
+## Pane pulses
+
+`pulse(pane, effect, options?)` plays an effect over the pane in `Shaders.paneEffects`.
+The bundled Pane Effects pack draws `portal`, a ring that sweeps out; `flash`, a light that fades; and `shake`.
+Numbers from 4 to 255 select effects that other packs define.
+`options.duration_ms` sets the time, from 50 to 10,000 ms. The default is 600 ms.
+`options.color` is a palette index from 0 to 255. The default is 4.
+A new pulse on the same pane replaces the old one.
+The [pulse example](../data/examples/scripts/pane-pulses.luau) flashes failed commands and shakes on the bell.
 
 ## Launch options
 
@@ -330,6 +371,11 @@ Unchanged instances retain counters. Replacements start new counters.
 | `afterglow.await_all` | `(effects: { Effect }) -> { ResultEvent }` |
 | `afterglow.sleep` | `(ms: number) -> (any?, OperationError?, ResultEvent)` |
 | `afterglow.request` | `(id: string, effect: Effect) -> Effect` |
+| `afterglow.key_mode` | `(pane: PaneRef, label: string?) -> Effect` |
+| `afterglow.end_key_mode` | `() -> Effect` |
+| `afterglow.overview` | `(pane: PaneRef, operation: ("open" \| "close" \| "choose")?) -> Effect` |
+| `afterglow.overview_move` | `(pane: PaneRef, step: number?, target: PaneRef?) -> Effect` |
+| `afterglow.pulse` | `(pane: PaneRef, effect: string, options: { duration_ms: number?, color: number? }?) -> Effect` |
 | `afterglow.semantic_regions` | `(pane: PaneRef) -> Effect` |
 | `afterglow.read_region` | `(pane: PaneRef, region: string, max_bytes: number?) -> Effect` |
 | `afterglow.read_text` | `(pane: PaneRef, scope: ("screen" \| "scrollback" \| "last-output" \| "selection")?, max_bytes: number?) -> Effect` |

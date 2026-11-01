@@ -585,12 +585,11 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
         break;
     }
     m_splits->split(m_focused, added, direction, options.fraction);
-    if (paneEffectsAllowed()) {
-        // It opens from the edge it shares with the pane it split from.
-        const int edge = direction == SplitTree::Direction::Right ? 1 : direction == SplitTree::Direction::Down ? 2
-            : direction == SplitTree::Direction::Left ? 3 : 4;
-        m_paneOpening.insert(added, {std::chrono::steady_clock::now(), edge});
-    }
+    // It opens from the edge it shares with the pane it split from.
+    const int edge = direction == SplitTree::Direction::Right ? 1 : direction == SplitTree::Direction::Down ? 2
+        : direction == SplitTree::Direction::Left ? 3 : 4;
+    m_paneOrigin.insert(added, {m_focused->id(), edge});
+    if (paneEffectsAllowed()) m_paneOpening.insert(added, {std::chrono::steady_clock::now(), edge});
     setFocusedPane(added);
     m_layoutSize = QSize();
     scheduleRender();
@@ -610,6 +609,9 @@ void TerminalWindow::closePane(Pane* pane)
     Tab& tab = *m_tabs[std::size_t(index)];
     m_paneOpening.remove(pane);
     m_paneContext.remove(pane);
+    m_paneOrigin.remove(pane);
+    m_panePulse.remove(pane);
+    if (m_scriptKeyMode && m_scriptKeyMode->pane == pane) m_scriptKeyMode->pane = nullptr;
     // Its last frame stays on screen while it closes.
     const QRect drawn = index == m_currentTab && tab.splits->isVisible(pane) ? motion(pane).rect.value().toRect() : QRect();
     if (!tab.splits->remove(pane)) {
@@ -692,7 +694,10 @@ Pane* TerminalWindow::newTab(const QString& workingDirectory, const QStringList&
     const int from = m_currentTab; // inserted after it, so its index holds
     m_splits = nullptr; // the current tab's index moved; nothing to save
     switchTab(at);
-    if (hadTab) startTabTransition(from, at);
+    if (hadTab) {
+        startTabTransition(from, at);
+        Q_EMIT tabSwitched(m_tabs[std::size_t(from)]->id, tab.id, 1);
+    }
     return first;
 }
 
@@ -841,6 +846,8 @@ void TerminalWindow::switchTab(int index)
     if (m_splits && m_currentTab < int(m_tabs.size())) {
         m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     }
+    const quint32 leaving = m_splits && m_currentTab != index && m_currentTab < int(m_tabs.size()) ? m_tabs[std::size_t(m_currentTab)]->id : 0;
+    const int direction = index > m_currentTab ? 1 : -1;
     if (m_splits) startTabTransition(m_currentTab, index);
     m_currentTab = index;
     Tab& tab = *m_tabs[std::size_t(index)];
@@ -857,6 +864,7 @@ void TerminalWindow::switchTab(int index)
     setFocusedPane(tab.focused);
     m_layoutSize = QSize();
     Q_EMIT tabsChanged();
+    if (leaving) Q_EMIT tabSwitched(leaving, tab.id, direction);
     scheduleRender();
 }
 
@@ -1199,6 +1207,13 @@ void TerminalWindow::renderNow()
         if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
             wp.params.openProgress = paneEffectProgress(opening->at);
             wp.params.openEdge = opening->edge;
+        }
+        if (const auto pulse = m_panePulse.constFind(p); pulse != m_panePulse.constEnd()) {
+            const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - pulse->at).count();
+            wp.params.pulseProgress = std::clamp(seconds * 1000.0f / float(std::max(1, pulse->durationMs)), 0.0f, 1.0f);
+            wp.params.pulseEffect = pulse->effect;
+            wp.params.pulseColor = pulse->color;
+            animating |= wp.params.pulseProgress < 1.0f;
         }
         {
             // A change of host, user or container animates; the first sighting does not.
@@ -1671,7 +1686,8 @@ void TerminalWindow::cancelKeyMode()
 
 void TerminalWindow::updateKeyMode()
 {
-    m_controller->setKeyMode(m_overview.open ? tr("Panes · arrows choose · Enter or 1–9 focus · Esc cancel")
+    m_controller->setKeyMode(m_scriptKeyMode ? m_scriptKeyMode->label
+                             : m_overview.open ? tr("Panes · arrows choose · Enter or 1–9 focus · Esc cancel")
                              : m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy") : m_keyMode.label());
     m_keyModeTimer.stop();
     if (m_keyMode.active()) m_keyModeTimer.start(int(std::max(qint64(1), m_keyMode.deadline - m_keyModeClock.elapsed())));
@@ -2987,6 +3003,7 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
     const quint32 physicalKey = e->nativeScanCode() ? e->nativeScanCode() : quint32(e->key());
     if (!e->isAutoRepeat()) m_consumedKeys.remove(physicalKey);
     if (copyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
+    if (scriptKeyModeKey(e)) { m_consumedKeys.insert(physicalKey); return; }
     if (m_overview.open) {
         m_consumedKeys.insert(physicalKey);
         overviewKey(e);
@@ -3032,7 +3049,7 @@ void TerminalWindow::keyReleaseEvent(QKeyEvent* e)
         if (m_controller->wantsKeyboard()) m_chrome->deliver(e);
         return;
     }
-    if (m_urlMode.active || m_unicodeInput || m_overview.open) {
+    if (m_urlMode.active || m_unicodeInput || m_overview.open || m_scriptKeyMode) {
         return; // the mode took the press
     }
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;

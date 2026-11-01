@@ -31,7 +31,8 @@
 // both is linear over Animation.paneEffectDuration; shaders ease it.
 // A pane whose shell moves to another host, user or container (OSC 3008,
 // such as afterglow ssh) changes context; the shader also runs on frames drawn
-// while any pane is away from here, so it can mark those panes.
+// while any pane is away from here, so it can mark those panes. Scripts play
+// effects over a pane with afterglow.pulse(), read through panePulse().
 
 #ifndef AFTERGLOW_TERMINAL_PANES_GLSL
 #define AFTERGLOW_TERMINAL_PANES_GLSL
@@ -61,7 +62,10 @@ layout(std140, binding = 19) uniform TerminalPanes {
                            //              3 a container
     vec4 uClosedRect;      // offset 2112  the pane closing, in window px (x, y, w, h)
     vec4 uClosed;          // offset 2128  .x how far it has closed: 0 just closed, 1 gone, .y 1 while it shows
-};                         // total 2144 bytes
+    vec4 uPanePulse[32];   // offset 2144  a script's afterglow.pulse: .x how far it has run: 0 just
+                           //              started, 1 done, .y the effect: 0 none, 1 portal, 2 flash,
+                           //              3 shake, 4-255 for packs to define, .z a palette index
+};                         // total 2656 bytes
 
 // Another tab at full resolution, laid out like the window: in the overview
 // the highlighted card's tab when it is not current, in a tab transition the
@@ -153,6 +157,20 @@ int paneContext(int pane) {
 // How far the pane's last context change has run: 0 just changed, 1 settled.
 float paneContextChange(int pane) {
     return uPaneLife[clamp(pane, 0, 31)].z;
+}
+
+// A script's pulse: how far it has run (1 when done or none).
+float panePulse(int pane) {
+    vec4 p = uPanePulse[clamp(pane, 0, 31)];
+    return p.y > 0.5 ? p.x : 1.0;
+}
+
+int panePulseEffect(int pane) {
+    return int(uPanePulse[clamp(pane, 0, 31)].y + 0.5);
+}
+
+vec3 panePulseColor(int pane) {
+    return uPalette[clamp(int(uPanePulse[clamp(pane, 0, 31)].z + 0.5), 0, 255)].rgb;
 }
 
 bool closingPaneActive() {

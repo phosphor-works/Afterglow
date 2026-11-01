@@ -287,6 +287,7 @@ While it shows, the cards are the panes of every tab, up to 32.
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
 | `paneOpening(i)`, `paneOpenEdge(i)` | How far a new pane has opened, and the edge it opened from. |
 | `paneContext(i)`, `paneContextChange(i)` | Where the pane's shell runs, and how far its last change has run. |
+| `panePulse(i)`, `panePulseEffect(i)`, `panePulseColor(i)` | A script's pulse: how far it has run, its effect and its palette colour. |
 | `closingPaneActive()`, `closingPaneProgress()`, `closingPaneRect()`, `closingPaneTexel(uv)` | A closed pane, while it closes. |
 
 `paneTexel()` reads the current tab's panes from the pass input.
@@ -322,6 +323,9 @@ Both progress values are linear over `Animation.paneEffectDuration`. The pack ea
 At progress 1, draw the input unchanged.
 `paneContext(i)` is where the pane's shell runs: 0 here, 1 remote, 2 elevated or 3 a container.
 `paneContextChange(i)` runs from 0, just changed, to 1, settled. It follows OSC 3008 contexts, such as those `afterglow ssh` reports.
+Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, linearly over the script's duration.
+`panePulseEffect(i)` is 1 for a portal, 2 for a flash, 3 for a shake, or a pack's own number from 4 to 255.
+`panePulseColor(i)` is the palette colour the script chose.
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
 [Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube.
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.

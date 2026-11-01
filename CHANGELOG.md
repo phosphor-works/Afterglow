@@ -96,6 +96,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Script packages with manifests, configuration, assets and saved state with migrations.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
 - `afterglow.await`, `await_all` and `sleep`, so a handler waits for results in place instead of in callbacks.
+- Script key modes that take the window's keys, script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and D-Bus, with access settings.
 
 ### Performance

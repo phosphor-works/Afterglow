@@ -124,6 +124,11 @@ public:
         /// and how far the last change has run (1 when settled).
         int context = 0;
         float contextProgress = 1.0f;
+        /// A script's pulse (afterglow.pulse): how far it has run (1 when
+        /// done), which effect, and its palette colour.
+        float pulseProgress = 1.0f;
+        int pulseEffect = 0;
+        int pulseColor = 0;
     };
 
     /// Where each layer's instances start, relative to the pane's first:

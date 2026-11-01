@@ -3,7 +3,10 @@
 #include "TerminalWindow.h"
 #include "chrome/ChromeController.h"
 #include <AfterglowRender/GpuDevice.h>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <algorithm>
+#include <cmath>
 
 namespace Afterglow {
 QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const QVariantMap& effect, ScriptReply reply)
@@ -128,8 +131,112 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
     scheduleRender();
     return {};
 }
+namespace {
+/// A key press as a script's on_key sees it.
+QVariantMap scriptKeyEvent(const QKeyEvent* e)
+{
+    static const QHash<int, QString> names{
+        {Qt::Key_Left, QStringLiteral("Left")}, {Qt::Key_Right, QStringLiteral("Right")},
+        {Qt::Key_Up, QStringLiteral("Up")}, {Qt::Key_Down, QStringLiteral("Down")},
+        {Qt::Key_Return, QStringLiteral("Enter")}, {Qt::Key_Enter, QStringLiteral("Enter")},
+        {Qt::Key_Escape, QStringLiteral("Escape")}, {Qt::Key_Tab, QStringLiteral("Tab")}, {Qt::Key_Backtab, QStringLiteral("Tab")},
+        {Qt::Key_Backspace, QStringLiteral("Backspace")}, {Qt::Key_Delete, QStringLiteral("Delete")},
+        {Qt::Key_Insert, QStringLiteral("Insert")}, {Qt::Key_Home, QStringLiteral("Home")}, {Qt::Key_End, QStringLiteral("End")},
+        {Qt::Key_PageUp, QStringLiteral("PageUp")}, {Qt::Key_PageDown, QStringLiteral("PageDown")}, {Qt::Key_Space, QStringLiteral("Space")}};
+    QString text = e->text();
+    // Control characters (Ctrl+A) report the key, not the character.
+    if (std::any_of(text.cbegin(), text.cend(), [](QChar c) { return c.category() == QChar::Other_Control; })) text.clear();
+    QString key = names.value(e->key());
+    if (key.isEmpty() && e->key() >= Qt::Key_F1 && e->key() <= Qt::Key_F35) key = QStringLiteral("F%1").arg(e->key() - Qt::Key_F1 + 1);
+    if (key.isEmpty()) key = !text.isEmpty() ? text : QKeySequence(e->key()).toString(QKeySequence::PortableText).toLower();
+    const auto mods = e->modifiers();
+    return {{QStringLiteral("key"), key}, {QStringLiteral("text"), text},
+            {QStringLiteral("ctrl"), bool(mods & Qt::ControlModifier)}, {QStringLiteral("shift"), bool(mods & Qt::ShiftModifier)},
+            {QStringLiteral("alt"), bool(mods & Qt::AltModifier)}, {QStringLiteral("meta"), bool(mods & Qt::MetaModifier)},
+            {QStringLiteral("repeat"), e->isAutoRepeat()}};
+}
+} // namespace
+
+bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e)
+{
+    if (!m_scriptKeyMode) return false;
+    Pane* pane = m_scriptKeyMode->pane ? m_scriptKeyMode->pane.data() : m_focused.data();
+    Q_EMIT scriptKey(m_scriptKeyMode->owner, pane ? pane->id() : 0, scriptKeyEvent(e));
+    return true;
+}
+
+QString TerminalWindow::startScriptKeyMode(const QString& owner, Pane* pane, const QString& label)
+{
+    if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
+    if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("A dialog has the keyboard");
+    stopCopyMode(); cancelKeyMode(); stopUrlMode();
+    m_scriptKeyMode = ScriptKeyMode{owner, label.left(160), pane};
+    updateKeyMode();
+    return {};
+}
+
+void TerminalWindow::endScriptKeyMode(const QString& owner)
+{
+    if (!m_scriptKeyMode || m_scriptKeyMode->owner != owner) return;
+    m_scriptKeyMode.reset();
+    updateKeyMode();
+}
+
+QVariantMap TerminalWindow::overviewState() const
+{
+    QVariantList cards;
+    for (Pane* pane : overviewPanes()) cards.append(pane->id());
+    return {{QStringLiteral("open"), m_overview.open},
+            {QStringLiteral("highlighted"), m_overview.open && m_overview.highlighted ? m_overview.highlighted->id() : 0},
+            {QStringLiteral("cards"), cards}};
+}
+
+QString TerminalWindow::scriptOverview(Pane* pane, const QString& operation, QVariantMap& result)
+{
+    if (operation == QLatin1String("open")) {
+        if (!m_overview.open) {
+            if (pane && pane != m_focused) revealPane(pane);
+            if (!openOverview()) return QStringLiteral("The overview is not available");
+        }
+    } else if (operation == QLatin1String("close") || operation == QLatin1String("choose")) {
+        if (!m_overview.open) return QStringLiteral("The overview is not open");
+        closeOverview(operation == QLatin1String("choose") ? m_overview.highlighted.data() : nullptr);
+    } else {
+        return QStringLiteral("Overview operation must be open, close or choose");
+    }
+    result = overviewState();
+    return {};
+}
+
+QString TerminalWindow::scriptOverviewMove(Pane*, Pane* target, int step, QVariantMap& result)
+{
+    if (!m_overview.open) return QStringLiteral("The overview is not open");
+    const auto panes = overviewPanes();
+    if (target) {
+        const auto at = std::find(panes.begin(), panes.end(), target);
+        if (at == panes.end()) return QStringLiteral("That pane is not in the overview");
+        moveOverview(int(at - panes.begin()));
+    } else if (step != 0) {
+        const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
+        const int current = at == panes.end() ? 0 : int(at - panes.begin());
+        moveOverview(current + step, step > 0 ? 1 : -1);
+    }
+    result = overviewState();
+    return {};
+}
+
+QString TerminalWindow::pulsePane(Pane* pane, int effect, int durationMs, int color)
+{
+    if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
+    if (!m_paneEffectsAvailable) return QStringLiteral("Shaders.paneEffects is off");
+    m_panePulse.insert(pane, {std::chrono::steady_clock::now(), durationMs, effect, color});
+    scheduleRender();
+    return {};
+}
+
 void TerminalWindow::clearScriptOwner(const QString& owner)
 {
+    endScriptKeyMode(owner);
     m_shaderControls.clearOwner(owner);
     if (m_scriptDialog && m_scriptDialog->owner == owner) finishScriptDialog(false, {});
     std::erase_if(m_scriptAppearance, [&](const auto& item) { return item.owner == owner; });
