@@ -10,6 +10,7 @@
 
 #include <QDBusArgument>
 #include <QDBusConnection>
+#include <QDBusMessage>
 #include <QDBusMetaType>
 #include <QBuffer>
 #include <QDBusPendingCallWatcher>
@@ -124,9 +125,12 @@ NotificationCenter::NotificationCenter()
     // a valid id, which must not be dropped.
     auto* watcher = new QDBusServiceWatcher(Service, bus, QDBusServiceWatcher::WatchForOwnerChange, this);
     connect(watcher, &QDBusServiceWatcher::serviceOwnerChanged, this,
-            [this](const QString&, const QString& oldOwner, const QString&) {
+            [this](const QString&, const QString& oldOwner, const QString& newOwner) {
         if (!oldOwner.isEmpty()) forgetServer();
-        queryCapabilities();
+        // A query with no owner would start the server that just left
+        // (D-Bus activation), perhaps before the one that replaces it.
+        if (newOwner.isEmpty()) m_bodyMarkup = true;
+        else queryCapabilities();
     });
     queryCapabilities();
 }
@@ -373,11 +377,38 @@ void NotificationCenter::send(const Request& request, uint replaces)
             return;
         }
         if (reply.isError()) {
-            // A server that left without answering may be gone before the bus
-            // says so: its ids then name nothing for the server that follows.
             const QDBusError::ErrorType error = reply.error().type();
-            const bool gone = error == QDBusError::NoReply || error == QDBusError::ServiceUnknown
-                              || error == QDBusError::Disconnected;
+            if (error == QDBusError::NoReply && (waiting.next || waiting.close)) {
+                // NoReply has two causes. The bus sends it for a server that left
+                // without answering, whose ids then name nothing for the server
+                // that follows. libdbus sends it for its own reply timeout, while
+                // a slow server lives on and may have applied REPLACES. The bus
+                // sends NameOwnerChanged for a server that left before it answers
+                // a later call, so one round trip to the bus tells them apart.
+                // Requests for the id wait for that answer.
+                m_inFlight.insert(key, waiting);
+                QDBusMessage ask = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"),
+                                                                  QStringLiteral("/org/freedesktop/DBus"),
+                                                                  QStringLiteral("org.freedesktop.DBus"),
+                                                                  QStringLiteral("GetNameOwner"));
+                ask << Service;
+                auto* owner = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(ask), this);
+                connect(owner, &QDBusPendingCallWatcher::finished, this,
+                        [this, key, entry, replaces, server](QDBusPendingCallWatcher* w) {
+                    w->deleteLater();
+                    const InFlight settled = m_inFlight.take(key);
+                    if (entry.owner && !entry.pane) return;
+                    const bool gone = server != m_server || w->isError();
+                    if (settled.close) {
+                        if (!gone && replaces != 0) close(replaces);
+                    } else if (settled.next) {
+                        send(*settled.next, gone ? 0 : replaces);
+                    }
+                });
+                return;
+            }
+            // A server that is not there: its ids name nothing for the server that follows.
+            const bool gone = error == QDBusError::ServiceUnknown || error == QDBusError::Disconnected;
             if (waiting.next) send(*waiting.next, gone ? 0 : replaces);
             return;
         }

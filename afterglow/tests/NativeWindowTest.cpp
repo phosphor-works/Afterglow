@@ -109,10 +109,12 @@ QList<QQuickItem*> visualDescendants(QQuickItem* root) {
 }
 // An overlay takes the keyboard one event-loop turn after it shows. The
 // chrome is made in the background and finished by the first frame that
-// needs it, if the background has not finished it yet.
+// needs it, if the background has not finished it yet. The chrome root holds
+// the keys after an overlay closed, until the next one takes them.
 bool chromeFocusReady(ChromeLayer* layer) {
     auto* focus = layer->focusedItem();
-    return focus && focus->hasActiveFocus() && focus->isVisible() && focus != focus->window()->contentItem();
+    return focus && focus->hasActiveFocus() && focus->isVisible() && focus != focus->window()->contentItem()
+        && focus != layer->rootItem();
 }
 class NativeWindow : public ::testing::Test {
 protected:
@@ -1290,6 +1292,30 @@ TEST_F(NativeWindow, ClipboardPromptDeniesOnTypedReturnAndPlainA) {
     EXPECT_EQ(answers, (QList<int>{0, 2}));
 }
 
+TEST_F(NativeWindow, AReopenedClipboardPromptStartsOnDeny) {
+    auto* chrome = window->findChild<ChromeController*>();
+    auto* layer = window->findChild<ChromeLayer*>();
+    QList<int> answers;
+    QObject::connect(chrome, &ChromeController::clipboardAnswered, window, [&](int answer) { answers << answer; });
+    chrome->askClipboard(QStringLiteral("A program wants to read the clipboard"), QString());
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    auto* allow = chromeItemWithText(layer, QStringLiteral("Allow once"));
+    ASSERT_NE(allow, nullptr);
+    allow->forceActiveFocus();
+    sendKey(window, Qt::Key_Return);
+    ASSERT_EQ(answers, QList<int>{1});
+    // A hidden item keeps the active focus: the next request must not open
+    // on the button the last one was answered with, where a Return typed for
+    // the shell would allow it.
+    chrome->askClipboard(QStringLiteral("A program wants to read the clipboard"), QString());
+    auto* deny = chromeItemWithText(layer, QStringLiteral("Deny"));
+    ASSERT_NE(deny, nullptr);
+    ASSERT_TRUE(waitFor([&] { return deny->hasActiveFocus(); }));
+    EXPECT_FALSE(allow->hasActiveFocus());
+    sendKey(window, Qt::Key_Return);
+    EXPECT_EQ(answers, (QList<int>{1, 0}));
+}
+
 TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
     auto* chrome = window->findChild<ChromeController*>();
     auto* layer = window->findChild<ChromeLayer*>();
@@ -1807,6 +1833,35 @@ TEST_F(NativeWindow, ATabThatClosesTakesItsTabMenuWithIt) {
     other->sendInput("\n");
     ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
     EXPECT_FALSE(chrome->contextMenuOpen());
+}
+
+TEST_F(NativeWindow, ATabThatClosesLeavesAPaneMenuOpen) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line")};
+    auto* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    drain();
+    ASSERT_EQ(window->tabs().size(), 2);
+    window->revealPane(first);
+    drain(300);
+    auto* chrome = window->findChild<ChromeController*>();
+    // The tab menu of the background tab, dismissed without a choice.
+    chrome->tabMenu(1, 50, 15);
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    chrome->closeContextMenu();
+    ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(first).isEmpty(); }));
+    const QPointF at = window->mapFromGlobal(window->accessiblePaneRect(first).center());
+    QMouseEvent press(QEvent::MouseButtonPress, at, window->mapToGlobal(at), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, window->mapToGlobal(at), Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &release);
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    // The other tab's program ends: its tab closes, and the pane menu, which
+    // belongs to the first tab, stays open.
+    other->sendInput("\n");
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
+    EXPECT_TRUE(chrome->contextMenuOpen());
 }
 
 // --- window wave 2: pane callbacks, directories, replies, overview ---------

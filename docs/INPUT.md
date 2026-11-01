@@ -192,7 +192,7 @@ Afterglow also ignores a pattern without `pattern` or with an unknown action, an
 Hint patterns are case-sensitive.
 Type a label to select it. Press Escape to cancel.
 `Hints.alphabet` sets the letters of the labels, the easiest to reach first.
-It needs two or more different letters. Other values use the default.
+It needs two or more letters, and each letter can occur only one time. Other values use the default.
 A pane content change, a scroll of the pane or a change of the layout cancels the hints.
 
 ## Links and URL hints

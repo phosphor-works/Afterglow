@@ -153,8 +153,8 @@ An empty setting always requires permission.
 | Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. A delta upload holds two. |
 | Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
 | Decoded data per packet | 4,096 bytes | The file fails with an error status. |
-| Command size | 16,384 bytes | Every transfer in the pane is cancelled with `ENOMEM`. |
-| Input queue, output queue | 16 MiB each | Every transfer in the pane is cancelled with `ENOMEM`. |
+| Command size | 16,384 bytes | Every transfer in the pane is canceled with `ENOMEM`. |
+| Input queue, output queue | 16 MiB each | Every transfer in the pane is canceled with `ENOMEM`. |
 | Path length, name length | 4,096 bytes, 255 bytes | The request is refused. |
 | Receive listing depth | 128 directory levels | The deeper entry gets `EFBIG`. |
 | Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
@@ -166,7 +166,7 @@ File I/O, compression and delta calculation run outside the GUI thread.
 Afterglow makes the delta data for a receive transfer in small steps while it sends the data.
 It writes no temporary copy of the delta.
 Uploads and other messages in the pane continue during a large delta.
-Files that Afterglow sends wait in turn.
+Afterglow sends its files one at a time, so the other files wait until the delta is complete.
 
 Kitty 0.49.2 can omit empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.

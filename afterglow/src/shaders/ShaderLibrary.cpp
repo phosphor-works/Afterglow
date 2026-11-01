@@ -833,30 +833,31 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, c
         m_cache.insert(key, compiled->program);
         return compiled->program;
     }
-    // The pack draws, but these values apply nowhere: build() lists them with
-    // the other problems. The result is cached, so they are kept by key.
+    // Values that apply nowhere: build() lists them with the other problems.
+    // The result is cached, so they are kept by key.
     QStringList notes;
     for (auto it = overrides.begin(); it != overrides.end(); ++it) {
         if (std::none_of(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); }))
             notes << QStringLiteral("Shaders.params.%1.%2: the pack has no such parameter").arg(ref, it.key());
     }
-    // The config's values over the pack's defaults, in phosphor's slot layout.
-    AfterglowRender::ShaderParameterValues values;
-    // A value phosphor does not accept (out of range, not a colour) comes back as the default.
-    const auto validated = m_registry->validateAndCoerceParams(info.id, overrides);
+    // Phosphor decides which values the pack accepts (in range, a colour, a truth value).
+    // Each value is asked alone, so that one wrong value does not reject the others.
+    // A rejected value gives the pack's default.
+    QSet<QString> rejected;
     for (const auto& p : info.parameters) {
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture") || !overrides.contains(p.id)) continue;
-        if (validated.value(p.id) != overrides.value(p.id))
-            notes << QStringLiteral("Shaders.params.%1.%2: the pack does not accept this value, so it uses its default")
-                         .arg(ref, p.id);
+        if (m_registry->validateParams(info.id, QVariantMap{{p.id, overrides.value(p.id)}})) continue;
+        rejected.insert(p.id);
+        notes << QStringLiteral("Shaders.params.%1.%2: the pack does not accept this value, so it uses its default")
+                     .arg(ref, p.id);
     }
-    for (const QString& note : std::as_const(notes)) qCWarning(lcShaders).noquote() << note;
-    if (!notes.isEmpty()) m_valueProblems.insert(key, notes);
+    // The config's values over the pack's defaults, in phosphor's slot layout.
+    AfterglowRender::ShaderParameterValues values;
     for (const auto& p : info.parameters) {
         if (p.slot < 0 || !overrides.contains(p.id)) {
             continue;
         }
-        const QVariant v = validated.value(p.id, p.defaultValue);
+        const QVariant v = rejected.contains(p.id) ? p.defaultValue : overrides.value(p.id);
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
             if (p.slot >= AfterglowRender::MaxShaderImages) continue;
             // The user's config may name any image; the pack's own default stays inside it.
@@ -871,7 +872,7 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, c
             if (!error.isEmpty()) return fail(error);
             values.imageMask |= std::uint8_t(1u << p.slot);
         } else if (p.type == QLatin1String("color")) {
-            // validateAndCoerceParams put the pack's default in place of a colour that does not parse.
+            // A colour that does not parse was rejected above and gave the pack's default.
             const QColor c(v.toString());
             if (p.slot < 16 && c.isValid()) {
                 float* out = &values.colors[std::size_t(p.slot) * 4];
@@ -886,6 +887,9 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, c
             values.paramMask |= std::uint32_t(1) << p.slot;
         }
     }
+    // Only a pack that draws lists them. A pack that failed above has its one line.
+    for (const QString& note : std::as_const(notes)) qCWarning(lcShaders).noquote() << note;
+    if (!notes.isEmpty()) m_valueProblems.insert(key, notes);
     auto program = compiled->program->withValues(values);
     m_cache.insert(key, program);
     return program;

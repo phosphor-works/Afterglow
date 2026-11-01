@@ -74,8 +74,8 @@ before a commit.
 - The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.
 - The native window tests (`afterglow_native_tests`) are not in CTest by default (`AFTERGLOW_NATIVE_TESTS=OFF`).
   They need a nested KWin. Use the `ag-verify-live` skill to run them.
-- The Python suites in `afterglow/tests/*.py` and `tools/conformance/test_headless.py` are separate. Run the ones
-  that cover the area that you changed (`docs/TESTING.md` lists them).
+- The Python suites in `afterglow/tests/*.py` are separate. Run the ones that cover the area that you changed
+  (`docs/TESTING.md` lists them). CTest runs `tools/conformance/test_headless.py` as `afterglow_headless_runner`.
 
 ## Generated files
 

@@ -443,6 +443,7 @@ Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
 
 `semantic_regions` returns up to 1024 retained shell regions in chronological order.
+A region goes when its start row is deleted, or when a resize drops it below the cursor.
 Each region has these fields:
 
 | Field | Meaning |

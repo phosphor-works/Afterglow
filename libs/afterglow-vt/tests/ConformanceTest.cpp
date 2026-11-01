@@ -203,10 +203,11 @@ TEST(Conformance, SoftResetClearsCursorsSavedCursorMarginsAndProtection)
     ASSERT_EQ(rowText(iso.t, 0), "a");
     iso.feed("\x1b[!p\x1b[1;1H\x1b[K");
     EXPECT_EQ(rowText(iso.t, 0), "");
-    // DEC protection: DECSCA's pen goes, so DECSEL erases what follows.
+    // DEC protection: DECSCA's pen goes. DEC protection is on again for the
+    // DECSEL, so only the pen of each cell decides what it erases.
     Term dec(6, 1);
-    dec.feed("\x1b[1\"q\x1b[!pc\x1b[1;1H\x1b[?K");
-    EXPECT_EQ(rowText(dec.t, 0), "");
+    dec.feed("\x1b[1\"q\x1b[!pc\x1b[1\"qd\x1b[1;1H\x1b[?K");
+    EXPECT_EQ(rowText(dec.t, 0), " d");
 }
 
 TEST(Conformance, BackspaceFromPendingWrap)

@@ -642,7 +642,7 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Keys] = {
         stringKey(QStringLiteral("leader"), {}, QStringLiteral("Key that Leader stands for in sequences. It has no default.")),
         intKey(QStringLiteral("sequenceTimeout"), KeyModes::DefaultSequenceTimeout, 100, 10000,
-               QStringLiteral("Milliseconds before an incomplete sequence is cancelled.")),
+               QStringLiteral("Milliseconds before an incomplete sequence is canceled.")),
         intKey(QStringLiteral("tableTimeout"), KeyModes::DefaultTableTimeout, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table.")),
         {QStringLiteral("tables"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Named action-to-key maps, activated with table:NAME.")},

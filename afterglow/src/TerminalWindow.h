@@ -706,8 +706,10 @@ private:
     /// The pane the context menu was opened on: its items act on it, even
     /// when the focus moved while the menu was open.
     QPointer<Pane> m_menuPane;
-    /// Tab::id of the tab a tab menu was opened on (0: none). An id, not an
-    /// address: a tab created after a move can reuse a freed one.
+    /// Tab::id of the tab the last menu was opened on (0: a pane menu, or
+    /// none). A dismissed tab menu leaves it set, which is harmless: closing a
+    /// closed menu does nothing. An id, not an address: a tab created after a
+    /// move can reuse a freed one.
     quint32 m_menuTab = 0;
     /// What the open title prompt renames: a pane, or (pane null) the tab
     /// with this Tab::id (0: none).

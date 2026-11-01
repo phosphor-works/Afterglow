@@ -151,11 +151,11 @@ local function abandon(since)
         return false
     end
     local dropped = false
-    for n = since + 1, nextFlow do
-        local id = tostring(n)
-        local flow = flows[id]
-        if flow ~= nil then
-            flows[id] = nil
+    -- The live flows, at most MaxWaiting: the range of ids since @since can
+    -- be much longer, and this runs under the same time limit.
+    for id, flow in pairs(flows) do
+        if tonumber(id) > since then
+            flows[id] = nil -- clearing a field that pairs visits is allowed
             waiting -= 1
             outstanding -= flow.remaining
             dropped = true

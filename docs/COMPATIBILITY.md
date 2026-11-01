@@ -84,7 +84,8 @@ Capability queries return `1;2;3;29;30;40;100;101`. Clients must inspect the res
 CSI parsing permits 4,096 numeric parameters per sequence.
 An overflow rejects the complete command. Divide larger point sets across sequences.
 The terminal keeps at most 4,096 extra cursors. It ignores new positions after this limit.
-In one sequence, the rectangles that start nearest the top of the screen come first, then those nearest the left.
+At this limit, the terminal keeps the positions of the rectangles that start nearest the top, then nearest the left.
+The order of the rectangles in the sequence does not matter.
 Full reset restores default colors. Clear and screen switches remove positions.
 Positions use screen coordinates and do not scroll with output.
 Cursors disappear while viewing scrollback. Resize clips positions to the screen.

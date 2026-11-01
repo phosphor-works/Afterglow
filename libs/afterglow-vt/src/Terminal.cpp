@@ -38,17 +38,6 @@ constexpr int MaxRepliesPerSequence = 256;
 /// OSC 7 URI of a path up to PATH_MAX fits).
 constexpr std::size_t MaxWorkingDirectory = 8192;
 
-/// The row a resize gives a semantic mark whose row left the screen while no
-/// history row was dropped yet. No scroll region contains it.
-constexpr std::uint64_t GoneMarkRow = UINT64_MAX;
-
-/// @p row as an upper bound for Terminal::m_semanticRegionsLastRow: a gone
-/// row raises nothing, or every region scroll would walk the regions again.
-std::uint64_t boundRow(std::uint64_t row)
-{
-    return row == GoneMarkRow ? 0 : row;
-}
-
 std::array<Rgb, 256> buildPalette(const std::array<Rgb, 16>& base)
 {
     std::array<Rgb, 256> p{};
@@ -496,34 +485,64 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
         positions.push_back(region.start);
         positions.push_back(region.end);
     }
+    // A row leaves the top only through the history, which counts it in
+    // rowsDropped(): a position there is trimmed. Below the cursor, a resize
+    // destroys rows, as a deleted line is: a position after the cursor that
+    // the resize loses is gone, not trimmed.
+    const Mark cursorBefore = cursorMark();
+    std::vector<bool> afterCursor;
+    afterCursor.reserve(positions.size());
     for (const auto& point : positions) {
         const auto index = m_primary->absoluteIndexOf(point.row);
         anchors.push_back(index < 0 ? Screen::TrackedRowGone : std::size_t(index));
         columns.push_back(point.col);
+        afterCursor.push_back(index >= 0
+                              && std::tie(point.row, point.col) > std::tie(cursorBefore.row, cursorBefore.col));
     }
     // Screen::resize moves the saved cursor (DECSC, 1049) itself, with its
     // pending wrap.
     m_primary->resize(cols, rows, true, prompt, &anchors, &columns);
+    std::vector<bool> destroyed(positions.size(), false);
     for (std::size_t i = 0; i < positions.size(); ++i) {
         const auto mapped = anchors[imageAnchors + i];
         if (mapped != Screen::TrackedRowGone) {
             positions[i] = {m_primary->rowsDropped() + mapped, columns[imageAnchors + i]};
+        } else if (afterCursor[i] || m_primary->rowsDropped() == 0) {
+            // With nothing dropped, the row cannot have left the top.
+            destroyed[i] = true;
         } else if (positions[i].row >= m_primary->rowsDropped()) {
-            positions[i].row = m_primary->rowsDropped() ? m_primary->rowsDropped() - 1 : GoneMarkRow;
+            positions[i].row = m_primary->rowsDropped() - 1;
         }
     }
     std::size_t index = 0;
     for (auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
-        const auto point = positions[index++];
-        mark->row = point.row;
-        mark->col = point.col;
+        const auto i = index++;
+        if (destroyed[i]) {
+            *mark = {};
+        } else {
+            mark->row = positions[i].row;
+            mark->col = positions[i].col;
+        }
     }
+    // As in a region scroll, a region whose start (or end, once closed) was
+    // destroyed goes. An open region ends at the cursor: its stored end is
+    // not used.
     m_semanticRegionsLastRow = 0;
-    for (auto& region : m_semanticRegions) {
-        region.start = positions[index++];
-        region.end = positions[index++];
-        m_semanticRegionsLastRow = std::max({m_semanticRegionsLastRow, boundRow(region.start.row), boundRow(region.end.row)});
+    std::size_t kept = 0;
+    for (std::size_t r = 0; r < m_semanticRegions.size(); ++r, index += 2) {
+        SemanticRegion& region = m_semanticRegions[r];
+        if (destroyed[index] || (!region.open && destroyed[index + 1])) {
+            continue;
+        }
+        region.start = positions[index];
+        region.end = destroyed[index + 1] ? region.start : positions[index + 1];
+        m_semanticRegionsLastRow = std::max({m_semanticRegionsLastRow, region.start.row, region.end.row});
+        if (kept != r) {
+            m_semanticRegions[kept] = std::move(region);
+        }
+        ++kept;
     }
+    m_semanticRegions.resize(kept);
     anchors.resize(imageAnchors);
     columns.resize(imageAnchors);
     // Without a reflow the row ids hold, and an image whose top row left can
@@ -1818,7 +1837,7 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
                     region.end.row = end->row;
                 }
                 region.start.row = start->row;
-                last = std::max({last, boundRow(region.start.row), boundRow(region.end.row)});
+                last = std::max({last, region.start.row, region.end.row});
                 return false;
             });
             m_semanticRegionsLastRow = last;

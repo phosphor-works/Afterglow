@@ -1188,11 +1188,10 @@ TEST_F(ConfigTest, ThemeValuesThatAreNotColorsAreNotCalledUnusedKeys)
 
 TEST_F(ConfigTest, JsonThemeWithoutTheJsonExtensionReportsItsKeys)
 {
-    // locate() finds a bare "mine" too; the content says it is JSON.
-    const QString theme = write(QStringLiteral("mine"), R"({"foreground": "#445566", "selectionBackgroud": "#111111"})");
-    SettingsStore store(write(QStringLiteral("config.json"),
-                              QJsonDocument(QJsonObject{{QStringLiteral("Colors"), QJsonObject{{QStringLiteral("theme"), theme}}}})
-                                  .toJson()));
+    // The search directories hold a bare "mine" too; the content says it is JSON.
+    QDir().mkpath(m_home.path() + QStringLiteral("/afterglow/themes"));
+    write(QStringLiteral("afterglow/themes/mine"), R"({"foreground": "#445566", "selectionBackgroud": "#111111"})");
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"theme": "mine"}})"));
     EXPECT_TRUE(same(store.settings().terminal.defaultForeground, {0x44, 0x55, 0x66}));
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("keys Afterglow does not use: selectionBackgroud")));
 }

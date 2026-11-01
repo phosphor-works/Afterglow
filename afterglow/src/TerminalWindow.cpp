@@ -2925,6 +2925,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     const QVariant separator = QVariantMap{{QStringLiteral("separator"), true}};
     const bool pane = m_focused != nullptr;
     m_menuPane = m_focused;
+    m_menuTab = 0; // a pane menu has no tab items
 
     QVariantList items;
     // Only a link under the pointer: not one at the focused pane's edge,

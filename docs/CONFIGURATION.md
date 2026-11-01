@@ -112,7 +112,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | --- | --- | --- | --- |
 | `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or list. An empty string removes the binding. |
 | `leader` | `""` |  | Key that Leader stands for in sequences. It has no default. |
-| `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before an incomplete sequence is cancelled. |
+| `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before an incomplete sequence is canceled. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
 | `tables` | `{}` |  | Named action-to-key maps, activated with table:NAME. |
 

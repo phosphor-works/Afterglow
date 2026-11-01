@@ -547,6 +547,33 @@ TEST(Terminal, SemanticRegionsWhoseRowsAResizeDropsAreGone)
     EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "");
 }
 
+TEST(Terminal, ShellMarksBelowTheCursorThatAResizeDropsAreGoneNotTrimmed)
+{
+    // The output starts on row 5, then the program moves the cursor up. A
+    // shorter window drops the rows below the cursor: the output's start is
+    // destroyed, not trimmed from the history, and its text is not the text
+    // above the cursor.
+    Term t(10, 6);
+    t.feed("top\x1b[5;1H\x1b]133;C\aout\x1b[1;4H");
+    ASSERT_EQ(t.t.text(Terminal::TextScope::LastOutput), "");
+    ASSERT_EQ(t.t.semanticRegions().size(), 1u);
+    ASSERT_FALSE(t.t.semanticRegions()[0].startTrimmed);
+    t.t.resize(10, 2, 10, 20);
+    EXPECT_EQ(rowText(t.t, 0), "top");
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "");
+    EXPECT_TRUE(t.t.semanticRegions().empty());
+
+    // The same with a dropped history row, so that rowsDropped() is not 0.
+    Term h(10, 6, 1);
+    h.feed("1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\x1b[5;1H\x1b]133;C\aout\x1b[1;2H");
+    ASSERT_EQ(h.t.screen().rowsDropped(), 1u);
+    ASSERT_EQ(h.t.text(Terminal::TextScope::LastOutput), "");
+    h.t.resize(10, 2, 10, 20);
+    EXPECT_EQ(rowText(h.t, 0), "3");
+    EXPECT_EQ(h.t.text(Terminal::TextScope::LastOutput), "");
+    EXPECT_TRUE(h.t.semanticRegions().empty());
+}
+
 TEST(Terminal, SemanticRegionsKeepTheNewest1024)
 {
     Term t(20, 5);
@@ -958,6 +985,14 @@ TEST(Terminal, RepeatedAndOverlappingExtraCursorGroupsKeepTheirMeaning)
     EXPECT_EQ(t.t.extraCursors().count({1, 1}), 0u);
     EXPECT_EQ(t.t.extraCursors().count({2, 2}), 0u);
     EXPECT_EQ(t.t.extraCursors().count({2, 3}), 1u);
+    // The point is below the rectangle but left of it: the groups sort one
+    // way by top and the other way by left.
+    t.feed("\x1b[>0;2:3:1;4:1:3:2:4 q");
+    EXPECT_EQ(t.t.extraCursors().size(), 80u * 24u - 10u);
+    EXPECT_EQ(t.t.extraCursors().count({0, 2}), 0u);
+    EXPECT_EQ(t.t.extraCursors().count({1, 3}), 0u);
+    EXPECT_EQ(t.t.extraCursors().count({2, 0}), 0u);
+    EXPECT_EQ(t.t.extraCursors().count({2, 1}), 1u);
 }
 
 TEST(Terminal, ResizeClipsExtraCursorsToTheClampedSize)

@@ -425,6 +425,17 @@ TEST_F(ShaderControlsTest, ConfiguredValuesThatApplyNowhereAreProblems)
     EXPECT_EQ(library.problems(), problems);
     library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("count"), 3}}}});
     EXPECT_TRUE(library.problems().isEmpty()) << library.problems().join(QLatin1Char('\n')).toStdString();
+    // Phosphor accepts these in a form that is not their native type: no problem.
+    const QVariantMap loose{{QStringLiteral("enabled"), 1}, {QStringLiteral("count"), QStringLiteral("3")}};
+    ASSERT_EQ(library.build(refs, {{QStringLiteral("types"), loose}}).background.size(), 1u);
+    EXPECT_TRUE(library.problems().isEmpty()) << library.problems().join(QLatin1Char('\n')).toStdString();
+    // A pack that fails on its images lists only that, not the values it never used.
+    QVariantMap broken = wrong;
+    broken.insert(QStringLiteral("photo"), 5);
+    EXPECT_TRUE(library.build(refs, {{QStringLiteral("types"), broken}}).background.empty());
+    EXPECT_EQ(library.problems().filter(QStringLiteral("not an image path")).size(), 1);
+    EXPECT_TRUE(library.problems().filter(QStringLiteral("Shaders.params.types.")).isEmpty())
+        << library.problems().join(QLatin1Char('\n')).toStdString();
 }
 
 TEST_F(ShaderControlsTest, AMissingPackIsOneShortProblem)
