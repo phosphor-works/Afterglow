@@ -185,6 +185,9 @@ public:
 
     /// Re-reads the file. A file that does not parse keeps the current settings.
     void reload();
+    /// Writes one key to the config file and reloads. Command-line overrides
+    /// keep winning over the file. False when the file cannot be written.
+    bool write(const QString& group, const QString& key, const QVariant& value);
 
     /// "Group.key=value" as an override; the value is JSON when it parses
     /// (14, true, ["calt"]), else a string. Returns false if malformed.

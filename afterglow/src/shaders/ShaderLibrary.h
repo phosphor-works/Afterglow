@@ -56,6 +56,9 @@ public:
     /// Compiles the configured chains. Shaders that fail are logged and skipped.
     /// @p params maps a reference to its parameter overrides.
     AfterglowRender::ShaderChains build(const Refs& refs, const QVariantMap& params);
+    /// Script packages' shader directories, by package ID. Their packs are
+    /// referenced by "<package>.<pack>" only, while the package is loaded.
+    void setPackageShaders(const QMap<QString, QString>& directories);
 
     QStringList packIds() const;
     QVariantList presets(const QString& ref) const;
@@ -77,6 +80,10 @@ private:
     void seedPresets();
     void refreshWatches();
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
+    QStringList m_baseDirectories; ///< bundled, system and user packs, lowest priority first
+    QMap<QString, QString> m_packageShaders; ///< script packages' pack directories, by package ID
+    /// A registry over the base directories and the packages' directories.
+    void buildRegistry();
     std::unique_ptr<PhosphorShaders::ShaderPresetStore> m_presets;
     std::unique_ptr<PhosphorAnimation::CurveRegistry> m_curves;
     QStringList m_includeDirs;

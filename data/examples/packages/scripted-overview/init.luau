@@ -1,13 +1,14 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
--- Copy into ~/.config/afterglow/scripts and bind "script:overview-keys.open".
--- The pane overview, with this script owning the keyboard: a/d or h/l move,
--- w/s jump between tabs, Enter or Space chooses, q or Escape closes.
+-- A package that ships a script and the shader it drives. Copy this folder
+-- into ~/.config/afterglow/scripts, run "Use Package Shaders…" to set
+-- Shaders.overview to scripted-overview.wall, and bind
+-- "script:scripted-overview.open". The script owns the keyboard: a/d or h/l
+-- move, w/s jump between tabs, Enter or Space chooses, q or Escape closes.
 local script = {}
 script.metadata = {
-    id = "overview-keys",
-    name = "Overview keys",
-    actions = { { id = "open", title = "Pane overview (script keys)" } },
+    name = "Scripted overview",
+    actions = { { id = "open", title = "Pane overview (scripted keys)" } },
 }
 
 local function windowOf(ev)

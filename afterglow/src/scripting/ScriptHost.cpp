@@ -45,6 +45,9 @@ struct ScriptHost::Script
     QByteArray source;
     bool package = false;
     QVariantMap packageInfo;
+    QString shaderDirectory;
+    QVariantMap suggests;
+    QHash<QString, int> pulses;
     ScriptState::Snapshot storage;
     int stateVersion = 1;
     bool migrateState = false;
@@ -377,6 +380,14 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     for (const ScriptPtr& s : m_scripts) {
         watched << s->path; // editors that save in place change only the file
     }
+    QMap<QString, QString> shaders;
+    for (const ScriptPtr& s : m_scripts) {
+        if (!s->shaderDirectory.isEmpty() && !s->disabled) shaders.insert(s->id, s->shaderDirectory);
+    }
+    if (shaders != m_packageShaders) {
+        m_packageShaders = shaders;
+        Q_EMIT packageShadersChanged(m_packageShaders);
+    }
     watched.removeDuplicates();
     return watched;
 }
@@ -441,6 +452,9 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     }
     if (package) {
         script->package = true;
+        script->shaderDirectory = package->shaderDirectory;
+        script->suggests = package->suggests;
+        script->pulses = package->pulses;
         script->stateVersion = package->stateVersion;
         script->packageInfo = {{QStringLiteral("id"), package->id}, {QStringLiteral("version"), package->version},
             {QStringLiteral("api_version"), 1}, {QStringLiteral("assets"), package->assets}, {QStringLiteral("home"), QDir::homePath()}, {QStringLiteral("config"), package->config}};
@@ -472,6 +486,19 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     }
     qCInfo(lcScripts).noquote() << "loaded" << script->id << "from" << path;
     return script;
+}
+
+QVariantList ScriptHost::packageSuggestions() const
+{
+    QVariantList out;
+    for (const ScriptPtr& s : m_scripts) {
+        if (s->disabled) continue;
+        for (auto it = s->suggests.cbegin(); it != s->suggests.cend(); ++it) {
+            out.append(QVariantMap{{QStringLiteral("package"), s->id}, {QStringLiteral("key"), it.key()},
+                                   {QStringLiteral("ref"), s->id + QLatin1Char('.') + it.value().toString()}});
+        }
+    }
+    return out;
 }
 
 QStringList ScriptHost::scriptIds() const
@@ -782,6 +809,11 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 badNumber = QLatin1String(key);
             }
             if (v.isValid()) effect.insert(QLatin1String(key), v.toDouble());
+        }
+        // A package names its packs' pulse effects.
+        if (kind == QLatin1String("pulse")) {
+            if (const int number = script->pulses.value(str(effect, "effect")); number > 0)
+                effect.insert(QStringLiteral("effect"), QString::number(number));
         }
         if (kind == QLatin1String("shader_parameters") || kind == QLatin1String("shader_preset")) {
             const auto values = raw.value(QStringLiteral("values"));

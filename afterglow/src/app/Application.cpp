@@ -64,6 +64,8 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
     if (QIcon::themeName().isEmpty()) QIcon::setThemeName(QStringLiteral("breeze"));
     if (QIcon::fallbackThemeName().isEmpty()) QIcon::setFallbackThemeName(QStringLiteral("hicolor"));
     connectScriptEvents(m_scripts, m_control);
+    // Script packages bring their shader packs with them.
+    connect(&m_scripts, &ScriptHost::packageShadersChanged, &m_shaders, &ShaderLibrary::setPackageShaders);
     m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
     m_control.setScriptDiagnostics([this] { return m_scripts.diagnostics(); });
     auto scriptPaths = ScriptHost::defaultSearchPaths();

@@ -108,6 +108,38 @@ Return effects from `on_load`.
 Afterglow applies these effects after successful activation.
 `on_load` can wait for results. See [waiting for results](SCRIPTING.md#wait-for-results).
 
+## Shaders
+
+A package can ship shader packs with the script that uses them.
+
+```json
+{
+  "id": "scripted-overview",
+  "shaders": {"path": "shaders", "suggests": {"overview": "wall"}},
+  "pulses": {"ripple": 4}
+}
+```
+
+`shaders.path` names a directory inside the package. The default is `shaders`.
+Each directory in it is a shader pack. It can contain 1 to 16 packs.
+A pack's `metadata.json` must declare the ID `<package>.<pack>`, such as `scripted-overview.wall`.
+Configuration refers to the pack by that ID only.
+So a package cannot collide with another package or replace a bundled pack.
+
+The packs are available while the package is loaded.
+They reload when they change, and disappear when you remove or disable the package.
+A configuration that names a missing pack logs an error and skips the pack, as for any pack.
+
+A package never changes the configuration file by itself.
+`shaders.suggests` maps `Shaders` keys to the package's packs.
+The keys are `background`, `text`, `cursor`, `pane`, `window`, `overview`, `tabTransition` and `paneEffects`.
+The **Use Package Shaders…** command (`use_package_shaders`) lists the suggestions of loaded packages.
+It writes the one you select to the configuration file. A chain key gains the pack at its end.
+
+`pulses` names effect numbers from 4 to 255 that the package's packs draw.
+`afterglow.pulse(pane, "ripple")` then plays effect 4.
+The [scripted overview](../data/examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
+
 ## Reload and removal
 
 ```sh
@@ -133,6 +165,7 @@ The stored data remains available for a later installation.
 | [Tab status](../data/examples/packages/tab-status/README.md) | Shows Git, directory, command and exit information |
 | [Scene controls](../data/examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
 | [Contextual scene](../data/examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
+| [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
 
 Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
 Use the package instructions for configuration and actions.

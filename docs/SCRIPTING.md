@@ -282,7 +282,7 @@ Results contain the overview: `open`, `highlighted` and `cards`.
 The snapshot's window records contain the same `overview` table. `cards` lists pane IDs in tab order while the overview shows.
 
 Combine these effects with a key mode to replace the overview's keys.
-The [overview example](../data/examples/scripts/overview-keys.luau) moves with a, d, w and s.
+The [scripted overview package](../data/examples/packages/scripted-overview/init.luau) moves with a, d, w and s, and ships its own overview shader.
 A click still closes the overview, so check `overview.open` in `on_key` and end the key mode when it is false.
 
 ## Pane pulses

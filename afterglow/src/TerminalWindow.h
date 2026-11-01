@@ -147,6 +147,9 @@ public:
     bool rotatePanes(bool clockwise);
     /// The pane overview: the tab's panes as live cards, drawn by Shaders.overview.
     bool openOverview();
+    /// Lists the shader settings loaded script packages suggest and writes
+    /// the chosen one to the config file.
+    bool usePackageShaders();
     bool overviewOpen() const { return m_overview.open; }
     /// The highlighted pane, while the overview is open.
     Pane* overviewHighlight() const { return m_overview.open ? m_overview.highlighted.data() : nullptr; }

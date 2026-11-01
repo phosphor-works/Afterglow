@@ -507,3 +507,22 @@ TEST(ShaderReload, UnrelatedDirectoryWritesDoNotInvalidateCachedPrograms)
     EXPECT_EQ(library.build(refs, {}).window.front(), first.window.front());
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
+
+TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
+{
+    ShaderLibrary library;
+    const QString package = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    auto build = [&](const QString& ref) {
+        ShaderLibrary::Refs refs;
+        refs.overview = ref;
+        return library.build(refs, {}).overview.size();
+    };
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
+    library.setPackageShaders({{QStringLiteral("scripted-overview"), package + QStringLiteral("/shaders")}});
+    EXPECT_TRUE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 1u);
+    EXPECT_EQ(build(QStringLiteral("wall")), 0u);
+    EXPECT_EQ(build(QStringLiteral("pane-deck")), 1u);
+    library.setPackageShaders({});
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
+}

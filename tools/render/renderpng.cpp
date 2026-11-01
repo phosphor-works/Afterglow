@@ -21,6 +21,7 @@
 
 #include <QCommandLineParser>
 #include <QFile>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
@@ -105,6 +106,7 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("wake-from"), QStringLiteral("Previous cursor cell."), QStringLiteral("col,row")});
     parser.addOption({QStringLiteral("split"), QStringLiteral("Show the terminal twice, side by side; the left pane focused.")});
     parser.addOption({QStringLiteral("grid"), QStringLiteral("Show the terminal in a grid of COLSxROWS panes; the first focused."), QStringLiteral("size")});
+    parser.addOption({QStringLiteral("package"), QStringLiteral("A script package folder whose shaders load as <package>.<pack> (repeatable)."), QStringLiteral("dir")});
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview, counting every tab (default 0)."), QStringLiteral("n")});
@@ -284,6 +286,11 @@ int main(int argc, char** argv)
         + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1) + (refs.paneEffects.isEmpty() ? 0 : 1);
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;
+        QMap<QString, QString> packages;
+        for (const QString& dir : parser.values(QStringLiteral("package"))) {
+            packages.insert(QDir(dir).dirName(), QDir(dir).absoluteFilePath(QStringLiteral("shaders")));
+        }
+        library.setPackageShaders(packages);
         AfterglowRender::ShaderChains chains = library.build(refs, params);
         const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
             + chains.window.size() + chains.overview.size() + chains.tabTransition.size() + chains.paneEffects.size();

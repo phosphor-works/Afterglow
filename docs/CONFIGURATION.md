@@ -261,3 +261,4 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `toggle_fullscreen` | `"F11"` |
 | `toggle_pane_zoom` | `"Ctrl+Shift+Return"` |
 | `unicode_input` | `"Ctrl+Shift+U"` |
+| `use_package_shaders` | `[]` |

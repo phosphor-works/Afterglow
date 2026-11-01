@@ -33,6 +33,7 @@ Without layer shaders, Afterglow does not allocate separate layers.
 The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab in 3D.
 The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
+Script packages can ship packs of their own, such as an overview with the script that drives it. See [packages](PACKAGES.md#shaders).
 The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.
 
 Switching tabs runs `Shaders.tabTransition`. The default pack is Tab Switch.

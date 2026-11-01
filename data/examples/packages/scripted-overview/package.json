@@ -1,0 +1,11 @@
+{
+    "id": "scripted-overview",
+    "version": "1.0.0",
+    "api_version": 1,
+    "entry": "main",
+    "modules": {"main": "init.luau"},
+    "shaders": {
+        "path": "shaders",
+        "suggests": {"overview": "wall"}
+    }
+}

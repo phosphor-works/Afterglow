@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <QByteArray>
+#include <QHash>
 #include <QVariantMap>
 #include <QStringList>
 
@@ -16,6 +17,13 @@ struct ScriptPackage
     QVariantMap assets;
     QByteArray source;
     QStringList watched;
+    /// Shader packs the package ships, each declaring the id "<package>.<pack>".
+    QString shaderDirectory;
+    QStringList shaderPacks;
+    /// Shader settings it suggests: a Shaders key and one of its pack names.
+    QVariantMap suggests;
+    /// Pulse effects its packs draw, by name: afterglow.pulse(pane, name).
+    QHash<QString, int> pulses;
     static QString read(const QString& manifest, ScriptPackage& result);
 };
 }

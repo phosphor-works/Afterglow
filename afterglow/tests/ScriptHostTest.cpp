@@ -15,6 +15,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QTemporaryDir>
 
@@ -85,9 +86,13 @@ protected:
     void installPackage(const QString& name)
     {
         const QDir package(QStringLiteral(AFTERGLOW_EXAMPLE_PACKAGES) + "/" + name);
-        ASSERT_TRUE(QDir().mkpath(user.filePath(name)));
-        for (const auto& file : package.entryList(QDir::Files))
-            ASSERT_TRUE(QFile::copy(package.filePath(file),user.filePath(name+"/"+file)));
+        QDirIterator files(package.path(), QDir::Files, QDirIterator::Subdirectories);
+        while (files.hasNext()) {
+            const QString source = files.next();
+            const QString target = user.filePath(name + "/" + package.relativeFilePath(source));
+            ASSERT_TRUE(QDir().mkpath(QFileInfo(target).absolutePath()));
+            ASSERT_TRUE(QFile::copy(source, target));
+        }
     }
 
     QVariantList windows, tabs;
@@ -1874,4 +1879,38 @@ return {
     host->dispatchTo("someone@0", "on_key", 7, {{"key", "b"}});
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0]["text"], "a:7");
+}
+
+TEST_F(ScriptHostTest, PackagesShareTheirShadersSuggestionsAndPulseNames)
+{
+    installPackage("scripted-overview");
+    QDir().mkpath(user.filePath("ripples/shaders/rings"));
+    write(user, "ripples/package.json", R"({"id":"ripples","version":"1.0.0","api_version":1,"entry":"main",
+        "modules":{"main":"init.luau"},"shaders":{"path":"shaders","suggests":{"paneEffects":"rings"}},"pulses":{"ripple":7}})");
+    write(user, "ripples/shaders/rings/metadata.json", R"({"id":"ripples.rings","name":"Rings","fragmentShader":"effect.frag"})");
+    write(user, "ripples/shaders/rings/effect.frag", "vec4 pTerminal(vec2 uv) { return terminalTexel(uv); }");
+    write(user, "ripples/init.luau", R"(
+return { on_bell = function(ev) return {afterglow.pulse(ev.pane, "ripple"), afterglow.pulse(ev.pane, "flash")} end }
+)");
+    QList<QMap<QString, QString>> announced;
+    QObject::connect(host.get(), &ScriptHost::packageShadersChanged, host.get(),
+                     [&](const QMap<QString, QString>& dirs) { announced << dirs; });
+    host->setEnabled(true);
+    ASSERT_EQ(announced.size(), 1);
+    EXPECT_EQ(announced[0].keys(), QStringList({"ripples", "scripted-overview"}));
+    EXPECT_TRUE(announced[0]["scripted-overview"].endsWith("scripted-overview/shaders"));
+    QStringList suggestions;
+    for (const auto& s : host->packageSuggestions())
+        suggestions << s.toMap()["key"].toString() + "=" + s.toMap()["ref"].toString();
+    suggestions.sort();
+    EXPECT_EQ(suggestions, QStringList({"overview=scripted-overview.wall", "paneEffects=ripples.rings"}));
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[0]["effect"], "7");
+    EXPECT_EQ(rec.applied[1]["effect"], "flash");
+    // Removing a package withdraws its shaders.
+    QDir(user.filePath("ripples")).removeRecursively();
+    host->reload();
+    ASSERT_EQ(announced.size(), 2);
+    EXPECT_EQ(announced[1].keys(), QStringList({"scripted-overview"}));
 }

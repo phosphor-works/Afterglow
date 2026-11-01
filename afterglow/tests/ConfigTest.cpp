@@ -501,3 +501,20 @@ TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
     QElapsedTimer timer;timer.start(); while(timer.elapsed()<300) {QCoreApplication::processEvents();QThread::msleep(5);}
     EXPECT_EQ(changed,0);
 }
+
+TEST(Config, WritesOneKeyAndKeepsTheRest)
+{
+    QTemporaryDir dir;
+    const QString path = dir.filePath("config.json");
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write(R"({"Font": {"size": 15}, "Shaders": {"window": ["bloom"]}})");
+    file.close();
+    SettingsStore store(path);
+    ASSERT_TRUE(store.write(QStringLiteral("Shaders"), QStringLiteral("overview"), QStringLiteral("scripted-overview.wall")));
+    EXPECT_EQ(store.settings().shaders.overview, QStringLiteral("scripted-overview.wall"));
+    EXPECT_EQ(store.settings().shaders.window, QStringList{QStringLiteral("bloom")});
+    EXPECT_EQ(store.settings().font.sizePoints, 15.0f);
+    SettingsStore reread(path);
+    EXPECT_EQ(reread.settings().shaders.overview, QStringLiteral("scripted-overview.wall"));
+}

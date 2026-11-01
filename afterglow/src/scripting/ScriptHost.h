@@ -100,6 +100,10 @@ public:
     /// Whether a script stopped running after repeated failures.
     bool isDisabled(const QString& id) const;
     QList<ScriptAction> actions() const;
+    /// The shader directories of loaded packages, by package ID.
+    QMap<QString, QString> packageShaders() const { return m_packageShaders; }
+    /// Shader settings loaded packages suggest: {package, key, ref}.
+    QVariantList packageSuggestions() const;
 
     /// Runs a script action with @p pane (0 for none) as its event's pane.
     /// False if there is no such action.
@@ -112,6 +116,8 @@ public:
 
 Q_SIGNALS:
     void actionsChanged();
+    /// Loaded packages' shader directories changed (packageShaders()).
+    void packageShadersChanged(const QMap<QString, QString>& directories);
     /// After every effect, with the error if it was refused or failed.
     void effectApplied(const QString& script, const QVariantMap& effect, const QString& error);
 
@@ -143,6 +149,7 @@ private:
     mutable QMap<QString, QString> m_loadErrors;
     bool m_enabled = false;
     std::vector<ScriptPtr> m_scripts;
+    QMap<QString, QString> m_packageShaders;
     QElapsedTimer m_clock;
     // Last, so a pending rescan cannot run into a partly destroyed host.
     std::unique_ptr<PhosphorFsLoader::WatchedDirectorySet> m_directories; ///< while enabled

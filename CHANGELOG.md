@@ -94,6 +94,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Luau scripts in a sandbox with time and memory limits, which reload when they change.
 - Script packages with manifests, configuration, assets and saved state with migrations.
+- Script packages that ship their own shader packs, suggest shader settings and name pulse effects.
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
 - `afterglow.await`, `await_all` and `sleep`, so a handler waits for results in place instead of in callbacks.
 - Script key modes that take the window's keys, script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.

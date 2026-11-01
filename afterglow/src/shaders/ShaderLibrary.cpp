@@ -296,24 +296,12 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
     QDir().mkpath(user);
     dirs << user;
     dirs.removeDuplicates();
-
     for (const QString& d : dirs) {
-        if (QDir(d).exists()) {
-            m_registry->addSearchPath(d);
-            m_includeDirs << d + QStringLiteral("/shared");
-        }
+        if (QDir(d).exists()) m_baseDirectories << d;
     }
-    m_registry->refresh();
     m_presets->load(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
         + QStringLiteral("/afterglow/shader-presets"), {PhosphorShaders::ShaderFamily::Surface});
-    seedPresets();
-
-    connect(m_registry.get(), &PhosphorShaders::ShaderRegistry::shadersChanged, this, [this] {
-        seedPresets();
-        m_cache.clear();
-        m_failed.clear();
-        Q_EMIT changed();
-    });
+    buildRegistry();
     connect(&m_files, &PhosphorFsLoader::WatchedFileSet::filesChanged, this, [this] {
         m_cache.clear();
         m_failed.clear();
@@ -323,6 +311,39 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
 
 ShaderLibrary::~ShaderLibrary() = default;
 
+void ShaderLibrary::buildRegistry()
+{
+    // The registry cannot drop a search path, so a change of packages builds a new one.
+    m_registry = std::make_unique<PhosphorShaders::ShaderRegistry>();
+    m_includeDirs.clear();
+    for (const QString& d : m_baseDirectories) {
+        m_registry->addSearchPath(d);
+        m_includeDirs << d + QStringLiteral("/shared");
+    }
+    for (const QString& d : std::as_const(m_packageShaders)) {
+        m_registry->addSearchPath(d);
+        m_includeDirs << d + QStringLiteral("/shared");
+    }
+    m_registry->refresh();
+    seedPresets();
+    connect(m_registry.get(), &PhosphorShaders::ShaderRegistry::shadersChanged, this, [this] {
+        seedPresets();
+        m_cache.clear();
+        m_failed.clear();
+        Q_EMIT changed();
+    });
+}
+
+void ShaderLibrary::setPackageShaders(const QMap<QString, QString>& directories)
+{
+    if (directories == m_packageShaders) return;
+    m_packageShaders = directories;
+    buildRegistry();
+    m_cache.clear();
+    m_failed.clear();
+    Q_EMIT changed();
+}
+
 void ShaderLibrary::refreshWatches()
 {
     QStringList paths;
@@ -330,30 +351,46 @@ void ShaderLibrary::refreshWatches()
     m_files.setPaths(paths);
 }
 
-QStringList ShaderLibrary::packIds() const
-{
-    QStringList ids;
-    for (const auto& info : m_registry->availableShaders()) {
-        ids << QDir(info.packDir).dirName();
-    }
-    ids.sort();
-    return ids;
-}
 
 namespace {
 /// The registry keys packs by a UUID derived from their id; configs name them
 /// by directory (normally the declared id), display name or that UUID.
-PhosphorShaders::ShaderRegistry::ShaderInfo findPack(const PhosphorShaders::ShaderRegistry& registry, const QString& ref)
+/// "<package>.<pack>" for a pack from a script package, else empty.
+QString packagedRef(const PhosphorShaders::ShaderRegistry::ShaderInfo& info, const QMap<QString, QString>& packages)
+{
+    const QString parent = QFileInfo(info.packDir).absolutePath();
+    for (auto it = packages.cbegin(); it != packages.cend(); ++it) {
+        if (QFileInfo(it.value()).absoluteFilePath() == parent) return it.key() + QLatin1Char('.') + QDir(info.packDir).dirName();
+    }
+    return {};
+}
+
+PhosphorShaders::ShaderRegistry::ShaderInfo findPack(const PhosphorShaders::ShaderRegistry& registry, const QString& ref,
+                                                     const QMap<QString, QString>& packages)
 {
     for (const auto& info : registry.availableShaders()) {
-        if (QDir(info.packDir).dirName() == ref || info.id == ref
-            || info.name.compare(ref, Qt::CaseInsensitive) == 0) {
+        // A package's packs answer only to "<package>.<pack>", the id the
+        // package loader required them to declare.
+        const QString packaged = packagedRef(info, packages);
+        if (!packaged.isEmpty() ? packaged == ref
+                                : (QDir(info.packDir).dirName() == ref || info.id == ref || info.name.compare(ref, Qt::CaseInsensitive) == 0)) {
             return info;
         }
     }
     return {};
 }
 } // namespace
+
+QStringList ShaderLibrary::packIds() const
+{
+    QStringList ids;
+    for (const auto& info : m_registry->availableShaders()) {
+        const QString packaged = packagedRef(info, m_packageShaders);
+        ids << (packaged.isEmpty() ? QDir(info.packDir).dirName() : packaged);
+    }
+    ids.sort();
+    return ids;
+}
 
 void ShaderLibrary::seedPresets()
 {
@@ -362,7 +399,7 @@ void ShaderLibrary::seedPresets()
 
 QVariantList ShaderLibrary::presets(const QString& ref) const
 {
-    const auto info = findPack(*m_registry, ref);
+    const auto info = findPack(*m_registry, ref, m_packageShaders);
     QVariantList result;
     if (!info.isValid()) return result;
     result.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("@defaults")}, {QStringLiteral("name"), QStringLiteral("Pack defaults")}, {QStringLiteral("read_only"), true}});
@@ -372,7 +409,7 @@ QVariantList ShaderLibrary::presets(const QString& ref) const
 }
 QString ShaderLibrary::presetParameters(const QString& ref, const QString& id, QVariantMap& values) const
 {
-    const auto info = findPack(*m_registry, ref);
+    const auto info = findPack(*m_registry, ref, m_packageShaders);
     if (!info.isValid()) return QStringLiteral("Shader has no preset metadata");
     QVariantMap candidate;
     for (const auto& p : parameters(ref)) {
@@ -400,7 +437,7 @@ QString ShaderLibrary::savePreset(const QString& ref, const QString& name, const
     AfterglowRender::ShaderParameterValues packed;
     const auto error = validateParameters(ref, values, packed);
     if (!error.isEmpty()) return error;
-    const auto info = findPack(*m_registry, ref);
+    const auto info = findPack(*m_registry, ref, m_packageShaders);
     const auto directory = m_presets->directoryFor(PhosphorShaders::ShaderFamily::Surface);
     if (QDir(directory).entryList({QStringLiteral("*.json")}, QDir::Files).size() >= 128)
         return QStringLiteral("At most 128 user presets can be stored");
@@ -420,7 +457,7 @@ QString ShaderLibrary::savePreset(const QString& ref, const QString& name, const
 QVariantList ShaderLibrary::parameters(const QString& ref) const
 {
     QVariantList result;
-    for (const auto& p : findPack(*m_registry, ref).parameters) {
+    for (const auto& p : findPack(*m_registry, ref, m_packageShaders).parameters) {
         const bool supported = p.slot >= 0 && (((p.type == QLatin1String("image") || p.type == QLatin1String("texture")) && p.slot < AfterglowRender::MaxShaderImages)
             || (p.type == QLatin1String("color") && p.slot < 16)
             || ((p.type == QLatin1String("float") || p.type == QLatin1String("int") || p.type == QLatin1String("bool")) && p.slot < 32));
@@ -437,7 +474,7 @@ QVariantList ShaderLibrary::parameters(const QString& ref) const
 QString ShaderLibrary::validateParameters(const QString& ref, const QVariantMap& values,
                                          AfterglowRender::ShaderParameterValues& packed) const
 {
-    const auto info = findPack(*m_registry, ref);
+    const auto info = findPack(*m_registry, ref, m_packageShaders);
     if (!info.isValid()) return QStringLiteral("Shader has no parameter metadata");
     AfterglowRender::ShaderParameterValues candidate;
     for (auto it = values.begin(); it != values.end(); ++it) {
@@ -558,7 +595,7 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
         return fail(QStringLiteral("shaders are packs, referenced by id: put the shader in a directory with a "
                                    "metadata.json under ~/.config/afterglow/shaders"));
     }
-    const PhosphorShaders::ShaderRegistry::ShaderInfo info = findPack(*m_registry, ref);
+    const PhosphorShaders::ShaderRegistry::ShaderInfo info = findPack(*m_registry, ref, m_packageShaders);
     if (!info.isValid()) {
         return fail(QStringLiteral("no shader pack named \"%1\" (available: %2)")
                         .arg(ref, packIds().join(QStringLiteral(", "))));

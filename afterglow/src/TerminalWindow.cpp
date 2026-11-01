@@ -1766,6 +1766,7 @@ bool TerminalWindow::performAction(Action action)
     case Action::RotatePanesClockwise: return rotatePanes(true);
     case Action::RotatePanesCounterclockwise: return rotatePanes(false);
     case Action::PaneOverview: return openOverview();
+    case Action::UsePackageShaders: return usePackageShaders();
     case Action::MovePaneToTab:
         return m_focused && movePaneTo(m_focused, this, nullptr, SplitTree::Direction::Right).isEmpty();
     case Action::MovePaneToWindow:

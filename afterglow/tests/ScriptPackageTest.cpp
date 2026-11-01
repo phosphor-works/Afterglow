@@ -95,3 +95,36 @@ TEST(ScriptFiles, RejectsSpecialFilesAndChecksOpenedContainment)
     EXPECT_EQ(bytes, "return {}");
     EXPECT_FALSE(readScriptFile(outside.filePath("source"), 4, bytes).isEmpty());
 }
+
+TEST(ScriptPackage, ShaderPacksCarryThePackageNameAndSuggestionsNameThem)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    put(dir.filePath("init.luau"), "return {}");
+    put(dir.filePath("shaders/wall/metadata.json"), R"({"id":"test.wall","name":"Wall","fragmentShader":"effect.frag"})");
+    put(dir.filePath("shaders/wall/effect.frag"), "vec4 pTerminal(vec2 uv) { return terminalTexel(uv); }");
+    const QJsonObject shaders{{"path", "shaders"}, {"suggests", QJsonObject{{"overview", "wall"}}}};
+    put(file, manifest({{"shaders", shaders}, {"pulses", QJsonObject{{"ripple", 4}}}}));
+    ScriptPackage p;
+    ASSERT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    EXPECT_EQ(QFileInfo(p.shaderDirectory).fileName(), "shaders");
+    EXPECT_EQ(p.shaderPacks, QStringList{"wall"});
+    EXPECT_EQ(p.suggests.value("overview"), "wall");
+    EXPECT_EQ(p.pulses.value("ripple"), 4);
+    // Suggestions name the package's own packs and real Shaders keys.
+    for (const auto& bad : {QJsonObject{{"overview", "missing"}}, QJsonObject{{"palette", "wall"}}}) {
+        put(file, manifest({{"shaders", QJsonObject{{"path", "shaders"}, {"suggests", bad}}}}));
+        EXPECT_FALSE(ScriptPackage::read(file, p).isEmpty());
+    }
+    // Pulse names map to the numbers packs own: 4 to 255.
+    for (const auto number : {3, 256}) {
+        put(file, manifest({{"pulses", QJsonObject{{"ripple", number}}}}));
+        EXPECT_FALSE(ScriptPackage::read(file, p).isEmpty());
+    }
+    // A pack must declare "<package>.<pack>", so it cannot replace a bundled one.
+    put(dir.filePath("shaders/wall/metadata.json"), R"({"id":"pane-deck","name":"Wall","fragmentShader":"effect.frag"})");
+    put(file, manifest({{"shaders", shaders}}));
+    EXPECT_TRUE(ScriptPackage::read(file, p).contains("test.wall"));
+    put(file, manifest({{"shaders", QJsonObject{{"path", "../elsewhere"}}}}));
+    EXPECT_FALSE(ScriptPackage::read(file, p).isEmpty());
+}

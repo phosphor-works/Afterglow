@@ -469,6 +469,17 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
 
 SettingsStore::~SettingsStore() = default;
 
+bool SettingsStore::write(const QString& group, const QString& key, const QVariant& value)
+{
+    m_store->write(group, key, value);
+    if (!m_backend->commit()) {
+        qCWarning(lcConfig).noquote() << "cannot write" << m_path;
+        return false;
+    }
+    reload();
+    return true;
+}
+
 bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignment)
 {
     const qsizetype eq = assignment.indexOf(QLatin1Char('='));

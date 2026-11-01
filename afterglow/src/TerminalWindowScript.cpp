@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TerminalWindow.h"
 #include "chrome/ChromeController.h"
+#include "scripting/ScriptHost.h"
 #include <AfterglowRender/GpuDevice.h>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -223,6 +224,43 @@ QString TerminalWindow::scriptOverviewMove(Pane*, Pane* target, int step, QVaria
     }
     result = overviewState();
     return {};
+}
+
+bool TerminalWindow::usePackageShaders()
+{
+    const QVariantList suggestions = m_scripts.packageSuggestions();
+    if (!m_focused) return false;
+    QVariantList items;
+    if (suggestions.isEmpty())
+        items.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("none")}, {QStringLiteral("title"), tr("No loaded script package suggests shaders")}});
+    for (int i = 0; i < suggestions.size(); ++i) {
+        const auto s = suggestions[i].toMap();
+        items.append(QVariantMap{{QStringLiteral("id"), QString::number(i)},
+            {QStringLiteral("title"), tr("%1: Shaders.%2 = %3").arg(s.value(QStringLiteral("package")).toString(),
+                s.value(QStringLiteral("key")).toString(), s.value(QStringLiteral("ref")).toString())}});
+    }
+    const QVariantMap dialog{{QStringLiteral("kind"), QStringLiteral("select")},
+        {QStringLiteral("title"), tr("Use package shaders (writes the config file)")}, {QStringLiteral("items"), items}};
+    const QString error = showScriptDialog(QStringLiteral("afterglow"), m_focused, dialog,
+        [this, suggestions](const QString& error, const QVariantMap& data) {
+            bool chosen = false;
+            const int index = data.value(QStringLiteral("id")).toString().toInt(&chosen);
+            if (!error.isEmpty() || !chosen || index < 0 || index >= suggestions.size()) return;
+            const auto s = suggestions[index].toMap();
+            const QString key = s.value(QStringLiteral("key")).toString(), ref = s.value(QStringLiteral("ref")).toString();
+            // One pack keys take the pack; chains gain it at the end.
+            static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects")};
+            QVariant value = ref;
+            if (!Single.contains(key)) {
+                const Settings& now = m_settings.settings();
+                QStringList chain = key == QLatin1String("background") ? now.shaders.background : key == QLatin1String("text") ? now.shaders.text
+                    : key == QLatin1String("cursor") ? now.shaders.cursor : key == QLatin1String("pane") ? now.shaders.pane : now.shaders.window;
+                if (!chain.contains(ref)) chain.append(ref);
+                value = chain;
+            }
+            m_settings.write(QStringLiteral("Shaders"), key, value);
+        });
+    return error.isEmpty();
 }
 
 QString TerminalWindow::pulsePane(Pane* pane, int effect, int durationMs, int color)

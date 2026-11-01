@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
+#include <cmath>
 #include <functional>
 
 namespace Afterglow {
@@ -75,6 +76,58 @@ struct Builder
         if (error.isEmpty() && (parse.error != QJsonParseError::NoError || !doc.isObject())) error = QStringLiteral("Invalid package JSON: %1").arg(file);
         return doc.object();
     }
+    /// The package's shader packs, the settings it suggests and its pulse names.
+    bool shaders(const QString& base, const QString& id, const QJsonObject& manifest)
+    {
+        static const QStringList Keys{QStringLiteral("background"), QStringLiteral("text"), QStringLiteral("cursor"),
+            QStringLiteral("pane"), QStringLiteral("window"), QStringLiteral("overview"), QStringLiteral("tabTransition"),
+            QStringLiteral("paneEffects")};
+        const auto pulses = manifest.value(QStringLiteral("pulses"));
+        if ((!pulses.isUndefined() && !pulses.isObject()) || pulses.toObject().size() > 32) {
+            error = QStringLiteral("pulses must name at most 32 effects"); return false;
+        }
+        const auto named = pulses.toObject();
+        for (auto it = named.begin(); it != named.end(); ++it) {
+            const double number = it.value().toDouble(-1);
+            if (!identifier(it.key()) || number < 4 || number > 255 || number != std::floor(number)) {
+                error = QStringLiteral("A pulse name maps to an effect number from 4 to 255"); return false;
+            }
+            out.pulses.insert(it.key(), int(number));
+        }
+        const auto shaders = manifest.value(QStringLiteral("shaders"));
+        if (shaders.isUndefined()) return true;
+        if (!shaders.isObject()) { error = QStringLiteral("shaders must be an object"); return false; }
+        const auto declared = shaders.toObject();
+        const auto directory = path(base, declared.value(QStringLiteral("path")).toString(QStringLiteral("shaders")));
+        if (!error.isEmpty()) return false;
+        if (!QFileInfo(directory).isDir()) { error = QStringLiteral("The shaders path is not a directory"); return false; }
+        // Each pack carries the package's name, so packages cannot collide
+        // with each other or replace a bundled pack.
+        for (const auto& pack : QDir(directory).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name)) {
+            if (pack.fileName() == QLatin1String("shared")) continue;
+            const auto metadata = json(path(directory, pack.fileName() + QStringLiteral("/metadata.json")));
+            if (!error.isEmpty()) return false;
+            const QString expected = id + QLatin1Char('.') + pack.fileName();
+            if (!identifier(pack.fileName()) || metadata.value(QStringLiteral("id")).toString() != expected) {
+                error = QStringLiteral("Shader pack %1 must declare the id \"%2\"").arg(pack.fileName(), expected); return false;
+            }
+            out.shaderPacks << pack.fileName();
+        }
+        if (out.shaderPacks.isEmpty() || out.shaderPacks.size() > 16) {
+            error = QStringLiteral("shaders must hold 1 to 16 packs"); return false;
+        }
+        out.shaderDirectory = directory;
+        const auto suggests = declared.value(QStringLiteral("suggests"));
+        if (!suggests.isUndefined() && !suggests.isObject()) { error = QStringLiteral("suggests must be an object"); return false; }
+        const auto wanted = suggests.toObject();
+        for (auto it = wanted.begin(); it != wanted.end(); ++it) {
+            if (!Keys.contains(it.key()) || !out.shaderPacks.contains(it.value().toString())) {
+                error = QStringLiteral("suggests maps a Shaders key to one of the package's packs"); return false;
+            }
+            out.suggests.insert(it.key(), it.value().toString());
+        }
+        return true;
+    }
     QByteArray package(const QString& base, const QString& prefix, const QString& expected = {})
     {
         if (++packages > 16 || loading.contains(base)) { error = QStringLiteral("Too many dependencies or dependency cycle"); return {}; }
@@ -116,6 +169,7 @@ struct Builder
                 }
                 out.assets.insert(it.key(), file);
             }
+            if (!shaders(base, id, manifest)) return {};
             const auto configPath = path(base, QStringLiteral("config.json"));
             if (QFileInfo::exists(configPath)) {
                 const auto overrides = json(configPath).toVariantMap();
