@@ -23,6 +23,12 @@
 // A tab switch runs the tab transition shader (Shaders.tabTransition) over
 // the new tab while uTabTransition.w is 1. The tab being left keeps running:
 // read it with previousTabTexel(). Animation.tabCurve eases the progress.
+//
+// Splitting and closing panes run the pane effects shader (Shaders.paneEffects)
+// while a pane opens or closes. uPaneLife says how far each card has opened and
+// from which edge. A closed pane's last frame stays in uTabImage, at its old
+// place, while it closes: read it with closingPaneTexel(). The progress of
+// both is linear over Animation.paneEffectDuration; shaders ease it.
 
 #ifndef AFTERGLOW_TERMINAL_PANES_GLSL
 #define AFTERGLOW_TERMINAL_PANES_GLSL
@@ -45,7 +51,11 @@ layout(std140, binding = 19) uniform TerminalPanes {
     vec4 uPaneSource[32];  // offset 576   where its pixels are: a uv rectangle (x, y, w, h) in its source
     ivec4 uPaneTab[32];    // offset 1088  .x its tab's index, .y source: 0 the input, 1 uTabImage,
                            //              2 uTabAtlas, .z its index within its tab
-};                         // total 1600 bytes
+    vec4 uPaneLife[32];    // offset 1600  .x how far it has opened: 0 just split, 1 open, .y the edge it
+                           //              opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom
+    vec4 uClosedRect;      // offset 2112  the pane closing, in window px (x, y, w, h)
+    vec4 uClosed;          // offset 2128  .x how far it has closed: 0 just closed, 1 gone, .y 1 while it shows
+};                         // total 2144 bytes
 
 // Another tab at full resolution, laid out like the window: in the overview
 // the highlighted card's tab when it is not current, in a tab transition the
@@ -118,6 +128,31 @@ float tabTransitionDirection() {
 
 // The tab being left, at a window uv.
 vec4 previousTabTexel(vec2 uv) {
+    return texture(uTabImage, uv);
+}
+
+float paneOpening(int pane) {
+    return uPaneLife[clamp(pane, 0, 31)].x;
+}
+
+int paneOpenEdge(int pane) {
+    return int(uPaneLife[clamp(pane, 0, 31)].y + 0.5);
+}
+
+bool closingPaneActive() {
+    return uClosed.y != 0.0;
+}
+
+float closingPaneProgress() {
+    return uClosed.x;
+}
+
+vec4 closingPaneRect() {
+    return uClosedRect;
+}
+
+// The closed pane's last frame, at a window uv inside closingPaneRect().
+vec4 closingPaneTexel(vec2 uv) {
     return texture(uTabImage, uv);
 }
 

@@ -22,6 +22,7 @@ The `Shaders` configuration group contains five chains and the pane overview:
 | `window` | The completed window. |
 | `overview` | The completed window, while the pane overview shows. One pack ID, not a list. |
 | `tabTransition` | The completed window, while a tab switch runs. One pack ID, not a list. |
+| `paneEffects` | The completed window, while a pane opens or closes. One pack ID, not a list. |
 
 The first three chains run before pane composition.
 Layer inputs use premultiplied alpha. Empty areas are transparent.
@@ -39,6 +40,12 @@ Its `style` parameter chooses a turning cube (0), a page flip (1), a shatter (2)
 The tab being left keeps running until the new tab arrives.
 `Animation.tabCurve` and `Animation.tabDuration` set the motion.
 Set `Shaders.tabTransition` to an empty string to switch tabs at once.
+
+Splitting and closing panes run `Shaders.paneEffects`. The default pack is Pane Effects.
+Its `style` parameter chooses a hinge (0) or a picture tube (1).
+A new pane swings in from the edge it split from, or switches on like a tube.
+A closed pane falls back off its bottom edge, or switches off to a dot.
+`Animation.paneEffectDuration` sets the time. `Animation.splits=false` also turns the effects off.
 
 [Phosphor](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.

@@ -116,6 +116,10 @@ public:
         ShaderParameterMap shaderParameters;
         /// Highlighted in the pane overview.
         bool highlighted = false;
+        /// How far a new split has opened (1 when open), and the edge it
+        /// opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom.
+        float openProgress = 1.0f;
+        int openEdge = 0;
     };
 
     /// Where each layer's instances start, relative to the pane's first:
@@ -246,6 +250,16 @@ public:
     };
     void setTabTransition(TabTransition transition) { m_transition = std::move(transition); }
     bool transitionShowing() const { return m_transition.active && !overviewShowing(); }
+    /// Panes opening and closing: the pane effects chain runs while @c active.
+    /// A closed pane's last frame is drawn into uTabImage at its old place.
+    struct PaneEffects
+    {
+        bool active = false;
+        std::optional<Pane> closing;
+        float closingProgress = 1; ///< 0 just closed, 1 gone
+    };
+    void setPaneEffects(PaneEffects effects) { m_effects = std::move(effects); }
+    bool paneEffectsShowing() const { return m_effects.active && !overviewShowing() && !transitionShowing(); }
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
     void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
@@ -337,6 +351,7 @@ private:
     bool m_scrollbackSettling = false;
     Overview m_overview;
     TabTransition m_transition;
+    PaneEffects m_effects;
     PipelineSet m_postPipelines;
     QRhiRenderPassDescriptor* m_postPipelinePass = nullptr;
     std::unique_ptr<class PostChain> m_post;

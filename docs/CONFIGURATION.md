@@ -14,6 +14,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `overviewCurve` | `"spring:12,0.82"` |  | Pane overview motion: a Phosphor curve spec, as for splitCurve. The default spring overshoots slightly |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs |
+| `paneEffectDuration` | `420` | 16–5000 | Milliseconds a pane takes to open or close in Shaders.paneEffects |
 | `scroll` | `true` |  | Animate scrolling between rows. |
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves |
@@ -129,6 +130,7 @@ Numeric values are clamped to the listed ranges. Invalid enum choices use the de
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off |
 | `pane` | `[]` |  | Shaders run over each pane: shader pack ids, such as cursor-trail and bloom |
+| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. An empty value turns it off |
 | `params` | `{}` |  | Per shader parameter values, e.g. { "bloom": { "strength": 0.5 } } |
 | `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text |

@@ -111,6 +111,10 @@ int main(int argc, char** argv)
     parser.addOption({QStringLiteral("tab-transition"), QStringLiteral("Tab transition shader, from a copy of the panes on a blue background."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("transition-progress"), QStringLiteral("Tab transition progress, 0 to 1 (default 0.5)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("transition-direction"), QStringLiteral("1 toward a tab on the right (default), -1 toward one on the left."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("pane-effects"), QStringLiteral("Pane effects shader for --open-progress and --close-progress."), QStringLiteral("ref")});
+    parser.addOption({QStringLiteral("open-progress"), QStringLiteral("The last pane is opening, 0 to 1, from --open-edge."), QStringLiteral("f")});
+    parser.addOption({QStringLiteral("open-edge"), QStringLiteral("The edge it opens from: 1 left (default), 2 top, 3 right, 4 bottom."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("close-progress"), QStringLiteral("The last pane has closed, 0 to 1, leaving its frame on a blue background."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("tabs"), QStringLiteral("With --overview: N tabs with the same panes, the first current (default 1)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("current-tab"), QStringLiteral("With --tabs: the current tab (default 0)."), QStringLiteral("n")});
@@ -272,14 +276,14 @@ int main(int argc, char** argv)
         parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
         parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
         parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview")),
-        parser.value(QStringLiteral("tab-transition"))};
+        parser.value(QStringLiteral("tab-transition")), parser.value(QStringLiteral("pane-effects"))};
     const auto wanted = refs.background.size() + refs.text.size() + refs.cursor.size() + refs.pane.size()
-        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1);
+        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1) + (refs.paneEffects.isEmpty() ? 0 : 1);
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;
         AfterglowRender::ShaderChains chains = library.build(refs, params);
         const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
-            + chains.window.size() + chains.overview.size() + chains.tabTransition.size();
+            + chains.window.size() + chains.overview.size() + chains.tabTransition.size() + chains.paneEffects.size();
         if (got != std::size_t(wanted)) {
             std::fprintf(stderr, "a shader failed to load\n");
             return 1;
@@ -413,6 +417,19 @@ int main(int argc, char** argv)
         }
         if (highlight / perTab == currentTab) panes[std::size_t(highlight % perTab)].params.highlighted = true;
         renderer.setOverview(std::move(overview));
+    }
+    AfterglowRender::PaneSnapshot closed = snapshot;
+    if (parser.isSet(QStringLiteral("open-progress")) && !panes.empty()) {
+        panes.back().params.openProgress = parser.value(QStringLiteral("open-progress")).toFloat();
+        panes.back().params.openEdge = parser.isSet(QStringLiteral("open-edge")) ? parser.value(QStringLiteral("open-edge")).toInt() : 1;
+        renderer.setPaneEffects({true, std::nullopt, 1.0f});
+    }
+    if (parser.isSet(QStringLiteral("close-progress")) && panes.size() > 1) {
+        closed.defaultBg = 0xFF5A2A10u; // blue
+        auto ghost = panes.back();
+        ghost.snapshot = &closed;
+        panes.pop_back();
+        renderer.setPaneEffects({true, ghost, parser.value(QStringLiteral("close-progress")).toFloat()});
     }
     if (parser.isSet(QStringLiteral("tab-transition"))) {
         for (auto& copy : tabSnapshots) copy.defaultBg = 0xFF5A2A10u; // the tab being left: blue

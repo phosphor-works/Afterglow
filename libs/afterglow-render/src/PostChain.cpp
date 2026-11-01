@@ -243,7 +243,7 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
     }
     const auto format = m_chains.highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
     // Other tabs' images exist only while the overview or a tab switch shows them.
-    if ((!m_overviewShowing && !m_transitionShowing) || size != m_size) {
+    if ((!m_overviewShowing && !m_transitionShowing && !m_paneEffectsShowing) || size != m_size) {
         m_tabImageTarget.reset();
         m_tabAtlasTarget.reset();
         m_tabImage.reset();
@@ -1054,6 +1054,7 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
     std::vector<ShaderProgramPtr> steps = m_chains.window;
     if (m_overviewShowing) steps.insert(steps.end(), m_chains.overview.begin(), m_chains.overview.end());
     else if (m_transitionShowing) steps.insert(steps.end(), m_chains.tabTransition.begin(), m_chains.tabTransition.end());
+    else if (m_paneEffectsShowing) steps.insert(steps.end(), m_chains.paneEffects.begin(), m_chains.paneEffects.end());
     if (steps.empty()) {
         steps.push_back(ShaderProgram::passthrough());
     }

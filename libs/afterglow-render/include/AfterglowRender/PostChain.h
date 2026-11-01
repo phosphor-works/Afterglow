@@ -84,10 +84,12 @@ struct ShaderChains
     std::vector<ShaderProgramPtr> overview;
     /// A tab switch, after the window chain, only while it runs.
     std::vector<ShaderProgramPtr> tabTransition;
+    /// Panes opening and closing, after the window chain, only while they do.
+    std::vector<ShaderProgramPtr> paneEffects;
 
     bool readsScrollback() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects}) {
             for (const auto& program : *chain) {
                 if (program->readsScrollback()) return true;
             }
@@ -97,7 +99,7 @@ struct ShaderChains
 
     bool audioReactive() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects}) {
             for (const auto& program : *chain) {
                 if (program->requiresAudio()) return true;
             }
@@ -107,7 +109,7 @@ struct ShaderChains
 
     bool highDynamicRange() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects}) {
             for (const auto& program : *chain) {
                 if (program->requiresHdr()) {
                     return true;
@@ -119,7 +121,7 @@ struct ShaderChains
 
     bool textHistory() const noexcept
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects}) {
             for (const auto& program : *chain) {
                 if (program->readsPreviousText()) {
                     return true;
@@ -158,8 +160,11 @@ public:
     bool active() const noexcept
     {
         return !m_chains.empty() || (m_overviewShowing && !m_chains.overview.empty())
-            || (m_transitionShowing && !m_chains.tabTransition.empty());
+            || (m_transitionShowing && !m_chains.tabTransition.empty())
+            || (m_paneEffectsShowing && !m_chains.paneEffects.empty());
     }
+    /// Runs the pane effects chain after the window chain while panes open or close.
+    void setPaneEffectsShowing(bool showing) { m_paneEffectsShowing = showing; }
     /// Runs the overview chain after the window chain while the overview shows.
     void setOverviewShowing(bool showing) { m_overviewShowing = showing; }
     /// Runs the tab transition chain after the window chain while a switch runs.
@@ -254,6 +259,7 @@ private:
     ShaderChains m_chains;
     bool m_overviewShowing = false;
     bool m_transitionShowing = false;
+    bool m_paneEffectsShowing = false;
     std::unique_ptr<QRhiBuffer> m_panesUbo;
     std::unique_ptr<QRhiTexture> m_tabImage;
     std::unique_ptr<QRhiTexture> m_tabAtlas;

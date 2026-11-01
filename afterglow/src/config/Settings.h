@@ -105,6 +105,7 @@ struct AnimationSettings
     /// Tab switches (Shaders.tabTransition), as splitCurve.
     QString tabCurve = QStringLiteral("spring:13,0.9");
     int tabDuration = 400;
+    int paneEffectDuration = 420; ///< panes opening and closing (Shaders.paneEffects)
     bool operator==(const AnimationSettings&) const = default;
 };
 

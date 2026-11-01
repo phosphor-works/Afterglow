@@ -374,6 +374,8 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Tab switch motion (Shaders.tabTransition): a Phosphor curve spec, as for splitCurve")),
         intKey(QStringLiteral("tabDuration"), 400, 16, 5000,
                QStringLiteral("Duration of tab switches in milliseconds for curves other than springs")),
+        intKey(QStringLiteral("paneEffectDuration"), 420, 16, 5000,
+               QStringLiteral("Milliseconds a pane takes to open or close in Shaders.paneEffects")),
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), QVariantList{}, QMetaType::QVariantList,
@@ -390,6 +392,8 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Shader that draws the pane overview (pane_overview). An empty value turns the overview off")),
         stringKey(QStringLiteral("tabTransition"), QStringLiteral("tab-switch"),
                   QStringLiteral("Shader that animates switching tabs. An empty value switches at once")),
+        stringKey(QStringLiteral("paneEffects"), QStringLiteral("pane-effects"),
+                  QStringLiteral("Shader that animates panes as they split open and close. An empty value turns it off")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Per shader parameter values, e.g. { \"bloom\": { \"strength\": 0.5 } }")},
     };
@@ -765,6 +769,7 @@ Settings SettingsStore::read() const
     s.animation.overviewDuration = st.read<int>(Animation, QStringLiteral("overviewDuration"));
     s.animation.tabCurve = st.read<QString>(Animation, QStringLiteral("tabCurve")).trimmed();
     s.animation.tabDuration = st.read<int>(Animation, QStringLiteral("tabDuration"));
+    s.animation.paneEffectDuration = st.read<int>(Animation, QStringLiteral("paneEffectDuration"));
 
     // Shaders
     auto shaderList = [&st](const char* key) {
@@ -776,7 +781,8 @@ Settings SettingsStore::read() const
     };
     s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
                  shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed()};
+                 st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed(),
+                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed()};
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
     s.hintPatterns = st.read<QVariantList>(QStringLiteral("Hints"), QStringLiteral("patterns")).mid(0, 16);

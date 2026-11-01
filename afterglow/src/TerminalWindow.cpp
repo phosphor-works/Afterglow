@@ -585,6 +585,12 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
         break;
     }
     m_splits->split(m_focused, added, direction, options.fraction);
+    if (paneEffectsAllowed()) {
+        // It opens from the edge it shares with the pane it split from.
+        const int edge = direction == SplitTree::Direction::Right ? 1 : direction == SplitTree::Direction::Down ? 2
+            : direction == SplitTree::Direction::Left ? 3 : 4;
+        m_paneOpening.insert(added, {std::chrono::steady_clock::now(), edge});
+    }
     setFocusedPane(added);
     m_layoutSize = QSize();
     scheduleRender();
@@ -602,10 +608,15 @@ void TerminalWindow::closePane(Pane* pane)
         return;
     }
     Tab& tab = *m_tabs[std::size_t(index)];
+    m_paneOpening.remove(pane);
+    // Its last frame stays on screen while it closes.
+    const QRect drawn = index == m_currentTab && tab.splits->isVisible(pane) ? motion(pane).rect.value().toRect() : QRect();
     if (!tab.splits->remove(pane)) {
         closeTab(index); // the tab's last pane
         return;
     }
+    if (paneEffectsAllowed() && !drawn.isEmpty())
+        m_closingPane = ClosingPane{std::make_shared<AfterglowRender::PaneSnapshot>(pane->snapshot()), drawn, std::chrono::steady_clock::now()};
     if (tab.focused == pane || (index == m_currentTab && m_focused == pane)) {
         Pane* next = nullptr;
         tab.splits->forEachPane([&next](Pane* p, const QRect&) {
@@ -1183,6 +1194,10 @@ void TerminalWindow::renderNow()
         wp.snapshot = &p->snapshot();
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
+        if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
+            wp.params.openProgress = paneEffectProgress(opening->at);
+            wp.params.openEdge = opening->edge;
+        }
         const auto overrides = scriptOverrides(p);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.cursorBlinkOverride = overrides.contains(QStringLiteral("cursorBlink"))
@@ -1233,6 +1248,7 @@ void TerminalWindow::renderNow()
     }
     m_renderer->setOverview(std::move(overview));
     advanceTabTransition(backgroundAlpha, holding, animating);
+    advancePaneEffects(animating);
     // Split labels, in logical pixels for the chrome.
     QVariantList titles;
     if (multiple && m_settings.settings().window.paneTitles && !m_renderer->overviewShowing()) {
@@ -2814,6 +2830,7 @@ void TerminalWindow::applyShaders()
     m_audioReactive = chains.audioReactive();
     m_overviewAvailable = !chains.overview.empty();
     m_tabTransitionAvailable = !chains.tabTransition.empty();
+    m_paneEffectsAvailable = !chains.paneEffects.empty();
     if (!m_overviewAvailable) closeOverview(nullptr);
     m_renderer->setShaderChains(std::move(chains));
     m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);

@@ -94,6 +94,42 @@ void TerminalWindow::startTabTransition(int from, int to)
     m_tabTransition.startedAt = std::chrono::steady_clock::now();
 }
 
+bool TerminalWindow::paneEffectsAllowed() const
+{
+    const bool overview = m_overview.open || m_overview.amount.isAnimating() || std::abs(m_overview.amount.value()) > 1e-3;
+    return m_paneEffectsAvailable && m_settings.settings().animation.splits && !overview
+        && !m_tabTransition.progress.isAnimating() && isExposed();
+}
+
+float TerminalWindow::paneEffectProgress(std::chrono::steady_clock::time_point at) const
+{
+    const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - at).count();
+    return std::clamp(seconds * 1000.0f / float(std::max(1, m_settings.settings().animation.paneEffectDuration)), 0.0f, 1.0f);
+}
+
+void TerminalWindow::advancePaneEffects(bool& animating)
+{
+    AfterglowRender::WindowRenderer::PaneEffects effects;
+    for (auto it = m_paneOpening.begin(); it != m_paneOpening.end();) {
+        if (paneEffectProgress(it->at) >= 1.0f) it = m_paneOpening.erase(it);
+        else { effects.active = true; ++it; }
+    }
+    if (m_closingPane && paneEffectProgress(m_closingPane->at) >= 1.0f) m_closingPane.reset();
+    if (m_closingPane) {
+        AfterglowRender::WindowRenderer::Pane ghost;
+        ghost.snapshot = m_closingPane->snapshot.get();
+        ghost.params.rect = m_closingPane->rect;
+        ghost.params.contentOrigin = contentRect(m_closingPane->rect).topLeft();
+        ghost.params.focused = false;
+        ghost.params.backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
+        effects.closing = ghost;
+        effects.closingProgress = paneEffectProgress(m_closingPane->at);
+        effects.active = true;
+    }
+    animating |= effects.active;
+    m_renderer->setPaneEffects(std::move(effects));
+}
+
 void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating)
 {
     AfterglowRender::WindowRenderer::TabTransition transition;

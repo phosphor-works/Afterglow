@@ -285,6 +285,8 @@ While it shows, the cards are the panes of every tab, up to 32.
 | `highlightPosition()` | The highlight's position in cards. It is fractional while the highlight moves. It counts on past the last card when the highlight wraps round, so motion continues. Take it modulo `paneCount()`. |
 | `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
+| `paneOpening(i)`, `paneOpenEdge(i)` | How far a new pane has opened, and the edge it opened from. |
+| `closingPaneActive()`, `closingPaneProgress()`, `closingPaneRect()`, `closingPaneTexel(uv)` | A closed pane, while it closes. |
 
 `paneTexel()` reads the current tab's panes from the pass input.
 It reads other tabs from images that Afterglow renders while the overview shows.
@@ -308,6 +310,16 @@ Afterglow runs it after the window chain while the switch runs, over the new tab
 Draw the tab being left at progress 0 and the new tab at 1, so a switch starts and ends without a jump.
 The overview takes precedence: a switch that the overview makes does not run the transition.
 [Tab Switch](../data/shaders/tab-switch/effect.frag) shows four styles.
+
+`Shaders.paneEffects` names the pack that animates panes as they split open and close.
+Afterglow runs it after the window chain while a pane opens or closes, unless the overview or a tab switch shows.
+`paneOpening(i)` runs from 0, just split, to 1, open. `paneOpenEdge(i)` is the edge the pane opened from: 1 left, 2 top, 3 right or 4 bottom.
+`closingPaneActive()` is true while a closed pane shows. `closingPaneRect()` is where it was.
+`closingPaneTexel(uv)` reads its last frame at a window uv, from `uTabImage`.
+`closingPaneProgress()` runs from 0, just closed, to 1, gone.
+Both progress values are linear over `Animation.paneEffectDuration`. The pack eases them.
+At progress 1, draw the input unchanged.
+[Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube.
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
 
 Input does not reach the panes while the overview is open.

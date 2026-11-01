@@ -832,7 +832,7 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
         m_scrollbackInitialized = false;
         m_scrollbackSettling = false;
     }
-    if (chains.empty() && chains.overview.empty() && chains.tabTransition.empty()) {
+    if (chains.empty() && chains.overview.empty() && chains.tabTransition.empty() && chains.paneEffects.empty()) {
         m_post.reset();
         return;
     }
@@ -844,7 +844,8 @@ void WindowRenderer::setShaderChains(ShaderChains chains)
 
 bool WindowRenderer::animating() const
 {
-    return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing() || transitionShowing();
+    return (m_post && (m_post->animated() || m_scrollbackSettling)) || overviewShowing() || transitionShowing()
+        || paneEffectsShowing();
 }
 
 bool WindowRenderer::overviewShowing() const
@@ -1062,7 +1063,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     // While the overview shows, other tabs' panes are built too; they are
     // drawn into their own targets, after the visible panes.
     const bool transition = m_post && transitionShowing() && !m_transition.from.panes.empty();
-    const bool otherTabs = (m_post && overviewShowing() && !m_overview.otherTabs.empty()) || transition;
+    const bool ghost = m_post && paneEffectsShowing() && m_effects.closing.has_value();
+    const bool otherTabs = (m_post && overviewShowing() && !m_overview.otherTabs.empty()) || transition || ghost;
     std::vector<Pane> combined;
     struct TabSlice
     {
@@ -1073,11 +1075,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         bool card = true; ///< an overview card; a tab being left is not
     };
     std::vector<TabSlice> slices;
-    if (transition) {
+    if (transition || ghost) {
+        // The tab being left, or a closed pane's last frame: full resolution, not a card.
         combined = panes;
-        TabSlice slice{m_transition.from.index, combined.size(), 0, true};
+        TabSlice slice{transition ? m_transition.from.index : m_overview.currentTab, combined.size(), 0, true};
         slice.card = false;
-        combined.insert(combined.end(), m_transition.from.panes.begin(), m_transition.from.panes.end());
+        if (transition) combined.insert(combined.end(), m_transition.from.panes.begin(), m_transition.from.panes.end());
+        else combined.push_back(*m_effects.closing);
         slice.end = combined.size();
         slices.push_back(slice);
     } else if (otherTabs) {
@@ -1250,6 +1254,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     if (m_post) {
         m_post->setOverviewShowing(overviewShowing());
         m_post->setTransitionShowing(transitionShowing());
+        m_post->setPaneEffectsShowing(paneEffectsShowing());
     }
     const bool post = m_post && m_post->active();
     QRhiRenderTarget* gridTarget = target.renderTarget();
@@ -1339,6 +1344,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         QRectF uv;
         bool focused;
         bool highlighted;
+        float openProgress = 1.0f;
+        int openEdge = 0;
     };
     std::vector<Card> cards;
     auto toUv = [&px](const QRect& r) {
@@ -1429,7 +1436,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
             st.shaderParameters = pane.params.shaderParameters;
             cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect),
-                             pane.params.focused, pane.params.highlighted});
+                             pane.params.focused, pane.params.highlighted, pane.params.openProgress, pane.params.openEdge});
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;
@@ -1468,6 +1475,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             paneBlock.uPaneTab[index][0] = card.tab;
             paneBlock.uPaneTab[index][1] = card.source;
             paneBlock.uPaneTab[index][2] = card.indexInTab;
+            paneBlock.uPaneLife[index][0] = card.openProgress;
+            paneBlock.uPaneLife[index][1] = float(card.openEdge);
             paneBlock.uPaneState[0] = index + 1;
             if (card.focused) paneBlock.uPaneState[1] = index;
             if (card.highlighted) paneBlock.uPaneState[2] = index;
@@ -1475,6 +1484,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         }
         paneBlock.uTabState[0] = int(tabs.size());
         paneBlock.uTabState[1] = m_overview.currentTab;
+        if (paneEffectsShowing() && m_effects.closing) {
+            const QRect r = m_effects.closing->params.rect;
+            paneBlock.uClosedRect[0] = float(r.x());
+            paneBlock.uClosedRect[1] = float(r.y());
+            paneBlock.uClosedRect[2] = float(r.width());
+            paneBlock.uClosedRect[3] = float(r.height());
+            paneBlock.uClosed[0] = m_effects.closingProgress;
+            paneBlock.uClosed[1] = 1.0f;
+        }
         if (transitionShowing()) {
             paneBlock.uTabTransition[0] = m_transition.progress;
             paneBlock.uTabTransition[1] = m_transition.direction;

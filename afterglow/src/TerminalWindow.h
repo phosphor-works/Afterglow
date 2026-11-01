@@ -23,6 +23,7 @@
 
 #include <functional>
 #include <memory>
+#include <QHash>
 #include <chrono>
 #include <optional>
 #include <unordered_map>
@@ -443,6 +444,26 @@ private:
     CurveCache m_tabCurve;
     bool m_tabTransitionAvailable = false; ///< Shaders.tabTransition compiled
     void startTabTransition(int from, int to);
+    // Panes opening and closing (Shaders.paneEffects).
+    struct PaneOpening
+    {
+        std::chrono::steady_clock::time_point at;
+        int edge = 0; ///< 1 left, 2 top, 3 right, 4 bottom
+    };
+    QHash<const Pane*, PaneOpening> m_paneOpening;
+    struct ClosingPane
+    {
+        std::shared_ptr<AfterglowRender::PaneSnapshot> snapshot; ///< its last frame
+        QRect rect;
+        std::chrono::steady_clock::time_point at;
+    };
+    std::optional<ClosingPane> m_closingPane;
+    bool m_paneEffectsAvailable = false; ///< Shaders.paneEffects compiled
+    bool paneEffectsAllowed() const;
+    /// How far an effect that started at @p at has run, 0 to 1.
+    float paneEffectProgress(std::chrono::steady_clock::time_point at) const;
+    /// Hands opening and closing panes to the renderer.
+    void advancePaneEffects(bool& animating);
     /// Advances the tab switch and hands it to the renderer.
     void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled

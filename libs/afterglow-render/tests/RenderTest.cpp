@@ -1885,6 +1885,48 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
 }
 
+TEST_F(Render, PaneEffectsSeeOpeningPanesAndTheClosedPanesLastFrame)
+{
+    // Left half: the closed pane's frame; right half: card 0's opening state.
+    ShaderProgramSource source;
+    source.id = "life";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    if (uv.x < 0.5) return vec4(closingPaneActive() ? closingPaneTexel(uv).rgb : vec3(1.0), 1.0);
+    return vec4(paneOpening(0), float(paneOpenEdge(0)) / 4.0, closingPaneProgress(), 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.paneEffects = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot closed = snapshot;
+    closed.defaultBg = 0xFFC00000u; // blue
+    const QSize size(Cols * cw * 2, Rows * ch);
+    WindowRenderer::Pane open{&snapshot, {}};
+    open.params.rect = QRect(QPoint(), size);
+    open.params.openProgress = 0.5f;
+    open.params.openEdge = 2;
+    WindowRenderer::Pane ghost = open;
+    ghost.snapshot = &closed;
+    ghost.params.rect = QRect(QPoint(), QSize(size.width() / 2, size.height()));
+    const QPoint inLeft(size.width() / 4, size.height() / 2), inRight(size.width() * 3 / 4, size.height() / 2);
+    renderer->setPaneEffects({true, ghost, 0.25f});
+    EXPECT_TRUE(renderer->paneEffectsShowing());
+    auto image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inLeft, qRgb(0, 0, 0xC0));
+    EXPECT_PIXEL(image, inRight, qRgb(128, 128, 64));
+    // A tab switch takes precedence; with nothing moving the chain stops.
+    renderer->setTabTransition({true, 0.5f, 1.0f, std::chrono::steady_clock::now(), {1, {open}}});
+    EXPECT_FALSE(renderer->paneEffectsShowing());
+    renderer->setTabTransition({});
+    renderer->setPaneEffects({});
+    open.params.openProgress = 1.0f;
+    image = renderer->renderToImage(size, {open}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
+}
+
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
 {
     std::vector<ShaderSceneObject> objects(3);
