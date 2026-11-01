@@ -55,7 +55,8 @@ MSG_PGREP_KILL = (
     'numbers in a separate command.'
 )
 MSG_SUDO = 'Do not use sudo. The user installs system packages. Tell the user what you need and why.'
-MSG_INSTALL = 'Never install the build (cmake --install, the install target). The user installs Afterglow.'
+MSG_INSTALL = ('Never install the build (cmake --install, the install target). The user installs Afterglow. '
+               'Only `cmake --install` into a temporary directory (--prefix /tmp/... or DESTDIR=/tmp/...) is allowed.')
 MSG_CTL = (
     "`afterglow ctl` drives the user's running Afterglow, and this session runs inside one of its panes "
     '($AFTERGLOW_PANE_ID), so it acts on the user\'s own terminal. Run it only inside the private bus of a test '
@@ -175,10 +176,24 @@ def check_git(args):
     return None
 
 
-def is_install(word, args):
+def temp_destination(command, args):
+    """An install into a temporary directory (--prefix or DESTDIR under /tmp) is allowed: it never touches the system."""
+    prefix = None
+    for k, a in enumerate(args):
+        if a == '--prefix' and k + 1 < len(args):
+            prefix = args[k + 1]
+        elif a.startswith('--prefix='):
+            prefix = a.split('=', 1)[1]
+    if prefix is not None:
+        return os.path.realpath(prefix).startswith('/tmp/')
+    match = re.search(r'(?:^|\s)DESTDIR=(\S+)', command)
+    return bool(match) and os.path.realpath(match.group(1).strip('\'"')).startswith('/tmp/')
+
+
+def is_install(word, args, command=''):
     if word == 'cmake':
         if '--install' in args:
-            return True
+            return not temp_destination(command, args)
         targets = [args[k + 1] for k, a in enumerate(args[:-1]) if a in ('--target', '-t')]
         return 'install' in targets or any(a.startswith('--target=install') for a in args)
     return word in ('ninja', 'make') and 'install' in args
@@ -196,7 +211,7 @@ def check_bash(command):
             return MSG_PKILL
         if word in ('sudo', 'doas') or 'sudo' in wrappers or 'doas' in wrappers:
             return MSG_SUDO
-        if is_install(word, args):
+        if is_install(word, args, command):
             return MSG_INSTALL
         if word == 'afterglow' and args[:1] == ['ctl'] and not private_bus(command, cmds):
             return MSG_CTL

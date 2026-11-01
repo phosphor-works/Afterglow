@@ -169,4 +169,5 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 `afterglow --help` lists application launch options.
 `afterglow --config-reference` prints the runtime configuration schema.
+Use the option alone.
 This command does not open a window or read user configuration.

@@ -388,6 +388,9 @@ private:
     std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
     void restartBlink();
+    /// Shows what the config file could not use as a notice, once for each
+    /// new list, or @p again after a reload the user asked for.
+    static void reportConfigProblems(const QStringList& problems, bool again = false);
 
     QRect contentRect(const QRect& paneRect) const;
     /// Cell under a window position, clamped to the pane's grid.
@@ -409,7 +412,18 @@ private:
     qint64 m_sceneSampleMs = -1000;
     ScriptHost& m_scripts;
     AudioController& m_audio;
-    bool m_audioReactive = false;
+    /// Which chains read audio. An event chain counts only while it shows.
+    struct AudioUse
+    {
+        bool alwaysOn = false; ///< layers, panes, window
+        bool overview = false;
+        bool tabTransition = false;
+        bool paneEffects = false;
+    } m_audioUse;
+    bool m_audioCapturing = false; ///< a chain that shows now reads audio
+    /// Starts or stops audio capture for the chains that show now.
+    void updateAudioCapture();
+    bool m_readsMouse = false; ///< a chain reads the pointer: it moving is a frame
     QStringList m_paletteScriptActions; ///< palette id ScriptActionBase + i runs entry i
     ChromeController* m_controller = nullptr;
     ChromeLayer* m_chrome = nullptr;
@@ -521,6 +535,10 @@ private:
         qreal positionTarget = 0; ///< where it heads: equals the highlighted index modulo the cards
         std::optional<std::chrono::steady_clock::time_point> changedAt;
         std::optional<std::chrono::steady_clock::time_point> movedAt;
+        /// A card in another tab was chosen: its tab shows once the close
+        /// has finished, so the cards never move with the current tab.
+        QPointer<Pane> reveal;
+        bool wasShowing = false; ///< showing at the last frame
     } m_overview;
     /// A curve resolved from its setting once per spec.
     struct CurveCache
@@ -573,6 +591,7 @@ private:
     {
         int kind = 0; ///< 0 here, 1 remote, 2 elevated, 3 a container
         std::chrono::steady_clock::time_point at; ///< when it last changed
+        int previous = 0; ///< the kind before that change
     };
     QHash<const Pane*, PaneContext> m_paneContext;
     QHash<const Pane*, PaneOrigin> m_paneOrigin;
@@ -589,6 +608,9 @@ private:
         QString owner;
         QString label;
         QPointer<Pane> pane;
+        /// Started while the overview was open: it drives the overview, and
+        /// closing the overview (a click, a script) ends it.
+        bool withOverview = false;
     };
     std::optional<ScriptKeyMode> m_scriptKeyMode;
     bool m_anyPaneAway = false; ///< this frame: some visible pane is not here
@@ -598,6 +620,14 @@ private:
     float paneEffectProgress(std::chrono::steady_clock::time_point at) const;
     /// Hands opening and closing panes to the renderer.
     void advancePaneEffects(bool& animating);
+    bool m_paneEffectsShowing = false; ///< the last frame ran the pane effects chain
+    /// Fills @p params with @p pane's context and pulse, for any pane drawn
+    /// (the current tab, overview cards, the tab being left).
+    void applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, bool& animating);
+    /// The unfocused dim (when @p dim) and the dividers of a pane drawn at
+    /// @p shown, as the window draws them for the current tab.
+    void addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
+                         const QVariantMap& overrides) const;
     /// Advances the tab switch and hands it to the renderer.
     void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled

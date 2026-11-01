@@ -34,7 +34,7 @@ Each tab's cards form a group, in tab order. The focused pane starts highlighted
 | Escape, the `pane_overview` key, or a right or middle click | Closes the overview and keeps the focus |
 
 The mouse wheel also moves the highlight.
-A pane in another tab switches to that tab.
+A pane in another tab switches to that tab when the overview has closed.
 Keys do not reach the panes while the overview is open. Programs in the panes keep running.
 A zoomed tab shows all of its panes in the overview, and returns zoomed on the chosen pane.
 `Animation.overviewCurve` and `Animation.overviewDuration` set the motion.
@@ -97,6 +97,7 @@ Saves replace files atomically. Symlink files are not permitted.
 | File size | 1 MiB |
 
 Afterglow validates the layout before it creates windows or runs commands.
+A save or an open that a limit stops names that limit.
 
 1. Copy [development.json](../data/examples/projects/development.json) into the project directory.
 2. Set the directories and commands for your system.

@@ -123,8 +123,10 @@ public:
         float openProgress = 1.0f;
         int openEdge = 0;
         /// Where its shell runs: 0 here, 1 remote, 2 elevated, 3 a container;
+        /// where it ran before the last change, so a pack can blend from it;
         /// and how far the last change has run (1 when settled).
         int context = 0;
+        int previousContext = 0;
         float contextProgress = 1.0f;
         /// A script's pulse (afterglow.pulse): how far it has run (1 when
         /// done), which effect, and its palette colour.

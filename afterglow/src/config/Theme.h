@@ -55,6 +55,12 @@ QStringList candidates(const QString& name, const QStringList& dirs, const QStri
 /// The first of candidates() that is a file. Empty if none is.
 QString locate(const QString& name, const QStringList& dirs, const QString& base = {});
 
+/// Whether @p name is a colour that a setting or theme can hold: a Qt colour
+/// name or hex form, but not eight hex digits. Qt reads those as #AARRGGBB,
+/// and these colours have no alpha, so "#1e1e2eff" would come out a
+/// different colour with no warning.
+bool isColorName(const QString& name);
+
 /// Reads a theme: afterglow's JSON (one object with the colour keys
 /// foreground, background, cursor, cursorText, selectionForeground,
 /// selectionBackground, divider, the highlight colours and palette), a

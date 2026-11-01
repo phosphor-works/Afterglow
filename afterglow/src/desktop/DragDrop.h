@@ -22,7 +22,7 @@ public:
     void setInputBacklog(std::function<std::size_t()> backlog);
     bool acceptsDrops() const;
     bool offersDrags() const;
-    void drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QWindow* window);
+    void drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel);
     void leave();
     void press(QPoint position);
     void release();

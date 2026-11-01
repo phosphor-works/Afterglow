@@ -28,16 +28,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 ## First configuration
 
 The usual configuration path is `~/.config/afterglow/config.json`.
-`XDG_CONFIG_HOME` can change its parent directory.
-
-```json
-{
-  "Font": {"size": 12, "antialiasing": "grayscale"},
-  "Colors": {"theme": "afterglow-dark"},
-  "Terminal": {"shellIntegration": true, "scrollback": 10000},
-  "Window": {"padding": 8}
-}
-```
+See the [configuration file](APPEARANCE.md#configuration-file) for its format and an example.
 
 Afterglow reloads configuration changes automatically.
 Shell integration starts automatically for supported Bash, Zsh and Fish versions.
@@ -52,3 +43,4 @@ Reopen the palette after reload to see new actions.
 `afterglow --help` lists launch options.
 `afterglow ctl --help` lists live control commands.
 `afterglow --config-reference` prints the runtime schema without a window or user configuration.
+Use the option alone.

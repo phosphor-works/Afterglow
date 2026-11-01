@@ -33,10 +33,12 @@ Start with the [documentation index](docs/README.md).
 - [Supported protocols and limits](docs/COMPATIBILITY.md)
 
 See the [Phosphor scene](data/examples/phosphor/README.md) for an audio-responsive example.
-See the [release notes](CHANGELOG.md) for changes.
+See the [release notes](CHANGELOG.md) for supported features.
 
 ## License
 
 The application uses GPL-3.0-or-later. The libraries in `libs/` use LGPL-2.1-or-later.
-The icon uses CC-BY-SA-4.0. Each file identifies its license.
+Most bundled shader packs use LGPL-2.1-or-later. Third-party themes use MIT.
+The icon uses CC-BY-SA-4.0.
+Each file, or `REUSE.toml` for a file without a header, identifies its license.
 The [LICENSES directory](LICENSES) contains the license texts.

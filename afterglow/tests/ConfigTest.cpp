@@ -173,6 +173,20 @@ TEST(Themes, ReadsJsonThemes)
     EXPECT_TRUE(theme->palette[1] == Rgb(0xff, 0x00, 0x00));
 }
 
+TEST(Themes, EightDigitHexIsNotAColour)
+{
+    // Qt reads eight digits as #AARRGGBB; these colours have no alpha.
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("#1e1e2eff")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("#1e1e2e")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("#fff")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("red")));
+    QStringList ignored;
+    const auto theme = Themes::parse(R"({"background": "#101010", "foreground": "#1e1e2eff"})", nullptr, &ignored);
+    ASSERT_TRUE(theme);
+    EXPECT_FALSE(theme->foreground);
+    EXPECT_TRUE(ignored.contains(QStringLiteral("foreground")));
+}
+
 TEST(Themes, RejectsFilesWithoutColours)
 {
     QString error;
@@ -467,6 +481,29 @@ TEST(KeyModes, TablesCancelExpireAndDoNotTrapUnmatchedInput)
     EXPECT_FALSE(state.active());
 }
 
+TEST(KeyModes, TablesMatchTheCallersBaseKey)
+{
+    // On a Russian layout R and H report the Cyrillic К and Р. The caller
+    // gives the Latin key of the same position, and the table matches it.
+    QVariantMap bindings{{QStringLiteral("table:resize"), QStringLiteral("Ctrl+Space, R")}};
+    QVariantMap resize{{QStringLiteral("resize_left"), QStringLiteral("H")}};
+    QStringList errors;
+    const auto modes = KeyModes::fromConfig(bindings, {{QStringLiteral("resize"), resize}}, {}, 1000, 5000,
+        Keybinds::fromMap(bindings, &errors), &errors);
+    ASSERT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+    KeyModes::State state;
+    const QKeyEvent leader = press(Qt::Key_Space, Qt::ControlModifier);
+    const QKeyEvent ka = press(0x041A);
+    const QKeyEvent er = press(0x0420);
+    modes.press(&leader, state, 0);
+    EXPECT_TRUE(modes.press(&ka, state, 10, U'r').consumed);
+    EXPECT_EQ(state.table, QStringLiteral("resize"));
+    EXPECT_EQ(modes.press(&er, state, 20, U'h').target, QStringLiteral("resize_left"));
+    // Without the base key the Cyrillic letter matches nothing and leaves the table.
+    EXPECT_FALSE(modes.press(&er, state, 30).consumed);
+    EXPECT_FALSE(state.active());
+}
+
 TEST(KeyModes, RejectsAmbiguousPrefixesAndPreservesExistingSingles)
 {
     QStringList errors;
@@ -487,9 +524,11 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     const auto groups = Afterglow::SettingsStore::reference().value(QStringLiteral("groups")).toObject();
     const auto font = groups.value(QStringLiteral("Font")).toObject();
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
-    // 0 is the desktop's size; other sizes run from 4 to 96.
+    // 0 is the desktop's size; other sizes run from 4 to 96, the limits font_bigger keeps to.
     EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 0);
     EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("maximum")).toInt(), 96);
+    EXPECT_EQ(AfterglowRender::FontSpec::MaxPoints, 96.0f);
+    EXPECT_TRUE(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("description")).toString().contains(QStringLiteral("from 4 to 96")));
     EXPECT_TRUE(font.value(QStringLiteral("family")).toObject().value(QStringLiteral("default")).toString().isEmpty());
     EXPECT_TRUE(groups.value(QStringLiteral("Keybinds")).toObject().value(QStringLiteral("bindings")).toObject().value(QStringLiteral("default")).isObject());
 }
@@ -869,6 +908,20 @@ TEST_F(ConfigTest, WriteKeepsEditsNotReloadedYetAndLeavesOverridesOut)
     EXPECT_FLOAT_EQ(store.settings().font.sizePoints, 16.0f);
 }
 
+TEST_F(ConfigTest, PersistedReadsTheFileWithoutOverrides)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Shaders": {"window": ["bloom"]}})");
+    QJsonObject overrides;
+    ASSERT_TRUE(SettingsStore::addOverride(overrides, QStringLiteral(R"(Shaders.window=["crt"])")));
+    ASSERT_TRUE(SettingsStore::addOverride(overrides, QStringLiteral("Window.padding=30")));
+    SettingsStore store(path, overrides);
+    EXPECT_EQ(store.settings().shaders.window, QStringList{QStringLiteral("crt")});
+    EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(), QStringList{QStringLiteral("bloom")});
+    // Not in the file: the default, not the override.
+    EXPECT_EQ(store.persisted(QStringLiteral("Window"), QStringLiteral("padding")).toInt(), WindowSettings{}.padding);
+    EXPECT_FALSE(store.persisted(QStringLiteral("Window"), QStringLiteral("nosuchkey")).isValid());
+}
+
 TEST_F(ConfigTest, WriteRefusesUndeclaredKeys)
 {
     const QString path = write(QStringLiteral("config.json"), "{}");
@@ -895,12 +948,32 @@ TEST_F(ConfigTest, ReloadKeepsSettingsUnlessTheFileIsGone)
     EXPECT_TRUE(store.problems().isEmpty());
 }
 
-TEST_F(ConfigTest, FirstRunFileIsPrivate)
+TEST_F(ConfigTest, FirstRunWritesNoFile)
 {
     const QString path = m_home.filePath(QStringLiteral("fresh/config.json"));
     SettingsStore store(path);
+    // No file means every default; a later change of a default reaches the user.
+    EXPECT_FALSE(QFile::exists(path));
+    SettingsStore empty(write(QStringLiteral("empty.json"), "{}"));
+    EXPECT_TRUE(store.settings() == empty.settings());
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, FirstWriteCreatesAPrivateFileWithOnlyThatKey)
+{
+    const QString path = m_home.filePath(QStringLiteral("fresh/config.json"));
+    SettingsStore store(path);
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 11));
     ASSERT_TRUE(QFile::exists(path));
     const auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther;
+    EXPECT_EQ(QFile::permissions(path) & others, QFileDevice::Permissions{});
+    const QJsonObject file = QJsonDocument::fromJson(read(path)).object();
+    // The changed key, and the schema version PhosphorConfig stamps on every file.
+    EXPECT_EQ(file.keys(), (QStringList{QStringLiteral("Window"), QStringLiteral("_version")}));
+    EXPECT_EQ(file.value(QStringLiteral("Window")).toObject(), (QJsonObject{{QStringLiteral("padding"), 11}}));
+    EXPECT_EQ(store.settings().window.padding, 11);
+    // A later save keeps the mode.
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
     EXPECT_EQ(QFile::permissions(path) & others, QFileDevice::Permissions{});
 }
 
@@ -929,6 +1002,16 @@ TEST_F(ConfigTest, MalformedValuesAndUnknownKeysAreReported)
     EXPECT_TRUE(mentions(problems, QStringLiteral("unknown setting Font.sise")));
     EXPECT_TRUE(mentions(problems, QStringLiteral("unknown setting group Fonts")));
     EXPECT_TRUE(store.settings().shaders.pane.isEmpty());
+}
+
+TEST_F(ConfigTest, EightDigitColorsAreReportedAndNotUsed)
+{
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              R"({"Colors": {"foreground": "#1e1e2eff", "palette": ["#000000", "#ff0000ff"]}})"));
+    const QStringList problems = store.problems();
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.foreground is not a color")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.palette[1] is not a color")));
+    EXPECT_TRUE(same(store.settings().terminal.defaultForeground, Settings{}.terminal.defaultForeground));
 }
 
 TEST_F(ConfigTest, HintPatternsAreCheckedWhenRead)
@@ -1236,4 +1319,16 @@ TEST(KeyModes, TablesCanBindEscapeAndHoldingTheirKeyTypesNothing)
     EXPECT_EQ(modes.press(&heldH, state, 30).target, QStringLiteral("resize_left"));
     EXPECT_EQ(modes.press(&escape, state, 40).target, QStringLiteral("split_right"));
     EXPECT_EQ(state.table, QStringLiteral("resize"));
+}
+
+TEST(Keybinds, TheCallerGivesTheKeyOnTheLatinLayout)
+{
+    // Ctrl+Shift+С on a Russian layout: Qt reports the Cyrillic letter, and
+    // the caller, which reads the keymap, gives the Latin c of that key.
+    const QKeyEvent cyrillic = press(0x0421, Qt::ControlModifier | Qt::ShiftModifier);
+    const Keybinds kb = Keybinds::defaults();
+    EXPECT_EQ(kb.match(&cyrillic), Action::None);
+    EXPECT_EQ(kb.match(&cyrillic, U'c'), Action::Copy);
+    EXPECT_TRUE(Keybinds::combinations(&cyrillic, U'c').contains(
+        QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_C).toCombined()));
 }

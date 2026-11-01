@@ -406,6 +406,25 @@ TEST(Conformance, LegacySynchronizedUpdatesAndFlash)
     EXPECT_EQ(host.flashes, 1);
 }
 
+TEST(Conformance, EachSynchronizedBlockHasItsOwnSerial)
+{
+    RecordingHost host;
+    Terminal t(10, 2, host);
+    const std::uint64_t start = t.synchronizedOutputSerial();
+    t.feed("\x1b[?2026h");
+    const std::uint64_t first = t.synchronizedOutputSerial();
+    EXPECT_NE(first, start);
+    t.feed("\x1b[?2026h"); // still the same block
+    EXPECT_EQ(t.synchronizedOutputSerial(), first);
+    // An end and the next begin in one read: the mode looks unchanged, the serial does not.
+    t.feed("x\x1b[?2026ly\x1b[?2026h");
+    EXPECT_TRUE(t.modes().synchronizedOutput);
+    const std::uint64_t second = t.synchronizedOutputSerial();
+    EXPECT_NE(second, first);
+    t.feed("\x1b[?2026l\x1bP=1s\x1b\\"); // the older form too
+    EXPECT_NE(t.synchronizedOutputSerial(), second);
+}
+
 TEST(Conformance, ModifyOtherKeysControl)
 {
     Term t(10, 2);

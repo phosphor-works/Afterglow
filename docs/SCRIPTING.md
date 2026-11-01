@@ -362,8 +362,9 @@ One script at a time holds a window's keyboard. Another script's request returns
 | Editing | `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`, `Insert`, `Space` |
 | Movement | `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Right`, `Up`, `Down` |
 | Function keys | `F1` to `F35` |
-| Other keys, modifier presses included | The lowercase Qt key name, such as `shift` or `menu` |
+| Other keys | The lowercase Qt key name, such as `menu` |
 
+A modifier key alone does not reach `on_key`. It comes with the key that it changes, in `ctrl`, `shift`, `alt` and `meta`.
 With Ctrl, `key` is the letter, and `text` is empty.
 Ignore the keys that the script does not use.
 `end_key_mode()` gives the keyboard back. It works also when the effect budget is spent.
@@ -376,6 +377,7 @@ Key releases are not reported.
 
 `overview(pane, operation)` drives the pane overview of the pane's window.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
+When the chosen pane is in another tab, that tab shows after the overview has closed.
 `overview_move(pane, step)` moves the highlight by `step` cards. `overview_move(pane, 0, target)` highlights the pane `target`.
 Results contain the overview: `open`, `highlighted` and `cards`.
 The snapshot's window records contain the same `overview` table.
@@ -383,7 +385,9 @@ The snapshot's window records contain the same `overview` table.
 
 Combine these effects with a key mode to replace the overview's keys.
 The [scripted overview package](../data/examples/packages/scripted-overview/init.luau) moves with a, d, w and s, and ships its own overview shader.
-A click still closes the overview, so check `overview.open` in `on_key` and end the key mode when it is false.
+A key mode that starts while the overview is open ends when the overview closes.
+This also applies when a click or the keyboard closes the overview, so the next key goes to the shell.
+A key mode that starts before the overview opens continues.
 
 ## Pane pulses
 
@@ -399,6 +403,8 @@ The [pulse example](../data/examples/scripts/pane-pulses.luau) flashes failed co
 
 `split`, `new_tab` and `new_window` accept a final `LaunchOptions` table.
 `cwd` sets the working directory.
+Without `cwd`, `split(pane)` and `new_tab(pane)` start in the directory of `pane`, as the `Window.workingDirectory` setting permits.
+The tab of `new_tab(pane)` opens after the tab of `pane`.
 `env` changes inherited environment variables.
 `size` sets the new split fraction, greater than zero and less than one.
 Split directions are `left`, `right`, `up` and `down`.

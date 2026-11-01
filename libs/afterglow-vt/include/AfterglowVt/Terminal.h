@@ -167,6 +167,12 @@ public:
     virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
     /// Host-side file transfer and drag-and-drop commands; code 0 resets sessions.
     virtual void terminalProtocol(int code, std::string_view payload) {}
+    /// A scroll moved cells of the active screen to other rows (SU, SD, IL,
+    /// DL, a line feed at a scroll region's margin). The terminal has moved
+    /// its own images and shell marks; a host that keeps positions on that
+    /// screen by stable row id (a selection: Selection::followScroll) moves
+    /// them too.
+    virtual void regionScrolled(const RegionScroll& scroll) {}
     /// A program asks for a new size in cells (DECCOLM, DECSCPP, DECSLPP,
     /// DECSNLS, XTWINOPS 4 and 8, and RIS after DECCOLM). Return true to let
     /// the terminal take that size; the host then follows it.
@@ -289,6 +295,11 @@ public:
     /// and the shell has not finished yet (OSC 133;B). Renderers can keep showing
     /// the previous frame meanwhile instead of showing a partial repaint.
     bool promptRedrawPending() const noexcept { return m_promptRedrawPending; }
+    /// Changes each time synchronized output (mode 2026, or DCS = 1 s) begins
+    /// a block. A renderer that holds frames while modes().synchronizedOutput
+    /// is set restarts its timeout when this changes: an end and the next
+    /// begin can both arrive between two of its frames.
+    std::uint64_t synchronizedOutputSerial() const noexcept { return m_synchronizedOutputSerial; }
     /// The shell asked (OSC 133 click_events) for clicks on its command line
     /// to move the cursor there, and the user is at that line now.
     bool promptTakesClicks() const noexcept
@@ -425,6 +436,9 @@ private:
     void eraseChars(int n);
     void scrollUp(int n);
     void scrollDown(int n);
+    /// Scrolls the active screen's region @p r by @p n rows (up when @p up),
+    /// and moves what is anchored to the rows that moved with them.
+    void scrollRegion(const Region& r, int n, bool up, bool intoHistory = false);
     void repeatLast(int n);
     void repeatInserting(char32_t cp, int n);
     void setTopBottomMargins(int top, int bottom);
@@ -432,6 +446,7 @@ private:
     void saveCursor();
     void restoreCursor();
     void setAltScreen(bool on, bool saveRestoreCursor, bool clear);
+    void setSynchronizedOutput(bool on);
     void fullReset();
     void decaln();
     void insertColumns(int n);
@@ -577,6 +592,7 @@ private:
     bool m_shellRedrawsPrompt = true;
     bool m_promptRedrawPending = false;
     bool m_promptClickEvents = false;
+    std::uint64_t m_synchronizedOutputSerial = 0;
     /// The command line a shell reported (133 cmdline, 633 E) for the next C.
     std::optional<std::string> m_explicitCommand;
     ShellContexts m_contexts;

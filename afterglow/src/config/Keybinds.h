@@ -118,17 +118,23 @@ public:
     /// Actions that create or destroy panes, tabs or windows.
     static bool isStructural(Action action);
 
-    /// The action bound to a key press, or Action::None.
-    Action match(const QKeyEvent* event) const;
+    /// The action bound to a key press, or Action::None. @p base is the
+    /// key's character on the active layout, as for combinations().
+    Action match(const QKeyEvent* event, char32_t base = 0) const;
     /// The combinations a key press can match, most specific first: the event
     /// itself, Tab for Backtab, the layout's unshifted key, and a shifted
     /// symbol without its Shift ("%" for Shift+5 on a US layout).
-    static QList<int> combinations(const QKeyEvent* event);
+    /// @p base is the character the key types without modifiers on the
+    /// active layout, or on the first Latin layout when that one is not
+    /// ASCII; 0 when unknown. The caller reads it from the keymap
+    /// (bindingBaseKey in KeyMapping.h): the config layer follows no
+    /// keyboard state of its own.
+    static QList<int> combinations(const QKeyEvent* event, char32_t base = 0);
     bool isBound(int key) const { return m_byKey.contains(key) || m_scriptByKey.contains(key) || m_textByKey.contains(key); }
     /// The script action ("<script id>.<action id>") bound to a key press, or empty.
-    QString matchScript(const QKeyEvent* event) const;
+    QString matchScript(const QKeyEvent* event, char32_t base = 0) const;
     /// The bytes a "text:" binding sends for a key press, or empty.
-    QByteArray matchText(const QKeyEvent* event) const;
+    QByteArray matchText(const QKeyEvent* event, char32_t base = 0) const;
     /// A "text:" binding's escapes turned into bytes; empty if malformed.
     static QByteArray unescape(const QString& text);
     /// Human-readable bindings of @p action, for menus and the command palette,

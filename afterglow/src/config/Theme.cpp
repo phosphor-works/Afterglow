@@ -24,10 +24,10 @@ std::optional<AfterglowVt::Rgb> color(QString value)
     if (BareHex.match(value).hasMatch()) {
         value.prepend(QLatin1Char('#'));
     }
-    const QColor c = QColor::fromString(value);
-    if (!c.isValid()) {
+    if (!isColorName(value)) {
         return std::nullopt;
     }
+    const QColor c = QColor::fromString(value);
     return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
 }
 
@@ -90,6 +90,12 @@ bool assign(Theme& theme, QString key, const QString& value)
 }
 
 } // namespace
+
+bool isColorName(const QString& name)
+{
+    static const QRegularExpression EightDigits(QStringLiteral("^#[0-9a-fA-F]{8}$"));
+    return QColor::isValidColorName(name) && !EightDigits.match(name).hasMatch();
+}
 
 QString pick(const QString& spec, bool dark)
 {

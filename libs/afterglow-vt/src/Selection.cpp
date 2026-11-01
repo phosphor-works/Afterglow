@@ -113,6 +113,31 @@ bool Selection::validFor(const Screen& screen) const noexcept
         && screen.absoluteIndexOf(head.row) >= 0;
 }
 
+bool Selection::followScroll(const RegionScroll& scroll) noexcept
+{
+    if (!active) {
+        return true;
+    }
+    const std::uint64_t first = std::min(anchor.row, head.row);
+    const std::uint64_t last = std::max(anchor.row, head.row);
+    if (last < scroll.top || first > scroll.bottom) {
+        return true;
+    }
+    // Only a full-width region moves whole rows; anything less splits the
+    // selected text between cells that moved and cells that stayed.
+    if (!scroll.fullWidth || first < scroll.top || last > scroll.bottom) {
+        return false;
+    }
+    const auto movedAnchor = scroll.map(anchor);
+    const auto movedHead = scroll.map(head);
+    if (!movedAnchor || !movedHead) {
+        return false;
+    }
+    anchor = *movedAnchor;
+    head = *movedHead;
+    return true;
+}
+
 Selection::Range Selection::range(const Screen& screen, std::u32string_view boundaries) const
 {
     Range r;

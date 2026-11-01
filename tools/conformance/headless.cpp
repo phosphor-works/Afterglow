@@ -395,8 +395,9 @@ int main(int argc, char** argv)
         ~TemporaryScreen() { if (!path.empty()) ::unlink(path.c_str()); }
     } temporary;
     if (!responder.empty() && idleDir.empty()) {
-        char name[] = "/tmp/afterglow-screen-XXXXXX";
-        const int fd = ::mkstemp(name);
+        const char* tmpdir = std::getenv("TMPDIR");
+        std::string name = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/afterglow-screen-XXXXXX";
+        const int fd = ::mkstemp(name.data());
         if (fd < 0) failed = true;
         else { temporary.path = name; ::close(fd); }
     }

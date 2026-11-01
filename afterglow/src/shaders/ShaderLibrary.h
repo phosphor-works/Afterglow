@@ -16,6 +16,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -36,7 +37,9 @@ namespace Afterglow {
 /// data directories and the bundled packs, and from loaded script packages'
 /// shaders/ directories as "<package>.<pack>". When two packs answer to one
 /// name, the user's wins over the system's, and the system's over the bundled.
-/// Compiled programs are cached and rebuilt when their files change.
+/// A pack compiles once and is cached until its files change; the config's
+/// parameter values are applied over a copy, so changing them does not
+/// compile it again.
 class ShaderLibrary : public QObject
 {
     Q_OBJECT
@@ -78,9 +81,25 @@ Q_SIGNALS:
 private:
     struct PackIndex;
 
+    /// A pack compiled once, with its own defaults, for every set of
+    /// configured values: a Shaders.params change does not compile again.
+    struct Compiled
+    {
+        AfterglowRender::ShaderProgramPtr program; ///< null when it failed
+        QString error;
+        QStringList watched;   ///< resolved and missing candidate paths of its files
+        QByteArray signature;  ///< their state when it compiled
+        QString packDir;       ///< the pack its reference named
+        /// Why a default image did not load, by slot. The program has no
+        /// image there, and only a configured image for that slot can use it.
+        std::array<QString, AfterglowRender::MaxShaderImages> imageErrors;
+    };
+
+    /// The pack @p ref names with the config's values @p params over its defaults.
     AfterglowRender::ShaderProgramPtr load(const QString& ref, const QVariantMap& params);
-    AfterglowRender::ShaderProgramPtr compile(const QString& key, const QString& ref, const QVariantMap& params,
-                                              QStringList& watched);
+    Compiled compile(const QString& ref);
+    AfterglowRender::ShaderProgramPtr configure(const QString& key, const QString& ref, const QVariantMap& params,
+                                                QStringList& watched);
     /// The shared/ directories a pack's includes search, most important first:
     /// its own package's, then the user's, the system's and the bundled.
     QStringList includeDirs(const QString& packDir) const;
@@ -100,6 +119,7 @@ private:
     std::unique_ptr<PhosphorShaders::ShaderPresetStore> m_presets;
     std::unique_ptr<PhosphorAnimation::CurveRegistry> m_curves;
     PhosphorFsLoader::WatchedFileSet m_files;
+    QHash<QString, Compiled> m_compiled; // reference -> its pack, compiled with the pack's defaults
     QHash<QString, QStringList> m_dependencies; // cache key -> resolved and missing candidate paths
     QHash<QString, QByteArray> m_signatures; // cache key -> the state of its dependencies when loaded
     QHash<QString, QString> m_resolved; // cache key -> the pack directory its reference named

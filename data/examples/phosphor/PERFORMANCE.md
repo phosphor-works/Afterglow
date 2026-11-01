@@ -17,7 +17,7 @@ They do not certify other GPUs or compare Afterglow with other terminals.
 | Kernel | CachyOS 7.3.0-4. |
 | Desktop | Qt 6.12.0, KDE/KWin Wayland. |
 | Build | RelWithDebInfo. |
-| Font | Monaspace Neon Var, renderer default 11-point size, DPR 1. |
+| Font | Monaspace Neon Var at 11 points, DPR 1. |
 | Power | 225 W GPU limit. Normal desktop power management. No locked clocks or exclusive GPU access. |
 
 `afterglow_renderpng` rendered exact 1920×1080 and 3840×2160 framebuffers.
@@ -73,6 +73,7 @@ Run from the repository root:
 python3 tools/render/scene_benchmark.py build/tools/render/afterglow_renderpng /tmp/afterglow-scene-benchmark
 ```
 
+Install Monaspace Neon Var before the run. With another font, the times are not comparable with the table.
 The benchmark's NVIDIA memory sampler is optional.
 Other GPUs still produce timings, with memory marked unavailable.
 The tool does not substitute whole-machine GPU memory.

@@ -157,7 +157,7 @@ QVariant clampDouble(const QVariant& v, double def, double lo, double hi)
 QVariant validColor(const QVariant& v, const QString& fallback)
 {
     const QString s = v.toString();
-    return (s.isEmpty() || QColor::isValidColorName(s)) ? QVariant(s) : QVariant(fallback);
+    return (s.isEmpty() || Themes::isColorName(s)) ? QVariant(s) : QVariant(fallback);
 }
 
 KeyDef intKey(const QString& key, int def, int lo, int hi, const QString& description)
@@ -279,10 +279,15 @@ PhosphorConfig::Schema buildSchema()
         stringKey(QStringLiteral("boldItalicFamily"), {},
                   QStringLiteral("Font family of bold italic text. An empty value uses the italic family.")),
         {QStringLiteral("size"), 0.0, QMetaType::Double,
-         QStringLiteral("Size in points, from 4 to 96. A value of 0 uses the size of the desktop's fixed-width font."),
+         QStringLiteral("Size in points, from %1 to %2. A value of 0 uses the size of the desktop's fixed-width font.")
+             .arg(AfterglowRender::FontSpec::MinPoints)
+             .arg(AfterglowRender::FontSpec::MaxPoints),
          [](const QVariant& v) {
              const double size = v.toDouble();
-             return QVariant(!std::isfinite(size) || size <= 0 ? 0.0 : std::clamp(size, 4.0, 96.0));
+             return QVariant(!std::isfinite(size) || size <= 0
+                                 ? 0.0
+                                 : std::clamp(size, double(AfterglowRender::FontSpec::MinPoints),
+                                              double(AfterglowRender::FontSpec::MaxPoints)));
          }},
         doubleKey(QStringLiteral("sizeStep"), d.fontSizeStep, 0.1, 12.0,
                   QStringLiteral("Points that the font_bigger and font_smaller actions add or remove.")),
@@ -311,7 +316,8 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("Glyph hinting mode. The none mode preserves outlines. The light mode aligns vertical positions only. "
                                "The full mode aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
-                QStringLiteral("Font antialiasing mode. Subpixel modes use grayscale when transparency or shaders are active.")),
+                QStringLiteral("Font antialiasing mode. Subpixel modes use grayscale when transparency or shaders are active. Pane "
+                               "effects are shaders, and they run while a pane is remote or in another context.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
     };
@@ -398,11 +404,12 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Variables added to the shell's environment, such as { \"EDITOR\": \"nvim\" }. Each value must be a "
                         "string.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
-         QStringLiteral("Ask before pasting several lines into a program that would run them.")},
+         QStringLiteral("Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line "
+                        "break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
                   QStringLiteral("Shared secret for kitty file-transfer approval. An empty value always asks for approval.")),
         enumKey(QStringLiteral("clipboardRead"), d.clipboardRead,
-                QStringLiteral("Programs reading the clipboard with OSC 52. The ask value shows a prompt for each read."),
+                QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read."),
                 {QStringLiteral("ask"), QStringLiteral("allow"), QStringLiteral("deny")}),
         enumKey(QStringLiteral("clipboardWrite"), ClipboardWriteChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
@@ -606,9 +613,9 @@ PhosphorConfig::Schema buildSchema()
 
 AfterglowVt::Rgb toRgb(const QString& name, AfterglowVt::Rgb fallback)
 {
-    const QColor c(name);
-    return c.isValid() ? AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())}
-                       : fallback;
+    if (!Themes::isColorName(name)) return fallback;
+    const QColor c = QColor::fromString(name);
+    return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
 }
 
 /// Values the validators replaced with a default, and keys the schema does
@@ -650,13 +657,13 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                     out << QStringLiteral("%1 must be one of %2. Using the default").arg(name, names.join(QStringLiteral(", ")));
                 }
             } else if (group == Colors && def.expectedType == QMetaType::QString && def.key != QLatin1String("theme")) {
-                if (const QString color = raw.toString(); !color.isEmpty() && !QColor::isValidColorName(color)) {
+                if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
                     out << QStringLiteral("%1 is not a color. Using the default").arg(name);
                 }
             } else if (group == Colors && def.key == QLatin1String("palette")) {
                 const QJsonArray palette = raw.toArray();
                 for (qsizetype i = 0; i < palette.size(); ++i) {
-                    if (!QColor::isValidColorName(palette[i].toString())) {
+                    if (!Themes::isColorName(palette[i].toString())) {
                         out << QStringLiteral("Colors.palette[%1] is not a color. Using the default").arg(i);
                     }
                 }
@@ -706,16 +713,9 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
     // Command-line overrides are read over the file and never written to it.
     m_backend->setOverlay(m_overrides);
     m_store = std::make_unique<PhosphorConfig::Store>(m_backend.get(), buildSchema());
-
-    if (!QFile::exists(path)) {
-        // A complete file with every default, so all options are discoverable.
-        if (!PhosphorConfig::JsonBackend::writeJsonAtomically(path, m_store->defaultsToJson())) {
-            qCWarning(lcConfig).noquote() << "cannot write" << path << "- running with defaults";
-        } else {
-            // It can come to hold Terminal.fileTransferPassword. Later saves keep the mode.
-            QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        }
-    }
+    // No file means every default. The file holds only what differs, so a
+    // later change of a default reaches the user (PhosphorConfig's sparse
+    // persistence); write() creates it.
     loadFile();
     m_settings = read();
 
@@ -782,6 +782,16 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
         qCWarning(lcConfig).noquote() << "not writing" << group + QLatin1Char('.') + key << "until" << m_path << "parses";
         return false;
     }
+    if (!QFile::exists(m_path)) {
+        // The file can come to hold Terminal.fileTransferPassword. Create it
+        // private before the first save, which keeps the mode it finds.
+        QFile file(m_path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly, QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+            || file.write("{}\n") < 0) {
+            qCWarning(lcConfig).noquote() << "cannot create" << m_path << "-" << file.errorString();
+            return false;
+        }
+    }
     m_store->write(group, key, value);
     if (!m_backend->commit()) {
         qCWarning(lcConfig).noquote() << "cannot write" << m_path;
@@ -789,6 +799,15 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
     }
     apply();
     return true;
+}
+
+QVariant SettingsStore::persisted(const QString& group, const QString& key) const
+{
+    const PhosphorConfig::KeyDef* def = m_store->schema().findKey(group, key);
+    if (!def) return {};
+    const auto file = m_backend->persistedGroup(group);
+    QVariant value = file->hasKey(key) ? file->readJson(key).toVariant() : def->defaultValue;
+    return def->validator ? def->validator(value) : value;
 }
 
 bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignment)
@@ -1009,7 +1028,7 @@ Settings SettingsStore::read()
         hl.visualBellIntensity = theme->visualBellIntensity.value_or(hl.visualBellIntensity);
         // Themes from other terminals have no divider: a fifth of the way
         // from the background to the text suits light and dark alike. The
-        // config's divider is not used, since the first run writes a dark one.
+        // config's divider is not used, since its default is a dark one.
         auto mix = [](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) / 5); };
         const AfterglowVt::Rgb& bg = t.defaultBackground;
         const AfterglowVt::Rgb& fg = t.defaultForeground;

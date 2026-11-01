@@ -70,6 +70,22 @@ TEST(Input, TildeAndFunctionKeys)
     EXPECT_EQ(encodeKey(key(Key::F5, Mod::Alt), m), "\x1b[15;3~");
 }
 
+TEST(Input, FunctionKeysBeyondTwelve)
+{
+    Modes m;
+    // xterm's terminfo: F13 to F24 are Shift+F1 to F12, F25 to F35 Ctrl+F1 to F11.
+    EXPECT_EQ(encodeKey(key(Key::F13), m), "\x1b[1;2P");
+    EXPECT_EQ(encodeKey(key(Key::F17), m), "\x1b[15;2~");
+    EXPECT_EQ(encodeKey(key(Key::F24), m), "\x1b[24;2~");
+    EXPECT_EQ(encodeKey(key(Key::F25), m), "\x1b[1;5P");
+    EXPECT_EQ(encodeKey(key(Key::F35), m), "\x1b[23;5~");
+    EXPECT_EQ(encodeKey(key(Key::F13, Mod::Ctrl), m), "\x1b[1;6P"); // modifiers add up
+    // The kitty protocol has a code for each: 57376 for F13 to 57398 for F35.
+    m.kittyKeyboard = KittyFlag::Disambiguate;
+    EXPECT_EQ(encodeKey(key(Key::F13), m), "\x1b[57376u");
+    EXPECT_EQ(encodeKey(key(Key::F35, Mod::Shift), m), "\x1b[57398;2u");
+}
+
 TEST(Input, ControlAndAltText)
 {
     Modes m;

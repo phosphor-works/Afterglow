@@ -16,6 +16,8 @@ Keep audit reports, implementation plans, milestone labels and work-session summ
 - Use active voice and present tense where possible.
 - Give each term one meaning.
 - Use the same term for the same item.
+- Use American spelling.
+- Do not join clauses with an em dash or a semicolon. Do not use a spaced hyphen as a dash.
 - Keep a procedural sentence to 20 words or fewer.
 - Keep a descriptive sentence to 25 words or fewer.
 - Give one instruction in each numbered step.

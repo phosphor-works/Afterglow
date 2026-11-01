@@ -14,8 +14,9 @@ wrong, and points to the skills that hold the procedures.
 
 - **Commit and push finished work to `main` without asking.** "Finished" means built with no warnings, tested, and
   verified the way the change needs (see below). Stage files by name.
-- **Never install and never use `sudo`.** No `cmake --install`, no install target, no system packages. Tell the
-  user what you need and why.
+- **Never install and never use `sudo`.** No install target and no system packages. Tell the user what you need
+  and why. The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`),
+  to check the install layout.
 - **PlasmaZones changes only through its own pull request.** The build compiles the Phosphor libraries from
   `../PlasmaZones/phosphor-libs`. Never edit that checkout from an Afterglow session. When Afterglow needs a Phosphor
   change, say what and why, and let the user decide.
@@ -27,16 +28,16 @@ wrong, and points to the skills that hold the procedures.
   A green suite has missed a transparent shader, a flicker at a wrap seam and an animation that never stopped.
 - **Find the mechanism.** A fix explains why the bug happens. Do not tune a delay, add a retry or special-case one
   input until the symptom goes away.
-- **Make it configurable.** A value that a user could want to change (a duration, a curve, a colour, a limit, a
+- **Make it configurable.** A value that a user could want to change (a duration, a curve, a color, a limit, a
   pack) is a setting with a default, not a constant in the code (`ag-add-setting`).
 - **Unreleased: no migrations.** Rename a key or change a format directly. Write no compatibility code for old
   configs or old script APIs. `CHANGELOG.md` describes what the first release supports. It is not a log of changes
   and has no migration notes.
 - **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
-  `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`. `libs/**` is
-  `LGPL-2.1-or-later`, tests included. New shader packs are `LGPL-2.1-or-later`. Feedback Glow, Depth Trails and
-  Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file has, and do not relicense it. `REUSE.toml`
-  licenses files that cannot hold a header (JSON, images).
+  `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`. Tools that link only
+  `libs/afterglow-vt` are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New shader packs are
+  `LGPL-2.1-or-later`. Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file
+  has, and do not relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON, images).
 - **Ask only about real decisions.** When the next step is clear, do it.
 
 ## Code

@@ -12,6 +12,11 @@ A file that does not parse, or that does not hold a JSON object, keeps the curre
 A deleted file gives every setting its default.
 Afterglow logs unknown keys and values that it replaces with a default.
 
+The file holds only the values that differ from the defaults.
+Afterglow does not create it on the first start.
+Afterglow creates it when it saves a setting for the first time, for example the shaders that a script package suggests.
+Only your user can read the file that Afterglow creates.
+
 The [configuration reference](CONFIGURATION.md) lists all keys, defaults and ranges.
 Group names and key names are case-sensitive.
 
@@ -88,6 +93,8 @@ afterglow -o Font.antialiasing=rgb -o Font.gamma=1.2
 
 Subpixel modes use separate filtered coverage for each color channel.
 Active shaders or window transparency cause an automatic change to grayscale text.
+Pane effects are shaders. They run while a pane is remote (`afterglow ssh`) or in another context.
+Such a pane makes all text in its window grayscale.
 A transparent pane background also uses grayscale text.
 An opaque window without shaders can use subpixel text again.
 Grayscale can give better results when the compositor scales or rotates the output.
@@ -132,6 +139,8 @@ An Afterglow JSON theme is one object with color keys.
 The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground` and `divider`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
 Afterglow logs other keys in a JSON theme.
+A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
+These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
 
 Use this value to follow the desktop preference:
 

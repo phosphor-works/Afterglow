@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <AfterglowVt/Selection.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
 #include <cstdint>
@@ -197,6 +198,11 @@ public:
     std::vector<std::size_t> anchorRows(const Screen& screen) const;
     std::vector<int> anchorColumns() const;
     void retarget(const Screen& screen, const std::vector<std::size_t>& rows, const std::vector<int>* columns = nullptr);
+    /// Moves the placements anchored in @p scroll's region with the rows the
+    /// scroll moved, and drops those whose anchor left the region. Virtual
+    /// placements follow their placeholder cells, and relative children their
+    /// parents, so neither is moved here.
+    void scrollRegion(const RegionScroll& scroll);
 
     void clear();
     /// Sets the bytes of image data kept; a lower quota evicts at once.

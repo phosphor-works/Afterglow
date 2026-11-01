@@ -41,7 +41,7 @@ class Application : public QObject, protected QDBusContext
     Q_CLASSINFO("D-Bus Interface", "com.phosphorworks.Afterglow")
 
 public:
-    static constexpr const char* ServiceName = "com.phosphorworks.Afterglow";
+    static constexpr const char* ServiceName = AFTERGLOW_APP_ID;
     static constexpr const char* ObjectPath = "/com/phosphorworks/Afterglow";
 
     /// @p configPath (empty for the usual one) and @p overrides (afterglow -o)

@@ -59,7 +59,7 @@ of the active window or of the window that was active last.
 Put text that starts with -- after a "--": send-text -- --stdin.
 )";
 
-const QString Service = QStringLiteral("com.phosphorworks.Afterglow");
+const QString Service = QStringLiteral(AFTERGLOW_APP_ID);
 
 QString unescape(const QString& s)
 {

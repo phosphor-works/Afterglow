@@ -268,6 +268,20 @@ TEST(Graphics, ClearScreenDropsPlacements)
     EXPECT_TRUE(t.g().placements().empty());
 }
 
+TEST(Graphics, ClearScreenDropsImagesThatReachItFromTheScrollback)
+{
+    Term t(20, 5);
+    t.t.feed("\x1b[5;1H");
+    // Three rows high (cells are 20 px) from the bottom row, then three more
+    // line feeds: its top row is history, its last row still on the screen.
+    t.t.feed(apc("a=T,f=32,s=10,v=60,i=1,q=2", b64(rgba(10, 60, 0, 0, 0))));
+    t.t.feed("\n\n\n");
+    ASSERT_EQ(t.t.screen().historySize(), 5u);
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    t.t.feed("\x1b[2J");
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
 TEST(Graphics, SixelAllocationAndCoveragePreserveKittyImagesInInternalRange)
 {
     Term t(20, 10);
@@ -312,6 +326,7 @@ TEST(Graphics, KittyCommandsCannotAddressAnInternalImage)
 {
     Term t(20, 10);
     t.t.feed("\x1bPq#1~\x1b\\");
+    ASSERT_EQ(t.g().placements().size(), 1u);
     const auto id = t.g().placements().front().imageId;
     const auto identity = std::to_string(id);
     t.host.written.clear();
@@ -420,6 +435,102 @@ TEST(Graphics, ImageFollowsItsWrappedLine)
     vis = t.g().visible(t.t.screen(), 10, 20);
     ASSERT_EQ(vis.size(), 1u);
     EXPECT_EQ(vis[0].y, 0);
+}
+
+TEST(Graphics, ImageKeepsItsCharacterColumnWhenTheTerminalReflows)
+{
+    Term t(10, 6);
+    t.t.feed("0123456789AB"); // wraps onto row 1
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=14,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // right after "AB"
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    EXPECT_EQ(t.g().placements()[0].col, 2);
+    t.t.resize(20, 6, 10, 20); // the line unwraps: "AB" ends at column 12
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    EXPECT_EQ(t.g().placements()[0].col, 12);
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].x, 120);
+    EXPECT_EQ(vis[0].y, 0);
+}
+
+TEST(Graphics, AlternateScreenImageWhoseRowLeavesOnResizeIsDropped)
+{
+    Term t(20, 6);
+    t.t.feed("\x1b[?1049h\x1b[H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=1,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 0
+    t.t.feed("\x1b[4;5H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=2,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 3, column 4
+    t.t.feed("\x1b[6;1H");
+    ASSERT_EQ(t.g().placements().size(), 2u);
+    t.t.resize(20, 3, 10, 20); // the cursor's row stays: rows 0 to 2 leave at the top
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    EXPECT_EQ(t.g().placements()[0].imageId, 2u);
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].x, 40);
+    EXPECT_EQ(vis[0].y, 0);
+}
+
+TEST(Graphics, InsertedLinesMoveImagesAndPushThemOut)
+{
+    Term t(20, 6);
+    t.t.feed(std::string(10, '\n')); // history: IL and DL still move rows inside the screen
+    t.t.feed("\x1b[4;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=1,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 3
+    t.t.feed("\x1b[2;1H\x1b[2L"); // IL 2 at row 1: the image's row moves to 5
+    auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 100);
+    t.t.feed("\x1b[1M"); // DL 1 at row 1: back up to 4
+    vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 80);
+    t.t.feed("\x1b[2L"); // past the bottom: its row is gone, so is the image
+    EXPECT_TRUE(t.g().placements().empty());
+    EXPECT_EQ(t.g().images().count(1), 1u); // a numbered image stays for a later placement
+}
+
+TEST(Graphics, RegionScrollMovesImagesInsideItOnly)
+{
+    Term t(20, 6);
+    t.t.feed("\x1b[2;5r"); // rows 1 to 4
+    t.t.feed("\x1b[1;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=1,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 0, above the region
+    t.t.feed("\x1b[3;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=2,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 2
+    t.t.feed("\x1b[1S"); // SU 1 in the region
+    const auto rowOf = [&](std::uint32_t id) {
+        for (const auto& v : t.g().visible(t.t.screen(), 10, 20)) {
+            if (v.imageId == id) return v.y / 20;
+        }
+        return -1;
+    };
+    EXPECT_EQ(rowOf(1), 0);
+    EXPECT_EQ(rowOf(2), 1);
+    t.t.feed("\x1b[1S"); // row 1 is the region's top: it leaves
+    EXPECT_EQ(rowOf(1), 0);
+    EXPECT_EQ(rowOf(2), -1);
+    EXPECT_EQ(t.g().placements().size(), 1u);
+    // Left and right margins: only images in those columns move.
+    t.t.feed("\x1b[r\x1b[?69h\x1b[1;10s");
+    t.t.feed("\x1b[4;3H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=3,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 3, column 2
+    t.t.feed("\x1b[4;16H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=4,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 3, column 15
+    t.t.feed("\x1b[1S");
+    EXPECT_EQ(rowOf(3), 2);
+    EXPECT_EQ(rowOf(4), 3);
+}
+
+TEST(Graphics, AlternateScreenRegionScrollMovesImages)
+{
+    Term t(20, 6);
+    t.t.feed("\x1b[?1049h\x1b[2;6r\x1b[4;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=20,i=1,C=1,q=2", b64(rgba(10, 20, 0, 0, 0)))); // row 3
+    t.t.feed("\x1b[6;1H\n"); // a line feed at the bottom margin
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 40);
 }
 
 TEST(Graphics, HugeRowCountDoesNotHang)
@@ -1084,6 +1195,36 @@ TEST(Graphics, FileTransmissionCanBeTurnedOff)
     s.apc("a=t,t=t,f=32,s=1,v=1,i=1", b64(file.path));
     EXPECT_EQ(s.host.written, "\x1b_Gi=1;OK\x1b\\");
     EXPECT_FALSE(std::filesystem::exists(file.path)); // a temporary file is the terminal's to delete
+}
+
+TEST(Graphics, TerminalOptionTurnsFileTransmissionOff)
+{
+    TempFile file("afterglow-tty-graphics-protocol-option-");
+    const auto writeFile = [&] {
+        const int fd = open(file.path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        ASSERT_GE(fd, 0);
+        ASSERT_EQ(write(fd, "RGBA", 4), 4);
+        close(fd);
+    };
+    writeFile();
+    TerminalOptions off;
+    off.graphicsFileTransfer = false;
+    Term t(20, 10, off);
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1", b64(file.path)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EPERM:file transmission is turned off\x1b\\");
+    EXPECT_TRUE(std::filesystem::exists(file.path));
+    // A reload that allows it again reaches the store.
+    t.host.written.clear();
+    t.t.setOptions(TerminalOptions{});
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1", b64(file.path)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
+    // And one that turns it off again, on the alternate screen too.
+    writeFile();
+    t.host.written.clear();
+    t.t.setOptions(off);
+    t.t.feed("\x1b[?1049h");
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=2", b64(file.path)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;EPERM:file transmission is turned off\x1b\\");
 }
 
 TEST(Graphics, RefusedCommandStillDeletesItsTemporaryFile)

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TerminalWindow.h"
+#include "KeyMapping.h"
+#include "audio/AudioController.h"
 #include "chrome/ChromeController.h"
 #include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorAnimation/Spring.h>
@@ -109,9 +111,6 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
     if (tab < 0 || tab >= int(m_tabs.size()) || !m_tabs[std::size_t(tab)]->splits) return other;
     const Tab& owner = *m_tabs[std::size_t(tab)];
     const bool multiple = owner.splits->paneCount() > 1;
-    const QRect area = paneArea();
-    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
-    const double overviewAmount = std::clamp(m_overview.amount.value(), 0.0, 1.0);
     owner.splits->forEachPane([&](Pane* p, const QRect& r) {
         if (r.isEmpty() || (only && std::find(only->begin(), only->end(), p) == only->end())) return;
         AfterglowRender::WindowRenderer::Pane wp;
@@ -119,29 +118,77 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         wp.snapshot = &p->snapshot();
         wp.params.focused = false;
         wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
+        applyPaneEffectState(p, wp.params, animating);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.textBlinkOn = m_textBlinkOn;
         const QVariantMap overrides = applyScriptOverrides(p, wp.params, backgroundAlpha);
         const QRect shown = wp.params.rect;
         other.panes.push_back(std::move(wp));
-        // The overlays the tab had while it was current: the unfocused dim and
-        // the dividers, so a tab switch starts from exactly what was shown.
-        if (multiple && p != owner.focused) {
-            const double paneDim = overrides.contains(QStringLiteral("unfocusedDim"))
-                ? overrides.value(QStringLiteral("unfocusedDim")).toDouble() : m_settings.settings().window.unfocusedDim;
-            if (const auto alpha = std::uint8_t(std::lround(paneDim * (1.0 - overviewAmount) * 255)); alpha > 0)
-                other.overlays.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, alpha));
-        }
-        if (shown.right() < area.right()) {
-            other.overlays.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()),
-                                        m_settings.settings().window.dividerColor);
-        }
-        if (shown.bottom() < area.bottom()) {
-            other.overlays.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), dividerWidth),
-                                        m_settings.settings().window.dividerColor);
-        }
+        // The overlays the tab had while it was current, so a tab switch
+        // starts from exactly what was shown.
+        addPaneOverlays(other.overlays, shown, multiple && p != owner.focused, overrides);
     });
     return other;
+}
+
+void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, bool& animating)
+{
+    if (const auto pulse = m_panePulse.constFind(pane); pulse != m_panePulse.constEnd()) {
+        const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - pulse->at).count();
+        params.pulseProgress = std::clamp(seconds * 1000.0f / float(std::max(1, pulse->durationMs)), 0.0f, 1.0f);
+        params.pulseEffect = pulse->effect;
+        params.pulseColor = pulse->color;
+        animating |= params.pulseProgress < 1.0f;
+    }
+    // A change of host, user or container animates; the first sighting does not.
+    const QString kind = pane->contextKind();
+    const int context = kind == QLatin1String("remote") ? 1 : kind == QLatin1String("elevated") ? 2
+        : kind == QLatin1String("container") ? 3 : 0;
+    auto known = m_paneContext.find(pane);
+    if (known == m_paneContext.end()) {
+        known = m_paneContext.insert(pane, {context, std::chrono::steady_clock::now() - std::chrono::hours(1), context});
+    } else if (known->kind != context && paneEffectsAllowed()) {
+        // The pack eases from the old context's mark to the new one's.
+        *known = {context, std::chrono::steady_clock::now(), known->kind};
+    } else {
+        known->kind = context;
+    }
+    params.context = context;
+    params.previousContext = known->previous;
+    params.contextProgress = paneEffectProgress(known->at);
+    m_anyPaneAway |= context != 0;
+    animating |= params.contextProgress < 1.0f;
+}
+
+void TerminalWindow::addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
+                                     const QVariantMap& overrides) const
+{
+    const WindowSettings& window = m_settings.settings().window;
+    if (dim) {
+        // The overview shader draws the cards: the dim fades out under it.
+        const double overviewAmount = std::clamp(m_overview.amount.value(), 0.0, 1.0);
+        const auto custom = overrides.constFind(QStringLiteral("unfocusedDim"));
+        const double paneDim = custom != overrides.constEnd() ? custom->toDouble() : window.unfocusedDim;
+        if (const auto alpha = std::uint8_t(std::lround(paneDim * (1.0 - overviewAmount) * 255)); alpha > 0)
+            overlays.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, alpha));
+    }
+    // Dividers follow the drawn edges, so they move with split animations.
+    const QRect area = paneArea();
+    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
+    if (shown.right() < area.right())
+        overlays.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()), window.dividerColor);
+    if (shown.bottom() < area.bottom())
+        overlays.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), dividerWidth), window.dividerColor);
+}
+
+void TerminalWindow::updateAudioCapture()
+{
+    // An event chain that reads audio needs it only while it shows: an
+    // overview pack must not keep capture running while the overview is shut.
+    m_audioCapturing = m_audioUse.alwaysOn || (m_audioUse.overview && overviewShowing())
+        || (m_audioUse.tabTransition && m_tabTransition.progress.isAnimating())
+        || (m_audioUse.paneEffects && m_paneEffectsShowing);
+    m_audio.setActive(this, m_audioCapturing && isExposed() && visibility() != QWindow::Minimized);
 }
 
 QVariantMap TerminalWindow::applyScriptOverrides(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params,
@@ -230,6 +277,7 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         effects.active = effects.moving = true;
     }
     animating |= effects.moving;
+    m_paneEffectsShowing = effects.active;
     m_renderer->setPaneEffects(std::move(effects));
 }
 
@@ -271,6 +319,9 @@ bool TerminalWindow::openOverview()
         else tree->setZoomedPane(nullptr);
     }
     m_overview.open = true;
+    // Not laid out since a new tab, a split or the unzoom above: the current
+    // tab's cards would have no rectangles, and the focused one none to find.
+    if (m_layoutSize.isEmpty()) relayout();
     layoutOtherTabs();
     const auto panes = overviewPanes();
     const auto focused = std::find(panes.begin(), panes.end(), m_focused.data());
@@ -280,6 +331,13 @@ bool TerminalWindow::openOverview()
         restoreOverviewZooms(nullptr);
         return false;
     }
+    // Reopened while closing onto another tab: the user stays in the overview.
+    m_overview.reveal = nullptr;
+    m_overviewWheel = 0;
+    // The overview draws over every tab: a switch still running ends here.
+    m_tabTransition.progress.cancel();
+    // Cards in other tabs can be seen now (mode 2033).
+    updatePaneVisibility();
     cancelKeyMode();
     stopCopyMode();
     stopUrlMode();
@@ -337,10 +395,19 @@ void TerminalWindow::closeOverview(Pane* chosen)
     m_overview.open = false;
     Pane* target = chosen && std::find(before.begin(), before.end(), chosen) != before.end() ? chosen : m_overview.original.data();
     restoreOverviewZooms(target);
-    if (target && tabOf(target) != m_currentTab) revealPane(target);
-    else if (target) setFocusedPane(target);
+    if (target && tabOf(target) != m_currentTab) {
+        // Cards sit beside the current tab's panes: switching tabs now would
+        // move every card by the part of the way the overview has not opened.
+        // The tab switches once the close has finished (advanceOverview).
+        if (isExposed()) m_overview.reveal = target;
+        else revealPane(target);
+    } else if (target) {
+        setFocusedPane(target);
+    }
     const auto spec = overviewSpec();
     m_overview.amount.start(m_overview.amount.value(), 0.0, spec);
+    // Opened and closed before a frame: nothing to wait for.
+    if (m_overview.reveal && !overviewShowing()) revealPane(std::exchange(m_overview.reveal, nullptr));
     // The zooms can take cards away: count from the card the deck shows.
     const auto after = overviewPanes();
     if (const auto at = std::find(after.begin(), after.end(), target); at != after.end()) {
@@ -352,7 +419,11 @@ void TerminalWindow::closeOverview(Pane* chosen)
     m_overview.changedAt = std::chrono::steady_clock::now();
     m_overview.highlighted = nullptr;
     m_overview.original = nullptr;
+    // A script key mode that drove the overview goes with it, so its next
+    // key reaches the shell (a click closes the overview without the script).
+    if (m_scriptKeyMode && m_scriptKeyMode->withOverview) m_scriptKeyMode.reset();
     updateKeyMode();
+    updatePaneVisibility();
     scheduleRender();
 }
 
@@ -379,7 +450,7 @@ void TerminalWindow::overviewKey(QKeyEvent* e)
     const auto panes = overviewPanes();
     const auto at = std::find(panes.begin(), panes.end(), m_overview.highlighted.data());
     const int current = at == panes.end() ? 0 : int(at - panes.begin());
-    const Action action = m_settings.settings().keybinds.match(e);
+    const Action action = m_settings.settings().keybinds.match(e, bindingBaseKey(e));
     if (e->key() == Qt::Key_Escape || action == Action::PaneOverview) {
         closeOverview(nullptr);
     } else if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter || e->key() == Qt::Key_Space) {
@@ -446,6 +517,17 @@ void TerminalWindow::advanceOverview(bool& animating)
     m_overview.amount.advance();
     m_overview.position.advance();
     animating |= m_overview.amount.isAnimating() || m_overview.position.isAnimating();
+    const bool showing = overviewShowing();
+    if (m_overview.wasShowing && !showing) {
+        // The close has finished: other tabs' cards are hidden again, and
+        // the chosen card's tab shows. Not inside this frame, which has
+        // started on the current tab's layout.
+        QMetaObject::invokeMethod(this, [this, pane = std::exchange(m_overview.reveal, nullptr)] {
+            updatePaneVisibility();
+            if (pane && !overviewShowing() && tabOf(pane) >= 0) revealPane(pane);
+        }, Qt::QueuedConnection);
+    }
+    m_overview.wasShowing = showing;
 }
 
 } // namespace Afterglow

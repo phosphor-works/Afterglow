@@ -6,11 +6,11 @@
 #include <QJsonDocument>
 #include <cstdio>
 #include "app/Application.h"
+#include "app/Startup.h"
 #include "control/Ctl.h"
 #include "shell/Ssh.h"
 
 #include <PhosphorDBus/Client.h>
-#include <PhosphorWayland/LayerShellPluginLoader.h>
 
 #include <QCommandLineParser>
 #include <QApplication>
@@ -27,15 +27,18 @@
 #include <QQuickWindow>
 
 #include <exception>
+#include <memory>
 #include <sys/stat.h>
 
 namespace {
 
-enum class ForwardResult { Forwarded, DifferentExecutable, Unavailable };
+enum class ForwardResult { Forwarded, DifferentExecutable, Unavailable, Failed };
 
 /// Share the GPU device with an instance of this executable. A development
 /// build or an executable replaced by an upgrade must run its own code.
-ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& command, const QVariantMap& options, bool quick)
+/// @p error receives the running instance's reason when it answers Failed.
+ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& command, const QVariantMap& options, bool quick,
+                                       QString* error)
 {
     const QDBusConnection bus = QDBusConnection::sessionBus();
     QDBusConnectionInterface* interface = bus.interface();
@@ -66,7 +69,14 @@ ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& co
     const QString iface = QLatin1String(Afterglow::Application::ServiceName);
     const QDBusMessage reply = quick ? remote.syncCall(iface, QStringLiteral("ToggleQuickTerminal"))
                                      : remote.syncCall(iface, QStringLiteral("NewWindow"), {cwd, command, options});
-    return reply.type() != QDBusMessage::ErrorMessage ? ForwardResult::Forwarded : ForwardResult::Unavailable;
+    if (reply.type() != QDBusMessage::ErrorMessage) return ForwardResult::Forwarded;
+    // The instance got the request and could not open the window (a bad -e
+    // program): starting another process would fail the same way.
+    if (reply.errorName() == QLatin1String("org.freedesktop.DBus.Error.Failed")) {
+        *error = reply.errorMessage();
+        return ForwardResult::Failed;
+    }
+    return ForwardResult::Unavailable;
 }
 
 } // namespace
@@ -89,30 +99,12 @@ int main(int argc, char** argv)
         for (int i = 2; i < argc; ++i) args << QByteArray(argv[i]);
         return Afterglow::Ssh::run(args);
     }
-    // The quick terminal is a layer surface; this shell integration also gives
-    // ordinary windows their usual xdg-shell role. Chosen before Qt starts.
-    // The plugin lives in afterglow's private directory when installed, in
-    // the build tree during development (which, added last, wins).
-#ifdef AFTERGLOW_INSTALLED_PLUGIN_DIR
-    if (QDir(QStringLiteral(AFTERGLOW_INSTALLED_PLUGIN_DIR)).exists()) {
-        QCoreApplication::addLibraryPath(QStringLiteral(AFTERGLOW_INSTALLED_PLUGIN_DIR));
-    }
-#endif
-#ifdef AFTERGLOW_BUILD_PLUGIN_DIR
-    if (QDir(QStringLiteral(AFTERGLOW_BUILD_PLUGIN_DIR)).exists()) {
-        QCoreApplication::addLibraryPath(QStringLiteral(AFTERGLOW_BUILD_PLUGIN_DIR));
-    }
-#endif
-    PhosphorWayland::registerLayerShellPlugin();
+    Afterglow::prepareApplication();
 
     // Desktop Qt Quick styles can delegate their painting to the widget style.
     // QApplication initializes that style and follows the platform's palette.
     QApplication app(argc, argv);
-    QGuiApplication::setApplicationName(QStringLiteral("afterglow"));
-    QGuiApplication::setApplicationDisplayName(QStringLiteral("Afterglow"));
-    QGuiApplication::setApplicationVersion(QStringLiteral(AFTERGLOW_VERSION));
-    QGuiApplication::setDesktopFileName(QStringLiteral("com.phosphorworks.Afterglow"));
-    QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral("com.phosphorworks.Afterglow")));
+    QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral(AFTERGLOW_APP_ID)));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("A GPU accelerated terminal"));
@@ -166,9 +158,11 @@ int main(int argc, char** argv)
     const QString cwd = cwdGiven ? QDir(parser.value(cwdOption)).absolutePath() : QDir::currentPath();
     const QStringList command = parser.isSet(execOption) ? parser.positionalArguments() : QStringList{};
     const bool quick = parser.isSet(quickOption);
+    // The launcher's token lets the running instance's new window take focus.
     const QVariantMap windowOptions{{QStringLiteral("directoryGiven"), cwdGiven},
                                     {QStringLiteral("title"), parser.value(titleOption)},
-                                    {QStringLiteral("hold"), parser.isSet(holdOption)}};
+                                    {QStringLiteral("hold"), parser.isSet(holdOption)},
+                                    {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")}};
 
     QJsonObject overrides;
     for (const QString& assignment : parser.values(overrideOption)) {
@@ -186,10 +180,19 @@ int main(int argc, char** argv)
     const bool separate = !configPath.isEmpty() || !overrides.isEmpty() || parser.isSet(classOption);
 
     // Reuse the session process only when it runs this executable.
-    if (!separate && !QDBusConnection::sessionBus().registerService(QLatin1String(Afterglow::Application::ServiceName))) {
-        switch (forwardToRunningInstance(cwd, command, windowOptions, quick)) {
+    const bool owner = !separate && QDBusConnection::sessionBus().registerService(QLatin1String(Afterglow::Application::ServiceName));
+    // Launches that arrive while this process starts (the GPU device, QML
+    // and scripts take a while) wait in the queue, not for an unknown object.
+    std::unique_ptr<Afterglow::LaunchQueue> launches;
+    if (owner) launches = std::make_unique<Afterglow::LaunchQueue>();
+    if (!separate && !owner) {
+        QString error;
+        switch (forwardToRunningInstance(cwd, command, windowOptions, quick, &error)) {
         case ForwardResult::Forwarded:
             return 0;
+        case ForwardResult::Failed:
+            qCritical("afterglow: %s", qPrintable(error));
+            return 1;
         case ForwardResult::DifferentExecutable:
             qInfo("afterglow: the running instance uses a different executable; starting this build separately");
             break;
@@ -209,6 +212,7 @@ int main(int argc, char** argv)
         } else {
             if (!application.newWindow({cwd, command, false, cwdGiven, parser.value(titleOption), parser.isSet(holdOption)})) return 1;
         }
+        if (launches) launches->replay(application);
         return app.exec();
     } catch (const std::exception& e) {
         qCritical("afterglow: %s", e.what());

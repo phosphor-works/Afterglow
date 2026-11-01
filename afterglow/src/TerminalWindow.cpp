@@ -205,11 +205,9 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         if (QAccessible::isActive()) { QAccessibleEvent event(this, QAccessible::ObjectReorder); QAccessible::updateAccessibility(&event); }
     });
     connect(&m_device, &AfterglowRender::GpuDevice::audioChanged, this, [this] {
-        if (m_audioReactive && isExposed()) scheduleRender();
+        if (m_audioCapturing && isExposed()) scheduleRender();
     });
-    connect(this, &QWindow::visibilityChanged, this, [this] {
-        m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
-    });
+    connect(this, &QWindow::visibilityChanged, this, &TerminalWindow::updateAudioCapture);
     m_quick = options.quick;
     AfterglowRender::GpuDevice& device = m_device;
     QQmlEngine& engine = m_engine;
@@ -346,11 +344,11 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         const AfterglowVt::ClipboardRequest& r = pending->request;
         if (pending->write) {
             if (answer != 0) writeClipboard(pending->pane, r);
-            else if (!r.osc52) pending->pane->sendInput(AfterglowVt::ClipboardAssembler::writeStatus("EPERM", r.id));
+            else if (!r.osc52) pending->pane->sendReply(AfterglowVt::ClipboardAssembler::writeStatus("EPERM", r.id));
             return;
         }
         if (answer == 0) {
-            pending->pane->sendInput(r.osc52 ? r.osc52Reply({}) : AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
+            pending->pane->sendReply(r.osc52 ? r.osc52Reply({}) : AfterglowVt::ClipboardAssembler::readStatus("EPERM", r));
             return;
         }
         if (answer == 2 && !r.password.empty() && !r.name.empty()) {
@@ -386,6 +384,9 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
     connect(&m_device, &AfterglowRender::GpuDevice::fontsChanged, this, &TerminalWindow::scheduleRender);
     connect(&m_settings, &SettingsStore::changed, this, &TerminalWindow::applySettings);
+    // What the config file could not use: once for the process, not per window.
+    connect(&m_settings, &SettingsStore::problemsChanged, this, [](const QStringList& problems) { reportConfigProblems(problems); });
+    reportConfigProblems(m_settings.problems());
 
     m_textBlinkTimer.setInterval(m_settings.settings().textBlinkInterval);
     connect(&m_textBlinkTimer, &QTimer::timeout, this, [this] {
@@ -539,7 +540,7 @@ void TerminalWindow::bindPane(Pane* pane)
     connect(pane, &Pane::notificationRequested, this, [this, guard = QPointer<Pane>(pane)](const QString& title, const QString& body) {
         // Only when the user is not looking at that pane already.
         if (guard && m_settings.settings().notifications && (!isActive() || guard != m_focused)) {
-            NotificationCenter::instance().showSimple(guard, this, title.isEmpty() ? guard->title() : title, body);
+            NotificationCenter::instance().showSimple(guard, title.isEmpty() ? guard->title() : title, body);
         }
     });
     connect(pane, &Pane::clipboardRequested, this,
@@ -567,12 +568,18 @@ void TerminalWindow::bindPane(Pane* pane)
                         return;
                     }
                 }
-                NotificationCenter::instance().handle(guard, this, request);
+                NotificationCenter::instance().handle(guard, request);
             });
     connect(pane, &Pane::terminalProtocolRequested, this, [this, guard = QPointer<Pane>(pane)](int code, const QByteArray& payload) {
         if (!guard) return;
-        if (code == 0) { guard->fileTransfers()->reset(); guard->dragDrop()->reset(); }
-        else if (code == -1) { guard->fileTransfers()->abort(); guard->dragDrop()->abort(); }
+        // A reset or an overflow reaches only the handlers a program started.
+        if (code == 0) {
+            if (guard->hasFileTransfers()) guard->fileTransfers()->reset();
+            if (guard->hasDragDrop()) guard->dragDrop()->reset();
+        } else if (code == -1) {
+            if (guard->hasFileTransfers()) guard->fileTransfers()->abort();
+            if (guard->hasDragDrop()) guard->dragDrop()->abort();
+        }
         else if (code == 72) guard->dragDrop()->handle(payload);
         else if (code == 5113) {
             // The transfer worker starts with the first OSC 5113 message, not with the pane.
@@ -1072,6 +1079,8 @@ void TerminalWindow::switchTab(int index)
     if (index == m_currentTab && m_splits) {
         return; // already shown: switching would snap its animations
     }
+    // The user went somewhere else while the overview closed onto a card.
+    m_overview.reveal = nullptr;
     if (m_splits && m_currentTab < int(m_tabs.size())) {
         m_tabs[std::size_t(m_currentTab)]->focused = m_focused;
     }
@@ -1287,7 +1296,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     // A pane that left its tree (its program exited) has no reader for the report.
     if (m_focused && m_windowFocused && tabOf(m_focused) >= 0) {
         Pane* old = m_focused;
-        old->sendInput(old->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
+        old->sendReply(old->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
     }
     if (m_focused) {
         m_focused->setPreedit({}, 0);
@@ -1313,7 +1322,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
         setPaneZoom(pane);
     }
     if (pane && m_windowFocused) {
-        pane->sendInput(pane->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
+        pane->sendReply(pane->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
     }
     updateTitle();
     restartBlink();
@@ -1446,15 +1455,11 @@ void TerminalWindow::renderNow()
     const bool multiple = m_splits->paneCount() > 1;
     bool holding = false;
     bool animating = m_shaderControls.advance();
-    const QRect area = paneArea();
-    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
     const auto backgroundAlpha = std::uint8_t(std::lround(m_settings.settings().window.backgroundOpacity * 255));
     bool anyBlinkingText = false;
     bool focusedCursorBlinks = false;
     m_anyPaneAway = false;
     advanceOverview(animating);
-    // The overview shader draws the cards: fade the unfocused dim out under it.
-    const double overviewAmount = std::clamp(m_overview.amount.value(), 0.0, 1.0);
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         if (r.isEmpty()) return;
         AfterglowRender::WindowRenderer::Pane wp;
@@ -1466,34 +1471,10 @@ void TerminalWindow::renderNow()
             wp.params.openProgress = paneEffectProgress(opening->at);
             wp.params.openEdge = opening->edge;
         }
-        if (const auto pulse = m_panePulse.constFind(p); pulse != m_panePulse.constEnd()) {
-            const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - pulse->at).count();
-            wp.params.pulseProgress = std::clamp(seconds * 1000.0f / float(std::max(1, pulse->durationMs)), 0.0f, 1.0f);
-            wp.params.pulseEffect = pulse->effect;
-            wp.params.pulseColor = pulse->color;
-            animating |= wp.params.pulseProgress < 1.0f;
-        }
-        {
-            // A change of host, user or container animates; the first sighting does not.
-            const QString kind = p->contextKind();
-            const int context = kind == QLatin1String("remote") ? 1 : kind == QLatin1String("elevated") ? 2
-                : kind == QLatin1String("container") ? 3 : 0;
-            auto known = m_paneContext.find(p);
-            if (known == m_paneContext.end()) {
-                known = m_paneContext.insert(p, {context, std::chrono::steady_clock::now() - std::chrono::hours(1)});
-            } else if (known->kind != context && paneEffectsAllowed()) {
-                *known = {context, std::chrono::steady_clock::now()};
-            } else {
-                known->kind = context;
-            }
-            wp.params.context = context;
-            wp.params.contextProgress = paneEffectProgress(known->at);
-            m_anyPaneAway |= context != 0;
-            animating |= wp.params.contextProgress < 1.0f;
-        }
+        applyPaneEffectState(p, wp.params, animating);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.textBlinkOn = m_textBlinkOn;
-        applyScriptOverrides(p, wp.params, backgroundAlpha);
+        const QVariantMap overrides = applyScriptOverrides(p, wp.params, backgroundAlpha);
         anyBlinkingText |= p->snapshot().hasBlinkingText;
         if (p == m_focused) {
             const auto& snap = p->snapshot();
@@ -1508,13 +1489,7 @@ void TerminalWindow::renderNow()
         }
         panes.push_back(wp);
         const QRect shown = wp.params.rect;
-        if (multiple && p != m_focused) {
-            const auto overrides = scriptOverrides(p);
-            const double paneDim = overrides.contains(QStringLiteral("unfocusedDim"))
-                ? overrides.value(QStringLiteral("unfocusedDim")).toDouble() : m_settings.settings().window.unfocusedDim;
-            if (const auto alpha = std::uint8_t(std::lround(paneDim * (1.0 - overviewAmount) * 255)); alpha > 0)
-                overlays.emplace_back(shown, packRgba(0, 0, 0, alpha));
-        }
+        addPaneOverlays(overlays, shown, multiple && p != m_focused, overrides);
         if (PaneMotion& pm = motion(p); pm.bell.isAnimating()) {
             pm.bell.advance();
             // A colour the program set (OSC 21) wins over the theme's.
@@ -1525,15 +1500,6 @@ void TerminalWindow::renderNow()
             const double strength = std::clamp(pm.bell.value(), 0.0, 1.0) * std::clamp(colors.visualBellIntensity, 0.0, 1.0);
             overlays.emplace_back(shown, (rgb & 0x00ffffffu) | (std::uint32_t(std::lround(strength * 255)) << 24));
             animating |= pm.bell.isAnimating();
-        }
-        // Dividers follow the drawn edges, so they move with split animations.
-        if (shown.right() < area.right()) {
-            overlays.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()),
-                                  m_settings.settings().window.dividerColor);
-        }
-        if (shown.bottom() < area.bottom()) {
-            overlays.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), dividerWidth),
-                                  m_settings.settings().window.dividerColor);
         }
     });
     // The overview shows other tabs' panes too, each prepared like a visible one.
@@ -1610,7 +1576,10 @@ void TerminalWindow::renderNow()
         m_chrome->renderIfNeeded(m_renderer->pixelSize());
         chrome = m_chrome->texture();
     }
-    m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
+    // Nothing presented (a swapchain out of date, a lost device): the frame
+    // is owed, and output that arrives later may never ask for it.
+    if (!m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial())) scheduleRender();
+    updateAudioCapture();
     if (anyBlinkingText && !m_textBlinkTimer.isActive()) {
         m_textBlinkTimer.start();
     } else if (!anyBlinkingText && m_textBlinkTimer.isActive()) {
@@ -1881,7 +1850,7 @@ bool TerminalWindow::event(QEvent* e)
         for (auto* pane : panes()) if (pane != target) pane->dragDrop()->leave();
         if (target && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
             const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(m_splits->rectOf(target)).topLeft();
-            target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel, this);
+            target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
             return true;
         }
         const QString paths = droppedFiles(drop->mimeData());
@@ -1944,7 +1913,7 @@ void TerminalWindow::exposeEvent(QExposeEvent*)
 {
     QAccessibleEvent accessibleEvent(this, isExposed() ? QAccessible::ObjectShow : QAccessible::ObjectHide);
     QAccessible::updateAccessibility(&accessibleEvent);
-    m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
+    updateAudioCapture();
     if (isExposed() && !m_effectsApplied) {
         m_effectsApplied = true;
         applyWindowEffects();
@@ -1986,7 +1955,7 @@ void TerminalWindow::focusInEvent(QFocusEvent*)
     if (m_focused) { QAccessibleEvent event(m_focused, QAccessible::Focus); QAccessible::updateAccessibility(&event); }
     m_windowFocused = true;
     if (m_focused) {
-        m_focused->sendInput(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
+        m_focused->sendReply(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(true, t.modes()); }));
     }
     restartBlink();
     acknowledgeStatus();
@@ -2005,7 +1974,7 @@ void TerminalWindow::focusOutEvent(QFocusEvent*)
         applyPointerShape();
     }
     if (m_focused) {
-        m_focused->sendInput(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
+        m_focused->sendReply(m_focused->withTerminal([](Terminal& t) { return AfterglowVt::encodeFocus(false, t.modes()); }));
     }
     scheduleRender();
 }
@@ -2020,7 +1989,8 @@ void TerminalWindow::updateKeyMode()
 {
     m_controller->setKeyMode(m_scriptKeyMode ? m_scriptKeyMode->label
                              : m_overview.open ? tr("Panes · arrows choose · Enter or 1–9 focus · Esc cancel")
-                             : m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy · Esc to cancel") : m_keyMode.label());
+                             : m_copyPane ? tr("Copy · arrows/hjkl · v select · y copy · Esc to cancel")
+                             : m_keyMode.active() ? tr("%1 · Esc to cancel").arg(m_keyMode.label()) : QString());
     m_keyModeTimer.stop();
     if (m_keyMode.active()) m_keyModeTimer.start(int(std::max(qint64(1), m_keyMode.deadline - m_keyModeClock.elapsed())));
     // The overview, copy mode and script key modes start and end here.
@@ -2048,11 +2018,11 @@ void TerminalWindow::syncInputMethodEnabled()
 
 bool TerminalWindow::handleShortcut(QKeyEvent* e)
 {
-    const auto result = m_settings.settings().keyModes.press(e, m_keyMode, m_keyModeClock.elapsed());
+    const auto result = m_settings.settings().keyModes.press(e, m_keyMode, m_keyModeClock.elapsed(), bindingBaseKey(e));
     updateKeyMode();
     if (result.consumed) {
-        if (result.target.startsWith(QLatin1String("text:")) && m_focused) {
-            const QByteArray bytes = Keybinds::unescape(result.target.mid(5));
+        if (result.target.startsWith(QLatin1String(Keybinds::TextPrefix)) && m_focused) {
+            const QByteArray bytes = Keybinds::unescape(result.target.mid(qsizetype(std::strlen(Keybinds::TextPrefix))));
             m_focused->clearSelection();
             m_focused->sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())));
         } else if (result.target.startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
@@ -2065,7 +2035,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
         return true;
     }
     const Keybinds& kb = m_settings.settings().keybinds;
-    const Action action = kb.match(e);
+    const Action action = kb.match(e, bindingBaseKey(e));
     if (action != Action::None) {
         // These keep their key even when there is nothing to do: the
         // encoded chord would reach the shell as a control byte (the
@@ -2075,7 +2045,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
                                       Action::UsePackageShaders, Action::TogglePaneZoom};
         return performAction(action) || std::find(keepsKey.begin(), keepsKey.end(), action) != keepsKey.end();
     }
-    if (const QByteArray text = kb.matchText(e); !text.isEmpty()) {
+    if (const QByteArray text = kb.matchText(e, bindingBaseKey(e)); !text.isEmpty()) {
         if (!m_focused) {
             return false;
         }
@@ -2084,7 +2054,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
         m_focused->sendInput(std::string_view(text.constData(), std::size_t(text.size())));
         return true;
     }
-    const QString script = kb.matchScript(e);
+    const QString script = kb.matchScript(e, bindingBaseKey(e));
     return !script.isEmpty() && m_scripts.runAction(script, m_focused ? m_focused->id() : 0);
 }
 
@@ -2371,9 +2341,14 @@ bool TerminalWindow::performAction(Action action)
             scheduleRender();
         }
         return true;
-    case Action::ReloadConfig:
+    case Action::ReloadConfig: {
+        const QStringList before = m_settings.problems();
         m_settings.reload();
+        // Asked for: problems that did not change show again (a changed
+        // list has shown through problemsChanged).
+        if (m_settings.problems() == before) reportConfigProblems(before, true);
         return true;
+    }
     case Action::OpenConfig:
         QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings.path()));
         return true;
@@ -2436,10 +2411,40 @@ void TerminalWindow::updateChrome()
                                   QColor(pal[9].r, pal[9].g, pal[9].b));
 }
 
+void TerminalWindow::reportConfigProblems(const QStringList& problems, bool again)
+{
+    // Every window hears problemsChanged from the one store, and each new
+    // window sees the problems of the startup read: show a list once.
+    static QStringList shown;
+    if (problems.isEmpty() || (problems == shown && !again)) {
+        shown = problems;
+        return;
+    }
+    shown = problems;
+    constexpr qsizetype Listed = 5;
+    QString body = QStringList(problems.mid(0, Listed)).join(QLatin1Char('\n'));
+    if (problems.size() > Listed) body += QLatin1Char('\n') + tr("and %n more", nullptr, int(problems.size() - Listed));
+    NotificationCenter::instance().showNotice(nullptr, tr("Configuration problems"), body);
+}
+
+namespace {
+/// The chords bound to @p action, then its key sequences and table keys,
+/// each in config order.
+QStringList shortcutsOf(const Keybinds& keybinds, const KeyModes& modes, Action action)
+{
+    return keybinds.bindingsOf(action) + modes.bindingsOf(Keybinds::token(action));
+}
+QStringList scriptShortcutsOf(const Keybinds& keybinds, const KeyModes& modes, const QString& action)
+{
+    return keybinds.bindingsOfScript(action) + modes.bindingsOf(QLatin1String(Keybinds::ScriptPrefix) + action);
+}
+} // namespace
+
 void TerminalWindow::updatePaletteActions()
 {
     QVariantList actions;
     const Keybinds& kb = m_settings.settings().keybinds;
+    const KeyModes& modes = m_settings.settings().keyModes;
     for (Action a : Keybinds::allActions()) {
         // The palette cannot run itself, and while a script holds the keys
         // the palette cannot open: its chord is the only way.
@@ -2448,13 +2453,13 @@ void TerminalWindow::updatePaletteActions()
         }
         actions.append(QVariantMap{{QStringLiteral("id"), int(a)},
                                    {QStringLiteral("title"), Keybinds::title(a)},
-                                   {QStringLiteral("shortcut"), kb.bindingsOf(a).join(QStringLiteral("  "))}});
+                                   {QStringLiteral("shortcut"), shortcutsOf(kb, modes, a).join(QStringLiteral("  "))}});
     }
     m_paletteScriptActions.clear();
     for (const ScriptHost::ScriptAction& a : m_scripts.actions()) {
         actions.append(QVariantMap{{QStringLiteral("id"), ScriptActionBase + int(m_paletteScriptActions.size())},
                                    {QStringLiteral("title"), a.title},
-                                   {QStringLiteral("shortcut"), kb.bindingsOfScript(a.token).join(QStringLiteral("  "))}});
+                                   {QStringLiteral("shortcut"), scriptShortcutsOf(kb, modes, a.token).join(QStringLiteral("  "))}});
         m_paletteScriptActions.append(a.token);
     }
     m_controller->setActions(actions);
@@ -2689,7 +2694,7 @@ void TerminalWindow::paneStatusChanged(Pane* pane)
             && (!view.lastNotification.isValid() || view.lastNotification.elapsed() >= StatusNotificationIntervalMs)) {
             view.lastNotification.start();
             const QString source = statusSource(*attention);
-            NotificationCenter::instance().showSimple(pane, this, source.isEmpty() ? pane->title() : source,
+            NotificationCenter::instance().showSimple(pane, source.isEmpty() ? pane->title() : source,
                                                       statusDescription(*attention),
                                                       attention->state == AfterglowVt::StatusState::Blocked ? 2 : 1);
         }
@@ -2773,7 +2778,7 @@ void TerminalWindow::publishLauncherStatus()
                                                      QStringLiteral("com.canonical.Unity.LauncherEntry"),
                                                      QStringLiteral("Update"));
     // --class changes the desktop file name, and the launcher entry with it.
-    const QString desktopFile = QGuiApplication::desktopFileName().isEmpty() ? QStringLiteral("com.phosphorworks.Afterglow")
+    const QString desktopFile = QGuiApplication::desktopFileName().isEmpty() ? QStringLiteral(AFTERGLOW_APP_ID)
                                                                              : QGuiApplication::desktopFileName();
     signal << QStringLiteral("application://%1.desktop").arg(desktopFile)
            << QVariantMap{{QStringLiteral("progress"), progress >= 0 ? progress / 100.0 : 0.0},
@@ -2835,6 +2840,7 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
 void TerminalWindow::openContextMenu(const QPointF& pos)
 {
     const Keybinds& kb = m_settings.settings().keybinds;
+    const KeyModes& modes = m_settings.settings().keyModes;
     auto entry = [](int id, const QString& title, const char* icon, const QString& shortcut = {}, bool enabled = true) {
         return QVariant(QVariantMap{{QStringLiteral("id"), id},
                                     {QStringLiteral("title"), title},
@@ -2843,7 +2849,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
                                     {QStringLiteral("enabled"), enabled}});
     };
     auto action = [&](Action a, const QString& title, const char* icon, bool enabled = true) {
-        return entry(int(a), title, icon, kb.bindingsOf(a).value(0), enabled);
+        return entry(int(a), title, icon, shortcutsOf(kb, modes, a).value(0), enabled);
     };
     auto submenu = [](const QString& title, const char* icon, const QVariantList& items) {
         return QVariant(QVariantMap{{QStringLiteral("title"), title},
@@ -2900,7 +2906,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
         // Ids from TabMenuRename on are the tab menu's.
         if (MenuScriptBase + m_menuScriptActions.size() >= TabMenuRename) break;
         scripts << entry(MenuScriptBase + int(m_menuScriptActions.size()), a.title, "",
-                         kb.bindingsOfScript(a.token).value(0));
+                         scriptShortcutsOf(kb, modes, a.token).value(0));
         m_menuScriptActions.append(a.token);
     }
     if (!scripts.isEmpty()) {
@@ -3289,13 +3295,17 @@ void TerminalWindow::applyShaders()
     const Settings& s = m_settings.settings();
     auto chains = m_shaders.build(s.shaders, s.shaderParams);
     m_shaderControls.rebuild(chains);
-    m_audioReactive = chains.audioReactive();
+    const auto audio = [](const AfterglowRender::ShaderProgram& p) { return p.requiresAudio(); };
+    m_audioUse = {chains.anyAlwaysOn(audio), AfterglowRender::ShaderChains::anyIn(chains.overview, audio),
+                  AfterglowRender::ShaderChains::anyIn(chains.tabTransition, audio),
+                  AfterglowRender::ShaderChains::anyIn(chains.paneEffects, audio)};
+    m_readsMouse = chains.readsMouse();
     m_overviewAvailable = !chains.overview.empty();
     m_tabTransitionAvailable = !chains.tabTransition.empty();
     m_paneEffectsAvailable = !chains.paneEffects.empty();
     if (!m_overviewAvailable) closeOverview(nullptr);
     m_renderer->setShaderChains(std::move(chains));
-    m_audio.setActive(this, m_audioReactive && isExposed() && visibility() != QWindow::Minimized);
+    updateAudioCapture();
     scheduleRender();
 }
 
@@ -3431,8 +3441,8 @@ bool TerminalWindow::copyModeKey(QKeyEvent* e)
 {
     if (!m_copyPane) return false;
     if (m_controller->wantsKeyboard()) { stopCopyMode(); return false; }
-    if (m_settings.settings().keybinds.match(e) == Action::CopyMode) { stopCopyMode(); return true; }
-    if (m_settings.settings().keybinds.match(e) == Action::Copy) { performAction(Action::Copy); stopCopyMode(); return true; }
+    if (m_settings.settings().keybinds.match(e, bindingBaseKey(e)) == Action::CopyMode) { stopCopyMode(); return true; }
+    if (m_settings.settings().keybinds.match(e, bindingBaseKey(e)) == Action::Copy) { performAction(Action::Copy); stopCopyMode(); return true; }
     if (!m_copyPane->moveCopyCursor(0, 0)) { stopCopyMode(); return true; }
     int dx = 0, dy = 0, edge = 0;
     switch (e->key()) {
@@ -3502,7 +3512,7 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         cancelKeyMode();
         // The palette keybind still closes the palette, and the search
         // keybind still moves to search, while the chrome has the keyboard.
-        const Action a = m_settings.settings().keybinds.match(e);
+        const Action a = m_settings.settings().keybinds.match(e, bindingBaseKey(e));
         if (!m_scriptDialog && (a == Action::CommandPalette || a == Action::Search)) {
             performAction(a);
             return;
@@ -3623,7 +3633,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
     QClipboard* clipboard = QGuiApplication::clipboard();
     if (r.kind == AfterglowVt::ClipboardRequest::Kind::Write) {
         if (r.primary && !clipboard->supportsSelection()) {
-            pane->sendInput(ClipboardAssembler::writeStatus("ENOSYS", r.id));
+            pane->sendReply(ClipboardAssembler::writeStatus("ENOSYS", r.id));
             return;
         }
         clipboardWrite(pane, r);
@@ -3643,11 +3653,11 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         // An OSC 52 read: no name or password to remember a grant by, so
         // the setting decides, or the user does each time.
         if (policy == QLatin1String("deny") || (r.primary && !clipboard->supportsSelection())) {
-            pane->sendInput(r.osc52Reply({}));
+            pane->sendReply(r.osc52Reply({}));
         } else if (policy == QLatin1String("allow")) {
             answerClipboardRead(pane, r);
         } else if (m_pendingClipboardRead) {
-            pane->sendInput(r.osc52Reply({})); // one prompt at a time
+            pane->sendReply(r.osc52Reply({})); // one prompt at a time
         } else {
             m_pendingClipboardRead = PendingClipboardRead{pane, r};
             m_controller->askClipboard(tr("%1 wants to read the %2.").arg(who({}), buffer), {});
@@ -3657,7 +3667,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     if (r.primary && !clipboard->supportsSelection()) {
-        pane->sendInput(ClipboardAssembler::readStatus("ENOSYS", r));
+        pane->sendReply(ClipboardAssembler::readStatus("ENOSYS", r));
         return;
     }
     // Listing the types needs no permission.
@@ -3666,7 +3676,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     if (policy == QLatin1String("deny")) {
-        pane->sendInput(ClipboardAssembler::readStatus("EPERM", r));
+        pane->sendReply(ClipboardAssembler::readStatus("EPERM", r));
         return;
     }
     auto& grants = m_clipboardGrants[pane];
@@ -3692,7 +3702,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     if (m_pendingClipboardRead) {
-        pane->sendInput(ClipboardAssembler::readStatus("EBUSY", r));
+        pane->sendReply(ClipboardAssembler::readStatus("EBUSY", r));
         return;
     }
     // Ask. The name, when the program gave one with a password, can be remembered.
@@ -3716,13 +3726,13 @@ void TerminalWindow::clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequ
         writeClipboard(pane, r);
         return;
     case Settings::Permission::Deny:
-        if (!r.osc52) pane->sendInput(ClipboardAssembler::writeStatus("EPERM", r.id));
+        if (!r.osc52) pane->sendReply(ClipboardAssembler::writeStatus("EPERM", r.id));
         return;
     case Settings::Permission::Ask:
         break;
     }
     if (m_pendingClipboardRead) {
-        if (!r.osc52) pane->sendInput(ClipboardAssembler::writeStatus("EBUSY", r.id));
+        if (!r.osc52) pane->sendReply(ClipboardAssembler::writeStatus("EBUSY", r.id));
         return;
     }
     const QString who = sanitizedText(pane->title().isEmpty() ? tr("A program") : pane->title(), 80);
@@ -3754,7 +3764,7 @@ void TerminalWindow::writeClipboard(Pane* pane, const AfterglowVt::ClipboardRequ
         data->setData(it.key(), it.value());
     }
     clipboard->setMimeData(data, mode);
-    pane->sendInput(ClipboardAssembler::writeStatus("DONE", r.id));
+    pane->sendReply(ClipboardAssembler::writeStatus("DONE", r.id));
 }
 
 void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& r, std::string_view oneTimePassword)
@@ -3763,7 +3773,7 @@ void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::Clipboar
     if (r.osc52) {
         const QByteArray text = truncatedUtf8(
             QGuiApplication::clipboard()->text(r.primary ? QClipboard::Selection : QClipboard::Clipboard).toUtf8(), MaxClipboardReply);
-        pane->sendInput(r.osc52Reply(std::string_view(text.constData(), std::size_t(text.size()))));
+        pane->sendReply(r.osc52Reply(std::string_view(text.constData(), std::size_t(text.size()))));
         return;
     }
     const QMimeData* data = QGuiApplication::clipboard()->mimeData(r.primary ? QClipboard::Selection : QClipboard::Clipboard);
@@ -3794,16 +3804,16 @@ void TerminalWindow::answerClipboardRead(Pane* pane, const AfterglowVt::Clipboar
         }
         if (bytes.size() > MaxClipboardReply) {
             // Too large for one reply: say so, rather than send part of it.
-            pane->sendInput(ClipboardAssembler::readStatus("EFBIG", r, oneTimePassword));
+            pane->sendReply(ClipboardAssembler::readStatus("EFBIG", r, oneTimePassword));
             return;
         }
         out += ClipboardAssembler::readData(mime, std::string_view(bytes.constData(), std::size_t(bytes.size())), r,
                                             oneTimePassword);
     }
     out += ClipboardAssembler::readStatus("DONE", r, oneTimePassword);
-    if (!pane->sendInput(out)) {
+    if (!pane->sendReply(out)) {
         // The input queue refused it whole: the program still gets an end.
-        pane->sendInput(ClipboardAssembler::readStatus("EIO", r, oneTimePassword));
+        pane->sendReply(ClipboardAssembler::readStatus("EIO", r, oneTimePassword));
     }
 }
 
@@ -4189,6 +4199,8 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     m_pointerHidden = false;
     m_renderer->setMousePosition(e->position() * devicePixelRatio());
     m_pointer = e->position();
+    // A pack that reads the pointer moves with it, with nothing else changing.
+    if (m_readsMouse) scheduleRender();
     // The overview draws cards, not the layout: no hover, selection or reports.
     if (m_overview.open) return;
     const QPoint px = (e->position() * devicePixelRatio()).toPoint();

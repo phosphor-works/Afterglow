@@ -180,12 +180,12 @@ void KeyModes::expire(State& state, qint64 now)
     arm(state);
 }
 
-KeyModes::Result KeyModes::press(const QKeyEvent* event, State& state, qint64 now) const
+KeyModes::Result KeyModes::press(const QKeyEvent* event, State& state, qint64 now, char32_t base) const
 {
     expire(state, now);
     if (modifierOnly(event->key())) return {state.active(), {}};
     if (event->isAutoRepeat() && !state.prefix.isEmpty()) return {true, {}};
-    const auto combinations = Keybinds::combinations(event);
+    const auto combinations = Keybinds::combinations(event, base);
     // On mismatch discard the prefix/table and reconsider only this key at root.
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto entries = m_tables.constFind(state.table);

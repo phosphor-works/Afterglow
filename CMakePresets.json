@@ -1,12 +1,12 @@
 {
-    "version": 6,
+    "version": 3,
     "configurePresets": [
         {
             "name": "dev",
             "displayName": "Development (RelWithDebInfo)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "AFTERGLOW_BUILD_TOOLS": "ON" }
         },
         {
             "name": "debug",
@@ -23,7 +23,7 @@
             "displayName": "Release",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build-release",
-            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "AFTERGLOW_BUILD_TOOLS": "ON" }
         }
     ],
     "buildPresets": [

@@ -226,10 +226,15 @@ bool budgetFree(const QString& kind)
     return kind == QLatin1String("sleep") || kind == QLatin1String("end_key_mode") || kind == QLatin1String("cancel");
 }
 
+/// The channels a signal can set: the size of the shaders' uSignal array
+/// (TerminalUniformsTail in ShaderProgram.h, Pane::SignalCount). This
+/// library does not link the renderer to read it from there.
+constexpr int SignalChannels = 8;
+
 bool validSignal(const QVariant& channel, const QVariant& value)
 {
     const double c = channel.toDouble(), v = value.toDouble();
-    return number(channel) && number(value) && std::isfinite(c) && c == std::floor(c) && c >= 0 && c < 8
+    return number(channel) && number(value) && std::isfinite(c) && c == std::floor(c) && c >= 0 && c < SignalChannels
         && std::isfinite(v) && std::abs(v) <= std::numeric_limits<float>::max();
 }
 
@@ -1075,8 +1080,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             const auto values = raw.value(QStringLiteral("values")).toList();
             QVariantList checked;
             QSet<int> seen;
-            if (values.isEmpty() || values.size() > 8) {
-                error = QStringLiteral("a signal batch needs 1 to 8 channels");
+            if (values.isEmpty() || values.size() > SignalChannels) {
+                error = QStringLiteral("a signal batch needs 1 to %1 channels").arg(SignalChannels);
             }
             for (const auto& value : values) {
                 const auto entry = value.toMap();

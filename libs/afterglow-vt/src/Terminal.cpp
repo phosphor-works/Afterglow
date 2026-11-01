@@ -4,6 +4,7 @@
 #include <AfterglowVt/Input.h>
 #include <AfterglowVt/Terminal.h>
 #include <AfterglowVt/Sixel.h>
+#include <AfterglowVt/afterglowvt_version.h>
 
 #include "Base64.h"
 #include "ITerm2.h"
@@ -26,11 +27,7 @@ constexpr char32_t DecSpecialGraphics[32] = {
     0x2524, 0x2534, 0x252C, 0x2502, 0x2264, 0x2265, 0x03C0, 0x2260, 0x00A3, 0x00B7,
 };
 
-constexpr std::string_view Version = "0.1.0";
-
-/// What decodeSixel accepts (Sixel.cpp): XTSMGRAPHICS reports no more.
-constexpr int SixelMaxSide = 10000;
-constexpr std::uint64_t SixelMaxPixels = std::uint64_t(4096) * 4096;
+constexpr std::string_view Version = AFTERGLOW_VT_VERSION;
 
 /// Replies one sequence that lists items (OSC 4 queries, XTGETTCAP names)
 /// may produce: each is a write to the program, and the list can be long.
@@ -266,6 +263,7 @@ Terminal::Terminal(int cols, int rows, ITerminalHost& host, const TerminalOption
     m_modes.cursorBlink = options.cursorBlink;
     for (GraphicsStore& store : m_graphics) {
         store.setQuota(options.graphicsQuota);
+        store.setFileTransfer(options.graphicsFileTransfer);
     }
     m_margins = Region{0, rows - 1, 0, cols - 1};
     m_tabStops.assign(std::size_t(cols), false);
@@ -423,6 +421,9 @@ void Terminal::setOptions(const TerminalOptions& options)
             store.setQuota(options.graphicsQuota);
         }
     }
+    for (GraphicsStore& store : m_graphics) {
+        store.setFileTransfer(options.graphicsFileTransfer);
+    }
     // A reload changes settings unrelated to the cursor too (scrollback,
     // colours): the shape a program chose stays unless the configured one changed.
     const bool cursorChanged = options.cursorShape != m_options.cursorShape || options.cursorBlink != m_options.cursorBlink;
@@ -466,16 +467,15 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
         return;
     }
     const std::optional<std::size_t> prompt = m_modes.altScreen ? std::nullopt : redrawablePromptStart();
-    // As Screen::resize decides: without history nothing reflows, so no
-    // prompt is kept for the shell to repaint.
-    const bool reflows = cols != m_primary->cols() && m_options.maxScrollback > 0;
+    // As Screen::resize decides: only a width change reflows.
+    const bool reflows = cols != m_primary->cols();
     if (prompt && reflows) {
         m_promptRedrawPending = true;
     }
     // Reflow renumbers rows; images follow the rows they are anchored to.
     std::vector<std::size_t> anchors = m_graphics[0].anchorRows(*m_primary);
     const auto imageAnchors = anchors.size();
-    std::vector<int> columns(anchors.size(), 0);
+    std::vector<int> columns = m_graphics[0].anchorColumns();
     std::vector<SemanticPosition> positions;
     for (const auto* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
         positions.push_back({mark->row, mark->col});
@@ -526,8 +526,12 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
         region.end = positions[index++];
     }
     anchors.resize(imageAnchors);
-    m_graphics[0].retarget(*m_primary, anchors);
-    m_alternate->resize(cols, rows, false);
+    columns.resize(imageAnchors);
+    m_graphics[0].retarget(*m_primary, anchors, &columns);
+    std::vector<std::size_t> altRows = m_graphics[1].anchorRows(*m_alternate);
+    std::vector<int> altColumns = m_graphics[1].anchorColumns();
+    m_alternate->resize(cols, rows, false, std::nullopt, &altRows, &altColumns);
+    m_graphics[1].retarget(*m_alternate, altRows, &altColumns);
     m_margins = Region{0, rows - 1, 0, cols - 1};
 
     const std::size_t oldCols = m_tabStops.size();
@@ -1037,9 +1041,7 @@ void Terminal::index()
     cur.pendingWrap = false;
     if (cur.y == m_margins.bottom) {
         if (cur.x >= m_margins.left && cur.x <= m_margins.right) {
-            const std::uint32_t fill = acquireFill();
-            m_active->scrollUp(m_margins, 1, fill, true);
-            releaseFill(fill);
+            scrollRegion(m_margins, 1, true, true);
         }
     } else if (cur.y < rows() - 1) {
         ++cur.y;
@@ -1053,9 +1055,7 @@ void Terminal::reverseIndex()
     cur.pendingWrap = false;
     if (cur.y == m_margins.top) {
         if (cur.x >= m_margins.left && cur.x <= m_margins.right) {
-            const std::uint32_t fill = acquireFill();
-            m_active->scrollDown(m_margins, 1, fill);
-            releaseFill(fill);
+            scrollRegion(m_margins, 1, false);
         }
     } else if (cur.y > 0) {
         --cur.y;
@@ -1360,9 +1360,7 @@ void Terminal::placeMulticell(char32_t cp, std::u32string_view extra, const Mult
     }
     while (cur.y + height - 1 > bottom) {
         Region r = inRegion ? m_margins : Region{0, rows() - 1, 0, cols() - 1};
-        const std::uint32_t fill = acquireFill();
-        m_active->scrollUp(r, 1, fill, r.top == 0 && r.left == 0 && r.right == cols() - 1);
-        releaseFill(fill);
+        scrollRegion(r, 1, true, r.top == 0 && r.left == 0 && r.right == cols() - 1);
         --cur.y;
     }
     // Lines that hold a block are single size, as setLineSize() keeps them:
@@ -1476,7 +1474,7 @@ void Terminal::eraseDisplay(int mode, bool selective)
         for (int y = 0; y < rows(); ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
-        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, false);
+        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, false, m_cellWidth, m_cellHeight);
         break;
     case 3:
         // Only the saved lines go (xterm): images on the screen stay with its text.
@@ -1523,9 +1521,7 @@ void Terminal::insertLines(int n)
     }
     Region r = m_margins;
     r.top = cur.y;
-    const std::uint32_t fill = acquireFill();
-    m_active->scrollDown(r, n, fill);
-    releaseFill(fill);
+    scrollRegion(r, n, false);
     cur.x = m_margins.left;
     cur.pendingWrap = false;
 }
@@ -1538,9 +1534,7 @@ void Terminal::deleteLines(int n)
     }
     Region r = m_margins;
     r.top = cur.y;
-    const std::uint32_t fill = acquireFill();
-    m_active->scrollUp(r, n, fill);
-    releaseFill(fill);
+    scrollRegion(r, n, true);
     cur.x = m_margins.left;
     cur.pendingWrap = false;
 }
@@ -1762,16 +1756,57 @@ void Terminal::copyRect(const Params& p)
 
 void Terminal::scrollUp(int n)
 {
-    const std::uint32_t fill = acquireFill();
-    m_active->scrollUp(m_margins, n, fill);
-    releaseFill(fill);
+    scrollRegion(m_margins, n, true);
 }
 
 void Terminal::scrollDown(int n)
 {
+    scrollRegion(m_margins, n, false);
+}
+
+void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
+{
     const std::uint32_t fill = acquireFill();
-    m_active->scrollDown(m_margins, n, fill);
+    const bool moved = up ? m_active->scrollUp(r, n, fill, intoHistory) : m_active->scrollDown(r, n, fill);
     releaseFill(fill);
+    if (!moved) {
+        return; // every cell kept its row id: nothing anchored needs to move
+    }
+    // Stable ids, as images, marks and selections hold them. n is the
+    // count Screen clamped to the region's height.
+    const Screen& scr = *m_active;
+    const std::uint64_t base = scr.rowsDropped() + scr.historySize();
+    RegionScroll scroll;
+    scroll.top = base + std::uint64_t(r.top);
+    scroll.bottom = base + std::uint64_t(r.bottom);
+    scroll.left = r.left;
+    scroll.right = r.right;
+    scroll.fullWidth = r.left == 0 && r.right == cols() - 1;
+    const int count = std::min(n, r.bottom - r.top + 1);
+    scroll.delta = up ? -count : count;
+    m_graphics[m_modes.altScreen ? 1 : 0].scrollRegion(scroll);
+    if (!m_modes.altScreen) {
+        // Shell marks are kept for the primary screen only. One whose cell
+        // left the region is gone, as its text is.
+        for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
+            if (!mark->valid) continue;
+            if (const auto to = scroll.map({mark->row, mark->col})) mark->row = to->row;
+            else *mark = {};
+        }
+        std::erase_if(m_semanticRegions, [&](SemanticRegion& region) {
+            const auto start = scroll.map({region.start.row, region.start.col});
+            if (!start) return true;
+            // An open region ends at the cursor: its stored end is not used.
+            if (!region.open) {
+                const auto end = scroll.map({region.end.row, region.end.col});
+                if (!end) return true;
+                region.end.row = end->row;
+            }
+            region.start.row = start->row;
+            return false;
+        });
+    }
+    m_host.regionScrolled(scroll);
 }
 
 void Terminal::setTopBottomMargins(int top, int bottom)
@@ -1929,6 +1964,14 @@ void Terminal::clearScreenAndHistory()
         setCursor(0, 0);
     }
     touch();
+}
+
+void Terminal::setSynchronizedOutput(bool on)
+{
+    if (on && !m_modes.synchronizedOutput) {
+        ++m_synchronizedOutputSerial;
+    }
+    m_modes.synchronizedOutput = on;
 }
 
 void Terminal::fullReset()
@@ -2703,7 +2746,7 @@ void Terminal::setColumnMode(bool wide)
         for (int y = 0; y < rows(); ++y) {
             m_active->eraseRow(m_active->row(y), StyleTable::DefaultId);
         }
-        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, false);
+        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, false, m_cellWidth, m_cellHeight);
         m_extraCursors.clear();
     }
     setCursor(0, 0);
@@ -3126,7 +3169,7 @@ void Terminal::setDecMode(int mode, bool on)
         m_modes.bracketedPaste = on;
         break;
     case 2026:
-        m_modes.synchronizedOutput = on;
+        setSynchronizedOutput(on);
         break;
     case 5522:
         m_modes.pasteEvents = on;
@@ -4271,13 +4314,16 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
     if (!detail::iterm2ImageSize(file, frame.width, frame.height, m_cellWidth, m_cellHeight, cols(), rows(), width, height)) {
         return;
     }
-    frame = detail::scaleFrame(frame, width, height);
+    // Stored at its natural size, shrunk only: an enlargement is drawn by the
+    // renderer at the display size, so it costs no quota and stays sharp.
+    frame = detail::scaleFrame(frame, std::min(width, frame.width), std::min(height, frame.height));
     Cursor& cur = cursor();
     const int cellsWide = int((width + std::uint32_t(m_cellWidth) - 1) / std::uint32_t(m_cellWidth));
     const int cellsHigh = int((height + std::uint32_t(m_cellHeight) - 1) / std::uint32_t(m_cellHeight));
     const int col = cur.x;
     const int row = cur.y;
-    m_graphics[m_modes.altScreen ? 1 : 0].addSixel(std::move(frame), *m_active, row, col, m_cellWidth, m_cellHeight);
+    m_graphics[m_modes.altScreen ? 1 : 0].addSixel(std::move(frame), *m_active, row, col, m_cellWidth, m_cellHeight,
+                                                   width, height);
     if (file.doNotMoveCursor) {
         return;
     }
@@ -4671,7 +4717,7 @@ void Terminal::dcsDispatch(const Params& params, const Intermediates& inter, std
     if (inter.marker == '=' && inter.count == 0 && final == 's') {
         // The older form of synchronized updates: 1 begins, 2 ends.
         if (params.at(0) == 1 || params.at(0) == 2) {
-            m_modes.synchronizedOutput = params.at(0) == 1;
+            setSynchronizedOutput(params.at(0) == 1);
         }
         return;
     }

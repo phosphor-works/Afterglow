@@ -221,7 +221,9 @@ struct Settings
 };
 
 /// The config file (~/.config/afterglow/config.json) on phosphor-config,
-/// with defaults written on first run and live reload when the file changes.
+/// with live reload when the file changes. The file holds only the values
+/// that differ from the defaults; a missing file means every default, and
+/// the first write() creates it, readable by the owner only.
 class SettingsStore : public QObject
 {
     Q_OBJECT
@@ -255,6 +257,11 @@ public:
     /// file. False for an undeclared key, or when the file cannot be read
     /// back (it would lose what it holds) or written.
     bool write(const QString& group, const QString& key, const QVariant& value);
+    /// What the file holds for one key, or its default: the value without
+    /// command-line overrides. A write built on a current value (a shader
+    /// chain that gains a pack) starts from this, so that an override never
+    /// reaches the file. An invalid QVariant for an undeclared key.
+    QVariant persisted(const QString& group, const QString& key) const;
 
     /// "Group.key=value" as an override; the value is JSON when it parses
     /// (14, true, ["calt"]), else a string. Returns false if malformed or if

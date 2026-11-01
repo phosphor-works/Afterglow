@@ -119,7 +119,7 @@ struct alignas(16) TerminalPaneUniforms {
     float uPaneLife[MaxShaderPanes][4] {}; ///< opening progress, the edge it opened from, context progress, context
     float uClosedRect[4] {};
     float uClosed[4] {1.0f, 0.0f, 0.0f, 0.0f}; ///< closing progress, showing
-    float uPanePulse[MaxShaderPanes][4] {}; ///< progress, effect, palette colour
+    float uPanePulse[MaxShaderPanes][4] {}; ///< pulse progress, effect, palette colour; the context before the last change
 };
 static_assert(sizeof(TerminalPaneUniforms) == 2656);
 // The std140 offsets of terminal_panes.glsl: a reorder that keeps the size fails here.
@@ -255,7 +255,31 @@ public:
         copy->m_instanceId = id;
         return copy;
     }
-    /// The shader reads time or event ages, so the window must keep rendering frames.
+    /// A copy that draws with @p values over its own parameter values: the
+    /// configured values of a pack, without compiling it again. Its buffer
+    /// passes and shaders are this program's.
+    std::shared_ptr<const ShaderProgram> withValues(const ShaderParameterValues& values) const
+    {
+        auto copy = std::make_shared<ShaderProgram>(*this);
+        ShaderParameterValues merged;
+        merged.params = m_params;
+        merged.colors = m_colors;
+        merged.images = m_images;
+        merged.imagePaths = m_imagePaths;
+        merged.merge(values);
+        copy->m_params = merged.params;
+        copy->m_colors = merged.colors;
+        copy->m_images = merged.images;
+        copy->m_imagePaths = merged.imagePaths;
+        return copy;
+    }
+    /// The window must keep rendering frames while the shader is active. Any
+    /// of these makes a program animated: iTime, iTimeDelta, iTimeHi, iFrame,
+    /// iDate, uEventAges or uSignal in the author's code; the helpers
+    /// timeAngle, timeCycle, timeSeconds, cursorAge, focusAge and signalAge;
+    /// including terminal_history.glsl; a buffer with bufferFeedback; a scene
+    /// object that spins. signalValue() alone is not: a signal change asks
+    /// for one frame.
     bool animated() const noexcept { return m_animated; }
     bool readsScrollback() const noexcept { return m_readsScrollback; }
     /// Reads the pointer (iMouse or uWindowMouse): the window renders when it moves.

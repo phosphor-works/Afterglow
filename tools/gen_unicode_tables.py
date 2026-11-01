@@ -14,7 +14,7 @@
 #
 # Output: a two-stage lookup. stage1[cp >> 8] picks a 256-entry block, the
 # block entry indexes into a table of unique packed property words. The packed
-# word layout must match AfterglowVt::Unicode (see Unicode.h).
+# word layout must match its decoder in libs/afterglow-vt/src/Unicode.cpp.
 
 import re
 import sys

@@ -6,10 +6,16 @@
 #include <AfterglowVt/Graphics.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 namespace AfterglowVt {
+
+/// The largest image decodeSixel accepts: each side, and the pixel count.
+/// XTSMGRAPHICS reports no more.
+inline constexpr int SixelMaxSide = 10000;
+inline constexpr std::size_t SixelMaxPixels = std::size_t(4096) * 4096;
 
 /// Sixel colour registers, 0xRRGGBB.
 using SixelPalette = std::array<std::uint32_t, 1024>;

@@ -55,11 +55,14 @@ TEST(ProgramStatus, KindAndProgressOnlyWhereTheyApply)
 {
     Term t;
     t.feed("\x1b]7501;state=done:kind=auth:progress=50\x1b\\");
+    ASSERT_EQ(t.records().size(), 1u);
     EXPECT_EQ(t.records()[0].kind, BlockKind::None);
     EXPECT_EQ(t.records()[0].progress, -1);
     t.feed("\x1b]7501;state=working:progress=101\x1b\\"); // out of range: indeterminate
+    ASSERT_EQ(t.records().size(), 1u);
     EXPECT_EQ(t.records()[0].progress, -1);
     t.feed("\x1b]7501;state=blocked:kind=telepathy\x1b\\"); // unknown kind: absent
+    ASSERT_EQ(t.records().size(), 1u);
     EXPECT_EQ(t.records()[0].kind, BlockKind::None);
 }
 
@@ -67,6 +70,7 @@ TEST(ProgramStatus, BadReportsAreDiscardedWhole)
 {
     Term t;
     t.feed("\x1b]7501;state=working:app=cargo\x1b\\");
+    ASSERT_EQ(t.records().size(), 1u);
     const auto good = t.records()[0];
     for (const char* bad : {
              "\x1b]7501;state=sleeping\x1b\\", // unknown state
@@ -97,6 +101,7 @@ TEST(ProgramStatus, SizeLimits)
     };
     // msg: 2048 bytes decoded at most ("QUFB" is "AAA").
     EXPECT_EQ(status.apply("state=done:msg=" + repeat("QUFB", 682) + "QUE="), ProgramStatus::Result::Changed);
+    ASSERT_EQ(status.records().size(), 1u);
     EXPECT_EQ(status.records()[0].msg.size(), 2048u);
     EXPECT_EQ(status.apply("state=working:msg=" + repeat("QUFB", 683)), ProgramStatus::Result::Ignored);
     EXPECT_EQ(status.records()[0].state, StatusState::Done);

@@ -35,7 +35,7 @@ CPU percentages use 100% for one full core.
 | Workload | 1080p CPU (%) | 4K CPU (%) | 1080p frame p95 (ms) | 4K frame p95 (ms) |
 | --- | ---: | ---: | ---: | ---: |
 | Idle | 0.09 | 0.08 | — | — |
-| Cursor blink | 0.31 | 0.52 | 0.96 | 1.98 |
+| Idle with blink | 0.31 | 0.52 | 0.96 | 1.98 |
 | Scroll, 100,000 rows | 6.79 | 12.79 | 1.29 | 2.71 |
 | Resize, 100,000 rows | 91.54 | 94.09 | 237.06 | 341.84 |
 
@@ -43,9 +43,10 @@ Static idle submitted no frames in all six runs.
 Scroll frame-interval p95 is 33.56 ms at 1080p and 33.60 ms at 4K.
 Resize frame-interval p95 is 237.07 ms at 1080p and 341.86 ms at 4K.
 After the resize workload, median RSS is 640.76 MiB at 1080p and 959.75 MiB at 4K.
-Resizing was a visible performance limit in this baseline.
-Width changes run [history reflow](../libs/afterglow-vt/src/Screen.cpp), which rebuilds stored rows.
-The high CPU use and shorter GPU times suggest CPU-side resize work is the main cost.
+In the `2aa71e7` build, resizing was a visible performance limit.
+In that build, width changes ran [history reflow](../libs/afterglow-vt/src/Screen.cpp), which rebuilt stored rows.
+The high CPU use and shorter GPU times suggested that CPU-side resize work was the main cost.
+The next two sections measure the later resize and reflow work.
 The 50 ms request timer cannot maintain its requested rate during this workload.
 
 ### Terminal GPU timing and allocation
@@ -54,7 +55,7 @@ GPU elapsed time is asynchronous. Allocation is the largest external process sam
 
 | Workload | 1080p GPU p95 (ms) | 4K GPU p95 (ms) | 1080p allocation (MiB) | 4K allocation (MiB) |
 | --- | ---: | ---: | ---: | ---: |
-| Cursor blink | 0.11 | 0.33 | 71.00 | 137.00 |
+| Idle with blink | 0.11 | 0.33 | 71.00 | 137.00 |
 | Scroll | 0.13 | 0.40 | 81.00 | 169.00 |
 | Resize | 0.21 | 0.74 | 91.00 | 201.00 |
 
@@ -71,7 +72,7 @@ Vendor readings can repeat between polls.
 | Input | 13 / 121 | 17 / 29 | 1 / 123 | 20 / 20 |
 | Input with output | 85 / 123 | 20 / 41 | 52 / 123 | 17 / 39 |
 
-Static idle and cursor blink supplied no numerical SM activity readings.
+Idle and idle with blink supplied no numerical SM activity readings.
 Zero submitted frames does not establish zero GPU utilization.
 
 ### History memory
@@ -126,12 +127,12 @@ See the [summary and ranges](../data/benchmarks/resize-optimized-2026-10-30.summ
 | RSS after resize (MiB) | 640.76 | 268.43 | 959.75 | 276.30 |
 | Resize requests per second | 4.21 | 19.80 | 2.99 | 19.73 |
 
-The resize path now moves compact history rows when a complete line still fits.
+The resize path moves compact history rows when a complete line still fits.
 It keeps their cell allocations, styles and graphemes.
 Rows that enter the active screen expand to the new screen width.
 Wrapped lines and lines wider than the new width still use full reflow.
 
-This removes repeated cell reconstruction from this workload.
+This keeps repeated cell reconstruction out of this workload.
 It does not remove the traversal of history rows.
 Long wrapped text can still cost more than these short lines.
 See [reflow of long wrapped lines](#reflow-of-long-wrapped-lines).
@@ -140,27 +141,30 @@ The nested-compositor and timing limits below still apply.
 
 ## Reflow of long wrapped lines
 
-Base commit: `3396c14`. Measurement date: 31 October 2026. Build type: `RelWithDebInfo`.
+Before: `3396c14`. After: `03e8bb9`. Measurement date: 31 October 2026. Build type: `RelWithDebInfo`.
 This set uses the headless VT benchmark, not the native benchmark.
 It measures the `Terminal::resize` call only. It does not measure rendering or frame time.
-Run `afterglow_vtbench --reflow [runs] [case filter]` from the build's `tools/bench` directory.
+Build with `-DAFTERGLOW_BUILD_TOOLS=ON`.
+Run `afterglow_vtbench --reflow [RUNS] [CASE]` from the build's `tools/bench` directory.
+`RUNS` is a positive integer, and the default is 5.
+`CASE` is a case-sensitive part of a case name, such as `long rich`.
 
 Each run fills a 200×50 terminal until it holds 100,000 history rows.
 The scrollback limit is 100,000 rows.
 The run then resizes to 180×45, 160×50, 140×45, 160×50, 180×45 and 200×50 four times.
-These steps match the native resize steps at 8×16 pixel cells.
+These are not the native benchmark's steps. Each resize changes the size by 20 columns or 5 rows.
 Each resize is timed in process CPU time, which is less sensitive to other load than elapsed time.
 A run gives the median and 95th percentile of its 24 resizes.
 Tables show the medians of five runs.
 The before and after runs use the same benchmark binary with the old and new library.
 The runs alternate between the two libraries.
 
-| Case | History lines |
-| --- | --- |
-| Short ASCII | 20 to 120 ASCII characters. Each line fits on one row at every tested width |
-| Long ASCII | 300 to 3,000 ASCII characters |
-| Long rich | 300 to 3,000 cells with about 4% wide characters, 3% combining marks, color and bold changes and 1% hyperlinks |
-| Mixed rich | Half short ASCII lines and half long rich lines |
+| Case | Case name | History lines |
+| --- | --- | --- |
+| Short ASCII | `short ascii 20-120` | 20 to 120 ASCII characters. Each line fits on one row at every tested width |
+| Long ASCII | `long ascii 300-3000` | 300 to 3,000 ASCII characters |
+| Long rich | `long rich 300-3000` | 300 to 3,000 cells with about 4% wide characters, 3% combining marks, color and bold changes and 1% hyperlinks |
+| Mixed rich | `mixed rich 50% long` | Half short ASCII lines and half long rich lines |
 
 The generated text is the same in each run.
 The long cases fill 100,000 rows at 200 columns.
@@ -179,9 +183,9 @@ After the first pass, the long cases hold about 71,000 rows at 200 columns.
 | Long ASCII | 555 | 185 |
 | Long rich | 763 | 305 |
 
-Reflow now rewraps one logical line at a time, directly from the old rows into the new rows.
-It no longer copies each line into a temporary buffer first.
-Lines that fit on one row also no longer get a temporary line record.
+In the after build, reflow rewraps one logical line at a time, directly from the old rows into the new rows.
+It does not copy a line into a temporary buffer first.
+A line that fits on one row gets no temporary line record.
 It copies runs of narrow cells in one operation.
 Grapheme entries move between rows without new allocations.
 The old rows of a line are freed when the line is complete, which lowers peak memory.
@@ -189,25 +193,25 @@ Only rows that can store blank cells after their content are compacted again.
 
 These numbers come from a shared 8-core machine with a load average between 11 and 23.
 Absolute values change with load. Compare the before and after columns of one table only.
-Reflow still rebuilds every row of a wrapped line. Each new row needs one allocation.
+Reflow rebuilds every row of a wrapped line. Each new row needs one allocation.
 Cost increases with the number of history cells.
 Grapheme clusters add cost, because reflow visits each stored cluster.
-Long rich history at this size still takes more than 100 ms of CPU for each resize.
+Long rich history at this size takes more than 100 ms of CPU for each resize.
 This is longer than one frame interval.
 The native benchmark was not repeated, so these results do not give frame service times.
 
 ## Workloads
 
-| Case | Work |
-| --- | --- |
-| Idle | 75-character viewport rows, no output, static cursor |
-| Idle with blink | 75-character viewport rows, no output, blinking cursor |
-| Scroll | Repeated scrollbar traversal through 100,000 history rows; requests every 16 ms |
-| Resize | Repeated width changes of 160 pixels and height changes of 80 pixels; requests every 50 ms |
-| History | Retain exactly 0, 100,000 or 1,000,000 rows, then measure idle memory |
-| Input | Send ASCII key events through Qt and the PTY and wait for a visible acknowledgement |
-| Input with output | Repeat the input case while the child targets 4 MiB/s of colored output |
-| Scripts | Run the Phosphor command-finished callback 10,000 times with 1, 8 or 32 pane snapshots |
+| Case | `--cases` value | Work |
+| --- | --- | --- |
+| Idle | `idle` | 75-character viewport rows, no output, static cursor |
+| Idle with blink | `idle-blink` | 75-character viewport rows, no output, blinking cursor |
+| Scroll | `scroll` | Repeated scrollbar traversal through 100,000 history rows, with a request every 16 ms |
+| Resize | `resize` | Width changes in 16-pixel steps across a 160-pixel range, and height changes in 8-pixel steps across 80 pixels, with a request every 50 ms |
+| History | `history` | Retain exactly 0, 100,000 or 1,000,000 rows, then measure idle memory |
+| Input | `input` | Send ASCII key events through Qt and the PTY and wait for a visible acknowledgement |
+| Input with output | `input-load` | Repeat the input case while the child targets 4 MiB/s of colored output |
+| Scripts | `scripts` | Run the Phosphor command-finished callback 10,000 times with 1, 8 or 32 pane snapshots |
 
 Resize uses 100,000 history rows and enables normal text reflow.
 History population feeds the terminal parser directly, before measurement.

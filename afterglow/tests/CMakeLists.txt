@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 find_package(GTest REQUIRED)
-target_link_libraries(afterglow_native_tests PRIVATE GTest::gtest)
+
+# Application sources compiled again into a test keep the definitions they
+# ship with. The tests themselves build strings from literals.
+set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/desktop/FileTransfer.cpp
+    ../src/desktop/DragDrop.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
 
 qt_add_executable(afterglow_app_tests
     ProjectStoreTest.cpp

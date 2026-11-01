@@ -3,6 +3,8 @@
 
 #include "TestUtil.h"
 
+#include <AfterglowVt/afterglowvt_version.h>
+
 #include <gtest/gtest.h>
 
 #include <clocale>
@@ -535,6 +537,25 @@ TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
     EXPECT_GT(t.t.semanticRegions().front().id, regions.back().id);
 }
 
+TEST(Terminal, ShellMarksMoveWithInsertedAndDeletedLines)
+{
+    Term t(20, 6);
+    t.feed("\x1b[3;1H\x1b]133;A\a$ \x1b]133;B\aecho hi\x1b]133;C\a\r\nhi\x1b]133;D;0\a");
+    const auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 3u);
+    ASSERT_EQ(t.t.text(Terminal::TextScope::LastOutput), "\nhi");
+    t.feed("\x1b[1;1H\x1b[2L"); // IL 2 at the top: the command moves to rows 4 and 5
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "\nhi");
+    EXPECT_EQ(t.t.semanticRegionText(regions[1].id), "echo hi");
+    EXPECT_EQ(t.t.semanticRegionText(regions[2].id), "\nhi");
+    // DL 4 from row 1: the prompt row leaves the region, its output's last row
+    // comes up to row 1. The regions and marks that start on the prompt row go.
+    t.feed("\x1b[2;1H\x1b[4M");
+    EXPECT_EQ(rowText(t.t, 1), "hi");
+    EXPECT_TRUE(t.t.semanticRegions().empty());
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "");
+}
+
 TEST(Terminal, SavedCursorRetainsHyperlinkAndAltScreenReinternsIt)
 {
     Term t(20, 4);
@@ -698,20 +719,28 @@ TEST(Terminal, ClearForgetsTheLastPrintedCell)
     EXPECT_EQ(t.t.text(Terminal::TextScope::All), "");
 }
 
-TEST(Terminal, NoPromptRedrawWithoutScrollback)
+TEST(Terminal, XtversionReportsTheProjectVersion)
 {
-    // Without history nothing reflows, so there is no prompt to wait for.
+    Term t(10, 3);
+    t.feed("\x1b[>q");
+    EXPECT_EQ(t.host.written, std::string("\x1bP>|afterglow ") + AFTERGLOW_VT_VERSION + "\x1b\\");
+}
+
+TEST(Terminal, PromptRedrawWithoutScrollback)
+{
+    // A width change reflows with or without history, so the shell's
+    // repaint of its prompt is awaited in both.
     Term t(10, 3, 0);
     t.feed("\x1b]133;A\x07$ ");
     t.t.resize(12, 3, 8, 16);
-    EXPECT_FALSE(t.t.promptRedrawPending());
+    EXPECT_TRUE(t.t.promptRedrawPending());
     Term kept(10, 3);
     kept.feed("\x1b]133;A\x07$ ");
     kept.t.resize(12, 3, 8, 16);
     EXPECT_TRUE(kept.t.promptRedrawPending());
 }
 
-TEST(Terminal, ResizeWithoutScrollbackDoesNotReflow)
+TEST(Terminal, ResizeWithoutScrollbackKeepsImagesAndMarks)
 {
     Term t(10, 3, 0);
     t.t.resize(10, 3, 8, 16);

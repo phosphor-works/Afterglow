@@ -5,7 +5,8 @@
 -- Shaders.overview to scripted-overview.wall, and bind
 -- "script:scripted-overview.open". The script owns the keyboard: a/d, h/l or
 -- the arrow keys move, w/s jump between tabs, Enter or Space chooses, q or
--- Escape closes.
+-- Escape closes. The key mode starts while the overview is open, so it ends
+-- when the overview closes, also when a click closes it.
 local script = {}
 script.metadata = {
     name = "Scripted overview",
@@ -47,8 +48,7 @@ end
 
 function script.on_key(ev)
     local window = windowOf(ev)
-    -- A click can close the overview without this script: give the keys back.
-    if not window or not window.overview.open then return afterglow.end_key_mode() end
+    if not window then return nil end
     -- Letters arrive as typed: "A" with Caps Lock or Shift. Named keys keep their case.
     local key = #ev.key == 1 and string.lower(ev.key) or ev.key
     if key == "a" or key == "h" or key == "Left" then return afterglow.overview_move(ev.pane, -1) end
@@ -58,8 +58,8 @@ function script.on_key(ev)
         if target then return afterglow.overview_move(ev.pane, 0, target) end
         return nil
     end
-    if key == "Enter" or key == "Space" then return { afterglow.overview(ev.pane, "choose"), afterglow.end_key_mode() } end
-    if key == "q" or key == "Escape" then return { afterglow.overview(ev.pane, "close"), afterglow.end_key_mode() } end
+    if key == "Enter" or key == "Space" then return afterglow.overview(ev.pane, "choose") end
+    if key == "q" or key == "Escape" then return afterglow.overview(ev.pane, "close") end
     return nil
 end
 

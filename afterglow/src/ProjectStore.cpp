@@ -23,32 +23,45 @@ bool identity(const QJsonValue& value)
 {
     return string(value, 64) && !value.toString().isEmpty();
 }
-bool tree(const QJsonValue& value, QSet<QString>& all, QSet<QString>& local, int depth)
+/// Checks one split tree. Returns why it is refused, or nothing.
+QString tree(const QJsonValue& value, QSet<QString>& all, QSet<QString>& local, int depth)
 {
-    if (!value.isObject() || depth > 16) return false;
+    if (depth > 16) return ProjectStore::tr("A split tree is more than 16 levels deep");
+    if (!value.isObject()) return ProjectStore::tr("A split tree entry is not an object");
     const auto node = value.toObject();
     if (node.contains(QStringLiteral("pane"))) {
-        if (node.size() != 1 || !node.value(QStringLiteral("pane")).isObject()) return false;
+        if (node.size() != 1 || !node.value(QStringLiteral("pane")).isObject())
+            return ProjectStore::tr("A pane entry holds only a pane object");
         const auto pane = node.value(QStringLiteral("pane")).toObject();
         const auto id = pane.value(QStringLiteral("id"));
+        if (!identity(id)) return ProjectStore::tr("A pane ID must be text of 1–64 characters");
+        if (all.contains(id.toString())) return ProjectStore::tr("The pane ID \"%1\" is used more than once").arg(id.toString());
+        if (all.size() >= 32) return ProjectStore::tr("A project holds at most 32 panes");
         const auto cwd = pane.value(QStringLiteral("cwd"));
-        if (!identity(id) || all.contains(id.toString()) || all.size() >= 32 || !string(cwd)
-            || !string(pane.value(QStringLiteral("title")), 256)) return false;
+        if (!string(cwd)) return ProjectStore::tr("A pane directory must be text of at most 4,096 characters");
         const auto path = cwd.toString();
-        if (!QDir::isAbsolutePath(path) && path != QLatin1String("~") && !path.startsWith(QLatin1String("~/"))) return false;
+        if (!QDir::isAbsolutePath(path) && path != QLatin1String("~") && !path.startsWith(QLatin1String("~/")))
+            return ProjectStore::tr("A pane directory must be an absolute path or start with ~");
+        if (!string(pane.value(QStringLiteral("title")), 256)) return ProjectStore::tr("A pane title must be text of at most 256 characters");
         const auto command = pane.value(QStringLiteral("command"));
-        if (!command.isArray() || command.toArray().size() > 64) return false;
-        for (const auto arg : command.toArray()) if (!string(arg)) return false;
-        if (!command.toArray().isEmpty() && command.toArray().first().toString().isEmpty()) return false;
+        if (!command.isArray()) return ProjectStore::tr("A pane command must be a list of arguments");
+        if (command.toArray().size() > 64) return ProjectStore::tr("A pane command has more than 64 arguments");
+        for (const auto arg : command.toArray())
+            if (!string(arg)) return ProjectStore::tr("A command argument must be text of at most 4,096 characters");
+        if (!command.toArray().isEmpty() && command.toArray().first().toString().isEmpty())
+            return ProjectStore::tr("A pane command starts with an empty program name");
         all.insert(id.toString()); local.insert(id.toString());
-        return true;
+        return {};
     }
+    if (node.size() != 4) return ProjectStore::tr("A split holds direction, ratio, first and second");
     const auto direction = node.value(QStringLiteral("direction")).toString();
+    if (direction != QLatin1String("right") && direction != QLatin1String("down"))
+        return ProjectStore::tr("A split direction must be right or down");
     const auto ratio = node.value(QStringLiteral("ratio"));
-    return node.size() == 4 && (direction == QLatin1String("right") || direction == QLatin1String("down"))
-        && ratio.isDouble() && std::isfinite(ratio.toDouble()) && ratio.toDouble() > 0 && ratio.toDouble() < 1
-        && tree(node.value(QStringLiteral("first")), all, local, depth + 1)
-        && tree(node.value(QStringLiteral("second")), all, local, depth + 1);
+    if (!ratio.isDouble() || !std::isfinite(ratio.toDouble()) || ratio.toDouble() <= 0 || ratio.toDouble() >= 1)
+        return ProjectStore::tr("A split ratio must be greater than 0 and less than 1");
+    if (const auto error = tree(node.value(QStringLiteral("first")), all, local, depth + 1); !error.isEmpty()) return error;
+    return tree(node.value(QStringLiteral("second")), all, local, depth + 1);
 }
 }
 bool ProjectStore::validName(const QString& name)
@@ -66,11 +79,13 @@ QString ProjectStore::validate(const QJsonObject& document)
     for (const auto value : tabsValue.toArray()) {
         const auto tab = value.toObject();
         const auto id = tab.value(QStringLiteral("id"));
+        if (!identity(id)) return tr("A tab ID must be text of 1–64 characters");
+        if (tabs.contains(id.toString())) return tr("The tab ID \"%1\" is used more than once").arg(id.toString());
+        if (!string(tab.value(QStringLiteral("title")), 256)) return tr("A tab title must be text of at most 256 characters");
         QSet<QString> local;
-        if (!identity(id) || tabs.contains(id.toString()) || !string(tab.value(QStringLiteral("title")), 256)
-            || !tree(tab.value(QStringLiteral("tree")), panes, local, 0)
-            || !local.contains(tab.value(QStringLiteral("active_pane")).toString()))
-            return tr("Invalid tab or split tree, a duplicate ID, or more than 32 panes or depth 16");
+        if (const auto error = tree(tab.value(QStringLiteral("tree")), panes, local, 0); !error.isEmpty()) return error;
+        if (!local.contains(tab.value(QStringLiteral("active_pane")).toString()))
+            return tr("The active pane of the tab \"%1\" is not in its split tree").arg(id.toString());
         tabs.insert(id.toString());
     }
     if (!tabs.contains(document.value(QStringLiteral("active_tab")).toString())) return tr("Invalid active project tab");

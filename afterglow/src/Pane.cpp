@@ -6,12 +6,15 @@
 #include "desktop/DragDrop.h"
 
 #include "app/NotificationCenter.h"
+#include "app/Startup.h"
 
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
+#include <QDBusConnection>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QDir>
@@ -99,6 +102,13 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
     std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
     opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
+    // The pane ID means something only to this process: `afterglow ctl` in a
+    // second instance's pane must reach that instance, not the first.
+    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_BUS_NAME"; });
+    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_BUS_NAME"));
+    if (const QString bus = QDBusConnection::sessionBus().baseService(); !bus.isEmpty()) {
+        opts.environment.emplace_back("AFTERGLOW_BUS_NAME", bus.toStdString());
+    }
     opts.cols = cols;
     opts.rows = rows;
     opts.pixelWidth = cols * cellWidth;
@@ -109,6 +119,8 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
         // (the trailing ':' keeps the defaults).
         QStringList dirs;
         for (const char* d : {AFTERGLOW_BUILD_TERMINFO_DIR, AFTERGLOW_INSTALLED_TERMINFO_DIR}) {
+            // The build tree's entry is for the build's own binary.
+            if (d == std::string_view(AFTERGLOW_BUILD_TERMINFO_DIR) && !runningFromBuildTree()) continue;
             if (QFile::exists(QString::fromUtf8(d) + QStringLiteral("/a/afterglow"))) {
                 dirs << QString::fromUtf8(d);
             }
@@ -168,7 +180,7 @@ int Pane::rows() const
     return m_terminal.rows();
 }
 
-bool Pane::sendInput(std::string_view bytes)
+bool Pane::sendInput(std::string_view bytes, bool reportFailure)
 {
     if (bytes.empty() || !m_pty || m_held.load()) {
         return bytes.empty();
@@ -183,7 +195,7 @@ bool Pane::sendInput(std::string_view bytes)
         }
     }
     const bool accepted = m_pty->write(bytes);
-    if (!accepted) reportInputFailure();
+    if (!accepted && reportFailure) reportInputFailure();
     return accepted;
 }
 
@@ -191,6 +203,12 @@ bool Pane::refreshSnapshot(int extraRows)
 {
     std::lock_guard lock(m_mutex);
     if (m_terminal.modes().synchronizedOutput && m_snapshotGeneration != ~0ull) {
+        // Each update a program begins gets its own timeout: one that ends
+        // and the next that begins between two frames must not inherit it.
+        if (m_terminal.synchronizedOutputSerial() != m_syncSerial) {
+            m_syncSerial = m_terminal.synchronizedOutputSerial();
+            m_syncTimer.start();
+        }
         if (!m_syncTimer.isValid()) {
             m_syncTimer.start();
         }
@@ -381,6 +399,24 @@ void Pane::scrollHistory(double fraction)
     m_terminal.scrollViewport(long(screen.viewportTop()) - top);
 }
 
+namespace {
+/// The vt library's search errors, in the user's language.
+QString searchError(const std::string& error)
+{
+    if (error.empty()) return {};
+    if (error == "Pattern exceeds 4096 characters") return Pane::tr("Pattern exceeds 4096 characters");
+    if (error == "Cannot allocate search context") return Pane::tr("Not enough memory to search");
+    if (error == "Search time limit reached") return Pane::tr("Search time limit reached");
+    if (error == "Search complexity limit reached") return Pane::tr("Search complexity limit reached");
+    constexpr std::string_view Invalid = "Invalid regular expression at character ";
+    if (error.starts_with(Invalid)) {
+        return Pane::tr("Invalid regular expression at character %1")
+            .arg(QString::fromStdString(error.substr(Invalid.size())));
+    }
+    return QString::fromStdString(error);
+}
+} // namespace
+
 void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex)
 {
     if (job != m_searchJob || job->cancelled) return;
@@ -424,7 +460,7 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
             m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
-            m_searchNotice = QString::fromStdString(result.error);
+            m_searchNotice = searchError(result.error);
             if (result.truncated) m_searchNotice += tr(" (limited results)");
             if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
@@ -693,7 +729,14 @@ QString Pane::foregroundJob() const
 
 QString Pane::workingDirectory() const
 {
-    return m_pty ? QString::fromStdString(m_pty->currentWorkingDirectory()) : QString();
+    QString reported;
+    {
+        std::lock_guard lock(m_mutex);
+        reported = m_reportedDirectory;
+    }
+    // A shell in a container can report a path that is not on this machine.
+    if (!reported.isEmpty() && QFileInfo(reported).isDir()) return reported;
+    return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
 }
 
 void Pane::reportInputFailure()
@@ -710,15 +753,11 @@ void Pane::writeToPty(std::string_view bytes)
     if (m_pty && !m_pty->write(bytes)) reportInputFailure();
 }
 
-bool Pane::writeReply(const QByteArray& bytes)
+bool Pane::sendReply(std::string_view bytes)
 {
-    // A protocol reply is not typing: it leaves the view where it is.
+    if (bytes.empty()) return true;
     if (!m_pty || m_held.load()) return false;
-    if (!m_pty->write(std::string_view(bytes.constData(), std::size_t(bytes.size())))) {
-        reportInputFailure();
-        return false;
-    }
-    return true;
+    return m_pty->write(bytes);
 }
 
 void Pane::titleChanged(std::string_view title)
@@ -729,6 +768,31 @@ void Pane::titleChanged(std::string_view title)
     if (shown == m_shownTitle) return;
     m_shownTitle = shown;
     Q_EMIT titleUpdated(shown);
+}
+
+void Pane::workingDirectoryChanged(std::string_view directory)
+{
+    // pty thread, terminal locked. OSC 7 sends file://host/path, percent
+    // encoded; the others send a plain path. A directory on another host
+    // leaves /proc to answer, which knows the local end of the session.
+    QByteArray path;
+    if (directory.starts_with("file://")) {
+        const std::string_view rest = directory.substr(7);
+        const std::size_t slash = rest.find('/');
+        const QString host = QString::fromUtf8(rest.substr(0, slash == std::string_view::npos ? rest.size() : slash));
+        static const QString here = QSysInfo::machineHostName();
+        const bool local = host.isEmpty() || host.compare(QLatin1String("localhost"), Qt::CaseInsensitive) == 0
+            || host.compare(here, Qt::CaseInsensitive) == 0;
+        if (local && slash != std::string_view::npos) {
+            const std::string_view encoded = rest.substr(slash);
+            path = QByteArray::fromPercentEncoding(QByteArray(encoded.data(), qsizetype(encoded.size())));
+        }
+    } else if (directory.starts_with('/') && m_contextKind != QLatin1String("remote")) {
+        path = QByteArray(directory.data(), qsizetype(directory.size()));
+    }
+    // Decoded, the path may hold a control byte that the URI hid.
+    if (std::any_of(path.cbegin(), path.cend(), [](char c) { return (unsigned char)c < 0x20 || c == 0x7F; })) path.clear();
+    m_reportedDirectory = QFile::decodeName(path);
 }
 
 void Pane::queueOnce(std::atomic_bool& queued, std::function<void()> deliver)
@@ -885,8 +949,64 @@ void Pane::contextChanged()
     if (label != m_contextLabel || kind != m_contextKind) {
         m_contextLabel = label;
         m_contextKind = kind;
-        Q_EMIT contextUpdated();
+        queueOnce(m_contextQueued, [this] { Q_EMIT contextUpdated(); });
     }
+}
+
+void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
+{
+    // pty thread, terminal locked. What the pane keeps by stable row id on
+    // the active screen moves with the rows; what leaves the region goes.
+    const bool altScreen = m_terminal.modes().altScreen;
+    bool changed = false;
+    if (m_copyMode && m_selectionOnAltScreen == altScreen && scroll.contains(m_copyCursor)) {
+        // A cursor whose row left stays at the edge the text went past.
+        if (const auto moved = scroll.map(m_copyCursor)) m_copyCursor = *moved;
+        else m_copyCursor.row = scroll.delta < 0 ? scroll.top : scroll.bottom;
+        changed = true;
+    }
+    if (m_selection.active && m_selectionOnAltScreen == altScreen) {
+        if (!m_selection.followScroll(scroll)) {
+            m_copySelecting = false;
+            if (m_copyMode) {
+                // Copy mode keeps its cursor: the selection starts there again.
+                m_selection.anchor = m_selection.head = m_copyCursor;
+            } else {
+                m_selection.active = false;
+            }
+        }
+        changed = true;
+    }
+    if (!m_searchMatches.empty() && m_searchAlt == altScreen) {
+        // Matches move with their text; a match that left the region, or
+        // that a narrower region cut, is no longer on the screen as found.
+        const std::size_t current = m_searchCurrent >= 0 ? std::size_t(m_searchCurrent) : m_searchMatches.size();
+        std::vector<AfterglowVt::SearchMatch> kept;
+        kept.reserve(m_searchMatches.size());
+        int newCurrent = -1;
+        for (std::size_t i = 0; i < m_searchMatches.size(); ++i) {
+            AfterglowVt::SearchMatch match = m_searchMatches[i];
+            if (scroll.contains(match.start) || scroll.contains(match.end)) {
+                const auto start = scroll.map(match.start);
+                const auto end = scroll.map(match.end);
+                if (!scroll.fullWidth || !start || !end || scroll.contains(match.start) != scroll.contains(match.end)) continue;
+                match = {*start, *end};
+                changed = true;
+            }
+            if (i == current) newCurrent = int(kept.size());
+            kept.push_back(match);
+        }
+        if (kept.size() != m_searchMatches.size()) {
+            changed = true;
+            // The current match went: the nearest one before it is current.
+            if (newCurrent < 0 && m_searchCurrent >= 0 && !kept.empty()) {
+                newCurrent = std::min(int(kept.size()) - 1, std::max(0, m_searchCurrent - 1));
+            }
+        }
+        m_searchMatches = std::move(kept);
+        m_searchCurrent = newCurrent;
+    }
+    if (changed) ++m_selectionSerial;
 }
 
 void Pane::userVarChanged(std::string_view name, std::string_view value)
@@ -980,7 +1100,9 @@ void Pane::flash()
 
 void Pane::programStatusChanged()
 {
-    Q_EMIT statusChanged(); // queued to the GUI thread, which reads status()
+    // Called on the pty thread, or on the GUI thread by a reset through
+    // withTerminal: either way m_mutex is held, and the receivers read status().
+    queueOnce(m_statusQueued, [this] { Q_EMIT statusChanged(); });
 }
 
 QList<PaneStatusRecord> Pane::status() const
@@ -1024,7 +1146,7 @@ void Pane::ptyData(std::string_view bytes)
 void Pane::ptyClosed(int status)
 {
     if (status == -1) {
-        qCInfo(lcPane) << "shell closed the terminal before exiting";
+        qCInfo(lcPane) << "shell exit status unknown";
     } else if (WIFSIGNALED(status)) {
         qCWarning(lcPane) << "shell killed by signal" << WTERMSIG(status) << (WCOREDUMP(status) ? "(core dumped)" : "");
     } else {
@@ -1079,7 +1201,7 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         // Say so once while the dialog is open, not once for each file.
         if (!dropNoticed.exchange(true)) {
             QMetaObject::invokeMethod(this, [this] {
-                NotificationCenter::instance().showSimple(this, nullptr, tr("Download not saved"),
+                NotificationCenter::instance().showNotice(this, tr("Download not saved"),
                     tr("A program sent a file while another file was waiting to be saved."));
             }, Qt::QueuedConnection);
         }
@@ -1118,7 +1240,7 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
                 // Not a modal box parented to the dialog: the dialog deletes
                 // itself when the pane closes, which would end a nested loop
                 // inside it.
-                NotificationCenter::instance().showSimple(nullptr, nullptr, tr("Download failed"),
+                NotificationCenter::instance().showNotice(nullptr, tr("Download failed"),
                                                           QStringLiteral("%1: %2").arg(path, file.errorString()));
             }
         });
@@ -1132,9 +1254,14 @@ FileTransfer* Pane::fileTransfers()
 {
     if (!m_fileTransfers) {
         m_fileTransfers = std::make_unique<FileTransfer>();
+        // A program that reads slowly holds the transfer back before the
+        // input queue fills and a refused reply ends it.
+        m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
-            if (!writeReply(bytes)) m_fileTransfers->reset();
+            if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
+            reportInputFailure();
+            m_fileTransfers->reset();
         });
     }
     return m_fileTransfers.get();
@@ -1143,8 +1270,11 @@ DragDrop* Pane::dragDrop()
 {
     if (!m_dragDrop) {
         m_dragDrop = std::make_unique<DragDrop>();
+        m_dragDrop->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
-            if (!writeReply(bytes)) m_dragDrop->reset();
+            if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
+            reportInputFailure();
+            m_dragDrop->reset();
         });
     }
     return m_dragDrop.get();

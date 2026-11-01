@@ -50,7 +50,7 @@ Named key tables supply temporary input modes.
 }
 ```
 
-The window shows the active sequence or table.
+The window shows the active sequence or table, and that Escape cancels it.
 Escape, timeout, focus changes and configuration reload cancel the mode.
 A table can bind Escape. Escape then runs that action instead.
 Modifier keys, AltGr, Super, Caps Lock and Num Lock do not cancel the mode.
@@ -146,7 +146,7 @@ The output limit is 1 MiB. A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
 The pager command uses arguments without shell expansion.
 Missing shell markers cause a notification.
-If the pager is not installed, the action does nothing.
+If the pager is not installed, or the output cannot be shown, a notification gives the reason.
 
 ## Text hints
 
@@ -190,7 +190,7 @@ Relative paths use the pane working directory.
 Afterglow also ignores a pattern without `pattern` or with an unknown action, and logs a warning.
 Hint patterns are case-sensitive.
 Type a label to select it. Press Escape to cancel.
-A pane content change cancels the hints.
+A pane content change, a scroll of the pane or a change of the layout cancels the hints.
 
 ## Links and URL hints
 
@@ -235,6 +235,14 @@ Afterglow removes control characters from pasted text, in bracketed and plain pa
 It keeps tab, carriage return and line feed. It removes DEL and the C1 controls.
 `Terminal.confirmUnsafePaste` asks before a paste of several lines into a program that would run them.
 
+## Clipboard requests
+
+Programs read the clipboard with OSC 52 and OSC 5522. `Terminal.clipboardRead` sets the policy: `ask`, `allow` or `deny`.
+With `ask`, a prompt names the tab of the program. The window stays on the current tab.
+The prompt starts on Deny, so a Return typed for the shell denies the request.
+An OSC 5522 request with a name and a password also offers **Always allow**.
+An `a` key alone chooses it. A held or modified `a` does not.
+
 ## Keyboard protocols
 
 modifyOtherKeys follows xterm.
@@ -244,6 +252,13 @@ Return, Tab, Backspace and Escape with modifiers are encoded as xterm encodes th
 In the kitty keyboard protocol, Afterglow reports Caps Lock and Num Lock only in the "report all keys" mode.
 The kitty specification also reports them in the disambiguate mode for keys without text.
 Afterglow does not, so that a program reads Num Lock+Up as Up.
+
+With Num Lock off, the keypad keys stay keypad keys.
+The kitty protocol reports them as the keypad's Left, Home, Begin and other keys.
+Legacy encodings send them as the main arrow, Home, End, Page Up, Page Down, Insert and Delete keys.
+The keypad 5 key (Begin) sends `CSI E`.
+The decimal key of a layout with a decimal comma is the keypad separator.
+F13 to F35 send the sequences of xterm's terminfo entry, and the kitty protocol codes 57376 to 57398.
 
 ## Shell integration
 

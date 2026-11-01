@@ -146,6 +146,7 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("open-edge"), QStringLiteral("The edge it opens from: 1 left (default), 2 top, 3 right, 4 bottom."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("context"), QStringLiteral("The last pane's context: 0 here, 1 remote, 2 elevated, 3 container."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("context-progress"), QStringLiteral("How far its context change has run, 0 to 1 (default 1)."), QStringLiteral("f")});
+    parser.addOption({QStringLiteral("previous-context"), QStringLiteral("Its context before that change, 0 to 3 (default 0)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("pulse"), QStringLiteral("A pulse on the last pane: EFFECT:PROGRESS[:COLOR], effect 1 portal, 2 flash, 3 shake."), QStringLiteral("spec")});
     parser.addOption({QStringLiteral("close-progress"), QStringLiteral("The last pane has closed, 0 to 1, leaving its frame on a blue background. Needs --split or --grid."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("overview-position"), QStringLiteral("The highlight's position, a fractional card index (default the highlighted card)."), QStringLiteral("f")});
@@ -200,13 +201,13 @@ int run(QGuiApplication& app)
     };
     struct Range { const char* key; double low, high; bool integer; };
     for (const Range r : {Range{"cols", 1, 1000, true}, {"rows", 1, 500, true},
-            {"dpr", .25, 8, false}, {"size", 4, 96, false}, {"time", 0, 10000000, false},
+            {"dpr", .25, 8, false}, {"size", AfterglowRender::FontSpec::MinPoints, AfterglowRender::FontSpec::MaxPoints, false}, {"time", 0, 10000000, false},
             {"wake-age", 0, 10000000, false}, {"opacity", 0, 1, false}, {"weight", 100, 900, false},
             {"overview-amount", 0, 1, false}, {"overview-position", -1000, 1000, false},
             {"highlight", 0, AfterglowRender::MaxShaderPanes - 1, true}, {"tabs", 1, AfterglowRender::MaxShaderPanes, true},
             {"current-tab", 0, AfterglowRender::MaxShaderPanes - 1, true}, {"transition-progress", 0, 1, false},
             {"transition-direction", -1, 1, true}, {"open-progress", 0, 1, false}, {"open-edge", 1, 4, true},
-            {"context", 0, 3, true}, {"context-progress", 0, 1, false}, {"close-progress", 0, 1, false},
+            {"context", 0, 3, true}, {"context-progress", 0, 1, false}, {"previous-context", 0, 3, true}, {"close-progress", 0, 1, false},
             {"overview-age", 0, 10000000, false}, {"highlight-age", 0, 10000000, false},
             {"transition-age", 0, 10000000, false}, {"minimum-contrast", 1, 21, false},
             {"scroll-shift", 0, 1000, false}, {"search-current", -1, 100000, true}}) {
@@ -643,6 +644,7 @@ int run(QGuiApplication& app)
         panes.back().params.context = parser.value(QStringLiteral("context")).toInt();
         panes.back().params.contextProgress = parser.isSet(QStringLiteral("context-progress"))
             ? parser.value(QStringLiteral("context-progress")).toFloat() : 1.0f;
+        panes.back().params.previousContext = parser.value(QStringLiteral("previous-context")).toInt();
         effects = true;
     }
     if (parser.isSet(QStringLiteral("pulse"))) {

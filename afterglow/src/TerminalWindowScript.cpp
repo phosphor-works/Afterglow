@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "TerminalWindow.h"
+#include "KeyMapping.h"
 #include "chrome/ChromeController.h"
 #include "app/NotificationCenter.h"
 #include "scripting/ScriptHost.h"
@@ -173,7 +174,7 @@ bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e)
 {
     if (!m_scriptKeyMode) return false;
     // The user's way out, which no script can take.
-    if (m_settings.settings().keybinds.match(e) == Action::EndScriptKeyMode) {
+    if (m_settings.settings().keybinds.match(e, bindingBaseKey(e)) == Action::EndScriptKeyMode) {
         performAction(Action::EndScriptKeyMode);
         return true;
     }
@@ -199,7 +200,7 @@ QString TerminalWindow::startScriptKeyMode(const QString& owner, Pane* pane, con
         m_unicodeInput.reset();
         showUnicodeInput();
     }
-    m_scriptKeyMode = ScriptKeyMode{owner, label.left(160), pane};
+    m_scriptKeyMode = ScriptKeyMode{owner, label.left(160), pane, m_overview.open};
     updateKeyMode();
     return {};
 }
@@ -286,9 +287,8 @@ bool TerminalWindow::usePackageShaders()
             static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects")};
             QVariant value = ref;
             if (!Single.contains(key)) {
-                const Settings& now = m_settings.settings();
-                QStringList chain = key == QLatin1String("background") ? now.shaders.background : key == QLatin1String("text") ? now.shaders.text
-                    : key == QLatin1String("cursor") ? now.shaders.cursor : key == QLatin1String("pane") ? now.shaders.pane : now.shaders.window;
+                // The chain the file holds: a command-line override must not reach it.
+                QStringList chain = m_settings.persisted(QStringLiteral("Shaders"), key).toStringList();
                 if (!chain.contains(ref)) chain.append(ref);
                 // The schema keeps chains as lists of variants.
                 value = QVariant(QVariantList(chain.cbegin(), chain.cend()));

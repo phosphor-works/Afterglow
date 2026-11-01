@@ -1653,6 +1653,24 @@ void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t
     settle();
 }
 
+void GraphicsStore::scrollRegion(const RegionScroll& scroll)
+{
+    std::vector<char> gone(m_placements.size(), 0);
+    bool changed = false;
+    for (std::size_t i = 0; i < m_placements.size(); ++i) {
+        Placement& p = m_placements[i];
+        if (p.parentImage || p.isVirtual) continue;
+        const SelectionPoint anchor{p.row, p.col};
+        if (!scroll.contains(anchor)) continue;
+        changed = true;
+        if (const auto moved = scroll.map(anchor)) p.row = moved->row;
+        else gone[i] = 1;
+    }
+    if (!changed) return;
+    eraseFlagged(m_placements, gone);
+    settle();
+}
+
 void GraphicsStore::clear()
 {
     m_images.clear();

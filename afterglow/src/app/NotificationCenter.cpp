@@ -27,7 +27,7 @@ namespace {
 const QString Service = QStringLiteral("org.freedesktop.Notifications");
 const QString Path = QStringLiteral("/org/freedesktop/Notifications");
 const QString Interface = QStringLiteral("org.freedesktop.Notifications");
-const QString DesktopEntry = QStringLiteral("com.phosphorworks.Afterglow");
+const QString DesktopEntry = QStringLiteral(AFTERGLOW_APP_ID);
 
 PhosphorDBus::Client notificationServer()
 {
@@ -188,9 +188,8 @@ uint NotificationCenter::idFor(const Pane* pane, const QString& clientId) const
     return 0;
 }
 
-void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const AfterglowVt::NotificationRequest& r)
+void NotificationCenter::handle(Pane* pane, const AfterglowVt::NotificationRequest& r)
 {
-    Q_UNUSED(window);
     using Kind = AfterglowVt::NotificationRequest::Kind;
     track(pane);
     const QString clientId = fromUtf8(r.id);
@@ -218,7 +217,7 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
         }
         const QString reply = QStringLiteral("\x1b]99;i=%1:p=alive;%2\x1b\\")
                                   .arg(clientId.isEmpty() ? QStringLiteral("0") : clientId, open.join(QLatin1Char(',')));
-        pane->sendInput(reply.toStdString());
+        pane->sendReply(reply.toStdString());
         return;
     }
     // An update of a notification already on screen adds none.
@@ -316,10 +315,8 @@ void NotificationCenter::handle(Pane* pane, TerminalWindow* window, const Afterg
     send(request, replaces);
 }
 
-void NotificationCenter::showSimple(Pane* pane, TerminalWindow* window, const QString& title, const QString& body,
-                                    int urgency)
+void NotificationCenter::showSimple(Pane* pane, const QString& title, const QString& body, int urgency)
 {
-    Q_UNUSED(window);
     if (rateLimited(pane)) {
         return;
     }
@@ -417,10 +414,10 @@ void NotificationCenter::onActionInvoked(uint id, const QString& action)
             }
         }
         if (e.reportActivation && e.pane) {
-            e.pane->sendInput(QStringLiteral("\x1b]99;i=%1;\x1b\\").arg(client).toStdString());
+            e.pane->sendReply(QStringLiteral("\x1b]99;i=%1;\x1b\\").arg(client).toStdString());
         }
     } else if (bool ok = false; action.toInt(&ok) > 0 && ok && e.reportActivation && e.pane) {
-        e.pane->sendInput(QStringLiteral("\x1b]99;i=%1;%2\x1b\\").arg(client, action).toStdString());
+        e.pane->sendReply(QStringLiteral("\x1b]99;i=%1;%2\x1b\\").arg(client, action).toStdString());
     }
 }
 
@@ -432,7 +429,7 @@ void NotificationCenter::onClosed(uint id, uint)
     }
     if (it->reportClose && it->pane) {
         const QString client = it->clientId.isEmpty() ? QStringLiteral("0") : it->clientId;
-        it->pane->sendInput(QStringLiteral("\x1b]99;i=%1:p=close;\x1b\\").arg(client).toStdString());
+        it->pane->sendReply(QStringLiteral("\x1b]99;i=%1:p=close;\x1b\\").arg(client).toStdString());
     }
     m_entries.erase(it);
 }

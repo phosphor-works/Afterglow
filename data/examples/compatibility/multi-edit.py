@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tiny ASCII multi-edit client using native Kitty multiple cursors.
 Type to edit three values together; Backspace deletes; Tab cycles cursor colors;

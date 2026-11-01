@@ -18,7 +18,10 @@ endif()
 include(CTest)
 include(GNUInstallDirs)
 
-set(AFTERGLOW_QT_MIN 6.8)
+# The phosphor libraries need Qt 6.10; they read QT_MIN_VERSION, so one floor
+# applies to the whole build.
+set(AFTERGLOW_QT_MIN 6.10)
+set(QT_MIN_VERSION "${AFTERGLOW_QT_MIN}.0")
 # Private APIs are required by the renderer and Wayland integration. Report
 # their build-version requirement once instead of warning for each module.
 set(QT_NO_PRIVATE_MODULE_WARNING ON)
@@ -36,16 +39,18 @@ add_compile_definitions(QT_NO_KEYWORDS)
 
 # Installed layout: the executable in bin/; afterglow's libraries, its own
 # copies of the phosphor libraries and their layer-shell plugin in a private
-# lib/afterglow/, so a system install of phosphor is never touched.
+# lib/afterglow/, so a system install of phosphor is never touched. The
+# executable finds that directory; the libraries in it and the plugin set their
+# own run paths where they are installed (afterglow/CMakeLists.txt).
 set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
-set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR};$ORIGIN;$ORIGIN/../..")
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
 
 include(cmake/AfterglowPhosphor.cmake)
 
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
-option(AFTERGLOW_BUILD_TOOLS "Build developer tools (benchmarks)" OFF)
+option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
 add_subdirectory(afterglow)             # the application
 
 if(AFTERGLOW_BUILD_TOOLS)

@@ -32,6 +32,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
 find_package(ZLIB REQUIRED)
 target_link_libraries(AfterglowVt PRIVATE ZLIB::ZLIB PkgConfig::PCRE2)
+# XTVERSION reports the project's version. A generated header, not a compile
+# definition, so tools/fuzz, which compiles these sources itself, has it too.
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/include/AfterglowVt/afterglowvt_version.h
+     CONTENT "#pragma once\n#define AFTERGLOW_VT_VERSION \"@PROJECT_VERSION@\"\n" @ONLY)
 
 # The parser's hot path crosses files and the library's own exported
 # functions: let calls inside the library go straight to their targets (no

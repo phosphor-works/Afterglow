@@ -54,6 +54,9 @@ enum class Antialiasing : std::uint8_t { Grayscale, None, Rgb, Bgr };
 
 struct FontSpec
 {
+    /// The sizes that Font.size and font_bigger/font_smaller reach.
+    static constexpr float MinPoints = 4.0f;
+    static constexpr float MaxPoints = 96.0f;
     /// The application resolves the desktop's fixed-width font and size into
     /// these; the defaults are fontconfig's monospace alias at 11 points.
     float sizePoints = 11.0f;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/Application.h"
+#include "app/Startup.h"
 #include "scripting/ScriptHost.h"
 #include <QApplication>
 #include <QCommandLineParser>
@@ -132,6 +133,8 @@ void key(TerminalWindow* window, const QString& text)
 }
 int main(int argc, char** argv)
 {
+    // The plugin paths and the names, as afterglow sets them.
+    Afterglow::prepareApplication();
     BenchApplication qt(argc, argv);
     qt.setQuitOnLastWindowClosed(false);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
@@ -153,16 +156,31 @@ int main(int argc, char** argv)
         const QStringList modes{QStringLiteral("idle"), QStringLiteral("idle-blink"), QStringLiteral("scroll"),
             QStringLiteral("resize"), QStringLiteral("history"), QStringLiteral("input"), QStringLiteral("input-load"), QStringLiteral("scripts")};
         if (!modes.contains(mode) || out.isEmpty() || str("config").isEmpty()) throw std::runtime_error("Missing or invalid case/output/config");
-        const int width = integer("width",1920,640,7680), height = integer("height",1080,480,4320);
+        // 720 pixels fit the 75-column rows of fill() at the benchmark font.
+        const int width = integer("width",1920,720,7680), height = integer("height",1080,480,4320);
         const int duration = integer("duration",15,1,120), retained = integer("history",100000,0,1000000);
         const int sampleCount = integer("samples",100,1,1000), paneCount = integer("panes",8,1,128);
         QJsonObject result{{QStringLiteral("case"),mode}, {QStringLiteral("pid"),double(getpid())},
             {QStringLiteral("qt"),QString::fromLatin1(qVersion())}, {QStringLiteral("duration_requested_s"),duration}};
+        // The font, shaders and animations are fixed here, not left to the
+        // defaults, so runs stay comparable with the recorded baselines: those
+        // ran with animated cursor, scrolling and splits, and before the
+        // overview, pane-effect and tab-switch packs existed.
+        QJsonArray features{QStringLiteral("calt"), QStringLiteral("liga")};
+        for (int i = 1; i <= 10; ++i) features.append(QStringLiteral("ss%1").arg(i, 2, 10, QLatin1Char('0')));
         QJsonObject settings{{QStringLiteral("Terminal"),QJsonObject{{QStringLiteral("cursorBlink"),mode==QLatin1String("idle-blink")},
             {QStringLiteral("scrollback"),1000000}, {QStringLiteral("shellIntegration"),false}}},
             {QStringLiteral("Window"),QJsonObject{{QStringLiteral("decorations"),false}, {QStringLiteral("tabBar"),QStringLiteral("never")}}},
+            {QStringLiteral("Font"),QJsonObject{{QStringLiteral("family"),QStringLiteral("Monaspace Neon Var")}, {QStringLiteral("size"),11},
+                {QStringLiteral("features"),features}, {QStringLiteral("antialiasing"),QStringLiteral("grayscale")},
+                {QStringLiteral("hinting"),QStringLiteral("light")}}},
+            {QStringLiteral("Shaders"),QJsonObject{{QStringLiteral("overview"),QString()}, {QStringLiteral("paneEffects"),QString()},
+                {QStringLiteral("tabTransition"),QString()}}},
+            {QStringLiteral("Animation"),QJsonObject{{QStringLiteral("cursor"),true}, {QStringLiteral("scroll"),true},
+                {QStringLiteral("splits"),true}}},
             {QStringLiteral("Audio"),QJsonObject{{QStringLiteral("enabled"),false}}},
             {QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("enabled"),false}}}};
+        result.insert(QStringLiteral("settings"),settings);
         Application app(str("config"),settings);
         struct ResetObserver {
             BenchApplication& qt;

@@ -169,6 +169,15 @@ namespace {
 
 std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
 {
+    if (e.key >= Key::F13 && e.key <= Key::F35) {
+        // As xterm's terminfo (kf13 to kf35): F13 to F24 are Shift+F1 to F12,
+        // F25 to F35 Ctrl+F1 to F11. Other modifiers add to that one.
+        const int n = int(e.key) - int(Key::F13);
+        KeyEvent base = e;
+        base.key = Key(int(Key::F1) + n % 12);
+        base.mods = std::uint8_t(e.mods | (n < 12 ? Mod::Shift : Mod::Ctrl));
+        return encodeLegacyKey(base, modes);
+    }
     const std::uint8_t m = e.mods & ~Mod::Locks;
     // modifyOtherKeys for Return, Tab, Backspace and Escape follows xterm's
     // ModifyOtherKeys (input.c): level 1 leaves Alt to the ESC prefix and the
@@ -451,6 +460,10 @@ bool kittyFunctional(Key k, KittyKey& out)
         return true;
     default:
         break;
+    }
+    if (k >= Key::F13 && k <= Key::F35) {
+        out = {57376u + std::uint32_t(int(k) - int(Key::F13)), 'u'};
+        return true;
     }
     if (k >= Key::KeypadSeparator && k <= Key::KeypadDelete) {
         out = {57416u + std::uint32_t(int(k) - int(Key::KeypadSeparator)), 'u'};

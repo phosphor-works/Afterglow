@@ -15,6 +15,7 @@
 // at its edge, and closes back in when it returns. While it is away, a soft
 // frame in the context's colour marks it: the theme's bright cyan for a
 // remote host, bright red for an elevated user, bright magenta for a container.
+// The frame fades out in that colour when the pane returns.
 //
 // Scripts play pulses over a pane with afterglow.pulse(): a portal ring, a
 // flash or a shake, in a palette colour.
@@ -191,13 +192,18 @@ vec4 contextMarks(vec2 pixel, vec4 color) {
         vec4 r = paneRect(i);
         if (!inside(pixel, r)) continue;
         bool away = context != 0;
+        int previous = panePreviousContext(i);
         // Returning home closes the portal in the theme's cursor colour.
         vec3 tint = away ? contextColor(context) : uThemeCursorColor.rgb;
-        // The frame grows in as the pane leaves and fades as it returns.
-        float settled = away ? smoothstep(0.0, 1.0, p) : 1.0 - smoothstep(0.0, 1.0, p);
+        // The frame grows in as the pane leaves and fades as it returns, in
+        // the colour it had. Between two contexts it stays and changes colour.
+        float q = smoothstep(0.0, 1.0, p);
+        vec3 was = previous != 0 ? contextColor(previous) : tint;
+        vec3 frameTint = away ? mix(was, tint, q) : was;
+        float settled = away ? (previous != 0 ? 1.0 : q) : 1.0 - q;
         float edge = min(min(pixel.x - r.x, r.x + r.z - pixel.x), min(pixel.y - r.y, r.y + r.w - pixel.y));
         float frame = exp(-edge / 10.0) * p_frame * settled;
-        color = addLight(color, tint * frame * color.a);
+        color = addLight(color, frameTint * frame * color.a);
         // The ring opens from the pane's centre as it leaves, and closes back
         // to it as it returns.
         if (p < 1.0 && p_portal > 0.0) color = mix(color, portalRing(pixel, r, p, tint, color, away), p_portal);

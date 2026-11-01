@@ -561,12 +561,12 @@ void Screen::releaseRow(Row& row) noexcept
 
 // --- scrolling -------------------------------------------------------------
 
-void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool intoHistory)
+bool Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool intoHistory)
 {
     const int height = r.bottom - r.top + 1;
     n = std::clamp(n, 0, height);
     if (n == 0) {
-        return;
+        return false;
     }
     const bool fullWidth = r.left == 0 && r.right == m_cols - 1;
 
@@ -603,7 +603,7 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
             m_viewportOffset += std::size_t(n);
         }
         trimHistory();
-        return;
+        return false;
     }
 
     if (fullWidth && r.top == 0 && r.bottom == m_rowCount - 1 && historySize() == 0) {
@@ -628,7 +628,7 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
             ++m_rowsDropped;
             eraseRow(m_rows.back(), fillStyleId);
         }
-        return;
+        return false;
     }
 
     // Blocks the region boundary cuts cannot move with it, and neither can
@@ -641,7 +641,7 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
         for (int y = r.bottom - n + 1; y <= r.bottom; ++y) {
             eraseRow(row(y), fillStyleId);
         }
-        return;
+        return true;
     }
 
     for (int y = r.top; y + n <= r.bottom; ++y) {
@@ -650,14 +650,15 @@ void Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
     for (int y = r.bottom - n + 1; y <= r.bottom; ++y) {
         eraseCells(row(y), r.left, r.right + 1, fillStyleId);
     }
+    return true;
 }
 
-void Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
+bool Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
 {
     const int height = r.bottom - r.top + 1;
     n = std::clamp(n, 0, height);
     if (n == 0) {
-        return;
+        return false;
     }
     const bool fullWidth = r.left == 0 && r.right == m_cols - 1;
 
@@ -668,7 +669,7 @@ void Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
         for (int y = r.top; y < r.top + n; ++y) {
             eraseRow(row(y), fillStyleId);
         }
-        return;
+        return true;
     }
 
     for (int y = r.bottom; y - n >= r.top; --y) {
@@ -677,6 +678,7 @@ void Screen::scrollDown(const Region& r, int n, std::uint32_t fillStyleId)
     for (int y = r.top; y < r.top + n; ++y) {
         eraseCells(row(y), r.left, r.right + 1, fillStyleId);
     }
+    return true;
 }
 
 void Screen::trimHistory()

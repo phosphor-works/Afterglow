@@ -22,16 +22,16 @@
 
         { "id": "emberIntensity", "name": "Ember intensity", "group": "Cursor", "type": "float", "default": 0.85, "min": 0.0, "max": 3.0 },
         { "id": "emberRadius", "name": "Ember radius (cells)", "group": "Cursor", "type": "float", "default": 1.22, "min": 0.1, "max": 6.0 },
-        { "id": "emberTint", "name": "Cursor colour tint", "group": "Cursor", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
+        { "id": "emberTint", "name": "Cursor color tint", "group": "Cursor", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
         { "id": "wakeDuration", "name": "Wake duration (seconds)", "group": "Cursor", "type": "float", "default": 0.45, "min": 0.05, "max": 3.0 },
         { "id": "wakeWidth", "name": "Wake width (cells)", "group": "Cursor", "type": "float", "default": 0.39, "min": 0.05, "max": 3.0 },
         { "id": "wakeMinDistance", "name": "Wake minimum jump (cells)", "group": "Cursor", "type": "float", "default": 0.0, "min": 0.0, "max": 20.0 },
         { "id": "emberSleeps", "name": "Ember sleeps when unfocused", "group": "Cursor", "type": "bool", "default": true },
 
-        { "id": "followTheme", "name": "Follow terminal palette", "group": "Colours", "type": "bool", "default": false },
-        { "id": "stop0", "name": "Gradient start", "group": "Colours", "type": "color", "default": "#22D3EE" },
-        { "id": "stop1", "name": "Gradient second", "group": "Colours", "type": "color", "default": "#3B82F6" },
-        { "id": "stop2", "name": "Gradient third", "group": "Colours", "type": "color", "default": "#A855F7" },
-        { "id": "stop3", "name": "Gradient end", "group": "Colours", "type": "color", "default": "#F43F5E" }
+        { "id": "followTheme", "name": "Follow terminal palette", "group": "Colors", "type": "bool", "default": false },
+        { "id": "stop0", "name": "Gradient start", "group": "Colors", "type": "color", "default": "#22D3EE" },
+        { "id": "stop1", "name": "Gradient second", "group": "Colors", "type": "color", "default": "#3B82F6" },
+        { "id": "stop2", "name": "Gradient third", "group": "Colors", "type": "color", "default": "#A855F7" },
+        { "id": "stop3", "name": "Gradient end", "group": "Colors", "type": "color", "default": "#F43F5E" }
     ]
 }

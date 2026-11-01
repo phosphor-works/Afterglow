@@ -65,7 +65,7 @@ The uniform block starts with Phosphor's `BaseUniforms` and continues with the t
 | `uCursorRect`, `uPreviousCursorRect` | The cursor and its previous position, in canvas pixels. |
 | `uCursorColor`, `uPreviousCursorColor` | The cursor colors as drawn. |
 | `uCursorState` | Shape, previous shape, visibility and pane focus. Shapes are the `kCursor` constants. An unfocused pane always reports `kCursorBlockHollow`. |
-| `uEventAges` | Seconds since the cursor moved and since focus changed. |
+| `uEventAges` | Seconds since the cursor moved and since focus changed. 1e6 means never: a pane seen for the first time reads 1e6 for both. So does every pane on the first frame after frames without shaders. Only a move of the cursor rectangle sets the cursor age. A change of shape or color does not. |
 | `uBackgroundColor`, `uForegroundColor` | Theme colors. `uBackgroundColor.a` is the window background opacity. |
 | `uThemeCursorColor`, `uThemeCursorTextColor` | Theme cursor colors. |
 | `uSelectionBackgroundColor`, `uSelectionForegroundColor` | Theme selection colors. |
@@ -85,12 +85,13 @@ Use the time helpers instead. They read the full shader time and do not jump.
 
 The window renders continuously while an active shader does one of these:
 
-- Reads `iTime`, `iTimeDelta`, `iTimeHi`, `iFrame`, `uEventAges` or `uSignal`.
+- Reads `iTime`, `iTimeDelta`, `iTimeHi`, `iFrame`, `iDate`, `uEventAges` or `uSignal`.
 - Calls `timeAngle()`, `timeCycle()`, `timeSeconds()`, `cursorAge()`, `focusAge()` or `signalAge()`.
 - Includes `terminal_history.glsl`.
 - Sets `bufferFeedback`, or spins a scene object.
 
 `signalValue()` alone does not animate the shader. The window redraws when a signal changes.
+A shader that reads `iMouse` or `uWindowMouse`, and nothing in the list above, redraws when the pointer moves.
 
 ## Metadata
 
@@ -166,6 +167,9 @@ Buffer passes use fullscreen geometry unless `geometryPasses` selects a mesh.
 The vertex stage applies only to the final pass.
 The final pass computes `uv` from the pixel position, not from the quad.
 A deformed quad changes which pixels run. It does not move the content.
+The pass does not run for pixels that a smaller quad leaves out.
+In a pane chain, those pixels show the undeformed pane, because pane passes draw over a copy of their input.
+In window, overview, tab transition and pane effects passes, they show the window's clear color.
 
 ## Mesh passes
 
@@ -225,7 +229,8 @@ To pass visible depth to another shader, enable `depthBuffer` and write
 
 OBJ files must contain triangles. Export triangulated faces from the modeling application.
 The loader accepts positions, UVs, normals and negative face indices.
-A position or normal record needs exactly three values, and a UV record exactly two. Other records reject the pack.
+A position record has 3, 4 or 6 values, a normal record 3, and a UV record 1 to 3. The loader uses the first three or two.
+Other counts reject the pack.
 Each OBJ line permits up to 4,096 bytes. Coordinate components must be finite and no greater than 1,000,000 in magnitude.
 It generates face normals when normals are absent. Missing UVs are zero.
 Object names, group names, smoothing groups and material references do not change rendering.
@@ -295,6 +300,7 @@ Include `terminal_panes.glsl` in any pass to read the panes and the pane overvie
 The block lists panes as cards, in tab order and then in layout order within each tab.
 While the overview is closed, the cards are the current tab's panes.
 While it shows, the cards are the panes of every tab, up to 32.
+Panes after the 32nd, in tab order, do not appear in the overview.
 
 | Function | Value |
 | --- | --- |
@@ -312,6 +318,7 @@ While it shows, the cards are the panes of every tab, up to 32.
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
 | `paneOpening(i)`, `paneOpenEdge(i)` | How far a new pane has opened, and the edge it opened from. |
 | `paneContext(i)`, `paneContextChange(i)` | Where the pane's shell runs, and how far its last change has run. |
+| `panePreviousContext(i)` | Where the pane's shell ran before its last change. |
 | `panePulse(i)`, `panePulseEffect(i)`, `panePulseColor(i)` | A script's pulse: how far it has run, its effect and its palette color. |
 | `closingPaneActive()`, `closingPaneProgress()`, `closingPaneRect()`, `closingPaneTexel(uv)` | A closed pane, while it closes. |
 
@@ -324,7 +331,7 @@ Use `paneTexel()` in window and overview passes. In other passes, its input is n
 `uOverview.z` and `uOverview.w` hold the seconds since the overview opened or closed and since the highlight moved.
 
 `Shaders.overview` names the pack that draws the pane overview.
-Afterglow runs that pack after the window chain, only while the overview shows.
+Afterglow runs that pack after the window chain and the pane effects, only while the overview shows.
 It costs nothing while the overview is closed.
 Afterglow eases `overviewAmount()` and `highlightPosition()` with `Animation.overviewCurve`, so a shader reads positions and never times motion itself.
 Draw the flat window when `overviewAmount()` is 0. Opening and closing then start and end on the window.
@@ -332,16 +339,19 @@ A choice in another tab switches tabs as the overview closes. `currentTab()` cha
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
 
 `Shaders.tabTransition` names the pack that animates a tab switch.
-Afterglow runs it after the window chain while the switch runs, over the new tab.
+Afterglow runs it after the window chain and the pane effects while the switch runs, over the new tab.
 `previousTabTexel(uv)` reads the tab being left at a window uv. That tab keeps running.
 `tabTransitionProgress()` runs from 0, the tab being left, to 1, the new tab. `Animation.tabCurve` eases it, and a spring can pass 1.
 `tabTransitionDirection()` is 1 toward a tab on the right and -1 toward one on the left.
 Draw the tab being left at progress 0 and the new tab at 1. The switch then starts and ends without a jump.
+The tab being left has no layer, pane or window shaders, because its image does not include them.
+With window shaders, the first frame of a switch can differ from the frame before it.
 The overview takes precedence: a switch that the overview makes does not run the transition.
 [Tab Switch](../data/shaders/tab-switch/effect.frag) shows four styles.
 
 `Shaders.paneEffects` names the pack that animates panes as they split open and close.
-Afterglow runs it after the window chain while a pane opens or closes, a pulse runs or a pane is away, unless the overview or a tab switch shows.
+Afterglow runs it after the window chain while a pane opens or closes, a pulse runs or a pane is away.
+It also runs while the overview or a tab switch shows. It then runs before the overview or tab transition pack, so those start and end on what the window showed.
 `paneOpening(i)` runs from 0, just split, to 1, open. `paneOpenEdge(i)` is the edge the pane opened from: 0 none, 1 left, 2 top, 3 right or 4 bottom.
 `closingPaneActive()` is true while a closed pane shows. `closingPaneRect()` is where it was.
 `closingPaneTexel(uv)` reads its last frame at a window uv, from `uTabImage`.
@@ -351,6 +361,8 @@ At progress 1, draw the input unchanged.
 `paneContext(i)` is where the pane's shell runs: 0 here, 1 remote, 2 elevated or 3 a container.
 `paneContextChange(i)` runs from 0, just changed, to 1, settled. It follows OSC 3008 contexts, such as those `afterglow ssh` reports.
 `paneContextChange(i)` also runs linearly over `Animation.paneEffectDuration`.
+`panePreviousContext(i)` is the context before that change, with the same numbers. Blend from it while the change runs.
+A pane that returns here can then fade its mark out in the color it had.
 Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, linearly over the script's duration. It is 1 when no pulse runs.
 `panePulseEffect(i)` is 0 for none, 1 for a portal, 2 for a flash or 3 for a shake. A pack can define its own numbers from 4 to 255.
 `panePulseColor(i)` is the palette color the script chose.

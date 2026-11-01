@@ -7,7 +7,7 @@ Afterglow shaders are Phosphor shader packs.
 A pack is a directory with `metadata.json` and GLSL stages.
 Each stage uses the terminal shader contract. Each fragment stage defines `vec4 pTerminal(vec2 uv)`.
 See the [shader API](SHADER-API.md) for vertex and mesh stages.
-Configuration refers to packs by ID.
+Configuration refers to a pack by its directory name, which normally equals its `id`.
 The [shader API](SHADER-API.md) describes the contract.
 
 ## Pack locations
@@ -51,6 +51,15 @@ Shader output must also use premultiplied alpha.
 Afterglow draws the tab bar and other controls after all shader chains.
 Without layer shaders, Afterglow does not allocate separate layers.
 
+`Shaders.params` sets parameter values for each pack reference:
+
+```json
+{"Shaders": {"window": ["bloom"], "params": {"bloom": {"strength": 0.5}}}}
+```
+
+Afterglow compiles a pack one time. A change of `Shaders.params` does not compile it again.
+The change rebuilds the chains, so it resets buffer history and expires instance IDs.
+
 The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab in 3D.
 The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
@@ -60,6 +69,7 @@ The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an
 Switching tabs runs `Shaders.tabTransition`. The default pack is Tab Switch.
 Its `style` parameter chooses a turning cube (0), a page flip (1), a shatter (2) or a slide (3).
 The tab being left keeps running until the new tab arrives.
+It shows without its layer, pane and window shaders. With window shaders, the first frame of a switch can differ from the frame before it.
 `Animation.tabCurve` and `Animation.tabDuration` set the motion.
 Set `Shaders.tabTransition` to an empty string to switch tabs at once.
 
@@ -68,11 +78,12 @@ Its `style` parameter chooses a hinge (0) or a picture tube (1).
 A new pane swings in from the edge it split from, or switches on like a tube.
 A closed pane falls back off its bottom edge, or switches off to a dot.
 `Animation.paneEffectDuration` sets the time.
-`Animation.splits=false` turns off the open and close animations and the portal. The away frame and script pulses still show.
+`Animation.splits=false` turns off the open and close animations, the portal and the away frame. Script pulses still show.
 Set `Shaders.paneEffects` to an empty string to turn off all pane effects.
 A pane whose shell moves to another host, user or container passes through a portal, such as after `afterglow ssh`.
 While it is away, a soft frame marks it in a palette color of the theme.
 The frame is bright cyan for a remote host, bright red for an elevated user and bright magenta for a container.
+When the pane returns, the frame fades out in its color. Between two contexts, the frame changes color.
 The `portal` and `frame` parameters set their strength.
 
 [The Phosphor scene](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.

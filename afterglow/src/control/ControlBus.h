@@ -19,7 +19,7 @@ class ControlBus : public QObject, protected QDBusContext
     Q_CLASSINFO("D-Bus Interface", "com.phosphorworks.Afterglow.Control")
 
 public:
-    static constexpr const char* Interface = "com.phosphorworks.Afterglow.Control";
+    static constexpr const char* Interface = AFTERGLOW_APP_ID ".Control";
     static constexpr const char* ObjectPath = "/com/phosphorworks/Afterglow/Control";
 
     ControlBus(Control& control, SettingsStore& settings, QObject* parent = nullptr);

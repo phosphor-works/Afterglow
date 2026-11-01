@@ -18,14 +18,14 @@
     </p>
     <ul>
       <li>Kitty keyboard, graphics, text sizing, notification and clipboard protocols, and sixel images</li>
-      <li>Full Monaspace support: texture healing, ligatures and variable axes</li>
+      <li>Texture healing, ligatures and variable axes for fonts such as Monaspace</li>
       <li>Custom shaders per pane and per window, animated splits, smooth scrolling and cursor motion</li>
       <li>Program status, shell integration, hyperlinks and keyboard-driven URL opening</li>
     </ul>
   </description>
-  <url type="homepage">https://github.com/phosphor-works/afterglow</url>
-  <url type="bugtracker">https://github.com/phosphor-works/afterglow/issues</url>
-  <url type="vcs-browser">https://github.com/phosphor-works/afterglow</url>
+  <url type="homepage">https://github.com/phosphor-works/Afterglow</url>
+  <url type="bugtracker">https://github.com/phosphor-works/Afterglow/issues</url>
+  <url type="vcs-browser">https://github.com/phosphor-works/Afterglow</url>
   <launchable type="desktop-id">com.phosphorworks.Afterglow.desktop</launchable>
   <provides>
     <binary>afterglow</binary>
@@ -35,7 +35,4 @@
     <category>TerminalEmulator</category>
   </categories>
   <content_rating type="oars-1.1"/>
-  <releases>
-    <release version="0.1.0" date="2026-10-29"/>
-  </releases>
 </component>

@@ -19,7 +19,6 @@
 namespace Afterglow {
 
 class Pane;
-class TerminalWindow;
 
 /// Desktop notifications through org.freedesktop.Notifications, for every
 /// window: kitty's OSC 99 (updates by id, buttons, click and close reports,
@@ -43,10 +42,10 @@ public:
 
     /// An OSC 99 request from @p pane. The window has already applied the
     /// request's occasion (always / unfocused / invisible).
-    void handle(Pane* pane, TerminalWindow* window, const AfterglowVt::NotificationRequest& request);
+    void handle(Pane* pane, const AfterglowVt::NotificationRequest& request);
     /// A plain notification that a program in @p pane asked for (OSC 9,
     /// OSC 777, program status). It counts against the rate limit.
-    void showSimple(Pane* pane, TerminalWindow* window, const QString& title, const QString& body, int urgency = 1);
+    void showSimple(Pane* pane, const QString& title, const QString& body, int urgency = 1);
     /// Afterglow's own notice about @p pane (which may be null): input
     /// rejected, a command finished, ctl and script notify, project and move
     /// results. Program output cannot use up its rate limit and hide it.

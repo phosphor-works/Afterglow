@@ -30,7 +30,7 @@ struct Dnd : testing::Test {
         service.handle("t=a:i=42;");
         QTimer::singleShot(0, &service, [this] { service.handle("t=m:o=1;text/plain"); });
         QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-        service.drop(&event, false, { 1, 1 }, { 4, 4 }, nullptr);
+        service.drop(&event, false, { 1, 1 }, { 4, 4 });
         ASSERT_TRUE(event.isAccepted());
     }
 };
@@ -71,7 +71,7 @@ TEST_F(Dnd, DropStreamsMimeAndFinishesWithClientAction)
             QTimer::singleShot(0, &service, [this] { service.handle("t=r:o=1;"); });
     });
     QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 });
     EXPECT_TRUE(event.isAccepted());
     EXPECT_TRUE(contains("aGVsbG8gZGVza3RvcA=="));
     EXPECT_TRUE(contains("i=42"));
@@ -92,7 +92,7 @@ TEST_F(Dnd, ResetFromEndReplyReleasesReadBeforeCallback)
             }
         });
         QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-        service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+        service.drop(&event, true, { 1, 1 }, { 4, 4 });
         QObject::disconnect(connection);
         EXPECT_TRUE(reset);
         EXPECT_FALSE(event.isAccepted());
@@ -111,7 +111,7 @@ TEST_F(Dnd, RemoteReceiverMustReadUrisBeforeFile)
             QTimer::singleShot(0, &service, [this] { service.handle("t=r:x=2:y=1;"); });
     });
     QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 });
     EXPECT_FALSE(event.isAccepted());
     EXPECT_TRUE(contains("EINVAL"));
 }
@@ -148,7 +148,7 @@ TEST_F(Dnd, RemoteReceiverReadsDirectoryAndChildWithHandles)
         }
     });
     QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 });
     EXPECT_TRUE(event.isAccepted());
     EXPECT_EQ(stage, 3);
     EXPECT_TRUE(contains("X=1"));
@@ -171,7 +171,7 @@ TEST_F(Dnd, UnsignedMimeIndexCannotBecomeFinish)
             QTimer::singleShot(0, &service, [this] { service.handle("t=r:x=4294967295;"); });
     });
     QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 });
     EXPECT_FALSE(event.isAccepted());
     EXPECT_TRUE(contains("EINVAL"));
 }
@@ -192,7 +192,7 @@ TEST_F(Dnd, RejectedFinalDropSendsLeave)
     QMimeData mime;
     mime.setText(QStringLiteral("unwanted"));
     QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 });
     EXPECT_FALSE(event.isAccepted());
     // Qt sends no leave event after a drop, so the client hears it here.
     EXPECT_TRUE(contains("t=m:x=-1:y=-1"));
@@ -238,7 +238,7 @@ TEST_F(Dnd, FileUrlWithRemoteHostIsNotRead)
             QTimer::singleShot(0, &service, [&] { service.handle("t=r:x=2:y=1;"); });
     });
     QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-    service.drop(&event, true, { 1, 1 }, { 4, 4 }, nullptr);
+    service.drop(&event, true, { 1, 1 }, { 4, 4 });
     EXPECT_FALSE(event.isAccepted());
     EXPECT_TRUE(contains("EUNKNOWN"));
 }
@@ -259,6 +259,8 @@ TEST(DndTree, LinksCannotLeaveTheTreeThroughOtherLinks)
 } // namespace
 int main(int argc, char** argv)
 {
+    // Test discovery runs this binary too: it must never reach the user's session.
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "offscreen");
     QGuiApplication app(argc, argv);
     testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

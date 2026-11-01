@@ -254,7 +254,8 @@ QString Control::sendText(quint32 id, const QString& text)
     if (!p) {
         return noPane(id);
     }
-    return p->sendInput(text.toStdString()) ? QString() : QStringLiteral("program closed or input queue full");
+    // The caller hears of a refusal; the user gets no notice as well.
+    return p->sendInput(text.toStdString(), false) ? QString() : QStringLiteral("program closed or input queue full");
 }
 
 QString Control::readText(quint32 id, TextScope scope, QString& out)
@@ -391,9 +392,11 @@ QString Control::newTab(quint32 id, const QString& cwd, const QStringList& comma
     PaneLaunchOptions options;
     if (const auto error = launchOptions(cwd, command, input, options); !error.isEmpty()) return error;
     TerminalWindow* window = nullptr;
-    if (!find(id, &window)) return noPane(id);
+    Pane* from = find(id, &window);
+    if (!from) return noPane(id);
     QString error;
-    auto* added = window->openTab(options, &error);
+    // Without a directory, the tab starts where the pane is, as a split does.
+    auto* added = window->openTab(options, &error, from);
     if (!added) return error.isEmpty() ? QStringLiteral("cannot open a tab") : error;
     created = added->id();
     return {};

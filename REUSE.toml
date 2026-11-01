@@ -7,18 +7,29 @@
 version = 1
 
 [[annotations]]
-path = ["data/icons/**"]
-SPDX-FileCopyrightText = "2026 fuddlesworth"
-SPDX-License-Identifier = "CC-BY-SA-4.0"
-# From the phosphor-works branding repository.
-
-[[annotations]]
-path = ["data/shaders/**/metadata.json"]
+path = ["data/shaders/**/metadata.json", "data/examples/packages/*/shaders/**/metadata.json"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "LGPL-2.1-or-later"
 
+# These three packs are GPL-3.0-or-later like their GLSL. The last matching
+# annotation wins.
 [[annotations]]
-path = [".gitignore", "CMakePresets.json", "data/*.desktop", "tools/conformance/esctest-expected-failures.txt"]
+path = [
+    "data/shaders/depth-trails/metadata.json",
+    "data/shaders/feedback-glow/metadata.json",
+    "data/shaders/mesh-reactor/metadata.json",
+]
+SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = [
+    ".gitignore",
+    ".claude/settings.json",
+    "CMakePresets.json",
+    "data/benchmarks/*.json",
+    "data/benchmarks/*.json.gz",
+]
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "CC0-1.0"
 
@@ -27,6 +38,19 @@ path = ["data/examples/glasshouse/**/*.json", "data/examples/glasshouse/preview.
 SPDX-FileCopyrightText = "2026 fuddlesworth"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 # Glasshouse palettes after Dsaquel/dots.
+
+[[annotations]]
+path = [
+    "data/examples/phosphor/*.json",
+    "data/examples/phosphor/**/*.json",
+    "data/examples/phosphor/preview.webp",
+    "data/examples/packages/*/package.json",
+    "data/examples/projects/*.json",
+    "data/themes/afterglow-dark.json",
+    "data/themes/afterglow-light.json",
+]
+SPDX-FileCopyrightText = "2026 fuddlesworth"
+SPDX-License-Identifier = "GPL-3.0-or-later"
 
 [[annotations]]
 path = [

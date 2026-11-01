@@ -66,7 +66,8 @@ layout(std140, binding = 19) uniform TerminalPanes {
     vec4 uClosed;          // offset 2128  .x how far it has closed: 0 just closed, 1 gone, .y 1 while it shows
     vec4 uPanePulse[32];   // offset 2144  a script's afterglow.pulse: .x how far it has run: 0 just
                            //              started, 1 done, .y the effect: 0 none, 1 portal, 2 flash,
-                           //              3 shake, 4-255 for packs to define, .z a palette index
+                           //              3 shake, 4-255 for packs to define, .z a palette index;
+                           //              .w the pane's context before its last change (as uPaneLife.w)
 };                         // total 2656 bytes
 
 // Another tab at full resolution, laid out like the window: in the overview
@@ -165,6 +166,12 @@ int paneContext(int pane) {
 // How far the pane's last context change has run: 0 just changed, 1 settled.
 float paneContextChange(int pane) {
     return uPaneLife[clamp(pane, 0, 31)].z;
+}
+
+// The context before the last change, to blend from while it runs: a pane
+// that comes back here still shows where it was.
+int panePreviousContext(int pane) {
+    return int(uPanePulse[clamp(pane, 0, 31)].w + 0.5);
 }
 
 // A script's pulse: how far it has run (1 when done or none).

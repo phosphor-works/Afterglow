@@ -460,6 +460,7 @@ void ShaderLibrary::setPackageShaders(const QMap<QString, QString>& directories)
     if (directories == m_packageShaders) return;
     m_packageShaders = directories;
     buildRegistry();
+    m_compiled.clear();
     m_cache.clear();
     m_failed.clear();
     m_overBudget.clear();
@@ -476,10 +477,21 @@ void ShaderLibrary::refreshWatches()
 bool ShaderLibrary::invalidate()
 {
     bool dropped = false;
+    // A pack whose files changed, or whose reference now names another pack,
+    // compiles again, and every configuration of it goes with it.
+    QSet<QString> stale;
+    for (auto it = m_compiled.begin(); it != m_compiled.end();) {
+        if (signature(it->watched) == it->signature && m_index->find(it.key()).packDir == it->packDir) {
+            ++it;
+            continue;
+        }
+        stale.insert(it.key());
+        it = m_compiled.erase(it);
+    }
     const auto keys = m_dependencies.keys();
     for (const QString& key : keys) {
         const QString ref = key.section(QLatin1Char('\x1f'), 0, 0);
-        if (signature(m_dependencies.value(key)) == m_signatures.value(key)
+        if (!stale.contains(ref) && signature(m_dependencies.value(key)) == m_signatures.value(key)
             && m_index->find(ref).packDir == m_resolved.value(key)) continue;
         // Bitwise: each must be dropped, whichever held it.
         dropped |= m_cache.remove(key) | m_failed.remove(key) | m_overBudget.remove(key);
@@ -682,6 +694,7 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
         }
     }
     // Configuration changes must release old decoded assets and compiled packs.
+    m_compiled.removeIf([&](const auto& item) { return !named.contains(item.key()); });
     m_cache.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
     m_failed.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
     m_dependencies.removeIf([&](const auto& item) { return !desired.contains(item.key()); });
@@ -740,21 +753,94 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::load(const QString& ref, const 
     }
     auto& watched = m_dependencies[key];
     watched.clear();
-    auto program = compile(key, ref, overrides, watched);
+    auto program = configure(key, ref, overrides, watched);
     m_signatures.insert(key, signature(watched));
     m_resolved.insert(key, m_index->find(ref).packDir);
     return program;
 }
 
-AfterglowRender::ShaderProgramPtr ShaderLibrary::compile(const QString& key, const QString& ref, const QVariantMap& overrides,
-                                                         QStringList& watched)
+AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, const QString& ref,
+                                                           const QVariantMap& overrides, QStringList& watched)
 {
+    auto compiled = m_compiled.find(ref);
+    if (compiled == m_compiled.end()) compiled = m_compiled.insert(ref, compile(ref));
+    watched = compiled->watched;
+    if (!compiled->program) {
+        // compile() said why, once for the pack.
+        m_failed.insert(key, compiled->error);
+        return nullptr;
+    }
     auto fail = [&](const QString& error) {
         qCWarning(lcShaders).noquote() << ref << ":" << error;
         m_failed.insert(key, error);
         return nullptr;
     };
     const ShaderInfo info = m_index->find(ref);
+    // A default image that did not load fails the pack, unless the config names another one.
+    for (const auto& p : info.parameters) {
+        if (p.slot < 0 || p.slot >= AfterglowRender::MaxShaderImages || overrides.contains(p.id)) continue;
+        if (const QString& error = compiled->imageErrors[std::size_t(p.slot)]; !error.isEmpty()) return fail(error);
+    }
+    if (overrides.isEmpty()) {
+        m_cache.insert(key, compiled->program);
+        return compiled->program;
+    }
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        if (std::none_of(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); }))
+            qCWarning(lcShaders).noquote() << ref << ": Shaders.params sets" << it.key() << "but the pack has no such parameter";
+    }
+    // The config's values over the pack's defaults, in phosphor's slot layout.
+    AfterglowRender::ShaderParameterValues values;
+    const auto validated = m_registry->validateAndCoerceParams(info.id, overrides);
+    for (const auto& p : info.parameters) {
+        if (p.slot < 0 || !overrides.contains(p.id)) {
+            continue;
+        }
+        const QVariant v = validated.value(p.id, p.defaultValue);
+        if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
+            if (p.slot >= AfterglowRender::MaxShaderImages) continue;
+            // The user's config may name any image; the pack's own default stays inside it.
+            const auto error = loadImageParameter(info.packDir, v.toString(), AbsolutePathPolicy::Trust,
+                                                  values.images[std::size_t(p.slot)], values.imagePaths[std::size_t(p.slot)]);
+            watched << values.imagePaths[std::size_t(p.slot)];
+            if (!error.isEmpty()) return fail(error);
+            values.imageMask |= std::uint8_t(1u << p.slot);
+        } else if (p.type == QLatin1String("color")) {
+            // A colour that does not parse keeps the pack's.
+            const QColor c(v.toString());
+            if (p.slot < 16 && c.isValid()) {
+                float* out = &values.colors[std::size_t(p.slot) * 4];
+                out[0] = float(c.redF());
+                out[1] = float(c.greenF());
+                out[2] = float(c.blueF());
+                out[3] = float(c.alphaF());
+                values.colorMask |= std::uint16_t(1u << p.slot);
+            }
+        } else if (p.slot < 32) {
+            values.params[std::size_t(p.slot)] = p.type == QLatin1String("bool") ? (v.toBool() ? 1.0f : 0.0f) : v.toFloat();
+            values.paramMask |= std::uint32_t(1) << p.slot;
+        }
+    }
+    auto program = compiled->program->withValues(values);
+    m_cache.insert(key, program);
+    return program;
+}
+
+ShaderLibrary::Compiled ShaderLibrary::compile(const QString& ref)
+{
+    Compiled result;
+    const ShaderInfo info = m_index->find(ref);
+    result.packDir = info.packDir;
+    QStringList& watched = result.watched;
+    auto done = [&] {
+        result.signature = signature(watched);
+        return result;
+    };
+    auto fail = [&](const QString& error) {
+        qCWarning(lcShaders).noquote() << ref << ":" << error;
+        result.error = error;
+        return done();
+    };
     if (!info.isValid()) {
         // A package pack may be named "<package>.glsl", so only a reference
         // that names no pack is taken for a file.
@@ -764,10 +850,6 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::compile(const QString& key, con
         }
         return fail(QStringLiteral("no shader pack named \"%1\" (available: %2)")
                         .arg(ref, packIds().join(QStringLiteral(", "))));
-    }
-    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
-        if (std::none_of(info.parameters.begin(), info.parameters.end(), [&](const auto& p) { return p.id == it.key(); }))
-            qCWarning(lcShaders).noquote() << ref << ": Shaders.params sets" << it.key() << "but the pack has no such parameter";
     }
     if (info.bufferShaderPaths.size() > AfterglowRender::MaxShaderBuffers) return fail(QStringLiteral("Too many buffer passes"));
     const QStringList includes = includeDirs(info.packDir);
@@ -808,20 +890,23 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::compile(const QString& key, con
     if (const auto error = loadPackMetadata(info.packDir, src, includes, scalarSlots, watched); !error.isEmpty())
         return fail(error);
     src.parameterPreamble = PhosphorShaders::ShaderRegistry::paramPreamble(info).toUtf8();
-    // Defaults, overlaid with the config's values, in phosphor's slot layout.
-    const auto validated = m_registry->validateAndCoerceParams(info.id, overrides);
+    // The pack's defaults, in phosphor's slot layout. configure() lays the config's values over them.
+    const auto defaults = m_registry->validateAndCoerceParams(info.id, {});
     for (const auto& p : info.parameters) {
         if (p.slot < 0) {
             continue;
         }
-        const QVariant v = validated.value(p.id, p.defaultValue);
+        const QVariant v = defaults.value(p.id, p.defaultValue);
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
             if (p.slot >= AfterglowRender::MaxShaderImages) continue;
-            // The user's config may name any image; the pack's own default stays inside it.
-            const auto policy = overrides.contains(p.id) ? AbsolutePathPolicy::Trust : AbsolutePathPolicy::Reject;
-            const auto error = loadImageParameter(info.packDir, v.toString(), policy, src.images[p.slot], src.imagePaths[p.slot]);
+            const auto error = loadImageParameter(info.packDir, v.toString(), AbsolutePathPolicy::Reject, src.images[p.slot],
+                                                  src.imagePaths[p.slot]);
             watched << src.imagePaths[p.slot];
-            if (!error.isEmpty()) return fail(error);
+            // The pack still compiles: a configured image in this slot can stand in for it (configure()).
+            if (!error.isEmpty()) {
+                result.imageErrors[std::size_t(p.slot)] = error;
+                src.images[p.slot] = {};
+            }
         } else if (p.type == QLatin1String("color")) {
             const QColor c(v.toString());
             if (p.slot < 16 && c.isValid()) {
@@ -841,12 +926,12 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::compile(const QString& key, con
     auto program = AfterglowRender::ShaderProgram::compile(src, &error);
     if (!program) {
         qCWarning(lcShaders).noquote() << "shader" << ref << "failed to compile:\n" << error;
-        m_failed.insert(key, error);
-        return nullptr;
+        result.error = error;
+        return done();
     }
     qCInfo(lcShaders).noquote() << "loaded shader" << ref << (program->animated() ? "(animated)" : "");
-    m_cache.insert(key, program);
-    return program;
+    result.program = std::move(program);
+    return done();
 }
 
 } // namespace Afterglow

@@ -254,7 +254,7 @@ void GpuDevice::setFontSpec(const FontSpec& spec)
 void GpuDevice::adjustFontSize(float deltaPoints)
 {
     FontSpec spec = m_fontSpec;
-    spec.sizePoints = std::clamp(spec.sizePoints + deltaPoints, 4.0f, 96.0f);
+    spec.sizePoints = std::clamp(spec.sizePoints + deltaPoints, FontSpec::MinPoints, FontSpec::MaxPoints);
     if (spec.sizePoints != m_fontSpec.sizePoints) {
         setFontSpec(spec);
     }

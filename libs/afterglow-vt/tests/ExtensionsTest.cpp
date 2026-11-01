@@ -248,12 +248,16 @@ TEST(Extensions, ITerm2InlineImages)
     // A download (no inline=1) is not shown.
     t.feed("\x1b]1337;File=name=eA==;size=7:" + picture + "\x07");
     EXPECT_TRUE(t.graphics().placements().empty());
-    // Three cells wide, keeping the 2:1 shape: 24 by 12 pixels.
+    // Three cells wide, keeping the 2:1 shape: drawn at 24 by 12 pixels, but
+    // stored at its natural 4 by 2 (an enlargement is the renderer's).
     t.feed("\x1b]1337;File=inline=1;width=3:" + picture + "\x07");
     ASSERT_EQ(t.graphics().placements().size(), 1u);
-    const Image& img = t.graphics().images().at(t.graphics().placements()[0].imageId);
-    EXPECT_EQ(img.width, 24u);
-    EXPECT_EQ(img.height, 12u);
+    const Placement& drawn = t.graphics().placements()[0];
+    const Image& img = t.graphics().images().at(drawn.imageId);
+    EXPECT_EQ(img.width, 4u);
+    EXPECT_EQ(img.height, 2u);
+    EXPECT_EQ(drawn.displayWidth, 24u);
+    EXPECT_EQ(drawn.displayHeight, 12u);
     // One row high, so the cursor stays on it, right of the image.
     EXPECT_EQ(t.screen().cursor.y, 0);
     EXPECT_EQ(t.screen().cursor.x, 3);
@@ -264,6 +268,30 @@ TEST(Extensions, ITerm2InlineImages)
     const Image& second = t.graphics().images().at(t.graphics().placements()[1].imageId);
     EXPECT_EQ(second.width, 4u);
     EXPECT_EQ(second.height, 2u);
+}
+
+TEST(Extensions, ITerm2InterruptedMultipartFileLeavesNoImage)
+{
+    Host host;
+    Terminal t(20, 6, host);
+    t.resize(20, 6, 8, 16);
+    // Cut off by a new transfer: only the new file's parts count.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07");
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07");
+    EXPECT_TRUE(t.graphics().placements().empty());
+    t.feed("\x1b]1337;FileEnd\x07");
+    ASSERT_EQ(t.graphics().placements().size(), 1u);
+    // Cut off by RIS: no image, and a FileEnd after it does nothing.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdHVyZQ==\x07\x1b" "c");
+    t.feed("\x1b]1337;FileEnd\x07");
+    EXPECT_TRUE(t.graphics().placements().empty());
+    // The next transfer works.
+    t.feed("\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=cGljdH\x07\x1b]1337;FilePart=VyZQ==\x07"
+           "\x1b]1337;FileEnd\x07");
+    ASSERT_EQ(t.graphics().placements().size(), 1u);
+    const Image& img = t.graphics().images().at(t.graphics().placements()[0].imageId);
+    EXPECT_EQ(img.width, 4u);
+    EXPECT_EQ(img.height, 2u);
 }
 
 TEST(Extensions, ITerm2ImageSizes)

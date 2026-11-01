@@ -54,11 +54,15 @@ qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h)
 target_link_libraries(afterglow PRIVATE afterglow_app)
 
 # Shader pack loading, shared with the developer render tool.
+# A binary under the build directory reads the packs and themes of the source
+# tree; an installed one reads those of its own prefix.
 qt_add_library(afterglow_shaders STATIC src/shaders/ShaderLibrary.cpp src/shaders/ShaderLibrary.h
-    src/shaders/ShaderControls.cpp src/shaders/ShaderControls.h)
+    src/shaders/ShaderControls.cpp src/shaders/ShaderControls.h src/shaders/ShaderRefs.h)
 target_include_directories(afterglow_shaders PUBLIC src)
 target_compile_definitions(afterglow_shaders PRIVATE QT_NO_CAST_FROM_ASCII
-    AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders")
+    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
+    AFTERGLOW_SOURCE_SHADER_DIR="${PROJECT_SOURCE_DIR}/data/shaders"
+    AFTERGLOW_INSTALLED_SHADER_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/shaders")
 target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders::PhosphorShaders PhosphorAnimation::PhosphorAnimation
     PhosphorFsLoader::PhosphorFsLoader Qt6::Core)
 
@@ -68,7 +72,8 @@ pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 
-# Settings, keybinds and themes, shared with their tests.
+# Settings, keybinds, key modes, themes and the terminal text capture, shared
+# with their tests.
 qt_add_library(afterglow_config STATIC
     src/desktop/TerminalText.cpp
     src/desktop/TerminalText.h
@@ -84,7 +89,9 @@ qt_add_library(afterglow_config STATIC
     src/XkbKeyboard.h)
 target_include_directories(afterglow_config PUBLIC src)
 target_compile_definitions(afterglow_config PRIVATE QT_NO_CAST_FROM_ASCII
-    AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
+    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
+    AFTERGLOW_SOURCE_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes"
+    AFTERGLOW_INSTALLED_THEME_DIR="${CMAKE_INSTALL_FULL_DATADIR}/afterglow/themes")
 target_link_libraries(afterglow_config PUBLIC afterglow_shaders Afterglow::Render Afterglow::Vt
     PhosphorConfig::PhosphorConfig PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Gui PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON)
 
@@ -148,11 +155,16 @@ endif()
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     qt_add_executable(afterglow_native_tests tests/NativeWindowTest.cpp)
-    target_link_libraries(afterglow_native_tests PRIVATE afterglow_app)
+    target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
     afterglow_add_chrome(afterglow_native_tests)
 endif()
 
+# The app id matches QGuiApplication::desktopFileName, which Wayland uses to
+# find the icon and group windows, and names the desktop files below.
+set(AFTERGLOW_APP_ID com.phosphorworks.Afterglow)
 target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_VERSION="${PROJECT_VERSION}"
+    AFTERGLOW_APP_ID="${AFTERGLOW_APP_ID}"
+    AFTERGLOW_BUILD_DIR="${CMAKE_BINARY_DIR}"
     AFTERGLOW_BUILD_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins"
     AFTERGLOW_INSTALLED_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/afterglow/plugins"
     AFTERGLOW_BUILD_TERMINFO_DIR="${CMAKE_BINARY_DIR}/share/terminfo"
@@ -165,17 +177,34 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
-    Qt6::DBus KF6::WindowSystem)
+    Qt6::DBus KF6::WindowSystem
+    PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Private libraries: afterglow's own and the phosphor ones it was built with.
-install(TARGETS AfterglowVt AfterglowRender AfterglowPty
-                PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
-                PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-                PhosphorDBus PhosphorScripting PhosphorAudio
-        LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
+# They find each other in their own directory, and the plugin finds them two
+# levels up.
+set(AFTERGLOW_PRIVATE_LIBS AfterglowVt AfterglowRender AfterglowPty
+    PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
+    PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
+    PhosphorDBus PhosphorScripting PhosphorAudio)
+set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
+set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
+install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
+# Licence texts. Luau is statically linked into PhosphorScripting, and its MIT
+# notice must go with the binaries; the phosphor rule that installs it is
+# skipped with the others (cmake/AfterglowPhosphor.cmake).
+file(GLOB AFTERGLOW_LICENSE_TEXTS "${PROJECT_SOURCE_DIR}/LICENSES/*.txt")
+install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
+get_directory_property(AFTERGLOW_LUAU_VERSION DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-scripting"
+    DEFINITION PHOSPHORSCRIPTING_LUAU_VERSION)
+set(AFTERGLOW_LUAU_LICENSE "${CMAKE_BINARY_DIR}/_luau/luau-${AFTERGLOW_LUAU_VERSION}/LICENSE.txt")
+if(EXISTS "${AFTERGLOW_LUAU_LICENSE}")
+    install(FILES "${AFTERGLOW_LUAU_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
+            RENAME LICENSE.Luau)
+endif()
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
 # Scripting: types for editors and examples to copy; neither loads on its own.
@@ -188,9 +217,7 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/glasshouse/ DESTINATION ${
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/phosphor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/phosphor
         USE_SOURCE_PERMISSIONS)
 
-# Desktop integration. The app id matches QGuiApplication::desktopFileName,
-# which Wayland uses to find the icon and group windows.
-set(AFTERGLOW_APP_ID com.phosphorworks.Afterglow)
+# Desktop integration.
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES ${PROJECT_SOURCE_DIR}/data/${AFTERGLOW_APP_ID}.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 install(FILES ${PROJECT_SOURCE_DIR}/data/icons/${AFTERGLOW_APP_ID}.svg
@@ -231,5 +258,3 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
-
-target_link_libraries(afterglow_app PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)

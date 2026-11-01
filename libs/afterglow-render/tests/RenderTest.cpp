@@ -1965,13 +1965,14 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, inRight, rgb(snapshot.defaultBg));
 }
 
-TEST_F(Render, PaneContextReachesPaneEffects)
+TEST_F(Render, PaneContextAndPreviousContextReachPaneEffects)
 {
     ShaderProgramSource source;
     source.id = "context";
     source.code = R"(#include <terminal_panes.glsl>
 vec4 pTerminal(vec2 uv) {
-    return vec4(paneContextChange(0), float(paneContext(0)) / 4.0, paneInCurrentTab(0) ? 1.0 : 0.0, 1.0);
+    return vec4(paneContextChange(0), float(paneContext(0)) / 4.0,
+                paneInCurrentTab(0) ? 0.5 + float(panePreviousContext(0)) / 8.0 : 0.0, 1.0);
 })";
     QString error;
     auto program = ShaderProgram::compile(source, &error);
@@ -1983,13 +1984,14 @@ vec4 pTerminal(vec2 uv) {
     WindowRenderer::Pane pane{&snapshot, {}};
     pane.params.rect = QRect(QPoint(), size);
     pane.params.context = 1;
+    pane.params.previousContext = 2;
     pane.params.contextProgress = 0.5f;
     // A pane away from here keeps the chain on without asking for new frames.
     renderer->setPaneEffects({true, false, std::nullopt, 1.0f});
     EXPECT_TRUE(renderer->paneEffectsShowing());
     EXPECT_FALSE(renderer->animating());
     const auto image = renderer->renderToImage(size, {pane}, {}, 0xff000000u);
-    EXPECT_PIXEL(image, QPoint(size.width() / 2, size.height() / 2), qRgb(128, 64, 255));
+    EXPECT_PIXEL(image, QPoint(size.width() / 2, size.height() / 2), qRgb(128, 64, 191));
 }
 
 TEST(ShaderGeometry, SceneMatricesComposeParentsParametersAndSpin)
@@ -2269,6 +2271,24 @@ TEST(Snapshot, SelectionStaysOpaqueOverATransparentBackgroundColour)
     c.capture("", &sel);
     EXPECT_FALSE(c.snapshot.at(0, 0).backgroundOverride);
     EXPECT_EQ(c.snapshot.at(0, 0).bg >> 24, 255u);
+}
+
+TEST(Snapshot, PlaceholderRunsEndAtAnyOtherCell)
+{
+    Captured pane{AfterglowVt::TerminalOptions{}};
+    pane.terminal.resize(20, 2, 10, 20);
+    // A 2x1 image on a two-cell grid: each cell shows one pixel column.
+    pane.capture("\x1b[?25l\x1b_Ga=T,f=32,s=2,v=1,i=7,p=1,U=1,c=2,r=1,q=2;/wAA/wD/AP8=\x1b\\"
+                 "\x1b[38;2;0;0;7m\xf4\x8e\xbb\xae\xf4\x8e\xbb\xaeX\xf4\x8e\xbb\xae\x1b[0m");
+    const auto& images = pane.snapshot.images;
+    ASSERT_EQ(images.size(), 3u);
+    EXPECT_EQ(images[0].x, 0);
+    EXPECT_EQ(images[1].x, 10);
+    EXPECT_EQ(images[2].x, 30);
+    // The second cell continues the run; the cell after the X starts a new one.
+    EXPECT_GT(images[1].srcX, images[0].srcX);
+    EXPECT_EQ(images[2].srcX, images[0].srcX);
+    EXPECT_EQ(pane.snapshot.at(0, 0).cp, char32_t(0));
 }
 
 TEST(Snapshot, CopiesAndAssignmentsTakeANewIdentity)

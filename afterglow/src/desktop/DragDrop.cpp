@@ -1200,7 +1200,7 @@ void DragDrop::handle(const QByteArray& command)
     } else
         state->dispatch(m, payload);
 }
-void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel, QWindow*)
+void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
 {
     const auto state = d;
     if (!state->accepting || state->dropped) {

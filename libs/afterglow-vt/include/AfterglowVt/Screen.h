@@ -117,8 +117,11 @@ public:
     /// Scrolls the region's content up by @p n. With @p intoHistory, a region
     /// covering the whole screen sends the rows leaving the top into scrollback
     /// (only line feeds do this; SU and DL never do).
-    void scrollUp(const Region& region, int n, std::uint32_t fillStyleId, bool intoHistory = false);
-    void scrollDown(const Region& region, int n, std::uint32_t fillStyleId);
+    /// Both return true when cells moved to other row ids (see RegionScroll),
+    /// and false when the scroll kept every cell's row id: into the history,
+    /// a whole screen without history, or nothing to move.
+    bool scrollUp(const Region& region, int n, std::uint32_t fillStyleId, bool intoHistory = false);
+    bool scrollDown(const Region& region, int n, std::uint32_t fillStyleId);
 
     void clearHistory();
     /// Changes the history limit, trimming the oldest rows if needed.

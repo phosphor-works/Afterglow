@@ -7,15 +7,21 @@ Usage:
   python3 .claude/skills/ag-verify-live/headless_native.py [--filter 'NativeWindow.*'] [--icd lvp.json]
 
 --icd selects a Vulkan driver manifest, such as a lavapipe build for software rendering. Without it the tests use
-the host driver. The KWin log goes to --log (default: a file in the temporary directory, printed at the end).
+the host driver. On a failure, the last KWin log lines are printed. The runner starts itself again under
+dbus-run-session, so that KWin and the tests use a private session bus.
 """
 import argparse
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / 'afterglow/tests'))
+from nested_desktop import KWINRC  # noqa: E402  (one KWin configuration for every runner)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--binary', default='build/afterglow/afterglow_native_tests')
@@ -24,11 +30,18 @@ parser.add_argument('--icd', help='Vulkan ICD manifest (for example a lavapipe l
 parser.add_argument('--timeout', type=int, default=400, help='seconds for the whole test binary')
 parser.add_argument('--size', default='1100x750', help='virtual output size')
 parser.add_argument('--validation', action='store_true', help='enable the Vulkan validation layer')
+parser.add_argument('--private-bus', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
 
 binary = Path(args.binary).resolve()
 if not binary.exists():
     sys.exit(f'{binary} does not exist. Build it: cmake --build build --target afterglow_native_tests')
+if not args.private_bus:
+    # KWin must not join the user's session bus: run everything below on a private one.
+    sys.exit(subprocess.call(['dbus-run-session', '--', sys.executable, __file__, *sys.argv[1:],
+                              '--binary', str(binary), '--private-bus']))
+# Stop KWin on SIGTERM too, through the finally block below.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
 width, height = args.size.split('x')
 
 with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
@@ -36,10 +49,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     config = root / 'config'
     config.mkdir()
     # The user's KWin plugins (PlasmaZones) must not load into the test compositor
-    (config / 'kwinrc').write_text(
-        '[Plugins]\nplasmazonesEnabled=false\nkwin_effect_plasmazonesEnabled=false\n'
-        'kwin_effect_plasmazones_overviewEnabled=false\n'
-    )
+    (config / 'kwinrc').write_text(KWINRC)
     socket = f'afterglow-headless-{os.getpid()}'
     env = dict(
         os.environ,

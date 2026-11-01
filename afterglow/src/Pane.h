@@ -67,9 +67,18 @@ public:
     int rows() const;
 
     /// Sends bytes to the child and snaps the viewport back to the bottom.
-    bool sendInput(std::string_view bytes);
+    /// A refusal shows the input-rejected notice unless @p reportFailure is
+    /// false (a caller that reports the failure itself).
+    bool sendInput(std::string_view bytes, bool reportFailure = true);
+    /// Writes a protocol reply (a clipboard, notification, focus, file
+    /// transfer or drag and drop answer). It is not typing: the view stays
+    /// where it is, and a refusal shows no notice. False when the pty refused it.
+    bool sendReply(std::string_view bytes);
+    /// Creates the protocol handlers on first use.
     FileTransfer* fileTransfers();
     DragDrop* dragDrop();
+    bool hasFileTransfers() const noexcept { return m_fileTransfers != nullptr; }
+    bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
 
     /// Runs @p fn with the terminal locked.
     template<typename Fn>
@@ -93,6 +102,8 @@ public:
     /// Overrides the title; empty returns to the program's.
     void setUserTitle(const QString& title);
     QString userTitle() const;
+    /// The directory the shell reported last (OSC 7, 9;9, 633, 1337) when it
+    /// is local and exists, else the foreground job's directory from /proc.
     QString workingDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     QVariantMap readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit);
@@ -132,8 +143,8 @@ public:
 
     /// Values for this pane's shaders (uSignal), set by scripts and the
     /// control interface. GUI thread.
-    using Signals = std::array<AfterglowRender::FrameBuilder::PaneParams::Signal, 8>;
-    static constexpr int SignalCount = 8;
+    using Signals = decltype(AfterglowRender::FrameBuilder::PaneParams::signals);
+    static constexpr int SignalCount = int(std::tuple_size_v<Signals>);
     void setSignal(int channel, float value);
     void setSignals(const QList<QPair<int, float>>& values, std::chrono::steady_clock::time_point time);
     const Signals& shaderSignals() const noexcept { return m_signals; }
@@ -211,9 +222,6 @@ Q_SIGNALS:
 private:
     // ITerminalHost (pty thread, m_mutex held)
     void writeToPty(std::string_view bytes) override;
-    /// Writes a protocol reply (file transfer, drag and drop) from the GUI
-    /// thread without snapping the view. False when the pty refused it.
-    bool writeReply(const QByteArray& bytes);
     void reportInputFailure();
     std::atomic_bool m_inputFailureQueued{false};
     /// Queues @p deliver to the GUI thread unless one is already queued.
@@ -222,10 +230,15 @@ private:
     std::atomic_bool m_flashQueued{false};
     std::atomic_bool m_clipboardQueued{false};
     std::atomic_bool m_pointerShapeQueued{false};
+    // Status and context also change on the GUI thread (a reset through
+    // withTerminal): queued, so no receiver reads them under m_mutex.
+    std::atomic_bool m_statusQueued{false};
+    std::atomic_bool m_contextQueued{false};
     std::optional<QString> m_pendingClipboard; ///< guarded by m_mutex
     std::optional<QString> m_pendingPrimary; ///< guarded by m_mutex
     QString m_pendingPointerShape; ///< guarded by m_mutex
     void titleChanged(std::string_view title) override;
+    void workingDirectoryChanged(std::string_view directory) override;
     void bell() override;
     void clipboardWrite(std::string_view selection, std::string_view data) override;
     void notify(std::string_view title, std::string_view body) override;
@@ -241,6 +254,7 @@ private:
     void commandStarted(std::string_view command) override;
     void commandFinished(int exitCode) override;
     void contextChanged() override;
+    void regionScrolled(const AfterglowVt::RegionScroll& scroll) override;
     void userVarChanged(std::string_view name, std::string_view value) override;
     void downloadFile(std::string_view name, std::string_view data) override;
     bool decodeImage(std::string_view data, std::uint32_t& width, std::uint32_t& height,
@@ -271,6 +285,7 @@ private:
     bool m_scrollOnInput = true;
     QString m_contextLabel;
     QString m_contextKind;
+    QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
     QHash<QString, QString> m_userVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
@@ -317,6 +332,7 @@ private:
     std::uint64_t m_snapshotSelectionSerial = ~0ull;
     int m_snapshotExtraRows = 0;
     QElapsedTimer m_syncTimer;
+    std::uint64_t m_syncSerial = 0; ///< the synchronized update m_syncTimer times
     QElapsedTimer m_promptTimer;
 
     std::atomic<bool> m_notifyPending{false};

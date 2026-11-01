@@ -168,3 +168,77 @@ TEST(Selection, RangeOfRowsThatAreGoneIsNotExpanded)
     sel.mode = SelectionMode::Line;
     EXPECT_EQ(sel.range(t.t.screen()).start, sel.anchor);
 }
+
+TEST(Selection, FollowsAFullWidthRegionScroll)
+{
+    // Rows 10 to 20 moved up 3.
+    RegionScroll scroll;
+    scroll.top = 10;
+    scroll.bottom = 20;
+    scroll.left = 0;
+    scroll.right = 79;
+    scroll.delta = -3;
+    Selection sel;
+    sel.active = true;
+    sel.anchor = {15, 4};
+    sel.head = {17, 2};
+    ASSERT_TRUE(sel.followScroll(scroll));
+    EXPECT_EQ(sel.anchor, (SelectionPoint{12, 4}));
+    EXPECT_EQ(sel.head, (SelectionPoint{14, 2}));
+    // Outside the region: it stays.
+    sel.anchor = {2, 0};
+    sel.head = {9, 5};
+    ASSERT_TRUE(sel.followScroll(scroll));
+    EXPECT_EQ(sel.anchor, (SelectionPoint{2, 0}));
+    EXPECT_EQ(sel.head, (SelectionPoint{9, 5}));
+    // A row that leaves the top, a selection the region cuts, and a region
+    // narrower than the screen: it cannot follow.
+    sel.anchor = {11, 0};
+    sel.head = {14, 0};
+    EXPECT_FALSE(sel.followScroll(scroll));
+    sel.anchor = {8, 0};
+    sel.head = {14, 0};
+    EXPECT_FALSE(sel.followScroll(scroll));
+    sel.anchor = {15, 0};
+    sel.head = {16, 0};
+    scroll.fullWidth = false;
+    scroll.right = 39;
+    EXPECT_FALSE(sel.followScroll(scroll));
+}
+
+TEST(Selection, HostLearnsWhichRowsAScrollMoved)
+{
+    struct Host : RecordingHost
+    {
+        std::vector<RegionScroll> scrolls;
+        void regionScrolled(const RegionScroll& s) override { scrolls.push_back(s); }
+    } host;
+    Terminal t(20, 6, host);
+    t.feed("\n\n\n\n\n\n\n\n"); // three rows of history: line feeds move no row ids
+    ASSERT_EQ(t.screen().historySize(), 3u);
+    EXPECT_TRUE(host.scrolls.empty());
+    const std::uint64_t base = t.screen().rowsDropped() + t.screen().historySize();
+    t.feed("\x1b[3;1H\x1b[2L"); // IL 2 at row 2: rows 2 to 5 move down 2
+    ASSERT_EQ(host.scrolls.size(), 1u);
+    EXPECT_EQ(host.scrolls[0].top, base + 2);
+    EXPECT_EQ(host.scrolls[0].bottom, base + 5);
+    EXPECT_EQ(host.scrolls[0].delta, 2);
+    EXPECT_TRUE(host.scrolls[0].fullWidth);
+    t.feed("\x1b[2;4r\x1b[2S"); // SU 2 in rows 1 to 3
+    ASSERT_EQ(host.scrolls.size(), 2u);
+    EXPECT_EQ(host.scrolls[1].top, base + 1);
+    EXPECT_EQ(host.scrolls[1].bottom, base + 3);
+    EXPECT_EQ(host.scrolls[1].delta, -2);
+    t.feed("\x1b[4;1H\n"); // a line feed at the region's bottom margin
+    ASSERT_EQ(host.scrolls.size(), 3u);
+    EXPECT_EQ(host.scrolls[2].delta, -1);
+    // The selection a host keeps follows with Selection::followScroll.
+    Selection sel;
+    sel.active = true;
+    sel.layoutEpoch = t.screen().layoutEpoch();
+    sel.anchor = {base + 2, 0};
+    sel.head = {base + 3, 4};
+    ASSERT_TRUE(sel.followScroll(host.scrolls[2]));
+    EXPECT_EQ(sel.anchor.row, base + 1);
+    EXPECT_EQ(sel.head.row, base + 2);
+}

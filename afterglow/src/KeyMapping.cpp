@@ -33,53 +33,59 @@ std::uint8_t mapModifiers(Qt::KeyboardModifiers mods)
 
 namespace {
 
-/// Keypad digits and operators: keypad keys whatever their text, which Ctrl
-/// can turn into a control character. The navigation keys that NumLock off
-/// gives are not among them.
-bool keypadSymbolKey(int qtKey)
-{
-    return (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9) || qtKey == Qt::Key_Period || qtKey == Qt::Key_Comma
-        || qtKey == Qt::Key_Slash || qtKey == Qt::Key_Asterisk || qtKey == Qt::Key_Minus || qtKey == Qt::Key_Plus
-        || qtKey == Qt::Key_Equal || qtKey == Qt::Key_Enter;
-}
-
+/// A keypad key with Qt::KeypadModifier. With NumLock off the keypad gives
+/// navigation keys (Qt reports Home, Down…): they stay keypad keys, which the
+/// kitty protocol tells apart and legacy encodings send as the main keys.
 Key keypadKey(int qtKey)
 {
     switch (qtKey) {
     case Qt::Key_0:
-    case Qt::Key_Insert:
         return Key::Keypad0;
     case Qt::Key_1:
-    case Qt::Key_End:
         return Key::Keypad1;
     case Qt::Key_2:
-    case Qt::Key_Down:
         return Key::Keypad2;
     case Qt::Key_3:
-    case Qt::Key_PageDown:
         return Key::Keypad3;
     case Qt::Key_4:
-    case Qt::Key_Left:
         return Key::Keypad4;
     case Qt::Key_5:
-    case Qt::Key_Clear:
         return Key::Keypad5;
     case Qt::Key_6:
-    case Qt::Key_Right:
         return Key::Keypad6;
     case Qt::Key_7:
-    case Qt::Key_Home:
         return Key::Keypad7;
     case Qt::Key_8:
-    case Qt::Key_Up:
         return Key::Keypad8;
     case Qt::Key_9:
-    case Qt::Key_PageUp:
         return Key::Keypad9;
-    case Qt::Key_Period:
-    case Qt::Key_Comma:
+    case Qt::Key_Insert:
+        return Key::KeypadInsert;
+    case Qt::Key_End:
+        return Key::KeypadEnd;
+    case Qt::Key_Down:
+        return Key::KeypadDown;
+    case Qt::Key_PageDown:
+        return Key::KeypadPageDown;
+    case Qt::Key_Left:
+        return Key::KeypadLeft;
+    case Qt::Key_Clear:
+        return Key::KeypadBegin;
+    case Qt::Key_Right:
+        return Key::KeypadRight;
+    case Qt::Key_Home:
+        return Key::KeypadHome;
+    case Qt::Key_Up:
+        return Key::KeypadUp;
+    case Qt::Key_PageUp:
+        return Key::KeypadPageUp;
     case Qt::Key_Delete:
+        return Key::KeypadDelete;
+    case Qt::Key_Period:
         return Key::KeypadDecimal;
+    case Qt::Key_Comma:
+        // KP_Separator: the decimal key of layouts with a decimal comma.
+        return Key::KeypadSeparator;
     case Qt::Key_Slash:
         return Key::KeypadDivide;
     case Qt::Key_Asterisk:
@@ -224,6 +230,15 @@ char32_t firstCodepoint(const QString& s)
 
 } // namespace
 
+char32_t bindingBaseKey(const QKeyEvent* event)
+{
+    const XkbKeyboard& xkb = XkbKeyboard::instance();
+    char32_t base = xkb.unshiftedCodepoint(event->nativeScanCode());
+    // "H" in a binding means the key that types h on the first Latin layout.
+    if (base < 0x20 || base >= 0x7F) base = xkb.latinCodepoints(event->nativeScanCode()).first;
+    return base;
+}
+
 AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
 {
     AfterglowVt::KeyEvent out;
@@ -265,10 +280,7 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
     out.text = std::string_view(textStorage.constData(), std::size_t(textStorage.size()));
 
     if (e->modifiers() & Qt::KeypadModifier) {
-        const Key kp = keypadKey(k);
-        // With NumLock off the keypad sends navigation keys (Qt reports Home,
-        // Down…); those fall through to the regular mapping below.
-        if (kp != Key::Text && keypadSymbolKey(k)) {
+        if (const Key kp = keypadKey(k); kp != Key::Text) {
             out.key = kp;
             return out;
         }
@@ -325,7 +337,7 @@ AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* e, QByteArray& textStorage)
         out.key = Key::PageDown;
         break;
     default:
-        if (k >= Qt::Key_F1 && k <= Qt::Key_F12) {
+        if (k >= Qt::Key_F1 && k <= Qt::Key_F35) {
             out.key = Key(int(Key::F1) + (k - Qt::Key_F1));
         } else {
             out.key = Key::Text;

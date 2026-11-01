@@ -41,6 +41,30 @@ Scrolling or resizing can change the anchor.
 Parent offsets use cells. `X` and `Y` remain the child's pixel offsets.
 Relative placements do not move the terminal cursor.
 
+## Image lifetime and scrolling
+
+| Event | Result |
+| --- | --- |
+| Lowercase Kitty delete (`d=a`, `d=i` and the others) | The placements go. Image data with an ID or a number stays, also the data of child images. |
+| Last placement of an image without an ID or a number goes | The image data goes. Sixel and iTerm2 images do the same. |
+| ED 2 (erase the screen) | Images that reach into the screen go, also when their top row is in the scrollback. |
+| ED 3 (erase the scrollback) | Images whose top row is in the scrollback go. Images on the screen stay, like the text. |
+| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | Images move with their rows. An image goes when its top-left cell leaves the region. |
+
+The same scrolls move shell-integration marks (OSC 133) with their rows.
+A command or prompt region goes when its start or end leaves the scroll region.
+A selection moves when a full-width scroll region holds all of it.
+The selection is cleared when the scroll region holds only part of it.
+It is also cleared when a region with left and right margins holds any of it.
+With left and right margins, only images and marks in those columns move.
+
+Afterglow stores an iTerm2 inline image at its own size, or smaller when the requested size is smaller.
+The renderer enlarges it to the requested size.
+
+To refuse Kitty transmissions from files, temporary files and shared memory (`t=f`, `t=t`, `t=s`), set `Terminal.graphicsFileTransfer` to `"deny"`.
+The program then gets an `EPERM` error, and Afterglow opens no file.
+Inline transmissions (`t=d`) always work.
+
 ## Multiple cursors
 
 Color operations 30 (text), 40 (fill) and query 101 are supported.

@@ -23,7 +23,9 @@ public:
     /// Timeouts arrive already clamped by the schema.
     static KeyModes fromConfig(const QVariantMap& bindings, const QVariantMap& tables,
         const QString& leader, int sequenceTimeout, int tableTimeout, const Keybinds& singles, QStringList* errors);
-    Result press(const QKeyEvent* event, State& state, qint64 now) const;
+    /// @p base is the unshifted key on the active layout (bindingBaseKey),
+    /// as for Keybinds::combinations.
+    Result press(const QKeyEvent* event, State& state, qint64 now, char32_t base = 0) const;
     /// Drops a prefix that timed out, and leaves a table that stayed idle too long.
     static void expire(State& state, qint64 now);
     /// The root sequences bound to @p target ("new_tab", "script:a.b"), for

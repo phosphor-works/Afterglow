@@ -1436,6 +1436,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         float openProgress = 1.0f;
         int openEdge = 0;
         int context = 0;
+        int previousContext = 0;
         float contextProgress = 1.0f;
         float pulseProgress = 1.0f;
         int pulseEffect = 0;
@@ -1555,8 +1556,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             st.shaderParameters = pane.params.shaderParameters;
             cards.push_back({m_overview.currentTab, int(regions.size()), st.rect, 0, toUv(st.rect),
                              pane.params.focused, pane.params.highlighted, pane.params.openProgress, pane.params.openEdge,
-                             pane.params.context, pane.params.contextProgress, pane.params.pulseProgress,
-                             pane.params.pulseEffect, pane.params.pulseColor});
+                             pane.params.context, pane.params.previousContext, pane.params.contextProgress,
+                             pane.params.pulseProgress, pane.params.pulseEffect, pane.params.pulseColor});
             regions.push_back(st);
             if (pane.params.focused || windowState.snapshot == nullptr) {
                 const QRect whole = windowState.rect;
@@ -1580,8 +1581,8 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 }
                 const auto& params = drawn[i].params;
                 cards.push_back({slice.tab, indexInTab++, r, slice.sharp ? 1 : 2, uv, false, params.highlighted,
-                                 params.openProgress, params.openEdge, params.context, params.contextProgress,
-                                 params.pulseProgress, params.pulseEffect, params.pulseColor});
+                                 params.openProgress, params.openEdge, params.context, params.previousContext,
+                                 params.contextProgress, params.pulseProgress, params.pulseEffect, params.pulseColor});
             }
         }
         // Cards in tab order, then layout order within each tab.
@@ -1605,6 +1606,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             paneBlock.uPanePulse[index][0] = card.pulseProgress;
             paneBlock.uPanePulse[index][1] = float(card.pulseEffect);
             paneBlock.uPanePulse[index][2] = float(card.pulseColor);
+            paneBlock.uPanePulse[index][3] = float(card.previousContext);
             paneBlock.uPaneState[0] = index + 1;
             if (card.focused) paneBlock.uPaneState[1] = index;
             if (card.highlighted) paneBlock.uPaneState[2] = index;

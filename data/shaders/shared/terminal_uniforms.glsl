@@ -65,7 +65,10 @@ layout(std140, binding = 0) uniform TerminalUniforms {
     ivec4 uCursorState;          // offset 800  .x shape, .y previous shape (kCursor*;
                                  //             kCursorBlockHollow in an unfocused pane,
                                  //             whatever the shape), .z visible, .w pane focused
-    vec4 uEventAges;             // offset 816  seconds since: .x the cursor moved, .y focus changed
+    vec4 uEventAges;             // offset 816  seconds since: .x the cursor moved, .y focus changed;
+                                 //             1e6 means never: a pane seen for the first time, and every
+                                 //             pane on the first frame after frames without shaders.
+                                 //             Only a move of the cursor rectangle sets .x
     vec4 uBackgroundColor;       // offset 832  theme background; .a is the window's background opacity
     vec4 uForegroundColor;       // offset 848  theme foreground
     vec4 uThemeCursorColor;      // offset 864  theme cursor colour

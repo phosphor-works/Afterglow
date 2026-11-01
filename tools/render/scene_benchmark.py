@@ -19,6 +19,8 @@ import xml.etree.ElementTree as ET
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary', type=Path)
 parser.add_argument('output', type=Path)
+# The recorded scene numbers were taken with this font, not the fontconfig monospace.
+parser.add_argument('--family', default='Monaspace Neon Var', help='font family (default: %(default)s)')
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
@@ -54,7 +56,7 @@ for pixels in ['1920x1080', '3840x2160']:
         # Two panes side by side share the same total frame size (and a 2-pixel divider).
         width, height = map(int, pixels.split('x'))
         size = f'{(width-2)//2}x{height}' if '--split' in extra else pixels
-        cmd = [str(args.binary.resolve()),'--pixels',size,'--cols','120','--rows','40',
+        cmd = [str(args.binary.resolve()),'--pixels',size,'--cols','120','--rows','40','--family',args.family,
                '--frames',str(frames),'--last-only','--timings','--time','10',
                '--audio-bands','.5,.3,.2','--scrollback-lines','5000'] + extra + [str(source),str(out/(stem+'.png'))]
         memory = []

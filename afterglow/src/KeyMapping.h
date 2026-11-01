@@ -18,4 +18,10 @@ std::uint8_t mapModifiers(Qt::KeyboardModifiers mods);
 /// alive for the returned event's string_view.
 AfterglowVt::KeyEvent mapKeyEvent(const QKeyEvent* event, QByteArray& textStorage);
 
+/// The character @p event's key types without modifiers on the active
+/// layout, for matching key bindings (Keybinds::combinations). On a
+/// Cyrillic or Greek layout it is the key's character on the first Latin
+/// layout, as Qt does for Ctrl shortcuts. 0 when the key has none.
+char32_t bindingBaseKey(const QKeyEvent* event);
+
 } // namespace Afterglow

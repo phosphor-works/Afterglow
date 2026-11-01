@@ -12,12 +12,10 @@ namespace AfterglowVt {
 
 namespace {
 
-constexpr int MaxSide = 10000;
-constexpr std::size_t MaxPixels = std::size_t(4096) * 4096;
 /// Pixel writes one image may make. '$' repaints a band from its start, so
 /// without a limit a short string could repaint the same pixels forever.
 /// Encoders write each pixel once per colour pass that sets it.
-constexpr std::size_t MaxPaint = 4 * MaxPixels;
+constexpr std::size_t MaxPaint = 4 * SixelMaxPixels;
 
 std::uint32_t percentRgb(int r, int g, int b)
 {
@@ -116,17 +114,17 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
         if (w <= allocW && h <= allocH) {
             return true;
         }
-        if (w > MaxSide || h > MaxSide) {
+        if (w > SixelMaxSide || h > SixelMaxSide) {
             return false;
         }
         const int needW = std::max(w, allocW);
         const int needH = std::max(h, allocH);
-        if (std::size_t(needW) * std::size_t(needH) > MaxPixels) {
+        if (std::size_t(needW) * std::size_t(needH) > SixelMaxPixels) {
             return false;
         }
-        int nw = w > allocW ? std::min(MaxSide, std::max(w, allocW * 2)) : allocW;
-        int nh = h > allocH ? std::min(MaxSide, std::max(h, allocH * 2)) : allocH;
-        if (std::size_t(nw) * std::size_t(nh) > MaxPixels) {
+        int nw = w > allocW ? std::min(SixelMaxSide, std::max(w, allocW * 2)) : allocW;
+        int nh = h > allocH ? std::min(SixelMaxSide, std::max(h, allocH * 2)) : allocH;
+        if (std::size_t(nw) * std::size_t(nh) > SixelMaxPixels) {
             nw = needW;
             nh = needH;
         }
@@ -147,7 +145,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
     // only the rows up to its highest set bit.
     auto paint = [&](int bits, int n) {
         const int rows = std::bit_width(unsigned(bits));
-        if (band + rows > MaxSide) {
+        if (band + rows > SixelMaxSide) {
             return false;
         }
         painted += std::size_t(std::popcount(unsigned(bits))) * std::size_t(n);
@@ -169,7 +167,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
     while (i < data.size()) {
         const char c = data[i];
         if (c >= '?' && c <= '~') {
-            if (x >= MaxSide) return false;
+            if (x >= SixelMaxSide) return false;
             const int bits = c - '?';
             if (bits != 0 && !paint(bits, 1)) {
                 return false;
@@ -184,7 +182,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             if (i < data.size() && data[i] >= '?' && data[i] <= '~') {
                 const int bits = data[i] - '?';
                 n = std::max(n, 1);
-                if (n > MaxSide - x) return false;
+                if (n > SixelMaxSide - x) return false;
                 if (bits != 0 && !paint(bits, n)) {
                     return false;
                 }
@@ -208,9 +206,9 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             ++i;
             int params[4] = {1, 1, 0, 0};
             readParams(data, i, params, 4);
-            rasterW = std::clamp(params[2], 0, MaxSide);
-            rasterH = std::clamp(params[3], 0, MaxSide);
-            if (std::size_t(rasterW) * std::size_t(rasterH) > MaxPixels) {
+            rasterW = std::clamp(params[2], 0, SixelMaxSide);
+            rasterH = std::clamp(params[3], 0, SixelMaxSide);
+            if (std::size_t(rasterW) * std::size_t(rasterH) > SixelMaxPixels) {
                 return false;
             }
         } else if (c == '$') {
@@ -220,7 +218,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
             // One line feed past the last paintable band is harmless (many
             // encoders end with one); more would only run up the counter.
             x = 0;
-            if (band >= MaxSide) return false;
+            if (band >= SixelMaxSide) return false;
             band += 6;
             ++i;
         } else {
@@ -230,7 +228,7 @@ bool decodeSixel(std::string_view data, int p2, std::uint32_t background, SixelP
 
     const int width = std::max(usedW, rasterW);
     const int height = std::max(usedH, rasterH);
-    if (width <= 0 || height <= 0 || std::size_t(width) * std::size_t(height) > MaxPixels) {
+    if (width <= 0 || height <= 0 || std::size_t(width) * std::size_t(height) > SixelMaxPixels) {
         return false;
     }
     out.width = std::uint32_t(width);

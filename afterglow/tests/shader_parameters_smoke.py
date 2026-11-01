@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Native Luau -> control -> shader uniform acceptance, isolated from user terminals."""
+"""Native Luau -> control -> shader uniform acceptance, isolated from user terminals.
+
+Requires the nested_desktop dependencies and dbus-run-session. Logs and
+screenshots stay in the artifacts directory.
+"""
 import argparse
 import json
-import os
 import shutil
 from pathlib import Path
 import subprocess
@@ -15,14 +18,28 @@ from nested_desktop import NestedDesktop, wait_for
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
+parser.add_argument("--artifacts", type=Path,
+                    help="Directory for the log and screenshots (default: a new temporary directory)")
 parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 args = parser.parse_args()
 binary = str(args.binary.resolve())
 if not args.private_bus:
-    sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary, "--private-bus"]))
-artifacts = Path("/tmp/afterglow-shader-parameters")
-artifacts.mkdir(exist_ok=True)
-with tempfile.TemporaryDirectory(prefix="afterglow-v11-") as temp:
+    # The top-level process: the run under the private bus has its own timeouts.
+    artifacts = args.artifacts or Path(tempfile.mkdtemp(prefix="afterglow-shader-parameters-"))
+    artifacts.mkdir(parents=True, exist_ok=True)
+    print(f"Artifacts: {artifacts}", flush=True)
+    sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary,
+                              "--artifacts", str(artifacts.resolve()), "--private-bus"]))
+artifacts = args.artifacts
+
+
+def check(condition, *detail):
+    # Not assert: python -O must not turn the checks off.
+    if not condition:
+        raise AssertionError(*detail)
+
+
+with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
     root = Path(temp)
     config = root / "afterglow"
     inspector = config / "scripts/inspect"
@@ -44,38 +61,39 @@ return {
 ''')
     source = Path(__file__).resolve().parents[2]
     shutil.copytree(source / "data/examples/packages/scene-controls", config / "scripts/scene-controls")
-    shutil.copytree(source / "data/shaders/bloom", config / "shaders/bloom")
+    # Every pack from the checkout, so an installed copy of a bundled pack
+    # (the default overview, pane effects and tab switch too) cannot answer.
+    shutil.copytree(source / "data/shaders", config / "shaders")
     writer = config / "scripts/writer.luau"
     writer.write_text('''
-local remembered
 return {
  metadata={actions={{id="pane",title="Pane"},{id="tab",title="Tab"},{id="window",title="Window"},
-          {id="transition",title="Transition"},{id="bad",title="Invalid"},{id="stale",title="Stale"},{id="reset",title="Reset"}}},
- run_action=function(action,ev)
-  if action=="stale" then return afterglow.request("done",afterglow.shader_parameters(ev.pane,remembered,{strength=1.2})) end
-  return afterglow.request(action,afterglow.shaders(ev.pane))
- end,
+          {id="transition",title="Transition"},{id="bad",title="Invalid"},{id="reset",title="Reset"}}},
+ run_action=function(action,ev) return afterglow.request(action,afterglow.shaders(ev.pane)) end,
  on_result=function(ev)
-  if ev.request_id=="done" then return afterglow.log(ev.ok and "WRITE_OK" or "WRITE_REJECTED") end
-  if not ev.ok then return afterglow.log("QUERY_FAILED") end
+  -- Each line names its action, so the harness waits for the answer to that action.
+  local done=string.match(ev.request_id,"^done:(.+)$")
+  if done then return afterglow.log((ev.ok and "WRITE_OK:" or "WRITE_REJECTED:")..done) end
+  if not ev.ok then return afterglow.log("QUERY_FAILED:"..ev.request_id) end
   local shader=ev.data.shaders[ev.request_id=="window" and 3 or 1]
-  remembered=shader.instance
   local scope=ev.request_id=="tab" and "tab" or ev.request_id=="window" and "window" or "pane"
   local values=ev.request_id=="reset" and {} or {strength=ev.request_id=="bad" and 999 or 1.2}
-  return afterglow.request("done",afterglow.shader_parameters(ev.pane,shader.instance,values,scope,ev.request_id=="transition" and {duration_ms=800,curve="linear"} or nil))
+  return afterglow.request("done:"..ev.request_id,afterglow.shader_parameters(ev.pane,shader.instance,values,scope,ev.request_id=="transition" and {duration_ms=3000,curve="linear"} or nil))
  end,
 }
 ''')
-    (root / ".bashrc").write_text("PS1='V1> '\n")
+    (root / ".bashrc").write_text("PS1='PARAMS> '\n")
     settings = {"Terminal": {"shell": "/bin/bash", "env": {"HOME": temp}, "confirmClose": False},
         "Control": {"allowReadText": True}, "QuickTerminal": {"shortcut": ""}, "Audio": {"enabled": False},
-        "Animation": {"enabled": False}, "Window": {"width": 900, "height": 600},
-        "Shaders": {"pane": ["bloom", "bloom"], "window": ["bloom"], "params": {"bloom": {"strength": 0.1}}}}
+        "Animation": {"cursor": False, "scroll": False, "splits": False},
+        "Window": {"initialColumns": 90, "initialRows": 28},
+        "Shaders": {"pane": ["bloom", "bloom"], "window": ["bloom"], "params": {"bloom": {"strength": 0.1}},
+                    "tabTransition": "", "paneEffects": ""}}
     settings_path = config / "config.json"
     settings_path.write_text(json.dumps(settings))
     with NestedDesktop(root) as desktop, (artifacts / "application.log").open("w") as log:
         env = dict(desktop.env, QT_FORCE_STDERR_LOGGING="1", QT_LOGGING_TO_CONSOLE="1", QT_LOGGING_RULES="afterglow.scripts.info=true")
-        app = subprocess.Popen([binary, "--title", "V1.1 live shader parameters"], env=env, stdout=log, stderr=subprocess.STDOUT)
+        app = subprocess.Popen([binary, "--title", "Live shader parameters"], env=env, stdout=log, stderr=subprocess.STDOUT)
         def ctl(*args):
             result = subprocess.run([binary, "ctl", *map(str, args)], env=env, text=True, capture_output=True, timeout=5)
             if result.returncode: raise RuntimeError(result.stderr)
@@ -83,26 +101,38 @@ return {
         def panes():
             try: return json.loads(ctl("ls", "--json"))
             except RuntimeError: return []
+        def log_text():
+            log.flush()
+            return (artifacts / "application.log").read_text(errors="replace")
+        def answers(name):
+            text = log_text()
+            return sum(text.count(f"{kind}:{name}\n") for kind in ("WRITE_OK", "WRITE_REJECTED", "QUERY_FAILED"))
         def action(pane, name):
+            """Runs a writer action and waits until the writer logs the answer to its write."""
+            before = answers(name)
             ctl("action", "script:writer." + name, "--pane", pane)
-            time.sleep(0.2)
+            wait_for(lambda: answers(name) > before)
+            check(f"QUERY_FAILED:{name}" not in log_text(), name)
+        def settles(pane, index, expected):
+            """Waits until a shader value reaches the expected value."""
+            wait_for(lambda: abs(inspect(pane)[index]["values"]["strength"] - expected) < 0.001)
         state = config / "state/scripts/inspect.json"
         def inspect(pane, kind="read"):
             previous = json.loads(state.read_text())["revision"] if state.exists() else 0
             ctl("action", "script:inspect." + kind, "--pane", pane)
             wait_for(lambda: state.exists() and json.loads(state.read_text())["revision"] > previous)
             return json.loads(state.read_text())["value"]["scene" if kind == "scene" else "shaders"]
-        def near(value, expected): assert abs(value - expected) < 0.001, (value, expected)
+        def near(value, expected): check(abs(value - expected) < 0.001, value, expected)
         try:
             first = wait_for(panes)[0]["id"]
-            wait_for(lambda: "V1>" in ctl("get-text", "--pane", first, "--screen"))
+            wait_for(lambda: "PARAMS>" in ctl("get-text", "--pane", first, "--screen"))
             second = int(ctl("split", "--pane", first, "--right"))
             for pane in [first, second]:
                 ctl("send-text", "--pane", pane, "printf 'PHOSPHOR LIVE PARAMETERS\\n'\\n")
             desktop.activate()
             time.sleep(0.4)
             before = inspect(first)
-            assert len(before) == 3 and len({s["instance"] for s in before}) == 3
+            check(len(before) == 3 and len({s["instance"] for s in before}) == 3, before)
             desktop.screenshot(artifacts / "baseline.png")
             action(first, "pane")
             near(inspect(first)[0]["values"]["strength"], 1.2)
@@ -110,14 +140,16 @@ return {
             near(inspect(second)[0]["values"]["strength"], 0.1)
             desktop.screenshot(artifacts / "pane-override.png")
             action(first, "bad")
+            check("WRITE_REJECTED:bad\n" in log_text(), "An invalid value was accepted")
             near(inspect(first)[0]["values"]["strength"], 1.2)
             action(first, "reset")
             near(inspect(first)[0]["values"]["strength"], 0.1)
+            # A 3 s linear transition from 0.1 to 1.2 is past 0.15 after 0.14 s
+            # and below 1.15 until 2.86 s, so one round trip lands inside it.
             action(first, "transition")
             midway = inspect(first)[0]["values"]["strength"]
-            assert 0.15 < midway < 1.15, midway
-            time.sleep(0.9)
-            near(inspect(first)[0]["values"]["strength"], 1.2)
+            check(0.15 < midway < 1.15, midway)
+            settles(first, 0, 1.2)
             action(first, "tab")
             near(inspect(second)[0]["values"]["strength"], 1.2)
             action(first, "window")
@@ -127,26 +159,38 @@ return {
             settings_path.write_text(json.dumps(settings))
             time.sleep(0.6)
             after = inspect(first)
-            assert before[0]["instance"] != after[0]["instance"]
-            action(first, "stale")
+            check(before[0]["instance"] != after[0]["instance"], before, after)
+            # A write to an instance id from before the reload must fail. A
+            # separate script carries the old id, so a reload of the writer
+            # cannot lose it.
+            stale = config / "scripts/stale.luau"
+            stale.write_text('return {metadata={actions={{id="write",title="Stale"}}},'
+                ' run_action=function(_,ev) return afterglow.request("done",afterglow.shader_parameters(ev.pane,'
+                + json.dumps(before[0]["instance"]) + ',{strength=1.2})) end,'
+                ' on_result=function(ev) return afterglow.log(ev.ok and "STALE_OK" or "STALE_REJECTED") end}\n')
+            wait_for(lambda: any(s["id"] == "stale" for s in json.loads(ctl("scripts"))))
+            ctl("action", "script:stale.write", "--pane", first)
+            wait_for(lambda: "STALE_REJECTED" in log_text())
+            check("STALE_OK" not in log_text(), "A stale instance id was accepted")
+            check(log_text().count("WRITE_REJECTED:bad\n") == 1, "A valid write was rejected")
             near(inspect(first)[0]["values"]["strength"], 0.2)
+            # The tab override must land before the uninstall can remove it.
             action(first, "tab")
+            settles(second, 0, 1.2)
             writer.unlink()
-            time.sleep(0.5)
-            near(inspect(second)[0]["values"]["strength"], 0.2)
-            assert "WRITE_REJECTED" in (artifacts / "application.log").read_text()
+            settles(second, 0, 0.2)
             desktop.screenshot(artifacts / "reset.png")
-            third = int(ctl("new-tab", "--pane", first))
+            ctl("new-tab", "--pane", first)
             time.sleep(0.3)
             empty = inspect(first, "scene")
             ctl("send-text", "--pane", first, "seq 1 200\\n")
             time.sleep(0.4)
             hidden = inspect(first, "scene")
-            assert hidden["tab_id"] == empty["tab_id"] and hidden["history_rows"] == empty["history_rows"]
+            check(hidden["tab_id"] == empty["tab_id"] and hidden["history_rows"] == empty["history_rows"], hidden, empty)
             ctl("focus", "--pane", first)
             active = inspect(first, "scene")
-            assert active["tab_id"] != hidden["tab_id"] and active["history_rows"] > 100
-            assert not active["audio_available"] and active["overall"] == 0
+            check(active["tab_id"] != hidden["tab_id"] and active["history_rows"] > 100, active, hidden)
+            check(not active["audio_available"] and active["overall"] == 0, active)
             def menu(choice):
                 ctl("action", "script:scene-controls.open", "--pane", first)
                 time.sleep(0.3)
@@ -164,13 +208,13 @@ return {
             menu("Save current")
             desktop.key("Return")
             time.sleep(0.3)
-            assert list((config / "shader-presets/surface").glob("*.json"))
+            check(list((config / "shader-presets/surface").glob("*.json")), "No preset was saved")
             menu("Reset my")
             time.sleep(0.3)
             desktop.screenshot(artifacts / "preset-reset.png")
             near(inspect(first)[0]["values"]["strength"], 0.2)
             app.terminate(); app.wait(timeout=5)
-            app = subprocess.Popen([binary, "--title", "V1 persisted preset"], env=env, stdout=log, stderr=subprocess.STDOUT)
+            app = subprocess.Popen([binary, "--title", "Persisted preset"], env=env, stdout=log, stderr=subprocess.STDOUT)
             first = wait_for(panes)[0]["id"]
             time.sleep(0.4)
             desktop.activate()

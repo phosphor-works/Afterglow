@@ -6,7 +6,9 @@
 #
 #   cmake -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON
 #   cmake --build build-fuzz --target afterglow_vtfuzz
-#   ./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 corpus/
+#   mkdir -p corpus
+#   ./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 -max_len=65536 \
+#       -dict=tools/fuzz/vt.dict corpus/
 
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "AFTERGLOW_BUILD_FUZZERS needs clang (libFuzzer)")
@@ -14,7 +16,7 @@ endif()
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
-file(GLOB VT_SOURCES ${PROJECT_SOURCE_DIR}/libs/afterglow-vt/src/*.cpp)
+file(GLOB VT_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/libs/afterglow-vt/src/*.cpp)
 add_executable(afterglow_vtfuzz vtfuzz.cpp ${VT_SOURCES})
 target_include_directories(afterglow_vtfuzz PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/afterglow-vt/include

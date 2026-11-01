@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/Application.h"
+#include "app/Startup.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include <QMessageBox>
@@ -17,6 +18,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QFile>
+#include <QUrl>
 #include <QDir>
 #include <QFileInfo>
 #include <unistd.h>
@@ -53,12 +55,21 @@ bool waitFor(const std::function<bool()>& condition, int ms = 3000) {
     while (!condition() && timer.elapsed() < ms) drain(10);
     return condition();
 }
-// Expects the window to stop asking for frames once nothing moves.
+// Expects the window to stop asking for frames once nothing moves: 300 ms
+// with no frame. Springs advance at most 100 ms of motion per frame, so a
+// loaded machine that gives few frames stretches them in wall time. The
+// deadline allows for that; an animation that never stops still fails.
 void expectIdle(TerminalWindow* window) {
     drain(1500);
-    const auto frames = window->submittedFrames();
-    drain(300);
-    EXPECT_EQ(window->submittedFrames(), frames) << "the window still renders with nothing moving";
+    QElapsedTimer deadline; deadline.start();
+    auto frames = window->submittedFrames();
+    bool idle = false;
+    while (!idle && deadline.elapsed() < 5000) {
+        frames = window->submittedFrames();
+        drain(300);
+        idle = window->submittedFrames() == frames;
+    }
+    EXPECT_TRUE(idle) << "the window still renders with nothing moving";
 }
 // QML errors print a warning and leave the test green. The handler keeps them,
 // and every test fails that produced one.
@@ -446,7 +457,8 @@ TEST_F(NativeWindow, SwapFailurePreservesZoomAndSuccessRestoresVisiblePanes) {
     ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
     drain();
     auto* chrome = window->findChild<ChromeController*>();
-    ASSERT_EQ(chrome->paneTitles().size(), 1);
+    // The titles follow the next frame, which has no fixed time.
+    ASSERT_TRUE(waitFor([&] { return chrome->paneTitles().size() == 1; }));
     const auto zoomed = window->accessiblePaneRect(first);
     EXPECT_FALSE(window->swapPane(first, SplitTree::Neighbour::Left));
     drain();
@@ -701,16 +713,16 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     QByteArray png; QBuffer buffer(&png); buffer.open(QIODevice::WriteOnly); ASSERT_TRUE(image.save(&buffer, "PNG"));
     request.iconData.assign(png.constData(), std::size_t(png.size()));
     auto& center = NotificationCenter::instance();
-    center.handle(first, window, request);
+    center.handle(first, request);
     ASSERT_TRUE(waitFor([&] { return server.count == 1; }));
     EXPECT_EQ(server.appName, QStringLiteral("Afterglow"));
-    EXPECT_EQ(server.appIcon, QStringLiteral("com.phosphorworks.Afterglow"));
-    EXPECT_EQ(server.desktopEntry, QStringLiteral("com.phosphorworks.Afterglow"));
+    EXPECT_EQ(server.appIcon, QStringLiteral(AFTERGLOW_APP_ID));
+    EXPECT_EQ(server.desktopEntry, QStringLiteral(AFTERGLOW_APP_ID));
     EXPECT_FALSE(server.images.last().isEmpty());
     EXPECT_LE(server.images.last().height(), 512);
     request.expireMs = 2000;
     request.iconData.clear();
-    center.handle(first, window, request);
+    center.handle(first, request);
     ASSERT_TRUE(waitFor([&] { return server.count == 2; }));
     EXPECT_FALSE(server.images.last().isEmpty());
     PaneLaunchOptions launch;
@@ -718,7 +730,7 @@ TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     auto* second = window->splitPane(first, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(second, nullptr);
     request.id = "another-pane";
-    center.handle(second, window, request);
+    center.handle(second, request);
     ASSERT_TRUE(waitFor([&] { return server.count == 3; }));
     EXPECT_TRUE(server.images.last().isEmpty());
     // Past the 200 ms expiry of the notice that was replaced.
@@ -976,7 +988,8 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     ASSERT_TRUE(window->overviewOpen());
     EXPECT_EQ(window->overviewHighlight(), first);
     EXPECT_TRUE(chrome->keyMode().startsWith(QStringLiteral("Panes")));
-    EXPECT_TRUE(chrome->paneTitles().isEmpty());
+    // The titles follow the frame that draws the cards, which has no fixed time.
+    EXPECT_TRUE(waitFor([&] { return chrome->paneTitles().isEmpty(); }));
     // Every pane is a card while the overview is open, zoom or not.
     EXPECT_FALSE(window->accessiblePaneRect(third).isEmpty());
     press(Qt::Key_Right);
@@ -1047,8 +1060,11 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
     press(Qt::Key_Up);
     press(Qt::Key_Return);
     EXPECT_FALSE(window->overviewOpen());
-    EXPECT_EQ(window->focusedPane(), first);
+    // The chosen tab shows once the close has finished, so the cards never
+    // jump with the current tab.
+    EXPECT_TRUE(waitFor([&] { return window->focusedPane() == first; }));
     EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
+    expectIdle(window);
 }
 
 TEST_F(NativeWindow, TabSwitchAnimatesAndSettles) {
@@ -1338,7 +1354,8 @@ TEST_F(NativeWindow, OverviewRestoresTheZoomOnTheTabItCameFrom) {
     QCoreApplication::sendEvent(window, &escape);
     drain();
     EXPECT_FALSE(window->overviewOpen());
-    EXPECT_EQ(window->focusedPane(), first);
+    // The first tab shows once the close has finished.
+    EXPECT_TRUE(waitFor([&] { return window->focusedPane() == first; }));
     EXPECT_TRUE(window->accessiblePaneRect(second).isEmpty()) << "the first tab lost its zoom";
     EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
 }
@@ -1395,6 +1412,19 @@ TEST_F(NativeWindow, KeyMappingKeepsKeypadAndShiftedKeysUnderCtrl) {
     EXPECT_EQ(mapped.key, AfterglowVt::Key::Text);
     EXPECT_EQ(mapped.unshifted, U'a');
     EXPECT_EQ(mapped.shifted, U'A');
+    // NumLock off: the keypad's navigation keys stay keypad keys.
+    const QKeyEvent left(QEvent::KeyPress, Qt::Key_Left, Qt::KeypadModifier);
+    EXPECT_EQ(mapKeyEvent(&left, storage).key, AfterglowVt::Key::KeypadLeft);
+    const QKeyEvent begin(QEvent::KeyPress, Qt::Key_Clear, Qt::KeypadModifier);
+    EXPECT_EQ(mapKeyEvent(&begin, storage).key, AfterglowVt::Key::KeypadBegin);
+    const QKeyEvent home(QEvent::KeyPress, Qt::Key_Home, Qt::NoModifier);
+    EXPECT_EQ(mapKeyEvent(&home, storage).key, AfterglowVt::Key::Home);
+    const QKeyEvent separator(QEvent::KeyPress, Qt::Key_Comma, Qt::KeypadModifier, QStringLiteral(","));
+    EXPECT_EQ(mapKeyEvent(&separator, storage).key, AfterglowVt::Key::KeypadSeparator);
+    const QKeyEvent f13(QEvent::KeyPress, Qt::Key_F13, Qt::NoModifier);
+    EXPECT_EQ(mapKeyEvent(&f13, storage).key, AfterglowVt::Key::F13);
+    const QKeyEvent f35(QEvent::KeyPress, Qt::Key_F35, Qt::NoModifier);
+    EXPECT_EQ(mapKeyEvent(&f35, storage).key, AfterglowVt::Key::F35);
 }
 
 // --- window-core: focus, keys, clipboard prompts, splits and menus ---------
@@ -1536,6 +1566,125 @@ TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn) {
     EXPECT_NE(second->userTitle(), QStringLiteral("menu-pane"));
 }
 
+// --- window wave 2: pane callbacks, directories, replies, overview ---------
+
+TEST_F(NativeWindow, StatusAndContextChangesOnTheGuiThreadDoNotDeadlock) {
+    auto* pane = window->focusedPane();
+    int statuses = 0;
+    int contexts = 0;
+    QObject::connect(pane, &Pane::statusChanged, pane, [&] { ++statuses; });
+    QObject::connect(pane, &Pane::contextUpdated, pane, [&] { ++contexts; });
+    // The receivers read status() and contextKind(), which lock the pane:
+    // a direct emission under withTerminal would never return.
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        t.feed("\x1b]7501;state=working:progress=40\x1b\\");
+        t.feed("\x1b]3008;start=w2;type=remote;user=someone;hostname=far-away-host\x1b\\");
+    });
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.reset(); });
+    EXPECT_TRUE(waitFor([&] { return statuses > 0 && contexts > 0; }));
+    // A burst is one delivery.
+    EXPECT_EQ(statuses, 1);
+    EXPECT_EQ(pane->contextKind(), QStringLiteral("remote"));
+}
+
+TEST_F(NativeWindow, ReportedDirectoryWinsWhenLocalAndANewTabStartsThere) {
+    SettingsStore settings(directory.filePath(QStringLiteral("dirs.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    auto* pane = window->focusedPane();
+    const QString spaced = directory.filePath(QStringLiteral("with space"));
+    ASSERT_TRUE(QDir().mkpath(spaced));
+    const QString fromProc = pane->workingDirectory();
+    ASSERT_NE(fromProc, spaced);
+    const auto report = [pane](const QByteArray& osc) {
+        pane->withTerminal([&osc](AfterglowVt::Terminal& t) { t.feed(std::string_view(osc.constData(), std::size_t(osc.size()))); });
+    };
+    // OSC 7 is a file:// URI, percent encoded; a local host is accepted.
+    report("\x1b]7;file://localhost" + QUrl::toPercentEncoding(spaced, "/") + "\x07");
+    EXPECT_EQ(pane->workingDirectory(), spaced);
+    // Another host's directory is not here: /proc answers again.
+    report("\x1b]7;file://far-away-host/srv\x07");
+    EXPECT_EQ(pane->workingDirectory(), fromProc);
+    // OSC 1337 CurrentDir gives a plain path.
+    report("\x1b]1337;CurrentDir=" + spaced.toUtf8() + "\x07");
+    EXPECT_EQ(pane->workingDirectory(), spaced);
+    // A directory that does not exist here (a container's) falls back too.
+    report("\x1b]1337;CurrentDir=/afterglow-test-not-a-directory\x07");
+    EXPECT_EQ(pane->workingDirectory(), fromProc);
+    report("\x1b]1337;CurrentDir=" + spaced.toUtf8() + "\x07");
+    // new_tab from a pane starts where that pane is.
+    quint32 created = 0;
+    ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("/bin/cat")}, created).isEmpty());
+    Pane* added = nullptr;
+    for (Pane* p : window->panes()) if (p->id() == created) added = p;
+    ASSERT_NE(added, nullptr);
+    EXPECT_TRUE(waitFor([&] { return added->workingDirectory() == spaced; }));
+}
+
+TEST_F(NativeWindow, ProtocolRepliesLeaveTheViewWhereItIs) {
+    auto* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    pane->setScrollPolicy(false, true);
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        for (int i = 0; i < 200; ++i) t.feed("line\r\n");
+        t.scrollViewport(10);
+    });
+    const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
+    ASSERT_GT(offset(), 0u);
+    EXPECT_TRUE(pane->sendReply("\x1b[I"));
+    EXPECT_GT(offset(), 0u);
+    // Typing snaps back to the bottom.
+    EXPECT_TRUE(pane->sendInput("x"));
+    EXPECT_EQ(offset(), 0u);
+}
+
+TEST_F(NativeWindow, SelectionAndSearchFollowLinesThatInsertAndDeleteMove) {
+    auto* pane = window->focusedPane();
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[2J\x1b[Hzero\r\none\r\ntwo\r\nthree\r\n"); });
+    pane->startSelection(pane->selectionPointAt(0, 2), AfterglowVt::SelectionMode::Normal, true);
+    pane->extendSelection(pane->selectionPointAt(2, 2));
+    ASSERT_EQ(pane->selectedText(), QStringLiteral("two"));
+    // DL at the first row: "two" moves up a row, and the selection with it.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[1;1H\x1b[M"); });
+    EXPECT_TRUE(pane->hasSelection());
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("two"));
+    // IL above it moves it down again.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[1;1H\x1b[L"); });
+    EXPECT_EQ(pane->selectedText(), QStringLiteral("two"));
+    // A region scroll that pushes it out of the region clears it.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[1;4r\x1b[1;1H\x1b[3M\x1b[r"); });
+    EXPECT_FALSE(pane->hasSelection());
+}
+
+TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
+    drain();
+    auto* chrome = window->findChild<ChromeController*>();
+    // A key mode from before the overview stays when it closes.
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), first, QStringLiteral("Before")).isEmpty());
+    QVariantMap state;
+    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("open"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("close"), state).isEmpty());
+    EXPECT_EQ(chrome->keyMode(), QStringLiteral("Before"));
+    window->clearScriptOwner(QStringLiteral("script@1"));
+    // One started while the overview is open ends with it: closeOverview is
+    // where a click, a script and the keys all close it.
+    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("open"), state).isEmpty());
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), first, QStringLiteral("Overview keys")).isEmpty());
+    EXPECT_EQ(chrome->keyMode(), QStringLiteral("Overview keys"));
+    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("choose"), state).isEmpty());
+    EXPECT_FALSE(window->overviewOpen());
+    EXPECT_TRUE(chrome->keyMode().isEmpty());
+    // The next key reaches the shell, not the script.
+    int keys = 0;
+    QObject::connect(window, &TerminalWindow::scriptKey, window, [&](const QString&, quint32, const QVariantMap&) { ++keys; });
+    sendKey(window, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
+    EXPECT_EQ(keys, 0);
+}
+
 int main(int argc, char** argv)
 {
     // These tests open windows and send desktop-wide D-Bus signals (the
@@ -1546,6 +1695,8 @@ int main(int argc, char** argv)
         return 2;
     }
     previousHandler = qInstallMessageHandler(recordQmlErrors);
+    // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
+    prepareApplication();
     QApplication app(argc, argv);
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
     ::testing::InitGoogleTest(&argc, argv);

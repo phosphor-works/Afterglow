@@ -75,6 +75,30 @@ TEST_F(ShaderControlsTest, InstancesAreDistinctAndUpdatesNeverRecompile)
     EXPECT_EQ(chains.background[0].get(), program);
     EXPECT_EQ(chains.background[0]->shader(), shader);
 }
+TEST_F(ShaderControlsTest, ConfiguredValuesApplyWithoutCompilingAgain)
+{
+    ShaderLibrary::Refs refs;
+    refs.window = {QStringLiteral("feedback-glow")};
+    const auto low = library.build(refs, {{QStringLiteral("feedback-glow"), QVariantMap{{QStringLiteral("strength"), 0.1}}}});
+    const auto high = library.build(refs, {{QStringLiteral("feedback-glow"), QVariantMap{{QStringLiteral("strength"), 0.4}}}});
+    const auto defaults = library.build(refs, {});
+    ASSERT_EQ(low.window.size(), 1u);
+    ASSERT_EQ(high.window.size(), 1u);
+    ASSERT_EQ(defaults.window.size(), 1u);
+    ASSERT_FALSE(low.window[0]->buffers().empty());
+    // One compile for the pack: each configuration is a copy that shares its passes.
+    EXPECT_EQ(low.window[0]->buffers()[0], high.window[0]->buffers()[0]);
+    EXPECT_EQ(low.window[0]->buffers()[0], defaults.window[0]->buffers()[0]);
+    int slot = -1;
+    for (const auto& parameter : library.parameters(QStringLiteral("feedback-glow")))
+        if (parameter.toMap().value(QStringLiteral("id")) == QStringLiteral("strength"))
+            slot = parameter.toMap().value(QStringLiteral("slot")).toInt();
+    ASSERT_GE(slot, 0);
+    EXPECT_FLOAT_EQ(low.window[0]->params()[std::size_t(slot)], 0.1f);
+    EXPECT_FLOAT_EQ(high.window[0]->params()[std::size_t(slot)], 0.4f);
+    EXPECT_FLOAT_EQ(defaults.window[0]->params()[std::size_t(slot)], 0.15f);
+}
+
 TEST_F(ShaderControlsTest, RejectsInvalidBatchWithoutPartialChanges)
 {
     for (const QVariant& value : {QVariant(-1.), QVariant(3.), QVariant("1.2"), QVariant(true),
@@ -338,6 +362,37 @@ TEST_F(ShaderControlsTest, ScriptImagesStayInsideThePack)
     const auto configured = library.build(refs, {{QStringLiteral("types"), QVariantMap{{QStringLiteral("photo"), path}}}});
     ASSERT_EQ(configured.background.size(), 1u);
     EXPECT_EQ(configured.background.front()->images()[0].pixelColor(0, 0), QColor(Qt::green));
+}
+
+TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
+{
+    const auto dir = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/missing-default");
+    ASSERT_TRUE(QDir().mkpath(dir));
+    QFile metadata(dir + QStringLiteral("/metadata.json"));
+    ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
+    metadata.write(R"({"id":"missing-default","name":"Missing","fragmentShader":"effect.frag","parameters":[
+        {"id":"photo","name":"Photo","type":"image","default":"missing.png"}]})");
+    metadata.close();
+    QFile shader(dir + QStringLiteral("/effect.frag"));
+    ASSERT_TRUE(shader.open(QIODevice::WriteOnly));
+    shader.write("vec4 pTerminal(vec2 uv) { return vec4(1.0); }");
+    shader.close();
+    const QString blue = qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/afterglow/shaders/types/blue.png");
+    // A library made after the pack exists, so its index holds the pack.
+    ShaderLibrary fresh;
+    ShaderLibrary::Refs refs;
+    refs.background = {QStringLiteral("missing-default")};
+    // The pack's own image is missing: without a configured one it fails.
+    EXPECT_TRUE(fresh.build(refs, {}).background.empty());
+    // The config names an image for that slot, and the pack draws with it.
+    const auto configured = fresh.build(refs, {{QStringLiteral("missing-default"), QVariantMap{{QStringLiteral("photo"), blue}}}});
+    ASSERT_EQ(configured.background.size(), 1u);
+    EXPECT_EQ(configured.background.front()->images()[0].pixelColor(0, 0), QColor(Qt::blue));
+    // A configured image that fails too still fails the pack.
+    EXPECT_TRUE(fresh.build(refs, {{QStringLiteral("missing-default"),
+                                      QVariantMap{{QStringLiteral("photo"), dir + QStringLiteral("/absent.png")}}}})
+                    .background.empty());
+    EXPECT_TRUE(QDir(dir).removeRecursively());
 }
 
 TEST_F(ShaderControlsTest, PresetsStoreImagesRelativeToThePack)

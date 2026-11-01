@@ -3,8 +3,6 @@
 
 #include "Keybinds.h"
 
-#include "../XkbKeyboard.h"
-
 #include <QKeyEvent>
 #include <QKeySequence>
 
@@ -305,7 +303,7 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     return kb;
 }
 
-QList<int> Keybinds::combinations(const QKeyEvent* event)
+QList<int> Keybinds::combinations(const QKeyEvent* event, char32_t base)
 {
     const auto mods = event->modifiers() & RelevantMods;
     const int key = event->key();
@@ -316,11 +314,6 @@ QList<int> Keybinds::combinations(const QKeyEvent* event)
     };
     // Qt reports Shift+Tab as Backtab, while bindings name it Shift+Tab.
     if (key == Qt::Key_Backtab) add(mods | Qt::ShiftModifier, Qt::Key_Tab);
-    const XkbKeyboard& xkb = XkbKeyboard::instance();
-    char32_t base = xkb.unshiftedCodepoint(event->nativeScanCode());
-    // On a Cyrillic or Greek layout, "H" in a key table means the key that
-    // types h on the first Latin layout, as Qt does for Ctrl shortcuts.
-    if (base < 0x20 || base >= 0x7F) base = xkb.latinCodepoints(event->nativeScanCode()).first;
     int baseKey = 0;
     if (base >= 0x20 && base < 0x7F) {
         baseKey = (base >= 'a' && base <= 'z') ? int(base - 'a' + 'A') : int(base);
@@ -334,29 +327,29 @@ QList<int> Keybinds::combinations(const QKeyEvent* event)
     return result;
 }
 template<typename T>
-static const T* lookup(const QHash<int, T>& map, const QKeyEvent* event)
+static const T* lookup(const QHash<int, T>& map, const QKeyEvent* event, char32_t base)
 {
-    for (int key : Keybinds::combinations(event)) {
+    for (int key : Keybinds::combinations(event, base)) {
         if (auto it = map.constFind(key); it != map.constEnd()) return &*it;
     }
     return nullptr;
 }
 
-Action Keybinds::match(const QKeyEvent* event) const
+Action Keybinds::match(const QKeyEvent* event, char32_t base) const
 {
-    const Action* a = lookup(m_byKey, event);
+    const Action* a = lookup(m_byKey, event, base);
     return a ? *a : Action::None;
 }
 
-QString Keybinds::matchScript(const QKeyEvent* event) const
+QString Keybinds::matchScript(const QKeyEvent* event, char32_t base) const
 {
-    const QString* s = lookup(m_scriptByKey, event);
+    const QString* s = lookup(m_scriptByKey, event, base);
     return s ? *s : QString();
 }
 
-QByteArray Keybinds::matchText(const QKeyEvent* event) const
+QByteArray Keybinds::matchText(const QKeyEvent* event, char32_t base) const
 {
-    const QByteArray* b = lookup(m_textByKey, event);
+    const QByteArray* b = lookup(m_textByKey, event, base);
     return b ? *b : QByteArray();
 }
 

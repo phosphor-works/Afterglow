@@ -43,7 +43,10 @@ def main():
                     height = os.get_terminal_size(1).lines
                     pending = f'\x1b[2;{height}r\x1b[{height};1H'.encode() + chunk
                     credit -= len(pending)
-            readable, writable, _ = select.select([0], [1] if pending else [], [], .002)
+            # With nothing to write and no output rate, sleep until input arrives
+            # instead of waking the measured machine 500 times a second.
+            idle = not pending and not rate
+            readable, writable, _ = select.select([0], [1] if pending else [], [], None if idle else .002)
             if readable:
                 data = os.read(0, 4096)
                 if not data:
