@@ -412,6 +412,9 @@ PhosphorConfig::Schema buildSchema()
                 {QStringLiteral("install"), QStringLiteral("fallback")}),
         stringKey(QStringLiteral("pager"), d.pager,
                   QStringLiteral("Command for viewing the last command output. Shell expansion is disabled.")),
+        intKey(QStringLiteral("lastOutputLimit"), int(d.lastOutputLimit >> 10), 1, 65536,
+               QStringLiteral("Kibibytes of the last command output that the pager gets. For longer output, the pager gets the "
+                              "start and a note.")),
         stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run. An empty value starts your login shell.")),
         stringKey(QStringLiteral("term"), d.term, QStringLiteral("Value of TERM for the programs in the panes.")),
         enumKey(QStringLiteral("cursorShape"), CursorShapeChoices, term.cursorShape,
@@ -1119,6 +1122,7 @@ Settings SettingsStore::read()
     t.cursorBlink = st.read<bool>(Terminal, QStringLiteral("cursorBlink"));
     t.bidi = readEnum(st, Terminal, QStringLiteral("bidi"), BidiChoices, t.bidi);
     s.pager = st.read<QString>(Terminal, QStringLiteral("pager"));
+    s.lastOutputLimit = std::size_t(st.read<int>(Terminal, QStringLiteral("lastOutputLimit"))) << 10;
     s.shellIntegration = st.read<bool>(Terminal, QStringLiteral("shellIntegration"));
     s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
     s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));

@@ -689,7 +689,7 @@ QVariantMap Pane::readText(AfterglowVt::Terminal::TextScope scope, std::size_t l
 {
     std::lock_guard lock(m_mutex);
     bool truncated = false;
-    const auto text = m_terminal.text(scope, std::min(limit, std::size_t(1024 * 1024)), &truncated);
+    const auto text = m_terminal.text(scope, limit, &truncated);
     return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("truncated"), truncated},
             {QStringLiteral("available"), scope != AfterglowVt::Terminal::TextScope::LastOutput || m_terminal.hasCommandOutput()}};
 }

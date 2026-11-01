@@ -14,6 +14,7 @@ class QEvent;
 class QInputMethodQueryEvent;
 class QAccessibleInterface;
 class QPointF;
+class QQmlComponent;
 class QQmlEngine;
 class QQuickItem;
 class QQuickWindow;
@@ -29,11 +30,17 @@ class GpuDevice;
 namespace Afterglow {
 
 class ChromeController;
+class ChromeIncubator;
 class ChromeRenderControl;
 
 /// The window chrome: a QML scene rendered by QQuickRenderControl into a
 /// texture on the shared GpuDevice, which the window composites over the
 /// terminal. No second GPU device or context is involved.
+///
+/// The scene is made in the background from the moment the window is: the
+/// type loads on the QML loader thread and the objects are incubated in short
+/// slices of the event loop. The first frame that shows chrome then only
+/// renders it. A frame that needs the chrome before it is made finishes it.
 class ChromeLayer : public QObject
 {
     Q_OBJECT
@@ -68,6 +75,16 @@ Q_SIGNALS:
     void updateRequested();
 
 private:
+    /// The component loaded (or failed): starts incubating the scene.
+    void componentStatusChanged();
+    /// The incubator finished (or failed): puts the scene in its window.
+    void sceneCreated(bool ready);
+    /// Gives the scene the keyboard focus, once it has a window.
+    void focusScene();
+    /// Finishes the scene now, for a frame that shows chrome before the
+    /// background made it.
+    void completeScene();
+    /// Gives the scene its GPU device. Needs the scene and the device.
     bool initialize();
     /// Frees the render target and the texture: after a failed allocation,
     /// and from the destructor once the scene graph is invalidated.
@@ -78,6 +95,8 @@ private:
     QQmlEngine& m_engine;
     ChromeController* m_controller;
 
+    std::unique_ptr<QQmlComponent> m_component;
+    std::unique_ptr<ChromeIncubator> m_incubator;
     std::unique_ptr<ChromeRenderControl> m_control;
     std::unique_ptr<QQuickWindow> m_window;
     QQuickItem* m_root = nullptr;
@@ -88,6 +107,7 @@ private:
     QSize m_failedSize;
     qreal m_dpr = 0;
     bool m_dirty = true;
+    bool m_wanted = false; ///< a frame needed the chrome before it was made
     bool m_initialized = false;
     bool m_failed = false;
     std::uint64_t m_serial = 0;

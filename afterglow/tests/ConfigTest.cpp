@@ -747,6 +747,20 @@ TEST_F(ConfigTest, AnimationCurvesAndTextBlinkDefaultAndOverride)
     EXPECT_EQ(c.textBlinkInterval, 100); // clamped
 }
 
+TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().lastOutputLimit, std::size_t(1024) << 10);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"lastOutputLimit": 4096}})"));
+    EXPECT_EQ(custom.settings().lastOutputLimit, std::size_t(4096) << 10);
+
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"lastOutputLimit": 0}})"));
+    EXPECT_EQ(low.settings().lastOutputLimit, std::size_t(1) << 10);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"lastOutputLimit": 999999}})"));
+    EXPECT_EQ(high.settings().lastOutputLimit, std::size_t(65536) << 10);
+}
+
 TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

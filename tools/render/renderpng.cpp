@@ -138,6 +138,7 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("overview"), QStringLiteral("Pane overview shader, shown open."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("overview-amount"), QStringLiteral("How far the overview is open, 0 to 1 (default 1)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("highlight"), QStringLiteral("The highlighted pane in the overview, counting every tab (default 0)."), QStringLiteral("n")});
+    parser.addOption({QStringLiteral("overview-closing"), QStringLiteral("The overview is closing onto the --highlight card, at --overview-amount.")});
     parser.addOption({QStringLiteral("tab-transition"), QStringLiteral("Tab transition shader, from a copy of the panes on a blue background."), QStringLiteral("ref")});
     parser.addOption({QStringLiteral("transition-progress"), QStringLiteral("Tab transition progress, 0 to 1 (default 0.5)."), QStringLiteral("f")});
     parser.addOption({QStringLiteral("transition-direction"), QStringLiteral("1 toward a tab on the right (default), -1 toward one on the left."), QStringLiteral("n")});
@@ -615,7 +616,8 @@ int run(QGuiApplication& app)
             return 1;
         }
         overview.emplace();
-        overview->open = true;
+        // Closing: open is 0, and the highlight stays on the card it closes onto.
+        overview->open = !parser.isSet(QStringLiteral("overview-closing"));
         overview->amount = parser.isSet(QStringLiteral("overview-amount")) ? parser.value(QStringLiteral("overview-amount")).toFloat() : 1.0f;
         overview->position = parser.isSet(QStringLiteral("overview-position")) ? parser.value(QStringLiteral("overview-position")).toFloat() : float(highlight);
         overview->currentTab = currentTab;

@@ -49,7 +49,7 @@ Relative placements do not move the terminal cursor.
 | Last placement of an image without an ID or a number goes | The image data goes. Sixel and iTerm2 images do the same. |
 | ED 2 (erase the screen) | Images that reach into the screen go, also when their top row is in the scrollback. |
 | ED 3 (erase the scrollback) | Images whose top row is in the scrollback go. Images on the screen stay, like the text. |
-| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | Images move with their rows. An image goes when its top-left cell leaves the region. |
+| SU, SD, IL, DL, or a line feed or reverse index at a scroll-region margin | An image whose top-left cell is in the region moves with its rows. It shows only its rows that are in the region after the scroll. It goes when none of its rows is in the region. Rows below the last row of the screen stay when the scroll is up: they come into view as the image moves. |
 
 The same scrolls move shell-integration marks (OSC 133) with their rows.
 A command or prompt region goes when its start or end leaves the scroll region.

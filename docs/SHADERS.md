@@ -70,6 +70,7 @@ The change rebuilds the chains, so it resets buffer history and expires instance
 The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab in 3D.
 The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
+When the overview closes, the chosen card stays highlighted until the close ends. A card in another tab then shows its tab.
 Script packages can ship packs of their own, such as an overview with the script that drives it. See [packages](PACKAGES.md#shaders).
 The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.
 

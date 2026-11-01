@@ -116,7 +116,8 @@ public:
         };
         std::array<Signal, 8> signals{};
         ShaderParameterMap shaderParameters;
-        /// Highlighted in the pane overview.
+        /// Highlighted in the pane overview, or the card it closes onto
+        /// while it closes.
         bool highlighted = false;
         /// How far a new split has opened (1 when open), and the edge it
         /// opened from: 0 none, 1 left, 2 top, 3 right, 4 bottom.

@@ -201,10 +201,15 @@ public:
     void retarget(const Screen& screen, const std::vector<std::size_t>& rows, const std::vector<int>* columns = nullptr,
                   int cellWidth = 0, int cellHeight = 0);
     /// Moves the placements anchored in @p scroll's region with the rows the
-    /// scroll moved, and drops those whose anchor left the region. Virtual
-    /// placements follow their placeholder cells, and relative children their
-    /// parents, so neither is moved here.
-    void scrollRegion(const RegionScroll& scroll);
+    /// scroll moved. A placement keeps only its rows still inside the region
+    /// (its source rectangle and size shrink) and goes when none remain.
+    /// Rows below the screen's last row are not cut by an upward scroll: they
+    /// come into view as it moves, as with a line feed into the history.
+    /// The cell size measures the rows an image covers; 0 counts only its
+    /// top row, which goes when it leaves. Virtual placements follow their
+    /// placeholder cells, and relative children their parents, so neither is
+    /// moved here.
+    void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight);
 
     void clear();
     /// Sets the bytes of image data kept; a lower quota evicts at once.

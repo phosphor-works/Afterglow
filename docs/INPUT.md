@@ -142,7 +142,8 @@ A resize during capture cancels the search.
 
 `show_last_output` opens marked command output in a new tab.
 It uses `Terminal.pager`, which defaults to `less -R`.
-The output limit is 1 MiB. A notice identifies truncation.
+`Terminal.lastOutputLimit` sets the output limit in KiB. The default is 1024 (1 MiB).
+A notice identifies truncation.
 The pager reads a temporary file. Afterglow removes the file when the pane closes.
 The pager command uses arguments without shell expansion.
 Missing shell markers cause a notification.

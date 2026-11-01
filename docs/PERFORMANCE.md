@@ -200,6 +200,40 @@ Long rich history at this size takes more than 100 ms of CPU for each resize.
 This is longer than one frame interval.
 The native benchmark was not repeated, so these results do not give frame service times.
 
+## Worst-case terminal input
+
+Run `afterglow_vtbench --stress [CASE]` from the build's `tools/bench` directory.
+`CASE` is a case-sensitive part of a case name, such as `cursors`.
+Each case feeds its setup before the clock starts.
+Then it feeds one input many times, in 64 KiB chunks, as the PTY reader does.
+The time is process CPU time, the best of three runs.
+
+| Case name | Terminal | Setup | Repeated input |
+| --- | --- | --- | --- |
+| `region lf, no regions` | 80×24 | Margins over rows 1 to 23, cursor on row 23 | One 51-byte line that ends with a line feed at the bottom margin |
+| `region lf, 1024 regions` | 80×24 | 400 shell commands with OSC 133 marks, which keep 1,024 regions in the history, then the same margins | The same line |
+| `cursors 80x24, one group repeated` | 80×24 | None | One extra-cursor sequence with 4,095 full-screen groups |
+| `cursors 80x24, distinct rects` | 80×24 | None | One extra-cursor sequence with 812 different overlapping rectangles |
+
+An 80×24 screen has 1,920 cells, fewer than the limit of 4,096 extra cursors.
+Thus no sequence stops at the limit.
+
+Measurement: 1 November 2026, `RelWithDebInfo`, a shared 8-core machine with a load average of about 16.
+`fd1124a` examined every retained OSC 133 region on each scroll of a region on the main screen.
+The next commit keeps an upper bound on the rows of the regions.
+When every region is above the scroll region, the terminal does not examine them.
+
+| Case name | `fd1124a` (µs) | With the bound (µs) | Throughput with the bound (MB/s) |
+| --- | ---: | ---: | ---: |
+| `region lf, no regions` | 0.40 for each line feed | 0.40 | 128.5 |
+| `region lf, 1024 regions` | 2.29 for each line feed | 0.41 | 125.9 |
+| `cursors 80x24, one group repeated` | 233 for each sequence | 235 | 34.8 |
+| `cursors 80x24, distinct rects` | 1,637 for each sequence | 1,599 | 6.4 |
+
+An extra-cursor sequence visits each cell of each different rectangle once.
+It also compares each existing cursor with each rectangle.
+Thus the cost increases with the number of rectangles multiplied by their area.
+
 ## Workloads
 
 | Case | `--cases` value | Work |

@@ -1157,6 +1157,70 @@ TEST_F(Render, ScrollbackHandlesPaneRemovalAndClockReset)
     EXPECT_FALSE(renderer->animating());
 }
 
+TEST_F(Render, AgeOnlyShadersSettleThenWakeOnTheNextEvent)
+{
+    // Event ages are this program's only clock: the window renders every
+    // frame while the youngest age it reads is below the settle time.
+    ShaderChains chains;
+    chains.window = {layerShader("cursor-age", "fragColor = vec4(c.rgb * clamp(cursorAge(), 0.0, 1.0), 1.0);")};
+    ASSERT_FALSE(chains.window[0]->animated());
+    EXPECT_EQ(chains.window[0]->eventAges(), unsigned(CursorAge));
+    EXPECT_FLOAT_EQ(chains.window[0]->settleSeconds(), 2.0f);
+    renderer->setShaderChains(chains);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    pane.params.focused = true;
+    auto draw = [&](double time, const std::string& output) {
+        terminal->feed(output);
+        snapshot.capture(*terminal);
+        renderer->setClockOverride(time);
+        renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+    };
+    draw(0, ""); // a pane seen for the first time has no event yet
+    EXPECT_FALSE(renderer->animating());
+    draw(1, "\x1b[3;5H");
+    EXPECT_TRUE(renderer->animating());
+    draw(2.9, "");
+    EXPECT_TRUE(renderer->animating());
+    draw(3.1, "");
+    EXPECT_FALSE(renderer->animating());
+    draw(10, "\x1b[1;1H");
+    EXPECT_TRUE(renderer->animating());
+    draw(12.1, "");
+    EXPECT_FALSE(renderer->animating());
+
+    // Only the ages a program reads wake it, after its own settle time.
+    ShaderProgramSource source;
+    source.id = QStringLiteral("focus-age");
+    source.code = "vec4 pTerminal(vec2 uv) { return terminalTexel(uv) * clamp(focusAge(), 0.0, 1.0); }\n";
+    source.settleSeconds = 0.5f;
+    QString error;
+    auto focus = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(focus) << error.toStdString();
+    EXPECT_EQ(focus->eventAges(), unsigned(FocusAge));
+    chains.window = {focus};
+    renderer->setShaderChains(chains);
+    draw(20, "\x1b[2;2H");
+    EXPECT_FALSE(renderer->animating());
+    pane.params.focused = false;
+    draw(21, "");
+    EXPECT_TRUE(renderer->animating());
+    draw(21.6, "");
+    EXPECT_FALSE(renderer->animating());
+
+    // A signal's age counts from when the script set it.
+    chains.window = {layerShader("signal-age", "fragColor = c * clamp(signalAge(3), 0.0, 1.0);")};
+    EXPECT_EQ(chains.window[0]->eventAges(), unsigned(SignalAge));
+    renderer->setShaderChains(chains);
+    pane.params.signals[3] = {1.0f, std::chrono::steady_clock::now() - std::chrono::seconds(5)};
+    draw(30, "");
+    EXPECT_FALSE(renderer->animating());
+    pane.params.signals[3].at = std::chrono::steady_clock::now();
+    draw(30.1, "");
+    EXPECT_TRUE(renderer->animating());
+}
+
 TEST_F(Render, HdrHighlightsSurviveLayersAndIntermediatePasses)
 {
     const QImage plain = render("\x1b[?25l");
@@ -1960,6 +2024,41 @@ vec4 pTerminal(vec2 uv) {
     EXPECT_PIXEL(image, QPoint(stripe * 5 / 2, bottom), qRgb(128, 64, 64));
 }
 
+TEST_F(Render, ClosingOverviewKeepsItsTargetInAnotherTabHighlighted)
+{
+    // The overview closes onto a card in tab 1 while tab 0, and its focus,
+    // stay current until the close ends.
+    ShaderProgramSource source;
+    source.id = "close-target";
+    source.code = R"(#include <terminal_panes.glsl>
+vec4 pTerminal(vec2 uv) {
+    int lit = highlightedPane();
+    float sharp = lit >= 0 ? float(uPaneTab[lit].y) / 4.0 : 1.0;
+    return vec4(float(lit + 1) / 4.0, float(focusedPane() + 1) / 4.0, overviewOpen() ? 1.0 : sharp, 1.0);
+})";
+    QString error;
+    auto program = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(program) << error.toStdString();
+    ShaderChains chains; chains.overview = {program};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    PaneSnapshot other = snapshot;
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane current{&snapshot, {}};
+    current.params.rect = QRect(QPoint(), size);
+    current.params.focused = true;
+    WindowRenderer::Pane target{&other, {}};
+    target.params.rect = current.params.rect;
+    target.params.highlighted = true;
+    auto overview = overviewAt(false, 0.5f, 1.0f, Clock::now(), Clock::now());
+    overview.otherTabs = {tabOf(1, {target})};
+    renderer->setOverview(overview);
+    ASSERT_TRUE(renderer->overviewShowing());
+    const auto image = renderer->renderToImage(size, {current}, {}, 0xff000000u);
+    // Highlighted card 1, focused card 0, closing, and the target's tab at full resolution.
+    EXPECT_PIXEL(image, QPoint(size.width() / 2, size.height() / 2), qRgb(128, 64, 64));
+}
+
 TEST_F(Render, TabTransitionSeesTheTabBeingLeftWhileItRuns)
 {
     // Left half: the tab being left; right half: the transition's state.
@@ -2150,6 +2249,13 @@ TEST(ShaderGeometry, ClockPointerAndTimeHelpersAreDetected)
     EXPECT_TRUE(compileBody("return vec4(fract(iDate.w));")->animated());
     EXPECT_TRUE(compileBody("return vec4(sin(timeAngle(1.0)));")->animated());
     EXPECT_FALSE(compileBody("return vec4(1);")->animated());
+    // A comment that mentions the clock is not a read of it.
+    EXPECT_FALSE(compileBody("// iTime\n/* timeAngle(1.0) */ return vec4(1);")->animated());
+    // Event ages are not a clock: they settle (PostChain::animated()).
+    auto ages = compileBody("return vec4(cursorAge() + focusAge() + signalAge(0));");
+    EXPECT_FALSE(ages->animated());
+    EXPECT_EQ(ages->eventAges(), unsigned(CursorAge | FocusAge | SignalAge));
+    EXPECT_EQ(compileBody("return vec4(signalValue(0));")->eventAges(), 0u);
     // A pack that reads only the pointer asks for frames when it moves.
     auto pointer = compileBody("return vec4(iMouse.x > 0.0 ? 1.0 : 0.0);");
     EXPECT_TRUE(pointer->readsMouse());

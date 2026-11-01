@@ -117,7 +117,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
         wp.params.focused = false;
-        wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
+        wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
         applyPaneEffectState(p, wp.params, animating);
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.textBlinkOn = m_textBlinkOn;
@@ -445,7 +445,9 @@ void TerminalWindow::closeOverview(Pane* chosen)
         m_overview.position.start(now, m_overview.positionTarget, spec);
     }
     m_overview.changedAt = std::chrono::steady_clock::now();
-    m_overview.highlighted = nullptr;
+    // The card it closes onto stays highlighted until the close ends
+    // (advanceOverview): in another tab, focus moves only then.
+    m_overview.highlighted = target;
     m_overview.original = nullptr;
     // A script key mode that drove the overview goes with it, so its next
     // key reaches the shell (a click closes the overview without the script).
@@ -555,6 +557,7 @@ void TerminalWindow::advanceOverview(bool& animating)
             if (pane && !overviewShowing() && tabOf(pane) >= 0) revealOverviewChoice(pane);
         }, Qt::QueuedConnection);
     }
+    if (!showing) m_overview.highlighted = nullptr;
     m_overview.wasShowing = showing;
 }
 

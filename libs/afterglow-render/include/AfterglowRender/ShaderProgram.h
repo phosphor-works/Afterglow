@@ -73,6 +73,10 @@ static_assert(sizeof(TerminalUniforms) == 5184);
 inline constexpr int MaxShaderBuffers = PhosphorShaders::kMaxBufferPasses;
 inline constexpr int MaxShaderImages = PhosphorShaders::kMaxImageSlots;
 enum class ShaderWrap { Clamp, Repeat, Mirror };
+/// The event ages a program reads (ShaderProgram::eventAges()): bit i is
+/// kind i of PostChain's newest event times.
+enum EventAge : unsigned { CursorAge = 1u << 0, FocusAge = 1u << 1, SignalAge = 1u << 2 };
+inline constexpr int EventAgeKinds = 3;
 /// Triangle geometry. Empty vertices select procedural generation with gl_VertexIndex.
 struct ShaderMeshVertex {
     float position[3];
@@ -109,7 +113,9 @@ static_assert(sizeof(TerminalSceneUniforms) == 8192);
 inline constexpr int MaxShaderPanes = 32;
 /// The pane block (std140, binding 19): mirrors terminal_panes.glsl.
 struct alignas(16) TerminalPaneUniforms {
-    std::int32_t uPaneState[4] {0, -1, -1, 0}; ///< panes, focused, highlighted, overview open
+    /// Panes, focused, highlighted (the card the overview closes onto while
+    /// it closes), overview open.
+    std::int32_t uPaneState[4] {0, -1, -1, 0};
     float uOverview[4] {0.0f, 0.0f, 1e6f, 1e6f}; ///< open amount, highlight position, ages since open/close and highlight move
     std::int32_t uTabState[4] {0, 0, 0, 0}; ///< tabs with cards, the current tab
     float uTabTransition[4] {1.0f, 1.0f, 1e6f, 0.0f}; ///< progress, direction, age, running
@@ -172,6 +178,7 @@ struct ShaderProgramSource
     std::vector<ShaderBufferSource> buffers;
     bool highDynamicRange = false; ///< metadata `highDynamicRange`: keep values above 1 between passes
     bool windowBackground = false; ///< metadata `windowBackground`: one background for the whole window
+    float settleSeconds = 2.0f; ///< metadata `settleSeconds`: see ShaderProgram::settleSeconds()
     QByteArray parameterPreamble; ///< `#define p_<id> customParams[...]` lines
     std::array<float, 32> params{};
     std::array<float, 64> colors{};
@@ -274,13 +281,22 @@ public:
         return copy;
     }
     /// The window must keep rendering frames while the shader is active. Any
-    /// of these makes a program animated: iTime, iTimeDelta, iTimeHi, iFrame,
-    /// iDate, uEventAges or uSignal in the author's code; the helpers
-    /// timeAngle, timeCycle, timeSeconds, cursorAge, focusAge and signalAge;
-    /// including terminal_history.glsl; a buffer with bufferFeedback; a scene
-    /// object that spins. signalValue() alone is not: a signal change asks
-    /// for one frame.
+    /// of these makes a program animated: iTime, iTimeDelta, iTimeHi, iFrame
+    /// or iDate in the author's code (comments aside); the helpers timeAngle,
+    /// timeCycle and timeSeconds; including terminal_history.glsl; a buffer
+    /// with bufferFeedback; a scene object that spins. Event ages are not:
+    /// see eventAges().
     bool animated() const noexcept { return m_animated; }
+    /// The event ages the author's code reads (EventAge bits): cursorAge or
+    /// uEventAges, focusAge or uEventAges, signalAge or uSignal. A program
+    /// that is not animated() but reads ages renders every frame only while
+    /// the youngest of those ages is below settleSeconds(), so the window
+    /// goes idle once the effect has played out. signalValue() alone reads no
+    /// age: a signal change asks for one frame.
+    unsigned eventAges() const noexcept { return m_eventAges; }
+    /// Metadata `settleSeconds` (2 by default): how long after an event an
+    /// age-only program still moves.
+    float settleSeconds() const noexcept { return m_settleSeconds; }
     bool readsScrollback() const noexcept { return m_readsScrollback; }
     /// Reads the pointer (iMouse or uWindowMouse): the window renders when it moves.
     bool readsMouse() const noexcept { return m_readsMouse; }
@@ -309,6 +325,8 @@ private:
     QString m_id;
     QString m_instanceId;
     bool m_animated = false;
+    unsigned m_eventAges = 0;
+    float m_settleSeconds = 2.0f;
     bool m_readsPreviousText = false;
     bool m_readsScrollback = false;
     bool m_readsMouse = false;

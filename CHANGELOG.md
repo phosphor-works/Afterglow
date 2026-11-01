@@ -49,6 +49,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - 33 bundled themes: Afterglow, Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
 - `light:NAME,dark:NAME` theme pairs that follow the desktop color scheme.
 - Search match and visual bell colors, set in `Colors` or by a theme.
+- `show_last_output` opens the last command's output in a pager, up to `Terminal.lastOutputLimit` (1 MiB by default).
 - Colors as SVG names or in hex. A color in eight-digit hex is refused, because it does not say where the alpha is.
 
 ### Shell integration
@@ -101,6 +102,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Phosphor shader packs in five chains: background, text and cursor layers, panes and the window.
 - A Phosphor shader-family contract: Phosphor's base uniforms plus terminal inputs such as `uCursorRect`, `uSignal` and `uPalette`.
 - Packs that read the pointer (`iMouse` or `uWindowMouse`) draw again when it moves.
+- Packs that react only to event ages (`cursorAge()`, `focusAge()`, `signalAge()`) stop drawing once their animation has settled. A pack sets the time with `settleSeconds`.
 - `panePreviousContext()` in the shader contract, so that a pack can blend from where a pane's shell ran before.
 - Up to eight buffer passes, four image parameters, auxiliary depth, vertex stages and instanced OBJ or generated meshes.
 - Object hierarchies for mesh passes, with transforms that follow parameters, scripts and transitions.

@@ -535,6 +535,95 @@ TEST(Graphics, RegionScrollMovesImagesInsideItOnly)
     EXPECT_EQ(rowOf(4), 3);
 }
 
+TEST(Graphics, UpwardRegionScrollClipsAnImageToTheRowsLeftInside)
+{
+    Term t(20, 6);
+    t.t.feed("\x1b[1;4r\x1b[1;1H"); // rows 0 to 3
+    t.t.feed(apc("a=T,f=32,s=10,v=60,i=1,C=1,q=2", b64(rgba(10, 60, 0, 0, 0)))); // rows 0 to 2
+    t.t.feed("\x1b[4;1H\n"); // its top-left cell leaves; rows 1 and 2 stay
+    auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 0);
+    EXPECT_EQ(vis[0].height, 40);
+    EXPECT_EQ(vis[0].srcY, 20);
+    EXPECT_EQ(vis[0].srcH, 40);
+    t.t.feed("\n");
+    vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 0);
+    EXPECT_EQ(vis[0].height, 20);
+    EXPECT_EQ(vis[0].srcY, 40);
+    EXPECT_EQ(vis[0].srcH, 20);
+    t.t.feed("\n"); // no row is left inside
+    EXPECT_TRUE(t.g().placements().empty());
+    // An image anchored in the region loses the rows the scroll takes below
+    // its bottom margin: they would cover the rows outside the region.
+    t.t.feed("\x1b[3;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=80,i=2,C=1,q=2", b64(rgba(10, 80, 0, 0, 0)))); // rows 2 to 5
+    t.t.feed("\x1b[4;1H\n");
+    vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 20);
+    EXPECT_EQ(vis[0].height, 60);
+    EXPECT_EQ(vis[0].srcY, 0);
+    EXPECT_EQ(vis[0].srcH, 60);
+}
+
+TEST(Graphics, ChildOfAClippedImageMovesWithTheRows)
+{
+    Term t(20, 6);
+    t.t.feed(apc("a=t,f=32,s=10,v=60,i=1,q=2", b64(rgba(10, 60, 0, 0, 0))));
+    t.t.feed(apc("a=t,f=32,s=10,v=20,i=2,q=2", b64(rgba(10, 20, 0, 0, 0))));
+    t.t.feed("\x1b[1;4r\x1b[1;1H"); // rows 0 to 3
+    t.t.feed(apc("a=p,i=1,p=1,C=1,q=2")); // rows 0 to 2
+    t.t.feed(apc("a=p,i=2,p=2,P=1,Q=1,V=2,q=2")); // row 2
+    t.t.feed("\x1b[4;1H\n"); // the parent's anchor moves down to row 0, the child up to row 1
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    const auto child = std::find_if(vis.begin(), vis.end(), [](const auto& v) { return v.imageId == 2; });
+    ASSERT_NE(child, vis.end());
+    EXPECT_EQ(child->y, 20);
+}
+
+TEST(Graphics, DownwardRegionScrollClipsAnImageAtTheBottomMargin)
+{
+    Term t(20, 6);
+    t.t.feed("\x1b[2;5r\x1b[3;1H"); // rows 1 to 4
+    // 30 source rows drawn over 3 cell rows: each cell row shows 10 of them.
+    t.t.feed(apc("a=T,f=32,s=10,v=30,i=1,r=3,C=1,q=2", b64(rgba(10, 30, 0, 0, 0)))); // rows 2 to 4
+    t.t.feed("\x1b[2;1H\x1bM"); // RI at the top margin: row 4 leaves at the bottom
+    auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 60);
+    EXPECT_EQ(vis[0].height, 40);
+    EXPECT_EQ(vis[0].srcY, 0);
+    EXPECT_EQ(vis[0].srcH, 20);
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    EXPECT_EQ(t.g().placements()[0].rows, 2);
+    t.t.feed("\x1bM");
+    vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 80);
+    EXPECT_EQ(vis[0].height, 20);
+    EXPECT_EQ(vis[0].srcY, 0);
+    EXPECT_EQ(vis[0].srcH, 10);
+    t.t.feed("\x1bM"); // no row is left inside
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
+TEST(Graphics, UpwardScrollAtTheScreenBottomKeepsRowsBelowIt)
+{
+    Term t(20, 6);
+    t.t.feed(std::string(10, '\n')); // history: SU moves rows inside the screen
+    t.t.feed("\x1b[5;1H");
+    t.t.feed(apc("a=T,f=32,s=10,v=80,i=1,C=1,q=2", b64(rgba(10, 80, 0, 0, 0)))); // rows 4 to 7, two below the screen
+    t.t.feed("\x1b[1S");
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, 60);
+    EXPECT_EQ(vis[0].height, 80);
+    EXPECT_EQ(vis[0].srcH, 80);
+}
+
 TEST(Graphics, AlternateScreenRegionScrollMovesImages)
 {
     Term t(20, 6);

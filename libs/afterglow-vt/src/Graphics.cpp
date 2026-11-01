@@ -1644,9 +1644,14 @@ void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t
     settle();
 }
 
-void GraphicsStore::scrollRegion(const RegionScroll& scroll)
+void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& screen, int cw, int ch)
 {
+    const std::uint64_t lastRow =
+        screen.rowsDropped() + screen.historySize() + std::uint64_t(std::max(0, screen.rows() - 1));
+    const bool cutBelow = scroll.delta > 0 || scroll.bottom < lastRow;
+    const long long regionPixels = (static_cast<long long>(scroll.bottom - scroll.top) + 1) * ch;
     std::vector<char> gone(m_placements.size(), 0);
+    std::vector<long long> anchorShift; // rows a clipped anchor moved down, for its children
     bool changed = false;
     for (std::size_t i = 0; i < m_placements.size(); ++i) {
         Placement& p = m_placements[i];
@@ -1654,10 +1659,61 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll)
         const SelectionPoint anchor{p.row, p.col};
         if (!scroll.contains(anchor)) continue;
         changed = true;
-        if (const auto moved = scroll.map(anchor)) p.row = moved->row;
-        else gone[i] = 1;
+        const auto img = m_images.find(p.imageId);
+        const DisplaySize size = img != m_images.end() && cw > 0 && ch > 0 ? displaySize(p, img->second, cw, ch)
+                                                                           : DisplaySize{0, 0};
+        const SourceRect src = img != m_images.end() ? sourceRect(p, img->second) : SourceRect{};
+        if (size.width <= 0 || size.height <= 0 || src.width <= 0 || src.height <= 0) {
+            // Nothing to measure its rows by: it is its top-left cell.
+            if (const auto moved = scroll.map(anchor)) p.row = moved->row;
+            else gone[i] = 1;
+            continue;
+        }
+        // Pixels relative to the region's top edge, after the move.
+        const long long rel = static_cast<long long>(p.row - scroll.top) + scroll.delta;
+        const long long y0 = rel * ch + p.offsetY;
+        const long long cutTop = std::max(0LL, -y0);
+        const long long cutBottom = cutBelow ? std::max(0LL, y0 + size.height - regionPixels) : 0;
+        const long long kept = size.height - cutTop - cutBottom;
+        if (kept <= 0) {
+            gone[i] = 1;
+            continue;
+        }
+        long long anchorRel = rel;
+        if (rel < 0) {
+            // The anchor left the top: the first row still shown becomes it.
+            const long long top = y0 + cutTop;
+            anchorRel = top / ch;
+            p.offsetY = int(top - anchorRel * ch);
+            if (anchorShift.empty()) anchorShift.assign(m_placements.size(), 0);
+            anchorShift[i] = anchorRel - rel;
+        }
+        p.row = scroll.top + std::uint64_t(anchorRel);
+        if (cutTop == 0 && cutBottom == 0) continue;
+        // The source shrinks in proportion. Rounding down keeps at least one
+        // source row, and at most a fraction of one more than is shown.
+        const long long srcTop = cutTop * src.height / size.height;
+        const long long srcBottom = cutBottom * src.height / size.height;
+        p.srcY = int(src.y + srcTop);
+        p.srcH = int(src.height - srcTop - srcBottom);
+        // The display size is now explicit; displaySize() takes it as the
+        // aspect for whichever side the cells still give. A row count stays
+        // only while the kept part is whole rows.
+        p.displayWidth = std::uint32_t(size.width);
+        p.displayHeight = std::uint32_t(kept);
+        if (p.rows > 0) p.rows = kept % ch == 0 ? int(kept / ch) : 0;
     }
     if (!changed) return;
+    if (!anchorShift.empty()) {
+        // A child hangs from its parent's anchor cell: it keeps its place
+        // when that anchor moves down to the region's top.
+        Origins origins(*this, screen, Origins::Rows::Active);
+        for (Placement& p : m_placements) {
+            if (const auto parent = origins.parentOf(p); parent && anchorShift[*parent] != 0) {
+                p.relativeY = int(std::clamp<long long>(p.relativeY - anchorShift[*parent], INT_MIN, INT_MAX));
+            }
+        }
+    }
     eraseFlagged(m_placements, gone);
     settle();
 }

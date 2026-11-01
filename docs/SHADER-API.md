@@ -6,7 +6,7 @@
 Afterglow uses Phosphor ShaderRegistry metadata, source containment, include resolution, parameter slots and presets.
 Terminal shaders are a Phosphor shader family, like Phosphor's overlay, animation, pointer and surface families.
 Afterglow's PostChain renders them in terminal QRhi composition passes.
-Afterglow reads its own metadata keys from pack metadata: `highDynamicRange`, `windowBackground` and `geometryPasses`.
+Afterglow reads its own metadata keys from pack metadata: `highDynamicRange`, `windowBackground`, `settleSeconds` and `geometryPasses`.
 
 ## The terminal contract
 
@@ -85,13 +85,31 @@ Use the time helpers instead. They read the full shader time and do not jump.
 
 The window renders continuously while an active shader does one of these:
 
-- Reads `iTime`, `iTimeDelta`, `iTimeHi`, `iFrame`, `iDate`, `uEventAges` or `uSignal`.
-- Calls `timeAngle()`, `timeCycle()`, `timeSeconds()`, `cursorAge()`, `focusAge()` or `signalAge()`.
+- Reads `iTime`, `iTimeDelta`, `iTimeHi`, `iFrame` or `iDate`.
+- Calls `timeAngle()`, `timeCycle()` or `timeSeconds()`.
 - Includes `terminal_history.glsl`.
 - Sets `bufferFeedback`, or spins a scene object.
 
+A name in a comment does not count.
+
+Event ages are a different time source. They are `cursorAge()`, `focusAge()`, `signalAge()`, `uEventAges` and `uSignal`.
+A shader that reads ages, and nothing in the list above, renders continuously only for a short time after an event.
+The window stops when the youngest age that the shader reads is `settleSeconds` or more.
+The next event of that kind starts the frames again.
+
+| Age | Event |
+| --- | --- |
+| `cursorAge()` | The cursor moved. |
+| `focusAge()` | The pane focus changed. |
+| `signalAge()` | A script set a signal. |
+| `uEventAges` | The cursor moved, or the pane focus changed. |
+| `uSignal` | A script set a signal. |
+
+Set `settleSeconds` to the time that the effect needs to finish at the largest parameter values.
+If the value is too short, the effect stops before its end. At the next redraw, it jumps to its current state.
+
 `signalValue()` alone does not animate the shader. The window redraws when a signal changes.
-A shader that reads `iMouse` or `uWindowMouse`, and nothing in the list above, redraws when the pointer moves.
+A shader that reads `iMouse` or `uWindowMouse`, and nothing in the lists above, redraws when the pointer moves.
 
 ## Metadata
 
@@ -109,6 +127,7 @@ A shader that reads `iMouse` or `uWindowMouse`, and nothing in the list above, r
 | `geometryPasses` | One mesh object or `null` per buffer shader. |
 | `highDynamicRange` | `true` keeps values above 1 between passes. |
 | `windowBackground` | `true` shares one background across the window's panes. |
+| `settleSeconds` | Above 0, at most 600. The default is 2. How long a shader that reads only event ages renders after an event. A value outside the range rejects the pack. |
 
 ## Pass order and coordinates
 
@@ -310,7 +329,7 @@ Panes after the 32nd, in tab order, do not appear in the overview.
 | `paneInCurrentTab(i)` | True for a pane of the current tab. |
 | `paneTexel(i, uv)` | The card's pixels at `uv`, from (0, 0) at its top-left corner to (1, 1). |
 | `focusedPane()` | The focused card, or -1. |
-| `highlightedPane()` | The card the overview highlights, or -1. |
+| `highlightedPane()` | The card the overview highlights, or -1. While the overview closes, the card it closes onto. |
 | `overviewOpen()` | True while the overview is open. False while it closes. |
 | `overviewAmount()` | 0 for the flat window, 1 when the overview is open. A spring can pass 1 briefly. |
 | `highlightPosition()` | The highlight's position in cards. It is fractional while the highlight moves. It counts on past the last card when the highlight wraps around, so motion continues. Take it modulo `paneCount()`. |
@@ -335,7 +354,8 @@ Afterglow runs that pack after the window chain and the pane effects, only while
 It costs nothing while the overview is closed.
 Afterglow eases `overviewAmount()` and `highlightPosition()` with `Animation.overviewCurve`, so a shader reads positions and never times motion itself.
 Draw the flat window when `overviewAmount()` is 0. Opening and closing then start and end on the window.
-A choice in another tab switches tabs as the overview closes. `currentTab()` changes during that close.
+While the overview closes, `highlightedPane()` is the card it closes onto. Draw the highlight on that card, and use `focusedPane()` only when `highlightedPane()` is -1.
+A choice in another tab switches tabs when the close ends. Until then, `currentTab()` and `focusedPane()` stay in the old tab.
 The overview chain receives the window after the window chain. The tab bar and other controls stay above it.
 
 `Shaders.tabTransition` names the pack that animates a tab switch.

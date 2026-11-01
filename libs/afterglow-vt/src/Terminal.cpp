@@ -507,9 +507,11 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
         mark->row = point.row;
         mark->col = point.col;
     }
+    m_semanticRegionsLastRow = 0;
     for (auto& region : m_semanticRegions) {
         region.start = positions[index++];
         region.end = positions[index++];
+        m_semanticRegionsLastRow = std::max({m_semanticRegionsLastRow, region.start.row, region.end.row});
     }
     anchors.resize(imageAnchors);
     columns.resize(imageAnchors);
@@ -1772,7 +1774,7 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
     scroll.fullWidth = r.left == 0 && r.right == cols() - 1;
     const int count = std::min(n, r.bottom - r.top + 1);
     scroll.delta = up ? -count : count;
-    m_graphics[m_modes.altScreen ? 1 : 0].scrollRegion(scroll);
+    m_graphics[m_modes.altScreen ? 1 : 0].scrollRegion(scroll, scr, m_cellWidth, m_cellHeight);
     if (!m_modes.altScreen) {
         // Shell marks are kept for the primary screen only. One whose cell
         // left the region is gone, as its text is.
@@ -1786,22 +1788,30 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
                 *mark = {};
             }
         }
-        std::erase_if(m_semanticRegions, [&](SemanticRegion& region) {
-            const auto start = scroll.map({region.start.row, region.start.col});
-            if (!start) {
-                return true;
-            }
-            // An open region ends at the cursor: its stored end is not used.
-            if (!region.open) {
-                const auto end = scroll.map({region.end.row, region.end.col});
-                if (!end) {
+        // Regions are kept in the order they began, not by row, so only an
+        // upper bound on their rows can skip the walk. Most of them are in
+        // the history, above the region.
+        if (!m_semanticRegions.empty() && scroll.top <= m_semanticRegionsLastRow) {
+            std::uint64_t last = 0;
+            std::erase_if(m_semanticRegions, [&](SemanticRegion& region) {
+                const auto start = scroll.map({region.start.row, region.start.col});
+                if (!start) {
                     return true;
                 }
-                region.end.row = end->row;
-            }
-            region.start.row = start->row;
-            return false;
-        });
+                // An open region ends at the cursor: its stored end is not used.
+                if (!region.open) {
+                    const auto end = scroll.map({region.end.row, region.end.col});
+                    if (!end) {
+                        return true;
+                    }
+                    region.end.row = end->row;
+                }
+                region.start.row = start->row;
+                last = std::max({last, region.start.row, region.end.row});
+                return false;
+            });
+            m_semanticRegionsLastRow = last;
+        }
     }
     m_host.regionScrolled(scroll);
 }
@@ -2001,6 +2011,7 @@ void Terminal::fullReset()
         m_outputStart = {};
     }
     m_semanticRegions.clear();
+    m_semanticRegionsLastRow = 0;
     m_hasSelectionFg = m_hasSelectionBg = false;
     m_reportedDark = -1;
     clearColorStack();
@@ -4030,6 +4041,7 @@ void Terminal::closeSemanticRegion(std::optional<int> exitCode)
     auto& region = m_semanticRegions.back();
     const auto mark = cursorMark();
     region.end = {mark.row, mark.col};
+    m_semanticRegionsLastRow = std::max(m_semanticRegionsLastRow, mark.row);
     region.open = false;
     region.exitCode = exitCode;
 }
@@ -4043,6 +4055,7 @@ void Terminal::beginSemanticRegion(SemanticZoneKind kind)
     region.id = m_nextSemanticId++;
     region.kind = kind;
     region.start = region.end = {mark.row, mark.col};
+    m_semanticRegionsLastRow = std::max(m_semanticRegionsLastRow, mark.row);
     region.open = true;
     if (m_semanticRegions.size() == 1024) m_semanticRegions.erase(m_semanticRegions.begin());
     m_semanticRegions.push_back(region);

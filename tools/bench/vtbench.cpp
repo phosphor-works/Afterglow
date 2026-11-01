@@ -10,6 +10,11 @@
 //
 // With --reflow, fills 100,000 history rows with generated text, then
 // times repeated width and height changes of the primary screen.
+//
+// With --stress, times inputs that make one code path do the most work for
+// each byte: line feeds in a scroll region with many retained OSC 133
+// regions, and extra-cursor sequences on a screen smaller than the cursor
+// limit. Each case comes with a baseline that skips the expensive part.
 
 #include <AfterglowVt/Terminal.h>
 
@@ -227,13 +232,97 @@ void reflowBench(const ReflowCase& c, int repeats)
                 percentile(medians, 0.5), percentile(p95s, 0.5), repeats);
 }
 
+struct StressCase
+{
+    const char* name;
+    const char* unit; ///< what one repetition is
+    int cols;
+    int rows;
+    std::string setup; ///< fed before the clock starts
+    std::string repetition;
+    int repeats;
+};
+
+/// Prompt, input and output regions, then blank lines: every region is in
+/// the history, above any scroll region of the screen, as when a program
+/// sets margins after a long shell session.
+std::string shellHistory(int commands, int rows)
+{
+    std::string out;
+    for (int i = 0; i < commands; ++i) {
+        out += "\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07file " + std::to_string(i) + "\r\n\x1b]133;D;0\x07";
+    }
+    return out + std::string(std::size_t(rows), '\n');
+}
+
+/// One extra-cursor sequence (shape 1, a block) with @p groups.
+std::string extraCursors(const std::vector<std::string>& groups)
+{
+    std::string out = "\x1b[>1";
+    for (const auto& group : groups) {
+        out += ';' + group;
+    }
+    return out + " q";
+}
+
+std::vector<StressCase> stressCases()
+{
+    std::vector<StressCase> cases;
+    // apt's progress bar: margins over all rows but the last, a line feed at
+    // the bottom margin for each line of output.
+    const std::string margins = "\x1b[1;23r\x1b[23;1H";
+    const std::string line = "Unpacking libexample (1.2.3-4) over (1.2.3-3) ...\r\n";
+    cases.push_back({"region lf, no regions", "line feed", 80, 24, margins, line, 200000});
+    cases.push_back({"region lf, 1024 regions", "line feed", 80, 24, shellHistory(400, 24) + margins, line, 200000});
+    // 80x24 holds 1,920 cells, fewer than the 4,096 cursor limit, so no
+    // sequence stops at the limit. The same group repeated is the cheap
+    // case; distinct overlapping rectangles each visit their cells.
+    cases.push_back({"cursors 80x24, one group repeated", "sequence", 80, 24, {},
+                     extraCursors(std::vector<std::string>(4095, "4")), 2000});
+    std::vector<std::string> rects;
+    for (int a = 0; a < 28; ++a) {
+        for (int b = 0; b < 29; ++b) {
+            rects.push_back("4:1:" + std::to_string(1 + a) + ":24:" + std::to_string(80 - b));
+        }
+    }
+    cases.push_back({"cursors 80x24, distinct rects", "sequence", 80, 24, {}, extraCursors(rects), 200});
+    return cases;
+}
+
+void stressBench(const StressCase& c)
+{
+    std::string data;
+    data.reserve(c.repetition.size() * std::size_t(c.repeats));
+    for (int i = 0; i < c.repeats; ++i) {
+        data += c.repetition;
+    }
+    double best = 1e9;
+    for (int round = 0; round < 3; ++round) {
+        NullHost host;
+        AfterglowVt::TerminalOptions opts;
+        opts.maxScrollback = 10000;
+        AfterglowVt::Terminal t(c.cols, c.rows, host, opts);
+        t.resize(c.cols, c.rows, 8, 16);
+        t.feed(c.setup);
+        constexpr std::size_t Chunk = 65536;
+        const double start = cpuSeconds();
+        for (std::size_t i = 0; i < data.size(); i += Chunk) {
+            t.feed(std::string_view(data).substr(i, Chunk));
+        }
+        best = std::min(best, cpuSeconds() - start);
+    }
+    std::printf("%-36s %10.3f us per %-9s %8.1f MB/s  (%d of %zu bytes, %.3f s CPU)\n", c.name,
+                best * 1e6 / c.repeats, c.unit, data.size() / best / 1e6, c.repeats, c.repetition.size(), best);
+}
+
 int usage()
 {
     std::fprintf(stderr, "usage: afterglow_vtbench\n"
                          "       afterglow_vtbench FILE...\n"
                          "       afterglow_vtbench --reflow [RUNS] [CASE]\n"
+                         "       afterglow_vtbench --stress [CASE]\n"
                          "RUNS is a positive integer (default 5). CASE is a case-sensitive part of a case name,\n"
-                         "such as \"long rich\".\n");
+                         "such as \"long rich\" or \"cursors\".\n");
     return 2;
 }
 
@@ -266,6 +355,22 @@ int main(int argc, char** argv)
         }
         if (ran == 0) {
             std::fprintf(stderr, "no reflow case matches \"%s\"\n", argv[3]);
+            return 1;
+        }
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--stress") == 0) {
+        if (argc > 3) return usage();
+        int ran = 0;
+        for (const auto& c : stressCases()) {
+            if (argc > 2 && !std::strstr(c.name, argv[2])) {
+                continue;
+            }
+            stressBench(c);
+            ++ran;
+        }
+        if (ran == 0) {
+            std::fprintf(stderr, "no stress case matches \"%s\"\n", argv[2]);
             return 1;
         }
         return 0;

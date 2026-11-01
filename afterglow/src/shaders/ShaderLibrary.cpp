@@ -224,7 +224,7 @@ QString loadSceneObjects(const QString& pack, const QJsonArray& list, const QHas
     return {};
 }
 
-/// Afterglow's own metadata keys: the scene flags and the mesh passes.
+/// Afterglow's own metadata keys: the scene flags, the settle time and the mesh passes.
 QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSource& source,
                          const QStringList& includes, const QHash<QString, int>& scalarSlots, QStringList& watched)
 {
@@ -241,6 +241,12 @@ QString loadPackMetadata(const QString& pack, AfterglowRender::ShaderProgramSour
         const auto value = document.object().value(key);
         if (!value.isUndefined() && !value.isBool()) return QStringLiteral("%1 must be true or false").arg(key);
         *flag = value.toBool(false);
+    }
+    if (const auto settle = document.object().value(QStringLiteral("settleSeconds")); !settle.isUndefined()) {
+        const double seconds = settle.toDouble(-1);
+        if (!settle.isDouble() || !(seconds > 0 && seconds <= 600))
+            return QStringLiteral("settleSeconds must be a number above 0, at most 600");
+        source.settleSeconds = float(seconds);
     }
     const auto value = document.object().value(QStringLiteral("geometryPasses"));
     if (value.isUndefined()) return {};
@@ -971,7 +977,8 @@ ShaderLibrary::Compiled ShaderLibrary::compile(const QString& ref)
         result.error = error;
         return done();
     }
-    qCInfo(lcShaders).noquote() << "loaded shader" << ref << (program->animated() ? "(animated)" : "");
+    qCInfo(lcShaders).noquote() << "loaded shader" << ref
+                                << (program->animated() ? "(animated)" : program->eventAges() ? "(animated after events)" : "");
     result.program = std::move(program);
     return done();
 }

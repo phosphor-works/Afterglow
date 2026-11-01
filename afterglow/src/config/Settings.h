@@ -165,6 +165,7 @@ struct Settings
     bool scriptsAllowReadText = true;
     bool scripts = true; ///< run Luau scripts from the scripts directories
     QString pager = QStringLiteral("less -R");
+    std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
     bool shellIntegration = true;
     bool sshIntegration = true; ///< integrated shells run ssh through `afterglow ssh`
     QString sshTerminfo = QStringLiteral("install"); ///< TERM=afterglow on a host without its entry: install or fallback

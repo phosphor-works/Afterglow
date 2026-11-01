@@ -103,9 +103,12 @@ QShader bakeStage(const QByteArray& code, const QString& prologue, const QList<P
 
 /// @p expanded without the terminal contract's own text, so that what the
 /// contract declares is not mistaken for what the pack uses. Every contract
-/// file is one include guard, opened and closed by name.
+/// file is one include guard, opened and closed by name. Comments go too: a
+/// note that mentions iTime does not make a pack render every frame.
 QString authorText(const QString& expanded)
 {
+    static const QRegularExpression comment(QStringLiteral(R"(//[^\n]*|/\*.*?\*/)"),
+                                            QRegularExpression::DotMatchesEverythingOption);
     static const QRegularExpression open(QStringLiteral(R"(^\s*#ifndef\s+AFTERGLOW_TERMINAL_\w+_GLSL\s*$)"));
     static const QRegularExpression close(QStringLiteral(R"(^\s*#endif\s*//\s*AFTERGLOW_TERMINAL_\w+_GLSL\s*$)"));
     QString result;
@@ -119,7 +122,7 @@ QString authorText(const QString& expanded)
             result += line + QLatin1Char('\n');
         }
     }
-    return result;
+    return result.remove(comment);
 }
 
 /// Whether one of the opt-in contract modules was included.
@@ -331,8 +334,10 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compileStage(const ShaderProgramSo
     program->m_geometry = geometry;
     program->m_id = source.id;
     static const QRegularExpression usesTime(QStringLiteral(
-        "\\b(?:iTime|iTimeDelta|iTimeHi|iFrame|iDate|uEventAges|uSignal|cursorAge|focusAge|signalAge"
-        "|timeAngle|timeCycle|timeSeconds)\\b"));
+        "\\b(?:iTime|iTimeDelta|iTimeHi|iFrame|iDate|timeAngle|timeCycle|timeSeconds)\\b"));
+    static const QRegularExpression usesCursorAge(QStringLiteral("\\b(?:cursorAge|uEventAges)\\b"));
+    static const QRegularExpression usesFocusAge(QStringLiteral("\\b(?:focusAge|uEventAges)\\b"));
+    static const QRegularExpression usesSignalAge(QStringLiteral("\\b(?:signalAge|uSignal)\\b"));
     static const QRegularExpression usesScrollback(QStringLiteral("\\buScrollback\\b"));
     static const QRegularExpression usesMouse(QStringLiteral("\\b(?:iMouse|uWindowMouse)\\b"));
     const QString expanded = fragment + QLatin1Char('\n') + vertex;
@@ -344,6 +349,9 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compileStage(const ShaderProgramSo
     program->m_readsScrollback = author.contains(usesScrollback);
     program->m_readsMouse = author.contains(usesMouse);
     program->m_animated = author.contains(usesTime) || program->m_readsPreviousText;
+    program->m_eventAges = (author.contains(usesCursorAge) ? CursorAge : 0u)
+        | (author.contains(usesFocusAge) ? FocusAge : 0u) | (author.contains(usesSignalAge) ? SignalAge : 0u);
+    program->m_settleSeconds = source.settleSeconds;
     // Spinning objects move without the shader reading time.
     for (const auto& object : geometry.objects)
         for (const auto& value : object.spin) program->m_animated |= value.slot >= 0 || value.value != 0.0f;
@@ -367,6 +375,7 @@ std::shared_ptr<ShaderProgram> ShaderProgram::compileStage(const ShaderProgramSo
         auto buffer = compileStage(bufferSource, error, true);
         if (!buffer) return nullptr;
         program->m_animated |= settings.feedback || buffer->animated();
+        program->m_eventAges |= buffer->eventAges();
         program->m_readsPreviousText |= buffer->readsPreviousText();
         program->m_readsScrollback |= buffer->readsScrollback();
         program->m_readsMouse |= buffer->readsMouse();

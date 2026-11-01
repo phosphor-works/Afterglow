@@ -106,8 +106,9 @@ QList<QQuickItem*> visualDescendants(QQuickItem* root) {
     }
     return result;
 }
-// An overlay takes the keyboard one event-loop turn after it shows, and the
-// chrome itself loads on the first frame that needs it.
+// An overlay takes the keyboard one event-loop turn after it shows. The
+// chrome is made in the background and finished by the first frame that
+// needs it, if the background has not finished it yet.
 bool chromeFocusReady(ChromeLayer* layer) {
     auto* focus = layer->focusedItem();
     return focus && focus->hasActiveFocus() && focus->isVisible() && focus != focus->window()->contentItem();
@@ -1682,6 +1683,35 @@ TEST_F(NativeWindow, ScriptKeyModeEndsWithItsReservedChord) {
     sendKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier);
     EXPECT_EQ(keys, 0);
     EXPECT_TRUE(chrome->keyMode().isEmpty());
+}
+
+// The chrome scene is made in the background from the window's creation, so
+// the first frame that shows chrome (here the pane titles of the first split)
+// renders it and does not build it. Building it there held that frame for
+// 215-280 ms.
+TEST_F(NativeWindow, ChromeSceneIsMadeBeforeTheFirstFrameThatShowsIt) {
+    auto* layer = window->findChild<ChromeLayer*>();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(layer, nullptr);
+    ASSERT_NE(chrome, nullptr);
+    ASSERT_TRUE(chrome->paneTitles().isEmpty());
+    EXPECT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
+    // Made, not rendered: no frame has shown chrome yet.
+    EXPECT_EQ(layer->texture(), nullptr);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr), nullptr);
+    QElapsedTimer timer;
+    timer.start();
+    QEvent update(QEvent::UpdateRequest);
+    QCoreApplication::sendEvent(window, &update);
+    const qint64 elapsed = timer.elapsed();
+    EXPECT_FALSE(chrome->paneTitles().isEmpty());
+    EXPECT_NE(layer->texture(), nullptr);
+    // A wall-clock bound would fail on a loaded machine: the time is reported.
+    RecordProperty("firstChromeFrameMs", int(elapsed));
+    std::fprintf(stderr, "first frame with chrome: %lld ms\n", static_cast<long long>(elapsed));
+    expectIdle(window);
 }
 
 TEST_F(NativeWindow, SplitsKeepTheMinimumSizeAndStartShellsAtTheirSizeBeforeAFrame) {

@@ -7,6 +7,10 @@
 // the divider. When focus arrives, gilding runs along the pane's mullions
 // behind a hot tip and cools to the keyline. Signal 3 (the bell) sends a
 // shock ring through the glass, bending it as it passes.
+//
+// Only event ages move it, so the window stops rendering settleSeconds after
+// the last one. 12 s covers the slowest gilding: at gildTime 3 the tip takes
+// 5 s, and on a small pane the gilt behind it cools for 6 s more.
 
 #include <terminal_panes.glsl>
 #include "glasshouse.glsl"

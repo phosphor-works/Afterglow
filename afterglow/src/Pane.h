@@ -110,6 +110,8 @@ public:
     /// is local and exists, else the foreground job's directory from /proc.
     QString workingDirectory() const;
     QString text(AfterglowVt::Terminal::TextScope scope);
+    /// At most `limit` bytes of text. The caller bounds the limit: scripts
+    /// to their max_bytes range, show_last_output to Terminal.lastOutputLimit.
     QVariantMap readText(AfterglowVt::Terminal::TextScope scope, std::size_t limit);
     /// The command running now (OSC 133), empty at the prompt.
     QString runningCommand() const;

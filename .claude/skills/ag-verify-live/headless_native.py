@@ -54,6 +54,8 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
     env = dict(
         os.environ,
         XDG_CONFIG_HOME=str(config),
+        # Scripts, packs and state under the user's own data directory must not reach the tests.
+        XDG_DATA_HOME=str(root / 'data'),
         QT_FORCE_STDERR_LOGGING='1',
         QT_QPA_PLATFORM='offscreen',
         WAYLAND_DISPLAY='',

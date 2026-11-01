@@ -80,9 +80,9 @@ vec4 shade(int i, Card c, vec2 local, float pixel, float a, out float coverage) 
                       + paneTexel(i, cardUv + spread * vec2(-0.25, 0.25)) + paneTexel(i, cardUv + spread * vec2(0.25, 0.25)));
     }
     color.rgb *= mix(1.0, mix(p_sideBrightness, 1.0, c.focus), shown);
-    // While the overview closes it has no highlight: the border stays on the
-    // pane it closes onto, which is focused by then, and fades with the wall.
-    int lit = overviewOpen() ? highlightedPane() : focusedPane();
+    // While the overview closes, the highlight is the card it closes onto,
+    // in any tab: the border stays there and fades with the wall.
+    int lit = highlightedPane() >= 0 ? highlightedPane() : focusedPane();
     if (i == lit) {
         float width = c.halfSize.y * 0.025;
         float ring = (1.0 - smoothstep(width, width + pixel, -sd)) * shown;

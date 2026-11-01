@@ -184,9 +184,10 @@ public:
     void shrinkTabToAtlas(RenderFrame& frame, const QRect& tile);
     /// Layer chains run, or a chain that runs this frame reads the previous text.
     bool layered() const;
-    /// An always-on chain animates (time, history, feedback or spin), so the
-    /// window renders every frame. WindowRenderer::animating() covers the
-    /// event chains.
+    /// An always-on chain animates (time, history, feedback or spin), or an
+    /// age-only program's youngest age in the last recorded frame is below
+    /// its settle time, so the window renders every frame.
+    /// WindowRenderer::animating() covers the event chains.
     bool animated() const noexcept;
 
     /// Makes sure the offscreen textures match @p size and returns the target
@@ -350,6 +351,10 @@ private:
     std::vector<HistoryRegion> m_historyRegions;
     bool m_historyValid = false;
     double m_historyTime = 0;
+    /// The newest event of each EventAge kind among the last recorded frame's
+    /// regions, in shader time, and that frame's time: what animated() ages.
+    std::array<double, EventAgeKinds> m_eventTimes{-1e6, -1e6, -1e6};
+    double m_eventClock = 0;
     std::vector<std::unique_ptr<QRhiBuffer>> m_ubos;
     std::vector<std::unique_ptr<QRhiBuffer>> m_sceneUbos;
     std::vector<std::unique_ptr<QRhiShaderResourceBindings>> m_bindings;

@@ -192,6 +192,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
 | `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
+| `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
 | `notifications` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). |
 | `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. |
 | `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |

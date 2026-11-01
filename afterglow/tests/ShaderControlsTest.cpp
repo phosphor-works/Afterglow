@@ -13,6 +13,7 @@
 #include <QSet>
 #include <gtest/gtest.h>
 #include <limits>
+#include <tuple>
 using namespace Afterglow;
 using namespace AfterglowRender;
 
@@ -554,6 +555,48 @@ QString writePack(const QString& name, const QByteArray& fragment)
         || !writeShaderFixture(dir + QStringLiteral("/effect.frag"), fragment)) return {};
     return dir;
 }
+}
+
+TEST(ShaderPackMetadata, SettleSecondsIsCheckedAndAgeOnlyPacksSettle)
+{
+    const std::vector<std::pair<QByteArray, bool>> cases{
+        {"0.5", true}, {"600", true}, {"0", false}, {"-1", false}, {"601", false}, {"\"2\"", false}, {"true", false},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto name = QStringLiteral("settle-test-%1").arg(i);
+        const auto dir = writePack(name, "vec4 pTerminal(vec2 uv){return terminalTexel(uv) * min(cursorAge(), 1.0);}\n");
+        ASSERT_FALSE(dir.isEmpty());
+        ASSERT_TRUE(writeShaderFixture(dir + QStringLiteral("/metadata.json"),
+                                       "{\"id\":\"" + name.toUtf8() + "\",\"name\":\"" + name.toUtf8()
+                                           + "\",\"fragmentShader\":\"effect.frag\",\"settleSeconds\":" + cases[i].first + "}"));
+        ShaderLibrary library;
+        ShaderLibrary::Refs refs;
+        refs.background = {name};
+        const auto chains = library.build(refs, {});
+        EXPECT_EQ(chains.background.size(), cases[i].second ? 1u : 0u) << i;
+        if (i == 0 && !chains.background.empty()) {
+            EXPECT_FLOAT_EQ(chains.background[0]->settleSeconds(), 0.5f);
+        }
+        ASSERT_TRUE(QDir(dir).removeRecursively());
+    }
+
+    // The packs that only event ages move go idle after their settle time.
+    ShaderLibrary library;
+    const std::vector<std::tuple<QString, unsigned, float>> packs{
+        {QStringLiteral("cursor-trail"), CursorAge, 2.0f},
+        {QStringLiteral("phosphor-cursor"), CursorAge | SignalAge, 2.0f},
+        {QStringLiteral("glasshouse-mullion"), FocusAge | SignalAge, 12.0f},
+    };
+    for (const auto& [pack, ages, settle] : packs) {
+        SCOPED_TRACE(pack.toStdString());
+        ShaderLibrary::Refs refs;
+        refs.pane = {pack};
+        const auto chains = library.build(refs, {});
+        ASSERT_EQ(chains.pane.size(), 1u);
+        EXPECT_FALSE(chains.pane[0]->animated());
+        EXPECT_EQ(chains.pane[0]->eventAges(), ages);
+        EXPECT_FLOAT_EQ(chains.pane[0]->settleSeconds(), settle);
+    }
 }
 
 TEST(ShaderReload, MissingIncludeRecoversThroughNewParentDirectories)

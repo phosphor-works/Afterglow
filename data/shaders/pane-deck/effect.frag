@@ -190,9 +190,9 @@ vec4 shade(int i, Card c, vec2 local, bool front, float pixel, float a, out floa
     float focus = 1.0 - clamp(abs(c.offset), 0.0, 1.0);
     color.rgb *= mix(1.0, mix(p_sideBrightness, 1.0, focus), shown);
 
-    // While the overview closes it has no highlight: the border stays on the
-    // pane it closes onto, which is focused by then, and fades with the deck.
-    int lit = overviewOpen() ? highlightedPane() : focusedPane();
+    // While the overview closes, the highlight is the card it closes onto,
+    // in any tab: the border stays there and fades with the deck.
+    int lit = highlightedPane() >= 0 ? highlightedPane() : focusedPane();
     // Only the nearest copy of the card round the ring, which is within half
     // a round of the highlight.
     if (i == lit && abs(c.offset) < 0.5 * c.spacing) {

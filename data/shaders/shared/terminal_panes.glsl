@@ -40,7 +40,7 @@
 
 layout(std140, binding = 19) uniform TerminalPanes {
     ivec4 uPaneState;      // offset 0     .x cards (0-32), .y focused card (-1 for none), .z highlighted card
-                           //              (-1 for none),
+                           //              (-1 for none): while the overview closes, the card it closes onto,
                            //              .w 1 while the overview is open, 0 while closed or closing
     vec4 uOverview;        // offset 16    .x how far the overview is open: 0 the flat window, 1 open
                            //                 (a spring can overshoot), .y the highlight's position in cards:
@@ -116,7 +116,8 @@ int focusedPane() {
     return uPaneState.y;
 }
 
-// -1 when no card is highlighted.
+// -1 when no card is highlighted. While the overview closes, the card it
+// closes onto, which may be in another tab and not focused yet.
 int highlightedPane() {
     return uPaneState.z;
 }

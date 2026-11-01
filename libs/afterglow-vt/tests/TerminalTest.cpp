@@ -580,6 +580,25 @@ TEST(Terminal, ShellMarksMoveWithInsertedAndDeletedLines)
     EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "");
 }
 
+TEST(Terminal, SemanticRegionBegunAfterARegionScrollMovesWithTheNext)
+{
+    Term t(20, 6);
+    t.feed("\x1b]133;A\a$ \x1b]133;B\aecho\x1b]133;C\a\r\nhi\x1b]133;D;0\a");
+    t.feed(std::string(10, '\n')); // the command is in the history now
+    // A line feed at the bottom margin: no region is at or below its top.
+    t.feed("\x1b[3;6r\x1b[6;1H\n");
+    t.feed("\x1b[4;1H\x1b]133;A\a$ \x1b]133;B\a"); // a prompt in the scroll region
+    auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 5u);
+    const std::uint64_t prompt = regions[3].id;
+    EXPECT_EQ(t.t.semanticRegionText(prompt), "$");
+    t.feed("\x1b[6;1H\n"); // the prompt's row moves up, and the prompt with it
+    regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 5u);
+    EXPECT_EQ(t.t.semanticRegionText(prompt), "$");
+    EXPECT_EQ(t.t.semanticRegionText(regions[2].id), "\nhi");
+}
+
 TEST(Terminal, SavedCursorRetainsHyperlinkAndAltScreenReinternsIt)
 {
     Term t(20, 4);

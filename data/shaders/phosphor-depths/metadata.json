@@ -6,6 +6,9 @@
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",
+    "multipass": true,
+    "bufferShaders": ["glow.frag"],
+    "bufferScale": 0.5,
     "parameters": [
         { "id": "depthIntensity", "name": "Glow intensity", "group": "Depths", "type": "float", "default": 0.085, "min": 0.0, "max": 0.4 },
         { "id": "filamentGain", "name": "Filaments", "group": "Depths", "type": "float", "default": 0.8, "min": 0.0, "max": 3.0 },

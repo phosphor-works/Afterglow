@@ -109,8 +109,6 @@ constexpr qint64 BellSoundIntervalMs = 250;
 constexpr qint64 StatusNotificationIntervalMs = 3000;
 /// Labels for at most this many distinct matches (show_hints).
 constexpr std::size_t MaxHints = 1000;
-/// show_last_output hands the pager at most this much.
-constexpr std::size_t LastOutputLimit = 1024 * 1024;
 /// A clipboard reply (OSC 52, or each type of an OSC 5522 read) carries at most this much.
 constexpr qsizetype MaxClipboardReply = 8 * 1024 * 1024;
 /// A paste larger than this would not fit the PTY's input queue (32 MiB).
@@ -1496,7 +1494,7 @@ void TerminalWindow::renderNow()
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
         wp.params.focused = p == m_focused && m_windowFocused;
-        wp.params.highlighted = m_overview.open && p == m_overview.highlighted;
+        wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
         if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
             wp.params.openProgress = paneEffectProgress(opening->at);
             wp.params.openEdge = opening->edge;
@@ -2302,7 +2300,8 @@ bool TerminalWindow::performAction(Action action)
             return fail(tr("No pager"), command.isEmpty() ? tr("Terminal.pager is empty.")
                                                           : tr("The pager %1 was not found.").arg(command.front()));
         }
-        const auto output = m_focused->readText(Terminal::TextScope::LastOutput, LastOutputLimit);
+        const std::size_t limit = m_settings.settings().lastOutputLimit;
+        const auto output = m_focused->readText(Terminal::TextScope::LastOutput, limit);
         if (!output.value(QStringLiteral("available")).toBool()) {
             return fail(tr("No command output"), tr("Shell integration has not recorded a command yet."));
         }
@@ -2312,7 +2311,7 @@ bool TerminalWindow::performAction(Action action)
             return fail(tr("Could not show the output"), tr("The temporary file could not be written."));
         }
         if (output.value(QStringLiteral("truncated")).toBool()) {
-            file->write(QStringLiteral("\n[Afterglow: output limited to %1]\n").arg(QLocale::c().formattedDataSize(qint64(LastOutputLimit))).toUtf8());
+            file->write(QStringLiteral("\n[Afterglow: output limited to %1]\n").arg(QLocale::c().formattedDataSize(qint64(limit))).toUtf8());
         }
         const QString path = file->fileName();
         file->close();

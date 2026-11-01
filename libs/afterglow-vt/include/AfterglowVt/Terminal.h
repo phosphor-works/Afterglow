@@ -546,6 +546,10 @@ private:
         bool valid = false;
     };
     std::vector<SemanticRegion> m_semanticRegions;
+    /// At least the largest start or end row in m_semanticRegions. A region
+    /// scroll whose top row is past it can move or drop none of them, so a
+    /// line feed at a margin need not walk them all.
+    std::uint64_t m_semanticRegionsLastRow = 0;
     std::uint64_t m_nextSemanticId = 1;
     void beginSemanticRegion(SemanticZoneKind kind);
     void closeSemanticRegion(std::optional<int> exitCode = {});

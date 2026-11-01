@@ -156,9 +156,17 @@ PostChain::~PostChain()
 
 bool PostChain::animated() const noexcept
 {
+    // An age-only program has played out once its youngest age passes the
+    // settle time: the window goes idle until the next event renders a frame.
+    auto settling = [this](const ShaderProgram& p) {
+        for (int kind = 0; kind < EventAgeKinds; ++kind)
+            if ((p.eventAges() & (1u << kind)) && m_eventClock - m_eventTimes[std::size_t(kind)] < p.settleSeconds())
+                return true;
+        return false;
+    };
     for (const auto* chain : {&m_chains.background, &m_chains.text, &m_chains.cursor, &m_chains.pane, &m_chains.window}) {
         for (const ShaderProgramPtr& p : *chain) {
-            if (p->animated()) {
+            if (p->animated() || settling(*p)) {
                 return true;
             }
         }
@@ -1157,6 +1165,17 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
                        const ShaderRegionState& window, const ShaderFrameTime& time, QRhiRenderTarget* swapTarget,
                        QRhiRenderPassDescriptor* swapPass, const QColor& clear)
 {
+    m_eventClock = time.time;
+    m_eventTimes.fill(-1e6);
+    auto noteEvents = [this](const ShaderRegionState& state) {
+        auto newest = [](double& kind, double at) { kind = std::max(kind, at); };
+        newest(m_eventTimes[0], state.cursorChangeTime);
+        newest(m_eventTimes[1], state.focusChangeTime);
+        for (const auto& signal : state.signals) newest(m_eventTimes[2], signal.at);
+    };
+    for (const ShaderRegionState& state : panes) noteEvents(state);
+    noteEvents(window);
+
     auto* cb = frame.commands();
     QRhi* rhi = m_device.rhi();
     const QSize px = m_size;
