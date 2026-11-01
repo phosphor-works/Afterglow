@@ -8,7 +8,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMutex>
-#include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QThread>
 #include <QTimer>
@@ -28,6 +27,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_set>
+#include <utility>
 #include <xxhash.h>
 
 namespace Afterglow {
@@ -44,6 +44,7 @@ namespace {
     constexpr int MaxDepth = 128;
     constexpr qsizetype MaxRequestBytes = 4 * 1024 * 1024; // requested paths of all receive sessions
     constexpr qsizetype MaxRsyncBuffer = 16 * 1024 * 1024; // one signature or one literal
+    constexpr qsizetype DeltaStep = 1024 * 1024; // file bytes one pump() reads for a delta
     constexpr std::size_t MaxPendingBytes = 64 * 1024 * 1024; // every rsync buffer of the pane
     constexpr qsizetype DeliveryWindow = 65536;
     constexpr std::size_t MaxInputBacklog = 1024 * 1024;
@@ -287,9 +288,77 @@ struct FileTransfer::Worker {
         std::map<QString, Fields> listing;
         std::vector<QString> createdDirs;
     };
+    // The delta of a file against the receiver's signature, built as pump()
+    // asks for data: a large file needs no copy on disk, and the worker,
+    // which serves every session of the pane, never stalls on one file.
+    struct Delta {
+        std::unique_ptr<QFile> basis;
+        // Stays charged to the pane's rsync budget until the stream ends. It
+        // is read into the tables only when the stream reaches the front, so
+        // that the streams queued behind it hold no tables.
+        QByteArray signature;
+        std::size_t* pendingTotal = nullptr;
+        std::size_t charged = 0;
+        quint32 blockSize = 0;
+        // Keyed by both hashes: many blocks with one weak hash cost one lookup, not a scan.
+        std::unordered_set<quint32> weakHashes;
+        std::map<std::pair<quint32, quint64>, quint64> blocks;
+        XXH3_state_t* hash = XXH3_createState();
+        QByteArray buffer, literal;
+        qsizetype position = 0;
+        quint32 a = 0, b = 0;
+        bool fresh = true, parsed = false, done = false;
+        Delta()
+        {
+            if (hash)
+                XXH3_128bits_reset(hash);
+        }
+        ~Delta()
+        {
+            XXH3_freeState(hash);
+            if (pendingTotal)
+                *pendingTotal -= charged;
+        }
+        Delta(const Delta&) = delete;
+        Delta& operator=(const Delta&) = delete;
+        void parse()
+        {
+            for (qsizetype at = 12; at <= signature.size() - 20; at += 20) {
+                quint64 index = 0, strong = 0;
+                quint32 weak = 0;
+                for (int byte = 0; byte < 8; ++byte) {
+                    index |= quint64(quint8(signature[at + byte])) << (byte * 8);
+                    strong |= quint64(quint8(signature[at + 12 + byte])) << (byte * 8);
+                }
+                for (int byte = 0; byte < 4; ++byte)
+                    weak |= quint32(quint8(signature[at + 8 + byte])) << (byte * 8);
+                weakHashes.insert(weak);
+                blocks.try_emplace({ weak, strong }, index);
+            }
+            signature = QByteArray();
+            parsed = true;
+        }
+        void flushLiteral(QByteArray& out)
+        {
+            if (literal.isEmpty())
+                return;
+            QByteArray op(5, '\0');
+            op[0] = 1;
+            qToLittleEndian(quint32(literal.size()), op.data() + 1);
+            XXH3_128bits_update(hash, literal.constData(), std::size_t(literal.size()));
+            out += op;
+            out += literal;
+            literal.clear();
+        }
+        // Appends operations to OUT until it holds WANT bytes, DeltaStep bytes
+        // of the file were read, or the delta ends. False on a read error.
+        bool produce(QByteArray& out, qsizetype want);
+    };
     struct Stream {
         Fields fields;
         std::unique_ptr<QFile> source;
+        std::unique_ptr<Delta> delta; // in place of the source
+        QByteArray generated;         // delta operations not sent yet
         QByteArray input;
         z_stream z { };
         bool compressed = false, eof = false;
@@ -468,16 +537,15 @@ struct FileTransfer::Worker {
         s.asking = true;
         QStringList paths;
         for (const auto& request : s.requests) {
-            if (paths.size() == MaxPromptPaths) {
-                paths.push_back(FileTransfer::tr("Paths not shown: %1").arg(s.requests.size() - std::size_t(MaxPromptPaths)));
+            if (paths.size() == MaxPromptPaths)
                 break;
-            }
             paths.push_back(request.path);
         }
         const auto token = s.token;
         const bool writing = s.sending;
-        QMetaObject::invokeMethod(
-            owner, [o = owner, token, writing, paths] { Q_EMIT o->permissionRequested(token, writing, paths); });
+        const int total = int(s.requests.size());
+        QMetaObject::invokeMethod(owner,
+            [o = owner, token, writing, paths, total] { Q_EMIT o->permissionRequested(token, writing, paths, total); });
         return true;
     }
     // Takes the id by value: callers pass references to the key that this erases.
@@ -528,7 +596,9 @@ struct FileTransfer::Worker {
     void settle(Session& s, const QByteArray& fid);
     void finishLinks(Session& s);
     void sendFile(Session& s, const Fields& f);
-    bool stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> file, bool compress);
+    bool stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> file, bool compress,
+        std::unique_ptr<Delta> delta = { });
+    QByteArray read(Stream& item, bool& error, bool& atEnd);
     void pump();
     bool write(Session& s, File& file, const QByteArray& bytes);
     bool rawWrite(File& file, const QByteArray& bytes);
@@ -986,10 +1056,13 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
     }
     file.complete = end;
     if (end && file.output) {
-        // QTemporaryFile creates mode 0600. Without a mode from the client, follow the umask.
+        // QTemporaryFile creates mode 0600. Without a mode from the client
+        // (none, or prm=-1), follow the umask.
         const auto temporary = QFile::encodeName(file.output->fileName());
+        bool modeValid = false;
+        const bool modeGiven = file.meta.value("prm").toLongLong(&modeValid) >= 0 && modeValid;
         if (!file.output->flush()
-            || (!file.meta.contains("prm") && ::chmod(temporary.constData(), 0666 & ~creationMask()))
+            || (!modeGiven && ::chmod(temporary.constData(), 0666 & ~creationMask()))
             || !setMetadata(file.output->fileName(), file.meta, false)
             || ::rename(temporary.constData(), QFile::encodeName(file.path).constData())) {
             file.failed = true;
@@ -1220,7 +1293,8 @@ void FileTransfer::Worker::list(Session& s)
     status(s, { }, "OK", -1, { { "n", QDir::homePath().toUtf8() } });
 }
 
-bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> source, bool compress)
+bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> source, bool compress,
+    std::unique_ptr<Delta> delta)
 {
     if (streams.size() >= MaxStreams) {
         status(s, fid, "EBUSY");
@@ -1229,6 +1303,7 @@ bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique
     auto item = std::make_unique<Stream>();
     item->fields = { { "id", s.id }, { "fid", fid } };
     item->source = std::move(source);
+    item->delta = std::move(delta);
     if (compress) {
         if (deflateInit(&item->z, Z_DEFAULT_COMPRESSION) != Z_OK) {
             status(s, fid, "ENOMEM");
@@ -1242,6 +1317,24 @@ bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique
     return true;
 }
 
+QByteArray FileTransfer::Worker::read(Stream& item, bool& error, bool& atEnd)
+{
+    if (!item.delta) {
+        QByteArray data = item.source->read(MaxPacketData);
+        error = item.source->error() != QFileDevice::NoError;
+        atEnd = item.source->atEnd();
+        return data;
+    }
+    if (!item.delta->produce(item.generated, MaxPacketData)) {
+        error = true;
+        return { };
+    }
+    QByteArray data = item.generated.left(MaxPacketData);
+    item.generated.remove(0, data.size());
+    atEnd = item.delta->done && item.generated.isEmpty();
+    return data;
+}
+
 void FileTransfer::Worker::pump()
 {
     if (streams.empty())
@@ -1250,17 +1343,17 @@ void FileTransfer::Worker::pump()
     QByteArray data;
     bool end = false, error = false;
     if (!item.compressed) {
-        data = item.source->read(MaxPacketData);
-        error = item.source->error() != QFileDevice::NoError;
-        end = item.source->atEnd();
+        data = read(item, error, end);
     } else {
         if (item.z.avail_in == 0 && !item.eof) {
-            item.input = item.source->read(MaxPacketData);
-            item.eof = item.source->atEnd();
-            error = item.source->error() != QFileDevice::NoError;
+            item.input = read(item, error, item.eof);
             item.z.next_in = reinterpret_cast<Bytef*>(item.input.data());
             item.z.avail_in = uInt(item.input.size());
         }
+        // A delta step can end with nothing to send yet. Without input,
+        // deflate would report no progress.
+        if (!error && item.z.avail_in == 0 && !item.eof)
+            return;
         data.resize(MaxPacketData);
         item.z.next_out = reinterpret_cast<Bytef*>(data.data());
         item.z.avail_out = MaxPacketData;
@@ -1435,65 +1528,47 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
         status(s, fid, "EINVAL");
         return;
     }
-    // Keyed by both hashes: many blocks with one weak hash cost one lookup, not a scan.
-    std::unordered_set<quint32> weakHashes;
-    std::map<std::pair<quint32, quint64>, quint64> blocks;
-    for (qsizetype at = 12; at <= signature.size() - 20; at += 20) {
-        quint64 index = 0, strong = 0;
-        quint32 weak = 0;
-        for (int byte = 0; byte < 8; ++byte) {
-            index |= quint64(quint8(signature[at + byte])) << (byte * 8);
-            strong |= quint64(quint8(signature[at + 12 + byte])) << (byte * 8);
-        }
-        for (int byte = 0; byte < 4; ++byte)
-            weak |= quint32(quint8(signature[at + 8 + byte])) << (byte * 8);
-        weakHashes.insert(weak);
-        blocks.try_emplace({ weak, strong }, index);
-    }
-    // The delta can be as large as the file. Keep it on disk, not in a tmpfs /tmp.
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
-        + QStringLiteral("/afterglow");
-    auto output = QDir().mkpath(cache)
-        ? std::make_unique<QTemporaryFile>(cache + QStringLiteral("/transfer-delta-XXXXXX"))
-        : std::make_unique<QTemporaryFile>();
-    if (!output->open()) {
-        status(s, fid, "EIO");
+    auto generator = std::make_unique<Delta>();
+    if (!generator->hash) {
+        status(s, fid, "ENOMEM");
         return;
     }
-    auto stop = watch(s.id);
-    QByteArray buffer, literal;
-    qsizetype position = 0;
-    quint32 a = 0, b = 0;
-    bool fresh = true;
-    auto flushLiteral = [&] {
-        if (literal.isEmpty())
-            return true;
-        QByteArray op(5, '\0');
-        op[0] = 1;
-        qToLittleEndian(quint32(literal.size()), op.data() + 1);
-        XXH3_128bits_update(file.hash, literal.constData(), std::size_t(literal.size()));
-        const bool ok = output->write(op) == op.size() && output->write(literal) == literal.size();
-        literal.clear();
-        return ok;
-    };
-    for (;;) {
-        if (stopped(stop)) {
-            status(s, fid, "EINTR");
-            return;
-        }
-        if (buffer.size() - position <= blockSize && !file.basis->atEnd()) {
+    generator->blockSize = blockSize;
+    generator->basis = std::move(file.basis);
+    // The signature's bytes stay in the pane's budget: they move from the file to the stream.
+    generator->pendingTotal = &pendingBytes;
+    generator->charged = std::size_t(file.pending.size());
+    generator->signature = std::exchange(file.pending, QByteArray());
+    stream(s, fid, nullptr, file.meta.value("zip") == "zlib", std::move(generator));
+}
+
+bool FileTransfer::Worker::Delta::produce(QByteArray& out, qsizetype want)
+{
+    if (!parsed)
+        parse();
+    qsizetype scanned = 0;
+    while (!done && out.size() < want && scanned < DeltaStep) {
+        if (buffer.size() - position <= blockSize && !basis->atEnd()) {
             buffer.remove(0, position);
             position = 0;
-            buffer += file.basis->read(std::max<qint64>(65536, 2 * qint64(blockSize)));
-            if (file.basis->error() != QFileDevice::NoError) {
-                status(s, fid, "EIO");
-                return;
-            }
+            buffer += basis->read(std::max<qint64>(65536, 2 * qint64(blockSize)));
+            if (basis->error() != QFileDevice::NoError)
+                return false;
             fresh = true;
         }
         const auto length = std::min<qsizetype>(blockSize, buffer.size() - position);
-        if (!length)
+        if (!length) {
+            flushLiteral(out);
+            XXH128_canonical_t digest { };
+            XXH128_canonicalFromHash(&digest, XXH3_128bits_digest(hash));
+            QByteArray final(3, '\0');
+            final[0] = 2;
+            qToLittleEndian(quint16(16), final.data() + 1);
+            final.append(reinterpret_cast<const char*>(digest.digest), 16);
+            out += final;
+            done = true;
             break;
+        }
         if (fresh) {
             a = b = 0;
             for (qsizetype n = 0; n < length; ++n) {
@@ -1511,18 +1586,13 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
                 match = found->second;
         }
         if (match) {
-            if (!flushLiteral()) {
-                status(s, fid, "EIO");
-                return;
-            }
+            flushLiteral(out);
             QByteArray op(9, '\0');
             qToLittleEndian(*match, op.data() + 1);
-            if (output->write(op) != op.size()) {
-                status(s, fid, "EIO");
-                return;
-            }
-            XXH3_128bits_update(file.hash, buffer.constData() + position, std::size_t(length));
+            out += op;
+            XXH3_128bits_update(hash, buffer.constData() + position, std::size_t(length));
             position += length;
+            scanned += length;
             fresh = true;
         } else {
             literal += buffer[position];
@@ -1532,7 +1602,7 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
                 a = (a - old + next) & 0xffffu;
                 b = (b - quint32(length) * old + a) & 0xffffu;
                 fresh = false;
-            } else if (file.basis->atEnd()) {
+            } else if (basis->atEnd()) {
                 // At the end of the file the window shrinks: roll the old byte out only.
                 a = (a - old) & 0xffffu;
                 b = (b - quint32(length) * old) & 0xffffu;
@@ -1540,27 +1610,11 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
             } else
                 fresh = true; // the next pass refills the buffer
             ++position;
-            if (literal.size() >= 65536 && !flushLiteral()) {
-                status(s, fid, "EIO");
-                return;
-            }
+            ++scanned;
+            if (literal.size() >= 65536)
+                flushLiteral(out);
         }
     }
-    if (!flushLiteral()) {
-        status(s, fid, "EIO");
-        return;
-    }
-    XXH128_canonical_t hash { };
-    XXH128_canonicalFromHash(&hash, XXH3_128bits_digest(file.hash));
-    QByteArray final(3, '\0');
-    final[0] = 2;
-    qToLittleEndian(quint16(16), final.data() + 1);
-    final.append(reinterpret_cast<const char*>(hash.digest), 16);
-    if (output->write(final) != final.size() || !output->seek(0)) {
-        status(s, fid, "EIO");
-        return;
-    }
-    stream(s, fid, std::move(output), file.meta.value("zip") == "zlib");
-    file.clearPending();
+    return true;
 }
 } // namespace Afterglow

@@ -159,11 +159,12 @@ An empty setting always requires permission.
 | Receive listing depth | 128 directory levels | The deeper entry gets `EFBIG`. |
 | Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
 | Requested paths waiting for permission per pane | 4 MiB | The session gets `ENOMEM`. |
-| Delta buffers per pane | 64 MiB | The file gets `ENOMEM`. |
+| Delta buffers per pane | 64 MiB | The file gets `ENOMEM`. The signature of a delta that waits to be sent counts until it is sent. |
 
 A limit never authorizes more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
-Delta data for a receive transfer is written to a temporary file in the cache directory, `$XDG_CACHE_HOME/afterglow`.
+Afterglow makes the delta data for a receive transfer in small steps while it sends the data.
+It writes no temporary copy of the delta, and other transfers in the pane continue during a large delta.
 
 Kitty 0.49.2 can omit empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.

@@ -72,6 +72,8 @@ struct ScriptHost::Script
     int callTimeoutMs = ActionTimeoutMs; ///< of the running handler; its awaited results resume with it
     LuauEngine::CallOutcome invoke(const QString& function, const QVariantList& args, int timeoutMs)
     {
+        const QString flows = QStringLiteral("__flows");
+        const qint64 flowsBefore = engine->moduleField(module, flows).toLongLong();
         QElapsedTimer elapsed;
         elapsed.start();
         auto outcome = engine->callModule(module, function, args, timeoutMs);
@@ -79,6 +81,18 @@ struct ScriptHost::Script
         lastCallNs = elapsed.nsecsElapsed();
         maxCallNs = std::max(maxCallNs, lastCallNs);
         totalCallNs += lastCallNs;
+        // The await runtime registers a flow before the engine converts the
+        // effects it waits for. When they are too large to convert (an error,
+        // or with an older engine an invalid result), no result will resume
+        // the flow, and it would hold a waiting slot for good.
+        const bool lost = outcome.status != LuauEngine::CallStatus::Ok || !outcome.result.isValid();
+        if (lost && engine->moduleField(module, flows).toLongLong() > flowsBefore) {
+            engine->callModule(module, QStringLiteral("__abandon"), {flowsBefore}, timeoutMs);
+            if (outcome.status == LuauEngine::CallStatus::Ok) {
+                outcome.status = LuauEngine::CallStatus::Error;
+                outcome.message = QStringLiteral("result too large");
+            }
+        }
         return outcome;
     }
 };
@@ -340,8 +354,13 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     QStringList watched;
     QHash<QString, Memo> memos;
     m_loadErrors.clear();
-    m_superseded.clear();
+    const auto wasSuperseded = std::exchange(m_superseded, {});
     m_stateFailures.clear();
+    // Warns once, when a path starts to lose its id, not on every rescan.
+    auto supersede = [&](const QString& path, const QString& id, const QString& holder) {
+        if (!wasSuperseded.contains(path)) qCWarning(lcScripts) << path << "uses the id" << id << "of" << holder << "and is not loaded";
+        m_superseded.insert(path, holder);
+    };
     if (m_enabled) {
         // Every script file and package folder, lowest priority first. A
         // package follows the files of its directory, so it wins an id clash
@@ -378,6 +397,12 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 watched << package.watched;
                 if (failure.isEmpty() && package.id != QFileInfo(path).absoluteDir().dirName())
                     failure = QStringLiteral("Package id must match its directory name");
+                // The manifest names the id, so a losing package never runs. It
+                // shares the winner's state file, whose every write would load it again.
+                if (failure.isEmpty() && holders.contains(package.id)) {
+                    supersede(path, package.id, holders.value(package.id));
+                    continue;
+                }
                 source = package.source;
                 // Everything a running instance copied from the manifest: a
                 // change to any of it must replace the instance.
@@ -411,14 +436,15 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 script = *same;
             } else if (known && !memo->error.isEmpty()) {
                 m_loadErrors[path] = memo->error; // unchanged and still broken
+                if (memo->state) m_stateFailures.insert(path);
                 memos.insert(path, *memo);
             } else if (known && holders.contains(memo->id)) {
-                m_superseded.insert(path, holders.value(memo->id)); // unchanged and still superseded
+                supersede(path, memo->id, holders.value(memo->id)); // unchanged and still superseded
                 memos.insert(path, *memo);
                 continue;
             } else {
                 script = load(path, source, isPackage ? &package : nullptr);
-                if (!script) memos.insert(path, {stamp, {}, m_loadErrors.value(path)});
+                if (!script) memos.insert(path, {stamp, {}, m_loadErrors.value(path), m_stateFailures.contains(path)});
             }
             if (!script) {
                 if (isPackage && m_stateFailures.contains(path)) {
@@ -431,8 +457,7 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 script = *old;
             }
             if (const auto holder = holders.constFind(script->id); holder != holders.cend()) {
-                qCWarning(lcScripts) << path << "uses the id" << script->id << "of" << *holder << "and is not loaded";
-                m_superseded.insert(path, *holder);
+                supersede(path, script->id, *holder);
                 memos.insert(path, {stamp, script->id, {}});
                 continue;
             }
@@ -463,6 +488,7 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 }
                 if (old == m_scripts.end()) { it = loaded.erase(it); continue; }
                 script = *old;
+                m_superseded.remove(script->path); // it keeps running, so it is not superseded
             } else { script->storage = committed; script->migrateState = false; }
         }
         ++it;

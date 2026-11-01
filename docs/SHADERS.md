@@ -21,13 +21,20 @@ A pack in a later row replaces a pack with the same ID in an earlier row.
 | `afterglow/shaders/` in each XDG data directory, such as `/usr/share/afterglow/shaders/` | Installed packs. |
 | `~/.config/afterglow/shaders/` | Your own packs. Afterglow creates this directory. |
 
+A binary that runs from the build tree moves `data/shaders/` of its checkout below the XDG data directories in this order.
+Thus a pack in the checkout replaces an installed pack with the same ID, and you test the pack that you edit.
+Your own packs in `~/.config/afterglow/shaders/` still replace the packs of the checkout.
+
 Put each pack in its own subdirectory, such as `~/.config/afterglow/shaders/my-pack/metadata.json`.
 Put include files that several packs share in a `shared/` subdirectory of the same directory.
 Afterglow looks for an include file in this order:
 
 1. The pack's own directory, for `#include "name.glsl"` only.
 2. The contract headers built into Afterglow, such as `terminal_lib.glsl`.
-3. The `shared/` subdirectory of each directory in the table, in table order.
+3. For a pack in a script package, the `shared/` subdirectory of the package's `shaders/` directory.
+4. The `shared/` subdirectory of each directory in the table, in reverse table order: your own directory first, then the installed and bundled directories.
+
+Afterglow uses the first file that it finds.
 Script packages carry their own `shaders/` directory. See [packages](PACKAGES.md#shaders).
 
 ## Shader chains
@@ -278,7 +285,7 @@ It reports when Bloom is absent.
 | Helper | Result |
 | --- | --- |
 | `shader_presets(pane, instance)` | Available presets in `data.presets`. |
-| `shader_preset(pane, instance, preset, scope?, transition?)` | Apply a preset with normal operation results. |
+| `shader_preset(pane, instance, preset, scope?, transition?)` | Apply a preset. `data.values` holds the values that it applied. |
 | `save_shader_preset(pane, instance, name)` | Save a preset. Return `data.id` and `data.name`. |
 
 `@defaults` applies pack defaults. An empty `shader_parameters` table releases only the calling script's changes.

@@ -10,11 +10,12 @@ The usual path is `~/.config/afterglow/config.json`.
 Afterglow reloads this file when it changes.
 A file that does not parse, or that does not hold a JSON object, keeps the current settings.
 A deleted file gives every setting its default.
-Afterglow logs unknown keys and values that it replaces with a default.
+Afterglow shows a notice and logs a warning for unknown keys and for values that it replaces with a default.
 
 The file holds only the values that differ from the defaults.
 Afterglow does not create it on the first start.
 Afterglow creates it when it saves a setting for the first time, for example the shaders that a script package suggests.
+The `open_config` action creates an empty file if there is no file.
 Only your user can read the file that Afterglow creates.
 
 The [configuration reference](CONFIGURATION.md) lists all keys, defaults and ranges.
@@ -114,7 +115,8 @@ A theme without a divider color gets one between its background and text colors.
 
 Afterglow first searches `$XDG_CONFIG_HOME/afterglow/themes`.
 It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
-Last, it searches the supplied themes:
+Last, it searches the supplied themes in the table below.
+An `afterglow` binary in a build directory searches the themes of its source tree before the XDG data directories.
 
 | Family | Themes |
 | --- | --- |
@@ -134,7 +136,7 @@ Last, it searches the supplied themes:
 | Tokyo Night | `tokyonight-night`, `tokyonight-storm`, `tokyonight-moon`, `tokyonight-day` |
 
 The third-party palettes come from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) under the MIT license.
-Supported formats are Afterglow JSON, Ghostty themes and kitty themes.
+Supported formats are Afterglow JSON, Ghostty themes and Kitty themes.
 An Afterglow JSON theme is one object with color keys.
 The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground` and `divider`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.

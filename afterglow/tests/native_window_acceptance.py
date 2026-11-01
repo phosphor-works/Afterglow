@@ -53,9 +53,12 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
                         return False
                     return len(coordinates) == 4
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise AssertionError(f"The native tests did not finish within {args.timeout} s")
-                wait_for(ready, timeout=remaining)
+                try:
+                    if remaining <= 0:
+                        raise AssertionError
+                    wait_for(ready, timeout=remaining)
+                except AssertionError:
+                    raise AssertionError(f"The native tests did not finish within {args.timeout} s") from None
                 if len(coordinates) == 4:
                     marker.unlink(missing_ok=True)
                     Path(str(marker) + ".pressed").unlink(missing_ok=True)

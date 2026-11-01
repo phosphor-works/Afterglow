@@ -32,18 +32,13 @@ Item {
     Component.onCompleted: {
         input.text = selector ? "" : (controller.scriptDialog.text || "")
         input.selectAll()
-        Qt.callLater(() => { if (dialog.visible) takeFocus() })
     }
     function takeFocus() {
         input.forceActiveFocus()
     }
-    Rectangle {
-        anchors.fill: parent
-        color: dialog.controller.scrimColor
-        MouseArea {
-            anchors.fill: parent
-            onClicked: dialog.controller.answerScriptDialog(false, "")
-        }
+    Scrim {
+        controller: dialog.controller
+        onDismissed: dialog.controller.answerScriptDialog(false, "")
     }
     Pane {
         anchors.horizontalCenter: parent.horizontalCenter

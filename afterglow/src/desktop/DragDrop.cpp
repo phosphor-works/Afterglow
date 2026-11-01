@@ -639,6 +639,10 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     }
     QByteArray fetch(int index)
     {
+        // A reset during the drag ended the protocol: nothing may reach the
+        // PTY, where the shell would read it as typed input.
+        if (!started)
+            return { };
         if (sourceAction && !leftButton())
             announceDrop();
         send({ { "t", "e" }, { "x", "1" }, { "y", QByteArray::number(index) } }, { }, true);
@@ -695,6 +699,8 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         if (!pictures.empty())
             operation->setPixmap(pictures.front());
         QObject::connect(operation, &QDrag::actionChanged, owner, [this](Qt::DropAction action) {
+            if (!started)
+                return;
             sourceAction = int(action) & 3;
             send({ { "t", "e" }, { "x", "2" }, { "o", QByteArray::number(int(action) & 3) } }, { }, true);
         });
@@ -715,7 +721,9 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         const auto action = operation->exec(Qt::DropActions(sourceActions), Qt::CopyAction);
         if (action != Qt::IgnoreAction)
             announceDrop();
-        send({ { "t", "e" }, { "x", "4" }, { "y", action == Qt::IgnoreAction ? "1" : "0" } }, { }, true);
+        // A reset during exec() cancelled the drag and ended the protocol.
+        if (started)
+            send({ { "t", "e" }, { "x", "4" }, { "y", action == Qt::IgnoreAction ? "1" : "0" } }, { }, true);
         if (drag)
             drag->deleteLater();
         drag.clear();

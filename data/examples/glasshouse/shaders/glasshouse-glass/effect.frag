@@ -76,7 +76,8 @@ vec4 pTerminal(vec2 uv)
         vec2 d = p - origin;
         float r = length(d);
         float th = atan(d.y, d.x);
-        float seed = floor(ghSetTime(strikeAge) * 7.0);
+        // Each exit code cracks the glass its own way.
+        float seed = ghEventSeed(vec2(signalValue(0), 0.37));
         float maxR = length(iResolution.xy);
         float front = (1.0 - exp(-strikeAge * 6.0)) * maxR * 0.55;
         float best = 1e4;

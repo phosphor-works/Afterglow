@@ -624,7 +624,7 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
 
 // --- transmission -----------------------------------------------------------
 
-bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::string& error, std::string& unlinkAfterDecode)
+bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::string& error)
 {
     const bool fromFile = cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's';
     if (fromFile && !m_fileTransfer) {
@@ -681,11 +681,10 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
         // would instead deliver SIGBUS to the terminal process.
         const bool success = readPayload(fd, cmd.offset, cmd.size, data, error);
         close(fd);
-        // An object named for the protocol is the terminal's to delete. Any
-        // other name is deleted only once it decoded as an image, so a
-        // command cannot delete an unrelated object by naming it.
+        // Only an object named for the protocol is the terminal's to delete.
+        // Any other name stays: a command must not delete an unrelated object
+        // by naming it, and almost any object decodes as a tiny image.
         if (name.find(TemporaryTag) != std::string::npos) shm_unlink(name.c_str());
-        else if (success) unlinkAfterDecode = name;
         if (!success) return false;
         break;
     }
@@ -733,8 +732,7 @@ void GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) c
 bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out,
                                  std::string& error)
 {
-    std::string unlinkAfterDecode;
-    if (!loadPayload(cmd, data, error, unlinkAfterDecode)) {
+    if (!loadPayload(cmd, data, error)) {
         return false;
     }
     if (cmd.format == 100) {
@@ -780,23 +778,12 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
         error = "EINVAL:invalid decoded image extent";
         return false;
     }
-    if (!unlinkAfterDecode.empty()) {
-        shm_unlink(unlinkAfterDecode.c_str());
-    }
     return true;
 }
 
 void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ctx)
 {
     Command cmd = cmdIn;
-    const bool replaces = cmd.id && findImage(Command{.id = cmd.id});
-    // At the image limit, an image nothing shows makes room; only when every
-    // image is on screen is the new one refused.
-    if (cmd.action != 'q' && !replaces && m_images.size() >= MaxImages && !evictUnusedImage()) {
-        releaseMedium(cmd, data);
-        respond(cmd, ctx, "ENOSPC:too many images", true);
-        return;
-    }
     ImageFrame frame;
     std::string error;
     if (!decodePixels(cmd, std::move(data), ctx, frame, error)) {
@@ -809,6 +796,14 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     }
     if (cmd.action == 'q') {
         respond(cmd, ctx, "OK", false);
+        return;
+    }
+    // At the image limit, an image nothing shows makes room; only when every
+    // image is on screen is the new one refused. This comes after the decode,
+    // so a command that fails costs the client no image.
+    const bool replaces = cmd.id && findImage(Command{.id = cmd.id});
+    if (!replaces && m_images.size() >= MaxImages && !evictUnusedImage()) {
+        respond(cmd, ctx, "ENOSPC:too many images", true);
         return;
     }
 
@@ -1601,15 +1596,6 @@ void GraphicsStore::clearPlacements(const Screen& screen, bool includeHistory, i
     settle();
 }
 
-void GraphicsStore::clearHistoryPlacements(const Screen& screen)
-{
-    const long long history = static_cast<long long>(screen.historySize());
-    std::erase_if(m_placements, [&](const Placement& p) {
-        return !p.parentImage && !p.isVirtual && anchorIndex(p, screen) < history;
-    });
-    settle();
-}
-
 std::vector<std::size_t> GraphicsStore::anchorRows(const Screen& screen) const
 {
     std::vector<std::size_t> out;
@@ -1633,7 +1619,8 @@ std::vector<int> GraphicsStore::anchorColumns() const
     return out;
 }
 
-void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t>& rows, const std::vector<int>* columns)
+void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t>& rows, const std::vector<int>* columns,
+                             int cellWidth, int cellHeight)
 {
     if (rows.size() != m_placements.size() || (columns && columns->size() != rows.size())) {
         return;
@@ -1643,7 +1630,11 @@ void GraphicsStore::retarget(const Screen& screen, const std::vector<std::size_t
         Placement& p = m_placements[i];
         if (p.parentImage || p.isVirtual) continue;
         if (rows[i] == Screen::TrackedRowGone) {
-            gone[i] = 1;
+            // Without a reflow the row ids still hold: an image whose top
+            // row left the buffer keeps its anchor while its lower rows show.
+            // With no cell size it counts one row, so it goes.
+            const long long top = anchorIndex(p, screen);
+            gone[i] = top >= 0 || top + rowsCovered(p, cellWidth, cellHeight) <= 0;
             continue;
         }
         p.row = screen.rowsDropped() + rows[i];

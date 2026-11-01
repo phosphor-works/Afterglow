@@ -21,7 +21,6 @@ Pane {
             // Closing the bar cleared the matches: search the kept query again.
             if (query.text.length > 0)
                 bar.controller.search(query.text, 0)
-            Qt.callLater(() => { if (bar.visible) takeFocus() })
         }
     }
 

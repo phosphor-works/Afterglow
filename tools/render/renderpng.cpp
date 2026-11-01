@@ -428,7 +428,8 @@ int run(QGuiApplication& app)
             return 1;
         }
         matches = AfterglowVt::findAll(screen, needle);
-        // The application's default highlight colours.
+        // The defaults of Afterglow::HighlightColors (afterglow/src/config/Settings.h),
+        // which this tool cannot include: keep the two equal.
         search = {&matches, parser.isSet(QStringLiteral("search-current")) ? parser.value(QStringLiteral("search-current")).toInt() : -1,
                   AfterglowRender::packRgba(0xe5, 0xc0, 0x7b), AfterglowRender::packRgba(0xff, 0x8c, 0x42),
                   AfterglowRender::packRgba(0x10, 0x10, 0x10)};

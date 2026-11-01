@@ -275,6 +275,9 @@ std::string encodeLegacyKey(const KeyEvent& e, const Modes& modes)
             if (idx >= 0 && idx < int(sizeof Finals) - 1) {
                 return ss3Key(Finals[idx], m, modes);
             }
+            if (e.key == Key::KeypadSeparator) {
+                return ss3Key('l', m, modes); // xterm's KP_Separator
+            }
         }
         return withAlt(std::string(e.text), m);
     }
@@ -724,8 +727,13 @@ std::string encodePaste(std::string_view text, const Modes& modes)
         // (U+0080-U+009F) are C2 80 to C2 9F.
         const bool c1 = c == 0xC2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) >= 0x80
             && static_cast<unsigned char>(text[i + 1]) <= 0x9F;
+        // A dropped control must not join the bytes around it into one: C2,
+        // 01, 85 would otherwise leave C2 85.
+        const bool joinsC1 = c >= 0x80 && c <= 0x9F && !body.empty() && static_cast<unsigned char>(body.back()) == 0xC2;
         if (c1) {
             ++i;
+        } else if (joinsC1) {
+            body.pop_back();
         } else if (c == '\t' || (c >= 0x20 && c != 0x7F)) {
             body.push_back(char(c));
         }

@@ -141,6 +141,25 @@ local function resume(ev)
     return drive(flow.co, if ev.ok then ev.data else nil, ev.error, ev)
 end
 
+-- Afterglow calls this when it cannot take the effects that a call returned
+-- (too large to convert) after that call registered a flow: no result will
+-- ever resume it. A synchronous call registers at most one flow, the one
+-- after @since. Returns whether it dropped one.
+local function abandon(since)
+    if type(since) ~= "number" then
+        return false
+    end
+    local id = tostring(since + 1)
+    local flow = flows[id]
+    if flow == nil then
+        return false
+    end
+    flows[id] = nil
+    waiting -= 1
+    outstanding -= flow.remaining
+    return true
+end
+
 -- Handlers that must return at once: a migration returns state, and effects
 -- returned while unloading are ignored.
 local direct = { migrate = true, on_unload = true }
@@ -158,6 +177,10 @@ local function wrap(module)
                 return resume
             elseif key == "__waiting" then
                 return waiting
+            elseif key == "__abandon" then
+                return abandon
+            elseif key == "__flows" then
+                return nextFlow
             end
             -- rawget: the host's lookups must never run the script's own
             -- __index, which has no time limit outside a handler call.

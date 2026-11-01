@@ -6,7 +6,7 @@
 This scene places a shared 3D reactor inside a lit chamber.
 It includes curved metal fragments, plasma, magnetic filaments, haze and reflections.
 System playback controls armor, plasma and lights.
-Shell events charge and fracture the reactor. Pressure waves distort live terminal content.
+Shell events charge and fracture the reactor. Shock fronts distort live terminal content.
 
 ![Phosphor reactor and terminal panes](preview.webp)
 
@@ -149,8 +149,9 @@ The command palette (**Ctrl+Shift+P**) also contains these actions:
 The charge lasts until the next command completes.
 
 Use the palette if desktop shortcuts intercept these keys.
-The demo process never owns the `afterglow ctl` service name.
-Use the palette or the shortcuts.
+The demo process does not own `com.phosphorworks.Afterglow`.
+`afterglow ctl` reaches it only from its own panes.
+Elsewhere, use the palette or the shortcuts.
 
 ## Layers and signals
 

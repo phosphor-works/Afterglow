@@ -115,10 +115,11 @@ float ghAge(int channel)
     return signalAge(channel);
 }
 
-// When an event `age` seconds old happened, on a 1024 s cycle, to seed its
-// pattern. iTime - age is exact, and mod() keeps it the same when iTime wraps
-// during the event, so the pattern holds still for the event's whole life.
-float ghSetTime(float age)
+// A seed for an event's pattern, from values that stay the same for the
+// event's whole life. The event's start time cannot seed it: the host rounds
+// iTime and the age separately, so iTime - age moves by about 1e-4 s from frame
+// to frame, and floor() of it can flip mid-event and scatter the pattern.
+float ghEventSeed(vec2 key)
 {
-    return mod(iTime - age, 1024.0);
+    return floor(ghHash(key) * 1024.0);
 }

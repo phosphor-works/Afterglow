@@ -3,6 +3,8 @@
 
 #include "Theme.h"
 
+#include "app/BuildTree.h"
+
 #include <QColor>
 #include <QDir>
 #include <QFileInfo>
@@ -31,31 +33,40 @@ std::optional<AfterglowVt::Rgb> color(QString value)
     return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
 }
 
+enum class Assigned { Unused, Invalid, Set };
+
 /// Sets the colour @p key names (in any of the three spellings) to @p value.
-/// Returns false for keys that are not colours afterglow uses.
-bool assign(Theme& theme, QString key, const QString& value)
+/// Unused for keys that are not colours afterglow uses, Invalid for one of
+/// its keys with a value that is not a colour.
+Assigned assign(Theme& theme, QString key, const QString& value)
 {
+    auto set = [](std::optional<AfterglowVt::Rgb>& target, const QString& text) {
+        target = color(text);
+        return target ? Assigned::Set : Assigned::Invalid;
+    };
     key = key.toLower().replace(QLatin1Char('-'), QLatin1Char('_'));
     if (key == QLatin1String("palette")) {
         // Ghostty: "palette = 3=#c5a332".
         const qsizetype eq = value.indexOf(QLatin1Char('='));
         bool ok = false;
         const int index = value.left(eq).trimmed().toInt(&ok);
-        if (eq < 0 || !ok || index < 0 || index >= 16) {
-            return false;
+        if (eq < 0 || !ok) {
+            return Assigned::Invalid;
         }
-        theme.palette[std::size_t(index)] = color(value.mid(eq + 1));
-        return theme.palette[std::size_t(index)].has_value();
+        // Entries 16 to 255 are the program's, not a theme's.
+        if (index < 0 || index >= 16) {
+            return Assigned::Unused;
+        }
+        return set(theme.palette[std::size_t(index)], value.mid(eq + 1));
     }
     if (key.startsWith(QLatin1String("color"))) {
         // kitty: "color3 #c5a332".
         bool ok = false;
         const int index = key.mid(5).toInt(&ok);
         if (!ok || index < 0 || index >= 16) {
-            return false;
+            return Assigned::Unused;
         }
-        theme.palette[std::size_t(index)] = color(value);
-        return theme.palette[std::size_t(index)].has_value();
+        return set(theme.palette[std::size_t(index)], value);
     }
     std::optional<AfterglowVt::Rgb>* target = nullptr;
     if (key == QLatin1String("foreground")) {
@@ -83,10 +94,9 @@ bool assign(Theme& theme, QString key, const QString& value)
                || key == QLatin1String("visual_bell_color")) {
         target = &theme.visualBell;
     } else {
-        return false;
+        return Assigned::Unused;
     }
-    *target = color(value);
-    return target->has_value();
+    return set(*target, value);
 }
 
 } // namespace
@@ -131,12 +141,10 @@ namespace {
 
 QString bundledDirectory()
 {
-#if defined(AFTERGLOW_BUILD_DIR) && defined(AFTERGLOW_INSTALLED_THEME_DIR)
+#if defined(AFTERGLOW_INSTALLED_THEME_DIR)
     // A build-tree binary reads the checkout; an installed one its own prefix,
     // which need not be in XDG_DATA_DIRS.
-    const bool inBuild = QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath().startsWith(
-        QStringLiteral(AFTERGLOW_BUILD_DIR "/"));
-    return inBuild ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
+    return runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_THEME_DIR);
 #elif defined(AFTERGLOW_SOURCE_THEME_DIR)
     return QStringLiteral(AFTERGLOW_SOURCE_THEME_DIR);
 #else
@@ -150,9 +158,16 @@ QStringList searchDirs()
 {
     QStringList dirs{QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
                      + QStringLiteral("/afterglow/themes")};
+    const QString bundled = bundledDirectory();
+    // A build-tree binary puts the checkout above the data directories, so
+    // that an installed copy does not shadow the themes that it is testing.
+    const bool checkout = runningFromBuildTree();
+    if (checkout && !bundled.isEmpty()) {
+        dirs << bundled;
+    }
     dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("afterglow/themes"),
                                       QStandardPaths::LocateDirectory);
-    if (const QString bundled = bundledDirectory(); !bundled.isEmpty()) {
+    if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
     dirs.removeDuplicates();
@@ -191,7 +206,7 @@ QString locate(const QString& name, const QStringList& dirs, const QString& base
     return {};
 }
 
-std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* ignored)
+std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* ignored, QStringList* invalid)
 {
     Theme theme;
     int found = 0;
@@ -200,9 +215,11 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
     if (text.startsWith("\xEF\xBB\xBF")) {
         text.remove(0, 3);
     }
-    auto ignore = [ignored](const QString& key) {
-        if (ignored) {
-            ignored->append(key);
+    auto count = [&](Assigned assigned, const QString& key) {
+        if (assigned == Assigned::Set) {
+            ++found;
+        } else if (QStringList* list = assigned == Assigned::Unused ? ignored : invalid) {
+            list->append(key);
         }
     };
     if (text.trimmed().startsWith('{')) {
@@ -220,17 +237,18 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
                 const QJsonArray palette = it.value().toArray();
                 for (int i = 0; i < 16 && i < palette.size(); ++i) {
                     theme.palette[std::size_t(i)] = color(palette[i].toString());
-                    found += theme.palette[std::size_t(i)].has_value();
+                    count(theme.palette[std::size_t(i)] ? Assigned::Set : Assigned::Invalid,
+                          QStringLiteral("palette[%1]").arg(i));
                 }
             } else if (it.key() == QLatin1String("visualBellIntensity")) {
                 // A number, not a colour: it alone does not make a theme.
                 if (const double v = it.value().toDouble(-1); v >= 0 && v <= 1) {
                     theme.visualBellIntensity = v;
+                } else if (invalid) {
+                    invalid->append(it.key());
                 }
-            } else if (assign(theme, it.key(), it.value().toString())) {
-                ++found;
             } else {
-                ignore(it.key());
+                count(assign(theme, it.key(), it.value().toString()), it.key());
             }
         }
     } else {
@@ -249,16 +267,12 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
             if (!m.hasMatch()) {
                 continue;
             }
-            if (assign(theme, m.captured(1), m.captured(2).trimmed())) {
-                ++found;
-            } else {
-                ignore(m.captured(1));
-            }
+            count(assign(theme, m.captured(1), m.captured(2).trimmed()), m.captured(1));
         }
     }
     if (found == 0) {
         if (error) {
-            *error = QStringLiteral("no colours found");
+            *error = QStringLiteral("no colors found");
         }
         return std::nullopt;
     }

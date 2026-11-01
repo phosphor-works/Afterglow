@@ -189,7 +189,7 @@ double percentile(std::vector<double> v, double p)
 void reflowBench(const ReflowCase& c, int repeats)
 {
     constexpr std::size_t History = 100000;
-    // Each resize changes the size by 20 columns or 5 rows, between 140 and 200
+    // Each resize changes the size by 20 columns and 5 rows, between 140 and 200
     // columns. These are not the native benchmark's steps, which move the window
     // 16 by 8 pixels at a time across a 160 by 80 pixel range.
     const std::pair<int, int> sizes[] = {{180, 45}, {160, 50}, {140, 45}, {160, 50}, {180, 45}, {200, 50}};

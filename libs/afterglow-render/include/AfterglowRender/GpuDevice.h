@@ -60,7 +60,7 @@ public:
 
     /// The resources for @p devicePixelRatio, made on first use. A set no
     /// window has asked for in FontResourcesUnusedFor is freed by
-    /// pruneImageTextures(); a window compares FontSet::identity(), not the
+    /// pruneUnused(); a window compares FontSet::identity(), not the
     /// address, to see that it changed.
     FontResources& fontResources(double devicePixelRatio);
     static constexpr std::chrono::seconds FontResourcesUnusedFor{30};
@@ -76,7 +76,7 @@ public:
     QRhiSampler* imageSampler() const noexcept { return m_imageSampler; }
     /// Releases textures of frames nobody references any more, and font
     /// resources no window uses. Call once per frame.
-    void pruneImageTextures();
+    void pruneUnused();
 
     const FontSpec& fontSpec() const noexcept { return m_fontSpec; }
     /// Bumped on every font change; face indices from before are invalid.

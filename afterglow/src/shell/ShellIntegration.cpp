@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ShellIntegration.h"
-#include <QCoreApplication>
+#include "app/BuildTree.h"
 #include <QFileInfo>
 #include <algorithm>
 #include <cstdlib>
@@ -44,8 +44,8 @@ bool prepare(AfterglowPty::SpawnOptions& o, bool enabled, const QString& root)
     }
     QString directory = root;
     if (directory.isEmpty()) {
-        const bool inBuild = QCoreApplication::applicationFilePath().startsWith(QStringLiteral(AFTERGLOW_BUILD_DIR "/"));
-        directory = inBuild ? QStringLiteral(AFTERGLOW_SOURCE_SHELL_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_SHELL_DIR);
+        directory = runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_SHELL_DIR)
+                                           : QStringLiteral(AFTERGLOW_INSTALLED_SHELL_DIR);
     }
     const QString entry = directory + (shell == QLatin1String("zsh") ? QStringLiteral("/zsh/.zshenv") : QLatin1Char('/') + shell);
     if (!QFileInfo(entry).isReadable()) return false;

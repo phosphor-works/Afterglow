@@ -110,6 +110,10 @@ public:
         *start = 0; *end = count; return QStringLiteral("read-only:true;");
     }
     void notify() {
+        // Nothing an assistive technology reads changed: no text to rebuild.
+        const auto serial = pane()->accessibleSerial();
+        if (m_notified == serial) return;
+        m_notified = serial;
         m_cached = pane()->accessibleText();
         const auto next = *m_cached;
         for (const auto& edit : textEdits(previous.text, next.text)) {
@@ -135,6 +139,7 @@ public:
     TerminalText previous;
 private:
     mutable std::optional<TerminalText> m_cached;
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> m_notified;
     QMetaObject::Connection m_output;
 };
 class AccessibleWindow final : public QAccessibleObject {

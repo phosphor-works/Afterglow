@@ -34,10 +34,11 @@ wrong, and points to the skills that hold the procedures.
   configs or old script APIs. `CHANGELOG.md` describes what the first release supports. It is not a log of changes
   and has no migration notes.
 - **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
-  `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`. Tools that link only
-  `libs/afterglow-vt` are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New shader packs are
-  `LGPL-2.1-or-later`. Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file
-  has, and do not relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON, images).
+  `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`. Tools that use only
+  `libs/afterglow-vt` (the VT benchmark, `tools/conformance`, `tools/fuzz`, `tools/gen_unicode_tables.py`) are
+  `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New shader packs are `LGPL-2.1-or-later`.
+  Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file has, and do not
+  relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON, images).
 - **Ask only about real decisions.** When the next step is clear, do it.
 
 ## Code

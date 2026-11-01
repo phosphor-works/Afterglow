@@ -156,6 +156,35 @@ TEST(Selection, WordIsExpandedOnceWhenSelected)
     EXPECT_EQ(moved.text(t.t.screen()), "abcdef");
 }
 
+TEST(Selection, CopyAfterTheWordsFirstRowLeftTheHistory)
+{
+    Term t(10, 3, 5);
+    t.t.feed(std::string(25, 'x')); // one word over three rows
+    t.t.feed("\r\n\r\n\r\n\r\n\r\n"); // the word's first row is now the oldest history row
+    const Screen& screen = t.t.screen();
+    ASSERT_EQ(screen.historySize(), 5u);
+    Selection sel;
+    sel.start({screen.rowsDropped() + 2, 0}, SelectionMode::Word, screen.layoutEpoch(), true);
+    EXPECT_EQ(sel.text(screen), std::string(25, 'x'));
+    t.t.feed("\n"); // trims that first row; the clicked row stays
+    ASSERT_TRUE(sel.validFor(screen));
+    EXPECT_EQ(sel.range(screen).start.row, screen.rowsDropped());
+    EXPECT_EQ(sel.text(screen), std::string(15, 'x'));
+}
+
+TEST(Selection, NewSelectionForgetsTheLastWordExpansion)
+{
+    Term t(20, 2);
+    t.t.feed("foo bar");
+    Selection sel;
+    const SelectionPoint at{t.t.screen().rowsDropped(), 0};
+    sel.start(at, SelectionMode::Word, t.t.screen().layoutEpoch(), true);
+    EXPECT_EQ(sel.text(t.t.screen()), "foo");
+    t.t.feed("\r\x1b[2Kfoobarbaz qux"); // a program redraws the row in place
+    sel.start(at, SelectionMode::Word, t.t.screen().layoutEpoch(), true);
+    EXPECT_EQ(sel.text(t.t.screen()), "foobarbaz");
+}
+
 TEST(Selection, RangeOfRowsThatAreGoneIsNotExpanded)
 {
     Term t(20, 3);

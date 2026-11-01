@@ -89,12 +89,15 @@ local function candidates(terminal)
         local result = results[i + 1]
         -- A provider that stopped at the output limit, or exited non-zero for a
         -- missing root or an unreadable directory, still returns the complete
-        -- records it printed. Only a command that did not start is unavailable.
-        if not result.ok and result.error and result.error.code == "spawn_failed" then
-            table.insert(failed, job.id)
+        -- records it printed. Any other failure (no start, a timeout, a refused
+        -- job) returns no output, so the title names it.
+        local stdout = result.data and result.data.stdout
+        if result.ok or stdout then
+            for _, path in ipairs(providers.parse(job.kind, stdout or "", home)) do add("directory", path) end
         else
-            local stdout = result.data and result.data.stdout or ""
-            for _, path in ipairs(providers.parse(job.kind, stdout, home)) do add("directory", path) end
+            local code = result.error and result.error.code or ""
+            local reason = code == "spawn_failed" and "not started" or code == "timeout" and "timed out" or code
+            table.insert(failed, job.id .. " " .. reason)
         end
     end
     return entries, projects, failed

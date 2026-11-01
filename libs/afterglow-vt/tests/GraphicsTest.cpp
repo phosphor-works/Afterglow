@@ -119,14 +119,27 @@ struct ShmName
 };
 
 /// A file in the test's temporary directory, removed when the test ends.
+/// mkstemp picks a name nobody could have planted a link at; the stem keeps
+/// the protocol's tag in it.
 struct TempFile
 {
     std::string path;
     explicit TempFile(std::string_view stem)
-        : path((std::filesystem::temp_directory_path() / (std::string(stem) + std::to_string(getpid()))).string())
+        : path((std::filesystem::temp_directory_path() / (std::string(stem) + "XXXXXX")).string())
     {
+        const int fd = mkstemp(path.data());
+        if (fd >= 0) close(fd);
     }
     ~TempFile() { unlink(path.c_str()); }
+    /// (Re)writes the file; a link put in its place is not followed.
+    bool write(std::string_view bytes) const
+    {
+        const int fd = open(path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd < 0) return false;
+        const bool ok = ::write(fd, bytes.data(), bytes.size()) == ssize_t(bytes.size());
+        close(fd);
+        return ok;
+    }
 };
 
 } // namespace
@@ -656,7 +669,28 @@ TEST(Graphics, SharedMemoryOffsetWithoutSizeReadsRemainingBytes)
     t.t.feed(apc("a=t,t=s,f=32,s=1,v=1,O=4,i=7", b64(shm.name)));
     ASSERT_EQ(t.g().images().count(7), 1u);
     EXPECT_EQ(t.g().images().at(7).frames[0]->rgba[0], 'R');
-    EXPECT_EQ(shm_open(shm.name.c_str(), O_RDONLY, 0), -1); // decoded, so deleted
+}
+
+TEST(Graphics, SharedMemoryIsDeletedOnlyWhenNamedForTheProtocol)
+{
+    // Almost any object decodes as a tiny image, so a decode proves nothing:
+    // an object without the protocol's tag in its name is never deleted.
+    const ShmName plain{"/afterglow-graphics-plain-" + std::to_string(getpid())};
+    const ShmName tagged{"/afterglow-tty-graphics-protocol-test-" + std::to_string(getpid())};
+    for (const ShmName* shm : {&plain, &tagged}) {
+        const int fd = shm_open(shm->name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+        ASSERT_GE(fd, 0);
+        ASSERT_EQ(write(fd, "victim", 6), 6);
+        close(fd);
+    }
+    Term t(20, 10);
+    t.t.feed(apc("a=t,i=1,t=s,f=24,s=1,v=1", b64(plain.name)));
+    t.t.feed(apc("a=t,i=2,t=s,f=24,s=1,v=1", b64(tagged.name)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\\x1b_Gi=2;OK\x1b\\");
+    const int survivor = shm_open(plain.name.c_str(), O_RDONLY, 0);
+    EXPECT_GE(survivor, 0);
+    if (survivor >= 0) close(survivor);
+    EXPECT_EQ(shm_open(tagged.name.c_str(), O_RDONLY, 0), -1);
 }
 
 TEST(Graphics, FilePayloadRejectsSparseOversizeAndNonRegularFiles)
@@ -930,6 +964,11 @@ TEST(Graphics, TheImageLimitMakesRoomFromImagesNotShown)
     }
     t.t.feed(apc("a=p,i=1,C=1,q=2"));
     t.host.written.clear();
+    // A command that fails costs no image.
+    t.t.feed(apc("a=t,f=24,s=2,v=2,i=4999", b64("abc")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=4999;ENODATA:insufficient image data\x1b\\");
+    EXPECT_EQ(t.g().images().count(2), 1u);
+    t.host.written.clear();
     t.t.feed(apc("a=t,f=24,s=1,v=1,i=5000", b64("abc")));
     EXPECT_EQ(t.host.written, "\x1b_Gi=5000;OK\x1b\\");
     EXPECT_EQ(t.g().images().size(), GraphicsStore::MaxImages);
@@ -964,6 +1003,22 @@ TEST(Graphics, ImageStaysWhileItsLowerRowsAreOnScreen)
     EXPECT_EQ(vis[0].y, -20);
     t.t.feed("\n\n"); // now every row has left
     EXPECT_TRUE(t.g().visible(t.t.screen(), 10, 20).empty());
+}
+
+TEST(Graphics, ResizeKeepsAnImageWhoseTopRowLeft)
+{
+    Term t(20, 10);
+    t.t.feed("\x1b[?1049h\x1b[2;3H");
+    t.t.feed(apc("a=T,f=32,s=25,v=45,i=5,q=2", b64(rgba(25, 45, 0, 0, 255))));
+    t.t.feed("\x1b[10;1H\n\n"); // its top row has left; two rows still show
+    t.t.resize(20, 12, 10, 20);
+    auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, -20);
+    t.t.resize(30, 12, 10, 20); // the alternate screen does not reflow either
+    vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 1u);
+    EXPECT_EQ(vis[0].y, -20);
 }
 
 TEST(Graphics, QuotaEvictsOlderImagesNotTheOneBeingAdded)
@@ -1012,18 +1067,6 @@ TEST(Graphics, ClearScreenKeepsVirtualPlacementsAndDropsImagesReachingIt)
     ASSERT_EQ(s.g.placements().size(), 2u);
     EXPECT_TRUE(std::any_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.isVirtual; }));
     EXPECT_TRUE(std::none_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.imageId == 2; }));
-}
-
-TEST(Graphics, EraseScrollbackKeepsImagesOnScreen)
-{
-    Store s(20, 5);
-    s.apc("a=t,f=32,s=1,v=1,i=1,q=2", b64(rgba(1, 1, 0, 0, 0)));
-    s.apc("a=p,i=1,p=1,C=1,q=2"); // row 0, scrolled into history below
-    s.screen.scrollUp(Region{0, 4, 0, 19}, 3, StyleTable::DefaultId, true);
-    s.apc("a=p,i=1,p=2,C=1,q=2"); // on the screen
-    s.g.clearHistoryPlacements(s.screen);
-    ASSERT_EQ(s.g.placements().size(), 1u);
-    EXPECT_EQ(s.g.placements()[0].placementId, 2u);
 }
 
 TEST(Graphics, DeleteVisibleIncludesImagesReachingTheScreen)
@@ -1179,12 +1222,7 @@ TEST(Graphics, SharedMemoryFifoDoesNotHang)
 TEST(Graphics, FileTransmissionCanBeTurnedOff)
 {
     TempFile file("afterglow-tty-graphics-protocol-");
-    {
-        const int fd = open(file.path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
-        ASSERT_GE(fd, 0);
-        ASSERT_EQ(write(fd, "RGBA", 4), 4);
-        close(fd);
-    }
+    ASSERT_TRUE(file.write("RGBA"));
     Store s(20, 5);
     s.g.setFileTransfer(false);
     s.apc("a=t,t=t,f=32,s=1,v=1,i=1", b64(file.path));
@@ -1200,13 +1238,7 @@ TEST(Graphics, FileTransmissionCanBeTurnedOff)
 TEST(Graphics, TerminalOptionTurnsFileTransmissionOff)
 {
     TempFile file("afterglow-tty-graphics-protocol-option-");
-    const auto writeFile = [&] {
-        const int fd = open(file.path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
-        ASSERT_GE(fd, 0);
-        ASSERT_EQ(write(fd, "RGBA", 4), 4);
-        close(fd);
-    };
-    writeFile();
+    ASSERT_TRUE(file.write("RGBA"));
     TerminalOptions off;
     off.graphicsFileTransfer = false;
     Term t(20, 10, off);
@@ -1219,7 +1251,7 @@ TEST(Graphics, TerminalOptionTurnsFileTransmissionOff)
     t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1", b64(file.path)));
     EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
     // And one that turns it off again, on the alternate screen too.
-    writeFile();
+    ASSERT_TRUE(file.write("RGBA"));
     t.host.written.clear();
     t.t.setOptions(off);
     t.t.feed("\x1b[?1049h");
@@ -1230,12 +1262,7 @@ TEST(Graphics, TerminalOptionTurnsFileTransmissionOff)
 TEST(Graphics, RefusedCommandStillDeletesItsTemporaryFile)
 {
     TempFile file("afterglow-tty-graphics-protocol-");
-    {
-        const int fd = open(file.path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
-        ASSERT_GE(fd, 0);
-        ASSERT_EQ(write(fd, "RGBA", 4), 4);
-        close(fd);
-    }
+    ASSERT_TRUE(file.write("RGBA"));
     Term t(20, 10);
     t.t.feed(apc("a=f,i=99,t=t,f=32,s=1,v=1", b64(file.path)));
     EXPECT_EQ(t.host.written, "\x1b_Gi=99;ENOENT:no such image\x1b\\");

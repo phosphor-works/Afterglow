@@ -71,12 +71,22 @@ public:
                                AfterglowRender::ShaderParameterValues& packed) const;
     /// Curves for parameter transitions.
     const PhosphorAnimation::CurveRegistry& curves() const { return *m_curves; }
+    /// What the last build() could not use, one line each: Shaders.params
+    /// entries that apply nowhere, and configured packs that do not draw
+    /// (no such pack, a compile error, an image, the image budget). Each is
+    /// also logged, with the full compile log.
+    QStringList problems() const { return m_problems; }
+    /// The files whose change rebuilds: the configured packs' stages,
+    /// includes and images, found or not yet created.
+    QStringList watchedPaths() const { return m_files.paths(); }
 
 Q_SIGNALS:
     /// A configured pack or one of its files changed on disk, or script
     /// packages loaded or unloaded: chains should be rebuilt. Rebuilding
     /// retires every script override.
     void changed();
+    /// problems() changed.
+    void problemsChanged(const QStringList& problems);
 
 private:
     struct PackIndex;
@@ -101,7 +111,7 @@ private:
     AfterglowRender::ShaderProgramPtr configure(const QString& key, const QString& ref, const QVariantMap& params,
                                                 QStringList& watched);
     /// The shared/ directories a pack's includes search, most important first:
-    /// its own package's, then the user's, the system's and the bundled.
+    /// its own package's, then m_baseDirectories from the user's down.
     QStringList includeDirs(const QString& packDir) const;
     /// Drops cached and failed programs whose files changed or whose
     /// reference now names another pack. True if it dropped any.
@@ -111,7 +121,9 @@ private:
     void seedPresets();
     void refreshWatches();
     std::unique_ptr<PhosphorShaders::ShaderRegistry> m_registry;
-    QStringList m_baseDirectories; ///< bundled, system and user packs, lowest priority first
+    /// Bundled, system and user packs, lowest priority first. A build-tree
+    /// binary puts the checkout's packs above the system ones.
+    QStringList m_baseDirectories;
     QMap<QString, QString> m_packageShaders; ///< script packages' pack directories, by package ID
     /// A registry over the base directories and the packages' directories.
     void buildRegistry();
@@ -128,6 +140,8 @@ private:
     QSet<QString> m_desired; // cache keys of the last build
     QSet<QString> m_overBudget; // keys of m_desired dropped for the image budget, not loaded again
     QString m_paramsChecked; // the Shaders.params and references last checked for unused entries
+    QStringList m_paramsProblems; // what that check found
+    QStringList m_problems;
 };
 
 } // namespace Afterglow

@@ -30,6 +30,7 @@
 #include <cmath>
 #include <span>
 #include <stdexcept>
+#include <utility>
 
 #ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
 #include <QtWaylandClient/private/qwaylandwindow_p.h>
@@ -993,26 +994,33 @@ const char* frameOpName(QRhi::FrameOpResult result)
 
 } // namespace
 
-bool WindowRenderer::render(const std::vector<Pane>& panes,
-                            const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
-                            QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
+WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& panes,
+                                                  const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
+                                                  std::uint32_t clearColor, QRhiTexture* overlayTexture,
+                                                  std::uint64_t overlaySerial)
 {
     m_completedGpuSeconds = 0;
     if (!m_hasSwapChain) {
-        return false;
+        return FrameResult::Failed;
     }
-    bool presented = false;
+    FrameResult result = FrameResult::Failed;
+    // A failure that repeats every frame (a lost device) is logged once, until
+    // a frame presents again.
+    auto failed = [this](const char* call, QRhi::FrameOpResult r) {
+        if (!std::exchange(m_frameFailureLogged, true))
+            qCWarning(lcRender, "Vulkan %s failed: %s", call, frameOpName(r));
+    };
     QRhi* rhi = m_device.rhi();
     Target target;
     target.size = m_swapChain->currentPixelSize();
-    target.begin = [this, rhi, &target]() -> QRhiCommandBuffer* {
+    target.begin = [this, rhi, &target, &result, &failed]() -> QRhiCommandBuffer* {
         auto begin = [this, rhi] {
-            const auto result = rhi->beginFrame(m_swapChain.get());
+            const auto r = rhi->beginFrame(m_swapChain.get());
 #ifdef AFTERGLOW_QT_612_FRAME_RECOVERY
-            if (result != QRhi::FrameOpSuccess && !rhi->isRecordingFrame())
+            if (r != QRhi::FrameOpSuccess && !rhi->isRecordingFrame())
                 recoverFailedWaylandFrame(m_window);
 #endif
-            return result;
+            return r;
         };
         QRhi::FrameOpResult r = begin();
         if (r == QRhi::FrameOpSwapChainOutOfDate) {
@@ -1020,15 +1028,21 @@ bool WindowRenderer::render(const std::vector<Pane>& panes,
             // can become out of date during window mapping or transfer.
             m_hasSwapChain = false;
             if (!ensureSwapChain()) {
+                // No surface yet: the host's next frame waits for one.
+                result = FrameResult::Retry;
                 return nullptr;
             }
             r = begin();
         }
+        if (r == QRhi::FrameOpSwapChainOutOfDate) {
+            // Out of date twice is a resize in progress.
+            result = FrameResult::Retry;
+            return nullptr;
+        }
         if (r != QRhi::FrameOpSuccess) {
-            // Out of date twice is a resize in progress; anything else stops
-            // rendering, and nothing in Afterglow recovers a lost device.
-            if (r != QRhi::FrameOpSwapChainOutOfDate)
-                qCWarning(lcRender, "Vulkan beginFrame failed: %s", frameOpName(r));
+            // A lost device or an error: nothing in Afterglow recovers either,
+            // so the next frame fails the same way.
+            failed("beginFrame", r);
             return nullptr;
         }
         target.size = m_swapChain->currentPixelSize();
@@ -1039,19 +1053,21 @@ bool WindowRenderer::render(const std::vector<Pane>& panes,
     target.renderTarget = [this] { return m_swapChain->currentFrameRenderTarget(); };
     target.renderPass = m_renderPass.get();
     target.pipelines = &m_swapPipelines;
-    target.end = [this, rhi, &presented] {
-        const auto result = rhi->endFrame(m_swapChain.get());
-        if (result == QRhi::FrameOpSuccess) {
+    target.end = [this, rhi, &result, &failed] {
+        const auto r = rhi->endFrame(m_swapChain.get());
+        if (r == QRhi::FrameOpSuccess) {
             ++m_submittedFrames;
-            presented = true;
-        } else if (result == QRhi::FrameOpSwapChainOutOfDate) {
+            m_frameFailureLogged = false;
+            result = FrameResult::Presented;
+        } else if (r == QRhi::FrameOpSwapChainOutOfDate) {
             m_hasSwapChain = false;
+            result = FrameResult::Retry;
         } else {
-            qCWarning(lcRender, "Vulkan endFrame failed: %s", frameOpName(result));
+            failed("endFrame", r);
         }
     };
     renderTo(target, panes, overlays, clearColor, overlayTexture, overlaySerial);
-    return presented;
+    return result;
 }
 
 QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>& panes,
@@ -1790,7 +1806,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     std::erase_if(m_paneCache, [this](const auto& kv) { return kv.second.seenFrame != m_frameCounter; });
     // Bindings of textures not drawn for a while (deleted or scrolled away).
     std::erase_if(m_imageBindings, [this](const auto& kv) { return kv.second.lastUsed + 120 < m_frameCounter; });
-    m_device.pruneImageTextures();
+    m_device.pruneUnused();
 }
 
 } // namespace AfterglowRender

@@ -109,7 +109,11 @@ struct Builder
         // with each other or replace a bundled pack. The shader loader
         // follows symlinked packs, so they pass the same checks.
         for (const auto& pack : QDir(directory).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-            if (pack.fileName() == QLatin1String("shared")) continue; // the packs' include directory
+            if (pack.fileName() == QLatin1String("shared")) { // the packs' include directory
+                path(directory, pack.fileName());
+                if (!error.isEmpty()) return false;
+                continue;
+            }
             if (pack.fileName() == QLatin1String("none")) {
                 error = QStringLiteral("Shader pack name none is reserved"); return false;
             }

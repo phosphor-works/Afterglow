@@ -116,7 +116,19 @@ vec4 shatter(vec2 uv, float progress, float dir) {
     // the pixel can show a shard from the row below or any row above, from one
     // column behind to two columns ahead.
     float ahead = dir < 0.0 ? -1.0 : 1.0;
+    // How far a shard of these columns can have fallen: the earliest start
+    // (r1 = 0) gives the most progress. A row whose shards cannot fall to this
+    // pixel ends the search, because every row above it starts higher.
+    float most = 0.0;
+    for (float k = -1.0; k <= 2.0; k += 1.0) {
+        float x = home.x + k * ahead;
+        if (x < 0.0 || x >= Columns) continue;
+        float across = dir > 0.0 ? x / Columns : 1.0 - x / Columns;
+        most = max(most, clamp((p - across * 0.45) / 0.35, 0.0, 1.0));
+    }
+    float reach = res.y * 1.2 * most * most * most + 0.5 * length(cell);
     for (float row = min(home.y + 1.0, rows - 1.0); row >= 0.0; row -= 1.0) {
+        if ((row + 0.5) * cell.y + reach < pixel.y) break;
         for (float k = -1.0; k <= 2.0; k += 1.0) {
             vec2 id = vec2(home.x + k * ahead, row);
             if (id.x < 0.0 || id.x >= Columns) continue;

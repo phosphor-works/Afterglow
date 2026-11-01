@@ -2,7 +2,7 @@
     "id": "phosphor-emission",
     "name": "Phosphor Emission",
     "category": "Text",
-    "description": "Text casts coloured light and leaves a brief, decaying afterimage.",
+    "description": "Text casts colored light and leaves a brief, decaying afterimage.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",

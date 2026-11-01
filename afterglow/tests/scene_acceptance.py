@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 import wave
-from nested_desktop import NestedDesktop, wait_for
+from nested_desktop import NestedDesktop, check, wait_for
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary',type=Path)
@@ -33,11 +33,8 @@ if not args.private_bus:
     out.mkdir(parents=True,exist_ok=True)
     print(f'Artifacts: {out}',flush=True)
     sys.exit(subprocess.call(['dbus-run-session','--',sys.executable,__file__,binary,'--artifacts',str(out.resolve()),'--private-bus']))
+if not args.artifacts: parser.error('--private-bus needs --artifacts')
 out=args.artifacts
-
-def check(condition,*detail):
-    # Not assert: python -O must not turn the checks off.
-    if not condition: raise AssertionError(*detail)
 
 # SIGTERM runs the finally blocks, so the sink does not stay in the user's audio server.
 def stop(signum,frame): raise SystemExit(128+signum)
@@ -115,6 +112,10 @@ return {
                     time.sleep(.5)
                 raise AssertionError(data)
             def field(data):return next(s['values'] for s in data['shaders'] if s['shader']=='phosphor-field')
+            def focus(pane):
+                """Focuses a pane and waits until the control bus reports it as the focused one."""
+                ctl('focus','--pane',pane)
+                wait_for(lambda:any(p['id']==pane and p['focused'] for p in panes()))
             def act(action,pane,changed):
                 """Runs an action and waits until the pane's grid satisfies changed(cols, rows)."""
                 ctl('action',action,'--pane',pane)
@@ -136,7 +137,7 @@ return {
                 check(charged['scene']['history_rows']>9000 and charged['scene']['overall']>.02,charged)
                 until(first,lambda d:field(d)['commandHeat']<.05)
                 for _ in range(4):
-                    ctl('focus','--pane',first);ctl('focus','--pane',second)
+                    focus(first);focus(second)
                 ctl('action','script:contextual-scene.toggle','--pane',first)
                 contextual=until(first,lambda d:abs(field(d)['intensity']-1.05)>.02)
                 ctl('action','script:contextual-scene.toggle','--pane',first)
@@ -144,7 +145,7 @@ return {
                 third=int(ctl('new-tab','--pane',first));time.sleep(.3)
                 empty=inspect(third)
                 check(empty['scene']['history_rows']<50,empty)
-                ctl('focus','--pane',first)
+                focus(first)
                 check(inspect(first)['scene']['history_rows']>9000)
                 # Each layout action must change the grid of the pane, and its
                 # counterpart must bring it back.
@@ -159,6 +160,7 @@ return {
                 time.sleep(.6);desktop.screenshot(out/'reactive.png')
                 # Live opacity and font changes through the normal config reload.
                 # A larger font in a window of the same size gives a smaller grid.
+                # Nothing reads the opacity back: only the screenshot shows it.
                 settings['Window']['backgroundOpacity']=.75;settings['Font']['size']=15
                 path.write_text(json.dumps(settings))
                 wait_for(lambda:all(a<b for a,b in zip(grid(first),(cols,rows))))
@@ -173,7 +175,7 @@ return {
                 evidence=dict(audio=audio['scene'],history=history['scene'],charged=field(charged),
                               contextual=field(contextual),reset=field(reset),silence=silence['scene'],unavailable=unavailable['scene'])
                 (out/'results.json').write_text(json.dumps(evidence,indent=2)+'\n')
-                print('PASS: real CAVA audio + command transitions + 10k current-tab history; focus/splits/zoom/fullscreen; contextual toggle/reset; transparency/font resize; silence/disabled capture')
+                print('PASS: real CAVA audio + command transitions + 10k current-tab history; focus/splits/zoom/fullscreen; contextual toggle/reset; live font resize (opacity in translucent-resized.png); silence/disabled capture')
             finally:
                 app.terminate()
                 try:app.wait(timeout=5)

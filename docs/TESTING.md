@@ -77,6 +77,7 @@ It uses the Basic control style and generic Qt platform theme.
 | --- | --- | --- |
 | `--filter` | All tests | A GTest filter, for example `NativeWindow.KittyDragAndDropClient` |
 | `--timeout` | 110 | Seconds for the whole run. The runner stops the suite at the limit and fails. |
+
 See [desktop integration](DESKTOP.md#native-acceptance-coverage) for coverage and limits.
 
 ## Accessibility and downloads

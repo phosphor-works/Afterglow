@@ -13,8 +13,13 @@ namespace {
 
 constexpr std::size_t MaxField = 256;
 
+/// A field shown in labels and titles: one with control characters, line
+/// separators or invalid UTF-8 could forge a second line, so it is dropped.
 std::string field(std::string_view value)
 {
+    if (!detail::isCleanText(value)) {
+        return {};
+    }
     return std::string(detail::truncateUtf8(value, MaxField));
 }
 
@@ -101,6 +106,9 @@ bool ShellContexts::apply(std::string_view payload)
 
 bool ShellContexts::setRemoteHost(std::string_view userAtHost)
 {
+    if (!detail::isCleanText(userAtHost)) {
+        return false;
+    }
     ShellContext c;
     if (!userAtHost.empty()) {
         c.iterm2RemoteHost = true;

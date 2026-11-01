@@ -280,7 +280,9 @@ vec4 pTerminal(vec2 uv)
         return tex;
     }
     // The transfer functions work on straight colour; the added light is
-    // premultiplied by the frame's alpha.
+    // premultiplied by the frame's alpha. The ember core and the wake head can
+    // pass 1: clamp the straight colour there, as an opaque target would, so
+    // rgb never exceeds alpha in a translucent window.
     vec4 linear = toLinearPremultiplied(tex);
-    return toSrgbPremultiplied(vec4(linear.rgb + fx * tex.a, tex.a));
+    return toSrgbPremultiplied(vec4(min(linear.rgb + fx * tex.a, vec3(tex.a)), tex.a));
 }

@@ -3,28 +3,16 @@
 
 #pragma once
 
+#include "BuildTree.h"
+
 #include <PhosphorWayland/LayerShellPluginLoader.h>
 
 #include <QCoreApplication>
 #include <QDir>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QString>
 
 namespace Afterglow {
-
-/// Whether this process runs the executable in the build tree. Files there
-/// (the QPA plugin, the terminfo entry) are for that build alone: an
-/// installed binary must not load them because a build directory exists.
-inline bool runningFromBuildTree()
-{
-    static const bool inside = [] {
-        const QString build = QFileInfo(QStringLiteral(AFTERGLOW_BUILD_DIR)).canonicalFilePath();
-        const QString self = QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath();
-        return !build.isEmpty() && self.startsWith(build + QLatin1Char('/'));
-    }();
-    return inside;
-}
 
 /// What the process sets up before QApplication exists, for afterglow and
 /// for the native window tests alike: the plugin paths, the layer-shell

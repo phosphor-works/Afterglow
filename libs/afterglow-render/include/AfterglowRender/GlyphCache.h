@@ -116,8 +116,10 @@ public:
     std::size_t colorPageCount() const noexcept { return m_color.size(); }
     /// Called once per render of any window that shares the cache. Over the
     /// byte budget, a page no render has used for StaleAfter discards the
-    /// whole cache (every page and entry) and bumps epoch().
-    void beginFrame(std::size_t glyphBound, int textureLimit);
+    /// whole cache (every page and entry) and bumps epoch(). @p now is the
+    /// render's time; tests pass their own.
+    void beginFrame(std::size_t glyphBound, int textureLimit,
+                    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     void touchPage(bool color, std::size_t page);
     std::size_t bytes() const noexcept;
     static constexpr std::chrono::milliseconds StaleAfter{1000};
@@ -140,6 +142,8 @@ private:
     std::vector<std::uint64_t> m_grayUsed, m_colorUsed;
     /// When each page was last used by a finished render.
     std::vector<std::chrono::steady_clock::time_point> m_grayUsedAt, m_colorUsedAt;
+    /// The time of the current render, which new pages start from.
+    std::chrono::steady_clock::time_point m_now = std::chrono::steady_clock::now();
     std::uint64_t m_frame = 0;
     std::size_t m_pageBound = std::numeric_limits<std::size_t>::max();
     int m_textureLimit = 4096;

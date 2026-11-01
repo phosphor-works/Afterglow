@@ -52,10 +52,22 @@ struct TextSnapshot
 AFTERGLOWVT_EXPORT bool appendTextRow(TextSnapshot& out, const Screen& screen, std::size_t index,
                                       std::size_t maxCharacters = 4 * 1024 * 1024);
 
+/// Why a search stopped. Callers translate this, not the English text.
+enum class SearchError : std::uint8_t {
+    None,
+    PatternTooLong, ///< over 4096 characters
+    NoMemory,
+    TimeLimit,
+    ComplexityLimit,
+    InvalidPattern, ///< at TextSearchResult::errorPosition
+};
+
 struct TextSearchResult
 {
     std::vector<SearchMatch> matches;
-    std::string error;
+    SearchError errorKind = SearchError::None;
+    std::size_t errorPosition = 0; ///< 1-based character of an InvalidPattern
+    std::string error; ///< errorKind in English, for logs
     bool truncated = false;
     bool cancelled = false;
 };

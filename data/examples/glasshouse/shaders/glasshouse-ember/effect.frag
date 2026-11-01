@@ -46,7 +46,8 @@ vec4 pTerminal(vec2 uv)
     vec2 from = previousCursorCenter();
     float jump = distance(from, centre);
     if (shown && p_sparks > 0.0 && age < p_sparkLife * 1.5 && jump > uCellSize.x * 1.5) {
-        float seed = floor(ghSetTime(age) * 13.0);
+        // Each jump between two places throws its own sparks.
+        float seed = ghEventSeed((from + centre * 0.37) / max(uCellSize, vec2(1.0)));
         vec2 path = (centre - from) / max(jump, 1.0);
         vec2 side = vec2(-path.y, path.x);
         for (int i = 0; i < 24; ++i) {

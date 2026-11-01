@@ -21,7 +21,7 @@ namespace AfterglowRender {
 
 namespace {
 constexpr int Padding = 1;
-/// More dirty rectangles than this on one page merge into their bounds.
+/// More dirty rectangles than this on one page merge with their nearest one.
 constexpr std::size_t MaxDirtyRects = 32;
 
 /// Sets @p ft to @p scale times the base size for as long as it lives, then
@@ -117,10 +117,15 @@ bool AtlasPage::grow()
 
 void AtlasPage::markDirty(const QRect& r)
 {
-    // Glyphs placed one after another on a shelf touch: they share a rectangle.
+    // A region that covers others (the whole page after a texture is made
+    // again) replaces them, so no pixel uploads twice.
+    std::erase_if(m_dirty, [&r](const QRect& dirty) { return r.contains(dirty); });
     for (QRect& dirty : m_dirty) {
         if (dirty.contains(r)) return;
-        if (dirty.y() == r.y() && dirty.height() == r.height() && dirty.adjusted(0, 0, Padding, 0).intersects(r)) {
+        // Glyphs on one shelf share its top edge and sit a padding apart,
+        // with different heights: one rectangle covers the shelf's new ones.
+        // The columns between them, uploaded before, are cheap to send again.
+        if (dirty.y() == r.y()) {
             dirty = dirty.united(r);
             return;
         }
@@ -129,9 +134,14 @@ void AtlasPage::markDirty(const QRect& r)
         m_dirty.push_back(r);
         return;
     }
-    QRect bounds = r;
-    for (const QRect& dirty : m_dirty) bounds = bounds.united(dirty);
-    m_dirty.assign(1, bounds);
+    // Full: grow the rectangle that grows least, not one box around every shelf.
+    const auto added = [&r](const QRect& dirty) {
+        const QRect united = dirty.united(r);
+        return std::int64_t(united.width()) * united.height() - std::int64_t(dirty.width()) * dirty.height();
+    };
+    auto nearest = std::min_element(m_dirty.begin(), m_dirty.end(),
+                                    [&](const QRect& a, const QRect& b) { return added(a) < added(b); });
+    *nearest = nearest->united(r);
 }
 
 std::vector<QRect> AtlasPage::takeDirty()
@@ -152,8 +162,7 @@ void GlyphCache::reset()
     m_gray.emplace_back(std::make_unique<AtlasPage>(QImage::Format_Grayscale8, 1024, 4096));
     m_color.emplace_back(std::make_unique<AtlasPage>(QImage::Format_ARGB32_Premultiplied, 512, 4096));
     m_grayUsed.assign(1, m_frame); m_colorUsed.assign(1, m_frame);
-    const auto now = std::chrono::steady_clock::now();
-    m_grayUsedAt.assign(1, now); m_colorUsedAt.assign(1, now);
+    m_grayUsedAt.assign(1, m_now); m_colorUsedAt.assign(1, m_now);
 }
 
 std::size_t GlyphCache::bytes() const noexcept
@@ -164,12 +173,12 @@ std::size_t GlyphCache::bytes() const noexcept
     return result;
 }
 
-void GlyphCache::beginFrame(std::size_t glyphBound, int textureLimit)
+void GlyphCache::beginFrame(std::size_t glyphBound, int textureLimit, std::chrono::steady_clock::time_point now)
 {
     // Staleness is measured in time, not in renders: every window at this
     // pixel ratio shares the cache, so one window's pages go unused for many
     // renders of the others while that window is still on screen.
-    const auto now = std::chrono::steady_clock::now();
+    m_now = now;
     for (std::size_t i = 0; i < m_grayUsed.size(); ++i) if (m_grayUsed[i] == m_frame) m_grayUsedAt[i] = now;
     for (std::size_t i = 0; i < m_colorUsed.size(); ++i) if (m_colorUsed[i] == m_frame) m_colorUsedAt[i] = now;
     ++m_frame;
@@ -211,7 +220,7 @@ AtlasPage& GlyphCache::allocate(bool color, int width, int height, int& x, int& 
         pages.emplace_back(std::make_unique<AtlasPage>(format, initial, std::min(4096, m_textureLimit)));
     }
     (color ? m_colorUsed : m_grayUsed).push_back(m_frame);
-    (color ? m_colorUsedAt : m_grayUsedAt).push_back(std::chrono::steady_clock::now());
+    (color ? m_colorUsedAt : m_grayUsedAt).push_back(m_now);
     index = std::uint32_t(pages.size() - 1);
     if (!pages.back()->allocate(width, height, x, y)) throw std::runtime_error("glyph atlas allocation failed");
     return *pages.back();

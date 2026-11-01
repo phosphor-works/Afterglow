@@ -93,11 +93,16 @@ struct AFTERGLOWVT_EXPORT Selection
         bool contains(std::uint64_t row, int col) const noexcept;
     };
 
+    /// Starts a new selection at @p at. Use it instead of setting the fields:
+    /// it also forgets the last word expansion, which a program that redraws
+    /// a row in place would otherwise give to a new double-click there.
+    void start(SelectionPoint at, SelectionMode newMode, std::uint64_t epoch, bool activeNow);
     /// False when the selection is inactive or belongs to an older layout.
     bool validFor(const Screen& screen) const noexcept;
     /// Expects validFor(): when the rows are gone the ends come back as they
     /// are, not expanded. A word selection is expanded once and remembered
-    /// until its ends, the screen's layout or the boundaries change.
+    /// until its ends, the screen's layout or the boundaries change, a row of
+    /// the expansion leaves the history, or start() begins a new selection.
     Range range(const Screen& screen, std::u32string_view wordBoundaries = DefaultWordBoundaries) const;
     /// The selected text, UTF-8. Soft-wrapped rows join without a newline and
     /// trailing blanks of each line are dropped.

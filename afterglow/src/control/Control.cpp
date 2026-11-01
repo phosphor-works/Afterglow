@@ -564,6 +564,19 @@ QString Control::runAction(quint32 id, const QString& action)
     return QStringLiteral("no action %1").arg(action);
 }
 
+QString Control::runScriptAction(quint32 id, const QString& action)
+{
+    if (!m_settings.settings().scriptsAllowReadText && readsPaneText(action))
+        return QStringLiteral("action %1 reads pane text, which is off (Scripts.allowReadText)").arg(action);
+    return runAction(id, action);
+}
+
+bool Control::readsPaneText(const QString& action)
+{
+    return action == QLatin1String("copy") || action == QLatin1String("paste") || action == QLatin1String("select_all")
+        || action == QLatin1String("show_last_output");
+}
+
 QString Control::scopeName(TextScope scope)
 {
     switch (scope) {

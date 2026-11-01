@@ -533,8 +533,11 @@ void Pty::run()
             {exited ? -1 : m_pidFd, POLLIN, 0},
             {m_execFd, POLLIN, 0},
         };
-        // Without a pidfd, look for the child's exit every 100 ms once the terminal hung up.
-        const int timeout = closed && m_pidFd < 0 ? 100 : -1;
+        // Without a pidfd, look for the child's exit every 100 ms once the
+        // terminal hung up. So too once the pidfd fired but the child could not
+        // be reaped yet (a tracer such as gdb or strace waits for it first):
+        // the pidfd stays readable and is out of the set.
+        const int timeout = closed && (m_pidFd < 0 || exited) ? 100 : -1;
         if (poll(fds, 4, timeout) < 0) {
             if (errno == EINTR) {
                 continue;

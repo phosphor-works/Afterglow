@@ -37,10 +37,11 @@ struct ScriptPackage;
 /// itself, gives timers, processes and file reads to its tasks, and hands
 /// the rest to @ref Callbacks::applyOwned or @ref Callbacks::apply.
 ///
-/// Scripts load from the search path, lowest priority first; a script with
-/// the same id in a later directory, or a package beside a file with the same
-/// id, replaces the other one. Files ending in .d.luau are type definitions and
-/// are skipped. Edits reload on the fly.
+/// The search path lists directories lowest priority first; a script with
+/// the same id in a later directory, a package beside a file with the same
+/// id, or a file whose name sorts later in the same directory replaces the
+/// other one. Files ending in .d.luau are type definitions and are skipped.
+/// Edits reload on the fly.
 class ScriptHost : public QObject, private PhosphorFsLoader::IScanStrategy
 {
     Q_OBJECT
@@ -165,8 +166,9 @@ private:
     void publishPackageShaders();
     /// Creates or drops the directory set to match m_enabled.
     void applyEnabled();
-    /// Loads the scripts in @p directories, lowest priority first, and
-    /// returns the files and package folders to watch.
+    /// Loads the scripts in @p directories, which are ordered lowest priority
+    /// first, and returns the files and package folders to watch. The scan
+    /// visits candidates highest priority first: the first to claim an id keeps it.
     QStringList performScan(const QStringList& directories) override;
     void retire(const ScriptPtr& script);
     void emitOwned(const ScriptPtr&, const QString& handler, QVariantMap event, quint32 pane);
@@ -186,6 +188,7 @@ private:
         QByteArray stamp;
         QString id;
         QString error;
+        bool state = false; ///< the error came from the stored state, whose file is watched
     };
     QHash<QString, Memo> m_memos;
     QMap<QString, QString> m_superseded; ///< path -> the path of the script that took its id

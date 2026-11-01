@@ -19,9 +19,9 @@ void TerminalWindow::releasePaneUi(Pane* pane)
     if (m_copyPane == pane) stopCopyMode();
     if (m_hover.pane == pane) m_hover = {};
     m_dividerDrag.reset(); // the layout changes under it
-    if (m_menuTab && tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))].get() == m_menuTab) {
+    if (m_menuTab && tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))]->id == m_menuTab) {
         m_controller->closeContextMenu();
-        m_menuTab = nullptr;
+        m_menuTab = 0;
     }
     if (std::any_of(m_pendingConfirmPanes.cbegin(), m_pendingConfirmPanes.cend(), [pane](const auto& p) { return p == pane; })) {
         m_controller->answerConfirm(false); // it would close a pane that lives elsewhere now
@@ -64,12 +64,24 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
     destination->bindPane(pane);
 }
 
-void TerminalWindow::removeTabShell(int index)
+std::unique_ptr<TerminalWindow::Tab> TerminalWindow::removeTabShell(int index)
 {
+    auto tab = std::move(m_tabs[std::size_t(index)]);
+    // A prompt or a menu for the tab that leaves has nothing to act on here.
+    const quint32 removed = tab->id;
+    if (m_titleTab == removed) {
+        m_controller->cancelTitle();
+        m_titleTab = 0;
+    }
+    if (m_menuTab == removed) {
+        m_controller->closeContextMenu();
+        m_menuTab = 0;
+    }
     m_splits = nullptr;
     m_tabs.erase(m_tabs.begin() + index);
     if (index < m_currentTab) --m_currentTab;
     if (m_currentTab >= int(m_tabs.size())) m_currentTab = int(m_tabs.size()) - 1;
+    return tab;
 }
 
 void TerminalWindow::finishTransfer(quint32 previousTab, int previousIndex)
@@ -162,8 +174,7 @@ QString TerminalWindow::detachTabTo(Pane* pane, TerminalWindow* destination)
     QList<Pane*> moved;
     source.splits->forEachPane([&](Pane* p, const QRect&) { moved << p; });
     for (auto* p : moved) releasePaneUi(p);
-    auto tab = std::move(m_tabs[std::size_t(index)]);
-    removeTabShell(index);
+    auto tab = removeTabShell(index);
     for (auto* p : moved) reparentPane(p, destination);
     destination->m_tabs.push_back(std::move(tab)); // retains the live tab's identity and ratios
     destination->m_currentTab = int(destination->m_tabs.size()) - 1;

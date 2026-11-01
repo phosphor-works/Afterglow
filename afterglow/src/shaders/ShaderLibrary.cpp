@@ -3,6 +3,8 @@
 
 #include "ShaderLibrary.h"
 
+#include "app/BuildTree.h"
+
 #include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorFsLoader/ContainedFileReader.h>
 #include <PhosphorShaders/ShaderIncludeResolver.h>
@@ -105,7 +107,9 @@ QString readStage(const QString& path, const QStringList& includes, QStringList&
     watched << path;
     // Package packs are third-party files, read on the GUI thread.
     if (!readCapped(path, ShaderIncludeResolver::MaxIncludeBytes, code))
-        return QStringLiteral("Cannot read shader, or it exceeds 1 MiB: %1").arg(path);
+        return QStringLiteral("Cannot read shader, or it exceeds %1 KiB: %2")
+            .arg(ShaderIncludeResolver::MaxIncludeBytes / 1024)
+            .arg(path);
     watchIncludes(code, path, includes, watched);
     return {};
 }
@@ -296,12 +300,10 @@ bool isFileReference(const QString& ref)
 
 QString bundledDirectory()
 {
-#if defined(AFTERGLOW_BUILD_DIR) && defined(AFTERGLOW_INSTALLED_SHADER_DIR)
+#if defined(AFTERGLOW_INSTALLED_SHADER_DIR)
     // A build-tree binary reads the checkout; an installed one its own prefix,
     // which need not be in XDG_DATA_DIRS.
-    const bool inBuild = QFileInfo(QStringLiteral("/proc/self/exe")).canonicalFilePath().startsWith(
-        QStringLiteral(AFTERGLOW_BUILD_DIR "/"));
-    return inBuild ? QStringLiteral(AFTERGLOW_SOURCE_SHADER_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_SHADER_DIR);
+    return runningFromBuildTree() ? QStringLiteral(AFTERGLOW_SOURCE_SHADER_DIR) : QStringLiteral(AFTERGLOW_INSTALLED_SHADER_DIR);
 #elif defined(AFTERGLOW_SOURCE_SHADER_DIR)
     return QStringLiteral(AFTERGLOW_SOURCE_SHADER_DIR);
 #else
@@ -376,8 +378,12 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
     , m_curves(std::make_unique<PhosphorAnimation::CurveRegistry>())
 {
     // Lowest priority first: bundled, then system, then the user's own packs.
+    // A build-tree binary puts the checkout above the system packs, so that
+    // an installed copy does not shadow the packs that it is testing.
     QStringList dirs;
-    if (const QString bundled = bundledDirectory(); !bundled.isEmpty()) {
+    const QString bundled = bundledDirectory();
+    const bool checkout = runningFromBuildTree();
+    if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
     const QStringList system =
@@ -385,6 +391,10 @@ ShaderLibrary::ShaderLibrary(QObject* parent)
                                   QStandardPaths::LocateDirectory);
     for (auto it = system.crbegin(); it != system.crend(); ++it) {
         dirs << *it;
+    }
+    if (checkout && !bundled.isEmpty()) {
+        dirs.removeAll(bundled);
+        dirs << bundled;
     }
     const QString user = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
         + QStringLiteral("/afterglow/shaders");
@@ -685,13 +695,15 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
             + QStringList(named.values()).join(QLatin1Char('\x1f'));
         check != m_paramsChecked) {
         m_paramsChecked = check;
+        m_paramsProblems.clear();
         for (auto it = params.begin(); it != params.end(); ++it) {
             if (it.value().typeId() != QMetaType::QVariantMap)
-                qCWarning(lcShaders).noquote() << "Shaders.params:" << it.key() << "must be an object of parameter values";
+                m_paramsProblems << QStringLiteral("Shaders.params.%1 must be an object of parameter values").arg(it.key());
             else if (!named.contains(it.key()))
-                qCWarning(lcShaders).noquote() << "Shaders.params:" << it.key()
-                                               << "is not a reference in any shader chain, so its values apply nowhere";
+                m_paramsProblems << QStringLiteral("Shaders.params.%1 names no shader in any chain, so its values apply nowhere")
+                                        .arg(it.key());
         }
+        for (const QString& problem : std::as_const(m_paramsProblems)) qCWarning(lcShaders).noquote() << problem;
     }
     // Configuration changes must release old decoded assets and compiled packs.
     m_compiled.removeIf([&](const auto& item) { return !named.contains(item.key()); });
@@ -719,7 +731,8 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
                     candidate.insert(image.cacheKey()); bytes += image.sizeInBytes();
                 }
                 if (bytes > MaxDecodedImageBytes) {
-                    qCWarning(lcShaders) << ref << "Configured images exceed the 256 MiB decoded-image budget";
+                    qCWarning(lcShaders).noquote() << ref << ": configured images exceed the" << (MaxDecodedImageBytes >> 20)
+                                                   << "MiB decoded-image budget";
                     // Not compiled again for every window and change until the set of packs changes.
                     m_cache.remove(key);
                     m_overBudget.insert(key);
@@ -739,6 +752,27 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     add(tabTransition, chains.tabTransition);
     add(paneEffects, chains.paneEffects);
     refreshWatches();
+    // What the user sees in a notice: each configured pack that does not
+    // draw, and why, in a line. Compile logs stay in the afterglow.shaders log.
+    QStringList problems = m_paramsProblems;
+    QStringList packs;
+    for (const QString& key : std::as_const(m_desired)) {
+        const QString ref = key.section(QLatin1Char('\x1f'), 0, 0);
+        if (const auto failed = m_failed.constFind(key); failed != m_failed.constEnd()) {
+            packs << QStringLiteral("shader %1: %2").arg(ref, failed->section(QLatin1Char('\n'), 0, 0).trimmed());
+        } else if (m_overBudget.contains(key)) {
+            packs << QStringLiteral("shader %1: its images exceed the %2 MiB decoded-image budget")
+                         .arg(ref)
+                         .arg(MaxDecodedImageBytes >> 20);
+        }
+    }
+    packs.sort();
+    packs.removeDuplicates();
+    problems << packs;
+    if (problems != m_problems) {
+        m_problems = problems;
+        Q_EMIT problemsChanged(m_problems);
+    }
     return chains;
 }
 
@@ -777,8 +811,11 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, c
     };
     const ShaderInfo info = m_index->find(ref);
     // A default image that did not load fails the pack, unless the config names another one.
+    // Images, colours and scalars number their slots apart: only an image owns an image slot.
     for (const auto& p : info.parameters) {
-        if (p.slot < 0 || p.slot >= AfterglowRender::MaxShaderImages || overrides.contains(p.id)) continue;
+        if ((p.type != QLatin1String("image") && p.type != QLatin1String("texture")) || p.slot < 0
+            || p.slot >= AfterglowRender::MaxShaderImages || overrides.contains(p.id))
+            continue;
         if (const QString& error = compiled->imageErrors[std::size_t(p.slot)]; !error.isEmpty()) return fail(error);
     }
     if (overrides.isEmpty()) {
@@ -800,7 +837,12 @@ AfterglowRender::ShaderProgramPtr ShaderLibrary::configure(const QString& key, c
         if (p.type == QLatin1String("image") || p.type == QLatin1String("texture")) {
             if (p.slot >= AfterglowRender::MaxShaderImages) continue;
             // The user's config may name any image; the pack's own default stays inside it.
-            const auto error = loadImageParameter(info.packDir, v.toString(), AbsolutePathPolicy::Trust,
+            // A value that is not a path would turn into the pack's default here, read
+            // as trusted, so it fails instead.
+            const QVariant path = overrides.value(p.id);
+            if (path.typeId() != QMetaType::QString)
+                return fail(QStringLiteral("Shaders.params sets %1 to a value that is not an image path").arg(p.id));
+            const auto error = loadImageParameter(info.packDir, path.toString(), AbsolutePathPolicy::Trust,
                                                   values.images[std::size_t(p.slot)], values.imagePaths[std::size_t(p.slot)]);
             watched << values.imagePaths[std::size_t(p.slot)];
             if (!error.isEmpty()) return fail(error);

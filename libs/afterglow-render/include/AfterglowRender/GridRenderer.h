@@ -294,15 +294,27 @@ public:
     /// The pointer, in framebuffer pixels, for shaders' iMouse.
     void setMousePosition(const QPointF& px) { m_mouse = px; }
 
-    /// Renders one frame. @p overlays are solid rectangles drawn last
-    /// (split dividers, focus dimming).
+    /// What render() did with the frame.
+    enum class FrameResult {
+        Presented,
+        /// The swapchain was out of date and nothing was presented. The
+        /// swapchain is made again on the next frame, which the host must
+        /// schedule: output that arrives later may never ask for it.
+        Retry,
+        /// Nothing was presented and the next frame would fail the same way
+        /// (no swapchain, a lost device, a GPU error). Nothing in Afterglow
+        /// recovers a lost device, so the host must not retry in a loop. The
+        /// failure is logged once until a frame presents again.
+        Failed,
+    };
+    /// Renders one frame. @p overlays are solid rectangles (split dividers,
+    /// focus dimming) drawn over the panes' cells; with shader chains they
+    /// go into the grid target, so the pane and window chains process them.
     /// @p overlayTexture, if given, is a premultiplied full-window texture
-    /// (the chrome) drawn over everything; @p overlaySerial changes whenever
-    /// that texture object is replaced.
-    /// Returns false when nothing was presented (no surface, a swapchain out
-    /// of date, a lost device): the host must schedule another frame.
-    bool render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
-                std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
+    /// (the chrome) drawn over everything, after the chains; @p overlaySerial
+    /// changes whenever that texture object is replaced.
+    FrameResult render(const std::vector<Pane>& panes, const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
+                       std::uint32_t clearColor, QRhiTexture* overlayTexture = nullptr, std::uint64_t overlaySerial = 0);
 
     /// Shader time (iTime) for the following frames instead of the wall
     /// clock, for reproducible renders; unset returns to the clock. Event
@@ -316,6 +328,7 @@ public:
 
 private:
     bool m_gpuTimingEnabled = false;
+    bool m_frameFailureLogged = false;
     double m_completedGpuSeconds = 0;
     std::uint64_t m_submittedFrames = 0;
 

@@ -11,12 +11,12 @@ vec4 pMesh() {
     int cell=gl_VertexIndex/6;
     ivec2 corner=corners[gl_VertexIndex%6];
     vec2 uv=vec2(ivec2(cell%192,cell/192)+corner)/vec2(192,64);
-    float u=uv.x*TAU, v=uv.y*TAU, t=sceneTime();
+    float u=uv.x*TAU, v=uv.y*TAU;
     material=gl_InstanceIndex;
     surfaceUV=uv;
     seed=float(material)*0.17;
     vec3 point,normal;
-    mat3 model=ry(t*0.15+0.35)*rz(0.22)*rx(0.12*sin(t*0.3));
+    mat3 model=ry(sceneAngle(0.15)+0.35)*rz(0.22)*rx(0.12*sin(sceneAngle(0.3)));
     if(material==1) {
         int panelIndex=cell/128, tile=panelIndex%16, face=panelIndex/16;
         vec2 puv=vec2(ivec2(cell%16,(cell%128)/16)+corner)/vec2(16,8);
@@ -36,7 +36,7 @@ vec4 pMesh() {
         float radius=1.3+float(material-2)*0.28;
         float tube=material==2 ? 0.035 : 0.018;
         if(material==11) { radius=2.25; tube=0.06; model=mat3(1); }
-        else model=model*rx(float(material)*0.74+t*0.1)*rz(float(material)*0.4);
+        else model=model*rx(float(material)*0.74+sceneAngle(0.1))*rz(float(material)*0.4);
         normal=vec3(cos(u)*cos(v),sin(v),sin(u)*cos(v));
         point=vec3(cos(u)*radius,0,sin(u)*radius)+tube*normal;
         if(material==11) point.y-=1.65;
@@ -48,8 +48,10 @@ vec4 pMesh() {
         normal=vec3(sin(phi)*cos(u),cos(phi),sin(phi)*sin(u));
         point=normal*(0.84+0.025*drive());
         if(material>=5) {
-            float phase=float(material)*2.39996+t*(0.18+float(material)*0.02);
-            vec3 orbit=vec3(cos(phase)*2.05,sin(phase*0.7)*0.65,sin(phase)*2.05);
+            // The bob turns at 0.7 times the orbit rate, so it needs its own angle.
+            float rate=0.18+float(material)*0.02, start=float(material)*2.39996;
+            float phase=start+sceneAngle(rate), bob=start*0.7+sceneAngle(rate*0.7);
+            vec3 orbit=vec3(cos(phase)*2.05,sin(bob)*0.65,sin(phase)*2.05);
             point=normal*(0.035+0.012*seed)+orbit;
         }
     }

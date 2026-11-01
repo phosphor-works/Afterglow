@@ -108,6 +108,11 @@ public:
     /// A keybind action by its config name (split_right, new_tab...), or a
     /// script action as "script:<script id>.<action id>".
     QString runAction(quint32 pane, const QString& action);
+    /// runAction for a script: the actions that read pane text need Scripts.allowReadText.
+    QString runScriptAction(quint32 pane, const QString& action);
+    /// copy, paste, select_all and show_last_output move pane text to the
+    /// clipboard, into another pane or into a file, with no user step between.
+    static bool readsPaneText(const QString& action);
 
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString scriptDialog(const QString& owner, quint32 pane, const QVariantMap& effect, ScriptReply reply);

@@ -2,7 +2,7 @@
     "id": "phosphor-field",
     "name": "Phosphor Field",
     "category": "Background",
-    "description": "Audio-reactive bevelled armour, volumetric plasma and a reflective chamber that gains energy as combined terminal scrollback grows. The pack writes linear radiance without tone mapping. Use Phosphor Lens after it.",
+    "description": "Audio-reactive beveled armor, volumetric plasma and a reflective chamber that gains energy as combined terminal scrollback grows. The pack writes linear radiance without tone mapping. Use Phosphor Lens after it.",
     "author": "afterglow",
     "version": "2.2",
     "fragmentShader": "effect.frag",

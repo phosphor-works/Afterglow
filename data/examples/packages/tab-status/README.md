@@ -30,6 +30,7 @@ Create `config.json` beside `package.json` to change the defaults:
   "separator": "  |  ",
   "tab_title": true,
   "git": true,
+  "git_changes": false,
   "git_refresh_seconds": 15
 }
 ```
@@ -37,7 +38,7 @@ Create `config.json` beside `package.json` to change the defaults:
 | Component | Content |
 | --- | --- |
 | `cwd` | Directory basename. |
-| `git` | Branch and `*` for tracked changes. Untracked files are excluded. |
+| `git` | Branch, or the commit on a detached `HEAD`. With `git_changes`, also `*` for tracked changes. Untracked files are excluded. |
 | `command` | Running shell-integrated command, or `idle`. |
 | `exit` | `ok` or `exit N` after command completion. |
 | `context` | Remote or root identity supplied by the shell. |
@@ -48,6 +49,7 @@ Create `config.json` beside `package.json` to change the defaults:
 | `separator` | `"  \|  "` | Text between components. At most 16 bytes are used. Control characters become spaces. |
 | `tab_title` | `true` | Adds the directory basename and the running command to the tab title. |
 | `git` | `true` | Shows the `git` component. `false` stops all Git queries. |
+| `git_changes` | `false` | Adds `*` when tracked files have changes. This runs `git status`, which can run commands from the repository's own configuration. |
 | `git_refresh_seconds` | `15` | Time that a Git result stays cached. The range is 5 to 300 seconds. A value outside the range is clamped. |
 
 Command and exit components require shell integration.
@@ -58,8 +60,11 @@ The focused pane refreshes each second.
 The other tabs refresh in rotation, one tab each second.
 Git runs asynchronously without shell interpolation or optional index locks.
 Git runs with `core.fsmonitor` turned off, so a repository cannot start its file monitor command.
-Git still reads the configuration of each repository.
-Set `git` to `false` before you open directories that you do not trust.
+By default, Git reads only `HEAD` to find the branch. It does not compare the work tree.
+`git_changes` compares the work tree with `git status`.
+That comparison runs the clean filters that the configuration of the repository names.
+Programs can set the directory of a pane with an escape sequence, so a printed file can select any local directory.
+Keep `git_changes` at `false` if a pane can show directories or output that you do not trust.
 Each query has a two-second timeout and a 16 KiB output limit.
 Results remain cached for 15 seconds by default.
 Command completion invalidates that directory's cache.

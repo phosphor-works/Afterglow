@@ -70,6 +70,16 @@ vec3 environment(vec3 r, float roughness) {
     return c + vec3(0.68,0.84,1.0)*key*5.5 + vec3(1.0,0.63,0.32)*rim*3.4
              + vec3(0.12,0.33,0.55)*fill*0.5;
 }
+// The scene clock at a shutter sample, `shutter` seconds before this frame.
+// sceneAngle() is the angle that `rate` radians per scene second have turned,
+// for every rotation, orbit and wave: it keeps full precision however long the
+// window runs. timeSeconds() is a float that steps by 8 ms after a day, which
+// would step every motion and put all shutter samples on one moment, so the
+// scene reads it only to drift noise.
+float sceneAngle(float rate, float shutter) {
+    float r = rate*p_speed;
+    return timeAngle(r) - r*shutter;
+}
 float ruptureAt(float failureAge, float successAge) {
     // A quick impulse, a suspended moment, then a damped return. No snapping
     // when recall starts while pieces are still moving outwards.
@@ -78,24 +88,23 @@ float ruptureAt(float failureAge, float successAge) {
     return x;
 }
 
-vec4 traceObject(vec3 ro, vec3 rd, float time) {
+vec4 traceObject(vec3 ro, vec3 rd, float shutter) {
     if (sphere(ro,rd,4.1).y <= 0.0) return vec4(0,0,0,FAR);
-    float t = time*p_speed;
     // Signal ages at this sample's moment, which the shutter can put slightly
     // in the past.
-    float lag = timeSeconds()-time;
-    float failureAge = max(0.0,phAge(0)-lag), successAge = max(0.0,phAge(1)-lag);
+    float failureAge = max(0.0,phAge(0)-shutter), successAge = max(0.0,phAge(1)-shutter);
     float heat = p_commandHeat;
     float bass = bassDrive(), mids = midDrive(), treble = trebleDrive();
     float history = historyDrive();
     float rupture = ruptureAt(failureAge,successAge);
     float impact = exp(-failureAge*5.0), release = exp(-successAge*3.0);
-    vec3 energy = mix(vec3(0.10,0.7,1.0),vec3(0.48,0.22,1.0),0.15+0.1*sin(t));
+    float spin = sceneAngle(1.0,shutter);
+    vec3 energy = mix(vec3(0.10,0.7,1.0),vec3(0.48,0.22,1.0),0.15+0.1*sin(spin));
     energy = mix(energy,vec3(0.40,0.28,1.0),history*0.24);
     energy = mix(energy,vec3(1.0,0.16,0.07),rupture*0.72);
     energy = mix(energy,vec3(0.35,1.0,0.78),release*0.5);
-    mat3 object = rotation(vec3(0,1,0),t*0.16+0.35)*rotation(vec3(0,0,1),0.24)
-                * rotation(vec3(1,0,0),0.16*sin(t*0.17));
+    mat3 object = rotation(vec3(0,1,0),sceneAngle(0.16,shutter)+0.35)*rotation(vec3(0,0,1),0.24)
+                * rotation(vec3(1,0,0),0.16*sin(sceneAngle(0.17,shutter)));
     vec3 o = transpose(object)*ro, d = transpose(object)*rd;
     float hitDistance = FAR, seed = 0.0, edge = 0.0, radius = 0.0;
     vec3 normal = vec3(0), point = vec3(0);
@@ -177,13 +186,14 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
         float stepLength = (leave-enter)/48.0;
         float transmission = 1.0;
         vec3 volumeLight = vec3(0);
-        mat3 core = rotation(vec3(0.3,1,0.2),-t*0.36);
+        mat3 core = rotation(vec3(0.3,1,0.2),-sceneAngle(0.36,shutter));
+        vec3 flow = vec3(sceneAngle(0.7,shutter),0.0,sceneAngle(0.3,shutter));
         for (int i = 0; i < 48; ++i) {
             vec3 p = core*(ro+rd*(enter+(float(i)+0.5)*stepLength));
             float r = length(p);
             vec3 q = p*(9.0+history*1.8);
-            q.x += sin(p.y*5.0+t)*(0.8+mids*0.65);
-            float gyroid = dot(sin(q+vec3(t*0.7,0,t*0.3)),cos(q.yzx));
+            q.x += sin(p.y*5.0+spin)*(0.8+mids*0.65);
+            float gyroid = dot(sin(q+flow),cos(q.yzx));
             float filament = exp(-abs(gyroid)*16.0);
             float envelope = (1.0-smoothstep(0.75,0.91,r))*smoothstep(0.15,0.5,r);
             float density = filament*envelope;
@@ -200,6 +210,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
 
     // Three thin, occluded orbital traces with machined breaks and circulating
     // energy. Pixel-footprint filtering keeps subpixel curves stable at any DPR.
+    float arcAngle = sceneAngle(0.15,shutter);
     for (int ring = 0; ring < 3; ++ring) {
         float index = float(ring);
         mat3 plane = rotation(vec3(0,0,1),0.20+index*0.55)*rotation(vec3(1,0,0),0.30+index*0.44);
@@ -213,8 +224,8 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
         float footprint = max(0.002,distance/uWindowSize.y/max(abs(ringD.y),0.12));
         float line = exp(-phSq(radial/footprint))*0.003/footprint;
         float angle = atan(p.z,p.x);
-        float arc = smoothstep(-0.3,0.2,sin(angle*(2.0+index)+t*0.15+index));
-        float runner = pow(max(0.0,cos(angle-t*(0.8+index*0.1)+index*2.0)),110.0);
+        float arc = smoothstep(-0.3,0.2,sin(angle*(2.0+index)+arcAngle+index));
+        float runner = pow(max(0.0,cos(angle-sceneAngle(0.8+index*0.1,shutter)+index*2.0)),110.0);
         vec3 tint = ring == 1 ? vec3(0.55,0.28,0.95) : energy;
         // Angular spectrum detail travels with the ring; broad energy still
         // reads as a pulse, rather than turning the scene into a bar chart.
@@ -225,15 +236,20 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
     // Curved magnetic filaments run through the surrounding space. Segment
     // distance is filtered by the ray footprint, with real opaque occlusion.
     if (sphere(ro,rd,1.8+rupture*1.2).y > 0.0) {
+        // The rise turns at 1.3 times the orbit, so it needs its own angle.
+        float orbit = sceneAngle(0.28,shutter), rise = sceneAngle(0.28*1.3,shutter);
+        float waveAngle = sceneAngle(2.0,shutter);
         for (int strand = 0; strand < 10; ++strand) {
-            float index = float(strand), phase = index*2.39996+t*0.28;
+            float index = float(strand), phase = index*2.39996+orbit;
+            float risePhase = index*2.39996*1.3+rise;
             mat3 strandRotation = rotation(vec3(0,0,1),sin(index*3.0)*0.4);
             vec3 previous = vec3(0);
             for (int segment = 0; segment <= 32; ++segment) {
                 float u = float(segment)/32.0;
-                float angle = phase+u*(2.2+rupture*0.8)+mids*0.16*sin(u*PI*3.0+index);
+                float sweep = u*(2.2+rupture*0.8)+mids*0.16*sin(u*PI*3.0+index);
+                float angle = phase+sweep;
                 float r = 0.85+u*(0.65+rupture*1.1);
-                vec3 p = vec3(cos(angle)*r,sin(angle*1.3+index)*0.5+sin(u*PI)*0.5,sin(angle)*r);
+                vec3 p = vec3(cos(angle)*r,sin(risePhase+sweep*1.3+index)*0.5+sin(u*PI)*0.5,sin(angle)*r);
                 p = strandRotation*p;
                 if (segment > 0) {
                     vec3 v = p-previous, w = ro-previous;
@@ -245,7 +261,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
                         float distance = length(ro+rd*alongRay-nearest);
                         float width = max(0.002,alongRay/uWindowSize.y*0.6);
                         float line = exp(-phSq(distance/width))*0.002/width;
-                        float wave = pow(max(0.0,sin(u*7.0-t*2.0+index)),8.0);
+                        float wave = pow(max(0.0,sin(u*7.0-waveAngle+index)),8.0);
                         vec3 tint = mix(energy,vec3(0.4,0.18,1.0),0.35+0.25*sin(index));
                         color += tint*line*(0.035+heat*0.18+rupture*0.4+mids*0.50+history*0.20)*(0.15+wave*2.0);
                     }
@@ -259,7 +275,7 @@ vec4 traceObject(vec3 ro, vec3 rd, float time) {
     // front and behind it. Their projection and occlusion share the 3D camera.
     for (int i = 0; i < 36; ++i) {
         float id = float(i), h = hash21(vec2(id,91.3));
-        float angle = id*2.39996+t*(0.05+h*0.07);
+        float angle = id*2.39996+sceneAngle(0.05+h*0.07,shutter);
         float radius = 1.5+h*1.5+rupture*0.35;
         vec3 p = vec3(cos(angle)*radius,(hash21(vec2(id,17))-0.5)*3.1,sin(angle)*radius);
         float along = dot(p-ro,rd);
@@ -288,7 +304,7 @@ float fbm(vec3 p) {
 }
 // An illuminated haze behind the subject: slow sheets of turbulence, narrow
 // caustic strands and shafts through suspended dust. It spans the full window.
-vec3 atmosphere(vec3 rd, float t, float heat) {
+vec3 atmosphere(vec3 rd, float t, float shutter, float heat) {
     vec2 p = rd.xy/max(-rd.z,0.15);
     vec3 q = vec3(p*3.0,t*0.035);
     float warp = fbm(q+vec3(0,t*0.05,0));
@@ -301,24 +317,25 @@ vec3 atmosphere(vec3 rd, float t, float heat) {
     vec3 color = tint*(0.008+wisps*1.4)*(0.5+heat*0.5);
     color += tint*thread*(0.04+heat*0.14)*clouds;
     // Diverging light shafts from the rear of the chamber, modulated by haze.
-    float shafts = pow(max(0.0,sin(atan(p.x+0.1,p.y-0.6)*27.0+t*0.08)),12.0);
+    float shafts = pow(max(0.0,sin(atan(p.x+0.1,p.y-0.6)*27.0+sceneAngle(0.08,shutter))),12.0);
     color += vec3(0.04,0.16,0.21)*shafts*curtain*(0.03+heat*0.1)*clouds;
     color += vec3(0.012,0.021,0.042)*exp(-length(p-vec2(0.35,0.1))*2.0);
     return color;
 }
 vec3 traceScene(vec2 pixel, float shutter) {
-    // The full clock, so the scene does not jump when iTime wraps.
-    float time = max(0.0,timeSeconds()-shutter), t = time*p_speed;
+    // The full clock, so the scene does not jump when iTime wraps. Only
+    // noise drifts with it: every periodic motion uses sceneAngle().
+    float t = max(0.0,timeSeconds()-shutter)*p_speed;
     float heat = p_commandHeat;
     vec2 uv = (pixel-uWindowSize*vec2(0.60,0.55))/uWindowSize.y;
     // The pointer anywhere in the window steers the one camera all panes share.
     vec2 pointer = uWindowMouse.x < 0.0 ? vec2(0.0)
         : clamp(vec2(uWindowMouse.x,uWindowSize.y-uWindowMouse.y)/uWindowSize-0.5,-0.5,0.5);
-    mat3 camera = rotation(vec3(0,1,0),sin(t*0.12)*0.16+pointer.x*p_parallax)
+    mat3 camera = rotation(vec3(0,1,0),sin(sceneAngle(0.12,shutter))*0.16+pointer.x*p_parallax)
                 * rotation(vec3(1,0,0),-0.12-pointer.y*p_parallax*0.24);
     vec3 ro = camera*vec3(0,0.45,6.2), rd = camera*normalize(vec3(uv*3.2,-3.2));
-    vec4 subject = traceObject(ro,rd,time);
-    vec3 haze = atmosphere(rd,t,heat+midDrive()*0.7+historyDrive()*0.8);
+    vec4 subject = traceObject(ro,rd,shutter);
+    vec3 haze = atmosphere(rd,t,shutter,heat+midDrive()*0.7+historyDrive()*0.8);
     vec3 color = subject.rgb+haze*(subject.a < FAR ? 0.12 : 1.0);
     float ground = abs(rd.y) > 0.0001 ? (-1.48-ro.y)/rd.y : FAR;
     if (ground > 0.0 && ground < subject.a) {
@@ -327,15 +344,15 @@ vec3 traceScene(vec2 pixel, float shutter) {
         float rough = noise3(vec3(p.xz*8.0,0.0));
         vec3 n = normalize(vec3(sin(p.x*17.0+p.z*9.0),500.0,cos(p.z*13.0-p.x*8.0)));
         vec3 reflectedRay = reflect(rd,n);
-        vec4 reflected = traceObject(p+n*0.002,reflectedRay,time);
+        vec4 reflected = traceObject(p+n*0.002,reflectedRay,shutter);
         float fresnel = 0.16+pow(1.0-max(dot(n,-rd),0.0),5.0)*0.45;
         vec3 floorColor = vec3(0.001,0.002,0.004)+reflected.rgb*fresnel;
-        floorColor += atmosphere(reflectedRay,t,heat+historyDrive()*0.8)*0.28;
+        floorColor += atmosphere(reflectedRay,t,shutter,heat+historyDrive()*0.8)*0.28;
         // Concentric machined grooves pick up the core's moving caustic light.
         float width = max(0.003,ground/uWindowSize.y/max(abs(rd.y),0.08));
         float rings = abs(fract(radial*2.4+0.5)-0.5)/2.4;
         float etched = exp(-phSq(rings/width))*0.0025/width;
-        float ripple = sin(radial*16.0-t*1.6+fbm(vec3(p.xz*1.4,t*0.07))*4.0);
+        float ripple = sin(radial*16.0-sceneAngle(1.6,shutter)+fbm(vec3(p.xz*1.4,t*0.07))*4.0);
         vec3 cyan = vec3(0.035,0.55,0.8), violet = vec3(0.35,0.07,0.65);
         vec3 tint = mix(cyan,violet,smoothstep(-1.0,2.0,p.x));
         floorColor += tint*(etched*0.015+pow(max(0.0,ripple),18.0)*(0.008+heat*0.018+bassDrive()*0.045+historyDrive()*0.025))

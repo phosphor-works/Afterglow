@@ -18,6 +18,7 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QFile>
+#include <QFontMetricsF>
 #include <QUrl>
 #include <QDir>
 #include <QFileInfo>
@@ -294,6 +295,9 @@ TEST_F(NativeWindow, LaunchOptionsAndClosedIdentity) {
         return added->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-options|unset"));
     }));
     EXPECT_EQ(added->workingDirectory(), directory.path());
+    // The window lays the split out at its next frame, and the shell can
+    // print before that frame.
+    ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(added).isEmpty(); }));
     EXPECT_LT(window->accessiblePaneRect(added).width(), window->accessiblePaneRect(original).width() / 2);
     const quint32 tab = window->tabIdOf(added), win = window->id();
     QVariantList closed;
@@ -316,11 +320,17 @@ TEST_F(NativeWindow, ZoomedPaneTitlesRenderEveryPanePosition) {
     for (auto* pane : {first, second}) {
         window->revealPane(pane);
         ASSERT_TRUE(window->runAction(pane, Action::TogglePaneZoom));
-        // The zoom animates: wait for the label to reach the zoomed size.
-        drain(600);
         auto* chrome = window->findChild<ChromeController*>();
         ASSERT_NE(chrome, nullptr);
-        ASSERT_EQ(chrome->paneTitles().size(), 1);
+        // The zoom animates, stretched in wall time on a loaded machine:
+        // wait for the label to reach the zoomed size.
+        // The labels change at the next frame: until then they are the last
+        // zoom's, which also had one label as wide as the window.
+        ASSERT_TRUE(waitFor([&] {
+            return chrome->paneTitles().size() == 1
+                && chrome->paneTitles().front().toMap().value(QStringLiteral("title")).toString() == pane->title()
+                && chrome->paneTitles().front().toMap().value(QStringLiteral("width")).toDouble() > window->width() * 0.9;
+        }));
         const auto entry = chrome->paneTitles().front().toMap();
         EXPECT_EQ(entry.value(QStringLiteral("title")).toString(), pane->title());
         // The zoomed pane fills the window, the label's rectangle with it.
@@ -380,10 +390,17 @@ TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
     ASSERT_NE(layer->rootItem(), nullptr);
+    // What is drawn, not only the property: as markup the title would lay
+    // out as a short bold "A&B" and an image, far narrower than its source.
+    const auto drawsLiterally = [&title](const QQuickItem* item) {
+        const QFont font = item->property("font").value<QFont>();
+        return item->property("implicitWidth").toDouble() >= 0.9 * QFontMetricsF(font).horizontalAdvance(title);
+    };
     int literalLabels = 0;
     for (auto* item : visualDescendants(layer->rootItem())) {
         if (item->property("text").toString() == title && item->property("textFormat").isValid()) {
             EXPECT_EQ(item->property("textFormat").toInt(), 0); // Text.PlainText
+            EXPECT_TRUE(drawsLiterally(item));
             ++literalLabels;
         }
     }
@@ -404,6 +421,14 @@ TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
         auto* accessible = QAccessible::queryAccessibleInterface(item);
         ASSERT_NE(accessible, nullptr);
         EXPECT_EQ(accessible->text(QAccessible::Name), title);
+        // The style's own text item inside the menu row draws the escaped
+        // title at the width of the literal string.
+        bool drawn = false;
+        for (auto* text : visualDescendants(item)) {
+            if (text->property("textFormat").isValid() && !text->property("text").toString().isEmpty())
+                drawn = drawn || drawsLiterally(text);
+        }
+        EXPECT_TRUE(drawn);
     }
     EXPECT_TRUE(found);
 }
@@ -660,10 +685,12 @@ TEST_F(NativeWindow, AccessibleChromeExposesFocusedEditor) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     chrome->setSearchOpen(true);
+    // The chrome scene loads at the first frame that shows it, which on a
+    // new window can come later than a fixed wait.
+    ASSERT_TRUE(waitFor([&] { return window->accessibleChrome() != nullptr; }));
     drain();
     auto* root = window->accessibleRoot();
     ASSERT_NE(root, nullptr);
-    ASSERT_NE(window->accessibleChrome(), nullptr);
     EXPECT_GE(root->childCount(), 2);
     EXPECT_EQ(window->accessibleChrome()->parent(), root);
     EXPECT_GT(window->accessibleChrome()->childCount(), 0);
@@ -1082,7 +1109,8 @@ TEST_F(NativeWindow, TabSwitchAnimatesAndSettles) {
     // Switching back runs again; the overview suppresses it.
     window->revealPane(first);
     EXPECT_TRUE(window->tabSwitching());
-    while (window->tabSwitching() && clock.elapsed() < 6000) drain();
+    clock.restart(); // expectIdle took its own time
+    while (window->tabSwitching() && clock.elapsed() < 3000) drain();
     EXPECT_FALSE(window->tabSwitching());
     expectIdle(window);
     ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
@@ -1275,14 +1303,15 @@ TEST_F(NativeWindow, PaneTitleLabelsSurviveTitleChanges) {
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
-    drain(600);
     auto* layer = window->findChild<ChromeLayer*>();
     const auto labels = [&] {
         QList<QQuickItem*> found;
+        if (!layer->rootItem()) return found; // the chrome loads on the first frame that needs it
         for (auto* item : visualDescendants(layer->rootItem()))
             if (item->property("scrollbarSpace").isValid()) found.append(item);
         return found;
     };
+    ASSERT_TRUE(waitFor([&] { return labels().size() == 2; }));
     const auto before = labels();
     ASSERT_EQ(before.size(), 2);
     first->setUserTitle(QStringLiteral("renamed"));
@@ -1489,6 +1518,136 @@ TEST_F(NativeWindow, KeyRepeatsOfAKeyThatClosedAModeStayOutOfTheShell) {
     EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('2')));
 }
 
+TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    auto* left = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(left, nullptr);
+    auto* right = window->splitPane(left, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(right, nullptr);
+    window->revealPane(left);
+    drain();
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
+    QCoreApplication::sendEvent(window, &down);
+    // The focus moves while the key is held (a click, D-Bus, a script).
+    window->revealPane(right);
+    for (int i = 0; i < 3; ++i) {
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"), true);
+        QCoreApplication::sendEvent(window, &up);
+        QKeyEvent again(QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"), true);
+        QCoreApplication::sendEvent(window, &again);
+    }
+    QKeyEvent up(QEvent::KeyRelease, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
+    QCoreApplication::sendEvent(window, &up);
+    sendKey(window, Qt::Key_Y, Qt::NoModifier, QStringLiteral("y"));
+    sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    EXPECT_TRUE(waitFor([&] { return right->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('y')); }));
+    EXPECT_FALSE(right->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('q')));
+}
+
+TEST_F(NativeWindow, TypingWhileTheOverviewClosesReachesTheChosenTab) {
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    drain();
+    auto* second = window->focusedPane();
+    ASSERT_NE(second, first);
+    ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
+    // Frames open the overview. Closed before any frame has opened it, it
+    // would switch the tab at once, with no close to wait for.
+    const auto opened = window->submittedFrames();
+    ASSERT_TRUE(waitFor([&] { return window->submittedFrames() >= opened + 3; }));
+    sendKey(window, Qt::Key_Left);
+    ASSERT_EQ(window->overviewHighlight(), first);
+    sendKey(window, Qt::Key_Return);
+    ASSERT_FALSE(window->overviewOpen());
+    // Still closing: the tab switches once the close has finished.
+    ASSERT_EQ(window->focusedPane(), second);
+    // A key typed now switches first, so it reaches the chosen pane.
+    sendKey(window, Qt::Key_Shift);
+    EXPECT_EQ(window->focusedPane(), first);
+    expectIdle(window);
+    EXPECT_EQ(window->focusedPane(), first);
+}
+
+TEST_F(NativeWindow, OverviewClosingOntoAnotherTabSwitchesWithoutATransition) {
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    auto* second = window->focusedPane();
+    ASSERT_NE(second, first);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); })); // the new tab's own slide
+    ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
+    // Frames open the overview. Closed before any frame has opened it, it
+    // would switch the tab at once, with no close to wait for.
+    const auto opened = window->submittedFrames();
+    ASSERT_TRUE(waitFor([&] { return window->submittedFrames() >= opened + 3; }));
+    sendKey(window, Qt::Key_Left);
+    ASSERT_EQ(window->overviewHighlight(), first);
+    sendKey(window, Qt::Key_Return);
+    ASSERT_EQ(window->focusedPane(), second);
+    // The close has carried the motion onto the card: the tab switch at its
+    // end must not slide the panes a second time.
+    bool slid = false;
+    QElapsedTimer clock;
+    clock.start();
+    while (window->focusedPane() != first && clock.elapsed() < 3000) {
+        drain(5);
+        slid = slid || window->tabSwitching();
+    }
+    ASSERT_EQ(window->focusedPane(), first);
+    EXPECT_FALSE(slid);
+    EXPECT_FALSE(window->tabSwitching());
+    expectIdle(window);
+    // An ordinary switch afterwards still slides.
+    window->revealPane(second);
+    EXPECT_TRUE(window->tabSwitching());
+}
+
+TEST_F(NativeWindow, FocusWhileTheOverviewClosesWinsOverTheCard) {
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    drain();
+    auto* second = window->focusedPane();
+    ASSERT_NE(second, first);
+    ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
+    // Frames open the overview. Closed before any frame has opened it, it
+    // would switch the tab at once, with no close to wait for.
+    const auto opened = window->submittedFrames();
+    ASSERT_TRUE(waitFor([&] { return window->submittedFrames() >= opened + 3; }));
+    sendKey(window, Qt::Key_Left);
+    ASSERT_EQ(window->overviewHighlight(), first);
+    sendKey(window, Qt::Key_Return);
+    ASSERT_EQ(window->focusedPane(), second);
+    // afterglow ctl focus on the pane that already has the focus.
+    window->revealPane(second);
+    expectIdle(window);
+    EXPECT_EQ(window->focusedPane(), second);
+    EXPECT_TRUE(window->accessiblePaneRect(first).isEmpty());
+}
+
+TEST_F(NativeWindow, ASplitRefusedForRoomKeepsTheZoom) {
+    auto* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* last = first;
+    bool refused = false;
+    for (int i = 0; i < 64 && !refused; ++i) {
+        Pane* added = window->splitPane(last, SplitTree::Direction::Down, launch, nullptr);
+        if (added) last = added;
+        else refused = true;
+    }
+    ASSERT_TRUE(refused);
+    ASSERT_NE(last, first);
+    ASSERT_TRUE(window->runAction(last, Action::TogglePaneZoom));
+    drain();
+    ASSERT_TRUE(window->accessiblePaneRect(first).isEmpty()); // zoomed on last
+    QString error;
+    EXPECT_EQ(window->splitPane(last, SplitTree::Direction::Down, launch, &error), nullptr);
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_TRUE(window->accessiblePaneRect(first).isEmpty());
+    EXPECT_FALSE(window->accessiblePaneRect(last).isEmpty());
+}
+
 TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
@@ -1540,7 +1699,9 @@ TEST_F(NativeWindow, SplitsKeepTheMinimumSizeAndStartShellsAtTheirSizeBeforeAFra
     EXPECT_GE(second->cols(), 4);
     EXPECT_GE(third->cols(), 4);
     EXPECT_GT(third->rows(), 2);
-    drain();
+    // The next frame lays the splits out. The first frame with pane titles
+    // also builds the chrome scene, which takes longer than a fixed wait.
+    ASSERT_TRUE(waitFor([&] { return !window->accessiblePaneRect(second).isEmpty(); }));
     EXPECT_GE(window->accessiblePaneRect(second).width(), 4);
 }
 

@@ -131,10 +131,12 @@ std::string shellQuote(const std::string& value)
     return out + "'";
 }
 
-bool respond(const std::string& command, const std::string& path, std::string& output)
+/// Runs the responder on the screen file. Returns nullptr when it succeeded,
+/// or why it did not, so each failure has its own message.
+const char* respond(const std::string& command, const std::string& path, std::string& output)
 {
     int fds[2];
-    if (::pipe2(fds, O_CLOEXEC) != 0) return false;
+    if (::pipe2(fds, O_CLOEXEC) != 0) return "responder could not start";
     const std::string invocation = command + " " + shellQuote(path);
     const pid_t pid = ::fork();
     if (pid == 0) {
@@ -145,21 +147,22 @@ bool respond(const std::string& command, const std::string& path, std::string& o
         _exit(127);
     }
     ::close(fds[1]);
-    if (pid < 0) { ::close(fds[0]); return false; }
+    if (pid < 0) { ::close(fds[0]); return "responder could not start"; }
     ::setpgid(pid, pid);
-    bool ok = ::fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0;
+    const char* why = ::fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0 ? nullptr : "responder output could not be read";
+    bool ok = !why;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (ok) {
-        if (std::chrono::steady_clock::now() >= deadline) { ok = false; break; }
+        if (std::chrono::steady_clock::now() >= deadline) { ok = false; why = "responder timed out"; break; }
         pollfd pfd{fds[0], POLLIN, 0};
         const int ready = ::poll(&pfd, 1, 100);
-        if (ready < 0) { if (errno == EINTR) continue; ok = false; break; }
+        if (ready < 0) { if (errno == EINTR) continue; ok = false; why = "responder output could not be read"; break; }
         if (!ready) continue;
         char buffer[4096];
         const auto count = ::read(fds[0], buffer, sizeof buffer);
         if (count == 0) break;
-        if (count < 0) { if (errno == EINTR || errno == EAGAIN) continue; ok = false; break; }
-        if (output.size() + std::size_t(count) > 1024 * 1024) { ok = false; break; }
+        if (count < 0) { if (errno == EINTR || errno == EAGAIN) continue; ok = false; why = "responder output could not be read"; break; }
+        if (output.size() + std::size_t(count) > 1024 * 1024) { ok = false; why = "responder output exceeded 1 MiB"; break; }
         output.append(buffer, std::size_t(count));
     }
     ::close(fds[0]);
@@ -169,8 +172,9 @@ bool respond(const std::string& command, const std::string& path, std::string& o
     for (;;) {
         const auto done = ::waitpid(pid, &status, WNOHANG);
         if (done == pid) break;
-        if (done < 0 && errno != EINTR) { ok = false; break; }
+        if (done < 0 && errno != EINTR) { ok = false; why = "responder could not be waited for"; break; }
         if (!ok || std::chrono::steady_clock::now() >= deadline) {
+            if (ok) why = "responder timed out";
             ok = false;
             ::kill(-pid, SIGKILL); ::kill(pid, SIGKILL);
             while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
@@ -178,7 +182,8 @@ bool respond(const std::string& command, const std::string& path, std::string& o
         }
         ::poll(nullptr, 0, 20);
     }
-    return ok && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (!ok) return why;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? nullptr : "responder failed";
 }
 
 void appendUtf8(std::string& out, char32_t c)
@@ -398,7 +403,7 @@ int main(int argc, char** argv)
         const char* tmpdir = std::getenv("TMPDIR");
         std::string name = std::string(tmpdir && *tmpdir ? tmpdir : "/tmp") + "/afterglow-screen-XXXXXX";
         const int fd = ::mkstemp(name.data());
-        if (fd < 0) failed = true;
+        if (fd < 0) { std::perror("screen file"); failed = true; }
         else { temporary.path = name; ::close(fd); }
     }
     int status = 0;
@@ -466,8 +471,8 @@ int main(int argc, char** argv)
             }
             if (!responder.empty() && !dumpPath.empty()) {
                 std::string keys;
-                if (!respond(responder, dumpPath, keys)) {
-                    std::fprintf(stderr, "responder failed, timed out or exceeded 1 MiB\n");
+                if (const char* why = respond(responder, dumpPath, keys)) {
+                    std::fprintf(stderr, "%s\n", why);
                     failed = true; break;
                 }
                 while (!keys.empty() && (keys.back() == '\n')) {

@@ -4,12 +4,16 @@
 #include "scripting/ScriptHost.h"
 #include "scripting/ScriptTasks.h"
 #include "scripting/ScriptState.h"
+#include <QDateTime>
 #include <QElapsedTimer>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QThread>
 #include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <signal.h>
+#include <algorithm>
 #include <cerrno>
 #include <sys/stat.h>
 
@@ -334,6 +338,33 @@ TEST_F(ScriptHostTest, SemanticRegionExampleCopiesSelectedOutput)
     ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     EXPECT_EQ(rec.applied.size(), 8);
+}
+
+TEST_F(ScriptHostTest, SemanticRegionExampleReportsARefusedSelector)
+{
+    QFile example(QStringLiteral(AFTERGLOW_EXAMPLE_SCRIPTS) + QStringLiteral("/semantic-regions.luau"));
+    ASSERT_TRUE(example.open(QIODevice::ReadOnly));
+    write(user, "semantic-regions.luau", example.readAll());
+    QString selectCode = "busy";
+    applyHook = [&](const QVariantMap& effect) -> ScriptHost::EffectResult {
+        if (effect["kind"] == QLatin1String("semantic_regions"))
+            return {{}, {{"regions", QVariantList{QVariantMap{{"id", "42"}, {"kind", "output"}, {"available", true}}}}}, {}};
+        if (effect["kind"] == QLatin1String("select")) return {"Another dialog is open", {}, selectCode};
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 3);
+    EXPECT_EQ(rec.applied[2]["kind"].toString(), "notify");
+    EXPECT_EQ(rec.applied[2]["body"].toString(), "Another dialog is open");
+    // Escape is not an error.
+    selectCode = "cancelled";
+    rec.applied.clear();
+    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1]["kind"].toString(), "select");
 }
 
 TEST_F(ScriptHostTest, SignalEffects)
@@ -870,6 +901,21 @@ TEST(ScriptTasksTest, OwnerCleanupStopsTimersAndDropsAsyncCallbacks)
     EXPECT_EQ(callbacks, 1);
 }
 
+TEST(ScriptTasksTest, WatchFileRefusesThePathsThatReadFileRefuses)
+{
+    QTemporaryDir dir;
+    ScriptTasks tasks;
+    const QString tooLong = dir.path() + "/" + QString(4096, 'x');
+    const QString withNul = dir.path() + QChar(0) + "watch";
+    for (const QString& path : {QStringLiteral("relative"), tooLong, withNul}) {
+        for (const char* kind : {"watch_file", "read_file"}) {
+            const auto result = tasks.apply("owner", {{"kind", QString::fromLatin1(kind)}, {"name", "watch"}, {"path", path}}, {}, {});
+            EXPECT_EQ(result.code, "invalid_effect") << kind;
+            EXPECT_TRUE(result.error.contains("at most 4096 characters")) << kind << ' ' << result.error.toStdString();
+        }
+    }
+}
+
 TEST(ScriptTasksTest, WatchSurvivesAtomicFileReplacement)
 {
     QTemporaryDir dir;
@@ -1214,7 +1260,7 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
         if (e.value("kind")=="list_projects") return {{},{{"names",QStringList{}}},{}};
         if (e.value("kind")=="select") {
             selected=true;
-            EXPECT_TRUE(e.value("title").toString().contains("fd-1"));
+            EXPECT_TRUE(e.value("title").toString().contains("fd-1 not started")) << e.value("title").toString().toStdString();
             EXPECT_FALSE(e.value("items").toList().isEmpty());
             return {"Dialog cancelled",{},"cancelled"};
         }
@@ -1230,6 +1276,37 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
     ScriptState::Snapshot stored;
     ASSERT_TRUE(ScriptState(stateDir.path()).read("project-navigator",stored).isEmpty());
     EXPECT_TRUE(stored.value.value("favorites").toMap().value("/tmp").toBool());
+}
+
+TEST_F(ScriptHostTest, NavigatorNamesAProviderThatTimedOut)
+{
+    installPackage("project-navigator");
+    write(user, "project-navigator/config.json", R"({"roots":["/tmp"],"fd":true,"zoxide":false})");
+    // A provider that runs past its timeout returns no output at all.
+    auto patch = [&](const QString& name, const QByteArray& from, const QByteArray& to) {
+        QFile f(user.filePath("project-navigator/" + name));
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        auto source = f.readAll();
+        f.close();
+        ASSERT_TRUE(source.contains(from)) << from.toStdString();
+        write(user, "project-navigator/" + name, source.replace(from, to));
+    };
+    patch("providers.luau", R"(command={"fd", )", R"(command={"/bin/sh", "-c", "exec sleep 5", )");
+    patch("init.luau", "timeout_ms=5000", "timeout_ms=100");
+    paneState[7]["cwd"] = "/tmp";
+    QString title;
+    applyHook = [&](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if (e.value("kind") == "list_projects") return {{}, {{"names", QStringList{"dev"}}}, {}};
+        if (e.value("kind") == "select") {
+            title = e.value("title").toString();
+            return {"Dialog cancelled", {}, "cancelled"};
+        }
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("project-navigator.open", 7));
+    ASSERT_TRUE(await([&] { return !title.isEmpty(); }));
+    EXPECT_TRUE(title.contains("(unavailable: fd-1 timed out)")) << title.toStdString();
 }
 
 TEST_F(ScriptHostTest, PackageReloadAndRemovalRetireJobsTimersWatchesAndUi)
@@ -1379,9 +1456,10 @@ TEST_F(ScriptHostTest, TabStatusParsesGitAndBoundsConfigurableSegments)
     write(user,"tab-status/init.luau",R"(
 local s=require("segments")
 return {on_load=function()
- assert(s.git("## main...origin/main\n M file.cpp\n")=="main *")
- assert(s.git("## No commits yet on feature\n")=="feature")
- assert(s.git("fatal: not a repository")=="")
+ assert(s.git("main\n"," M file.cpp\n")=="main *")
+ assert(s.git("feature\n","")=="feature")
+ assert(s.git("a1b2c3d\n")=="a1b2c3d")
+ assert(s.git("",nil)=="")
  local text,title=s.render({cwd="/tmp/project",command="",context="remote"},"main",1,{segments={"context","cwd","unknown","exit"},separator=" | ",tab_title=false})
  assert(text=="remote | project | exit 1" and title=="")
  local long={cwd=string.rep("x",1000),command=string.rep("y",1000)}
@@ -1790,6 +1868,51 @@ return {
     EXPECT_TRUE(stats["last_error"].toString().startsWith("a handler after await:")) << stats["last_error"].toString().toStdString();
     EXPECT_TRUE(stats["last_error"].toString().contains("after the second await"));
     EXPECT_EQ(stats["waiting"].toInt(), 0);
+}
+
+// The await runtime registers a flow before the engine converts the effects it
+// waits for. Effects too large to convert must not keep that flow, or every
+// such call would hold one of the script's 16 waiting slots for good.
+TEST_F(ScriptHostTest, AwaitWithEffectsTooLargeToConvertFreesItsWaitingSlot)
+{
+    write(user, "large.luau", R"(
+return {
+    metadata = {actions = {{id = "large", title = "Large"}, {id = "small", title = "Small"}}},
+    run_action = function(action, ev)
+        if action == "large" then
+            -- Each level holds the one below twice: 2^20 conversions, little memory.
+            local wide = {}
+            for _ = 1, 20 do
+                wide = {wide, wide}
+            end
+            local effect = afterglow.log("large")
+            effect.extra = wide
+            afterglow.await(effect)
+            return afterglow.copy("unreachable")
+        end
+        local _, err = afterglow.await(afterglow.log("small"))
+        return afterglow.copy(err and err.code or "ok")
+    end,
+}
+)");
+    host->setEnabled(true);
+    // Three failures, then a success that resets the run of failures: 18
+    // abandoned waits in all, more than the 16 that can wait at once.
+    for (int round = 0; round < 6; ++round) {
+        for (int i = 0; i < 3; ++i) ASSERT_TRUE(host->runAction("large.large", 7));
+        ASSERT_TRUE(host->runAction("large.small", 7));
+        ASSERT_TRUE(await([&] {
+            return std::count_if(rec.applied.cbegin(), rec.applied.cend(),
+                                 [](const QVariantMap& e) { return e["kind"] == QLatin1String("copy"); }) == round + 1;
+        }));
+        EXPECT_EQ(rec.applied.last()["text"], "ok") << "round " << round;
+    }
+    for (const QVariantMap& e : std::as_const(rec.applied)) EXPECT_NE(e["text"], "unreachable");
+    const auto stats = host->diagnostics().first().toMap();
+    EXPECT_EQ(stats["waiting"].toInt(), 0);
+    EXPECT_EQ(stats["handler_errors"].toULongLong(), 18u);
+    EXPECT_TRUE(stats["last_error"].toString().contains("result too large")) << stats["last_error"].toString().toStdString();
+    EXPECT_TRUE(host->scriptIds().contains("large"));
 }
 
 TEST_F(ScriptHostTest, ReplacementDropsWaitingHandlersAndOnResultStillWorks)
@@ -2404,6 +2527,52 @@ TEST_F(ScriptHostTest, PackageStateRefusalsAndMigrationAreReported)
     EXPECT_TRUE(errors.contains("Migration must return an object table"));
 }
 
+TEST_F(ScriptHostTest, PackageWithRefusedStateRetriesWhenTheStateFileChangesAfterARescan)
+{
+    QDir().mkpath(user.filePath("stored"));
+    write(user, "stored/package.json", R"({"id":"stored","version":"1.0.0","api_version":1,"state_version":2,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "stored/init.luau", "return {}");
+    ScriptState::Snapshot saved;
+    ASSERT_TRUE(ScriptState(stateDir.path()).write("stored", 3, 0, {{"x", 1}}, saved).isEmpty());
+    host->setEnabled(true);
+    ASSERT_TRUE(host->scriptIds().isEmpty());
+    // An unrelated rescan finds the package unchanged and does not load it again.
+    write(user, "other.luau", "return {}");
+    host->reload();
+    ASSERT_EQ(host->scriptIds(), QStringList{"other"});
+    await([] { return false; }, 300);
+    // The state file is still watched: removing it retries the package.
+    ASSERT_TRUE(QFile::remove(stateDir.filePath("stored.json")));
+    EXPECT_TRUE(await([&] { return host->scriptIds().contains("stored"); }));
+}
+
+TEST_F(ScriptHostTest, SupersededPackageNeverLoadsAgainstTheWinnersState)
+{
+    // Both copies share stored.json. The winner writes it at a newer version
+    // than the loser can read, so loading the loser would fail.
+    auto install = [&](const QTemporaryDir& dir, int stateVersion, const QByteArray& source) {
+        QDir().mkpath(dir.filePath("dup"));
+        write(dir, "dup/package.json", QString(R"({"id":"dup","version":"1.0.0","api_version":1,"state_version":%1,"entry":"main","modules":{"main":"init.luau"}})")
+            .arg(stateVersion).toUtf8());
+        write(dir, "dup/init.luau", source);
+    };
+    install(system, 1, "return {on_load=function() return afterglow.copy('loser loaded') end}");
+    install(user, 2, "return {on_load=function(ev) return afterglow.state_write({n=1},ev.storage.revision) end}");
+    host->setEnabled(true);
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    ScriptState::Snapshot stored;
+    ASSERT_TRUE(ScriptState(stateDir.path()).read("dup", stored).isEmpty());
+    ASSERT_EQ(stored.version, 2);
+    host->reload();
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    EXPECT_EQ(host->scriptIds(), QStringList{"dup"});
+    QStringList statuses;
+    for (const auto& entry : host->diagnostics()) statuses << entry.toMap()["status"].toString();
+    EXPECT_EQ(statuses.count("superseded"), 1);
+    EXPECT_FALSE(statuses.contains("failed")) << statuses.join(",").toStdString();
+    for (const auto& e : rec.applied) EXPECT_NE(e.value("text"), "loser loaded");
+}
+
 TEST_F(ScriptHostTest, NavigatorMigratesSchemaOneHistory)
 {
     installPackage("project-navigator");
@@ -2435,6 +2604,25 @@ TEST_F(ScriptHostTest, UnloadEffectsAreIgnored)
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     EXPECT_TRUE(rec.applied.isEmpty());
     EXPECT_EQ(cleaned.size(), 2);
+}
+
+TEST_F(ScriptHostTest, UnloadRunsOnRetireButNotForADisabledScript)
+{
+    // An on_unload that raises an error reaches the failed callback: that shows it ran.
+    write(user, "observed.luau", "return {on_unload = function() error('unloaded') end}");
+    write(user, "broken.luau", R"(return {metadata={actions={{id="go"}}},
+        run_action=function() error("boom") end, on_unload=function() error("unloaded") end})");
+    host->setEnabled(true);
+    while (!host->isDisabled("broken")) {
+        ASSERT_TRUE(host->runAction("broken.go", 7));
+        ASSERT_LE(failedOwners.size(), 5);
+    }
+    const auto failures = failedOwners.size();
+    write(user, "observed.luau", "return {}");
+    host->reload();
+    EXPECT_EQ(failedOwners.size(), failures + 1); // the replaced instance ran on_unload
+    host->setEnabled(false);
+    EXPECT_EQ(failedOwners.size(), failures + 1); // the disabled script did not
 }
 
 TEST_F(ScriptHostTest, ReadFileHelperResultsReachOnResultByTaskName)
@@ -2498,18 +2686,60 @@ TEST_F(ScriptHostTest, ExampleScriptsCreatePulseAndNotify)
 
 TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
 {
+    const QString gitProgram = QStandardPaths::findExecutable("git");
+    if (gitProgram.isEmpty()) GTEST_SKIP() << "git is not installed";
+    // A repository whose own config names a clean filter for every file, with an
+    // index entry whose timestamp no longer matches: comparing the work tree runs it.
+    const QString repository = files.filePath("repository");
+    const QString marker = files.filePath("filter-ran");
+    auto git = [&](const QStringList& args) {
+        QProcess p;
+        p.start(gitProgram, QStringList{"-C", repository} + args);
+        return p.waitForFinished(5000) && p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+    };
+    ASSERT_TRUE(QDir().mkpath(repository));
+    ASSERT_TRUE(git({"init", "-q", "-b", "trunk"}));
+    write(files, "repository/.gitattributes", "* filter=evil\n");
+    write(files, "repository/file", "text\n");
+    ASSERT_TRUE(git({"add", ".gitattributes", "file"}));
+    ASSERT_TRUE(git({"config", "filter.evil.clean", "touch '" + marker + "'; cat"}));
+    {
+        QFile f(files.filePath("repository/file"));
+        ASSERT_TRUE(f.open(QIODevice::ReadWrite));
+        ASSERT_TRUE(f.setFileTime(QDateTime::fromSecsSinceEpoch(1577836800), QFileDevice::FileModificationTime));
+    }
+
     installPackage("tab-status");
-    write(user, "tab-status/config.json", R"({"git":true})");
-    paneState[7]["cwd"] = files.path();
+    write(user, "tab-status/config.json", R"({"git":true,"segments":["git"],"tab_title":false})");
+    paneState[7]["cwd"] = repository;
     paneState[7]["context"] = "";
     tabs = {QVariantMap{{"active_pane", 7}}};
+    auto shows = [&](const QString& text) {
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < 5000) {
+            host->dispatch("on_timer", 0, {{"name", "refresh"}});
+            for (int i = 0; i < 20; ++i) { QCoreApplication::processEvents(); QThread::msleep(5); }
+            if (!rec.applied.isEmpty() && rec.applied.last().value("text") == text) return true;
+        }
+        return false;
+    };
     host->setEnabled(true);
-    host->dispatch("on_timer", 0, {{"name", "refresh"}});
-    for (int i = 0; i < 6; ++i) QCoreApplication::processEvents();
-    QStringList command;
-    for (const auto& r : rec.results) if (r.first["kind"] == "exec") command = r.first["command"].toStringList();
-    ASSERT_GE(command.size(), 3);
-    EXPECT_EQ(command.mid(0, 3), QStringList({"git", "-c", "core.fsmonitor=false"}));
+    ASSERT_TRUE(shows("trunk"));
+    EXPECT_FALSE(QFile::exists(marker));
+    for (const auto& r : rec.results) {
+        if (r.first["kind"] != "exec") continue;
+        const auto command = r.first["command"].toStringList();
+        EXPECT_EQ(command.mid(0, 3), QStringList({"git", "-c", "core.fsmonitor=false"}));
+        EXPECT_FALSE(command.contains("status"));
+    }
+
+    // The change mark is opt-in, because git status compares the work tree.
+    // That it runs the filter shows that the repository above would have run it.
+    write(user, "tab-status/config.json", R"({"git":true,"git_changes":true,"segments":["git"],"tab_title":false})");
+    host->reload();
+    ASSERT_TRUE(shows("trunk *"));
+    EXPECT_TRUE(QFile::exists(marker));
 }
 
 TEST_F(ScriptHostTest, NavigatorOpensAProjectWithoutAskingForALayout)
@@ -2542,6 +2772,39 @@ TEST_F(ScriptHostTest, NavigatorOpensAProjectWithoutAskingForALayout)
     }
 }
 
+TEST_F(ScriptHostTest, NavigatorReusesARunningDirectoryWithoutAskingForALayout)
+{
+    installPackage("project-navigator");
+    write(user, "project-navigator/config.json", R"({"roots":[],"fd":false,"zoxide":false})");
+    windows = {QVariantMap{{"id", 1}, {"project_directory", "/tmp/nav-running"}, {"active_pane", 7}}};
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        const auto kind = e.value("kind").toString();
+        if (kind == "list_projects") return {{}, {{"names", QStringList{"dev"}}}, {}};
+        if (kind == "select") {
+            if (e.value("title").toString().startsWith("Layout for")) return {{}, {{"id", "shell"}}, {}};
+            for (const auto& item : e.value("items").toList())
+                if (item.toMap().value("title").toString() == "[running] /tmp/nav-running") return {{}, {{"id", item.toMap().value("id")}}, {}};
+        }
+        if (kind == "open_directory") return {{}, {{"window_id", 1}, {"cwd", "/tmp/nav-running"}, {"reused", true}}, {}};
+        return {};
+    };
+    paneState[7]["cwd"] = "/tmp";
+    host->setEnabled(true);
+    ASSERT_TRUE(host->runAction("project-navigator.open", 7));
+    ASSERT_TRUE(await([&] {
+        return std::any_of(rec.applied.begin(), rec.applied.end(), [](const auto& e) { return e.value("kind") == "open_directory"; });
+    }));
+    for (const auto& e : rec.applied) {
+        if (e.value("kind") == "open_directory") {
+            EXPECT_EQ(e.value("cwd"), "/tmp/nav-running");
+            EXPECT_EQ(e.value("layout"), "");
+        }
+        if (e.value("kind") == "select") {
+            EXPECT_FALSE(e.value("title").toString().startsWith("Layout for"));
+        }
+    }
+}
+
 TEST_F(ScriptHostTest, SceneControlsEscapeShowsNoNotice)
 {
     installPackage("scene-controls");
@@ -2557,6 +2820,67 @@ TEST_F(ScriptHostTest, SceneControlsEscapeShowsNoNotice)
     ASSERT_TRUE(host->runAction("scene-controls.open", 7));
     for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
     for (const auto& e : rec.applied) EXPECT_NE(e["kind"], "notify");
+}
+
+TEST_F(ScriptHostTest, SceneControlsKeepsOnlyAcceptedValuesInItsLayer)
+{
+    installPackage("scene-controls");
+    // The effective values hold another script's override (strength 0.1). The
+    // host refuses a strength above 1, as validateParameters does for a range.
+    const QVariantMap strength{{"id", "strength"}, {"name", "Strength"}, {"type", "float"}, {"supported", true}};
+    const QVariantMap radius{{"id", "radius"}, {"name", "Radius"}, {"type", "float"}, {"supported", true}};
+    QString choice; ///< the parameter to edit next, or "@preset"
+    QList<QVariantMap> sent;
+    applyHook = [&](const QVariantMap& e) -> ScriptHost::EffectResult {
+        const auto kind = e.value("kind").toString();
+        if (kind == "shaders")
+            return {{}, {{"shaders", QVariantList{QVariantMap{{"instance", "i"}, {"shader", "bloom"}, {"layer", "pane"},
+                {"parameters", QVariantList{strength, radius}}, {"values", QVariantMap{{"strength", 0.1}, {"radius", 1}}}}}}}, {}};
+        if (kind == "shader_presets") return {{}, {{"presets", QVariantList{QVariantMap{{"id", "soft"}, {"name", "Soft"}}}}}, {}};
+        if (kind == "shader_preset") return {{}, {{"values", QVariantMap{{"strength", 0.8}, {"radius", 3}}}}, {}};
+        if (kind == "shader_parameters") {
+            sent.append(e.value("values").toMap());
+            if (e.value("values").toMap().value("strength", 0).toDouble() > 1)
+                return {"Shader parameter outside its declared range", {}, "operation_failed"};
+            return {};
+        }
+        if (kind != "select") return {};
+        const auto title = e.value("title").toString();
+        if (title == "Select effect") return {{}, {{"id", "i"}}, {}};
+        if (title == "Scene controls") return {{}, {{"id", choice == "@preset" ? "presets" : "edit"}}, {}};
+        if (title == "Choose preset") return {{}, {{"id", "soft"}}, {}};
+        return {{}, {{"id", choice}}, {}};
+    };
+    host->setEnabled(true);
+    auto pump = [] { for (int i = 0; i < 10; ++i) QCoreApplication::processEvents(); };
+    auto edit = [&](const QString& id, const QString& value) {
+        choice = id;
+        pendingReply = {};
+        ASSERT_TRUE(host->runAction("scene-controls.open", 7));
+        pump();
+        ASSERT_TRUE(bool(pendingReply));
+        pendingReply({{}, {{"text", value}}, {}});
+        pump();
+    };
+    edit("strength", "9");
+    ASSERT_EQ(sent.size(), 1);
+    EXPECT_EQ(sent.last(), QVariantMap({{"strength", 9}}));
+    // The refused strength is not sent again with the next edit.
+    edit("radius", "2");
+    ASSERT_EQ(sent.size(), 2);
+    EXPECT_EQ(sent.last(), QVariantMap({{"radius", 2}}));
+    edit("strength", "0.5");
+    EXPECT_EQ(sent.last(), QVariantMap({{"radius", 2}, {"strength", 0.5}}));
+
+    // Each edit applies six effects: wait for the second of 20 applied
+    // effects to pass, so that the next twelve are not rate_limited.
+    await([] { return false; }, 1100);
+    // After a preset, an edit keeps the preset's values, not the effective ones.
+    choice = "@preset";
+    ASSERT_TRUE(host->runAction("scene-controls.open", 7));
+    pump();
+    edit("radius", "4");
+    EXPECT_EQ(sent.last(), QVariantMap({{"strength", 0.8}, {"radius", 4}}));
 }
 
 int main(int argc, char** argv)

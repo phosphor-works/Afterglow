@@ -19,6 +19,13 @@ import tempfile
 import time
 
 
+def check(condition, *detail):
+    """Raises AssertionError when condition is false. Not assert: python -O must
+    not turn the checks off."""
+    if not condition:
+        raise AssertionError(*detail)
+
+
 def transfer(relay, arguments):
     helper = subprocess.Popen([relay, "--protocol-relay"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     pid, master = pty.fork()
@@ -57,7 +64,7 @@ def transfer(relay, arguments):
             found, status = os.waitpid(pid, os.WNOHANG)
             if found:
                 reaped = True
-                assert os.waitstatus_to_exitcode(status) == 0, transcript[-4000:].decode(errors="replace")
+                check(os.waitstatus_to_exitcode(status) == 0, transcript[-4000:].decode(errors="replace"))
                 # The last packets (finish) can arrive after the last read. Read to EOF.
                 while True:
                     try:
@@ -114,19 +121,19 @@ def main():
             destination.mkdir()
             transfer(relay, ["--direction=" + direction, str(source), str(destination) + "/"])
             copied = destination / "source"
-            assert (copied / "file").read_bytes() == contents
-            assert (copied / "symlink").is_symlink()
-            assert (copied / "symlink").read_bytes() == contents
-            assert (copied / "file").stat().st_ino == (copied / "hardlink").stat().st_ino
+            check((copied / "file").read_bytes() == contents)
+            check((copied / "symlink").is_symlink())
+            check((copied / "symlink").read_bytes() == contents)
+            check((copied / "file").stat().st_ino == (copied / "hardlink").stat().st_ino)
             if direction == "send":
                 nested = (copied / "nested").stat()
-                assert nested.st_mode & 0o777 == 0o750, oct(nested.st_mode)
-                assert int(nested.st_mtime) == modified, nested.st_mtime
+                check(nested.st_mode & 0o777 == 0o750, oct(nested.st_mode))
+                check(int(nested.st_mtime) == modified, nested.st_mtime)
             empty = copied / "nested" / "empty"
             if direction == "receive" and not empty.exists() and args.allow_client_empty_file_bug:
                 print("Client omitted an empty received file (known kitten 0.49.2 bug).", flush=True)
             else:
-                assert empty.read_bytes() == b""
+                check(empty.read_bytes() == b"")
             print(direction + ": recursive compressed transfer and links passed", flush=True)
         for direction in ("send", "receive"):
             destination = root / (direction + "-delta")
@@ -134,7 +141,7 @@ def main():
             changed = root / "changed"
             changed.write_bytes(b"inserted prefix\n" + contents + b"suffix\n")
             transfer(relay, ["--direction=" + direction, "--transmit-deltas", str(changed), str(destination)])
-            assert destination.read_bytes() == changed.read_bytes()
+            check(destination.read_bytes() == changed.read_bytes())
             print(direction + ": delta transfer passed", flush=True)
 
 

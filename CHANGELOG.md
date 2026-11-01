@@ -26,7 +26,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - The Kitty keyboard protocol, with a flag stack for each screen, and xterm `modifyOtherKeys`.
 - Mouse reporting in X10, normal, button-event and any-event modes, with UTF-8, SGR, urxvt and SGR-pixel encodings.
 - Focus reports, bracketed paste and alternate-scroll mode.
-- Keypad keys with Num Lock off, which the kitty protocol reports as keypad keys, and the function keys F13 to F35.
+- Keypad keys with Num Lock off, which the Kitty protocol reports as keypad keys, and the function keys F13 to F35.
 - The Kitty mouse-pointer protocol (OSC 22), with separate shape stacks for the main and alternate screens.
 - Pastes keep tab, carriage return and line feed, and drop all other control characters.
 - A prompt before a paste with a line break reaches a program that does not use bracketed paste.
@@ -35,7 +35,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Kitty graphics: transmission, placement, animation, Unicode placeholders and relative placements with parent chains.
 - Kitty images sent as a file, a temporary file or shared memory, unless `Terminal.graphicsFileTransfer` is `deny`.
-- An image memory limit for each pane (`Graphics.quota`, 320 MiB by default). The oldest images go first.
+- An image memory limit for the main and the alternate screen of each pane (`Graphics.quota`, 320 MiB each by default). The oldest images go first.
 - Sixel images.
 - iTerm2 inline images and file downloads (OSC 1337), with a native Save dialog.
 - Kitty text sizing (OSC 66).
@@ -74,7 +74,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 ### Windows, tabs and panes
 
 - Tabs and split panes, with pane zoom, resize, swap, rotation and directional focus.
-- Ctrl+Shift+Alt+= equalizes the splits of a tab, so that Ctrl++ and Ctrl+= make the font larger.
+- Ctrl+Shift+Alt+= equalizes the splits of a tab. Ctrl++ and Ctrl+= make the font larger.
 - Animated splits whose motion takes any Phosphor curve, such as a spring or a cubic Bézier.
 - Phosphor curves for the cursor, scrolling, the visual bell and the quick terminal (`Animation.cursorCurve`, `scrollCurve`, `bellCurve` and `QuickTerminal.curve`).
 - A pane overview that shows the panes of every tab as live 3D cards to choose from, drawn by a replaceable shader pack.
@@ -90,7 +90,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Search with PCRE2 regular expressions, across soft-wrapped lines.
 - Keyboard selection in character, line and rectangle modes.
-- Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Links.hintAlphabet`.
+- Text hints that copy, open or run commands on regular-expression matches, and URL hints, labeled from `Hints.alphabet`.
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
 - Bindings that match Shift+Tab and shifted symbols, and that use the Latin layout for letters on other keyboard layouts.

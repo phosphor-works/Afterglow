@@ -2,7 +2,7 @@
     "id": "bloom",
     "name": "Bloom",
     "category": "Glow",
-    "description": "Bright text and colours glow softly into the space around them.",
+    "description": "Bright text and colors glow softly into the space around them.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",

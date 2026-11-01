@@ -12,7 +12,7 @@ The following table describes tested features. It does not claim complete xterm,
 | Feature | Supported behavior | Regression and interoperability fixture |
 | --- | --- | --- |
 | Kitty relative images | `P`, `Q`, signed `H`/`V`; parent movement; chained parents; cascade deletion; missing-parent, cycle and depth errors; virtual placeholder parents | `Graphics.Relative*`, `Graphics.TransmitAndPlaceReportsInvalidRelativeParent` and transmit/placeholder pixel regressions; [moving-image client](../data/examples/compatibility/relative-images.py) |
-| Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursor*`, `Extensions.ExtraCursorColors*`, `Terminal.ExtraCursorsAreBounded`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
+| Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursor*`, `Extensions.ExtraCursorColors*`, `Extensions.ResizeClipsExtraCursorsToTheScreen`, `Terminal.ExtraCursorsAreBounded`, `Terminal.ResizeClipsExtraCursorsToTheClampedSize`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
 | OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; explicit native Save dialog; cancellation; bounded data | `Extensions.Downloads*`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
 | IME context | Live cursor-row surrounding text, before/after text, UTF-16 position and cursor rectangle | `DesktopText.*`; [IME behavior](DESKTOP.md#input-methods-and-directionality) |
 | Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI | `DesktopText.*`, `desktop_acceptance.py` |
@@ -28,8 +28,8 @@ Each store has these limits:
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
-| Images | 4,096 | A Kitty command gets an `ENOSPC` error. |
-| Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel image removes the oldest placement. |
+| Images | 4,096 | Afterglow deletes the oldest image without a placement. When every image has a placement, a Kitty command gets an `ENOSPC` error. |
+| Placements | 4,096 | A Kitty command gets an `ENOSPC` error. A new Sixel or iTerm2 image removes the oldest Sixel or iTerm2 placement. When there is none, Afterglow does not keep the new image. |
 | Frames per image | 1,024 | A Kitty command gets an `ENOSPC` error. |
 | Image data | `Graphics.quota`, 320 MiB by default | Afterglow deletes the oldest image without a placement, then the oldest image. |
 | Pending transmissions | 320 MiB | The transmission fails with an `EFBIG` error. |
@@ -135,17 +135,10 @@ Support for a protocol does not imply support for every optional operation.
 Run focused tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi'
+ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.TransmitAndPlaceReportsInvalidRelativeParent|Extensions.Multiple|Terminal.ExtraCursorsAreBounded|Terminal.ResizeClipsExtraCursors|Extensions.ResizeClipsExtraCursors|Extensions.ExtraCursor|Extensions.Download|DesktopText|FileDrop|Render.Multiple|SnapshotCursor|Bidi'
 ```
 
-Run native acceptance:
-
-```sh
-python3 afterglow/tests/desktop_acceptance.py build/afterglow/afterglow
-```
-
-Native acceptance requires the [nested-desktop dependencies](DESKTOP.md#native-acceptance-coverage), `python-dbus` and AT-SPI.
-It uses temporary configuration and a private session bus.
+See [accessibility and downloads](TESTING.md#accessibility-and-downloads) for the native acceptance suite.
 
 ## Kitty color control and pointer shapes
 

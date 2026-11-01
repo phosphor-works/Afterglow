@@ -191,10 +191,9 @@ void ControlBus::Notify(uint pane, const QString& title, const QString& body)
 
 void ControlBus::RunAction(uint pane, const QString& action)
 {
-    // Selecting, copying and pasting move pane text to the clipboard and into
-    // other panes: the same reading that GetText needs permission for.
-    if (!m_settings.settings().control.allowReadText
-        && (action == QLatin1String("copy") || action == QLatin1String("paste") || action == QLatin1String("select_all"))) {
+    // These move pane text to the clipboard, into other panes or into a pager
+    // file: the same reading that GetText needs permission for.
+    if (!m_settings.settings().control.allowReadText && Control::readsPaneText(action)) {
         fail(QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action));
         return;
     }

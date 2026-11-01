@@ -34,6 +34,13 @@ SHIFTED = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ_+:"!?()<>|&*$#@%^~{}')
 MODIFIER_MASKS = {"Shift": 1, "Control": 4, "Alt": 8, "Meta": 8, "Super": 64}
 
 
+def check(condition, *detail):
+    """Raises AssertionError when condition is false. Not assert: python -O must
+    not turn the checks off, or skip the X calls that some checks make."""
+    if not condition:
+        raise AssertionError(*detail)
+
+
 def wait_for(condition, timeout=10):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -83,9 +90,18 @@ class NestedDesktop:
         # The application environment. A private data home keeps the user's own
         # scripts and shader packs out of the run. The generic platform theme and
         # the Basic style keep portal activation and the desktop style out of it.
+        # Qt's default message pattern keeps log lines in the form that the
+        # harnesses match, whatever the developer's own pattern is.
         self.env = dict(os.environ, XDG_CONFIG_HOME=str(root), XDG_DATA_HOME=str(root / "data"),
                         QT_QPA_PLATFORM="wayland", WAYLAND_DISPLAY=self.socket,
-                        QT_QPA_PLATFORMTHEME="generic", QT_QUICK_CONTROLS_STYLE="Basic")
+                        QT_QPA_PLATFORMTHEME="generic", QT_QUICK_CONTROLS_STYLE="Basic",
+                        QT_MESSAGE_PATTERN="%{if-category}%{category}: %{endif}%{message}")
+        # A harness started in an Afterglow pane inherits that pane's bus name and
+        # pane ID. `afterglow ctl` would then call the user's instance (a unique
+        # name of the session bus, unknown on the private bus) instead of the
+        # nested one, and default to a pane that the nested one does not have.
+        for name in ("AFTERGLOW_BUS_NAME", "AFTERGLOW_PANE_ID"):
+            self.env.pop(name, None)
         (root / "kwinrc").write_text(KWINRC)
         self.log = (root / "kwin.log").open("w")
         self.process = None
@@ -129,7 +145,7 @@ class NestedDesktop:
             self.x.XKeysymToKeycode.restype = C.c_uint
             self.x.XSetErrorHandler(_IGNORE_X_ERRORS)
             self.display = self.x.XOpenDisplay(None)
-            assert self.display, "Cannot open DISPLAY"
+            check(self.display, "Cannot open DISPLAY")
             self.window = wait_for(lambda: self.find_window(self.x.XDefaultRootWindow(self.display)))
             if self.fixed_size:
                 self.set_fixed_size()
@@ -193,8 +209,8 @@ class NestedDesktop:
         value.time = int(time.monotonic() * 1000) & 0xffffffff
         value.x, value.y = px, py
         rx, ry, child = C.c_int(), C.c_int(), C.c_ulong()
-        assert self.x.XTranslateCoordinates(self.display, self.window, value.root, px, py,
-                                            C.byref(rx), C.byref(ry), C.byref(child))
+        check(self.x.XTranslateCoordinates(self.display, self.window, value.root, px, py,
+                                           C.byref(rx), C.byref(ry), C.byref(child)), "XTranslateCoordinates failed")
         value.x_root, value.y_root = rx.value, ry.value
         value.state, value.same_screen = state, 1
         return event, value
@@ -205,14 +221,14 @@ class NestedDesktop:
         if kind != 6:
             value.button = 1
         mask = (1 << 6) | (1 << 13) if kind == 6 else (1 << (kind - 2))
-        assert self.x.XSendEvent(self.display, self.window, 0, mask, C.byref(event))
+        check(self.x.XSendEvent(self.display, self.window, 0, mask, C.byref(event)), "XSendEvent failed")
         self.x.XFlush(self.display)
 
     def size(self):
         root, x, y = C.c_ulong(), C.c_int(), C.c_int()
         w, h, border, depth = C.c_uint(), C.c_uint(), C.c_uint(), C.c_uint()
-        assert self.x.XGetGeometry(self.display, self.window, C.byref(root), C.byref(x), C.byref(y),
-            C.byref(w), C.byref(h), C.byref(border), C.byref(depth))
+        check(self.x.XGetGeometry(self.display, self.window, C.byref(root), C.byref(x), C.byref(y),
+              C.byref(w), C.byref(h), C.byref(border), C.byref(depth)), "XGetGeometry failed")
         return w.value, h.value
 
     def activate(self):
@@ -225,7 +241,7 @@ class NestedDesktop:
 
     def _keycode(self, name):
         code = self.x.XKeysymToKeycode(self.display, self.x.XStringToKeysym(name.encode()))
-        assert code, name
+        check(code, f"No keycode for {name}")
         return code
 
     def key(self, name, modifiers=()):
@@ -234,7 +250,7 @@ class NestedDesktop:
         def send(code, down):
             event, value = self._event(2 if down else 3, 0, 0, state)
             value.keycode = code
-            assert self.x.XSendEvent(self.display, self.window, 0, 1 if down else 2, C.byref(event))
+            check(self.x.XSendEvent(self.display, self.window, 0, 1 if down else 2, C.byref(event)), "XSendEvent failed")
         modifier_codes = [self._keycode(modifier) for modifier in modifiers]
         for code in modifier_codes:
             send(code, True)
@@ -308,7 +324,7 @@ class Session:
         """Runs a ctl command that must fail, and returns its error text."""
         result = subprocess.run([self.binary, "ctl", *map(str, args)], env=self.env,
                                 capture_output=True, text=True, timeout=5)
-        assert result.returncode != 0, f"ctl {args} succeeded: {result.stdout}"
+        check(result.returncode != 0, f"ctl {args} succeeded: {result.stdout}")
         return result.stderr
 
     def panes(self):

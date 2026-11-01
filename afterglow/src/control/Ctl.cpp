@@ -188,14 +188,12 @@ int runCtl(int argc, char** argv)
     if (!Commands.contains(command)) return usage(QStringLiteral("unknown command %1").arg(command));
 
     // Options before "--". What follows is a command to run, or more text.
+    // The text joins the words only after the options are taken, so that
+    // words after "--" are never read as options.
     QStringList trailing;
     if (const qsizetype dash = args.indexOf(QStringLiteral("--")); dash >= 0) {
         trailing = args.mid(dash + 1);
         args = args.mid(0, dash);
-    }
-    if (command == QLatin1String("send-text") || command == QLatin1String("set-title") || command == QLatin1String("notify")) {
-        args += trailing;
-        trailing.clear();
     }
     auto takeFlag = [&args](const QString& flag) { return args.removeAll(flag) > 0; };
     auto takeValue = [&args](const QString& flag) -> std::optional<QString> {
@@ -352,6 +350,7 @@ int runCtl(int argc, char** argv)
         QString text;
         if (takeFlag(QStringLiteral("--stdin"))) {
             if (const auto error = extra(0)) return usage(*error);
+            if (!trailing.isEmpty()) return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
             QFile in;
             if (!in.open(stdin, QIODevice::ReadOnly)) {
                 return fail(QStringLiteral("cannot read standard input"));
@@ -360,7 +359,7 @@ int runCtl(int argc, char** argv)
         } else {
             const bool raw = takeFlag(QStringLiteral("--raw"));
             if (const auto error = extra(-1)) return usage(*error);
-            text = args.join(QLatin1Char(' '));
+            text = (args + trailing).join(QLatin1Char(' '));
             if (!raw) {
                 text = unescape(text);
             }
@@ -417,7 +416,7 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("set-title")) {
         if (const auto error = extra(-1)) return usage(*error);
-        return call(QStringLiteral("SetTitle"), {*pane, args.join(QLatin1Char(' '))}, reply) ? 0 : 1;
+        return call(QStringLiteral("SetTitle"), {*pane, (args + trailing).join(QLatin1Char(' '))}, reply) ? 0 : 1;
     }
     if (command == QLatin1String("signal")) {
         bool okChannel = false;
@@ -432,10 +431,11 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("notify")) {
         if (const auto error = extra(-1)) return usage(*error);
-        if (args.isEmpty()) {
+        const QStringList words = args + trailing;
+        if (words.isEmpty()) {
             return usage(QStringLiteral("notify needs a title"));
         }
-        return call(QStringLiteral("Notify"), {*pane, args.value(0), args.mid(1).join(QLatin1Char(' '))}, reply) ? 0 : 1;
+        return call(QStringLiteral("Notify"), {*pane, words.value(0), words.mid(1).join(QLatin1Char(' '))}, reply) ? 0 : 1;
     }
     if (command == QLatin1String("action")) {
         if (const auto error = extra(1)) return usage(*error);

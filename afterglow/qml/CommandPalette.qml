@@ -25,7 +25,6 @@ Item {
         if (visible) {
             input.text = ""
             list.currentIndex = 0
-            Qt.callLater(() => { if (commandPalette.visible) takeFocus() })
         }
     }
 
@@ -41,13 +40,9 @@ Item {
             controller.runAction(matches[index].id)
     }
 
-    Rectangle {
-        anchors.fill: parent
-        color: commandPalette.controller.scrimColor
-        MouseArea {
-            anchors.fill: parent
-            onClicked: commandPalette.controller.paletteOpen = false
-        }
+    Scrim {
+        controller: commandPalette.controller
+        onDismissed: commandPalette.controller.paletteOpen = false
     }
 
     Pane {

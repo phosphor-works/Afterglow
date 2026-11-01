@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 import dbus
-from nested_desktop import NestedDesktop, wait_for
+from nested_desktop import NestedDesktop, check, wait_for
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary', type=Path)
@@ -84,15 +84,15 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             content = str(text.GetText(0, -1))
             print('AT-SPI text:', repr(content))
             start = content.index('ACCESSIBLE-READY')
-            assert text.AddSelection(start, start + 10)
-            assert tuple(map(int, text.GetSelection(0))) == (start, start + 10)
-            assert int(text.GetNSelections()) == 1
-            assert text.RemoveSelection(0)
+            check(text.AddSelection(start, start + 10))
+            check(tuple(map(int, text.GetSelection(0))) == (start, start + 10))
+            check(int(text.GetNSelections()) == 1)
+            check(text.RemoveSelection(0))
             cursor = int(dbus.Interface(terminal, P).Get(T, 'CaretOffset'))
-            assert content[:cursor].endswith('desktop> '), (content, cursor)
+            check(content[:cursor].endswith('desktop> '), (content, cursor))
             rect = text.GetCharacterExtents(start, 0)
-            assert int(rect[2]) > 0 and int(rect[3]) > 0
-            assert int(text.GetOffsetAtPoint(int(rect[0]) + 1, int(rect[1]) + 1, 0)) == start
+            check(int(rect[2]) > 0 and int(rect[3]) > 0)
+            check(int(text.GetOffsetAtPoint(int(rect[0]) + 1, int(rect[1]) + 1, 0)) == start)
             print('PASS: AT-SPI content, cursor, selection and character geometry')
             def nodes():
                 result = []
@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
                 return None
             def press(name):
                 obj = wait_for(lambda: button(name))
-                assert dbus.Interface(obj, 'org.a11y.atspi.Action').DoAction(0)
+                check(dbus.Interface(obj, 'org.a11y.atspi.Action').DoAction(0))
             # A real protocol download; receiving alone must not write a file.
             fixture = root / 'download.sh'
             offered = 'desktop-test.txt'
@@ -129,8 +129,8 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             wait_for(lambda: button('cancel') is None)
             # The home directory, and every download directory in it, is under root.
             written = [p for p in root.rglob(offered) if p != source]
-            assert not written, written
-            assert not (root / 'accepted.txt').exists()
+            check(not written, written)
+            check(not (root / 'accepted.txt').exists())
             time.sleep(.5)
             offer()
             wait_for(lambda: button('save'))
@@ -138,10 +138,10 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             fields = [(obj, name) for obj, name, role, interfaces in nodes() if 'org.a11y.atspi.EditableText' in interfaces]
             print('Save dialog fields:', [name for _, name in fields])
             field = next(obj for obj, name in fields if 'file name' in name.lower())
-            assert dbus.Interface(field, 'org.a11y.atspi.EditableText').SetTextContents(str(destination))
+            check(dbus.Interface(field, 'org.a11y.atspi.EditableText').SetTextContents(str(destination)))
             press('save')
             wait_for(destination.exists)
-            assert destination.read_bytes() == b'hello'
+            check(destination.read_bytes() == b'hello')
             print('PASS: OSC 1337 cancellation and explicit save')
         finally:
             if (root / 'kwin.log').exists():

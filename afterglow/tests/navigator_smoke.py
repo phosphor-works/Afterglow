@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from nested_desktop import NestedDesktop, Session
+from nested_desktop import NestedDesktop, Session, check
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
         try:
             first = wait(panes)[0]['id']; wait(lambda: 'T3>' in screen(first))
             wait(lambda: navigator().get('status') == 'active')
-            assert saved()['version'] == 2 and saved()['revision'] == 2, saved()
+            check(saved()['version'] == 2 and saved()['revision'] == 2, saved())
             # Actual Luau action -> native launch -> result -> durable history.
             ctl('action', 'script:project-navigator.previous', '--pane', first)
             wait(lambda: len(panes()) == 2)
@@ -56,35 +56,35 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             newpane = launched['id']; wait(lambda: 'T3>' in screen(newpane))
             pid = identity(newpane)
             reused = json.loads(ctl('open-directory', project))
-            assert reused['reused'] and reused['pane_id'] == newpane and len(panes()) == 2
-            assert identity(newpane) == pid
+            check(reused['reused'] and reused['pane_id'] == newpane and len(panes()) == 2)
+            check(identity(newpane) == pid)
             ctl('action', 'script:project-navigator.favorite', '--pane', newpane)
             wait(lambda: saved()['revision'] == 4)
-            assert str(project) not in saved()['value']['favorites']
+            check(str(project) not in saved()['value']['favorites'])
             second = int(ctl('split', '--pane', newpane, '--right'))
             wait(lambda: 'T3>' in screen(second))
             ctl('save-project', 'two-pane', '--pane', newpane)
             other = root / 'other'; other.mkdir()
             template = json.loads(ctl('open-directory', other, '--layout', 'two-pane'))
-            assert len(template['pane_ids']) == 2, template
+            check(len(template['pane_ids']) == 2, template)
             for pane in template['pane_ids'].values():
                 wait(lambda: next(p['cwd'] for p in panes() if p['id'] == pane) == str(other))
             before = len(panes())
             s.failing_ctl('open-directory', root / 'missing')
-            assert len(panes()) == before
+            check(len(panes()) == before)
             # Atomic module edits keep the last good package and then recover.
             module = package / 'history.luau'; original = module.read_text()
             module.write_text('invalid syntax !')
             wait(lambda: navigator().get('status') == 'last-good')
-            assert navigator()['error']
+            check(navigator()['error'])
             module.write_text(original)
             wait(lambda: navigator().get('status') == 'active')
             s.stop()
             s.start('Afterglow navigator restored probe')
             wait(panes)
             wait(lambda: navigator().get('status') == 'active')
-            assert saved()['revision'] == 4 and saved()['version'] == 2
-            assert saved()['value']['recent'][0]['value'] == str(project)
+            check(saved()['revision'] == 4 and saved()['version'] == 2)
+            check(saved()['value']['recent'][0]['value'] == str(project))
             print('PASS: installed package, schema migration, Luau previous-project action, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history')
         except Exception:
             print(s.log_text(5000), file=sys.stderr)

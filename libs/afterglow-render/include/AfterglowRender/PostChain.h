@@ -246,7 +246,11 @@ private:
     bool showing(const std::vector<ShaderProgramPtr>& chain) const noexcept;
     bool highDynamicRange() const;
     bool textHistory() const;
+    /// The window-sized textures and the shader buffers.
     void releaseTextures();
+    /// The window-sized textures only: shader buffers have their own formats
+    /// and render passes, so they and their contents stay.
+    void releaseTargets();
     void releaseTabImages();
     /// One render-pass descriptor per attachment layout, shared by every
     /// buffer state with that layout, so their pipelines are shared too.

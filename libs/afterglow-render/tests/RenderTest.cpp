@@ -827,6 +827,47 @@ TEST_F(Render, BufferFormatRetainsHdrAndNonfeedbackClears)
     }
 }
 
+TEST_F(Render, FeedbackBufferGoesOnWhileAnHdrEventChainStartsAndEnds)
+{
+    // The HDR overview changes the window textures' format; the always-on
+    // window chain's feedback buffer has its own and keeps accumulating.
+    ShaderProgramSource src;
+    src.id = QStringLiteral("feedback-under-hdr");
+    ShaderBufferSource buffer; buffer.feedback = true;
+    buffer.code = "#include <terminal_multipass.glsl>\n"
+        "vec4 pTerminal(vec2 uv){vec4 c=texture(iChannel0,uv)+vec4(customParams[0].x,0,0,0);c.a=1.;return c;}";
+    src.buffers = {buffer};
+    src.code = "#include <terminal_multipass.glsl>\nvec4 pTerminal(vec2 uv){return texture(iChannel0,uv);}";
+    QString error;
+    auto compiled = ShaderProgram::compile(src, &error);
+    ASSERT_TRUE(compiled) << error.toStdString();
+    auto program = compiled->instance(QStringLiteral("feedback-under-hdr"));
+    ShaderChains chains;
+    chains.window = {program};
+    chains.overview = {layerShader("hdr-overview", "", true)};
+    renderer->setShaderChains(chains);
+    terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    ShaderParameterValues values; values.paramMask = 1; values.params[0] = .1f;
+    pane.params.shaderParameters.insert(program->instanceId(), values);
+    auto frameAt = [&](float seconds) {
+        renderer->setClockOverride(seconds);
+        return renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+    };
+    EXPECT_PIXEL(frameAt(1.f), cellCenter(2, 2), qRgb(26, 0, 0));
+    EXPECT_PIXEL_NEAR(frameAt(2.f), cellCenter(2, 2), qRgb(51, 0, 0), 3);
+    const auto now = Clock::now();
+    renderer->setOverview(overviewAt(true, 1.0f, 0.0f, now, now));
+    ASSERT_TRUE(renderer->overviewShowing());
+    EXPECT_PIXEL_NEAR(frameAt(3.f), cellCenter(2, 2), qRgb(77, 0, 0), 4);
+    renderer->setOverview(overviewAt(false, 0.0f, 0.0f, now, now));
+    ASSERT_FALSE(renderer->overviewShowing());
+    EXPECT_PIXEL_NEAR(frameAt(4.f), cellCenter(2, 2), qRgb(102, 0, 0), 5);
+    renderer->setClockOverride(std::nullopt);
+}
+
 TEST_F(Render, BufferInstanceLimitUsesTransparentFallback)
 {
     ShaderProgramSource src; src.id=QStringLiteral("bounded");
@@ -962,6 +1003,44 @@ vec4 pTerminal(vec2 uv) {
     renderer->setShaderChains(chains);
     EXPECT_PIXEL(draw(), cellCenter(15, 0), qRgb(64, 128, 191));
     s_device->setAudioSpectrum({});
+}
+
+TEST_F(Render, IdleAudioEventChainBindsNoSpectrumBeforeItRuns)
+{
+    // A device of its own: the shared one may already hold a spectrum texture.
+    GpuDevice device{FontSpec{}};
+    device.rhi(nullptr);
+    ASSERT_EQ(device.audioTexture(), nullptr);
+    WindowRenderer fresh(device, nullptr);
+    ShaderProgramSource source;
+    source.id = QStringLiteral("audio-overview");
+    source.code = R"(#include <terminal_audio.glsl>
+vec4 pTerminal(vec2 uv) { return vec4(audioBar(0), 0.0, 1.0, 1.0); })";
+    QString error;
+    auto overview = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(overview) << error.toStdString();
+    ASSERT_TRUE(overview->requiresAudio());
+    ShaderChains chains;
+    chains.window = {layerShader("red-window", "fragColor = vec4(1.0, 0.0, 0.0, 1.0);")};
+    chains.overview = {overview};
+    fresh.setShaderChains(chains);
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(QPoint(), size);
+    // Closed: the window chain runs and the audio slot gets a real texture.
+    QImage image = fresh.renderToImage(size, {pane}, {}, 0xff000000u);
+    EXPECT_PIXEL(image, cellCenter(1, 0), qRgb(255, 0, 0));
+    EXPECT_EQ(device.audioTexture(), nullptr);
+    // Open: the frame that runs the overview creates and fills the spectrum.
+    std::array<float, GpuDevice::AudioBars> spectrum;
+    spectrum.fill(1.0f);
+    device.setAudioSpectrum(spectrum);
+    fresh.setOverview(overviewAt(true, 1.0f, 0.0f, Clock::now()));
+    image = fresh.renderToImage(size, {pane}, {}, 0xff000000u);
+    EXPECT_NE(device.audioTexture(), nullptr);
+    EXPECT_PIXEL(image, cellCenter(1, 0), qRgb(255, 0, 255));
 }
 
 TEST_F(Render, AudioInputSanitizesInvalidAndPartialFrames)
@@ -2317,23 +2396,61 @@ TEST(GlyphCache, OversizedSpritesDrawNothingInsteadOfThrowing)
     EXPECT_FALSE(small->empty);
 }
 
-TEST(GlyphCache, PagesUsedRecentlyStayAcrossManyRendersOverBudget)
+TEST(GlyphCache, OverBudgetOnlyAPageUnusedForStaleAfterDiscardsTheCache)
 {
     FontSet fonts(FontSpec{}, 1.0);
     GlyphCache cache;
+    // The renders' clock is the test's, so a slow setup does not age the pages.
+    const auto start = std::chrono::steady_clock::now();
     // Five full gray pages: 80 MiB, over the 64 MiB budget.
     int x = 0, y = 0, width = 49;
     while (cache.grayPageCount() < 5 && width > 0) {
         while (cache.grayPage(cache.grayPageCount() - 1).allocate(128, 128, x, y)) {}
-        cache.beginFrame(std::numeric_limits<std::size_t>::max() / 2, 8192);
+        cache.beginFrame(std::numeric_limits<std::size_t>::max() / 2, 8192, start);
         cache.sprite(fonts, U'\u2588', width--, 7); // a new size: a new entry, on a new page
     }
     ASSERT_GT(cache.bytes(), 64u * 1024 * 1024);
     const auto epoch = cache.epoch();
     // Other windows render many times in a fraction of a second: no page of
     // this window is stale yet.
-    for (int i = 0; i < 10; ++i) cache.beginFrame(1000, 8192);
+    for (int i = 0; i < 10; ++i) cache.beginFrame(1000, 8192, start + GlyphCache::StaleAfter / 2);
     EXPECT_EQ(cache.epoch(), epoch);
+    // No render used the older pages for longer than StaleAfter: start over.
+    cache.beginFrame(1000, 8192, start + GlyphCache::StaleAfter * 2);
+    EXPECT_NE(cache.epoch(), epoch);
+    EXPECT_EQ(cache.grayPageCount(), 1u);
+}
+
+TEST(GlyphCache, DirtyRegionsMergePerShelfAndAWholePageReplacesThem)
+{
+    AtlasPage page(QImage::Format_Grayscale8, 256, 256);
+    int x = 0, y = 0;
+    // Two glyphs of different heights on one shelf: one region.
+    ASSERT_TRUE(page.allocate(10, 12, x, y));
+    page.markDirty(QRect(x, y, 10, 12));
+    ASSERT_TRUE(page.allocate(8, 10, x, y));
+    ASSERT_EQ(y, 0);
+    page.markDirty(QRect(x, y, 8, 10));
+    // A taller glyph opens a shelf of its own: a second region.
+    ASSERT_TRUE(page.allocate(10, 40, x, y));
+    ASSERT_GT(y, 0);
+    page.markDirty(QRect(x, y, 10, 40));
+    auto dirty = page.takeDirty();
+    ASSERT_EQ(dirty.size(), 2u);
+    EXPECT_EQ(dirty[0], QRect(0, 0, 19, 12));
+    EXPECT_EQ(dirty[1], QRect(0, 13, 10, 40));
+    // A region that covers the others (a texture made again) replaces them.
+    page.markDirty(QRect(0, 0, 4, 4));
+    page.markDirty(QRect(0, 20, 4, 4));
+    page.markDirty(page.image().rect());
+    dirty = page.takeDirty();
+    ASSERT_EQ(dirty.size(), 1u);
+    EXPECT_EQ(dirty[0], page.image().rect());
+    // Past the limit a region joins its nearest one, not a box around all.
+    for (int row = 0; row <= 32; ++row) page.markDirty(QRect(0, row * 4, 2, 2));
+    dirty = page.takeDirty();
+    ASSERT_EQ(dirty.size(), 32u);
+    for (const QRect& rect : dirty) EXPECT_LE(rect.height(), 6);
 }
 
 TEST(GlyphCache, DashedLinesKeepEveryDashOrDrawSolid)
@@ -2377,7 +2494,7 @@ TEST_F(Render, KittyImagesFarBelowGoUnderCellBackgrounds)
     // its own green background, which covers the image; the second does not.
     const QImage img = render("\x1b[?25l\x1b[2;2H\x1b[42m \x1b[0m\x1b[2;2H"
                               "\x1b_Ga=T,f=32,s=1,v=1,c=2,r=1,z=-1073741825,q=2;/wAA/w==\x1b\\");
-    EXPECT_PIXEL(img, cellCenter(1, 1), qRgb(0x55, 0xcc, 0x55));
+    EXPECT_PIXEL(img, cellCenter(1, 1), rgb(packRgba(AfterglowVt::TerminalOptions{}.basePalette[2])));
     EXPECT_PIXEL_NEAR(img, cellCenter(2, 1), qRgb(255, 0, 0), 40);
 }
 

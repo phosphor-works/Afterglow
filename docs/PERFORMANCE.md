@@ -146,13 +146,13 @@ This set uses the headless VT benchmark, not the native benchmark.
 It measures the `Terminal::resize` call only. It does not measure rendering or frame time.
 Build with `-DAFTERGLOW_BUILD_TOOLS=ON`.
 Run `afterglow_vtbench --reflow [RUNS] [CASE]` from the build's `tools/bench` directory.
-`RUNS` is a positive integer, and the default is 5.
+`RUNS` is an integer from 1 to 1000, and the default is 5. Other values print the usage.
 `CASE` is a case-sensitive part of a case name, such as `long rich`.
 
 Each run fills a 200×50 terminal until it holds 100,000 history rows.
 The scrollback limit is 100,000 rows.
 The run then resizes to 180×45, 160×50, 140×45, 160×50, 180×45 and 200×50 four times.
-These are not the native benchmark's steps. Each resize changes the size by 20 columns or 5 rows.
+These are not the native benchmark's steps. Each resize changes the size by 20 columns and 5 rows.
 Each resize is timed in process CPU time, which is less sensitive to other load than elapsed time.
 A run gives the median and 95th percentile of its 24 resizes.
 Tables show the medians of five runs.
@@ -211,7 +211,7 @@ The native benchmark was not repeated, so these results do not give frame servic
 | History | `history` | Retain exactly 0, 100,000 or 1,000,000 rows, then measure idle memory |
 | Input | `input` | Send ASCII key events through Qt and the PTY and wait for a visible acknowledgement |
 | Input with output | `input-load` | Repeat the input case while the child targets 4 MiB/s of colored output |
-| Scripts | `scripts` | Run the Phosphor command-finished callback 10,000 times with 1, 8 or 32 pane snapshots |
+| Scripts | `scripts` | Run the Phosphor scene's command-finished callback 10,000 times with 1, 8 or 32 pane snapshots |
 
 Resize uses 100,000 history rows and enables normal text reflow.
 History population feeds the terminal parser directly, before measurement.
@@ -222,7 +222,7 @@ The child reserves the first screen row for acknowledgements.
 Its partial scrolling region does not add output to scrollback.
 The recorded output rate covers the interval between the first and last requests.
 
-The script case loads the shipped Phosphor callback through ScriptHost.
+The script case loads the Phosphor scene's callback through ScriptHost.
 All pane snapshots belong to the same tab and have no active command.
 The harness discards returned effects to isolate callback execution.
 It does not measure effect application, real pane creation or a complete plugin workload.

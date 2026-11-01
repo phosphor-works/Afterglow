@@ -233,6 +233,41 @@ TEST(Notification, PendingIconDataHasATotalLimit)
     EXPECT_TRUE(request.iconData.empty());
 }
 
+TEST(Notification, TextAndIconHaveLimitsPerNotification)
+{
+    NotificationAssembler assembler;
+    NotificationRequest request;
+    const std::string text(8192, 'x');
+    for (int i = 0; i < 7; ++i) {
+        ASSERT_EQ(assembler.feed("i=t:d=0;" + text, request), NotificationAssembler::Result::Pending);
+    }
+    ASSERT_EQ(assembler.feed("i=t;" + text, request), NotificationAssembler::Result::Ready); // 64 KiB of text
+    EXPECT_EQ(request.title.size(), 64u * 1024u);
+    for (int i = 0; i < 8; ++i) {
+        ASSERT_EQ(assembler.feed("i=u:d=0;" + text, request), NotificationAssembler::Result::Pending);
+    }
+    EXPECT_EQ(assembler.feed("i=u;x", request), NotificationAssembler::Result::Ignored); // one byte over
+    const std::string icon(8192, 'A'); // 6 KiB of icon data
+    for (int i = 0; i < 682; ++i) { // just under 4 MiB
+        ASSERT_EQ(assembler.feed("i=v:d=0:p=icon;" + icon, request), NotificationAssembler::Result::Pending);
+    }
+    EXPECT_EQ(assembler.feed("i=v:d=0:p=icon;" + icon, request), NotificationAssembler::Result::Ignored);
+}
+
+TEST(Notification, UnpaddedIconEndKeepsChunkedNotificationsWorking)
+{
+    Term t;
+    // The icon's last chunk ends in an unpadded group: its carry decodes at the end.
+    t.feed("\x1b]99;i=a:d=0:p=icon;iVBORw0K\x1b\\");
+    t.feed("\x1b]99;i=a:p=icon;Gg\x1b\\");
+    t.host.requests.clear();
+    t.feed("\x1b]99;i=b:d=0;Hello\x1b\\");
+    t.feed("\x1b]99;i=b:p=body;World\x1b\\");
+    ASSERT_EQ(t.host.requests.size(), 1u);
+    EXPECT_EQ(t.host.requests[0].title, "Hello");
+    EXPECT_EQ(t.host.requests[0].body, "World");
+}
+
 TEST(Notification, MetadataEdgeCases)
 {
     Term t;

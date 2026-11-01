@@ -9,13 +9,12 @@ end
 local function clean(text,max)
     return trim((string.gsub(type(text)=="string" and text or "","%c"," ")),max)
 end
-function segments.git(output)
-    local branch=string.match(output,"^## ([^\n]+)")
-    if not branch then return "" end
-    branch=string.gsub(branch,"^No commits yet on ","")
-    branch=string.gsub(branch,"^Initial commit on ","")
-    branch=string.match(branch,"^(.-)%.%.%.") or branch
-    local dirty=string.find(output,"\n[^\n]")~=nil
+-- The branch (or commit) from Git's output, and " *" when the optional
+-- porcelain status lists a tracked change.
+function segments.git(branch,status)
+    branch=string.match(branch or "","^%s*(.-)%s*$")
+    if branch=="" then return "" end
+    local dirty=status~=nil and string.find(status,"%S")~=nil
     return clean(branch,80)..(dirty and " *" or "")
 end
 function segments.render(pane,git,exit,config)

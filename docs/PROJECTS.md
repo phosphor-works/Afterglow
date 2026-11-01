@@ -165,12 +165,5 @@ afterglow ctl open-directory PATH --layout NAME
 
 ## Integration test
 
-Run this command on a Wayland desktop:
-
-```sh
-python3 afterglow/tests/project_smoke.py build/afterglow/afterglow
-```
-
-The test uses a private D-Bus session and temporary configuration.
-It checks pane transfers, save, restore and error recovery.
-It closes its test windows when it finishes.
+The test checks pane transfers, save, restore and error recovery.
+To run it, see [Projects and the project navigator](TESTING.md#projects-and-the-project-navigator).

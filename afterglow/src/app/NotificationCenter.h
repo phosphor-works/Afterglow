@@ -109,6 +109,7 @@ private:
     int m_rateLimit = 20;
     bool m_bodyMarkup = true; ///< the server reads markup in bodies (GetCapabilities)
     quint64 m_generation = 0;
+    quint64 m_server = 0; ///< counts server changes: an id from an earlier server names nothing
     QHash<QString, QImage> m_iconCache; ///< OSC 99 'g' ids
     QStringList m_iconCacheOrder;
 };

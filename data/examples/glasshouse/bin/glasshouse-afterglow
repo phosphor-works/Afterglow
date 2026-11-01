@@ -21,7 +21,8 @@ config="$conf/config.json"
 merge() (
     command -v jq >/dev/null || { echo "glasshouse-afterglow: needs jq" >&2; exit 1; }
     mkdir -p "$conf"
-    [ -s "$config" ] || echo '{}' > "$config"
+    # Afterglow creates its config 0600: it can hold the file transfer password.
+    [ -s "$config" ] || (umask 077; echo '{}' > "$config")
     # Replace the file the link points to, so a dotfile manager's link stays.
     local target tmp
     target="$(readlink -f "$config")"

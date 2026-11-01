@@ -59,6 +59,8 @@ grep -c "warning:" <scratchpad>/build.log
   is on for the application targets and `afterglow-render`: a raw `"string"` into a `QString` does not compile
   there. Use `QStringLiteral` or `QLatin1String`, also in tests that link those targets.
 - Never install (`cmake --install`, the `install` target), and never use `sudo`. The user installs Afterglow.
+  The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`), to check
+  the install layout.
 
 ## Test
 

@@ -76,6 +76,25 @@ TEST(Clipboard, WriteAssemblesTypesAndAliases)
     EXPECT_TRUE(t.host.written.empty()); // the host replies DONE
 }
 
+TEST(Clipboard, WriteMayBeCutBetweenItsPaddingCharacters)
+{
+    Term t;
+    t.feed("\x1b]5522;type=write\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;QQ=\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;=\x1b\\");
+    t.feed("\x1b]5522;type=wdata\x1b\\");
+    EXPECT_TRUE(t.host.written.empty());
+    ASSERT_EQ(t.host.requests.size(), 1u);
+    ASSERT_EQ(t.host.requests[0].data.size(), 1u);
+    EXPECT_EQ(t.host.requests[0].data[0], (std::pair<std::string, std::string>{"text/plain", "A"}));
+    // Padding that the stream never completes is still refused at the end.
+    t.feed("\x1b]5522;type=write:id=w\x1b\\");
+    t.feed("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;QQ=\x1b\\");
+    t.feed("\x1b]5522;type=wdata\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=w\x1b\\");
+    EXPECT_EQ(t.host.requests.size(), 1u);
+}
+
 TEST(Clipboard, BadBase64FailsTheWriteUntilTheNext)
 {
     Term t;
@@ -217,7 +236,7 @@ TEST(Clipboard, AWriteHoldsAtMost64Types)
         t.feed("\x1b]5522;type=wdata:mime=" + detail::base64Encode("type/" + std::to_string(i)) + ";aGk=\x1b\\");
     }
     EXPECT_TRUE(t.host.written.empty());
-    t.feed("\x1b]5522;type=wdata\x1b\\"); // the 65th type
+    t.feed("\x1b]5522;type=wdata\x1b\\"); // the end reports the 65th type
     EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EFBIG:id=w\x1b\\");
     EXPECT_TRUE(t.host.requests.empty());
 }

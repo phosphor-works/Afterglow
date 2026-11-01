@@ -2,7 +2,7 @@
     "id": "pane-effects",
     "name": "Pane Effects",
     "category": "Transition",
-    "description": "Panes swing in on a hinge or switch on like a picture tube when they split open, and leave the same way when they close. A pane that moves to another host passes through a portal and keeps a coloured frame.",
+    "description": "Panes swing in on a hinge or switch on like a picture tube when they split open, and leave the same way when they close. A pane that moves to another host passes through a portal and keeps a colored frame.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",

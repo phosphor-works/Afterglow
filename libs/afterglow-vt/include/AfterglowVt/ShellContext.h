@@ -40,9 +40,11 @@ public:
 
     /// Applies an OSC 3008 payload. Returns true if the contexts changed.
     bool apply(std::string_view payload);
-    /// iTerm2's RemoteHost (OSC 1337): user@host, empty to clear. It replaces
-    /// the previous one only, and becomes the innermost context. Returns true
-    /// if the contexts changed.
+    /// iTerm2's RemoteHost (OSC 1337): user@host, empty to clear. A new or
+    /// changed one replaces the previous one only, and becomes the innermost
+    /// context; an identical repeat changes nothing. A value that is not clean
+    /// text is ignored, as is an OSC 3008 field that is not. Returns true if
+    /// the contexts changed.
     bool setRemoteHost(std::string_view userAtHost);
     void clear() { m_stack.clear(); }
 

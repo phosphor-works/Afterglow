@@ -13,7 +13,12 @@ float noise3(vec3 p) {
                mix(mix(hash31(q+vec3(0,0,1)),hash31(q+vec3(1,0,1)),f.x),
                    mix(hash31(q+vec3(0,1,1)),hash31(q+vec3(1,1,1)),f.x),f.y),f.z);
 }
-// The scene clock: the full clock, so nothing jumps when iTime wraps.
+// The scene clocks read the full clock, so nothing jumps when iTime wraps.
+// sceneAngle(rate) is the angle that `rate` radians per scene second have
+// turned, for every rotation and wave: it keeps full precision however long
+// the window runs. sceneTime() is a float that steps by 8 ms after a day and
+// 62 ms after a week, so it only drifts noise, where such steps do not show.
+float sceneAngle(float rate) { return timeAngle(rate*p_speed); }
 float sceneTime() { return timeSeconds()*p_speed; }
 float history() { return 1.0-exp(-max(uScrollback.z,0.0)/4000.0); }
 float drive() { return p_audio*smoothstep(0.01,0.8,getBass()); }

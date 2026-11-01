@@ -190,6 +190,7 @@ Relative paths use the pane working directory.
 Afterglow also ignores a pattern without `pattern` or with an unknown action, and logs a warning.
 Hint patterns are case-sensitive.
 Type a label to select it. Press Escape to cancel.
+`Hints.alphabet` sets the letters of the labels, the easiest to reach first.
 A pane content change, a scroll of the pane or a change of the layout cancels the hints.
 
 ## Links and URL hints
@@ -202,7 +203,7 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 | `Links.detectUrls` | `true` | Finds plain-text URLs in addition to OSC 8 links |
 | `Links.openWith` | empty | Command that receives the URL. Empty uses the desktop browser. |
 | `Links.schemes` | `http`, `https`, `mailto`, `ftp`, `file` | Schemes that open without a prompt. Other schemes ask first. |
-| `Links.hintAlphabet` | `asdfjklghqweruiopzxcvbnmty` | Letters that label hints |
+| `Hints.alphabet` | `asdfjklghqweruiopzxcvbnmty` | Letters that label hints and URL hints |
 | `show_urls_open` | Ctrl+Shift+G | Labels the URLs on screen and opens the selected URL |
 | `show_urls_copy` | Ctrl+Shift+Y | Labels the URLs on screen and copies the selected URL |
 
@@ -249,16 +250,16 @@ modifyOtherKeys follows xterm.
 At level 2, Shift with a letter sends the shifted letter, and Shift+Space is encoded.
 Return, Tab, Backspace and Escape with modifiers are encoded as xterm encodes them.
 
-In the kitty keyboard protocol, Afterglow reports Caps Lock and Num Lock only in the "report all keys" mode.
-The kitty specification also reports them in the disambiguate mode for keys without text.
+In the Kitty keyboard protocol, Afterglow reports Caps Lock and Num Lock only in the "report all keys" mode.
+The Kitty specification also reports them in the disambiguate mode for keys without text.
 Afterglow does not, so that a program reads Num Lock+Up as Up.
 
 With Num Lock off, the keypad keys stay keypad keys.
-The kitty protocol reports them as the keypad's Left, Home, Begin and other keys.
+The Kitty protocol reports them as the keypad's Left, Home, Begin and other keys.
 Legacy encodings send them as the main arrow, Home, End, Page Up, Page Down, Insert and Delete keys.
 The keypad 5 key (Begin) sends `CSI E`.
 The decimal key of a layout with a decimal comma is the keypad separator.
-F13 to F35 send the sequences of xterm's terminfo entry, and the kitty protocol codes 57376 to 57398.
+F13 to F35 send the sequences of xterm's terminfo entry, and the Kitty protocol codes 57376 to 57398.
 
 ## Shell integration
 
@@ -293,6 +294,9 @@ The default `TERM` is `xterm-256color`, and every host knows that entry.
 If `Terminal.term` is `afterglow`, the first session to a host installs the `afterglow` terminfo entry in `~/.terminfo` on that host.
 The install and the session share one connection.
 You authenticate once when `XDG_RUNTIME_DIR` is private to you, or when your SSH configuration sets `ControlMaster auto`.
+For this first connection, Afterglow's shared connection replaces a `ControlPath none` setting for that host.
+The reason is that `ssh -G` shows `none` and the default value in the same way.
+To keep `ControlPath none`, set `Terminal.sshTerminfo` to `fallback`.
 Afterglow records the host in `$XDG_STATE_HOME/afterglow/ssh-terminfo`, by default under `~/.local/state`.
 The file holds only hashes. A host without `tic` is recorded as a fallback host.
 Afterglow does not install the entry on that host again until the entry changes.

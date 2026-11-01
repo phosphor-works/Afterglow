@@ -366,26 +366,19 @@ TEST(Terminal, NotificationsAndPointer)
 
 TEST(Terminal, ShellIntegrationCommands)
 {
-    struct CommandHost : RecordingHost
-    {
-        std::vector<std::string> started;
-        std::vector<int> finished;
-        void commandStarted(std::string_view c) override { started.emplace_back(c); }
-        void commandFinished(int code) override { finished.push_back(code); }
-    };
-    CommandHost host;
+    RecordingHost host;
     Terminal t(20, 6, host);
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07make test\r\n\x1b]133;C\x07");
     t.feed("ok 1\r\nok 2\r\n\x1b]133;D;2\x07");
-    ASSERT_EQ(host.started.size(), 1u);
-    EXPECT_EQ(host.started[0], "make test");
-    ASSERT_EQ(host.finished.size(), 1u);
-    EXPECT_EQ(host.finished[0], 2);
+    ASSERT_EQ(host.commandsStarted.size(), 1u);
+    EXPECT_EQ(host.commandsStarted[0], "make test");
+    ASSERT_EQ(host.commandsFinished.size(), 1u);
+    EXPECT_EQ(host.commandsFinished[0], 2);
     EXPECT_EQ(t.text(Terminal::TextScope::LastOutput), "ok 1\nok 2\n");
     // A new prompt without D finishes the command with an unknown code.
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07sleep 9\r\n\x1b]133;C\x07\x1b]133;A\x07");
-    ASSERT_EQ(host.finished.size(), 2u);
-    EXPECT_EQ(host.finished[1], -1);
+    ASSERT_EQ(host.commandsFinished.size(), 2u);
+    EXPECT_EQ(host.commandsFinished[1], -1);
     EXPECT_EQ(t.text(Terminal::TextScope::Screen), "$ make test\nok 1\nok 2\n$ sleep 9");
 }
 
@@ -535,6 +528,37 @@ TEST(Terminal, SemanticRegionsRetainTextThroughReflow)
     t.t.reset();
     t.feed("\x1b]133;A\a");
     EXPECT_GT(t.t.semanticRegions().front().id, regions.back().id);
+}
+
+TEST(Terminal, SemanticRegionsWhoseRowsAResizeDropsAreGone)
+{
+    Term t(10, 3, 1);
+    t.feed("\x1b]133;A\a$ \x1b]133;B\aecho\x1b]133;C\a\r\n0123456789\x1b]133;D;0\a\r\nabcdefghij\r\nklmnopqrst");
+    ASSERT_EQ(t.t.text(Terminal::TextScope::LastOutput), "\n0123456789");
+    // Narrower, every line takes two rows: the command's rows leave the buffer.
+    t.t.resize(5, 3, 10, 20);
+    const auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 3u);
+    for (const auto& region : regions) {
+        EXPECT_FALSE(region.available);
+        EXPECT_TRUE(region.startTrimmed);
+        EXPECT_EQ(t.t.semanticRegionText(region.id), std::nullopt);
+    }
+    EXPECT_EQ(t.t.text(Terminal::TextScope::LastOutput), "");
+}
+
+TEST(Terminal, SemanticRegionsKeepTheNewest1024)
+{
+    Term t(20, 5);
+    t.feed("\x1b]133;A\a");
+    const std::uint64_t first = t.t.semanticRegions().front().id;
+    for (int i = 0; i < 1099; ++i) {
+        t.feed("\x1b]133;A\a");
+    }
+    const auto regions = t.t.semanticRegions();
+    ASSERT_EQ(regions.size(), 1024u);
+    EXPECT_EQ(regions.front().id, first + 76);
+    EXPECT_EQ(regions.back().id, first + 1099);
 }
 
 TEST(Terminal, ShellMarksMoveWithInsertedAndDeletedLines)
@@ -696,6 +720,22 @@ TEST(Terminal, SavedCursorFollowsReflow)
     EXPECT_EQ(cursor.x, 2);
 }
 
+TEST(Terminal, SavedCursorKeepsItsPendingWrapThroughReflow)
+{
+    // The cursor sat after the last column when it was saved: after a wider
+    // reflow the next character goes after the line, not over its end.
+    Term alt(10, 5);
+    alt.feed("abcdefghij\x1b[?1049h");
+    alt.t.resize(20, 5, 8, 16);
+    alt.feed("\x1b[?1049lk");
+    EXPECT_EQ(rowText(alt.t, 0), "abcdefghijk");
+    Term saved(80, 5);
+    saved.feed(std::string(80, 'a') + "\x1b" "7");
+    saved.t.resize(100, 5, 8, 16);
+    saved.feed("\x1b" "8b");
+    EXPECT_EQ(rowText(saved.t, 0), std::string(80, 'a') + "b");
+}
+
 TEST(Terminal, ScreenSwitchCarriesThePendingWrap)
 {
     Term t(80, 24);
@@ -780,6 +820,13 @@ TEST(Terminal, DoubleWidthLinesKeepTheCursorVisible)
     Term restore(80, 4);
     restore.feed("\x1b[1;70H\x1b" "7\x1b#6\x1b" "8"); // DECRC onto a line made double width since
     EXPECT_LE(restore.t.screen().cursor.x, 39);
+    Term vt52(80, 4);
+    vt52.feed("\x1b[2;1H\x1b#6\x1b[1;70H\x1b[?2l\x1b" "B"); // VT52 cursor down onto it
+    EXPECT_EQ(vt52.t.screen().cursor.y, 1);
+    EXPECT_LE(vt52.t.screen().cursor.x, 39);
+    vt52.feed("\x1b<\x1b[3;70H\x1b[?2l\x1b" "A"); // and up onto it
+    EXPECT_EQ(vt52.t.screen().cursor.y, 1);
+    EXPECT_LE(vt52.t.screen().cursor.x, 39);
 }
 
 TEST(Terminal, Vs16WideningRespectsInsertMarginsAndDoubleWidth)
@@ -851,13 +898,31 @@ TEST(Terminal, ExtraCursorsAreBounded)
     for (int i = 0; i < 4000; ++i) {
         repeated += ";4";
     }
-    t.feed(repeated + " q"); // thousands of full-screen groups: one pass
+    t.feed(repeated + " q"); // thousands of full-screen groups count once
     EXPECT_EQ(t.t.extraCursors().size(), Terminal::MaxExtraCursors);
     EXPECT_EQ(t.t.extraCursors().begin()->second, 2);
     t.feed("\x1b[>0;4:1:1:1:100 q"); // erase the top row
     EXPECT_EQ(t.t.extraCursors().count({0, 0}), 0u);
     t.feed("\x1b[>0;4 q");
     EXPECT_TRUE(t.t.extraCursors().empty());
+}
+
+TEST(Terminal, RepeatedExtraCursorGroupsOnASmallScreenCountOnce)
+{
+    // 1,920 cells: the cursor limit never stops the walk here.
+    Term t(80, 24);
+    std::string repeated = "\x1b[>1";
+    for (int i = 0; i < 400; ++i) { // 3,601 parameters, under the parser's limit
+        repeated += ";4;4:1:1:2:2;2:3:3";
+    }
+    t.feed(repeated + " q");
+    EXPECT_EQ(t.t.extraCursors().size(), 80u * 24u);
+    EXPECT_EQ(t.t.extraCursors().at({2, 2}), 1);
+    t.feed("\x1b[>0;4:1:1:2:2;4:1:1:2:2;2:3:3 q");
+    EXPECT_EQ(t.t.extraCursors().size(), 80u * 24u - 5u);
+    EXPECT_EQ(t.t.extraCursors().count({1, 1}), 0u);
+    EXPECT_EQ(t.t.extraCursors().count({2, 2}), 0u);
+    EXPECT_EQ(t.t.extraCursors().count({2, 3}), 1u);
 }
 
 TEST(Terminal, ResizeClipsExtraCursorsToTheClampedSize)
@@ -938,10 +1003,15 @@ TEST(Terminal, DecimalValuesIgnoreTheLocale)
     // A comma-decimal locale must not change how rgbi: and opacities read.
     const char* locales[] = {"de_DE.UTF-8", "de_DE.utf8", "fr_FR.UTF-8", "fr_FR.utf8"};
     const std::string previous = std::setlocale(LC_NUMERIC, nullptr);
+    bool commaLocale = false;
     for (const char* name : locales) {
         if (std::setlocale(LC_NUMERIC, name)) {
+            commaLocale = true;
             break;
         }
+    }
+    if (!commaLocale) {
+        GTEST_SKIP() << "no de_DE or fr_FR locale is installed: the C locale proves nothing";
     }
     Term t(10, 2);
     t.feed("\x1b]4;1;rgbi:0.5/0.5/0.5\x07\x1b]4;1;?\x07");
@@ -1017,7 +1087,10 @@ TEST(Terminal, ResetClearsKeyboardStacksAndImagesOfBothScreens)
     t.feed("\x1b[>8u");
     t.feed(KittyPixel);
     t.feed("\x1b[?1049h\x1b[>8u");
-    t.feed(KittyPixel);
+    // A numbered image without a placement: entering the alternate screen
+    // keeps it, so only the reset can clear it.
+    t.feed("\x1b_Ga=t,i=9,f=24,s=1,v=1,q=2;AAAA\x1b\\");
+    ASSERT_EQ(t.t.graphics().images().count(9), 1u);
     t.feed("\x1b" "c");
     t.host.written.clear();
     t.feed("\x1b[?u\x1b[?1049h\x1b[?u");

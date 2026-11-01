@@ -312,6 +312,9 @@ InstallResult installTerminfo(const QByteArrayList& args, const Arguments& parse
     // A command-line value wins over the config, and the config's RemoteCommand
     // would refuse the install's command.
     if (config.remoteCommand) install << "-o" << "RemoteCommand=none";
+    // The config's StdinNull would send tic an empty entry. Only an ssh that
+    // printed the key knows it, so older ones never see the option.
+    if (config.stdinNull) install << "-o" << "StdinNull=no";
     bool isValue = false;
     for (const int i : parsed.options) {
         if (isValue) {
@@ -394,6 +397,9 @@ Config parseConfig(const QByteArray& resolved)
         else if (key == "controlmaster") config.controlMaster = value == QLatin1String("auto") || value == QLatin1String("autoask");
         else if (key == "controlpersist") config.controlPersist = value != QLatin1String("no");
         else if (key == "remotecommand") config.remoteCommand = value != QLatin1String("none");
+        else if (key == "sessiontype") config.noSession = config.noSession || value != QLatin1String("default");
+        else if (key == "forkafterauthentication") config.noSession = config.noSession || value == QLatin1String("yes");
+        else if (key == "stdinnull") config.stdinNull = value == QLatin1String("yes");
     }
     return config;
 }
@@ -429,8 +435,10 @@ int run(const QByteArrayList& args)
         const auto resolved = capture(QByteArrayList{"ssh", "-G"} + args, signals, {}, true);
         if (resolved && resolved->status == 0) config = parseConfig(resolved->output);
     }
+    // The config can turn off the session as -N, -s or -f do.
+    const bool noSession = parsed.noSession || (config && config->noSession);
     if (config) {
-        if (term == "afterglow" && !parsed.noSession) {
+        if (term == "afterglow" && !noSession) {
             const InstallResult install = qgetenv("AFTERGLOW_SSH_TERMINFO") == "fallback"
                 ? InstallResult{} : installTerminfo(args, parsed, *config, signals, options);
             if (install.result == Install::Ended) return finish(install.status, signals);
@@ -445,7 +453,7 @@ int run(const QByteArrayList& args)
         }
         if (!config->setEnv && !variables.isEmpty()) options << "-o" << "SetEnv=" + variables.join(' ');
     }
-    const bool label = config && !parsed.noSession && isatty(STDOUT_FILENO);
+    const bool label = config && !noSession && isatty(STDOUT_FILENO);
     const QString id = QStringLiteral("afterglow-ssh-") + QString::number(getpid());
     const auto send = [](const QByteArray& sequence) {
         for (qsizetype written = 0; written < sequence.size();) {

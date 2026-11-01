@@ -55,7 +55,7 @@ vec4 pTerminal(vec2 uv) {
         light+=energy*(seam*0.40+pow(1.0-max(dot(n,view),0.0),3.0)*0.24);
         if(material!=1) {
             // 0.35 rad/s at the default speed, and still at speed 0.
-            float band=pow(max(cos(surfaceUV.x*TAU*3.0-t*0.875),0.0),28.0);
+            float band=pow(max(cos(surfaceUV.x*TAU*3.0-sceneAngle(0.875)),0.0),28.0);
             light+=energy*(0.035+band*0.9)*(0.7+drive()*0.6);
         } else {
             // Recessed panel number strips and one status lamp per tile.

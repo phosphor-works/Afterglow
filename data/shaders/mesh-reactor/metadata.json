@@ -2,7 +2,7 @@
   "id": "mesh-reactor",
   "name": "Mesh Reactor",
   "category": "Background",
-  "description": "A segmented containment core with bevelled armour, plasma and orbiting emitters in a lit chamber. Audio, scrollback history and Luau scripts drive it.",
+  "description": "A segmented containment core with beveled armor, plasma and orbiting emitters in a lit chamber. Audio, scrollback history and Luau scripts drive it.",
   "author": "afterglow",
   "version": "1.0",
   "fragmentShader": "effect.frag",

@@ -81,7 +81,7 @@ Use the time helpers instead. They read the full shader time and do not jump.
 | --- | --- |
 | `timeAngle(rate)` | The angle that `rate` radians per second have turned, for `sin()` and `cos()`. Full precision however long the window runs. Use it only through a periodic function. |
 | `timeCycle(period)` | The position in a cycle of `period` seconds, from 0 to 1. |
-| `timeSeconds()` | `iTimeHi + iTime`, for a drift that does not repeat. Its precision falls as time grows: about 0.5 ms after two hours and 8 ms after a day. |
+| `timeSeconds()` | `iTimeHi + iTime`, for a drift that does not repeat, such as a noise offset. Its precision falls as time grows: about 0.5 ms after two hours, 8 ms after a day and 62 ms after a week. Do not use it for a rotation, an orbit or a wave. Use `timeAngle()`. |
 
 The window renders continuously while an active shader does one of these:
 
@@ -416,6 +416,7 @@ These changes reset history:
 Live parameter updates retain history.
 Focus changes can reset window-scoped buffers because their terminal context changes.
 Chain removal, window destruction or GPU resource release destroys the buffers.
+The buffers are also destroyed when no chain runs after a frame in which one ran, for example when the last overview, tab transition or pane effect ends and no other chain is set.
 
 ## Memory limits
 
@@ -425,7 +426,8 @@ Chain removal, window destruction or GPU resource release destroys the buffers.
 | Region input copies and uploaded images | A separate 256 MiB GPU cache. Excess inputs become transparent and log a warning. |
 | Decoded live images | 256 MiB per window, including transition endpoints. Excess updates are rejected atomically. Shared images count once. |
 
-Blocked buffers recover when their requested allocation fits the limit.
+A blocked buffer recovers when a size of at least 16 pixels on a side fits the limit.
+A smaller buffer grows when its full size fits, or when a size at least one eighth larger on each side fits.
 Unused GPU cache entries expire after one idle frame.
 These limits count resident pixels.
 Driver allocations, frames in flight, render targets, terminal textures, uniforms and pipelines require additional memory.

@@ -113,6 +113,16 @@ bool Selection::validFor(const Screen& screen) const noexcept
         && screen.absoluteIndexOf(head.row) >= 0;
 }
 
+void Selection::start(SelectionPoint at, SelectionMode newMode, std::uint64_t epoch, bool activeNow)
+{
+    anchor = at;
+    head = at;
+    mode = newMode;
+    layoutEpoch = epoch;
+    active = activeNow;
+    m_word = {};
+}
+
 bool Selection::followScroll(const RegionScroll& scroll) noexcept
 {
     if (!active) {
@@ -162,8 +172,11 @@ Selection::Range Selection::range(const Screen& screen, std::u32string_view boun
     case SelectionMode::Word: {
         // The walk crosses every soft-wrapped row of the word, and the
         // renderer asks for the range each frame: expand once per selection.
+        // The expansion may reach rows above the anchor that the history has
+        // trimmed since: the key does not see that, so check the rows.
         if (m_word.screen == &screen && m_word.epoch == screen.layoutEpoch() && m_word.anchor == anchor
-            && m_word.head == head && m_word.boundaries == boundaries) {
+            && m_word.head == head && m_word.boundaries == boundaries
+            && screen.absoluteIndexOf(m_word.range.start.row) >= 0 && screen.absoluteIndexOf(m_word.range.end.row) >= 0) {
             return m_word.range;
         }
         CellWalker s{&screen, screen.absoluteIndexOf(r.start.row), r.start.col};
@@ -216,9 +229,12 @@ std::string Selection::text(const Screen& screen, std::u32string_view boundaries
         return {};
     }
     const Range r = range(screen, boundaries);
-    const long long first = screen.absoluteIndexOf(r.start.row);
+    const long long first = std::max(0LL, screen.absoluteIndexOf(r.start.row));
     const long long last = screen.absoluteIndexOf(r.end.row);
     std::string out;
+    if (last < 0) {
+        return out;
+    }
     for (long long a = first; a <= last; ++a) {
         const Row& row = screen.absoluteRow(std::size_t(a));
         const std::uint64_t id = screen.rowsDropped() + std::uint64_t(a);

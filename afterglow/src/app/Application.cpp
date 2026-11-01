@@ -206,12 +206,23 @@ LaunchQueue::LaunchQueue(QObject* parent)
 
 void LaunchQueue::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
+    if (m_replayed) {
+        const QString error = m_application ? m_application->openForwarded(workingDirectory, command, options)
+                                            : QStringLiteral("afterglow is quitting");
+        if (!error.isEmpty()) sendErrorReply(QDBusError::Failed, error);
+        return;
+    }
     setDelayedReply(true);
     m_calls.append({message(), false, workingDirectory, command, options});
 }
 
 void LaunchQueue::ToggleQuickTerminal()
 {
+    if (m_replayed) {
+        if (m_application) m_application->ToggleQuickTerminal();
+        else sendErrorReply(QDBusError::Failed, QStringLiteral("afterglow is quitting"));
+        return;
+    }
     setDelayedReply(true);
     m_calls.append({message(), true, {}, {}, {}});
 }
@@ -224,6 +235,8 @@ void LaunchQueue::replay(Application& application)
         m_registered = false;
         bus.registerObject(QLatin1String(Application::ObjectPath), &application, QDBusConnection::ExportScriptableSlots);
     }
+    m_replayed = true;
+    m_application = &application;
     for (const Call& call : std::exchange(m_calls, {})) {
         QString error;
         if (call.quick) application.ToggleQuickTerminal();

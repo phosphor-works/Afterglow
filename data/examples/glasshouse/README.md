@@ -110,7 +110,7 @@ Other programs use `afterglow ctl signal CHANNEL VALUE` or D-Bus `Signal`.
 
 | Channel | Name | Value |
 | --- | --- | --- |
-| 0 | strike | Exit code. |
+| 0 | strike | Exit code. It also selects the crack pattern. |
 | 1 | glaze | Command duration in seconds. |
 | 2 | heat | 1 during a command. 0 after completion. |
 | 3 | ring | Any value. |

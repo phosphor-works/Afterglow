@@ -14,6 +14,13 @@ function script.on_load(ev)
     config=ev.package.config;enabled=ev.storage.value.enabled~=false
     return afterglow.timer("refresh",1000,1000)
 end
+-- One bounded Git query: no shell, no network, no optional locks.
+-- core.fsmonitor in the repository's own config would run a command.
+local function query(cwd,args)
+    local argv={"git","-c","core.fsmonitor=false","--no-optional-locks","-C",cwd}
+    for _,arg in ipairs(args) do table.insert(argv,arg) end
+    return afterglow.request("git",afterglow.exec("git",argv,{timeout_ms=2000,max_bytes=16384}))
+end
 local function render(pane)
     local entry=(pane.context or "")=="" and git[pane.cwd] or nil
     local text,title=segments.render(pane,entry and entry.label or "",exits[pane.id],config)
@@ -61,12 +68,11 @@ function script.on_timer(ev)
         local cached=git[pane.cwd]
         if config.git~=false and not job and pane.cwd~="" and (pane.context or "")==""
             and (not cached or tick-cached.tick>=refresh) then
-            -- One bounded Git query at a time; no shell, no network, no optional locks.
-            -- core.fsmonitor in the repository's own config would run a command.
-            job={cwd=pane.cwd}
-            table.insert(effects,afterglow.request("git",afterglow.exec("git",{"git","-c","core.fsmonitor=false",
-                "--no-optional-locks","-C",pane.cwd,"status","--porcelain=v1","--branch","--untracked-files=no"},
-                {timeout_ms=2000,max_bytes=16384})))
+            -- One query at a time. The branch comes from HEAD alone: a command that
+            -- compares the work tree runs the clean filters that the repository's
+            -- own config names, and terminal output can set pane.cwd to any directory.
+            job={cwd=pane.cwd,stage="branch"}
+            table.insert(effects,query(pane.cwd,{"symbolic-ref","--short","-q","HEAD"}))
         end
     end
     -- Bound the cache even across long-running navigation sessions.
@@ -81,7 +87,20 @@ function script.run_action(action,ev)
 end
 function script.on_result(ev)
     if ev.request_id=="git" then
-        if job then git[job.cwd]={label=ev.ok and segments.git(ev.data.stdout or "") or "",tick=tick};job=nil end
+        if not job then return nil end
+        local output=ev.ok and ev.data.stdout or ""
+        if job.stage=="branch" and not ev.ok and ev.data and ev.data.exit_code==1 then
+            -- A detached HEAD is not a symbolic ref: show the commit instead.
+            job.stage="commit"
+            return query(job.cwd,{"rev-parse","--short","-q","--verify","HEAD"})
+        end
+        if job.stage~="changes" and output~="" and config.git_changes==true then
+            job.stage="changes";job.branch=output
+            return query(job.cwd,{"status","--porcelain=v1","--untracked-files=no"})
+        end
+        local label
+        if job.stage=="changes" then label=segments.git(job.branch,ev.ok and output or nil) else label=segments.git(output) end
+        git[job.cwd]={label=label,tick=tick};job=nil
     elseif ev.request_id=="state" then
         if not ev.ok then toggling=false;return failure(ev.error.message) end
         return afterglow.request("saved",afterglow.state_write({enabled=ev.data.value.enabled==false},ev.data.revision))

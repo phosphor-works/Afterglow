@@ -43,7 +43,8 @@ QString pick(const QString& spec, bool dark);
 
 /// Where themes live, most important first: the user's
 /// ~/.config/afterglow/themes, then the XDG data directories' (from
-/// ~/.local/share on), then the bundled ones.
+/// ~/.local/share on), then the bundled ones. A build-tree binary puts the
+/// checkout's themes before the XDG data directories.
 QStringList searchDirs();
 
 /// Every file that could hold theme @p name, in search order: name.json,
@@ -66,8 +67,11 @@ bool isColorName(const QString& name);
 /// selectionBackground, divider, the highlight colours and palette), a
 /// Ghostty theme ("palette = 0=#1d1f21", "cursor-color = ...") or a kitty
 /// one ("color0 #1d1f21", "cursor ..."). nullopt, with @p error set, if it
-/// has no colours. Keys it does not use go to @p ignored.
-std::optional<Theme> parse(const QByteArray& data, QString* error = nullptr, QStringList* ignored = nullptr);
+/// has no colours. Keys it does not use go to @p ignored; keys it uses whose
+/// value is not a colour (or, for visualBellIntensity, not 0-1) go to
+/// @p invalid, palette entries as "palette[3]".
+std::optional<Theme> parse(const QByteArray& data, QString* error = nullptr, QStringList* ignored = nullptr,
+                           QStringList* invalid = nullptr);
 
 } // namespace Themes
 

@@ -25,6 +25,11 @@ namespace Afterglow {
 using Result = ScriptHost::EffectResult;
 namespace {
 Result failure(const char* code, const QString& text) { return {text, {}, QString::fromLatin1(code)}; }
+// read_file and watch_file accept the same paths.
+bool validPath(const QString& path)
+{
+    return path.size() <= 4096 && !path.contains(QChar(0)) && QDir::isAbsolutePath(path);
+}
 int bounded(const QVariantMap& effect, const char* key, int fallback, int low, int high)
 {
     const double value = effect.value(QLatin1String(key), fallback).toDouble();
@@ -135,7 +140,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     }
     if (kind == QLatin1String("watch_file")) {
         const QString path = e.value(QStringLiteral("path")).toString();
-        if (!QDir::isAbsolutePath(path)) return reject(QStringLiteral("watch_file requires an absolute path"));
+        if (!validPath(path)) return reject(QStringLiteral("watch_file needs an absolute path of at most 4096 characters"));
         if (!QFileInfo(path).isFile()) return reject(QStringLiteral("watch_file requires an existing regular file"));
         auto* watcher = new PhosphorFsLoader::WatchedFileSet(task);
         watcher->setDebounceInterval(250);
@@ -154,7 +159,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     timer->start(timeout);
     if (kind == QLatin1String("read_file")) {
         const QString path = e.value(QStringLiteral("path")).toString();
-        if (path.size() > 4096 || path.contains(QChar(0)) || !QDir::isAbsolutePath(path))
+        if (!validPath(path))
             return reject(QStringLiteral("read_file needs an absolute path of at most 4096 characters"));
         if (!fileSlots.tryAcquire()) {
             finish(task, {}, false);

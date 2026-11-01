@@ -88,6 +88,11 @@ private:
 /// before the GPU device, the QML engine and the scripts load. Without it a
 /// second launch in that time gets an unknown-object error and starts its
 /// own process.
+///
+/// The bus thread picks the object when a call arrives and posts the call to
+/// it, so calls that arrived during startup reach this queue only after
+/// replay(), once the event loop runs. It answers those through the
+/// application at once.
 class LaunchQueue : public QObject, protected QDBusContext
 {
     Q_OBJECT
@@ -113,6 +118,8 @@ private:
     };
     QList<Call> m_calls;
     bool m_registered = false;
+    bool m_replayed = false;
+    QPointer<Application> m_application;
 };
 
 } // namespace Afterglow

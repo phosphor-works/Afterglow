@@ -85,7 +85,7 @@ vec4 hingeStyle(vec2 pixel, vec2 uv) {
         vec2 source;
         float facing;
         if (hinge(pixel, closingPaneRect(), 4, p * p * Pi * 0.48, source, facing)) {
-            vec4 ghost = closingPaneTexel(source / iResolution) * vec4(vec3(mix(1.0, facing, p_shading)), 1.0);
+            vec4 ghost = closingPaneTexel(clampToRect(source, closingPaneRect()) / iResolution) * vec4(vec3(mix(1.0, facing, p_shading)), 1.0);
             color = mix(color, ghost, 1.0 - p * p);
         }
     }
@@ -102,7 +102,7 @@ vec4 hingeStyle(vec2 pixel, vec2 uv) {
         // Only inside its own place: where perspective carries the turned plane
         // over a neighbour, the neighbour (at the glass) hides it.
         if (inside(pixel, r) && hinge(pixel, r, edge, angle, source, facing)) {
-            return terminalTexel(source / iResolution) * vec4(vec3(mix(1.0, facing, p_shading)), 1.0);
+            return terminalTexel(clampToRect(source, r) / iResolution) * vec4(vec3(mix(1.0, facing, p_shading)), 1.0);
         }
         if (inside(pixel, r)) return backdrop();
     }

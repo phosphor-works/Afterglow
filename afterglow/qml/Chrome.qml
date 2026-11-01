@@ -40,12 +40,13 @@ Item {
         return false
     }
 
-    // A new overlay can open over another and take the focus. When it closes,
-    // the focus goes back to the topmost overlay still open; otherwise that
-    // overlay would keep the keyboard with no item to take the keys.
+    // The keyboard belongs to the topmost open overlay, so keys never go to
+    // one that another hides. An overlay that opens under another (a program's
+    // prompt is open) waits; one that closes hands the focus down. The list
+    // is the paint order below, topmost first.
     function restoreFocus(): void {
-        const overlays = [contextMenu, scriptDialog.item, confirmPrompt, titlePrompt, commandPalette,
-                          pasteConfirm, clipboardPrompt, searchBar]
+        const overlays = [clipboardPrompt, pasteConfirm, confirmPrompt, contextMenu, scriptDialog.item,
+                          titlePrompt, commandPalette, searchBar]
         for (const overlay of overlays) {
             if (overlay && overlay.visible) {
                 overlay.takeFocus()
@@ -53,9 +54,9 @@ Item {
             }
         }
     }
-    function overlayClosed(open: bool): void {
-        if (!open)
-            Qt.callLater(root.restoreFocus)
+    // Later: the overlay sets itself up (and a Loader makes its item) first.
+    function overlayChanged(): void {
+        Qt.callLater(root.restoreFocus)
     }
 
     // Split labels: a small title in each pane's top-right corner. By count,
@@ -198,7 +199,7 @@ Item {
         anchors.right: root.right
         anchors.margins: 8
         visible: root.controller.searchOpen
-        onVisibleChanged: root.overlayClosed(visible)
+        onVisibleChanged: root.overlayChanged()
     }
 
     // URL mode: a label to type over each link.
@@ -268,7 +269,7 @@ Item {
         anchors.right: root.right
         anchors.margins: 12
         visible: root.controller.keyMode.length > 0
-        width: Math.min(keyModeLabel.implicitWidth + 16, root.width * 0.6)
+        width: Math.min(keyModeLabel.implicitWidth + 16, root.width * (scriptStatusBadge.visible ? 0.48 : 0.6))
         height: keyModeLabel.implicitHeight + 16
         color: systemPalette.highlight
         radius: 4
@@ -292,7 +293,7 @@ Item {
         anchors.left: root.left
         anchors.margins: 12
         visible: root.controller.scriptStatus.length > 0
-        width: Math.min(scriptStatusLabel.implicitWidth + 16, root.width * 0.6)
+        width: Math.min(scriptStatusLabel.implicitWidth + 16, root.width * (keyModeBadge.visible ? 0.48 : 0.6))
         height: scriptStatusLabel.implicitHeight + 12
         color: systemPalette.window
         radius: 4
@@ -307,28 +308,12 @@ Item {
         }
     }
 
-    ClipboardPrompt {
-        id: clipboardPrompt
-        controller: root.controller
-        anchors.fill: root
-        visible: root.controller.clipboardPromptOpen
-        onVisibleChanged: root.overlayClosed(visible)
-    }
-
-    PasteConfirm {
-        id: pasteConfirm
-        controller: root.controller
-        anchors.fill: root
-        visible: root.controller.pasteConfirmOpen
-        onVisibleChanged: root.overlayClosed(visible)
-    }
-
     CommandPalette {
         id: commandPalette
         controller: root.controller
         anchors.fill: root
         visible: root.controller.paletteOpen
-        onVisibleChanged: root.overlayClosed(visible)
+        onVisibleChanged: root.overlayChanged()
     }
 
     TitlePrompt {
@@ -336,22 +321,14 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.titlePrompt.open === true
-        onVisibleChanged: root.overlayClosed(visible)
-    }
-
-    ConfirmPrompt {
-        id: confirmPrompt
-        controller: root.controller
-        anchors.fill: root
-        visible: root.controller.confirmPrompt.open === true
-        onVisibleChanged: root.overlayClosed(visible)
+        onVisibleChanged: root.overlayChanged()
     }
 
     Loader {
         id: scriptDialog
         anchors.fill: root
         active: root.controller.scriptDialog.open === true
-        onActiveChanged: root.overlayClosed(active)
+        onActiveChanged: root.overlayChanged()
         sourceComponent: Component { ScriptDialog { controller: root.controller } }
     }
 
@@ -360,6 +337,34 @@ Item {
         controller: root.controller
         anchors.fill: root
         visible: root.controller.contextMenu.open === true
-        onVisibleChanged: root.overlayClosed(visible)
+        onVisibleChanged: root.overlayChanged()
+    }
+
+    // The prompts that a program, a script or D-Bus opens (a link, a close,
+    // a paste, a clipboard request) can open over any overlay and take the
+    // keyboard: they come last, so they paint over it. Declaration order is
+    // the paint order (every overlay has z 0).
+    ConfirmPrompt {
+        id: confirmPrompt
+        controller: root.controller
+        anchors.fill: root
+        visible: root.controller.confirmPrompt.open === true
+        onVisibleChanged: root.overlayChanged()
+    }
+
+    PasteConfirm {
+        id: pasteConfirm
+        controller: root.controller
+        anchors.fill: root
+        visible: root.controller.pasteConfirmOpen
+        onVisibleChanged: root.overlayChanged()
+    }
+
+    ClipboardPrompt {
+        id: clipboardPrompt
+        controller: root.controller
+        anchors.fill: root
+        visible: root.controller.clipboardPromptOpen
+        onVisibleChanged: root.overlayChanged()
     }
 }

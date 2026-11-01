@@ -49,7 +49,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | Item | With `Control.allowReadText=false` |
 | --- | --- |
 | `GetText` | Fails with an error. |
-| `RunAction` with `copy`, `paste` or `select_all` | Fails with an error. These actions move pane text to the clipboard or into another pane. |
+| `RunAction` with `copy`, `paste`, `select_all` or `show_last_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `ListPanes` | Empty. |
 | The command in `CommandStarted` and `CommandFinished` | Empty. |
 | The value in `UserVarChanged` | Empty. |

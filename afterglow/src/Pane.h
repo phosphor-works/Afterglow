@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 namespace Afterglow {
 
@@ -79,6 +80,9 @@ public:
     DragDrop* dragDrop();
     bool hasFileTransfers() const noexcept { return m_fileTransfers != nullptr; }
     bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
+    /// Changes when what assistive technology reads changes: the terminal's
+    /// generation and the selection serial.
+    std::pair<std::uint64_t, std::uint64_t> accessibleSerial() const;
 
     /// Runs @p fn with the terminal locked.
     template<typename Fn>
@@ -216,7 +220,8 @@ Q_SIGNALS:
     /// An OSC 5522 clipboard read or write (queued to the GUI thread).
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
     void terminalProtocolRequested(int code, const QByteArray& payload);
-    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths);
+    /// @p paths holds at most the first 100 of @p total paths.
+    void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
     void closed();
 
 private:
@@ -317,11 +322,13 @@ private:
     std::u32string m_searchQuery;
     int m_searchCurrent = -1;
     bool m_searchActive = false;
+    /// Set by the window from the Colors.search* settings when it creates
+    /// the pane (setSearchColors), so the defaults live in one place.
     struct SearchColors
     {
-        std::uint32_t match = AfterglowRender::packRgba(0xe5, 0xc0, 0x7b);
-        std::uint32_t current = AfterglowRender::packRgba(0xff, 0x8c, 0x42);
-        std::uint32_t text = AfterglowRender::packRgba(0x10, 0x10, 0x10);
+        std::uint32_t match = 0;
+        std::uint32_t current = 0;
+        std::uint32_t text = 0;
     } m_searchColors; ///< guarded by m_mutex
     std::u32string m_preedit;
     int m_preeditCursor = 0;

@@ -37,6 +37,8 @@ struct Config {
     bool controlMaster = false;  ///< ControlMaster auto or autoask: a run may become the master
     bool controlPersist = false; ///< the master outlives its first session
     bool remoteCommand = false;  ///< the config runs a command in place of one on the command line
+    bool noSession = false;      ///< SessionType none or subsystem, or ForkAfterAuthentication: like -N, -s or -f
+    bool stdinNull = false;      ///< StdinNull: like -n
 };
 Config parseConfig(const QByteArray& resolved);
 

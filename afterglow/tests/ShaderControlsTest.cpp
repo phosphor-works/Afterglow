@@ -370,7 +370,10 @@ TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
     ASSERT_TRUE(QDir().mkpath(dir));
     QFile metadata(dir + QStringLiteral("/metadata.json"));
     ASSERT_TRUE(metadata.open(QIODevice::WriteOnly));
+    // The float takes scalar slot 0 and the image image slot 0: only the image
+    // owns the image slot whose default failed.
     metadata.write(R"({"id":"missing-default","name":"Missing","fragmentShader":"effect.frag","parameters":[
+        {"id":"count","name":"Count","type":"float","default":1},
         {"id":"photo","name":"Photo","type":"image","default":"missing.png"}]})");
     metadata.close();
     QFile shader(dir + QStringLiteral("/effect.frag"));
@@ -382,12 +385,20 @@ TEST_F(ShaderControlsTest, ConfiguredImageRescuesAPackWhoseDefaultImageFails)
     ShaderLibrary fresh;
     ShaderLibrary::Refs refs;
     refs.background = {QStringLiteral("missing-default")};
-    // The pack's own image is missing: without a configured one it fails.
+    // The pack's own image is missing: without a configured one it fails, and says so.
     EXPECT_TRUE(fresh.build(refs, {}).background.empty());
+    ASSERT_EQ(fresh.problems().size(), 1);
+    EXPECT_TRUE(fresh.problems().front().startsWith(QStringLiteral("shader missing-default: "))) << fresh.problems().front().toStdString();
     // The config names an image for that slot, and the pack draws with it.
     const auto configured = fresh.build(refs, {{QStringLiteral("missing-default"), QVariantMap{{QStringLiteral("photo"), blue}}}});
     ASSERT_EQ(configured.background.size(), 1u);
     EXPECT_EQ(configured.background.front()->images()[0].pixelColor(0, 0), QColor(Qt::blue));
+    EXPECT_TRUE(fresh.problems().isEmpty());
+    // A value that is not a path does not fall back to the pack's default,
+    // which would then be read as the user's own trusted path.
+    EXPECT_TRUE(fresh.build(refs, {{QStringLiteral("missing-default"), QVariantMap{{QStringLiteral("photo"), 5}}}})
+                    .background.empty());
+    EXPECT_TRUE(fresh.problems().filter(QStringLiteral("not an image path")).size() == 1);
     // A configured image that fails too still fails the pack.
     EXPECT_TRUE(fresh.build(refs, {{QStringLiteral("missing-default"),
                                       QVariantMap{{QStringLiteral("photo"), dir + QStringLiteral("/absent.png")}}}})
@@ -593,14 +604,16 @@ TEST(ShaderReload, MissingNestedIncludesRecoverAndStayWatchedAfterAtomicReplacem
         first = std::move(rebuilt);
     }
     // Dropping references retires the include watches. (The pack's own stage
-    // stays with the registry, which reports edits to any pack.)
+    // stays with the registry, which reports edits to any pack.) With nothing
+    // cached no edit could emit changed(), so the watched set is the check.
+    // Both exist, so each is watched under its canonical path too.
+    const QString includePath = QFileInfo(include).canonicalFilePath();
+    const QString nestedPath = QFileInfo(nested).canonicalFilePath();
+    EXPECT_TRUE(library.watchedPaths().contains(includePath));
+    EXPECT_TRUE(library.watchedPaths().contains(nestedPath));
     library.build({}, {});
-    QCoreApplication::processEvents();
-    before = changes;
-    ASSERT_TRUE(writeShaderFixture(nested, "float shade(){return 1.;}\n"));
-    ASSERT_TRUE(writeShaderFixture(include, "#include \"nested/tint.glsl\"\n// edited\n"));
-    // Several debounce periods (100 ms each), so a late signal shows.
-    EXPECT_FALSE(waitForShaderChange(changes, before, 500));
+    EXPECT_FALSE(library.watchedPaths().contains(includePath));
+    EXPECT_FALSE(library.watchedPaths().contains(nestedPath));
     ASSERT_TRUE(QDir(dir).removeRecursively());
 }
 
@@ -713,7 +726,7 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
     QVariantMap values;
     EXPECT_TRUE(library.presetParameters(ref, QStringLiteral("@defaults"), values).isEmpty());
     EXPECT_FALSE(library.presetParameters(QStringLiteral("wall"), QStringLiteral("@defaults"), values).isEmpty());
-    EXPECT_EQ(library.parameters(ref).size(), library.parameters(QStringLiteral("scripted-overview.wall")).size());
+    EXPECT_FALSE(library.parameters(ref).isEmpty());
     EXPECT_TRUE(library.parameters(QStringLiteral("wall")).isEmpty());
     ShaderParameterValues packed;
     EXPECT_TRUE(library.validateParameters(ref, {}, packed).isEmpty());

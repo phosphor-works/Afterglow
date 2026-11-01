@@ -146,7 +146,7 @@ QRhiTexture* GpuDevice::imageTexture(const AfterglowVt::FramePtr& frame, QRhiRes
     return tex;
 }
 
-void GpuDevice::pruneImageTextures()
+void GpuDevice::pruneUnused()
 {
     // Font sets for a pixel ratio no window uses any more (a window moved to
     // another screen, a scale that changed).
@@ -206,11 +206,14 @@ void GpuDevice::prepareAtlases(FontResources& res, QRhiResourceUpdateBatch* upda
             const std::vector<QRect> dirty = page.takeDirty();
             if (dirty.empty()) continue;
             // One entry per new region, not their bounding box across shelves.
+            // Each entry carries an image of its region only: QRhi reserves
+            // staging memory for an entry's whole source image, so 32 entries
+            // over a 4096 px colour page would ask for 2 GiB.
             std::vector<QRhiTextureUploadEntry> entries;
             entries.reserve(dirty.size());
             for (const QRect& rect : dirty) {
-                QRhiTextureSubresourceUploadDescription sub(page.image());
-                sub.setSourceTopLeft(rect.topLeft()); sub.setSourceSize(rect.size());
+                QRhiTextureSubresourceUploadDescription sub(
+                    rect == page.image().rect() ? page.image() : page.image().copy(rect));
                 sub.setDestinationTopLeft(rect.topLeft());
                 entries.emplace_back(0, 0, sub);
             }

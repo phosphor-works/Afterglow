@@ -545,3 +545,18 @@ TEST(Conformance, SixelGeometryFitsTheDecoder)
     EXPECT_LE(std::int64_t(width) * height, std::int64_t(4096) * 4096);
     EXPECT_GT(std::int64_t(width) * height, std::int64_t(4000) * 4000); // scaled down, not to a sliver
 }
+
+TEST(Conformance, SixelGraphicsAttributesHonourTheAction)
+{
+    Term t(10, 2); // 10 x 20 pixel cells
+    t.feed("\x1b[?2;2S"); // reset: the fixed geometry is the current one
+    EXPECT_EQ(t.take(), "\x1b[?2;0;100;40S");
+    t.feed("\x1b[?2;4S"); // max: the largest square the decoder takes
+    EXPECT_EQ(t.take(), "\x1b[?2;0;4096;4096S");
+    t.feed("\x1b[?1;4S");
+    EXPECT_EQ(t.take(), "\x1b[?1;0;1024S");
+    t.feed("\x1b[?2;3;640;480S\x1b[?1;3;256S"); // set: both are fixed
+    EXPECT_EQ(t.take(), "\x1b[?2;3S\x1b[?1;3S");
+    t.feed("\x1b[?1;9S");
+    EXPECT_EQ(t.take(), "\x1b[?1;2S");
+}

@@ -43,7 +43,7 @@ export type Pane = {
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
 }
 
--- The pane overview: cards are pane IDs in tab order while it shows, else the current tab's.
+-- The pane overview: cards are the pane IDs of every tab in tab order while it is open, else the current tab's.
 export type Overview = { open: boolean, highlighted: number, cards: { number } }
 export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number, active_pane: number, overview: Overview }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }

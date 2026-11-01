@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // libFuzzer target for the terminal core. The first byte picks the options
-// (bidi, ambiguous width, scrollback, screen readback) and how much the host
-// supports. The rest is a byte stream fed to a Terminal, with control records
-// that do what the application does between reads: resize (odd cell sizes
-// and very large grids too), scroll the viewport, copy a selection, search
-// the text as the search bar does, advance animations, reset, clear, read
-// text, reload options, end the program, change visibility, encode a paste,
-// and read the images as the renderer does.
+// (bidi, ambiguous width, scrollback, screen readback, file transfer) and how
+// much the host supports. The rest is a byte stream fed to a Terminal, with
+// control records that do what the application does between reads: resize
+// (odd cell sizes and very large grids too), scroll the viewport, copy a
+// selection, search the text as the search bar does, advance animations,
+// reset, clear, read text, reload options, end the program, change
+// visibility, encode a paste, and read the images as the renderer does.
 //
 //   clang++ -std=c++20 -g -O1 -fsanitize=fuzzer,address,undefined ...
 
@@ -61,18 +61,30 @@ struct Host : AfterglowVt::ITerminalHost
 };
 
 /// With bracketed paste on, the paste is wrapped once and cannot end early.
+/// In both modes the text holds no control but HT and CR (decision 5: LF
+/// becomes CR), no DEL and no C1.
 void checkPaste(std::string_view text, bool bracketed)
 {
     AfterglowVt::Modes modes;
     modes.bracketedPaste = bracketed;
     const std::string out = AfterglowVt::encodePaste(text, modes);
-    if (!bracketed) {
-        return;
+    std::string_view inner = out;
+    if (bracketed) {
+        constexpr std::string_view Begin = "\x1b[200~";
+        constexpr std::string_view End = "\x1b[201~";
+        if (!out.starts_with(Begin) || !out.ends_with(End) || out.find(End) != out.size() - End.size()) {
+            __builtin_trap();
+        }
+        inner = inner.substr(Begin.size(), inner.size() - Begin.size() - End.size());
     }
-    constexpr std::string_view Begin = "\x1b[200~";
-    constexpr std::string_view End = "\x1b[201~";
-    if (!out.starts_with(Begin) || !out.ends_with(End) || out.find(End) != out.size() - End.size()) {
-        __builtin_trap();
+    for (std::size_t i = 0; i < inner.size(); ++i) {
+        const auto c = static_cast<unsigned char>(inner[i]);
+        const bool control = (c < 0x20 && c != '\t' && c != '\r') || c == 0x7F;
+        const bool c1 = c == 0xC2 && i + 1 < inner.size() && static_cast<unsigned char>(inner[i + 1]) >= 0x80
+            && static_cast<unsigned char>(inner[i + 1]) <= 0x9F;
+        if (control || c1) {
+            __builtin_trap();
+        }
     }
 }
 
@@ -84,7 +96,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     // Byte 0: bits 0-1 bidi, 2 ambiguous width, 3-4 scrollback (64, 0, 1,
-    // 64), 5 a permissive host, 6 screen readback.
+    // 64), 5 a permissive host, 6 screen readback, 7 kitty file transfer
+    // (t=f, t=t and t=s open real paths on the fuzzing machine).
     const std::uint8_t config = data[0];
     ++data;
     --size;
@@ -96,6 +109,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     constexpr std::size_t Scrollbacks[] = {64, 0, 1, 64};
     opts.maxScrollback = Scrollbacks[(config >> 3) & 3];
     opts.allowScreenReadback = (config & 0x40) != 0;
+    opts.graphicsFileTransfer = (config & 0x80) != 0;
     AfterglowVt::Terminal t(20, 8, host, opts);
     t.resize(20, 8, 8, 16);
     std::uint64_t now = 0;
@@ -179,6 +193,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             o.maxScrollback = Scrollbacks[(a >> 3) & 3];
             o.cursorShape = AfterglowVt::CursorShape(b % 3);
             o.graphicsQuota = std::size_t(1 + b) << 16;
+            o.graphicsFileTransfer = (a & 0x20) != 0;
             t.setOptions(o);
             break;
         }
@@ -209,6 +224,14 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             for (const auto& placement : placements) {
                 (void)t.graphics().placeholderSlice(placement.imageId, std::uint32_t(b), a % 300, b % 300, cw, ch, cw,
                                                     ch);
+            }
+            // visible() leaves virtual placements out, and those are what
+            // placeholder cells usually show.
+            for (const auto& placement : t.graphics().placements()) {
+                if (placement.isVirtual) {
+                    (void)t.graphics().placeholderSlice(placement.imageId, (b & 1) ? placement.placementId : 0, a % 300,
+                                                        b % 300, cw, ch, cw, ch);
+                }
             }
             break;
         }

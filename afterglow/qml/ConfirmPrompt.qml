@@ -14,25 +14,14 @@ Item {
     required property QtObject controller
     readonly property var spec: controller.confirmPrompt
 
-    function syncVisibility() {
-        if (visible)
-            Qt.callLater(() => { if (prompt.visible) takeFocus() })
-    }
-
+    // Called by Chrome.qml when this is the topmost open overlay.
     function takeFocus() {
         panel.forceActiveFocus()
     }
 
-    onVisibleChanged: syncVisibility()
-    Component.onCompleted: Qt.callLater(syncVisibility)
-
-    Rectangle {
-        anchors.fill: parent
-        color: prompt.controller.scrimColor
-        MouseArea {
-            anchors.fill: parent
-            onClicked: prompt.controller.answerConfirm(false)
-        }
+    Scrim {
+        controller: prompt.controller
+        onDismissed: prompt.controller.answerConfirm(false)
     }
 
     Pane {

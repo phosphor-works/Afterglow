@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <tuple>
 
 namespace AfterglowVt {
 
@@ -484,29 +485,14 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
         positions.push_back(region.start);
         positions.push_back(region.end);
     }
-    // The cursor 1049 saved goes back where its text went (the live cursor
-    // is tracked by the reflow itself). Without a reflow the screen moves it.
-    const bool trackSavedCursor = reflows && m_primary->hasSavedCursor;
-    if (trackSavedCursor) {
-        const SavedCursor& saved = m_primary->savedCursor;
-        positions.push_back({m_primary->rowsDropped() + m_primary->historySize() + std::uint64_t(saved.y), saved.x});
-    }
     for (const auto& point : positions) {
         const auto index = m_primary->absoluteIndexOf(point.row);
         anchors.push_back(index < 0 ? Screen::TrackedRowGone : std::size_t(index));
         columns.push_back(point.col);
     }
+    // Screen::resize moves the saved cursor (DECSC, 1049) itself, with its
+    // pending wrap.
     m_primary->resize(cols, rows, true, prompt, &anchors, &columns);
-    if (trackSavedCursor) {
-        const std::size_t i = anchors.size() - 1;
-        if (anchors[i] != Screen::TrackedRowGone) {
-            SavedCursor& saved = m_primary->savedCursor;
-            const long long y = (long long)anchors[i] - (long long)m_primary->historySize();
-            saved.y = int(std::clamp<long long>(y, 0, m_primary->rows() - 1));
-            saved.x = std::clamp(columns[i], 0, m_primary->cols() - 1);
-        }
-        positions.pop_back();
-    }
     for (std::size_t i = 0; i < positions.size(); ++i) {
         const auto mapped = anchors[imageAnchors + i];
         if (mapped != Screen::TrackedRowGone) {
@@ -527,11 +513,13 @@ void Terminal::resize(int cols, int rows, int cellWidth, int cellHeight)
     }
     anchors.resize(imageAnchors);
     columns.resize(imageAnchors);
-    m_graphics[0].retarget(*m_primary, anchors, &columns);
+    // Without a reflow the row ids hold, and an image whose top row left can
+    // stay while its lower rows show.
+    m_graphics[0].retarget(*m_primary, anchors, &columns, reflows ? 0 : m_cellWidth, reflows ? 0 : m_cellHeight);
     std::vector<std::size_t> altRows = m_graphics[1].anchorRows(*m_alternate);
     std::vector<int> altColumns = m_graphics[1].anchorColumns();
     m_alternate->resize(cols, rows, false, std::nullopt, &altRows, &altColumns);
-    m_graphics[1].retarget(*m_alternate, altRows, &altColumns);
+    m_graphics[1].retarget(*m_alternate, altRows, &altColumns, m_cellWidth, m_cellHeight);
     m_margins = Region{0, rows - 1, 0, cols - 1};
 
     const std::size_t oldCols = m_tabStops.size();
@@ -1789,17 +1777,26 @@ void Terminal::scrollRegion(const Region& r, int n, bool up, bool intoHistory)
         // Shell marks are kept for the primary screen only. One whose cell
         // left the region is gone, as its text is.
         for (Mark* mark : {&m_inputStart, &m_outputStart, &m_outputEnd}) {
-            if (!mark->valid) continue;
-            if (const auto to = scroll.map({mark->row, mark->col})) mark->row = to->row;
-            else *mark = {};
+            if (!mark->valid) {
+                continue;
+            }
+            if (const auto to = scroll.map({mark->row, mark->col})) {
+                mark->row = to->row;
+            } else {
+                *mark = {};
+            }
         }
         std::erase_if(m_semanticRegions, [&](SemanticRegion& region) {
             const auto start = scroll.map({region.start.row, region.start.col});
-            if (!start) return true;
+            if (!start) {
+                return true;
+            }
             // An open region ends at the cursor: its stored end is not used.
             if (!region.open) {
                 const auto end = scroll.map({region.end.row, region.end.col});
-                if (!end) return true;
+                if (!end) {
+                    return true;
+                }
                 region.end.row = end->row;
             }
             region.start.row = start->row;
@@ -2355,9 +2352,22 @@ void Terminal::csiDispatch(const Params& p, const Intermediates& inter, std::uin
         case 'S': { // XTSMGRAPHICS: Pi (1 colours, 2 sixel geometry) ; Pa (1 read, 2 reset, 3 set, 4 max)
             char buf[48];
             int n = 0;
-            if (p.at(0) == 1) {
+            // Both values are fixed: a reset gives the current value, a set
+            // fails (status 3), and an unknown Pa is status 2.
+            const int item = p.at(0);
+            const int action = p.at(1, 1);
+            if ((item == 1 || item == 2) && action == 3) {
+                n = std::snprintf(buf, sizeof buf, "\x1b[?%d;3S", item);
+            } else if ((item == 1 || item == 2) && action > 4) {
+                n = std::snprintf(buf, sizeof buf, "\x1b[?%d;2S", item);
+            } else if (item == 1) {
                 n = std::snprintf(buf, sizeof buf, "\x1b[?1;0;1024S");
-            } else if (p.at(0) == 2) {
+            } else if (item == 2 && action == 4) {
+                // The largest square decodeSixel takes; a side may be longer
+                // when the other is shorter.
+                const int side = int(std::min<double>(SixelMaxSide, std::floor(std::sqrt(double(SixelMaxPixels)))));
+                n = std::snprintf(buf, sizeof buf, "\x1b[?2;0;%d;%dS", side, side);
+            } else if (item == 2) {
                 // The page in pixels, within what decodeSixel accepts, so a
                 // full-size image is not refused.
                 long long width = std::clamp(1LL * cols() * m_cellWidth, 1LL, 1LL * SixelMaxSide);
@@ -2555,10 +2565,12 @@ void Terminal::vt52Dispatch(std::uint8_t final)
     case 'A':
         cur.y = std::max(cur.y - 1, 0);
         cur.pendingWrap = false;
+        clampToLine(); // the new row may be double width
         break;
     case 'B':
         cur.y = std::min(cur.y + 1, rows() - 1);
         cur.pendingWrap = false;
+        clampToLine();
         break;
     case 'C':
         cur.x = std::min(cur.x + 1, cols() - 1);
@@ -4465,7 +4477,9 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
 {
     std::string response;
     auto append = [&](std::string_view key, const Rgb* color, std::optional<double> opacity = std::nullopt) {
-        response += ';'; response += key; response += '=';
+        response += ';';
+        response += key;
+        response += '=';
         if (color) {
             char buffer[80];
             std::snprintf(buffer, sizeof buffer, "rgb:%02x/%02x/%02x", color->r, color->g, color->b);
@@ -4483,7 +4497,9 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
         const auto end = args.find(';', start);
         const auto field = args.substr(start, end == std::string_view::npos ? end : end - start);
         start = end == std::string_view::npos ? args.size() + 1 : end + 1;
-        if (field.empty()) continue;
+        if (field.empty()) {
+            continue;
+        }
         const auto equal = field.find('=');
         const auto key = field.substr(0, equal);
         const bool reset = equal == std::string_view::npos;
@@ -4496,16 +4512,24 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
         int number = -1;
         const auto numeric = std::from_chars(key.data(), key.data() + key.size(), number);
         if (numeric.ec == std::errc{} && numeric.ptr == key.data() + key.size() && number >= 0 && number < 256) {
-            if (query) append(key, &m_palette[std::size_t(number)]);
-            else if (reset) m_palette[std::size_t(number)] = defaults[std::size_t(number)];
-            else if (valid) m_palette[std::size_t(number)] = parsed;
+            if (query) {
+                append(key, &m_palette[std::size_t(number)]);
+            } else if (reset) {
+                m_palette[std::size_t(number)] = defaults[std::size_t(number)];
+            } else if (valid) {
+                m_palette[std::size_t(number)] = parsed;
+            }
             continue;
         }
         if (key == "foreground" || key == "background") {
             auto& target = key == "foreground" ? m_defaultFg : m_defaultBg;
-            if (query) append(key, &target);
-            else if (reset || value.empty()) target = key == "foreground" ? m_options.defaultForeground : m_options.defaultBackground;
-            else if (valid) target = parsed;
+            if (query) {
+                append(key, &target);
+            } else if (reset || value.empty()) {
+                target = key == "foreground" ? m_options.defaultForeground : m_options.defaultBackground;
+            } else if (valid) {
+                target = parsed;
+            }
             continue;
         }
         if (key == "cursor" || key == "selection_foreground" || key == "selection_background") {
@@ -4513,16 +4537,28 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             bool& has = key == "cursor" ? m_hasCursorColor : key == "selection_foreground" ? m_hasSelectionFg : m_hasSelectionBg;
             bool& dynamic = key == "cursor" ? m_protocolColors.cursorDynamic : key == "selection_foreground"
                 ? m_protocolColors.selectionFgDynamic : m_protocolColors.selectionBgDynamic;
-            if (query) append(key, key == "cursor" ? cursorColor() : key == "selection_foreground" ? selectionForeground() : selectionBackground());
-            else if (reset || value.empty()) { has = false; dynamic = !reset; }
-            else if (valid) { target = parsed; has = true; dynamic = false; }
+            if (query) {
+                append(key, key == "cursor"                 ? cursorColor()
+                             : key == "selection_foreground" ? selectionForeground()
+                                                             : selectionBackground());
+            } else if (reset || value.empty()) {
+                has = false;
+                dynamic = !reset;
+            } else if (valid) {
+                target = parsed;
+                has = true;
+                dynamic = false;
+            }
             continue;
         }
         if (key == "cursor_text" || key == "visual_bell") {
             auto& target = key == "cursor_text" ? m_protocolColors.cursorText : m_protocolColors.bell;
-            if (query) append(key, key == "cursor_text" ? cursorTextColor() : visualBellColor());
-            else if (reset || value.empty() || valid) {
-                if (key == "cursor_text") m_protocolColors.cursorTextSet = !reset;
+            if (query) {
+                append(key, key == "cursor_text" ? cursorTextColor() : visualBellColor());
+            } else if (reset || value.empty() || valid) {
+                if (key == "cursor_text") {
+                    m_protocolColors.cursorTextSet = !reset;
+                }
                 target = valid && !reset ? std::optional<Rgb>(parsed) : std::nullopt;
             }
             continue;
@@ -4530,12 +4566,16 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
         constexpr std::string_view prefix = "transparent_background_color";
         if (key.size() == prefix.size() + 1 && key.starts_with(prefix) && key.back() >= '1' && key.back() <= '8') {
             auto& target = m_protocolColors.transparent[std::size_t(key.back() - '1')];
-            if (query) append(key, target ? &target->color : nullptr, target ? std::optional<double>(target->opacity) : std::nullopt);
-            else if (reset || value.empty()) target.reset();
-            else if (valid) {
+            if (query) {
+                append(key, target ? &target->color : nullptr, target ? std::optional<double>(target->opacity) : std::nullopt);
+            } else if (reset || value.empty()) {
+                target.reset();
+            } else if (valid) {
                 double opacity = 1.0;
                 if (at != std::string_view::npos) {
-                    if (!parseNumber(value.substr(at + 1), opacity)) continue;
+                    if (!parseNumber(value.substr(at + 1), opacity)) {
+                        continue;
+                    }
                     opacity = opacity < 0 ? -1.0 : std::clamp(opacity, 0.0, 1.0);
                 }
                 target = TransparentColor{parsed, opacity};
@@ -4543,10 +4583,14 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             continue;
         }
         auto encoded = detail::base64Encode(key);
-        while (!encoded.empty() && encoded.back() == '=') encoded.pop_back();
+        while (!encoded.empty() && encoded.back() == '=') {
+            encoded.pop_back();
+        }
         response += ";unknown=" + encoded;
     }
-    if (!response.empty()) reply("\x1b]21" + response + (bel ? "\x07" : "\x1b\\"));
+    if (!response.empty()) {
+        reply("\x1b]21" + response + (bel ? "\x07" : "\x1b\\"));
+    }
 }
 
 void Terminal::oscColor(int which, std::string_view spec, bool bel)
@@ -4894,11 +4938,13 @@ void Terminal::setExtraCursors(const Params& p)
 
     // Every group of one sequence applies the same shape, so their order does
     // not matter: gather the cells as rectangles (0-based, inclusive), then
-    // change the cursors once. A full-screen rectangle repeated thousands of
-    // times then costs no more than the cursor limit allows.
+    // change the cursors once. Repeated groups count once, and each cell gets
+    // at most one map operation, so a screen smaller than the cursor limit
+    // cannot be walked again for every group.
     struct Rect
     {
         int top, left, bottom, right;
+        bool operator==(const Rect&) const = default;
     };
     std::vector<Rect> rects;
     auto addPoint = [&](int y, int x) {
@@ -4936,10 +4982,20 @@ void Terminal::setExtraCursors(const Params& p)
         }
         i = end;
     }
+    std::sort(rects.begin(), rects.end(), [](const Rect& a, const Rect& b) {
+        return std::tie(a.top, a.left, a.bottom, a.right) < std::tie(b.top, b.left, b.bottom, b.right);
+    });
+    rects.erase(std::unique(rects.begin(), rects.end()), rects.end());
     auto covered = [&](const std::pair<int, int>& cell) {
-        return std::any_of(rects.begin(), rects.end(), [&](const Rect& r) {
-            return cell.first >= r.top && cell.first <= r.bottom && cell.second >= r.left && cell.second <= r.right;
-        });
+        for (const Rect& r : rects) {
+            if (r.top > cell.first) {
+                break; // sorted by top: no later one reaches this row
+            }
+            if (cell.first <= r.bottom && cell.second >= r.left && cell.second <= r.right) {
+                return true;
+            }
+        }
+        return false;
     };
     if (shape == 0) {
         std::erase_if(m_extraCursors, [&](const auto& entry) { return covered(entry.first); });
@@ -4950,10 +5006,15 @@ void Terminal::setExtraCursors(const Params& p)
             }
         }
         // New cursors up to the limit; the rest are ignored.
+        std::vector<bool> seen(std::size_t(rows()) * std::size_t(cols()), false);
         for (const Rect& r : rects) {
             for (int y = r.top; y <= r.bottom && m_extraCursors.size() < MaxExtraCursors; ++y) {
                 for (int x = r.left; x <= r.right && m_extraCursors.size() < MaxExtraCursors; ++x) {
-                    m_extraCursors.try_emplace({y, x}, shape);
+                    auto cell = seen[std::size_t(y) * std::size_t(cols()) + std::size_t(x)];
+                    if (!cell) {
+                        cell = true;
+                        m_extraCursors.try_emplace({y, x}, shape);
+                    }
                 }
             }
         }

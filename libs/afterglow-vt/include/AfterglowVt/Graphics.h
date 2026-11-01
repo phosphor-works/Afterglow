@@ -187,17 +187,19 @@ public:
     /// only its top row. With @p includeHistory (the alternate screen's
     /// lifecycle): drops every placement.
     void clearPlacements(const Screen& screen, bool includeHistory, int cellWidth = 0, int cellHeight = 0);
-    /// ED 3: drops the placements anchored in the scrollback. Images on the
-    /// screen stay, like its text.
-    void clearHistoryPlacements(const Screen& screen);
 
     /// Reflow renumbers rows. anchorRows() and anchorColumns() give each
     /// placement's absolute row and column for Screen::resize() to track;
     /// retarget() applies the result. Both vectors hold one entry per
-    /// placement, in order, or retarget() leaves the placements alone.
+    /// placement, in order, or retarget() leaves the placements alone. A
+    /// placement whose row is gone is dropped. Only when the row ids still
+    /// hold (a resize without reflow) does the caller pass the cell size:
+    /// a placement anchored above the buffer then stays while its lower rows
+    /// are still in it.
     std::vector<std::size_t> anchorRows(const Screen& screen) const;
     std::vector<int> anchorColumns() const;
-    void retarget(const Screen& screen, const std::vector<std::size_t>& rows, const std::vector<int>* columns = nullptr);
+    void retarget(const Screen& screen, const std::vector<std::size_t>& rows, const std::vector<int>* columns = nullptr,
+                  int cellWidth = 0, int cellHeight = 0);
     /// Moves the placements anchored in @p scroll's region with the rows the
     /// scroll moved, and drops those whose anchor left the region. Virtual
     /// placements follow their placeholder cells, and relative children their
@@ -235,7 +237,7 @@ private:
 
     void dispatch(std::string_view payload, Context& ctx);
     void execute(const Command& cmd, std::string data, Context& ctx);
-    bool loadPayload(const Command& cmd, std::string& data, std::string& error, std::string& unlinkAfterDecode);
+    bool loadPayload(const Command& cmd, std::string& data, std::string& error);
     bool decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out, std::string& error);
     void transmit(const Command& cmd, std::string data, Context& ctx);
     void place(const Command& cmd, Context& ctx);

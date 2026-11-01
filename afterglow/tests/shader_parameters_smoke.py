@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from nested_desktop import NestedDesktop, wait_for
+from nested_desktop import NestedDesktop, check, wait_for
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
@@ -30,13 +30,9 @@ if not args.private_bus:
     print(f"Artifacts: {artifacts}", flush=True)
     sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary,
                               "--artifacts", str(artifacts.resolve()), "--private-bus"]))
+if not args.artifacts:
+    parser.error("--private-bus needs --artifacts")
 artifacts = args.artifacts
-
-
-def check(condition, *detail):
-    # Not assert: python -O must not turn the checks off.
-    if not condition:
-        raise AssertionError(*detail)
 
 
 with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
@@ -104,15 +100,21 @@ return {
         def log_text():
             log.flush()
             return (artifacts / "application.log").read_text(errors="replace")
+        def count(kind, name):
+            return log_text().count(f"{kind}:{name}\n")
         def answers(name):
-            text = log_text()
-            return sum(text.count(f"{kind}:{name}\n") for kind in ("WRITE_OK", "WRITE_REJECTED", "QUERY_FAILED"))
-        def action(pane, name):
-            """Runs a writer action and waits until the writer logs the answer to its write."""
+            return sum(count(kind, name) for kind in ("WRITE_OK", "WRITE_REJECTED", "QUERY_FAILED"))
+        def action(pane, name, accepted=True):
+            """Runs a writer action, waits until the writer logs the answer to its write,
+            and checks that the write was accepted or rejected as expected."""
             before = answers(name)
+            expected = "WRITE_OK" if accepted else "WRITE_REJECTED"
+            matching = count(expected, name)
             ctl("action", "script:writer." + name, "--pane", pane)
             wait_for(lambda: answers(name) > before)
             check(f"QUERY_FAILED:{name}" not in log_text(), name)
+            check(count(expected, name) > matching,
+                  f"The {name} write was " + ("rejected" if accepted else "accepted"))
         def settles(pane, index, expected):
             """Waits until a shader value reaches the expected value."""
             wait_for(lambda: abs(inspect(pane)[index]["values"]["strength"] - expected) < 0.001)
@@ -139,16 +141,19 @@ return {
             near(inspect(first)[1]["values"]["strength"], 0.1)
             near(inspect(second)[0]["values"]["strength"], 0.1)
             desktop.screenshot(artifacts / "pane-override.png")
-            action(first, "bad")
-            check("WRITE_REJECTED:bad\n" in log_text(), "An invalid value was accepted")
+            action(first, "bad", accepted=False)
             near(inspect(first)[0]["values"]["strength"], 1.2)
             action(first, "reset")
             near(inspect(first)[0]["values"]["strength"], 0.1)
-            # A 3 s linear transition from 0.1 to 1.2 is past 0.15 after 0.14 s
-            # and below 1.15 until 2.86 s, so one round trip lands inside it.
+            # A 3 s linear transition from 0.1 to 1.2. A read right after the
+            # write lands inside it however fast the round trip is, and a read
+            # 0.3 s later (about 0.11 further) shows that it moves.
             action(first, "transition")
             midway = inspect(first)[0]["values"]["strength"]
-            check(0.15 < midway < 1.15, midway)
+            check(0.1001 < midway < 1.1999, midway)
+            time.sleep(0.3)
+            later = inspect(first)[0]["values"]["strength"]
+            check(midway + 0.05 < later < 1.1999, midway, later)
             settles(first, 0, 1.2)
             action(first, "tab")
             near(inspect(second)[0]["values"]["strength"], 1.2)
@@ -172,7 +177,6 @@ return {
             ctl("action", "script:stale.write", "--pane", first)
             wait_for(lambda: "STALE_REJECTED" in log_text())
             check("STALE_OK" not in log_text(), "A stale instance id was accepted")
-            check(log_text().count("WRITE_REJECTED:bad\n") == 1, "A valid write was rejected")
             near(inspect(first)[0]["values"]["strength"], 0.2)
             # The tab override must land before the uninstall can remove it.
             action(first, "tab")

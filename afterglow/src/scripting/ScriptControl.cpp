@@ -89,7 +89,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                 return error;
             }
             if (kind == QLatin1String("action")) {
-                return control.runAction(pane, s("name"));
+                return control.runScriptAction(pane, s("name"));
             }
             if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
             if (kind == QLatin1String("overview_move")) {

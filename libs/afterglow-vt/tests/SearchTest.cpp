@@ -152,6 +152,13 @@ TEST(TextSearch, InvalidComplexCancelledAndBoundedQueries)
     const char32_t surrogate[] = {U'a', char32_t(0xD800), 0};
     EXPECT_EQ(searchText(snapshot, surrogate, true, cancelled).error, "Invalid regular expression at character 2");
     EXPECT_EQ(searchText(snapshot, U"(a+)+$", true, cancelled).error, "Search complexity limit reached");
+    // Callers translate the kind and the position, not the English text.
+    const TextSearchResult invalid = searchText(snapshot, U"a)", true, cancelled);
+    EXPECT_EQ(invalid.errorKind, SearchError::InvalidPattern);
+    EXPECT_EQ(invalid.errorPosition, 2u);
+    EXPECT_EQ(searchText(snapshot, U"(a+)+$", true, cancelled).errorKind, SearchError::ComplexityLimit);
+    EXPECT_EQ(searchText(snapshot, std::u32string(4097, U'a'), true, cancelled).errorKind, SearchError::PatternTooLong);
+    EXPECT_EQ(searchText(snapshot, U"a", true, cancelled).errorKind, SearchError::None);
     EXPECT_TRUE(searchText(snapshot, U"a", true, cancelled, 3).truncated);
     cancelled = true;
     EXPECT_TRUE(searchText(snapshot, U"a", true, cancelled).cancelled);

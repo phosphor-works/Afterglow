@@ -197,7 +197,7 @@ QString ShaderControls::update(const QString& owner, const QList<quint32>& panes
     for (const auto& item : m_overrides) if (!matches(item)) countOverride(item);
     for (const auto& item : replacements) countOverride(item);
     if (!values.isEmpty() && imageBytes > ShaderLibrary::MaxDecodedImageBytes)
-        return QStringLiteral("Shader images exceed the 256 MiB decoded-image budget");
+        return QStringLiteral("Shader images exceed the %1 MiB decoded-image budget").arg(ShaderLibrary::MaxDecodedImageBytes >> 20);
     m_overrides.removeIf(matches);
     m_overrides.append(replacements);
     return {};

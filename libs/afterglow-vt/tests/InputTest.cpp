@@ -51,7 +51,7 @@ TEST(Input, ApplicationKeypadCoversEveryKey)
         {Key::Keypad4, 't'}, {Key::Keypad5, 'u'}, {Key::Keypad6, 'v'}, {Key::Keypad7, 'w'},
         {Key::Keypad8, 'x'}, {Key::Keypad9, 'y'}, {Key::KeypadDecimal, 'n'}, {Key::KeypadDivide, 'o'},
         {Key::KeypadMultiply, 'j'}, {Key::KeypadSubtract, 'm'}, {Key::KeypadAdd, 'k'},
-        {Key::KeypadEnter, 'M'}, {Key::KeypadEqual, 'X'},
+        {Key::KeypadEnter, 'M'}, {Key::KeypadEqual, 'X'}, {Key::KeypadSeparator, 'l'},
     };
     for (const auto& [code, final] : cases) {
         EXPECT_EQ(encodeKey(key(code), modes), std::string("\x1bO") + final);
@@ -59,6 +59,7 @@ TEST(Input, ApplicationKeypadCoversEveryKey)
     EXPECT_EQ(encodeKey(key(Key::KeypadEqual, Mod::Ctrl, "="), modes), "\x1b[1;5X");
     modes.keypadApp = false;
     EXPECT_EQ(encodeKey(key(Key::KeypadEqual, 0, "="), modes), "=");
+    EXPECT_EQ(encodeKey(key(Key::KeypadSeparator, 0, ","), modes), ",");
 }
 
 TEST(Input, TildeAndFunctionKeys)
@@ -155,6 +156,8 @@ TEST(Input, PasteDropsControlCharacters)
     EXPECT_EQ(encodePaste("a\tb\x7f\x03\x1b[A", m), "a\tb[A");
     // C1 in UTF-8 (U+0085) goes, other text stays.
     EXPECT_EQ(encodePaste("x\xc2\x85y\xc3\xa9\xc2\xa0", m), "xy\xc3\xa9\xc2\xa0");
+    // A dropped control does not join its neighbours into a C1 control.
+    EXPECT_EQ(encodePaste("x\xc2\x01\x85y\xc2\x7f\x9b", m), "xy");
     m.bracketedPaste = true;
     // Without ESC the end marker cannot appear in the text.
     EXPECT_EQ(encodePaste("x\x1b[201~y", m), "\x1b[200~x[201~y\x1b[201~");

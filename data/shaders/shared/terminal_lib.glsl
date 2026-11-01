@@ -83,9 +83,10 @@ float timeCycle(float period) {
 }
 
 // timeSeconds() is the full clock, for a drift that never repeats, such as a
-// noise offset or a scene clock. A float loses precision as the clock grows:
-// its step is about 0.5 ms after two hours and 8 ms after a day. Prefer
-// timeAngle() and timeCycle() for anything periodic.
+// noise offset. A float loses precision as the clock grows: its step is about
+// 0.5 ms after two hours, 8 ms after a day and 62 ms after a week. A rotation,
+// an orbit or a wave built on it moves in visible steps after a few days, so
+// anything periodic uses timeAngle() or timeCycle().
 float timeSeconds() {
     return iTimeHi + iTime;
 }

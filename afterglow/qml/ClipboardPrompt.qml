@@ -5,35 +5,25 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Asks before a program reads the clipboard (OSC 52 or OSC 5522). A program
-// can open this prompt while the user types, so nothing here allows on a key
-// typed for the shell: Deny holds the focus, Return answers only the button
-// that has it, and "a" counts only when pressed on its own.
+// Asks before a program reads or replaces the clipboard (OSC 52 or OSC
+// 5522). A program can open this prompt while the user types, so nothing
+// here allows on a key typed for the shell: Deny holds the focus, Return
+// answers only the button that has it, and "a" counts only when pressed on
+// its own.
 Item {
     id: prompt
 
     required property QtObject controller
     readonly property bool canRemember: controller.clipboardPromptName.length > 0
 
-    function syncVisibility() {
-        if (visible)
-            Qt.callLater(() => { if (prompt.visible) takeFocus() })
-    }
-
+    // Called by Chrome.qml when this is the topmost open overlay.
     function takeFocus() {
         deny.forceActiveFocus()
     }
 
-    onVisibleChanged: syncVisibility()
-    Component.onCompleted: Qt.callLater(syncVisibility)
-
-    Rectangle {
-        anchors.fill: parent
-        color: prompt.controller.scrimColor
-        MouseArea {
-            anchors.fill: parent
-            onClicked: prompt.controller.answerClipboard(0)
-        }
+    Scrim {
+        controller: prompt.controller
+        onDismissed: prompt.controller.answerClipboard(0)
     }
 
     Pane {
@@ -87,7 +77,7 @@ Item {
             Label {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: prompt.canRemember ? qsTr("Tab chooses a button and Enter presses it. A always allows. Escape denies.")
+                text: prompt.canRemember ? qsTr("Tab chooses a button and Enter presses it. Press a to always allow. Escape denies.")
                                          : qsTr("Tab chooses a button and Enter presses it. Escape denies.")
             }
         }

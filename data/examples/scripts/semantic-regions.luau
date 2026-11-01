@@ -19,8 +19,11 @@ return {
             end
         end
         if #choices == 0 then return notify(pane, "No retained shell markers in this pane.") end
-        local choice = afterglow.await(afterglow.select(pane, "Copy shell region", choices))
-        if not choice then return nil end -- cancelled
+        local choice, selectError = afterglow.await(afterglow.select(pane, "Copy shell region", choices))
+        if not choice then
+            if selectError.code == "cancelled" then return nil end
+            return notify(pane, selectError.message)
+        end
         local region, readError = afterglow.await(afterglow.read_region(pane, choice.id, 262144))
         if not region then return notify(pane, readError.message) end
         if not region.available then return notify(pane, "The region expired.") end

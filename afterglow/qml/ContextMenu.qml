@@ -41,7 +41,6 @@ Item {
             levels = [{ items: at.items || [], left: at.x || 0, right: at.x || 0, top: at.y || 0, root: true }]
             currents = [-1]
             hoverTimer.stop()
-            Qt.callLater(() => { if (menu.visible) takeFocus() })
         } else {
             levels = []
             currents = []
@@ -222,6 +221,9 @@ Item {
                     Repeater {
                         id: rows
                         model: panel.spec.items
+                        // Another submenu in this panel starts at its top,
+                        // not at the scroll of the one it replaced.
+                        onModelChanged: scroller.contentY = 0
 
                         delegate: Item {
                             id: entry

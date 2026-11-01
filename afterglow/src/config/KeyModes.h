@@ -10,6 +10,9 @@ class KeyModes
 public:
     /// QKeySequence holds no more keys than this.
     static constexpr int MaxSequenceKeys = 4;
+    /// The defaults of Keybinds.sequenceTimeout and Keybinds.tableTimeout, in milliseconds.
+    static constexpr int DefaultSequenceTimeout = 1000;
+    static constexpr int DefaultTableTimeout = 5000;
     struct State {
         QList<int> prefix;
         QString table;
@@ -39,7 +42,7 @@ private:
         bool operator==(const Binding&) const = default;
     };
     QHash<QString, QList<Binding>> m_tables;
-    int m_sequenceTimeout = 1000;
-    int m_tableTimeout = 5000;
+    int m_sequenceTimeout = DefaultSequenceTimeout;
+    int m_tableTimeout = DefaultTableTimeout;
 };
 }

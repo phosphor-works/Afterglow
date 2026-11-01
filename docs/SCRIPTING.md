@@ -30,6 +30,7 @@ The directories have this priority, from low to high:
 
 When two scripts have the same ID, the script in the higher-priority directory loads.
 In one directory, a package wins over a single file with the same ID.
+Of two files in one directory with the same ID, the file whose name sorts last loads.
 `afterglow ctl scripts` lists the other script with the status `superseded`.
 
 The VM has no direct file or process API.
@@ -164,6 +165,7 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Handler failures in a row | 5 | The script is disabled |
 | Handler calls (events, timers, watchers) | 64 each second | Afterglow drops the call |
 | Effects in one returned list | 64 | No effect applies |
+| Values in a returned table, nested tables included | 262,144 | The call fails, and a handler that waits does not wait |
 | Applied effects | 20 each second | `rate_limited` |
 | Structural effects | 3 each 10 seconds | `rate_limited` |
 | Queued results | 64 | The script is disabled |
@@ -205,7 +207,8 @@ A queued event can describe an earlier command than the snapshot.
 
 `cwd` is the local directory that the shell reported last, or the working directory of the pane's foreground process.
 It is `""` when it is not known.
-It is never a directory on a remote host, such as the directory of an `ssh` session.
+Afterglow ignores a reported directory that names another host, such as the directory of an `ssh` session.
+A reported path without a host is used when that path exists on this machine.
 
 A tab is active when its window selects it.
 Each unfocused window keeps its selected tab and pane.
@@ -246,6 +249,8 @@ Its pane is the new tab's focused pane.
 
 `run_action(action, ev)` handles declared palette and key actions.
 `on_load`, `on_unload` and `on_config_changed` handle lifecycle changes.
+Handlers and `metadata` must be fields of the table that the script returns.
+Afterglow does not read them through a metatable.
 `on_config_changed` runs after the Afterglow configuration changes. It has no pane.
 A change to a package's own `config.json` replaces the package instance instead.
 A single-file script's `on_load` has the 20 ms event limit. A package's `on_load` has 100 ms.
@@ -378,10 +383,11 @@ Key releases are not reported.
 `overview(pane, operation)` drives the pane overview of the pane's window.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
 When the chosen pane is in another tab, that tab shows after the overview has closed.
-`overview_move(pane, step)` moves the highlight by `step` cards. `overview_move(pane, 0, target)` highlights the pane `target`.
+`overview_move(pane, step)` moves the highlight by `step` cards. `step` is a whole number from -32 to 32.
+`overview_move(pane, 0, target)` highlights the pane `target`. `target` is a pane ID.
 Results contain the overview: `open`, `highlighted` and `cards`.
 The snapshot's window records contain the same `overview` table.
-`cards` lists pane IDs in tab order while the overview shows, otherwise the panes of the current tab.
+`cards` lists the pane IDs of every tab in tab order while the overview is open, otherwise the panes of the current tab.
 
 Combine these effects with a key mode to replace the overview's keys.
 The [scripted overview package](../data/examples/packages/scripted-overview/init.luau) moves with a, d, w and s, and ships its own overview shader.
@@ -456,6 +462,7 @@ Unknown or fully discarded IDs are unavailable.
 Reset does not reuse IDs. Retained positions follow text reflow.
 
 Set `Scripts.allowReadText=false` to deny these queries.
+While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all` and `show_last_output`.
 This setting is independent of external `Control.allowReadText` permissions.
 It controls terminal queries, not operating-system file or process access.
 

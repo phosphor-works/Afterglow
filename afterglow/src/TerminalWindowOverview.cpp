@@ -70,7 +70,7 @@ void TerminalWindow::layoutOtherTabs()
 {
     // Hidden tabs keep the layout of when they were last shown; the overview
     // shows them at the window's current size.
-    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
+    const int dividerWidth = dividerPixels();
     for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
         if (int(tab) != m_currentTab && m_tabs[tab]->splits) m_tabs[tab]->splits->layout(paneArea(), dividerWidth);
     }
@@ -174,7 +174,7 @@ void TerminalWindow::addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>
     }
     // Dividers follow the drawn edges, so they move with split animations.
     const QRect area = paneArea();
-    const int dividerWidth = std::max(1, int(std::lround(devicePixelRatio())));
+    const int dividerWidth = dividerPixels();
     if (shown.right() < area.right())
         overlays.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()), window.dividerColor);
     if (shown.bottom() < area.bottom())
@@ -205,7 +205,9 @@ QVariantMap TerminalWindow::applyScriptOverrides(Pane* pane, AfterglowRender::Fr
 
 void TerminalWindow::startTabTransition(int from, int to)
 {
-    if (!m_tabTransitionAvailable || from == to || from < 0 || from >= int(m_tabs.size()) || overviewShowing() || !isExposed()) return;
+    if (!m_tabTransitionAvailable || from == to || from < 0 || from >= int(m_tabs.size()) || overviewShowing()
+        || m_overview.revealing || !isExposed())
+        return;
     const AnimationSettings& anim = m_settings.settings().animation;
     m_tabTransition.from = m_tabs[std::size_t(from)]->id;
     m_tabTransition.direction = to > from ? 1.0f : -1.0f;
@@ -292,7 +294,7 @@ void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& ho
             m_tabTransition.progress.cancel();
         } else if (m_tabTransition.progress.isAnimating()) {
             // Only the tab being left is drawn: lay out that one at the window's size.
-            if ((*from)->splits) (*from)->splits->layout(paneArea(), std::max(1, int(std::lround(devicePixelRatio()))));
+            if ((*from)->splits) (*from)->splits->layout(paneArea(), dividerPixels());
             transition = {true, float(m_tabTransition.progress.value()), m_tabTransition.direction, m_tabTransition.startedAt,
                           prepareOtherTab(int(from - m_tabs.begin()), nullptr, backgroundAlpha, holding, animating)};
             animating = true;
@@ -306,6 +308,19 @@ bool TerminalWindow::openOverview()
     if (m_overview.open || !m_overviewAvailable || !m_splits || !m_focused) return false;
     // The overview takes the keyboard: not while a dialog or the chrome has it.
     if (m_scriptDialog || m_controller->wantsKeyboard()) return false;
+    // Refused before the unzoom below, which would snap the panes: the
+    // focused pane is no card past the card limit or with no room to draw.
+    if (paneArea().isEmpty()) return false;
+    std::size_t ahead = 0;
+    bool found = false;
+    for (std::size_t tab = 0; tab < m_tabs.size() && !found; ++tab) {
+        if (!m_tabs[tab]->splits) continue;
+        m_tabs[tab]->splits->forEachPane([&](Pane* pane, const QRect&) {
+            if (pane == m_focused) found = true;
+            else if (!found) ++ahead;
+        });
+    }
+    if (!found || ahead >= std::size_t(AfterglowRender::MaxShaderPanes)) return false;
     const bool fresh = !overviewShowing();
     const auto before = overviewPanes();
     // Every tab shows all of its panes; closing zooms them again.
@@ -326,7 +341,8 @@ bool TerminalWindow::openOverview()
     const auto panes = overviewPanes();
     const auto focused = std::find(panes.begin(), panes.end(), m_focused.data());
     if (focused == panes.end()) {
-        // Not among the cards: leave everything as it was.
+        // Not among the cards after all (a rectangle too small to lay out):
+        // zoom again. The panes snap back, with no easing.
         m_overview.open = false;
         restoreOverviewZooms(nullptr);
         return false;
@@ -388,6 +404,18 @@ void TerminalWindow::restoreOverviewZooms(Pane* target)
     }
 }
 
+void TerminalWindow::finishOverviewReveal()
+{
+    if (Pane* pane = std::exchange(m_overview.reveal, nullptr)) revealOverviewChoice(pane);
+}
+
+void TerminalWindow::revealOverviewChoice(Pane* pane)
+{
+    const bool was = std::exchange(m_overview.revealing, true);
+    revealPane(pane);
+    m_overview.revealing = was;
+}
+
 void TerminalWindow::closeOverview(Pane* chosen)
 {
     if (!m_overview.open) return;
@@ -407,7 +435,7 @@ void TerminalWindow::closeOverview(Pane* chosen)
     const auto spec = overviewSpec();
     m_overview.amount.start(m_overview.amount.value(), 0.0, spec);
     // Opened and closed before a frame: nothing to wait for.
-    if (m_overview.reveal && !overviewShowing()) revealPane(std::exchange(m_overview.reveal, nullptr));
+    if (!overviewShowing()) finishOverviewReveal();
     // The zooms can take cards away: count from the card the deck shows.
     const auto after = overviewPanes();
     if (const auto at = std::find(after.begin(), after.end(), target); at != after.end()) {
@@ -524,7 +552,7 @@ void TerminalWindow::advanceOverview(bool& animating)
         // started on the current tab's layout.
         QMetaObject::invokeMethod(this, [this, pane = std::exchange(m_overview.reveal, nullptr)] {
             updatePaneVisibility();
-            if (pane && !overviewShowing() && tabOf(pane) >= 0) revealPane(pane);
+            if (pane && !overviewShowing() && tabOf(pane) >= 0) revealOverviewChoice(pane);
         }, Qt::QueuedConnection);
     }
     m_overview.wasShowing = showing;

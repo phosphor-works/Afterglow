@@ -277,11 +277,7 @@ void Pane::selectAll()
 void Pane::startSelection(AfterglowVt::SelectionPoint anchor, AfterglowVt::SelectionMode mode, bool activeNow)
 {
     std::lock_guard lock(m_mutex);
-    m_selection.anchor = anchor;
-    m_selection.head = anchor;
-    m_selection.mode = mode;
-    m_selection.layoutEpoch = m_terminal.screen().layoutEpoch();
-    m_selection.active = activeNow;
+    m_selection.start(anchor, mode, m_terminal.screen().layoutEpoch(), activeNow);
     m_selectionOnAltScreen = m_terminal.modes().altScreen;
     ++m_selectionSerial;
 }
@@ -374,8 +370,7 @@ void Pane::toggleCopySelection(AfterglowVt::SelectionMode mode)
 {
     std::lock_guard lock(m_mutex);
     m_copySelecting = !m_copySelecting || m_selection.mode != mode;
-    m_selection.mode = mode;
-    m_selection.anchor = m_copyCursor;
+    m_selection.start(m_copyCursor, mode, m_selection.layoutEpoch, m_selection.active);
     ++m_selectionSerial;
 }
 void Pane::endCopyMode()
@@ -401,19 +396,24 @@ void Pane::scrollHistory(double fraction)
 
 namespace {
 /// The vt library's search errors, in the user's language.
-QString searchError(const std::string& error)
+QString searchError(const AfterglowVt::TextSearchResult& result)
 {
-    if (error.empty()) return {};
-    if (error == "Pattern exceeds 4096 characters") return Pane::tr("Pattern exceeds 4096 characters");
-    if (error == "Cannot allocate search context") return Pane::tr("Not enough memory to search");
-    if (error == "Search time limit reached") return Pane::tr("Search time limit reached");
-    if (error == "Search complexity limit reached") return Pane::tr("Search complexity limit reached");
-    constexpr std::string_view Invalid = "Invalid regular expression at character ";
-    if (error.starts_with(Invalid)) {
-        return Pane::tr("Invalid regular expression at character %1")
-            .arg(QString::fromStdString(error.substr(Invalid.size())));
+    using AfterglowVt::SearchError;
+    switch (result.errorKind) {
+    case SearchError::None:
+        return {};
+    case SearchError::PatternTooLong:
+        return Pane::tr("Pattern exceeds 4096 characters");
+    case SearchError::NoMemory:
+        return Pane::tr("Not enough memory to search");
+    case SearchError::TimeLimit:
+        return Pane::tr("Search time limit reached");
+    case SearchError::ComplexityLimit:
+        return Pane::tr("Search complexity limit reached");
+    case SearchError::InvalidPattern:
+        return Pane::tr("Invalid regular expression at character %1").arg(result.errorPosition);
     }
-    return QString::fromStdString(error);
+    return QString::fromStdString(result.error);
 }
 } // namespace
 
@@ -460,7 +460,7 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
             std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
             m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
-            m_searchNotice = searchError(result.error);
+            m_searchNotice = searchError(result);
             if (result.truncated) m_searchNotice += tr(" (limited results)");
             if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
@@ -1266,6 +1266,12 @@ FileTransfer* Pane::fileTransfers()
     }
     return m_fileTransfers.get();
 }
+std::pair<std::uint64_t, std::uint64_t> Pane::accessibleSerial() const
+{
+    std::lock_guard lock(m_mutex);
+    return {m_terminal.generation(), m_selectionSerial};
+}
+
 DragDrop* Pane::dragDrop()
 {
     if (!m_dragDrop) {

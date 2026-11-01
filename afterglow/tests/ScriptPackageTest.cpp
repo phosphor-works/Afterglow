@@ -172,6 +172,11 @@ TEST(ScriptPackage, ShaderPacksCarryThePackageNameAndSuggestionsNameThem)
     put(file, manifest({{"shaders", shaders}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
     QFile::remove(dir.filePath("shaders/crt"));
+    // So is the packs' include directory, although it is not a pack.
+    put(outside.filePath("include/common.glsl"), "");
+    ASSERT_TRUE(QFile::link(outside.filePath("include"), dir.filePath("shaders/shared")));
+    EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
+    QFile::remove(dir.filePath("shaders/shared"));
     // A non-string path is an error, not the default directory.
     put(file, manifest({{"shaders", QJsonObject{{"path", 5}}}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("shaders.path"));

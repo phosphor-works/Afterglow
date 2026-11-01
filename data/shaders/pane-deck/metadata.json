@@ -2,7 +2,7 @@
     "id": "pane-deck",
     "name": "Pane Deck",
     "category": "Overview",
-    "description": "The pane overview: the panes of every tab leave the window as live cards on a carousel, reflected in a glossy floor. The highlighted card turns to the front.",
+    "description": "In the pane overview, the panes of every tab leave the window as live cards on a carousel, reflected in a glossy floor. The highlighted card turns to the front.",
     "author": "afterglow",
     "version": "1.0",
     "fragmentShader": "effect.frag",

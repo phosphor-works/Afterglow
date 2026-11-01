@@ -339,10 +339,12 @@ TEST(Pty, ClosingDoesNotWaitForAChildThatIgnoresHangup)
     ASSERT_TRUE(pty->start());
     ASSERT_TRUE(output.wait("READY"));
     const pid_t child = pty->pid();
-    const auto started = std::chrono::steady_clock::now();
     pty.reset();
-    // The old destructor waited 100 ms before SIGKILL.
-    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds(80));
+    // The old destructor waited out the 100 ms grace and killed the child
+    // before it returned. Now the grace runs on the reaper: the child that
+    // ignores SIGHUP still runs. No wall-clock bound on the reset itself,
+    // which a loaded machine can exceed without a bug.
+    EXPECT_EQ(kill(child, 0), 0);
     // The child is still killed and reaped, off this thread.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (kill(child, 0) == 0 && std::chrono::steady_clock::now() < deadline)
@@ -398,7 +400,8 @@ struct FakeSsh {
         file(dir.filePath("ssh"), "#!/bin/sh\n"
             "for a; do [ \"$a\" = -G ] && { printf 'host prod\\nuser alice\\nhostname 10.0.0.5\\nport 22\\n';"
             " [ -n \"$FAKE_SETENV\" ] && echo 'setenv A=B';"
-            " [ -n \"$FAKE_REMOTECOMMAND\" ] && echo 'remotecommand tmux attach'; exit 0; }; done\n"
+            " [ -n \"$FAKE_REMOTECOMMAND\" ] && echo 'remotecommand tmux attach';"
+            " [ -n \"$FAKE_CONFIG\" ] && printf '%s\\n' \"$FAKE_CONFIG\"; exit 0; }; done\n"
             "{ printf 'ARGS'; printf ' [%s]' \"$@\"; printf '\\nTERM=%s\\n' \"$TERM\"; } >> \"$FAKE_LOG\"\n"
             "case \"$*\" in *tic*) cat > \"$FAKE_LOG.terminfo\";"
             " [ \"$FAKE_TIC_STATUS\" = int ] && kill -INT $$; exit \"${FAKE_TIC_STATUS:-0}\";; esac\n"
@@ -488,6 +491,13 @@ TEST(Ssh, ReadsResolvedConfigAndLabelsThePane)
     EXPECT_FALSE(multiplexed.controlPersist);
     EXPECT_TRUE(multiplexed.remoteCommand);
     EXPECT_EQ(multiplexed.proxyJump, "bastion");
+    EXPECT_FALSE(config.noSession);
+    EXPECT_FALSE(config.stdinNull);
+    EXPECT_FALSE(parseConfig("sessiontype default\nstdinnull no\nforkafterauthentication no\n").noSession);
+    EXPECT_TRUE(parseConfig("sessiontype none\nforkafterauthentication no\n").noSession);
+    EXPECT_TRUE(parseConfig("sessiontype subsystem\n").noSession);
+    EXPECT_TRUE(parseConfig("sessiontype default\nforkafterauthentication yes\n").noSession);
+    EXPECT_TRUE(parseConfig("stdinnull yes\n").stdinNull);
     EXPECT_FALSE(parseConfig("controlmaster false\ncontrolpersist 600\n").controlMaster);
     EXPECT_TRUE(parseConfig("controlmaster false\ncontrolpersist 600\n").controlPersist);
     EXPECT_EQ(contextStart("id1", config), "\x1b]3008;start=id1;type=remote;targetuser=alice;targethost=prod\x1b\\");
@@ -585,6 +595,29 @@ TEST(Ssh, InstallsPastRemoteCommandWithLaterOptionsAndInput)
         << runs[0].toStdString();
     EXPECT_EQ(runs[2], "ARGS [-nv] [prod] [-p] [2222]");
     EXPECT_EQ(runs[3], "TERM=afterglow");
+}
+
+TEST(Ssh, FollowsTheConfigsSessionTypeAndStdinNull)
+{
+    FakeSsh ssh;
+    if (!ssh.compileTerminfo()) GTEST_SKIP() << "tic or infocmp not installed";
+    ssh.environment.set("TERM", "afterglow");
+    ssh.environment.set("FAKE_SETENV", "1");
+    ssh.environment.set("XDG_RUNTIME_DIR", "");
+    // StdinNull in the config would give tic an empty entry: the install turns it off.
+    ssh.environment.set("FAKE_CONFIG", "stdinnull yes");
+    EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
+    auto runs = ssh.take();
+    ASSERT_EQ(runs.size(), 4) << runs.join('\n').toStdString();
+    EXPECT_TRUE(runs[0].startsWith("ARGS [-o] [StdinNull=no] [-T] [--] [prod] [sh -c ")) << runs[0].toStdString();
+    EXPECT_EQ(runs[2], "ARGS [prod]");
+    // SessionType none and ForkAfterAuthentication run no shell: nothing is installed.
+    ssh.environment.set("XDG_STATE_HOME", ssh.dir.filePath("other-state").toUtf8());
+    for (const char* config : {"sessiontype none", "forkafterauthentication yes"}) {
+        ssh.environment.set("FAKE_CONFIG", config);
+        EXPECT_EQ(Afterglow::Ssh::run({"prod"}), 7);
+        EXPECT_EQ(ssh.take(), QStringList({"ARGS [prod]", "TERM=afterglow"})) << config;
+    }
 }
 
 TEST(Ssh, DiesFromCtrlCAtTheInstallPrompt)

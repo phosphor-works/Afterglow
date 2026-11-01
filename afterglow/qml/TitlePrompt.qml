@@ -14,7 +14,6 @@ Item {
         if (visible) {
             input.text = controller.titlePrompt.text || ""
             input.selectAll()
-            Qt.callLater(() => { if (prompt.visible) takeFocus() })
         }
     }
 
@@ -35,13 +34,9 @@ Item {
         }
     }
 
-    Rectangle {
-        anchors.fill: parent
-        color: prompt.controller.scrimColor
-        MouseArea {
-            anchors.fill: parent
-            onClicked: prompt.controller.cancelTitle()
-        }
+    Scrim {
+        controller: prompt.controller
+        onDismissed: prompt.controller.cancelTitle()
     }
 
     Pane {

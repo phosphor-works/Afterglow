@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from nested_desktop import NestedDesktop, wait_for
+from nested_desktop import NestedDesktop, check, wait_for
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
         def check_log():
             log.flush()
             errors = log_path.read_text(errors="replace")
-            assert not any(e in errors for e in ("TypeError", "ReferenceError", "QML failed", "Cannot assign")), errors
+            check(not any(e in errors for e in ("TypeError", "ReferenceError", "QML failed", "Cannot assign")), errors)
         def ctl(*values):
             return subprocess.check_output([binary, "ctl", *map(str, values)], env=env,
                                            text=True, stderr=subprocess.PIPE, timeout=5).strip()
@@ -111,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             desktop.key("Return")
             time.sleep(0.6)
             # With no picker open, the typed text would have run in the shell.
-            assert "command not found" not in screen(focused[0]), f"No picker took {text!r}"
+            check("command not found" not in screen(focused[0]), f"No picker took {text!r}")
         try:
             first = wait_for(panes)[0]["id"]
             wait_for(lambda: "L3>" in screen(first))
@@ -131,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             wait_for(lambda: len(panes()) == 4)
             wait_for(lambda: state()["value"].get("templates", {}).get(str(alpha)) == "two-pane")
             opened = [p for p in panes() if p["cwd"] == str(alpha)]
-            assert len(opened) == 2, panes()
+            check(len(opened) == 2, panes())
             active = opened[0]["id"]
             pid = identity(active)
             action(active, "favorite")
@@ -140,14 +140,14 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             action(first)
             choose("alpha", "favorite-running")
             wait_for(lambda: state()["revision"] > revision)
-            assert len(panes()) == 4, "Opening a running directory duplicated its window"
-            assert identity(active) == pid, "The reused pane lost its shell"
+            check(len(panes()) == 4, "Opening a running directory duplicated its window")
+            check(identity(active) == pid, "The reused pane lost its shell")
             # Cancelling the picker must leave actions usable and storage unchanged.
             revision = state()["revision"]
             action(active)
             desktop.key("Escape")
             keys_reach(active, "picker-cancelled-ok")
-            assert state()["revision"] == revision
+            check(state()["revision"] == revision)
             # Reload provider configuration, then choose a newly discoverable repo.
             external = root / "external"
             gamma = external / "gamma"
@@ -167,7 +167,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             wait_for(lambda: status() == {})
             desktop.screenshot(args.artifacts / "uninstalled.png")
             keys_reach(first, "uninstalled-ok")
-            assert (config / "state/scripts/project-navigator.json").read_bytes() == before
+            check((config / "state/scripts/project-navigator.json").read_bytes() == before)
             shutil.move(root / "removed-package", package)
             wait_for(lambda: (status() or {}).get("project-navigator") == "active")
             # Reinstall/restart preserves favorites and remembered templates.
@@ -175,14 +175,14 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             app = start()
             first = wait_for(panes)[0]["id"]
             wait_for(lambda: "L3>" in screen(first))
-            assert state()["value"]["favorites"][str(alpha)]
+            check(state()["value"]["favorites"][str(alpha)])
             action(first)
             choose("alpha", "restored-favorites")
             # Last-used layout is first: Enter alone should restore two panes.
             desktop.screenshot(args.artifacts / "remembered-layout.png")
             desktop.key("Return")
             wait_for(lambda: len(panes()) == 3)
-            assert len([p for p in panes() if p["cwd"] == str(alpha)]) == 2
+            check(len([p for p in panes() if p["cwd"] == str(alpha)]) == 2)
             desktop.screenshot(args.artifacts / "restored-layout.png")
             check_log()
             print("PASS: navigator UI and package lifecycle", flush=True)

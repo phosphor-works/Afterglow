@@ -63,7 +63,7 @@ const ActionInfo Actions[] = {
     {Action::SplitDown, "split_down", "Split Down", {"Ctrl+Shift+O"}},
     {Action::SplitLeft, "split_left", "Split Left", {}},
     {Action::SplitUp, "split_up", "Split Up", {}},
-    {Action::RenamePane, "rename_pane", "Change Split Title", {}},
+    {Action::RenamePane, "rename_pane", "Change Pane Title", {}},
     {Action::ClosePane, "close_pane", "Close Pane", {"Ctrl+Shift+W"}},
     {Action::NewWindow, "new_window", "New Window", {"Ctrl+Shift+N"}},
     {Action::NewTab, "new_tab", "New Tab", {"Ctrl+Shift+T"}},
@@ -93,17 +93,17 @@ const ActionInfo Actions[] = {
     {Action::ClearScreen, "clear_screen", "Clear Screen and Scrollback", {"Ctrl+Shift+K"}},
     {Action::ResetTerminal, "reset", "Reset Terminal", {}},
     {Action::NotifyOnFinish, "notify_on_finish", "Notify When the Next Command Finishes", {}},
-    {Action::FocusLeft, "focus_left", "Focus Split Left", {"Ctrl+Shift+Left"}},
-    {Action::FocusRight, "focus_right", "Focus Split Right", {"Ctrl+Shift+Right"}},
-    {Action::FocusUp, "focus_up", "Focus Split Above", {"Ctrl+Shift+Up"}},
-    {Action::FocusDown, "focus_down", "Focus Split Below", {"Ctrl+Shift+Down"}},
+    {Action::FocusLeft, "focus_left", "Focus Pane Left", {"Ctrl+Shift+Left"}},
+    {Action::FocusRight, "focus_right", "Focus Pane Right", {"Ctrl+Shift+Right"}},
+    {Action::FocusUp, "focus_up", "Focus Pane Above", {"Ctrl+Shift+Up"}},
+    {Action::FocusDown, "focus_down", "Focus Pane Below", {"Ctrl+Shift+Down"}},
     // Not Ctrl+Shift+=: on most layouts that chord types "+", so it is Ctrl++ (font_bigger).
     {Action::EqualizeSplits, "equalize_splits", "Equalize Splits", {"Ctrl+Shift+Alt+="}},
     {Action::TogglePaneZoom, "toggle_pane_zoom", "Toggle Pane Zoom", {"Ctrl+Shift+Return"}},
-    {Action::ResizeLeft, "resize_left", "Resize Split Left", {"Ctrl+Shift+Alt+Left"}},
-    {Action::ResizeRight, "resize_right", "Resize Split Right", {"Ctrl+Shift+Alt+Right"}},
-    {Action::ResizeUp, "resize_up", "Resize Split Up", {"Ctrl+Shift+Alt+Up"}},
-    {Action::ResizeDown, "resize_down", "Resize Split Down", {"Ctrl+Shift+Alt+Down"}},
+    {Action::ResizeLeft, "resize_left", "Resize Pane Left", {"Ctrl+Shift+Alt+Left"}},
+    {Action::ResizeRight, "resize_right", "Resize Pane Right", {"Ctrl+Shift+Alt+Right"}},
+    {Action::ResizeUp, "resize_up", "Resize Pane Up", {"Ctrl+Shift+Alt+Up"}},
+    {Action::ResizeDown, "resize_down", "Resize Pane Down", {"Ctrl+Shift+Alt+Down"}},
     {Action::FontBigger, "font_bigger", "Increase Font Size", {"Ctrl+=", "Ctrl++"}},
     {Action::FontSmaller, "font_smaller", "Decrease Font Size", {"Ctrl+-"}},
     {Action::FontReset, "font_reset", "Reset Font Size", {"Ctrl+0"}},
@@ -186,7 +186,7 @@ QVariantMap Keybinds::defaultMap()
 
 Keybinds Keybinds::defaults()
 {
-    // Settings holds one per instance; parsing ~75 sequences each time is waste.
+    // Settings holds one per instance; parsing every default sequence each time is waste.
     static const Keybinds Defaults = fromMap(defaultMap());
     return Defaults;
 }

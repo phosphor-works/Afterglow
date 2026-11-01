@@ -194,6 +194,7 @@ protected:
     void focusOutEvent(QFocusEvent* e) override;
 
 private:
+    struct Tab;
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     void bindPane(Pane* pane);
@@ -206,7 +207,8 @@ private:
     /// After a swap or rotation: shows every pane again when the tab was
     /// zoomed (@p wasZoomed), or lets the panes ease to their new places.
     void settleRearrangement(bool wasZoomed);
-    void removeTabShell(int index);
+    /// Takes tab @p index out of this window and returns it, with its panes.
+    std::unique_ptr<Tab> removeTabShell(int index);
     /// Shows the current tab after panes or tabs arrived or left. The tab
     /// that was current before (@p previousTab, by id, at @p previousIndex)
     /// counts as left when another one shows now.
@@ -241,6 +243,8 @@ private:
     QRect paneArea(int tabCount = -1) const;
     /// The smallest pane that splits, resizes and divider drags leave, in pixels.
     QSize minimumPaneSize() const;
+    /// The width of a divider between panes, in pixels: one logical pixel.
+    int dividerPixels() const;
     /// @p pane is drawn this frame: visible in the current tab, a card of
     /// the overview, or in the tab a tab switch is leaving.
     bool paneDrawn(const Pane* pane) const;
@@ -364,6 +368,10 @@ private:
     // Clipboard protocol (OSC 5522)
     void clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRequest& request);
     void answerClipboardRead(Pane* pane, const AfterglowVt::ClipboardRequest& request, std::string_view oneTimePassword = {});
+    /// Who asks in a clipboard prompt, in words the program cannot disguise
+    /// (@p name, else the pane's title), and where the pane is when it is
+    /// not the one the user looks at.
+    QString clipboardAsker(Pane* pane, const QString& name = {}) const;
     /// A program's clipboard write (OSC 52 or 5522), as Terminal.clipboardWrite says.
     void clipboardWrite(Pane* pane, const AfterglowVt::ClipboardRequest& request);
     void writeClipboard(Pane* pane, const AfterglowVt::ClipboardRequest& request);
@@ -388,9 +396,11 @@ private:
     std::optional<PendingClipboardRead> m_pendingClipboardRead;
     void updateTitle();
     void restartBlink();
-    /// Shows what the config file could not use as a notice, once for each
-    /// new list, or @p again after a reload the user asked for.
-    static void reportConfigProblems(const QStringList& problems, bool again = false);
+    enum class ProblemSource { Config, Shaders };
+    /// Shows what the config file (or the shader library) could not use as
+    /// a notice, once for each new list, or @p again after a reload the user
+    /// asked for.
+    static void reportProblems(ProblemSource source, const QStringList& problems, bool again = false);
 
     QRect contentRect(const QRect& paneRect) const;
     /// Cell under a window position, clamped to the pane's grid.
@@ -538,6 +548,7 @@ private:
         /// A card in another tab was chosen: its tab shows once the close
         /// has finished, so the cards never move with the current tab.
         QPointer<Pane> reveal;
+        bool revealing = false; ///< showing the chosen card's tab, which needs no tab transition
         bool wasShowing = false; ///< showing at the last frame
     } m_overview;
     /// A curve resolved from its setting once per spec.
@@ -646,6 +657,12 @@ private:
     /// Zooms the tabs that were zoomed when the overview opened again, a
     /// tab that holds @p target on the target.
     void restoreOverviewZooms(Pane* target);
+    /// Switches to the card that a closing overview chose in another tab now,
+    /// not at the end of the close: input must reach that pane.
+    void finishOverviewReveal();
+    /// Shows @p pane, chosen in the overview, with no tab transition: the
+    /// overview's close has already carried the motion onto its card.
+    void revealOverviewChoice(Pane* pane);
     /// Highlights card @p index, the short way round, or in @p direction (1
     /// forward, -1 back) when it is given.
     void moveOverview(int index, int direction = 0);
@@ -682,10 +699,13 @@ private:
     /// The pane the context menu was opened on: its items act on it, even
     /// when the focus moved while the menu was open.
     QPointer<Pane> m_menuPane;
-    const Tab* m_menuTab = nullptr; ///< the tab a tab menu was opened on
-    /// What the open title prompt renames: a pane, or (pane null) a tab.
+    /// Tab::id of the tab a tab menu was opened on (0: none). An id, not an
+    /// address: a tab created after a move can reuse a freed one.
+    quint32 m_menuTab = 0;
+    /// What the open title prompt renames: a pane, or (pane null) the tab
+    /// with this Tab::id (0: none).
     QPointer<Pane> m_titlePane;
-    const Tab* m_titleTab = nullptr;
+    quint32 m_titleTab = 0;
     /// Panes that notify when their next command finishes.
     QSet<const Pane*> m_notifyOnFinish;
     QByteArray m_pendingPaste;

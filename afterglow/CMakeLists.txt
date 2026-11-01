@@ -138,6 +138,7 @@ qt_add_qml_module(${target}
         qml/ContextMenu.qml
         qml/PasteConfirm.qml
         qml/ScriptDialog.qml
+        qml/Scrim.qml
         qml/SearchBar.qml
         qml/StatusIndicator.qml
         qml/TitlePrompt.qml

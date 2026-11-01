@@ -17,20 +17,13 @@ local function format(p,value)
     if p.type=="float" and type(value)=="number" then return string.format("%.7g",value) end
     return tostring(value)
 end
--- Sets one parameter in this package's layer and sends the whole layer, because
--- each update replaces the layer.
+-- Sends this package's layer with one parameter changed, because each update
+-- replaces the layer. The layer keeps the value only when the host accepts it:
+-- a refused value would otherwise go out again with every later edit.
 local function edit(p,value)
-    local own=layer()
-    if own.preset then
-        -- A preset sets every supported parameter in this layer: keep them.
-        own.values={}
-        for _,parameter in ipairs(flow.shader.parameters) do
-            if parameter.supported then own.values[parameter.id]=flow.shader.values[parameter.id] end
-        end
-        own.preset=nil
-    end
-    own.values[p.id]=value
-    return afterglow.request("applied",afterglow.shader_parameters(flow.pane,flow.shader.instance,table.clone(own.values),scope(),{duration_ms=350}))
+    flow.pending=table.clone(layer().values)
+    flow.pending[p.id]=value
+    return afterglow.request("applied",afterglow.shader_parameters(flow.pane,flow.shader.instance,table.clone(flow.pending),scope(),{duration_ms=350}))
 end
 return {
  metadata={name="Scene controls",actions={{id="open",title="Edit scene parameters and presets"}}},
@@ -109,7 +102,10 @@ return {
         end
         return edit(p,value)
     elseif ev.request_id=="applied" then
-        if flow.preset then local own=layer(); own.values={}; own.preset=true end
+        -- A preset sets every supported parameter in this layer. Its own values
+        -- come back in the result: the effective values also hold other scripts' overrides.
+        if flow.preset then layer().values=table.clone(ev.data.values or {})
+        elseif flow.pending then layer().values=flow.pending end
         return finish(nil)
     elseif ev.request_id=="saved" then return finish(nil) end
  end,

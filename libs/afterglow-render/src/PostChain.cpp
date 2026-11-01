@@ -235,15 +235,21 @@ void PostChain::releaseTabImages()
 
 void PostChain::releaseTextures()
 {
-    // Bindings and copies refer to the textures; targets go before them.
-    m_bindings.clear();
-    m_compositeBindings.clear();
+    m_bindings.clear(); // they bind the buffers' textures
     m_buffers.clear();
     m_meshVertices.clear();
     m_bufferInstances.clear();
-    m_localTextures.clear();
     m_parameterTextures.clear();
     m_bufferBytes = 0;
+    releaseTargets();
+}
+
+void PostChain::releaseTargets()
+{
+    // Bindings and copies refer to the textures; targets go before them.
+    m_bindings.clear();
+    m_compositeBindings.clear();
+    m_localTextures.clear();
     releaseTabImages();
     m_historyTarget.reset();
     m_previousText.reset();
@@ -308,24 +314,35 @@ QRhiTextureRenderTarget* PostChain::prepare(const QSize& size)
                 m_bufferInstances.emplace(std::get<0>(key), std::get<1>(key), std::get<2>(key));
         }
     }
+    const bool resized = size != m_size;
     const auto format = highDynamicRange() ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
     if (int(format) != m_format) {
-        // Texture formats and render-pass compatibility change: start over.
-        release();
+        // An HDR event chain starts or ends. The window textures, their
+        // render-pass descriptors and the pipelines made for those change
+        // format. Shader buffers keep their own formats and passes, so an
+        // always-on feedback pack goes on from where it was.
+        releaseTargets();
+        forgetPass(m_renderPass.get());
+        forgetPass(m_gridPass.get());
+        m_composite.reset();
+        m_renderPass.reset();
+        m_gridPass.reset();
         m_format = int(format);
     }
     // The tab image (overview cards, the tab a switch leaves, a closing pane)
     // lives while frames use it, and goes after one that did not.
-    if (!std::exchange(m_tabImageUsed, false) || size != m_size) releaseTabImages();
+    if (!std::exchange(m_tabImageUsed, false) || resized) releaseTabImages();
     // Layer textures come and go with the layer chains.
     const bool layersReady = layered() == bool(m_textures[FirstLayerTexture]);
     const bool historyReady = textHistory() == bool(m_previousText);
-    if (size == m_size && m_textures[0] && layersReady && historyReady) {
+    if (!resized && m_textures[0] && layersReady && historyReady) {
         return m_gridTarget.get();
     }
-    // A new size or set of layers: new textures and targets. The render-pass
-    // descriptors hold no size, so they and the pipelines made for them stay.
-    releaseTextures();
+    // New textures and targets. The render-pass descriptors hold no size, so
+    // they and the pipelines made for them stay. Shader buffers are sized to
+    // the window: a new size makes them again, new layers or a new format do not.
+    if (resized) releaseTextures();
+    else releaseTargets();
     if (!m_sampler) {
         m_sampler.reset(rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
                                         QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
@@ -562,6 +579,10 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
     // Only a program that includes terminal_history.glsl samples the previous
     // text; the others get the input there and no second copy.
     auto* history = input;
+    // The renderer creates the spectrum texture only in a frame where an audio
+    // program runs (audioReactive()); an idle event chain with audio must not
+    // bind it before that.
+    QRhiTexture* audio = audioReactive() ? m_device.audioTexture() : nullptr;
     if (m_previousText && program && program->readsPreviousText())
         history = region ? localTexture(m_previousText.get(), region->rect, updates) : m_previousText.get();
     // Phosphor's binding table (PhosphorShaders::Bindings), with the canvas in
@@ -573,7 +594,7 @@ QRhiShaderResourceBindings* PostChain::bindings(int ubo, int texture, const Shad
         QRhiShaderResourceBinding::uniformBuffer(Bindings::kUniformBlock, stage, uniformBuffer(ubo)),
         QRhiShaderResourceBinding::sampledTexture(Bindings::kConsumer, stage, input, m_sampler.get()),
         QRhiShaderResourceBinding::sampledTexture(Bindings::kAudioSpectrum, stage,
-            m_chains.audioReactive() ? m_device.audioTexture() : input, m_device.atlasSampler()),
+            audio ? audio : input, m_device.atlasSampler()),
         QRhiShaderResourceBinding::sampledTexture(PreviousTextBinding, stage, history, m_sampler.get()),
         QRhiShaderResourceBinding::uniformBuffer(SceneBinding, stage, sceneBuffer(ubo)),
         QRhiShaderResourceBinding::uniformBuffer(PanesBinding, stage, panesBuffer()),

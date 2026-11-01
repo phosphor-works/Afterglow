@@ -6,6 +6,7 @@
 
 #include <AfterglowRender/Snapshot.h>
 
+#include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorAudio/AudioDefaults.h>
 #include <PhosphorConfig/JsonBackend.h>
 #include <PhosphorConfig/Schema.h>
@@ -221,6 +222,46 @@ KeyDef colorKey(const QString& key, const QString& def, const QString& descripti
     return {key, def, QMetaType::QString, description, [def](const QVariant& v) { return validColor(v, def); }};
 }
 
+/// The built-in curves, which are the only ones a curve setting can name.
+const PhosphorAnimation::CurveRegistry& curveRegistry()
+{
+    static const PhosphorAnimation::CurveRegistry Curves;
+    return Curves;
+}
+
+bool isCurve(const QString& spec)
+{
+    return curveRegistry().tryCreate(spec.trimmed()) != nullptr;
+}
+
+/// A Phosphor curve spec; one that does not parse becomes @p def.
+KeyDef curveKey(const QString& key, const QString& def, const QString& description)
+{
+    return {key, def, QMetaType::QString, description, [def](const QVariant& v) {
+                const QString spec = v.toString().trimmed();
+                return QVariant(isCurve(spec) ? spec : def);
+            }};
+}
+
+/// The curve settings: Animation.*Curve and QuickTerminal.curve.
+bool isCurveKey(const QString& group, const QString& key)
+{
+    return (group == Animation && key.endsWith(QLatin1String("Curve"))) || (group == Quick && key == QLatin1String("curve"));
+}
+
+/// Hint labels without spaces, in lower case: two or more letters, each one
+/// time. Empty when @p value is not such a set.
+QString hintLetters(const QString& value)
+{
+    const QString letters = value.toLower().remove(QLatin1Char(' '));
+    for (qsizetype i = 0; i < letters.size(); ++i) {
+        if (!letters[i].isLetter() || letters[i].isSurrogate() || letters.indexOf(letters[i]) != i) {
+            return {};
+        }
+    }
+    return letters.size() >= 2 ? letters : QString();
+}
+
 QVariantList stringList(const QStringList& strings)
 {
     QVariantList out;
@@ -313,10 +354,10 @@ PhosphorConfig::Schema buildSchema()
                         "Font Mono\" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators "
                         "U+E0B0 to U+E0BF itself, so this setting does not change them.")},
         enumKey(QStringLiteral("hinting"), HintingChoices, font.hinting,
-                QStringLiteral("Glyph hinting mode. The none mode preserves outlines. The light mode aligns vertical positions only. "
+                QStringLiteral("How glyph outlines align to the pixel grid. The none mode preserves outlines. The light mode aligns vertical positions only. "
                                "The full mode aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
-                QStringLiteral("Font antialiasing mode. Subpixel modes use grayscale when transparency or shaders are active. Pane "
+                QStringLiteral("How glyph edges are smoothed. Subpixel modes use grayscale when transparency or shaders are active. Pane "
                                "effects are shaders, and they run while a pane is remote or in another context.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
@@ -325,9 +366,9 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Colors] = {
         stringKey(QStringLiteral("theme"), {},
                   QStringLiteral("Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in "
-                                 "each XDG data directory, then the 33 bundled themes, such as nord and afterglow-light. Use "
+                                 "each XDG data directory, then the bundled themes, such as nord and afterglow-light. Use "
                                  "light:NAME,dark:NAME to follow the desktop. A theme replaces each color that it sets. Afterglow "
-                                 "reads its own JSON themes, Ghostty themes and kitty themes. A relative path starts at the "
+                                 "reads its own JSON themes, Ghostty themes and Kitty themes. A relative path starts at the "
                                  "directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background color.")),
@@ -338,9 +379,10 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colors, from black to bright white.")},
         colorKey(QStringLiteral("divider"), hex(WindowSettings::DefaultDivider),
-                 QStringLiteral("Split divider color. A theme without a divider color gets one between its background and text "
+                 QStringLiteral("Color of the dividers between panes. A theme without a divider color gets one between its background and text "
                                 "colors.")),
-        doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1, QStringLiteral("Darkening amount for unfocused splits.")),
+        doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1,
+                  QStringLiteral("Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, 1.0, 21.0,
@@ -372,7 +414,8 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Command for viewing the last command output. Shell expansion is disabled.")),
         stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run. An empty value starts your login shell.")),
         stringKey(QStringLiteral("term"), d.term, QStringLiteral("Value of TERM for the programs in the panes.")),
-        enumKey(QStringLiteral("cursorShape"), CursorShapeChoices, term.cursorShape, QStringLiteral("Cursor shape.")),
+        enumKey(QStringLiteral("cursorShape"), CursorShapeChoices, term.cursorShape,
+                QStringLiteral("Shape of the cursor until a program sets another one with DECSCUSR.")),
         {QStringLiteral("cursorBlink"), term.cursorBlink, QMetaType::Bool, QStringLiteral("Make the cursor blink.")},
         enumKey(QStringLiteral("copyOnSelect"), CopyOnSelectChoices, d.copyOnSelect,
                 QStringLiteral("Where new selections are copied: the primary selection, the clipboard too, or nowhere with off.")),
@@ -383,7 +426,7 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status "
                         "notifications (OSC 7501).")},
         {QStringLiteral("confirmClose"), d.confirmClose, QMetaType::Bool,
-         QStringLiteral("Ask before closing a split, tab or window where a program is running.")},
+         QStringLiteral("Ask before closing a pane, tab or window where a program is running.")},
         {QStringLiteral("hideMouseWhileTyping"), d.hideMouseWhileTyping, QMetaType::Bool,
          QStringLiteral("Hide the pointer while typing. Pointer movement shows it again.")},
         intKey(QStringLiteral("scrollLines"), d.scrollLines, 1, 50, QStringLiteral("Number of rows scrolled for each mouse-wheel notch.")),
@@ -407,14 +450,14 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line "
                         "break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
-                  QStringLiteral("Shared secret for kitty file-transfer approval. An empty value always asks for approval.")),
+                  QStringLiteral("Shared secret for Kitty file-transfer approval. An empty value always asks for approval.")),
         enumKey(QStringLiteral("clipboardRead"), d.clipboardRead,
                 QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read."),
                 {QStringLiteral("ask"), QStringLiteral("allow"), QStringLiteral("deny")}),
         enumKey(QStringLiteral("clipboardWrite"), ClipboardWriteChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, d.graphicsFileTransfer,
-                QStringLiteral("Images that programs send with the kitty graphics protocol as a file, a temporary file or shared "
+                QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
                                "memory. Images sent inline always work.")),
         {QStringLiteral("allowScreenReadback"), d.allowScreenReadback, QMetaType::Bool,
          QStringLiteral("Answer DECRQCRA checksum requests. These let any program in the pane read the screen back.")},
@@ -428,10 +471,10 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("blur"), d.window.blur, QMetaType::Bool,
          QStringLiteral("Blur content behind translucent backgrounds with KWin.")},
         {QStringLiteral("paneTitles"), d.window.paneTitles, QMetaType::Bool,
-         QStringLiteral("Show pane titles in tabs with multiple splits.")},
+         QStringLiteral("Show pane titles in tabs with two or more panes.")},
         stringKey(QStringLiteral("workingDirectory"), d.window.workingDirectory,
-                  QStringLiteral("Starting directory for new tabs, splits and windows. Use inherit, home or a path. Inherit uses the "
-                                 "focused pane's directory or launcher's directory. The afterglow -d option overrides this setting.")),
+                  QStringLiteral("Starting directory for new tabs, panes and windows. Use inherit, home or a path. Inherit uses the "
+                                 "focused pane's directory or the launcher's directory. The afterglow -d option overrides this setting.")),
         enumKey(QStringLiteral("startMode"), StartModeChoices, d.window.startMode, QStringLiteral("How new windows open.")),
         {QStringLiteral("decorations"), d.window.decorations, QMetaType::Bool,
          QStringLiteral("Show the compositor's title bar and borders on new windows.")},
@@ -439,19 +482,19 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Distribute unused cell space between opposite edges. Otherwise, space remains at the right and "
                         "bottom.")},
         enumKey(QStringLiteral("tabBar"), TabBarChoices, d.window.tabBar,
-                QStringLiteral("Tab-bar visibility. The auto value shows the bar when multiple tabs exist.")),
+                QStringLiteral("When the tab bar shows. The auto value shows it while there are two or more tabs.")),
         enumKey(QStringLiteral("scrollbar"), ScrollbarChoices, d.window.scrollbar,
-                QStringLiteral("History scrollbar visibility. The auto value shows the scrollbar while the view scrolls or the "
+                QStringLiteral("When the history scrollbar shows. The auto value shows the scrollbar while the view scrolls or the "
                                "pointer is over it, then fades it out.")),
         intKey(QStringLiteral("scrollbarHideDelay"), d.window.scrollbarHideDelay, 0, 60000,
                QStringLiteral("Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves.")),
     };
     schema.groups[MouseGroup] = {
         enumKey(QStringLiteral("rightClick"), RightClickChoices, d.mouse.rightClick,
-                QStringLiteral("Right-click action. The copy-or-paste action copies an existing selection or pastes otherwise. The "
+                QStringLiteral("What a right click does. The copy-or-paste action copies an existing selection or pastes otherwise. The "
                                "extend action extends the selection.")),
         enumKey(QStringLiteral("middleClick"), MiddleClickChoices, d.mouse.middleClick,
-                QStringLiteral("Middle-click action. Paste the primary selection, paste the clipboard, or do nothing.")),
+                QStringLiteral("What a middle click pastes. The none value turns middle-click paste off.")),
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -462,18 +505,6 @@ PhosphorConfig::Schema buildSchema()
                 QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
         {QStringLiteral("schemes"), stringList(d.links.schemes), QMetaType::QVariantList,
          QStringLiteral("URL schemes that open without a prompt. Links with other schemes ask first.")},
-        {QStringLiteral("hintAlphabet"), d.links.hintAlphabet, QMetaType::QString,
-         QStringLiteral("Letters that label hints, the easiest to reach first. It needs two or more letters, each one time. "
-                        "Other values use the default."),
-         [def = d.links.hintAlphabet](const QVariant& v) {
-             const QString letters = v.toString().toLower().remove(QLatin1Char(' '));
-             for (qsizetype i = 0; i < letters.size(); ++i) {
-                 if (!letters[i].isLetter() || letters[i].isSurrogate() || letters.indexOf(letters[i]) != i) {
-                     return QVariant(def);
-                 }
-             }
-             return QVariant(letters.size() >= 2 ? letters : def);
-         }},
     };
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), d.quickTerminal.height, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen.")),
@@ -481,8 +512,8 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Global shortcut to show or hide the quick terminal. An empty value disables the shortcut.")),
         {QStringLiteral("animate"), d.quickTerminal.animate, QMetaType::Bool,
          QStringLiteral("Animate quick-terminal opening and closing.")},
-        stringKey(QStringLiteral("curve"), d.quickTerminal.curve,
-                  QStringLiteral("Quick terminal slide: a Phosphor curve spec, as for Animation.splitCurve.")),
+        curveKey(QStringLiteral("curve"), d.quickTerminal.curve,
+                 QStringLiteral("Curve of the quick terminal slide, in the Animation.splitCurve format.")),
         intKey(QStringLiteral("duration"), d.quickTerminal.duration, 16, 5000,
                QStringLiteral("Duration of the quick terminal slide in milliseconds for curves other than springs.")),
         enumKey(QStringLiteral("position"), QuickPositionChoices, d.quickTerminal.position,
@@ -508,7 +539,7 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[AudioGroup] = {
         {QStringLiteral("enabled"), d.audio.enabled, QMetaType::Bool,
          QStringLiteral("Analyze system playback when a visible shader requests audio. Requires cava.")},
-        enumKey(QStringLiteral("inputMethod"), d.audio.inputMethod, QStringLiteral("Audio capture backend."),
+        enumKey(QStringLiteral("inputMethod"), d.audio.inputMethod, QStringLiteral("Sound system that cava captures from. The auto value detects it."),
                 {QStringLiteral("auto"), QStringLiteral("pipewire"), QStringLiteral("pulse")}),
         stringKey(QStringLiteral("inputSource"), d.audio.inputSource,
                   QStringLiteral("Playback source for capture. The auto value follows the default output.")),
@@ -531,41 +562,41 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("cursor"), anim.cursor, QMetaType::Bool, QStringLiteral("Animate cursor movement between cells.")},
         {QStringLiteral("scroll"), anim.scroll, QMetaType::Bool, QStringLiteral("Animate scrolling between rows.")},
         {QStringLiteral("splits"), anim.splits, QMetaType::Bool, QStringLiteral("Animate split opening, closing and resizing.")},
-        stringKey(QStringLiteral("splitCurve"), anim.splitCurve,
-                  QStringLiteral("Curve of split animations, as a Phosphor curve spec: a spring such as spring:22,1 (angular frequency, "
-                                 "damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An "
-                                 "invalid spec uses the default.")),
+        curveKey(QStringLiteral("splitCurve"), anim.splitCurve,
+                 QStringLiteral("Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular "
+                                "frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as "
+                                "elastic-out. An invalid spec uses the default.")),
         intKey(QStringLiteral("splitDuration"), anim.splitDuration, 16, 5000,
                QStringLiteral("Duration of split animations in milliseconds for curves other than springs, which settle by "
                               "themselves.")),
-        stringKey(QStringLiteral("overviewCurve"), anim.overviewCurve,
-                  QStringLiteral("Pane overview motion: a Phosphor curve spec, as for splitCurve. The default spring overshoots "
-                                 "slightly.")),
+        curveKey(QStringLiteral("overviewCurve"), anim.overviewCurve,
+                 QStringLiteral("Curve of the pane overview motion, in the splitCurve format. The default spring overshoots "
+                                "slightly.")),
         intKey(QStringLiteral("overviewDuration"), anim.overviewDuration, 16, 5000,
                QStringLiteral("Duration of pane overview motion in milliseconds for curves other than springs.")),
-        stringKey(QStringLiteral("tabCurve"), anim.tabCurve,
-                  QStringLiteral("Tab switch motion (Shaders.tabTransition): a Phosphor curve spec, as for splitCurve.")),
+        curveKey(QStringLiteral("tabCurve"), anim.tabCurve,
+                 QStringLiteral("Curve of tab switches (Shaders.tabTransition), in the splitCurve format.")),
         intKey(QStringLiteral("tabDuration"), anim.tabDuration, 16, 5000,
                QStringLiteral("Duration of tab switches in milliseconds for curves other than springs.")),
         intKey(QStringLiteral("paneEffectDuration"), anim.paneEffectDuration, 16, 5000,
                QStringLiteral("Milliseconds a pane takes to open or close in Shaders.paneEffects.")),
-        stringKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
-                  QStringLiteral("Cursor motion between cells: a Phosphor curve spec, as for splitCurve.")),
+        curveKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
+                 QStringLiteral("Curve of cursor motion between cells, in the splitCurve format.")),
         intKey(QStringLiteral("cursorDuration"), anim.cursorDuration, 16, 5000,
                QStringLiteral("Duration of cursor motion in milliseconds for curves other than springs.")),
-        stringKey(QStringLiteral("scrollCurve"), anim.scrollCurve,
-                  QStringLiteral("Scroll motion: a Phosphor curve spec, as for splitCurve.")),
+        curveKey(QStringLiteral("scrollCurve"), anim.scrollCurve,
+                 QStringLiteral("Curve of scroll motion, in the splitCurve format.")),
         intKey(QStringLiteral("scrollDuration"), anim.scrollDuration, 16, 5000,
                QStringLiteral("Duration of scroll motion in milliseconds for curves other than springs.")),
-        stringKey(QStringLiteral("bellCurve"), anim.bellCurve,
-                  QStringLiteral("Fade of the visual bell flash: a Phosphor curve spec, as for splitCurve.")),
+        curveKey(QStringLiteral("bellCurve"), anim.bellCurve,
+                 QStringLiteral("Curve of the visual bell fade, in the splitCurve format.")),
         intKey(QStringLiteral("bellDuration"), anim.bellDuration, 16, 5000,
                QStringLiteral("Duration of the visual bell fade in milliseconds for curves other than springs.")),
     };
     schema.groups[GraphicsGroup] = {
         intKey(QStringLiteral("quota"), int(d.graphicsQuota >> 20), 16, 4096,
-               QStringLiteral("Mebibytes of kitty graphics images that each pane keeps. The oldest images go first when it is "
-                              "full.")),
+               QStringLiteral("Mebibytes of Kitty graphics images that each screen of a pane keeps. A pane has a main and an "
+                              "alternate screen. The oldest images go first when a screen is full.")),
     };
     schema.groups[NotificationsGroup] = {
         intKey(QStringLiteral("rateLimit"), d.notificationRateLimit, 0, 1000,
@@ -597,12 +628,19 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("patterns"), d.hintPatterns, QMetaType::QVariantList,
          QStringLiteral("Up to 16 hints. Each is an object with a regular expression in pattern and an action: copy, open or "
                         "command. A command action also needs command, a list of 1 to 32 arguments.")},
+        {QStringLiteral("alphabet"), d.hintAlphabet, QMetaType::QString,
+         QStringLiteral("Letters that label hints and URL hints, the easiest to reach first. It needs two or more letters, "
+                        "each one time. Other values use the default."),
+         [def = d.hintAlphabet](const QVariant& v) {
+             const QString letters = hintLetters(v.toString());
+             return QVariant(letters.isEmpty() ? def : letters);
+         }},
     };
     schema.groups[Keys] = {
         stringKey(QStringLiteral("leader"), {}, QStringLiteral("Key that Leader stands for in sequences. It has no default.")),
-        intKey(QStringLiteral("sequenceTimeout"), 1000, 100, 10000,
+        intKey(QStringLiteral("sequenceTimeout"), KeyModes::DefaultSequenceTimeout, 100, 10000,
                QStringLiteral("Milliseconds before an incomplete sequence is cancelled.")),
-        intKey(QStringLiteral("tableTimeout"), 5000, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table.")),
+        intKey(QStringLiteral("tableTimeout"), KeyModes::DefaultTableTimeout, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table.")),
         {QStringLiteral("tables"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Named action-to-key maps, activated with table:NAME.")},
         {QStringLiteral("bindings"), Keybinds::defaultMap(), QMetaType::QVariantMap,
@@ -632,6 +670,10 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                 out << QStringLiteral("unknown setting group %1").arg(group.key());
                 continue;
             }
+            if (!group.value().isObject()) {
+                out << QStringLiteral("%1 must be an object of settings. Using the defaults").arg(group.key());
+                continue;
+            }
             const QJsonObject keys = group.value().toObject();
             for (auto key = keys.begin(); key != keys.end(); ++key) {
                 if (!schema.findKey(group.key(), key.key())) out << QStringLiteral("unknown setting %1.%2").arg(group.key(), key.key());
@@ -659,6 +701,12 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
             } else if (group == Colors && def.expectedType == QMetaType::QString && def.key != QLatin1String("theme")) {
                 if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
                     out << QStringLiteral("%1 is not a color. Using the default").arg(name);
+                }
+            } else if (isCurveKey(group, def.key)) {
+                if (!isCurve(raw.toString())) out << QStringLiteral("%1 is not a curve. Using the default").arg(name);
+            } else if (group == HintsGroup && def.key == QLatin1String("alphabet")) {
+                if (hintLetters(raw.toString()).isEmpty()) {
+                    out << QStringLiteral("%1 needs two or more letters, each one time. Using the default").arg(name);
                 }
             } else if (group == Colors && def.key == QLatin1String("palette")) {
                 const QJsonArray palette = raw.toArray();
@@ -782,15 +830,8 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
         qCWarning(lcConfig).noquote() << "not writing" << group + QLatin1Char('.') + key << "until" << m_path << "parses";
         return false;
     }
-    if (!QFile::exists(m_path)) {
-        // The file can come to hold Terminal.fileTransferPassword. Create it
-        // private before the first save, which keeps the mode it finds.
-        QFile file(m_path);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly, QFileDevice::ReadOwner | QFileDevice::WriteOwner)
-            || file.write("{}\n") < 0) {
-            qCWarning(lcConfig).noquote() << "cannot create" << m_path << "-" << file.errorString();
-            return false;
-        }
+    if (!ensureFile()) {
+        return false;
     }
     m_store->write(group, key, value);
     if (!m_backend->commit()) {
@@ -798,6 +839,29 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
         return false;
     }
     apply();
+    return true;
+}
+
+bool SettingsStore::ensureFile()
+{
+    if (QFile::exists(m_path)) {
+        return true;
+    }
+    // The file can come to hold Terminal.fileTransferPassword. Create it
+    // private before the first save, which keeps the mode it finds.
+    QFile file(m_path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly, QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        // Another process may have made it in the meantime: it is there to open.
+        if (QFile::exists(m_path)) {
+            return true;
+        }
+        qCWarning(lcConfig).noquote() << "cannot create" << m_path << "-" << file.errorString();
+        return false;
+    }
+    if (file.write("{}\n") < 0) {
+        qCWarning(lcConfig).noquote() << "cannot write" << m_path << "-" << file.errorString();
+        return false;
+    }
     return true;
 }
 
@@ -851,9 +915,10 @@ void SettingsStore::watch()
 
 void SettingsStore::reload()
 {
-    if (loadFile()) {
-        apply();
-    }
+    // A file that does not parse leaves the last good document in the
+    // backend, so a theme edit or a deleted theme still applies over it.
+    loadFile();
+    apply();
 }
 
 void SettingsStore::apply()
@@ -980,19 +1045,28 @@ Settings SettingsStore::read()
             QFile file(path);
             QString error;
             QStringList ignored;
+            QStringList invalid;
             std::optional<Theme> parsed;
             if (!file.open(QIODevice::ReadOnly)) {
                 error = file.errorString();
             } else {
-                parsed = Themes::parse(file.readAll(), &error, &ignored);
+                parsed = Themes::parse(file.readAll(), &error, &ignored, &invalid);
             }
             if (parsed) {
                 theme = std::make_shared<const Theme>(*parsed);
                 m_themeFile = path;
                 m_theme = theme;
-                // Ghostty and kitty files hold much else; Afterglow's own should not.
-                if (path.endsWith(QLatin1String(".json")) && !ignored.isEmpty()) {
-                    problem(QStringLiteral("theme %1 has keys Afterglow does not use: %2").arg(name, ignored.join(QStringLiteral(", "))));
+                // Ghostty and Kitty files hold much else (Kitty's "cursor none"
+                // among it); Afterglow's own should not.
+                if (path.endsWith(QLatin1String(".json"))) {
+                    if (!ignored.isEmpty()) {
+                        problem(QStringLiteral("theme %1 has keys Afterglow does not use: %2")
+                                    .arg(name, ignored.join(QStringLiteral(", "))));
+                    }
+                    if (!invalid.isEmpty()) {
+                        problem(QStringLiteral("theme %1 has values Afterglow cannot use: %2")
+                                    .arg(name, invalid.join(QStringLiteral(", "))));
+                    }
                 }
             } else if (path == m_themeFile && m_theme) {
                 // Mid-save: keep its colours rather than flash the config's.
@@ -1118,7 +1192,6 @@ Settings SettingsStore::read()
             s.links.schemes.append(scheme);
         }
     }
-    s.links.hintAlphabet = st.read<QString>(LinksGroup, QStringLiteral("hintAlphabet"));
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
     s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
     s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));
@@ -1175,6 +1248,7 @@ Settings SettingsStore::read()
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
     // Hints: checked once here, not on every show_hints.
+    s.hintAlphabet = st.read<QString>(HintsGroup, QStringLiteral("alphabet"));
     const QVariantList patterns = st.read<QVariantList>(HintsGroup, QStringLiteral("patterns"));
     if (patterns.size() > MaxHintPatterns) {
         problem(QStringLiteral("Hints.patterns has %1 entries. Afterglow uses the first %2").arg(patterns.size()).arg(MaxHintPatterns));

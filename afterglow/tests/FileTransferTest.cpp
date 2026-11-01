@@ -8,9 +8,11 @@
 #include <QSocketNotifier>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QtEndian>
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <xxhash.h>
 #include <zlib.h>
 using namespace Afterglow;
 namespace {
@@ -31,15 +33,17 @@ struct Transfer : testing::Test {
     QList<QByteArray> replies;
     QString token;
     QStringList prompted;
+    int promptedTotal = 0;
     int prompts = 0;
     int closed = 0;
     void SetUp() override
     {
         QObject::connect(&service, &FileTransfer::reply, &service, [this](const QByteArray& b) { replies.append(b); });
         QObject::connect(&service, &FileTransfer::permissionRequested, &service,
-            [this](const QString& t, bool, const QStringList& paths) {
+            [this](const QString& t, bool, const QStringList& paths, int total) {
                 token = t;
                 prompted = paths;
+                promptedTotal = total;
                 ++prompts;
             });
         QObject::connect(&service, &FileTransfer::sessionClosed, &service, [this] { ++closed; });
@@ -301,6 +305,13 @@ TEST_F(Transfer, FileWithoutModeFollowsTheUmask)
     struct stat st { };
     ASSERT_EQ(::stat(QFile::encodeName(dir.filePath("plain")).constData(), &st), 0);
     EXPECT_EQ(st.st_mode & 0777, 0666 & ~mask);
+    // prm=-1 means "not given" too.
+    send("ac=file;fid=g;prm=-1;n=" + path("unset"));
+    ASSERT_TRUE(fileStatus("g", "STARTED"));
+    send("ac=end_data;fid=g;d=" + b64("x"));
+    ASSERT_TRUE(fileStatus("g", "OK"));
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath("unset")).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0666 & ~mask);
 }
 TEST_F(Transfer, ModificationTimeBefore1970IsKept)
 {
@@ -382,6 +393,100 @@ TEST_F(Transfer, SmallFileWithLargeBlockSizeDeltaFinishes)
             [](const auto& b) { return b.contains("ac=end_data;") && b.contains(";fid=r;"); });
     }));
 }
+TEST_F(Transfer, LargeDeltaRebuildsTheFileFromBlocksAndLiterals)
+{
+    // The receiver's copy, and the file that differs from it: an insertion,
+    // a changed run and more data than one delta step reads.
+    QByteArray basis(512 * 1024, '\0');
+    quint32 seed = 1;
+    for (char& c : basis) {
+        seed = seed * 1664525u + 1013904223u;
+        c = char(seed >> 24);
+    }
+    QByteArray tail(1536 * 1024, '\0');
+    for (char& c : tail) {
+        seed = seed * 1664525u + 1013904223u;
+        c = char(seed >> 24);
+    }
+    QByteArray changed = basis.left(200000) + "inserted" + basis.mid(200000);
+    changed.replace(300000, 5000, QByteArray(5000, 'z'));
+    changed += tail;
+    QFile source(dir.filePath("source"));
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly));
+    source.write(changed);
+    source.close();
+    constexpr quint32 blockSize = 4096;
+    QByteArray signature(12, '\0');
+    qToLittleEndian(blockSize, signature.data() + 8);
+    for (qsizetype at = 0, index = 0; at < basis.size(); at += blockSize, ++index) {
+        const QByteArray block = basis.mid(at, blockSize);
+        quint32 a = 0, b = 0;
+        for (unsigned char c : block) {
+            a += c;
+            b += a;
+        }
+        QByteArray record(20, '\0');
+        qToLittleEndian(quint64(index), record.data());
+        qToLittleEndian((a & 0xffffu) | (b << 16), record.data() + 8);
+        qToLittleEndian(quint64(XXH3_64bits(block.constData(), std::size_t(block.size()))), record.data() + 12);
+        signature += record;
+    }
+    send("ac=receive;sz=1");
+    send("ac=file;fid=request;n=" + path("source"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    send("ac=file;tt=rsync;fid=r;n=" + path("source"));
+    for (qsizetype at = 0; at < signature.size(); at += 4096) {
+        const bool last = at + 4096 >= signature.size();
+        send(QByteArray(last ? "ac=end_data" : "ac=data") + ";fid=r;d=" + b64(signature.mid(at, 4096)));
+    }
+    ASSERT_TRUE(waitFor([&] {
+        return std::any_of(replies.begin(), replies.end(),
+            [](const auto& b) { return b.contains("ac=end_data;") && b.contains(";fid=r;"); });
+    }));
+    QByteArray delta;
+    for (const QByteArray& reply : std::as_const(replies)) {
+        if (!reply.contains(";fid=r;") || !(reply.contains("ac=data;") || reply.contains("ac=end_data;")))
+            continue;
+        const qsizetype at = reply.indexOf(";d=");
+        if (at < 0)
+            continue;
+        const qsizetype end = reply.indexOf(';', at + 3);
+        delta += QByteArray::fromBase64(reply.mid(at + 3, end - at - 3));
+    }
+    // Apply the operations to the receiver's copy.
+    QByteArray rebuilt;
+    int blocks = 0;
+    bool hashed = false;
+    for (qsizetype at = 0; at < delta.size() && !hashed;) {
+        const char op = delta[at];
+        if (op == 0) {
+            ASSERT_LE(at + 9, delta.size());
+            const auto index = qFromLittleEndian<quint64>(delta.constData() + at + 1);
+            rebuilt += basis.mid(qsizetype(index * blockSize), blockSize);
+            ++blocks;
+            at += 9;
+        } else if (op == 1) {
+            ASSERT_LE(at + 5, delta.size());
+            const auto length = qFromLittleEndian<quint32>(delta.constData() + at + 1);
+            rebuilt += delta.mid(at + 5, length);
+            at += 5 + length;
+        } else {
+            ASSERT_EQ(op, 2);
+            ASSERT_EQ(qFromLittleEndian<quint16>(delta.constData() + at + 1), 16);
+            ASSERT_EQ(at + 19, delta.size());
+            XXH128_canonical_t digest { };
+            XXH128_canonicalFromHash(&digest, XXH3_128bits(changed.constData(), std::size_t(changed.size())));
+            EXPECT_EQ(delta.mid(at + 3, 16), QByteArray(reinterpret_cast<const char*>(digest.digest), 16));
+            hashed = true;
+        }
+    }
+    EXPECT_TRUE(hashed);
+    EXPECT_TRUE(rebuilt == changed);
+    // Most of the basis travels as block references.
+    EXPECT_GT(blocks, 100);
+}
 TEST_F(Transfer, OnePromptAtATimeAndDenialCoolsDown)
 {
     send("ac=send");
@@ -406,8 +511,10 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
     for (int i = 0; i < 150; ++i)
         send("ac=file;fid=r" + QByteArray::number(i) + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
     ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
-    ASSERT_EQ(prompted.size(), 101);
-    EXPECT_TRUE(prompted.last().contains(QStringLiteral("50")));
+    // The list holds real paths only. The total counts the paths not shown.
+    ASSERT_EQ(prompted.size(), 100);
+    EXPECT_EQ(prompted.last(), dir.filePath(QStringLiteral("99")));
+    EXPECT_EQ(promptedTotal, 150);
 }
 } // namespace
 int main(int argc, char** argv)
@@ -416,7 +523,7 @@ int main(int argc, char** argv)
     if (app.arguments().contains(QStringLiteral("--protocol-relay"))) {
         FileTransfer transfer;
         QObject::connect(&transfer, &FileTransfer::permissionRequested, &transfer,
-            [&](const QString& token, bool, const QStringList&) { transfer.approve(token, true); });
+            [&](const QString& token, bool, const QStringList&, int) { transfer.approve(token, true); });
         QObject::connect(&transfer, &FileTransfer::reply, &transfer, [](const QByteArray& bytes) {
             qsizetype offset = 0;
             while (offset < bytes.size()) {

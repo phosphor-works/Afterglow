@@ -182,6 +182,32 @@ bool hasUpperCase(std::u32string_view text)
         && pcre2_match(code.get(), reinterpret_cast<PCRE2_SPTR>(text.data()), text.size(), 0, 0, data.get(), nullptr) >= 0;
 }
 
+void fail(TextSearchResult& result, SearchError kind, std::size_t position = 0)
+{
+    result.errorKind = kind;
+    result.errorPosition = position;
+    switch (kind) {
+    case SearchError::None:
+        result.error.clear();
+        break;
+    case SearchError::PatternTooLong:
+        result.error = "Pattern exceeds 4096 characters";
+        break;
+    case SearchError::NoMemory:
+        result.error = "Cannot allocate search context";
+        break;
+    case SearchError::TimeLimit:
+        result.error = "Search time limit reached";
+        break;
+    case SearchError::ComplexityLimit:
+        result.error = "Search complexity limit reached";
+        break;
+    case SearchError::InvalidPattern:
+        result.error = "Invalid regular expression at character " + std::to_string(position);
+        break;
+    }
+}
+
 } // namespace
 
 bool appendTextRow(TextSnapshot& out, const Screen& screen, std::size_t index, std::size_t maxCharacters)
@@ -252,7 +278,7 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
         return result;
     }
     if (pattern.size() > MaxPattern) {
-        result.error = "Pattern exceeds 4096 characters";
+        fail(result, SearchError::PatternTooLong);
         return result;
     }
     std::u32string expression;
@@ -269,7 +295,7 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
     const std::unique_ptr<pcre2_compile_context, decltype(&pcre2_compile_context_free)> compile(
         pcre2_compile_context_create(nullptr), pcre2_compile_context_free);
     if (!compile) {
-        result.error = "Cannot allocate search context";
+        fail(result, SearchError::NoMemory);
         return result;
     }
     pcre2_set_parens_nest_limit(compile.get(), 64);
@@ -284,14 +310,14 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
         // counted from 1 is that item's last character. A UTF error (a
         // negative code) gives the bad character's own 0-based index.
         const PCRE2_SIZE position = error < 0 ? offset + 1 : std::max<PCRE2_SIZE>(offset, 1);
-        result.error = "Invalid regular expression at character " + std::to_string(position);
+        fail(result, SearchError::InvalidPattern, position);
         return result;
     }
     const MatchData data(pcre2_match_data_create_from_pattern(code.get(), nullptr), pcre2_match_data_free);
     const std::unique_ptr<pcre2_match_context, decltype(&pcre2_match_context_free)> context(
         pcre2_match_context_create(nullptr), pcre2_match_context_free);
     if (!data || !context) {
-        result.error = "Cannot allocate search context";
+        fail(result, SearchError::NoMemory);
         return result;
     }
     pcre2_set_match_limit(context.get(), 50000);
@@ -312,7 +338,7 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
                 return result;
             }
             if (Clock::now() >= budget.until) {
-                result.error = "Search time limit reached";
+                fail(result, SearchError::TimeLimit);
                 return result;
             }
             const int rc = pcre2_match(code.get(), subject, line.text.size(), start, options, data.get(), context.get());
@@ -323,7 +349,7 @@ TextSearchResult searchText(const TextSnapshot& text, std::u32string_view patter
             if (rc < 0) {
                 result.cancelled = cancelled.load();
                 if (!result.cancelled) {
-                    result.error = budget.timedOut ? "Search time limit reached" : "Search complexity limit reached";
+                    fail(result, budget.timedOut ? SearchError::TimeLimit : SearchError::ComplexityLimit);
                 }
                 return result;
             }

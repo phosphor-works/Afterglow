@@ -20,7 +20,7 @@ vec3 chamber(vec2 uv) {
         float dotGlow=exp(-dot(f,f)*(180.0+layer*50.0))*step(0.975,h);
         c+=mix(vec3(0.05,0.25,0.5),vec3(0.6,0.15,0.5),h)*dotGlow*(0.25+layer*0.14);
     }
-    float shafts=pow(max(0.0,cos(atan(p.y,p.x+0.001)*9.0+t*0.03)),18.0);
+    float shafts=pow(max(0.0,cos(atan(p.y,p.x+0.001)*9.0+sceneAngle(0.03))),18.0);
     c+=energyColor()*shafts*exp(-length(p)*5.0)*0.055;
     return c;
 }

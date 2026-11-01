@@ -22,19 +22,11 @@ namespace {
 
 struct Host : RecordingHost
 {
-    std::vector<std::string> started;
-    std::vector<int> finished;
-    std::string cwd;
-    int contextChanges = 0;
     std::vector<std::pair<std::string, std::string>> userVars;
     std::vector<ClipboardRequest> clipboardReads;
     bool answerClipboard = false;
     std::string clipboardWritten;
 
-    void commandStarted(std::string_view c) override { started.emplace_back(c); }
-    void commandFinished(int code) override { finished.push_back(code); }
-    void workingDirectoryChanged(std::string_view d) override { cwd.assign(d); }
-    void contextChanged() override { ++contextChanges; }
     void userVarChanged(std::string_view n, std::string_view v) override { userVars.emplace_back(n, v); }
     bool clipboardRequest(const ClipboardRequest& r) override
     {
@@ -67,12 +59,12 @@ TEST(Extensions, ShellReportedCommandLine)
     // fish: the command line as cmdline_url, which beats the screen text.
     t.feed("\x1b]133;A;click_events=1\x1b\\$ \x1b]133;B\x1b\\echo  hi\r\n\x1b]133;C;cmdline_url=echo%20%22hi%22\x1b\\");
     t.feed("\x1b]133;D;0\x1b\\");
-    ASSERT_EQ(host.started.size(), 1u);
-    EXPECT_EQ(host.started[0], "echo \"hi\"");
+    ASSERT_EQ(host.commandsStarted.size(), 1u);
+    EXPECT_EQ(host.commandsStarted[0], "echo \"hi\"");
     // The next command without one falls back to the screen, not the old line.
     t.feed("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
-    ASSERT_EQ(host.started.size(), 2u);
-    EXPECT_EQ(host.started[1], "ls");
+    ASSERT_EQ(host.commandsStarted.size(), 2u);
+    EXPECT_EQ(host.commandsStarted[1], "ls");
 }
 
 TEST(Extensions, PromptClickEvents)
@@ -93,10 +85,10 @@ TEST(Extensions, VSCodeShellIntegration)
     Terminal t(40, 6, host);
     t.feed("\x1b]633;A\x07$ \x1b]633;B\x07ls; pwd\r\n");
     t.feed("\x1b]633;E;ls\\x3b pwd\\\\x;nonce123\x07\x1b]633;C\x07out\r\n\x1b]633;D;3\x07");
-    ASSERT_EQ(host.started.size(), 1u);
-    EXPECT_EQ(host.started[0], "ls; pwd\\x");
-    ASSERT_EQ(host.finished.size(), 1u);
-    EXPECT_EQ(host.finished[0], 3);
+    ASSERT_EQ(host.commandsStarted.size(), 1u);
+    EXPECT_EQ(host.commandsStarted[0], "ls; pwd\\x");
+    ASSERT_EQ(host.commandsFinished.size(), 1u);
+    EXPECT_EQ(host.commandsFinished[0], 3);
     t.feed("\x1b]633;P;Cwd=/srv/www\x07");
     EXPECT_EQ(host.cwd, "/srv/www");
     EXPECT_EQ(t.workingDirectory(), "/srv/www");
@@ -174,6 +166,22 @@ TEST(Extensions, ContextsRestartAndDepth)
     // Fields are cut at 256 bytes without splitting a character.
     t.feed("\x1b]3008;start=u;type=shell;user=" + std::string(255, 'a') + "\xc3\xa9\x1b\\");
     EXPECT_EQ(t.contexts().stack().back().user, std::string(255, 'a'));
+}
+
+TEST(Extensions, ContextFieldsMustBeCleanText)
+{
+    Host host;
+    Terminal t(40, 6, host);
+    // A line separator would forge a second line in the pane's label.
+    t.feed("\x1b]3008;start=x;type=remote;targethost=prod\xe2\x80\xa8root@bank;user=me\x1b\\");
+    ASSERT_EQ(t.contexts().stack().size(), 1u);
+    EXPECT_EQ(t.contexts().stack()[0].targetHost, "");
+    EXPECT_EQ(t.contexts().stack()[0].user, "me");
+    t.feed("\x1b]3008;start=y\xc2\x85;type=shell\x1b\\"); // an id with C1 NEL is no id
+    EXPECT_EQ(t.contexts().stack().size(), 1u);
+    t.feed("\x1b]1337;RemoteHost=me@prod\x7f\x07");
+    EXPECT_EQ(t.contexts().stack().size(), 1u);
+    EXPECT_FALSE(t.contexts().stack().back().iterm2RemoteHost);
 }
 
 TEST(Extensions, LinkStringsHaveAMemoryBudget)
@@ -431,11 +439,18 @@ TEST(Extensions, MultipleCursorsQueryCoordinatesAndLifecycle)
     EXPECT_EQ(t.extraCursors().count({4, 9}), 1u);
     t.feed("\x1b[>0;4 q");
     EXPECT_TRUE(t.extraCursors().empty());
-    t.feed("\x1b[>29;0 q\x1b[?1049h");
+    // Each lifecycle step clears a cursor that was really there.
+    t.feed("\x1b[>29;0 q");
+    ASSERT_FALSE(t.extraCursors().empty());
+    t.feed("\x1b[?1049h");
     EXPECT_TRUE(t.extraCursors().empty());
-    t.feed("\x1b[>1;0 q\x1b[2J");
+    t.feed("\x1b[>1;0 q");
+    ASSERT_FALSE(t.extraCursors().empty());
+    t.feed("\x1b[2J");
     EXPECT_TRUE(t.extraCursors().empty());
-    t.feed("\x1b[>1;0 q\x1b" "c");
+    t.feed("\x1b[>1;0 q");
+    ASSERT_FALSE(t.extraCursors().empty());
+    t.feed("\x1b" "c");
     EXPECT_TRUE(t.extraCursors().empty());
 }
 
@@ -465,7 +480,9 @@ TEST(Extensions, ExtraCursorColorsRoundTripAndReset)
     EXPECT_EQ(t.extraCursorColor().color, Color::palette(123));
     t.feed("\x1b[>40;2:256:0:0 q");
     EXPECT_EQ(t.extraCursorColor().color, Color::palette(123));
-    t.feed("\x1b[>1;0 q\x1b" "c");
+    t.feed("\x1b[>1;0 q");
+    ASSERT_FALSE(t.extraCursors().empty());
+    t.feed("\x1b" "c");
     EXPECT_TRUE(t.extraCursors().empty());
     EXPECT_EQ(t.extraCursorColor().mode, ExtraCursorColor::Mode::Main);
     EXPECT_EQ(t.extraCursorTextColor().mode, ExtraCursorColor::Mode::Main);

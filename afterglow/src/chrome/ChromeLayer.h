@@ -69,8 +69,8 @@ Q_SIGNALS:
 
 private:
     bool initialize();
-    /// Frees the render target and the texture. The destructor calls it
-    /// after it invalidates the scene graph.
+    /// Frees the render target and the texture: after a failed allocation,
+    /// and from the destructor once the scene graph is invalidated.
     void releaseResources();
 
     AfterglowRender::GpuDevice& m_device;

@@ -47,7 +47,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE void SetTitle(uint pane, const QString& title);
     Q_SCRIPTABLE void Signal(uint pane, int channel, double value);
     Q_SCRIPTABLE void Notify(uint pane, const QString& title, const QString& body);
-    /// copy, paste and select_all need Control.allowReadText.
+    /// copy, paste, select_all and show_last_output need Control.allowReadText.
     Q_SCRIPTABLE void RunAction(uint pane, const QString& action);
 
 Q_SIGNALS:

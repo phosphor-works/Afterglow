@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from nested_desktop import NestedDesktop, Session
+from nested_desktop import NestedDesktop, Session, check
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-t3-') as tmp:
             wait(lambda: len({p['window'] for p in panes()}) == 1)
             ctl('close', '--pane', spare)
             wait(lambda: len(panes()) == 2)
-            assert identity(first) == firstpid and identity(second) == secondpid
+            check(identity(first) == firstpid and identity(second) == secondpid)
             ctl('action', 'resize_left', '--pane', second)
             ctl('set-title', '--pane', second, 'build shell')
             third = int(ctl('new-tab', '--pane', first, '--cwd', '/tmp')); wait(lambda: 'T3>' in screen(third))
@@ -69,43 +69,43 @@ with tempfile.TemporaryDirectory(prefix='afterglow-t3-') as tmp:
             saved = json.loads(ctl('save-project', 'dev', '--pane', first))
             path = conf / 'projects/dev.json'
             layout = json.loads(path.read_text())
-            assert len(layout['tabs']) == 2 and layout['tabs'][0]['tree']['ratio'] != .5, layout
-            same = json.loads(ctl('open-project', 'dev')); assert same['reused'] and len(panes()) == 3
+            check(len(layout['tabs']) == 2 and layout['tabs'][0]['tree']['ratio'] != .5, layout)
+            same = json.loads(ctl('open-project', 'dev')); check(same['reused'] and len(panes()) == 3)
             error = s.failing_ctl('save-project', 'dev', '--pane', first)
-            assert 'already exists' in error, error
+            check('already exists' in error, error)
             fresh = json.loads(ctl('open-project', 'dev', '--new'))
-            assert not fresh['reused'] and len(fresh['pane_ids']) == 3 and len(fresh['tab_ids']) == 2, fresh
-            restored = set(fresh['pane_ids'].values()); assert not (original & restored)
+            check(not fresh['reused'] and len(fresh['pane_ids']) == 3 and len(fresh['tab_ids']) == 2, fresh)
+            restored = set(fresh['pane_ids'].values()); check(not (original & restored))
             newfirst = fresh['pane_ids'][str(first)]
-            assert identity(newfirst) != oldpid
+            check(identity(newfirst) != oldpid)
             ctl('save-project', 'copy', '--pane', newfirst)
             copy = json.loads((conf / 'projects/copy.json').read_text())
-            assert copy['tabs'][0]['tree']['ratio'] == layout['tabs'][0]['tree']['ratio']
-            assert copy['tabs'][0]['tree']['second']['pane']['title'] == 'build shell'
-            assert copy['tabs'][1]['tree']['pane']['cwd'] == '/tmp'
+            check(copy['tabs'][0]['tree']['ratio'] == layout['tabs'][0]['tree']['ratio'])
+            check(copy['tabs'][0]['tree']['second']['pane']['title'] == 'build shell')
+            check(copy['tabs'][1]['tree']['pane']['cwd'] == '/tmp')
             def active_position(doc): return next(i for i, t in enumerate(doc['tabs']) if t['id'] == doc['active_tab'])
-            assert active_position(copy) == active_position(layout)
+            check(active_position(copy) == active_position(layout))
             # Invalid files must create no objects or launch commands.
             before = len(panes())
             (conf / 'projects/bad.json').write_text('{bad')
             s.failing_ctl('open-project', 'bad')
-            assert len(panes()) == before
+            check(len(panes()) == before)
             recovery = {'version': 1, 'active_tab': 'main', 'tabs': [{'id': 'main', 'title': 'Recovery', 'active_pane': 'shell', 'tree': {'direction': 'right', 'ratio': .6, 'first': {'pane': {'id': 'shell', 'cwd': '/this-directory-does-not-exist-afterglow', 'title': 'Fallback', 'command': ['/missing-command-afterglow']}}, 'second': {'pane': {'id': 'command', 'cwd': '/tmp', 'title': 'Status', 'command': ['/bin/sh', '-c', 'printf PROJECT_COMMAND_OK; exit 7']}}}}]}
             (conf / 'projects/recovery.json').write_text(json.dumps(recovery))
             result = json.loads(ctl('open-project', 'recovery'))
-            assert len(result['warnings']) == 2, result
+            check(len(result['warnings']) == 2, result)
             wait(lambda: 'T3>' in screen(result['pane_ids']['shell']))
             wait(lambda: 'PROJECT_COMMAND_OK' in screen(result['pane_ids']['command']))
             wait(lambda: 'exited with status 7' in screen(result['pane_ids']['command']))
-            assert len(panes()) == before + 2
+            check(len(panes()) == before + 2)
             # A saved project remains usable across complete application restart.
             s.stop()
             s.start('Afterglow project restored probe')
             wait(panes)
             restarted = json.loads(ctl('open-project', 'dev'))
-            assert not restarted['reused'] and len(restarted['pane_ids']) == 3
+            check(not restarted['reused'] and len(restarted['pane_ids']) == 3)
             wait(lambda: 'T3>' in screen(restarted['pane_ids'][str(first)]))
-            assert identity(restarted['pane_ids'][str(first)]) != oldpid
+            check(identity(restarted['pane_ids'][str(first)]) != oldpid)
             print('PASS: live transfer/swap/detach preserves PTYs and reports moves to scripts; save, duplicate protection, running-project reuse, fresh identities/processes, nested ratios/titles/directories/focus, invalid-file isolation, missing directory/command recovery, held failure output, restart restoration')
         except Exception:
             print(s.log_text(5000), file=sys.stderr)

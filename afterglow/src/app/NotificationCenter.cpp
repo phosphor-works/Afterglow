@@ -127,6 +127,7 @@ NotificationCenter::NotificationCenter()
 void NotificationCenter::forgetServer()
 {
     m_entries.clear();
+    ++m_server;
     // Markup in bodies is the server's choice: one without it shows tags and
     // entities as text, so program text goes escaped only where it is read.
     m_bodyMarkup = true;
@@ -346,13 +347,20 @@ void NotificationCenter::send(const Request& request, uint replaces)
          request.actions, request.hints, request.timeout});
     auto* watcher = new QDBusPendingCallWatcher(call, this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, key, entry = request.entry, replaces, expireMs = request.expireMs](QDBusPendingCallWatcher* w) {
+            [this, key, entry = request.entry, replaces, expireMs = request.expireMs, server = m_server](QDBusPendingCallWatcher* w) {
         w->deleteLater();
         const QDBusPendingReply<uint> reply = *w;
         // What the program asked for while this call was out.
         const InFlight waiting = entry.clientId.isEmpty() ? InFlight{} : m_inFlight.take(key);
         // The pane's state went with it; its address may already be another pane's.
         if (entry.owner && !entry.pane) return;
+        // The server changed while the call was out: its answer and REPLACES
+        // name nothing now, and the new server may give them to another
+        // application's notification.
+        if (server != m_server) {
+            if (waiting.next) send(*waiting.next, 0);
+            return;
+        }
         if (reply.isError()) {
             if (waiting.next) send(*waiting.next, replaces);
             return;

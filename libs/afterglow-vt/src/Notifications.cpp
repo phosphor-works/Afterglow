@@ -357,6 +357,9 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
             return reject();
         }
         target(*p, p->carryPayload) += tail;
+        if (p != &single && p->carryPayload == Payload::Icon) {
+            m_pendingIconBytes += tail.size(); // counted in, as the subtraction below takes the whole icon
+        }
     }
     if (p != &single) {
         m_pendingIconBytes -= r.iconData.size();

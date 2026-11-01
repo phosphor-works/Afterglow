@@ -20,7 +20,9 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     // The dialog takes the keyboard: no mode is left behind it.
     stopCopyMode(); cancelKeyMode(); stopUrlMode();
-    closeOverview(nullptr);
+    // Onto the dialog's pane: the original card could be in another tab,
+    // and its deferred reveal would leave the dialog behind.
+    closeOverview(pane);
     if (m_unicodeInput) {
         m_unicodeInput.reset();
         showUnicodeInput();
@@ -138,6 +140,8 @@ QString TerminalWindow::scriptShader(const QString& owner, Pane* pane, const QVa
     const auto error = m_shaderControls.update(owner, targets, effect.value(QStringLiteral("instance")).toString(),
                                                scope, values, effect.value(QStringLiteral("transition")).toMap());
     if (!error.isEmpty()) return error;
+    // The preset's own values: a later edit keeps them instead of releasing them.
+    if (kind == QLatin1String("shader_preset")) result.insert(QStringLiteral("values"), values);
     result.insert(QStringLiteral("panes"), ids);
     scheduleRender();
     return {};

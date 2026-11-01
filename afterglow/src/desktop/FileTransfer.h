@@ -25,7 +25,8 @@ public:
 Q_SIGNALS:
     void sessionClosed(const QString& token);
     void reply(const QByteArray& bytes);
-    void permissionRequested(const QString& token, bool writing, const QStringList& paths);
+    /// @p paths holds at most the first 100 of the @p total requested paths.
+    void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
 
 private:
     struct Worker;

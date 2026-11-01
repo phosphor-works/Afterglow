@@ -48,10 +48,12 @@ Create `config.json` beside `package.json` to override the defaults:
 
 `fd` discovers Git repositories, including worktrees with `.git` files.
 `zoxide query --list` supplies frequently used directories.
-Both commands are optional. The picker title reports commands that could not start.
+Both commands are optional. The picker title names each provider that gave no output, and why.
+For example, `(unavailable: fd-1 timed out)` or `(unavailable: zoxide not started)`.
 Configured roots, saved layouts, favorites and history remain available.
 Providers run concurrently with a five-second timeout and a 128 KiB output limit.
-A provider that fails or reaches the output limit still supplies the complete paths that it printed.
+A provider that exits with an error or reaches the output limit still supplies the complete paths that it printed.
+A provider that times out or is refused supplies no paths.
 Limits are eight roots and 400 choices.
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
@@ -72,8 +74,9 @@ state and migrations. `init.luau` coordinates actions and correlated results.
 The package uses only declared local imports and Afterglow effects.
 
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
-from the repository on a Wayland desktop for an isolated live check. It uses
-a private D-Bus session and temporary config/state, then closes its windows.
+from the repository for an isolated live check. It needs `dbus-run-session`,
+Bash and the dependencies of the nested desktop below. It runs in a nested KWin
+with a private D-Bus session and temporary config/state, then closes its windows.
 
 ## Walkthrough: reuse a split layout across repositories
 
@@ -119,7 +122,7 @@ open selector and jobs are removed automatically. Favorites/history stay in
 them. To reset history too, remove that state file while the package is unloaded.
 
 The native acceptance check requires KWin, an X11/XWayland display, libX11,
-libXtst, xprop, ImageMagick, Git and fd:
+xprop, ImageMagick, `dbus-run-session`, Bash, Git and fd:
 
 ```bash
 python3 afterglow/tests/navigator_ui_smoke.py build/afterglow/afterglow
@@ -129,5 +132,6 @@ The test creates a nested desktop with private D-Bus, configuration and state.
 It drives the picker with keyboard input.
 It checks window reuse, configuration reload, removal with an open selector, reinstallation and retained layouts after restart.
 It also checks periodic save and restore in companion packages.
-Screenshots and logs use `/tmp/afterglow-navigator-ui/`. Change this with `--artifacts`.
+Screenshots and logs go to a new temporary directory whose name starts with `afterglow-navigator-ui-`.
+The test prints its path. Change this with `--artifacts`.
 The test closes only its temporary windows and processes.

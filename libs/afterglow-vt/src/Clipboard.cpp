@@ -293,14 +293,23 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
         }
         std::string joined = m_carry;
         joined += data;
-        const std::size_t whole = joined.ends_with('=') ? joined.size() : joined.size() / 4 * 4;
+        // Whole groups only: a stream may be cut between its two padding
+        // characters. Malformed padding stays in the carry, and flush()
+        // refuses it.
+        const std::size_t whole = joined.size() / 4 * 4;
+        std::size_t padding = 0;
+        while (padding < 2 && padding < whole && joined[whole - 1 - padding] == '=') {
+            ++padding;
+        }
+        // The size is known before the decode, so one large chunk cannot
+        // grow the data past the limit first.
+        if (m_part.size() + (whole / 4 * 3 - padding) > MaxWrite - m_decoded) {
+            return fail("EFBIG", reply);
+        }
         if (!detail::base64DecodeAppend(m_part, std::string_view(joined).substr(0, whole), detail::Base64Check::Strict)) {
             return fail("EINVAL", reply);
         }
-        if (m_part.size() > MaxWrite - m_decoded) {
-            return fail("EFBIG", reply);
-        }
-        m_padded = whole != 0 && joined[whole - 1] == '=';
+        m_padded = padding != 0;
         m_carry = joined.substr(whole);
         return Result::Pending;
     }

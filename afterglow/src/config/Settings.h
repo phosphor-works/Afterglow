@@ -80,8 +80,6 @@ struct LinkSettings
     /// Lower-case URL schemes that open without asking; other links ask first.
     QStringList schemes{QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("mailto"), QStringLiteral("ftp"),
                         QStringLiteral("file")};
-    /// Keys that label hints, home row first. Unique, at least two.
-    QString hintAlphabet = QStringLiteral("asdfjklghqweruiopzxcvbnmty");
     bool operator==(const LinkSettings&) const = default;
 };
 
@@ -209,6 +207,8 @@ struct Settings
     std::size_t graphicsQuota = std::size_t(320) << 20; ///< bytes of kitty images kept per terminal
     /// Each a map of pattern, action and command, checked when read.
     QVariantList hintPatterns = defaultHintPatterns();
+    /// Keys that label hints and URL hints, home row first. Unique, at least two.
+    QString hintAlphabet = QStringLiteral("asdfjklghqweruiopzxcvbnmty");
     KeyModes keyModes;
     Keybinds keybinds = Keybinds::defaults();
     /// Shader references for each chain, applied in order: pack ids, or
@@ -244,6 +244,12 @@ public:
 
     const Settings& settings() const noexcept { return m_settings; }
     QString path() const { return m_path; }
+    /// Creates the config file if it does not exist, holding {} and readable
+    /// by the owner only, so that an editor can open it. False if it cannot.
+    bool ensureFile();
+    /// The files whose change reloads: the config file and every place its
+    /// theme could come from.
+    QStringList watchedPaths() const { return m_files.paths(); }
     /// What the last read could not use: a file that does not parse, unknown
     /// keys, bad values, missing themes. Each is also logged.
     QStringList problems() const { return m_fileProblems + m_readProblems; }
