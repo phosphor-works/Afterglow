@@ -286,24 +286,21 @@ Each run took 15 seconds. The terminals ran in turn, three rounds.
 The program was commit `eb0631b`, built with Zig 0.17 in `ReleaseFast` mode.
 For Zig 0.17, a port uses C library calls for the terminal I/O. The port also stops the program after 15 seconds.
 
-Measurement: 1 November 2026, Afterglow `ded14ad`, Intel Core i7-9700K and NVIDIA GeForce RTX 2080.
-Another program used about two of the eight cores during all runs, with a load average of 6 to 8.
+Measurement: 1 November 2026, Afterglow `ded14ad`, Intel Core i7-9700K and NVIDIA GeForce RTX 2080, load average below 3.
 The fonts and the window size give each terminal a different grid.
 Thus the cells per second column compares the terminals best.
+The three runs of each terminal are within 1% of each other.
 
 | Terminal | Grid | Frames per second (three runs) | Median | Cells per second |
 | --- | --- | --- | ---: | ---: |
-| Alacritty 0.17.0 | 212×112 | 493, 495, 569 | 495 | 11.8 M |
-| Afterglow `ded14ad` | 210×118 | 449, 453, 575 | 453 | 11.2 M |
-| kitty 0.49.2 | 212×112 | 451, 456, 465 | 456 | 10.8 M |
-| foot 1.28.0 | 212×112 | 338, 340, 413 | 340 | 8.1 M |
-| Ghostty 1.3.1 | 211×118 | 222, 223, 305 | 223 | 5.5 M |
-| Konsole 26.08.2 | 208×109 | 147, 150, 165 | 150 | 3.4 M |
+| Alacritty 0.17.0 | 212×112 | 626, 626, 628 | 626 | 14.9 M |
+| Afterglow `ded14ad` | 210×118 | 595, 596, 596 | 596 | 14.8 M |
+| foot 1.28.0 | 212×112 | 533, 536, 537 | 536 | 12.7 M |
+| kitty 0.49.2 | 212×112 | 510, 510, 512 | 510 | 12.1 M |
+| Ghostty 1.3.1 | 211×118 | 287, 288, 289 | 288 | 7.2 M |
+| Konsole 26.08.2 | 208×109 | 186, 187, 188 | 187 | 4.2 M |
 
-The first three terminals changed places between rounds.
-Earlier that day, before the other program started, Afterglow `fa8bbf5` gave 582, 591 and 593 frames per second.
-Alacritty gave 589, 591 and 591 frames per second in other runs before the other program started.
-That is 14.6 M and 14.0 M cells per second.
+Before the throughput work, Afterglow `46c2cb7` gave 414 to 422 frames per second at the same size.
 
 ## Workloads
 
