@@ -13,11 +13,55 @@ Tab changes update the exposed pane list. Scrolling updates the text view.
 Background tabs and panes hidden by zoom are excluded.
 Qt Quick controls expose tab activation and the history scrollbar.
 
+### Pane actions
+
+Each pane object has an action interface.
+Its actions are the command palette actions that act on that pane or start from it.
+
+| Action | Effect |
+| --- | --- |
+| `Show Menu` | Opens the pane's context menu at its cursor. This is the first action. |
+| A palette action | Runs the action in that pane, as its keybinding does. |
+
+| Group | Pane actions |
+| --- | --- |
+| Text | `copy`, `paste`, `select_all`, `search`, `copy_mode`, `show_hints`, `show_urls_open`, `show_urls_copy`, `unicode_input` |
+| Terminal | `clear_screen`, `reset`, `rename_pane`, `notify_on_finish`, `show_last_output` |
+| Scroll | `scroll_page_up`, `scroll_page_down`, `scroll_top`, `scroll_bottom`, `jump_prompt_up`, `jump_prompt_down` |
+| Layout | `split_*`, `close_pane`, `toggle_pane_zoom`, `resize_*`, `swap_*`, `focus_*` |
+| Move and open | `move_pane_to_tab`, `move_pane_to_window`, `new_tab`, `new_window` |
+
+`new_tab` and `new_window` open in the directory of the pane.
+Tab, window, font, overview, shader, project and configuration actions are not pane actions.
+Use the command palette or the tab bar for them.
+
+The name of a palette action is its keybinding name, for example `split_right`.
+Its description is its title in the command palette, for example `Split Right`.
+Its key binding is the first key that the palette shows for the action.
+Qt also gives the title as the localized name. AT-SPI does not show the localized name.
+An action runs in the pane that you select, also when another pane has the focus.
+The pane then gets the focus. Confirmations, such as the close confirmation, show as they do for a key.
+
+### Docked areas
+
 Each [docked area](SCRIPTING.md#docked-areas) that shows is a read-only static text object under its window.
 Its name is the text of the area, one line for each row.
-Accessibility cannot activate the items of an area.
-An area with `tab_bar` hides the tab bar, so accessibility cannot activate tabs while the area shows.
-Use the tab keybindings to switch tabs.
+Each run with an `item` is a button in the area.
+Adjacent runs on one row with the same `item` are one button.
+
+| Button property | Value |
+| --- | --- |
+| Name | The text of the button cells. When those cells are blank, the `item`. |
+| State | Focusable |
+| Geometry | The cells of the button |
+| Action | `Press` sends `on_dock_click` with `button` set to `left`, as a left click does. |
+
+New text for the same items renames the buttons.
+When the items change or change their order, the area gets new buttons.
+An area with `tab_bar` hides the tab bar.
+Its script can show the tabs as buttons in the area, as the tab line package does.
+
+### Terminal text
 
 The accessible document contains the viewport. Scroll to read older content.
 A cursor outside the viewport is reported as absent.

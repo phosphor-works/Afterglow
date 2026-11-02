@@ -60,15 +60,25 @@ public:
     /// The text as drawn, one line for each row, for accessibility.
     const QString& text() const noexcept { return m_text; }
 
+    /// A run that a click reports, as drawn. Adjacent runs of one item on a
+    /// row are one.
+    struct Item
+    {
+        int row, from, to; ///< columns [from, to)
+        QString id;
+        QString text; ///< the cells that show, without trailing blanks
+    };
+    const std::vector<Item>& items() const noexcept { return m_items; }
+    /// Counts the changes to the order of the item ids. New text, cells or
+    /// widths of the same items leave it as it is.
+    quint64 itemsGeneration() const noexcept { return m_itemsGeneration; }
+    /// Where item @p index shows, framebuffer pixels; empty when it does not.
+    QRect itemRect(std::size_t index) const;
+
 private:
     struct NullHost : AfterglowVt::ITerminalHost
     {
         void writeToPty(std::string_view) override { }
-    };
-    struct Hit
-    {
-        int row, from, to; ///< columns [from, to)
-        QString item;
     };
     /// Gives the terminal the panes' options with the area's own on top.
     void applyOptions();
@@ -93,7 +103,8 @@ private:
     AfterglowVt::Terminal m_terminal;
     AfterglowRender::PaneSnapshot m_snapshot;
     bool m_stale = true;
-    std::vector<Hit> m_hits;
+    std::vector<Item> m_items;
+    quint64 m_itemsGeneration = 0;
     QString m_text;
 };
 

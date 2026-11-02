@@ -750,6 +750,151 @@ TEST_F(NativeWindow, AccessibleChromeExposesFocusedEditor) {
     EXPECT_TRUE(focus->state().editable);
     EXPECT_TRUE(root->rect().contains(focus->rect().center()));
 }
+TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
+    QAccessible::setActive(true);
+    const auto inactive = qScopeGuard([] { QAccessible::setActive(false); });
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    auto* original = window->focusedPane();
+    auto* accessible = QAccessible::queryAccessibleInterface(original);
+    ASSERT_NE(accessible, nullptr);
+    auto* actions = accessible->actionInterface();
+    ASSERT_NE(actions, nullptr);
+    const QStringList names = actions->actionNames();
+    EXPECT_EQ(names.value(0), QAccessibleActionInterface::showMenuAction());
+    for (const char* name : {"copy", "paste", "select_all", "search", "split_right", "split_down", "new_tab", "close_pane",
+                             "toggle_pane_zoom", "scroll_page_up"})
+        EXPECT_TRUE(names.contains(QLatin1String(name))) << name;
+    // The tab's, the window's and the palette's own act the same from any pane.
+    for (const char* name : {"next_tab", "font_bigger", "command_palette", "close_window", "pane_overview", "end_script_key_mode"})
+        EXPECT_FALSE(names.contains(QLatin1String(name))) << name;
+    EXPECT_EQ(actions->localizedActionName(QStringLiteral("split_right")), Keybinds::title(Action::SplitRight));
+    EXPECT_EQ(actions->localizedActionName(QStringLiteral("copy")), QStringLiteral("Copy"));
+    EXPECT_EQ(actions->localizedActionDescription(QStringLiteral("close_pane")), QStringLiteral("Close Pane"));
+    EXPECT_FALSE(actions->keyBindingsForAction(QStringLiteral("copy")).isEmpty());
+    EXPECT_EQ(actions->keyBindingsForAction(QStringLiteral("copy")), window->actionShortcuts(Action::Copy));
+    EXPECT_TRUE(actions->keyBindingsForAction(QStringLiteral("next_tab")).isEmpty());
+
+    // A structural action, as its keys run it.
+    actions->doAction(QStringLiteral("split_right"));
+    ASSERT_TRUE(waitFor([&] { return window->panes().size() == 2; }));
+    EXPECT_NE(window->focusedPane(), original);
+
+    // Copy runs in the pane it was asked of, not in the one with the focus.
+    original->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[2J\x1b[Hreadable\r\n"); });
+    original->startSelection(original->selectionPointAt(0, 0), AfterglowVt::SelectionMode::Normal, true);
+    original->extendSelection(original->selectionPointAt(7, 0));
+    ASSERT_EQ(original->selectedText(), QStringLiteral("readable"));
+    QGuiApplication::clipboard()->setText(QStringLiteral("before"));
+    ASSERT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("before"); }));
+    actions->doAction(QStringLiteral("copy"));
+    EXPECT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("readable"); }))
+        << QGuiApplication::clipboard()->text().toStdString();
+    EXPECT_EQ(window->focusedPane(), original);
+
+    // The menu opens at the pane's cursor, which a pointer need not be near.
+    window->revealPane(window->panes().value(1) == original ? window->panes().value(0) : window->panes().value(1));
+    ASSERT_NE(window->focusedPane(), original);
+    ASSERT_FALSE(chrome->contextMenuOpen());
+    actions->doAction(QAccessibleActionInterface::showMenuAction());
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    EXPECT_EQ(window->focusedPane(), original);
+    const QPointF at(chrome->contextMenu().value(QStringLiteral("x")).toDouble(), chrome->contextMenu().value(QStringLiteral("y")).toDouble());
+    chrome->closeContextMenu();
+    // The open menu answers the input method itself.
+    ASSERT_TRUE(waitFor([&] { return !chrome->wantsKeyboard(); }));
+    QInputMethodQueryEvent query(Qt::ImCursorRectangle);
+    QCoreApplication::sendEvent(window, &query);
+    const QRectF cursor = query.value(Qt::ImCursorRectangle).toRectF();
+    EXPECT_TRUE(cursor.contains(at)) << at.x() << "," << at.y() << " outside " << cursor.x() << "," << cursor.y() << " "
+                                     << cursor.width() << "x" << cursor.height();
+    // An unknown name runs nothing.
+    actions->doAction(QStringLiteral("close_window"));
+    drain();
+    EXPECT_EQ(window->panes().size(), 2);
+}
+TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
+    QAccessible::setActive(true);
+    const auto inactive = qScopeGuard([] { QAccessible::setActive(false); });
+    auto dock = [&](const QVariantList& line) {
+        return window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("bar")},
+                                                             {QStringLiteral("edge"), QStringLiteral("bottom")}, {QStringLiteral("size"), 1},
+                                                             {QStringLiteral("lines"), QVariantList{line}}});
+    };
+    auto run = [](const QString& text, const QString& item = {}) {
+        QVariantMap map{{QStringLiteral("text"), text}};
+        if (!item.isEmpty()) map.insert(QStringLiteral("item"), item);
+        return QVariant(map);
+    };
+    // Two runs of one item make one button.
+    ASSERT_TRUE(dock({run(QStringLiteral("["), QStringLiteral("build")), run(QStringLiteral("Build]"), QStringLiteral("build")),
+                      run(QStringLiteral(" | ")), run(QStringLiteral("Deploy"), QStringLiteral("deploy"))}).isEmpty());
+    auto* root = window->accessibleRoot();
+    ASSERT_NE(root, nullptr);
+    auto findDock = [&]() -> QAccessibleInterface* {
+        for (int i = 0; i < root->childCount(); ++i)
+            if (auto* c = root->child(i); c && c->object() == nullptr && c->text(QAccessible::Name).contains(QLatin1String("Deploy"))) return c;
+        return nullptr;
+    };
+    // The dock shows from the next frame's layout.
+    ASSERT_TRUE(waitFor([&] { return findDock() != nullptr; }));
+    QAccessibleInterface* area = findDock();
+    ASSERT_EQ(area->childCount(), 2);
+    QAccessibleInterface* build = area->child(0);
+    QAccessibleInterface* deploy = area->child(1);
+    ASSERT_NE(build, nullptr);
+    ASSERT_NE(deploy, nullptr);
+    EXPECT_EQ(build->role(), QAccessible::Button);
+    EXPECT_EQ(deploy->role(), QAccessible::Button);
+    EXPECT_EQ(build->text(QAccessible::Name), QStringLiteral("[Build]"));
+    EXPECT_EQ(deploy->text(QAccessible::Name), QStringLiteral("Deploy"));
+    EXPECT_TRUE(deploy->state().focusable);
+    EXPECT_FALSE(deploy->state().invisible);
+    EXPECT_EQ(deploy->parent(), area);
+    EXPECT_EQ(area->indexOfChild(deploy), 1);
+    EXPECT_EQ(area->child(1), deploy); // the same object each time
+    // Each button covers its own cells: "[Build]" and " | " come first.
+    EXPECT_TRUE(area->rect().contains(deploy->rect()));
+    EXPECT_GT(deploy->rect().left(), build->rect().right());
+    EXPECT_EQ(deploy->rect().width(), build->rect().width() * 6 / 7);
+    EXPECT_EQ(area->childAt(deploy->rect().center().x(), deploy->rect().center().y()), deploy);
+    EXPECT_EQ(root->childAt(deploy->rect().center().x(), deploy->rect().center().y()), area);
+
+    QList<QVariantMap> clicks;
+    QObject::connect(window, &TerminalWindow::scriptDockClicked, window,
+                     [&](const QString& owner, quint32, const QVariantMap& click) { if (owner == QLatin1String("a@1")) clicks.append(click); });
+    ASSERT_NE(deploy->actionInterface(), nullptr);
+    EXPECT_EQ(deploy->actionInterface()->actionNames(), QStringList{QAccessibleActionInterface::pressAction()});
+    deploy->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
+    ASSERT_EQ(clicks.size(), 1);
+    EXPECT_EQ(clicks[0][QStringLiteral("dock")], QStringLiteral("bar"));
+    EXPECT_EQ(clicks[0][QStringLiteral("item")], QStringLiteral("deploy"));
+    EXPECT_EQ(clicks[0][QStringLiteral("button")], QStringLiteral("left"));
+    EXPECT_EQ(clicks[0][QStringLiteral("window")].toUInt(), window->id());
+
+    // New text for the same items renames the buttons and keeps them.
+    const QAccessible::Id buildId = QAccessible::uniqueId(build), deployId = QAccessible::uniqueId(deploy);
+    ASSERT_TRUE(dock({run(QStringLiteral("Building"), QStringLiteral("build")), run(QStringLiteral(" | ")),
+                      run(QStringLiteral("Deploy"), QStringLiteral("deploy"))}).isEmpty());
+    ASSERT_EQ(area->childCount(), 2);
+    EXPECT_EQ(area->child(0), build);
+    EXPECT_EQ(build->text(QAccessible::Name), QStringLiteral("Building"));
+    // Items in a new order are new buttons: the old ones are gone at once.
+    ASSERT_TRUE(dock({run(QStringLiteral("Deploy"), QStringLiteral("deploy"))}).isEmpty());
+    EXPECT_EQ(QAccessible::accessibleInterface(buildId), nullptr);
+    EXPECT_EQ(QAccessible::accessibleInterface(deployId), nullptr);
+    ASSERT_EQ(area->childCount(), 1);
+    deploy = area->child(0);
+    EXPECT_EQ(deploy->text(QAccessible::Name), QStringLiteral("Deploy"));
+    deploy->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
+    ASSERT_EQ(clicks.size(), 2);
+    EXPECT_EQ(clicks[1][QStringLiteral("item")], QStringLiteral("deploy"));
+    // The buttons go with their dock.
+    const QAccessible::Id lastId = QAccessible::uniqueId(deploy);
+    window->clearScriptOwner(QStringLiteral("a@1"));
+    EXPECT_EQ(QAccessible::accessibleInterface(lastId), nullptr);
+    EXPECT_TRUE(waitFor([&] { return findDock() == nullptr; }));
+}
 class NotificationServer : public QObject {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.freedesktop.Notifications")

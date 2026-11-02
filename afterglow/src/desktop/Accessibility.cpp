@@ -3,6 +3,7 @@
 #include "Accessibility.h"
 #include "../DockArea.h"
 #include "../TerminalWindow.h"
+#include "../config/Keybinds.h"
 #include <QHash>
 #include <QAccessibleObject>
 #include <QGuiApplication>
@@ -18,7 +19,48 @@ TerminalWindow* owner(Pane* pane)
     for (auto* w : TerminalWindow::windows()) if (w->panes().contains(pane)) return w;
     return nullptr;
 }
-class AccessiblePane final : public QAccessibleObject, public QAccessibleTextInterface {
+// The palette's actions that read or change one pane, or start from it (a
+// split, tab or window opens in its directory). The others act the same from
+// every pane: tabs, fonts, fullscreen, equalize and rotate, the overview,
+// shaders, projects, the configuration and the palette itself. The tab bar
+// and the palette reach those, and on each pane they would bury its own.
+// End Script Key Mode is the chord that frees the keys, not a pane action.
+bool paneAction(Action action)
+{
+    switch (action) {
+    case Action::Copy: case Action::Paste: case Action::SelectAll: case Action::Search:
+    case Action::ClearScreen: case Action::ResetTerminal: case Action::RenamePane: case Action::NotifyOnFinish:
+    case Action::CopyMode: case Action::ShowHints: case Action::ShowLastOutput: case Action::UrlsOpen:
+    case Action::UrlsCopy: case Action::UnicodeInput:
+    case Action::ScrollPageUp: case Action::ScrollPageDown: case Action::ScrollTop: case Action::ScrollBottom:
+    case Action::JumpPromptUp: case Action::JumpPromptDown:
+    case Action::SplitRight: case Action::SplitDown: case Action::SplitLeft: case Action::SplitUp:
+    case Action::ClosePane: case Action::TogglePaneZoom:
+    case Action::ResizeLeft: case Action::ResizeRight: case Action::ResizeUp: case Action::ResizeDown:
+    case Action::SwapLeft: case Action::SwapRight: case Action::SwapUp: case Action::SwapDown:
+    case Action::FocusLeft: case Action::FocusRight: case Action::FocusUp: case Action::FocusDown:
+    case Action::MovePaneToTab: case Action::MovePaneToWindow: case Action::NewTab: case Action::NewWindow:
+        return true;
+    default:
+        return false;
+    }
+}
+const QList<Action>& paneActions()
+{
+    // In the palette's order.
+    static const QList<Action> actions = [] {
+        QList<Action> result;
+        for (Action a : Keybinds::allActions()) if (paneAction(a)) result.append(a);
+        return result;
+    }();
+    return actions;
+}
+Action paneActionNamed(const QString& name)
+{
+    for (Action a : paneActions()) if (Keybinds::token(a) == name) return a;
+    return Action::None;
+}
+class AccessiblePane final : public QAccessibleObject, public QAccessibleTextInterface, public QAccessibleActionInterface {
 public:
     explicit AccessiblePane(Pane* p) : QAccessibleObject(p) {
         m_output = QObject::connect(p, &Pane::contentChanged, p, [this] { m_cached.reset(); });
@@ -55,7 +97,36 @@ public:
         return s;
     }
     void* interface_cast(QAccessible::InterfaceType t) override {
-        return t == QAccessible::TextInterface ? static_cast<QAccessibleTextInterface*>(this) : nullptr;
+        if (t == QAccessible::TextInterface) return static_cast<QAccessibleTextInterface*>(this);
+        if (t == QAccessible::ActionInterface) return static_cast<QAccessibleActionInterface*>(this);
+        return nullptr;
+    }
+    // The menu comes first: a client that runs the first action by default
+    // opens the list of the others, not a copy or a split.
+    QStringList actionNames() const override {
+        QStringList names{showMenuAction()};
+        for (Action a : paneActions()) names.append(Keybinds::token(a));
+        return names;
+    }
+    QString localizedActionName(const QString& name) const override {
+        const Action a = paneActionNamed(name);
+        return a == Action::None ? QAccessibleActionInterface::localizedActionName(name) : Keybinds::title(a);
+    }
+    QString localizedActionDescription(const QString& name) const override {
+        const Action a = paneActionNamed(name);
+        return a == Action::None ? QAccessibleActionInterface::localizedActionDescription(name) : Keybinds::title(a);
+    }
+    QStringList keyBindingsForAction(const QString& name) const override {
+        const Action a = paneActionNamed(name);
+        auto* w = owner(pane());
+        return a == Action::None || !w ? QStringList() : w->actionShortcuts(a);
+    }
+    // As the action's keys in this pane: the same confirmations and notices.
+    void doAction(const QString& name) override {
+        auto* w = owner(pane());
+        if (!w) return;
+        if (name == showMenuAction()) w->openPaneMenu(pane());
+        else if (const Action a = paneActionNamed(name); a != Action::None) w->runAction(pane(), a);
     }
     int characterCount() const override { return int(snapshot().text.size()); }
     QString text(int start, int end) const override {
@@ -144,20 +215,69 @@ private:
     std::optional<std::pair<std::uint64_t, std::uint64_t>> m_notified;
     QMetaObject::Connection m_output;
 };
-// A script's dock: its text, read-only. Its items cannot be pressed.
-// A dock is not a QObject, so the window's accessible object makes these
-// and the dock's window forgets them before the dock goes.
-class AccessibleDock final : public QAccessibleInterface {
+class AccessibleDock;
+// An item of a dock: a button that sends its script the click a left press
+// sends. Its dock makes it and deletes it, before the dock goes or when the
+// order of the dock's items changes. Until then it reads the item at its
+// index, and goes inert once a new order is drawn.
+class AccessibleDockItem final : public QAccessibleInterface, public QAccessibleActionInterface {
 public:
-    AccessibleDock(TerminalWindow* w, const DockArea* d) : m_window(w), m_dock(d) {}
-    bool isValid() const override { return m_window; }
+    AccessibleDockItem(AccessibleDock* dock, std::size_t index, quint64 generation)
+        : m_dock(dock), m_index(index), m_generation(generation) {}
+    bool isValid() const override { return item(); }
     QObject* object() const override { return nullptr; }
-    QWindow* window() const override { return m_window; }
+    QWindow* window() const override;
     QAccessibleInterface* childAt(int, int) const override { return nullptr; }
-    QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(m_window.data()); }
+    QAccessibleInterface* parent() const override;
     QAccessibleInterface* child(int) const override { return nullptr; }
     int childCount() const override { return 0; }
     int indexOfChild(const QAccessibleInterface*) const override { return -1; }
+    QString text(QAccessible::Text kind) const override {
+        const auto* i = item();
+        if (kind != QAccessible::Name || !i) return {};
+        // Blank cells name nothing: the id the script gave says what it is.
+        const QString shown = i->text.trimmed();
+        return shown.isEmpty() ? i->id : shown;
+    }
+    void setText(QAccessible::Text, const QString&) override {}
+    QRect rect() const override;
+    QAccessible::Role role() const override { return QAccessible::Button; }
+    QAccessible::State state() const override {
+        QAccessible::State s;
+        s.invisible = rect().isEmpty();
+        s.focusable = !s.invisible;
+        return s;
+    }
+    void* interface_cast(QAccessible::InterfaceType t) override {
+        return t == QAccessible::ActionInterface ? static_cast<QAccessibleActionInterface*>(this) : nullptr;
+    }
+    QStringList actionNames() const override { return {pressAction()}; }
+    QStringList keyBindingsForAction(const QString&) const override { return {}; }
+    void doAction(const QString& name) override;
+    const DockArea::Item* item() const;
+private:
+    AccessibleDock* m_dock;
+    std::size_t m_index;
+    quint64 m_generation;
+};
+// A script's dock: its text, and its items as buttons. A dock is not a
+// QObject, so the window's accessible object makes these and the dock's
+// window forgets them before the dock goes.
+class AccessibleDock final : public QAccessibleInterface {
+public:
+    AccessibleDock(TerminalWindow* w, const DockArea* d) : m_window(w), m_dock(d), m_announced(d->text()) {}
+    ~AccessibleDock() override { releaseItems(); }
+    bool isValid() const override { return m_window; }
+    QObject* object() const override { return nullptr; }
+    QWindow* window() const override { return m_window; }
+    QAccessibleInterface* childAt(int x, int y) const override {
+        for (QAccessibleInterface* item : items()) if (item->rect().contains(x, y)) return item;
+        return nullptr;
+    }
+    QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(m_window.data()); }
+    QAccessibleInterface* child(int i) const override { return items().value(i); }
+    int childCount() const override { return int(items().size()); }
+    int indexOfChild(const QAccessibleInterface* c) const override { return int(items().indexOf(const_cast<QAccessibleInterface*>(c))); }
     QString text(QAccessible::Text kind) const override {
         if (kind == QAccessible::Name) return m_dock->text();
         if (kind == QAccessible::Description) return QStringLiteral("Script area");
@@ -172,10 +292,78 @@ public:
         s.invisible = rect().isEmpty();
         return s;
     }
+    TerminalWindow* terminal() const { return m_window; }
+    const DockArea* dock() const { return m_dock; }
+    /// The dock drew again: tells of a new name, and of items that came,
+    /// went or were renamed.
+    void update() {
+        if (m_built && m_built->generation != m_dock->itemsGeneration()) {
+            // The items went with their order; the next query makes new ones.
+            releaseItems();
+            QAccessibleEvent event(this, QAccessible::ObjectReorder);
+            QAccessible::updateAccessibility(&event);
+        } else if (m_built) {
+            for (qsizetype i = 0; i < m_built->items.size(); ++i) {
+                const QString name = m_built->items[i]->text(QAccessible::Name);
+                if (name == std::exchange(m_built->names[i], name)) continue;
+                QAccessibleEvent event(m_built->items[i], QAccessible::NameChanged);
+                QAccessible::updateAccessibility(&event);
+            }
+        }
+        if (m_dock->text() == std::exchange(m_announced, m_dock->text())) return;
+        QAccessibleEvent event(this, QAccessible::NameChanged);
+        QAccessible::updateAccessibility(&event);
+    }
 private:
+    // The item objects of one order of the dock's items.
+    struct Built {
+        quint64 generation;
+        QList<QAccessibleInterface*> items;
+        QList<QAccessible::Id> ids;
+        QStringList names; ///< as last told
+    };
+    const QList<QAccessibleInterface*>& items() const {
+        if (!m_built || m_built->generation != m_dock->itemsGeneration()) {
+            releaseItems();
+            Built built{m_dock->itemsGeneration(), {}, {}, {}};
+            for (std::size_t i = 0; i < m_dock->items().size(); ++i) {
+                auto* item = new AccessibleDockItem(const_cast<AccessibleDock*>(this), i, built.generation);
+                built.ids.append(QAccessible::registerAccessibleInterface(item));
+                built.items.append(item);
+                built.names.append(item->text(QAccessible::Name));
+            }
+            m_built = std::move(built);
+        }
+        return m_built->items;
+    }
+    void releaseItems() const {
+        if (!m_built) return;
+        const QList<QAccessible::Id> released = std::exchange(m_built, std::nullopt)->ids;
+        // The cache owns them once registered, and deletes them by id: at exit
+        // it may have deleted them already.
+        for (const QAccessible::Id id : released) QAccessible::deleteAccessibleInterface(id);
+    }
     QPointer<TerminalWindow> m_window;
     const DockArea* m_dock;
+    QString m_announced;
+    mutable std::optional<Built> m_built;
 };
+QWindow* AccessibleDockItem::window() const { return m_dock->window(); }
+QAccessibleInterface* AccessibleDockItem::parent() const { return m_dock; }
+const DockArea::Item* AccessibleDockItem::item() const
+{
+    const DockArea* dock = m_dock->dock();
+    if (!m_dock->isValid() || dock->itemsGeneration() != m_generation || m_index >= dock->items().size()) return nullptr;
+    return &dock->items()[m_index];
+}
+QRect AccessibleDockItem::rect() const
+{
+    return item() ? m_dock->terminal()->accessibleDockItemRect(m_dock->dock(), m_index) : QRect();
+}
+void AccessibleDockItem::doAction(const QString& name)
+{
+    if (name == pressAction() && item()) m_dock->terminal()->pressDockItem(m_dock->dock(), m_index);
+}
 QHash<const DockArea*, QAccessible::Id>& dockIds()
 {
     static QHash<const DockArea*, QAccessible::Id> ids;
@@ -270,8 +458,7 @@ void dockAccessibilityChanged(const DockArea* dock)
     // Only a dock that something asked about has an object to tell of.
     const auto it = dockIds().constFind(dock);
     if (it == dockIds().cend()) return;
-    QAccessibleEvent event(QAccessible::accessibleInterface(*it), QAccessible::NameChanged);
-    QAccessible::updateAccessibility(&event);
+    if (auto* accessible = dynamic_cast<AccessibleDock*>(QAccessible::accessibleInterface(*it))) accessible->update();
 }
 void releaseDockAccessibility(const DockArea* dock)
 {

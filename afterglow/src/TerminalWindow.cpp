@@ -2530,6 +2530,11 @@ QStringList scriptShortcutsOf(const Keybinds& keybinds, const KeyModes& modes, c
 }
 } // namespace
 
+QStringList TerminalWindow::actionShortcuts(Action action) const
+{
+    return shortcutsOf(m_settings.settings().keybinds, m_settings.settings().keyModes, action);
+}
+
 void TerminalWindow::updatePaletteActions()
 {
     QVariantList actions;
@@ -2572,12 +2577,17 @@ void TerminalWindow::runSearch(const QString& query, int direction)
 
 QRectF TerminalWindow::inputMethodCursorRect() const
 {
-    if (!m_focused || !m_splits) {
+    return cursorCellRect(m_focused);
+}
+
+QRectF TerminalWindow::cursorCellRect(Pane* pane) const
+{
+    if (!pane || !m_splits) {
         return {};
     }
     const auto& m = const_cast<TerminalWindow*>(this)->m_renderer->fonts().fonts->metrics();
-    const auto& snap = m_focused->snapshot();
-    const QPoint origin = contentRect(m_splits->rectOf(m_focused)).topLeft();
+    const auto& snap = pane->snapshot();
+    const QPoint origin = contentRect(m_splits->rectOf(pane)).topLeft();
     const qreal dpr = devicePixelRatio();
     return QRectF((origin.x() + snap.cursorX * m.cellWidth) / dpr, (origin.y() + snap.cursorY * m.cellHeight) / dpr,
                   m.cellWidth / dpr, m.cellHeight / dpr);
@@ -3030,6 +3040,16 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
                      {action(Action::OpenConfig, QStringLiteral("Open Config"), "document-open"),
                       action(Action::ReloadConfig, QStringLiteral("Reload Config"), "view-refresh")});
     m_controller->openContextMenu(pos, items);
+}
+
+void TerminalWindow::openPaneMenu(Pane* pane)
+{
+    if (!pane || tabOf(pane) < 0) return;
+    if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
+    setFocusedPane(pane);
+    // The middle of the cell: a link under the cursor is the menu's, as it
+    // is under a pointer.
+    openContextMenu(cursorCellRect(pane).center());
 }
 
 void TerminalWindow::updateLinkHover()
@@ -4069,6 +4089,13 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
     return int(std::floor((pos.y() * devicePixelRatio() - origin.y()) / m.cellHeight));
 }
 
+void TerminalWindow::emitDockClick(const DockArea& dock, const QString& item, const QString& button)
+{
+    Q_EMIT scriptDockClicked(dock.owner(), m_focused ? m_focused->id() : 0,
+                             {{QStringLiteral("dock"), dock.id()}, {QStringLiteral("item"), item},
+                              {QStringLiteral("button"), button}, {QStringLiteral("window"), m_id}});
+}
+
 bool TerminalWindow::pressDock(QMouseEvent* e)
 {
     const QPoint px = (e->position() * devicePixelRatio()).toPoint();
@@ -4081,10 +4108,7 @@ bool TerminalWindow::pressDock(QMouseEvent* e)
         : e->button() == Qt::MiddleButton                ? QStringLiteral("middle")
         : e->button() == Qt::RightButton                 ? QStringLiteral("right")
                                                          : QString();
-    if (!item.isEmpty() && !button.isEmpty())
-        Q_EMIT scriptDockClicked(dock->owner(), m_focused ? m_focused->id() : 0,
-                                 {{QStringLiteral("dock"), dock->id()}, {QStringLiteral("item"), item},
-                                  {QStringLiteral("button"), button}, {QStringLiteral("window"), m_id}});
+    if (!item.isEmpty() && !button.isEmpty()) emitDockClick(*dock, item, button);
     return true;
 }
 

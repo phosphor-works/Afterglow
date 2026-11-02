@@ -152,6 +152,7 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 ### Desktop integration
 
 - Terminal text, cursor, selection and geometry for screen readers through Qt and AT-SPI.
+- Accessibility clients can run the pane actions of the command palette and open the context menu of a pane. They can also press the items of a script's docked area.
 - Input-method support with surrounding text for the cursor row.
 - Tabs, menus and prompts in the desktop Qt style.
 - Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.

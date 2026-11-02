@@ -177,14 +177,14 @@ QRect TerminalWindow::placeDocks()
     for (std::size_t i = 0; i < m_docks.size(); ++i) {
         DockArea& dock = *m_docks[i];
         const QRect before = dock.rect();
-        const QString text = dock.text();
         dock.setRect(rects[i], m.cellWidth, m.cellHeight);
         const bool was = !before.isEmpty();
         const bool now = !dock.rect().isEmpty();
         kept += was;
         shown += now;
         reordered |= was != now;
-        if (now && was && dock.text() != text) dockAccessibilityChanged(&dock);
+        // A dock that comes or goes is the window's reorder.
+        if (now && was) dockAccessibilityChanged(&dock);
     }
     reordered |= kept != std::exchange(m_shownDocks, shown);
     if (reordered && QAccessible::isActive()) {
@@ -198,9 +198,8 @@ void TerminalWindow::setDockOptions(const AfterglowVt::TerminalOptions& options)
 {
     if (m_docks.empty()) return;
     for (const auto& dock : m_docks) {
-        const QString text = dock->text();
         dock->setOptions(options);
-        if (!dock->rect().isEmpty() && dock->text() != text) dockAccessibilityChanged(dock.get());
+        if (!dock->rect().isEmpty()) dockAccessibilityChanged(dock.get());
     }
     // The items move with the widths of the text.
     applyPointerShape();
@@ -223,13 +222,35 @@ QList<const DockArea*> TerminalWindow::accessibleDocks() const
     return shown;
 }
 
+bool TerminalWindow::showsDock(const DockArea* dock) const
+{
+    return std::any_of(m_docks.begin(), m_docks.end(), [dock](const auto& d) { return d.get() == dock; })
+        && !dock->rect().isEmpty();
+}
+
+QRect TerminalWindow::globalRect(const QRect& pixels) const
+{
+    const qreal dpr = devicePixelRatio();
+    return QRect(mapToGlobal((QPointF(pixels.topLeft()) / dpr).toPoint()), (QSizeF(pixels.size()) / dpr).toSize());
+}
+
 QRect TerminalWindow::accessibleDockRect(const DockArea* dock) const
 {
-    const auto shown = std::find_if(m_docks.begin(), m_docks.end(), [dock](const auto& d) { return d.get() == dock; });
-    if (shown == m_docks.end() || dock->rect().isEmpty()) return {};
-    const qreal dpr = devicePixelRatio();
-    const QRect px = dock->rect();
-    return QRect(mapToGlobal((QPointF(px.topLeft()) / dpr).toPoint()), (QSizeF(px.size()) / dpr).toSize());
+    return showsDock(dock) ? globalRect(dock->rect()) : QRect();
+}
+
+QRect TerminalWindow::accessibleDockItemRect(const DockArea* dock, std::size_t index) const
+{
+    if (!showsDock(dock)) return {};
+    const QRect px = dock->itemRect(index);
+    return px.isEmpty() ? QRect() : globalRect(px);
+}
+
+void TerminalWindow::pressDockItem(const DockArea* dock, std::size_t index)
+{
+    // Only what a pointer could press: an item of a dock that shows.
+    if (!showsDock(dock) || index >= dock->items().size()) return;
+    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"));
 }
 
 } // namespace Afterglow

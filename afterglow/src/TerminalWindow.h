@@ -87,6 +87,16 @@ public:
     /// The scripts' docks that show, and where (global logical pixels).
     QList<const DockArea*> accessibleDocks() const;
     QRect accessibleDockRect(const DockArea*) const;
+    /// Where item @p index of @p dock shows (global logical pixels).
+    QRect accessibleDockItemRect(const DockArea*, std::size_t index) const;
+    /// Item @p index of a dock that shows sends its script the click a left
+    /// press on it sends.
+    void pressDockItem(const DockArea*, std::size_t index);
+    /// Opens @p pane's context menu at its cursor, as a right click there
+    /// would, after its tab shows and it takes the focus.
+    void openPaneMenu(Pane* pane);
+    /// The keys that run @p action, as the command palette shows them.
+    QStringList actionShortcuts(Action action) const;
     /// Switches to @p pane's tab, focuses it and raises the window.
     void revealPane(Pane* pane);
 
@@ -315,6 +325,11 @@ private:
     DockArea* dockAt(const QPoint& pixel) const;
     /// A press on a dock: sends its item's click. False when no dock is there.
     bool pressDock(QMouseEvent* e);
+    void emitDockClick(const DockArea& dock, const QString& item, const QString& button);
+    /// Whether @p dock is one of this window's and shows.
+    bool showsDock(const DockArea* dock) const;
+    /// Framebuffer pixels to global logical ones.
+    QRect globalRect(const QRect& pixels) const;
     /// Removes @p owner's docks.
     void eraseDocks(const QString& owner);
     /// A dock came, went or moved: the next frame lays out the panes and
@@ -365,6 +380,8 @@ private:
     void applyPointerShape();
     /// The cursor cell in window coordinates, for the input method's popup.
     QRectF inputMethodCursorRect() const;
+    /// @p pane's cursor cell, window logical pixels.
+    QRectF cursorCellRect(Pane* pane) const;
     QRectF m_reportedImeRect;
     void ringBell(Pane* pane);
     /// Plays Terminal.bellSound, at most a few times a second.

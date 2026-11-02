@@ -431,6 +431,8 @@ Afterglow sends it when a mouse button goes down on a run with an `item`.
 
 Other mouse buttons send no event.
 A click on a run without an item, or on empty cells, does nothing.
+Accessibility clients see each item as a button. Its press action sends the event of a left click.
+See [desktop integration](DESKTOP.md#docked-areas).
 Clicks and the mouse wheel on an area never reach the panes.
 This is also true while the pane overview is open.
 A click on an item then sends `on_dock_click`, and the overview stays open.
