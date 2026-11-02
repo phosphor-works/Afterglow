@@ -141,6 +141,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             control.endScriptKeyMode(owner);
             return {};
         }
+        if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
+            const auto error = control.scriptDock(owner, pane, e);
+            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+        }
         if (kind == QLatin1String("status") || kind == QLatin1String("override")) {
             const auto error = control.scriptAppearance(owner, pane, e);
             return {error, {}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
@@ -166,6 +170,9 @@ void connectScriptEvents(ScriptHost& host, Control& control)
     }, Queued);
     QObject::connect(&control, &Control::scriptKey, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& key) {
         host.dispatchTo(owner, QStringLiteral("on_key"), pane, key);
+    }, Queued);
+    QObject::connect(&control, &Control::scriptDockClicked, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& click) {
+        host.dispatchTo(owner, QStringLiteral("on_dock_click"), pane, click);
     }, Queued);
     QObject::connect(&control, &Control::tabSwitched, &host, [&host](quint32 pane, quint32 from, quint32 to, int direction) {
         host.dispatch(QStringLiteral("on_tab_switch"), pane,

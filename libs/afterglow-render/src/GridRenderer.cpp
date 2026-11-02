@@ -1176,9 +1176,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     const std::size_t visibleCount = panes.size();
 
     std::size_t glyphBound = 0;
-    for (const auto& pane : drawn) {
-        glyphBound += pane.snapshot->cells.size();
-        for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
+    for (const std::vector<Pane>* list : {&drawn, static_cast<const std::vector<Pane>*>(&m_docks)}) {
+        for (const auto& pane : *list) {
+            glyphBound += pane.snapshot->cells.size();
+            for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
+        }
     }
     res.glyphs.beginFrame(glyphBound, rhi->resourceLimit(QRhi::TextureSizeMax));
     // Which chains run this frame, before anything reads active(): the panes
@@ -1201,13 +1203,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         m_scrollbackSettling = false;
         m_scrollbackInitialized = false;
     }
-    {
-        m_frame.clear();
-        m_ranges.clear();
-        for (const Pane& pane : drawn) {
+    // A pane's instances, from its cache when nothing it shows has changed.
+    // Subpixel text needs an opaque target that no chain resamples.
+    auto appendPane = [&](const Pane& pane, bool subpixelTarget) -> DrawRange {
             const auto first = std::uint32_t(m_frame.size());
             FrameBuilder::PaneParams pp = pane.params;
-            pp.allowSubpixel = pp.allowSubpixel && !m_translucent && !post
+            pp.allowSubpixel = pp.allowSubpixel && subpixelTarget
                 && pp.backgroundAlpha == 255 && !pane.snapshot->hasTransparentBackgrounds;
             // Blink phases that cannot change what is drawn do not rebuild the pane.
             const bool cursorBlinks = pp.cursorBlinkOverride < 0 ? pane.snapshot->cursorBlink : pp.cursorBlinkOverride != 0;
@@ -1249,12 +1250,16 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
             cache.seenFrame = m_frameCounter + 1;
             m_frame.insert(m_frame.end(), cache.instances.begin(), cache.instances.end());
-            m_ranges.push_back({first, first + std::uint32_t(cache.ranges.textStart),
-                                first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
-                                cache.ranges.cursorBelowText, pp.rect, {}});
-        }
-
-    }
+            return {first, first + std::uint32_t(cache.ranges.textStart),
+                    first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
+                    cache.ranges.cursorBelowText, pp.rect, {}};
+    };
+    m_frame.clear();
+    m_ranges.clear();
+    for (const Pane& pane : drawn) m_ranges.push_back(appendPane(pane, !m_translucent && !post));
+    // Docks go straight into the window, after every chain.
+    m_dockRanges.clear();
+    for (const Pane& dock : m_docks) m_dockRanges.push_back(appendPane(dock, !m_translucent));
     for (const auto& instance : m_frame) {
         if (instance.kind == std::uint32_t(InstanceKind::GrayGlyph) || instance.kind == std::uint32_t(InstanceKind::LinearGlyph))
             res.glyphs.touchPage(false, instance.atlasPage);
@@ -1262,8 +1267,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             res.glyphs.touchPage(true, instance.atlasPage);
     }
     // Image quads go after all grid instances; each is drawn with its own texture.
-    for (std::size_t i = 0; i < m_ranges.size(); ++i) {
-        const Pane& pane = drawn[i];
+    auto appendImages = [&](const Pane& pane, DrawRange& range) {
         const QPoint origin = pane.params.contentOrigin;
         for (const AfterglowVt::VisiblePlacement& img : pane.snapshot->images) {
             const float fw = float(img.frame->width);
@@ -1276,9 +1280,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             const auto layer = img.z < INT32_MIN / 2 ? ImageDraw::Layer::UnderCells
                 : img.z < 0                          ? ImageDraw::Layer::BelowText
                                                      : ImageDraw::Layer::AboveText;
-            m_ranges[i].images.push_back({index, img.frame, layer});
+            range.images.push_back({index, img.frame, layer});
         }
-    }
+    };
+    for (std::size_t i = 0; i < m_ranges.size(); ++i) appendImages(drawn[i], m_ranges[i]);
+    for (std::size_t i = 0; i < m_dockRanges.size(); ++i) appendImages(m_docks[i], m_dockRanges[i]);
     // Other tabs' overlays (dividers, dimming) go with their panes.
     for (const TabSlice& slice : slices) {
         if (!slice.overlays || slice.overlays->empty() || slice.begin == slice.end) continue;
@@ -1794,6 +1800,18 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     }
     if (post) {
         m_post->record(frame, regions, windowState, time, target.renderTarget(), target.renderPass, clear);
+    }
+    if (!m_dockRanges.empty()) {
+        // The last pass draws into the window itself: under shaders its
+        // pipelines are not the grid texture's.
+        gridPass = target.renderPass;
+        gridPipelines = target.pipelines;
+        if (!gridPipelines->grid) {
+            gridPipelines->grid = makeGridPipeline(gridPass, GridBlend::Premultiplied);
+            gridPipelines->fill = makeGridPipeline(gridPass, GridBlend::None);
+        }
+        bindGrid();
+        for (const DrawRange& range : m_dockRanges) drawRange(range);
     }
     drawChrome();
     frame.endPass(target.finalUpdates ? target.finalUpdates() : nullptr);

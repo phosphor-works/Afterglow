@@ -320,6 +320,7 @@ void TerminalWindow::clearScriptOwner(const QString& owner)
     m_shaderControls.clearOwner(owner);
     if (m_scriptDialog && m_scriptDialog->owner == owner) finishScriptDialog(false, {});
     std::erase_if(m_scriptAppearance, [&](const auto& item) { return item.owner == owner; });
+    if (std::erase_if(m_docks, [&](const auto& dock) { return dock->owner() == owner; }) && m_splits) relayout();
     updateChrome(); scheduleRender();
 }
 }

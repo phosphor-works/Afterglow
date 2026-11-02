@@ -876,6 +876,8 @@ int TerminalWindow::tabOf(const Pane* pane) const
 
 int TerminalWindow::tabBarHeight(int tabCount) const
 {
+    // A script's dock draws the tabs instead (afterglow.dock tab_bar).
+    if (tabBarReplaced()) return 0;
     const int height = int(std::lround(TabBarLogicalHeight * devicePixelRatio()));
     switch (m_settings.settings().window.tabBar) {
     case WindowSettings::TabBar::Always:
@@ -894,7 +896,7 @@ QRect TerminalWindow::paneArea(int tabCount) const
         ? (size() * devicePixelRatio())
         : m_renderer->pixelSize();
     const int bar = tabBarHeight(tabCount);
-    return QRect(0, bar, px.width(), std::max(0, px.height() - bar));
+    return layoutDocks(QRect(0, bar, px.width(), std::max(0, px.height() - bar)), nullptr);
 }
 
 QSize TerminalWindow::minimumPaneSize() const
@@ -1447,6 +1449,7 @@ void TerminalWindow::relayout()
 {
     const QSize px = m_renderer->pixelSize();
     const double dpr = devicePixelRatio();
+    placeDocks();
     m_splits->layout(paneArea(), dividerPixels());
     // Hint labels sit on cells that may have moved.
     if (m_urlMode.active) stopUrlMode();
@@ -1614,6 +1617,17 @@ void TerminalWindow::renderNow()
     // that arrives later may never ask for it. A failed frame (a lost device)
     // is not retried, not even for an animation: every retry would fail the
     // same way and spin the loop.
+    std::vector<AfterglowRender::WindowRenderer::Pane> docks;
+    for (const auto& dock : m_docks) {
+        if (dock->rect().isEmpty()) continue;
+        AfterglowRender::WindowRenderer::Pane wp;
+        wp.snapshot = &dock->snapshot();
+        wp.params.rect = dock->rect();
+        wp.params.contentOrigin = dock->rect().topLeft();
+        wp.params.backgroundAlpha = backgroundAlpha;
+        docks.push_back(wp);
+    }
+    m_renderer->setDocks(std::move(docks));
     using FrameResult = AfterglowRender::WindowRenderer::FrameResult;
     const FrameResult frame = m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
     if (frame == FrameResult::Retry)
@@ -2863,6 +2877,10 @@ void TerminalWindow::applyPointerShape()
         setCursor(m_chrome->cursorAt(m_pointer));
         return;
     }
+    if (const DockArea* dock = dockAt((m_pointer * devicePixelRatio()).toPoint())) {
+        setCursor(dock->itemAt((m_pointer * devicePixelRatio()).toPoint()).isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
+        return;
+    }
     if (!m_hover.url.isEmpty()) {
         setCursor(Qt::PointingHandCursor);
         return;
@@ -3387,6 +3405,7 @@ void TerminalWindow::applySettings(const Settings& previous)
         for (Pane* p : findChildren<Pane*>()) {
             p->setOptions(now.terminal);
         }
+        for (const auto& dock : m_docks) dock->setOptions(now.terminal);
     }
     if (now.colors != previous.colors) {
         for (Pane* p : findChildren<Pane*>()) {
@@ -4041,6 +4060,20 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (routePointerToChrome(e, e->position(), true, false)) {
         return;
     }
+    if (DockArea* dock = dockAt((e->position() * devicePixelRatio()).toPoint())) {
+        // A dock is its script's: the panes under it get nothing.
+        m_dockPress = true;
+        const QString item = dock->itemAt((e->position() * devicePixelRatio()).toPoint());
+        const QString button = e->button() == Qt::LeftButton ? QStringLiteral("left")
+            : e->button() == Qt::MiddleButton                ? QStringLiteral("middle")
+            : e->button() == Qt::RightButton                 ? QStringLiteral("right")
+                                                             : QString();
+        if (!item.isEmpty() && !button.isEmpty())
+            Q_EMIT scriptDockClicked(dock->owner(), m_focused ? m_focused->id() : 0,
+                                     {{QStringLiteral("dock"), dock->id()}, {QStringLiteral("item"), item},
+                                      {QStringLiteral("button"), button}, {QStringLiteral("window"), m_id}});
+        return;
+    }
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
     if (p && p != m_focused) {
         setFocusedPane(p);
@@ -4171,6 +4204,10 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     // release ends what its press started (a drag, a reported button, a
     // selection), even when the overview opened or closed in between.
     if (std::exchange(m_overviewSwallowedPress, false)) return;
+    if (m_dockPress) {
+        if (e->buttons() == Qt::NoButton) m_dockPress = false;
+        return;
+    }
     if (e->button() == Qt::LeftButton) for (auto* pane : panes()) if (pane->hasDragDrop()) pane->dragDrop()->release();
     if (m_dividerDrag && e->button() == Qt::LeftButton) {
         m_dividerDrag.reset();
@@ -4291,6 +4328,11 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     // The overview draws cards, not the layout: no hover, selection or reports.
     if (m_overview.open) return;
     const QPoint px = (e->position() * devicePixelRatio()).toPoint();
+    if (m_dockPress && e->buttons() == Qt::NoButton) m_dockPress = false; // its release went elsewhere
+    if (m_dockPress || (e->buttons() == Qt::NoButton && dockAt(px))) {
+        applyPointerShape();
+        return;
+    }
     if (m_dividerDrag && !(e->buttons() & Qt::LeftButton)) {
         m_dividerDrag.reset(); // its release went elsewhere
     }

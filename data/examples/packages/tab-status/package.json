@@ -4,11 +4,20 @@
   "api_version": 1,
   "state_version": 1,
   "entry": "main",
-  "modules": {"main": "init.luau", "segments": "segments.luau"},
+  "modules": {
+    "main": "init.luau",
+    "segments": "segments.luau"
+  },
   "config": {
-    "segments": ["cwd", "git", "command", "exit", "context"],
-    "separator": "  |  ",
-    "tab_title": true,
+    "segments": [
+      "command",
+      "exit",
+      "git",
+      "cwd",
+      "context"
+    ],
+    "powerline": true,
+    "tab_max_length": 24,
     "git": true,
     "git_changes": false,
     "git_refresh_seconds": 15

@@ -1864,6 +1864,66 @@ TEST_F(NativeWindow, ATabThatClosesLeavesAPaneMenuOpen) {
     EXPECT_TRUE(chrome->contextMenuOpen());
 }
 
+TEST_F(NativeWindow, ScriptDocksTakeCellsFromThePanesAndCanReplaceTheTabBar) {
+    auto* pane = window->focusedPane();
+    // The window settles at its size first: the grid is the baseline.
+    expectIdle(window);
+    const int rows = pane->rows(), cols = pane->cols();
+    const QVariantList line{QVariantMap{{QStringLiteral("text"), QStringLiteral("one")}, {QStringLiteral("item"), QStringLiteral("first")}},
+                            QVariantMap{{QStringLiteral("text"), QStringLiteral(" | ")}}};
+    auto dock = [&](const QString& owner, const QString& id, const QString& edge, int size, bool tabBar = false) {
+        return window->setScriptDock(owner, {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), id},
+                                             {QStringLiteral("edge"), edge}, {QStringLiteral("size"), size},
+                                             {QStringLiteral("tab_bar"), tabBar}, {QStringLiteral("lines"), QVariantList{line, line}}});
+    };
+    ASSERT_TRUE(dock(QStringLiteral("a@1"), QStringLiteral("status"), QStringLiteral("bottom"), 2).isEmpty());
+    ASSERT_TRUE(dock(QStringLiteral("a@1"), QStringLiteral("side"), QStringLiteral("left"), 10).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return pane->rows() == rows - 2 && pane->cols() == cols - 10; }))
+        << pane->rows() << "x" << pane->cols() << " from " << rows << "x" << cols;
+    expectIdle(window);
+
+    // A click on an item reaches its script. The rest of a dock is not the pane's.
+    QList<QVariantMap> clicks;
+    QObject::connect(window, &TerminalWindow::scriptDockClicked, window,
+                     [&](const QString& owner, quint32, const QVariantMap& click) { if (owner == QLatin1String("a@1")) clicks.append(click); });
+    auto press = [&](const QPointF& at) {
+        QMouseEvent down(QEvent::MouseButtonPress, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &down);
+        QMouseEvent up(QEvent::MouseButtonRelease, at, window->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &up);
+    };
+    // The bottom dock spans the window; the left one fits above it.
+    const qreal bottomRow = window->height() - 2;
+    press(QPointF(2, bottomRow));
+    press(QPointF(2, 2));
+    ASSERT_EQ(clicks.size(), 2);
+    EXPECT_EQ(clicks[0][QStringLiteral("dock")], QStringLiteral("status"));
+    EXPECT_EQ(clicks[1][QStringLiteral("dock")], QStringLiteral("side"));
+    EXPECT_EQ(clicks[1][QStringLiteral("item")], QStringLiteral("first"));
+    EXPECT_EQ(clicks[1][QStringLiteral("button")], QStringLiteral("left"));
+    press(QPointF(window->width() - 2, bottomRow)); // the status dock, past its text
+    EXPECT_EQ(clicks.size(), 2);
+
+    // With two tabs the tab bar shows, until a top dock takes its place.
+    auto* chrome = window->findChild<ChromeController*>();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    window->revealPane(pane);
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    ASSERT_TRUE(dock(QStringLiteral("b@1"), QStringLiteral("tabs"), QStringLiteral("top"), 1, true).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() == 0; }));
+    // A script's docks go with it, and the space comes back.
+    window->clearScriptOwner(QStringLiteral("b@1"));
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    window->clearScriptOwner(QStringLiteral("a@1"));
+    other->sendInput("\x04"); // its cat ends, and the tab with it
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
+    EXPECT_TRUE(waitFor([&] { return pane->rows() == rows && pane->cols() == cols; }))
+        << pane->rows() << "x" << pane->cols();
+}
+
 // --- window wave 2: pane callbacks, directories, replies, overview ---------
 
 TEST_F(NativeWindow, StatusAndContextChangesOnTheGuiThreadDoNotDeadlock) {

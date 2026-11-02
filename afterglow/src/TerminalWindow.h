@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "DockArea.h"
 #include "PaneLaunchOptions.h"
 
 #include "Pane.h"
@@ -113,6 +114,8 @@ public:
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
+    /// A script's dock or undock effect, for this window.
+    QString setScriptDock(const QString& owner, const QVariantMap& effect);
     void clearScriptOwner(const QString& owner);
     QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
     /// A script's key mode: the window's keys go to the script's on_key until
@@ -175,6 +178,8 @@ Q_SIGNALS:
     void focusedPaneChanged(Pane* pane);
     /// A key for the script that holds the key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
+    /// A click on an item of a script's dock.
+    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click);
     /// The current tab changed; @p direction is 1 toward the right.
     void tabSwitched(quint32 fromTab, quint32 toTab, int direction);
 
@@ -277,6 +282,17 @@ private:
     };
     std::vector<ScriptAppearance> m_scriptAppearance;
     quint64 m_scriptAppearanceOrder = 0;
+    /// Scripts' docked areas, and the order of their last change.
+    std::vector<std::unique_ptr<DockArea>> m_docks;
+    quint64 m_dockOrder = 0;
+    /// A press on a dock: its release and moves are the dock's too.
+    bool m_dockPress = false;
+    /// What is left of @p area once each dock that fits takes its edge;
+    /// with @p rects, where each dock goes (empty when it does not fit).
+    QRect layoutDocks(QRect area, std::vector<QRect>* rects) const;
+    void placeDocks();
+    DockArea* dockAt(const QPoint& pixel) const;
+    bool tabBarReplaced() const;
     QVariantMap scriptOverrides(Pane* pane) const;
     void cancelKeyMode();
     KeyModes::State m_keyMode;

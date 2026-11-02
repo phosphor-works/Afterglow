@@ -33,6 +33,7 @@ namespace {
 struct Recorder
 {
     QList<QVariantMap> applied;
+    QStringList owners; ///< of each owned effect, in order
     QList<QPair<QVariantMap, QString>> results;
 };
 
@@ -68,7 +69,8 @@ protected:
         };
         c.cleanup = [this](const QString& owner) { cleaned << owner; };
         c.failed = [this](const QString& owner) { failedOwners << owner; };
-        c.applyOwned = [this, apply = c.apply](const QString&, const QVariantMap& effect, std::function<void(ScriptHost::EffectResult)> complete) {
+        c.applyOwned = [this, apply = c.apply](const QString& owner, const QVariantMap& effect, std::function<void(ScriptHost::EffectResult)> complete) {
+            rec.owners.append(owner);
             if (effect.value(QStringLiteral("kind")) == QLatin1String("prompt")) {
                 pendingReply = std::move(complete);
                 return ScriptHost::EffectResult{{}, {}, {}, true};
@@ -998,6 +1000,71 @@ end }
 }
 
 
+TEST_F(ScriptHostTest, DockEffectsAreCheckedBeforeTheyReachTheWindow)
+{
+    write(user, "docks.luau", R"(
+local run = {text="A", fg=1, bg="#10A0FF", bold=true, item="tab-1"}
+return { on_bell = function(ev)
+    return {
+        afterglow.dock(ev.pane, {id="bar", edge="top", tab_bar=true, fill=0, lines={{run, {text="B"}}}}),
+        afterglow.dock(ev.pane, {id="side", edge="left", size=20, lines={}}),
+        afterglow.undock(ev.pane, "bar"),
+        afterglow.dock(ev.pane, {id="x", edge="middle", lines={}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", size=9, lines={}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", size=0, lines={}}),
+        afterglow.dock(ev.pane, {id="x", edge="bottom", tab_bar=true, lines={}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{{text="A", fg=256}}}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{{text="A", bg="red"}}}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{{text="A", blink=true}}}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{{text=5}}}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{{text="A", item=""}}}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{}, {}}}),
+        afterglow.dock(ev.pane, {id="two words", edge="top", lines={}}),
+        afterglow.dock(ev.pane, {id="x", edge="top", lines={{{text=string.rep("x", 16385)}}}}),
+    }
+end }
+)");
+    host->setEnabled(true); host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.results.size(), 15);
+    for (int i = 0; i < 3; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
+    for (int i = 3; i < 15; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    ASSERT_EQ(rec.applied.size(), 3);
+    // The window gets the checked form: colours as indices or lower-case hex.
+    const QVariantMap bar = rec.applied[0];
+    EXPECT_EQ(bar["edge"], QStringLiteral("top"));
+    EXPECT_EQ(bar["size"].toInt(), 1);
+    EXPECT_TRUE(bar["tab_bar"].toBool());
+    EXPECT_EQ(bar["fill"].toInt(), 0);
+    const QVariantMap first = bar["lines"].toList().at(0).toList().at(0).toMap();
+    EXPECT_EQ(first["fg"].toInt(), 1);
+    EXPECT_EQ(first["bg"], QStringLiteral("#10a0ff"));
+    EXPECT_EQ(first["item"], QStringLiteral("tab-1"));
+    EXPECT_TRUE(rec.applied[1]["lines"].toList().isEmpty());
+    EXPECT_EQ(rec.applied[2]["kind"], QStringLiteral("undock"));
+}
+
+TEST_F(ScriptHostTest, DockClicksReachOnlyTheDocksOwner)
+{
+    // Each script docks once, which names its owner, then answers clicks.
+    const char* source = R"(
+return {
+    on_bell = function(ev) return afterglow.dock(ev.pane, {id="bar", edge="top", lines={}}) end,
+    on_dock_click = function(ev) return afterglow.copy(ev.dock .. ":" .. ev.item .. ":" .. ev.button) end,
+}
+)";
+    write(user, "owner.luau", source);
+    write(user, "other.luau", source);
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.owners.size(), 2);
+    const QString owner = rec.owners[0];
+    rec.applied.clear();
+    host->dispatchTo(owner, "on_dock_click", 7, {{"dock", "bar"}, {"item", "tab-2"}, {"button", "middle"}, {"window", 1}});
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], QStringLiteral("bar:tab-2:middle"));
+    EXPECT_EQ(rec.owners.last(), owner);
+}
+
 TEST_F(ScriptHostTest, RetiredInstanceDropsPendingUiResultsAndCleansOwnedResources)
 {
     write(user, "retire.luau", R"(
@@ -1422,30 +1489,52 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
-TEST_F(ScriptHostTest, TabStatusTracksActivePaneAndPersistsToggle)
+// The texts of a dock's first line, separators and spacers left out.
+static QStringList dockTexts(const QVariantMap& dock)
+{
+    QStringList texts;
+    for (const QVariant& value : dock.value("lines").toList().value(0).toList()) {
+        const QString text = value.toMap().value("text").toString().trimmed();
+        if (!text.isEmpty() && text != QString(QChar(0xE0B0)) && text != QString(QChar(0xE0B2))) texts << text;
+    }
+    return texts;
+}
+
+TEST_F(ScriptHostTest, TabStatusDrawsATabLineAndPersistsToggle)
 {
     installPackage("tab-status");
-    write(user,"tab-status/config.json",R"({"git":false,"segments":["cwd","command","exit"],"separator":" / "})");
+    write(user,"tab-status/config.json",R"({"git":false,"segments":["cwd","command","exit"]})");
     paneState[7]["cwd"]="/tmp/repository";paneState[7]["context"]="";
-    paneState[8]["cwd"]="/tmp/other";paneState[8]["context"]="";
-    tabs={QVariantMap{{"active_pane",7}}};
-    auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    windows={QVariantMap{{"id",1},{"project","dev"},{"active_pane",7}}};
+    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}},
+          QVariantMap{{"id",11},{"window",1},{"index",1},{"title","vim"},{"active",false},{"active_pane",8}}};
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
     host->setEnabled(true);tick();
     ASSERT_EQ(rec.applied.size(),1);
-    EXPECT_EQ(rec.applied.last().value("text"),"repository / idle");
-    EXPECT_EQ(rec.applied.last().value("tab_title"),"repository");
-    host->dispatch("on_command_finished",7,{{"exit_code",2}});tick();
-    EXPECT_EQ(rec.applied.last().value("text"),"repository / idle / exit 2");
-    paneState[7]["command"]="make";tick();
-    EXPECT_EQ(rec.applied.last().value("text"),"repository / make");
-    tabs={QVariantMap{{"active_pane",8}}};rec.applied.clear();tick();
-    ASSERT_EQ(rec.applied.size(),2);
-    EXPECT_EQ(rec.applied.first().value("pane").toUInt(),7u);
-    EXPECT_EQ(rec.applied.first().value("text"),"");
-    EXPECT_EQ(rec.applied.last().value("text"),"other / idle");
-    ASSERT_TRUE(host->runAction("tab-status.toggle",8));
-    for(int i=0;i<6;++i)QCoreApplication::processEvents();
-    tick();EXPECT_EQ(rec.applied.last().value("text"),"");
+    const QVariantMap dock=rec.applied.last();
+    EXPECT_EQ(dock.value("kind"),"dock");
+    EXPECT_EQ(dock.value("pane").toUInt(),7u);
+    EXPECT_EQ(dock.value("edge"),"top");
+    EXPECT_TRUE(dock.value("tab_bar").toBool());
+    EXPECT_EQ(dockTexts(dock),(QStringList{"dev","1 fish","2 vim","repository"}));
+    QStringList items;
+    for (const QVariant& run : dock.value("lines").toList().value(0).toList())
+        if (run.toMap().contains("item")) items << run.toMap().value("item").toString();
+    EXPECT_EQ(items,(QStringList{"tab:10","tab:11"}));
+    // An unchanged line is not sent again.
+    tick();EXPECT_EQ(rec.applied.size(),1);
+    host->dispatch("on_command_finished",7,{{"exit_code",2}});pump();
+    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"dev","1 fish","2 vim","repository","exit 2"}));
+    // A click on a tab goes to it.
+    const QString owner=rec.owners.last();
+    host->dispatchTo(owner,"on_dock_click",7,{{"dock","tabline"},{"item","tab:11"},{"button","left"},{"window",1}});pump();
+    EXPECT_EQ(rec.applied.last().value("kind"),"focus");
+    EXPECT_EQ(rec.applied.last().value("pane").toUInt(),8u);
+    // Off, the window gets its tab bar back, and the choice survives a restart.
+    ASSERT_TRUE(host->runAction("tab-status.toggle",7));pump();
+    EXPECT_EQ(rec.applied.last().value("kind"),"undock");
+    EXPECT_EQ(rec.applied.last().value("id"),"tabline");
     host->setEnabled(false);host->setEnabled(true);rec.applied.clear();tick();
     EXPECT_TRUE(rec.applied.isEmpty());
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
@@ -1456,20 +1545,36 @@ TEST_F(ScriptHostTest, TabStatusParsesGitAndBoundsConfigurableSegments)
     installPackage("tab-status");
     write(user,"tab-status/init.luau",R"(
 local s=require("segments")
+local function texts(runs)
+ local out={}
+ for _,run in ipairs(runs) do
+  local text=run.text and string.match(run.text,"^%s*(.-)%s*$") or ""
+  if text~="" and text~="\u{e0b0}" and text~="\u{e0b2}" then table.insert(out,text) end
+ end
+ return table.concat(out,"|")
+end
 return {on_load=function()
  assert(s.git("main\n"," M file.cpp\n")=="main *")
  assert(s.git("feature\n","")=="feature")
  assert(s.git("a1b2c3d\n")=="a1b2c3d")
  assert(s.git("",nil)=="")
- local text,title=s.render({cwd="/tmp/project",command="",context="remote"},"main",1,{segments={"context","cwd","unknown","exit"},separator=" | ",tab_title=false})
- assert(text=="remote | project | exit 1" and title=="")
- local long={cwd=string.rep("x",1000),command=string.rep("y",1000)}
- local commands={}
- for i=1,8 do commands[i]="command" end
- local bounded=s.render(long,"",nil,{segments=commands})
- assert(#bounded<=500)
- local _,boundedTitle=s.render(long,"",nil,{})
- assert(#boundedTitle<=120)
+ local values=s.values({cwd="/tmp/project/",command="",context="remote"},"main",1)
+ assert(values.cwd=="project" and values.exit=="exit 1" and values.context=="remote")
+ local window={id=1,project=""}
+ local tabs={{id=3,index=0,title="",active=true}}
+ local runs=s.line(window,tabs,values,{segments={"context","cwd","unknown","exit"},powerline=false})
+ assert(texts(runs)=="1 shell|remote|project|exit 1", texts(runs))
+ for _,run in ipairs(runs) do assert(run.text~="\u{e0b0}") end
+ -- Long titles are cut, and only eight component names are read.
+ local long={{id=4,index=0,title=string.rep("y",1000),active=false}}
+ local names={}
+ for i=1,8 do names[i]="cwd" end
+ names[9]="exit"
+ local bounded=s.line(window,long,s.values({cwd="/"..string.rep("x",1000),command=""},"",2),{segments=names,tab_max_length=10})
+ for _,run in ipairs(bounded) do
+  assert(#(run.text or "")<=70)
+  assert(not run.text or not string.find(run.text,"exit"))
+ end
  return afterglow.copy("segments passed")
 end}
 )");
@@ -2752,17 +2857,18 @@ TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
     }
 
     installPackage("tab-status");
-    write(user, "tab-status/config.json", R"({"git":true,"segments":["git"],"tab_title":false})");
+    write(user, "tab-status/config.json", R"({"git":true,"segments":["git"]})");
     paneState[7]["cwd"] = repository;
     paneState[7]["context"] = "";
-    tabs = {QVariantMap{{"active_pane", 7}}};
+    windows = {QVariantMap{{"id", 1}, {"project", ""}, {"active_pane", 7}}};
+    tabs = {QVariantMap{{"id", 10}, {"window", 1}, {"index", 0}, {"title", "fish"}, {"active", true}, {"active_pane", 7}}};
     auto shows = [&](const QString& text) {
         QElapsedTimer clock;
         clock.start();
         while (clock.elapsed() < 5000) {
             host->dispatch("on_timer", 0, {{"name", "refresh"}});
             for (int i = 0; i < 20; ++i) { QCoreApplication::processEvents(); QThread::msleep(5); }
-            if (!rec.applied.isEmpty() && rec.applied.last().value("text") == text) return true;
+            if (!rec.applied.isEmpty() && dockTexts(rec.applied.last()).contains(text)) return true;
         }
         return false;
     };
@@ -2778,7 +2884,7 @@ TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
 
     // The change mark is opt-in, because git status compares the work tree.
     // That it runs the filter shows that the repository above would have run it.
-    write(user, "tab-status/config.json", R"({"git":true,"git_changes":true,"segments":["git"],"tab_title":false})");
+    write(user, "tab-status/config.json", R"({"git":true,"git_changes":true,"segments":["git"]})");
     host->reload();
     ASSERT_TRUE(shows("trunk *"));
     EXPECT_TRUE(QFile::exists(marker));

@@ -62,6 +62,7 @@ void Control::attachWindow(TerminalWindow* window)
     });
     connect(window, &TerminalWindow::paneCreated, this, [this, window](Pane* p) { attachPane(window, p); });
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
+    connect(window, &TerminalWindow::scriptDockClicked, this, &Control::scriptDockClicked);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
         Q_EMIT tabSwitched(window->focusedPane() ? window->focusedPane()->id() : 0, from, to, direction);
     });
@@ -613,6 +614,11 @@ QString Control::scriptAppearance(const QString& owner, quint32 id, const QVaria
     TerminalWindow* window = nullptr;
     auto* pane = find(id, &window);
     return pane ? window->setScriptAppearance(owner, pane, effect) : noPane(id);
+}
+QString Control::scriptDock(const QString& owner, quint32 id, const QVariantMap& effect)
+{
+    TerminalWindow* window = nullptr;
+    return find(id, &window) ? window->setScriptDock(owner, effect) : noPane(id);
 }
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {

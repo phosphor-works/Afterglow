@@ -734,6 +734,38 @@ TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
     }
 }
 
+TEST_F(Render, DocksAreDrawnAfterEveryShaderChain)
+{
+    // A window shader paints everything magenta. A dock below the pane keeps
+    // its own red: it goes into the window after the chains.
+    auto source = layerShader("magenta", "fragColor = vec4(1.0, 0.0, 1.0, 1.0);");
+    ASSERT_TRUE(source);
+    auto program = source->instance(QStringLiteral("magenta"));
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    AfterglowVt::Terminal dockTerminal(Cols, 1, host);
+    dockTerminal.resize(Cols, 1, cw, ch);
+    dockTerminal.feed("\x1b[?25l\x1b[41m\x1b[2K");
+    PaneSnapshot dockSnapshot;
+    dockSnapshot.capture(dockTerminal);
+    const QSize size(Cols * cw, (Rows + 1) * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(0, 0, Cols * cw, Rows * ch);
+    WindowRenderer::Pane dock{&dockSnapshot, {}};
+    dock.params.rect = QRect(0, Rows * ch, Cols * cw, ch);
+    dock.params.contentOrigin = dock.params.rect.topLeft();
+    renderer->setDocks({dock});
+    const QPoint inDock(cw / 2, Rows * ch + ch / 2);
+    for (bool shaded : {false, true}) {
+        ShaderChains chains;
+        if (shaded) chains.window = {program};
+        renderer->setShaderChains(chains);
+        const QImage image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        EXPECT_PIXEL(image, inDock, rgb(dockSnapshot.cells[0].bg));
+        if (shaded) EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(255, 0, 255));
+    }
+}
+
 TEST_F(Render, PersistentBufferAccumulatesAcrossFramesAndAllScopes)
 {
     terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);

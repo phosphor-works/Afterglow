@@ -105,8 +105,8 @@ with a private D-Bus session and temporary config/state, then closes its windows
     Selecting a directory offers its last-used layout first.
 
 A directory opens directly into a shell when no saved layouts exist. Save a
-layout first to exercise the multi-pane workflow. To add periodic saves and
-repository status, install the sibling [project-autosave](../project-autosave/README.md)
+layout first to exercise the multi-pane workflow. To add periodic saves and a
+tab line with repository status, install the sibling [project-autosave](../project-autosave/README.md)
 and [tab-status](../tab-status/README.md) packages.
 
 ## Reload, uninstall and recovery

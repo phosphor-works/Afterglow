@@ -28,6 +28,7 @@
 #include <cmath>
 #include <deque>
 #include <limits>
+#include <optional>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcScripts, "afterglow.scripts", QtInfoMsg)
@@ -120,6 +121,105 @@ bool integer(const QVariant& v, double low, double high)
     return number(v) && std::isfinite(d) && d == std::floor(d) && d >= low && d <= high;
 }
 
+/// A dock colour: a palette index, or "#rrggbb". Returns the checked value,
+/// or an invalid one. An absent colour is the default and stays absent.
+QVariant dockColor(const QVariant& v, bool& ok)
+{
+    if (!v.isValid()) return {};
+    if (integer(v, 0, 255)) return v.toInt();
+    const QString text = v.toString();
+    if (v.typeId() == QMetaType::QString && text.size() == 7 && text.startsWith(QLatin1Char('#'))) {
+        bool hex = false;
+        text.mid(1).toUInt(&hex, 16);
+        if (hex) return text.toLower();
+    }
+    ok = false;
+    return {};
+}
+
+/// A Luau array, which is empty when the table was: an empty table has no
+/// array part, so it arrives as an empty map.
+std::optional<QVariantList> luauArray(const QVariant& v)
+{
+    if (v.typeId() == QMetaType::QVariantList) return v.toList();
+    if (!v.isValid() || (v.typeId() == QMetaType::QVariantMap && v.toMap().isEmpty())) return QVariantList{};
+    return std::nullopt;
+}
+
+constexpr int MaxDockRows = 8;
+constexpr int MaxDockColumns = 80;
+constexpr int MaxDockLines = 256;
+constexpr int MaxDockRuns = 128;
+constexpr int MaxDockText = 16384;
+
+/// Checks a dock effect and copies its fields into @p effect in the form
+/// DockArea reads. Returns an error, or empty.
+QString checkDock(const QVariantMap& raw, QVariantMap& effect)
+{
+    const QString edge = raw.value(QStringLiteral("edge")).toString();
+    const bool side = edge == QLatin1String("left") || edge == QLatin1String("right");
+    if (!side && edge != QLatin1String("top") && edge != QLatin1String("bottom"))
+        return QStringLiteral("Dock edge must be top, bottom, left or right");
+    const QVariant size = raw.value(QStringLiteral("size"), 1);
+    if (!integer(size, 1, side ? MaxDockColumns : MaxDockRows))
+        return side ? QStringLiteral("A left or right dock is 1 to %1 columns wide").arg(MaxDockColumns)
+                    : QStringLiteral("A top or bottom dock is 1 to %1 rows high").arg(MaxDockRows);
+    const QVariant tabBar = raw.value(QStringLiteral("tab_bar"), false);
+    if (tabBar.typeId() != QMetaType::Bool) return QStringLiteral("tab_bar must be a boolean");
+    if (tabBar.toBool() && edge != QLatin1String("top")) return QStringLiteral("Only a top dock can replace the tab bar");
+    bool ok = true;
+    const QVariant fill = dockColor(raw.value(QStringLiteral("fill")), ok);
+    if (!ok) return QStringLiteral("Dock colours are palette indices 0 to 255 or \"#rrggbb\"");
+    const auto lines = luauArray(raw.value(QStringLiteral("lines")));
+    if (!lines || lines->size() > (side ? MaxDockLines : size.toInt()))
+        return QStringLiteral("Dock lines must be a list, with no more lines than the dock has rows");
+    QVariantList checkedLines;
+    int text = 0;
+    for (const QVariant& line : *lines) {
+        const auto runs = luauArray(line);
+        if (!runs || runs->size() > MaxDockRuns) return QStringLiteral("Each dock line is a list of at most %1 runs").arg(MaxDockRuns);
+        QVariantList checkedRuns;
+        for (const QVariant& value : *runs) {
+            if (value.typeId() != QMetaType::QVariantMap) return QStringLiteral("Each dock run is a table");
+            const QVariantMap run = value.toMap();
+            QVariantMap checked;
+            for (auto it = run.begin(); it != run.end(); ++it) {
+                const QString& key = it.key();
+                const QVariant& v = it.value();
+                if (key == QLatin1String("text")) {
+                    if (v.typeId() != QMetaType::QString) return QStringLiteral("Dock run text must be a string");
+                    text += int(v.toString().toUtf8().size());
+                    checked.insert(key, v.toString());
+                } else if (key == QLatin1String("fg") || key == QLatin1String("bg")) {
+                    checked.insert(key, dockColor(v, ok));
+                    if (!ok) return QStringLiteral("Dock colours are palette indices 0 to 255 or \"#rrggbb\"");
+                } else if (key == QLatin1String("bold") || key == QLatin1String("italic") || key == QLatin1String("underline")
+                           || key == QLatin1String("spacer")) {
+                    if (v.typeId() != QMetaType::Bool) return QStringLiteral("Dock run %1 must be a boolean").arg(key);
+                    checked.insert(key, v.toBool());
+                } else if (key == QLatin1String("item")) {
+                    const QString item = v.toString();
+                    if (v.typeId() != QMetaType::QString || item.isEmpty() || item.size() > 64
+                        || std::any_of(item.begin(), item.end(), [](QChar c) { return c.category() == QChar::Other_Control; }))
+                        return QStringLiteral("A dock item is a string of 1 to 64 characters");
+                    checked.insert(key, item);
+                } else {
+                    return QStringLiteral("Unknown dock run field %1").arg(key);
+                }
+            }
+            checkedRuns.append(checked);
+        }
+        checkedLines.append(QVariant(checkedRuns));
+    }
+    if (text > MaxDockText) return QStringLiteral("Dock text exceeds %1 bytes").arg(MaxDockText);
+    effect.insert(QStringLiteral("edge"), edge);
+    effect.insert(QStringLiteral("size"), size.toInt());
+    effect.insert(QStringLiteral("tab_bar"), tabBar.toBool());
+    if (fill.isValid()) effect.insert(QStringLiteral("fill"), fill);
+    effect.insert(QStringLiteral("lines"), checkedLines);
+    return {};
+}
+
 /// What a handler returned, as Luau names it.
 QString luauType(const QVariant& value)
 {
@@ -196,6 +296,8 @@ const EffectKind Kinds[] = {
     {"select", true, false, {"title"}, false},
     {"prompt", true, false, {"title", "text"}, false},
     {"status", true, false, {"text", "tab_title"}, false},
+    {"dock", true, false, {"id"}, false},
+    {"undock", true, false, {"id"}, false},
     {"override", true, false, {}, false},
     {"read_text", true, false, {"scope"}, false, {"max_bytes"}},
     {"semantic_regions", true, false, {}, false},
@@ -1104,6 +1206,15 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("Dialog text exceeds its length limit");
         if (kind == QLatin1String("status") && (str(effect, "text").size() > 512 || str(effect, "tab_title").size() > 128))
             error = QStringLiteral("Status text exceeds its length limit");
+        if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
+            const QString id = str(effect, "id");
+            if (id.isEmpty() || id.size() > 32 || std::any_of(id.begin(), id.end(), [](QChar c) {
+                    return !(c.isLetterOrNumber() && c.unicode() < 0x80) && c != QLatin1Char('-') && c != QLatin1Char('_');
+                }))
+                error = QStringLiteral("A dock id is 1 to 32 ASCII letters, digits, - or _");
+            else if (kind == QLatin1String("dock"))
+                if (const QString problem = checkDock(raw, effect); !problem.isEmpty()) error = problem;
+        }
         if (kind == QLatin1String("signals")) {
             const auto values = raw.value(QStringLiteral("values")).toList();
             QVariantList checked;

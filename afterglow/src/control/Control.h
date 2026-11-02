@@ -117,6 +117,8 @@ public:
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString scriptDialog(const QString& owner, quint32 pane, const QVariantMap& effect, ScriptReply reply);
     QString scriptAppearance(const QString& owner, quint32 pane, const QVariantMap& effect);
+    /// A dock or undock effect, in the window of @p pane.
+    QString scriptDock(const QString& owner, quint32 pane, const QVariantMap& effect);
     void clearScriptOwner(const QString& owner);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
@@ -148,6 +150,8 @@ Q_SIGNALS:
     void contextChanged(quint32 pane, const QString& context);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
+    /// A click on an item of a script's dock; @p pane is the window's focused pane.
+    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click);
     /// A window's current tab changed; @p pane is the new tab's focused pane.
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 

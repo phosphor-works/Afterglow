@@ -237,7 +237,7 @@ end
 ## Events and lifecycle
 
 Pane events include `on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell` and `on_title`.
-Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context` and `on_tab_switch`.
+Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context`, `on_tab_switch` and `on_dock_click`.
 These events contain the applicable pane and terminal snapshot.
 
 A split's `on_pane_created` also contains `split_from`, the pane it split from, and `edge`.
@@ -351,6 +351,67 @@ The latest script value for each field takes priority over configuration.
 Removal exposes the next owner's value or the configured value.
 An empty table clears the owner's values.
 Unload and pane closure remove all contributions.
+
+## Docked areas
+
+`dock(pane, spec)` puts lines of styled text at an edge of the pane's window.
+The panes get the space that is left, in whole cells.
+The shell in each pane gets the new size.
+The renderer draws the area like a pane, with the terminal font, the palette and the box-drawing and Powerline characters.
+No pane or window shader changes it.
+
+```lua
+return {
+    on_focus = function(ev)
+        return afterglow.dock(ev.pane, {id="bar", edge="top", tab_bar=true, fill=8, lines={{
+            {text=" main ", fg=0, bg=4, bold=true},
+            {text="\u{e0b0}", fg=4},
+            {spacer=true},
+            {text=" 12:30 ", fg=0, bg=2, item="clock"},
+        }}})
+    end,
+    on_dock_click = function(ev)
+        return afterglow.log(ev.item .. " " .. ev.button)
+    end,
+}
+```
+
+| Field | Value |
+| --- | --- |
+| `id` | 1 to 32 ASCII letters, digits, `-` or `_`. A second `dock` with the same `id` replaces the area. |
+| `edge` | `top`, `bottom`, `left` or `right` |
+| `size` | Rows for `top` and `bottom`, 1 to 8. Columns for `left` and `right`, 1 to 80. The default is 1. |
+| `tab_bar` | `true` draws a `top` area in place of the tab bar. The tab bar comes back when the area goes. |
+| `fill` | The background of cells that no run covers |
+| `lines` | A list of lines from the top. A line is a list of runs from the left. A `top` or `bottom` area has at most `size` lines. |
+
+| Run field | Value |
+| --- | --- |
+| `text` | The text. A control character shows as a space. Text past the edge is cut. |
+| `fg`, `bg` | A palette index from 0 to 255, or `"#rrggbb"`. Indices 0 to 15 follow the theme. Without them, the run uses the theme's default colors, and `bg` the area's `fill`. |
+| `bold`, `italic`, `underline` | `true` or `false` |
+| `item` | 1 to 64 characters. A click on the run sends `on_dock_click`. |
+| `spacer` | `true` makes an empty run that takes the cells the other runs of its line leave. Several spacers share them. A spacer has no text. |
+
+`on_dock_click` goes only to the script that owns the area.
+It contains `dock`, `item`, `button` (`left`, `middle` or `right`) and `window`.
+Its pane is the window's focused pane.
+A click on a run without an item, or on empty cells, does nothing.
+Clicks on an area never reach the panes.
+
+Areas on one edge stack from the window's edge inwards, in the order they first appeared.
+`top` and `bottom` areas take the full width. `left` and `right` areas fit between them.
+An area that would leave the panes smaller than 4 columns or 2 rows does not show.
+New text for an area keeps its place. A change of `edge`, `size` or `tab_bar` puts it last on its edge.
+`undock(pane, id)` removes the area. Unload, five failures in a row and window closure remove the owner's areas.
+
+| Limit | Value |
+| --- | --- |
+| Areas of one script in a window | 8 |
+| Areas in a window | 32 |
+| Lines of a `left` or `right` area | 256 |
+| Runs in a line | 128 |
+| Text of an area | 16,384 bytes |
 
 ## Key modes
 
@@ -522,6 +583,8 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.prompt` | `(pane: PaneRef, title: string, text: string?) -> Effect` |
 | `afterglow.status` | `(pane: PaneRef, text: string?, tab_title: string?) -> Effect` |
 | `afterglow.override` | `(pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect` |
+| `afterglow.dock` | `(pane: PaneRef, spec: DockSpec) -> Effect` |
+| `afterglow.undock` | `(pane: PaneRef, id: string) -> Effect` |
 | `afterglow.send_text` | `(pane: PaneRef, text: string) -> Effect` |
 | `afterglow.notify` | `(title: string, body: string?, pane: PaneRef?) -> Effect` |
 | `afterglow.split` | `(pane: PaneRef, direction: ("right" \| "down" \| "left" \| "up")?, command: (string \| { string })?, options: LaunchOptions?) -> Effect` |

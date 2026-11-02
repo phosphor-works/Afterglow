@@ -272,6 +272,13 @@ afterglow = {
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
     status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,
     override = function(pane, values) return {kind="override", pane=paneId(pane), values=values} end,
+    -- Lines of styled text at an edge of the pane's window. The panes get what is left.
+    dock = function(pane, spec)
+        local s = spec or {}
+        return {kind="dock", pane=paneId(pane), id=s.id, edge=s.edge, size=s.size, tab_bar=s.tab_bar,
+            fill=s.fill, lines=s.lines}
+    end,
+    undock = function(pane, id) return {kind="undock", pane=paneId(pane), id=id} end,
     semantic_regions = function(pane) return {kind="semantic_regions", pane=paneId(pane)} end,
     read_region = function(pane, region, max_bytes)
         return {kind="read_region", pane=paneId(pane), region=region, max_bytes=max_bytes or 65536}
