@@ -98,14 +98,14 @@ with tempfile.TemporaryDirectory(prefix='afterglow-desktop-') as tmp:
             action = dbus.Interface(terminal, 'org.a11y.atspi.Action')
             names = [str(action.GetName(i)) for i in range(int(dbus.Interface(terminal, P).Get('org.a11y.atspi.Action', 'NActions')))]
             # Qt's bridge names its standard menu action "Show Menu".
-            check(names[:1] == ['Show Menu'] and 'copy' in names and 'split_right' in names and 'next_tab' not in names, names)
+            check(names[:1] == ['Show Menu'] and 'Copy' in names and 'Split Right' in names and 'Next Tab' not in names, names)
             # Each entry is the name, the description and the first key binding.
-            # Qt's bridge has no localized name: the description is the palette title.
+            # The name is the palette title, which a screen reader says.
             entries = [tuple(map(str, entry)) for entry in action.GetActions()]
-            check(entries[names.index('split_right')][1] == 'Split Right', entries)
-            check(entries[names.index('copy')][2] != '', entries)
+            check(entries[names.index('Split Right')][1] == 'Split Right', entries)
+            check(entries[names.index('Copy')][2] != '', entries)
             before = [p['id'] for p in panes()]
-            check(action.DoAction(names.index('split_right')))
+            check(action.DoAction(names.index('Split Right')))
             split = wait_for(lambda: [p['id'] for p in panes() if p['id'] not in before])
             ctl('close', '--pane', split[0])
             wait_for(lambda: len(panes()) == len(before))

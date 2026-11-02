@@ -25,26 +25,26 @@ Its actions are the command palette actions that act on that pane or start from 
 
 | Group | Pane actions |
 | --- | --- |
-| Text | `copy`, `paste`, `select_all`, `search`, `copy_mode`, `show_hints`, `show_urls_open`, `show_urls_copy`, `unicode_input` |
-| Terminal | `clear_screen`, `reset`, `rename_pane`, `notify_on_finish`, `show_last_output` |
-| Scroll | `scroll_page_up`, `scroll_page_down`, `scroll_top`, `scroll_bottom`, `jump_prompt_up`, `jump_prompt_down` |
-| Layout | `split_*`, `close_pane`, `toggle_pane_zoom`, `resize_*`, `swap_*`, `focus_*` |
-| Move and open | `move_pane_to_tab`, `move_pane_to_window`, `new_tab`, `new_window` |
+| Text | Copy, Paste, Select All, Search, Keyboard Copy Mode, Select Text or File Reference, Open a URL on Screen, Copy a URL on Screen, Insert Unicode Character |
+| Terminal | Clear Screen and Scrollback, Reset Terminal, Change Pane Title, Notify When the Next Command Finishes, View Last Command Output in Pager |
+| Scroll | Scroll Page Up, Scroll Page Down, Scroll to Top, Scroll to Bottom, Jump to Previous Prompt, Jump to Next Prompt |
+| Layout | Split, Resize Pane, Swap Pane and Focus Pane in each direction, Close Pane, Toggle Pane Zoom |
+| Move and open | Move Pane to New Tab, Move Pane to New Window, New Tab, New Window |
 
-`new_tab` and `new_window` open in the directory of the pane.
+New Tab and New Window open in the directory of the pane.
 Tab, window, font, overview, shader, project and configuration actions are not pane actions.
 Use the command palette or the tab bar for them.
 
-The name of a palette action is its keybinding name, for example `split_right`.
-Its description is its title in the command palette, for example `Split Right`.
+The name of a pane action is its title in the command palette, for example `Split Right`.
+A screen reader says this name. The description is the same title.
 Its key binding is the first key that the palette shows for the action.
-Qt also gives the title as the localized name. AT-SPI does not show the localized name.
 An action runs in the pane that you select, also when another pane has the focus.
 The pane then gets the focus. Confirmations, such as the close confirmation, show as they do for a key.
 
 ### Docked areas
 
-Each [docked area](SCRIPTING.md#docked-areas) that shows is a read-only static text object under its window.
+Each [docked area](SCRIPTING.md#docked-areas) that shows is an object under its window.
+An area with items is a tool bar. An area without items is read-only static text.
 Its name is the text of the area, one line for each row.
 Each run with an `item` is a button in the area.
 Adjacent runs on one row with the same `item` are one button.

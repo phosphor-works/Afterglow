@@ -762,21 +762,23 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     ASSERT_NE(actions, nullptr);
     const QStringList names = actions->actionNames();
     EXPECT_EQ(names.value(0), QAccessibleActionInterface::showMenuAction());
-    for (const char* name : {"copy", "paste", "select_all", "search", "split_right", "split_down", "new_tab", "close_pane",
-                             "toggle_pane_zoom", "scroll_page_up"})
-        EXPECT_TRUE(names.contains(QLatin1String(name))) << name;
+    // Named by their palette titles, which a screen reader says.
+    for (Action action : {Action::Copy, Action::Paste, Action::SelectAll, Action::Search, Action::SplitRight, Action::SplitDown,
+                          Action::NewTab, Action::ClosePane, Action::TogglePaneZoom, Action::ScrollPageUp})
+        EXPECT_TRUE(names.contains(Keybinds::title(action))) << Keybinds::token(action).toStdString();
     // The tab's, the window's and the palette's own act the same from any pane.
-    for (const char* name : {"next_tab", "font_bigger", "command_palette", "close_window", "pane_overview", "end_script_key_mode"})
-        EXPECT_FALSE(names.contains(QLatin1String(name))) << name;
-    EXPECT_EQ(actions->localizedActionName(QStringLiteral("split_right")), Keybinds::title(Action::SplitRight));
-    EXPECT_EQ(actions->localizedActionName(QStringLiteral("copy")), QStringLiteral("Copy"));
-    EXPECT_EQ(actions->localizedActionDescription(QStringLiteral("close_pane")), QStringLiteral("Close Pane"));
-    EXPECT_FALSE(actions->keyBindingsForAction(QStringLiteral("copy")).isEmpty());
-    EXPECT_EQ(actions->keyBindingsForAction(QStringLiteral("copy")), window->actionShortcuts(Action::Copy));
+    for (Action action : {Action::NextTab, Action::FontBigger, Action::CommandPalette, Action::CloseWindow, Action::PaneOverview,
+                          Action::EndScriptKeyMode})
+        EXPECT_FALSE(names.contains(Keybinds::title(action))) << Keybinds::token(action).toStdString();
+    EXPECT_FALSE(names.contains(QStringLiteral("split_right")));
+    EXPECT_EQ(actions->localizedActionName(QStringLiteral("Split Right")), QStringLiteral("Split Right"));
+    EXPECT_EQ(actions->localizedActionDescription(QStringLiteral("Close Pane")), QStringLiteral("Close Pane"));
+    EXPECT_FALSE(actions->keyBindingsForAction(QStringLiteral("Copy")).isEmpty());
+    EXPECT_EQ(actions->keyBindingsForAction(QStringLiteral("Copy")), window->actionShortcuts(Action::Copy));
     EXPECT_TRUE(actions->keyBindingsForAction(QStringLiteral("next_tab")).isEmpty());
 
     // A structural action, as its keys run it.
-    actions->doAction(QStringLiteral("split_right"));
+    actions->doAction(QStringLiteral("Split Right"));
     ASSERT_TRUE(waitFor([&] { return window->panes().size() == 2; }));
     EXPECT_NE(window->focusedPane(), original);
 
@@ -787,7 +789,7 @@ TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     ASSERT_EQ(original->selectedText(), QStringLiteral("readable"));
     QGuiApplication::clipboard()->setText(QStringLiteral("before"));
     ASSERT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("before"); }));
-    actions->doAction(QStringLiteral("copy"));
+    actions->doAction(QStringLiteral("Copy"));
     EXPECT_TRUE(waitFor([] { return QGuiApplication::clipboard()->text() == QStringLiteral("readable"); }))
         << QGuiApplication::clipboard()->text().toStdString();
     EXPECT_EQ(window->focusedPane(), original);
@@ -839,6 +841,8 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
     // The dock shows from the next frame's layout.
     ASSERT_TRUE(waitFor([&] { return findDock() != nullptr; }));
     QAccessibleInterface* area = findDock();
+    // An area with buttons is a tool bar, which screen readers look inside.
+    EXPECT_EQ(area->role(), QAccessible::ToolBar);
     ASSERT_EQ(area->childCount(), 2);
     QAccessibleInterface* build = area->child(0);
     QAccessibleInterface* deploy = area->child(1);

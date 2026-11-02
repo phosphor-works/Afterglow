@@ -55,9 +55,11 @@ const QList<Action>& paneActions()
     }();
     return actions;
 }
+// An action's name is its palette title: Qt's AT-SPI bridge gives the name,
+// not the localized name, to a screen reader, as with its own "Show Menu".
 Action paneActionNamed(const QString& name)
 {
-    for (Action a : paneActions()) if (Keybinds::token(a) == name) return a;
+    for (Action a : paneActions()) if (Keybinds::title(a) == name) return a;
     return Action::None;
 }
 class AccessiblePane final : public QAccessibleObject, public QAccessibleTextInterface, public QAccessibleActionInterface {
@@ -105,7 +107,7 @@ public:
     // opens the list of the others, not a copy or a split.
     QStringList actionNames() const override {
         QStringList names{showMenuAction()};
-        for (Action a : paneActions()) names.append(Keybinds::token(a));
+        for (Action a : paneActions()) names.append(Keybinds::title(a));
         return names;
     }
     QString localizedActionName(const QString& name) const override {
@@ -285,7 +287,8 @@ public:
     }
     void setText(QAccessible::Text, const QString&) override {}
     QRect rect() const override { return m_window ? m_window->accessibleDockRect(m_dock) : QRect(); }
-    QAccessible::Role role() const override { return QAccessible::StaticText; }
+    // With buttons to press, a tool bar, which screen readers look inside.
+    QAccessible::Role role() const override { return m_dock->items().empty() ? QAccessible::StaticText : QAccessible::ToolBar; }
     QAccessible::State state() const override {
         QAccessible::State s;
         s.readOnly = true;
