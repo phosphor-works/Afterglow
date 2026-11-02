@@ -231,6 +231,8 @@ class SettingsStore : public QObject
 
 public:
     explicit SettingsStore(QObject* parent = nullptr);
+    /// A theme from the desktop's colours follows a new application palette.
+    bool eventFilter(QObject* watched, QEvent* event) override;
     SettingsStore(const QString& path, QObject* parent = nullptr);
     /// @p overrides ({ "Font": { "size": 14 } }) win over the file, which
     /// is still watched (afterglow -o Font.size=14).

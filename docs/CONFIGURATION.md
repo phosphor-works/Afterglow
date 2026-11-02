@@ -58,7 +58,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory, then the bundled themes, such as nord and afterglow-light. Use light:NAME,dark:NAME to follow the desktop. A theme replaces each color that it sets. Afterglow reads its own JSON themes, Ghostty themes and Kitty themes. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory, then the bundled themes, such as nord and afterglow-light, then the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. A theme replaces each color that it sets. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
