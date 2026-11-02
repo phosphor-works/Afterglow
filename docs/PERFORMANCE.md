@@ -236,6 +236,75 @@ An extra-cursor sequence visits each cell of each different rectangle once.
 It also compares each existing cursor with each rectangle.
 Thus the cost increases with the number of rectangles multiplied by their area.
 
+## Output throughput
+
+### Terminal core
+
+Run `afterglow_vtbench` without arguments from the build's `tools/bench` directory.
+Each case feeds 64 MiB of generated output to a 200×60 terminal, in 64 KiB chunks.
+The scrollback cases keep 10,000 lines.
+
+| Case name | Output |
+| --- | --- |
+| `ascii` | Lines of 20 to 119 random printable ASCII characters |
+| `ascii, no scrollback` | The same lines, with no scrollback |
+| `sgr colours` | Words of six letters, each in a 256-color SGR color |
+| `unicode` | Japanese, Chinese and Korean words, emoji, a ZWJ family sequence and accented Latin words |
+
+Measurement: 1 November 2026, `RelWithDebInfo`, Intel Core i7-9700K.
+`46c2cb7` is before the throughput work. Its values are the best of two runs.
+`ded14ad` is after the work. Its values are the best of three runs.
+
+| Case name | `46c2cb7` (MB/s) | `ded14ad` (MB/s) | Change |
+| --- | ---: | ---: | ---: |
+| `ascii` | 113 | 146 | +29% |
+| `ascii, no scrollback` | 215 | 219 | +2% |
+| `sgr colours` | 117 | 156 | +33% |
+| `unicode` | 45 | 63 | +40% |
+
+The changes between the two commits:
+
+- The parser reads a CSI sequence of parameters and a final byte in one loop.
+- An unused style stays interned for a time, so the next pen that uses it does not intern it again.
+- An open-addressing table finds interned styles without a heap allocation.
+- The terminal keeps the properties of 256 recently printed characters.
+- Narrow and wide characters go into plain cells without the general cell write.
+- A line that scrolls into the history gives its buffer to the new bottom line.
+- A history line that has only the default style is dropped without a read of its cells.
+
+### Comparison with other terminals
+
+[DOOM-fire-zig](https://github.com/const-void/DOOM-fire-zig) draws a full-screen fire with 256-color SGR sequences and the `▀` character.
+Each frame is one write of about 200 KiB to the terminal.
+The program counts the frames that it writes in each second.
+Thus the result shows how fast a terminal reads and parses output.
+It does not show how many frames the terminal shows on the display.
+
+Each terminal ran full screen in its own nested KWin at 1920×1080, with its default settings.
+Every terminal used DejaVu Sans Mono at 11 points.
+Each run took 15 seconds. The terminals ran in turn, three rounds.
+The program was commit `eb0631b`, built with Zig 0.17 in `ReleaseFast` mode.
+For Zig 0.17, a port uses C library calls for the terminal I/O. The port also stops the program after 15 seconds.
+
+Measurement: 1 November 2026, Afterglow `ded14ad`, Intel Core i7-9700K and NVIDIA GeForce RTX 2080.
+Another program used about two of the eight cores during all runs, with a load average of 6 to 8.
+The fonts and the window size give each terminal a different grid.
+Thus the cells per second column compares the terminals best.
+
+| Terminal | Grid | Frames per second (three runs) | Median | Cells per second |
+| --- | --- | --- | ---: | ---: |
+| Alacritty 0.17.0 | 212×112 | 493, 495, 569 | 495 | 11.8 M |
+| Afterglow `ded14ad` | 210×118 | 449, 453, 575 | 453 | 11.2 M |
+| kitty 0.49.2 | 212×112 | 451, 456, 465 | 456 | 10.8 M |
+| foot 1.28.0 | 212×112 | 338, 340, 413 | 340 | 8.1 M |
+| Ghostty 1.3.1 | 211×118 | 222, 223, 305 | 223 | 5.5 M |
+| Konsole 26.08.2 | 208×109 | 147, 150, 165 | 150 | 3.4 M |
+
+The first three terminals changed places between rounds.
+Earlier that day, before the other program started, Afterglow `fa8bbf5` gave 582, 591 and 593 frames per second.
+Alacritty gave 589, 591 and 591 frames per second in other runs before the other program started.
+That is 14.6 M and 14.0 M cells per second.
+
 ## Workloads
 
 | Case | `--cases` value | Work |
