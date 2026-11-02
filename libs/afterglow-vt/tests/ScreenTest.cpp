@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <numeric>
 #include <random>
 
 using namespace AfterglowVt;
@@ -710,4 +711,91 @@ TEST(Resize, HeightChangeKeepsTheLayoutEpoch)
     EXPECT_EQ(t.t.screen().layoutEpoch(), epoch);
     t.t.resize(12, 6, 8, 16);
     EXPECT_NE(t.t.screen().layoutEpoch(), epoch);
+}
+
+TEST(StyleTable, AnIdleStyleComesBackWithItsIdUntilEnoughOthersGo)
+{
+    StyleTable styles;
+    Style red;
+    red.fg = Color::palette(1);
+    const std::uint32_t id = styles.acquire(red);
+    styles.release(id);
+    // Idle: nothing holds it, so it is not live, but it keeps its id.
+    EXPECT_EQ(styles.liveCount(), 1u);
+    EXPECT_EQ(styles.acquire(red), id);
+    EXPECT_EQ(styles.liveCount(), 2u);
+    styles.release(id);
+
+    // Many idle styles are freed, and their ids serve new styles.
+    std::uint32_t highest = 0;
+    for (int i = 0; i < 4000; ++i) {
+        Style s;
+        s.fg = Color::rgb(std::uint8_t(i), std::uint8_t(i >> 8), 1);
+        const std::uint32_t got = styles.acquire(s);
+        highest = std::max(highest, got);
+        styles.release(got);
+    }
+    EXPECT_EQ(styles.liveCount(), 1u);
+    EXPECT_LT(highest, 4000u);
+}
+
+TEST(StyleTable, EveryHeldStyleKeepsItsIdThroughInsertsAndErasures)
+{
+    // Random acquires and releases over a few thousand styles grow the
+    // index and erase from it in every order; a held style must always be
+    // found under its own id.
+    StyleTable styles;
+    std::mt19937 random(7);
+    std::vector<Style> all(3000);
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        all[i].fg = Color::palette(std::uint8_t(i));
+        all[i].bg = Color::palette(std::uint8_t(i / 256));
+        all[i].attrs = std::uint16_t(i % 3);
+    }
+    std::vector<std::uint32_t> ids(all.size(), StyleTable::DefaultId);
+    std::vector<int> refs(all.size(), 0);
+    // Hold every style, then let go of more than the idle limit, so that the
+    // index erases entries from the runs that the held ones are in.
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        ids[i] = styles.acquire(all[i]);
+        refs[i] = 1;
+    }
+    std::vector<std::size_t> order(all.size());
+    std::iota(order.begin(), order.end(), std::size_t(0));
+    std::shuffle(order.begin(), order.end(), random);
+    for (std::size_t n = 0; n < 2000; ++n) {
+        styles.release(ids[order[n]]);
+        refs[order[n]] = 0;
+    }
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        if (refs[i] > 0) {
+            ASSERT_EQ(styles.acquire(all[i]), ids[i]);
+            styles.release(ids[i]);
+        }
+    }
+    for (int step = 0; step < 200000; ++step) {
+        const std::size_t k = random() % all.size();
+        if (refs[k] > 0 && random() % 5 < 3) {
+            styles.release(ids[k]);
+            --refs[k];
+        } else {
+            const std::uint32_t got = styles.acquire(all[k]);
+            ASSERT_TRUE(refs[k] == 0 || got == ids[k]) << "step " << step;
+            ids[k] = got;
+            ++refs[k];
+        }
+        if (step % 1000 == 0) {
+            std::size_t live = 1;
+            for (std::size_t i = 0; i < all.size(); ++i) {
+                if (refs[i] > 0) {
+                    ++live;
+                    ASSERT_TRUE(styles.get(ids[i]) == all[i]) << "step " << step;
+                    // Found through the index, not only by id.
+                    ASSERT_EQ(styles.acquire(all[i]), ids[i]) << "step " << step;
+                    styles.release(ids[i]);
+                }
+            }
+            ASSERT_EQ(styles.liveCount(), live) << "step " << step;
+        }
+    }
 }

@@ -3,6 +3,9 @@
 
 #include <AfterglowVt/Style.h>
 
+#include <bit>
+#include <utility>
+
 namespace AfterglowVt {
 
 StyleTable::StyleTable()
@@ -11,16 +14,102 @@ StyleTable::StyleTable()
     m_refs.push_back(0);
 }
 
+std::uint32_t StyleTable::hashOf(const Style& style) noexcept
+{
+    const std::uint64_t h = StyleHash{}(style);
+    return std::uint32_t(h ^ (h >> 32));
+}
+
+std::size_t StyleTable::Index::home(std::uint32_t hash) const noexcept
+{
+    // Fibonacci hashing: the top bits of the product take every input bit.
+    return std::size_t(std::uint32_t(hash * 0x9E3779B9u) >> m_shift);
+}
+
+std::uint32_t StyleTable::Index::find(const Style& style, std::uint32_t hash, const std::vector<Style>& styles) const noexcept
+{
+    if (m_slots.empty()) {
+        return DefaultId;
+    }
+    const std::size_t mask = m_slots.size() - 1;
+    for (std::size_t i = home(hash);; i = (i + 1) & mask) {
+        const Slot slot = m_slots[i];
+        if (slot.id == DefaultId || (slot.hash == hash && styles[slot.id] == style)) {
+            return slot.id;
+        }
+    }
+}
+
+void StyleTable::Index::insert(std::uint32_t hash, std::uint32_t id)
+{
+    // At most half full, so that a probe ends soon.
+    if ((m_size + 1) * 2 > m_slots.size()) {
+        grow();
+    }
+    const std::size_t mask = m_slots.size() - 1;
+    std::size_t i = home(hash);
+    while (m_slots[i].id != DefaultId) {
+        i = (i + 1) & mask;
+    }
+    m_slots[i] = {hash, id};
+    ++m_size;
+}
+
+void StyleTable::Index::erase(std::uint32_t hash, std::uint32_t id) noexcept
+{
+    if (m_slots.empty()) {
+        return;
+    }
+    const std::size_t mask = m_slots.size() - 1;
+    std::size_t i = home(hash);
+    while (m_slots[i].id != DefaultId && m_slots[i].id != id) {
+        i = (i + 1) & mask;
+    }
+    if (m_slots[i].id == DefaultId) {
+        return;
+    }
+    // Backward shift: move each later entry of the run into the hole when
+    // the hole lies between its home and its slot, so no probe stops short.
+    for (std::size_t j = (i + 1) & mask; m_slots[j].id != DefaultId; j = (j + 1) & mask) {
+        const std::size_t want = home(m_slots[j].hash);
+        if (((j - want) & mask) >= ((j - i) & mask)) {
+            m_slots[i] = m_slots[j];
+            i = j;
+        }
+    }
+    m_slots[i] = {};
+    --m_size;
+}
+
+void StyleTable::Index::grow()
+{
+    const std::size_t capacity = m_slots.empty() ? 64 : m_slots.size() * 2;
+    std::vector<Slot> old = std::exchange(m_slots, std::vector<Slot>(capacity));
+    m_shift = 32 - std::countr_zero(capacity);
+    m_size = 0;
+    for (const Slot& slot : old) {
+        if (slot.id != DefaultId) {
+            insert(slot.hash, slot.id);
+        }
+    }
+}
+
 std::uint32_t StyleTable::acquire(const Style& style)
 {
     if (style == Style{}) {
         return DefaultId;
     }
-    if (auto it = m_lookup.find(style); it != m_lookup.end()) {
-        ++m_refs[it->second];
-        return it->second;
+    const std::uint32_t hash = hashOf(style);
+    if (const std::uint32_t found = m_lookup.find(style, hash, m_styles); found != DefaultId) {
+        if (m_refs[found]++ == 0) {
+            --m_idleCount;
+        }
+        return found;
     }
 
+    if (m_free.empty() && m_styles.size() > MaxId) {
+        sweepIdle();
+    }
     std::uint32_t id;
     if (!m_free.empty()) {
         id = m_free.back();
@@ -36,18 +125,45 @@ std::uint32_t StyleTable::acquire(const Style& style)
         m_styles.push_back(style);
         m_refs.push_back(1);
     }
-    m_lookup.emplace(style, id);
+    m_lookup.insert(hash, id);
     retainLink(style.link);
     return id;
 }
 
 void StyleTable::releaseCounted(std::uint32_t id) noexcept
 {
-    if (--m_refs[id] == 0) {
-        releaseLink(m_styles[id].link);
-        m_lookup.erase(m_styles[id]);
-        m_free.push_back(id);
+    if (--m_refs[id] != 0) {
+        return;
     }
+    // A link counts against MaxLinkBytes while its style lives: it goes at once.
+    if (m_styles[id].link != 0) {
+        forget(id);
+        return;
+    }
+    ++m_idleCount;
+    m_idle.push_back(id);
+    if (m_idleCount > MaxIdle) {
+        sweepIdle();
+    }
+}
+
+void StyleTable::forget(std::uint32_t id) noexcept
+{
+    releaseLink(m_styles[id].link);
+    m_lookup.erase(hashOf(m_styles[id]), id);
+    m_free.push_back(id);
+}
+
+void StyleTable::sweepIdle() noexcept
+{
+    for (const std::uint32_t id : m_idle) {
+        // Skip a style in use again, and a second entry for one already freed.
+        if (m_refs[id] == 0 && m_lookup.find(m_styles[id], hashOf(m_styles[id]), m_styles) == id) {
+            forget(id);
+        }
+    }
+    m_idle.clear();
+    m_idleCount = 0;
 }
 
 std::uint32_t StyleTable::internLink(std::string_view uri, std::string_view id)

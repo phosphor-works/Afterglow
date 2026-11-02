@@ -125,6 +125,14 @@ public:
                         continue;
                     }
                 }
+                // Fast path: a whole CSI sequence of parameters and a final
+                // byte, as SGR and cursor moves send them.
+                if (*p == 0x1B && end - p > 2 && p[1] == '[') {
+                    if (const auto* next = csiRun(p + 2, end)) {
+                        p = next;
+                        continue;
+                    }
+                }
             }
             advance(*p++);
         }
@@ -429,6 +437,31 @@ private:
         m_dcsFinal = final;
         m_string.clear();
         m_state = m_inter.overflow ? State::DcsIgnore : State::DcsPassthrough;
+    }
+
+    /// Parses a CSI sequence from just after "ESC [" and dispatches it, as
+    /// advance() would. Returns the byte after the final byte, or null for
+    /// anything else (intermediates, controls, a sequence cut off by @p end):
+    /// the state machine then takes it again from the ESC, which clears what
+    /// this left in the parameters.
+    const std::uint8_t* csiRun(const std::uint8_t* p, const std::uint8_t* end)
+    {
+        clearSequence();
+        if (*p >= 0x3C && *p <= 0x3F) {
+            m_inter.marker = char(*p++);
+        }
+        while (p < end) {
+            const std::uint8_t b = *p++;
+            if (b >= '0' && b <= ';') {
+                param(b);
+            } else if (b >= 0x40 && b < 0x7F) {
+                dispatchCsi(b);
+                return p;
+            } else {
+                break;
+            }
+        }
+        return nullptr;
     }
 
     /// Decodes well-formed UTF-8 (and printable ASCII among it) from @p p,

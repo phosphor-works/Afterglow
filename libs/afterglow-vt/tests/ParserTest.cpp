@@ -251,6 +251,30 @@ TEST(Parser, StringsSplitAcrossFeedsMatchWholeOnes)
     EXPECT_EQ(whole.r.events.front(), "osc 2;title st");
 }
 
+TEST(Parser, CsiSplitAnywhereMatchesWholeOnes)
+{
+    // The whole-sequence fast path and the per-byte path must agree, and the
+    // fast path must leave a sequence cut off by the end of a feed, or one
+    // with intermediates, controls or an ignored byte, to the per-byte path.
+    const std::string input = "a\x1b[38:5:196;48;5;17mb\x1b[?25l\x1b[>0;2:3:1;4:1:3:2:4 q\x1b[1;5\rH"
+                              "\x1b[1?2m\x1b[m\x1b[;5H\x1b[3\x1b[2J\x1b[!pc\x1b[<1;2;3M";
+    Fixture whole;
+    whole.p.feed(input);
+    ASSERT_EQ(whole.r.events.front(), "csi 38:5:196;48;5;17m");
+    for (std::size_t split = 1; split < input.size(); ++split) {
+        Fixture parts;
+        parts.p.feed(std::string_view(input).substr(0, split));
+        parts.p.feed(std::string_view(input).substr(split));
+        EXPECT_EQ(parts.r.events, whole.r.events) << "split at " << split;
+        EXPECT_EQ(parts.r.printed, whole.r.printed) << "split at " << split;
+    }
+    Fixture bytewise;
+    for (char c : input) {
+        bytewise.p.feed(std::string_view(&c, 1));
+    }
+    EXPECT_EQ(bytewise.r.events, whole.r.events);
+}
+
 TEST(Parser, EscWithTooManyIntermediatesIsDropped)
 {
     Fixture f;

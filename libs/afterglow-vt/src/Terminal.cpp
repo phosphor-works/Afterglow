@@ -903,7 +903,11 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
     int lineY = -1;
     for (std::size_t i = 0; i < n; ++i) {
         const char32_t cp = cps[i];
-        const Unicode::Props props = (cp >= 0x20 && cp < 0x7F) ? Unicode::Props{} : Unicode::props(cp);
+        if (cp >= 0x80 && cp != m_propsCp) {
+            m_props = Unicode::props(cp);
+            m_propsCp = cp;
+        }
+        const Unicode::Props props = cp < 0x80 ? Unicode::Props{} : m_props;
         // A simple character (class Other, no emoji or conjunct rules) that
         // cannot join the cluster before it goes straight into the row;
         // everything else, and any wrapping, is the full path's.
@@ -929,7 +933,18 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
         if (m_modes.graphemeClustering) {
             m_segmenter.breaksBeforeSimple();
         }
-        scr.writeCell(*line, cur.x, cp, cur.penId, width);
+        Cell& c = line->cells[std::size_t(cur.x)];
+        if (width != 1 || c.width() != 1 || c.hasGrapheme() || c.isSpacerHead()) {
+            scr.writeCell(*line, cur.x, cp, cur.penId, width); // wide, or breaks up a wide character
+        } else {
+            // As printAscii(): a narrow character over a narrow cell.
+            if (c.styleId() != cur.penId) {
+                scr.styles().release(c.styleId());
+                scr.styles().retain(cur.penId);
+                c.setStyleId(cur.penId);
+            }
+            c.setCodepoint(cp);
+        }
         m_lastPrinted = cp;
         m_lastX = cur.x;
         m_lastY = cur.y;

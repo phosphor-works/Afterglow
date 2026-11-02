@@ -627,6 +627,11 @@ private:
     char32_t m_lastPrinted = 0;
     int m_lastX = -1;
     int m_lastY = -1;
+    // The properties of the last non-ASCII character that printCodepoints()
+    // looked up: a program that draws with one block character (a progress
+    // bar, a fire) asks for the same one for every cell.
+    char32_t m_propsCp = 0;
+    Unicode::Props m_props;
 
     // Images (kitty, sixel, iTerm2), one store per screen.
     GraphicsStore m_graphics[2];

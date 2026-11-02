@@ -130,7 +130,8 @@ public:
     }
 
     const Style& get(std::uint32_t id) const noexcept { return m_styles[id]; }
-    std::size_t liveCount() const noexcept { return m_lookup.size() + 1; }
+    /// Styles that something holds, the default included.
+    std::size_t liveCount() const noexcept { return m_lookup.size() + 1 - m_idleCount; }
 
     /// Interns an OSC 8 hyperlink for use in a Style. A link lives as long as
     /// some live style refers to it. Links with the same id and URI share an
@@ -152,6 +153,44 @@ private:
     void releaseCounted(std::uint32_t id) noexcept;
     void retainLink(std::uint32_t link) noexcept;
     void releaseLink(std::uint32_t link) noexcept;
+    void forget(std::uint32_t id) noexcept;
+    void sweepIdle() noexcept;
+
+    /// A style whose last reference goes stays interned while it is idle, so
+    /// that a pen that changes on every cell (a program that redraws the
+    /// screen in many colours) revives it instead of erasing and inserting it
+    /// again. Up to this many idle styles are kept before they are freed.
+    static constexpr std::size_t MaxIdle = 1024;
+    std::vector<std::uint32_t> m_idle; ///< may name a style more than once, or one in use again
+    std::size_t m_idleCount = 0; ///< interned styles with no reference
+
+    /// Interned style to id: open addressing with linear probing, so that a
+    /// lookup on every pen change touches one or two slots and allocates
+    /// nothing. A slot holds the hash and the id, not the style, so that the
+    /// slots of a screen full of colours stay in the first-level cache. Id 0
+    /// (the default style, never interned) marks an empty slot.
+    class Index
+    {
+    public:
+        std::uint32_t find(const Style& style, std::uint32_t hash, const std::vector<Style>& styles) const noexcept;
+        void insert(std::uint32_t hash, std::uint32_t id);
+        void erase(std::uint32_t hash, std::uint32_t id) noexcept;
+        std::size_t size() const noexcept { return m_size; }
+
+    private:
+        struct Slot
+        {
+            std::uint32_t hash = 0;
+            std::uint32_t id = DefaultId;
+        };
+        std::size_t home(std::uint32_t hash) const noexcept;
+        void grow();
+
+        std::vector<Slot> m_slots;
+        std::size_t m_size = 0;
+        int m_shift = 32;
+    };
+    static std::uint32_t hashOf(const Style& style) noexcept;
 
     std::vector<Link> m_links{Link{}}; // index 0 is "no link"
     std::vector<std::uint32_t> m_freeLinks;
@@ -161,7 +200,7 @@ private:
     std::vector<Style> m_styles;
     std::vector<std::uint32_t> m_refs;
     std::vector<std::uint32_t> m_free;
-    std::unordered_map<Style, std::uint32_t, StyleHash> m_lookup;
+    Index m_lookup;
 };
 
 } // namespace AfterglowVt
