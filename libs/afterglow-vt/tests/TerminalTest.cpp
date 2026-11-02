@@ -108,6 +108,31 @@ TEST(Terminal, CharactersThatShareACacheSlotKeepTheirOwnWidths)
     EXPECT_EQ(row.cells[5].codepoint(), U'Ā');
 }
 
+TEST(Terminal, WideCharactersOverwriteNarrowAndWideCellsCleanly)
+{
+    Term t(10, 2);
+    // Over two narrow cells, then over a wide character in the same place.
+    t.feed("abcd\r\x1b[31m\xe4\xb8\x80\x1b[32m\r\xe4\xb8\x81");
+    const Row& row = t.t.screen().row(0);
+    EXPECT_EQ(row.cells[0].codepoint(), U'丁');
+    EXPECT_EQ(row.cells[0].width(), 2);
+    EXPECT_TRUE(row.cells[1].isTail());
+    EXPECT_EQ(row.cells[0].styleId(), row.cells[1].styleId());
+    EXPECT_EQ(rowText(t.t, 0), "\xe4\xb8\x81" "cd");
+    // Red is gone with the cells that held it: default and green are left.
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 2u);
+
+    // Half over the next wide character: that one breaks into blanks.
+    t.feed("\x1b[m\r\x1b[2C\xe4\xb8\x80\xe4\xb8\x80\r\x1b[1C\xe4\xb8\x82");
+    EXPECT_EQ(row.cells[1].codepoint(), U'丂');
+    EXPECT_EQ(row.cells[1].width(), 2);
+    EXPECT_TRUE(row.cells[2].isTail());
+    EXPECT_EQ(row.cells[3].codepoint(), 0u);
+    EXPECT_EQ(row.cells[3].width(), 1);
+    EXPECT_EQ(row.cells[4].codepoint(), U'一');
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 1u);
+}
+
 TEST(Terminal, ScrollRegion)
 {
     Term t(5, 4);

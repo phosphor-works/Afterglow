@@ -930,9 +930,8 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
             m_segmenter.breaksBeforeSimple();
         }
         Cell& c = line->cells[std::size_t(cur.x)];
-        if (width != 1 || c.width() != 1 || c.hasGrapheme() || c.isSpacerHead()) {
-            scr.writeCell(*line, cur.x, cp, cur.penId, width); // wide, or breaks up a wide character
-        } else {
+        const bool plainCell = !c.hasGrapheme() && !c.isSpacerHead();
+        if (width == 1 && plainCell && c.width() == 1) {
             // As printAscii(): a narrow character over a narrow cell.
             if (c.styleId() != cur.penId) {
                 scr.styles().release(c.styleId());
@@ -940,6 +939,23 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
                 c.setStyleId(cur.penId);
             }
             c.setCodepoint(cp);
+        } else if (Cell* tail = width == 2 ? &line->cells[std::size_t(cur.x + 1)] : nullptr;
+                   tail && plainCell && !tail->hasGrapheme() && !tail->isSpacerHead() && !tail->isMulticell()
+                   && ((c.width() == 1 && tail->width() == 1) || (c.width() == 2 && tail->isTail()))) {
+            // A wide character over two narrow cells, or over one wide
+            // character: no neighbour changes, so the pair is written in place.
+            scr.styles().release(c.styleId());
+            scr.styles().release(tail->styleId());
+            c = Cell{};
+            c.setCodepoint(cp);
+            c.setStyleId(cur.penId);
+            c.setWidth(2);
+            *tail = Cell{};
+            tail->setStyleId(cur.penId);
+            tail->setWidth(0);
+            scr.styles().retain(cur.penId, 2);
+        } else {
+            scr.writeCell(*line, cur.x, cp, cur.penId, width); // breaks up a wide character or a block
         }
         m_lastPrinted = cp;
         m_lastX = cur.x;
