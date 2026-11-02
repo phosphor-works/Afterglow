@@ -12,7 +12,8 @@ wrong, and points to the skills that hold the procedures.
 
 ## Rules
 
-- **Commit and push finished work to `main` without asking.** "Finished" means built with no warnings, tested, and
+- **Land work through a pull request.** Start each change on a branch from `main`, and never push to `main`. Commit,
+  push the branch and open the PR without asking once the work is finished: built with no warnings, tested, and
   verified the way the change needs (see below). Stage files by name.
 - **Never install and never use `sudo`.** No install target and no system packages. Tell the user what you need
   and why. The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`),
