@@ -3,8 +3,10 @@
 
 #pragma once
 
+#include <QHash>
 #include <QList>
 #include <QObject>
+#include <QPair>
 #include <QPointer>
 #include <QStringList>
 #include <QVariantMap>
@@ -36,8 +38,8 @@ struct PaneInfo
     int cols = 0;
     int rows = 0;
     bool focused = false; ///< the focused pane of the active window
-    /// Where the shell runs when not here as you ("root", "deploy@prod-1");
-    /// not part of the D-Bus pane structure.
+    // The fields below are not part of the D-Bus pane structure.
+    /// Where the shell runs when not here as you ("root", "deploy@prod-1").
     QString context;
     quint32 tabId = 0; ///< stable within this process, unlike the tab's position (tab)
 };
@@ -102,8 +104,12 @@ public:
     /// Validates the complete batch before updating the anchor's pane/tab/window.
     QString signalsBatch(quint32 pane, const QString& scope, const QVariantList& values, QVariantList& updated);
     QString notify(quint32 pane, const QString& title, const QString& body);
+    /// Refuses text longer than MaxCopyLength UTF-16 units.
     QString copy(const QString& text);
-    /// http, https and mailto only: a script cannot be asked first.
+    static constexpr qsizetype MaxCopyLength = 1 << 22;
+    /// http, https and mailto only: a script cannot be asked first. Fails
+    /// when the desktop refuses the request; success does not mean that a
+    /// program opened the URL, which Qt cannot tell.
     QString openUrl(const QString& url);
     /// A keybind action by its config name (split_right, new_tab...), or a
     /// script action as "script:<script id>.<action id>".
@@ -117,7 +123,9 @@ public:
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString scriptDialog(const QString& owner, quint32 pane, const QVariantMap& effect, ScriptReply reply);
     QString scriptAppearance(const QString& owner, quint32 pane, const QVariantMap& effect);
-    /// A dock or undock effect, in the window of @p pane.
+    /// A dock effect, in the window of @p pane. An undock acts there too when
+    /// that window has the area; else, as when @p pane has moved or closed, in
+    /// the window of the newest such area whose last dock named @p pane.
     QString scriptDock(const QString& owner, quint32 pane, const QVariantMap& effect);
     void clearScriptOwner(const QString& owner);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
@@ -158,7 +166,7 @@ Q_SIGNALS:
 private:
     ProjectStore projects() const;
     void projectDialog(Pane* pane, bool save);
-    void attachPane(TerminalWindow* window, Pane* pane);
+    void attachPane(Pane* pane);
     Pane* find(quint32 id, TerminalWindow** window = nullptr) const;
     static PaneInfo describe(TerminalWindow* window, Pane* pane);
     /// Shows a window made by m_newWindow as Window.startMode asks.
@@ -172,6 +180,17 @@ private:
     QPointer<TerminalWindow> m_lastActive;
     QHash<quint32, QPair<quint32, quint32>> m_closingPanes;
     QHash<quint32, QPair<QString, QString>> m_status; ///< the state and text last sent for each pane
+    QHash<quint32, QString> m_context; ///< the context last sent for each pane
+    /// A script's area in a window, and the pane it last docked it through:
+    /// docks belong to windows, and a pane can move or close.
+    struct DockRecord
+    {
+        QString owner;
+        QString id;
+        QPointer<TerminalWindow> window;
+        quint32 pane = 0;
+    };
+    QList<DockRecord> m_docks;
 };
 
 } // namespace Afterglow

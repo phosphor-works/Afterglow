@@ -64,7 +64,8 @@ The result event contains a new `terminal` snapshot.
 `afterglow.await_all(effects)` applies up to 16 effects in order and waits for all of them.
 It returns their result events in the same order. Each event has `ok`, `data` and `error`.
 Use it to run processes or queries together.
-The list must not contain `nil` entries. A list with a gap causes an error.
+The list must have only the keys 1 to n, with no `nil` entries.
+A list with a gap or another key, such as the `n` of `table.pack`, causes an error.
 
 ```lua
 local results = afterglow.await_all({
@@ -99,7 +100,7 @@ The [project navigator](../data/examples/packages/project-navigator/init.luau) r
 Helpers create effects. Return an effect or a list of effects from a handler to apply them.
 Use `afterglow.await` when the handler needs the result.
 `afterglow.request(id, effect)` requests an `on_result` callback instead.
-Request IDs must contain 1–64 characters.
+Request IDs must contain 1 to 64 characters.
 Use different IDs for requests that require separate tracking.
 IDs that start with `afterglow.await:` are reserved for `afterglow.await`.
 The `exec` and `read_file` helpers use the task name as the request ID.
@@ -148,6 +149,12 @@ For a generic `action`, it does not confirm that a process or a dialog finished.
 `exec`, `select` and `prompt` deliver their results when the process or the dialog finishes.
 Use direct creation helpers when you need a returned pane ID.
 
+`copy` fails when the text is longer than 4,194,304 UTF-16 units. Afterglow does not cut it.
+`open_url` opens only `http`, `https` and `mailto` URLs. Another scheme fails.
+`open_url` also fails when the desktop cannot take the request.
+Success does not confirm that a program opened the URL.
+These failures return `operation_failed`.
+
 Replacement, removal or disable cancels outstanding results.
 An unchanged script keeps its VM and pending results during reload.
 Effect lists execute in order. They are not transactions.
@@ -163,7 +170,8 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Event handler, `on_result`, `on_unload` | 20 ms | The call fails |
 | User action, package `on_load` and `migrate` | 100 ms | The call fails |
 | Handler failures in a row | 5 | The script is disabled |
-| Handler calls (events, timers, watchers) | 64 each second | Afterglow drops the call |
+| `on_timer` and `on_file_changed` calls | 64 each second | Afterglow drops the call |
+| Other event handler calls (see the notes) | 64 each second | Afterglow drops the call |
 | Effects in one returned list | 64 | No effect applies |
 | Values in a returned table, nested tables included | 262,144 | The call fails. A handler that waits for these effects stops |
 | Applied effects | 20 each second | `rate_limited` |
@@ -180,8 +188,13 @@ A list with more than 64 effects applies nothing and causes an error.
 A disabled script stays disabled until its source or package configuration changes.
 Turning scripting off and on again also loads it again.
 Refused operations also count toward result limits.
-`on_key` calls do not count toward the handler call limit.
-`sleep`, `cancel` and `end_key_mode` do not count toward the effect limit.
+`on_load`, `on_key` and `on_dock_click` calls do not count toward a handler call limit.
+Timers and watchers have their own limit, so events cannot use it up.
+A dropped one-shot timer does not fire again.
+A repeating timer fires at its next interval.
+A dropped `on_file_changed` call is not sent again.
+The next change to the file sends a new one.
+`sleep`, `cancel`, `end_key_mode` and `undock` do not count toward the effect limit.
 Structural effects create, close or move panes, tabs or windows.
 They are `split`, `new_tab`, `new_window`, `close`, `move_pane`, `detach_tab`, `open_directory` and `open_project`.
 Generic actions that do the same use the same structural budget.
@@ -198,6 +211,7 @@ Changing the snapshot does not change the terminal.
 Afterglow captures the snapshot before dispatch.
 A queued event can describe an earlier command than the snapshot.
 `ev.state` in `on_status` remains the program status string.
+When a program clears its last status, or the terminal resets, `ev.state` is `idle` and `ev.text` is empty.
 
 | Record | Fields |
 | --- | --- |
@@ -266,7 +280,7 @@ A handler that continues after `afterglow.await` keeps the limit of its handler 
 
 ## Tasks
 
-Task names contain 1–64 characters and belong to one script instance.
+Task names contain 1 to 64 characters and belong to one script instance.
 Limits are 16 active tasks for each script and 128 in total.
 Reusing an active name returns `busy`.
 `afterglow.cancel(name)` cancels the owned timer, watcher or job.
@@ -354,11 +368,13 @@ Unload and pane closure remove all contributions.
 
 ## Docked areas
 
-`dock(pane, spec)` puts lines of styled text at an edge of the pane's window.
+`dock(pane, spec)` puts a docked area (a dock) of styled text at an edge of the pane's window.
 The panes get the space that is left, in whole cells.
 The shell in each pane gets the new size.
 The renderer draws the area like a pane, with the terminal font, the palette and the box-drawing and Powerline characters.
-No pane or window shader changes it.
+No shader changes it.
+Each window has its own areas. The same `id` in another window is a different area.
+`dock` acts on the window that holds `pane` when Afterglow applies the effect.
 
 ```lua
 return {
@@ -378,40 +394,80 @@ return {
 
 | Field | Value |
 | --- | --- |
-| `id` | 1 to 32 ASCII letters, digits, `-` or `_`. A second `dock` with the same `id` replaces the area. |
-| `edge` | `top`, `bottom`, `left` or `right` |
+| `id` | Required. 1 to 32 ASCII letters, digits, `-` or `_`. A second `dock` with the same `id` replaces the area. |
+| `edge` | Required. `top`, `bottom`, `left` or `right`. |
 | `size` | Rows for `top` and `bottom`, 1 to 8. Columns for `left` and `right`, 1 to 80. The default is 1. |
-| `tab_bar` | `true` draws a `top` area in place of the tab bar. The tab bar comes back when the area goes. |
-| `fill` | The background of cells that no run covers |
-| `lines` | A list of lines from the top. A line is a list of runs from the left. A `top` or `bottom` area has at most `size` lines. |
+| `tab_bar` | `true` draws a `top` area in place of the tab bar. The default is `false`. Only a `top` area can have `true`. |
+| `fill` | A palette index from 0 to 255, or `"#rrggbb"`. It is the background of the complete area. Without it, the area uses the theme's background. Below a `Window.backgroundOpacity` of 1, the fill has the same opacity as the pane background. |
+| `lines` | A list of lines from the top. A line is a list of runs from the left. Without `lines`, the area is empty. |
+
+A `top` or `bottom` area has at most `size` lines.
+Lines past the bottom of a `left` or `right` area do not show.
 
 | Run field | Value |
 | --- | --- |
-| `text` | The text. A control character shows as a space. Text past the edge is cut. |
-| `fg`, `bg` | A palette index from 0 to 255, or `"#rrggbb"`. Indices 0 to 15 follow the theme. Without them, the run uses the theme's default colors, and `bg` the area's `fill`. |
+| `text` | The text. A control character shows as a space. Text past the edge is cut. A wide character that does not fit shows as an empty cell in the colors of its run. |
+| `fg`, `bg` | A palette index from 0 to 255, or `"#rrggbb"`. Indices 0 to 15 follow the theme. |
 | `bold`, `italic`, `underline` | `true` or `false` |
-| `item` | 1 to 64 characters. A click on the run sends `on_dock_click`. |
-| `spacer` | `true` makes an empty run that takes the cells the other runs of its line leave. Several spacers share them. A spacer has no text. |
+| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. |
+| `spacer` | `true` makes an empty run that takes the cells the other runs of its line leave. Several spacers share them. |
+
+Without `fg`, a run uses the theme's foreground color. Without `bg`, it uses the area's `fill`.
+A spacer cannot have `text`.
+A run that takes no cells, such as a run with empty text, cannot be clicked.
+A field that is not in these tables refuses the effect with `invalid_effect`.
+A value of the wrong type or outside its range also refuses the effect with `invalid_effect`.
 
 `on_dock_click` goes only to the script that owns the area.
-It contains `dock`, `item`, `button` (`left`, `middle` or `right`) and `window`.
-Its pane is the window's focused pane.
-A click on a run without an item, or on empty cells, does nothing.
-Clicks on an area never reach the panes.
+Afterglow sends it when a mouse button goes down on a run with an `item`.
 
-Areas on one edge stack from the window's edge inwards, in the order they first appeared.
-`top` and `bottom` areas take the full width. `left` and `right` areas fit between them.
-An area that would leave the panes smaller than 4 columns or 2 rows does not show.
-New text for an area keeps its place. A change of `edge`, `size` or `tab_bar` puts it last on its edge.
-`undock(pane, id)` removes the area. Unload, five failures in a row and window closure remove the owner's areas.
-
-| Limit | Value |
+| Event field | Value |
 | --- | --- |
-| Areas of one script in a window | 8 |
-| Areas in a window | 32 |
-| Lines of a `left` or `right` area | 256 |
-| Runs in a line | 128 |
-| Text of an area | 16,384 bytes |
+| `dock` | The `id` of the area |
+| `item` | The `item` of the run |
+| `button` | `left`, `middle` or `right` |
+| `window` | The window ID |
+| `pane` | The focused pane of the window, if the window has one |
+
+Other mouse buttons send no event.
+A click on a run without an item, or on empty cells, does nothing.
+Clicks and the mouse wheel on an area never reach the panes.
+This is also true while the pane overview is open.
+A click on an item then sends `on_dock_click`, and the overview stays open.
+A prompt that is open over the overview takes the click first.
+An area always reads from left to right. `Terminal.bidi` does not apply to areas.
+
+Areas on one edge stack inward from the window's edge, in the order that they were placed.
+`tab_bar` areas are the outermost areas on the top edge, where the tab bar is.
+A `top` area without `tab_bar` shows below the tab bar.
+`top` and `bottom` areas take the full width. `left` and `right` areas fit between them.
+A `tab_bar` area shows for every `Window.tabBar` value, also in a window with one tab.
+An area that would leave the panes smaller than 4 columns or 2 rows does not show. Its `dock` effect still succeeds.
+New text for an area keeps its place. A change of `edge`, `size` or `tab_bar` puts it last on its edge.
+
+`undock(pane, id)` removes the area from the pane's window.
+When that window has no area with this `id`, or the pane has closed, `undock` looks elsewhere.
+It removes an area whose most recent `dock` named that pane. When several did, the newest goes.
+An `id` that the script has no area for is not an error.
+If the pane has closed and no such area names it, the result is `no_pane`.
+The tab bar shows again when the last `tab_bar` area is removed.
+A `tab_bar` area that does not show leaves the tab bar in place.
+Successful replacement, removal and disable of the script remove all of its areas.
+Five handler failures in a row disable the script, so they also remove its areas.
+When a window closes, its areas close with it.
+
+| Limit | Value | At the limit |
+| --- | --- | --- |
+| Areas of one script in a window | 8 | `rate_limited` |
+| Areas in a window | 32 | `rate_limited` |
+| Lines of a `left` or `right` area | 256 | `invalid_effect` |
+| Runs in a line | 128 | `invalid_effect` |
+| Runs in an area | 1,024 | `invalid_effect` |
+| UTF-8 text and items of an area | 16,384 bytes | `invalid_effect` |
+
+A new area past a count limit gets `rate_limited`. Remove an area to make room.
+New text for an existing area is not refused at the count limits.
+The [tab line package](../data/examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area and switches tabs on a click.
 
 ## Key modes
 
@@ -435,7 +491,7 @@ With Ctrl, `key` is the letter, and `text` is empty.
 Ignore the keys that the script does not use.
 `end_key_mode()` gives the keyboard back. It works also when the effect budget is spent.
 A handler error, disable, replacement or removal of the script also ends its key mode.
-The `end_script_key_mode` key binding always ends a key mode. The default is Ctrl+Shift+Escape.
+The `end_script_key_mode` keybinding always ends a key mode. The default is Ctrl+Shift+Escape.
 The script does not receive that key.
 Key releases are not reported.
 
@@ -499,11 +555,11 @@ return afterglow.split(ev.pane, "left", {"fish"}, {
 `read_text` accepts `screen`, `scrollback`, `last-output` and `selection`.
 The default scope is `last-output`.
 Results contain `text`, `available` and `truncated`.
-`max_bytes` limits UTF-8 output to 1–1048576 bytes. The default is 65536 bytes.
+`max_bytes` limits UTF-8 output to 1 to 1,048,576 bytes (1 MiB). The default is 65,536 bytes.
 Another value is refused with `invalid_effect`.
 A missing selection or unavailable region returns `available=false`.
 
-`semantic_regions` returns up to 1024 retained shell regions in chronological order.
+`semantic_regions` returns up to 1,024 retained shell regions in chronological order.
 Afterglow removes a region when a line deletion, a scroll in a scroll region or a resize destroys its start row.
 It also removes a completed region when its end row is destroyed.
 A start row that leaves the history does not remove the region (see `start_trimmed`).
@@ -540,7 +596,9 @@ The [creation example](../data/examples/scripts/create-and-title.luau) uses laun
 `status` is `active`, `disabled`, `last-good`, `failed` or `superseded`.
 An error in a package module names the module file and its line.
 Timing fields are `last_call_ms`, `max_call_ms` and `total_call_ms`.
-Diagnostics also count dropped callbacks, effects and results.
+Diagnostics also count what Afterglow dropped.
+`dropped_callbacks` counts calls dropped at either handler call limit.
+`dropped_effects` and `dropped_results` count dropped effects and results.
 `waiting` is the number of handlers that wait for a result.
 Timing measures VM handler execution, not asynchronous process duration.
 Deferred failures count when the operation completes.

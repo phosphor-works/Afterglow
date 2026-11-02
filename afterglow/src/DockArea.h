@@ -33,12 +33,21 @@ public:
     int size() const noexcept { return m_size; }
     /// Shown in place of the tab bar (top edge only).
     bool replacesTabBar() const noexcept { return m_tabBar; }
-    /// The order docks on one edge stack in, from the window's edge inwards.
+    /// The order docks on one edge stack in, from the window's edge inward:
+    /// the order of the last change of place.
     quint64 order() const noexcept { return m_order; }
 
+    /// What a setContent() call changed.
+    enum class Change {
+        None, ///< the same effect again: nothing to draw
+        Content, ///< new text or fill in the same place
+        Place, ///< the first content, or a new edge, size or tab bar
+    };
     /// Takes a checked dock effect: edge, size, tab_bar, fill and lines.
-    /// Returns whether the area's place changed (edge, size or tab bar).
-    bool setContent(const QVariantMap& effect, quint64 order);
+    /// A new place takes @p order; new content keeps the old one.
+    Change setContent(const QVariantMap& effect, quint64 order);
+    /// The panes' terminal options. The area keeps its own scrollback, bidi
+    /// and background on top of them.
     void setOptions(const AfterglowVt::TerminalOptions& options);
     /// Places the area at @p rect, framebuffer pixels, in whole cells.
     void setRect(const QRect& rect, int cellWidth, int cellHeight);
@@ -48,6 +57,8 @@ public:
     const AfterglowRender::PaneSnapshot& snapshot();
     /// The item of the run under @p point (framebuffer pixels), or empty.
     QString itemAt(const QPoint& point) const;
+    /// The text as drawn, one line for each row, for accessibility.
+    const QString& text() const noexcept { return m_text; }
 
 private:
     struct NullHost : AfterglowVt::ITerminalHost
@@ -59,6 +70,8 @@ private:
         int row, from, to; ///< columns [from, to)
         QString item;
     };
+    /// Gives the terminal the panes' options with the area's own on top.
+    void applyOptions();
     void draw();
 
     QString m_owner;
@@ -72,11 +85,16 @@ private:
     QRect m_rect;
     int m_cellWidth = 1;
     int m_cellHeight = 1;
+    /// The columns that show. The terminal has at least 2, so a dock 1
+    /// column wide lays its text out in fewer columns than the terminal has.
+    int m_columns = 1;
+    AfterglowVt::TerminalOptions m_options; ///< the panes' options
     NullHost m_host;
     AfterglowVt::Terminal m_terminal;
     AfterglowRender::PaneSnapshot m_snapshot;
     bool m_stale = true;
     std::vector<Hit> m_hits;
+    QString m_text;
 };
 
 } // namespace Afterglow

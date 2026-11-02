@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
-#include "DockArea.h"
 #include "PaneLaunchOptions.h"
 
 #include "Pane.h"
@@ -30,7 +29,6 @@
 #include <unordered_map>
 #include <vector>
 
-class QQmlEngine;
 
 namespace AfterglowRender {
 class GpuDevice;
@@ -58,9 +56,17 @@ struct WindowOptions
 
 class ChromeController;
 class ChromeLayer;
+class DockArea;
 class Pane;
 class ScriptHost;
 class ShaderLibrary;
+
+/// At most @p limit UTF-16 units of @p text, without splitting a surrogate pair.
+inline QString textPrefix(const QString& text, qsizetype limit)
+{
+    if (text.size() <= limit) return text;
+    return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
+}
 
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
@@ -78,6 +84,9 @@ public:
     QAccessibleInterface* accessibleChromeFocus() const;
     QRect accessiblePaneRect(Pane*) const;
     QRect accessibleCellRect(Pane*, AfterglowVt::SelectionPoint) const;
+    /// The scripts' docks that show, and where (global logical pixels).
+    QList<const DockArea*> accessibleDocks() const;
+    QRect accessibleDockRect(const DockArea*) const;
     /// Switches to @p pane's tab, focuses it and raises the window.
     void revealPane(Pane* pane);
 
@@ -244,8 +253,14 @@ private:
     void runTabMenuItem(int id);
     int tabOf(const Pane* pane) const;
     /// Height of the tab bar in pixels with @p tabCount tabs (the current
-    /// count when negative); 0 when hidden by its configured policy.
+    /// count when negative); 0 when hidden by its configured policy or
+    /// replaced by a script's tab_bar dock.
     int tabBarHeight(int tabCount = -1) const;
+    /// The window in pixels, before the renderer has a size too.
+    QSize windowPixels() const;
+    /// The window below the tab bar, in pixels, with @p tabCount tabs (the
+    /// current count when negative): what the docks and panes share.
+    QRect windowArea(int tabCount = -1) const;
     /// Where the current tab's panes are laid out, in pixels, with
     /// @p tabCount tabs (the current count when negative).
     QRect paneArea(int tabCount = -1) const;
@@ -282,16 +297,31 @@ private:
     };
     std::vector<ScriptAppearance> m_scriptAppearance;
     quint64 m_scriptAppearanceOrder = 0;
-    /// Scripts' docked areas, and the order of their last change.
+    /// Scripts' docked areas, and the last order given to a change of place.
     std::vector<std::unique_ptr<DockArea>> m_docks;
     quint64 m_dockOrder = 0;
-    /// A press on a dock: its release and moves are the dock's too.
-    bool m_dockPress = false;
+    /// The buttons pressed on a dock: their releases, and the moves while
+    /// only they are held, are the dock's too.
+    Qt::MouseButtons m_dockButtons;
     /// What is left of @p area once each dock that fits takes its edge;
-    /// with @p rects, where each dock goes (empty when it does not fit).
-    QRect layoutDocks(QRect area, std::vector<QRect>* rects) const;
-    void placeDocks();
+    /// with @p rects, where each dock goes (empty when it does not fit);
+    /// with @p tabBarPlaced, whether a tab_bar dock fits.
+    QRect layoutDocks(QRect area, std::vector<QRect>* rects, bool* tabBarPlaced = nullptr) const;
+    /// Places the docks for the window's size: returns the panes' area.
+    QRect placeDocks();
+    std::size_t m_shownDocks = 0; ///< the docks that showed at the last placeDocks
+    /// The panes' terminal options, for the docks too.
+    void setDockOptions(const AfterglowVt::TerminalOptions& options);
     DockArea* dockAt(const QPoint& pixel) const;
+    /// A press on a dock: sends its item's click. False when no dock is there.
+    bool pressDock(QMouseEvent* e);
+    /// Removes @p owner's docks.
+    void eraseDocks(const QString& owner);
+    /// A dock came, went or moved: the next frame lays out the panes and
+    /// the chrome again (finishDockMoves), once for every change before it.
+    bool m_docksMoved = false;
+    void finishDockMoves();
+    /// A tab_bar dock shows, in place of the tab bar.
     bool tabBarReplaced() const;
     QVariantMap scriptOverrides(Pane* pane) const;
     void cancelKeyMode();
@@ -437,7 +467,6 @@ private:
 
     AfterglowRender::GpuDevice& m_device;
     SettingsStore& m_settings;
-    QQmlEngine& m_engine;
     ShaderLibrary& m_shaders;
     ShaderControls m_shaderControls;
     QVariantMap m_sceneSample;
@@ -513,7 +542,7 @@ private:
     QPointer<Pane> m_wheelPane; ///< the pane m_wheelAccumulator belongs to
     Qt::MouseButtons m_reportedButtons;
     QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
-    bool m_overviewSwallowedPress = false; ///< the overview took a press: it takes its release
+    Qt::MouseButtons m_overviewButtons; ///< the overview took their presses: it takes their releases
 
     // Links under the pointer (while the link modifier is held).
     QPointF m_pointer;

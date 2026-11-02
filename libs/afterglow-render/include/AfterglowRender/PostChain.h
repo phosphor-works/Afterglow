@@ -219,7 +219,8 @@ public:
 
     /// Records the shader passes after the grid pass. Returns with the final
     /// pass on @p swapTarget begun and drawn, so the caller can add the
-    /// chrome before ending it. Window passes clear to @p clear (premultiplied).
+    /// docks and the chrome before ending it. Window passes clear to @p clear
+    /// (premultiplied).
     void record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes, const ShaderRegionState& window,
                 const ShaderFrameTime& time, QRhiRenderTarget* swapTarget, QRhiRenderPassDescriptor* swapPass,
                 const QColor& clear);

@@ -133,9 +133,11 @@ For `NewTab` and `CreateWindow`, an empty working directory uses the `Window.wor
 | `StatusChanged` | `u` pane, `s` state, `s` text. Sent when the state or the text changes. |
 | `FocusChanged` | `u` pane |
 | `UserVarChanged` | `u` pane, `s` name, `s` value |
-| `ContextChanged` | `u` pane, `s` context, such as `root` or `deploy@prod-1` |
+| `ContextChanged` | `u` pane, `s` context, such as `root` or `deploy@prod-1`. Sent when the context changes. |
 
 The states of `StatusChanged` are `idle`, `working`, `done`, `blocked` and `error`.
+When a program clears its last status, or the terminal resets, the state is `idle` and the text is empty.
+An empty context means that Afterglow knows of no remote, elevated or container context for the pane.
 
 ## Limits
 

@@ -311,7 +311,7 @@ If anything looks wrong, fix it before proceeding.
 
 ### 8. Commit & Push (PR/branch scopes only)
 
-For PR or branch scope: stage, commit (`fix(audit): pass N — <summary>`), push.
+For PR or branch scope: stage, commit with a subject that follows the CLAUDE.md commit rule (an imperative sentence in sentence case, with no prefix and no full stop), push.
 For uncommitted local scope: skip — leave fixes uncommitted.
 
 #### VERIFY THE MESSAGE AGAINST THE DIFF (BINDING)

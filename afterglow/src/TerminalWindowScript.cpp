@@ -51,7 +51,7 @@ void TerminalWindow::finishScriptDialog(bool accepted, const QString& value)
             if (item.toMap().value(QStringLiteral("id")).toString() == value) { data = item.toMap(); break; }
         }
         if (data.isEmpty()) error = QStringLiteral("Dialog canceled");
-    } else data.insert(QStringLiteral("text"), value.left(4096));
+    } else data.insert(QStringLiteral("text"), textPrefix(value, 4096));
     if (pending.reply) pending.reply(error, data);
     scheduleRender();
 }
@@ -204,7 +204,7 @@ QString TerminalWindow::startScriptKeyMode(const QString& owner, Pane* pane, con
         m_unicodeInput.reset();
         showUnicodeInput();
     }
-    m_scriptKeyMode = ScriptKeyMode{owner, label.left(160), pane, m_overview.open};
+    m_scriptKeyMode = ScriptKeyMode{owner, textPrefix(label, 160), pane, m_overview.open};
     updateKeyMode();
     return {};
 }
@@ -320,7 +320,7 @@ void TerminalWindow::clearScriptOwner(const QString& owner)
     m_shaderControls.clearOwner(owner);
     if (m_scriptDialog && m_scriptDialog->owner == owner) finishScriptDialog(false, {});
     std::erase_if(m_scriptAppearance, [&](const auto& item) { return item.owner == owner; });
-    if (std::erase_if(m_docks, [&](const auto& dock) { return dock->owner() == owner; }) && m_splits) relayout();
+    eraseDocks(owner);
     updateChrome(); scheduleRender();
 }
 }

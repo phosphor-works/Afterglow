@@ -115,17 +115,19 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                                                std::function<void(ScriptHost::EffectResult)> complete) -> ScriptHost::EffectResult {
         const auto kind = e.value(QStringLiteral("kind")).toString();
         const auto pane = e.value(QStringLiteral("pane")).toUInt();
-        // A dialog or key mode is refused because another holds the window,
-        // or because the pane has just gone.
-        auto refusal = [&control, pane](const QString& error) {
-            return error.isEmpty() ? QString() : control.paneInfo(pane) ? QStringLiteral("busy") : QStringLiteral("no_pane");
+        // A refusal for a pane that has gone is no_pane, as everywhere else.
+        // Only the error on a live pane depends on the kind.
+        auto code = [&control, pane](const QString& error, const QString& live) {
+            return error.isEmpty() ? QString() : control.paneInfo(pane) ? live : QStringLiteral("no_pane");
         };
+        // A dialog or key mode is refused because another holds the window.
+        auto refusal = [&code](const QString& error) { return code(error, QStringLiteral("busy")); };
         if (kind == QLatin1String("shaders") || kind == QLatin1String("shader_parameters")
             || kind == QLatin1String("shader_presets") || kind == QLatin1String("shader_preset")
             || kind == QLatin1String("save_shader_preset") || kind == QLatin1String("scene_state")) {
             QVariantMap data;
             const auto error = control.scriptShader(owner, pane, e, data);
-            return {error, data, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+            return {error, data, code(error, QStringLiteral("operation_failed"))};
         }
         if (kind == QLatin1String("select") || kind == QLatin1String("prompt")) {
             const auto error = control.scriptDialog(owner, pane, e, [complete = std::move(complete)](QString error, QVariantMap data) {
@@ -142,12 +144,14 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             return {};
         }
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
+            // The window refuses a dock only past its count limits: a
+            // capacity, which tasks also report as rate_limited.
             const auto error = control.scriptDock(owner, pane, e);
-            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+            return {error, {}, code(error, QStringLiteral("rate_limited"))};
         }
         if (kind == QLatin1String("status") || kind == QLatin1String("override")) {
             const auto error = control.scriptAppearance(owner, pane, e);
-            return {error, {}, error.isEmpty() ? QString() : QStringLiteral("operation_failed")};
+            return {error, {}, code(error, QStringLiteral("operation_failed"))};
         }
         return apply(e);
     };

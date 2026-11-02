@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QObject>
 #include <QPointF>
+#include <QRectF>
 #include <QStringList>
 #include <QVariantList>
 
@@ -31,6 +32,7 @@ class ChromeController : public QObject
     Q_PROPERTY(QColor badColor READ badColor NOTIFY themeChanged)
     Q_PROPERTY(int currentTab READ currentTab NOTIFY tabsChanged)
     Q_PROPERTY(int tabBarHeight READ tabBarHeight NOTIFY tabsChanged)
+    Q_PROPERTY(QRectF paneArea READ paneArea NOTIFY paneAreaChanged)
     Q_PROPERTY(QVariantList actions READ actions NOTIFY actionsChanged)
     Q_PROPERTY(bool paletteOpen READ paletteOpen WRITE setPaletteOpen NOTIFY paletteOpenChanged)
     Q_PROPERTY(bool searchOpen READ searchOpen WRITE setSearchOpen NOTIFY searchOpenChanged)
@@ -75,6 +77,10 @@ public:
     int currentTab() const { return m_currentTab; }
     int tabBarHeight() const { return m_tabBarHeight; }
     void setTabs(const QStringList& titles, int current, int barHeight);
+    /// Where the panes are, in logical pixels: the window less the tab bar
+    /// and the scripts' docks.
+    QRectF paneArea() const { return m_paneArea; }
+    void setPaneArea(const QRectF& area) { if (m_paneArea != area) { m_paneArea = area; Q_EMIT paneAreaChanged(); } }
     /// Per tab: { state, progress, text, priority } of its most pressing
     /// program status, or an empty map.
     QVariantList tabStatus() const { return m_tabStatus; }
@@ -183,6 +189,7 @@ public:
 
 Q_SIGNALS:
     void tabsChanged();
+    void paneAreaChanged();
     void tabStatusChanged();
     void tabContextsChanged();
     void urlHintsChanged();
@@ -240,6 +247,7 @@ private:
     QColor m_badColor{Qt::red};
     int m_currentTab = 0;
     int m_tabBarHeight = 0;
+    QRectF m_paneArea;
     QVariantList m_actions;
     bool m_paletteOpen = false;
     bool m_searchOpen = false;

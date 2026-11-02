@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "TerminalWindow.h"
+#include "DockArea.h"
 #include <QQuickWindow>
 #include <QQuickItem>
 #include "desktop/FileDrop.h"
@@ -154,10 +155,7 @@ QString sanitizedText(const QString& s, qsizetype limit)
             out.append(c);
         }
     }
-    if (out.size() > limit) {
-        out.truncate(out.at(limit).isLowSurrogate() ? limit - 1 : limit);
-    }
-    return out;
+    return textPrefix(out, limit);
 }
 
 /// The key's place on the keyboard, the same for its press, repeats and release.
@@ -188,7 +186,6 @@ quint32 s_nextWindowId = 1;
 TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     : m_device(services.device)
     , m_settings(services.settings)
-    , m_engine(services.engine)
     , m_shaders(services.shaders)
     , m_shaderControls(services.shaders)
     , m_scripts(services.scripts)
@@ -208,7 +205,6 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     connect(this, &QWindow::visibilityChanged, this, &TerminalWindow::updateAudioCapture);
     m_quick = options.quick;
     AfterglowRender::GpuDevice& device = m_device;
-    QQmlEngine& engine = m_engine;
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(device.vulkanInstance());
     // Qt marks a surface without alpha in its format as opaque, and the
@@ -243,7 +239,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         KeyModes::expire(m_keyMode, m_keyModeClock.elapsed());
         updateKeyMode();
     });
-    m_chrome = new ChromeLayer(device, this, engine, m_controller);
+    m_chrome = new ChromeLayer(device, this, services.chrome, m_controller);
     connect(m_chrome, &ChromeLayer::updateRequested, this, &TerminalWindow::scheduleRender);
     connect(m_controller, &ChromeController::activateTabRequested, this, &TerminalWindow::switchTab);
     connect(m_controller, &ChromeController::closeTabRequested, this, [this](int index) { requestCloseTabs({index}); });
@@ -425,6 +421,7 @@ TerminalWindow::~TerminalWindow()
     finishScriptDialog(false, {});
     s_windows.removeAll(this);
     publishLauncherStatus();
+    for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
     // The chrome renders on the device through this window; it goes first.
     delete m_chrome;
     m_chrome = nullptr;
@@ -713,6 +710,10 @@ Pane* TerminalWindow::splitFocused(SplitTree::Direction direction, const QString
         // lack of room leaves the zoom, and every pane's size, as they were.
         m_splits->setZoomedPane(nullptr);
         m_splits->layout(paneArea(), divider);
+    } else if (m_docksMoved) {
+        // A dock moved since the last frame: the rectangles below are from
+        // before it, and the room it took would not count.
+        finishDockMoves();
     } else if (m_layoutSize.isEmpty()) {
         // Not laid out since the last split, or never drawn: the rectangles
         // below would be empty, and the shell would start at 2x1.
@@ -892,11 +893,7 @@ int TerminalWindow::tabBarHeight(int tabCount) const
 
 QRect TerminalWindow::paneArea(int tabCount) const
 {
-    const QSize px = m_renderer->pixelSize().isEmpty()
-        ? (size() * devicePixelRatio())
-        : m_renderer->pixelSize();
-    const int bar = tabBarHeight(tabCount);
-    return layoutDocks(QRect(0, bar, px.width(), std::max(0, px.height() - bar)), nullptr);
+    return layoutDocks(windowArea(tabCount), nullptr);
 }
 
 QSize TerminalWindow::minimumPaneSize() const
@@ -1143,6 +1140,9 @@ void TerminalWindow::switchTab(int index)
     });
     QTimer::singleShot(0, this, &TerminalWindow::updatePaneVisibility);
     m_selectionPane = nullptr;
+    // A divider being dragged belongs to the tab that went: its node may be
+    // freed, and a new split could take its address.
+    m_dividerDrag.reset();
     setFocusedPane(tab.focused);
     m_layoutSize = QSize();
     Q_EMIT tabsChanged();
@@ -1449,8 +1449,16 @@ void TerminalWindow::relayout()
 {
     const QSize px = m_renderer->pixelSize();
     const double dpr = devicePixelRatio();
-    placeDocks();
-    m_splits->layout(paneArea(), dividerPixels());
+    const QRect area = placeDocks();
+    // Whether a tab_bar dock fits depends on the window, the font and the
+    // padding: the QML tab bar comes or goes with it.
+    if (m_controller->tabBarHeight() != (tabBarHeight() > 0 ? TabBarLogicalHeight : 0)) updateChrome();
+    m_splits->layout(area, dividerPixels());
+    // The chrome's overlays for the panes keep off the tab bar and the docks.
+    m_controller->setPaneArea(QRectF(QPointF(area.topLeft()) / dpr, QSizeF(area.size()) / dpr));
+    // An item, a pane edge or an overlay can come or go under a pointer that
+    // does not move: the shape follows the new layout.
+    applyPointerShape();
     // Hint labels sit on cells that may have moved.
     if (m_urlMode.active) stopUrlMode();
     const auto& m = m_renderer->fonts().fonts->metrics();
@@ -1482,8 +1490,10 @@ void TerminalWindow::renderNow()
             return;
         }
     }
-    if (m_renderer->pixelSize() != m_layoutSize || devicePixelRatio() != m_layoutDpr
-        || m_device.fontEpoch() != m_layoutFontEpoch) {
+    if (m_docksMoved) {
+        finishDockMoves();
+    } else if (m_renderer->pixelSize() != m_layoutSize || devicePixelRatio() != m_layoutDpr
+               || m_device.fontEpoch() != m_layoutFontEpoch) {
         relayout();
     }
 
@@ -1613,10 +1623,6 @@ void TerminalWindow::renderNow()
         m_chrome->renderIfNeeded(m_renderer->pixelSize());
         chrome = m_chrome->texture();
     }
-    // A swapchain out of date presented nothing: the frame is owed, and output
-    // that arrives later may never ask for it. A failed frame (a lost device)
-    // is not retried, not even for an animation: every retry would fail the
-    // same way and spin the loop.
     std::vector<AfterglowRender::WindowRenderer::Pane> docks;
     for (const auto& dock : m_docks) {
         if (dock->rect().isEmpty()) continue;
@@ -1628,6 +1634,10 @@ void TerminalWindow::renderNow()
         docks.push_back(wp);
     }
     m_renderer->setDocks(std::move(docks));
+    // A swapchain out of date presented nothing: the frame is owed, and output
+    // that arrives later may never ask for it. A failed frame (a lost device)
+    // is not retried, not even for an animation: every retry would fail the
+    // same way and spin the loop.
     using FrameResult = AfterglowRender::WindowRenderer::FrameResult;
     const FrameResult frame = m_renderer->render(panes, overlays, clear, chrome, m_chrome->serial());
     if (frame == FrameResult::Retry)
@@ -2873,7 +2883,16 @@ void TerminalWindow::applyPointerShape()
         setCursor(Qt::BlankCursor);
         return;
     }
-    if (chromeVisible() && m_chrome->wantsPointer(m_pointer)) {
+    // A drag keeps the divider's shape over the chrome and the docks too:
+    // every frame of it lays the panes out again, and the layout sets the
+    // shape. The overview can open during a drag, from the keyboard.
+    if (m_dividerDrag && !m_overview.open) {
+        setCursor(m_dividerDrag->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
+        return;
+    }
+    // The overview takes every click but a dock's, and a prompt's over it
+    // (mousePressEvent).
+    if ((!m_overview.open || m_controller->wantsKeyboard()) && chromeVisible() && m_chrome->wantsPointer(m_pointer)) {
         setCursor(m_chrome->cursorAt(m_pointer));
         return;
     }
@@ -2881,11 +2900,20 @@ void TerminalWindow::applyPointerShape()
         setCursor(dock->itemAt((m_pointer * devicePixelRatio()).toPoint()).isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
         return;
     }
+    if (m_overview.open) {
+        setCursor(Qt::ArrowCursor);
+        return;
+    }
+    const QPoint px = (m_pointer * devicePixelRatio()).toPoint();
+    if (const auto divider = m_splits ? m_splits->dividerAt(px, int(std::lround(4 * devicePixelRatio()))) : std::nullopt) {
+        setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
+        return;
+    }
     if (!m_hover.url.isEmpty()) {
         setCursor(Qt::PointingHandCursor);
         return;
     }
-    Pane* pane = m_splits ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    Pane* pane = m_splits ? m_splits->paneAt(px) : nullptr;
     const QString shape = pane ? motion(pane).pointerShape : QString();
     setCursor(protocolPointer(shape, devicePixelRatio()));
 }
@@ -3405,7 +3433,7 @@ void TerminalWindow::applySettings(const Settings& previous)
         for (Pane* p : findChildren<Pane*>()) {
             p->setOptions(now.terminal);
         }
-        for (const auto& dock : m_docks) dock->setOptions(now.terminal);
+        setDockOptions(now.terminal);
     }
     if (now.colors != previous.colors) {
         for (Pane* p : findChildren<Pane*>()) {
@@ -4041,6 +4069,25 @@ int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
     return int(std::floor((pos.y() * devicePixelRatio() - origin.y()) / m.cellHeight));
 }
 
+bool TerminalWindow::pressDock(QMouseEvent* e)
+{
+    const QPoint px = (e->position() * devicePixelRatio()).toPoint();
+    DockArea* dock = dockAt(px);
+    if (!dock) return false;
+    // A dock is its script's: the panes under it get nothing.
+    m_dockButtons |= e->button();
+    const QString item = dock->itemAt(px);
+    const QString button = e->button() == Qt::LeftButton ? QStringLiteral("left")
+        : e->button() == Qt::MiddleButton                ? QStringLiteral("middle")
+        : e->button() == Qt::RightButton                 ? QStringLiteral("right")
+                                                         : QString();
+    if (!item.isEmpty() && !button.isEmpty())
+        Q_EMIT scriptDockClicked(dock->owner(), m_focused ? m_focused->id() : 0,
+                                 {{QStringLiteral("dock"), dock->id()}, {QStringLiteral("item"), item},
+                                  {QStringLiteral("button"), button}, {QStringLiteral("window"), m_id}});
+    return true;
+}
+
 void TerminalWindow::mousePressEvent(QMouseEvent* e)
 {
     if (!m_splits) return;
@@ -4048,10 +4095,21 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         m_pointerHidden = false;
         applyPointerShape();
     }
+    // The first button down starts a new gesture: a press whose release
+    // went elsewhere (a compositor grab) takes nothing from this one.
+    if (e->buttons() == e->button()) {
+        m_overviewButtons = Qt::NoButton;
+        m_dockButtons = Qt::NoButton;
+    }
+    // A prompt that opened over the overview takes the pointer first, as
+    // outside it.
+    if (m_overview.open && m_controller->wantsKeyboard() && routePointerToChrome(e, e->position(), true, false)) return;
+    // A dock draws over the overview too, and is its script's there as well.
+    if (m_overview.open && pressDock(e)) return;
     if (m_overview.open) {
         // The cards are where the shader draws them: a click takes the one
         // in front. Its release is the overview's too.
-        m_overviewSwallowedPress = true;
+        m_overviewButtons |= e->button();
         closeOverview(e->button() == Qt::LeftButton ? m_overview.highlighted.data() : nullptr);
         return;
     }
@@ -4060,20 +4118,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (routePointerToChrome(e, e->position(), true, false)) {
         return;
     }
-    if (DockArea* dock = dockAt((e->position() * devicePixelRatio()).toPoint())) {
-        // A dock is its script's: the panes under it get nothing.
-        m_dockPress = true;
-        const QString item = dock->itemAt((e->position() * devicePixelRatio()).toPoint());
-        const QString button = e->button() == Qt::LeftButton ? QStringLiteral("left")
-            : e->button() == Qt::MiddleButton                ? QStringLiteral("middle")
-            : e->button() == Qt::RightButton                 ? QStringLiteral("right")
-                                                             : QString();
-        if (!item.isEmpty() && !button.isEmpty())
-            Q_EMIT scriptDockClicked(dock->owner(), m_focused ? m_focused->id() : 0,
-                                     {{QStringLiteral("dock"), dock->id()}, {QStringLiteral("item"), item},
-                                      {QStringLiteral("button"), button}, {QStringLiteral("window"), m_id}});
-        return;
-    }
+    if (pressDock(e)) return;
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
     if (p && p != m_focused) {
         setFocusedPane(p);
@@ -4203,14 +4248,20 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     // Only the press the overview took has its release taken too; any other
     // release ends what its press started (a drag, a reported button, a
     // selection), even when the overview opened or closed in between.
-    if (std::exchange(m_overviewSwallowedPress, false)) return;
-    if (m_dockPress) {
-        if (e->buttons() == Qt::NoButton) m_dockPress = false;
+    if (m_overviewButtons & e->button()) {
+        m_overviewButtons &= ~e->button();
+        return;
+    }
+    // Only the buttons pressed on a dock: another button's release still
+    // ends what its press started on a pane or the chrome.
+    if (m_dockButtons & e->button()) {
+        m_dockButtons &= ~e->button();
         return;
     }
     if (e->button() == Qt::LeftButton) for (auto* pane : panes()) if (pane->hasDragDrop()) pane->dragDrop()->release();
     if (m_dividerDrag && e->button() == Qt::LeftButton) {
         m_dividerDrag.reset();
+        applyPointerShape();
         return;
     }
     if (routePointerToChrome(e, e->position(), false, true)) {
@@ -4325,11 +4376,17 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     m_pointer = e->position();
     // A pack that reads the pointer moves with it, with nothing else changing.
     if (m_readsMouse) scheduleRender();
-    // The overview draws cards, not the layout: no hover, selection or reports.
-    if (m_overview.open) return;
+    // The overview draws cards, not the layout: no hover, selection or
+    // reports. Only a dock over it shows what a click does.
+    if (m_overview.open) {
+        if (m_controller->wantsKeyboard()) routePointerToChrome(e, e->position(), false, false);
+        applyPointerShape();
+        return;
+    }
     const QPoint px = (e->position() * devicePixelRatio()).toPoint();
-    if (m_dockPress && e->buttons() == Qt::NoButton) m_dockPress = false; // its release went elsewhere
-    if (m_dockPress || (e->buttons() == Qt::NoButton && dockAt(px))) {
+    m_dockButtons &= e->buttons(); // a release that went elsewhere
+    // A drag that only a dock's buttons make is the dock's.
+    if (m_dockButtons != Qt::NoButton && !(e->buttons() & ~m_dockButtons)) {
         applyPointerShape();
         return;
     }
@@ -4352,12 +4409,14 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         QMouseEvent outside(e->type(), QPointF(-1, -1), QPointF(-1, -1), e->button(), e->buttons(), e->modifiers());
         m_chrome->deliver(&outside);
     }
-    // After the chrome has seen the pointer leave, which may reset the cursor.
-    if (auto divider = m_splits->dividerAt(px, int(std::lround(4 * devicePixelRatio())))) {
-        setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
-    } else {
+    // Over a dock, after the chrome and the link under the pointer have
+    // seen it leave: no divider, shape or hover report of a pane.
+    if (e->buttons() == Qt::NoButton && dockAt(px)) {
         applyPointerShape();
+        return;
     }
+    // After the chrome has seen the pointer leave, which may reset the cursor.
+    applyPointerShape();
     if (m_focused && (e->buttons() & Qt::LeftButton)) {
         const QPoint pixel = px - contentRect(m_splits->rectOf(m_focused)).topLeft();
         if (m_focused->hasDragDrop() && m_focused->dragDrop()->move(this, e->position().toPoint(), cellAt(m_focused, e->position()), pixel)) {
@@ -4399,6 +4458,11 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
 void TerminalWindow::wheelEvent(QWheelEvent* e)
 {
     if (!m_splits) return;
+    // A dock is its script's: the wheel over it scrolls no pane and moves
+    // no card. The chrome draws over docks, so it comes first.
+    const bool overDock = dockAt((e->position() * devicePixelRatio()).toPoint()) != nullptr;
+    if (m_overview.open && m_controller->wantsKeyboard() && routePointerToChrome(e, e->position(), false, false)) return;
+    if (m_overview.open && overDock) return;
     if (m_overview.open) {
         m_overviewWheel += e->angleDelta().y() ? e->angleDelta().y() : e->angleDelta().x();
         const auto panes = overviewPanes();
@@ -4412,6 +4476,7 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     if (routePointerToChrome(e, e->position(), false, false)) {
         return;
     }
+    if (overDock) return;
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
     if (!p) {
         p = m_focused;

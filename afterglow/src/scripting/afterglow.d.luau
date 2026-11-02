@@ -75,18 +75,21 @@ export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: 
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 -- A split also says which pane it split from and the edge they share: 1 left, 2 top, 3 right, 4 bottom.
 export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? }
--- A palette index (0-255, the theme's 0-15 included) or "#rrggbb"; absent is the theme's default.
+-- A palette index (0-255, the theme's 0-15 included) or "#rrggbb". Absent: the theme's
+-- default color, except that a run without bg takes the dock's fill.
 export type DockColor = number | string
-export type DockRun = { text: string, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
-    underline: boolean?, item: string?, -- a click on a run with an item reaches on_dock_click
-    spacer: boolean? } -- takes the cells the other runs of its line leave, shared among the spacers
+export type DockRun = { text: string?, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
+    underline: boolean?,
+    item: string?, -- 1-64 characters, no control characters; a click on the run's cells reaches on_dock_click
+    spacer: boolean? } -- no text: takes the cells the other runs of its line leave, shared among the spacers
+-- A field that is not listed here refuses the dock.
 export type DockSpec = {
     id: string, -- 1 to 32 ASCII letters, digits, - or _
     edge: "top" | "bottom" | "left" | "right",
     size: number?, -- rows (top, bottom: 1-8) or columns (left, right: 1-80); default 1
-    tab_bar: boolean?, -- top only: drawn in place of the tab bar
-    fill: DockColor?, -- the background of cells no run covers
-    lines: { { DockRun } },
+    tab_bar: boolean?, -- top only: drawn in place of the tab bar; default false
+    fill: DockColor?, -- the background of the whole dock; default the theme's background
+    lines: { { DockRun } }?, -- top, bottom: at most size lines; left, right: at most 256
 }
 export type DockClickEvent = { pane: Pane?, dock: string, item: string, button: "left" | "middle" | "right",
     window: number, terminal: State }

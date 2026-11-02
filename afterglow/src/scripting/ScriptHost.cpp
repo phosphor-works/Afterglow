@@ -42,7 +42,7 @@ struct ScriptHost::Script
     QString id;
     QString owner;
     bool retiring = false;
-    std::deque<qint64> callbacks;
+    std::deque<qint64> callbacks, taskCallbacks;
     QString name;
     QString path;
     QByteArray source;
@@ -121,18 +121,20 @@ bool integer(const QVariant& v, double low, double high)
     return number(v) && std::isfinite(d) && d == std::floor(d) && d >= low && d <= high;
 }
 
-/// A dock colour: a palette index, or "#rrggbb". Returns the checked value,
-/// or an invalid one. An absent colour is the default and stays absent.
+/// A dock color: a palette index, or "#rrggbb". Returns the checked value,
+/// or an invalid one. An absent color is the default and stays absent.
 QVariant dockColor(const QVariant& v, bool& ok)
 {
     if (!v.isValid()) return {};
     if (integer(v, 0, 255)) return v.toInt();
     const QString text = v.toString();
-    if (v.typeId() == QMetaType::QString && text.size() == 7 && text.startsWith(QLatin1Char('#'))) {
-        bool hex = false;
-        text.mid(1).toUInt(&hex, 16);
-        if (hex) return text.toLower();
-    }
+    // Each digit by hand: toUInt would also take "0x", a sign and spaces.
+    if (v.typeId() == QMetaType::QString && text.size() == 7 && text.startsWith(QLatin1Char('#'))
+        && std::all_of(text.begin() + 1, text.end(), [](QChar c) {
+               const char16_t u = c.unicode();
+               return (u >= u'0' && u <= u'9') || (u >= u'a' && u <= u'f') || (u >= u'A' && u <= u'F');
+           }))
+        return text.toLower();
     ok = false;
     return {};
 }
@@ -149,13 +151,24 @@ std::optional<QVariantList> luauArray(const QVariant& v)
 constexpr int MaxDockRows = 8;
 constexpr int MaxDockColumns = 80;
 constexpr int MaxDockLines = 256;
-constexpr int MaxDockRuns = 128;
-constexpr int MaxDockText = 16384;
+constexpr int MaxDockRuns = 128; ///< in one line
+constexpr int MaxDockAreaRuns = 1024; ///< in all the lines of a dock
+constexpr int MaxDockItem = 64; ///< characters
+constexpr qsizetype MaxDockText = 16384; ///< UTF-8 bytes of a dock's texts and items together
 
 /// Checks a dock effect and copies its fields into @p effect in the form
 /// DockArea reads. Returns an error, or empty.
 QString checkDock(const QVariantMap& raw, QVariantMap& effect)
 {
+    // The helper passes the spec through whole, so a misspelled field is
+    // refused here, as a misspelled run field is, instead of being dropped.
+    static constexpr QLatin1String Fields[] = {QLatin1String("kind"), QLatin1String("pane"), QLatin1String("request_id"),
+        QLatin1String("id"), QLatin1String("edge"), QLatin1String("size"), QLatin1String("tab_bar"), QLatin1String("fill"),
+        QLatin1String("lines")};
+    for (auto it = raw.keyBegin(); it != raw.keyEnd(); ++it) {
+        if (std::none_of(std::begin(Fields), std::end(Fields), [&](QLatin1String field) { return *it == field; }))
+            return QStringLiteral("Unknown dock field %1").arg(*it);
+    }
     const QString edge = raw.value(QStringLiteral("edge")).toString();
     const bool side = edge == QLatin1String("left") || edge == QLatin1String("right");
     if (!side && edge != QLatin1String("top") && edge != QLatin1String("bottom"))
@@ -169,15 +182,28 @@ QString checkDock(const QVariantMap& raw, QVariantMap& effect)
     if (tabBar.toBool() && edge != QLatin1String("top")) return QStringLiteral("Only a top dock can replace the tab bar");
     bool ok = true;
     const QVariant fill = dockColor(raw.value(QStringLiteral("fill")), ok);
-    if (!ok) return QStringLiteral("Dock colours are palette indices 0 to 255 or \"#rrggbb\"");
+    if (!ok) return QStringLiteral("Dock colors are palette indices 0 to 255 or \"#rrggbb\"");
     const auto lines = luauArray(raw.value(QStringLiteral("lines")));
-    if (!lines || lines->size() > (side ? MaxDockLines : size.toInt()))
-        return QStringLiteral("Dock lines must be a list, with no more lines than the dock has rows");
+    if (!lines) return QStringLiteral("Dock lines must be a list");
+    if (side && lines->size() > MaxDockLines)
+        return QStringLiteral("A left or right dock has at most %1 lines").arg(MaxDockLines);
+    if (!side && lines->size() > size.toInt()) return QStringLiteral("A top or bottom dock has at most one line for each row");
+    // Counted as the runs are read, so a dock that is too large stops at the
+    // limit instead of converting all of its text first.
+    qsizetype bytes = 0;
+    auto withinText = [&bytes](const QString& s) {
+        // Each UTF-16 unit is at least one UTF-8 byte: a long string is over without a conversion.
+        bytes += s.size() > MaxDockText ? s.size() : s.toUtf8().size();
+        return bytes <= MaxDockText;
+    };
+    const QString tooMuchText = QStringLiteral("Dock text and items exceed %1 bytes").arg(MaxDockText);
     QVariantList checkedLines;
-    int text = 0;
+    qsizetype runCount = 0;
     for (const QVariant& line : *lines) {
         const auto runs = luauArray(line);
         if (!runs || runs->size() > MaxDockRuns) return QStringLiteral("Each dock line is a list of at most %1 runs").arg(MaxDockRuns);
+        runCount += runs->size();
+        if (runCount > MaxDockAreaRuns) return QStringLiteral("A dock has at most %1 runs").arg(MaxDockAreaRuns);
         QVariantList checkedRuns;
         for (const QVariant& value : *runs) {
             if (value.typeId() != QMetaType::QVariantMap) return QStringLiteral("Each dock run is a table");
@@ -188,30 +214,35 @@ QString checkDock(const QVariantMap& raw, QVariantMap& effect)
                 const QVariant& v = it.value();
                 if (key == QLatin1String("text")) {
                     if (v.typeId() != QMetaType::QString) return QStringLiteral("Dock run text must be a string");
-                    text += int(v.toString().toUtf8().size());
+                    if (!withinText(v.toString())) return tooMuchText;
                     checked.insert(key, v.toString());
                 } else if (key == QLatin1String("fg") || key == QLatin1String("bg")) {
                     checked.insert(key, dockColor(v, ok));
-                    if (!ok) return QStringLiteral("Dock colours are palette indices 0 to 255 or \"#rrggbb\"");
+                    if (!ok) return QStringLiteral("Dock colors are palette indices 0 to 255 or \"#rrggbb\"");
                 } else if (key == QLatin1String("bold") || key == QLatin1String("italic") || key == QLatin1String("underline")
                            || key == QLatin1String("spacer")) {
                     if (v.typeId() != QMetaType::Bool) return QStringLiteral("Dock run %1 must be a boolean").arg(key);
                     checked.insert(key, v.toBool());
                 } else if (key == QLatin1String("item")) {
                     const QString item = v.toString();
-                    if (v.typeId() != QMetaType::QString || item.isEmpty() || item.size() > 64
+                    // Characters, not UTF-16 units: a surrogate pair is one.
+                    const auto length = item.size() - std::count_if(item.begin(), item.end(), [](QChar c) { return c.isLowSurrogate(); });
+                    if (v.typeId() != QMetaType::QString || item.isEmpty() || length > MaxDockItem
                         || std::any_of(item.begin(), item.end(), [](QChar c) { return c.category() == QChar::Other_Control; }))
-                        return QStringLiteral("A dock item is a string of 1 to 64 characters");
+                        return QStringLiteral("A dock item is a string of 1 to %1 characters, with no control characters").arg(MaxDockItem);
+                    if (!withinText(item)) return tooMuchText;
                     checked.insert(key, item);
                 } else {
                     return QStringLiteral("Unknown dock run field %1").arg(key);
                 }
             }
+            // DockArea draws a spacer as blank cells and never reads its text.
+            if (checked.value(QStringLiteral("spacer")).toBool() && checked.contains(QStringLiteral("text")))
+                return QStringLiteral("A spacer run has no text");
             checkedRuns.append(checked);
         }
         checkedLines.append(QVariant(checkedRuns));
     }
-    if (text > MaxDockText) return QStringLiteral("Dock text exceeds %1 bytes").arg(MaxDockText);
     effect.insert(QStringLiteral("edge"), edge);
     effect.insert(QStringLiteral("size"), size.toInt());
     effect.insert(QStringLiteral("tab_bar"), tabBar.toBool());
@@ -330,11 +361,13 @@ const EffectKind Kinds[] = {
 };
 
 /// Kinds outside the effect budget. A sleep is bounded by MaxSleeping and its
-/// result counts as one. Ending a key mode or cancelling a task only gives
-/// something back, and must work when a burst has spent the budget.
+/// result counts as one. Ending a key mode, cancelling a task or removing a
+/// dock only gives something back, and must work when a burst has spent the
+/// budget. An undock removes at most the docks that budgeted effects made.
 bool budgetFree(const QString& kind)
 {
-    return kind == QLatin1String("sleep") || kind == QLatin1String("end_key_mode") || kind == QLatin1String("cancel");
+    return kind == QLatin1String("sleep") || kind == QLatin1String("end_key_mode") || kind == QLatin1String("cancel")
+        || kind == QLatin1String("undock");
 }
 
 /// The channels a signal can set: the size of the shaders' uSignal array
@@ -881,11 +914,13 @@ void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint3
 void ScriptHost::dispatch(const QString& handler, quint32 pane, QVariantMap event)
 {
     // Copied: a reload during a call must not free the script under it. The
-    // snapshot is built only when some script handles the event, because
-    // terminal output can raise events (titles) faster than anyone reads them.
+    // snapshot is built only when some script handles the event and has room
+    // in its callback budget, because terminal output can raise events
+    // (titles) faster than anyone reads them, and the snapshot costs a
+    // directory and a process lookup for each pane.
     std::vector<ScriptPtr> targets;
     for (const ScriptPtr& s : m_scripts) {
-        if (!s->disabled && !s->retiring && s->engine->hasFunction(s->module, handler)) targets.push_back(s);
+        if (!s->disabled && !s->retiring && s->engine->hasFunction(s->module, handler) && admitCallback(*s)) targets.push_back(s);
     }
     if (targets.empty()) {
         return;
@@ -896,7 +931,7 @@ void ScriptHost::dispatch(const QString& handler, quint32 pane, QVariantMap even
     }
     for (const ScriptPtr& s : targets) {
         // An earlier call can disable or replace a later script.
-        if (s->disabled || s->retiring || !admitCallback(*s)) continue;
+        if (s->disabled || s->retiring) continue;
         call(s, handler, {event}, EventTimeoutMs, pane);
     }
 }
@@ -910,15 +945,16 @@ QVariantMap ScriptHost::eventPane(quint32 pane) const
     return info;
 }
 
-bool ScriptHost::admitCallback(Script& script)
+bool ScriptHost::admitCallback(Script& script, bool task)
 {
+    std::deque<qint64>& calls = task ? script.taskCallbacks : script.callbacks;
     const qint64 now = m_clock.elapsed();
-    while (!script.callbacks.empty() && now - script.callbacks.front() >= 1000) script.callbacks.pop_front();
-    if (int(script.callbacks.size()) >= MaxCallbacksPerSecond) {
+    while (!calls.empty() && now - calls.front() >= 1000) calls.pop_front();
+    if (int(calls.size()) >= MaxCallbacksPerSecond) {
         ++script.droppedCallbacks;
         return false;
     }
-    script.callbacks.push_back(now);
+    calls.push_back(now);
     return true;
 }
 
@@ -953,9 +989,12 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 {
     if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()
         || !script->engine->hasFunction(script->module, handler)) return;
-    // Keys come from the user, at the keyboard's rate. Dropping one would
-    // leave a key mode on while its keys vanish.
-    if (handler != QLatin1String("on_key") && !admitCallback(*script)) return;
+    // Keys, dock clicks and on_load come at the user's rate: dropping a key
+    // would leave a key mode on while its keys vanish. Timers and watchers
+    // have a budget of their own, so a title storm that spends the events'
+    // budget does not stop them.
+    const bool task = handler == QLatin1String("on_timer") || handler == QLatin1String("on_file_changed");
+    if (task && !admitCallback(*script, true)) return;
     event.insert(QStringLiteral("terminal"), state());
     if (pane) event.insert(QStringLiteral("pane"), eventPane(pane));
     call(script, handler, {event}, EventTimeoutMs, pane);
@@ -1207,11 +1246,9 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         if (kind == QLatin1String("status") && (str(effect, "text").size() > 512 || str(effect, "tab_title").size() > 128))
             error = QStringLiteral("Status text exceeds its length limit");
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
-            const QString id = str(effect, "id");
-            if (id.isEmpty() || id.size() > 32 || std::any_of(id.begin(), id.end(), [](QChar c) {
-                    return !(c.isLetterOrNumber() && c.unicode() < 0x80) && c != QLatin1Char('-') && c != QLatin1Char('_');
-                }))
-                error = QStringLiteral("A dock id is 1 to 32 ASCII letters, digits, - or _");
+            const QVariant id = raw.value(QStringLiteral("id"));
+            if (id.typeId() != QMetaType::QString || !validScriptId(id.toString()) || id.toString().size() > 32)
+                error = QStringLiteral("A dock id is a string of 1 to 32 ASCII letters, digits, - or _");
             else if (kind == QLatin1String("dock"))
                 if (const QString problem = checkDock(raw, effect); !problem.isEmpty()) error = problem;
         }
@@ -1239,6 +1276,9 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("signal scope must be pane, tab or window");
             }
         }
+        // An undock may name a pane that has closed or moved: its area stays
+        // in the window it was docked in, where Control finds it.
+        const bool paneMustExist = info->pane && kind != QLatin1String("undock");
         const bool structural = info->structural || (kind == QLatin1String("action")
             && (!m_callbacks.structuralAction || m_callbacks.structuralAction(str(effect, "name"))));
         if (!error.isEmpty()) {
@@ -1266,7 +1306,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("pulse") && !(effect.value(QStringLiteral("duration_ms")).toDouble() >= 50
                                                       && effect.value(QStringLiteral("duration_ms")).toDouble() <= 10000
                                                       && integer(effect.value(QStringLiteral("color")), 0, 255))) {
-            error = QStringLiteral("pulse needs 50 to 10000 ms and a palette colour from 0 to 255");
+            error = QStringLiteral("pulse needs 50 to 10000 ms and a palette color from 0 to 255");
         } else if (kind == QLatin1String("sleep") && !request.startsWith(AwaitPrefix)) {
             error = QStringLiteral("sleep must be awaited: use afterglow.sleep");
         } else if (kind == QLatin1String("sleep") && !(effect.value(QStringLiteral("delay_ms")).toDouble() >= 0
@@ -1277,7 +1317,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("signal")
                    && !validSignal(effect.value(QStringLiteral("channel")), effect.value(QStringLiteral("value")))) {
             error = QStringLiteral("invalid signal channel/value");
-        } else if (info->pane && (!m_callbacks.paneInfo || m_callbacks.paneInfo(effect.value(QStringLiteral("pane")).toUInt()).isEmpty())) {
+        } else if (paneMustExist
+                   && (!m_callbacks.paneInfo || m_callbacks.paneInfo(effect.value(QStringLiteral("pane")).toUInt()).isEmpty())) {
             result.code = QStringLiteral("no_pane");
             error = QStringLiteral("no pane %1").arg(effect.value(QStringLiteral("pane")).toUInt());
         } else if (!budgetFree(kind) && !withinBudget(*script, structural)) {

@@ -1006,7 +1006,7 @@ TEST_F(ScriptHostTest, DockEffectsAreCheckedBeforeTheyReachTheWindow)
 local run = {text="A", fg=1, bg="#10A0FF", bold=true, item="tab-1"}
 return { on_bell = function(ev)
     return {
-        afterglow.dock(ev.pane, {id="bar", edge="top", tab_bar=true, fill=0, lines={{run, {text="B"}}}}),
+        afterglow.dock(ev.pane, {id="bar", edge="top", tab_bar=true, fill=3, lines={{run, {text="B"}}}}),
         afterglow.dock(ev.pane, {id="side", edge="left", size=20, lines={}}),
         afterglow.undock(ev.pane, "bar"),
         afterglow.dock(ev.pane, {id="x", edge="middle", lines={}}),
@@ -1025,16 +1025,22 @@ return { on_bell = function(ev)
 end }
 )");
     host->setEnabled(true); host->dispatch("on_bell", 7);
+    // Each refusal for its own reason, so a case refused for another passes no test.
+    const char* reasons[] = {"Dock edge must be", "1 to 8 rows", "1 to 8 rows", "Only a top dock", "Dock colors",
+                             "Dock colors", "Unknown dock run field blink", "text must be a string", "A dock item",
+                             "at most one line for each row", "A dock id", "exceed 16384 bytes"};
     ASSERT_EQ(rec.results.size(), 15);
     for (int i = 0; i < 3; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
-    for (int i = 3; i < 15; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    for (int i = 3; i < 15; ++i)
+        EXPECT_TRUE(rec.results[i].second.contains(QLatin1String(reasons[i - 3]))) << i << ' ' << rec.results[i].second.toStdString();
     ASSERT_EQ(rec.applied.size(), 3);
-    // The window gets the checked form: colours as indices or lower-case hex.
+    // The window gets the checked form: colors as indices or lower-case hex.
     const QVariantMap bar = rec.applied[0];
     EXPECT_EQ(bar["edge"], QStringLiteral("top"));
     EXPECT_EQ(bar["size"].toInt(), 1);
     EXPECT_TRUE(bar["tab_bar"].toBool());
-    EXPECT_EQ(bar["fill"].toInt(), 0);
+    EXPECT_EQ(bar["fill"].toInt(), 3);
+    EXPECT_FALSE(rec.applied[1].contains("fill")); // absent stays absent: the theme's background
     const QVariantMap first = bar["lines"].toList().at(0).toList().at(0).toMap();
     EXPECT_EQ(first["fg"].toInt(), 1);
     EXPECT_EQ(first["bg"], QStringLiteral("#10a0ff"));
@@ -1063,6 +1069,153 @@ return {
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0]["text"], QStringLiteral("bar:tab-2:middle"));
     EXPECT_EQ(rec.owners.last(), owner);
+}
+
+TEST_F(ScriptHostTest, DockEffectsRefuseEachFieldOutsideItsForm)
+{
+    write(user, "dockforms.luau", R"(
+local function lines(count, runs, run)
+    local out = {}
+    for i = 1, count do
+        local line = {}
+        for j = 1, runs do line[j] = run end
+        out[i] = line
+    end
+    return out
+end
+return { on_bell = function(ev)
+    local d = function(spec) return afterglow.dock(ev.pane, spec) end
+    return {
+        d({id="ok", edge="left", lines=lines(256, 4, {text="x"})}),
+        d({id="ok", edge="top", lines={{{}, {spacer=true, item="gap"}}}}),
+        d({id="ok", edge="top", lines={{{text="A", item=string.rep("\u{1F600}", 64)}}}}),
+        d({id="x", edge="top", size=0/0}),
+        d({id="x", edge="top", size=math.huge}),
+        d({id="x", edge="left", size=1e300}),
+        d({id="x", edge="top", fill="#0x1234"}),
+        d({id="x", edge="top", fill="#+abcde"}),
+        d({id="x", edge="top", lines={{{text="A", bg="# abcde"}}}}),
+        d({id="x", edge="top", lines={{{text="A", item="a\nb"}}}}),
+        d({id="x", edge="top", lines={{{text="A", item=string.rep("i", 65)}}}}),
+        d({id="x", edge="top", lines=lines(1, 129, {text="x"})}),
+        d({id="x", edge="right", lines=lines(257, 1, {text="x"})}),
+        d({id="x", edge="right", lines=lines(9, 128, {text="x"})}),
+        d({id="x", edge="right", lines=lines(4, 128, {item=string.rep("i", 60)})}),
+        d({id="x", edge="top", lines={{{text="A", spacer="yes"}}}}),
+        d({id="x", edge="top", tab_bar="yes"}),
+        d({id="x", edge="top", lines={{{spacer=true, text="ignored"}}}}),
+        d({id="x", edge="top", line={{{text="A"}}}}),
+        d({id=5, edge="top"}),
+        {kind="undock", pane=ev.pane.id, id=true},
+        d({id="x", lines={}}),
+    }
+end }
+)");
+    host->setEnabled(true); host->dispatch("on_bell", 7);
+    const char* reasons[] = {"1 to 8 rows", "1 to 8 rows", "1 to 80 columns", "Dock colors", "Dock colors", "Dock colors",
+                             "A dock item", "A dock item", "at most 128 runs", "at most 256 lines", "at most 1024 runs",
+                             "exceed 16384 bytes", "spacer must be a boolean", "tab_bar must be a boolean",
+                             "A spacer run has no text", "Unknown dock field line", "A dock id", "A dock id",
+                             "Dock edge must be"};
+    constexpr int accepted = 3;
+    ASSERT_EQ(rec.results.size(), accepted + int(std::size(reasons)));
+    for (int i = 0; i < accepted; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i << ' ' << rec.results[i].second.toStdString();
+    for (int i = accepted; i < rec.results.size(); ++i)
+        EXPECT_TRUE(rec.results[i].second.contains(QLatin1String(reasons[i - accepted]))) << i << ' ' << rec.results[i].second.toStdString();
+    ASSERT_EQ(rec.applied.size(), accepted);
+    EXPECT_EQ(rec.applied[0]["lines"].toList().size(), 256);
+    // An empty run is no error, and a spacer may be clickable.
+    const QVariantList runs = rec.applied[1]["lines"].toList().at(0).toList();
+    ASSERT_EQ(runs.size(), 2);
+    EXPECT_TRUE(runs[0].toMap().isEmpty());
+    EXPECT_EQ(runs[1].toMap()["item"], QStringLiteral("gap"));
+}
+
+TEST_F(ScriptHostTest, UndockReachesTheWindowAfterItsPaneClosed)
+{
+    write(user, "closing.luau", R"(
+return {
+    on_bell = function(ev) return afterglow.dock(ev.pane, {id="bar", edge="top"}) end,
+    on_pane_closed = function(ev) return {afterglow.undock(ev.pane.id, "bar"), afterglow.focus(ev.pane.id)} end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 9);
+    paneState.remove(9);
+    rec.applied.clear();
+    host->dispatch("on_pane_closed", 9, {{"pane", QVariantMap{{"id", 9}, {"tab_id", 20}, {"window", 2}}}});
+    // The area stays in its window when its pane goes: only the window side can find it.
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("undock"));
+    EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 9u);
+    EXPECT_TRUE(rec.results.last().second.contains("no pane 9")); // other pane effects are still refused
+}
+
+TEST_F(ScriptHostTest, DockClicksAreNotDroppedWhenEventsSpendTheCallbackBudget)
+{
+    write(user, "clicks.luau", R"(
+return {
+    on_bell = function(ev) return afterglow.dock(ev.pane, {id="bar", edge="top"}) end,
+    on_title = function() return nil end,
+    on_dock_click = function(ev) return afterglow.copy(ev.item) end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.owners.size(), 1);
+    // A program that rewrites its title spends the budget of the second.
+    for (int i = 0; i < ScriptHost::MaxCallbacksPerSecond; ++i) host->dispatch("on_title", 7);
+    ASSERT_GT(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), 0u);
+    rec.applied.clear();
+    host->dispatchTo(rec.owners[0], "on_dock_click", 7, {{"dock", "bar"}, {"item", "tab-2"}, {"button", "left"}, {"window", 1}});
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["text"], QStringLiteral("tab-2"));
+}
+
+TEST_F(ScriptHostTest, TimersAndWatchersHaveTheirOwnCallbackBudget)
+{
+    write(user, "ticks.luau", R"(
+return {
+    on_bell = function(ev) return afterglow.dock(ev.pane, {id="bar", edge="top"}) end,
+    on_timer = function() return nil end,
+    on_file_changed = function() return nil end,
+    on_key = function() return nil end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.owners.size(), 1);
+    const auto before = host->diagnostics().first().toMap();
+    for (int i = 0; i < ScriptHost::MaxCallbacksPerSecond + 6; ++i) host->dispatchTo(rec.owners[0], "on_timer", 0, {{"name", "t"}});
+    auto stats = host->diagnostics().first().toMap();
+    EXPECT_EQ(stats["calls"].toULongLong() - before["calls"].toULongLong(), quint64(ScriptHost::MaxCallbacksPerSecond));
+    EXPECT_EQ(stats["dropped_callbacks"].toULongLong() - before["dropped_callbacks"].toULongLong(), 6u);
+    // Watchers share the timers' budget, which the second has spent.
+    host->dispatchTo(rec.owners[0], "on_file_changed", 0, {{"name", "w"}});
+    EXPECT_EQ(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), stats["dropped_callbacks"].toULongLong() + 1);
+    stats = host->diagnostics().first().toMap();
+    // Keys are not counted: a key mode must not lose its keys.
+    for (int i = 0; i < ScriptHost::MaxCallbacksPerSecond + 6; ++i) host->dispatchTo(rec.owners[0], "on_key", 7, {{"key", "a"}});
+    EXPECT_EQ(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), stats["dropped_callbacks"].toULongLong());
+}
+
+TEST_F(ScriptHostTest, TimersFireWhenEventsSpendTheCallbackBudget)
+{
+    write(user, "timers.luau", R"(
+return {
+    on_bell = function() return afterglow.timer("later", 50) end,
+    on_title = function() return nil end,
+    on_timer = function(ev) return afterglow.copy(ev.name) end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    // A title storm spends the second's budget while the timer runs.
+    for (int i = 0; i < ScriptHost::MaxCallbacksPerSecond + 6; ++i) host->dispatch("on_title", 7);
+    ASSERT_GT(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), 0u);
+    rec.applied.clear();
+    ASSERT_TRUE(await([&] { return !rec.applied.isEmpty(); }));
+    EXPECT_EQ(rec.applied[0]["text"], QStringLiteral("later"));
 }
 
 TEST_F(ScriptHostTest, RetiredInstanceDropsPendingUiResultsAndCleansOwnedResources)
@@ -1500,10 +1653,10 @@ static QStringList dockTexts(const QVariantMap& dock)
     return texts;
 }
 
-TEST_F(ScriptHostTest, TabStatusDrawsATabLineAndPersistsToggle)
+TEST_F(ScriptHostTest, TabLineDrawsATabLineAndPersistsToggle)
 {
-    installPackage("tab-status");
-    write(user,"tab-status/config.json",R"({"git":false,"segments":["cwd","command","exit"]})");
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd","command","exit"]})");
     paneState[7]["cwd"]="/tmp/repository";paneState[7]["context"]="";
     windows={QVariantMap{{"id",1},{"project","dev"},{"active_pane",7}}};
     tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}},
@@ -1532,7 +1685,7 @@ TEST_F(ScriptHostTest, TabStatusDrawsATabLineAndPersistsToggle)
     EXPECT_EQ(rec.applied.last().value("kind"),"focus");
     EXPECT_EQ(rec.applied.last().value("pane").toUInt(),8u);
     // Off, the window gets its tab bar back, and the choice survives a restart.
-    ASSERT_TRUE(host->runAction("tab-status.toggle",7));pump();
+    ASSERT_TRUE(host->runAction("tab-line.toggle",7));pump();
     EXPECT_EQ(rec.applied.last().value("kind"),"undock");
     EXPECT_EQ(rec.applied.last().value("id"),"tabline");
     host->setEnabled(false);host->setEnabled(true);rec.applied.clear();tick();
@@ -1540,10 +1693,10 @@ TEST_F(ScriptHostTest, TabStatusDrawsATabLineAndPersistsToggle)
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
-TEST_F(ScriptHostTest, TabStatusParsesGitAndBoundsConfigurableSegments)
+TEST_F(ScriptHostTest, TabLineParsesGitAndBoundsConfigurableSegments)
 {
-    installPackage("tab-status");
-    write(user,"tab-status/init.luau",R"(
+    installPackage("tab-line");
+    write(user,"tab-line/init.luau",R"(
 local s=require("segments")
 local function texts(runs)
  local out={}
@@ -1575,11 +1728,174 @@ return {on_load=function()
   assert(#(run.text or "")<=70)
   assert(not run.text or not string.find(run.text,"exit"))
  end
+ -- Past 48 tabs, the line shows the current tab and its neighbors, in at most 128 runs.
+ local many={}
+ for i=1,100 do many[i]={id=i,index=i-1,title="t",active=i==100} end
+ local wide=s.line(window,many,values,{})
+ assert(#wide<=128,#wide)
+ local clickable=0
+ for _,run in ipairs(wide) do if run.item then clickable+=1 end end
+ assert(clickable==49,clickable) -- 48 tabs and the "+52" before them
+ assert(string.find(texts(wide),"^%+52|53 t|"),texts(wide))
+ -- A block that sets one color keeps the default of the other.
+ local colored=s.line(window,tabs,values,{colors={active={bg=2}}})
+ local found=false
+ for _,run in ipairs(colored) do
+  if run.item=="tab:3" then found=true;assert(run.fg==0 and run.bg==2) end
+ end
+ assert(found)
  return afterglow.copy("segments passed")
 end}
 )");
     host->setEnabled(true);
     ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.first().value("text"),"segments passed");
+}
+
+TEST_F(ScriptHostTest, TabLineSendsADroppedLineAgain)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd","exit"]})");
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7}}};
+    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}}};
+    QString refusal="rate_limited";
+    applyHook=[&](const QVariantMap& e) {
+        ScriptHost::EffectResult result;
+        if (e.value("kind")=="dock" && !refusal.isEmpty()) result={"too many docks: a script has at most 8 in a window, and a window at most 32",{},refusal};
+        refusal.clear();
+        return result;
+    };
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
+    host->setEnabled(true);pump();
+    ASSERT_EQ(rec.applied.size(),1);
+    // Afterglow dropped the line, so the next refresh sends it again, once.
+    tick();
+    ASSERT_EQ(rec.applied.size(),2);
+    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"1 fish","repository"}));
+    tick();EXPECT_EQ(rec.applied.size(),2);
+    // A line refused as invalid goes out again only when it changes.
+    refusal="invalid_effect";
+    host->dispatch("on_command_finished",7,{{"exit_code",2}});pump();
+    ASSERT_EQ(rec.applied.size(),3);
+    tick();tick();EXPECT_EQ(rec.applied.size(),3);
+    host->dispatch("on_command_finished",7,{{"exit_code",0}});tick();
+    ASSERT_EQ(rec.applied.size(),4);
+    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"1 fish","repository","ok"}));
+}
+
+TEST_F(ScriptHostTest, TabLineSendsALineAgainWhenItsResultIsLost)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7}}};
+    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}}};
+    bool lose=true;
+    applyHook=[&](const QVariantMap& e) {
+        ScriptHost::EffectResult result;
+        result.deferred=e.value("kind")=="dock" && lose; // and never completed
+        lose=false;
+        return result;
+    };
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
+    host->setEnabled(true);pump();
+    ASSERT_EQ(rec.applied.size(),1);
+    // One line at a time: the first still waits for its result.
+    tick();EXPECT_EQ(rec.applied.size(),1);
+    tick();ASSERT_EQ(rec.applied.size(),2);
+    tick();EXPECT_EQ(rec.applied.size(),2);
+}
+
+TEST_F(ScriptHostTest, TabLineCoalescesEventRedraws)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7}}};
+    auto title=[&](const QString& text) {
+        tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title",text},{"active",true},{"active_pane",7}}};
+    };
+    title("fish");
+    auto wait=[](int ms, const std::function<bool()>& done) {
+        QElapsedTimer clock;clock.start();
+        while (clock.elapsed()<ms && !done()) { QCoreApplication::processEvents(); QThread::msleep(5); }
+    };
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    host->setEnabled(true);pump();
+    ASSERT_EQ(rec.applied.size(),1);
+    for (int i=0;i<10;++i) { title(QString("t%1").arg(i)); host->dispatch("on_title",7,{}); }
+    pump();
+    // The first change draws at once. The draw timer sends the last one.
+    ASSERT_EQ(rec.applied.size(),2);
+    EXPECT_EQ(dockTexts(rec.applied.last()).value(0),"1 t0");
+    wait(2000,[&]{return rec.applied.size()>2;});
+    ASSERT_EQ(rec.applied.size(),3);
+    EXPECT_EQ(dockTexts(rec.applied.last()).value(0),"1 t9");
+    // With nothing left to draw, the timer stops itself.
+    wait(700,[]{return false;});
+    EXPECT_EQ(rec.applied.size(),3);
+    ASSERT_FALSE(rec.results.isEmpty());
+    EXPECT_EQ(rec.results.last().first.value("kind"),"cancel");
+    EXPECT_EQ(rec.results.last().first.value("name"),"draw");
+}
+
+TEST_F(ScriptHostTest, TabLineShowsTheTabsAroundTheCurrentTab)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+    paneState[7]["cwd"]="/tmp/repository";paneState[7]["cols"]=80;
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10}}};
+    tabs.clear();
+    for (int i=0;i<100;++i) {
+        tabs.append(QVariantMap{{"id",i==50?10:1000+i},{"window",1},{"index",i},{"title",QString("t%1").arg(i)},
+                                {"active",i==50},{"active_pane",i==50?7:0}});
+    }
+    host->setEnabled(true);
+    ASSERT_EQ(rec.applied.size(),1);
+    const QVariantList runs=rec.applied.last().value("lines").toList().value(0).toList();
+    EXPECT_LE(runs.size(),128);
+    // The text is ASCII and Powerline separators, one cell for each character.
+    qsizetype cells=0;
+    for (const QVariant& run : runs) cells+=run.toMap().value("text").toString().size();
+    EXPECT_LE(cells,80);
+    const QStringList texts=dockTexts(rec.applied.last());
+    ASSERT_GE(texts.size(),4);
+    EXPECT_TRUE(texts.contains("51 t50"));
+    EXPECT_EQ(texts.last(),"repository");
+    const QString before=texts.first(), after=texts.at(texts.size()-2);
+    ASSERT_TRUE(before.startsWith('+') && after.startsWith('+')) << texts.join('|').toStdString();
+    EXPECT_EQ(before.mid(1).toInt()+after.mid(1).toInt()+texts.size()-3,100);
+    // "+N" goes to the nearest hidden tab.
+    QString item;
+    for (const QVariant& run : runs) {
+        if (run.toMap().contains("item")) { item=run.toMap().value("item").toString(); break; }
+    }
+    EXPECT_EQ(item,QString("tab:%1").arg(1000+before.mid(1).toInt()-1));
+}
+
+TEST_F(ScriptHostTest, TabLineLeavesAOneTabWindowWithSingleTabOff)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"single_tab":false,"segments":["cwd"]})");
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7}}};
+    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}}};
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
+    host->setEnabled(true);pump();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    tabs.append(QVariantMap{{"id",11},{"window",1},{"index",1},{"title","vim"},{"active",false},{"active_pane",8}});
+    tick();
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.last().value("kind"),"dock");
+    tabs.removeLast();
+    tick();
+    ASSERT_EQ(rec.applied.size(),2);
+    EXPECT_EQ(rec.applied.last().value("kind"),"undock");
+    EXPECT_EQ(rec.applied.last().value("id"),"tabline");
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
 TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
@@ -1873,6 +2189,24 @@ return {
     host->dispatch("on_bell", 7);
     ASSERT_TRUE(await([&] { return !rec.applied.isEmpty() && rec.applied.last()["kind"] == "copy"; }));
     EXPECT_EQ(rec.applied.last()["text"], "screen,no_pane,selection");
+}
+
+TEST_F(ScriptHostTest, AwaitAllRefusesAListWithAHoleAfterAFullArrayPart)
+{
+    write(user, "gap.luau", R"(
+return { on_bell = function(ev)
+    local effects = {afterglow.copy("a"), afterglow.copy("b")}
+    -- Too far for the array part, so it goes to the hash part: # is still 2, and ipairs stops at 2.
+    effects[16] = afterglow.copy("p")
+    afterglow.await_all(effects)
+    return afterglow.copy("waited")
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
+    EXPECT_TRUE(rec.applied.isEmpty());
+    EXPECT_TRUE(host->diagnostics().first().toMap()["last_error"].toString().contains("with no holes"));
 }
 
 TEST_F(ScriptHostTest, SleepResumesAfterItsDelayAndIsBounded)
@@ -2317,6 +2651,18 @@ TEST_F(ScriptHostTest, EventsHaveACallbackBudgetAndNoSnapshotWithoutAHandler)
     EXPECT_EQ(stats["dropped_callbacks"].toULongLong(), 6u);
 }
 
+TEST_F(ScriptHostTest, EventsOverTheCallbackBudgetBuildNoSnapshot)
+{
+    write(user, "titles.luau", "return {on_title = function() return nil end}");
+    host->setEnabled(true);
+    for (int i = 0; i < ScriptHost::MaxCallbacksPerSecond; ++i) host->dispatch("on_title", 7);
+    // A dropped event costs no snapshot: each one reads every pane's directory and process.
+    const int before = snapshots;
+    for (int i = 0; i < 10; ++i) host->dispatch("on_title", 7);
+    EXPECT_EQ(snapshots, before);
+    EXPECT_EQ(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), 10u);
+}
+
 TEST_F(ScriptHostTest, RuntimeDisableWithdrawsPackageShadersAndActions)
 {
     QDir().mkpath(user.filePath("broken/shaders/wall"));
@@ -2524,6 +2870,7 @@ return {
         local out = {}
         for i = 1, %1 do out[i] = afterglow.set_title(ev.pane, "t") end
         table.insert(out, afterglow.cancel("nothing"))
+        table.insert(out, afterglow.undock(ev.pane, "bar"))
         table.insert(out, afterglow.end_key_mode())
         return out
     end,
@@ -2531,8 +2878,9 @@ return {
 )").arg(ScriptHost::MaxEffectsPerSecond).toUtf8());
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
-    ASSERT_EQ(rec.results.size(), ScriptHost::MaxEffectsPerSecond + 2);
+    ASSERT_EQ(rec.results.size(), ScriptHost::MaxEffectsPerSecond + 3);
     EXPECT_TRUE(rec.results[ScriptHost::MaxEffectsPerSecond].second.isEmpty()); // cancel
+    EXPECT_TRUE(rec.results[ScriptHost::MaxEffectsPerSecond + 1].second.isEmpty()); // undock
     EXPECT_TRUE(rec.results.last().second.isEmpty()); // end_key_mode
     EXPECT_EQ(rec.applied.last()["kind"], "end_key_mode");
 }
@@ -2816,7 +3164,7 @@ TEST_F(ScriptHostTest, ExampleScriptsCreatePulseAndNotify)
     EXPECT_TRUE(rec.applied.isEmpty()); // Ctrl+C is not a failure
 }
 
-TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
+TEST_F(ScriptHostTest, TabLineKeepsGitFromRunningRepositoryCommands)
 {
     const QString gitProgram = QStandardPaths::findExecutable("git");
     if (gitProgram.isEmpty()) GTEST_SKIP() << "git is not installed";
@@ -2856,8 +3204,8 @@ TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
         ASSERT_TRUE(f.setFileTime(QDateTime::fromSecsSinceEpoch(1577836800), QFileDevice::FileModificationTime));
     }
 
-    installPackage("tab-status");
-    write(user, "tab-status/config.json", R"({"git":true,"segments":["git"]})");
+    installPackage("tab-line");
+    write(user, "tab-line/config.json", R"({"git":true,"segments":["git"]})");
     paneState[7]["cwd"] = repository;
     paneState[7]["context"] = "";
     windows = {QVariantMap{{"id", 1}, {"project", ""}, {"active_pane", 7}}};
@@ -2865,9 +3213,17 @@ TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
     auto shows = [&](const QString& text) {
         QElapsedTimer clock;
         clock.start();
-        while (clock.elapsed() < 5000) {
-            host->dispatch("on_timer", 0, {{"name", "refresh"}});
-            for (int i = 0; i < 20; ++i) { QCoreApplication::processEvents(); QThread::msleep(5); }
+        // A refresh tick each second, beside the package's own 1 s timer, so
+        // about two a second: the package can drop a Git job after about 2 s,
+        // near the query's 2 s timeout. These local queries finish long before.
+        qint64 tick = -1000;
+        while (clock.elapsed() < 8000) {
+            if (clock.elapsed() - tick >= 1000) {
+                tick = clock.elapsed();
+                host->dispatch("on_timer", 0, {{"name", "refresh"}});
+            }
+            QCoreApplication::processEvents();
+            QThread::msleep(5);
             if (!rec.applied.isEmpty() && dockTexts(rec.applied.last()).contains(text)) return true;
         }
         return false;
@@ -2884,7 +3240,7 @@ TEST_F(ScriptHostTest, TabStatusKeepsGitFromRunningRepositoryCommands)
 
     // The change mark is opt-in, because git status compares the work tree.
     // That it runs the filter shows that the repository above would have run it.
-    write(user, "tab-status/config.json", R"({"git":true,"git_changes":true,"segments":["git"]})");
+    write(user, "tab-line/config.json", R"({"git":true,"git_changes":true,"segments":["git"]})");
     host->reload();
     ASSERT_TRUE(shows("trunk *"));
     EXPECT_TRUE(QFile::exists(marker));

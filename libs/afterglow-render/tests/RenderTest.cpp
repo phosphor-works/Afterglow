@@ -476,6 +476,51 @@ TEST_F(FontRendering, SubpixelFallbackTracksShadersAndTranslucencyWithoutSnapsho
     EXPECT_EQ(redraw(), lcd);
 }
 
+TEST_F(FontRendering, DockTextKeepsSubpixelUnderShadersButNotWhenTranslucent)
+{
+    // Docks draw into the window after the chains, so no chain resamples
+    // their text: it stays subpixel under the text, pane and window chains
+    // and the overview. A translucent window has no opaque target, so the
+    // docks fall back too.
+    mode(Antialiasing::Rgb);
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    AfterglowVt::Terminal dockTerminal(Cols, 1, host);
+    dockTerminal.resize(Cols, 1, cw, ch);
+    dockTerminal.feed("\x1b[?25l\x1b[0;38;2;255;255;255;48;2;0;0;0m\x1b[2J MWi Il -> fi");
+    PaneSnapshot dockSnapshot;
+    dockSnapshot.capture(dockTerminal);
+    const QSize size(Cols * cw, (Rows + 1) * ch);
+    const QRect dockRect(0, Rows * ch, Cols * cw, ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(0, 0, Cols * cw, Rows * ch);
+    WindowRenderer::Pane dock{&dockSnapshot, {}};
+    dock.params.rect = dockRect;
+    dock.params.contentOrigin = dockRect.topLeft();
+    auto dockEdges = [&] {
+        renderer->setDocks({dock});
+        return coloredEdges(renderer->renderToImage(size, {pane}, {}, packRgba(0, 0, 0)).copy(dockRect));
+    };
+    EXPECT_GT(dockEdges(), 0);
+    for (int layer = 0; layer < 4; ++layer) {
+        ShaderChains chains;
+        if (layer == 0) chains.text = {ShaderProgram::passthrough()};
+        if (layer == 1) chains.pane = {ShaderProgram::passthrough()};
+        if (layer == 2) chains.window = {ShaderProgram::passthrough()};
+        if (layer == 3) chains.overview = {ShaderProgram::passthrough()};
+        renderer->setShaderChains(chains);
+        renderer->setOverview(layer == 3 ? overviewAt(true, 1.0f, 0.0f, Clock::now()) : WindowRenderer::Overview{});
+        SCOPED_TRACE(layer);
+        EXPECT_GT(dockEdges(), 0);
+    }
+    renderer->setOverview({});
+    renderer->setShaderChains({});
+    renderer->setTranslucent(true);
+    EXPECT_EQ(dockEdges(), 0);
+    renderer->setTranslucent(false);
+    EXPECT_GT(dockEdges(), 0);
+}
+
 TEST_F(FontRendering, IconsAndScaledTextWorkInEveryMode)
 {
     for (const auto aa : {Antialiasing::None, Antialiasing::Grayscale, Antialiasing::Rgb, Antialiasing::Bgr}) {
@@ -736,8 +781,9 @@ TEST_F(Render, LiveParameterOverridesReachLayerPaneAndWindowUniforms)
 
 TEST_F(Render, DocksAreDrawnAfterEveryShaderChain)
 {
-    // A window shader paints everything magenta. A dock below the pane keeps
-    // its own red: it goes into the window after the chains.
+    // Each chain paints everything magenta. A dock below the pane keeps its
+    // own red: it goes into the window after the chains, the layered path,
+    // the overview and the pane effects included.
     auto source = layerShader("magenta", "fragColor = vec4(1.0, 0.0, 1.0, 1.0);");
     ASSERT_TRUE(source);
     auto program = source->instance(QStringLiteral("magenta"));
@@ -754,15 +800,79 @@ TEST_F(Render, DocksAreDrawnAfterEveryShaderChain)
     WindowRenderer::Pane dock{&dockSnapshot, {}};
     dock.params.rect = QRect(0, Rows * ch, Cols * cw, ch);
     dock.params.contentOrigin = dock.params.rect.topLeft();
-    renderer->setDocks({dock});
     const QPoint inDock(cw / 2, Rows * ch + ch / 2);
-    for (bool shaded : {false, true}) {
+    enum class Chain { None, Text, Pane, Window, Overview, PaneEffects };
+    for (const Chain kind : {Chain::None, Chain::Text, Chain::Pane, Chain::Window, Chain::Overview, Chain::PaneEffects}) {
         ShaderChains chains;
-        if (shaded) chains.window = {program};
+        if (kind == Chain::Text) chains.text = {program};
+        if (kind == Chain::Pane) chains.pane = {program};
+        if (kind == Chain::Window) chains.window = {program};
+        if (kind == Chain::Overview) chains.overview = {program};
+        if (kind == Chain::PaneEffects) chains.paneEffects = {program};
         renderer->setShaderChains(chains);
+        renderer->setOverview(kind == Chain::Overview ? overviewAt(true, 1.0f, 0.0f, Clock::now()) : WindowRenderer::Overview{});
+        renderer->setPaneEffects({kind == Chain::PaneEffects, false, std::nullopt, 1.0f});
+        renderer->setDocks({dock});
+        SCOPED_TRACE(int(kind));
         const QImage image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
         EXPECT_PIXEL(image, inDock, rgb(dockSnapshot.cells[0].bg));
-        if (shaded) EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(255, 0, 255));
+        if (kind != Chain::None) EXPECT_PIXEL(image, cellCenter(1, 1), qRgb(255, 0, 255));
+    }
+}
+
+TEST_F(Render, DocksAreDrawnOnlyInTheFrameThatSetsThem)
+{
+    // The renderer keeps no dock pointer past a frame: a frame without its
+    // own setDocks() shows the clear colour where the dock was.
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    AfterglowVt::Terminal dockTerminal(Cols, 1, host);
+    dockTerminal.resize(Cols, 1, cw, ch);
+    dockTerminal.feed("\x1b[?25l\x1b[41m\x1b[2K");
+    auto dockSnapshot = std::make_unique<PaneSnapshot>();
+    dockSnapshot->capture(dockTerminal);
+    const QSize size(Cols * cw, (Rows + 1) * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(0, 0, Cols * cw, Rows * ch);
+    WindowRenderer::Pane dock{dockSnapshot.get(), {}};
+    dock.params.rect = QRect(0, Rows * ch, Cols * cw, ch);
+    dock.params.contentOrigin = dock.params.rect.topLeft();
+    const QPoint inDock(cw / 2, Rows * ch + ch / 2);
+    const QRgb red = rgb(dockSnapshot->cells[0].bg);
+    renderer->setDocks({dock});
+    EXPECT_PIXEL(renderer->renderToImage(size, {pane}, {}, 0xFF000000u), inDock, red);
+    // As the window frees a dock between frames.
+    dockSnapshot.reset();
+    EXPECT_PIXEL(renderer->renderToImage(size, {pane}, {}, 0xFF000000u), inDock, qRgb(0, 0, 0));
+}
+
+TEST_F(Render, DockImagesAreUploadedWithTheirDock)
+{
+    // A green 1x1 kitty image in a dock that no pane shows: its texture is
+    // uploaded for the dock itself, with and without a chain.
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    AfterglowVt::Terminal dockTerminal(Cols, 1, host);
+    dockTerminal.resize(Cols, 1, cw, ch);
+    dockTerminal.feed("\x1b[?25l\x1b[41m\x1b[2K\x1b[1;2H\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1,q=2;AP8A/w==\x1b\\");
+    PaneSnapshot dockSnapshot;
+    dockSnapshot.capture(dockTerminal);
+    ASSERT_EQ(dockSnapshot.images.size(), 1u);
+    const QSize size(Cols * cw, (Rows + 1) * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(0, 0, Cols * cw, Rows * ch);
+    WindowRenderer::Pane dock{&dockSnapshot, {}};
+    dock.params.rect = QRect(0, Rows * ch, Cols * cw, ch);
+    dock.params.contentOrigin = dock.params.rect.topLeft();
+    for (bool shaded : {false, true}) {
+        ShaderChains chains;
+        if (shaded) chains.window = {ShaderProgram::passthrough()};
+        renderer->setShaderChains(chains);
+        renderer->setDocks({dock});
+        SCOPED_TRACE(shaded);
+        const QImage image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        EXPECT_PIXEL_NEAR(image, QPoint(cw + cw / 2, Rows * ch + ch / 2), qRgb(0, 255, 0), 40);
+        EXPECT_PIXEL(image, QPoint(cw / 2, Rows * ch + ch / 2), rgb(dockSnapshot.cells[0].bg));
     }
 }
 

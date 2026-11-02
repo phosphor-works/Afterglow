@@ -184,7 +184,7 @@ The stored data remains available for a later installation.
 | --- | --- |
 | [Project navigator](../data/examples/packages/project-navigator/README.md) | Finds directories and opens project layouts |
 | [Project autosave](../data/examples/packages/project-autosave/README.md) | Saves selected layouts periodically and supplies a restore selector |
-| [Tab line](../data/examples/packages/tab-status/README.md) | Draws the tab bar as a tab line with Git, directory, command and exit information |
+| [Tab line](../data/examples/packages/tab-line/README.md) | Draws the tab bar as a tab line with Git, directory, command and exit information |
 | [Scene controls](../data/examples/packages/scene-controls/README.md) | Selects, changes and saves shader parameters |
 | [Contextual scene](../data/examples/packages/contextual-scene/README.md) | Changes scene intensity from audio and history data |
 | [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |

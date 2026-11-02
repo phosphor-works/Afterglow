@@ -34,14 +34,26 @@ local Defaults={
     section={fg=0,bg=4}, active={fg=0,bg=4}, inactive={fg=7,bg=8},
     component={fg=15,bg=8}, accent={fg=0,bg=6},
 }
+-- A block's colors. A configured block that gives only fg or bg keeps the
+-- default of the other.
 local function color(config,name)
     local custom=type(config.colors)=="table" and config.colors[name]
-    return type(custom)=="table" and custom or Defaults[name]
+    local default=Defaults[name]
+    if type(custom)~="table" then return default end
+    return {fg=custom.fg or default.fg,bg=custom.bg or default.bg}
 end
+-- Afterglow takes at most 128 runs in a line. Each tab takes 2, and the other
+-- parts at most 23.
+local MaxTabs=48
+-- The cells of a block: its text, a space on each side and the separator
+-- before it. UTF-8 bytes are never fewer than the cells that the text takes.
+local function cells(text) return #text+3 end
 -- One window's tab line, like tabline.wez: the project on the left, then the
 -- tabs, then the focused pane's components against the right edge. tabs are
 -- in their window order; values are segments.values of the focused pane.
-function segments.line(window,tabs,values,config)
+-- width is the window's width in cells when it is known. Tabs that do not
+-- fit it, or past MaxTabs, show as "+N" on each side of the current tab.
+function segments.line(window,tabs,values,config,width)
     local powerline=config.powerline~=false
     local runs={}
     local function add(run) table.insert(runs,run) end
@@ -55,15 +67,12 @@ function segments.line(window,tabs,values,config)
         previous=c
     end
     local project=clean(window.project,40)
-    if project~="" then block(project,color(config,"section"),nil,true) end
     local max=math.clamp(tonumber(config.tab_max_length) or 24,4,80)
-    for _,tab in ipairs(tabs) do
+    local titles={}
+    for i,tab in ipairs(tabs) do
         local title=trim(clean(tab.title,200),max)
-        block(tostring(tab.index+1).." "..(title~="" and title or "shell"),
-            color(config,tab.active and "active" or "inactive"),"tab:"..tab.id)
+        titles[i]=tostring(tab.index+1).." "..(title~="" and title or "shell")
     end
-    if previous and powerline then add({text=Right,fg=previous.bg}) end
-    add({spacer=true})
     -- The pane components, from the configured list, against the right edge.
     local names=type(config.segments)=="table" and config.segments or {"command","exit","git","cwd","context"}
     local shown={}
@@ -71,6 +80,39 @@ function segments.line(window,tabs,values,config)
         if i>8 then break end
         if values[name] and values[name]~="" then table.insert(shown,values[name]) end
     end
+    -- The tabs that fit between the project and the components: all of them,
+    -- or the current tab and its neighbors.
+    local first,last=1,#tabs
+    local room=(width or math.huge)-1-(project~="" and cells(project) or 0)
+    local need=0
+    for _,text in ipairs(shown) do room-=cells(text) end
+    for _,text in ipairs(titles) do need+=cells(text) end
+    if #tabs>0 and (#tabs>MaxTabs or need>room) then
+        for i,tab in ipairs(tabs) do
+            if tab.active then first=i end
+        end
+        last=first
+        room-=2*cells("+"..#tabs)
+        local used,grew=cells(titles[first]),true
+        while grew do
+            grew=false
+            if last-first+1<MaxTabs and titles[last+1] and used+cells(titles[last+1])<=room then
+                last+=1;used+=cells(titles[last]);grew=true
+            end
+            if last-first+1<MaxTabs and titles[first-1] and used+cells(titles[first-1])<=room then
+                first-=1;used+=cells(titles[first]);grew=true
+            end
+        end
+    end
+    if project~="" then block(project,color(config,"section"),nil,true) end
+    -- A click on "+N" goes to the nearest hidden tab.
+    if first>1 then block("+"..(first-1),color(config,"inactive"),"tab:"..tabs[first-1].id) end
+    for i=first,last do
+        block(titles[i],color(config,tabs[i].active and "active" or "inactive"),"tab:"..tabs[i].id)
+    end
+    if last<#tabs then block("+"..(#tabs-last),color(config,"inactive"),"tab:"..tabs[last+1].id) end
+    if previous and powerline then add({text=Right,fg=previous.bg}) end
+    add({spacer=true})
     local before
     for i,text in ipairs(shown) do
         local c=color(config,i==#shown and "accent" or "component")

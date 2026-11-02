@@ -6,6 +6,7 @@
 #include <QCursor>
 #include <QObject>
 #include <QSize>
+#include <QUrl>
 
 #include <cstdint>
 #include <memory>
@@ -37,17 +38,26 @@ class ChromeRenderControl;
 /// texture on the shared GpuDevice, which the window composites over the
 /// terminal. No second GPU device or context is involved.
 ///
-/// The scene is made in the background from the moment the window is: the
-/// type loads on the QML loader thread and the objects are incubated in short
-/// slices of the event loop. The first frame that shows chrome then only
-/// renders it. A frame that needs the chrome before it is made finishes it.
+/// The scene is made in the background: the application loads the type on
+/// the QML loader thread once, and each layer incubates its objects in short
+/// slices of the event loop from the moment its window is made. The first
+/// frame that shows chrome then only renders it. A frame that needs the
+/// chrome before it is made finishes it.
 class ChromeLayer : public QObject
 {
     Q_OBJECT
 
 public:
-    ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQmlEngine& engine, ChromeController* controller);
+    /// @p component is the chrome type, shared by every window of the
+    /// engine, which the application loads.
+    ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQmlComponent& component, ChromeController* controller);
     ~ChromeLayer() override;
+
+    /// The chrome scene, by its URL in the module's resources. A component
+    /// loaded from the module by name is created as a C++ type when its
+    /// load ended before an incubator asks for it, and Qt 6.12 then makes no
+    /// object and crashes; the document's URL always loads as QML.
+    static QUrl sceneUrl();
 
     /// Re-renders the scene if it changed or the size did. Must be called
     /// outside any QRhi frame: Qt Quick records its own offscreen frame.
@@ -92,10 +102,10 @@ private:
 
     AfterglowRender::GpuDevice& m_device;
     QWindow* m_host;
+    QQmlComponent& m_component;
     QQmlEngine& m_engine;
     ChromeController* m_controller;
 
-    std::unique_ptr<QQmlComponent> m_component;
     std::unique_ptr<ChromeIncubator> m_incubator;
     std::unique_ptr<ChromeRenderControl> m_control;
     std::unique_ptr<QQuickWindow> m_window;

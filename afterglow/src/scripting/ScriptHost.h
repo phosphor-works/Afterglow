@@ -89,7 +89,10 @@ public:
     static constexpr int MaxActions = 32; ///< palette actions of one script
     static constexpr int MaxPendingResults = 64;
     static constexpr int MaxResultsPerSecond = 64;
-    /// Handler calls for one script each second: events, timers and watchers.
+    /// Handler calls for one script each second, once for events and once
+    /// for its timers and watchers: a title storm must not stop its timers.
+    /// Keys, dock clicks and on_load come at the user's rate and are not
+    /// counted.
     static constexpr int MaxCallbacksPerSecond = 64;
     static constexpr int MaxSleeping = 16;
     static constexpr int MaxSleepMs = 600000;
@@ -156,8 +159,9 @@ private:
     std::function<void(EffectResult)> completion(const ScriptPtr& script, const QString& request,
                                                  const QString& kind, quint32 eventPane);
     bool withinBudget(Script& script, bool structural);
-    /// Counts a handler call against the script's callback budget.
-    bool admitCallback(Script& script);
+    /// Counts a handler call against the script's callback budget: the one
+    /// for events, or for @p task the one for its timers and watchers.
+    bool admitCallback(Script& script, bool task = false);
     /// The event's pane: its record, or only its id once it has closed.
     QVariantMap eventPane(quint32 pane) const;
     /// Stops a script at run time and withdraws what it contributes.

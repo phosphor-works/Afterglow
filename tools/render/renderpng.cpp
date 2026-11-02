@@ -11,10 +11,11 @@
 // --param REF:ID=VALUE overrides a pack parameter. --time sets iTime, and
 // --signal CH=VALUE@AGE sets uSignal[CH] as if set AGE seconds earlier.
 // --wake-from COL,ROW renders a frame with the cursor there --wake-age
-// seconds earlier, so cursor effects show a jump. Further options set the
-// other renderer inputs (pointer, selection, search, glide, scroll shift,
-// hovered link, blink phase, bidi, contrast, hinting, cell scale); --help
-// lists them all.
+// seconds earlier, so cursor effects show a jump. --dock EDGE:CELLS:TEXT adds
+// a script dock at a window edge, drawn after every chain as in the window.
+// Further options set the other renderer inputs (pointer, selection, search,
+// glide, scroll shift, hovered link, blink phase, bidi, contrast, hinting,
+// cell scale); --help lists them all.
 
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
@@ -39,6 +40,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <optional>
 
 namespace {
@@ -180,6 +182,8 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("search-current"), QStringLiteral("With --search: the current match (default none)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("hover-link"), QStringLiteral("Underline columns C0 to C1 of row ROW as a hovered link."), QStringLiteral("row,c0-c1")});
     parser.addOption({QStringLiteral("blink-off"), QStringLiteral("Draw the off phase of a blinking cursor and of blinking text.")});
+    parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
+                      QStringLiteral("edge:cells:text")});
     parser.addPositionalArgument(QStringLiteral("input"), QStringLiteral("Byte stream, or - for stdin."));
     parser.addPositionalArgument(QStringLiteral("output"), QStringLiteral("PNG to write."));
     parser.process(app);
@@ -460,10 +464,42 @@ int run(QGuiApplication& app)
         gridCols = int(c);
         gridRows = int(r);
     }
+    // Script docks, laid out as the window does: from the frame's edge
+    // inwards in the order given, top and bottom across the whole width,
+    // left and right between them. The panes keep their size.
+    struct DockSpec
+    {
+        QString edge;
+        int extent; ///< pixels
+        QByteArray text;
+    };
+    std::vector<DockSpec> dockSpecs;
+    int dockTop = 0, dockBottom = 0, dockLeft = 0, dockRight = 0;
+    for (const QString& value : parser.values(QStringLiteral("dock"))) {
+        const qsizetype first = value.indexOf(QLatin1Char(':'));
+        const qsizetype second = first < 0 ? -1 : value.indexOf(QLatin1Char(':'), first + 1);
+        const QString edge = value.left(first);
+        const bool side = edge == QLatin1String("left") || edge == QLatin1String("right");
+        bool cellsOk = false;
+        const int cells = second < 0 ? 0 : value.mid(first + 1, second - first - 1).toInt(&cellsOk);
+        if (second < 0 || !cellsOk || cells < 1 || cells > (side ? 80 : 8)
+            || !(side || edge == QLatin1String("top") || edge == QLatin1String("bottom"))) {
+            std::fprintf(stderr, "--dock requires EDGE:CELLS:TEXT, edge top, bottom, left or right, cells 1..8 for top and bottom, 1..80 for left and right\n");
+            return 1;
+        }
+        const int extent = cells * (side ? metrics.cellWidth : metrics.cellHeight);
+        int& inset = edge == QLatin1String("top")    ? dockTop
+            : edge == QLatin1String("bottom")        ? dockBottom
+            : edge == QLatin1String("left")          ? dockLeft
+                                                     : dockRight;
+        inset += extent;
+        dockSpecs.push_back({edge, extent, value.mid(second + 1).toUtf8()});
+    }
     const qint64 fullWidth = split ? qint64(size.width()) * 2 + 2 : qint64(size.width() + 2) * gridCols - 2;
     const qint64 fullHeight = qint64(size.height() + 2) * gridRows - 2;
-    if (size.width() < 1 || size.height() < 1 || fullWidth > 8192 || fullHeight > 8192
-        || fullWidth * fullHeight > 16 * 1024 * 1024) {
+    const qint64 windowWidth = fullWidth + dockLeft + dockRight, windowHeight = fullHeight + dockTop + dockBottom;
+    if (size.width() < 1 || size.height() < 1 || windowWidth > 8192 || windowHeight > 8192
+        || windowWidth * windowHeight > 16 * 1024 * 1024) {
         std::fprintf(stderr, "framebuffer must fit within 8192 pixels per side and 16 megapixels\n");
         return 1;
     }
@@ -560,6 +596,59 @@ int run(QGuiApplication& app)
                 cell.params.focused = panes.empty() && pane.params.focused;
                 panes.push_back(cell);
             }
+        }
+    }
+    // Each dock is a terminal of its own that runs no program, without wrap,
+    // cursor, scrollback or bidi, as the window makes it.
+    std::vector<std::unique_ptr<AfterglowVt::Terminal>> dockTerminals;
+    std::vector<AfterglowRender::PaneSnapshot> dockSnapshots(dockSpecs.size());
+    std::vector<AfterglowRender::WindowRenderer::Pane> docks;
+    if (!dockSpecs.empty()) {
+        const QPoint offset(dockLeft, dockTop);
+        for (auto& region : panes) {
+            region.params.rect.translate(offset);
+            region.params.contentOrigin += offset;
+        }
+        for (auto& overlay : overlays) overlay.first.translate(offset);
+        frameSize += QSize(dockLeft + dockRight, dockTop + dockBottom);
+        QRect area(QPoint(0, 0), frameSize);
+        std::vector<std::size_t> order(dockSpecs.size());
+        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_partition(order.begin(), order.end(), [&](std::size_t i) {
+            return dockSpecs[i].edge == QLatin1String("top") || dockSpecs[i].edge == QLatin1String("bottom");
+        });
+        AfterglowVt::TerminalOptions dockOptions = options;
+        dockOptions.maxScrollback = 0;
+        dockOptions.bidi = AfterglowVt::BidiMode::Off;
+        for (const std::size_t i : order) {
+            const DockSpec& spec = dockSpecs[i];
+            QRect rect;
+            if (spec.edge == QLatin1String("top")) {
+                rect = QRect(area.left(), area.top(), area.width(), spec.extent);
+                area.setTop(area.top() + spec.extent);
+            } else if (spec.edge == QLatin1String("bottom")) {
+                rect = QRect(area.left(), area.bottom() + 1 - spec.extent, area.width(), spec.extent);
+                area.setBottom(area.bottom() - spec.extent);
+            } else if (spec.edge == QLatin1String("left")) {
+                rect = QRect(area.left(), area.top(), spec.extent, area.height());
+                area.setLeft(area.left() + spec.extent);
+            } else {
+                rect = QRect(area.right() + 1 - spec.extent, area.top(), spec.extent, area.height());
+                area.setRight(area.right() - spec.extent);
+            }
+            const int dockCols = std::max(2, rect.width() / metrics.cellWidth);
+            const int dockRows = std::max(1, rect.height() / metrics.cellHeight);
+            auto& dockTerminal = dockTerminals.emplace_back(std::make_unique<AfterglowVt::Terminal>(dockCols, dockRows, host, dockOptions));
+            dockTerminal->resize(dockCols, dockRows, metrics.cellWidth, metrics.cellHeight);
+            dockTerminal->feed("\x1b[?7l\x1b[?25l");
+            dockTerminal->feed(std::string_view(spec.text.constData(), std::size_t(spec.text.size())));
+            dockSnapshots[i].capture(*dockTerminal);
+            AfterglowRender::WindowRenderer::Pane dock;
+            dock.snapshot = &dockSnapshots[i];
+            dock.params.rect = rect;
+            dock.params.contentOrigin = rect.topLeft();
+            dock.params.backgroundAlpha = alpha;
+            docks.push_back(dock);
         }
     }
     if (parser.isSet(QStringLiteral("wake-from"))) {
@@ -724,6 +813,8 @@ int run(QGuiApplication& app)
             stampSignals(*ghost);
             renderer.setPaneEffects({true, true, ghost, closeProgress});
         }
+        // The renderer takes docks for one frame, as the window sets them before each.
+        renderer.setDocks(docks);
         const auto renderStart = std::chrono::steady_clock::now();
         const QImage image = renderer.renderToImage(frameSize, panes, overlays, clear);
         const auto renderEnd = std::chrono::steady_clock::now();

@@ -17,9 +17,16 @@ Item {
 
     // How long the history scrollbar takes to fade in or out.
     readonly property int scrollbarFade: 200
+    // Where the panes are, in logical pixels: the window less the tab bar
+    // and the scripts' docks. The overlays that belong to the panes (the
+    // search bar and the badges) keep inside it, off a dock.
+    readonly property rect paneArea: root.controller.paneArea.width > 0 ? root.controller.paneArea
+                                     : Qt.rect(0, tabBar.height, root.width, root.height - tabBar.height)
+    readonly property real paneRightInset: Math.max(0, root.width - paneArea.x - paneArea.width)
+    readonly property real paneBottomInset: Math.max(0, root.height - paneArea.y - paneArea.height)
     // The most each bottom badge takes while both show: half of what the
     // three 12 px margins leave, so they never overlap.
-    readonly property real badgeShare: Math.max(0, (width - 36) / 2)
+    readonly property real badgeShare: Math.max(0, (paneArea.width - 36) / 2)
 
     // Called by the host for every pointer event: true if the chrome takes it.
     // The history scrollbar does not take the wheel, so the wheel over it still
@@ -212,9 +219,11 @@ Item {
     SearchBar {
         id: searchBar
         controller: root.controller
-        anchors.top: tabBar.visible ? tabBar.bottom : root.top
+        anchors.top: root.top
         anchors.right: root.right
         anchors.margins: 8
+        anchors.topMargin: root.paneArea.y + 8
+        anchors.rightMargin: root.paneRightInset + 8
         visible: root.controller.searchOpen
         onVisibleChanged: root.overlayChanged()
     }
@@ -285,8 +294,10 @@ Item {
         anchors.bottom: root.bottom
         anchors.right: root.right
         anchors.margins: 12
+        anchors.bottomMargin: root.paneBottomInset + 12
+        anchors.rightMargin: root.paneRightInset + 12
         visible: root.controller.keyMode.length > 0
-        width: Math.min(keyModeLabel.implicitWidth + 16, scriptStatusBadge.visible ? root.badgeShare : root.width * 0.6)
+        width: Math.min(keyModeLabel.implicitWidth + 16, scriptStatusBadge.visible ? root.badgeShare : root.paneArea.width * 0.6)
         height: keyModeLabel.implicitHeight + 16
         color: systemPalette.highlight
         radius: 4
@@ -309,8 +320,10 @@ Item {
         anchors.bottom: root.bottom
         anchors.left: root.left
         anchors.margins: 12
+        anchors.bottomMargin: root.paneBottomInset + 12
+        anchors.leftMargin: root.paneArea.x + 12
         visible: root.controller.scriptStatus.length > 0
-        width: Math.min(scriptStatusLabel.implicitWidth + 16, keyModeBadge.visible ? root.badgeShare : root.width * 0.6)
+        width: Math.min(scriptStatusLabel.implicitWidth + 16, keyModeBadge.visible ? root.badgeShare : root.paneArea.width * 0.6)
         height: scriptStatusLabel.implicitHeight + 12
         color: systemPalette.window
         radius: 4

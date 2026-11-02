@@ -19,6 +19,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
+#include <QQmlComponent>
 #include <QQmlEngine>
 #include <QStringList>
 
@@ -69,6 +70,11 @@ private:
     SettingsStore m_settings;
     AfterglowRender::GpuDevice m_device;
     QQmlEngine m_engine;
+    // The chrome scene, one for all windows. It outlives every window
+    // (~Application deletes them first) and goes just before the engine it
+    // loads into: a window's own component could be freed while its
+    // asynchronous load still runs.
+    QQmlComponent m_chromeComponent;
     ShaderLibrary m_shaders;
     // Before the services, which hand the script host to windows.
     Control m_control;

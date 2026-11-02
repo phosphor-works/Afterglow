@@ -1,5 +1,5 @@
 {
-  "id": "tab-status",
+  "id": "tab-line",
   "version": "1.0.0",
   "api_version": 1,
   "state_version": 1,
@@ -17,6 +17,7 @@
       "context"
     ],
     "powerline": true,
+    "single_tab": true,
     "tab_max_length": 24,
     "git": true,
     "git_changes": false,

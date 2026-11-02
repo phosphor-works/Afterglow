@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 
 # Local state that never goes into git: another tool's workspace, Python caches, build trees
@@ -45,6 +46,23 @@ MSG_LOCAL = (
 )
 MSG_BROAD = 'Stage files by name (git add path...), not with -A, -u, ., *, :/ or commit -a.'
 MSG_PUSH = 'Never force-push. Fix the branch with a new commit instead.'
+MSG_PUSH_MAIN = ('Never push to main. Push a branch and open a pull request. The user merges it. '
+                 'If this command makes the branch, name it: git push -u origin BRANCH.')
+MSG_PUSH_UNKNOWN = ('This push names no branch, and the command runs git in a directory the guard cannot resolve. '
+                    'Name the branch: git push -u origin BRANCH.')
+# A directory the guard cannot know before the shell runs: $(...), $VAR, a backquote command, cd -, GIT_DIR
+UNKNOWN = object()
+# Wrapper options that take the next word as their value
+WRAPPER_VALUES = {
+    'env': {'-C', '--chdir', '-u', '--unset', '-S', '--split-string'},
+    'timeout': {'-s', '--signal', '-k', '--kill-after'},
+    'nice': {'-n', '--adjustment'},
+    'ionice': {'-c', '--class', '-n', '--classdata', '-p', '--pid'},
+    'stdbuf': {'-i', '--input', '-o', '--output', '-e', '--error'},
+    'xargs': {'-I', '--replace', '-d', '--delimiter', '-a', '--arg-file', '-E', '-n', '--max-args', '-P', '-s'},
+    'exec': {'-a'},
+    'time': {'-f', '--format', '-o', '--output'},
+}
 MSG_PKILL = (
     'pkill and killall match by name, and the user runs Afterglow as their terminal: `pkill afterglow` closes the '
     "user's own windows, and possibly this session. Use `pgrep -a NAME`, then `kill PID` on a build/ process only."
@@ -86,17 +104,65 @@ def tokens(command):
     lex = shlex.shlex(command, posix=True, punctuation_chars=SEPARATORS)
     lex.whitespace = ' \t\r'
     lex.whitespace_split = True
+    lex.commenters = ''
     try:
         return list(lex)
     except ValueError:  # unbalanced quotes: split at whitespace and separators, quotes dropped
         return re.findall(r'[%s]+|[^\s%s]+' % (re.escape(SEPARATORS), re.escape(SEPARATORS)), command.replace('"', ''))
 
 
+def without_substitutions(command):
+    """(the command line with each $(...) and backquote command as one word, $SUBST; the bodies of those commands).
+    Quotes are followed as the shell follows them: nothing is special inside single quotes or after a #."""
+    out, bodies, i, quote, word_start = [], [], 0, '', True
+    while i < len(command):
+        ch = command[i]
+        if quote == "'" or (not quote and ch == '#' and word_start):
+            end = command.find("'", i) if quote else command.find('\n', i + 1)
+            end = len(command) if end < 0 else end + (quote == "'")
+            if quote:  # a comment is left out: it is not a command, and its apostrophes are not quotes
+                out.append(command[i:end])
+            i, quote, word_start = end, '', False
+            continue
+        if ch == '\\':
+            if command[i + 1 : i + 2] != '\n':  # a backslash before a newline joins the lines
+                out.append(command[i : i + 2])
+            i, word_start = i + 2, False
+            continue
+        word_start = not quote and ch in ' \t\n;&|('
+        if ch in '\'"' and quote in ('', ch) and not (ch == "'" and quote):
+            quote = '' if quote else ch
+        if command.startswith('$(', i):
+            depth, j = 1, i + 2
+            while j < len(command) and depth:
+                depth += {'(': 1, ')': -1}.get(command[j], 0)
+                j += 1
+            if not depth:
+                out.append('$SUBST')
+                bodies.append(command[i + 2 : j - 1])
+                i = j
+                continue
+        elif ch == '`':
+            j = command.find('`', i + 1)
+            if j >= 0:
+                out.append('$SUBST')
+                bodies.append(command[i + 1 : j])
+                i = j + 1
+                continue
+        out.append(ch)
+        i += 1
+    return ''.join(out), bodies
+
+
 def simple_commands(command):
     """(wrappers, command word, arguments) for every simple command in a command line, including the ones in a
-    command substitution inside double quotes."""
+    command substitution. A substitution inside single quotes or a comment is text, as in the shell."""
     command = strip_heredocs(command)
-    lines = [command] + re.findall(r'\$\(([^()]*)\)', command) + re.findall(r'`([^`]*)`', command)
+    lines, pending = [], [command]
+    while pending:
+        line, bodies = without_substitutions(pending.pop())
+        lines.append(line)
+        pending += bodies
     for line in lines:
         words = []
         for tok in tokens(line) + [';']:
@@ -114,13 +180,23 @@ def split_wrappers(words):
         w = words[i]
         name = os.path.basename(w)
         if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', w):  # VAR=value before a command
+            if w.startswith(('GIT_DIR=', 'GIT_WORK_TREE=')):
+                wrappers.append('chdir:$')  # git then runs elsewhere
             i += 1
         elif name in WRAPPERS:
             wrappers.append(name)
             i += 1
-            # the wrapper's options, and timeout's duration
+            # the wrapper's options with their values, and timeout's duration
             while i < len(words) and (words[i].startswith('-') or re.match(r'^[\d.]+[smhd]?$', words[i])):
-                i += 1
+                option = words[i]
+                takes = option in WRAPPER_VALUES.get(name, ())
+                if name == 'env' and option in ('-C', '--chdir') and i + 1 < len(words):
+                    wrappers.append('chdir:' + words[i + 1])
+                elif name == 'env' and option.startswith('--chdir='):
+                    wrappers.append('chdir:' + option[len('--chdir='):])
+                elif name == 'env' and option.startswith('-C') and len(option) > 2:
+                    wrappers.append('chdir:' + option[2:])
+                i += 2 if takes else 1
         else:
             return wrappers, name, words[i + 1 :]
     return wrappers, '', []
@@ -138,7 +214,31 @@ def git_subcommand(args):
     return (args[i], args[i + 1 :]) if i < len(args) else ('', [])
 
 
-def check_git(args):
+def resolve(base, target):
+    """Where `cd TARGET` from BASE lands, or UNKNOWN when the shell decides (expansions, cd -)."""
+    if base is UNKNOWN or '$' in target or '`' in target or target == '-':
+        return UNKNOWN
+    path = os.path.abspath(os.path.join(base, os.path.expanduser(target)))
+    # A cd that fails leaves the shell where it was, which is kept; a directory that mkdir made earlier in the
+    # command belongs to the repository of its nearest existing parent.
+    while path != '/' and not os.path.isdir(path):
+        path = os.path.dirname(path)
+    return path
+
+
+def git_directory(args, cwd):
+    """The directory git runs in: @p cwd, then its own -C options (they stack, like cd)."""
+    directory, i = cwd, 0
+    while i < len(args) and args[i].startswith('-'):
+        if args[i] == '-C' and i + 1 < len(args):
+            directory = resolve(directory, args[i + 1])
+        elif args[i].startswith(('--git-dir', '--work-tree')):
+            directory = UNKNOWN
+        i += 1 + (args[i] in ('-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'))
+    return directory
+
+
+def check_git(args, places):
     sub, rest = git_subcommand(args)
     if sub in ('add', 'stage'):
         paths, broad, force = [], False, False
@@ -173,7 +273,56 @@ def check_git(args):
         for a in rest:
             if a.startswith(('--force', '--mirror')) or 'f' in short_flags(a) or a.startswith('+'):
                 return MSG_PUSH
+        return pushes_main(rest, [git_directory(args, place) for place in places])
     return None
+
+
+def current_branch(directory):
+    try:
+        out = subprocess.run(['git', 'symbolic-ref', '--short', '-q', 'HEAD'], capture_output=True, text=True,
+                             timeout=5, cwd=directory)
+        return out.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
+def pushes_main(rest, directories):
+    """The refusal for `git push ARGS`, if it can update main: a refspec whose destination is main, --all, or no
+    refspec (push.default then pushes the current branch) while main is checked out in any directory the command
+    may run git in. A directory the guard cannot resolve counts as main for HEAD and the current branch."""
+
+    def current_is_main():
+        if any(d is UNKNOWN for d in directories):
+            return MSG_PUSH_UNKNOWN
+        return MSG_PUSH_MAIN if any(current_branch(d) == 'main' for d in directories) else None
+
+    words, k = [], 0
+    while k < len(rest):
+        a = rest[k]
+        k += 1
+        if a == '--all' or a == '--branches':
+            return MSG_PUSH_MAIN
+        if a in ('-o', '--push-option', '--repo', '--receive-pack', '--exec'):
+            k += 1
+        elif not a.startswith('-'):
+            words.append(a)
+    refspecs = words[1:]
+    if not refspecs:
+        return current_is_main()
+    for spec in refspecs:
+        dst = spec.split(':', 1)[1] if ':' in spec else spec
+        if dst in ('HEAD', '@') or '$' in dst:  # $(git branch --show-current) is the current branch
+            if message := current_is_main():
+                return message
+        elif dst.removeprefix('refs/').removeprefix('heads/') == 'main':
+            return MSG_PUSH_MAIN
+    return None
+
+
+def under_tmp(path):
+    """An absolute path, written out, under /tmp. A relative path, ~ or $VAR is resolved by the shell, in a place
+    the guard does not know."""
+    return path.startswith('/') and os.path.realpath(path).startswith('/tmp/')
 
 
 def temp_destination(command, args):
@@ -185,9 +334,9 @@ def temp_destination(command, args):
         elif a.startswith('--prefix='):
             prefix = a.split('=', 1)[1]
     if prefix is not None:
-        return os.path.realpath(prefix).startswith('/tmp/')
+        return under_tmp(prefix)
     match = re.search(r'(?:^|\s)DESTDIR=(\S+)', command)
-    return bool(match) and os.path.realpath(match.group(1).strip('\'"')).startswith('/tmp/')
+    return bool(match) and under_tmp(match.group(1).strip('\'"'))
 
 
 def is_install(word, args, command=''):
@@ -204,9 +353,32 @@ def private_bus(command, cmds):
     return any(w == 'dbus-run-session' for _, w, _ in cmds) or 'DBUS_SESSION_BUS_ADDRESS=' in command
 
 
-def check_bash(command):
+def check_bash(command, cwd=None):
     cmds = list(simple_commands(command))
+    # Every directory a later git may run in: the start, each cd, pushd and env -C target, and UNKNOWN after a
+    # GIT_DIR or GIT_WORK_TREE. A cd in a subshell or a failed cd leaves the start in place, so all of them are
+    # kept, not only the last. A nested shell starts from all of them.
+    places = list(cwd) if isinstance(cwd, list) else [cwd or os.getcwd()]
     for wrappers, word, args in cmds:
+        targets = [w[len('chdir:'):] for w in wrappers if w.startswith('chdir:')]
+        if word in ('cd', 'pushd'):
+            operands = [a for a in args if not a.startswith('-') or a == '-']
+            targets += operands[:1] or ['~']
+        if word == 'export' and any(a.startswith(('GIT_DIR=', 'GIT_WORK_TREE=')) for a in args):
+            targets.append('$')
+        places += [resolve(place, target) for target in targets for place in list(places)]
+        places = list(dict.fromkeys(places))
+        if len(places) > 16:  # many cds: the guard stops guessing
+            places = places[:16] + [UNKNOWN]
+        # After this command's own env -C or GIT_DIR, which the nested shell inherits
+        script = None
+        if word in ('bash', 'sh', 'zsh'):
+            flag = next((k for k, a in enumerate(args) if a == '-c' or 'c' in short_flags(a)), None)
+            script = args[flag + 1] if flag is not None and flag + 1 < len(args) else None
+        elif word == 'eval' and args:
+            script = ' '.join(args)
+        if script is not None and (message := check_bash(script, list(places))):
+            return message
         if word in ('pkill', 'killall'):
             return MSG_PKILL
         if word in ('sudo', 'doas') or 'sudo' in wrappers or 'doas' in wrappers:
@@ -216,7 +388,7 @@ def check_bash(command):
         if word == 'afterglow' and args[:1] == ['ctl'] and not private_bus(command, cmds):
             return MSG_CTL
         if word == 'git':
-            msg = check_git(args)
+            msg = check_git(args, places)
             if msg:
                 return msg
     # kill $(pgrep -f ...), pgrep -f ... | xargs kill, a loop over pgrep -f
@@ -250,7 +422,7 @@ def main():
     params = call.get('tool_input', {})
     message = None
     if tool == 'Bash':
-        message = check_bash(params.get('command', ''))
+        message = check_bash(params.get('command', ''), call.get('cwd'))
     elif tool in ('Edit', 'Write', 'MultiEdit', 'NotebookEdit'):
         message = check_edit(params.get('file_path') or params.get('notebook_path') or '')
     if message:

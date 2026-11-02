@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "Accessibility.h"
+#include "../DockArea.h"
 #include "../TerminalWindow.h"
+#include <QHash>
 #include <QAccessibleObject>
 #include <QGuiApplication>
 #include <QQuickItem>
@@ -142,6 +144,51 @@ private:
     std::optional<std::pair<std::uint64_t, std::uint64_t>> m_notified;
     QMetaObject::Connection m_output;
 };
+// A script's dock: its text, read-only. Its items cannot be pressed.
+// A dock is not a QObject, so the window's accessible object makes these
+// and the dock's window forgets them before the dock goes.
+class AccessibleDock final : public QAccessibleInterface {
+public:
+    AccessibleDock(TerminalWindow* w, const DockArea* d) : m_window(w), m_dock(d) {}
+    bool isValid() const override { return m_window; }
+    QObject* object() const override { return nullptr; }
+    QWindow* window() const override { return m_window; }
+    QAccessibleInterface* childAt(int, int) const override { return nullptr; }
+    QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(m_window.data()); }
+    QAccessibleInterface* child(int) const override { return nullptr; }
+    int childCount() const override { return 0; }
+    int indexOfChild(const QAccessibleInterface*) const override { return -1; }
+    QString text(QAccessible::Text kind) const override {
+        if (kind == QAccessible::Name) return m_dock->text();
+        if (kind == QAccessible::Description) return QStringLiteral("Script area");
+        return {};
+    }
+    void setText(QAccessible::Text, const QString&) override {}
+    QRect rect() const override { return m_window ? m_window->accessibleDockRect(m_dock) : QRect(); }
+    QAccessible::Role role() const override { return QAccessible::StaticText; }
+    QAccessible::State state() const override {
+        QAccessible::State s;
+        s.readOnly = true;
+        s.invisible = rect().isEmpty();
+        return s;
+    }
+private:
+    QPointer<TerminalWindow> m_window;
+    const DockArea* m_dock;
+};
+QHash<const DockArea*, QAccessible::Id>& dockIds()
+{
+    static QHash<const DockArea*, QAccessible::Id> ids;
+    return ids;
+}
+QAccessibleInterface* dockInterface(TerminalWindow* w, const DockArea* dock)
+{
+    auto& ids = dockIds();
+    if (const auto it = ids.constFind(dock); it != ids.cend()) return QAccessible::accessibleInterface(*it);
+    auto* made = new AccessibleDock(w, dock);
+    ids.insert(dock, QAccessible::registerAccessibleInterface(made));
+    return made;
+}
 class AccessibleWindow final : public QAccessibleObject {
 public:
     explicit AccessibleWindow(TerminalWindow* w) : QAccessibleObject(w) {}
@@ -152,10 +199,29 @@ public:
         for (auto* p : terminal()->panes()) if (!terminal()->accessiblePaneRect(p).isEmpty()) result.append(p);
         return result;
     }
+    // The children: the visible panes, then the docks that show, then the chrome.
+    QList<QAccessibleInterface*> docks() const {
+        QList<QAccessibleInterface*> result;
+        for (const DockArea* d : terminal()->accessibleDocks()) result.append(dockInterface(terminal(), d));
+        return result;
+    }
     QAccessibleInterface* parent() const override { return QAccessible::queryAccessibleInterface(qApp); }
-    int childCount() const override { return int(visiblePanes().size()) + (terminal()->accessibleChrome() ? 1 : 0); }
-    QAccessibleInterface* child(int i) const override { const auto p = visiblePanes(); return i >= 0 && i < p.size() ? QAccessible::queryAccessibleInterface(p[i]) : i == p.size() ? terminal()->accessibleChrome() : nullptr; }
-    int indexOfChild(const QAccessibleInterface* c) const override { return c && c == terminal()->accessibleChrome() ? int(visiblePanes().size()) : int(visiblePanes().indexOf(qobject_cast<Pane*>(c ? c->object() : nullptr))); }
+    int childCount() const override { return int(visiblePanes().size() + terminal()->accessibleDocks().size()) + (terminal()->accessibleChrome() ? 1 : 0); }
+    QAccessibleInterface* child(int i) const override {
+        const auto p = visiblePanes();
+        if (i >= 0 && i < p.size()) return QAccessible::queryAccessibleInterface(p[i]);
+        const auto d = docks();
+        if (i >= p.size() && i < p.size() + d.size()) return d[i - p.size()];
+        return i == p.size() + d.size() ? terminal()->accessibleChrome() : nullptr;
+    }
+    int indexOfChild(const QAccessibleInterface* c) const override {
+        if (!c) return -1;
+        const auto p = visiblePanes();
+        const auto d = docks();
+        if (c == terminal()->accessibleChrome()) return int(p.size() + d.size());
+        if (const auto at = d.indexOf(const_cast<QAccessibleInterface*>(c)); at >= 0) return int(p.size() + at);
+        return int(p.indexOf(qobject_cast<Pane*>(c->object())));
+    }
     QAccessibleInterface* childAt(int x, int y) const override {
         if (auto* chrome = terminal()->accessibleChrome()) if (auto* control = chrome->childAt(x, y)) return control;
         for (int i = 0; i < childCount(); ++i) if (child(i)->rect().contains(x, y)) return child(i);
@@ -197,6 +263,19 @@ void installTerminalAccessibility()
         return true;
     }();
     Q_UNUSED(installed);
+}
+void dockAccessibilityChanged(const DockArea* dock)
+{
+    if (!QAccessible::isActive()) return;
+    // Only a dock that something asked about has an object to tell of.
+    const auto it = dockIds().constFind(dock);
+    if (it == dockIds().cend()) return;
+    QAccessibleEvent event(QAccessible::accessibleInterface(*it), QAccessible::NameChanged);
+    QAccessible::updateAccessibility(&event);
+}
+void releaseDockAccessibility(const DockArea* dock)
+{
+    if (const QAccessible::Id id = dockIds().take(dock)) QAccessible::deleteAccessibleInterface(id);
 }
 void updateTerminalAccessibility(TerminalWindow* w)
 {

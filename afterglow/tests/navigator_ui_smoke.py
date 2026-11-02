@@ -186,11 +186,11 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             desktop.screenshot(args.artifacts / "restored-layout.png")
             check_log()
             print("PASS: navigator UI and package lifecycle", flush=True)
-            # Companion packages: real periodic saves, native restore picker and Git status.
-            for name in ("project-autosave", "tab-status"):
+            # Companion packages: real periodic saves, the native restore picker and the tab line.
+            for name in ("project-autosave", "tab-line"):
                 shutil.copytree(source.parent / name, package.parent / name)
             (package.parent / "project-autosave/config.json").write_text(json.dumps({"interval_seconds": 10}))
-            wait_for(lambda: status() == {name: "active" for name in ("project-navigator", "project-autosave", "tab-status")})
+            wait_for(lambda: status() == {name: "active" for name in ("project-navigator", "project-autosave", "tab-line")})
             active = next(p["id"] for p in panes() if p["cwd"] == str(alpha))
             ctl("save-project", "autosave-demo", "--pane", active)
             ctl("action", "script:project-autosave.enable", "--pane", active)
@@ -222,16 +222,16 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             desktop.screenshot(args.artifacts / "status-running.png")
             time.sleep(5)  # command finishes, then all three tabs receive a refresh
             desktop.screenshot(args.artifacts / "status-failed.png")
-            ctl("action", "script:tab-status.toggle", "--pane", active)
-            status_state = config / "state/scripts/tab-status.json"
+            ctl("action", "script:tab-line.toggle", "--pane", active)
+            status_state = config / "state/scripts/tab-line.json"
             wait_for(lambda: status_state.exists() and json.loads(status_state.read_text())["value"].get("enabled") is False)
             time.sleep(2)
             desktop.screenshot(args.artifacts / "status-disabled.png")
             ctl("action", "script:project-autosave.disable", "--pane", active)
             wait_for(lambda: not json.loads(autosave_state.read_text())["value"].get("enabled", {}).get("autosave-demo"))
             check_log()
-            # The status screenshots are for a person to look at: nothing here reads the rendered marks.
-            print("PASS: periodic project autosave, restart/native restore, tab status toggle state and screenshots", flush=True)
+            # The tab line screenshots are for a person to look at: nothing here reads the rendered marks.
+            print("PASS: periodic project autosave, restart/native restore, tab line toggle state and screenshots", flush=True)
             print("PASS: live installation, fd discovery, keyboard picker/layout, running-window reuse, favorites, cancellation, config reload, uninstall with open selector, reinstall, restart and remembered split layout")
         except BaseException:
             try:
