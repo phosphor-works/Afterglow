@@ -103,6 +103,10 @@ struct Row
     /// A shell prompt starts on this row (OSC 133;A).
     bool promptStart = false;
     LineSize lineSize = LineSize::Single;
+    /// Every cell has the default style, so dropping the row releases no
+    /// style. Only a history row has it: compaction sets it while the row is
+    /// in the cache, so that dropping an old line does not read its cells.
+    bool plain = false;
 
     Row() = default;
     explicit Row(int cols)

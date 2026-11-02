@@ -627,11 +627,25 @@ private:
     char32_t m_lastPrinted = 0;
     int m_lastX = -1;
     int m_lastY = -1;
-    // The properties of the last non-ASCII character that printCodepoints()
-    // looked up: a program that draws with one block character (a progress
-    // bar, a fire) asks for the same one for every cell.
-    char32_t m_propsCp = 0;
-    Unicode::Props m_props;
+    // Recently printed characters and their properties, by the low bits of
+    // the codepoint. Text reuses few characters (a script's letters, block
+    // and box drawing), and the property tables are too large to stay in the
+    // cache while a screen of cells is written. Codepoint 0 never prints, so
+    // it marks an empty entry.
+    struct PropsEntry
+    {
+        char32_t cp = 0;
+        Unicode::Props props;
+    };
+    std::array<PropsEntry, 256> m_propsCache{};
+    const Unicode::Props& propsOf(char32_t cp) noexcept
+    {
+        PropsEntry& e = m_propsCache[cp & 0xFF];
+        if (e.cp != cp) {
+            e = {cp, Unicode::props(cp)};
+        }
+        return e.props;
+    }
 
     // Images (kitty, sixel, iTerm2), one store per screen.
     GraphicsStore m_graphics[2];

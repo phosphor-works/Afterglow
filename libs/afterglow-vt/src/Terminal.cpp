@@ -677,7 +677,7 @@ void Terminal::print(char32_t cp)
     }
 
     // Preserve directional controls as visible cells when bidi layout is enabled.
-    Unicode::Props props = Unicode::props(cp);
+    Unicode::Props props = propsOf(cp);
     const bool directionalControl = cp == 0x061c || cp == 0x200e || cp == 0x200f
         || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069);
     if (directionalControl && m_options.bidi != BidiMode::Off && !m_modes.altScreen
@@ -903,11 +903,7 @@ void Terminal::printCodepoints(const char32_t* cps, std::size_t n)
     int lineY = -1;
     for (std::size_t i = 0; i < n; ++i) {
         const char32_t cp = cps[i];
-        if (cp >= 0x80 && cp != m_propsCp) {
-            m_props = Unicode::props(cp);
-            m_propsCp = cp;
-        }
-        const Unicode::Props props = cp < 0x80 ? Unicode::Props{} : m_props;
+        const Unicode::Props props = cp < 0x80 ? Unicode::Props{} : propsOf(cp);
         // A simple character (class Other, no emoji or conjunct rules) that
         // cannot join the cluster before it goes straight into the row;
         // everything else, and any wrapping, is the full path's.

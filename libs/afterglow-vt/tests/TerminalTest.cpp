@@ -76,6 +76,38 @@ TEST(Terminal, ScrollingFeedsHistory)
     EXPECT_EQ(rowText(t.t.screen(), t.t.screen().absoluteRow(0)), "a");
 }
 
+TEST(Terminal, LinesThatLeaveTheHistoryReleaseTheirStyles)
+{
+    // Each line has a colour of its own. Only the lines still kept (three in
+    // the history, three on the screen above the empty cursor row) hold one,
+    // before and after a reflow, whether a line was plain or not.
+    Term t(10, 4, 3);
+    auto lines = [&t](int first) {
+        for (int i = first; i < first + 20; ++i) {
+            t.feed("plain\r\n\x1b[38;5;" + std::to_string(i) + "mX\x1b[m\r\n");
+        }
+    };
+    lines(0);
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 1u + 3u);
+    t.t.resize(7, 4, 8, 16);
+    lines(100);
+    EXPECT_EQ(t.t.screen().styles().liveCount(), 1u + 3u);
+}
+
+TEST(Terminal, CharactersThatShareACacheSlotKeepTheirOwnWidths)
+{
+    // U+4E00 and U+0100 have the same low byte: the wide one must not give
+    // the narrow one its width, nor the other way round.
+    Term t(10, 2);
+    t.feed("\xe4\xb8\x80\xc4\x80\xe4\xb8\x80\xc4\x80");
+    const Row& row = t.t.screen().row(0);
+    EXPECT_EQ(row.cells[0].width(), 2);
+    EXPECT_EQ(row.cells[2].width(), 1);
+    EXPECT_EQ(row.cells[3].width(), 2);
+    EXPECT_EQ(row.cells[5].width(), 1);
+    EXPECT_EQ(row.cells[5].codepoint(), U'Ā');
+}
+
 TEST(Terminal, ScrollRegion)
 {
     Term t(5, 4);

@@ -4,6 +4,7 @@
 #include <AfterglowVt/Screen.h>
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 namespace AfterglowVt {
@@ -19,6 +20,12 @@ bool isBlank(const Cell& c)
 bool rowIsBlank(const Row& row)
 {
     return std::all_of(row.cells.begin(), row.cells.end(), isBlank);
+}
+
+bool hasOnlyDefaultStyle(const Row& row)
+{
+    return std::all_of(row.cells.begin(), row.cells.end(),
+                       [](const Cell& c) { return c.styleId() == StyleTable::DefaultId; });
 }
 
 // A blank cell that a compact row does not store. A spacer head is kept:
@@ -533,10 +540,32 @@ void Screen::compact(Row& row)
         row.cells.resize(keep);
         row.cells.shrink_to_fit();
     }
+    row.plain = hasOnlyDefaultStyle(row);
+}
+
+std::vector<Cell> Screen::retire(Row& row)
+{
+    std::size_t keep = row.cells.size();
+    while (keep > 0 && isDroppableBlank(row.cells[keep - 1])) {
+        --keep;
+    }
+    // The blanks after keep have the default style: only the kept cells count.
+    bool plain = true;
+    for (std::size_t x = 0; x < keep; ++x) {
+        plain &= row.cells[x].styleId() == StyleTable::DefaultId;
+    }
+    std::vector<Cell> spare;
+    if (keep < row.cells.size()) {
+        std::vector<Cell> kept(row.cells.begin(), row.cells.begin() + std::ptrdiff_t(keep));
+        spare = std::exchange(row.cells, std::move(kept));
+    }
+    row.plain = plain;
+    return spare;
 }
 
 void Screen::expand(Row& row)
 {
+    row.plain = false; // a screen row takes any style
     if (row.cells.size() < std::size_t(m_cols)) {
         row.cells.reserve(std::size_t(m_cols)); // exactly; growth would overallocate
         row.cells.resize(std::size_t(m_cols));
@@ -554,6 +583,9 @@ std::size_t Screen::historyCells() const noexcept
 
 void Screen::releaseRow(Row& row) noexcept
 {
+    if (row.plain) {
+        return;
+    }
     for (const Cell& c : row.cells) {
         m_styles.release(c.styleId());
     }
@@ -572,32 +604,28 @@ bool Screen::scrollUp(const Region& r, int n, std::uint32_t fillStyleId, bool in
 
     if (intoHistory && fullWidth && r.top == 0 && r.bottom == m_rowCount - 1 && m_maxScrollback > 0) {
         for (int k = 0; k < n; ++k) {
-            Row* freshPtr;
+            // The top row of the screen is history now. It keeps only its
+            // text, and the full-width buffer it gives up, if any, serves
+            // the new bottom row: one allocation for each line, not two.
+            std::vector<Cell> spare = retire(m_rows[historySize()]);
             if (historySize() >= m_maxScrollback) {
-                // History is full: the oldest row's storage becomes the new line.
-                Row recycled = std::move(m_rows.front());
+                releaseRow(m_rows.front());
                 m_rows.pop_front();
                 ++m_rowsDropped;
-                releaseRow(recycled);
-                recycled.cells.assign(std::size_t(m_cols), Cell{});
-                recycled.graphemes.reset();
-                recycled.multicell.reset();
-                recycled.wrapped = false;
-                recycled.promptStart = false;
-                recycled.lineSize = LineSize::Single;
-                freshPtr = &m_rows.emplace_back(std::move(recycled));
-            } else {
-                freshPtr = &m_rows.emplace_back(m_cols);
             }
-            Row& fresh = *freshPtr;
+            Row& fresh = m_rows.emplace_back();
+            if (spare.capacity() == std::size_t(m_cols)) {
+                spare.assign(std::size_t(m_cols), Cell{});
+                fresh.cells = std::move(spare);
+            } else {
+                fresh.cells.assign(std::size_t(m_cols), Cell{});
+            }
             if (fillStyleId != StyleTable::DefaultId) {
                 for (Cell& c : fresh.cells) {
                     c.setStyleId(fillStyleId);
                     m_styles.retain(fillStyleId);
                 }
             }
-            // The row that just left the top of the screen is history now.
-            compact(m_rows[historySize() - 1]);
         }
         if (m_viewportOffset > 0) {
             m_viewportOffset += std::size_t(n);
@@ -730,6 +758,11 @@ void Screen::resize(int cols, int rows, bool reflow, std::optional<std::size_t> 
         ++m_layoutEpoch;
     }
     if (reflow && cols != m_cols) {
+        // Reflow moves cells between rows: a row is plain again only where
+        // it is compacted afterwards.
+        for (Row& row : m_rows) {
+            row.plain = false;
+        }
         // The saved cursor and the top of a scrolled-back viewport follow
         // their cells like the caller's positions; they go last in the list.
         std::vector<std::size_t> rowsTracked = trackedRows ? *trackedRows : std::vector<std::size_t>{};

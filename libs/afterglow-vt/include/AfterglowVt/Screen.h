@@ -184,6 +184,9 @@ private:
     void releaseRow(Row& row) noexcept;
     /// Drops a history row's trailing blank cells and returns the memory.
     static void compact(Row& row);
+    /// As compact(), for the row that scrolls into history: returns its old
+    /// full-width buffer when the row shrank, for the new bottom row.
+    static std::vector<Cell> retire(Row& row);
     /// Gives a row its full width again (leaving history).
     void expand(Row& row);
     void clearCell(Row& row, int x, std::uint32_t fillStyleId);
