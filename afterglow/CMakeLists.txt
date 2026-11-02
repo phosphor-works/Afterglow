@@ -10,6 +10,8 @@ qt_policy(SET QTP0004 NEW)
 
 qt_add_library(afterglow_app STATIC
     src/desktop/Accessibility.cpp
+    src/DockArea.cpp
+    src/DockArea.h
     src/Pane.cpp
     src/PaneText.cpp
     src/Pane.h
@@ -21,6 +23,7 @@ qt_add_library(afterglow_app STATIC
     src/TerminalWindowLayout.cpp
     src/TerminalWindowOverview.cpp
     src/TerminalWindowScript.cpp
+    src/TerminalWindowDock.cpp
     src/TerminalWindow.cpp
     src/TerminalWindow.h
     src/KeyMapping.cpp

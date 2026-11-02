@@ -5,17 +5,19 @@ find_package(GTest REQUIRED)
 
 # Application sources compiled again into a test keep the definitions they
 # ship with. The tests themselves build strings from literals.
-set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/desktop/FileTransfer.cpp
-    ../src/desktop/DragDrop.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
+set_source_files_properties(../src/ProjectStore.cpp ../src/SplitTree.cpp ../src/DockArea.cpp
+    ../src/desktop/FileTransfer.cpp ../src/desktop/DragDrop.cpp PROPERTIES COMPILE_DEFINITIONS QT_NO_CAST_FROM_ASCII)
 
 qt_add_executable(afterglow_app_tests
     ProjectStoreTest.cpp
     ../src/ProjectStore.cpp
     SplitTreeTest.cpp
     ../src/SplitTree.cpp
+    DockAreaTest.cpp
+    ../src/DockArea.cpp
 )
 target_include_directories(afterglow_app_tests PRIVATE ../src)
-target_link_libraries(afterglow_app_tests PRIVATE Qt6::Core GTest::gtest_main)
+target_link_libraries(afterglow_app_tests PRIVATE Qt6::Core Afterglow::Vt Afterglow::Render GTest::gtest_main)
 set_target_properties(afterglow_app_tests PROPERTIES AUTOMOC OFF)
 
 include(GoogleTest)

@@ -13,6 +13,12 @@ Tab changes update the exposed pane list. Scrolling updates the text view.
 Background tabs and panes hidden by zoom are excluded.
 Qt Quick controls expose tab activation and the history scrollbar.
 
+Each [docked area](SCRIPTING.md#docked-areas) that shows is a read-only static text object under its window.
+Its name is the text of the area, one line for each row.
+Accessibility cannot activate the items of an area.
+An area with `tab_bar` hides the tab bar, so accessibility cannot activate tabs while the area shows.
+Use the tab keybindings to switch tabs.
+
 The accessible document contains the viewport. Scroll to read older content.
 A cursor outside the viewport is reported as absent.
 Terminal output is read-only.

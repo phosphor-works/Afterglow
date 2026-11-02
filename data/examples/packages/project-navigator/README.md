@@ -28,11 +28,11 @@ Open the command palette and choose:
   recent projects and discovered directories. Running projects are reused.
   For a new directory, choose a saved layout or a shell. The last-used layout
   is offered first next time. Every template pane starts in that directory.
-- **Toggle favorite project directory**: pin/unpin the current project directory
+- **Toggle favorite project directory**: pin or unpin the current project directory
   (or the pane's working directory for an ordinary window).
 - **Previous project**: return to the most recent different project.
 
-Keybind tokens are `script:project-navigator.open`,
+The keybinding actions are `script:project-navigator.open`,
 `script:project-navigator.favorite` and `script:project-navigator.previous`.
 
 Create `config.json` beside `package.json` to override the defaults:
@@ -46,24 +46,38 @@ Create `config.json` beside `package.json` to override the defaults:
 }
 ```
 
+| Key | Default | Description |
+| --- | --- | --- |
+| `roots` | `["~/Projects"]` | Directories to offer and to search for Git repositories. A root starts with `/`, `~` or `~/`. The package reads the first eight entries. |
+| `fd` | `true` | `false` turns off the search for Git repositories with `fd`. |
+| `zoxide` | `true` | `false` turns off the directories from `zoxide`. |
+| `max_depth` | `5` | How many directory levels `fd` searches below each root, from 1 to 16. A value outside this range changes to the nearest limit. |
+
 `fd` discovers Git repositories, including worktrees with `.git` files.
 `zoxide query --list` supplies frequently used directories.
 Both commands are optional. The picker title names each provider that did not start, timed out or was refused, and why.
 For example, `(unavailable: fd-1 timed out)` or `(unavailable: zoxide not started)`.
 Configured roots, saved layouts, favorites and history remain available.
-Providers run concurrently with a five-second timeout and a 128 KiB output limit.
-A provider that exits with an error or reaches the output limit still supplies the complete paths that it printed.
-A provider that times out or is refused supplies no paths.
-Limits are eight roots and 400 choices.
+Providers run concurrently.
+A provider that exits with an error still supplies the complete paths that it printed.
+A provider that is refused supplies no paths.
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Roots | 8 | The package ignores the other entries of `roots`. |
+| Provider run time | 5 seconds | The provider stops and supplies no paths. |
+| Provider output | 128 KiB | The provider stops. It supplies the complete paths that it printed. |
+| Choices in the picker | 400 | The picker does not show more choices. Favorites, recent projects, running projects and roots come first. |
+
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
 
-Favorites, the last 50 projects and layout choices survive reloads/restarts.
+Favorites, the last 50 projects and layout choices survive reloads and restarts.
 The package keeps layout choices for favorites and recent directories only.
 Favorites and layout choices accept paths of up to 256 bytes.
 Storage is scoped to `project-navigator`, under
 `state/scripts/project-navigator.json` beside the active configuration. Schema 2
-includes a migration example from schema 1's arrays of favorite/recent paths.
+includes a migration example from schema 1's arrays of favorite and recent paths.
 State conflicts preserve the newer file and report the failed save. The next
 action reads current state again. A launch can succeed even if saving its history
 fails. `afterglow ctl scripts` reports package load errors and retained last-good
@@ -76,7 +90,7 @@ The package uses only declared local imports and Afterglow effects.
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
 from the repository for an isolated live check. It needs `dbus-run-session`,
 Bash and the dependencies of the nested desktop below. It runs in a nested KWin
-with a private D-Bus session and temporary config/state, then closes its windows.
+with a private D-Bus session and a temporary configuration and state, then closes its windows.
 
 ## Walkthrough: reuse a split layout across repositories
 
@@ -105,9 +119,9 @@ with a private D-Bus session and temporary config/state, then closes its windows
     Selecting a directory offers its last-used layout first.
 
 A directory opens directly into a shell when no saved layouts exist. Save a
-layout first to exercise the multi-pane workflow. To add periodic saves and
-repository status, install the sibling [project-autosave](../project-autosave/README.md)
-and [tab-status](../tab-status/README.md) packages.
+layout first to exercise the multi-pane workflow. To add periodic saves and a
+tab line with repository status, install the sibling [project-autosave](../project-autosave/README.md)
+and [tab-line](../tab-line/README.md) packages.
 
 ## Reload, uninstall and recovery
 
@@ -117,11 +131,17 @@ shows `last-good` and the error. Correct the edit to recover. Open dialogs and
 provider jobs from a successfully replaced version are canceled.
 
 Remove the `scripts/project-navigator/` directory to uninstall. Its actions,
-open selector and jobs are removed automatically. Favorites/history stay in
-`state/scripts/project-navigator.json` beside your config so reinstall restores
-them. To reset history too, remove that state file while the package is unloaded.
+open selector and jobs are removed automatically. Favorites and history stay in
+`state/scripts/project-navigator.json` beside the configuration file, so a new
+installation restores them.
 
-The native acceptance check requires KWin, an X11/XWayland display, libX11,
+To reset the favorites and the history:
+
+1. Remove the `scripts/project-navigator/` directory.
+2. Remove the file `state/scripts/project-navigator.json`.
+3. Copy the package into `scripts/` again.
+
+The native acceptance check requires KWin, an X11 or XWayland display, libX11,
 xprop, ImageMagick, `dbus-run-session`, Bash, Git and fd:
 
 ```bash
@@ -131,7 +151,7 @@ python3 afterglow/tests/navigator_ui_smoke.py build/afterglow/afterglow
 The test creates a nested desktop with private D-Bus, configuration and state.
 It drives the picker with keyboard input.
 It checks window reuse, configuration reload, removal with an open selector, reinstallation and retained layouts after restart.
-It also checks periodic save and restore in companion packages.
+It also checks periodic save and restore, and the tab line toggle, in the companion packages.
 Screenshots and logs go to a new temporary directory whose name starts with `afterglow-navigator-ui-`.
 The test prints its path. Change this with `--artifacts`.
 The test closes only its temporary windows and processes.

@@ -15,8 +15,11 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QGuiApplication>
+#include <QSet>
 #include <QUrl>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -33,13 +36,6 @@ namespace {
 QString noPane(quint32 id)
 {
     return QStringLiteral("no pane %1").arg(id);
-}
-
-// At most LIMIT UTF-16 units, without splitting a surrogate pair.
-QString leftWhole(const QString& text, qsizetype limit)
-{
-    if (text.size() <= limit) return text;
-    return text.left(limit > 0 && text.at(limit - 1).isHighSurrogate() ? limit - 1 : limit);
 }
 } // namespace
 
@@ -60,8 +56,9 @@ void Control::attachWindow(TerminalWindow* window)
         const auto error = tab ? detachTab(pane->id(), result) : movePane(pane->id(), 0, QStringLiteral("new-window"), result);
         if (!error.isEmpty()) notify(pane->id(), QStringLiteral("Move failed"), error);
     });
-    connect(window, &TerminalWindow::paneCreated, this, [this, window](Pane* p) { attachPane(window, p); });
+    connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
+    connect(window, &TerminalWindow::scriptDockClicked, this, &Control::scriptDockClicked);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
         Q_EMIT tabSwitched(window->focusedPane() ? window->focusedPane()->id() : 0, from, to, direction);
     });
@@ -72,15 +69,18 @@ void Control::attachWindow(TerminalWindow* window)
     });
     // Panes made before the window was handed over.
     for (Pane* p : window->panes()) {
-        attachPane(window, p);
+        attachPane(p);
     }
 }
 
-void Control::attachPane(TerminalWindow* window, Pane* pane)
+void Control::attachPane(Pane* pane)
 {
     const quint32 id = pane->id();
+    // A pane made before its window was handed over may have a context already.
+    m_context.insert(id, pane->contextLabel());
     connect(pane, &QObject::destroyed, this, [this, id] {
         m_status.remove(id);
+        m_context.remove(id);
         const auto identity = m_closingPanes.take(id);
         Q_EMIT paneClosedDetailed(id, identity.first, identity.second);
         Q_EMIT paneClosed(id);
@@ -90,9 +90,15 @@ void Control::attachPane(TerminalWindow* window, Pane* pane)
     connect(pane, &Pane::userVarUpdated, this,
             [this, id](const QString& name, const QString& value) { Q_EMIT userVarChanged(id, name, value); });
     connect(pane, &Pane::contextUpdated, this, [this, id, guard = QPointer<Pane>(pane)] {
-        if (guard) {
-            Q_EMIT contextChanged(id, guard->contextLabel());
+        if (!guard) {
+            return;
         }
+        // The pane also tells of a new kind with the same label, and of a
+        // change that went back before this delivery.
+        const QString label = guard->contextLabel();
+        if (const auto last = m_context.constFind(id); last != m_context.cend() && *last == label) return;
+        m_context.insert(id, label);
+        Q_EMIT contextChanged(id, label);
     });
     connect(pane, &Pane::commandBegan, this, [this, id](const QString& c) { Q_EMIT commandStarted(id, c); });
     connect(pane, &Pane::commandEnded, this,
@@ -103,7 +109,8 @@ void Control::attachPane(TerminalWindow* window, Pane* pane)
         }
         // The newest record's state and text stand for the pane. A record
         // also changes for progress alone, which this signal does not carry.
-        QString state;
+        // With no record left (cleared, or a reset), the pane is idle.
+        QString state = statusStateName(AfterglowVt::StatusState::Idle);
         QString text;
         quint64 serial = 0;
         for (const PaneStatusRecord& r : guard->status()) {
@@ -118,7 +125,6 @@ void Control::attachPane(TerminalWindow* window, Pane* pane)
         m_status.insert(id, current);
         Q_EMIT statusChanged(id, state, text);
     });
-    Q_UNUSED(window);
     Q_EMIT paneCreated(id);
 }
 
@@ -345,8 +351,13 @@ QString launchOptions(const QString& cwd, const QStringList& command, const QVar
     for (const auto& arg : command) if (arg.contains(QChar::Null)) return QStringLiteral("command contains a null character");
     if (!command.isEmpty() && command.first().isEmpty()) return QStringLiteral("command must name a program");
     if (input.contains(QStringLiteral("size"))) {
+        // A number only: toDouble also reads a string such as "0.5".
+        const QVariant size = input.value(QStringLiteral("size"));
+        const int type = size.metaType().id();
+        const bool number = type == QMetaType::Double || type == QMetaType::Float || type == QMetaType::Int
+            || type == QMetaType::UInt || type == QMetaType::LongLong || type == QMetaType::ULongLong;
         bool ok = false;
-        out.fraction = input.value(QStringLiteral("size")).toDouble(&ok);
+        out.fraction = number ? size.toDouble(&ok) : 0;
         if (!ok || !std::isfinite(out.fraction) || out.fraction <= 0 || out.fraction >= 1) return QStringLiteral("size must be a fraction between 0 and 1");
     }
     if (input.contains(QStringLiteral("env"))) {
@@ -448,7 +459,7 @@ QString Control::setTitle(quint32 id, const QString& title)
     if (!p) {
         return noPane(id);
     }
-    p->setUserTitle(leftWhole(title, 256));
+    p->setUserTitle(textPrefix(title, 256));
     return {};
 }
 
@@ -524,13 +535,15 @@ QString Control::notify(quint32 id, const QString& title, const QString& body)
     if (!p) {
         return noPane(id);
     }
-    NotificationCenter::instance().showNotice(p, leftWhole(title, 256), leftWhole(body, 2048));
+    NotificationCenter::instance().showNotice(p, textPrefix(title, 256), textPrefix(body, 2048));
     return {};
 }
 
 QString Control::copy(const QString& text)
 {
-    QGuiApplication::clipboard()->setText(leftWhole(text, 1 << 22));
+    // Refused, not cut: the caller would not know the clipboard holds less.
+    if (text.size() > MaxCopyLength) return QStringLiteral("copy text is longer than %1 UTF-16 units").arg(MaxCopyLength);
+    QGuiApplication::clipboard()->setText(text);
     return {};
 }
 
@@ -541,8 +554,7 @@ QString Control::openUrl(const QString& url)
     if (!u.isValid() || !(scheme == QLatin1String("http") || scheme == QLatin1String("https") || scheme == QLatin1String("mailto"))) {
         return QStringLiteral("only http, https and mailto URLs open");
     }
-    QDesktopServices::openUrl(u);
-    return {};
+    return QDesktopServices::openUrl(u) ? QString() : QStringLiteral("the desktop could not open the URL");
 }
 
 QString Control::runAction(quint32 id, const QString& action)
@@ -614,6 +626,46 @@ QString Control::scriptAppearance(const QString& owner, quint32 id, const QVaria
     auto* pane = find(id, &window);
     return pane ? window->setScriptAppearance(owner, pane, effect) : noPane(id);
 }
+QString Control::scriptDock(const QString& owner, quint32 id, const QVariantMap& effect)
+{
+    // Every dock and undock comes through here, so the records match the
+    // windows' areas. A closed window's records go.
+    m_docks.removeIf([](const DockRecord& r) { return !r.window; });
+    const QString dock = effect.value(QStringLiteral("id")).toString();
+    auto record = [&](auto matches) {
+        return std::find_if(m_docks.begin(), m_docks.end(), [&](const DockRecord& r) {
+            return r.owner == owner && r.id == dock && matches(r);
+        });
+    };
+    TerminalWindow* window = nullptr;
+    const bool open = find(id, &window);
+    if (effect.value(QStringLiteral("kind")) == QLatin1String("undock")) {
+        // The pane's window first. Else the area this pane docked, which
+        // stays in its window when the pane moves away or closes.
+        auto it = open ? record([window](const DockRecord& r) { return r.window == window; }) : m_docks.end();
+        if (it == m_docks.end()) {
+            // The records are in the order they were last docked through,
+            // so the last match is the area this pane docked last.
+            const auto last = std::find_if(m_docks.rbegin(), m_docks.rend(), [&](const DockRecord& r) {
+                return r.owner == owner && r.id == dock && r.pane == id;
+            });
+            if (last != m_docks.rend()) it = std::prev(last.base());
+        }
+        if (it == m_docks.end()) return open ? window->setScriptDock(owner, effect) : noPane(id);
+        const QPointer<TerminalWindow> target = it->window;
+        m_docks.erase(it);
+        return target->setScriptDock(owner, effect);
+    }
+    if (!open) return noPane(id);
+    const QString error = window->setScriptDock(owner, effect);
+    if (error.isEmpty()) {
+        // The newest dock goes last, for the undock above.
+        if (auto it = record([window](const DockRecord& r) { return r.window == window; }); it != m_docks.end())
+            m_docks.erase(it);
+        m_docks.append({owner, dock, window, id});
+    }
+    return error;
+}
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {
     TerminalWindow* window = nullptr;
@@ -623,6 +675,7 @@ QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMa
 
 void Control::clearScriptOwner(const QString& owner)
 {
+    m_docks.removeIf([&owner](const DockRecord& r) { return r.owner == owner || !r.window; });
     for (auto window : m_windows) if (window) window->clearScriptOwner(owner);
 }
 

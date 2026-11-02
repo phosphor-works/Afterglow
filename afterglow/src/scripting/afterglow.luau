@@ -220,8 +220,14 @@ afterglow = {
             checkEffect(effect, usage, 3)
             count += 1
         end
-        if count ~= #effects then
-            error(usage .. ", with no holes", 2)
+        -- Every key, not only #effects: when the array part is full, # stops
+        -- at its end and misses an entry after a hole, which ipairs never reaches.
+        local keys = 0
+        for _ in pairs(effects) do
+            keys += 1
+        end
+        if keys ~= count then
+            error(usage .. ", with no holes or other keys", 2)
         end
         if count == 0 then
             return {}
@@ -272,6 +278,15 @@ afterglow = {
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
     status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,
     override = function(pane, values) return {kind="override", pane=paneId(pane), values=values} end,
+    -- Lines of styled text at an edge of the pane's window. The panes get what is left.
+    -- The spec goes through whole, so that afterglow refuses a misspelled field.
+    dock = function(pane, spec)
+        local out = if type(spec) == "table" then table.clone(spec) else {}
+        out.kind = "dock"
+        out.pane = paneId(pane)
+        return out
+    end,
+    undock = function(pane, id) return {kind="undock", pane=paneId(pane), id=id} end,
     semantic_regions = function(pane) return {kind="semantic_regions", pane=paneId(pane)} end,
     read_region = function(pane, region, max_bytes)
         return {kind="read_region", pane=paneId(pane), region=region, max_bytes=max_bytes or 65536}

@@ -12,8 +12,9 @@ wrong, and points to the skills that hold the procedures.
 
 ## Rules
 
-- **Commit and push finished work to `main` without asking.** "Finished" means built with no warnings, tested, and
-  verified the way the change needs (see below). Stage files by name.
+- **Land work through a pull request.** Start each change on a branch from `main`. Never push to `main`. Finished
+  work is built with no warnings, tested, and verified the way the change needs (see below). Then commit, push the
+  branch and open the PR without asking. The user merges pull requests. Stage files by name.
 - **Never install and never use `sudo`.** No install target and no system packages. Tell the user what you need
   and why. The one exception: `cmake --install` into a temporary directory (`--prefix` or `DESTDIR` under `/tmp`),
   to check the install layout.
@@ -80,7 +81,7 @@ wrong, and points to the skills that hold the procedures.
 | Task | Command |
 | --- | --- |
 | Build | `cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `ctest --test-dir build --output-on-failure -j6` (about 850, all pass) |
+| Unit and renderer tests | `ctest --test-dir build --output-on-failure -j6` (about 900, all pass) |
 | Native window tests | `python3 .claude/skills/ag-verify-live/headless_native.py` |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
@@ -94,7 +95,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Terminal core | `libs/afterglow-vt/`: `Terminal.cpp` (parser and dispatch), `Screen.cpp` (grid, scrollback, reflow), `Input.cpp` (key and mouse encoding), `Graphics.cpp`, `Sixel.cpp`, `ITerm2.cpp` (images), `Clipboard.cpp`, `Notifications.cpp`, `ShellContext.cpp` (OSC 133 and host context), `Unicode.cpp` with the generated `UnicodeTables.inc` |
 | PTY | `libs/afterglow-pty/src/Pty.cpp`: spawn, the reader thread, bounded input queue |
 | Renderer | `libs/afterglow-render/`: `GridRenderer.cpp` (panes, window composition, the overview and other tabs), `PostChain.cpp` (shader chains, buffers, budgets, the pane and tab images), `ShaderProgram.*` (the uniform mirrors of the GLSL contract), `GlyphCache.cpp`, `FontSet.cpp`, `Bidi.cpp`, `GpuDevice.cpp` |
-| Window | `afterglow/src/TerminalWindow.cpp` (input routing, render loop, panes and tabs), `TerminalWindowLayout.cpp`, `TerminalWindowOverview.cpp` (overview, tab transitions, pane effects), `TerminalWindowProject.cpp`, `TerminalWindowScript.cpp`, `Pane.cpp`, `SplitTree.cpp`, `KeyMapping.cpp`, `XkbKeyboard.cpp`, `animation/` |
+| Window | `afterglow/src/TerminalWindow.cpp` (input routing, render loop, panes and tabs), `TerminalWindowLayout.cpp`, `TerminalWindowOverview.cpp` (overview, tab transitions, pane effects), `TerminalWindowProject.cpp`, `TerminalWindowScript.cpp`, `TerminalWindowDock.cpp` (script docks: layout and hits), `DockArea.cpp` (one dock's text and snapshot), `Pane.cpp`, `SplitTree.cpp`, `KeyMapping.cpp`, `XkbKeyboard.cpp`, `animation/` |
 | Chrome and QML | `afterglow/src/chrome/`, `afterglow/qml/` (tab bar, palette, prompts, menus) |
 | Configuration | `afterglow/src/config/`: `Settings.*` (schema, defaults, `SettingsStore` over PhosphorConfig), `Keybinds.*`, `KeyModes.*`, `Theme.*`; `data/themes/` |
 | Shader library | `afterglow/src/shaders/`: `ShaderLibrary.*` (the pack registry, with package packs), `ShaderControls.*`; packs in `data/shaders/`, the contract in `data/shaders/shared/` |
@@ -133,3 +134,8 @@ The reviewers in `.claude/agents/review/` report findings for one area each. The
 - Package shader packs are keyed by a UUID derived from their id. A lookup by id must go through `packagedRef`.
 - Per-pixel loops over every card cost 10 ms at 4K with 27 panes. Find the nearest candidates first, then shade
   only those. Measure with `afterglow_renderpng --timings --pixels 3840x2160`.
+- The native suite segfaulted in 3 of 8 runs, in Qt, while a window built its chrome. A component from
+  `loadFromModule(..., Asynchronous)` that was ready before `create(QQmlIncubator&)` took Qt 6.12's C++-type path
+  and made no object. A window freed while its own load ran got a late completion into freed memory. Now the
+  chrome loads by URL, once for each Application. For a crash in some runs only, read the core with
+  `coredumpctl` and write a test that makes it happen every time.

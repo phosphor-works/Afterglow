@@ -609,6 +609,38 @@ public:
 public Q_SLOTS:
     void update(const QString&, const QVariantMap& properties) { updates.append(properties); }
 };
+TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound) {
+    // The application loads the chrome type in the background, and each
+    // window incubates its scene from it. A window that goes before its
+    // scene is made, or before the load ends, leaves the next window's
+    // chrome sound, also across an engine that goes.
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/cat")};
+    for (int i = 0; i < 20; ++i) {
+        delete application->newWindow(options);
+        if (i % 4 == 0) drain(5);
+    }
+    drain(200);
+    auto* next = application->newWindow(options);
+    ASSERT_NE(next, nullptr);
+    auto* layer = next->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    EXPECT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
+    delete next;
+    // The same while the engine goes too, as between two tests, and while a
+    // new application's load still runs.
+    for (int i = 0; i < 8; ++i) delete application->newWindow(options);
+    application.reset();
+    application = std::make_unique<Application>(directory.filePath(QStringLiteral("afterglow.conf")), QJsonObject{});
+    for (int i = 0; i < 8; ++i) delete application->newWindow(options);
+    auto* fresh = application->newWindow(options);
+    ASSERT_NE(fresh, nullptr);
+    auto* freshLayer = fresh->findChild<ChromeLayer*>();
+    ASSERT_NE(freshLayer, nullptr);
+    EXPECT_TRUE(waitFor([&] { return freshLayer->rootItem() != nullptr; }));
+    window = nullptr;
+}
+
 TEST_F(NativeWindow, ClosingStatusWindowRepublishesLauncherAggregate) {
     LauncherObserver observer;
     auto bus = QDBusConnection::sessionBus();
@@ -1862,6 +1894,431 @@ TEST_F(NativeWindow, ATabThatClosesLeavesAPaneMenuOpen) {
     other->sendInput("\n");
     ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
     EXPECT_TRUE(chrome->contextMenuOpen());
+}
+
+TEST_F(NativeWindow, ScriptDocksTakeCellsFromThePanesAndCanReplaceTheTabBar) {
+    auto* pane = window->focusedPane();
+    // The window settles at its size first: the grid is the baseline.
+    expectIdle(window);
+    const int rows = pane->rows(), cols = pane->cols();
+    const QVariantList line{QVariantMap{{QStringLiteral("text"), QStringLiteral("one")}, {QStringLiteral("item"), QStringLiteral("first")}},
+                            QVariantMap{{QStringLiteral("text"), QStringLiteral(" | ")}}};
+    auto dock = [&](const QString& owner, const QString& id, const QString& edge, int size, bool tabBar = false) {
+        return window->setScriptDock(owner, {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), id},
+                                             {QStringLiteral("edge"), edge}, {QStringLiteral("size"), size},
+                                             {QStringLiteral("tab_bar"), tabBar}, {QStringLiteral("lines"), QVariantList{line, line}}});
+    };
+    ASSERT_TRUE(dock(QStringLiteral("a@1"), QStringLiteral("status"), QStringLiteral("bottom"), 2).isEmpty());
+    ASSERT_TRUE(dock(QStringLiteral("a@1"), QStringLiteral("side"), QStringLiteral("left"), 10).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return pane->rows() == rows - 2 && pane->cols() == cols - 10; }))
+        << pane->rows() << "x" << pane->cols() << " from " << rows << "x" << cols;
+    expectIdle(window);
+
+    // A click on an item reaches its script. The rest of a dock is not the pane's.
+    QList<QVariantMap> clicks;
+    QObject::connect(window, &TerminalWindow::scriptDockClicked, window,
+                     [&](const QString& owner, quint32, const QVariantMap& click) { if (owner == QLatin1String("a@1")) clicks.append(click); });
+    auto press = [&](const QPointF& at) {
+        QMouseEvent down(QEvent::MouseButtonPress, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &down);
+        QMouseEvent up(QEvent::MouseButtonRelease, at, window->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &up);
+    };
+    // The bottom dock spans the window; the left one fits above it.
+    const qreal bottomRow = window->height() - 2;
+    press(QPointF(2, bottomRow));
+    press(QPointF(2, 2));
+    ASSERT_EQ(clicks.size(), 2);
+    EXPECT_EQ(clicks[0][QStringLiteral("dock")], QStringLiteral("status"));
+    EXPECT_EQ(clicks[1][QStringLiteral("dock")], QStringLiteral("side"));
+    EXPECT_EQ(clicks[1][QStringLiteral("item")], QStringLiteral("first"));
+    EXPECT_EQ(clicks[1][QStringLiteral("button")], QStringLiteral("left"));
+    press(QPointF(window->width() - 2, bottomRow)); // the status dock, past its text
+    EXPECT_EQ(clicks.size(), 2);
+
+    // With two tabs the tab bar shows, until a top dock takes its place.
+    auto* chrome = window->findChild<ChromeController*>();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* other = window->openTab(launch, nullptr);
+    ASSERT_NE(other, nullptr);
+    window->revealPane(pane);
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    ASSERT_TRUE(dock(QStringLiteral("b@1"), QStringLiteral("tabs"), QStringLiteral("top"), 1, true).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() == 0; }));
+    // A script's docks go with it, and the space comes back.
+    window->clearScriptOwner(QStringLiteral("b@1"));
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    window->clearScriptOwner(QStringLiteral("a@1"));
+    other->sendInput("\x04"); // its cat ends, and the tab with it
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1; }));
+    EXPECT_TRUE(waitFor([&] { return pane->rows() == rows && pane->cols() == cols; }))
+        << pane->rows() << "x" << pane->cols();
+}
+
+TEST_F(NativeWindow, DockClicksReachTheScriptThroughControlAndNoPointerInputReachesThePanes) {
+    SettingsStore settings(directory.filePath(QStringLiteral("docks.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    auto* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    pane->setScrollPolicy(false, true);
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        for (int i = 0; i < 200; ++i) t.feed("line\r\n");
+    });
+    expectIdle(window);
+    const int rows = pane->rows();
+    const QVariantList line{QVariantMap{{QStringLiteral("text"), QStringLiteral("one")}, {QStringLiteral("item"), QStringLiteral("first")}}};
+    // Through Control, as ScriptControl applies a script's dock effect.
+    ASSERT_TRUE(control.scriptDock(QStringLiteral("a@1"), pane->id(),
+                                   {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("status")},
+                                    {QStringLiteral("edge"), QStringLiteral("bottom")}, {QStringLiteral("size"), 1},
+                                    {QStringLiteral("lines"), QVariantList{line}}})
+                    .isEmpty());
+    ASSERT_TRUE(waitFor([&] { return pane->rows() == rows - 1; })) << pane->rows();
+    // The click goes window, Control, then the script host's queued hop.
+    QList<QVariantMap> clicks;
+    QObject::connect(&control, &Control::scriptDockClicked, window,
+                     [&](const QString& owner, quint32 from, const QVariantMap& click) {
+                         if (owner == QLatin1String("a@1") && from == pane->id()) clicks.append(click);
+                     });
+    const QPointF onItem(2, window->height() - 2);
+    const QPointF onPane(window->width() / 2.0, window->height() / 2.0);
+    auto mouse = [&](QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons held) {
+        QMouseEvent event(type, at, window->mapToGlobal(at), button, held, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    // A drag from the item: the press clicks, and the drag selects nothing
+    // in the pane, which would otherwise take the press as the start of a
+    // selection.
+    mouse(QEvent::MouseButtonPress, onItem, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseMove, onItem + QPointF(40, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonRelease, onItem + QPointF(40, 0), Qt::LeftButton, Qt::NoButton);
+    ASSERT_EQ(clicks.size(), 1);
+    EXPECT_EQ(clicks[0][QStringLiteral("item")], QStringLiteral("first"));
+    EXPECT_FALSE(pane->hasSelection());
+    EXPECT_EQ(window->focusedPane(), pane);
+
+    // The wheel over the dock scrolls no pane; over the pane it does.
+    const auto offset = [pane] { return pane->withTerminal([](AfterglowVt::Terminal& t) { return t.screen().viewportOffset(); }); };
+    auto wheel = [&](const QPointF& at) {
+        QWheelEvent event(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    wheel(onItem);
+    drain();
+    EXPECT_EQ(offset(), 0u);
+    wheel(onPane);
+    EXPECT_TRUE(waitFor([&] { return offset() > 0; }));
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.scrollViewport(-int(t.screen().viewportOffset())); });
+
+    // A right click on the dock while the left button selects in the pane:
+    // the selection goes on, and the left release still ends it.
+    mouse(QEvent::MouseButtonPress, onPane, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseMove, onPane + QPointF(40, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonPress, onItem, Qt::RightButton, Qt::LeftButton | Qt::RightButton);
+    mouse(QEvent::MouseButtonRelease, onItem, Qt::RightButton, Qt::LeftButton);
+    const QString before = pane->selectedText();
+    mouse(QEvent::MouseMove, onPane + QPointF(0, 40), Qt::NoButton, Qt::LeftButton);
+    EXPECT_NE(pane->selectedText(), before);
+    mouse(QEvent::MouseButtonRelease, onPane + QPointF(0, 40), Qt::LeftButton, Qt::NoButton);
+    ASSERT_EQ(clicks.size(), 2);
+    EXPECT_EQ(clicks[1][QStringLiteral("button")], QStringLiteral("right"));
+    pane->clearSelection();
+
+    // A dock press whose release went elsewhere takes nothing from the next
+    // gesture: a click on the pane focuses and selects as usual.
+    // Away from the last click, so that this is no double click.
+    const QPointF elsewhere = onPane - QPointF(100, 60);
+    mouse(QEvent::MouseButtonPress, onItem, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonPress, elsewhere, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseMove, elsewhere + QPointF(40, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonRelease, elsewhere + QPointF(40, 0), Qt::LeftButton, Qt::NoButton);
+    EXPECT_TRUE(pane->hasSelection());
+    pane->clearSelection();
+    // The click goes out on the press, so the lost release does not take it.
+    ASSERT_EQ(clicks.size(), 3);
+
+    // With the overview open, a click on the dock is the dock's: the
+    // overview stays open.
+    QVariantMap state;
+    ASSERT_TRUE(window->scriptOverview(pane, QStringLiteral("open"), state).isEmpty());
+    mouse(QEvent::MouseButtonPress, onItem, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonRelease, onItem, Qt::LeftButton, Qt::NoButton);
+    EXPECT_TRUE(window->overviewOpen());
+    ASSERT_EQ(clicks.size(), 4);
+    ASSERT_TRUE(window->scriptOverview(pane, QStringLiteral("close"), state).isEmpty());
+
+    // A larger font places the dock again, and its item still takes clicks.
+    ASSERT_TRUE(window->runAction(pane, Action::FontBigger));
+    const int cols = pane->cols();
+    EXPECT_TRUE(waitFor([&] { return pane->cols() < cols || pane->rows() < rows - 1; }));
+    expectIdle(window);
+    mouse(QEvent::MouseButtonPress, onItem, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseButtonRelease, onItem, Qt::LeftButton, Qt::NoButton);
+    EXPECT_EQ(clicks.size(), 5);
+    ASSERT_TRUE(window->runAction(pane, Action::FontReset));
+    window->clearScriptOwner(QStringLiteral("a@1"));
+}
+
+TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
+    SettingsStore settings(directory.filePath(QStringLiteral("undock.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    auto* chrome = window->findChild<ChromeController*>();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    // Three tabs, so that the tab bar stays when one pane moves away.
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    auto* moving = window->focusedPane();
+    ASSERT_NE(moving, nullptr);
+    expectIdle(window);
+    const qreal height = chrome->paneArea().height();
+    const QVariantMap bar{{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("bar")},
+                          {QStringLiteral("edge"), QStringLiteral("bottom")}, {QStringLiteral("size"), 1}};
+    const QVariantMap undock{{QStringLiteral("kind"), QStringLiteral("undock")}, {QStringLiteral("id"), QStringLiteral("bar")}};
+    ASSERT_TRUE(control.scriptDock(QStringLiteral("a@1"), moving->id(), bar).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return chrome->paneArea().height() < height; }));
+
+    // The pane moves to another window: the undock still removes the area
+    // that it put in this one.
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/cat")};
+    auto* destination = application->newWindow(options);
+    ASSERT_NE(destination, nullptr);
+    destination->show();
+    control.attachWindow(destination);
+    auto* resident = destination->focusedPane();
+    ASSERT_NE(resident, nullptr);
+    auto* destinationChrome = destination->findChild<ChromeController*>();
+    ASSERT_TRUE(window->movePaneTo(moving, destination, resident, SplitTree::Direction::Right).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return destinationChrome->paneArea().height() > 0; }));
+    expectIdle(destination);
+    // The same area in the new window, through a pane that was there.
+    const qreal destinationHeight = destinationChrome->paneArea().height();
+    ASSERT_TRUE(control.scriptDock(QStringLiteral("a@1"), resident->id(), bar).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return destinationChrome->paneArea().height() < destinationHeight; }));
+    // An undock removes one area: the one in the pane's window first, then
+    // the one the pane left behind.
+    EXPECT_TRUE(control.scriptDock(QStringLiteral("a@1"), moving->id(), undock).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return destinationChrome->paneArea().height() == destinationHeight; }))
+        << destinationChrome->paneArea().height();
+    EXPECT_LT(chrome->paneArea().height(), height);
+    EXPECT_TRUE(control.scriptDock(QStringLiteral("a@1"), moving->id(), undock).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return chrome->paneArea().height() == height; })) << chrome->paneArea().height();
+
+    // The pane closes: the undock through its id still finds the area.
+    quint32 created = 0;
+    auto* first = window->focusedPane();
+    ASSERT_TRUE(control.split(first->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {}, created).isEmpty());
+    Pane* closing = nullptr;
+    for (auto* pane : window->panes())
+        if (pane->id() == created) closing = pane;
+    ASSERT_NE(closing, nullptr);
+    ASSERT_TRUE(control.scriptDock(QStringLiteral("a@1"), created, bar).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return chrome->paneArea().height() < height; }));
+    QPointer<Pane> gone(closing);
+    closing->sendInput("\x04"); // its cat ends, and the pane with it
+    ASSERT_TRUE(waitFor([&] { return gone.isNull(); }));
+    EXPECT_TRUE(control.scriptDock(QStringLiteral("a@1"), created, undock).isEmpty());
+    EXPECT_TRUE(waitFor([&] { return chrome->paneArea().height() == height; })) << chrome->paneArea().height();
+    // An id that never docked is still not a pane.
+    EXPECT_FALSE(control.scriptDock(QStringLiteral("a@1"), created + 1000, undock).isEmpty());
+    destination->close();
+}
+
+TEST_F(NativeWindow, ControlRefusesWhatItCannotDoInFull) {
+    SettingsStore settings(directory.filePath(QStringLiteral("refuse.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    auto* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    // A copy over the limit is refused, not cut.
+    QGuiApplication::clipboard()->setText(QStringLiteral("kept"));
+    EXPECT_FALSE(control.copy(QString(Control::MaxCopyLength + 1, u'x')).isEmpty());
+    EXPECT_EQ(QGuiApplication::clipboard()->text(), QStringLiteral("kept"));
+    // A split size must be a number, not a string that reads as one.
+    quint32 created = 0;
+    EXPECT_FALSE(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")},
+                               {{QStringLiteral("size"), QStringLiteral("0.5")}}, created)
+                     .isEmpty());
+    EXPECT_EQ(created, 0u);
+    EXPECT_TRUE(control.split(pane->id(), QStringLiteral("right"), {QStringLiteral("/bin/cat")}, {{QStringLiteral("size"), 0.5}}, created)
+                    .isEmpty());
+    EXPECT_NE(created, 0u);
+    // At most 8 docks for one script in a window.
+    for (int i = 0; i < 8; ++i)
+        ASSERT_TRUE(control.scriptDock(QStringLiteral("a@1"), pane->id(),
+                                       {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("d%1").arg(i)},
+                                        {QStringLiteral("edge"), QStringLiteral("left")}, {QStringLiteral("size"), 1}})
+                        .isEmpty());
+    EXPECT_FALSE(control.scriptDock(QStringLiteral("a@1"), pane->id(),
+                                    {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("d8")},
+                                     {QStringLiteral("edge"), QStringLiteral("left")}, {QStringLiteral("size"), 1}})
+                     .isEmpty());
+    window->clearScriptOwner(QStringLiteral("a@1"));
+}
+
+TEST_F(NativeWindow, ControlSendsStatusAndContextOnlyWhenTheyChange) {
+    SettingsStore settings(directory.filePath(QStringLiteral("status.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    auto* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    QList<QPair<QString, QString>> states;
+    QStringList contexts;
+    QObject::connect(&control, &Control::statusChanged, window, [&](quint32 from, const QString& state, const QString& text) {
+        if (from == pane->id()) states.append({state, text});
+    });
+    QObject::connect(&control, &Control::contextChanged, window, [&](quint32 from, const QString& context) {
+        if (from == pane->id()) contexts.append(context);
+    });
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]7501;state=working\x1b\\"); });
+    ASSERT_TRUE(waitFor([&] { return !states.isEmpty() && states.last().first == QLatin1String("working"); }));
+    // The same state again, in a delivery of its own: no new event.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]7501;state=working\x1b\\"); });
+    drain();
+    EXPECT_EQ(states.count(qMakePair(QStringLiteral("working"), QString())), 1);
+    // A reset clears the last record: the state is idle, not empty.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.reset(); });
+    ASSERT_TRUE(waitFor([&] { return states.last().first != QLatin1String("working"); }));
+    EXPECT_EQ(states.last(), qMakePair(QStringLiteral("idle"), QString()));
+
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        t.feed("\x1b]3008;start=b2;type=elevate;user=fuddles;targetuser=root;hostname=box\x1b\\");
+    });
+    ASSERT_TRUE(waitFor([&] { return !contexts.isEmpty(); }));
+    // The context ends and starts again the same: no new event.
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        t.feed("\x1b]3008;end=b2;exit=success\x1b\\");
+        t.feed("\x1b]3008;start=b3;type=elevate;user=fuddles;targetuser=root;hostname=box\x1b\\");
+    });
+    drain();
+    EXPECT_EQ(contexts.size(), 1) << contexts.join(QLatin1Char(',')).toStdString();
+}
+
+TEST_F(NativeWindow, ADividerDragKeepsTheSplitCursorThroughItsFrames) {
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    // Two tabs, so that a tab bar shows above the split.
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    auto* first = window->focusedPane();
+    ASSERT_NE(first, nullptr);
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    expectIdle(window);
+    const QPoint left = window->mapFromGlobal(window->accessiblePaneRect(first).topRight());
+    const QPoint right = window->mapFromGlobal(window->accessiblePaneRect(second).topLeft());
+    const QPointF divider((left.x() + right.x()) / 2.0, window->mapFromGlobal(window->accessiblePaneRect(first).center()).y());
+    auto mouse = [&](QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons held) {
+        QMouseEvent event(type, at, window->mapToGlobal(at), button, held, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    mouse(QEvent::MouseMove, divider, Qt::NoButton, Qt::NoButton);
+    EXPECT_EQ(window->cursor().shape(), Qt::SplitHCursor);
+    // Each drag move lays the panes out again in the next frame.
+    const int cols = first->cols();
+    mouse(QEvent::MouseButtonPress, divider, Qt::LeftButton, Qt::LeftButton);
+    mouse(QEvent::MouseMove, divider + QPointF(10, 0), Qt::NoButton, Qt::LeftButton);
+    drain(100);
+    mouse(QEvent::MouseMove, divider + QPointF(30, 0), Qt::NoButton, Qt::LeftButton);
+    drain(100);
+    EXPECT_GT(first->cols(), cols); // the frames laid the panes out
+    EXPECT_EQ(window->cursor().shape(), Qt::SplitHCursor);
+    // Over the tab bar too, while the drag lasts.
+    mouse(QEvent::MouseMove, QPointF(divider.x() + 30, chrome->tabBarHeight() / 2.0), Qt::NoButton, Qt::LeftButton);
+    drain(100);
+    EXPECT_EQ(window->cursor().shape(), Qt::SplitHCursor);
+    // A tab switch from the keyboard ends the drag: its divider is the other
+    // tab's.
+    ASSERT_TRUE(window->runAction(first, Action::PreviousTab));
+    drain(100);
+    mouse(QEvent::MouseMove, QPointF(divider.x() + 40, chrome->tabBarHeight() / 2.0), Qt::NoButton, Qt::LeftButton);
+    drain(100);
+    EXPECT_NE(window->cursor().shape(), Qt::SplitHCursor);
+    mouse(QEvent::MouseButtonRelease, QPointF(divider.x() + 40, chrome->tabBarHeight() / 2.0), Qt::LeftButton, Qt::NoButton);
+    expectIdle(window);
+}
+
+TEST_F(NativeWindow, ATabBarDockThatDoesNotFitLeavesTheTabBarInPlace) {
+    auto* chrome = window->findChild<ChromeController*>();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    expectIdle(window);
+    // Two rows more than the panes have. The dock takes the tab bar's place,
+    // but then the panes' 2 rows do not fit below it. (A resize is no use
+    // here: the compositor can give the height back.)
+    const int rows = window->focusedPane()->rows();
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("b@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("tabs")},
+                                                            {QStringLiteral("edge"), QStringLiteral("top")}, {QStringLiteral("size"), rows + 2},
+                                                            {QStringLiteral("tab_bar"), true}})
+                    .isEmpty());
+    drain();
+    // The dock does not show, so the tab bar stays, and so do the panes.
+    EXPECT_GT(chrome->tabBarHeight(), 0);
+    EXPECT_EQ(window->focusedPane()->rows(), rows);
+    window->clearScriptOwner(QStringLiteral("b@1"));
+}
+
+TEST_F(NativeWindow, ATabBarDockThatAFontChangeHidesGivesTheTabBarBack) {
+    auto* chrome = window->findChild<ChromeController*>();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    ASSERT_NE(window->openTab(launch, nullptr), nullptr);
+    ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    expectIdle(window);
+    const int rows = window->focusedPane()->rows();
+    auto dock = [&](int size) {
+        const auto frames = window->submittedFrames();
+        EXPECT_TRUE(window->setScriptDock(QStringLiteral("b@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("tabs")},
+                                                                {QStringLiteral("edge"), QStringLiteral("top")}, {QStringLiteral("size"), size},
+                                                                {QStringLiteral("tab_bar"), true}})
+                        .isEmpty());
+        EXPECT_TRUE(waitFor([&] { return window->submittedFrames() > frames; }));
+    };
+    // The largest dock that still leaves the panes their 2 rows: a larger
+    // font then leaves them less. (A resize is no use here: the compositor
+    // can give the height back.)
+    int size = rows + 2;
+    for (; size > 0; --size) {
+        dock(size);
+        if (chrome->tabBarHeight() == 0) break;
+    }
+    ASSERT_GT(size, 0);
+    // The font changes without a dock effect: only the layout of the next
+    // frame finds that the dock no longer fits, and the bar comes back.
+    for (int step = 0; step < 4; ++step) ASSERT_TRUE(window->runAction(window->focusedPane(), Action::FontBigger));
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+    ASSERT_TRUE(window->runAction(window->focusedPane(), Action::FontReset));
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() == 0; }));
+    window->clearScriptOwner(QStringLiteral("b@1"));
+    EXPECT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
+}
+
+TEST_F(NativeWindow, ASplitRightAfterADockCountsTheRoomTheDockTakes) {
+    auto* pane = window->focusedPane();
+    expectIdle(window);
+    const int cols = pane->cols();
+    ASSERT_GT(cols, 12);
+    // A left dock that leaves the pane 6 columns, too few for two panes of
+    // 4. The split comes before the frame that lays the dock out.
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("side")},
+                                                            {QStringLiteral("edge"), QStringLiteral("left")}, {QStringLiteral("size"), cols - 6}})
+                    .isEmpty());
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    QString error;
+    Pane* second = window->splitPane(pane, SplitTree::Direction::Right, launch, &error);
+    EXPECT_EQ(second, nullptr);
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_TRUE(waitFor([&] { return pane->cols() == 6; })) << pane->cols();
+    for (auto* each : window->panes()) EXPECT_GE(each->cols(), 4);
+    window->clearScriptOwner(QStringLiteral("a@1"));
 }
 
 // --- window wave 2: pane callbacks, directories, replies, overview ---------

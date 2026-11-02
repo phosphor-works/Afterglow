@@ -75,6 +75,24 @@ export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: 
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 -- A split also says which pane it split from and the edge they share: 1 left, 2 top, 3 right, 4 bottom.
 export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? }
+-- A palette index (0-255, the theme's 0-15 included) or "#rrggbb". Absent: the theme's
+-- default color, except that a run without bg takes the dock's fill.
+export type DockColor = number | string
+export type DockRun = { text: string?, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
+    underline: boolean?,
+    item: string?, -- 1-64 characters, no control characters; a click on the run's cells reaches on_dock_click
+    spacer: boolean? } -- no text: takes the cells the other runs of its line leave, shared among the spacers
+-- A field that is not listed here refuses the dock.
+export type DockSpec = {
+    id: string, -- 1 to 32 ASCII letters, digits, - or _
+    edge: "top" | "bottom" | "left" | "right",
+    size: number?, -- rows (top, bottom: 1-8) or columns (left, right: 1-80); default 1
+    tab_bar: boolean?, -- top only: drawn in place of the tab bar; default false
+    fill: DockColor?, -- the background of the whole dock; default the theme's background
+    lines: { { DockRun } }?, -- top, bottom: at most size lines; left, right: at most 256
+}
+export type DockClickEvent = { pane: Pane?, dock: string, item: string, button: "left" | "middle" | "right",
+    window: number, terminal: State }
 export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }
 -- key: "a", "A", "Enter", "Escape", "Left", "F5"...; text: what it types, "" for control keys.
 export type KeyEvent = { pane: Pane?, key: string, text: string, ctrl: boolean, shift: boolean, alt: boolean,
@@ -141,6 +159,7 @@ export type Effects = Effect | { Effect }
 --   on_user_var(ev: UserVarEvent)            on_context(ev: ContextEvent)
 --   on_pane_created(ev: PaneCreatedEvent)    on_tab_switch(ev: TabSwitchEvent)
 --   on_key(ev: KeyEvent) -- only while this script holds a key mode
+--   on_dock_click(ev: DockClickEvent) -- a click on an item of this script's dock
 --   run_action(action: string, ev: ActionEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
 -- returns a new state object. Migration/init failures retain the old instance.
@@ -197,6 +216,9 @@ declare afterglow: {
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
+    -- Lines of styled text at an edge of the pane's window. Sending one id again replaces it.
+    dock: (pane: PaneRef, spec: DockSpec) -> Effect,
+    undock: (pane: PaneRef, id: string) -> Effect,
     send_text: (pane: PaneRef, text: string) -> Effect,
     -- pane defaults to the event's pane; an event without one needs it given
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,

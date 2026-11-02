@@ -131,19 +131,18 @@ private:
     QWindow* m_host;
 };
 
-ChromeLayer::ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQmlEngine& engine,
+ChromeLayer::ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQmlComponent& component,
                          ChromeController* controller)
     : QObject(host)
     , m_device(device)
     , m_host(host)
-    , m_engine(engine)
+    , m_component(component)
+    , m_engine(*component.engine())
     , m_controller(controller)
 {
     if (!m_engine.incubationController()) new ChromeIncubation(m_engine);
-    m_component = std::make_unique<QQmlComponent>(&m_engine);
-    connect(m_component.get(), &QQmlComponent::statusChanged, this, &ChromeLayer::componentStatusChanged);
-    // The type, its imports and their plugins load on the QML loader thread.
-    m_component->loadFromModule("Afterglow.Chrome", "Chrome", QQmlComponent::Asynchronous);
+    // The application started loading the type; it may be ready already.
+    connect(&m_component, &QQmlComponent::statusChanged, this, &ChromeLayer::componentStatusChanged);
     componentStatusChanged();
     // The scene is made before the compositor activates the host, and Qt
     // Quick ignores the focus while another window has it: focus it again
@@ -151,6 +150,13 @@ ChromeLayer::ChromeLayer(AfterglowRender::GpuDevice& device, QWindow* host, QQml
     connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, [this](QWindow* window) {
         if (window == m_host) focusScene();
     });
+}
+
+QUrl ChromeLayer::sceneUrl()
+{
+    // The module's resource prefix and the file's path in QML_FILES
+    // (afterglow/CMakeLists.txt): the module's qmldir names the same file.
+    return QUrl(QStringLiteral("qrc:/qt/qml/Afterglow/Chrome/qml/Chrome.qml"));
 }
 
 ChromeLayer::~ChromeLayer()
@@ -164,7 +170,6 @@ ChromeLayer::~ChromeLayer()
     m_incubator.reset();
     delete m_root;
     m_root = nullptr;
-    m_component.reset();
     // QQuickRenderControl detaches itself from the window on destruction.
     m_control.reset();
     m_window.reset();
@@ -175,17 +180,17 @@ void ChromeLayer::componentStatusChanged()
     if (m_incubator || m_failed) {
         return;
     }
-    if (m_component->isError()) {
-        qCWarning(lcChrome).noquote() << "chrome QML failed to load:" << m_component->errorString();
+    if (m_component.isError()) {
+        qCWarning(lcChrome).noquote() << "chrome QML failed to load:" << m_component.errorString();
         m_failed = true;
         return;
     }
-    if (!m_component->isReady()) {
+    if (!m_component.isReady()) {
         return;
     }
     m_incubator = std::make_unique<ChromeIncubator>([this](bool ready) { sceneCreated(ready); });
     m_incubator->setInitialProperties({{QStringLiteral("controller"), QVariant::fromValue(m_controller)}});
-    m_component->create(*m_incubator);
+    m_component.create(*m_incubator);
     if (m_wanted && m_incubator->isLoading()) {
         m_incubator->forceCompletion();
     }
@@ -250,8 +255,8 @@ void ChromeLayer::completeScene()
     timer.start();
     // Loading again synchronously waits for the loader thread's load in
     // progress; the status change then creates the scene, at once.
-    if (m_component->isLoading()) {
-        m_component->loadFromModule("Afterglow.Chrome", "Chrome", QQmlComponent::PreferSynchronous);
+    if (m_component.isLoading()) {
+        m_component.loadUrl(sceneUrl(), QQmlComponent::PreferSynchronous);
     }
     if (m_incubator && m_incubator->isLoading()) {
         m_incubator->forceCompletion();

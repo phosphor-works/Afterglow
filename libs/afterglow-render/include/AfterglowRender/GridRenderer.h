@@ -265,6 +265,14 @@ public:
         std::vector<OverviewTab> otherTabs;
     };
     void setOverview(Overview overview) { m_overview = std::move(overview); }
+    /// Areas that scripts dock at the window's edges, drawn like panes in
+    /// the last pass: after every shader chain and before the chrome. No
+    /// shader chain (layer, pane, window, overview, tab transition or pane
+    /// effects) takes them. They are for the next render() or
+    /// renderToImage() only, which forgets them: the snapshots must stay
+    /// valid until it returns, and a frame without its own setDocks() draws
+    /// no docks.
+    void setDocks(std::vector<Pane> docks) { m_docks = std::move(docks); }
     /// Open, or still closing.
     bool overviewShowing() const;
     /// A tab switch: the tab being left is drawn at full resolution into
@@ -352,7 +360,7 @@ private:
         std::function<QRhiResourceUpdateBatch*()> finalUpdates;
         std::function<void()> end;
     };
-    void renderTo(const Target& target, const std::vector<Pane>& panes,
+    void renderTo(const Target& target, const std::vector<Pane>& panes, const std::vector<Pane>& docks,
                   const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
                   QRhiTexture* overlayTexture, std::uint64_t overlaySerial);
     void initResources(FontResources& res);
@@ -401,6 +409,7 @@ private:
     bool m_scrollbackInitialized = false;
     bool m_scrollbackSettling = false;
     Overview m_overview;
+    std::vector<Pane> m_docks; ///< for the next frame only (setDocks)
     TabTransition m_transition;
     PaneEffects m_effects;
     PipelineSet m_postPipelines;
@@ -449,6 +458,7 @@ private:
     FrameBuilder m_builder;
     std::vector<Instance> m_frame;
     std::vector<DrawRange> m_ranges;
+    std::vector<DrawRange> m_dockRanges;
 
     /// Each pane's built instances, reused while nothing that shapes them changed.
     struct PaneCache

@@ -336,7 +336,8 @@ bool TerminalWindow::openOverview()
     m_overview.open = true;
     // Not laid out since a new tab, a split or the unzoom above: the current
     // tab's cards would have no rectangles, and the focused one none to find.
-    if (m_layoutSize.isEmpty()) relayout();
+    if (m_docksMoved) finishDockMoves();
+    else if (m_layoutSize.isEmpty()) relayout();
     layoutOtherTabs();
     const auto panes = overviewPanes();
     const auto focused = std::find(panes.begin(), panes.end(), m_focused.data());
@@ -345,6 +346,8 @@ bool TerminalWindow::openOverview()
         // zoom again. The panes snap back, with no easing.
         m_overview.open = false;
         restoreOverviewZooms(nullptr);
+        // The layout above set the overview's arrow.
+        applyPointerShape();
         return false;
     }
     // Reopened while closing onto another tab: the user stays in the overview.
@@ -386,6 +389,8 @@ bool TerminalWindow::openOverview()
     }
     m_overview.changedAt = m_overview.movedAt = std::chrono::steady_clock::now();
     updateKeyMode();
+    // Opened from the keyboard: the pointer shows what a click does now.
+    applyPointerShape();
     scheduleRender();
     return true;
 }
@@ -456,6 +461,7 @@ void TerminalWindow::closeOverview(Pane* chosen)
     if (m_scriptKeyMode && m_scriptKeyMode->withOverview) m_scriptKeyMode.reset();
     updateKeyMode();
     updatePaneVisibility();
+    applyPointerShape();
     scheduleRender();
 }
 

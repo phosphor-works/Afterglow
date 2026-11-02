@@ -66,6 +66,7 @@ Then read the PNG with the Read tool and look at it. Useful options (`--help` li
 | Animation frames | `--time S`, `--frames N --fps F` |
 | Parameters | `--param my-pack:style=1` |
 | Several panes | `--split`, `--grid 3x2` |
+| Script docks | `--dock EDGE:CELLS:TEXT`, for example `--dock top:1:$'\e[44m main \e[0m'` (repeatable; EDGE is `top`, `bottom`, `left` or `right`; CELLS is 1 to 8 rows for `top` and `bottom`, 1 to 80 columns for `left` and `right`) |
 | Overview | `--overview pane-deck --tabs 3 --highlight 4 --overview-position 3.5`; closing: `--overview-closing --overview-amount 0.6` |
 | Tab switch | `--tab-transition tab-switch --transition-progress 0.4 --transition-direction -1` |
 | Pane effects | `--pane-effects pane-effects --open-progress 0.5 --open-edge 2`, `--close-progress`, `--context 1`, `--pulse 1:0.5` |

@@ -5,6 +5,7 @@
 
 #include "NotificationCenter.h"
 #include "WindowStart.h"
+#include "../chrome/ChromeLayer.h"
 
 #include <QIcon>
 #include <QStandardPaths>
@@ -33,12 +34,13 @@ const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 Application::Application(const QString& configPath, const QJsonObject& overrides)
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
     , m_device(m_settings.settings().font)
+    , m_chromeComponent(&m_engine)
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command, bool empty) {
         return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false, empty});
     })
     , m_controlBus(m_control, m_settings)
     , m_scripts(scriptCallbacks(m_control))
-    , m_services{m_device, m_settings, m_engine, m_shaders, m_scripts, m_audio}
+    , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
 {
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
@@ -55,6 +57,9 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
             }
         }
     }
+    // The chrome type, its imports and their plugins load on the QML loader
+    // thread from now on, with the style chosen, for every window to come.
+    m_chromeComponent.loadUrl(ChromeLayer::sceneUrl(), QQmlComponent::Asynchronous);
 
     connect(&m_audio, &AudioController::spectrumChanged, &m_device, [this](const QVector<float>& spectrum) {
         m_device.setAudioSpectrum(std::span<const float>(spectrum.constData(), std::size_t(spectrum.size())));
