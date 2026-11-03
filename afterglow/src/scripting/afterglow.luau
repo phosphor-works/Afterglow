@@ -380,6 +380,7 @@ afterglow = {
     key_mode = function(pane, label) return { kind = "key_mode", pane = paneId(pane), label = label or "" } end,
     end_key_mode = function() return { kind = "end_key_mode" } end,
     -- operation: "open", "close" (back to where it was) or "choose" (the highlighted pane).
+    tab_menu = function(pane) return { kind = "tab_menu", pane = paneId(pane) } end,
     overview = function(pane, operation) return { kind = "overview", pane = paneId(pane), operation = operation or "open" } end,
     -- Moves the highlight to target, or by step cards.
     overview_move = function(pane, step, target)

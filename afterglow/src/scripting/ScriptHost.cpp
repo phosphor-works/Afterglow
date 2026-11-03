@@ -67,6 +67,7 @@ struct ScriptHost::Script
     bool disabled = false;
     std::deque<qint64> effects; ///< when recent effects ran, for the budgets
     std::deque<qint64> structural;
+    std::deque<qint64> docks;
     std::deque<qint64> results;
     int pendingResults = 0;
     int sleeping = 0;
@@ -350,6 +351,7 @@ const EffectKind Kinds[] = {
     {"key_mode", true, false, {"label"}, false},
     {"end_key_mode", false, false, {}, false},
     {"overview", true, false, {"operation"}, false},
+    {"tab_menu", true, false, {}, false},
     {"overview_move", true, false, {}, false, {"target", "step"}},
     {"pulse", true, false, {"effect"}, false, {"duration_ms", "color"}},
     {"shaders", true, false, {}, false},
@@ -1325,7 +1327,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                    && (!m_callbacks.paneInfo || m_callbacks.paneInfo(effect.value(QStringLiteral("pane")).toUInt()).isEmpty())) {
             result.code = QStringLiteral("no_pane");
             error = QStringLiteral("no pane %1").arg(effect.value(QStringLiteral("pane")).toUInt());
-        } else if (!budgetFree(kind) && !withinBudget(*script, structural)) {
+        } else if (!budgetFree(kind) && !withinBudget(*script, kind, structural)) {
             ++script->droppedEffects;
             result.code = QStringLiteral("rate_limited");
             error = QStringLiteral("Too many effects. %1 dropped").arg(kind);
@@ -1456,7 +1458,7 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
     });
 }
 
-bool ScriptHost::withinBudget(Script& script, bool structural)
+bool ScriptHost::withinBudget(Script& script, const QString& kind, bool structural)
 {
     const qint64 now = m_clock.elapsed();
     auto admit = [now](std::deque<qint64>& times, qint64 window, int limit) {
@@ -1465,6 +1467,11 @@ bool ScriptHost::withinBudget(Script& script, bool structural)
         }
         return int(times.size()) < limit;
     };
+    if (kind == QLatin1String("dock")) {
+        if (!admit(script.docks, 1000, MaxDockEffectsPerSecond)) return false;
+        script.docks.push_back(now);
+        return true;
+    }
     if (!admit(script.effects, 1000, MaxEffectsPerSecond) || (structural && !admit(script.structural, 10000, MaxStructuralPer10s))) {
         return false;
     }

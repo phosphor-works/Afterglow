@@ -4,14 +4,18 @@
 #include "TerminalWindow.h"
 
 #include "DockArea.h"
+#include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
 #include "desktop/Accessibility.h"
 
 #include <AfterglowRender/GpuDevice.h>
 
+#include <QWheelEvent>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 
 namespace Afterglow {
 
@@ -180,7 +184,94 @@ QRect TerminalWindow::placeDocks()
         DockArea& dock = *m_docks[i];
         if (dock.setRect(rects[i], m.cellWidth, m.cellHeight) && !dock.rect().isEmpty()) dockAccessibilityChanged(&dock);
     }
+    reportDockLayouts();
     return area;
+}
+
+void TerminalWindow::reportDockLayouts()
+{
+    // Every change, not only the last of a burst: a script that drops one
+    // would lay its text out for a width that the dock no longer has.
+    for (const auto& dock : m_docks) {
+        if (const auto layout = dock->takeLayoutChange()) {
+            emitDockEvent(*dock, QStringLiteral("on_dock_layout"),
+                          {{QStringLiteral("shown"), layout->shown}, {QStringLiteral("cols"), layout->cols},
+                           {QStringLiteral("rows"), layout->rows}},
+                          false);
+        }
+    }
+}
+
+QSize TerminalWindow::gridSize() const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QSize px = windowPixels();
+    return {px.width() / std::max(1, m.cellWidth), px.height() / std::max(1, m.cellHeight)};
+}
+
+void TerminalWindow::updateDockHover()
+{
+    // Only a pointer that a click on the item would reach: not one over the
+    // chrome, outside the window, or in a drag that the panes or a divider
+    // took.
+    DockHover now;
+    const QPoint px = (m_pointer * devicePixelRatio()).toPoint();
+    const bool chrome = (!m_overview.open || m_controller->wantsKeyboard()) && chromeVisible() && m_chrome->wantsPointer(m_pointer);
+    const bool dragging = (m_dividerDrag && !m_overview.open) || m_selectionPane || m_reportedButtons != Qt::NoButton;
+    if (!chrome && !dragging) {
+        if (const DockArea* dock = dockAt(px)) {
+            const QString item = dock->itemAt(px);
+            if (!item.isEmpty()) now = {dock->owner(), dock->id(), item};
+        }
+    }
+    if (now == m_dockHover) return;
+    const DockHover before = std::exchange(m_dockHover, now);
+    auto find = [this](const DockHover& hover) -> const DockArea* {
+        const auto it = std::find_if(m_docks.begin(), m_docks.end(), [&](const auto& dock) {
+            return dock->owner() == hover.owner && dock->id() == hover.dock;
+        });
+        return it == m_docks.end() ? nullptr : it->get();
+    };
+    // A dock that the pointer left hears of it, if it is still there. One
+    // whose item changed hears only of the new item.
+    if (!before.owner.isEmpty() && (before.owner != now.owner || before.dock != now.dock)) {
+        if (const DockArea* dock = find(before)) emitDockEvent(*dock, QStringLiteral("on_dock_hover"), {}, false);
+    }
+    if (const DockArea* dock = now.owner.isEmpty() ? nullptr : find(now))
+        emitDockEvent(*dock, QStringLiteral("on_dock_hover"), {{QStringLiteral("item"), now.item}}, false);
+}
+
+void TerminalWindow::wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e)
+{
+    const QString item = dock.itemAt(pixel);
+    // Part of a notch over one item does not carry over to another.
+    const DockHover at{dock.owner(), dock.id(), item};
+    if (at != m_wheelDock) {
+        m_wheelDock = at;
+        m_dockWheel = {};
+    }
+    m_dockWheel += e->angleDelta();
+    const int up = m_dockWheel.y() / 120;
+    const int left = m_dockWheel.x() / 120;
+    m_dockWheel -= QPoint(left * 120, up * 120);
+    auto send = [&](int steps, const char* forward, const char* back) {
+        if (steps == 0) return;
+        QVariantMap event{{QStringLiteral("direction"), QString::fromLatin1(steps > 0 ? forward : back)},
+                          {QStringLiteral("steps"), std::abs(steps)}};
+        if (!item.isEmpty()) event.insert(QStringLiteral("item"), item);
+        // A wheel or a touchpad sends events faster than a click does.
+        emitDockEvent(dock, QStringLiteral("on_dock_wheel"), event, true);
+    };
+    send(up, "up", "down");
+    send(left, "left", "right");
+}
+
+void TerminalWindow::openScriptTabMenu(Pane* pane)
+{
+    const int tab = tabOf(pane);
+    if (tab < 0) return;
+    const QPointF at = m_dockClickAt.value_or(m_pointer.x() >= 0 ? m_pointer : QPointF(0, 0));
+    openTabMenu(tab, at);
 }
 
 void TerminalWindow::setDockOptions(const AfterglowVt::TerminalOptions& options)
@@ -248,7 +339,7 @@ void TerminalWindow::pressDockItem(const DockArea* dock, std::size_t index)
     if (!m_overview.open) finishOverviewReveal();
     // A client can press as fast as it can call: the presses count toward
     // the script's callback limit, as a pointer's clicks need not.
-    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true);
+    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true, centre);
 }
 
 } // namespace Afterglow

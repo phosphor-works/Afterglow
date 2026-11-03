@@ -146,6 +146,9 @@ Later effects validate the ID again.
 
 Success confirms operation acceptance or application.
 For a generic `action`, it does not confirm that a process or a dialog finished.
+A generic `action` runs in the pane's tab, and shows that tab first.
+`close_tab`, `rename_tab`, `move_tab_left` and `move_tab_right` act on the pane's tab and do not show it, as the tab menu does.
+`close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on.
 `exec`, `select` and `prompt` deliver their results when the process or the dialog finishes.
 Use direct creation helpers when you need a returned pane ID.
 
@@ -175,6 +178,7 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Effects in one returned list | 64 | No effect applies |
 | Values in a returned table, nested tables included | 262,144 | The call fails. A handler that waits for these effects stops |
 | Applied effects | 20 each second | `rate_limited` |
+| Applied `dock` effects | 60 each second | `rate_limited` |
 | Structural effects | 3 each 10 seconds | `rate_limited` |
 | Queued results | 64 | The script is disabled |
 | Result delivery | 64 each second | The script is disabled |
@@ -188,14 +192,16 @@ A list with more than 64 effects applies nothing and causes an error.
 A disabled script stays disabled until its source or package configuration changes.
 Turning scripting off and on again also loads it again.
 Refused operations also count toward result limits.
-`on_load`, `on_key` and `on_dock_click` calls do not count toward a handler call limit.
+`on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
 An `on_dock_click` from an accessibility client's press counts, because a client can press without a limit.
+`on_dock_wheel` calls count, because a touchpad can send many in a second.
 Timers and watchers have their own limit, so events cannot use it up.
 A dropped one-shot timer does not fire again.
 A repeating timer fires at its next interval.
 A dropped `on_file_changed` call is not sent again.
 The next change to the file sends a new one.
 `sleep`, `cancel`, `end_key_mode` and `undock` do not count toward the effect limit.
+`dock` effects have their own limit and do not count toward the effect limit.
 Structural effects create, close or move panes, tabs or windows.
 They are `split`, `new_tab`, `new_window`, `close`, `move_pane`, `detach_tab`, `open_directory` and `open_project`.
 Generic actions that do the same use the same structural budget.
@@ -216,7 +222,7 @@ When a program clears its last status, or the terminal resets, `ev.state` is `id
 
 | Record | Fields |
 | --- | --- |
-| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview` |
+| Window | `id`, `focused`, `active_tab`, `active_pane`, `project`, `project_directory`, `overview`, `cols`, `rows` |
 | Tab | `id`, `window`, `index`, `title`, `active`, `active_pane` |
 | Pane | `id`, `window`, `tab_id`, `tab`, `title`, `cwd`, `command`, `cols`, `rows`, `focused`, `context` |
 
@@ -224,6 +230,9 @@ When a program clears its last status, or the terminal resets, `ev.state` is `id
 It is `""` when it is not known.
 Afterglow ignores a reported directory that names another host, such as the directory of an `ssh` session.
 A reported path without a host is used when that path exists on this machine.
+
+A window's `cols` and `rows` are the cells of the terminal font that fit in the complete window.
+A `top` or `bottom` docked area that shows is `cols` cells wide.
 
 A tab is active when its window selects it.
 Each unfocused window keeps its selected tab and pane.
@@ -440,6 +449,36 @@ A click on an item then sends `on_dock_click`, and the overview stays open.
 A prompt that is open over the overview takes the click first.
 An area always reads from left to right. `Terminal.bidi` does not apply to areas.
 
+`on_dock_hover` goes to the owner when the item under the pointer changes.
+It contains `dock`, `window` and `pane` as above, and `item` when the pointer is on an item.
+Without `item`, the pointer has left the items of that area.
+New text that puts another item under a pointer that does not move also sends the event.
+The pointer is on no item while it is over a prompt or a menu, or while a drag that started in a pane goes on.
+Keep the cells of an item the same when it shows its hover state. Otherwise the item under the pointer can change again.
+
+`on_dock_wheel` goes to the owner when the mouse wheel turns over an area.
+
+| Event field | Value |
+| --- | --- |
+| `direction` | `up`, `down`, `left` or `right` |
+| `steps` | The whole wheel notches, 1 or more. Part of a notch waits for the next event over the same item. |
+| `item` | The item under the pointer, when there is one |
+
+`on_dock_layout` goes to the owner when an area first shows or fails to show, and when it shows, goes or changes its size.
+Use it to lay out the text for the cells that the area has.
+
+| Event field | Value |
+| --- | --- |
+| `shown` | `true` when the area shows |
+| `cols`, `rows` | The cells of the area. Both are 0 when it does not show. |
+
+New text in the same place sends no `on_dock_layout`.
+A change of the window size, the font or another area can send it.
+
+`tab_menu(pane)` opens the tab menu of the pane's tab, as a right click on the tab bar does.
+The menu opens at the last click on an area of that window, or at an accessibility client's press.
+Without one, it opens at the pointer.
+
 Areas on one edge stack inward from the window's edge, in the order that they were placed.
 `tab_bar` areas are the outermost areas on the top edge, where the tab bar is.
 A `top` area without `tab_bar` shows below the tab bar.
@@ -461,6 +500,7 @@ When a window closes, its areas close with it.
 
 | Limit | Value | At the limit |
 | --- | --- | --- |
+| `dock` effects of one script | 60 each second | `rate_limited` |
 | Areas of one script in a window | 8 | `rate_limited` |
 | Areas in a window | 32 | `rate_limited` |
 | Lines of a `left` or `right` area | 256 | `invalid_effect` |
@@ -666,6 +706,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.copy` | `(text: string) -> Effect` |
 | `afterglow.open_url` | `(url: string) -> Effect` |
 | `afterglow.action` | `(pane: PaneRef, name: string) -> Effect` |
+| `afterglow.tab_menu` | `(pane: PaneRef) -> Effect` |
 | `afterglow.shaders` | `(pane: PaneRef) -> Effect` |
 | `afterglow.scene_state` | `(pane: PaneRef) -> Effect` |
 | `afterglow.shader_presets` | `(pane: PaneRef, instance: string) -> Effect` |

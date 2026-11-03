@@ -10,6 +10,7 @@
 #include <QString>
 #include <QVariantList>
 
+#include <optional>
 #include <vector>
 
 namespace Afterglow {
@@ -53,6 +54,17 @@ public:
     /// empty @p rect hides it. Returns whether it moved or drew again.
     bool setRect(const QRect& rect, int cellWidth, int cellHeight);
     const QRect& rect() const noexcept { return m_rect; }
+
+    /// What a script learns of where its dock shows: whether it shows, and
+    /// its cells. A dock that does not show has none.
+    struct Layout
+    {
+        bool shown = false;
+        int cols = 0, rows = 0;
+        bool operator==(const Layout&) const = default;
+    };
+    /// The layout since the last call, when it is the first or it changed.
+    std::optional<Layout> takeLayoutChange();
 
     /// The text as drawn, captured again only after a change.
     const AfterglowRender::PaneSnapshot& snapshot();
@@ -107,6 +119,7 @@ private:
     std::vector<Item> m_items;
     quint64 m_itemsGeneration = 0;
     QString m_text;
+    std::optional<Layout> m_reported;
 };
 
 } // namespace Afterglow

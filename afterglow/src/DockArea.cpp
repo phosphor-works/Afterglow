@@ -131,6 +131,14 @@ bool DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
     return moved || resized;
 }
 
+std::optional<DockArea::Layout> DockArea::takeLayoutChange()
+{
+    const Layout now = m_rect.isEmpty() ? Layout{} : Layout{true, m_columns, m_terminal.rows()};
+    if (m_reported == now) return std::nullopt;
+    m_reported = now;
+    return now;
+}
+
 void DockArea::draw()
 {
     // No wrap and no cursor. Text past the edge is cut here, before the

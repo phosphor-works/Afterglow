@@ -5,14 +5,13 @@ local script={metadata={name="Tab line",actions={{id="toggle",title="Toggle the 
 local config,enabled,tick={},true,0
 local git,exits,job,jobs={}, {}, nil, 0
 local toggling,togglePane=nil,0
--- Lines go out at most this many times between two refresh ticks. Afterglow
--- applies 20 effects a second, and Git queries and clicks need some of them.
-local LinesPerTick=6
 -- Event redraws closer together than this go out as one.
 local DrawMs=250
 -- By window: shown is the line that Afterglow accepted, pending the line that
 -- waits for its result, refused a line that Afterglow will not take.
-local shown,pending,refused,sent,sends={}, {}, {}, 0, 0
+local shown,pending,refused,sends={}, {}, {}, 0
+-- By window: the line's width in cells once it shows, and the item under the pointer.
+local widths,hovered={}, {}
 -- The tick of the draw timer's start or last call, while it runs. dirty marks
 -- a change that the timer must still draw.
 local drawing,dirty=nil,false
@@ -41,16 +40,14 @@ local function windowPane(terminal,window)
     end
     return any
 end
--- The widest pane of the window's current tab. The window is at least that
--- wide, so a line that fits it is not cut.
-local function windowWidth(terminal,window)
-    local width
-    for _,pane in ipairs(terminal.panes) do
-        if pane.window==window.id and pane.tab_id==window.active_tab and type(pane.cols)=="number" then
-            width=math.max(width or 0,pane.cols)
-        end
+-- The window's tabs in their order.
+local function windowTabs(terminal,window)
+    local tabs={}
+    for _,tab in ipairs(terminal.tabs) do
+        if tab.window==window then table.insert(tabs,tab) end
     end
-    return width
+    table.sort(tabs,function(a,b) return a.index<b.index end)
+    return tabs
 end
 -- A line as one string, so that an unchanged line is not sent again.
 local function key(runs)
@@ -62,15 +59,13 @@ local function key(runs)
 end
 -- The line that the window must show, as runs and their key. "" is no line.
 local function wanted(terminal,window,pane)
-    local tabs={}
-    for _,tab in ipairs(terminal.tabs) do
-        if tab.window==window.id then table.insert(tabs,tab) end
-    end
+    local tabs=windowTabs(terminal,window.id)
     if not enabled or (#tabs<2 and config.single_tab==false) then return nil,"" end
-    table.sort(tabs,function(a,b) return a.index<b.index end)
     local entry=(pane.context or "")=="" and git[pane.cwd] or nil
     local values=segments.values(pane,entry and entry.label,exits[pane.id])
-    local runs=segments.line(window,tabs,values,config,windowWidth(terminal,window))
+    -- Until the line shows, it is as wide as the window.
+    local width=widths[window.id] or window.cols
+    local runs=segments.line(window,tabs,values,config,width,hovered[window.id])
     return runs,key(runs)
 end
 -- Sends each window's tab line, drawn in place of its tab bar, when it differs
@@ -86,10 +81,10 @@ local function flush(terminal)
         local runs,line
         if pane then runs,line=wanted(terminal,window,pane) end
         if pane and line~=(shown[window.id] or "") and line~=refused[window.id] then
-            if pending[window.id] or sent>=LinesPerTick then
+            if pending[window.id] then
                 behind=true
             else
-                sent+=1;sends+=1
+                sends+=1
                 pending[window.id]={id=sends,line=line,tick=tick}
                 local effect=runs and afterglow.dock(pane,{id="tabline",edge="top",tab_bar=true,lines={runs}})
                     or afterglow.undock(pane,"tabline")
@@ -98,7 +93,7 @@ local function flush(terminal)
         end
     end
     -- Closed windows take their areas with them.
-    for _,byWindow in ipairs({shown,pending,refused}) do
+    for _,byWindow in ipairs({shown,pending,refused,widths,hovered}) do
         for id in pairs(byWindow) do
             if not live[id] then byWindow[id]=nil end
         end
@@ -115,6 +110,20 @@ local function redraw(ev)
     -- A timer that the age check below gave up on can still run.
     table.insert(effects,afterglow.cancel("draw"))
     table.insert(effects,afterglow.timer("draw",DrawMs,DrawMs))
+    return effects
+end
+-- The pointer and the line's width draw at once, so that a hover shows
+-- while the pointer is still there. A window whose line is on its way gets
+-- the draw timer.
+local function drawNow(ev)
+    local effects,behind=flush(ev.terminal)
+    if behind and drawing then
+        dirty=true
+    elseif behind then
+        drawing,dirty=tick,true
+        table.insert(effects,afterglow.cancel("draw"))
+        table.insert(effects,afterglow.timer("draw",DrawMs,DrawMs))
+    end
     return effects
 end
 function script.on_load(ev)
@@ -140,16 +149,54 @@ function script.on_pane_closed(ev)
     exits[ev.pane.id]=nil
     return redraw(ev)
 end
-function script.on_dock_click(ev)
-    local id=tonumber(string.match(ev.item,"^tab:(%d+)$"))
-    if not id or ev.button~="left" then return nil end
-    for _,tab in ipairs(ev.terminal.tabs) do
-        if tab.id==id and tab.active_pane~=0 then return afterglow.focus(tab.active_pane) end
+local function tabById(terminal,id)
+    for _,tab in ipairs(terminal.tabs) do
+        if tab.id==id and tab.active_pane~=0 then return tab end
     end
     return nil
 end
+-- As on the tab bar: a left click shows a tab, a middle click closes it and
+-- a right click opens its menu. "+N" shows the nearest hidden tab, and "+"
+-- opens a new tab.
+function script.on_dock_click(ev)
+    if ev.dock~="tabline" then return nil end
+    if ev.item=="new" then
+        return ev.button=="left" and ev.pane and afterglow.new_tab(ev.pane) or nil
+    end
+    local kind,id=string.match(ev.item,"^(%a+):(%d+)$")
+    local tab=tabById(ev.terminal,tonumber(id))
+    if not tab then return nil end
+    if ev.button=="left" then return afterglow.focus(tab.active_pane) end
+    if kind~="tab" then return nil end
+    if ev.button=="middle" then return afterglow.action(tab.active_pane,"close_tab") end
+    return afterglow.tab_menu(tab.active_pane)
+end
+-- The wheel over the line moves through the tabs, and stops at the ends.
+function script.on_dock_wheel(ev)
+    if ev.dock~="tabline" or (ev.direction~="up" and ev.direction~="down") then return nil end
+    local tabs=windowTabs(ev.terminal,ev.window)
+    for i,tab in ipairs(tabs) do
+        if tab.active then
+            local target=tabs[math.clamp(i+(ev.direction=="up" and -ev.steps or ev.steps),1,#tabs)]
+            if target~=tab and target.active_pane~=0 then return afterglow.focus(target.active_pane) end
+            return nil
+        end
+    end
+    return nil
+end
+function script.on_dock_hover(ev)
+    if ev.dock~="tabline" then return nil end
+    hovered[ev.window]=ev.item
+    return drawNow(ev)
+end
+-- The line lays its tabs out for the cells that it has.
+function script.on_dock_layout(ev)
+    if ev.dock~="tabline" then return nil end
+    widths[ev.window]=ev.shown and ev.cols or nil
+    return drawNow(ev)
+end
 local function refresh(ev)
-    tick+=1;sent=0
+    tick+=1
     local effects={}
     -- State that waits for a call that never came: a failed handler call,
     -- or a timer that Afterglow refused at the effect limit. Results come

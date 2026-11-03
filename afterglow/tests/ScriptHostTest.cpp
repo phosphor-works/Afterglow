@@ -1049,6 +1049,55 @@ end }
     EXPECT_EQ(rec.applied[2]["kind"], QStringLiteral("undock"));
 }
 
+TEST_F(ScriptHostTest, DockEffectsHaveABudgetOfTheirOwn)
+{
+    write(user, "budget.luau", R"(
+return { on_bell = function(ev)
+    local out = {}
+    for i = 1, 20 do table.insert(out, afterglow.set_title(ev.pane, "t" .. i)) end
+    for i = 1, 40 do table.insert(out, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text=tostring(i)}}}})) end
+    table.insert(out, afterglow.tab_menu(ev.pane))
+    return out
+end, on_title = function(ev)
+    local out = {}
+    for i = 1, 30 do table.insert(out, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text=tostring(i)}}}})) end
+    return out
+end }
+)");
+    host->setEnabled(true);
+    // The general budget spent: the docks still go out, and the tab menu,
+    // which is not a dock, does not.
+    host->dispatch("on_bell", 7);
+    int docks = 0, menus = 0;
+    for (const QVariantMap& e : std::as_const(rec.applied)) {
+        docks += e["kind"] == QStringLiteral("dock");
+        menus += e["kind"] == QStringLiteral("tab_menu");
+    }
+    EXPECT_EQ(docks, 40);
+    EXPECT_EQ(menus, 0);
+    EXPECT_EQ(rec.applied.size(), ScriptHost::MaxEffectsPerSecond + 40);
+    // Past their own budget, docks are dropped as rate_limited.
+    rec.applied.clear();
+    rec.results.clear();
+    host->dispatch("on_title", 7);
+    EXPECT_EQ(rec.applied.size(), ScriptHost::MaxDockEffectsPerSecond - 40);
+    ASSERT_EQ(rec.results.size(), 30);
+    EXPECT_TRUE(rec.results.last().second.contains(QLatin1String("Too many effects")));
+}
+
+TEST_F(ScriptHostTest, TheTabMenuEffectNamesItsPane)
+{
+    write(user, "menu.luau", R"(
+return { on_bell = function(ev) return { afterglow.tab_menu(ev.pane), afterglow.tab_menu(8) } end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("tab_menu"));
+    EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 7u);
+    EXPECT_EQ(rec.applied[1]["pane"].toUInt(), 8u);
+}
+
 TEST_F(ScriptHostTest, DockClicksReachOnlyTheDocksOwner)
 {
     // Each script docks once, which names its owner, then answers clicks.
@@ -1676,15 +1725,15 @@ TEST_F(ScriptHostTest, TabLineDrawsATabLineAndPersistsToggle)
     EXPECT_EQ(dock.value("pane").toUInt(),7u);
     EXPECT_EQ(dock.value("edge"),"top");
     EXPECT_TRUE(dock.value("tab_bar").toBool());
-    EXPECT_EQ(dockTexts(dock),(QStringList{"dev","1 fish","2 vim","repository"}));
+    EXPECT_EQ(dockTexts(dock),(QStringList{"dev","1 fish","2 vim","+","repository"}));
     QStringList items;
     for (const QVariant& run : dock.value("lines").toList().value(0).toList())
         if (run.toMap().contains("item")) items << run.toMap().value("item").toString();
-    EXPECT_EQ(items,(QStringList{"tab:10","tab:11"}));
+    EXPECT_EQ(items,(QStringList{"tab:10","tab:11","new"}));
     // An unchanged line is not sent again.
     tick();EXPECT_EQ(rec.applied.size(),1);
     host->dispatch("on_command_finished",7,{{"exit_code",2}});pump();
-    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"dev","1 fish","2 vim","repository","exit 2"}));
+    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"dev","1 fish","2 vim","+","repository","exit 2"}));
     // A click on a tab goes to it.
     const QString owner=rec.owners.last();
     host->dispatchTo(owner,"on_dock_click",7,{{"dock","tabline"},{"item","tab:11"},{"button","left"},{"window",1}});pump();
@@ -1696,6 +1745,77 @@ TEST_F(ScriptHostTest, TabLineDrawsATabLineAndPersistsToggle)
     EXPECT_EQ(rec.applied.last().value("id"),"tabline");
     host->setEnabled(false);host->setEnabled(true);rec.applied.clear();tick();
     EXPECT_TRUE(rec.applied.isEmpty());
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, TabLineActsLikeATabBarAndFollowsItsDock)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10},{"cols",200}}};
+    auto setTabs=[&](int count) {
+        tabs.clear();
+        for (int i=0;i<count;++i)
+            tabs.append(QVariantMap{{"id",10+i},{"window",1},{"index",i},{"title",QString("t%1").arg(i)},
+                                    {"active",i==0},{"active_pane",i==0?7:(i==1?8:100+i)}});
+    };
+    setTabs(2);
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    host->setEnabled(true);pump();
+    ASSERT_EQ(rec.applied.size(),1);
+    const QString owner=rec.owners.last();
+    auto event=[&](const char* handler, QVariantMap ev) {
+        ev.insert("dock","tabline");ev.insert("window",1);
+        rec.applied.clear();
+        host->dispatchTo(owner,handler,7,ev);pump();
+    };
+    auto runOf=[](const QVariantMap& dock, const QString& item) {
+        for (const QVariant& run : dock.value("lines").toList().value(0).toList())
+            if (run.toMap().value("item")==item) return run.toMap();
+        return QVariantMap{};
+    };
+    // A tab under the pointer shows in the hover colors, at once.
+    event("on_dock_hover",{{"item","tab:11"}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(runOf(rec.applied.last(),"tab:11").value("bg").toInt(),7);
+    EXPECT_EQ(runOf(rec.applied.last(),"tab:10").value("bg").toInt(),4); // the current tab keeps its colors
+    event("on_dock_hover",{});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(runOf(rec.applied.last(),"tab:11").value("bg").toInt(),8);
+    // The buttons of a tab bar.
+    event("on_dock_click",{{"item","tab:11"},{"button","middle"}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.last().value("kind"),"action");
+    EXPECT_EQ(rec.applied.last().value("name"),"close_tab");
+    EXPECT_EQ(rec.applied.last().value("pane").toUInt(),8u);
+    event("on_dock_click",{{"item","tab:11"},{"button","right"}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.last().value("kind"),"tab_menu");
+    EXPECT_EQ(rec.applied.last().value("pane").toUInt(),8u);
+    event("on_dock_click",{{"item","new"},{"button","left"}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.last().value("kind"),"new_tab");
+    EXPECT_EQ(rec.applied.last().value("pane").toUInt(),7u);
+    // The wheel moves through the tabs and stops at the ends.
+    event("on_dock_wheel",{{"direction","down"},{"steps",3}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(rec.applied.last().value("kind"),"focus");
+    EXPECT_EQ(rec.applied.last().value("pane").toUInt(),8u);
+    event("on_dock_wheel",{{"direction","up"},{"steps",1}});
+    EXPECT_TRUE(rec.applied.isEmpty());
+    // The line lays its tabs out for the cells that its dock has.
+    setTabs(20);
+    event("on_dock_layout",{{"shown",true},{"cols",200},{"rows",1}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_TRUE(dockTexts(rec.applied.last()).contains("20 t19"));
+    event("on_dock_layout",{{"shown",true},{"cols",40},{"rows",1}});
+    ASSERT_EQ(rec.applied.size(),1);
+    qsizetype cells=0;
+    for (const QVariant& run : rec.applied.last().value("lines").toList().value(0).toList())
+        cells+=run.toMap().value("text").toString().size();
+    EXPECT_LE(cells,40);
+    EXPECT_FALSE(dockTexts(rec.applied.last()).contains("20 t19"));
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
@@ -1722,7 +1842,7 @@ return {on_load=function()
  local window={id=1,project=""}
  local tabs={{id=3,index=0,title="",active=true}}
  local runs=s.line(window,tabs,values,{segments={"context","cwd","unknown","exit"},powerline=false})
- assert(texts(runs)=="1 shell|remote|project|exit 1", texts(runs))
+ assert(texts(runs)=="1 shell|+|remote|project|exit 1", texts(runs))
  for _,run in ipairs(runs) do assert(run.text~="\u{e0b0}") end
  -- Long titles are cut, and only eight component names are read.
  local long={{id=4,index=0,title=string.rep("y",1000),active=false}}
@@ -1741,7 +1861,7 @@ return {on_load=function()
  assert(#wide<=128,#wide)
  local clickable=0
  for _,run in ipairs(wide) do if run.item then clickable+=1 end end
- assert(clickable==49,clickable) -- 48 tabs and the "+52" before them
+ assert(clickable==50,clickable) -- 48 tabs, the "+52" before them and the new tab button
  assert(string.find(texts(wide),"^%+52|53 t|"),texts(wide))
  -- A block that sets one color keeps the default of the other.
  local colored=s.line(window,tabs,values,{colors={active={bg=2}}})
@@ -1778,7 +1898,7 @@ TEST_F(ScriptHostTest, TabLineSendsADroppedLineAgain)
     // Afterglow dropped the line, so the next refresh sends it again, once.
     tick();
     ASSERT_EQ(rec.applied.size(),2);
-    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"1 fish","repository"}));
+    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"1 fish","+","repository"}));
     tick();EXPECT_EQ(rec.applied.size(),2);
     // A line refused as invalid goes out again only when it changes.
     refusal="invalid_effect";
@@ -1787,7 +1907,7 @@ TEST_F(ScriptHostTest, TabLineSendsADroppedLineAgain)
     tick();tick();EXPECT_EQ(rec.applied.size(),3);
     host->dispatch("on_command_finished",7,{{"exit_code",0}});tick();
     ASSERT_EQ(rec.applied.size(),4);
-    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"1 fish","repository","ok"}));
+    EXPECT_EQ(dockTexts(rec.applied.last()),(QStringList{"1 fish","+","repository","ok"}));
 }
 
 TEST_F(ScriptHostTest, TabLineSendsALineAgainWhenItsResultIsLost)
@@ -1851,8 +1971,8 @@ TEST_F(ScriptHostTest, TabLineShowsTheTabsAroundTheCurrentTab)
 {
     installPackage("tab-line");
     write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
-    paneState[7]["cwd"]="/tmp/repository";paneState[7]["cols"]=80;
-    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10}}};
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10},{"cols",80}}};
     tabs.clear();
     for (int i=0;i<100;++i) {
         tabs.append(QVariantMap{{"id",i==50?10:1000+i},{"window",1},{"index",i},{"title",QString("t%1").arg(i)},
@@ -1867,18 +1987,19 @@ TEST_F(ScriptHostTest, TabLineShowsTheTabsAroundTheCurrentTab)
     for (const QVariant& run : runs) cells+=run.toMap().value("text").toString().size();
     EXPECT_LE(cells,80);
     const QStringList texts=dockTexts(rec.applied.last());
-    ASSERT_GE(texts.size(),4);
+    ASSERT_GE(texts.size(),5);
     EXPECT_TRUE(texts.contains("51 t50"));
     EXPECT_EQ(texts.last(),"repository");
-    const QString before=texts.first(), after=texts.at(texts.size()-2);
+    EXPECT_EQ(texts.at(texts.size()-2),"+");
+    const QString before=texts.first(), after=texts.at(texts.size()-3);
     ASSERT_TRUE(before.startsWith('+') && after.startsWith('+')) << texts.join('|').toStdString();
-    EXPECT_EQ(before.mid(1).toInt()+after.mid(1).toInt()+texts.size()-3,100);
+    EXPECT_EQ(before.mid(1).toInt()+after.mid(1).toInt()+texts.size()-4,100);
     // "+N" goes to the nearest hidden tab.
     QString item;
     for (const QVariant& run : runs) {
         if (run.toMap().contains("item")) { item=run.toMap().value("item").toString(); break; }
     }
-    EXPECT_EQ(item,QString("tab:%1").arg(1000+before.mid(1).toInt()-1));
+    EXPECT_EQ(item,QString("more:%1").arg(1000+before.mid(1).toInt()-1));
 }
 
 TEST_F(ScriptHostTest, TabLineLeavesAOneTabWindowWithSingleTabOff)

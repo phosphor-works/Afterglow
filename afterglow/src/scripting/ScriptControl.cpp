@@ -91,6 +91,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("action")) {
                 return control.runScriptAction(pane, s("name"));
             }
+            if (kind == QLatin1String("tab_menu")) return control.tabMenu(pane);
             if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
             if (kind == QLatin1String("overview_move")) {
                 return control.overviewMove(pane, e.value(QStringLiteral("target")).toUInt(),
@@ -175,8 +176,9 @@ void connectScriptEvents(ScriptHost& host, Control& control)
     QObject::connect(&control, &Control::scriptKey, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& key) {
         host.dispatchTo(owner, QStringLiteral("on_key"), pane, key);
     }, Queued);
-    QObject::connect(&control, &Control::scriptDockClicked, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& click, bool limited) {
-        host.dispatchTo(owner, QStringLiteral("on_dock_click"), pane, click, limited);
+    QObject::connect(&control, &Control::scriptDockEvent, &host,
+                     [&host](const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited) {
+        host.dispatchTo(owner, handler, pane, event, limited);
     }, Queued);
     QObject::connect(&control, &Control::tabSwitched, &host, [&host](quint32 pane, quint32 from, quint32 to, int direction) {
         host.dispatch(QStringLiteral("on_tab_switch"), pane,
