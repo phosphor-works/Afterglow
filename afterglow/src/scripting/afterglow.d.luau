@@ -45,7 +45,9 @@ export type Pane = {
 
 -- The pane overview: cards are the pane IDs of every tab in tab order while it is open, else the current tab's.
 export type Overview = { open: boolean, highlighted: number, cards: { number } }
-export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number, active_pane: number, overview: Overview }
+-- cols and rows: the cells that fit in the window. A top or bottom dock is cols wide.
+export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number,
+    active_pane: number, overview: Overview, cols: number, rows: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
 -- Detached metadata, captured before dispatch. Editing it cannot mutate the host.
 -- Zero active IDs mean that no terminal window currently has keyboard focus.
@@ -80,7 +82,7 @@ export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? 
 export type DockColor = number | string
 export type DockRun = { text: string?, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
     underline: boolean?,
-    item: string?, -- 1-64 characters, no control characters; a click on the run's cells reaches on_dock_click
+    item: string?, -- 1-64 characters, no control characters; names the run's cells in on_dock_click, on_dock_hover and on_dock_wheel
     spacer: boolean? } -- no text: takes the cells the other runs of its line leave, shared among the spacers
 -- A field that is not listed here refuses the dock.
 export type DockSpec = {
@@ -93,6 +95,14 @@ export type DockSpec = {
 }
 export type DockClickEvent = { pane: Pane?, dock: string, item: string, button: "left" | "middle" | "right",
     window: number, terminal: State }
+-- item: the item under the pointer; nil when the pointer left the dock's items.
+export type DockHoverEvent = { pane: Pane?, dock: string, item: string?, window: number, terminal: State }
+-- steps: whole wheel notches, at least 1. item: the item under the pointer, if any.
+export type DockWheelEvent = { pane: Pane?, dock: string, item: string?, direction: "up" | "down" | "left" | "right",
+    steps: number, window: number, terminal: State }
+-- Where the dock shows: cols and rows are its cells, 0 when it does not show.
+export type DockLayoutEvent = { pane: Pane?, dock: string, shown: boolean, cols: number, rows: number, window: number,
+    terminal: State }
 export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }
 -- key: "a", "A", "Enter", "Escape", "Left", "F5"...; text: what it types, "" for control keys.
 export type KeyEvent = { pane: Pane?, key: string, text: string, ctrl: boolean, shift: boolean, alt: boolean,
@@ -160,6 +170,9 @@ export type Effects = Effect | { Effect }
 --   on_pane_created(ev: PaneCreatedEvent)    on_tab_switch(ev: TabSwitchEvent)
 --   on_key(ev: KeyEvent) -- only while this script holds a key mode
 --   on_dock_click(ev: DockClickEvent) -- a click on an item of this script's dock
+--   on_dock_hover(ev: DockHoverEvent) -- the pointer moved onto an item of this script's dock, or off its items
+--   on_dock_wheel(ev: DockWheelEvent) -- the mouse wheel over this script's dock
+--   on_dock_layout(ev: DockLayoutEvent) -- this script's dock showed, went or changed its size
 --   run_action(action: string, ev: ActionEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
 -- returns a new state object. Migration/init failures retain the old instance.
@@ -231,6 +244,9 @@ declare afterglow: {
     copy: (text: string) -> Effect,
     open_url: (url: string) -> Effect, -- http, https and mailto
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
+    -- The tab menu of the pane's tab: where the click on a dock item before it was, else at the pointer.
+    -- busy while a prompt, a script dialog or the command palette is open in the window.
+    tab_menu: (pane: PaneRef) -> Effect,
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
     scene_state: (pane: PaneRef) -> Effect,

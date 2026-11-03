@@ -4,14 +4,19 @@
 #include "TerminalWindow.h"
 
 #include "DockArea.h"
+#include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
 #include "desktop/Accessibility.h"
 
 #include <AfterglowRender/GpuDevice.h>
 
+#include <QGuiApplication>
+#include <QWheelEvent>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 
 namespace Afterglow {
 
@@ -36,6 +41,12 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
     DockArea* changed = nullptr;
     if (effect.value(QStringLiteral("kind")) == QLatin1String("undock")) {
         if (found == m_docks.end()) return {};
+        // The script still runs: it hears that the pointer left the item,
+        // which an area that has gone could not tell it later.
+        if (m_dockHover.owner == owner && m_dockHover.dock == id) {
+            m_dockHover = {};
+            emitDockEvent(**found, QStringLiteral("on_dock_hover"), {}, false);
+        }
         releaseDockAccessibility(found->get());
         m_docks.erase(found);
         // Now, not at the next frame: a window that is not exposed draws none.
@@ -63,8 +74,11 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
     // A dock that does not show is no child of the window: it tells of its
     // items when it shows (placeDocks).
     if (changed && !changed->rect().isEmpty()) dockAccessibilityChanged(changed);
-    // An item can come or go under a pointer that does not move.
-    applyPointerShape();
+    // An item can come or go under a pointer that does not move. A dock that
+    // moves has its place at the next frame, whose relayout sets the shape
+    // and the item: until then its rectangle is the old one. One that went
+    // is gone now.
+    if (change != DockArea::Change::Place || !changed) applyPointerShape();
     scheduleRender();
     return {};
 }
@@ -73,7 +87,8 @@ void TerminalWindow::finishDockMoves()
 {
     if (!std::exchange(m_docksMoved, false)) return;
     // relayout tells the chrome when the tab bar comes or goes and sets the
-    // pointer shape, and placeDocks tells assistive technology what shows.
+    // pointer shape and the hovered item, and placeDocks tells assistive
+    // technology what shows and each dock's script where it shows.
     relayout();
 }
 
@@ -175,12 +190,115 @@ QRect TerminalWindow::placeDocks()
     // went, can show or hide a dock or cut its text anew. A dock that comes
     // or goes changes the window's children, which the next frame tells of
     // (updateTerminalAccessibility). One that shows tells of what changed
-    // in it since it last showed, and of where it is now.
+    // in it since it last showed, and of where it is now. Each dock whose
+    // cells changed tells its script too.
     for (std::size_t i = 0; i < m_docks.size(); ++i) {
         DockArea& dock = *m_docks[i];
         if (dock.setRect(rects[i], m.cellWidth, m.cellHeight) && !dock.rect().isEmpty()) dockAccessibilityChanged(&dock);
     }
+    reportDockLayouts();
     return area;
+}
+
+void TerminalWindow::reportDockLayouts()
+{
+    // Every change, not only the last of a burst: a script that drops one
+    // would lay its text out for a width that the dock no longer has.
+    for (const auto& dock : m_docks) {
+        if (const auto layout = dock->takeLayoutChange()) {
+            emitDockEvent(*dock, QStringLiteral("on_dock_layout"),
+                          {{QStringLiteral("shown"), layout->shown}, {QStringLiteral("cols"), layout->cols},
+                           {QStringLiteral("rows"), layout->rows}},
+                          false);
+        }
+    }
+}
+
+QSize TerminalWindow::gridSize() const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QSize px = windowPixels();
+    return {px.width() / std::max(1, m.cellWidth), px.height() / std::max(1, m.cellHeight)};
+}
+
+void TerminalWindow::updateDockHover()
+{
+    // Each pointer move comes here: a window with no dock and no item to
+    // leave has nothing to look at.
+    if (m_docks.empty() && m_dockHover.owner.isEmpty()) return;
+    // Only a pointer that a click on the item would reach: not one over the
+    // chrome, outside the window, or in a drag that the panes, a divider,
+    // the chrome or the overview took. A grab whose release went elsewhere
+    // ends with its buttons.
+    DockHover now;
+    const QPoint px = (m_pointer * devicePixelRatio()).toPoint();
+    const bool held = QGuiApplication::mouseButtons() != Qt::NoButton;
+    const bool dragging = (m_dividerDrag && !m_overview.open) || m_selectionPane || m_reportedButtons != Qt::NoButton
+        || (held && (m_chromeGrab || m_overviewButtons != Qt::NoButton));
+    if (!dragging) {
+        if (const DockArea* dock = dockAt(px)) {
+            const QString item = dock->itemAt(px);
+            const bool chrome = (!m_overview.open || m_controller->wantsKeyboard()) && chromeVisible()
+                && m_chrome->wantsPointer(m_pointer);
+            if (!item.isEmpty() && !chrome) now = {dock->owner(), dock->id(), item};
+        }
+    }
+    if (now == m_dockHover) return;
+    const DockHover before = std::exchange(m_dockHover, now);
+    auto find = [this](const DockHover& hover) -> const DockArea* {
+        const auto it = std::find_if(m_docks.begin(), m_docks.end(), [&](const auto& dock) {
+            return dock->owner() == hover.owner && dock->id() == hover.dock;
+        });
+        return it == m_docks.end() ? nullptr : it->get();
+    };
+    // A dock that the pointer left hears of it, if it is still there. One
+    // whose item changed hears only of the new item.
+    if (!before.owner.isEmpty() && (before.owner != now.owner || before.dock != now.dock)) {
+        if (const DockArea* dock = find(before)) emitDockEvent(*dock, QStringLiteral("on_dock_hover"), {}, false);
+    }
+    if (const DockArea* dock = now.owner.isEmpty() ? nullptr : find(now))
+        emitDockEvent(*dock, QStringLiteral("on_dock_hover"), {{QStringLiteral("item"), now.item}}, false);
+}
+
+void TerminalWindow::wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e)
+{
+    const QString item = dock.itemAt(pixel);
+    // Part of a notch over one item does not carry over to another.
+    const DockHover at{dock.owner(), dock.id(), item};
+    if (at != m_wheelDock) {
+        m_wheelDock = at;
+        m_dockWheel = {};
+    }
+    m_dockWheel += e->angleDelta();
+    const int up = m_dockWheel.y() / 120;
+    const int left = m_dockWheel.x() / 120;
+    m_dockWheel -= QPoint(left * 120, up * 120);
+    auto send = [&](int steps, const char* forward, const char* back) {
+        if (steps == 0) return;
+        QVariantMap event{{QStringLiteral("direction"), QString::fromLatin1(steps > 0 ? forward : back)},
+                          {QStringLiteral("steps"), std::abs(steps)}};
+        if (!item.isEmpty()) event.insert(QStringLiteral("item"), item);
+        // A wheel or a touchpad sends events faster than a click does.
+        emitDockEvent(dock, QStringLiteral("on_dock_wheel"), event, true);
+    };
+    send(up, "up", "down");
+    send(left, "left", "right");
+}
+
+QString TerminalWindow::openScriptTabMenu(Pane* pane)
+{
+    const int tab = tabOf(pane);
+    if (tab < 0) return QStringLiteral("Pane closed");
+    // Not over a prompt or the palette, which take the pointer: the tab
+    // bar's own menu cannot open there either, and the menu's Close would
+    // replace a prompt's pending answer. A menu that is open gives way, as
+    // it does to a right click on the tab bar.
+    if (m_scriptDialog || m_controller->confirmPromptOpen() || m_controller->titlePromptOpen()
+        || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || m_controller->paletteOpen())
+        return QStringLiteral("A prompt or the palette is open");
+    const QPointF at = std::exchange(m_dockClickAt, std::nullopt).value_or(m_pointer.x() >= 0 ? m_pointer : QPointF(0, 0));
+    openTabMenu(tab, at);
+    return {};
 }
 
 void TerminalWindow::setDockOptions(const AfterglowVt::TerminalOptions& options)
@@ -248,7 +366,7 @@ void TerminalWindow::pressDockItem(const DockArea* dock, std::size_t index)
     if (!m_overview.open) finishOverviewReveal();
     // A client can press as fast as it can call: the presses count toward
     // the script's callback limit, as a pointer's clicks need not.
-    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true);
+    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true, centre);
 }
 
 } // namespace Afterglow

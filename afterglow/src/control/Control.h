@@ -112,7 +112,9 @@ public:
     /// program opened the URL, which Qt cannot tell.
     QString openUrl(const QString& url);
     /// A keybind action by its config name (split_right, new_tab...), or a
-    /// script action as "script:<script id>.<action id>".
+    /// script action as "script:<script id>.<action id>". A keybind action
+    /// shows the pane's tab first, except the tab actions that act on that
+    /// tab where it is (TerminalWindow::runAction).
     QString runAction(quint32 pane, const QString& action);
     /// runAction for a script: the actions that read pane text need Scripts.allowReadText.
     QString runScriptAction(quint32 pane, const QString& action);
@@ -127,6 +129,9 @@ public:
     /// that window has the area; else, as when @p pane has moved or closed, in
     /// the window of the newest such area whose last dock named @p pane.
     QString scriptDock(const QString& owner, quint32 pane, const QVariantMap& effect);
+    /// Opens the tab menu of @p pane's tab (afterglow.tab_menu). Scripts
+    /// only: no D-Bus method or ctl command opens it.
+    QString tabMenu(quint32 pane);
     void clearScriptOwner(const QString& owner);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
@@ -158,10 +163,10 @@ Q_SIGNALS:
     void contextChanged(quint32 pane, const QString& context);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
-    /// A click on an item of a script's dock; @p pane is the window's focused pane.
-    /// @p limited: an assistive technology pressed it, and the press counts
-    /// toward the script's callback limit.
-    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click, bool limited);
+    /// An event of a script's dock for the owner's @p handler; @p pane is
+    /// the window's focused pane. @p limited: the call counts toward the
+    /// script's callback limit.
+    void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited);
     /// A window's current tab changed; @p pane is the new tab's focused pane.
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 

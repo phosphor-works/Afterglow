@@ -82,17 +82,27 @@ public:
     static constexpr int ActionTimeoutMs = 100;
     static constexpr int MaxFailures = 5; ///< in a row, before a script is disabled
     static constexpr int MaxEffectsPerSecond = 20;
+    /// dock effects, which have a budget of their own: a dock that follows
+    /// the pointer or a clock must not use up the budget of the rest.
+    static constexpr int MaxDockEffectsPerSecond = 60;
     /// Effects that create, close or move panes, tabs and windows (Kinds[]
     /// marks them), and the generic actions that do.
     static constexpr int MaxStructuralPer10s = 3;
     static constexpr int MaxEffectsPerCall = 64;
     static constexpr int MaxActions = 32; ///< palette actions of one script
-    static constexpr int MaxPendingResults = 64;
-    static constexpr int MaxResultsPerSecond = 64;
+    /// Results, queued or each second, disable a script past these: a
+    /// handler that answers each result with a new request loops without
+    /// end. A script that requests every effect its budgets let it apply,
+    /// in one pass of the event loop, must stay under them.
+    static constexpr int MaxPendingResults = 128;
+    static constexpr int MaxResultsPerSecond = 128;
+    static_assert(MaxPendingResults > MaxEffectsPerSecond + MaxDockEffectsPerSecond);
+    static_assert(MaxResultsPerSecond > MaxEffectsPerSecond + MaxDockEffectsPerSecond);
     /// Handler calls for one script each second, once for events and once
     /// for its timers and watchers: a title storm must not stop its timers.
-    /// Keys, dock clicks and on_load come at the user's rate and are not
-    /// counted.
+    /// Keys, pointer clicks on docks, dock hovers, dock layouts and on_load
+    /// are not counted: dropping one would lose a state that no later call
+    /// tells again. Wheel turns and accessibility presses on docks count.
     static constexpr int MaxCallbacksPerSecond = 64;
     static constexpr int MaxSleeping = 16;
     static constexpr int MaxSleepMs = 600000;
@@ -159,7 +169,7 @@ private:
     /// Where a deferred effect's completion goes: counted, then queued as its result.
     std::function<void(EffectResult)> completion(const ScriptPtr& script, const QString& request,
                                                  const QString& kind, quint32 eventPane);
-    bool withinBudget(Script& script, bool structural);
+    bool withinBudget(Script& script, const QString& kind, bool structural);
     /// Counts a handler call against the script's callback budget: the one
     /// for events, or for @p task the one for its timers and watchers.
     bool admitCallback(Script& script, bool task = false);

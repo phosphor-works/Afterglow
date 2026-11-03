@@ -19,6 +19,7 @@
     "powerline": true,
     "single_tab": true,
     "tab_max_length": 24,
+    "new_tab_button": true,
     "git": true,
     "git_changes": false,
     "git_refresh_seconds": 15

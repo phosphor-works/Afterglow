@@ -32,7 +32,7 @@ end
 local Right,Left="\u{e0b0}","\u{e0b2}"
 local Defaults={
     section={fg=0,bg=4}, active={fg=0,bg=4}, inactive={fg=7,bg=8},
-    component={fg=15,bg=8}, accent={fg=0,bg=6},
+    component={fg=15,bg=8}, accent={fg=0,bg=6}, hover={fg=0,bg=7},
 }
 -- A block's colors. A configured block that gives only fg or bg keeps the
 -- default of the other.
@@ -43,7 +43,7 @@ local function color(config,name)
     return {fg=custom.fg or default.fg,bg=custom.bg or default.bg}
 end
 -- Afterglow takes at most 128 runs in a line. Each tab takes 2, and the other
--- parts at most 23.
+-- parts at most 25.
 local MaxTabs=48
 -- The cells of a block: its text, a space on each side and the separator
 -- before it. UTF-8 bytes are never fewer than the cells that the text takes.
@@ -51,9 +51,11 @@ local function cells(text) return #text+3 end
 -- One window's tab line, like tabline.wez: the project on the left, then the
 -- tabs, then the focused pane's components against the right edge. tabs are
 -- in their window order; values are segments.values of the focused pane.
--- width is the window's width in cells when it is known. Tabs that do not
+-- width is the line's width in cells when it is known. Tabs that do not
 -- fit it, or past MaxTabs, show as "+N" on each side of the current tab.
-function segments.line(window,tabs,values,config,width)
+-- hovered is the item under the pointer: a tab or button that is not
+-- current shows in the hover colors.
+function segments.line(window,tabs,values,config,width,hovered)
     local powerline=config.powerline~=false
     local runs={}
     local function add(run) table.insert(runs,run) end
@@ -66,6 +68,10 @@ function segments.line(window,tabs,values,config,width)
         add({text=" "..text.." ",fg=c.fg,bg=c.bg,bold=bold,item=item})
         previous=c
     end
+    local function tint(name,item)
+        return color(config,item and item==hovered and name~="active" and "hover" or name)
+    end
+    local newTab=config.new_tab_button~=false
     local project=clean(window.project,40)
     local max=math.clamp(tonumber(config.tab_max_length) or 24,4,80)
     local titles={}
@@ -83,7 +89,11 @@ function segments.line(window,tabs,values,config,width)
     -- The tabs that fit between the project and the components: all of them,
     -- or the current tab and its neighbors.
     local first,last=1,#tabs
-    local room=(width or math.huge)-1-(project~="" and cells(project) or 0)
+    -- cells counts a separator before every block and component. The first
+    -- block has none, and with powerline the left side ends in one. Without
+    -- powerline, the first component has none either.
+    local edges=powerline and 0 or (#shown>0 and 2 or 1)
+    local room=(width or math.huge)+edges-(project~="" and cells(project) or 0)-(newTab and cells("+") or 0)
     local need=0
     for _,text in ipairs(shown) do room-=cells(text) end
     for _,text in ipairs(titles) do need+=cells(text) end
@@ -106,11 +116,19 @@ function segments.line(window,tabs,values,config,width)
     end
     if project~="" then block(project,color(config,"section"),nil,true) end
     -- A click on "+N" goes to the nearest hidden tab.
-    if first>1 then block("+"..(first-1),color(config,"inactive"),"tab:"..tabs[first-1].id) end
-    for i=first,last do
-        block(titles[i],color(config,tabs[i].active and "active" or "inactive"),"tab:"..tabs[i].id)
+    if first>1 then
+        local item="more:"..tabs[first-1].id
+        block("+"..(first-1),tint("inactive",item),item)
     end
-    if last<#tabs then block("+"..(#tabs-last),color(config,"inactive"),"tab:"..tabs[last+1].id) end
+    for i=first,last do
+        local item="tab:"..tabs[i].id
+        block(titles[i],tint(tabs[i].active and "active" or "inactive",item),item)
+    end
+    if last<#tabs then
+        local item="more:"..tabs[last+1].id
+        block("+"..(#tabs-last),tint("inactive",item),item)
+    end
+    if newTab then block("+",tint("inactive","new"),"new") end
     if previous and powerline then add({text=Right,fg=previous.bg}) end
     add({spacer=true})
     local before

@@ -138,13 +138,22 @@ public:
     /// beside the current tab, from the focused pane.
     Pane* openTab(const PaneLaunchOptions& options, QString* error, Pane* from = nullptr);
     void requestClosePane(Pane* pane) { closePane(pane); }
-    /// Runs a keybind action as if it were pressed in @p pane.
+    /// Runs a keybind action as if it were pressed in @p pane. The tab
+    /// actions of a pane in another tab (close, rename, move, detach) act on
+    /// that tab without showing it, as its tab menu does.
     bool runAction(Pane* pane, Action action);
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
     /// A script's dock or undock effect, for this window.
     QString setScriptDock(const QString& owner, const QVariantMap& effect);
+    /// The tab menu of @p pane's tab, for a script: at the dock click that
+    /// came before it, else at the pointer, else at the window's top left
+    /// corner. Refused while a prompt, a script dialog or the palette is
+    /// open: the menu would answer for the prompt.
+    QString openScriptTabMenu(Pane* pane);
+    /// The cells that fit in the window: a top or bottom dock is as wide.
+    QSize gridSize() const;
     void clearScriptOwner(const QString& owner);
     QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
     /// A script's key mode: the window's keys go to the script's on_key until
@@ -207,9 +216,11 @@ Q_SIGNALS:
     void focusedPaneChanged(Pane* pane);
     /// A key for the script that holds the key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
-    /// A click on an item of a script's dock. @p limited: an assistive
-    /// technology pressed it, which counts toward the callback limit.
-    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click, bool limited);
+    /// An event of a script's dock for its owner's @p handler: on_dock_click,
+    /// on_dock_hover, on_dock_wheel or on_dock_layout. @p pane is the
+    /// window's focused pane. @p limited: the call counts toward the
+    /// callback limit.
+    void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited);
     /// The current tab changed; @p direction is 1 toward the right.
     void tabSwitched(quint32 fromTab, quint32 toTab, int direction);
 
@@ -337,7 +348,30 @@ private:
     /// A press on a dock: sends its item's click. False when no dock is there.
     bool pressDock(QMouseEvent* e);
     /// @p limited: the click counts toward the script's callback limit.
-    void emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited);
+    /// @p at, window logical pixels, is where a tab menu opens after it.
+    void emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited, const QPointF& at);
+    void emitDockEvent(const DockArea& dock, const QString& handler, QVariantMap event, bool limited);
+    /// The wheel over a dock: whole steps go to its script.
+    void wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e);
+    /// The dock item under the pointer, by owner and id: a dock can go
+    /// while the pointer is over it.
+    struct DockHover
+    {
+        QString owner, dock, item;
+        bool operator==(const DockHover&) const = default;
+    };
+    DockHover m_dockHover;
+    /// Tells the scripts when the item under the pointer changes.
+    void updateDockHover();
+    /// Wheel travel over m_wheelDock that is not yet a whole step.
+    QPoint m_dockWheel;
+    DockHover m_wheelDock;
+    /// Where the last dock click was, window logical pixels: a tab menu
+    /// that a script opens for it opens there. A new pointer gesture or the
+    /// menu takes it.
+    std::optional<QPointF> m_dockClickAt;
+    /// Tells each dock's script where it shows, when that changed.
+    void reportDockLayouts();
     /// Whether @p dock is one of this window's and shows.
     bool showsDock(const DockArea* dock) const;
     /// Framebuffer pixels to global logical ones.
@@ -581,8 +615,9 @@ private:
     QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
     Qt::MouseButtons m_overviewButtons; ///< the overview took their presses: it takes their releases
 
-    // Links under the pointer (while the link modifier is held).
-    QPointF m_pointer;
+    // Links under the pointer (while the link modifier is held). Outside
+    // the window, as before the pointer first enters it, it is (-1, -1).
+    QPointF m_pointer{-1, -1};
     /// A link on one row: an OSC 8 hyperlink run or a URL in the text.
     struct UrlSpan
     {

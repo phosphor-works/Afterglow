@@ -139,6 +139,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             const auto error = control.scriptKeyMode(owner, pane, e.value(QStringLiteral("label")).toString());
             return {error, {}, refusal(error)};
         }
+        if (kind == QLatin1String("tab_menu")) {
+            const auto error = control.tabMenu(pane);
+            return {error, {}, refusal(error)};
+        }
         if (kind == QLatin1String("end_key_mode")) {
             control.endScriptKeyMode(owner);
             return {};
@@ -175,8 +179,9 @@ void connectScriptEvents(ScriptHost& host, Control& control)
     QObject::connect(&control, &Control::scriptKey, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& key) {
         host.dispatchTo(owner, QStringLiteral("on_key"), pane, key);
     }, Queued);
-    QObject::connect(&control, &Control::scriptDockClicked, &host, [&host](const QString& owner, quint32 pane, const QVariantMap& click, bool limited) {
-        host.dispatchTo(owner, QStringLiteral("on_dock_click"), pane, click, limited);
+    QObject::connect(&control, &Control::scriptDockEvent, &host,
+                     [&host](const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited) {
+        host.dispatchTo(owner, handler, pane, event, limited);
     }, Queued);
     QObject::connect(&control, &Control::tabSwitched, &host, [&host](quint32 pane, quint32 from, quint32 to, int direction) {
         host.dispatch(QStringLiteral("on_tab_switch"), pane,

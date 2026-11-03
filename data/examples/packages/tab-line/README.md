@@ -19,21 +19,26 @@ The tab line takes one row at the top of each window, in place of the tab bar.
 It also shows in a window with one tab, and when `Window.tabBar` is `never`.
 Set `single_tab` to `false` to remove it from a window with one tab.
 Click a tab to switch to it.
+Middle-click a tab to close it. Right-click a tab to open its tab menu, which can change its title, move it, detach it or close it.
+Click `+` after the tabs to open a new tab.
+Turn the mouse wheel over the line to go to the previous or the next tab.
+A tab or button under the pointer shows in the `hover` colors.
 Run a command, change directory or switch tabs to see changes.
 Choose **Toggle the tab line** in the command palette to turn the line off and on.
 When the line is off, the windows show their usual tab bars.
 The choice survives restart. The keybinding action is `script:tab-line.toggle`.
 
-The tab line has no new-tab button and no tab menu.
-You cannot drag, rename or close a tab in it.
-Use keybindings or the command palette for these operations, or turn the tab line off.
+You cannot drag a tab in the tab line. Use **Move Left** and **Move Right** in the tab menu, or keybindings.
+A middle click that closes a tab and a click on `+` are structural effects.
+A script can open or close at most three tabs in ten seconds, together.
+Past that limit, `+` and the middle click do nothing until the ten seconds end.
 
 ## Layout
 
 | Part | Content |
 | --- | --- |
 | Left | The window's project, when the window has one. |
-| Middle | One block for each tab: its number and title. The current tab has the `active` colors. A tab without a title shows `shell`. |
+| Middle | One block for each tab: its number and title. The current tab has the `active` colors. A tab without a title shows `shell`. Then `+`, which opens a new tab. |
 | Right | The components of the focused pane, against the right edge. The last one has the `accent` colors. |
 
 | Component | Content |
@@ -50,7 +55,7 @@ An empty component does not show.
 When the tabs do not fit in the window, the line shows the current tab and the tabs next to it.
 `+N` on each side shows the number of tabs that are not shown. Click `+N` to switch to the nearest of them.
 The line shows at most 48 tabs.
-The window width comes from the widest pane of the current tab, so a split window can show fewer tabs than fit.
+The line uses the width that Afterglow gives it, so it fits the window as the window changes size.
 
 ## Configuration
 
@@ -62,6 +67,7 @@ Create `config.json` beside `package.json` to change the defaults:
   "powerline": true,
   "single_tab": true,
   "tab_max_length": 24,
+  "new_tab_button": true,
   "colors": {"active": {"fg": 0, "bg": 4}},
   "git": true,
   "git_changes": false,
@@ -74,6 +80,7 @@ Create `config.json` beside `package.json` to change the defaults:
 | `segments` | All five components | Component names on the right, in display order. Only the first eight names are read. Unknown names among them are ignored. |
 | `powerline` | `true` | Joins the blocks with Powerline triangles. Afterglow draws them, so no special font is necessary. `false` puts a space between blocks. |
 | `single_tab` | `true` | Shows the tab line in a window with one tab. |
+| `new_tab_button` | `true` | Shows `+` after the tabs. |
 | `tab_max_length` | `24` | Bytes of a tab title that show. The range is 4 to 80. A value outside the range changes to the nearest limit. |
 | `colors` | See below | Colors for each kind of block, as `{"fg": color, "bg": color}`. A color is a palette index from 0 to 255 or `"#rrggbb"`. A block without `fg` or `bg` uses the default for that color. |
 | `git` | `true` | Shows the `git` component. `false` stops all Git queries. |
@@ -87,14 +94,19 @@ Create `config.json` beside `package.json` to change the defaults:
 | `inactive` (other tabs) | 7 | 8 |
 | `component` | 15 | 8 |
 | `accent` (the last component) | 0 | 6 |
+| `hover` (a tab or button under the pointer, except the current tab) | 0 | 7 |
 
 Palette indices 0 to 15 are the colors of the theme, so the line follows a theme change.
 A color that Afterglow does not accept leaves the window without a tab line. `afterglow ctl scripts` shows the error.
+A `hover` color that Afterglow does not accept refuses only the line with a hovered item. The line stays, without hover colors.
 
 ## Refresh and limits
 
 The line redraws at once when a tab, title, focus, command or context changes.
-More changes in the next 250 ms redraw together, so a title that changes quickly does not use up the effect limit.
+More changes in the next 250 ms redraw together, so a title that changes quickly sends few lines.
+The line also redraws at once when the pointer moves onto a tab or a button, and when its width changes.
+After 25 of these redraws in one second, the next ones wait for the 250 ms redraw.
+When the pointer moves off the tabs and buttons, the line redraws with the 250 ms redraw.
 The line also redraws once each second.
 An unchanged line is not sent again.
 A line that Afterglow drops, for example at the effect limit, is sent again at the next redraw.
@@ -109,8 +121,9 @@ A line that Afterglow refuses as invalid is sent again only when it changes.
 
 Control characters show as spaces.
 
-The package sends at most 6 lines in each one-second refresh interval, for all windows together.
-When more windows change at once, the other lines wait for the next interval.
+Each window has at most one line on its way at a time. The next line waits for the result of that line.
+Lines use the `dock` effect limit, so they do not use up the effect limit that Git queries and clicks need.
+Each line gets a result, so lines also count toward the result limit.
 
 Git runs asynchronously without shell interpolation or optional index locks.
 Git runs with `core.fsmonitor` turned off, so a repository cannot start its file monitor command.

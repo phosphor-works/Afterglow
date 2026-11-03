@@ -58,7 +58,7 @@ void Control::attachWindow(TerminalWindow* window)
     });
     connect(window, &TerminalWindow::paneCreated, this, &Control::attachPane);
     connect(window, &TerminalWindow::scriptKey, this, &Control::scriptKey);
-    connect(window, &TerminalWindow::scriptDockClicked, this, &Control::scriptDockClicked);
+    connect(window, &TerminalWindow::scriptDockEvent, this, &Control::scriptDockEvent);
     connect(window, &TerminalWindow::tabSwitched, this, [this, window](quint32 from, quint32 to, int direction) {
         Q_EMIT tabSwitched(window->focusedPane() ? window->focusedPane()->id() : 0, from, to, direction);
     });
@@ -221,9 +221,11 @@ QVariantMap Control::state() const
             continue;
         }
         const quint32 focused = w->focusedPane() ? w->focusedPane()->id() : 0;
+        const QSize grid = w->gridSize();
         windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("project_directory"), w->projectDirectory()}, {QStringLiteral("focused"), w->isActive()},
                                    {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused},
-                                   {QStringLiteral("overview"), w->overviewState()}});
+                                   {QStringLiteral("overview"), w->overviewState()},
+                                   {QStringLiteral("cols"), grid.width()}, {QStringLiteral("rows"), grid.height()}});
         for (const auto& tab : w->tabs()) {
             tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},
                                     {QStringLiteral("index"), tab.index}, {QStringLiteral("title"), tab.title},
@@ -665,6 +667,12 @@ QString Control::scriptDock(const QString& owner, quint32 id, const QVariantMap&
         m_docks.append({owner, dock, window, id});
     }
     return error;
+}
+QString Control::tabMenu(quint32 id)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? window->openScriptTabMenu(pane) : noPane(id);
 }
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {
