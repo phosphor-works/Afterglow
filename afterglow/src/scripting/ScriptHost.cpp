@@ -899,10 +899,14 @@ bool ScriptHost::runAction(const QString& token, quint32 pane)
     return false;
 }
 
-void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event)
+void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event, bool limited)
 {
     for (const ScriptPtr& script : m_scripts) {
         if (script->owner == owner) {
+            // Only a call that would run counts.
+            if (limited && !script->disabled && !script->retiring && script->engine->hasFunction(script->module, handler)
+                && !admitCallback(*script))
+                return;
             // A copy: a reload during the call must not free the script under it.
             const ScriptPtr target = script;
             emitOwned(target, handler, std::move(event), pane);

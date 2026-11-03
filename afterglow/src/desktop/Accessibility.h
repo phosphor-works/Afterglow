@@ -14,4 +14,7 @@ void updateTerminalAccessibility(TerminalWindow*);
 void dockAccessibilityChanged(const DockArea*);
 /// Forgets the accessible object of a dock, before the dock goes.
 void releaseDockAccessibility(const DockArea*);
+/// The panes or docks that a window shows may have changed: assistive
+/// technology hears to read its children again when they did.
+void windowAccessibilityChanged(TerminalWindow*);
 }

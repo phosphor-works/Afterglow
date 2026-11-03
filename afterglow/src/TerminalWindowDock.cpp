@@ -4,11 +4,10 @@
 #include "TerminalWindow.h"
 
 #include "DockArea.h"
+#include "chrome/ChromeLayer.h"
 #include "desktop/Accessibility.h"
 
 #include <AfterglowRender/GpuDevice.h>
-
-#include <QAccessible>
 
 #include <algorithm>
 #include <array>
@@ -39,6 +38,8 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
         if (found == m_docks.end()) return {};
         releaseDockAccessibility(found->get());
         m_docks.erase(found);
+        // Now, not at the next frame: a window that is not exposed draws none.
+        windowAccessibilityChanged(this);
     } else {
         if (found == m_docks.end()) {
             const auto owned = std::count_if(m_docks.begin(), m_docks.end(), [&](const auto& d) { return d->owner() == owner; });
@@ -59,7 +60,9 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
     // once in the next frame, however many docks move before it. New text
     // in a dock that stays where it is changes neither.
     if (change == DockArea::Change::Place) m_docksMoved = true;
-    if (changed) dockAccessibilityChanged(changed);
+    // A dock that does not show is no child of the window: it tells of its
+    // items when it shows (placeDocks).
+    if (changed && !changed->rect().isEmpty()) dockAccessibilityChanged(changed);
     // An item can come or go under a pointer that does not move.
     applyPointerShape();
     scheduleRender();
@@ -76,12 +79,12 @@ void TerminalWindow::finishDockMoves()
 
 void TerminalWindow::eraseDocks(const QString& owner)
 {
-    const auto erased = std::erase_if(m_docks, [&](const auto& dock) {
-        if (dock->owner() != owner) return false;
-        releaseDockAccessibility(dock.get());
-        return true;
-    });
+    // Released in a loop of their own: the release sends events, which have
+    // no place in erase_if's predicate.
+    for (const auto& dock : m_docks) if (dock->owner() == owner) releaseDockAccessibility(dock.get());
+    const auto erased = std::erase_if(m_docks, [&](const auto& dock) { return dock->owner() == owner; });
     if (erased == 0) return;
+    windowAccessibilityChanged(this);
     m_docksMoved = true;
     applyPointerShape();
     scheduleRender();
@@ -169,27 +172,13 @@ QRect TerminalWindow::placeDocks()
     const QRect area = layoutDocks(windowArea(), &rects);
     const auto& m = m_renderer->fonts().fonts->metrics();
     // A new window size, font or padding, as well as a dock that came or
-    // went, can show or hide a dock or cut its text anew. A new dock has no
-    // rect yet, so fewer shown docks than last time means some went.
-    std::size_t kept = 0;
-    std::size_t shown = 0;
-    bool reordered = false;
+    // went, can show or hide a dock or cut its text anew. A dock that comes
+    // or goes changes the window's children, which the next frame tells of
+    // (updateTerminalAccessibility). One that shows tells of what changed
+    // in it since it last showed, and of where it is now.
     for (std::size_t i = 0; i < m_docks.size(); ++i) {
         DockArea& dock = *m_docks[i];
-        const QRect before = dock.rect();
-        dock.setRect(rects[i], m.cellWidth, m.cellHeight);
-        const bool was = !before.isEmpty();
-        const bool now = !dock.rect().isEmpty();
-        kept += was;
-        shown += now;
-        reordered |= was != now;
-        // A dock that comes or goes is the window's reorder.
-        if (now && was) dockAccessibilityChanged(&dock);
-    }
-    reordered |= kept != std::exchange(m_shownDocks, shown);
-    if (reordered && QAccessible::isActive()) {
-        QAccessibleEvent event(this, QAccessible::ObjectReorder);
-        QAccessible::updateAccessibility(&event);
+        if (dock.setRect(rects[i], m.cellWidth, m.cellHeight) && !dock.rect().isEmpty()) dockAccessibilityChanged(&dock);
     }
     return area;
 }
@@ -248,9 +237,18 @@ QRect TerminalWindow::accessibleDockItemRect(const DockArea* dock, std::size_t i
 
 void TerminalWindow::pressDockItem(const DockArea* dock, std::size_t index)
 {
-    // Only what a pointer could press: an item of a dock that shows.
+    // Only what a pointer could press: an item of a dock that shows, and
+    // not under the chrome (a prompt, a menu, the scrollbar), which would
+    // take the click.
     if (!showsDock(dock) || index >= dock->items().size()) return;
-    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"));
+    const QPointF centre = QRectF(dock->itemRect(index)).center() / devicePixelRatio();
+    if (chromeVisible() && m_chrome->wantsPointer(centre)) return;
+    // As a click does: one while the overview closes onto a card lands
+    // there, with that card's pane in the event.
+    if (!m_overview.open) finishOverviewReveal();
+    // A client can press as fast as it can call: the presses count toward
+    // the script's callback limit, as a pointer's clicks need not.
+    emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true);
 }
 
 } // namespace Afterglow

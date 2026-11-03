@@ -67,6 +67,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes.
 - Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99).
 - A notification limit for each pane (`Notifications.rateLimit`, 20 in 10 seconds by default). Notices from Afterglow itself do not count.
+- Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`), between two status notifications of a pane (`Notifications.statusInterval`) and between the rows of a selection drag that scrolls (`Mouse.autoScrollInterval`). `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
 - Kitty drag and drop, including remote directory data and thumbnails.
 - Local file drops, quoted for the shell and sent as bracketed paste.
@@ -152,7 +153,7 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 ### Desktop integration
 
 - Terminal text, cursor, selection and geometry for screen readers through Qt and AT-SPI.
-- Accessibility clients can run the pane actions of the command palette and open the context menu of a pane. They can also press the items of a script's docked area.
+- Accessibility clients can run the pane actions of the command palette, open the context menu of a pane and give a pane the focus. They can also press the items of a script's docked area. Pane actions do nothing while a prompt or a keyboard mode has the keys.
 - Input-method support with surrounding text for the cursor row.
 - Tabs, menus and prompts in the desktop Qt style.
 - Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.

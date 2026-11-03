@@ -444,6 +444,9 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols.")},
         stringKey(QStringLiteral("bellSound"), {},
                   QStringLiteral("Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file.")),
+        intKey(QStringLiteral("bellSoundInterval"), d.bellSoundInterval, 0, 10000,
+               QStringLiteral("Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 "
+                              "plays every bell.")),
         stringKey(QStringLiteral("wordSeparators"), wordSeparators,
                   QStringLiteral("Characters that end a word for double-click selection, besides spaces.")),
         {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
@@ -457,6 +460,9 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("clipboardRead"), d.clipboardRead,
                 QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read."),
                 {QStringLiteral("ask"), QStringLiteral("allow"), QStringLiteral("deny")}),
+        intKey(QStringLiteral("pasteReadTimeout"), d.pasteReadTimeout, 1, 600,
+               QStringLiteral("Seconds after a paste in which the program can read the clipboard with the password of the paste "
+                              "event (OSC 5522).")),
         enumKey(QStringLiteral("clipboardWrite"), ClipboardWriteChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, d.graphicsFileTransfer,
@@ -498,6 +504,9 @@ PhosphorConfig::Schema buildSchema()
                                "extend action extends the selection.")),
         enumKey(QStringLiteral("middleClick"), MiddleClickChoices, d.mouse.middleClick,
                 QStringLiteral("What a middle click pastes. The none value turns middle-click paste off.")),
+        intKey(QStringLiteral("autoScrollInterval"), d.mouse.autoScrollInterval, 10, 1000,
+               QStringLiteral("Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom "
+                              "of a pane.")),
     };
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
@@ -605,6 +614,9 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("rateLimit"), d.notificationRateLimit, 0, 1000,
                QStringLiteral("Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. "
                               "Notices from Afterglow itself do not count.")),
+        intKey(QStringLiteral("statusInterval"), d.statusNotificationInterval, 0, 600000,
+               QStringLiteral("Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. "
+                              "A value of 0 shows each one.")),
     };
     schema.groups[Shaders] = {
         {QStringLiteral("background"), stringList(d.shaders.background), QMetaType::QVariantList,
@@ -1148,6 +1160,7 @@ Settings SettingsStore::read()
     s.scrollOnInput = st.read<bool>(Terminal, QStringLiteral("scrollOnInput"));
     t.ambiguousWide = st.read<bool>(Terminal, QStringLiteral("ambiguousWide"));
     s.bellSound = st.read<QString>(Terminal, QStringLiteral("bellSound")).trimmed();
+    s.bellSoundInterval = st.read<int>(Terminal, QStringLiteral("bellSoundInterval"));
     t.wordBoundaries = st.read<QString>(Terminal, QStringLiteral("wordSeparators")).toStdU32String();
     const QVariantMap env = st.read<QVariantMap>(Terminal, QStringLiteral("env"));
     for (auto it = env.cbegin(); it != env.cend(); ++it) {
@@ -1162,6 +1175,7 @@ Settings SettingsStore::read()
     }
     s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
     s.clipboardRead = st.read<QString>(Terminal, QStringLiteral("clipboardRead"));
+    s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), ClipboardWriteChoices, s.clipboardWrite);
     s.graphicsFileTransfer =
         readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, s.graphicsFileTransfer);
@@ -1172,6 +1186,7 @@ Settings SettingsStore::read()
     t.graphicsQuota = s.graphicsQuota;
     t.graphicsFileTransfer = s.graphicsFileTransfer != Settings::Permission::Deny;
     s.notificationRateLimit = st.read<int>(NotificationsGroup, QStringLiteral("rateLimit"));
+    s.statusNotificationInterval = st.read<int>(NotificationsGroup, QStringLiteral("statusInterval"));
 
     // Window
     s.window.padding = st.read<int>(Window, QStringLiteral("padding"));
@@ -1189,6 +1204,7 @@ Settings SettingsStore::read()
     s.window.scrollbarHideDelay = st.read<int>(Window, QStringLiteral("scrollbarHideDelay"));
     s.mouse.rightClick = readEnum(st, MouseGroup, QStringLiteral("rightClick"), RightClickChoices, s.mouse.rightClick);
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
+    s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
     s.links.modifier = readEnum(st, LinksGroup, QStringLiteral("modifier"), ModifierChoices, s.links.modifier);

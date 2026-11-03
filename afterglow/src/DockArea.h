@@ -49,8 +49,9 @@ public:
     /// The panes' terminal options. The area keeps its own scrollback, bidi
     /// and background on top of them.
     void setOptions(const AfterglowVt::TerminalOptions& options);
-    /// Places the area at @p rect, framebuffer pixels, in whole cells.
-    void setRect(const QRect& rect, int cellWidth, int cellHeight);
+    /// Places the area at @p rect, framebuffer pixels, in whole cells. An
+    /// empty @p rect hides it. Returns whether it moved or drew again.
+    bool setRect(const QRect& rect, int cellWidth, int cellHeight);
     const QRect& rect() const noexcept { return m_rect; }
 
     /// The text as drawn, captured again only after a change.

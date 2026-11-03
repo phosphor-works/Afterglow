@@ -105,8 +105,15 @@ void DockArea::applyOptions()
     m_terminal.setOptions(options);
 }
 
-void DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
+bool DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
 {
+    const bool moved = rect != m_rect;
+    // A dock that does not fit keeps the layout it last had: drawn into one
+    // column, its items would go and come back when it shows again.
+    if (rect.isEmpty()) {
+        m_rect = rect;
+        return moved;
+    }
     const int width = std::max(1, cellWidth);
     const int height = std::max(1, cellHeight);
     const int columns = std::max(1, rect.width() / width);
@@ -121,6 +128,7 @@ void DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
         m_terminal.resize(std::max(2, columns), rows, m_cellWidth, m_cellHeight);
         draw();
     }
+    return moved || resized;
 }
 
 void DockArea::draw()
@@ -150,8 +158,7 @@ void DockArea::draw()
             if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)) cp = U' ';
             const AfterglowVt::Unicode::Props props = AfterglowVt::Unicode::props(cp);
             if (clusters.breaksBefore(props)) {
-                const int width = props.width == 1 && props.ambiguous && m_options.ambiguousWide ? 2 : props.width;
-                if (column() + std::max(1, width) > m_columns) {
+                if (column() + std::max(1, m_terminal.charWidth(props)) > m_columns) {
                     // A wide character with one cell left: the cell keeps
                     // the run's background, not a replacement character.
                     if (column() < m_columns) {

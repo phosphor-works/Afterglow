@@ -159,7 +159,9 @@ Q_SIGNALS:
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
     /// A click on an item of a script's dock; @p pane is the window's focused pane.
-    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click);
+    /// @p limited: an assistive technology pressed it, and the press counts
+    /// toward the script's callback limit.
+    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click, bool limited);
     /// A window's current tab changed; @p pane is the new tab's focused pane.
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
 

@@ -34,7 +34,7 @@ closes windows or kills processes there damages their work.
    grep -E '^\[  (FAILED|PASSED) |^\[==' <scratchpad>/native.log
    ```
 
-The default filter is `NativeWindow.*` (46 tests). Options:
+The default filter is `NativeWindow.*:KeyMapping.*`: every native test but `Shaders/NativeRenderer.*`. Options:
 
 | Option | Effect |
 | --- | --- |

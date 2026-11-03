@@ -1170,6 +1170,12 @@ return {
     host->dispatchTo(rec.owners[0], "on_dock_click", 7, {{"dock", "bar"}, {"item", "tab-2"}, {"button", "left"}, {"window", 1}});
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0]["text"], QStringLiteral("tab-2"));
+    // An assistive technology's press can come without end: it counts, and
+    // the spent budget drops it.
+    const auto dropped = host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong();
+    host->dispatchTo(rec.owners[0], "on_dock_click", 7, {{"dock", "bar"}, {"item", "tab-3"}, {"button", "left"}, {"window", 1}}, true);
+    EXPECT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), dropped + 1);
 }
 
 TEST_F(ScriptHostTest, TimersAndWatchersHaveTheirOwnCallbackBudget)

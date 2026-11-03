@@ -9,8 +9,10 @@ Each visible pane in the current tab is a terminal text object under its window 
 Screen readers can query viewport text, UTF-16 cursor and selection offsets, character geometry and text changes.
 Text preserves grapheme clusters and soft wraps.
 AT-SPI selection changes update the terminal selection.
-Tab changes update the exposed pane list. Scrolling updates the text view.
-Background tabs and panes hidden by zoom are excluded.
+Tab changes, splits and zoom update the exposed pane list. Scrolling updates the text view.
+Afterglow does not expose background tabs or panes that zoom hides.
+While the pane overview is open, Afterglow exposes every pane of the current tab, also a pane that zoom hides.
+The geometry of each pane is then its place in the split layout, not its card.
 Qt Quick controls expose tab activation and the history scrollbar.
 
 ### Pane actions
@@ -22,49 +24,66 @@ Its actions are the command palette actions that act on that pane or start from 
 | --- | --- |
 | `Show Menu` | Opens the pane's context menu at its cursor. This is the first action. |
 | A palette action | Runs the action in that pane, as its keybinding does. |
+| `Set Focus` | Asks for the keyboard focus for the pane and its window. The compositor can refuse the window activation. This is the last action. |
 
 | Group | Pane actions |
 | --- | --- |
 | Text | Copy, Paste, Select All, Search, Keyboard Copy Mode, Select Text or File Reference, Open a URL on Screen, Copy a URL on Screen, Insert Unicode Character |
 | Terminal | Clear Screen and Scrollback, Reset Terminal, Change Pane Title, Notify When the Next Command Finishes, View Last Command Output in Pager |
 | Scroll | Scroll Page Up, Scroll Page Down, Scroll to Top, Scroll to Bottom, Jump to Previous Prompt, Jump to Next Prompt |
-| Layout | Split, Resize Pane, Swap Pane and Focus Pane in each direction, Close Pane, Toggle Pane Zoom |
+| Layout | Split Right, Split Down, Split Left, Split Up, Resize Pane Left, Resize Pane Right, Resize Pane Up, Resize Pane Down, Swap Pane Left, Swap Pane Right, Swap Pane Above, Swap Pane Below, Focus Pane Left, Focus Pane Right, Focus Pane Above, Focus Pane Below, Close Pane, Toggle Pane Zoom |
 | Move and open | Move Pane to New Tab, Move Pane to New Window, New Tab, New Window |
 
-New Tab and New Window open in the directory of the pane.
-Tab, window, font, overview, shader, project and configuration actions are not pane actions.
-Use the command palette or the tab bar for them.
+New Tab and New Window start in the directory of the pane, as the `Window.workingDirectory` setting permits.
+
+The other palette actions act the same from every pane.
+They switch, move, detach and close tabs, close the window, change the font and switch to fullscreen.
+They also equalize and rotate splits, and open the overview, shaders, projects, the configuration and the palette.
+End Script Key Mode is not a pane action.
+Use the command palette or the tab bar for these actions.
 
 The name of a pane action is its title in the command palette, for example `Split Right`.
-A screen reader says this name. The description is the same title.
-Its key binding is the first key that the palette shows for the action.
-An action runs in the pane that you select, also when another pane has the focus.
-The pane then gets the focus. Confirmations, such as the close confirmation, show as they do for a key.
+A screen reader says this name.
+The key bindings of a pane action are the keys that the palette shows for it.
+An action runs in the pane whose object you use, also when another pane has the focus.
+Afterglow first shows the window and the tab of the pane, and gives the pane the focus.
+Confirmations, such as the close confirmation, show as they do for a key.
+When an action has nothing to do, its key goes on to the program, but the accessible action does nothing.
+For example, Scroll Page Up does nothing in a full-screen program, and Toggle Pane Zoom does nothing in a tab with one pane.
+
+Pane actions do nothing while a prompt, a menu, the palette, the search field or a keyboard mode has the keys.
+Keyboard modes are the overview, copy mode, URL hints, Unicode input and a script's key mode.
+Keys cannot run an action then, and an action from outside would replace the answer that the prompt waits for.
 
 ### Docked areas
 
 Each [docked area](SCRIPTING.md#docked-areas) that shows is an object under its window.
-An area with items is a tool bar. An area without items is read-only static text.
+An area with items is a toolbar. An area without items is read-only static text.
 Its name is the text of the area, one line for each row.
-Each run with an `item` is a button in the area.
+Each run with an `item` that takes cells is a button in the area.
 Adjacent runs on one row with the same `item` are one button.
 
 | Button property | Value |
 | --- | --- |
-| Name | The text of the button cells. When those cells are blank, the `item`. |
-| State | Focusable |
+| Name | The text of the button cells, without leading and trailing spaces. When that text is empty, the `item`. |
+| State | Not focusable. The keyboard stays with the panes. |
 | Geometry | The cells of the button |
 | Action | `Press` sends `on_dock_click` with `button` set to `left`, as a left click does. |
 
+`Press` does nothing when a prompt, a menu or another part of the window controls covers the button, as for a click.
+Each press counts toward the handler call limit of the script.
+A mouse click does not count.
+
 New text for the same items renames the buttons.
-When the items change or change their order, the area gets new buttons.
+When items come, go or change their order, the area gets new buttons.
 An area with `tab_bar` hides the tab bar.
 Its script can show the tabs as buttons in the area, as the tab line package does.
+When the area has no tab buttons, use the tab keybindings.
 
 ### Terminal text
 
 The accessible document contains the viewport. Scroll to read older content.
-A cursor outside the viewport is reported as absent.
+Afterglow reports a cursor outside the viewport as absent.
 Terminal output is read-only.
 Accessibility cannot rewrite output or move the shell's editing cursor through a document offset.
 Rectangular selections report their encompassing range.
@@ -76,6 +95,8 @@ A screen reader that speaks inserted text then reads the new output, not the who
 
 `Control.allowReadText` does not apply to accessibility clients.
 AT-SPI is a separate D-Bus bus. Any client on it can read the viewport text while accessibility is active, as with other toolkits.
+Any client on it can also run the pane actions, for example Paste, Close Pane and New Window, and press docked-area buttons.
+The access settings of D-Bus control and scripts do not apply to these actions.
 
 ## Input methods and directionality
 
@@ -151,6 +172,7 @@ The suite also checks these behaviors:
 
 - Composition, commit and focused-editor input-method queries.
 - Accessible controls and the focused chrome editor.
+- Accessible pane actions, the pane menu and docked-area buttons.
 - Bidirectional pointer selection.
 - Pane launch failures, launch options and close identity.
 - Paste confirmation ownership and keyboard acceptance.
