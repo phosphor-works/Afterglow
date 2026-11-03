@@ -91,6 +91,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("action")) {
                 return control.runScriptAction(pane, s("name"));
             }
+            if (kind == QLatin1String("move_tab")) return control.moveTab(pane, int(e.value(QStringLiteral("index")).toDouble()));
             if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
             if (kind == QLatin1String("overview_move")) {
                 return control.overviewMove(pane, e.value(QStringLiteral("target")).toUInt(),

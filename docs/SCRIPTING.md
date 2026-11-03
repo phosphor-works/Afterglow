@@ -196,7 +196,7 @@ Only effects with a request ID, or that a handler waits for, get results.
 The result limits are more than the effect limit and the `dock` limit together.
 So the results of the effects that those two limits let through cannot disable a script.
 Requested `sleep`, `cancel`, `end_key_mode` and `undock` effects are outside both limits, and their results add to the count.
-`on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
+`on_load`, `on_key`, `on_dock_click`, `on_dock_hover`, `on_dock_drag` and `on_dock_layout` calls do not count toward a handler call limit.
 An `on_dock_click` from an accessibility client's press counts, because a client can press without a limit.
 `on_dock_wheel` calls count, because a touchpad can send many in a second.
 Timers and watchers have their own limit, so events cannot use it up.
@@ -268,7 +268,7 @@ end
 Pane events include `on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell` and `on_title`.
 Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context` and `on_tab_switch`.
 These events contain the applicable pane and terminal snapshot.
-The events of docked areas are `on_dock_click`, `on_dock_hover`, `on_dock_wheel` and `on_dock_layout` (see [docked areas](#docked-areas)).
+The events of docked areas are `on_dock_click`, `on_dock_hover`, `on_dock_wheel`, `on_dock_drag` and `on_dock_layout` (see [docked areas](#docked-areas)).
 
 A split's `on_pane_created` also contains `split_from`, the pane it split from, and `edge`.
 `edge` is the side the two panes share: 1 left, 2 top, 3 right or 4 bottom.
@@ -425,7 +425,7 @@ Lines past the bottom of a `left` or `right` area do not show.
 | `text` | The text. A control character shows as a space. Text past the edge is cut. A wide character that does not fit shows as an empty cell in the colors of its run. |
 | `fg`, `bg` | A palette index from 0 to 255, or `"#rrggbb"`. Indices 0 to 15 follow the theme. |
 | `bold`, `italic`, `underline` | `true` or `false` |
-| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. `on_dock_hover` and `on_dock_wheel` name the item under the pointer. |
+| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. `on_dock_hover`, `on_dock_wheel` and `on_dock_drag` name the item under the pointer. |
 | `spacer` | `true` makes an empty run that takes the cells the other runs of its line leave. Several spacers share them. |
 
 Without `fg`, a run uses the theme's foreground color. Without `bg`, it uses the area's `fill`.
@@ -473,6 +473,28 @@ It contains `dock`, `window` and `pane` as above.
 | `direction` | `up`, `down`, `left` or `right` |
 | `steps` | The whole wheel notches, 1 or more. Part of a notch waits for the next event over the same item. |
 | `item` | The item under the pointer, when there is one |
+
+`on_dock_drag` goes to the owner when the left mouse button drags an item of an area.
+The press sends `on_dock_click` first.
+The drag starts when the pointer moves the system drag distance from the press.
+It contains `dock`, `window` and `pane` as above.
+
+| Event field | Value |
+| --- | --- |
+| `phase` | `start` when the drag starts, `move` when `over`, `col` or `row` changes, `end` when the button goes up, `cancel` when the drag stops in another way |
+| `item` | The item that the press was on |
+| `over` | The item of this area under the pointer, when there is one |
+| `col`, `row` | The cell under the pointer, from 0 at the top left of the area. Outside the area, they are less than 0 or more than its size. |
+
+A press and release with no drag sends no `on_dock_drag`.
+The drag continues outside the area and outside the window, until the button goes up.
+The drag gets `cancel` when the script removes the area with `undock`.
+`on_dock_hover` continues during the drag.
+
+`move_tab(pane, index)` moves the pane's tab to `index` in its window, and does not show it.
+`index` is the `index` of a tab in the snapshot, from 0.
+An `index` that is not a tab of the window fails with `operation_failed`.
+The tab line package uses `on_dock_drag` and `move_tab` to drag tabs.
 
 `on_dock_layout` goes to the owner after Afterglow first places an area, also when the area does not fit.
 It also goes when the area starts or stops showing, and when its size changes.
@@ -725,6 +747,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.open_url` | `(url: string) -> Effect` |
 | `afterglow.action` | `(pane: PaneRef, name: string) -> Effect` |
 | `afterglow.tab_menu` | `(pane: PaneRef) -> Effect` |
+| `afterglow.move_tab` | `(pane: PaneRef, index: number) -> Effect` |
 | `afterglow.shaders` | `(pane: PaneRef) -> Effect` |
 | `afterglow.scene_state` | `(pane: PaneRef) -> Effect` |
 | `afterglow.shader_presets` | `(pane: PaneRef, instance: string) -> Effect` |

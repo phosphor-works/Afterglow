@@ -674,6 +674,12 @@ QString Control::tabMenu(quint32 id)
     Pane* pane = find(id, &window);
     return pane ? window->openScriptTabMenu(pane) : noPane(id);
 }
+QString Control::moveTab(quint32 id, int index)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? window->moveTabOf(pane, index) : noPane(id);
+}
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {
     TerminalWindow* window = nullptr;

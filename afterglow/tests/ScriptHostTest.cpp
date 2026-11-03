@@ -1134,6 +1134,27 @@ return { on_bell = function(ev) return { afterglow.tab_menu(ev.pane), afterglow.
     EXPECT_EQ(rec.applied[1]["pane"].toUInt(), 8u);
 }
 
+TEST_F(ScriptHostTest, MoveTabNeedsAWholeIndexOfZeroOrMore)
+{
+    write(user, "move.luau", R"(
+return { on_bell = function(ev)
+    return { afterglow.move_tab(ev.pane, 2), afterglow.move_tab(8, 0), afterglow.move_tab(ev.pane, -1),
+             afterglow.move_tab(ev.pane, 1.5), afterglow.move_tab(ev.pane, "1"), afterglow.move_tab(ev.pane) }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("move_tab"));
+    EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 7u);
+    EXPECT_EQ(rec.applied[0]["index"].toInt(), 2);
+    EXPECT_EQ(rec.applied[1]["pane"].toUInt(), 8u);
+    EXPECT_EQ(rec.applied[1]["index"].toInt(), 0);
+    ASSERT_EQ(rec.results.size(), 6);
+    for (int i = 0; i < 2; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
+    for (int i = 2; i < 6; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+}
+
 TEST_F(ScriptHostTest, DockClicksReachOnlyTheDocksOwner)
 {
     // Each script docks once, which names its owner, then answers clicks.
@@ -1907,6 +1928,62 @@ TEST_F(ScriptHostTest, TabLineActsLikeATabBarAndFollowsItsDock)
     event("on_dock_layout",{{"shown",false},{"cols",0},{"rows",0}});
     ASSERT_EQ(rec.applied.size(),1);
     EXPECT_TRUE(dockTexts(rec.applied.last()).contains("20 t19"));
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, TabLineDragsATabOntoTheTabUnderThePointer)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10},{"cols",200}}};
+    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","a"},{"active",true},{"active_pane",7}},
+          QVariantMap{{"id",11},{"window",1},{"index",1},{"title","b"},{"active",false},{"active_pane",8}},
+          QVariantMap{{"id",12},{"window",1},{"index",2},{"title","c"},{"active",false},{"active_pane",9}}};
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    host->setEnabled(true);pump();
+    ASSERT_EQ(rec.applied.size(),1);
+    const QString owner=rec.owners.last();
+    auto drag=[&](const char* phase, const char* over) {
+        QVariantMap ev{{"dock","tabline"},{"window",1},{"item","tab:10"},{"phase",phase},{"col",3},{"row",0}};
+        if (over) ev.insert("over",over);
+        rec.applied.clear();
+        host->dispatchTo(owner,"on_dock_drag",7,ev);pump();
+    };
+    auto moved=[&](int index) {
+        return rec.applied.size()==1 && rec.applied[0].value("kind")=="move_tab"
+            && rec.applied[0].value("pane").toUInt()==7u && rec.applied[0].value("index").toInt()==index;
+    };
+    // Over its own cells, the tab stays.
+    drag("start","tab:10");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    // Onto the third tab: it takes that tab's place.
+    drag("move","tab:12");
+    EXPECT_TRUE(moved(2));
+    // The line that shows the move is not there yet: more moves over the
+    // same cells do not move the tab back.
+    tabs[0]=QVariantMap{{"id",10},{"window",1},{"index",2},{"title","a"},{"active",true},{"active_pane",7}};
+    tabs[2]=QVariantMap{{"id",12},{"window",1},{"index",0},{"title","c"},{"active",false},{"active_pane",9}};
+    drag("move","tab:12");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    // Off the items, then onto a tab again: a new item moves it.
+    drag("move",nullptr);
+    EXPECT_TRUE(rec.applied.isEmpty());
+    drag("move","tab:11");
+    EXPECT_TRUE(moved(1));
+    // The "+" button is no tab.
+    drag("move","new");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    // The end forgets the item: the next drag starts anew.
+    drag("end","new");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    drag("start","tab:11");
+    EXPECT_TRUE(moved(1));
+    drag("cancel",nullptr);
+    // A drag of the "+" button moves nothing.
+    rec.applied.clear();
+    host->dispatchTo(owner,"on_dock_drag",7,{{"dock","tabline"},{"window",1},{"item","new"},{"phase","move"},
+                                             {"over","tab:11"},{"col",0},{"row",0}});pump();
+    EXPECT_TRUE(rec.applied.isEmpty());
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 

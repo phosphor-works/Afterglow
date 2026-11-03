@@ -21,6 +21,7 @@
 #include <QDrag>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QStyleHints>
 #include <QFile>
 #include <QFontMetricsF>
 #include <QUrl>
@@ -2653,6 +2654,149 @@ TEST_F(NativeWindow, DocksTellTheirScriptOfTheirCellsTheHoveredItemAndTheWheel) 
     EXPECT_EQ(last("side")[QStringLiteral("rows")].toInt(), 0);
     ASSERT_TRUE(window->runAction(pane, Action::FontReset));
     EXPECT_TRUE(waitFor([&] { return last("side")[QStringLiteral("shown")].toBool() && last("bar")[QStringLiteral("cols")].toInt() == windowCols; }));
+    window->clearScriptOwner(QStringLiteral("a@1"));
+}
+
+TEST_F(NativeWindow, ADragOnADockItemTellsItsScriptAndMoveTabMovesATab) {
+    auto* first = window->focusedPane();
+    ASSERT_NE(first, nullptr);
+    QList<QVariantMap> drags;
+    int clicks = 0;
+    QObject listener;
+    QObject::connect(window, &TerminalWindow::scriptDockEvent, &listener,
+                     [&](const QString& owner, const QString& handler, quint32, const QVariantMap& event, bool limited) {
+                         if (owner != QLatin1String("a@1")) return;
+                         if (handler == QLatin1String("on_dock_click")) ++clicks;
+                         if (handler != QLatin1String("on_dock_drag")) return;
+                         EXPECT_FALSE(limited);
+                         drags.append(event);
+                     });
+    auto run = [](const QString& text, const QString& item = {}) {
+        QVariantMap map{{QStringLiteral("text"), text}};
+        if (!item.isEmpty()) map.insert(QStringLiteral("item"), item);
+        return QVariant(map);
+    };
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), QStringLiteral("bar")},
+                                                            {QStringLiteral("edge"), QStringLiteral("bottom")}, {QStringLiteral("size"), 1},
+                                                            {QStringLiteral("lines"), QVariantList{QVariantList{
+                                                                run(QStringLiteral("one"), QStringLiteral("first")), run(QStringLiteral("    ")),
+                                                                run(QStringLiteral("two"), QStringLiteral("second"))}}}})
+                    .isEmpty());
+    const DockArea* bar = nullptr;
+    ASSERT_TRUE(waitFor([&] {
+        for (const DockArea* d : window->accessibleDocks()) if (d->id() == QLatin1String("bar")) bar = d;
+        return bar && bar->items().size() == 2;
+    }));
+    expectIdle(window);
+    const qreal dpr = window->devicePixelRatio();
+    const QRect dockRect = bar->rect();
+    const QPointF onFirst = QRectF(bar->itemRect(0)).center() / dpr;
+    const QPointF onSecond = QRectF(bar->itemRect(1)).center() / dpr;
+    // "one" takes 3 cells, and the area 1 row. Between the items: the
+    // middle of the fifth cell.
+    const int cell = bar->itemRect(0).width() / 3;
+    const QPointF between((bar->itemRect(0).left() + 4.5 * cell) / dpr, onFirst.y());
+    auto send = [&](QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, at, window->mapToGlobal(at), button, buttons, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    auto press = [&](const QPointF& at) { send(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton); };
+    auto move = [&](const QPointF& at) { send(QEvent::MouseMove, at, Qt::NoButton, Qt::LeftButton); };
+    auto release = [&](const QPointF& at) { send(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton); };
+
+    // A click with no drag between press and release is only a click.
+    press(onFirst);
+    move(onFirst + QPointF(1, 0));
+    release(onFirst + QPointF(1, 0));
+    EXPECT_TRUE(drags.isEmpty());
+    EXPECT_EQ(clicks, 1);
+
+    // Past the drag distance it starts, then tells each new item or cell.
+    press(onFirst);
+    const int distance = QGuiApplication::styleHints()->startDragDistance();
+    move(onFirst + QPointF(distance + 1, 0));
+    ASSERT_EQ(drags.size(), 1);
+    EXPECT_EQ(drags[0][QStringLiteral("phase")], QStringLiteral("start"));
+    EXPECT_EQ(drags[0][QStringLiteral("item")], QStringLiteral("first"));
+    EXPECT_EQ(drags[0][QStringLiteral("dock")], QStringLiteral("bar"));
+    EXPECT_EQ(drags[0][QStringLiteral("window")].toUInt(), window->id());
+    EXPECT_EQ(drags[0][QStringLiteral("row")].toInt(), 0);
+    move(between);
+    ASSERT_EQ(drags.size(), 2);
+    EXPECT_EQ(drags[1][QStringLiteral("phase")], QStringLiteral("move"));
+    EXPECT_FALSE(drags[1].contains(QStringLiteral("over")));
+    EXPECT_EQ(drags[1][QStringLiteral("col")].toInt(), 4);
+    // The same cell again tells nothing.
+    move(between + QPointF(0, 0.2));
+    EXPECT_EQ(drags.size(), 2);
+    move(onSecond);
+    ASSERT_EQ(drags.size(), 3);
+    EXPECT_EQ(drags[2][QStringLiteral("over")], QStringLiteral("second"));
+    EXPECT_EQ(drags[2][QStringLiteral("item")], QStringLiteral("first"));
+    // Above the area, the drag goes on with rows above it, and no pane
+    // hears of it.
+    const QPointF above(onSecond.x(), (dockRect.top() - 3 * dockRect.height()) / dpr);
+    move(above);
+    ASSERT_EQ(drags.size(), 4);
+    EXPECT_LT(drags[3][QStringLiteral("row")].toInt(), 0);
+    EXPECT_FALSE(drags[3].contains(QStringLiteral("over")));
+    EXPECT_FALSE(first->hasSelection());
+    release(onSecond);
+    ASSERT_EQ(drags.size(), 6);
+    EXPECT_EQ(drags[4][QStringLiteral("phase")], QStringLiteral("move"));
+    EXPECT_EQ(drags[5][QStringLiteral("phase")], QStringLiteral("end"));
+    EXPECT_EQ(drags[5][QStringLiteral("over")], QStringLiteral("second"));
+
+    // A release that went elsewhere cancels it.
+    drags.clear();
+    press(onFirst);
+    move(onSecond);
+    ASSERT_EQ(drags.size(), 1);
+    send(QEvent::MouseMove, onSecond, Qt::NoButton, Qt::NoButton);
+    ASSERT_EQ(drags.size(), 2);
+    EXPECT_EQ(drags[1][QStringLiteral("phase")], QStringLiteral("cancel"));
+    // So does an undock of the area, before it goes.
+    drags.clear();
+    press(onFirst);
+    move(onSecond);
+    ASSERT_EQ(drags.size(), 1);
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("undock")}, {QStringLiteral("id"), QStringLiteral("bar")}})
+                    .isEmpty());
+    ASSERT_EQ(drags.size(), 2);
+    EXPECT_EQ(drags[1][QStringLiteral("phase")], QStringLiteral("cancel"));
+    EXPECT_EQ(drags[1][QStringLiteral("item")], QStringLiteral("first"));
+    move(onFirst);
+    release(onFirst);
+    EXPECT_EQ(drags.size(), 2);
+
+    // move_tab moves the pane's tab and leaves the current tab on screen.
+    ASSERT_TRUE(window->runAction(first, Action::NewTab));
+    auto* second = window->focusedPane();
+    ASSERT_TRUE(window->runAction(second, Action::NewTab));
+    auto* third = window->focusedPane();
+    ASSERT_EQ(window->tabIndexOf(first), 0);
+    ASSERT_EQ(window->tabIndexOf(third), 2);
+    EXPECT_TRUE(window->moveTabOf(first, 2).isEmpty());
+    EXPECT_EQ(window->tabIndexOf(first), 2);
+    EXPECT_EQ(window->tabIndexOf(second), 0);
+    EXPECT_EQ(window->tabIndexOf(third), 1);
+    EXPECT_EQ(window->focusedPane(), third);
+    EXPECT_FALSE(window->moveTabOf(first, 3).isEmpty());
+    EXPECT_EQ(window->tabIndexOf(first), 2);
+    // Through the script callbacks, with its refusal.
+    SettingsStore settings(directory.filePath(QStringLiteral("move.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    const auto callbacks = scriptCallbacks(control);
+    auto apply = [&](quint32 pane, int index) {
+        return callbacks.applyOwned(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("move_tab")}, {QStringLiteral("pane"), pane},
+                                                           {QStringLiteral("index"), double(index)}}, {});
+    };
+    EXPECT_TRUE(apply(first->id(), 0).error.isEmpty());
+    EXPECT_EQ(window->tabIndexOf(first), 0);
+    const auto refused = apply(first->id(), 9);
+    EXPECT_FALSE(refused.error.isEmpty());
+    EXPECT_EQ(refused.code, QStringLiteral("operation_failed"));
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
 

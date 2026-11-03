@@ -10,8 +10,9 @@ local DrawMs=250
 -- By window: shown is the line that Afterglow accepted, pending the line that
 -- waits for its result, refused a line that Afterglow will not take.
 local shown,pending,refused,sends={}, {}, {}, 0
--- By window: the line's width in cells once it shows, and the item under the pointer.
-local widths,hovered={}, {}
+-- By window: the line's width in cells once it shows, the item under the
+-- pointer, and the item under a drag.
+local widths,hovered,dragged={}, {}, {}
 -- The tick of the draw timer's start or last call, while it runs. dirty marks
 -- a change that the timer must still draw.
 local drawing,dirty=nil,false
@@ -93,7 +94,7 @@ local function flush(terminal)
         end
     end
     -- Closed windows take their areas with them.
-    for _,byWindow in ipairs({shown,pending,refused,widths,hovered}) do
+    for _,byWindow in ipairs({shown,pending,refused,widths,hovered,dragged}) do
         for id in pairs(byWindow) do
             if not live[id] then byWindow[id]=nil end
         end
@@ -201,6 +202,20 @@ function script.on_dock_wheel(ev)
         end
     end
     return nil
+end
+-- A tab that is dragged onto another tab, or onto "+N", takes its place.
+-- Only a new item under the pointer moves it: the line that shows the move
+-- comes after the move, and until then the pointer is over the old cells.
+function script.on_dock_drag(ev)
+    if ev.dock~="tabline" then return nil end
+    local id=tonumber(string.match(ev.item,"^tab:(%d+)$"))
+    if not id or ev.phase=="end" or ev.phase=="cancel" then dragged[ev.window]=nil;return nil end
+    if ev.over==dragged[ev.window] then return nil end
+    dragged[ev.window]=ev.over
+    local target=ev.over and tonumber(string.match(ev.over,"^%a+:(%d+)$"))
+    local from,to=tabById(ev.terminal,id),target and tabById(ev.terminal,target)
+    if not from or not to or from==to or from.window~=to.window then return nil end
+    return afterglow.move_tab(from.active_pane,to.index)
 end
 -- A pointer that leaves an item draws later: between two tabs, the cells of
 -- the separator are on no item, and the next tab comes before the timer.

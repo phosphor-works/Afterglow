@@ -132,6 +132,8 @@ public:
     /// Opens the tab menu of @p pane's tab (afterglow.tab_menu). Scripts
     /// only: no D-Bus method or ctl command opens it.
     QString tabMenu(quint32 pane);
+    /// Moves @p pane's tab to @p index in its window (afterglow.move_tab).
+    QString moveTab(quint32 pane, int index);
     void clearScriptOwner(const QString& owner);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);

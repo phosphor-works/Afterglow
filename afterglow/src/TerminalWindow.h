@@ -152,6 +152,8 @@ public:
     /// corner. Refused while a prompt, a script dialog or the palette is
     /// open: the menu would answer for the prompt.
     QString openScriptTabMenu(Pane* pane);
+    /// Moves @p pane's tab to @p index, without showing it.
+    QString moveTabOf(Pane* pane, int index);
     /// The cells that fit in the window: a top or bottom dock is as wide.
     QSize gridSize() const;
     void clearScriptOwner(const QString& owner);
@@ -366,6 +368,24 @@ private:
     /// Wheel travel over m_wheelDock that is not yet a whole step.
     QPoint m_dockWheel;
     DockHover m_wheelDock;
+    /// A left-button drag that began on a dock item. It starts once the
+    /// pointer has gone the drag distance from the press.
+    struct DockDrag
+    {
+        QString owner, dock, item;
+        QPointF from; ///< the press, window logical pixels
+        bool started = false;
+        /// What the last event told: the item and the cell under the pointer.
+        QString over;
+        QPoint cell;
+    };
+    std::optional<DockDrag> m_dockDrag;
+    /// The pointer at @p pos while a dock drag is held: starts the drag,
+    /// or tells its script of a new item or cell under the pointer.
+    void moveDockDrag(const QPointF& pos);
+    /// Ends the dock drag. A drag that started tells its script: "end" for
+    /// a release at @p pos, "cancel" when the drag was cut off.
+    void endDockDrag(bool released, const QPointF& pos = {});
     /// Where the last dock click was, window logical pixels: a tab menu
     /// that a script opens for it opens there. A new pointer gesture or the
     /// menu takes it.

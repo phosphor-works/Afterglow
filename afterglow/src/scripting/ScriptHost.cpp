@@ -352,6 +352,7 @@ const EffectKind Kinds[] = {
     {"end_key_mode", false, false, {}, false},
     {"overview", true, false, {"operation"}, false},
     {"tab_menu", true, false, {}, false},
+    {"move_tab", true, false, {}, false, {"index"}},
     {"overview_move", true, false, {}, false, {"target", "step"}},
     {"pulse", true, false, {"effect"}, false, {"duration_ms", "color"}},
     {"shaders", true, false, {}, false},
@@ -1309,6 +1310,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("overview_move") && !(integer(effect.value(QStringLiteral("step"), 0), -32, 32)
                                                               && integer(effect.value(QStringLiteral("target"), 0), 0, std::numeric_limits<quint32>::max()))) {
             error = QStringLiteral("overview_move needs a pane or a whole step of at most 32 cards");
+        } else if (kind == QLatin1String("move_tab") && !integer(effect.value(QStringLiteral("index")), 0, std::numeric_limits<int>::max())) {
+            error = QStringLiteral("move_tab needs a tab index of 0 or more");
         } else if (kind == QLatin1String("pulse") && pulseEffect(str(effect, "effect")) == 0) {
             error = QStringLiteral("pulse effect must be portal, flash, shake or a number from 1 to 255");
         } else if (kind == QLatin1String("pulse") && !(effect.value(QStringLiteral("duration_ms")).toDouble() >= 50

@@ -22,13 +22,13 @@ Click a tab to switch to it.
 Middle-click a tab to close it. Right-click a tab to open its tab menu, which can change its title, move it, detach it or close it.
 Click `+` after the tabs to open a new tab.
 Turn the mouse wheel over the line to go to the previous or the next tab.
+Drag a tab to move it. The tab moves when the pointer goes onto another tab, or onto a `+N` block.
 A tab or button under the pointer shows in the `hover` colors.
 Run a command, change directory or switch tabs to see changes.
 Choose **Toggle the tab line** in the command palette to turn the line off and on.
 When the line is off, the windows show their usual tab bars.
 The choice survives restart. The keybinding action is `script:tab-line.toggle`.
 
-You cannot drag a tab in the tab line. Use **Move Left** and **Move Right** in the tab menu, or keybindings.
 A middle click that closes a tab and a click on `+` are structural effects.
 A script can open or close at most three tabs in ten seconds, together.
 Past that limit, `+` and the middle click do nothing until the ten seconds end.

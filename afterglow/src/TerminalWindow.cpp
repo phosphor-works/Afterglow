@@ -4234,6 +4234,10 @@ bool TerminalWindow::pressDock(QMouseEvent* e)
         : e->button() == Qt::RightButton                 ? QStringLiteral("right")
                                                          : QString();
     if (!item.isEmpty() && !button.isEmpty()) emitDockClick(*dock, item, button, false, e->position());
+    // The left button on an item can drag it.
+    if (e->button() == Qt::LeftButton && !item.isEmpty()) {
+        m_dockDrag = DockDrag{dock->owner(), dock->id(), item, e->position(), false, {}, {}};
+    }
     return true;
 }
 
@@ -4249,6 +4253,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (e->buttons() == e->button()) {
         m_overviewButtons = Qt::NoButton;
         m_dockButtons = Qt::NoButton;
+        endDockDrag(false);
         m_chromeGrab = false;
         m_reportedButtons = Qt::NoButton;
         m_reportedPane = nullptr;
@@ -4418,6 +4423,7 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     // ends what its press started on a pane or the chrome.
     if (m_dockButtons & e->button()) {
         m_dockButtons &= ~e->button();
+        if (e->button() == Qt::LeftButton) endDockDrag(true, e->position());
         return;
     }
     if (e->button() == Qt::LeftButton) for (auto* pane : panes()) if (pane->hasDragDrop()) pane->dragDrop()->release();
@@ -4547,6 +4553,12 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     m_pointer = e->position();
     // A pack that reads the pointer moves with it, with nothing else changing.
     if (m_readsMouse) scheduleRender();
+    // Over the overview too, where a dock press can start one. A release
+    // that went elsewhere cuts it off.
+    if (m_dockDrag) {
+        if (e->buttons() & Qt::LeftButton) moveDockDrag(e->position());
+        else endDockDrag(false);
+    }
     // The overview draws cards, not the layout: no hover, selection or
     // reports. Only a dock over it shows what a click does.
     if (m_overview.open) {

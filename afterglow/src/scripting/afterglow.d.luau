@@ -82,7 +82,7 @@ export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? 
 export type DockColor = number | string
 export type DockRun = { text: string?, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
     underline: boolean?,
-    item: string?, -- 1-64 characters, no control characters; names the run's cells in on_dock_click, on_dock_hover and on_dock_wheel
+    item: string?, -- 1-64 characters, no control characters; names the run's cells in on_dock_click, on_dock_hover, on_dock_wheel and on_dock_drag
     spacer: boolean? } -- no text: takes the cells the other runs of its line leave, shared among the spacers
 -- A field that is not listed here refuses the dock.
 export type DockSpec = {
@@ -101,6 +101,12 @@ export type DockHoverEvent = { pane: Pane?, dock: string, item: string?, window:
 export type DockWheelEvent = { pane: Pane?, dock: string, item: string?, direction: "up" | "down" | "left" | "right",
     steps: number, window: number, terminal: State }
 -- Where the dock shows: cols and rows are its cells, 0 when it does not show.
+-- A left-button drag that began on item. phase: "start" once the pointer has moved the drag
+-- distance, "move" when over or the cell changes, "end" at the release, "cancel" when the drag
+-- was cut off. over: the item under the pointer, if any. col, row: the cell under the pointer,
+-- from 0 at the dock's top left; past the dock's edges they go below 0 or past its size.
+export type DockDragEvent = { pane: Pane?, dock: string, item: string, phase: "start" | "move" | "end" | "cancel",
+    over: string?, col: number, row: number, window: number, terminal: State }
 export type DockLayoutEvent = { pane: Pane?, dock: string, shown: boolean, cols: number, rows: number, window: number,
     terminal: State }
 export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }
@@ -172,6 +178,7 @@ export type Effects = Effect | { Effect }
 --   on_dock_click(ev: DockClickEvent) -- a click on an item of this script's dock
 --   on_dock_hover(ev: DockHoverEvent) -- the pointer moved onto an item of this script's dock, or off its items
 --   on_dock_wheel(ev: DockWheelEvent) -- the mouse wheel over this script's dock
+--   on_dock_drag(ev: DockDragEvent) -- a drag that began on an item of this script's dock
 --   on_dock_layout(ev: DockLayoutEvent) -- this script's dock showed, went or changed its size
 --   run_action(action: string, ev: ActionEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
@@ -247,6 +254,8 @@ declare afterglow: {
     -- The tab menu of the pane's tab: where the click on a dock item before it was, else at the pointer.
     -- busy while a prompt, a script dialog or the command palette is open in the window.
     tab_menu: (pane: PaneRef) -> Effect,
+    -- Moves the pane's tab to index (Tab.index, from 0) in its window, without showing it.
+    move_tab: (pane: PaneRef, index: number) -> Effect,
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
     scene_state: (pane: PaneRef) -> Effect,

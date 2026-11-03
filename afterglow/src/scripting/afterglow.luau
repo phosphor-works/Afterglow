@@ -381,6 +381,8 @@ afterglow = {
     end_key_mode = function() return { kind = "end_key_mode" } end,
     -- The tab menu of the pane's tab, where the dock click before it was.
     tab_menu = function(pane) return { kind = "tab_menu", pane = paneId(pane) } end,
+    -- Moves the pane's tab to index (Tab.index, from 0) in its window.
+    move_tab = function(pane, index) return { kind = "move_tab", pane = paneId(pane), index = index } end,
     -- operation: "open", "close" (back to where it was) or "choose" (the highlighted pane).
     overview = function(pane, operation) return { kind = "overview", pane = paneId(pane), operation = operation or "open" } end,
     -- Moves the highlight to target, or by step cards.

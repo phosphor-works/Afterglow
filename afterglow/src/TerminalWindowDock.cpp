@@ -11,10 +11,12 @@
 #include <AfterglowRender/GpuDevice.h>
 
 #include <QGuiApplication>
+#include <QStyleHints>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 
@@ -47,6 +49,8 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
             m_dockHover = {};
             emitDockEvent(**found, QStringLiteral("on_dock_hover"), {}, false);
         }
+        // As the hover: the drag that it holds ends before it goes.
+        if (m_dockDrag && m_dockDrag->owner == owner && m_dockDrag->dock == id) endDockDrag(false);
         releaseDockAccessibility(found->get());
         m_docks.erase(found);
         // Now, not at the next frame: a window that is not exposed draws none.
@@ -97,6 +101,8 @@ void TerminalWindow::eraseDocks(const QString& owner)
     // Released in a loop of their own: the release sends events, which have
     // no place in erase_if's predicate.
     for (const auto& dock : m_docks) if (dock->owner() == owner) releaseDockAccessibility(dock.get());
+    // A script that goes hears nothing more.
+    if (m_dockDrag && m_dockDrag->owner == owner) m_dockDrag.reset();
     const auto erased = std::erase_if(m_docks, [&](const auto& dock) { return dock->owner() == owner; });
     if (erased == 0) return;
     windowAccessibilityChanged(this);
@@ -285,6 +291,63 @@ void TerminalWindow::wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent*
     send(left, "left", "right");
 }
 
+void TerminalWindow::moveDockDrag(const QPointF& pos)
+{
+    if (!m_dockDrag) return;
+    DockDrag& drag = *m_dockDrag;
+    const auto it = std::find_if(m_docks.begin(), m_docks.end(), [&](const auto& dock) {
+        return dock->owner() == drag.owner && dock->id() == drag.dock;
+    });
+    // An area that went took its drag with it (setScriptDock, eraseDocks).
+    if (it == m_docks.end()) {
+        m_dockDrag.reset();
+        return;
+    }
+    const DockArea& dock = **it;
+    if (!drag.started && (pos - drag.from).manhattanLength() < QGuiApplication::styleHints()->startDragDistance()) return;
+    const QPoint px = (pos * devicePixelRatio()).toPoint();
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    // Cells of the area, also past its edges: a drag goes on outside it.
+    // An area that does not show has no cells to go by.
+    QPoint cell = drag.cell;
+    if (!dock.rect().isEmpty()) {
+        cell = QPoint(int(std::floor(double(px.x() - dock.rect().left()) / std::max(1, m.cellWidth))),
+                      int(std::floor(double(px.y() - dock.rect().top()) / std::max(1, m.cellHeight))));
+    }
+    const QString over = dock.rect().contains(px) ? dock.itemAt(px) : QString();
+    const char* phase = drag.started ? "move" : "start";
+    if (drag.started && over == drag.over && cell == drag.cell) return;
+    drag.started = true;
+    drag.over = over;
+    drag.cell = cell;
+    QVariantMap event{{QStringLiteral("phase"), QString::fromLatin1(phase)}, {QStringLiteral("item"), drag.item},
+                      {QStringLiteral("col"), cell.x()}, {QStringLiteral("row"), cell.y()}};
+    if (!over.isEmpty()) event.insert(QStringLiteral("over"), over);
+    // As hover: at most one call for each cell that the pointer crosses.
+    emitDockEvent(dock, QStringLiteral("on_dock_drag"), event, false);
+}
+
+void TerminalWindow::endDockDrag(bool released, const QPointF& pos)
+{
+    if (!m_dockDrag) return;
+    if (released) moveDockDrag(pos);
+    // moveDockDrag drops a drag whose area went.
+    if (!m_dockDrag) return;
+    const DockDrag drag = *std::exchange(m_dockDrag, std::nullopt);
+    // A press and release with no drag between them was a click.
+    if (!drag.started) return;
+    const auto it = std::find_if(m_docks.begin(), m_docks.end(), [&](const auto& dock) {
+        return dock->owner() == drag.owner && dock->id() == drag.dock;
+    });
+    if (it == m_docks.end()) return;
+    QVariantMap event{{QStringLiteral("phase"), released ? QStringLiteral("end") : QStringLiteral("cancel")},
+                      {QStringLiteral("item"), drag.item},
+                      {QStringLiteral("col"), drag.cell.x()},
+                      {QStringLiteral("row"), drag.cell.y()}};
+    if (!drag.over.isEmpty()) event.insert(QStringLiteral("over"), drag.over);
+    emitDockEvent(**it, QStringLiteral("on_dock_drag"), event, false);
+}
+
 QString TerminalWindow::openScriptTabMenu(Pane* pane)
 {
     const int tab = tabOf(pane);
@@ -298,6 +361,16 @@ QString TerminalWindow::openScriptTabMenu(Pane* pane)
         return QStringLiteral("A prompt or the palette is open");
     const QPointF at = std::exchange(m_dockClickAt, std::nullopt).value_or(m_pointer.x() >= 0 ? m_pointer : QPointF(0, 0));
     openTabMenu(tab, at);
+    return {};
+}
+
+QString TerminalWindow::moveTabOf(Pane* pane, int index)
+{
+    const int tab = tabOf(pane);
+    if (tab < 0) return QStringLiteral("Pane closed");
+    const int count = int(m_tabs.size());
+    if (index < 0 || index >= count) return QStringLiteral("index %1 is not a tab: the window has %2").arg(index).arg(count);
+    moveTab(tab, index);
     return {};
 }
 
