@@ -62,6 +62,7 @@
 #include <QLocale>
 #include <QPlatformSurfaceEvent>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QScreen>
 #include <QSurfaceFormat>
 #include <QVariantMap>
@@ -292,6 +293,11 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
                 QAccessibleEvent event(m_focused, QAccessible::Focus);
                 QAccessible::updateAccessibility(&event);
             }
+            // An overlay that opens or closes under a pointer that does not
+            // move changes what the pointer is on. Queued: the chrome's
+            // bindings, which wantsPointer reads, hear of the change after
+            // this slot.
+            QMetaObject::invokeMethod(this, &TerminalWindow::applyPointerShape, Qt::QueuedConnection);
         });
     }
     connect(m_controller, &ChromeController::titleAnswered, this, [this](const QString& title) {
@@ -1128,6 +1134,11 @@ bool TerminalWindow::runAction(Pane* pane, Action action)
             return true;
         case Action::MoveTabRight:
             moveTab(tab, tab + 1);
+            return true;
+        case Action::DetachTab:
+            // The pane named is the one that the new window focuses.
+            m_tabs[std::size_t(tab)]->focused = pane;
+            detachTab(tab);
             return true;
         default:
             break;
@@ -1982,6 +1993,15 @@ bool TerminalWindow::event(QEvent* e)
         for (auto* pane : panes()) if (pane->hasDragDrop()) pane->dragDrop()->leave();
         e->accept();
         return true;
+    case QEvent::Enter:
+        // A pointer that enters and stays still sends no move: what it is
+        // on shows now.
+        m_pointer = static_cast<QEnterEvent*>(e)->position();
+        m_renderer->setMousePosition(m_pointer * devicePixelRatio());
+        updateLinkHover();
+        applyPointerShape();
+        if (m_readsMouse) scheduleRender();
+        break;
     case QEvent::Leave:
         // Packs read a position outside the window as "no pointer".
         m_renderer->setMousePosition(QPointF(-1, -1));
@@ -4234,6 +4254,8 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         m_reportedPane = nullptr;
         m_selectionPane = nullptr;
         m_autoScroll.stop();
+        // A dock click is where a tab menu opens only until the next click.
+        m_dockClickAt.reset();
     }
     // A prompt that opened over the overview takes the pointer first, as
     // outside it.
@@ -4381,6 +4403,10 @@ void TerminalWindow::updateSelectionDrag()
 
 void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
 {
+    // A drag that ends over a dock item puts the pointer on it, with no move.
+    const auto hover = qScopeGuard([self = QPointer<TerminalWindow>(this)] {
+        if (self) self->updateDockHover();
+    });
     // Only the press the overview took has its release taken too; any other
     // release ends what its press started (a drag, a reported button, a
     // selection), even when the overview opened or closed in between.
@@ -4629,6 +4655,9 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         if (steps) moveOverview(current - steps, steps > 0 ? -1 : 1);
         return;
     }
+    // As a click: the wheel while the overview closes onto another tab
+    // turns there, and a dock's script sees that tab current.
+    finishOverviewReveal();
     if (routePointerToChrome(e, e->position(), false, false)) {
         return;
     }

@@ -77,7 +77,7 @@ local branch = if results[1].ok then results[1].data.stdout else nil
 
 `afterglow.sleep(ms)` waits from 0 to 600,000 milliseconds.
 A sleep is not an effect for the effect budget, but its result counts toward the result limits.
-A loop that sleeps for less than about 16 ms reaches the limit of 64 results each second.
+A loop that sleeps for less than about 8 ms reaches the limit of 128 results each second.
 
 Every handler can wait, except `migrate` and `on_unload`.
 Module code that runs at load time cannot wait.
@@ -147,7 +147,7 @@ Later effects validate the ID again.
 Success confirms operation acceptance or application.
 For a generic `action`, it does not confirm that a process or a dialog finished.
 A generic `action` runs in the pane's tab, and shows that tab first.
-`close_tab`, `rename_tab`, `move_tab_left` and `move_tab_right` act on the pane's tab and do not show it, as the tab menu does.
+`close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` act on the pane's tab and do not show it, as the tab menu does.
 `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on.
 `exec`, `select` and `prompt` deliver their results when the process or the dialog finishes.
 Use direct creation helpers when you need a returned pane ID.
@@ -180,8 +180,8 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Applied effects | 20 each second | `rate_limited` |
 | Applied `dock` effects | 60 each second | `rate_limited` |
 | Structural effects | 3 each 10 seconds | `rate_limited` |
-| Queued results | 64 | The script is disabled |
-| Result delivery | 64 each second | The script is disabled |
+| Queued results | 128 | The script is disabled |
+| Result delivery | 128 each second | The script is disabled |
 | Waiting handlers | 16 | `busy` |
 | Effects that waiting handlers wait for | 48 | `busy` |
 | Effects in one `await_all` | 16 | An error in the handler |
@@ -192,6 +192,10 @@ A list with more than 64 effects applies nothing and causes an error.
 A disabled script stays disabled until its source or package configuration changes.
 Turning scripting off and on again also loads it again.
 Refused operations also count toward result limits.
+Only effects with a request ID, or that a handler waits for, get results.
+The result limits are more than the effect limit and the `dock` limit together.
+So the results of the effects that those two limits let through cannot disable a script.
+Requested `sleep`, `cancel`, `end_key_mode` and `undock` effects are outside both limits, and their results add to the count.
 `on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
 An `on_dock_click` from an accessibility client's press counts, because a client can press without a limit.
 `on_dock_wheel` calls count, because a touchpad can send many in a second.
@@ -200,6 +204,7 @@ A dropped one-shot timer does not fire again.
 A repeating timer fires at its next interval.
 A dropped `on_file_changed` call is not sent again.
 The next change to the file sends a new one.
+A dropped `on_dock_wheel` call is not sent again. Its steps are lost.
 `sleep`, `cancel`, `end_key_mode` and `undock` do not count toward the effect limit.
 `dock` effects have their own limit and do not count toward the effect limit.
 Structural effects create, close or move panes, tabs or windows.
@@ -261,8 +266,9 @@ end
 ## Events and lifecycle
 
 Pane events include `on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell` and `on_title`.
-Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context`, `on_tab_switch` and `on_dock_click`.
+Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context` and `on_tab_switch`.
 These events contain the applicable pane and terminal snapshot.
+The events of docked areas are `on_dock_click`, `on_dock_hover`, `on_dock_wheel` and `on_dock_layout` (see [docked areas](#docked-areas)).
 
 A split's `on_pane_created` also contains `split_from`, the pane it split from, and `edge`.
 `edge` is the side the two panes share: 1 left, 2 top, 3 right or 4 bottom.
@@ -419,7 +425,7 @@ Lines past the bottom of a `left` or `right` area do not show.
 | `text` | The text. A control character shows as a space. Text past the edge is cut. A wide character that does not fit shows as an empty cell in the colors of its run. |
 | `fg`, `bg` | A palette index from 0 to 255, or `"#rrggbb"`. Indices 0 to 15 follow the theme. |
 | `bold`, `italic`, `underline` | `true` or `false` |
-| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. |
+| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. `on_dock_hover` and `on_dock_wheel` name the item under the pointer. |
 | `spacer` | `true` makes an empty run that takes the cells the other runs of its line leave. Several spacers share them. |
 
 Without `fg`, a run uses the theme's foreground color. Without `bg`, it uses the area's `fill`.
@@ -453,10 +459,14 @@ An area always reads from left to right. `Terminal.bidi` does not apply to areas
 It contains `dock`, `window` and `pane` as above, and `item` when the pointer is on an item.
 Without `item`, the pointer has left the items of that area.
 New text that puts another item under a pointer that does not move also sends the event.
-The pointer is on no item while it is over a prompt or a menu, or while a drag that started in a pane goes on.
+When the script removes the area under the pointer with `undock`, the script gets the event without `item` first.
+The pointer is on no item while a prompt, a menu or the command palette is open, and while it is over the search bar.
+The pointer is also on no item during a drag that started in a pane or on a divider.
+The same is true for a drag that started on the tab bar, on the scrollbar or in the overview.
 Keep the cells of an item the same when it shows its hover state. Otherwise the item under the pointer can change again.
 
 `on_dock_wheel` goes to the owner when the mouse wheel turns over an area.
+It contains `dock`, `window` and `pane` as above.
 
 | Event field | Value |
 | --- | --- |
@@ -464,8 +474,11 @@ Keep the cells of an item the same when it shows its hover state. Otherwise the 
 | `steps` | The whole wheel notches, 1 or more. Part of a notch waits for the next event over the same item. |
 | `item` | The item under the pointer, when there is one |
 
-`on_dock_layout` goes to the owner when an area first shows or fails to show, and when it shows, goes or changes its size.
-Use it to lay out the text for the cells that the area has.
+`on_dock_layout` goes to the owner after Afterglow first places an area, also when the area does not fit.
+It also goes when the area starts or stops showing, and when its size changes.
+An `undock` sends no `on_dock_layout`.
+Use the event to lay out the text for the cells that the area has.
+It contains `dock`, `window` and `pane` as above.
 
 | Event field | Value |
 | --- | --- |
@@ -476,8 +489,11 @@ New text in the same place sends no `on_dock_layout`.
 A change of the window size, the font or another area can send it.
 
 `tab_menu(pane)` opens the tab menu of the pane's tab, as a right click on the tab bar does.
-The menu opens at the last click on an area of that window, or at an accessibility client's press.
-Without one, it opens at the pointer.
+The menu opens at the last click on an item of an area of that window, or at an accessibility client's press.
+Each menu uses that position once. A click on another part of the window also clears it.
+Without a position, the menu opens at the pointer. When the pointer is outside the window, the menu opens at the top left corner.
+While a prompt, a script dialog or the command palette is open in the window, the result is `busy`.
+A menu that is open closes, and the tab menu opens in its place.
 
 Areas on one edge stack inward from the window's edge, in the order that they were placed.
 `tab_bar` areas are the outermost areas on the top edge, where the tab bar is.
@@ -510,7 +526,9 @@ When a window closes, its areas close with it.
 
 A new area past a count limit gets `rate_limited`. Remove an area to make room.
 New text for an existing area is not refused at the count limits.
-The [tab line package](../data/examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area and switches tabs on a click.
+The [tab line package](../data/examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area.
+A click switches tabs, a middle click closes a tab and a right click opens its tab menu.
+The package also has a `+` button, moves through the tabs with the wheel and shows the tab under the pointer.
 
 ## Key modes
 

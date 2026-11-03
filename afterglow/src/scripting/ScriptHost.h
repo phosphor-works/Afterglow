@@ -90,12 +90,19 @@ public:
     static constexpr int MaxStructuralPer10s = 3;
     static constexpr int MaxEffectsPerCall = 64;
     static constexpr int MaxActions = 32; ///< palette actions of one script
-    static constexpr int MaxPendingResults = 64;
-    static constexpr int MaxResultsPerSecond = 64;
+    /// Results, queued or each second, disable a script past these: a
+    /// handler that answers each result with a new request loops without
+    /// end. A script that requests every effect its budgets let it apply,
+    /// in one pass of the event loop, must stay under them.
+    static constexpr int MaxPendingResults = 128;
+    static constexpr int MaxResultsPerSecond = 128;
+    static_assert(MaxPendingResults > MaxEffectsPerSecond + MaxDockEffectsPerSecond);
+    static_assert(MaxResultsPerSecond > MaxEffectsPerSecond + MaxDockEffectsPerSecond);
     /// Handler calls for one script each second, once for events and once
     /// for its timers and watchers: a title storm must not stop its timers.
-    /// Keys, dock clicks and hovers, dock layouts and on_load come at the
-    /// user's rate and are not counted.
+    /// Keys, pointer clicks on docks, dock hovers, dock layouts and on_load
+    /// are not counted: dropping one would lose a state that no later call
+    /// tells again. Wheel turns and accessibility presses on docks count.
     static constexpr int MaxCallbacksPerSecond = 64;
     static constexpr int MaxSleeping = 16;
     static constexpr int MaxSleepMs = 600000;

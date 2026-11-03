@@ -138,16 +138,20 @@ public:
     /// beside the current tab, from the focused pane.
     Pane* openTab(const PaneLaunchOptions& options, QString* error, Pane* from = nullptr);
     void requestClosePane(Pane* pane) { closePane(pane); }
-    /// Runs a keybind action as if it were pressed in @p pane.
+    /// Runs a keybind action as if it were pressed in @p pane. The tab
+    /// actions of a pane in another tab (close, rename, move, detach) act on
+    /// that tab without showing it, as its tab menu does.
     bool runAction(Pane* pane, Action action);
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
     /// A script's dock or undock effect, for this window.
     QString setScriptDock(const QString& owner, const QVariantMap& effect);
-    /// The tab menu of @p pane's tab, for a script: at its last dock click,
-    /// else at the pointer.
-    void openScriptTabMenu(Pane* pane);
+    /// The tab menu of @p pane's tab, for a script: at the dock click that
+    /// came before it, else at the pointer, else at the window's top left
+    /// corner. Refused while a prompt, a script dialog or the palette is
+    /// open: the menu would answer for the prompt.
+    QString openScriptTabMenu(Pane* pane);
     /// The cells that fit in the window: a top or bottom dock is as wide.
     QSize gridSize() const;
     void clearScriptOwner(const QString& owner);
@@ -363,7 +367,8 @@ private:
     QPoint m_dockWheel;
     DockHover m_wheelDock;
     /// Where the last dock click was, window logical pixels: a tab menu
-    /// that a script opens for it opens there.
+    /// that a script opens for it opens there. A new pointer gesture or the
+    /// menu takes it.
     std::optional<QPointF> m_dockClickAt;
     /// Tells each dock's script where it shows, when that changed.
     void reportDockLayouts();
@@ -610,8 +615,9 @@ private:
     QPointer<Pane> m_reportedPane; ///< the pane whose program got the reported press
     Qt::MouseButtons m_overviewButtons; ///< the overview took their presses: it takes their releases
 
-    // Links under the pointer (while the link modifier is held).
-    QPointF m_pointer;
+    // Links under the pointer (while the link modifier is held). Outside
+    // the window, as before the pointer first enters it, it is (-1, -1).
+    QPointF m_pointer{-1, -1};
     /// A link on one row: an OSC 8 hyperlink run or a URL in the text.
     struct UrlSpan
     {

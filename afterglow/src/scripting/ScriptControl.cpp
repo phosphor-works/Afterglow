@@ -91,7 +91,6 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("action")) {
                 return control.runScriptAction(pane, s("name"));
             }
-            if (kind == QLatin1String("tab_menu")) return control.tabMenu(pane);
             if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
             if (kind == QLatin1String("overview_move")) {
                 return control.overviewMove(pane, e.value(QStringLiteral("target")).toUInt(),
@@ -138,6 +137,10 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         }
         if (kind == QLatin1String("key_mode")) {
             const auto error = control.scriptKeyMode(owner, pane, e.value(QStringLiteral("label")).toString());
+            return {error, {}, refusal(error)};
+        }
+        if (kind == QLatin1String("tab_menu")) {
+            const auto error = control.tabMenu(pane);
             return {error, {}, refusal(error)};
         }
         if (kind == QLatin1String("end_key_mode")) {

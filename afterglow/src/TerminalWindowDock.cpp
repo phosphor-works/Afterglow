@@ -10,6 +10,7 @@
 
 #include <AfterglowRender/GpuDevice.h>
 
+#include <QGuiApplication>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -40,6 +41,12 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
     DockArea* changed = nullptr;
     if (effect.value(QStringLiteral("kind")) == QLatin1String("undock")) {
         if (found == m_docks.end()) return {};
+        // The script still runs: it hears that the pointer left the item,
+        // which an area that has gone could not tell it later.
+        if (m_dockHover.owner == owner && m_dockHover.dock == id) {
+            m_dockHover = {};
+            emitDockEvent(**found, QStringLiteral("on_dock_hover"), {}, false);
+        }
         releaseDockAccessibility(found->get());
         m_docks.erase(found);
         // Now, not at the next frame: a window that is not exposed draws none.
@@ -67,8 +74,11 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
     // A dock that does not show is no child of the window: it tells of its
     // items when it shows (placeDocks).
     if (changed && !changed->rect().isEmpty()) dockAccessibilityChanged(changed);
-    // An item can come or go under a pointer that does not move.
-    applyPointerShape();
+    // An item can come or go under a pointer that does not move. A dock that
+    // moves has its place at the next frame, whose relayout sets the shape
+    // and the item: until then its rectangle is the old one. One that went
+    // is gone now.
+    if (change != DockArea::Change::Place || !changed) applyPointerShape();
     scheduleRender();
     return {};
 }
@@ -77,7 +87,8 @@ void TerminalWindow::finishDockMoves()
 {
     if (!std::exchange(m_docksMoved, false)) return;
     // relayout tells the chrome when the tab bar comes or goes and sets the
-    // pointer shape, and placeDocks tells assistive technology what shows.
+    // pointer shape and the hovered item, and placeDocks tells assistive
+    // technology what shows and each dock's script where it shows.
     relayout();
 }
 
@@ -179,7 +190,8 @@ QRect TerminalWindow::placeDocks()
     // went, can show or hide a dock or cut its text anew. A dock that comes
     // or goes changes the window's children, which the next frame tells of
     // (updateTerminalAccessibility). One that shows tells of what changed
-    // in it since it last showed, and of where it is now.
+    // in it since it last showed, and of where it is now. Each dock whose
+    // cells changed tells its script too.
     for (std::size_t i = 0; i < m_docks.size(); ++i) {
         DockArea& dock = *m_docks[i];
         if (dock.setRect(rects[i], m.cellWidth, m.cellHeight) && !dock.rect().isEmpty()) dockAccessibilityChanged(&dock);
@@ -211,17 +223,24 @@ QSize TerminalWindow::gridSize() const
 
 void TerminalWindow::updateDockHover()
 {
+    // Each pointer move comes here: a window with no dock and no item to
+    // leave has nothing to look at.
+    if (m_docks.empty() && m_dockHover.owner.isEmpty()) return;
     // Only a pointer that a click on the item would reach: not one over the
-    // chrome, outside the window, or in a drag that the panes or a divider
-    // took.
+    // chrome, outside the window, or in a drag that the panes, a divider,
+    // the chrome or the overview took. A grab whose release went elsewhere
+    // ends with its buttons.
     DockHover now;
     const QPoint px = (m_pointer * devicePixelRatio()).toPoint();
-    const bool chrome = (!m_overview.open || m_controller->wantsKeyboard()) && chromeVisible() && m_chrome->wantsPointer(m_pointer);
-    const bool dragging = (m_dividerDrag && !m_overview.open) || m_selectionPane || m_reportedButtons != Qt::NoButton;
-    if (!chrome && !dragging) {
+    const bool held = QGuiApplication::mouseButtons() != Qt::NoButton;
+    const bool dragging = (m_dividerDrag && !m_overview.open) || m_selectionPane || m_reportedButtons != Qt::NoButton
+        || (held && (m_chromeGrab || m_overviewButtons != Qt::NoButton));
+    if (!dragging) {
         if (const DockArea* dock = dockAt(px)) {
             const QString item = dock->itemAt(px);
-            if (!item.isEmpty()) now = {dock->owner(), dock->id(), item};
+            const bool chrome = (!m_overview.open || m_controller->wantsKeyboard()) && chromeVisible()
+                && m_chrome->wantsPointer(m_pointer);
+            if (!item.isEmpty() && !chrome) now = {dock->owner(), dock->id(), item};
         }
     }
     if (now == m_dockHover) return;
@@ -266,12 +285,20 @@ void TerminalWindow::wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent*
     send(left, "left", "right");
 }
 
-void TerminalWindow::openScriptTabMenu(Pane* pane)
+QString TerminalWindow::openScriptTabMenu(Pane* pane)
 {
     const int tab = tabOf(pane);
-    if (tab < 0) return;
-    const QPointF at = m_dockClickAt.value_or(m_pointer.x() >= 0 ? m_pointer : QPointF(0, 0));
+    if (tab < 0) return QStringLiteral("Pane closed");
+    // Not over a prompt or the palette, which take the pointer: the tab
+    // bar's own menu cannot open there either, and the menu's Close would
+    // replace a prompt's pending answer. A menu that is open gives way, as
+    // it does to a right click on the tab bar.
+    if (m_scriptDialog || m_controller->confirmPromptOpen() || m_controller->titlePromptOpen()
+        || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen() || m_controller->paletteOpen())
+        return QStringLiteral("A prompt or the palette is open");
+    const QPointF at = std::exchange(m_dockClickAt, std::nullopt).value_or(m_pointer.x() >= 0 ? m_pointer : QPointF(0, 0));
     openTabMenu(tab, at);
+    return {};
 }
 
 void TerminalWindow::setDockOptions(const AfterglowVt::TerminalOptions& options)

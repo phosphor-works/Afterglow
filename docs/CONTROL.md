@@ -93,7 +93,7 @@ A pane argument is a pane ID.
 | `SetTitle` | `u` pane, `s` title | None. An empty title gives the title back to the programs. |
 | `Signal` | `u` pane, `i` channel, `d` value | None. Channels are 0 to 7. |
 | `Notify` | `u` pane, `s` title, `s` body | None |
-| `RunAction` | `u` pane, `s` action | None. Actions are keybind action names, or `script:ID.ACTION`. An action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left` and `move_tab_right` do not show it. |
+| `RunAction` | `u` pane, `s` action | None. Actions are keybind action names, or `script:ID.ACTION`. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. |
 | `MovePane` | `u` pane, `u` target, `s` placement | `a{sv}`: the pane after the move. See [projects](PROJECTS.md). |
 | `DetachTab` | `u` pane | `a{sv}`: the pane in its new window |
 | `OpenDirectory` | `s` directory, `s` layout | `a{sv}`: the window and its pane |

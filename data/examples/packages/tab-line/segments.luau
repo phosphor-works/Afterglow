@@ -89,7 +89,11 @@ function segments.line(window,tabs,values,config,width,hovered)
     -- The tabs that fit between the project and the components: all of them,
     -- or the current tab and its neighbors.
     local first,last=1,#tabs
-    local room=(width or math.huge)-1-(project~="" and cells(project) or 0)-(newTab and cells("+") or 0)
+    -- cells counts a separator before every block and component. The first
+    -- block has none, and with powerline the left side ends in one. Without
+    -- powerline, the first component has none either.
+    local edges=powerline and 0 or (#shown>0 and 2 or 1)
+    local room=(width or math.huge)+edges-(project~="" and cells(project) or 0)-(newTab and cells("+") or 0)
     local need=0
     for _,text in ipairs(shown) do room-=cells(text) end
     for _,text in ipairs(titles) do need+=cells(text) end

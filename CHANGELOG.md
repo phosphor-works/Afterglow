@@ -122,8 +122,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Script effects for panes, tabs, windows, shader parameters and presets, with results and tasks.
 - `afterglow.await`, `await_all` and `sleep`, so a handler waits for results in place instead of in callbacks.
 - Docked areas: a script puts lines of styled text at an edge of a window, and the panes shrink to fit. An area can take the place of the tab bar. Its script gets clicks, the item under the pointer, the mouse wheel and the cells that the area has.
-- Scripts can open the tab menu of a tab. The tab actions of a pane act on its tab without showing it.
-- The tab line example package draws the tab bar in the terminal font. Its tabs show a hover state, close on a middle click and open their menu on a right click, and the wheel moves through them.
+- Scripts can open the menu of a tab. A pane's actions that close, rename, move or detach its tab do not show that tab first.
+- The tab line example package draws the tab bar in the terminal font. Its tabs show a hover state, close on a middle click and open their menu on a right click. A `+` button opens a new tab, and the wheel moves through the tabs.
 - Script key modes that take the window's keys. Ctrl+Shift+Escape (`end_script_key_mode`) always ends one.
 - A script key mode that starts while the pane overview is open ends when the overview closes.
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.

@@ -82,7 +82,7 @@ export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? 
 export type DockColor = number | string
 export type DockRun = { text: string?, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
     underline: boolean?,
-    item: string?, -- 1-64 characters, no control characters; a click on the run's cells reaches on_dock_click
+    item: string?, -- 1-64 characters, no control characters; names the run's cells in on_dock_click, on_dock_hover and on_dock_wheel
     spacer: boolean? } -- no text: takes the cells the other runs of its line leave, shared among the spacers
 -- A field that is not listed here refuses the dock.
 export type DockSpec = {
@@ -244,7 +244,8 @@ declare afterglow: {
     copy: (text: string) -> Effect,
     open_url: (url: string) -> Effect, -- http, https and mailto
     action: (pane: PaneRef, name: string) -> Effect, -- a keybind action: split_right, new_tab...
-    -- The tab menu of the pane's tab, at the last click on a dock of the window, else at the pointer.
+    -- The tab menu of the pane's tab: where the click on a dock item before it was, else at the pointer.
+    -- busy while a prompt, a script dialog or the command palette is open in the window.
     tab_menu: (pane: PaneRef) -> Effect,
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,

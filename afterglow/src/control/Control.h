@@ -112,7 +112,9 @@ public:
     /// program opened the URL, which Qt cannot tell.
     QString openUrl(const QString& url);
     /// A keybind action by its config name (split_right, new_tab...), or a
-    /// script action as "script:<script id>.<action id>".
+    /// script action as "script:<script id>.<action id>". A keybind action
+    /// shows the pane's tab first, except the tab actions that act on that
+    /// tab where it is (TerminalWindow::runAction).
     QString runAction(quint32 pane, const QString& action);
     /// runAction for a script: the actions that read pane text need Scripts.allowReadText.
     QString runScriptAction(quint32 pane, const QString& action);
@@ -127,7 +129,8 @@ public:
     /// that window has the area; else, as when @p pane has moved or closed, in
     /// the window of the newest such area whose last dock named @p pane.
     QString scriptDock(const QString& owner, quint32 pane, const QVariantMap& effect);
-    /// Opens the tab menu of @p pane's tab (afterglow.tab_menu).
+    /// Opens the tab menu of @p pane's tab (afterglow.tab_menu). Scripts
+    /// only: no D-Bus method or ctl command opens it.
     QString tabMenu(quint32 pane);
     void clearScriptOwner(const QString& owner);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);

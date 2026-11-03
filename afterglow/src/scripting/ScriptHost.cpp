@@ -995,10 +995,12 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 {
     if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()
         || !script->engine->hasFunction(script->module, handler)) return;
-    // Keys, dock clicks and on_load come at the user's rate: dropping a key
-    // would leave a key mode on while its keys vanish. Timers and watchers
-    // have a budget of their own, so a title storm that spends the events'
-    // budget does not stop them.
+    // Keys, dock clicks, hovers and layouts and on_load are not counted here:
+    // dropping a key would leave a key mode on while its keys vanish, and a
+    // dropped hover or layout would leave a script with an old state. Those
+    // that can come without limit (wheel turns, accessibility presses) were
+    // counted by dispatchTo. Timers and watchers have a budget of their own,
+    // so a title storm that spends the events' budget does not stop them.
     const bool task = handler == QLatin1String("on_timer") || handler == QLatin1String("on_file_changed");
     if (task && !admitCallback(*script, true)) return;
     event.insert(QStringLiteral("terminal"), state());

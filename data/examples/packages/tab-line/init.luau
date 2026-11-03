@@ -112,11 +112,29 @@ local function redraw(ev)
     table.insert(effects,afterglow.timer("draw",DrawMs,DrawMs))
     return effects
 end
+-- A change that the draw timer draws, when it next calls.
+local function drawLater()
+    dirty=true
+    if drawing then return nil end
+    drawing=tick
+    return {afterglow.cancel("draw"),afterglow.timer("draw",DrawMs,DrawMs)}
+end
+-- Lines that drawNow sends in each refresh second. Past them the draw timer
+-- draws, so that a fast sweep of the pointer over many tabs stays inside
+-- the dock budget and the result limit. The budget is any 1000 ms, so the
+-- end of one refresh second and the start of the next can both fall in it:
+-- twice this, the draw timer's 4 and the refresh are under 60.
+local NowLines=25
+local nowLines,nowTick=0,0
 -- The pointer and the line's width draw at once, so that a hover shows
 -- while the pointer is still there. A window whose line is on its way gets
 -- the draw timer.
 local function drawNow(ev)
+    if nowTick~=tick then nowTick,nowLines=tick,0 end
+    if nowLines>=NowLines then return drawLater() end
+    local before=sends
     local effects,behind=flush(ev.terminal)
+    nowLines+=sends-before
     if behind and drawing then
         dirty=true
     elseif behind then
@@ -184,9 +202,12 @@ function script.on_dock_wheel(ev)
     end
     return nil
 end
+-- A pointer that leaves an item draws later: between two tabs, the cells of
+-- the separator are on no item, and the next tab comes before the timer.
 function script.on_dock_hover(ev)
     if ev.dock~="tabline" then return nil end
     hovered[ev.window]=ev.item
+    if ev.item==nil then return drawLater() end
     return drawNow(ev)
 end
 -- The line lays its tabs out for the cells that it has.

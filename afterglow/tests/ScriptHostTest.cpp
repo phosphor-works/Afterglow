@@ -1051,38 +1051,74 @@ end }
 
 TEST_F(ScriptHostTest, DockEffectsHaveABudgetOfTheirOwn)
 {
-    write(user, "budget.luau", R"(
+    // Each budget in one handler call, so that the second of the budgets
+    // cannot end between two calls.
+    write(user, "general-first.luau", R"(
 return { on_bell = function(ev)
     local out = {}
     for i = 1, 20 do table.insert(out, afterglow.set_title(ev.pane, "t" .. i)) end
     for i = 1, 40 do table.insert(out, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text=tostring(i)}}}})) end
     table.insert(out, afterglow.tab_menu(ev.pane))
     return out
-end, on_title = function(ev)
+end }
+)");
+    write(user, "docks-first.luau", R"(
+return { on_bell = function(ev)
     local out = {}
-    for i = 1, 30 do table.insert(out, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text=tostring(i)}}}})) end
+    for i = 1, 60 do table.insert(out, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text=tostring(i)}}}})) end
+    table.insert(out, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text="over"}}}}))
+    for i = 1, 3 do table.insert(out, afterglow.set_title(ev.pane, "t" .. i)) end
     return out
 end }
 )");
     host->setEnabled(true);
+    auto count = [&](const QString& owner, const char* kind) {
+        int n = 0;
+        for (qsizetype i = 0; i < rec.applied.size(); ++i)
+            n += rec.owners.value(i).startsWith(owner) && rec.applied[i]["kind"] == QLatin1String(kind);
+        return n;
+    };
     // The general budget spent: the docks still go out, and the tab menu,
-    // which is not a dock, does not.
+    // which is not a dock, does not. The docks' budget spent first: the
+    // general effects still go out.
     host->dispatch("on_bell", 7);
-    int docks = 0, menus = 0;
-    for (const QVariantMap& e : std::as_const(rec.applied)) {
-        docks += e["kind"] == QStringLiteral("dock");
-        menus += e["kind"] == QStringLiteral("tab_menu");
-    }
-    EXPECT_EQ(docks, 40);
-    EXPECT_EQ(menus, 0);
-    EXPECT_EQ(rec.applied.size(), ScriptHost::MaxEffectsPerSecond + 40);
+    ASSERT_EQ(rec.owners.size(), rec.applied.size());
+    EXPECT_EQ(count("general-first", "dock"), 40);
+    EXPECT_EQ(count("general-first", "set_title"), ScriptHost::MaxEffectsPerSecond);
+    EXPECT_EQ(count("general-first", "tab_menu"), 0);
+    EXPECT_EQ(count("docks-first", "dock"), ScriptHost::MaxDockEffectsPerSecond);
+    EXPECT_EQ(count("docks-first", "set_title"), 3);
     // Past their own budget, docks are dropped as rate_limited.
-    rec.applied.clear();
-    rec.results.clear();
+    int refused = 0;
+    for (const auto& result : std::as_const(rec.results))
+        refused += result.first["kind"] == QLatin1String("dock") && result.second.contains(QLatin1String("Too many effects"));
+    EXPECT_EQ(refused, 1);
+}
+
+TEST_F(ScriptHostTest, AScriptThatRequestsAllItsBudgetsAllowIsNotDisabledForItsResults)
+{
+    write(user, "requests.luau", R"(
+return { on_bell = function(ev)
+    local out = {}
+    for i = 1, 20 do table.insert(out, afterglow.request("t" .. i, afterglow.set_title(ev.pane, "t" .. i))) end
+    for i = 1, 40 do
+        table.insert(out, afterglow.request("d" .. i, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text=tostring(i)}}}})))
+    end
+    return out
+end, on_title = function(ev)
+    local out = {}
+    for i = 1, 20 do
+        table.insert(out, afterglow.request("e" .. i, afterglow.dock(ev.pane, {id="bar", edge="top", lines={{{text="x" .. i}}}})))
+    end
+    return out
+end, on_result = function(ev) end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
     host->dispatch("on_title", 7);
-    EXPECT_EQ(rec.applied.size(), ScriptHost::MaxDockEffectsPerSecond - 40);
-    ASSERT_EQ(rec.results.size(), 30);
-    EXPECT_TRUE(rec.results.last().second.contains(QLatin1String("Too many effects")));
+    for (int i = 0; i < 4; ++i) QCoreApplication::processEvents();
+    EXPECT_FALSE(host->isDisabled("requests"));
+    EXPECT_EQ(rec.applied.size(), ScriptHost::MaxEffectsPerSecond + ScriptHost::MaxDockEffectsPerSecond);
 }
 
 TEST_F(ScriptHostTest, TheTabMenuEffectNamesItsPane)
@@ -1775,14 +1811,33 @@ TEST_F(ScriptHostTest, TabLineActsLikeATabBarAndFollowsItsDock)
             if (run.toMap().value("item")==item) return run.toMap();
         return QVariantMap{};
     };
+    auto wait=[](int ms, const std::function<bool()>& done) {
+        QElapsedTimer clock;clock.start();
+        while (clock.elapsed()<ms && !done()) { QCoreApplication::processEvents(); QThread::msleep(5); }
+    };
     // A tab under the pointer shows in the hover colors, at once.
     event("on_dock_hover",{{"item","tab:11"}});
     ASSERT_EQ(rec.applied.size(),1);
     EXPECT_EQ(runOf(rec.applied.last(),"tab:11").value("bg").toInt(),7);
-    EXPECT_EQ(runOf(rec.applied.last(),"tab:10").value("bg").toInt(),4); // the current tab keeps its colors
-    event("on_dock_hover",{});
+    EXPECT_EQ(runOf(rec.applied.last(),"tab:10").value("bg").toInt(),4);
+    // The current tab keeps its colors under the pointer.
+    event("on_dock_hover",{{"item","tab:10"}});
     ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(runOf(rec.applied.last(),"tab:10").value("bg").toInt(),4);
     EXPECT_EQ(runOf(rec.applied.last(),"tab:11").value("bg").toInt(),8);
+    event("on_dock_hover",{{"item","new"}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(runOf(rec.applied.last(),"new").value("bg").toInt(),7);
+    // Off the items, the line draws with the draw timer, not at once.
+    event("on_dock_hover",{});
+    EXPECT_TRUE(rec.applied.isEmpty());
+    wait(1000,[&]{return !rec.applied.isEmpty();});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(runOf(rec.applied.last(),"new").value("bg").toInt(),8);
+    // Another area of the script is not the line.
+    rec.applied.clear();
+    host->dispatchTo(owner,"on_dock_hover",7,{{"dock","other"},{"window",1},{"item","tab:11"}});pump();
+    EXPECT_TRUE(rec.applied.isEmpty());
     // The buttons of a tab bar.
     event("on_dock_click",{{"item","tab:11"},{"button","middle"}});
     ASSERT_EQ(rec.applied.size(),1);
@@ -1809,13 +1864,94 @@ TEST_F(ScriptHostTest, TabLineActsLikeATabBarAndFollowsItsDock)
     event("on_dock_layout",{{"shown",true},{"cols",200},{"rows",1}});
     ASSERT_EQ(rec.applied.size(),1);
     EXPECT_TRUE(dockTexts(rec.applied.last()).contains("20 t19"));
+    // The text is ASCII and Powerline separators, one cell for each character.
+    auto cellsOf=[](const QVariantMap& dock) {
+        qsizetype cells=0;
+        for (const QVariant& run : dock.value("lines").toList().value(0).toList())
+            cells+=run.toMap().value("text").toString().size();
+        return cells;
+    };
+    auto hidden=[](const QStringList& texts) {
+        return std::any_of(texts.begin(),texts.end(),[](const QString& t){return t.size()>1 && t.startsWith('+');});
+    };
     event("on_dock_layout",{{"shown",true},{"cols",40},{"rows",1}});
     ASSERT_EQ(rec.applied.size(),1);
-    qsizetype cells=0;
+    EXPECT_LE(cellsOf(rec.applied.last()),40);
+    QStringList texts=dockTexts(rec.applied.last());
+    EXPECT_FALSE(texts.contains("20 t19"));
+    EXPECT_TRUE(texts.contains("1 t0"));
+    EXPECT_TRUE(hidden(texts)) << texts.join('|').toStdString();
+    // "+N" takes the hover colors too.
+    QString more;
     for (const QVariant& run : rec.applied.last().value("lines").toList().value(0).toList())
-        cells+=run.toMap().value("text").toString().size();
-    EXPECT_LE(cells,40);
-    EXPECT_FALSE(dockTexts(rec.applied.last()).contains("20 t19"));
+        if (run.toMap().value("item").toString().startsWith("more:")) more=run.toMap().value("item").toString();
+    ASSERT_FALSE(more.isEmpty());
+    event("on_dock_hover",{{"item",more}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(runOf(rec.applied.last(),more).value("bg").toInt(),7);
+    event("on_dock_hover",{{"item","tab:10"}});
+    // A line that just fits shows every tab, and one cell less does not.
+    int need=4+13; // "+" and "repository", each with the separator before it
+    for (int i=0;i<20;++i) need+=QString("%1 t%2").arg(i+1).arg(i).size()+3;
+    event("on_dock_layout",{{"shown",true},{"cols",need},{"rows",1}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_EQ(cellsOf(rec.applied.last()),need);
+    texts=dockTexts(rec.applied.last());
+    EXPECT_TRUE(texts.contains("20 t19"));
+    EXPECT_FALSE(hidden(texts)) << texts.join('|').toStdString();
+    event("on_dock_layout",{{"shown",true},{"cols",need-1},{"rows",1}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_LE(cellsOf(rec.applied.last()),need-1);
+    EXPECT_TRUE(hidden(dockTexts(rec.applied.last())));
+    // An area that does not show: the line is for the window's width again.
+    event("on_dock_layout",{{"shown",false},{"cols",0},{"rows",0}});
+    ASSERT_EQ(rec.applied.size(),1);
+    EXPECT_TRUE(dockTexts(rec.applied.last()).contains("20 t19"));
+    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+}
+
+TEST_F(ScriptHostTest, TabLinePacesTheLinesThatThePointerDraws)
+{
+    installPackage("tab-line");
+    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+    paneState[7]["cwd"]="/tmp/repository";
+    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10},{"cols",200}}};
+    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","a"},{"active",true},{"active_pane",7}},
+          QVariantMap{{"id",11},{"window",1},{"index",1},{"title","b"},{"active",false},{"active_pane",8}},
+          QVariantMap{{"id",12},{"window",1},{"index",2},{"title","c"},{"active",false},{"active_pane",9}}};
+    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
+    host->setEnabled(true);pump();
+    ASSERT_EQ(rec.applied.size(),1);
+    const QString owner=rec.owners.last();
+    rec.applied.clear();
+    auto wait=[](int ms, const std::function<bool()>& done) {
+        QElapsedTimer clock;clock.start();
+        while (clock.elapsed()<ms && !done()) { QCoreApplication::processEvents(); QThread::msleep(5); }
+    };
+    // A sweep back and forth over two tabs, faster than a hand moves: 25
+    // lines go out at once in a refresh second, and the rest wait for the
+    // draw timer. A slow run can let the timer draw once or twice meanwhile.
+    for (int i=0;i<40;++i) {
+        host->dispatchTo(owner,"on_dock_hover",7,{{"dock","tabline"},{"window",1},{"item",i%2?"tab:12":"tab:11"}});
+        pump();
+    }
+    EXPECT_GE(rec.applied.size(),25);
+    EXPECT_LE(rec.applied.size(),28);
+    EXPECT_FALSE(host->isDisabled("tab-line"));
+    // The timer draws the last hover.
+    auto hoveredLast=[&]{
+        if (rec.applied.isEmpty()) return false;
+        for (const QVariant& run : rec.applied.last().value("lines").toList().value(0).toList())
+            if (run.toMap().value("item")=="tab:12") return run.toMap().value("bg").toInt()==7;
+        return false;
+    };
+    wait(1000,hoveredLast);
+    EXPECT_TRUE(hoveredLast());
+    // The next refresh second draws at once again.
+    host->dispatch("on_timer",0,{{"name","refresh"}});pump();
+    rec.applied.clear();
+    host->dispatchTo(owner,"on_dock_hover",7,{{"dock","tabline"},{"window",1},{"item","tab:11"}});pump();
+    EXPECT_EQ(rec.applied.size(),1);
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
@@ -1844,6 +1980,26 @@ return {on_load=function()
  local runs=s.line(window,tabs,values,{segments={"context","cwd","unknown","exit"},powerline=false})
  assert(texts(runs)=="1 shell|+|remote|project|exit 1", texts(runs))
  for _,run in ipairs(runs) do assert(run.text~="\u{e0b0}") end
+ -- A line that just fits shows every tab, with and without powerline, with
+ -- and without a project and components. One cell less hides a tab.
+ local function cells(line)
+  local n=0
+  for _,run in ipairs(line) do n+=utf8.len(run.text or "") end
+  return n
+ end
+ local three={{id=5,index=0,title="a",active=true},{id=6,index=1,title="b",active=false},{id=7,index=2,title="c",active=false}}
+ for _,powerline in ipairs({true,false}) do
+  for _,case in ipairs({{project="",values={cwd=""}},{project="dev",values={cwd="here",exit="ok"}}}) do
+   local config={powerline=powerline,segments={"cwd","exit"}}
+   local full=s.line({id=1,project=case.project},three,case.values,config)
+   local width=cells(full)
+   local fit=s.line({id=1,project=case.project},three,case.values,config,width)
+   assert(string.find(texts(fit),"3 c",1,true) and not string.find(texts(fit),"%+%d"),texts(fit))
+   assert(cells(fit)==width,cells(fit).." "..width)
+   local short=s.line({id=1,project=case.project},three,case.values,config,width-1)
+   assert(string.find(texts(short),"%+%d") and cells(short)<=width-1,texts(short))
+  end
+ end
  -- Long titles are cut, and only eight component names are read.
  local long={{id=4,index=0,title=string.rep("y",1000),active=false}}
  local names={}

@@ -221,10 +221,11 @@ QVariantMap Control::state() const
             continue;
         }
         const quint32 focused = w->focusedPane() ? w->focusedPane()->id() : 0;
+        const QSize grid = w->gridSize();
         windows.append(QVariantMap{{QStringLiteral("id"), w->id()}, {QStringLiteral("project"), w->projectName()}, {QStringLiteral("project_directory"), w->projectDirectory()}, {QStringLiteral("focused"), w->isActive()},
                                    {QStringLiteral("active_tab"), w->activeTabId()}, {QStringLiteral("active_pane"), focused},
                                    {QStringLiteral("overview"), w->overviewState()},
-                                   {QStringLiteral("cols"), w->gridSize().width()}, {QStringLiteral("rows"), w->gridSize().height()}});
+                                   {QStringLiteral("cols"), grid.width()}, {QStringLiteral("rows"), grid.height()}});
         for (const auto& tab : w->tabs()) {
             tabs.append(QVariantMap{{QStringLiteral("id"), tab.id}, {QStringLiteral("window"), w->id()},
                                     {QStringLiteral("index"), tab.index}, {QStringLiteral("title"), tab.title},
@@ -671,9 +672,7 @@ QString Control::tabMenu(quint32 id)
 {
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
-    if (!pane) return noPane(id);
-    window->openScriptTabMenu(pane);
-    return {};
+    return pane ? window->openScriptTabMenu(pane) : noPane(id);
 }
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {

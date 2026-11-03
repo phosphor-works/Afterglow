@@ -37,7 +37,7 @@ end
 local AwaitPrefix = "afterglow.await:"
 local MaxWaiting = 16 -- handlers waiting at once, per script
 local MaxBatch = 16 -- effects in one await_all
--- Effects waited for at once, per script. Below the host's 64 pending results,
+-- Effects waited for at once, per script. Below the host's 128 pending results,
 -- so waiting handlers alone cannot make it disable the script.
 local MaxOutstanding = 48
 local Yield = {} -- marks the runtime's own yields
@@ -379,8 +379,9 @@ afterglow = {
     -- Sends the window's keys to on_key until end_key_mode. label shows in the window.
     key_mode = function(pane, label) return { kind = "key_mode", pane = paneId(pane), label = label or "" } end,
     end_key_mode = function() return { kind = "end_key_mode" } end,
-    -- operation: "open", "close" (back to where it was) or "choose" (the highlighted pane).
+    -- The tab menu of the pane's tab, where the dock click before it was.
     tab_menu = function(pane) return { kind = "tab_menu", pane = paneId(pane) } end,
+    -- operation: "open", "close" (back to where it was) or "choose" (the highlighted pane).
     overview = function(pane, operation) return { kind = "overview", pane = paneId(pane), operation = operation or "open" } end,
     -- Moves the highlight to target, or by step cards.
     overview_move = function(pane, step, target)

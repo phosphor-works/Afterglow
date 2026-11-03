@@ -29,7 +29,9 @@ When the line is off, the windows show their usual tab bars.
 The choice survives restart. The keybinding action is `script:tab-line.toggle`.
 
 You cannot drag a tab in the tab line. Use **Move Left** and **Move Right** in the tab menu, or keybindings.
-A middle click that closes a tab is a structural effect. A script can close at most three tabs in ten seconds.
+A middle click that closes a tab and a click on `+` are structural effects.
+A script can open or close at most three tabs in ten seconds, together.
+Past that limit, `+` and the middle click do nothing until the ten seconds end.
 
 ## Layout
 
@@ -96,12 +98,15 @@ Create `config.json` beside `package.json` to change the defaults:
 
 Palette indices 0 to 15 are the colors of the theme, so the line follows a theme change.
 A color that Afterglow does not accept leaves the window without a tab line. `afterglow ctl scripts` shows the error.
+A `hover` color that Afterglow does not accept refuses only the line with a hovered item. The line stays, without hover colors.
 
 ## Refresh and limits
 
 The line redraws at once when a tab, title, focus, command or context changes.
 More changes in the next 250 ms redraw together, so a title that changes quickly sends few lines.
-The line also redraws at once when the pointer moves to another tab, and when its width changes.
+The line also redraws at once when the pointer moves onto a tab or a button, and when its width changes.
+After 25 of these redraws in one second, the next ones wait for the 250 ms redraw.
+When the pointer moves off the tabs and buttons, the line redraws with the 250 ms redraw.
 The line also redraws once each second.
 An unchanged line is not sent again.
 A line that Afterglow drops, for example at the effect limit, is sent again at the next redraw.
@@ -118,6 +123,7 @@ Control characters show as spaces.
 
 Each window has at most one line on its way at a time. The next line waits for the result of that line.
 Lines use the `dock` effect limit, so they do not use up the effect limit that Git queries and clicks need.
+Each line gets a result, so lines also count toward the result limit.
 
 Git runs asynchronously without shell interpolation or optional index locks.
 Git runs with `core.fsmonitor` turned off, so a repository cannot start its file monitor command.
