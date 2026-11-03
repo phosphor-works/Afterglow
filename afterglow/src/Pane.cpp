@@ -4,6 +4,8 @@
 #include "Pane.h"
 #include "desktop/FileTransfer.h"
 #include "desktop/DragDrop.h"
+#include "desktop/Accessibility.h"
+#include "DockArea.h"
 
 #include "app/NotificationCenter.h"
 #include "app/Startup.h"
@@ -76,6 +78,7 @@ Pane::~Pane()
     m_dragDrop.reset();
     m_fileTransfers.reset();
     m_pty.reset();
+    for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
 bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term, int cols, int rows, int cellWidth,

@@ -116,6 +116,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
+        addPaneDocks(p, wp.params.rect, wp.docks);
         wp.params.focused = false;
         wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
         applyPaneEffectState(p, wp.params, animating);
@@ -271,7 +272,8 @@ void TerminalWindow::advancePaneEffects(bool& animating)
         AfterglowRender::WindowRenderer::Pane ghost;
         ghost.snapshot = m_closingPane->snapshot.get();
         ghost.params.rect = m_closingPane->rect;
-        ghost.params.contentOrigin = contentRect(m_closingPane->rect).topLeft();
+        ghost.params.contentOrigin = m_closingPane->contentOrigin;
+        for (const auto& [snapshot, rect] : m_closingPane->docks) ghost.docks.push_back({snapshot.get(), rect});
         ghost.params.focused = false;
         ghost.params.backgroundAlpha = m_closingPane->backgroundAlpha;
         effects.closing = ghost;

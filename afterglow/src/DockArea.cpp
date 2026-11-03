@@ -44,9 +44,10 @@ std::string colorParams(const QVariant& color, bool background)
 
 } // namespace
 
-DockArea::DockArea(QString owner, QString id, const AfterglowVt::TerminalOptions& options)
+DockArea::DockArea(QString owner, QString id, const AfterglowVt::TerminalOptions& options, quint32 pane)
     : m_owner(std::move(owner))
     , m_id(std::move(id))
+    , m_pane(pane)
     , m_options(options)
     , m_terminal(2, 1, m_host, dockOptions(options))
 {

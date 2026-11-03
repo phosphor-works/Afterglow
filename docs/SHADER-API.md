@@ -147,8 +147,9 @@ The final pass uses full-resolution pixels.
 `uWindowSize` keeps the window width and height.
 Buffer scaling does not change these two inputs. Use them for a camera or effect that spans split panes.
 The window size includes the [docked areas](SCRIPTING.md#docked-areas) of scripts.
-Afterglow draws those areas after every chain, so no shader changes them. Under them, a layer input is transparent, and the first pack of the window chain sees the clear color.
+Afterglow draws the areas at the window edges after every chain, so no shader changes them. Under them, a layer input is transparent, and the first pack of the window chain sees the clear color.
 Later packs and the overview, tab transition and pane effects see what the passes before them drew there.
+A [pane area](SCRIPTING.md#pane-areas) is part of its pane: it is inside `uTerminalRect`, in the layers and in the cards, and every chain draws over it.
 Buffer `iFrame` starts at zero after reset. Final-pass `iFrame` keeps the window frame counter.
 `iTime` is the shared host clock.
 
@@ -359,7 +360,7 @@ Afterglow eases `overviewAmount()` and `highlightPosition()` with `Animation.ove
 Draw the flat window when `overviewAmount()` is 0. Opening and closing then start and end on the window.
 While the overview closes, `highlightedPane()` is the card it closes onto. Draw the highlight on that card, and use `focusedPane()` only when `highlightedPane()` is -1.
 A choice in another tab switches tabs when the close ends. Until then, `currentTab()` and `focusedPane()` stay in the old tab.
-The overview chain receives the window after the window chain. The tab bar, docked areas and other controls stay above it.
+The overview chain receives the window after the window chain. The tab bar, the docked areas at the window edges and other controls stay above it.
 
 `Shaders.tabTransition` names the pack that animates a tab switch.
 Afterglow runs it after the window chain and the pane effects while the switch runs, over the new tab.

@@ -816,9 +816,19 @@ void TerminalWindow::closePane(Pane* pane)
         closeTab(index); // the tab's last pane
         return;
     }
-    if (paneEffectsAllowed() && !drawn.isEmpty())
+    if (paneEffectsAllowed() && !drawn.isEmpty()) {
+        // Its docks close with it, in the same frame.
+        std::vector<QRect> dockRects;
+        paneDockArea(pane, drawn, &dockRects);
+        decltype(ClosingPane::docks) docks;
+        for (std::size_t i = 0; i < dockRects.size(); ++i) {
+            if (!dockRects[i].isEmpty())
+                docks.emplace_back(std::make_shared<AfterglowRender::PaneSnapshot>(pane->docks()[i]->snapshot()), dockRects[i]);
+        }
         m_closingPane = ClosingPane{std::make_shared<AfterglowRender::PaneSnapshot>(pane->snapshot()), drawn,
-                                    std::chrono::steady_clock::now(), tab.id, last.backgroundAlpha};
+                                    contentRect(pane, drawn).topLeft(), std::move(docks), std::chrono::steady_clock::now(),
+                                    tab.id, last.backgroundAlpha};
+    }
     // The current tab's focus is m_focused; a background tab's is its saved one.
     if (index == m_currentTab ? m_focused == pane : tab.focused == pane) {
         Pane* next = nullptr;
@@ -1492,6 +1502,11 @@ QRect TerminalWindow::contentRect(const QRect& paneRect) const
     return r;
 }
 
+QRect TerminalWindow::contentRect(const Pane* pane, const QRect& paneRect) const
+{
+    return contentRect(pane ? paneDockArea(pane, paneRect) : paneRect);
+}
+
 void TerminalWindow::relayout()
 {
     const QSize px = m_renderer->pixelSize();
@@ -1511,7 +1526,7 @@ void TerminalWindow::relayout()
     const auto& m = m_renderer->fonts().fonts->metrics();
     m_splits->forEachPane([&](Pane* p, const QRect& r) {
         if (r.isEmpty()) return; // hidden by zoom: retain the PTY's existing size
-        const QRect content = contentRect(r);
+        const QRect content = contentRect(placePaneDocks(p, r));
         const int cols = std::max(2, content.width() / m.cellWidth);
         const int rows = std::max(1, content.height() / m.cellHeight);
         p->resize(cols, rows, m.cellWidth, m.cellHeight);
@@ -1559,6 +1574,7 @@ void TerminalWindow::renderNow()
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
+        addPaneDocks(p, wp.params.rect, wp.docks);
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
         if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
@@ -1617,7 +1633,8 @@ void TerminalWindow::renderNow()
         std::size_t index = 0;
         m_splits->forEachPane([&](Pane* p, const QRect& area) {
             if (area.isEmpty()) return;
-            const QRect r = panes[index++].params.rect;
+            // Below and beside the pane's docks.
+            const QRect r = paneDockArea(p, panes[index++].params.rect);
             titles.append(QVariantMap{{QStringLiteral("x"), r.x() / dpr},
                                       {QStringLiteral("y"), r.y() / dpr},
                                       {QStringLiteral("width"), r.width() / dpr},
@@ -1639,7 +1656,7 @@ void TerminalWindow::renderNow()
     if (focusedEntry != panes.end() && windowSettings.scrollbar != WindowSettings::Scrollbar::Never
         && !m_renderer->overviewShowing()) {
         history = m_focused->historyPosition();
-        const QRectF rect = QRectF(focusedEntry->params.rect);
+        const QRectF rect = QRectF(paneDockArea(m_focused, focusedEntry->params.rect));
         history.insert(QStringLiteral("x"), rect.right() / devicePixelRatio() - ScrollbarLogicalWidth);
         history.insert(QStringLiteral("y"), rect.top() / devicePixelRatio());
         history.insert(QStringLiteral("width"), ScrollbarLogicalWidth);
@@ -1840,7 +1857,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     animating |= m.cursor.isAnimating();
 
     params.rect = shown;
-    params.contentOrigin = contentRect(shown).topLeft();
+    params.contentOrigin = contentRect(pane, shown).topLeft();
     params.cursorPosition = m.cursor.value();
     params.scrollShift = shift;
     params.signals = pane->shaderSignals();
@@ -1968,7 +1985,7 @@ bool TerminalWindow::event(QEvent* e)
         // asked for drag and drop accepts and offers nothing.
         for (auto* pane : panes()) if (pane != target && pane->hasDragDrop()) pane->dragDrop()->leave();
         if (target && target->hasDragDrop() && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
-            const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(m_splits->rectOf(target)).topLeft();
+            const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(target, m_splits->rectOf(target)).topLeft();
             target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
             return true;
         }
@@ -2655,7 +2672,7 @@ QRectF TerminalWindow::cursorCellRect(Pane* pane) const
     }
     const auto& m = const_cast<TerminalWindow*>(this)->m_renderer->fonts().fonts->metrics();
     const auto& snap = pane->snapshot();
-    const QRect content = contentRect(m_splits->rectOf(pane));
+    const QRect content = contentRect(pane, m_splits->rectOf(pane));
     const qreal dpr = devicePixelRatio();
     // Scrolled back, the cursor's row is not on screen: its row number
     // would name a history line.
@@ -3365,7 +3382,7 @@ void TerminalWindow::showUrlHints()
         return;
     }
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(m_splits->rectOf(m_urlMode.pane)).topLeft();
+    const QPoint origin = contentRect(m_urlMode.pane, m_splits->rectOf(m_urlMode.pane)).topLeft();
     const qreal dpr = devicePixelRatio();
     QVariantList list;
     for (const UrlHint& h : m_urlMode.hints) {
@@ -4148,7 +4165,7 @@ void TerminalWindow::paste(QClipboard::Mode mode)
 QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(m_splits->rectOf(pane)).topLeft();
+    const QPoint origin = contentRect(pane, m_splits->rectOf(pane)).topLeft();
     const QPointF px = pos * devicePixelRatio() - QPointF(origin);
     const int col = std::clamp(int(std::floor(px.x() / m.cellWidth)), 0, std::max(0, pane->cols() - 1));
     const int row = std::clamp(int(std::floor(px.y() / m.cellHeight)), 0, std::max(0, pane->rows() - 1));
@@ -4189,7 +4206,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
     ev.col = cell.x();
     ev.row = cell.y();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
-    const QPointF px = shown ? pos * devicePixelRatio() - QPointF(contentRect(m_splits->rectOf(pane)).topLeft())
+    const QPointF px = shown ? pos * devicePixelRatio() - QPointF(contentRect(pane, m_splits->rectOf(pane)).topLeft())
                              : QPointF(cell.x() * metrics.cellWidth, cell.y() * metrics.cellHeight);
     ev.pixelX = std::max(0, int(px.x()));
     ev.pixelY = std::max(0, int(px.y()));
@@ -4204,7 +4221,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
 int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(m_splits->rectOf(pane)).topLeft();
+    const QPoint origin = contentRect(pane, m_splits->rectOf(pane)).topLeft();
     return int(std::floor((pos.y() * devicePixelRatio() - origin.y()) / m.cellHeight));
 }
 
@@ -4212,7 +4229,10 @@ void TerminalWindow::emitDockEvent(const DockArea& dock, const QString& handler,
 {
     event.insert(QStringLiteral("dock"), dock.id());
     event.insert(QStringLiteral("window"), m_id);
-    Q_EMIT scriptDockEvent(dock.owner(), handler, m_focused ? m_focused->id() : 0, event, limited);
+    // A pane's dock speaks of its pane, the window's of the focused pane.
+    event.insert(QStringLiteral("scope"), dock.pane() ? QStringLiteral("pane") : QStringLiteral("window"));
+    const quint32 pane = dock.pane() ? dock.pane() : m_focused ? m_focused->id() : 0;
+    Q_EMIT scriptDockEvent(dock.owner(), handler, pane, event, limited);
 }
 
 void TerminalWindow::emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited, const QPointF& at)
@@ -4236,7 +4256,7 @@ bool TerminalWindow::pressDock(QMouseEvent* e)
     if (!item.isEmpty() && !button.isEmpty()) emitDockClick(*dock, item, button, false, e->position());
     // The left button on an item can drag it.
     if (e->button() == Qt::LeftButton && !item.isEmpty()) {
-        m_dockDrag = DockDrag{dock->owner(), dock->id(), item, e->position(), false, {}, {}};
+        m_dockDrag = DockDrag{dock->owner(), dock->id(), item, dock->pane(), e->position(), false, {}, {}};
     }
     return true;
 }
@@ -4608,7 +4628,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     // After the chrome has seen the pointer leave, which may reset the cursor.
     applyPointerShape();
     if (m_focused && (e->buttons() & Qt::LeftButton)) {
-        const QPoint pixel = px - contentRect(m_splits->rectOf(m_focused)).topLeft();
+        const QPoint pixel = px - contentRect(m_focused, m_splits->rectOf(m_focused)).topLeft();
         if (m_focused->hasDragDrop() && m_focused->dragDrop()->move(this, e->position().toPoint(), cellAt(m_focused, e->position()), pixel)) {
             m_autoScroll.stop();
             if (m_selectionPane) m_selectionPane->clearSelection();
@@ -4745,7 +4765,7 @@ bool TerminalWindow::chromeHasKeyboard() const
 QRect TerminalWindow::accessiblePaneRect(Pane* pane) const
 {
     if (!m_splits || tabIdOf(pane) != activeTabId() || m_splits->rectOf(pane).isEmpty()) return {};
-    return globalRect(contentRect(m_splits->rectOf(pane)));
+    return globalRect(contentRect(pane, m_splits->rectOf(pane)));
 }
 std::optional<AfterglowVt::SelectionPoint> TerminalWindow::accessibleCellAt(Pane* pane, const QPoint& global) const
 {

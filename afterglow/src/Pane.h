@@ -26,6 +26,7 @@
 #include <mutex>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace Afterglow {
 
@@ -44,6 +45,7 @@ struct PaneStatusRecord
 
 class FileTransfer;
 class DragDrop;
+class DockArea;
 
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
@@ -80,6 +82,10 @@ public:
     DragDrop* dragDrop();
     bool hasFileTransfers() const noexcept { return m_fileTransfers != nullptr; }
     bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
+    /// The areas that scripts dock at the pane's edges. The window lays them
+    /// out and draws them. They go where the pane goes, and close with it.
+    std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
+    const std::vector<std::unique_ptr<DockArea>>& docks() const noexcept { return m_docks; }
     /// Changes when what assistive technology reads changes: the terminal's
     /// generation and the selection serial.
     std::pair<std::uint64_t, std::uint64_t> accessibleSerial() const;
@@ -253,6 +259,7 @@ private:
     void terminalProtocol(int code, std::string_view payload) override;
     std::unique_ptr<FileTransfer> m_fileTransfers;
     std::unique_ptr<DragDrop> m_dragDrop;
+    std::vector<std::unique_ptr<DockArea>> m_docks;
     std::atomic<qsizetype> m_protocolBytes{0};
     std::atomic<quint64> m_protocolGeneration{0};
     std::atomic<bool> m_protocolBlocked{false};

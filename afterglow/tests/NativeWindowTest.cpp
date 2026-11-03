@@ -2800,6 +2800,149 @@ TEST_F(NativeWindow, ADragOnADockItemTellsItsScriptAndMoveTabMovesATab) {
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
 
+TEST_F(NativeWindow, PaneDocksTakeCellsFromTheirPaneAndSpeakOfIt) {
+    auto* first = window->focusedPane();
+    ASSERT_NE(first, nullptr);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    expectIdle(window);
+    ASSERT_EQ(first->rows(), second->rows());
+    const int rows = first->rows();
+    struct Event { QString handler; quint32 pane; QVariantMap event; };
+    QList<Event> events;
+    QObject listener;
+    QObject::connect(window, &TerminalWindow::scriptDockEvent, &listener,
+                     [&](const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool) {
+                         if (owner == QLatin1String("a@1")) events.append({handler, pane, event});
+                     });
+    auto of = [&](const char* handler) {
+        QList<Event> found;
+        for (const Event& e : events) if (e.handler == QLatin1String(handler)) found.append(e);
+        return found;
+    };
+    auto dock = [&](Pane* pane, const QString& id, const QString& edge, int size) {
+        return window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("dock")}, {QStringLiteral("id"), id},
+                                                            {QStringLiteral("scope"), QStringLiteral("pane")},
+                                                            {QStringLiteral("edge"), edge}, {QStringLiteral("size"), size},
+                                                            {QStringLiteral("lines"), QVariantList{QVariantList{QVariantMap{
+                                                                {QStringLiteral("text"), QStringLiteral("title")}, {QStringLiteral("item"), QStringLiteral("t")}}}}}},
+                                       pane);
+    };
+    auto undock = [&](Pane* pane, const QString& id) {
+        return window->setScriptDock(QStringLiteral("a@1"), {{QStringLiteral("kind"), QStringLiteral("undock")}, {QStringLiteral("id"), id},
+                                                            {QStringLiteral("scope"), QStringLiteral("pane")}},
+                                       pane);
+    };
+    auto paneDock = [&](Pane* pane, const char* id) -> const DockArea* {
+        for (const auto& d : pane->docks()) if (d->id() == QLatin1String(id)) return d.get();
+        return nullptr;
+    };
+
+    // A top dock takes a row from its pane only, and tells its script the
+    // pane's width.
+    ASSERT_TRUE(dock(first, QStringLiteral("title"), QStringLiteral("top"), 1).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return first->rows() == rows - 1; }));
+    EXPECT_EQ(second->rows(), rows);
+    ASSERT_TRUE(waitFor([&] { return !of("on_dock_layout").isEmpty(); }));
+    const Event layout = of("on_dock_layout").constLast();
+    EXPECT_EQ(layout.pane, first->id());
+    EXPECT_EQ(layout.event[QStringLiteral("scope")], QStringLiteral("pane"));
+    EXPECT_EQ(layout.event[QStringLiteral("dock")], QStringLiteral("title"));
+    EXPECT_TRUE(layout.event[QStringLiteral("shown")].toBool());
+    EXPECT_GE(layout.event[QStringLiteral("cols")].toInt(), first->cols());
+    EXPECT_EQ(layout.event[QStringLiteral("rows")].toInt(), 1);
+    const DockArea* title = paneDock(first, "title");
+    ASSERT_NE(title, nullptr);
+    ASSERT_FALSE(title->rect().isEmpty());
+    // Inside the pane, above its grid.
+    const qreal dpr = window->devicePixelRatio();
+    const QRect grid = window->accessiblePaneRect(first);
+    const QRect dockGlobal = window->accessibleDockRect(title);
+    EXPECT_LE(dockGlobal.bottom(), grid.top());
+    EXPECT_GE(dockGlobal.left(), window->mapToGlobal(QPoint(0, 0)).x());
+    EXPECT_TRUE(window->accessibleDocks().contains(title));
+    expectIdle(window);
+
+    // A click on its item goes to its script, with its pane, and not to
+    // the pane.
+    const QPointF onItem = QRectF(title->itemRect(0)).center() / dpr;
+    QMouseEvent down(QEvent::MouseButtonPress, onItem, window->mapToGlobal(onItem), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &down);
+    QMouseEvent up(QEvent::MouseButtonRelease, onItem, window->mapToGlobal(onItem), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(window, &up);
+    ASSERT_EQ(of("on_dock_click").size(), 1);
+    EXPECT_EQ(of("on_dock_click")[0].pane, first->id());
+    EXPECT_EQ(of("on_dock_click")[0].event[QStringLiteral("item")], QStringLiteral("t"));
+    EXPECT_EQ(of("on_dock_click")[0].event[QStringLiteral("scope")], QStringLiteral("pane"));
+    EXPECT_FALSE(first->hasSelection());
+    // The same id at another pane is another area.
+    ASSERT_TRUE(dock(second, QStringLiteral("title"), QStringLiteral("left"), 4).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return paneDock(second, "title") && !paneDock(second, "title")->rect().isEmpty(); }));
+    EXPECT_EQ(second->rows(), rows);
+    EXPECT_EQ(first->rows(), rows - 1);
+    // The overview draws cards: their docks take no pointer there.
+    ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
+    EXPECT_FALSE(window->accessibleDocks().contains(title));
+    QVariantMap state;
+    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("close"), state).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return !window->overviewOpen(); }));
+    EXPECT_TRUE(window->accessibleDocks().contains(title));
+    // An undock gives the row back.
+    ASSERT_TRUE(undock(first, QStringLiteral("title")).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return first->rows() == rows; }));
+    EXPECT_NE(paneDock(second, "title"), nullptr);
+
+    // A pane in another tab lays its docks out at once, where it is.
+    ASSERT_TRUE(window->runAction(second, Action::NewTab));
+    auto* third = window->focusedPane();
+    ASSERT_NE(window->tabIndexOf(third), window->tabIndexOf(first));
+    events.clear();
+    ASSERT_TRUE(dock(first, QStringLiteral("status"), QStringLiteral("bottom"), 2).isEmpty());
+    ASSERT_EQ(of("on_dock_layout").size(), 1);
+    EXPECT_TRUE(of("on_dock_layout")[0].event[QStringLiteral("shown")].toBool());
+    EXPECT_EQ(of("on_dock_layout")[0].event[QStringLiteral("rows")].toInt(), 2);
+    // Its row count follows when its tab shows.
+    window->revealPane(first);
+    // The tab bar shows now: the pane beside it, with a left dock only,
+    // has the rows of the tab.
+    ASSERT_TRUE(waitFor([&] { return first->rows() == second->rows() - 2; })) << first->rows() << " " << second->rows();
+    // Too many at one pane.
+    for (const char* id : {"b", "c"}) ASSERT_TRUE(dock(first, QString::fromLatin1(id), QStringLiteral("right"), 1).isEmpty());
+    ASSERT_TRUE(dock(first, QStringLiteral("d"), QStringLiteral("right"), 1).isEmpty());
+    EXPECT_FALSE(dock(first, QStringLiteral("e"), QStringLiteral("right"), 1).isEmpty());
+    // A pane that closes takes its docks: the closing frame draws them,
+    // and nothing points at them after.
+    window->requestClosePane(second);
+    expectIdle(window);
+    // The script's end takes the rest.
+    window->clearScriptOwner(QStringLiteral("a@1"));
+    EXPECT_TRUE(first->docks().empty());
+    ASSERT_TRUE(waitFor([&] { return first->rows() == third->rows(); }));
+    EXPECT_TRUE(window->accessibleDocks().isEmpty());
+
+    // A pane's docks go with it to another window, and take their cells
+    // from it there.
+    window->revealPane(third);
+    expectIdle(window);
+    const int alone = third->rows();
+    ASSERT_TRUE(dock(third, QStringLiteral("title"), QStringLiteral("top"), 1).isEmpty());
+    ASSERT_TRUE(waitFor([&] { return third->rows() == alone - 1; }));
+    ASSERT_TRUE(window->runAction(third, Action::DetachTab));
+    TerminalWindow* detached = nullptr;
+    ASSERT_TRUE(waitFor([&] {
+        detached = qobject_cast<TerminalWindow*>(third->parent());
+        return detached && detached != window;
+    }));
+    ASSERT_EQ(third->docks().size(), 1u);
+    const DockArea* moved = third->docks().front().get();
+    ASSERT_TRUE(waitFor([&] { return detached->accessibleDocks().contains(moved); }));
+    EXPECT_FALSE(window->accessibleDocks().contains(moved));
+    detached->clearScriptOwner(QStringLiteral("a@1"));
+    EXPECT_TRUE(third->docks().empty());
+}
+
 TEST_F(NativeWindow, APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks) {
     WindowOptions options;
     options.command = {QStringLiteral("/bin/cat")};

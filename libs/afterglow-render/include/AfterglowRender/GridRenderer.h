@@ -204,6 +204,16 @@ public:
     {
         const PaneSnapshot* snapshot = nullptr;
         FrameBuilder::PaneParams params;
+        /// A script's area docked at an edge of the pane: drawn over the
+        /// pane after its grid, inside params.rect, in the pane's opacity.
+        struct Dock
+        {
+            const PaneSnapshot* snapshot = nullptr;
+            QRect rect; ///< framebuffer pixels; cell (0,0) is its top left
+        };
+        /// Part of the pane: its chains, card, tab image and closing frame
+        /// show them too.
+        std::vector<Dock> docks = {};
     };
 
     /// @p window may be null for a renderer that only renders to images;
@@ -390,6 +400,7 @@ private:
         QRect scissor;
         std::vector<ImageDraw> images;
         std::uint32_t overlayFirst = 0, overlayEnd = 0; ///< another tab's overlays
+        std::vector<DrawRange> docks = {}; ///< the pane's docks, drawn after it
     };
     QRhiShaderResourceBindings* imageBindings(QRhiTexture* texture, std::uint64_t serial);
 

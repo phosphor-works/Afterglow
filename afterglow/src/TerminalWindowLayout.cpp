@@ -3,6 +3,8 @@
 #include "TerminalWindow.h"
 #include "app/WindowStart.h"
 #include "chrome/ChromeController.h"
+#include "desktop/Accessibility.h"
+#include "DockArea.h"
 #include <algorithm>
 #include <cmath>
 
@@ -62,6 +64,10 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
         destination->motion(pane).pointerShape = it->second->pointerShape;
     m_motion.erase(pane); // motion objects reference the source window's clock
     m_growFrom.erase(pane);
+    // Its docks go with it. Their objects for assistive technology are this
+    // window's children: the destination makes new ones.
+    for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());
+    if (!pane->docks().empty()) windowAccessibilityChanged(this);
     pane->setParent(destination);
     destination->bindPane(pane);
 }

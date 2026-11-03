@@ -1181,9 +1181,13 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
 
     std::size_t glyphBound = 0;
     auto countGlyphs = [&glyphBound](const std::vector<Pane>& list) {
+        auto count = [&glyphBound](const PaneSnapshot& snapshot) {
+            glyphBound += snapshot.cells.size();
+            for (const auto& extra : snapshot.graphemes) glyphBound += extra.size();
+        };
         for (const auto& pane : list) {
-            glyphBound += pane.snapshot->cells.size();
-            for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
+            count(*pane.snapshot);
+            for (const auto& dock : pane.docks) count(*dock.snapshot);
         }
     };
     countGlyphs(drawn);
@@ -1260,9 +1264,27 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
                 cache.ranges.cursorBelowText, pp.rect, {}};
     };
+    // A pane's docks: each its own small pane, in the pane's opacity and
+    // inside its scissor.
+    auto dockPane = [](const Pane& pane, const Pane::Dock& dock) {
+        Pane out;
+        out.snapshot = dock.snapshot;
+        out.params.rect = dock.rect;
+        out.params.contentOrigin = dock.rect.topLeft();
+        out.params.backgroundAlpha = pane.params.backgroundAlpha;
+        return out;
+    };
     m_frame.clear();
     m_ranges.clear();
-    for (const Pane& pane : drawn) m_ranges.push_back(appendPane(pane, !m_translucent && !post));
+    for (const Pane& pane : drawn) {
+        DrawRange range = appendPane(pane, !m_translucent && !post);
+        for (const Pane::Dock& dock : pane.docks) {
+            DrawRange inner = appendPane(dockPane(pane, dock), !m_translucent && !post);
+            inner.scissor = inner.scissor.intersected(range.scissor);
+            range.docks.push_back(std::move(inner));
+        }
+        m_ranges.push_back(std::move(range));
+    }
     // Docks go straight into the window, after every chain.
     m_dockRanges.clear();
     for (const Pane& dock : docks) m_dockRanges.push_back(appendPane(dock, !m_translucent));
@@ -1289,7 +1311,10 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             range.images.push_back({index, img.frame, layer});
         }
     };
-    for (std::size_t i = 0; i < m_ranges.size(); ++i) appendImages(drawn[i], m_ranges[i]);
+    for (std::size_t i = 0; i < m_ranges.size(); ++i) {
+        appendImages(drawn[i], m_ranges[i]);
+        for (std::size_t d = 0; d < drawn[i].docks.size(); ++d) appendImages(dockPane(drawn[i], drawn[i].docks[d]), m_ranges[i].docks[d]);
+    }
     for (std::size_t i = 0; i < m_dockRanges.size(); ++i) appendImages(docks[i], m_dockRanges[i]);
     // Other tabs' overlays (dividers, dimming) go with their panes.
     for (const TabSlice& slice : slices) {
@@ -1328,8 +1353,9 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     // Image textures upload in this frame's batch, before the pass begins.
     ++m_frameCounter;
     m_pendingImages.clear();
-    auto uploadImages = [&](const std::vector<DrawRange>& ranges) {
+    std::function<void(const std::vector<DrawRange>&)> uploadImages = [&](const std::vector<DrawRange>& ranges) {
         for (const DrawRange& range : ranges) {
+            uploadImages(range.docks);
             for (const ImageDraw& draw : range.images) {
                 if (!m_pendingImages.count(draw.frame.get())) {
                     std::uint64_t serial = 0;
@@ -1725,7 +1751,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     };
     // The order the layer composite also gives: backgrounds, images below the
     // text, a block cursor, text, other cursors, images above the text.
-    auto drawRange = [&](const DrawRange& range) {
+    std::function<void(const DrawRange&)> drawRange = [&](const DrawRange& range) {
         if (!range.scissor.isEmpty()) {
             cb->setScissor(scissor(range.scissor));
             drawBackgrounds(range);
@@ -1738,6 +1764,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             else drawSpan(range.cursorOtherStart, range.end);
             drawImages(range, ImageDraw::Layer::AboveText);
         }
+        for (const DrawRange& dock : range.docks) drawRange(dock);
         if (range.overlayEnd > range.overlayFirst) {
             cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
             cb->draw(4, range.overlayEnd - range.overlayFirst, 0, range.overlayFirst);
@@ -1774,6 +1801,11 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
                 if (!range.scissor.isEmpty()) {
                     cb->setScissor(scissor(range.scissor));
                     draw(range);
+                }
+                for (const DrawRange& dock : range.docks) {
+                    if (dock.scissor.isEmpty()) continue;
+                    cb->setScissor(scissor(dock.scissor));
+                    draw(dock);
                 }
             }
             frame.endPass();
