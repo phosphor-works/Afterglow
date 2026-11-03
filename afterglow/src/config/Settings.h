@@ -231,13 +231,14 @@ class SettingsStore : public QObject
 
 public:
     explicit SettingsStore(QObject* parent = nullptr);
-    /// A theme from the desktop's colours follows a new application palette.
-    bool eventFilter(QObject* watched, QEvent* event) override;
     SettingsStore(const QString& path, QObject* parent = nullptr);
     /// @p overrides ({ "Font": { "size": 14 } }) win over the file, which
     /// is still watched (afterglow -o Font.size=14).
     SettingsStore(const QString& path, const QJsonObject& overrides, QObject* parent = nullptr);
     ~SettingsStore() override;
+
+    /// A theme from the desktop's colours follows a new application palette.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
     static QString defaultPath();
     /// Machine-readable reference generated from the runtime Phosphor schema.
@@ -250,8 +251,8 @@ public:
     /// Creates the config file if it does not exist, holding {} and readable
     /// by the owner only, so that an editor can open it. False if it cannot.
     bool ensureFile();
-    /// The files whose change reloads: the config file and every place its
-    /// theme could come from.
+    /// The files whose change reloads: the config file, every place its
+    /// theme could come from and, for a plasma theme, the kdeglobals files.
     QStringList watchedPaths() const { return m_files.paths(); }
     /// What the last read could not use: a file that does not parse, unknown
     /// keys, bad values, missing themes. Each is also logged.
@@ -302,9 +303,13 @@ private:
     /// The last theme that parsed, kept while its file is saved half-written.
     QString m_themeFile;
     std::shared_ptr<const Theme> m_theme;
+    /// The theme name the last read() loaded from (NAME of "plasma:NAME"),
+    /// and whether it laid the desktop's colours over it. watch() follows them.
+    QString m_themeName;
+    bool m_plasmaTheme = false;
     QStringList m_fileProblems;
     QStringList m_readProblems;
-    PhosphorFsLoader::WatchedFileSet m_files; ///< the config file and its theme
+    PhosphorFsLoader::WatchedFileSet m_files; ///< the config file, its theme and kdeglobals
 };
 
 } // namespace Afterglow

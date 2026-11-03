@@ -388,7 +388,8 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
 bool isPlasma(const QString& name, QString* base)
 {
     static const QLatin1String Prefix("plasma");
-    if (name != Prefix && !name.startsWith(Prefix + QLatin1Char(':'))) {
+    // In any case, as the light: and dark: of pick().
+    if (name.compare(Prefix, Qt::CaseInsensitive) != 0 && !name.startsWith(Prefix + QLatin1Char(':'), Qt::CaseInsensitive)) {
         return false;
     }
     if (base) {

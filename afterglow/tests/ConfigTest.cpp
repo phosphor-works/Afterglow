@@ -185,6 +185,10 @@ TEST(Themes, PlasmaNamesTakeAnOptionalBaseTheme)
     EXPECT_TRUE(base.isEmpty());
     EXPECT_TRUE(Themes::isPlasma(QStringLiteral("plasma:nord"), &base));
     EXPECT_EQ(base, QStringLiteral("nord"));
+    // In any case, as light: and dark: are.
+    EXPECT_TRUE(Themes::isPlasma(QStringLiteral("Plasma:Nord"), &base));
+    EXPECT_EQ(base, QStringLiteral("Nord"));
+    EXPECT_TRUE(Themes::isPlasma(QStringLiteral("PLASMA")));
     EXPECT_FALSE(Themes::isPlasma(QStringLiteral("plasmatic")));
     EXPECT_FALSE(Themes::isPlasma(QStringLiteral("nord")));
     // Each half of a light:/dark: spec may be a plasma theme of its own.
@@ -406,6 +410,14 @@ TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
     SettingsStore store(config);
     EXPECT_TRUE(same(store.settings().terminal.basePalette[4], *light->palette[4]));
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {252, 252, 252}));
+    // The watch follows the theme that was read, not another read of kdeglobals.
+    const QStringList watched = store.watchedPaths();
+    auto watches = [&](const QString& file) {
+        return std::any_of(watched.begin(), watched.end(), [&](const QString& p) { return p.endsWith(file); });
+    };
+    EXPECT_TRUE(watches(QStringLiteral("/afterglow-light.json")));
+    EXPECT_FALSE(watches(QStringLiteral("/afterglow-dark.json")));
+    EXPECT_TRUE(watched.contains(m_home.filePath(QStringLiteral("kdeglobals"))));
 }
 
 TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
@@ -431,6 +443,24 @@ TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
         QThread::msleep(5);
     }
     EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {1, 2, 3}));
+}
+
+TEST_F(ConfigTest, PlasmaThemeRereadsTheColorsOnANewApplicationPalette)
+{
+    int argc = 1;
+    char name[] = "config-test";
+    char* argv[] = {name, nullptr};
+    std::unique_ptr<QCoreApplication> app;
+    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    write(QStringLiteral("kdeglobals"), DarkPlasma);
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
+    SettingsStore store(config);
+    ASSERT_TRUE(same(store.settings().terminal.defaultBackground, {20, 22, 24}));
+    // Before the file watcher's debounce: only the palette event reads it now.
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nBackgroundNormal=7,8,9\nForegroundNormal=200,200,200\n");
+    QEvent event(QEvent::ApplicationPaletteChange);
+    QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
+    EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {7, 8, 9}));
 }
 
 TEST_F(ConfigTest, MissingThemeKeepsTheConfigsColours)
