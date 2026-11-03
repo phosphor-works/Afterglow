@@ -89,25 +89,29 @@ export type DockSpec = {
     id: string, -- 1 to 32 ASCII letters, digits, - or _
     edge: "top" | "bottom" | "left" | "right",
     size: number?, -- rows (top, bottom: 1-8) or columns (left, right: 1-80); default 1
-    tab_bar: boolean?, -- top only: drawn in place of the tab bar; default false
+    tab_bar: boolean?, -- top, window scope only: drawn in place of the tab bar; default false
+    -- "window" (default): at the window's edge, the panes get what is left. "pane": at the pane's
+    -- edge, part of the pane (its shaders, overview card, transitions); its text gets what is left.
+    scope: ("window" | "pane")?,
     fill: DockColor?, -- the background of the whole dock; default the theme's background
     lines: { { DockRun } }?, -- top, bottom: at most size lines; left, right: at most 256
 }
-export type DockClickEvent = { pane: Pane?, dock: string, item: string, button: "left" | "middle" | "right",
+-- scope: the dock's scope. pane: a pane dock's pane, or the window's focused pane.
+export type DockClickEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string, button: "left" | "middle" | "right",
     window: number, terminal: State }
 -- item: the item under the pointer; nil when the pointer left the dock's items.
-export type DockHoverEvent = { pane: Pane?, dock: string, item: string?, window: number, terminal: State }
+export type DockHoverEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string?, window: number, terminal: State }
 -- steps: whole wheel notches, at least 1. item: the item under the pointer, if any.
-export type DockWheelEvent = { pane: Pane?, dock: string, item: string?, direction: "up" | "down" | "left" | "right",
+export type DockWheelEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string?, direction: "up" | "down" | "left" | "right",
     steps: number, window: number, terminal: State }
 -- Where the dock shows: cols and rows are its cells, 0 when it does not show.
 -- A left-button drag that began on item. phase: "start" once the pointer has moved the drag
 -- distance, "move" when over or the cell changes, "end" at the release, "cancel" when the drag
 -- was cut off. over: the item under the pointer, if any. col, row: the cell under the pointer,
 -- from 0 at the dock's top left; past the dock's edges they go below 0 or past its size.
-export type DockDragEvent = { pane: Pane?, dock: string, item: string, phase: "start" | "move" | "end" | "cancel",
+export type DockDragEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string, phase: "start" | "move" | "end" | "cancel",
     over: string?, col: number, row: number, window: number, terminal: State }
-export type DockLayoutEvent = { pane: Pane?, dock: string, shown: boolean, cols: number, rows: number, window: number,
+export type DockLayoutEvent = { pane: Pane?, dock: string, scope: "window" | "pane", shown: boolean, cols: number, rows: number, window: number,
     terminal: State }
 export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }
 -- key: "a", "A", "Enter", "Escape", "Left", "F5"...; text: what it types, "" for control keys.
@@ -236,9 +240,9 @@ declare afterglow: {
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
-    -- Lines of styled text at an edge of the pane's window. Sending one id again replaces it.
+    -- Lines of styled text at an edge of the pane's window, or of the pane (spec.scope). Sending one id again replaces it.
     dock: (pane: PaneRef, spec: DockSpec) -> Effect,
-    undock: (pane: PaneRef, id: string) -> Effect,
+    undock: (pane: PaneRef, id: string, scope: ("window" | "pane")?) -> Effect,
     send_text: (pane: PaneRef, text: string) -> Effect,
     -- pane defaults to the event's pane; an event without one needs it given
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,

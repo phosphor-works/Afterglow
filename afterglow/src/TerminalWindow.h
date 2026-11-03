@@ -145,8 +145,9 @@ public:
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
     QString setScriptAppearance(const QString& owner, Pane*, const QVariantMap&);
-    /// A script's dock or undock effect, for this window.
-    QString setScriptDock(const QString& owner, const QVariantMap& effect);
+    /// A script's dock or undock effect, for this window. With scope "pane",
+    /// for the docks at the edges of @p pane, which must be in this window.
+    QString setScriptDock(const QString& owner, const QVariantMap& effect, Pane* pane = nullptr);
     /// The tab menu of @p pane's tab, for a script: at the dock click that
     /// came before it, else at the pointer, else at the window's top left
     /// corner. Refused while a prompt, a script dialog or the palette is
@@ -357,9 +358,16 @@ private:
     void wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e);
     /// The dock item under the pointer, by owner and id: a dock can go
     /// while the pointer is over it.
+    /// A dock by owner, id and pane (0 for the window's), or null when it
+    /// is not in this window.
+    DockArea* findDock(const QString& owner, const QString& id, quint32 pane) const;
+    /// The docks of the current tab's panes that show, while no overview
+    /// draws them as cards.
+    std::vector<DockArea*> shownPaneDocks() const;
     struct DockHover
     {
         QString owner, dock, item;
+        quint32 pane = 0; ///< the pane whose dock it is, or 0
         bool operator==(const DockHover&) const = default;
     };
     DockHover m_dockHover;
@@ -373,6 +381,7 @@ private:
     struct DockDrag
     {
         QString owner, dock, item;
+        quint32 pane = 0;
         QPointF from; ///< the press, window logical pixels
         bool started = false;
         /// What the last event told: the item and the cell under the pointer.
@@ -546,6 +555,18 @@ private:
     static void reportProblems(ProblemSource source, const QStringList& problems, bool again = false);
 
     QRect contentRect(const QRect& paneRect) const;
+    /// The grid of @p pane drawn at @p paneRect: what its docks leave, less
+    /// the padding.
+    QRect contentRect(const Pane* pane, const QRect& paneRect) const;
+    /// What @p pane's docks that show leave of @p paneRect, with them at the
+    /// sizes that the last layout gave them. With @p rects, where each of
+    /// them goes (empty when it does not show), in the order of docks().
+    QRect paneDockArea(const Pane* pane, const QRect& paneRect, std::vector<QRect>* rects = nullptr) const;
+    /// Lays out @p pane's docks in its layout rectangle @p paneRect, and
+    /// tells their scripts. Returns what they leave.
+    QRect placePaneDocks(Pane* pane, const QRect& paneRect);
+    /// @p pane's docks, drawn at @p shown, into @p out.
+    void addPaneDocks(Pane* pane, const QRect& shown, std::vector<AfterglowRender::WindowRenderer::Pane::Dock>& out);
     /// Cell under a window position, clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;
     /// Cell row under @p pos without clamping; negative above, >= rows below.
@@ -737,6 +758,9 @@ private:
     {
         std::shared_ptr<AfterglowRender::PaneSnapshot> snapshot; ///< its last frame
         QRect rect;
+        QPoint contentOrigin;
+        /// Its docks' last frames, and where they were drawn.
+        std::vector<std::pair<std::shared_ptr<AfterglowRender::PaneSnapshot>, QRect>> docks;
         std::chrono::steady_clock::time_point at;
         quint32 tab = 0; ///< the tab it closed in, by id
         std::uint8_t backgroundAlpha = 255; ///< with the pane's script override

@@ -384,13 +384,14 @@ Unload and pane closure remove all contributions.
 
 ## Docked areas
 
-`dock(pane, spec)` puts a docked area (a dock) of styled text at an edge of the pane's window.
+`dock(pane, spec)` puts a docked area (a dock) of styled text at an edge of the pane's window, or of the pane.
 The panes get the space that is left, in whole cells.
 The shell in each pane gets the new size.
 The renderer draws the area like a pane, with the terminal font, the palette and the box-drawing and Powerline characters.
-No shader changes it.
+No shader changes an area at the window edge.
 Each window has its own areas. The same `id` in another window is a different area.
 `dock` acts on the window that holds `pane` when Afterglow applies the effect.
+With `scope = "pane"`, the area goes at an edge of the pane itself. See [pane areas](#pane-areas).
 
 ```lua
 return {
@@ -413,7 +414,8 @@ return {
 | `id` | Required. 1 to 32 ASCII letters, digits, `-` or `_`. A second `dock` with the same `id` replaces the area. |
 | `edge` | Required. `top`, `bottom`, `left` or `right`. |
 | `size` | Rows for `top` and `bottom`, 1 to 8. Columns for `left` and `right`, 1 to 80. The default is 1. |
-| `tab_bar` | `true` draws a `top` area in place of the tab bar. The default is `false`. Only a `top` area can have `true`. |
+| `tab_bar` | `true` draws a `top` area in place of the tab bar. The default is `false`. Only a `top` area with the `window` scope can have `true`. |
+| `scope` | `window` puts the area at an edge of the pane's window. `pane` puts it at an edge of the pane. The default is `window`. |
 | `fill` | A palette index from 0 to 255, or `"#rrggbb"`. It is the background of the complete area. Without it, the area uses the theme's background. Below a `Window.backgroundOpacity` of 1, the fill has the same opacity as the pane background. |
 | `lines` | A list of lines from the top. A line is a list of runs from the left. Without `lines`, the area is empty. |
 
@@ -443,7 +445,8 @@ Afterglow sends it when a mouse button goes down on a run with an `item`, or whe
 | `item` | The `item` of the run |
 | `button` | `left`, `middle` or `right` |
 | `window` | The window ID |
-| `pane` | The focused pane of the window, if the window has one |
+| `scope` | `window` or `pane`, as in the `dock` effect |
+| `pane` | For a `window` area, the focused pane of the window, if the window has one. For a `pane` area, the pane of the area. |
 
 Other mouse buttons send no event.
 A click on a run without an item, or on empty cells, does nothing.
@@ -548,6 +551,51 @@ When a window closes, its areas close with it.
 
 A new area past a count limit gets `rate_limited`. Remove an area to make room.
 New text for an existing area is not refused at the count limits.
+### Pane areas
+
+A `dock` with `scope = "pane"` puts the area at an edge of the pane.
+The pane's text gets the space that is left, in whole cells, and its shell gets the new size.
+The other panes keep their size.
+Each pane has its own areas. The same `id` at another pane, or in the window scope, is a different area.
+
+```lua
+return {
+    on_command_started = function(ev)
+        return afterglow.dock(ev.pane, {id="title", edge="top", scope="pane", fill=8, lines={{
+            {text=" " .. ev.pane.command .. " ", fg=0, bg=4, item="title"},
+        }}})
+    end,
+    on_command_finished = function(ev)
+        return afterglow.undock(ev.pane, "title", "pane")
+    end,
+}
+```
+
+A pane area is part of the pane:
+- It moves and changes size with the pane in split animations.
+- It shows on the pane's card in the pane overview, in a tab transition and in the frame of a pane that closes.
+- The pane shaders, the text and background layer shaders and the window shaders draw over it, as they draw over the pane's text.
+- It goes with the pane to another tab or window, and it closes with the pane.
+
+The events of a pane area have `scope = "pane"`, and their `pane` is the pane of the area.
+While the pane overview is open, the cards take the pointer: a pane area gets no click, hover, wheel or drag.
+A pane that a zoom hides shows none of its areas.
+The layout rules of window areas apply inside the pane.
+An area that would leave the pane smaller than 4 columns or 2 rows does not show.
+A pane in a tab that does not show lays out its areas where that tab was last shown.
+Its shell gets the new size when the tab shows.
+Window areas are the outermost: they take their space from the window first, and the panes share the rest.
+
+`undock(pane, id, "pane")` removes the area from the pane.
+When the pane has closed, its areas are gone, and the result is `no_pane`.
+
+| Limit | Value | At the limit |
+| --- | --- | --- |
+| Areas of one script at a pane | 4 | `rate_limited` |
+| Areas at a pane | 8 | `rate_limited` |
+
+The other limits of areas apply to pane areas too. Pane areas do not count toward the window limits.
+
 The [tab line package](../data/examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area.
 A click switches tabs, a middle click closes a tab and a right click opens its tab menu.
 The package also has a `+` button, moves through the tabs with the wheel and shows the tab under the pointer.
@@ -734,7 +782,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.status` | `(pane: PaneRef, text: string?, tab_title: string?) -> Effect` |
 | `afterglow.override` | `(pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect` |
 | `afterglow.dock` | `(pane: PaneRef, spec: DockSpec) -> Effect` |
-| `afterglow.undock` | `(pane: PaneRef, id: string) -> Effect` |
+| `afterglow.undock` | `(pane: PaneRef, id: string, scope: ("window" \| "pane")?) -> Effect` |
 | `afterglow.send_text` | `(pane: PaneRef, text: string) -> Effect` |
 | `afterglow.notify` | `(title: string, body: string?, pane: PaneRef?) -> Effect` |
 | `afterglow.split` | `(pane: PaneRef, direction: ("right" \| "down" \| "left" \| "up")?, command: (string \| { string })?, options: LaunchOptions?) -> Effect` |

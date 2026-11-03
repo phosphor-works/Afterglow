@@ -165,7 +165,7 @@ QString checkDock(const QVariantMap& raw, QVariantMap& effect)
     // refused here, as a misspelled run field is, instead of being dropped.
     static constexpr QLatin1String Fields[] = {QLatin1String("kind"), QLatin1String("pane"), QLatin1String("request_id"),
         QLatin1String("id"), QLatin1String("edge"), QLatin1String("size"), QLatin1String("tab_bar"), QLatin1String("fill"),
-        QLatin1String("lines")};
+        QLatin1String("lines"), QLatin1String("scope")};
     for (auto it = raw.keyBegin(); it != raw.keyEnd(); ++it) {
         if (std::none_of(std::begin(Fields), std::end(Fields), [&](QLatin1String field) { return *it == field; }))
             return QStringLiteral("Unknown dock field %1").arg(*it);
@@ -181,6 +181,8 @@ QString checkDock(const QVariantMap& raw, QVariantMap& effect)
     const QVariant tabBar = raw.value(QStringLiteral("tab_bar"), false);
     if (tabBar.typeId() != QMetaType::Bool) return QStringLiteral("tab_bar must be a boolean");
     if (tabBar.toBool() && edge != QLatin1String("top")) return QStringLiteral("Only a top dock can replace the tab bar");
+    if (tabBar.toBool() && raw.value(QStringLiteral("scope")) == QLatin1String("pane"))
+        return QStringLiteral("Only a window dock can replace the tab bar");
     bool ok = true;
     const QVariant fill = dockColor(raw.value(QStringLiteral("fill")), ok);
     if (!ok) return QStringLiteral("Dock colors are palette indices 0 to 255 or \"#rrggbb\"");
@@ -1258,8 +1260,12 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             const QVariant id = raw.value(QStringLiteral("id"));
             if (id.typeId() != QMetaType::QString || !validScriptId(id.toString()) || id.toString().size() > 32)
                 error = QStringLiteral("A dock id is a string of 1 to 32 ASCII letters, digits, - or _");
+            else if (const QVariant scope = raw.value(QStringLiteral("scope"), QStringLiteral("window"));
+                     scope != QLatin1String("window") && scope != QLatin1String("pane"))
+                error = QStringLiteral("Dock scope must be window or pane");
             else if (kind == QLatin1String("dock"))
                 if (const QString problem = checkDock(raw, effect); !problem.isEmpty()) error = problem;
+            effect.insert(QStringLiteral("scope"), raw.value(QStringLiteral("scope"), QStringLiteral("window")).toString());
         }
         if (kind == QLatin1String("signals")) {
             const auto values = raw.value(QStringLiteral("values")).toList();

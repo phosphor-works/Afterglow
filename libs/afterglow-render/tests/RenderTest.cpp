@@ -876,6 +876,51 @@ TEST_F(Render, DockImagesAreUploadedWithTheirDock)
     }
 }
 
+TEST_F(Render, PaneDocksAreDrawnInsideTheirPaneAndUnderItsChains)
+{
+    // A red pane dock on the pane's last row, with a green image in its
+    // second cell. It is part of the pane: drawn over the pane's grid, cut
+    // at the pane's edge, and painted over by the chains as the pane is.
+    auto source = layerShader("magenta", "fragColor = vec4(1.0, 0.0, 1.0, 1.0);");
+    ASSERT_TRUE(source);
+    auto program = source->instance(QStringLiteral("magenta"));
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    AfterglowVt::Terminal dockTerminal(Cols, 1, host);
+    dockTerminal.resize(Cols, 1, cw, ch);
+    dockTerminal.feed("\x1b[?25l\x1b[41m\x1b[2K\x1b[1;2H\x1b_Ga=T,f=32,s=1,v=1,c=1,r=1,C=1,q=2;AP8A/w==\x1b\\");
+    PaneSnapshot dockSnapshot;
+    dockSnapshot.capture(dockTerminal);
+    ASSERT_EQ(dockSnapshot.images.size(), 1u);
+    const QRgb red = rgb(dockSnapshot.cells[0].bg);
+    // The pane is one column narrower than the window, and the dock as wide
+    // as the window: its last column is cut.
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane{&snapshot, {}};
+    pane.params.rect = QRect(0, 0, (Cols - 1) * cw, Rows * ch);
+    pane.docks.push_back({&dockSnapshot, QRect(0, (Rows - 1) * ch, Cols * cw, ch)});
+    const QPoint inDock(cw / 2, (Rows - 1) * ch + ch / 2);
+    const QPoint onImage(cw + cw / 2, (Rows - 1) * ch + ch / 2);
+    const QPoint pastPane((Cols - 1) * cw + cw / 2, (Rows - 1) * ch + ch / 2);
+    enum class Chain { None, Pane, Window };
+    for (const Chain kind : {Chain::None, Chain::Pane, Chain::Window}) {
+        ShaderChains chains;
+        if (kind == Chain::Pane) chains.pane = {program};
+        if (kind == Chain::Window) chains.window = {program};
+        renderer->setShaderChains(chains);
+        SCOPED_TRACE(int(kind));
+        const QImage image = renderer->renderToImage(size, {pane}, {}, 0xFF000000u);
+        if (kind == Chain::None) {
+            EXPECT_PIXEL(image, inDock, red);
+            EXPECT_PIXEL_NEAR(image, onImage, qRgb(0, 255, 0), 40);
+            EXPECT_PIXEL(image, cellCenter(1, 1), rgb(snapshot.defaultBg));
+            EXPECT_PIXEL(image, pastPane, qRgb(0, 0, 0));
+        } else {
+            EXPECT_PIXEL(image, inDock, qRgb(255, 0, 255));
+        }
+    }
+}
+
 TEST_F(Render, PersistentBufferAccumulatesAcrossFramesAndAllScopes)
 {
     terminal->feed("\x1b[?25l"); snapshot.capture(*terminal);

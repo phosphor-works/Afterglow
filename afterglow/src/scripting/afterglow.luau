@@ -278,7 +278,8 @@ afterglow = {
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
     status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,
     override = function(pane, values) return {kind="override", pane=paneId(pane), values=values} end,
-    -- Lines of styled text at an edge of the pane's window. The panes get what is left.
+    -- Lines of styled text at an edge of the pane's window, or of the pane with scope = "pane".
+    -- The panes, or the pane's text, get what is left.
     -- The spec goes through whole, so that afterglow refuses a misspelled field.
     dock = function(pane, spec)
         local out = if type(spec) == "table" then table.clone(spec) else {}
@@ -286,7 +287,7 @@ afterglow = {
         out.pane = paneId(pane)
         return out
     end,
-    undock = function(pane, id) return {kind="undock", pane=paneId(pane), id=id} end,
+    undock = function(pane, id, scope) return {kind="undock", pane=paneId(pane), id=id, scope=scope or "window"} end,
     semantic_regions = function(pane) return {kind="semantic_regions", pane=paneId(pane)} end,
     read_region = function(pane, region, max_bytes)
         return {kind="read_region", pane=paneId(pane), region=region, max_bytes=max_bytes or 65536}

@@ -1155,6 +1155,35 @@ end }
     for (int i = 2; i < 6; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
 }
 
+TEST_F(ScriptHostTest, DocksHaveAWindowOrAPaneScope)
+{
+    write(user, "scope.luau", R"(
+return { on_bell = function(ev)
+    return { afterglow.dock(ev.pane, {id="a", edge="top", scope="pane", lines={{{text="x"}}}}),
+             afterglow.dock(ev.pane, {id="b", edge="bottom"}),
+             afterglow.undock(ev.pane, "a", "pane"),
+             afterglow.undock(ev.pane, "b"),
+             afterglow.dock(ev.pane, {id="c", edge="top", scope="pane", tab_bar=true}),
+             afterglow.dock(ev.pane, {id="d", edge="top", scope="tab"}),
+             afterglow.undock(ev.pane, "e", "screen") }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.applied.size(), 4);
+    EXPECT_EQ(rec.applied[0]["scope"], QStringLiteral("pane"));
+    EXPECT_EQ(rec.applied[0]["edge"], QStringLiteral("top"));
+    EXPECT_EQ(rec.applied[1]["scope"], QStringLiteral("window"));
+    EXPECT_EQ(rec.applied[2]["kind"], QStringLiteral("undock"));
+    EXPECT_EQ(rec.applied[2]["scope"], QStringLiteral("pane"));
+    EXPECT_EQ(rec.applied[3]["scope"], QStringLiteral("window"));
+    ASSERT_EQ(rec.results.size(), 7);
+    for (int i = 0; i < 4; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
+    EXPECT_TRUE(rec.results[4].second.contains(QStringLiteral("tab bar"))) << rec.results[4].second.toStdString();
+    EXPECT_TRUE(rec.results[5].second.contains(QStringLiteral("scope"))) << rec.results[5].second.toStdString();
+    EXPECT_TRUE(rec.results[6].second.contains(QStringLiteral("scope"))) << rec.results[6].second.toStdString();
+}
+
 TEST_F(ScriptHostTest, DockClicksReachOnlyTheDocksOwner)
 {
     // Each script docks once, which names its owner, then answers clicks.
