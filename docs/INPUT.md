@@ -194,6 +194,8 @@ Type a label to select it. Press Escape to cancel.
 `Hints.alphabet` sets the letters of the labels, the easiest to reach first.
 It needs two or more letters, and each letter can occur only one time. Other values use the default.
 A pane content change, a scroll of the pane or a change of the layout cancels the hints.
+The same is true for the URL labels of `show_urls_open` and `show_urls_copy`.
+In a pane with continuous output, the labels therefore close at the next output.
 
 ## Links and URL hints
 
@@ -218,6 +220,9 @@ Afterglow opens OSC 8 links and plain-text URLs with a click while you hold the 
 
 `copy-or-paste` copies a selection, or pastes when there is no selection.
 `extend` extends the selection to the click.
+
+A selection that you drag past the top or bottom of a pane scrolls one row each `Mouse.autoScrollInterval`
+milliseconds (50 by default).
 
 ## Quick terminal
 
@@ -245,6 +250,8 @@ With `ask`, a prompt names the tab of the program. The window stays on the curre
 The prompt starts on Deny, so a Return typed for the shell denies the request.
 An OSC 5522 request with a name and a password also offers **Always allow**.
 An `a` key alone chooses it. A held or modified `a` does not.
+After a paste, the program can read the clipboard with the password of the paste event for
+`Terminal.pasteReadTimeout` seconds (10 by default).
 
 ## Keyboard protocols
 

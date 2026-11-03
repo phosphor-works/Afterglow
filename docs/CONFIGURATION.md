@@ -129,6 +129,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom of a pane. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
 | `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The copy-or-paste action copies an existing selection or pastes otherwise. The extend action extends the selection. |
 
@@ -137,6 +138,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `rateLimit` | `20` | 0–1000 | Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. Notices from Afterglow itself do not count. |
+| `statusInterval` | `3000` | 0–600000 | Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. A value of 0 shows each one. |
 
 ## QuickTerminal
 
@@ -179,6 +181,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `ambiguousWide` | `false` |  | Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. |
 | `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | Response to the bell. The attention value marks the window urgent. The visual value flashes the pane. The both value does both. |
 | `bellSound` | `""` |  | Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file. |
+| `bellSoundInterval` | `250` | 0–10000 | Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 plays every bell. |
 | `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional paragraph layout mode. Application grids retain logical order. |
 | `clipboardRead` | `"ask"` | `"ask"`, `"allow"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
@@ -195,6 +198,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
 | `notifications` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). |
 | `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. |
+| `pasteReadTimeout` | `10` | 1–600 | Seconds after a paste in which the program can read the clipboard with the password of the paste event (OSC 5522). |
 | `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |
 | `scrollOnInput` | `true` |  | Scroll to the bottom on typing or paste. |
 | `scrollOnOutput` | `false` |  | Scroll to the bottom when new output arrives. |

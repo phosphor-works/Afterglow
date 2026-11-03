@@ -761,6 +761,35 @@ TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
     EXPECT_EQ(high.settings().lastOutputLimit, std::size_t(65536) << 10);
 }
 
+TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().bellSoundInterval, 250);
+    EXPECT_EQ(defaults.settings().statusNotificationInterval, 3000);
+    EXPECT_EQ(defaults.settings().pasteReadTimeout, 10);
+    EXPECT_EQ(defaults.settings().mouse.autoScrollInterval, 50);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({
+        "Terminal": {"bellSoundInterval": 0, "pasteReadTimeout": 30},
+        "Notifications": {"statusInterval": 0},
+        "Mouse": {"autoScrollInterval": 120}
+    })"));
+    EXPECT_EQ(custom.settings().bellSoundInterval, 0);
+    EXPECT_EQ(custom.settings().statusNotificationInterval, 0);
+    EXPECT_EQ(custom.settings().pasteReadTimeout, 30);
+    EXPECT_EQ(custom.settings().mouse.autoScrollInterval, 120);
+
+    SettingsStore clamped(write(QStringLiteral("clamped.json"), R"({
+        "Terminal": {"bellSoundInterval": 99999, "pasteReadTimeout": 0},
+        "Notifications": {"statusInterval": -5},
+        "Mouse": {"autoScrollInterval": 1}
+    })"));
+    EXPECT_EQ(clamped.settings().bellSoundInterval, 10000);
+    EXPECT_EQ(clamped.settings().statusNotificationInterval, 0);
+    EXPECT_EQ(clamped.settings().pasteReadTimeout, 1);
+    EXPECT_EQ(clamped.settings().mouse.autoScrollInterval, 10);
+}
+
 TEST_F(ConfigTest, HighlightColoursComeFromTheConfigAndTheTheme)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

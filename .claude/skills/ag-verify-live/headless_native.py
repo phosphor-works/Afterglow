@@ -4,7 +4,7 @@
 """Run afterglow_native_tests in a headless nested KWin, with no window on the user's desktop.
 
 Usage:
-  python3 .claude/skills/ag-verify-live/headless_native.py [--filter 'NativeWindow.*'] [--icd lvp.json]
+  python3 .claude/skills/ag-verify-live/headless_native.py [--filter 'NativeWindow.*:KeyMapping.*'] [--icd lvp.json]
 
 --icd selects a Vulkan driver manifest, such as a lavapipe build for software rendering. Without it the tests use
 the host driver. On a failure, the last KWin log lines are printed. The runner starts itself again under
@@ -25,7 +25,7 @@ from nested_desktop import KWINRC  # noqa: E402  (one KWin configuration for eve
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--binary', default='build/afterglow/afterglow_native_tests')
-parser.add_argument('--filter', default='NativeWindow.*', help='--gtest_filter pattern')
+parser.add_argument('--filter', default='NativeWindow.*:KeyMapping.*', help='--gtest_filter pattern')
 parser.add_argument('--icd', help='Vulkan ICD manifest (for example a lavapipe lvp.json)')
 parser.add_argument('--timeout', type=int, default=400, help='seconds for the whole test binary')
 parser.add_argument('--size', default='1100x750', help='virtual output size')

@@ -189,6 +189,7 @@ A disabled script stays disabled until its source or package configuration chang
 Turning scripting off and on again also loads it again.
 Refused operations also count toward result limits.
 `on_load`, `on_key` and `on_dock_click` calls do not count toward a handler call limit.
+An `on_dock_click` from an accessibility client's press counts, because a client can press without a limit.
 Timers and watchers have their own limit, so events cannot use it up.
 A dropped one-shot timer does not fire again.
 A repeating timer fires at its next interval.
@@ -419,7 +420,7 @@ A field that is not in these tables refuses the effect with `invalid_effect`.
 A value of the wrong type or outside its range also refuses the effect with `invalid_effect`.
 
 `on_dock_click` goes only to the script that owns the area.
-Afterglow sends it when a mouse button goes down on a run with an `item`.
+Afterglow sends it when a mouse button goes down on a run with an `item`, or when an accessibility client presses the item.
 
 | Event field | Value |
 | --- | --- |
@@ -431,6 +432,8 @@ Afterglow sends it when a mouse button goes down on a run with an `item`.
 
 Other mouse buttons send no event.
 A click on a run without an item, or on empty cells, does nothing.
+Accessibility clients see each item as a button. Its press sends the event of a left click.
+See [desktop integration](DESKTOP.md#docked-areas).
 Clicks and the mouse wheel on an area never reach the panes.
 This is also true while the pane overview is open.
 A click on an item then sends `on_dock_click`, and the overview stays open.
@@ -499,8 +502,10 @@ Key releases are not reported.
 
 `overview(pane, operation)` drives the pane overview of the pane's window.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
+The default operation is `open`.
 When the chosen pane is in another tab, that tab shows after the overview has closed.
 `overview_move(pane, step)` moves the highlight by `step` cards. `step` is a whole number from -32 to 32.
+The default `step` is 0.
 `overview_move(pane, 0, target)` highlights the pane `target`. `target` is a pane record or ID.
 Results contain the overview: `open`, `highlighted` and `cards`.
 The snapshot's window records contain the same `overview` table.
@@ -515,8 +520,15 @@ A key mode that starts before the overview opens continues.
 ## Pane pulses
 
 `pulse(pane, effect, options?)` plays an effect over the pane in `Shaders.paneEffects`.
-The bundled Pane Effects pack draws `portal`, a ring that sweeps out; `flash`, a light that fades; and `shake`.
-Numbers from 4 to 255 select effects that other packs define. Give them as a number or a string.
+The bundled Pane Effects pack draws these effects:
+
+| Effect | Number | Look |
+| --- | --- | --- |
+| `portal` | 1 | A ring that sweeps out |
+| `flash` | 2 | A light that fades |
+| `shake` | 3 | The pane shakes |
+
+Numbers from 4 to 255 select effects that other packs define. Give an effect as its name, or as a number or a numeric string.
 `options.duration_ms` sets the time, from 50 to 10,000 ms. The default is 600 ms.
 `options.color` is a palette index from 0 to 255. The default is 4.
 A new pulse on the same pane replaces the old one.
@@ -530,7 +542,7 @@ Without `cwd`, `split(pane)` and `new_tab(pane)` start in the directory of `pane
 The tab of `new_tab(pane)` opens after the tab of `pane`.
 `env` changes inherited environment variables.
 `size` sets the new split fraction, greater than zero and less than one.
-Split directions are `left`, `right`, `up` and `down`.
+Split directions are `left`, `right`, `up` and `down`. The default direction is `right`.
 Failed launches return errors and remove the incomplete ordinary pane.
 
 `move_pane(pane, target?, placement?)` moves a pane. The default placement is `right`.

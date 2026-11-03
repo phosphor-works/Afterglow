@@ -58,6 +58,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 `Control.allowReadText` does not apply to accessibility clients.
 AT-SPI uses a separate bus.
 While accessibility is active, any client on that bus can read the text in the viewport.
+It can also run the [pane actions](DESKTOP.md#pane-actions) and press docked-area buttons. `Control.enabled` does not apply to them.
 
 `Control.enabled=false` removes only the control interface.
 The application object stays on the bus, because later launches of Afterglow use it.

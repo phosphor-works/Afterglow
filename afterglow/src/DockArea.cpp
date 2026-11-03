@@ -6,6 +6,7 @@
 #include <AfterglowVt/Unicode.h>
 
 #include <algorithm>
+#include <utility>
 
 namespace Afterglow {
 
@@ -104,8 +105,15 @@ void DockArea::applyOptions()
     m_terminal.setOptions(options);
 }
 
-void DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
+bool DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
 {
+    const bool moved = rect != m_rect;
+    // A dock that does not fit keeps the layout it last had: drawn into one
+    // column, its items would go and come back when it shows again.
+    if (rect.isEmpty()) {
+        m_rect = rect;
+        return moved;
+    }
     const int width = std::max(1, cellWidth);
     const int height = std::max(1, cellHeight);
     const int columns = std::max(1, rect.width() / width);
@@ -120,6 +128,7 @@ void DockArea::setRect(const QRect& rect, int cellWidth, int cellHeight)
         m_terminal.resize(std::max(2, columns), rows, m_cellWidth, m_cellHeight);
         draw();
     }
+    return moved || resized;
 }
 
 void DockArea::draw()
@@ -128,7 +137,7 @@ void DockArea::draw()
     // terminal sees it: with autowrap off, the terminal would write each
     // character past the edge into the last cell.
     m_terminal.feed("\x1b[?7l\x1b[?25l\x1b[0m\x1b[2J");
-    m_hits.clear();
+    const std::vector<Item> before = std::exchange(m_items, {});
     m_text.clear();
     const auto& cursor = m_terminal.screen().cursor;
     // Where the cursor is after the text written so far on the row.
@@ -149,8 +158,7 @@ void DockArea::draw()
             if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)) cp = U' ';
             const AfterglowVt::Unicode::Props props = AfterglowVt::Unicode::props(cp);
             if (clusters.breaksBefore(props)) {
-                const int width = props.width == 1 && props.ambiguous && m_options.ambiguousWide ? 2 : props.width;
-                if (column() + std::max(1, width) > m_columns) {
+                if (column() + std::max(1, m_terminal.charWidth(props)) > m_columns) {
                     // A wide character with one cell left: the cell keeps
                     // the run's background, not a replacement character.
                     if (column() < m_columns) {
@@ -207,10 +215,20 @@ void DockArea::draw()
                 text = run.value(QStringLiteral("text")).toString();
             }
             const int from = column();
+            const qsizetype start = shown.size();
             const bool room = write(sgr + 'm', text);
             const int to = std::min(column(), m_columns);
             const QString item = run.value(QStringLiteral("item")).toString();
-            if (!item.isEmpty() && to > from) m_hits.push_back({row, from, to, item});
+            if (!item.isEmpty() && to > from) {
+                const QString cells = shown.mid(start);
+                // A styled label in several runs is one control.
+                if (!m_items.empty() && m_items.back().row == row && m_items.back().to == from && m_items.back().id == item) {
+                    m_items.back().to = to;
+                    m_items.back().text += cells;
+                } else {
+                    m_items.push_back({row, from, to, item, cells});
+                }
+            }
             if (!room) break;
         }
         if (row > 0) m_text += QLatin1Char('\n');
@@ -219,6 +237,16 @@ void DockArea::draw()
         while (end > 0 && shown.at(end - 1) == QLatin1Char(' ')) --end;
         m_text += shown.left(end);
     }
+    for (Item& item : m_items) {
+        qsizetype end = item.text.size();
+        while (end > 0 && item.text.at(end - 1) == QLatin1Char(' ')) --end;
+        item.text.truncate(end);
+    }
+    // Accessibility keeps one object for each item while the ids stay in
+    // order: a clock that ticks in an item renames it, and does not replace it.
+    if (!std::equal(before.begin(), before.end(), m_items.begin(), m_items.end(),
+                    [](const Item& a, const Item& b) { return a.id == b.id; }))
+        ++m_itemsGeneration;
     m_stale = true;
 }
 
@@ -236,10 +264,18 @@ QString DockArea::itemAt(const QPoint& point) const
     if (!m_rect.contains(point)) return {};
     const int col = (point.x() - m_rect.x()) / m_cellWidth;
     const int row = (point.y() - m_rect.y()) / m_cellHeight;
-    for (const Hit& hit : m_hits) {
-        if (hit.row == row && col >= hit.from && col < hit.to) return hit.item;
+    for (const Item& item : m_items) {
+        if (item.row == row && col >= item.from && col < item.to) return item.id;
     }
     return {};
+}
+
+QRect DockArea::itemRect(std::size_t index) const
+{
+    if (m_rect.isEmpty() || index >= m_items.size()) return {};
+    const Item& item = m_items[index];
+    return QRect(m_rect.x() + item.from * m_cellWidth, m_rect.y() + item.row * m_cellHeight,
+                 (item.to - item.from) * m_cellWidth, m_cellHeight);
 }
 
 } // namespace Afterglow

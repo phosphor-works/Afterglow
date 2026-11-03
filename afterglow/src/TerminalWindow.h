@@ -82,11 +82,31 @@ public:
     QAccessibleInterface* accessibleRoot() const override;
     QAccessibleInterface* accessibleChrome() const;
     QAccessibleInterface* accessibleChromeFocus() const;
+    /// A prompt, a menu, the palette or the search field takes the keys.
+    bool chromeHasKeyboard() const;
     QRect accessiblePaneRect(Pane*) const;
     QRect accessibleCellRect(Pane*, AfterglowVt::SelectionPoint) const;
+    /// The cell of @p pane under @p global (global logical pixels), if any.
+    std::optional<AfterglowVt::SelectionPoint> accessibleCellAt(Pane*, const QPoint& global) const;
     /// The scripts' docks that show, and where (global logical pixels).
     QList<const DockArea*> accessibleDocks() const;
     QRect accessibleDockRect(const DockArea*) const;
+    /// Where item @p index of @p dock shows (global logical pixels).
+    QRect accessibleDockItemRect(const DockArea*, std::size_t index) const;
+    /// Whether an assistive technology may act on the window now: as for
+    /// keys, not while a prompt, the palette or a mode holds the keyboard.
+    bool acceptsAccessibleActions() const;
+    /// Item @p index of a dock that shows sends its script the click a left
+    /// press on it sends, unless the chrome covers the item.
+    void pressDockItem(const DockArea*, std::size_t index);
+    /// Shows @p pane (its window, its tab) and gives it the focus, then
+    /// runs @p action there, as its keys would. False when the window does
+    /// not accept accessible actions now or the action did nothing.
+    bool runAccessibleAction(Pane* pane, Action action);
+    /// Shows @p pane and opens the context menu at its cursor.
+    void openPaneMenu(Pane* pane);
+    /// The keys that run @p action, as the command palette shows them.
+    QStringList actionShortcuts(Action action) const;
     /// Switches to @p pane's tab, focuses it and raises the window.
     void revealPane(Pane* pane);
 
@@ -187,8 +207,9 @@ Q_SIGNALS:
     void focusedPaneChanged(Pane* pane);
     /// A key for the script that holds the key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
-    /// A click on an item of a script's dock.
-    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click);
+    /// A click on an item of a script's dock. @p limited: an assistive
+    /// technology pressed it, which counts toward the callback limit.
+    void scriptDockClicked(const QString& owner, quint32 pane, const QVariantMap& click, bool limited);
     /// The current tab changed; @p direction is 1 toward the right.
     void tabSwitched(quint32 fromTab, quint32 toTab, int direction);
 
@@ -214,8 +235,9 @@ private:
     void bindPane(Pane* pane);
     void releasePaneUi(Pane* pane);
     /// Closes the prompts and modes that belong to @p pane, which is going
-    /// away: its clipboard and paste prompts, title prompt, menu, URL mode
-    /// and selection drag. Prompts about other panes stay.
+    /// away: its clipboard and paste prompts, title prompt, menu, URL mode,
+    /// selection drag, reported mouse buttons and a close confirmation about
+    /// it alone. Prompts about other panes stay.
     void dropPanePrompts(Pane* pane);
     /// Cancels the title prompt and closes the tab menu when they belong to
     /// tab @p tabId, which is going away: they would have nothing to act on.
@@ -309,12 +331,17 @@ private:
     QRect layoutDocks(QRect area, std::vector<QRect>* rects, bool* tabBarPlaced = nullptr) const;
     /// Places the docks for the window's size: returns the panes' area.
     QRect placeDocks();
-    std::size_t m_shownDocks = 0; ///< the docks that showed at the last placeDocks
     /// The panes' terminal options, for the docks too.
     void setDockOptions(const AfterglowVt::TerminalOptions& options);
     DockArea* dockAt(const QPoint& pixel) const;
     /// A press on a dock: sends its item's click. False when no dock is there.
     bool pressDock(QMouseEvent* e);
+    /// @p limited: the click counts toward the script's callback limit.
+    void emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited);
+    /// Whether @p dock is one of this window's and shows.
+    bool showsDock(const DockArea* dock) const;
+    /// Framebuffer pixels to global logical ones.
+    QRect globalRect(const QRect& pixels) const;
     /// Removes @p owner's docks.
     void eraseDocks(const QString& owner);
     /// A dock came, went or moved: the next frame lays out the panes and
@@ -363,11 +390,21 @@ private:
     void updateLinkHover();
     /// The pointer for where it is: a link hand, the program's shape, or the default.
     void applyPointerShape();
+    /// Shows @p pane for an assistive technology's action and lays its tab
+    /// out. False when the pane is not this window's or the window does not
+    /// accept accessible actions now.
+    bool revealForAccessibility(Pane* pane);
+    /// The chrome held the keyboard when it last changed: when it lets go,
+    /// assistive technology hears that the focused pane has the focus again.
+    bool m_chromeHeldKeyboard = false;
+    bool m_accessibleExposed = false; ///< isExposed() as assistive technology last heard
     /// The cursor cell in window coordinates, for the input method's popup.
     QRectF inputMethodCursorRect() const;
+    /// @p pane's cursor cell, window logical pixels.
+    QRectF cursorCellRect(Pane* pane) const;
     QRectF m_reportedImeRect;
     void ringBell(Pane* pane);
-    /// Plays Terminal.bellSound, at most a few times a second.
+    /// Plays Terminal.bellSound, at most once in Terminal.bellSoundInterval.
     void playBellSound();
     /// Starts the visual bell's flash over @p pane.
     void flashPane(Pane* pane);

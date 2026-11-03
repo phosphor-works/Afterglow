@@ -15,9 +15,8 @@ The following table describes tested features. It does not claim complete xterm,
 | Kitty multiple cursors | Shapes 1/2/3/29, clear 0, coordinate types 0/2/4, color operations 30/40, capabilities and queries 100/101; clipping, reset, clear, alternate-screen lifecycle; blink and mixed shape rendering | `Extensions.MultipleCursor*`, `Extensions.ExtraCursorColors*`, `Extensions.ResizeClipsExtraCursorsToTheScreen`, `Terminal.ExtraCursorsAreBounded`, `Terminal.ResizeClipsExtraCursorsToTheClampedSize`, `SnapshotCursor.*`, `Render.MultipleCursors*`; [multi-edit client](../data/examples/compatibility/multi-edit.py) |
 | OSC 1337 downloads | `File`, `MultipartFile`, `FilePart`, `FileEnd`; explicit native Save dialog; cancellation; bounded data | `Extensions.Downloads*`, `desktop_acceptance.py`; [download client](../data/examples/compatibility/download.py), upstream [it2dl](https://iterm2.com/utilities/it2dl) |
 | IME context | Live cursor-row surrounding text, before/after text, UTF-16 position and cursor rectangle | `DesktopText.*`; [IME behavior](DESKTOP.md#input-methods-and-directionality) |
-| Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI | `DesktopText.*`, `desktop_acceptance.py` |
+| Native terminal accessibility | Viewport text, cursor, selection and character geometry through Qt/AT-SPI; pane actions, the pane menu and docked-area buttons | `DesktopText.*`, `NativeWindow.Accessible*`, `desktop_acceptance.py`; [accessibility](DESKTOP.md#accessible-terminal-text) |
 | Local file drop | Local absolute paths quoted for Bash/Zsh/Fish, targeted pane, bracketed paste, no automatic Enter | `FileDrop.*`; [file-drop workflow](DESKTOP.md#drop-files-into-a-pane) |
-
 
 ## Relative images
 
@@ -36,7 +35,7 @@ Each store has these limits:
 
 An omitted parent placement ID selects the first matching placement at creation.
 Displayed Unicode placeholders determine a virtual parent's origin, including implied diacritics.
-Children are hidden when no parent placeholders are displayed.
+Afterglow hides the children when it displays no parent placeholders.
 Scrolling or resizing can change the anchor.
 Parent offsets use cells. `X` and `Y` remain the child's pixel offsets.
 Relative placements do not move the terminal cursor.
@@ -54,8 +53,8 @@ Relative placements do not move the terminal cursor.
 The same scrolls move shell-integration marks (OSC 133) with their rows.
 A command or prompt region goes when its start or end leaves the scroll region.
 A selection moves when a full-width scroll region holds all of it.
-The selection is cleared when the scroll region holds only part of it.
-It is also cleared when a region with left and right margins holds any of it.
+Afterglow clears the selection when the scroll region holds only part of it.
+It also clears the selection when a region with left and right margins holds any of it.
 With left and right margins, only images and marks in those columns move.
 
 Afterglow stores an iTerm2 inline image at its own size, or smaller when the requested size is smaller.
@@ -112,6 +111,23 @@ IME context does not permit arbitrary surrounding-text edits.
 Optional primary-screen bidirectional layout has application-grid exclusions and bounded paragraph processing.
 See [bidirectional text](BIDI.md).
 
+## Kitty color control and pointer shapes
+
+OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
+Programs can set, query and reset palette colors and dynamic colors.
+Supported values include named X11 colors, hexadecimal colors, `rgb:` values and `rgbi:` values.
+Cursor text, visual-bell color and eight transparent-background slots affect rendering.
+Transparent slots support an explicit opacity or the configured window opacity.
+The color stack saves and restores these settings.
+Unknown color keys produce the protocol's encoded `unknown` response.
+
+OSC 22 supports the [Kitty mouse-pointer protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/).
+Programs can replace, push, pop and query shapes.
+The main screen and alternate screen have separate stacks, each with 32 entries.
+A full stack discards its oldest entry when a new entry is pushed.
+All protocol shape names are supported, including zoom, cell and vertical-text pointers.
+A terminal reset clears both stacks and restores the default text pointer.
+
 ## Protocol definitions
 
 - [Kitty relative graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/#relative-placements).
@@ -141,20 +157,3 @@ ctest --test-dir build --output-on-failure -R 'Graphics.Relative|Graphics.Transm
 ```
 
 See [accessibility and downloads](TESTING.md#accessibility-and-downloads) for the native acceptance suite.
-
-## Kitty color control and pointer shapes
-
-OSC 21 supports the [Kitty color-control protocol](https://sw.kovidgoyal.net/kitty/color-stack/).
-Programs can set, query and reset palette colors and dynamic colors.
-Supported values include named X11 colors, hexadecimal colors, `rgb:` values and `rgbi:` values.
-Cursor text, visual-bell color and eight transparent-background slots affect rendering.
-Transparent slots support an explicit opacity or the configured window opacity.
-The color stack saves and restores these settings.
-Unknown color keys produce the protocol's encoded `unknown` response.
-
-OSC 22 supports the [Kitty mouse-pointer protocol](https://sw.kovidgoyal.net/kitty/pointer-shapes/).
-Programs can replace, push, pop and query shapes.
-The main screen and alternate screen have separate stacks, each with 32 entries.
-A full stack discards its oldest entry when a new entry is pushed.
-All protocol shape names are supported, including zoom, cell and vertical-text pointers.
-A terminal reset clears both stacks and restores the default text pointer.

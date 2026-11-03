@@ -132,8 +132,9 @@ public:
     /// Calls @p handler (on_command_finished...) in every script that has it.
     /// The event's "pane" is filled in from @p pane.
     void dispatch(const QString& handler, quint32 pane, QVariantMap event = {});
-    /// Calls @p handler in the script instance @p owner only (on_key).
-    void dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event = {});
+    /// Calls @p handler in the script instance @p owner only (on_key). With
+    /// @p limited, the call counts toward the callback limit like any event.
+    void dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event = {}, bool limited = false);
 
 Q_SIGNALS:
     void actionsChanged();

@@ -68,6 +68,9 @@ struct MouseSettings
     /// Middle-click pastes the primary selection, the clipboard, or nothing.
     enum class MiddleClick { Primary, Clipboard, None };
     MiddleClick middleClick = MiddleClick::Primary;
+    /// Milliseconds between the rows a selection scrolls while it is
+    /// dragged past the top or bottom of its pane.
+    int autoScrollInterval = 50;
     bool operator==(const MouseSettings&) const = default;
 };
 
@@ -181,6 +184,8 @@ struct Settings
     /// Notifications one pane may show in 10 seconds; 0 for no limit.
     /// Afterglow's own notices do not count.
     int notificationRateLimit = 20;
+    /// Milliseconds between two program status notifications of one pane.
+    int statusNotificationInterval = 3000;
     bool confirmUnsafePaste = true; ///< ask before pasting lines a shell would run
     bool confirmClose = true; ///< ask before closing where a program is running
     bool hideMouseWhileTyping = false;
@@ -192,11 +197,15 @@ struct Settings
     /// The bell's sound: empty for none, "default" for the desktop sound
     /// theme's, or a sound file.
     QString bellSound;
+    int bellSoundInterval = 250; ///< the fewest milliseconds between two bell sounds
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     QString fileTransferPassword;
     /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
     QString clipboardRead = QStringLiteral("ask");
+    /// Seconds after a paste in which its password lets a program read the
+    /// clipboard (OSC 5522 paste events).
+    int pasteReadTimeout = 10;
     enum class Permission { Allow, Ask, Deny };
     /// Programs writing the clipboard (OSC 52, OSC 5522).
     Permission clipboardWrite = Permission::Allow;

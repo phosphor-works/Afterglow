@@ -13,6 +13,11 @@ void TerminalWindow::releasePaneUi(Pane* pane)
     // The pane goes on in another window: a clipboard read it asked for is
     // denied, as a program expects, rather than dropped.
     if (m_pendingClipboardRead && m_pendingClipboardRead->pane == pane) m_controller->answerClipboard(0);
+    // A close confirmation that names it would close a pane that lives on
+    // elsewhere: none of its answer holds.
+    if (std::any_of(m_pendingConfirmPanes.cbegin(), m_pendingConfirmPanes.cend(), [pane](const auto& p) { return p == pane; })) {
+        m_controller->answerConfirm(false);
+    }
     // Only what belongs to this pane: a paste or a title the user is
     // giving another pane stays open.
     dropPanePrompts(pane);
@@ -22,9 +27,6 @@ void TerminalWindow::releasePaneUi(Pane* pane)
     if (m_menuTab && tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))]->id == m_menuTab) {
         m_controller->closeContextMenu();
         m_menuTab = 0;
-    }
-    if (std::any_of(m_pendingConfirmPanes.cbegin(), m_pendingConfirmPanes.cend(), [pane](const auto& p) { return p == pane; })) {
-        m_controller->answerConfirm(false); // it would close a pane that lives elsewhere now
     }
     if (m_focused == pane) {
         m_controller->setSearchOpen(false);
