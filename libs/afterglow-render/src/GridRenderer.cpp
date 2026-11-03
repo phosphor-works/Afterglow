@@ -992,6 +992,30 @@ const char* frameOpName(QRhi::FrameOpResult result)
     return "unknown";
 }
 
+/// What a pane's docks leave of @p area. They are stacked from its edges
+/// inward, each spanning a whole side of what the docks before it left, so
+/// what is left is one rectangle. A dock in any order is found: each step
+/// peels one that spans a side of what is left, and shrinks it.
+QRect dockedContent(QRect area, const std::vector<WindowRenderer::Pane::Dock>& docks)
+{
+    for (bool peeled = !docks.empty(); peeled;) {
+        peeled = false;
+        for (const WindowRenderer::Pane::Dock& dock : docks) {
+            const QRect r = dock.rect.intersected(area);
+            if (r.isEmpty()) continue;
+            const bool across = r.left() == area.left() && r.right() == area.right();
+            const bool along = r.top() == area.top() && r.bottom() == area.bottom();
+            if (across && r.top() == area.top()) area.setTop(r.bottom() + 1);
+            else if (across && r.bottom() == area.bottom()) area.setBottom(r.top() - 1);
+            else if (along && r.left() == area.left()) area.setLeft(r.right() + 1);
+            else if (along && r.right() == area.right()) area.setRight(r.left() - 1);
+            else continue;
+            peeled = true;
+        }
+    }
+    return area;
+}
+
 } // namespace
 
 WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& panes,
@@ -1180,14 +1204,16 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     const std::size_t visibleCount = panes.size();
 
     std::size_t glyphBound = 0;
-    auto countGlyphs = [&glyphBound](const std::vector<Pane>& list) {
-        for (const auto& pane : list) {
-            glyphBound += pane.snapshot->cells.size();
-            for (const auto& extra : pane.snapshot->graphemes) glyphBound += extra.size();
-        }
+    auto countGlyphs = [&glyphBound](const PaneSnapshot& snapshot) {
+        glyphBound += snapshot.cells.size();
+        for (const auto& extra : snapshot.graphemes) glyphBound += extra.size();
     };
-    countGlyphs(drawn);
-    countGlyphs(docks);
+    for (const auto& pane : drawn) {
+        countGlyphs(*pane.snapshot);
+        for (const auto& dock : pane.docks) countGlyphs(*dock.snapshot);
+    }
+    // A window dock's own docks are not drawn (setDocks).
+    for (const auto& dock : docks) countGlyphs(*dock.snapshot);
     res.glyphs.beginFrame(glyphBound, rhi->resourceLimit(QRhi::TextureSizeMax));
     // Which chains run this frame, before anything reads active(): the panes
     // below choose subpixel text by it, and prepare() sizes for it.
@@ -1258,11 +1284,30 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         m_frame.insert(m_frame.end(), cache.instances.begin(), cache.instances.end());
         return {first, first + std::uint32_t(cache.ranges.textStart),
                 first + std::uint32_t(cache.ranges.cursorStart), first + std::uint32_t(cache.ranges.cursorOtherStart), std::uint32_t(m_frame.size()),
-                cache.ranges.cursorBelowText, pp.rect, {}};
+                cache.ranges.cursorBelowText, pp.rect, pp.rect, {}};
     };
     m_frame.clear();
     m_ranges.clear();
-    for (const Pane& pane : drawn) m_ranges.push_back(appendPane(pane, !m_translucent && !post));
+    for (const Pane& pane : drawn) {
+        DrawRange range = appendPane(pane, !m_translucent && !post);
+        if (!pane.docks.empty()) {
+            range.content = dockedContent(range.scissor, pane.docks);
+            // A pane's docks: each its own small pane, in the pane's opacity
+            // and text blink phase, inside its scissor.
+            Pane dockPane;
+            dockPane.params.backgroundAlpha = pane.params.backgroundAlpha;
+            dockPane.params.textBlinkOn = pane.params.textBlinkOn;
+            for (const Pane::Dock& dock : pane.docks) {
+                dockPane.snapshot = dock.snapshot;
+                dockPane.params.rect = dock.rect;
+                dockPane.params.contentOrigin = dock.rect.topLeft();
+                DrawRange inner = appendPane(dockPane, !m_translucent && !post);
+                inner.scissor = inner.content = inner.scissor.intersected(range.scissor);
+                range.docks.push_back(std::move(inner));
+            }
+        }
+        m_ranges.push_back(std::move(range));
+    }
     // Docks go straight into the window, after every chain.
     m_dockRanges.clear();
     for (const Pane& dock : docks) m_dockRanges.push_back(appendPane(dock, !m_translucent));
@@ -1273,13 +1318,12 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             res.glyphs.touchPage(true, instance.atlasPage);
     }
     // Image quads go after all grid instances; each is drawn with its own texture.
-    auto appendImages = [&](const Pane& pane, DrawRange& range) {
-        const QPoint origin = pane.params.contentOrigin;
-        for (const AfterglowVt::VisiblePlacement& img : pane.snapshot->images) {
+    auto appendImages = [&](const PaneSnapshot& snapshot, QPoint origin, float scrollShift, DrawRange& range) {
+        for (const AfterglowVt::VisiblePlacement& img : snapshot.images) {
             const float fw = float(img.frame->width);
             const float fh = float(img.frame->height);
             const auto index = std::uint32_t(m_frame.size());
-            m_frame.push_back({float(origin.x() + img.x), float(origin.y() + img.y) - pane.params.scrollShift, float(img.width),
+            m_frame.push_back({float(origin.x() + img.x), float(origin.y() + img.y) - scrollShift, float(img.width),
                                float(img.height), float(img.srcX) / fw, float(img.srcY) / fh,
                                float(img.srcX + img.srcW) / fw, float(img.srcY + img.srcH) / fh,
                                packRgba(255, 255, 255), std::uint32_t(InstanceKind::Solid)});
@@ -1289,8 +1333,14 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             range.images.push_back({index, img.frame, layer});
         }
     };
-    for (std::size_t i = 0; i < m_ranges.size(); ++i) appendImages(drawn[i], m_ranges[i]);
-    for (std::size_t i = 0; i < m_dockRanges.size(); ++i) appendImages(docks[i], m_dockRanges[i]);
+    for (std::size_t i = 0; i < m_ranges.size(); ++i) {
+        const Pane& pane = drawn[i];
+        appendImages(*pane.snapshot, pane.params.contentOrigin, pane.params.scrollShift, m_ranges[i]);
+        for (std::size_t d = 0; d < pane.docks.size(); ++d)
+            appendImages(*pane.docks[d].snapshot, pane.docks[d].rect.topLeft(), 0, m_ranges[i].docks[d]);
+    }
+    for (std::size_t i = 0; i < m_dockRanges.size(); ++i)
+        appendImages(*docks[i].snapshot, docks[i].params.contentOrigin, docks[i].params.scrollShift, m_dockRanges[i]);
     // Other tabs' overlays (dividers, dimming) go with their panes.
     for (const TabSlice& slice : slices) {
         if (!slice.overlays || slice.overlays->empty() || slice.begin == slice.end) continue;
@@ -1328,19 +1378,22 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     // Image textures upload in this frame's batch, before the pass begins.
     ++m_frameCounter;
     m_pendingImages.clear();
-    auto uploadImages = [&](const std::vector<DrawRange>& ranges) {
-        for (const DrawRange& range : ranges) {
-            for (const ImageDraw& draw : range.images) {
-                if (!m_pendingImages.count(draw.frame.get())) {
-                    std::uint64_t serial = 0;
-                    QRhiTexture* tex = m_device.imageTexture(draw.frame, updates, serial);
-                    m_pendingImages.emplace(draw.frame.get(), std::make_pair(tex, serial));
-                }
+    // A range, then its pane's docks, which have no docks of their own.
+    auto forEachDrawn = [](const DrawRange& range, const auto& fn) {
+        fn(range);
+        for (const DrawRange& dock : range.docks) fn(dock);
+    };
+    auto uploadImages = [&](const DrawRange& range) {
+        for (const ImageDraw& draw : range.images) {
+            if (!m_pendingImages.count(draw.frame.get())) {
+                std::uint64_t serial = 0;
+                QRhiTexture* tex = m_device.imageTexture(draw.frame, updates, serial);
+                m_pendingImages.emplace(draw.frame.get(), std::make_pair(tex, serial));
             }
         }
     };
-    uploadImages(m_ranges);
-    uploadImages(m_dockRanges);
+    for (const DrawRange& range : m_ranges) forEachDrawn(range, uploadImages);
+    for (const DrawRange& range : m_dockRanges) uploadImages(range);
     if (!m_uniforms) {
         initResources(res);
     }
@@ -1428,7 +1481,7 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             }
             cb->setGraphicsPipeline(gridPipelines->image.get());
             cb->setViewport({0, 0, float(px.width()), float(px.height())});
-            cb->setScissor(scissor(range.scissor));
+            cb->setScissor(scissor(range.content));
             cb->setShaderResources(srb);
             cb->setVertexInput(0, 1, &input);
             cb->draw(4, 1, 0, draw.instance);
@@ -1677,12 +1730,15 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
         m_post->uploadPanes(updates, paneBlock);
     }
 
+    // Leaves the content scissor set, for the rest of the range.
     auto drawBackgrounds = [&](const DrawRange& range) {
         // The pane's default background comes first and replaces what is
         // under it: blended over the translucent clear colour, its alpha
         // would compound (0.9 over 0.9 is 0.99).
+        cb->setScissor(scissor(range.scissor));
         cb->setGraphicsPipeline(gridPipelines->fill.get());
         cb->draw(4, 1, 0, range.first);
+        cb->setScissor(scissor(range.content));
         // Kitty images below INT32_MIN/2 go between the pane fill and the
         // cell backgrounds, which cover them where a cell has its own colour.
         if (drawImages(range, ImageDraw::Layer::UnderCells)) cb->setGraphicsPipeline(gridPipelines->fill.get());
@@ -1725,19 +1781,19 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
     };
     // The order the layer composite also gives: backgrounds, images below the
     // text, a block cursor, text, other cursors, images above the text.
+    auto drawContent = [&](const DrawRange& range) {
+        if (range.scissor.isEmpty()) return;
+        drawBackgrounds(range);
+        drawImages(range, ImageDraw::Layer::BelowText);
+        if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+        else drawSpan(range.cursorOtherStart, range.end);
+        drawSpan(range.textStart, range.cursorStart);
+        if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
+        else drawSpan(range.cursorOtherStart, range.end);
+        drawImages(range, ImageDraw::Layer::AboveText);
+    };
     auto drawRange = [&](const DrawRange& range) {
-        if (!range.scissor.isEmpty()) {
-            cb->setScissor(scissor(range.scissor));
-            drawBackgrounds(range);
-            drawImages(range, ImageDraw::Layer::BelowText);
-            cb->setScissor(scissor(range.scissor));
-            if (range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-            else drawSpan(range.cursorOtherStart, range.end);
-            drawSpan(range.textStart, range.cursorStart);
-            if (!range.cursorBelowText) drawSpan(range.cursorStart, range.cursorOtherStart);
-            else drawSpan(range.cursorOtherStart, range.end);
-            drawImages(range, ImageDraw::Layer::AboveText);
-        }
+        forEachDrawn(range, drawContent);
         if (range.overlayEnd > range.overlayFirst) {
             cb->setScissor(scissor(QRect(QPoint(0, 0), px)));
             cb->draw(4, range.overlayEnd - range.overlayFirst, 0, range.overlayFirst);
@@ -1770,14 +1826,20 @@ void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& pan
             frame.beginPass(m_post->layerTarget(layer), Qt::transparent, {1.0f, 0}, first ? updates : nullptr);
             first = false;
             bindGrid();
+            // Each layer is a target of its own, where a dock's background
+            // covers nothing of the pane's text and cursors: those keep to
+            // the content rectangle, out of the pane's docks.
             for (const DrawRange& range : visible) {
-                if (!range.scissor.isEmpty()) {
-                    cb->setScissor(scissor(range.scissor));
-                    draw(range);
-                }
+                forEachDrawn(range, [&](const DrawRange& r) {
+                    if (r.scissor.isEmpty()) return;
+                    cb->setScissor(scissor(r.content));
+                    draw(r);
+                });
             }
             frame.endPass();
         }
+        // By pane, not by dock: the window hides a dock's cursor (?25l), and
+        // the pane's own cursors keep out of its docks.
         std::vector<bool> cursorBelowText;
         for (const DrawRange& range : visible) {
             if (!range.scissor.intersected(QRect(QPoint(), px)).isEmpty())

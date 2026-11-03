@@ -15,27 +15,30 @@
 
 namespace Afterglow {
 
-/// An area that a script docks at an edge of a window (afterglow.dock): lines
-/// of styled text, drawn by the grid renderer like a pane. The text goes into
-/// a terminal of its own that runs no program, so widths, emoji, the palette
-/// and box drawing are those of the panes. The panes get the space that is
-/// left.
+/// An area that a script docks at an edge of a window or of a pane
+/// (afterglow.dock): lines of styled text, drawn by the grid renderer like a
+/// pane. The text goes into a terminal of its own that runs no program, so
+/// widths, emoji, the palette and box drawing are those of the panes. The
+/// panes, or the pane's text, get the space that is left.
 class DockArea
 {
 public:
     enum class Edge { Top, Bottom, Left, Right };
 
-    DockArea(QString owner, QString id, const AfterglowVt::TerminalOptions& options);
+    /// @p pane: the ID of the pane whose edge the area docks at, or 0 for
+    /// an area at the window's edge.
+    DockArea(QString owner, QString id, const AfterglowVt::TerminalOptions& options, quint32 pane = 0);
 
     const QString& owner() const noexcept { return m_owner; }
     const QString& id() const noexcept { return m_id; }
+    quint32 pane() const noexcept { return m_pane; }
     Edge edge() const noexcept { return m_edge; }
     /// Rows for the top and bottom edges, columns for the left and right.
     int size() const noexcept { return m_size; }
     /// Shown in place of the tab bar (top edge only).
     bool replacesTabBar() const noexcept { return m_tabBar; }
-    /// The order docks on one edge stack in, from the window's edge inward:
-    /// the order of the last change of place.
+    /// The order docks on one edge stack in, from the window's or the pane's
+    /// edge inward: the order of the last change of place.
     quint64 order() const noexcept { return m_order; }
 
     /// What a setContent() call changed.
@@ -99,6 +102,7 @@ private:
 
     QString m_owner;
     QString m_id;
+    quint32 m_pane = 0;
     Edge m_edge = Edge::Top;
     int m_size = 1;
     bool m_tabBar = false;

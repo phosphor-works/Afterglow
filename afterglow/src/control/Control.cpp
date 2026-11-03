@@ -633,6 +633,12 @@ QString Control::scriptDock(const QString& owner, quint32 id, const QVariantMap&
     // Every dock and undock comes through here, so the records match the
     // windows' areas. A closed window's records go.
     m_docks.removeIf([](const DockRecord& r) { return !r.window; });
+    // A pane's areas go where it goes, and close with it: no record.
+    if (effect.value(QStringLiteral("scope")) == QLatin1String("pane")) {
+        TerminalWindow* window = nullptr;
+        Pane* pane = find(id, &window);
+        return pane ? window->setScriptDock(owner, effect, pane) : noPane(id);
+    }
     const QString dock = effect.value(QStringLiteral("id")).toString();
     auto record = [&](auto matches) {
         return std::find_if(m_docks.begin(), m_docks.end(), [&](const DockRecord& r) {
@@ -673,6 +679,12 @@ QString Control::tabMenu(quint32 id)
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
     return pane ? window->openScriptTabMenu(pane) : noPane(id);
+}
+QString Control::moveTab(quint32 id, int index)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    return pane ? window->moveTabOf(pane, index) : noPane(id);
 }
 QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMap& effect, QVariantMap& result)
 {

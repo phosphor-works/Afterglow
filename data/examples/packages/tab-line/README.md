@@ -22,13 +22,15 @@ Click a tab to switch to it.
 Middle-click a tab to close it. Right-click a tab to open its tab menu, which can change its title, move it, detach it or close it.
 Click `+` after the tabs to open a new tab.
 Turn the mouse wheel over the line to go to the previous or the next tab.
+Drag a tab to move it. The tab takes the place of the tab under the pointer.
+The `+N` blocks at the ends show the number of tabs that do not fit. Over a `+N` block, the tab takes the place of the nearest tab that does not show.
+A drag does not detach a tab. Use the tab menu to detach it.
 A tab or button under the pointer shows in the `hover` colors.
 Run a command, change directory or switch tabs to see changes.
 Choose **Toggle the tab line** in the command palette to turn the line off and on.
 When the line is off, the windows show their usual tab bars.
 The choice survives restart. The keybinding action is `script:tab-line.toggle`.
 
-You cannot drag a tab in the tab line. Use **Move Left** and **Move Right** in the tab menu, or keybindings.
 A middle click that closes a tab and a click on `+` are structural effects.
 A script can open or close at most three tabs in ten seconds, together.
 Past that limit, `+` and the middle click do nothing until the ten seconds end.
@@ -102,7 +104,7 @@ A `hover` color that Afterglow does not accept refuses only the line with a hove
 
 ## Refresh and limits
 
-The line redraws at once when a tab, title, focus, command or context changes.
+The line redraws at once when a tab, title, focus, command or context changes, and when a tab moves.
 More changes in the next 250 ms redraw together, so a title that changes quickly sends few lines.
 The line also redraws at once when the pointer moves onto a tab or a button, and when its width changes.
 After 25 of these redraws in one second, the next ones wait for the 250 ms redraw.
@@ -110,6 +112,7 @@ When the pointer moves off the tabs and buttons, the line redraws with the 250 m
 The line also redraws once each second.
 An unchanged line is not sent again.
 A line that Afterglow drops, for example at the effect limit, is sent again at the next redraw.
+A tab move that Afterglow drops at the effect limit is not tried again until the pointer goes onto another tab.
 A line that Afterglow refuses as invalid is sent again only when it changes.
 
 | Text | At most | Longer text |

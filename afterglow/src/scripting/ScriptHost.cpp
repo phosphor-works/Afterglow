@@ -165,7 +165,7 @@ QString checkDock(const QVariantMap& raw, QVariantMap& effect)
     // refused here, as a misspelled run field is, instead of being dropped.
     static constexpr QLatin1String Fields[] = {QLatin1String("kind"), QLatin1String("pane"), QLatin1String("request_id"),
         QLatin1String("id"), QLatin1String("edge"), QLatin1String("size"), QLatin1String("tab_bar"), QLatin1String("fill"),
-        QLatin1String("lines")};
+        QLatin1String("lines"), QLatin1String("scope")};
     for (auto it = raw.keyBegin(); it != raw.keyEnd(); ++it) {
         if (std::none_of(std::begin(Fields), std::end(Fields), [&](QLatin1String field) { return *it == field; }))
             return QStringLiteral("Unknown dock field %1").arg(*it);
@@ -181,6 +181,8 @@ QString checkDock(const QVariantMap& raw, QVariantMap& effect)
     const QVariant tabBar = raw.value(QStringLiteral("tab_bar"), false);
     if (tabBar.typeId() != QMetaType::Bool) return QStringLiteral("tab_bar must be a boolean");
     if (tabBar.toBool() && edge != QLatin1String("top")) return QStringLiteral("Only a top dock can replace the tab bar");
+    if (tabBar.toBool() && raw.value(QStringLiteral("scope")) == QLatin1String("pane"))
+        return QStringLiteral("Only a window dock can replace the tab bar");
     bool ok = true;
     const QVariant fill = dockColor(raw.value(QStringLiteral("fill")), ok);
     if (!ok) return QStringLiteral("Dock colors are palette indices 0 to 255 or \"#rrggbb\"");
@@ -352,6 +354,7 @@ const EffectKind Kinds[] = {
     {"end_key_mode", false, false, {}, false},
     {"overview", true, false, {"operation"}, false},
     {"tab_menu", true, false, {}, false},
+    {"move_tab", true, false, {}, false, {"index"}},
     {"overview_move", true, false, {}, false, {"target", "step"}},
     {"pulse", true, false, {"effect"}, false, {"duration_ms", "color"}},
     {"shaders", true, false, {}, false},
@@ -995,11 +998,12 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 {
     if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()
         || !script->engine->hasFunction(script->module, handler)) return;
-    // Keys, dock clicks, hovers and layouts and on_load are not counted here:
-    // dropping a key would leave a key mode on while its keys vanish, and a
-    // dropped hover or layout would leave a script with an old state. Those
-    // that can come without limit (wheel turns, accessibility presses) were
-    // counted by dispatchTo. Timers and watchers have a budget of their own,
+    // Keys, dock clicks, hovers and layouts, the start, end and cancel of a
+    // dock drag and on_load are not counted here: dropping a key would leave
+    // a key mode on while its keys vanish, and a dropped hover or layout
+    // would leave a script with an old state. Those that can come without
+    // limit (wheel turns, drag moves, accessibility presses) were counted by
+    // dispatchTo. Timers and watchers have a budget of their own,
     // so a title storm that spends the events' budget does not stop them.
     const bool task = handler == QLatin1String("on_timer") || handler == QLatin1String("on_file_changed");
     if (task && !admitCallback(*script, true)) return;
@@ -1255,10 +1259,14 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("Status text exceeds its length limit");
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
             const QVariant id = raw.value(QStringLiteral("id"));
+            const QVariant scope = raw.value(QStringLiteral("scope"), QStringLiteral("window"));
             if (id.typeId() != QMetaType::QString || !validScriptId(id.toString()) || id.toString().size() > 32)
                 error = QStringLiteral("A dock id is a string of 1 to 32 ASCII letters, digits, - or _");
+            else if (scope != QLatin1String("window") && scope != QLatin1String("pane"))
+                error = QStringLiteral("Dock scope must be window or pane");
             else if (kind == QLatin1String("dock"))
                 if (const QString problem = checkDock(raw, effect); !problem.isEmpty()) error = problem;
+            effect.insert(QStringLiteral("scope"), scope.toString());
         }
         if (kind == QLatin1String("signals")) {
             const auto values = raw.value(QStringLiteral("values")).toList();
@@ -1284,8 +1292,9 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("signal scope must be pane, tab or window");
             }
         }
-        // An undock may name a pane that has closed or moved: its area stays
-        // in the window it was docked in, where Control finds it.
+        // An undock may name a pane that has closed or moved: a window area
+        // stays in the window it was docked in, where Control finds it. A
+        // pane area goes with its pane and closes with it (no_pane then).
         const bool paneMustExist = info->pane && kind != QLatin1String("undock");
         const bool structural = info->structural || (kind == QLatin1String("action")
             && (!m_callbacks.structuralAction || m_callbacks.structuralAction(str(effect, "name"))));
@@ -1309,6 +1318,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("overview_move") && !(integer(effect.value(QStringLiteral("step"), 0), -32, 32)
                                                               && integer(effect.value(QStringLiteral("target"), 0), 0, std::numeric_limits<quint32>::max()))) {
             error = QStringLiteral("overview_move needs a pane or a whole step of at most 32 cards");
+        } else if (kind == QLatin1String("move_tab") && !integer(effect.value(QStringLiteral("index")), 0, std::numeric_limits<int>::max())) {
+            error = QStringLiteral("move_tab needs a tab index of 0 or more");
         } else if (kind == QLatin1String("pulse") && pulseEffect(str(effect, "effect")) == 0) {
             error = QStringLiteral("pulse effect must be portal, flash, shake or a number from 1 to 255");
         } else if (kind == QLatin1String("pulse") && !(effect.value(QStringLiteral("duration_ms")).toDouble() >= 50

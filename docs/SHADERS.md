@@ -55,7 +55,8 @@ The `Shaders` configuration group contains five chains and three event packs: th
 The first three chains run before pane composition.
 Layer inputs use premultiplied alpha. Empty areas are transparent.
 Shader output must also use premultiplied alpha.
-Afterglow draws the [docked areas](SCRIPTING.md#docked-areas) of scripts, the tab bar and other controls after all shader chains.
+Afterglow draws the window [docked areas](SCRIPTING.md#docked-areas), the tab bar and other controls after all shader chains.
+A [pane area](SCRIPTING.md#pane-areas) is part of its pane. The shader chains and the event packs draw over it.
 Without layer shaders, Afterglow does not allocate separate layers.
 
 `Shaders.params` sets parameter values for each pack reference:

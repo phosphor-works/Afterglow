@@ -484,11 +484,14 @@ public:
     QAccessible::State state() const override { QAccessible::State s; s.active = terminal()->isActive(); s.invisible = !terminal()->isVisible(); return s; }
 private:
     /// What the children are, in order: by id, which a new pane or dock at a
-    /// freed one's address does not share. The chrome comes once it is made.
+    /// freed one's address does not share. A dock's id is its owner's, and
+    /// each pane and the window can have one with the same id: its pane
+    /// tells them apart. The chrome comes once it is made.
     QStringList childObjects() const {
         QStringList result;
         for (Pane* p : visiblePanes()) result.append(QStringLiteral("pane %1").arg(p->id()));
-        for (const DockArea* d : terminal()->accessibleDocks()) result.append(QStringLiteral("dock %1 %2").arg(d->owner(), d->id()));
+        for (const DockArea* d : terminal()->accessibleDocks())
+            result.append(QStringLiteral("dock %1 %2 %3").arg(d->owner(), d->id()).arg(d->pane()));
         if (terminal()->accessibleChrome()) result.append(QStringLiteral("chrome"));
         return result;
     }

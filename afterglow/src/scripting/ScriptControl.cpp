@@ -91,6 +91,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("action")) {
                 return control.runScriptAction(pane, s("name"));
             }
+            if (kind == QLatin1String("move_tab")) return control.moveTab(pane, int(e.value(QStringLiteral("index")).toDouble()));
             if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
             if (kind == QLatin1String("overview_move")) {
                 return control.overviewMove(pane, e.value(QStringLiteral("target")).toUInt(),
@@ -148,8 +149,9 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             return {};
         }
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
-            // The window refuses a dock only past its count limits: a
-            // capacity, which tasks also report as rate_limited.
+            // On a live pane, the window refuses a dock only past its count
+            // limits: a capacity, which tasks also report as rate_limited.
+            // A pane that has gone, also for a pane area, is no_pane.
             const auto error = control.scriptDock(owner, pane, e);
             return {error, {}, code(error, QStringLiteral("rate_limited"))};
         }

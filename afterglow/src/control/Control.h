@@ -127,11 +127,18 @@ public:
     QString scriptAppearance(const QString& owner, quint32 pane, const QVariantMap& effect);
     /// A dock effect, in the window of @p pane. An undock acts there too when
     /// that window has the area; else, as when @p pane has moved or closed, in
-    /// the window of the newest such area whose last dock named @p pane.
+    /// the window of the newest such area whose last dock named @p pane. With
+    /// scope "pane", the effect acts on @p pane's own areas, which keep no
+    /// record: a closed pane is an error.
     QString scriptDock(const QString& owner, quint32 pane, const QVariantMap& effect);
     /// Opens the tab menu of @p pane's tab (afterglow.tab_menu). Scripts
     /// only: no D-Bus method or ctl command opens it.
     QString tabMenu(quint32 pane);
+    /// Moves @p pane's tab to @p index in its window, without showing it
+    /// (afterglow.move_tab). An index outside 0 to count - 1 fails. Scripts
+    /// only: D-Bus and ctl move a tab one place with the move_tab_left and
+    /// move_tab_right actions.
+    QString moveTab(quint32 pane, int index);
     void clearScriptOwner(const QString& owner);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
@@ -163,9 +170,9 @@ Q_SIGNALS:
     void contextChanged(quint32 pane, const QString& context);
     /// A key for the script holding a window's key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
-    /// An event of a script's dock for the owner's @p handler; @p pane is
-    /// the window's focused pane. @p limited: the call counts toward the
-    /// script's callback limit.
+    /// An event of a script's dock for the owner's @p handler; @p pane is a
+    /// pane dock's pane, or the window's focused pane for a window dock.
+    /// @p limited: the call counts toward the script's callback limit.
     void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited);
     /// A window's current tab changed; @p pane is the new tab's focused pane.
     void tabSwitched(quint32 pane, quint32 fromTab, quint32 toTab, int direction);
@@ -189,7 +196,8 @@ private:
     QHash<quint32, QPair<QString, QString>> m_status; ///< the state and text last sent for each pane
     QHash<quint32, QString> m_context; ///< the context last sent for each pane
     /// A script's area in a window, and the pane it last docked it through:
-    /// docks belong to windows, and a pane can move or close.
+    /// window docks belong to windows, and a pane can move or close. Pane
+    /// docks go with their pane and have no record.
     struct DockRecord
     {
         QString owner;

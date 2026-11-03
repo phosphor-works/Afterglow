@@ -435,7 +435,10 @@ TerminalWindow::~TerminalWindow()
     finishScriptDialog(false, {});
     s_windows.removeAll(this);
     publishLauncherStatus();
+    // The panes' docks too, while this window's object is still there to be
+    // their parent: the panes are freed only after this body.
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
+    for (Pane* pane : panes()) for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());
     // The chrome renders on the device through this window; it goes first.
     delete m_chrome;
     m_chrome = nullptr;
@@ -816,9 +819,19 @@ void TerminalWindow::closePane(Pane* pane)
         closeTab(index); // the tab's last pane
         return;
     }
-    if (paneEffectsAllowed() && !drawn.isEmpty())
+    if (paneEffectsAllowed() && !drawn.isEmpty()) {
+        // Its docks close with it, in the same frame.
+        std::vector<QRect> dockRects;
+        paneDockArea(pane, drawn, &dockRects);
+        decltype(ClosingPane::docks) docks;
+        for (std::size_t i = 0; i < dockRects.size(); ++i) {
+            if (!dockRects[i].isEmpty())
+                docks.emplace_back(std::make_shared<AfterglowRender::PaneSnapshot>(pane->docks()[i]->snapshot()), dockRects[i]);
+        }
         m_closingPane = ClosingPane{std::make_shared<AfterglowRender::PaneSnapshot>(pane->snapshot()), drawn,
-                                    std::chrono::steady_clock::now(), tab.id, last.backgroundAlpha};
+                                    contentRect(pane, drawn).topLeft(), std::move(docks), std::chrono::steady_clock::now(),
+                                    tab.id, last.backgroundAlpha};
+    }
     // The current tab's focus is m_focused; a background tab's is its saved one.
     if (index == m_currentTab ? m_focused == pane : tab.focused == pane) {
         Pane* next = nullptr;
@@ -878,6 +891,8 @@ void TerminalWindow::dropPanePrompts(Pane* pane)
         m_reportedPane = nullptr;
         m_reportedButtons = Qt::NoButton;
     }
+    // Its docks go with it, and the pane is still in its tab to find them by.
+    dropDockPointer(pane);
     // A close confirmation about this pane alone has nothing left to ask
     // about. One about a tab or the window still holds for the others.
     if (m_pendingConfirmPanes.removeAll(pane) > 0 && m_pendingConfirmPanes.isEmpty()) m_controller->answerConfirm(false);
@@ -1244,6 +1259,8 @@ void TerminalWindow::moveTab(int from, int to)
         return;
     }
     const Tab* current = m_tabs[std::size_t(m_currentTab)].get();
+    // The overview's cards go in tab order.
+    const auto cards = overviewPanes();
     auto moved = std::move(m_tabs[std::size_t(from)]);
     m_tabs.erase(m_tabs.begin() + from);
     m_tabs.insert(m_tabs.begin() + to, std::move(moved));
@@ -1252,7 +1269,15 @@ void TerminalWindow::moveTab(int from, int to)
             m_currentTab = i;
         }
     }
+    rebaseOverview(cards);
+    // A drag in the tab bar counts tabs by place: a move from elsewhere
+    // (a key, a script) ends it.
+    m_controller->notifyTabsMoved();
     Q_EMIT tabsChanged();
+    // The moved tab's panes are at a new tab index: scripts and D-Bus hear
+    // of it as of any move. The other tabs shift by one place.
+    if (m_tabs[std::size_t(to)]->splits)
+        m_tabs[std::size_t(to)]->splits->forEachPane([this](Pane* p, const QRect&) { Q_EMIT paneMoved(p); });
     scheduleRender();
 }
 
@@ -1492,6 +1517,11 @@ QRect TerminalWindow::contentRect(const QRect& paneRect) const
     return r;
 }
 
+QRect TerminalWindow::contentRect(const Pane* pane, const QRect& paneRect) const
+{
+    return contentRect(pane ? paneDockArea(pane, paneRect) : paneRect);
+}
+
 void TerminalWindow::relayout()
 {
     const QSize px = m_renderer->pixelSize();
@@ -1503,19 +1533,12 @@ void TerminalWindow::relayout()
     m_splits->layout(area, dividerPixels());
     // The chrome's overlays for the panes keep off the tab bar and the docks.
     m_controller->setPaneArea(QRectF(QPointF(area.topLeft()) / dpr, QSizeF(area.size()) / dpr));
-    // An item, a pane edge or an overlay can come or go under a pointer that
-    // does not move: the shape follows the new layout.
-    applyPointerShape();
     // Hint labels sit on cells that may have moved.
     if (m_urlMode.active) stopUrlMode();
-    const auto& m = m_renderer->fonts().fonts->metrics();
-    m_splits->forEachPane([&](Pane* p, const QRect& r) {
-        if (r.isEmpty()) return; // hidden by zoom: retain the PTY's existing size
-        const QRect content = contentRect(r);
-        const int cols = std::max(2, content.width() / m.cellWidth);
-        const int rows = std::max(1, content.height() / m.cellHeight);
-        p->resize(cols, rows, m.cellWidth, m.cellHeight);
-    });
+    m_splits->forEachPane([this](Pane* p, const QRect& r) { layoutPane(p, r); });
+    // An item, a pane edge or an overlay can come or go under a pointer that
+    // does not move: the shape follows the new layout, the panes' docks too.
+    applyPointerShape();
     m_layoutSize = px;
     m_layoutDpr = dpr;
     m_layoutFontEpoch = m_device.fontEpoch();
@@ -1559,6 +1582,7 @@ void TerminalWindow::renderNow()
         AfterglowRender::WindowRenderer::Pane wp;
         preparePane(p, r, wp.params, holding, animating);
         wp.snapshot = &p->snapshot();
+        addPaneDocks(p, wp.params.rect, wp.docks);
         wp.params.focused = p == m_focused && m_windowFocused;
         wp.params.highlighted = overviewShowing() && p == m_overview.highlighted;
         if (const auto opening = m_paneOpening.constFind(p); opening != m_paneOpening.constEnd()) {
@@ -1569,7 +1593,8 @@ void TerminalWindow::renderNow()
         wp.params.cursorBlinkOn = m_blinkOn;
         wp.params.textBlinkOn = m_textBlinkOn;
         const QVariantMap overrides = applyScriptOverrides(p, wp.params, backgroundAlpha);
-        anyBlinkingText |= p->snapshot().hasBlinkingText;
+        anyBlinkingText |= p->snapshot().hasBlinkingText
+            || std::any_of(wp.docks.begin(), wp.docks.end(), [](const auto& dock) { return dock.snapshot->hasBlinkingText; });
         if (p == m_focused) {
             const auto& snap = p->snapshot();
             const bool blinks = wp.params.cursorBlinkOverride >= 0 ? wp.params.cursorBlinkOverride != 0 : snap.cursorBlink;
@@ -1617,7 +1642,8 @@ void TerminalWindow::renderNow()
         std::size_t index = 0;
         m_splits->forEachPane([&](Pane* p, const QRect& area) {
             if (area.isEmpty()) return;
-            const QRect r = panes[index++].params.rect;
+            // Below and beside the pane's docks.
+            const QRect r = paneDockArea(p, panes[index++].params.rect);
             titles.append(QVariantMap{{QStringLiteral("x"), r.x() / dpr},
                                       {QStringLiteral("y"), r.y() / dpr},
                                       {QStringLiteral("width"), r.width() / dpr},
@@ -1639,7 +1665,7 @@ void TerminalWindow::renderNow()
     if (focusedEntry != panes.end() && windowSettings.scrollbar != WindowSettings::Scrollbar::Never
         && !m_renderer->overviewShowing()) {
         history = m_focused->historyPosition();
-        const QRectF rect = QRectF(focusedEntry->params.rect);
+        const QRectF rect = QRectF(paneDockArea(m_focused, focusedEntry->params.rect));
         history.insert(QStringLiteral("x"), rect.right() / devicePixelRatio() - ScrollbarLogicalWidth);
         history.insert(QStringLiteral("y"), rect.top() / devicePixelRatio());
         history.insert(QStringLiteral("width"), ScrollbarLogicalWidth);
@@ -1654,9 +1680,17 @@ void TerminalWindow::renderNow()
     // translucent cell background, a script's opacity), it stays: output
     // scrolling such cells in and out must not rebuild the swapchain each
     // time. The new swapchain is made here, so this frame still draws.
-    if (!m_contentTranslucent && std::any_of(panes.begin(), panes.end(), [](const auto& pane) {
-            return pane.params.backgroundAlpha < 255 || pane.snapshot->hasTransparentBackgrounds;
-        })) {
+    // A script's dock can write a translucent cell background too.
+    const auto translucentDock = [](const auto& dock) { return dock.snapshot->hasTransparentBackgrounds; };
+    if (!m_contentTranslucent
+        && (std::any_of(panes.begin(), panes.end(),
+                        [&](const auto& pane) {
+                            return pane.params.backgroundAlpha < 255 || pane.snapshot->hasTransparentBackgrounds
+                                || std::any_of(pane.docks.begin(), pane.docks.end(), translucentDock);
+                        })
+            || std::any_of(m_docks.begin(), m_docks.end(), [](const auto& dock) {
+                   return !dock->rect().isEmpty() && dock->snapshot().hasTransparentBackgrounds;
+               }))) {
         m_contentTranslucent = true;
         m_renderer->setTranslucent(true);
         if (!m_renderer->ensureSwapChain()) {
@@ -1678,6 +1712,8 @@ void TerminalWindow::renderNow()
         wp.params.rect = dock->rect();
         wp.params.contentOrigin = dock->rect().topLeft();
         wp.params.backgroundAlpha = backgroundAlpha;
+        wp.params.textBlinkOn = m_textBlinkOn;
+        anyBlinkingText |= wp.snapshot->hasBlinkingText;
         docks.push_back(wp);
     }
     m_renderer->setDocks(std::move(docks));
@@ -1840,7 +1876,7 @@ void TerminalWindow::preparePane(Pane* pane, const QRect& layoutRect, AfterglowR
     animating |= m.cursor.isAnimating();
 
     params.rect = shown;
-    params.contentOrigin = contentRect(shown).topLeft();
+    params.contentOrigin = contentRect(pane, shown).topLeft();
     params.cursorPosition = m.cursor.value();
     params.scrollShift = shift;
     params.signals = pane->shaderSignals();
@@ -1963,12 +1999,13 @@ bool TerminalWindow::event(QEvent* e)
             drop->ignore();
             return true;
         }
-        Pane* target = m_splits ? m_splits->paneAt((drop->position() * devicePixelRatio()).toPoint()) : nullptr;
+        // A dock is its script's: the pane under it takes no drop.
+        Pane* target = paneUnder(drop->position());
         // Only the handlers a program started (OSC 72): a pane that never
         // asked for drag and drop accepts and offers nothing.
         for (auto* pane : panes()) if (pane != target && pane->hasDragDrop()) pane->dragDrop()->leave();
         if (target && target->hasDragDrop() && !target->isHeld() && !m_controller->wantsKeyboard() && target->dragDrop()->acceptsDrops()) {
-            const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(m_splits->rectOf(target)).topLeft();
+            const QPoint pixel = (drop->position() * devicePixelRatio()).toPoint() - contentRect(target, m_splits->rectOf(target)).topLeft();
             target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
             return true;
         }
@@ -2030,6 +2067,9 @@ bool TerminalWindow::event(QEvent* e)
         }
         qCInfo(lcWindow) << "window close requested";
         const bool handled = QWindow::event(e);
+        // The scripts still run: a drag on a dock ends, and the item under
+        // the pointer is left.
+        dropDockPointer(nullptr);
         deleteLater();
         return handled;
     }
@@ -2655,7 +2695,7 @@ QRectF TerminalWindow::cursorCellRect(Pane* pane) const
     }
     const auto& m = const_cast<TerminalWindow*>(this)->m_renderer->fonts().fonts->metrics();
     const auto& snap = pane->snapshot();
-    const QRect content = contentRect(m_splits->rectOf(pane));
+    const QRect content = contentRect(pane, m_splits->rectOf(pane));
     const qreal dpr = devicePixelRatio();
     // Scrolled back, the cursor's row is not on screen: its row number
     // would name a history line.
@@ -2987,16 +3027,17 @@ void TerminalWindow::applyPointerShape()
         setCursor(m_chrome->cursorAt(m_pointer));
         return;
     }
-    if (const DockArea* dock = dockAt((m_pointer * devicePixelRatio()).toPoint())) {
-        setCursor(dock->itemAt((m_pointer * devicePixelRatio()).toPoint()).isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
+    // The same pixel as a press: dockPixel for the docks and the dividers.
+    const QPoint px = dockPixel(m_pointer);
+    if (const DockArea* dock = dockAt(px); dock && !dividerTakesDock(px)) {
+        setCursor(dock->itemAt(px).isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
         return;
     }
     if (m_overview.open) {
         setCursor(Qt::ArrowCursor);
         return;
     }
-    const QPoint px = (m_pointer * devicePixelRatio()).toPoint();
-    if (const auto divider = m_splits ? m_splits->dividerAt(px, int(std::lround(4 * devicePixelRatio()))) : std::nullopt) {
+    if (const auto divider = m_splits ? m_splits->dividerAt(px, dividerTolerance()) : std::nullopt) {
         setCursor(divider->vertical ? Qt::SplitVCursor : Qt::SplitHCursor);
         return;
     }
@@ -3067,7 +3108,7 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     QVariantList items;
     // Only a link under the pointer: not one at the focused pane's edge,
     // where a click on a divider would clamp to.
-    Pane* under = m_splits ? m_splits->paneAt((pos * devicePixelRatio()).toPoint()) : nullptr;
+    Pane* under = paneUnder(pos);
     m_menuLink = under == m_focused ? linkAt(m_focused, pos).url : QString();
     if (!m_menuLink.isEmpty()) {
         items << entry(MenuOpenLink, QStringLiteral("Open Link"), "internet-web-browser")
@@ -3162,7 +3203,8 @@ void TerminalWindow::openPaneMenu(Pane* pane)
 
 void TerminalWindow::updateLinkHover()
 {
-    Pane* pane = m_splits && linkModifierHeld() ? m_splits->paneAt((m_pointer * devicePixelRatio()).toPoint()) : nullptr;
+    // Not over a pane's dock, where the cell would clamp to the grid's edge.
+    Pane* pane = linkModifierHeld() ? paneUnder(m_pointer) : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
@@ -3365,7 +3407,7 @@ void TerminalWindow::showUrlHints()
         return;
     }
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(m_splits->rectOf(m_urlMode.pane)).topLeft();
+    const QPoint origin = contentRect(m_urlMode.pane, m_splits->rectOf(m_urlMode.pane)).topLeft();
     const qreal dpr = devicePixelRatio();
     QVariantList list;
     for (const UrlHint& h : m_urlMode.hints) {
@@ -4148,7 +4190,7 @@ void TerminalWindow::paste(QClipboard::Mode mode)
 QPoint TerminalWindow::cellAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(m_splits->rectOf(pane)).topLeft();
+    const QPoint origin = contentRect(pane, m_splits->rectOf(pane)).topLeft();
     const QPointF px = pos * devicePixelRatio() - QPointF(origin);
     const int col = std::clamp(int(std::floor(px.x() / m.cellWidth)), 0, std::max(0, pane->cols() - 1));
     const int row = std::clamp(int(std::floor(px.y() / m.cellHeight)), 0, std::max(0, pane->rows() - 1));
@@ -4189,7 +4231,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
     ev.col = cell.x();
     ev.row = cell.y();
     const auto& metrics = m_renderer->fonts().fonts->metrics();
-    const QPointF px = shown ? pos * devicePixelRatio() - QPointF(contentRect(m_splits->rectOf(pane)).topLeft())
+    const QPointF px = shown ? pos * devicePixelRatio() - QPointF(contentRect(pane, m_splits->rectOf(pane)).topLeft())
                              : QPointF(cell.x() * metrics.cellWidth, cell.y() * metrics.cellHeight);
     ev.pixelX = std::max(0, int(px.x()));
     ev.pixelY = std::max(0, int(px.y()));
@@ -4204,7 +4246,7 @@ bool TerminalWindow::sendMouse(Pane* pane, const QPointF& pos, int button, int a
 int TerminalWindow::rawRowAt(Pane* pane, const QPointF& pos) const
 {
     const auto& m = m_renderer->fonts().fonts->metrics();
-    const QPoint origin = contentRect(m_splits->rectOf(pane)).topLeft();
+    const QPoint origin = contentRect(pane, m_splits->rectOf(pane)).topLeft();
     return int(std::floor((pos.y() * devicePixelRatio() - origin.y()) / m.cellHeight));
 }
 
@@ -4212,7 +4254,10 @@ void TerminalWindow::emitDockEvent(const DockArea& dock, const QString& handler,
 {
     event.insert(QStringLiteral("dock"), dock.id());
     event.insert(QStringLiteral("window"), m_id);
-    Q_EMIT scriptDockEvent(dock.owner(), handler, m_focused ? m_focused->id() : 0, event, limited);
+    // A pane's dock speaks of its pane, the window's of the focused pane.
+    event.insert(QStringLiteral("scope"), dock.pane() ? QStringLiteral("pane") : QStringLiteral("window"));
+    const quint32 pane = dock.pane() ? dock.pane() : m_focused ? m_focused->id() : 0;
+    Q_EMIT scriptDockEvent(dock.owner(), handler, pane, event, limited);
 }
 
 void TerminalWindow::emitDockClick(const DockArea& dock, const QString& item, const QString& button, bool limited, const QPointF& at)
@@ -4223,7 +4268,7 @@ void TerminalWindow::emitDockClick(const DockArea& dock, const QString& item, co
 
 bool TerminalWindow::pressDock(QMouseEvent* e)
 {
-    const QPoint px = (e->position() * devicePixelRatio()).toPoint();
+    const QPoint px = dockPixel(e->position());
     DockArea* dock = dockAt(px);
     if (!dock) return false;
     // A dock is its script's: the panes under it get nothing.
@@ -4234,6 +4279,10 @@ bool TerminalWindow::pressDock(QMouseEvent* e)
         : e->button() == Qt::RightButton                 ? QStringLiteral("right")
                                                          : QString();
     if (!item.isEmpty() && !button.isEmpty()) emitDockClick(*dock, item, button, false, e->position());
+    // The left button on an item can drag it.
+    if (e->button() == Qt::LeftButton && !item.isEmpty()) {
+        m_dockDrag = DockDrag{dock->owner(), dock->id(), item, dock->pane(), e->position(), false, {}, dockCell(*dock, px)};
+    }
     return true;
 }
 
@@ -4249,6 +4298,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (e->buttons() == e->button()) {
         m_overviewButtons = Qt::NoButton;
         m_dockButtons = Qt::NoButton;
+        endDockDrag(false);
         m_chromeGrab = false;
         m_reportedButtons = Qt::NoButton;
         m_reportedPane = nullptr;
@@ -4274,7 +4324,11 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     if (routePointerToChrome(e, e->position(), true, false)) {
         return;
     }
-    if (pressDock(e)) return;
+    // A plain left press in a divider's grab takes the divider, also where
+    // the grab reaches into a pane's dock.
+    const bool divider = e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)
+        && dividerTakesDock(dockPixel(e->position()));
+    if (!divider && pressDock(e)) return;
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
     if (p && p != m_focused) {
         setFocusedPane(p);
@@ -4285,8 +4339,7 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
     m_pointer = e->position();
     updateLinkHover();
     if (e->button() == Qt::LeftButton && !(e->modifiers() & Qt::ControlModifier)) {
-        const int tolerance = int(std::lround(4 * devicePixelRatio()));
-        if (auto divider = m_splits->dividerAt((e->position() * devicePixelRatio()).toPoint(), tolerance)) {
+        if (auto divider = m_splits->dividerAt(dockPixel(e->position()), dividerTolerance())) {
             m_dividerDrag = divider;
             return;
         }
@@ -4418,6 +4471,7 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
     // ends what its press started on a pane or the chrome.
     if (m_dockButtons & e->button()) {
         m_dockButtons &= ~e->button();
+        if (e->button() == Qt::LeftButton) endDockDrag(true, e->position());
         return;
     }
     if (e->button() == Qt::LeftButton) for (auto* pane : panes()) if (pane->hasDragDrop()) pane->dragDrop()->release();
@@ -4457,7 +4511,7 @@ void TerminalWindow::mouseReleaseEvent(QMouseEvent* e)
             m_selectionPane->clearSelection();
             // A click ends where it began: let go elsewhere (over the tab
             // bar), it opens no link and moves no cursor.
-            const bool inside = m_splits && m_splits->rectOf(m_selectionPane).contains((e->position() * devicePixelRatio()).toPoint());
+            const bool inside = paneUnder(e->position()) == m_selectionPane;
             const bool plain = inside && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier));
             if (m_clickCount == 1 && plain && m_settings.settings().links.modifier == Qt::NoModifier
                 && !m_hover.url.isEmpty()) {
@@ -4547,6 +4601,12 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     m_pointer = e->position();
     // A pack that reads the pointer moves with it, with nothing else changing.
     if (m_readsMouse) scheduleRender();
+    // Over the overview too, where a dock press can start one. A release
+    // that went elsewhere cuts it off.
+    if (m_dockDrag) {
+        if (e->buttons() & Qt::LeftButton) moveDockDrag(e->position());
+        else endDockDrag(false);
+    }
     // The overview draws cards, not the layout: no hover, selection or
     // reports. Only a dock over it shows what a click does.
     if (m_overview.open) {
@@ -4596,7 +4656,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
     // After the chrome has seen the pointer leave, which may reset the cursor.
     applyPointerShape();
     if (m_focused && (e->buttons() & Qt::LeftButton)) {
-        const QPoint pixel = px - contentRect(m_splits->rectOf(m_focused)).topLeft();
+        const QPoint pixel = px - contentRect(m_focused, m_splits->rectOf(m_focused)).topLeft();
         if (m_focused->hasDragDrop() && m_focused->dragDrop()->move(this, e->position().toPoint(), cellAt(m_focused, e->position()), pixel)) {
             m_autoScroll.stop();
             if (m_selectionPane) m_selectionPane->clearSelection();
@@ -4628,7 +4688,7 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         return;
     }
     // Hover reports only over the focused pane itself, not clamped from another.
-    if (m_splits->paneAt(px) == m_focused) {
+    if (paneUnder(e->position()) == m_focused) {
         sendMouse(m_focused, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
     }
 }
@@ -4638,11 +4698,11 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     if (!m_splits) return;
     // A dock is its script's: the wheel over it scrolls no pane and moves
     // no card. The chrome draws over docks, so it comes first.
-    const QPoint dockPixel = (e->position() * devicePixelRatio()).toPoint();
-    DockArea* overDock = dockAt(dockPixel);
+    const QPoint overPixel = dockPixel(e->position());
+    DockArea* overDock = dockAt(overPixel);
     if (m_overview.open && m_controller->wantsKeyboard() && routePointerToChrome(e, e->position(), false, false)) return;
     if (m_overview.open && overDock) {
-        wheelDock(*overDock, dockPixel, e);
+        wheelDock(*overDock, overPixel, e);
         return;
     }
     if (m_overview.open) {
@@ -4662,7 +4722,7 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
         return;
     }
     if (overDock) {
-        wheelDock(*overDock, dockPixel, e);
+        wheelDock(*overDock, overPixel, e);
         return;
     }
     Pane* p = m_splits->paneAt((e->position() * devicePixelRatio()).toPoint());
@@ -4733,7 +4793,7 @@ bool TerminalWindow::chromeHasKeyboard() const
 QRect TerminalWindow::accessiblePaneRect(Pane* pane) const
 {
     if (!m_splits || tabIdOf(pane) != activeTabId() || m_splits->rectOf(pane).isEmpty()) return {};
-    return globalRect(contentRect(m_splits->rectOf(pane)));
+    return globalRect(contentRect(pane, m_splits->rectOf(pane)));
 }
 std::optional<AfterglowVt::SelectionPoint> TerminalWindow::accessibleCellAt(Pane* pane, const QPoint& global) const
 {

@@ -37,7 +37,7 @@ export type Pane = {
     title: string,
     cwd: string,
     command: string, -- running now (OSC 133), "" at the prompt
-    cols: number,
+    cols: number, -- the text's cells, without the pane's docks
     rows: number,
     focused: boolean,
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
@@ -45,7 +45,7 @@ export type Pane = {
 
 -- The pane overview: cards are the pane IDs of every tab in tab order while it is open, else the current tab's.
 export type Overview = { open: boolean, highlighted: number, cards: { number } }
--- cols and rows: the cells that fit in the window. A top or bottom dock is cols wide.
+-- cols and rows: the cells that fit in the window. A top or bottom window dock is cols wide.
 export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number,
     active_pane: number, overview: Overview, cols: number, rows: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
@@ -82,26 +82,38 @@ export type PaneCreatedEvent = PaneEvent & { split_from: number?, edge: number? 
 export type DockColor = number | string
 export type DockRun = { text: string?, fg: DockColor?, bg: DockColor?, bold: boolean?, italic: boolean?,
     underline: boolean?,
-    item: string?, -- 1-64 characters, no control characters; names the run's cells in on_dock_click, on_dock_hover and on_dock_wheel
+    item: string?, -- 1-64 characters, no control characters; names the run's cells in on_dock_click, on_dock_hover, on_dock_wheel and on_dock_drag
     spacer: boolean? } -- no text: takes the cells the other runs of its line leave, shared among the spacers
 -- A field that is not listed here refuses the dock.
 export type DockSpec = {
     id: string, -- 1 to 32 ASCII letters, digits, - or _
     edge: "top" | "bottom" | "left" | "right",
     size: number?, -- rows (top, bottom: 1-8) or columns (left, right: 1-80); default 1
-    tab_bar: boolean?, -- top only: drawn in place of the tab bar; default false
+    tab_bar: boolean?, -- top, window scope only: drawn in place of the tab bar; default false
+    -- "window" (default): at the window's edge, the panes get what is left. "pane": at the pane's
+    -- edge, part of the pane (its shaders, overview card, transitions); its text gets what is left.
+    scope: ("window" | "pane")?,
     fill: DockColor?, -- the background of the whole dock; default the theme's background
     lines: { { DockRun } }?, -- top, bottom: at most size lines; left, right: at most 256
 }
-export type DockClickEvent = { pane: Pane?, dock: string, item: string, button: "left" | "middle" | "right",
+-- Every dock event below has dock, scope and window. scope: the dock's scope. pane: a pane
+-- dock's pane, or the window's focused pane for a window dock.
+export type DockClickEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string, button: "left" | "middle" | "right",
     window: number, terminal: State }
 -- item: the item under the pointer; nil when the pointer left the dock's items.
-export type DockHoverEvent = { pane: Pane?, dock: string, item: string?, window: number, terminal: State }
+export type DockHoverEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string?, window: number, terminal: State }
 -- steps: whole wheel notches, at least 1. item: the item under the pointer, if any.
-export type DockWheelEvent = { pane: Pane?, dock: string, item: string?, direction: "up" | "down" | "left" | "right",
+export type DockWheelEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string?, direction: "up" | "down" | "left" | "right",
     steps: number, window: number, terminal: State }
+-- A left-button drag that began on item. phase: "start" once the pointer has moved the drag
+-- distance, "move" when a pointer move changes over or the cell, "end" at the release, "cancel"
+-- when the drag was cut off. Moves count toward the callback limit. over: the item under the
+-- pointer, if any. col, row: the cell under the pointer, from 0 at the dock's top left; past the
+-- dock's edges they are below 0, or its size or more.
+export type DockDragEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string, phase: "start" | "move" | "end" | "cancel",
+    over: string?, col: number, row: number, window: number, terminal: State }
 -- Where the dock shows: cols and rows are its cells, 0 when it does not show.
-export type DockLayoutEvent = { pane: Pane?, dock: string, shown: boolean, cols: number, rows: number, window: number,
+export type DockLayoutEvent = { pane: Pane?, dock: string, scope: "window" | "pane", shown: boolean, cols: number, rows: number, window: number,
     terminal: State }
 export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }
 -- key: "a", "A", "Enter", "Escape", "Left", "F5"...; text: what it types, "" for control keys.
@@ -172,6 +184,7 @@ export type Effects = Effect | { Effect }
 --   on_dock_click(ev: DockClickEvent) -- a click on an item of this script's dock
 --   on_dock_hover(ev: DockHoverEvent) -- the pointer moved onto an item of this script's dock, or off its items
 --   on_dock_wheel(ev: DockWheelEvent) -- the mouse wheel over this script's dock
+--   on_dock_drag(ev: DockDragEvent) -- a drag that began on an item of this script's dock
 --   on_dock_layout(ev: DockLayoutEvent) -- this script's dock showed, went or changed its size
 --   run_action(action: string, ev: ActionEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
@@ -229,9 +242,9 @@ declare afterglow: {
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
-    -- Lines of styled text at an edge of the pane's window. Sending one id again replaces it.
+    -- Lines of styled text at an edge of the pane's window, or of the pane (spec.scope). Sending one id again replaces it.
     dock: (pane: PaneRef, spec: DockSpec) -> Effect,
-    undock: (pane: PaneRef, id: string) -> Effect,
+    undock: (pane: PaneRef, id: string, scope: ("window" | "pane")?) -> Effect,
     send_text: (pane: PaneRef, text: string) -> Effect,
     -- pane defaults to the event's pane; an event without one needs it given
     notify: (title: string, body: string?, pane: PaneRef?) -> Effect,
@@ -247,6 +260,8 @@ declare afterglow: {
     -- The tab menu of the pane's tab: where the click on a dock item before it was, else at the pointer.
     -- busy while a prompt, a script dialog or the command palette is open in the window.
     tab_menu: (pane: PaneRef) -> Effect,
+    -- Moves the pane's tab to index (Tab.index, from 0) in its window, without showing it.
+    move_tab: (pane: PaneRef, index: number) -> Effect,
     -- Query active instances, metadata and effective values via on_result.
     shaders: (pane: PaneRef) -> Effect,
     scene_state: (pane: PaneRef) -> Effect,

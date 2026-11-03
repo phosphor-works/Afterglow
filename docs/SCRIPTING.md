@@ -197,8 +197,11 @@ The result limits are more than the effect limit and the `dock` limit together.
 So the results of the effects that those two limits let through cannot disable a script.
 Requested `sleep`, `cancel`, `end_key_mode` and `undock` effects are outside both limits, and their results add to the count.
 `on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
+The `start`, `end` and `cancel` calls of `on_dock_drag` do not count either.
 An `on_dock_click` from an accessibility client's press counts, because a client can press without a limit.
 `on_dock_wheel` calls count, because a touchpad can send many in a second.
+The `move` calls of `on_dock_drag` count, because a fast drag crosses many cells in a second.
+The next `move` or the `end` tells the item and the cell that a dropped `move` would have told.
 Timers and watchers have their own limit, so events cannot use it up.
 A dropped one-shot timer does not fire again.
 A repeating timer fires at its next interval.
@@ -209,6 +212,7 @@ A dropped `on_dock_wheel` call is not sent again. Its steps are lost.
 `dock` effects have their own limit and do not count toward the effect limit.
 Structural effects create, close or move panes, tabs or windows.
 They are `split`, `new_tab`, `new_window`, `close`, `move_pane`, `detach_tab`, `open_directory` and `open_project`.
+`move_tab` and the `move_tab_left` and `move_tab_right` actions change the order of the tabs. They are not structural.
 Generic actions that do the same use the same structural budget.
 
 Afterglow keeps a broken source file from running again.
@@ -237,7 +241,8 @@ Afterglow ignores a reported directory that names another host, such as the dire
 A reported path without a host is used when that path exists on this machine.
 
 A window's `cols` and `rows` are the cells of the terminal font that fit in the complete window.
-A `top` or `bottom` docked area that shows is `cols` cells wide.
+A `top` or `bottom` window area that shows is `cols` cells wide.
+A pane's `cols` and `rows` are the cells of its text, without the areas of the pane.
 
 A tab is active when its window selects it.
 Each unfocused window keeps its selected tab and pane.
@@ -268,12 +273,14 @@ end
 Pane events include `on_pane_created`, `on_pane_closed`, `on_pane_moved`, `on_focus`, `on_bell` and `on_title`.
 Other events are `on_status`, `on_command_started`, `on_command_finished`, `on_user_var`, `on_context` and `on_tab_switch`.
 These events contain the applicable pane and terminal snapshot.
-The events of docked areas are `on_dock_click`, `on_dock_hover`, `on_dock_wheel` and `on_dock_layout` (see [docked areas](#docked-areas)).
+The events of docked areas are `on_dock_click`, `on_dock_hover`, `on_dock_wheel`, `on_dock_drag` and `on_dock_layout` (see [docked areas](#docked-areas)).
 
 A split's `on_pane_created` also contains `split_from`, the pane it split from, and `edge`.
 `edge` is the side the two panes share: 1 left, 2 top, 3 right or 4 bottom.
 `on_tab_switch` contains `from_tab`, `to_tab` and `direction`, 1 toward a tab on the right and -1 toward one on the left.
 Its pane is the new tab's focused pane.
+A tab that moves to another place in its window sends `on_pane_moved` for each of its panes.
+The other tabs also change their `index`, but they send no event.
 
 `on_user_var` runs when a variable changes. Setting the same value again sends no event.
 
@@ -384,13 +391,14 @@ Unload and pane closure remove all contributions.
 
 ## Docked areas
 
-`dock(pane, spec)` puts a docked area (a dock) of styled text at an edge of the pane's window.
+`dock(pane, spec)` puts a docked area (a dock) of styled text at an edge of the pane's window, or of the pane.
 The panes get the space that is left, in whole cells.
 The shell in each pane gets the new size.
 The renderer draws the area like a pane, with the terminal font, the palette and the box-drawing and Powerline characters.
-No shader changes it.
+No shader changes a window area.
 Each window has its own areas. The same `id` in another window is a different area.
 `dock` acts on the window that holds `pane` when Afterglow applies the effect.
+With `scope = "pane"`, the area goes at an edge of the pane itself. See [pane areas](#pane-areas).
 
 ```lua
 return {
@@ -413,7 +421,8 @@ return {
 | `id` | Required. 1 to 32 ASCII letters, digits, `-` or `_`. A second `dock` with the same `id` replaces the area. |
 | `edge` | Required. `top`, `bottom`, `left` or `right`. |
 | `size` | Rows for `top` and `bottom`, 1 to 8. Columns for `left` and `right`, 1 to 80. The default is 1. |
-| `tab_bar` | `true` draws a `top` area in place of the tab bar. The default is `false`. Only a `top` area can have `true`. |
+| `tab_bar` | `true` draws a `top` area in place of the tab bar. The default is `false`. Only a `top` area with the `window` scope can have `true`. |
+| `scope` | `window` puts the area at an edge of the pane's window. `pane` puts it at an edge of the pane. The default is `window`. |
 | `fill` | A palette index from 0 to 255, or `"#rrggbb"`. It is the background of the complete area. Without it, the area uses the theme's background. Below a `Window.backgroundOpacity` of 1, the fill has the same opacity as the pane background. |
 | `lines` | A list of lines from the top. A line is a list of runs from the left. Without `lines`, the area is empty. |
 
@@ -425,7 +434,7 @@ Lines past the bottom of a `left` or `right` area do not show.
 | `text` | The text. A control character shows as a space. Text past the edge is cut. A wide character that does not fit shows as an empty cell in the colors of its run. |
 | `fg`, `bg` | A palette index from 0 to 255, or `"#rrggbb"`. Indices 0 to 15 follow the theme. |
 | `bold`, `italic`, `underline` | `true` or `false` |
-| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. `on_dock_hover` and `on_dock_wheel` name the item under the pointer. |
+| `item` | 1 to 64 characters, with no control characters. A click on the cells of the run sends `on_dock_click`. `on_dock_hover`, `on_dock_wheel` and `on_dock_drag` name the item under the pointer. |
 | `spacer` | `true` makes an empty run that takes the cells the other runs of its line leave. Several spacers share them. |
 
 Without `fg`, a run uses the theme's foreground color. Without `bg`, it uses the area's `fill`.
@@ -443,20 +452,23 @@ Afterglow sends it when a mouse button goes down on a run with an `item`, or whe
 | `item` | The `item` of the run |
 | `button` | `left`, `middle` or `right` |
 | `window` | The window ID |
-| `pane` | The focused pane of the window, if the window has one |
+| `scope` | `window` or `pane`, as in the `dock` effect |
+| `pane` | For a `window` area, the focused pane of the window, if the window has one. For a `pane` area, the pane of the area. |
 
 Other mouse buttons send no event.
 A click on a run without an item, or on empty cells, does nothing.
 Accessibility clients see each item as a button. Its press sends the event of a left click.
 See [desktop integration](DESKTOP.md#docked-areas).
 Clicks and the mouse wheel on an area never reach the panes.
-This is also true while the pane overview is open.
+A click on a pane area does not focus its pane. The script can return `focus(ev.pane)` to do that.
+While the pane overview is open, a window area takes clicks too.
 A click on an item then sends `on_dock_click`, and the overview stays open.
+A pane area gets no clicks while the overview is open (see [pane areas](#pane-areas)).
 A prompt that is open over the overview takes the click first.
 An area always reads from left to right. `Terminal.bidi` does not apply to areas.
 
 `on_dock_hover` goes to the owner when the item under the pointer changes.
-It contains `dock`, `window` and `pane` as above, and `item` when the pointer is on an item.
+It contains `dock`, `scope`, `window` and `pane` as above, and `item` when the pointer is on an item.
 Without `item`, the pointer has left the items of that area.
 New text that puts another item under a pointer that does not move also sends the event.
 When the script removes the area under the pointer with `undock`, the script gets the event without `item` first.
@@ -466,7 +478,7 @@ The same is true for a drag that started on the tab bar, on the scrollbar or in 
 Keep the cells of an item the same when it shows its hover state. Otherwise the item under the pointer can change again.
 
 `on_dock_wheel` goes to the owner when the mouse wheel turns over an area.
-It contains `dock`, `window` and `pane` as above.
+It contains `dock`, `scope`, `window` and `pane` as above.
 
 | Event field | Value |
 | --- | --- |
@@ -474,11 +486,40 @@ It contains `dock`, `window` and `pane` as above.
 | `steps` | The whole wheel notches, 1 or more. Part of a notch waits for the next event over the same item. |
 | `item` | The item under the pointer, when there is one |
 
+`on_dock_drag` goes to the owner when the left mouse button drags an item of an area.
+The press sends `on_dock_click` first.
+The drag starts when the pointer moves the system drag distance from the press.
+It contains `dock`, `scope`, `window` and `pane` as above.
+
+| Event field | Value |
+| --- | --- |
+| `phase` | `start` when the drag starts, `move` when a pointer move changes `over`, `col` or `row`, `end` when the button goes up, `cancel` when the drag stops in another way |
+| `item` | The item that the press was on |
+| `over` | The item of this area under the pointer, when there is one |
+| `col`, `row` | The cell under the pointer, from 0 at the top left of the area. Outside the area, they are less than 0, or equal to its size or more. |
+
+A press and release with no drag sends no `on_dock_drag`.
+The drag continues outside the area and outside the window, until the button goes up.
+The drag gets `cancel` when the script removes the area with `undock`.
+It also gets `cancel` when the area goes with its pane or window.
+A drag on a pane area that stops showing gets `cancel` at the next pointer move or release.
+A release that Afterglow does not get, such as a release in another window, sends `cancel` at the next pointer move.
+New text that puts another item under a pointer that does not move sends no `move`.
+The next pointer move or the `end` has the new `over`.
+`on_dock_hover` continues during the drag.
+
+`move_tab(pane, index)` moves the pane's tab to `index` in its window, and does not show it.
+`index` is the `index` of a tab in the snapshot, from 0.
+An `index` that is not a tab of the window fails with `operation_failed`.
+An `index` that is not a whole number of 0 or more is refused with `invalid_effect`.
+The index of the tab's own place succeeds and does nothing.
+The tab line package uses `on_dock_drag` and `move_tab` to drag tabs.
+
 `on_dock_layout` goes to the owner after Afterglow first places an area, also when the area does not fit.
 It also goes when the area starts or stops showing, and when its size changes.
 An `undock` sends no `on_dock_layout`.
 Use the event to lay out the text for the cells that the area has.
-It contains `dock`, `window` and `pane` as above.
+It contains `dock`, `scope`, `window` and `pane` as above.
 
 | Event field | Value |
 | --- | --- |
@@ -487,6 +528,9 @@ It contains `dock`, `window` and `pane` as above.
 
 New text in the same place sends no `on_dock_layout`.
 A change of the window size, the font or another area can send it.
+While the window changes size or a divider moves, it can come once in each frame.
+A script that draws again for each one can get `rate_limited` at the `dock` limit.
+Send the last text again later, as the tab line package does.
 
 `tab_menu(pane)` opens the tab menu of the pane's tab, as a right click on the tab bar does.
 The menu opens at the last click on an item of an area of that window, or at an accessibility client's press.
@@ -526,9 +570,60 @@ When a window closes, its areas close with it.
 
 A new area past a count limit gets `rate_limited`. Remove an area to make room.
 New text for an existing area is not refused at the count limits.
+
 The [tab line package](../data/examples/packages/tab-line/init.luau) draws the tab bar of each window as a docked area.
 A click switches tabs, a middle click closes a tab and a right click opens its tab menu.
 The package also has a `+` button, moves through the tabs with the wheel and shows the tab under the pointer.
+Drag a tab to move it.
+
+### Pane areas
+
+A `dock` with `scope = "pane"` puts the area at an edge of the pane.
+The pane's text gets the space that is left, in whole cells, and its shell gets the new size.
+The other panes keep their size.
+Each pane has its own areas. The same `id` at another pane, or in the window scope, is a different area.
+
+```lua
+local function title(pane, text)
+    return afterglow.dock(pane, {id="title", edge="top", scope="pane", fill=8, lines={{
+        {text=" " .. text .. " ", fg=0, bg=4, item="title"},
+    }}})
+end
+
+return {
+    on_pane_created = function(ev) return title(ev.pane, "ready") end,
+    on_command_started = function(ev) return title(ev.pane, ev.command) end,
+    on_command_finished = function(ev) return title(ev.pane, "ready") end,
+}
+```
+
+New text keeps the area in its place, so the pane and its program keep their size.
+Do not add and remove an area for each command: each change gives the program a new size.
+
+A pane area is part of the pane:
+- It moves and changes size with the pane in split animations.
+- It shows on the pane's card in the pane overview, in a tab transition and in the frame of a pane that closes.
+- The pane shaders, the text and background layer shaders and the window shaders draw over it, as they draw over the pane's text.
+- It goes with the pane to another tab or window, and it closes with the pane.
+
+The events of a pane area have `scope = "pane"`, and their `pane` is the pane of the area.
+While the pane overview is open, the cards take the pointer: a pane area gets no click, hover, wheel or drag.
+A pane that a zoom hides shows none of its areas.
+The layout rules of window areas apply inside the pane.
+An area that would leave the pane smaller than 4 columns or 2 rows does not show.
+A pane in a tab that does not show lays out its areas in the last layout of its tab.
+Its shell gets the new size at once, unless a zoom hides the pane.
+Window areas are the outermost: they take their space from the window first, and the panes share the rest.
+
+`undock(pane, id, "pane")` removes the area from the pane.
+When the pane has closed, its areas are gone, and the result is `no_pane`.
+
+| Limit | Value | At the limit |
+| --- | --- | --- |
+| Areas of one script at a pane | 4 | `rate_limited` |
+| Areas at a pane | 8 | `rate_limited` |
+
+The other limits of areas apply to pane areas too. Pane areas do not count toward the window limits.
 
 ## Key modes
 
@@ -712,7 +807,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.status` | `(pane: PaneRef, text: string?, tab_title: string?) -> Effect` |
 | `afterglow.override` | `(pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect` |
 | `afterglow.dock` | `(pane: PaneRef, spec: DockSpec) -> Effect` |
-| `afterglow.undock` | `(pane: PaneRef, id: string) -> Effect` |
+| `afterglow.undock` | `(pane: PaneRef, id: string, scope: ("window" \| "pane")?) -> Effect` |
 | `afterglow.send_text` | `(pane: PaneRef, text: string) -> Effect` |
 | `afterglow.notify` | `(title: string, body: string?, pane: PaneRef?) -> Effect` |
 | `afterglow.split` | `(pane: PaneRef, direction: ("right" \| "down" \| "left" \| "up")?, command: (string \| { string })?, options: LaunchOptions?) -> Effect` |
@@ -725,6 +820,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.open_url` | `(url: string) -> Effect` |
 | `afterglow.action` | `(pane: PaneRef, name: string) -> Effect` |
 | `afterglow.tab_menu` | `(pane: PaneRef) -> Effect` |
+| `afterglow.move_tab` | `(pane: PaneRef, index: number) -> Effect` |
 | `afterglow.shaders` | `(pane: PaneRef) -> Effect` |
 | `afterglow.scene_state` | `(pane: PaneRef) -> Effect` |
 | `afterglow.shader_presets` | `(pane: PaneRef, instance: string) -> Effect` |
