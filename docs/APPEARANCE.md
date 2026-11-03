@@ -115,7 +115,17 @@ A theme without a divider color gets one between its background and text colors.
 
 Afterglow first searches `$XDG_CONFIG_HOME/afterglow/themes`.
 It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
-Last, it searches the supplied themes in the table below.
+It then searches the supplied themes in the table below.
+Last, it searches the themes that other terminals installed:
+
+| Terminal | Directories | File |
+| --- | --- | --- |
+| Ghostty | `~/.config/ghostty/themes`, then `ghostty/themes` in each XDG data directory | `NAME` |
+| Kitty | `~/.config/kitty/themes` | `NAME.conf` |
+| Konsole | `konsole` in each XDG data directory | `NAME.colorscheme` |
+
+An installed theme works by its name alone, for example `"Catppuccin Mocha"` from Ghostty or `Breeze` from Konsole.
+An Afterglow theme with the same name comes first.
 An `afterglow` binary in a build directory searches the themes of its source tree before the XDG data directories.
 
 | Family | Themes |
@@ -136,7 +146,10 @@ An `afterglow` binary in a build directory searches the themes of its source tre
 | Tokyo Night | `tokyonight-night`, `tokyonight-storm`, `tokyonight-moon`, `tokyonight-day` |
 
 The third-party palettes come from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes) under the MIT license.
-Supported formats are Afterglow JSON, Ghostty themes and Kitty themes.
+Supported formats are Afterglow JSON, Ghostty themes, Kitty themes and Konsole color schemes.
+Afterglow reads its `Foreground`, `Background`, `Color0` to `Color7` and `Color0Intense` to `Color7Intense` colors.
+The intense colors are palette entries 8 to 15.
+Afterglow has no counterpart for the faint and intense text colors, the wallpaper or the opacity of a Konsole color scheme.
 An Afterglow JSON theme is one object with color keys.
 The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground` and `divider`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
@@ -149,6 +162,30 @@ Use this value to follow the desktop preference:
 ```json
 {"Colors": {"theme": "light:afterglow-light,dark:nord"}}
 ```
+
+### The desktop color scheme
+
+Use `plasma:NAME` to take colors from the desktop color scheme:
+
+```json
+{"Colors": {"theme": "plasma:nord"}}
+```
+
+| Color | From the Plasma color scheme |
+| --- | --- |
+| Background | View background (`[Colors:View] BackgroundNormal`) |
+| Text | View text (`[Colors:View] ForegroundNormal`) |
+| Selection | Selection background and text (`[Colors:Selection]`) |
+| Cursor | Focus decoration, the accent color (`[Colors:View] DecorationFocus`) |
+| Text under the cursor | View background |
+| Divider | Derived from the background and the text |
+| Palette entries 0 to 15 | Theme `NAME` |
+
+`plasma` without a name takes the palette from `afterglow-dark` for a dark color scheme, and from `afterglow-light` for a light one.
+Afterglow reads `kdeglobals` in the XDG configuration directories, as Plasma does.
+On another desktop, or for a color that `kdeglobals` does not set, the colors come from the application palette.
+Afterglow applies a new color scheme while it runs.
+Each half of a `light:` and `dark:` value can also be a `plasma:` value.
 
 A theme value can also be a file path. Either half of a `light:` and `dark:` value can be a path.
 A relative path starts at the directory of the configuration file.

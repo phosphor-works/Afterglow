@@ -45,7 +45,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 
 - Palette and dynamic colors (OSC 4, 10, 11, 12, 104 and 110 to 112).
 - The Kitty color-control protocol (OSC 21), including transparent background colors and the color stack.
-- Themes in Afterglow JSON, Ghostty and Kitty formats, which reload when the file changes.
+- Themes in Afterglow JSON, Ghostty, Kitty and Konsole color scheme formats, which reload when the file changes. A theme that Ghostty, Kitty or Konsole installed works by its name alone, such as Ghostty's Catppuccin Mocha or Konsole's Breeze.
+- `plasma:NAME` themes, which take the background, text, selection and cursor colors of the desktop color scheme and follow it while Afterglow runs.
 - 33 bundled themes: Afterglow, Ayu, Catppuccin, Dracula, Everforest, GitHub, Gruvbox, Kanagawa, Monokai, Nord, One, Rosé Pine, Solarized and Tokyo Night.
 - `light:NAME,dark:NAME` theme pairs that follow the desktop color scheme.
 - Search match and visual bell colors, set in `Colors` or by a theme.

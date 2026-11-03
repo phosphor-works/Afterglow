@@ -7,12 +7,17 @@
 
 #include <QColor>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPalette>
 #include <QRegularExpression>
 #include <QStandardPaths>
+
+#include <algorithm>
 
 namespace Afterglow::Themes {
 
@@ -105,6 +110,51 @@ QByteArray withoutByteOrderMark(const QByteArray& data)
     return data.startsWith("\xEF\xBB\xBF") ? data.mid(3) : data;
 }
 
+/// A colour written as KDE writes it, "r,g,b" with 0-255 parts (Konsole
+/// schemes and kdeglobals), or any form color() reads.
+std::optional<AfterglowVt::Rgb> kdeColor(const QString& value)
+{
+    const QStringList parts = value.split(QLatin1Char(','));
+    if (parts.size() != 3 && parts.size() != 4) { // kdeglobals may add an alpha
+        return color(value);
+    }
+    std::array<int, 3> rgb{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        bool ok = false;
+        rgb[i] = parts[qsizetype(i)].trimmed().toInt(&ok);
+        if (!ok || rgb[i] < 0 || rgb[i] > 255) {
+            return std::nullopt;
+        }
+    }
+    return AfterglowVt::Rgb{std::uint8_t(rgb[0]), std::uint8_t(rgb[1]), std::uint8_t(rgb[2])};
+}
+
+/// The "[Section]" a line opens, or an empty string.
+QString sectionOf(const QString& line)
+{
+    return line.size() > 2 && line.startsWith(QLatin1Char('[')) && line.endsWith(QLatin1Char(']'))
+        ? line.mid(1, line.size() - 2).trimmed()
+        : QString();
+}
+
+/// Where a Konsole section's colour goes: Foreground, Background, ColorN
+/// (0-7) and ColorNIntense (the bright 8-15). nullptr for the sections that
+/// Afterglow has no counterpart for (faint and intense text, General).
+std::optional<AfterglowVt::Rgb>* konsoleTarget(Theme& theme, const QString& section)
+{
+    if (section == QLatin1String("Foreground")) {
+        return &theme.foreground;
+    }
+    if (section == QLatin1String("Background")) {
+        return &theme.background;
+    }
+    static const QRegularExpression Numbered(QStringLiteral("^Color([0-7])(Intense)?$"));
+    if (const auto m = Numbered.match(section); m.hasMatch()) {
+        return &theme.palette[std::size_t(m.captured(1).toInt() + (m.captured(2).isEmpty() ? 0 : 8))];
+    }
+    return nullptr;
+}
+
 } // namespace
 
 bool isColorName(const QString& name)
@@ -176,6 +226,17 @@ QStringList searchDirs()
     if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
+    // The themes other terminals installed, after Afterglow's own, so that an
+    // Afterglow theme of the same name wins: Ghostty's (its user directory and
+    // share/ghostty/themes, where it ships its own), Kitty's custom themes and
+    // Konsole's colour schemes.
+    const QString config = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    dirs << config + QStringLiteral("/ghostty/themes");
+    dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("ghostty/themes"),
+                                      QStandardPaths::LocateDirectory);
+    dirs << config + QStringLiteral("/kitty/themes");
+    dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("konsole"),
+                                      QStandardPaths::LocateDirectory);
     dirs.removeDuplicates();
     return dirs;
 }
@@ -195,7 +256,8 @@ QStringList candidates(const QString& name, const QStringList& dirs, const QStri
     }
     QStringList out;
     for (const QString& dir : dirs) {
-        for (const QString& file : {name + QStringLiteral(".json"), name + QStringLiteral(".conf"), name}) {
+        for (const QString& file : {name + QStringLiteral(".json"), name + QStringLiteral(".conf"),
+                                    name + QStringLiteral(".colorscheme"), name}) {
             out << dir + QLatin1Char('/') + file;
         }
     }
@@ -215,6 +277,13 @@ QString locate(const QString& name, const QStringList& dirs, const QString& base
 bool isJson(const QByteArray& data)
 {
     return withoutByteOrderMark(data).trimmed().startsWith('{');
+}
+
+bool isKonsole(const QByteArray& data)
+{
+    static const QRegularExpression Section(QStringLiteral("^\\[(Foreground|Background|Color[0-7](Intense)?)\\]\\s*$"),
+                                            QRegularExpression::MultilineOption);
+    return !isJson(data) && Section.match(QString::fromUtf8(withoutByteOrderMark(data))).hasMatch();
 }
 
 std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* ignored, QStringList* invalid)
@@ -264,6 +333,30 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
                 count(assign(theme, it.key(), it.value().toString()), it.key());
             }
         }
+    } else if (isKonsole(text)) {
+        QString section;
+        for (const QByteArray& raw : text.split('\n')) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+                continue;
+            }
+            if (const QString opened = sectionOf(line); !opened.isEmpty()) {
+                section = opened;
+                continue;
+            }
+            const qsizetype eq = line.indexOf(QLatin1Char('='));
+            const QString key = line.left(eq).trimmed();
+            if (eq < 0 || key != QLatin1String("Color")) {
+                continue; // Description, Opacity, MaxRandomHue and the like
+            }
+            std::optional<AfterglowVt::Rgb>* target = konsoleTarget(theme, section);
+            if (!target) {
+                count(Assigned::Unused, section);
+                continue;
+            }
+            *target = kdeColor(line.mid(eq + 1));
+            count(*target ? Assigned::Set : Assigned::Invalid, section);
+        }
     } else {
         // Ghostty writes "key = value"; kitty "key value".
         static const QRegularExpression Ghostty(QStringLiteral("^([\\w-]+)\\s*=\\s*(.*)$"));
@@ -289,6 +382,84 @@ std::optional<Theme> parse(const QByteArray& data, QString* error, QStringList* 
         }
         return std::nullopt;
     }
+    return theme;
+}
+
+bool isPlasma(const QString& name, QString* base)
+{
+    static const QLatin1String Prefix("plasma");
+    // In any case, as the light: and dark: of pick().
+    if (name.compare(Prefix, Qt::CaseInsensitive) != 0 && !name.startsWith(Prefix + QLatin1Char(':'), Qt::CaseInsensitive)) {
+        return false;
+    }
+    if (base) {
+        *base = name.mid(Prefix.size() + 1).trimmed();
+    }
+    return true;
+}
+
+QStringList plasmaSources()
+{
+    // locateAll lists the user's file first; KDE reads the system's first.
+    QStringList files = QStandardPaths::locateAll(QStandardPaths::GenericConfigLocation, QStringLiteral("kdeglobals"));
+    const QString user = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
+        + QStringLiteral("/kdeglobals");
+    files.removeAll(user);
+    std::reverse(files.begin(), files.end());
+    files << user;
+    return files;
+}
+
+Theme plasmaColors(const QStringList& sources)
+{
+    std::optional<AfterglowVt::Rgb> background, foreground, accent, selectionBackground, selectionForeground;
+    for (const QString& path : sources) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        QString section;
+        for (const QByteArray& raw : file.readAll().split('\n')) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (const QString opened = sectionOf(line); !opened.isEmpty()) {
+                section = opened;
+                continue;
+            }
+            const qsizetype eq = line.indexOf(QLatin1Char('='));
+            if (eq < 0 || (section != QLatin1String("Colors:View") && section != QLatin1String("Colors:Selection"))) {
+                continue;
+            }
+            const QString key = line.left(eq).trimmed();
+            const std::optional<AfterglowVt::Rgb> value = kdeColor(line.mid(eq + 1));
+            if (!value) {
+                continue;
+            }
+            const bool view = section == QLatin1String("Colors:View");
+            if (key == QLatin1String("BackgroundNormal")) {
+                (view ? background : selectionBackground) = value;
+            } else if (key == QLatin1String("ForegroundNormal")) {
+                (view ? foreground : selectionForeground) = value;
+            } else if (view && key == QLatin1String("DecorationFocus")) {
+                accent = value;
+            }
+        }
+    }
+    // Without kdeglobals (another desktop, or a scheme that leaves a colour
+    // out) the platform theme's palette says the same.
+    // qGuiApp is only a cast of the application: a QCoreApplication has no palette.
+    const bool gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
+    const QPalette palette = gui ? QGuiApplication::palette() : QPalette(Qt::black, Qt::white);
+    auto from = [&](QPalette::ColorRole role) {
+        const QColor c = palette.color(QPalette::Active, role);
+        return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
+    };
+    Theme theme;
+    theme.background = background.value_or(from(QPalette::Base));
+    theme.foreground = foreground.value_or(from(QPalette::Text));
+    theme.selectionBackground = selectionBackground.value_or(from(QPalette::Highlight));
+    theme.selectionForeground = selectionForeground.value_or(from(QPalette::HighlightedText));
+    theme.cursor = accent.value_or(from(QPalette::Accent));
+    theme.cursorText = theme.background;
     return theme;
 }
 

@@ -271,6 +271,13 @@ QVariantList stringList(const QStringList& strings)
     return out;
 }
 
+/// qGuiApp is only a cast of the application, so it is set under a
+/// QCoreApplication too, which has no platform theme to ask.
+bool hasGuiApplication()
+{
+    return qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
+}
+
 /// The desktop's fixed-width font, for Font.family "" and Font.size 0.
 /// Without a GUI application (or a platform theme that names one), fontconfig's
 /// monospace alias at 11 points.
@@ -278,7 +285,7 @@ std::pair<QString, double> desktopFixedFont()
 {
     QString family;
     double size = 0;
-    if (qGuiApp) {
+    if (hasGuiApplication()) {
         const QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         family = font.family().trimmed();
         size = font.pointSizeF();
@@ -366,10 +373,13 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Colors] = {
         stringKey(QStringLiteral("theme"), {},
                   QStringLiteral("Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in "
-                                 "each XDG data directory, then the bundled themes, such as nord and afterglow-light. Use "
-                                 "light:NAME,dark:NAME to follow the desktop. A theme replaces each color that it sets. Afterglow "
-                                 "reads its own JSON themes, Ghostty themes and Kitty themes. A relative path starts at the "
-                                 "directory of the config file.")),
+                                 "each XDG data directory, then the bundled themes, such as nord and afterglow-light, then the "
+                                 "themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
+                                 "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
+                                 "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
+                                 "after the brightness of the color scheme. A theme replaces each color that it sets. Afterglow "
+                                 "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative "
+                                 "path starts at the directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background color.")),
         colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor color. An empty value uses the foreground.")),
@@ -783,9 +793,14 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
     m_settings = read();
 
     connect(&m_files, &PhosphorFsLoader::WatchedFileSet::filesChanged, this, &SettingsStore::reload);
-    if (qGuiApp) {
+    if (hasGuiApplication()) {
         // "light:a,dark:b" themes follow the desktop, also while the file does not parse.
         connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, &SettingsStore::apply);
+    }
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        // A new palette reaches the application as QEvent::ApplicationPaletteChange:
+        // Qt 6 deprecates QGuiApplication::paletteChanged.
+        app->installEventFilter(this);
     }
     watch();
 }
@@ -919,16 +934,50 @@ bool SettingsStore::addOverride(QJsonObject& overrides, const QString& assignmen
 bool SettingsStore::darkScheme() const
 {
     // Unknown (no desktop preference) counts as dark, afterglow's own default.
-    return !qGuiApp || QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
+    return !hasGuiApplication() || QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
 }
+
+namespace {
+
+/// The theme a picked name loads: itself, or for "plasma:NAME" NAME, and for
+/// "plasma" alone Afterglow's dark or light theme, after the brightness of
+/// the desktop's own background.
+QString baseTheme(const QString& picked, const std::optional<Theme>& desktop)
+{
+    QString base;
+    if (!Themes::isPlasma(picked, &base)) {
+        return picked;
+    }
+    if (base.isEmpty() && desktop && desktop->background) {
+        const AfterglowVt::Rgb& bg = *desktop->background;
+        const bool dark = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b < 128;
+        base = dark ? QStringLiteral("afterglow-dark") : QStringLiteral("afterglow-light");
+    }
+    return base;
+}
+
+} // namespace
 
 void SettingsStore::watch()
 {
-    // Every place the theme could come from, so creating a closer one counts.
+    // Every place the theme that read() resolved could come from, so creating
+    // a closer one counts.
     QStringList paths{m_path};
-    const auto spec = m_store->read<QString>(Colors, QStringLiteral("theme")).trimmed();
-    paths << Themes::candidates(Themes::pick(spec, darkScheme()), Themes::searchDirs(), QFileInfo(m_path).absolutePath());
+    if (m_plasmaTheme) {
+        // A new desktop colour scheme rewrites kdeglobals.
+        paths << Themes::plasmaSources();
+    }
+    paths << Themes::candidates(m_themeName, Themes::searchDirs(), QFileInfo(m_path).absolutePath());
     m_files.setPaths(paths);
+}
+
+bool SettingsStore::eventFilter(QObject* watched, QEvent* event)
+{
+    // A plasma theme without kdeglobals follows the platform palette instead.
+    if (event->type() == QEvent::ApplicationPaletteChange && watched == QCoreApplication::instance() && m_plasmaTheme) {
+        apply();
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 void SettingsStore::reload()
@@ -1049,8 +1098,18 @@ Settings SettingsStore::read()
 
     // A theme's colours replace the ones above.
     std::shared_ptr<const Theme> theme;
+    // "plasma[:NAME]": the desktop's colours over theme NAME.
+    std::optional<Theme> desktop;
+    m_themeName.clear();
+    m_plasmaTheme = false;
     if (const QString spec = st.read<QString>(Colors, QStringLiteral("theme")).trimmed(); !spec.isEmpty()) {
-        const QString name = Themes::pick(spec, darkScheme());
+        const QString picked = Themes::pick(spec, darkScheme());
+        m_plasmaTheme = Themes::isPlasma(picked);
+        if (m_plasmaTheme) {
+            desktop = Themes::plasmaColors(Themes::plasmaSources());
+        }
+        const QString name = baseTheme(picked, desktop);
+        m_themeName = name;
         const QStringList dirs = Themes::searchDirs();
         const QString path = Themes::locate(name, dirs, QFileInfo(m_path).absolutePath());
         if (name.isEmpty()) {
@@ -1077,9 +1136,10 @@ Settings SettingsStore::read()
                 theme = std::make_shared<const Theme>(*parsed);
                 m_themeFile = path;
                 m_theme = theme;
-                // Ghostty and Kitty files hold much else (Kitty's "cursor none"
-                // among it); Afterglow's own should not. The content, not the
-                // file name, says which it is: locate() also finds "mine".
+                // Ghostty, Kitty and Konsole files hold much else (Kitty's
+                // "cursor none" among it); Afterglow's own should not. The
+                // content, not the file name, says which it is: locate() also
+                // finds "mine".
                 if (json) {
                     if (!ignored.isEmpty()) {
                         problem(QStringLiteral("theme %1 has keys Afterglow does not use: %2")
@@ -1098,6 +1158,18 @@ Settings SettingsStore::read()
                 problem(QStringLiteral("theme %1: %2").arg(name, error));
             }
         }
+    }
+    if (desktop) {
+        Theme over = theme ? *theme : Theme{};
+        over.background = desktop->background;
+        over.foreground = desktop->foreground;
+        over.selectionBackground = desktop->selectionBackground;
+        over.selectionForeground = desktop->selectionForeground;
+        over.cursor = desktop->cursor;
+        over.cursorText = desktop->cursorText;
+        // Derived from the desktop's background and text, not the theme's.
+        over.divider.reset();
+        theme = std::make_shared<const Theme>(over);
     }
     if (theme) {
         t.defaultForeground = theme->foreground.value_or(t.defaultForeground);

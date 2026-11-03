@@ -45,7 +45,7 @@ bool same(Rgb a, Rgb b)
 class ConfigTest : public ::testing::Test
 {
 protected:
-    static constexpr const char* Variables[] = {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_DATA_DIRS"};
+    static constexpr const char* Variables[] = {"XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS"};
 
     void SetUp() override
     {
@@ -54,6 +54,8 @@ protected:
             m_saved.append({name, qEnvironmentVariableIsSet(name), qgetenv(name)});
         }
         qputenv("XDG_CONFIG_HOME", m_home.path().toUtf8());
+        // No system kdeglobals: a plasma theme reads only what a test writes.
+        qputenv("XDG_CONFIG_DIRS", m_home.filePath(QStringLiteral("config-dirs")).toUtf8());
         qputenv("XDG_DATA_HOME", m_home.filePath(QStringLiteral("data-home")).toUtf8());
         qputenv("XDG_DATA_DIRS", m_home.filePath(QStringLiteral("data-dirs")).toUtf8());
     }
@@ -141,6 +143,56 @@ TEST(Themes, ReadsGhosttyThemes)
     EXPECT_TRUE(theme->cursorText == Rgb(0x1d, 0x1f, 0x21));
     EXPECT_TRUE(theme->selectionBackground == Rgb(0x37, 0x3b, 0x41));
     EXPECT_TRUE(theme->selectionForeground == Rgb(0xc5, 0xc8, 0xc6));
+}
+
+TEST(Themes, ReadsKonsoleColorSchemes)
+{
+    const QByteArray scheme = "[Background]\nColor=35,38,39\n\n"
+                              "[BackgroundFaint]\nColor=49,54,59\n\n"
+                              "[Color0]\nColor=35,38,39\n\n"
+                              "[Color1]\nColor=237,21,21\n\n"
+                              "[Color1Intense]\nColor=192,57,43\n\n"
+                              "[Color7Intense]\nColor=255,255,255\n\n"
+                              "[Foreground]\nColor=252,252,252\n\n"
+                              "[ForegroundIntense]\nColor=255,255,255\n\n"
+                              "[General]\nDescription=Breeze\nOpacity=1\nWallpaper=\n";
+    EXPECT_TRUE(Themes::isKonsole(scheme));
+    EXPECT_FALSE(Themes::isKonsole("background = #000000\n"));
+    QStringList ignored;
+    const auto theme = Themes::parse(scheme, nullptr, &ignored);
+    ASSERT_TRUE(theme);
+    EXPECT_TRUE(theme->background == Rgb(35, 38, 39));
+    EXPECT_TRUE(theme->foreground == Rgb(252, 252, 252));
+    EXPECT_TRUE(theme->palette[0] == Rgb(35, 38, 39));
+    EXPECT_TRUE(theme->palette[1] == Rgb(237, 21, 21));
+    // ColorNIntense is the bright colour N + 8.
+    EXPECT_TRUE(theme->palette[9] == Rgb(192, 57, 43));
+    EXPECT_TRUE(theme->palette[15] == Rgb(255, 255, 255));
+    EXPECT_FALSE(theme->palette[2].has_value());
+    EXPECT_FALSE(theme->cursor.has_value());
+    // Faint and intense text colours have no Afterglow counterpart.
+    EXPECT_TRUE(ignored.contains(QStringLiteral("BackgroundFaint")));
+    EXPECT_TRUE(ignored.contains(QStringLiteral("ForegroundIntense")));
+    QStringList invalid;
+    EXPECT_FALSE(Themes::parse("[Color3]\nColor=300,0,0\n", nullptr, nullptr, &invalid));
+    EXPECT_EQ(invalid, QStringList{QStringLiteral("Color3")});
+}
+
+TEST(Themes, PlasmaNamesTakeAnOptionalBaseTheme)
+{
+    QString base = QStringLiteral("unset");
+    EXPECT_TRUE(Themes::isPlasma(QStringLiteral("plasma"), &base));
+    EXPECT_TRUE(base.isEmpty());
+    EXPECT_TRUE(Themes::isPlasma(QStringLiteral("plasma:nord"), &base));
+    EXPECT_EQ(base, QStringLiteral("nord"));
+    // In any case, as light: and dark: are.
+    EXPECT_TRUE(Themes::isPlasma(QStringLiteral("Plasma:Nord"), &base));
+    EXPECT_EQ(base, QStringLiteral("Nord"));
+    EXPECT_TRUE(Themes::isPlasma(QStringLiteral("PLASMA")));
+    EXPECT_FALSE(Themes::isPlasma(QStringLiteral("plasmatic")));
+    EXPECT_FALSE(Themes::isPlasma(QStringLiteral("nord")));
+    // Each half of a light:/dark: spec may be a plasma theme of its own.
+    EXPECT_EQ(Themes::pick(QStringLiteral("light:plasma:paper,dark:plasma"), false), QStringLiteral("plasma:paper"));
 }
 
 TEST(Themes, ReadsKittyThemes)
@@ -244,6 +296,171 @@ TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0, 0, 0}));
     // A fifth of the way from the background to the text.
     EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(0x33, 0x33, 0x33));
+}
+
+namespace {
+std::optional<Theme> bundled(const char* name)
+{
+    QFile file(Themes::locate(QString::fromLatin1(name), Themes::searchDirs()));
+    if (!file.open(QIODevice::ReadOnly)) return std::nullopt;
+    return Themes::parse(file.readAll());
+}
+const QByteArray DarkPlasma = "[Colors:View]\nBackgroundNormal=20,22,24\nForegroundNormal=230,231,232\n"
+                              "DecorationFocus=61,174,233\n\n[Colors:Selection]\nBackgroundNormal=30,90,150\n"
+                              "ForegroundNormal=250,251,252\n";
+} // namespace
+
+TEST_F(ConfigTest, KonsoleColorSchemesAreFoundByNameAfterAfterglowThemes)
+{
+    QDir().mkpath(m_home.filePath(QStringLiteral("data-home/konsole")));
+    write(QStringLiteral("data-home/konsole/Breezy.colorscheme"), "[Background]\nColor=1,2,3\n[Foreground]\nColor=4,5,6\n");
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "Breezy"}})");
+    {
+        SettingsStore store(config);
+        EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {1, 2, 3}));
+        EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    }
+    // An Afterglow theme of the same name comes first.
+    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
+    write(QStringLiteral("afterglow/themes/Breezy.json"), R"({"background": "#0a0b0c"})");
+    SettingsStore store(config);
+    EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {0x0a, 0x0b, 0x0c}));
+}
+
+TEST_F(ConfigTest, GhosttyAndKittyThemesAreFoundInTheirOwnDirectories)
+{
+    // Ghostty's user themes, the ones it ships (share/ghostty/themes, no
+    // extension) and Kitty's custom themes (NAME.conf).
+    QDir().mkpath(m_home.filePath(QStringLiteral("ghostty/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("data-dirs/ghostty/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("kitty/themes")));
+    write(QStringLiteral("ghostty/themes/Mine"), "background = #010203\n");
+    write(QStringLiteral("data-dirs/ghostty/themes/Shipped Night"), "background = #040506\n");
+    write(QStringLiteral("kitty/themes/Paper.conf"), "background #070809\n");
+    auto backgroundOf = [&](const char* theme) {
+        const QString config = write(QStringLiteral("config.json"),
+                                     QJsonDocument(QJsonObject{{QStringLiteral("Colors"),
+                                                                QJsonObject{{QStringLiteral("theme"), QString::fromUtf8(theme)}}}})
+                                         .toJson());
+        SettingsStore store(config);
+        EXPECT_TRUE(store.problems().isEmpty()) << theme << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
+        return store.settings().terminal.defaultBackground;
+    };
+    EXPECT_TRUE(same(backgroundOf("Mine"), {1, 2, 3}));
+    EXPECT_TRUE(same(backgroundOf("Shipped Night"), {4, 5, 6}));
+    EXPECT_TRUE(same(backgroundOf("Paper"), {7, 8, 9}));
+}
+
+TEST_F(ConfigTest, PlasmaThemeTakesTheDesktopColorsOverTheNamedTheme)
+{
+    write(QStringLiteral("kdeglobals"), DarkPlasma);
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-light"}})");
+    SettingsStore store(config);
+    const Settings& s = store.settings();
+    EXPECT_TRUE(same(s.terminal.defaultBackground, {20, 22, 24}));
+    EXPECT_TRUE(same(s.terminal.defaultForeground, {230, 231, 232}));
+    EXPECT_TRUE(s.terminal.selectionBackground == Rgb(30, 90, 150));
+    EXPECT_TRUE(s.terminal.selectionForeground == Rgb(250, 251, 252));
+    EXPECT_TRUE(s.terminal.cursorColor == Rgb(61, 174, 233));
+    EXPECT_TRUE(s.terminal.cursorTextColor == Rgb(20, 22, 24));
+    // The 16 colours are the named theme's.
+    const auto light = bundled("afterglow-light");
+    ASSERT_TRUE(light && light->palette[1]);
+    EXPECT_TRUE(same(s.terminal.basePalette[1], *light->palette[1]));
+    // The divider comes from the desktop's background and text.
+    auto mix = [](int a, int b) { return a + (b - a) / 5; };
+    EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(store.watchedPaths().contains(m_home.filePath(QStringLiteral("kdeglobals"))));
+}
+
+TEST_F(ConfigTest, PlasmaColorsReadHexValuesTheViewSectionAndTheSystemFile)
+{
+    // As Plasma writes it today: hex values, and the same keys in other sections.
+    write(QStringLiteral("kdeglobals"), "[Colors:Button]\nBackgroundNormal=#ff0000\nForegroundNormal=#00ff00\n\n"
+                                        "[Colors:View]\nBackgroundAlternate=#071C33\nBackgroundNormal=#2E4159\n"
+                                        "DecorationFocus=#80B9FF\nForegroundNormal=#e2e2e6\n");
+    // The system's file under the user's: it supplies what the user's leaves out.
+    QDir().mkpath(m_home.filePath(QStringLiteral("config-dirs")));
+    write(QStringLiteral("config-dirs/kdeglobals"), "[Colors:View]\nBackgroundNormal=1,1,1\n\n"
+                                                    "[Colors:Selection]\nBackgroundNormal=61,174,233,255\nForegroundNormal=252,252,252\n");
+    const QStringList sources = Themes::plasmaSources();
+    ASSERT_EQ(sources.size(), 2);
+    EXPECT_EQ(sources.last(), m_home.filePath(QStringLiteral("kdeglobals")));
+    const Theme theme = Themes::plasmaColors(sources);
+    EXPECT_TRUE(theme.background == Rgb(0x2e, 0x41, 0x59));
+    EXPECT_TRUE(theme.foreground == Rgb(0xe2, 0xe2, 0xe6));
+    EXPECT_TRUE(theme.cursor == Rgb(0x80, 0xb9, 0xff));
+    EXPECT_TRUE(theme.selectionBackground == Rgb(61, 174, 233));
+    EXPECT_TRUE(theme.selectionForeground == Rgb(252, 252, 252));
+}
+
+TEST_F(ConfigTest, PlasmaThemeAloneTakesTheColorsOfTheSchemesBrightness)
+{
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma"}})");
+    const auto dark = bundled("afterglow-dark");
+    const auto light = bundled("afterglow-light");
+    ASSERT_TRUE(dark && light && dark->palette[4] && light->palette[4]);
+    write(QStringLiteral("kdeglobals"), DarkPlasma);
+    {
+        SettingsStore store(config);
+        EXPECT_TRUE(same(store.settings().terminal.basePalette[4], *dark->palette[4]));
+    }
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nBackgroundNormal=252,252,252\nForegroundNormal=35,38,41\n");
+    SettingsStore store(config);
+    EXPECT_TRUE(same(store.settings().terminal.basePalette[4], *light->palette[4]));
+    EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {252, 252, 252}));
+    // The watch follows the theme that was read, not another read of kdeglobals.
+    const QStringList watched = store.watchedPaths();
+    auto watches = [&](const QString& file) {
+        return std::any_of(watched.begin(), watched.end(), [&](const QString& p) { return p.endsWith(file); });
+    };
+    EXPECT_TRUE(watches(QStringLiteral("/afterglow-light.json")));
+    EXPECT_FALSE(watches(QStringLiteral("/afterglow-dark.json")));
+    EXPECT_TRUE(watched.contains(m_home.filePath(QStringLiteral("kdeglobals"))));
+}
+
+TEST_F(ConfigTest, PlasmaThemeFollowsAChangedColorScheme)
+{
+    int argc = 1;
+    char name[] = "config-test";
+    char* argv[] = {name, nullptr};
+    std::unique_ptr<QCoreApplication> app;
+    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    write(QStringLiteral("kdeglobals"), DarkPlasma);
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
+    SettingsStore store(config);
+    ASSERT_TRUE(same(store.settings().terminal.defaultBackground, {20, 22, 24}));
+    // Plasma rewrites kdeglobals when the user picks another scheme.
+    QSaveFile file(m_home.filePath(QStringLiteral("kdeglobals")));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("[Colors:View]\nBackgroundNormal=1,2,3\nForegroundNormal=200,200,200\n");
+    ASSERT_TRUE(file.commit());
+    QElapsedTimer timer;
+    timer.start();
+    while (!same(store.settings().terminal.defaultBackground, {1, 2, 3}) && timer.elapsed() < 2500) {
+        QCoreApplication::processEvents();
+        QThread::msleep(5);
+    }
+    EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {1, 2, 3}));
+}
+
+TEST_F(ConfigTest, PlasmaThemeRereadsTheColorsOnANewApplicationPalette)
+{
+    int argc = 1;
+    char name[] = "config-test";
+    char* argv[] = {name, nullptr};
+    std::unique_ptr<QCoreApplication> app;
+    if (!QCoreApplication::instance()) app = std::make_unique<QCoreApplication>(argc, argv);
+    write(QStringLiteral("kdeglobals"), DarkPlasma);
+    const QString config = write(QStringLiteral("config.json"), R"({"Colors": {"theme": "plasma:afterglow-dark"}})");
+    SettingsStore store(config);
+    ASSERT_TRUE(same(store.settings().terminal.defaultBackground, {20, 22, 24}));
+    // Before the file watcher's debounce: only the palette event reads it now.
+    write(QStringLiteral("kdeglobals"), "[Colors:View]\nBackgroundNormal=7,8,9\nForegroundNormal=200,200,200\n");
+    QEvent event(QEvent::ApplicationPaletteChange);
+    QCoreApplication::sendEvent(QCoreApplication::instance(), &event);
+    EXPECT_TRUE(same(store.settings().terminal.defaultBackground, {7, 8, 9}));
 }
 
 TEST_F(ConfigTest, MissingThemeKeepsTheConfigsColours)
