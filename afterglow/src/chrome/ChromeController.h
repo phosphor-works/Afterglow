@@ -77,6 +77,9 @@ public:
     int currentTab() const { return m_currentTab; }
     int tabBarHeight() const { return m_tabBarHeight; }
     void setTabs(const QStringList& titles, int current, int barHeight);
+    /// The tabs changed order. A drag in the tab bar, which counts tabs by
+    /// place, stops.
+    void notifyTabsMoved() { Q_EMIT tabsMoved(); }
     /// Where the panes are, in logical pixels: the window less the tab bar
     /// and the scripts' docks.
     QRectF paneArea() const { return m_paneArea; }
@@ -189,6 +192,7 @@ public:
 
 Q_SIGNALS:
     void tabsChanged();
+    void tabsMoved();
     void paneAreaChanged();
     void tabStatusChanged();
     void tabContextsChanged();

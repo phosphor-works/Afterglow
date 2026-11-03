@@ -34,7 +34,38 @@ bool sideEdge(const DockArea& dock)
 {
     return dock.edge() == DockArea::Edge::Left || dock.edge() == DockArea::Edge::Right;
 }
+
+// The last order given to a change of place. One count for every window: a
+// pane takes its docks to another window, where a new dock still goes last.
+quint64 s_dockOrder = 0;
 } // namespace
+
+template<typename Match>
+DockArea* TerminalWindow::firstShownPaneDock(Match&& match) const
+{
+    // Only the panes drawn as laid out: the overview draws cards, which take
+    // the pointer, and a pane hidden by a zoom shows none of its docks.
+    if (!m_splits || m_overview.open) return nullptr;
+    DockArea* found = nullptr;
+    m_splits->forEachPane([&](Pane* pane, const QRect& rect) {
+        if (found || rect.isEmpty()) return;
+        for (const auto& dock : pane->docks()) {
+            if (!dock->rect().isEmpty() && match(dock.get())) {
+                found = dock.get();
+                return;
+            }
+        }
+    });
+    return found;
+}
+
+QPoint TerminalWindow::dockPixel(const QPointF& logical) const
+{
+    // The pixel the point is in, not the nearest corner: cells and items
+    // start at a pixel's left and top edges.
+    const QPointF px = logical * devicePixelRatio();
+    return QPoint(int(std::floor(px.x())), int(std::floor(px.y())));
+}
 
 QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& effect, Pane* pane)
 {
@@ -52,10 +83,7 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
         if (found == docks.end()) return {};
         // The script still runs: it hears that the pointer left the item,
         // which an area that has gone could not tell it later.
-        if (m_dockHover.owner == owner && m_dockHover.dock == id && m_dockHover.pane == paneId) {
-            m_dockHover = {};
-            emitDockEvent(**found, QStringLiteral("on_dock_hover"), {}, false);
-        }
+        if (m_dockHover.owner == owner && m_dockHover.dock == id && m_dockHover.pane == paneId) leaveDockHover();
         // As the hover: the drag that it holds ends before it goes.
         if (m_dockDrag && m_dockDrag->owner == owner && m_dockDrag->dock == id && m_dockDrag->pane == paneId)
             endDockDrag(false);
@@ -77,26 +105,23 @@ QString TerminalWindow::setScriptDock(const QString& owner, const QVariantMap& e
             found = std::prev(docks.end());
         }
         changed = found->get();
-        change = changed->setContent(effect, m_dockOrder + 1);
-        if (change == DockArea::Change::Place) ++m_dockOrder;
+        change = changed->setContent(effect, s_dockOrder + 1);
+        if (change == DockArea::Change::Place) ++s_dockOrder;
     }
     // The same effect again: nothing to draw.
     if (change == DockArea::Change::None) return {};
     // The panes take what the docks leave, and the tab bar may come or go:
     // once in the next frame, however many docks move before it. New text
     // in a dock that stays where it is changes neither. A pane in another
-    // tab is laid out where its tab last was, now: its docks show on its
-    // overview card, and the tab lays out again when it shows.
+    // tab is laid out in its tab's last layout, now: its docks show on its
+    // overview card, and its shell gets the size that they leave.
     if (change == DockArea::Change::Place) {
-        if (!atPane || tabOf(pane) == m_currentTab) {
-            m_docksMoved = true;
-        } else if (const auto& splits = m_tabs[std::size_t(tabOf(pane))]->splits; splits && splits->isVisible(pane)) {
-            placePaneDocks(pane, splits->rectOf(pane));
-        }
+        if (!atPane || tabOf(pane) == m_currentTab) m_docksMoved = true;
+        else layoutBackgroundPane(pane);
     }
     // A dock that does not show is no child of the window: it tells of its
     // items when it shows (placeDocks).
-    if (changed && !changed->rect().isEmpty()) dockAccessibilityChanged(changed);
+    if (changed && showsDock(changed)) dockAccessibilityChanged(changed);
     // An item can come or go under a pointer that does not move. A dock that
     // moves has its place at the next frame, whose relayout sets the shape
     // and the item: until then its rectangle is the old one. One that went
@@ -128,9 +153,7 @@ void TerminalWindow::eraseDocks(const QString& owner)
         for (const auto& dock : pane->docks()) if (mine(dock)) releaseDockAccessibility(dock.get());
         if (std::erase_if(pane->docks(), mine) == 0) continue;
         erased += 1;
-        // A pane in another tab lays out again when its tab shows.
-        const auto& splits = m_tabs[std::size_t(tabOf(pane))]->splits;
-        if (tabOf(pane) != m_currentTab && splits->isVisible(pane)) placePaneDocks(pane, splits->rectOf(pane));
+        if (tabOf(pane) != m_currentTab) layoutBackgroundPane(pane);
     }
     if (erased == 0) return;
     windowAccessibilityChanged(this);
@@ -167,8 +190,8 @@ namespace {
 /// where the tab bar is. Then the dock whose place was set first is
 /// outermost. With @p minimum, a dock that would leave less than it does
 /// not show. Without it, only the docks that show now do, at the size that
-/// they have. Returns what the docks leave. No allocation: this runs for
-/// each pane drawn.
+/// they have or what is left of @p area. Returns what the docks leave. No
+/// allocation: this runs for each pane drawn.
 QRect stackDocks(const std::vector<std::unique_ptr<DockArea>>& docks, QRect area, const QSize* minimum, int cellWidth,
                  int cellHeight, std::vector<QRect>* rects, bool* tabBarPlaced)
 {
@@ -196,7 +219,10 @@ QRect stackDocks(const std::vector<std::unique_ptr<DockArea>>& docks, QRect area
             if (side ? area.width() - extent < minimum->width() : area.height() - extent < minimum->height()) continue;
         } else {
             if (dock.rect().isEmpty()) continue;
-            extent = side ? dock.rect().width() : dock.rect().height();
+            // A split animation can draw the pane smaller than the layout
+            // that placed the dock: it takes no more than is left.
+            extent = std::min(side ? dock.rect().width() : dock.rect().height(), side ? area.width() : area.height());
+            if (extent <= 0) continue;
         }
         QRect rect;
         switch (dock.edge()) {
@@ -246,19 +272,43 @@ QRect TerminalWindow::placePaneDocks(Pane* pane, const QRect& paneRect)
     if (pane->docks().empty()) return paneRect;
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QSize minimum = minimumPaneSize();
-    std::vector<QRect> rects;
+    // The overview places other tabs' docks each frame: no allocation.
+    std::vector<QRect>& rects = m_paneDockRects;
     const QRect area = stackDocks(pane->docks(), paneRect, &minimum, m.cellWidth, m.cellHeight, &rects, nullptr);
     for (std::size_t i = 0; i < pane->docks().size(); ++i) {
         DockArea& dock = *pane->docks()[i];
         if (dock.setRect(rects[i], m.cellWidth, m.cellHeight) && !dock.rect().isEmpty()) dockAccessibilityChanged(&dock);
-        if (const auto layout = dock.takeLayoutChange()) {
-            emitDockEvent(dock, QStringLiteral("on_dock_layout"),
-                          {{QStringLiteral("shown"), layout->shown}, {QStringLiteral("cols"), layout->cols},
-                           {QStringLiteral("rows"), layout->rows}},
-                          false);
-        }
+        reportDockLayout(dock);
     }
     return area;
+}
+
+void TerminalWindow::layoutPane(Pane* pane, const QRect& paneRect)
+{
+    // A pane hidden by a zoom shows no dock, and its shell keeps its size.
+    if (paneRect.isEmpty()) {
+        placePaneDocks(pane, QRect());
+        return;
+    }
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QRect content = contentRect(placePaneDocks(pane, paneRect));
+    const int cols = std::max(2, content.width() / m.cellWidth);
+    const int rows = std::max(1, content.height() / m.cellHeight);
+    pane->resize(cols, rows, m.cellWidth, m.cellHeight);
+}
+
+void TerminalWindow::placeTabDocks(int tab)
+{
+    if (tab < 0 || tab >= int(m_tabs.size()) || !m_tabs[std::size_t(tab)]->splits) return;
+    m_tabs[std::size_t(tab)]->splits->forEachPane([this](Pane* p, const QRect& r) { placePaneDocks(p, r); });
+}
+
+void TerminalWindow::layoutBackgroundPane(Pane* pane)
+{
+    const int tab = tabOf(pane);
+    if (tab < 0) return;
+    const auto& splits = m_tabs[std::size_t(tab)]->splits;
+    if (splits) layoutPane(pane, splits->isVisible(pane) ? splits->rectOf(pane) : QRect());
 }
 
 void TerminalWindow::addPaneDocks(Pane* pane, const QRect& shown,
@@ -266,11 +316,11 @@ void TerminalWindow::addPaneDocks(Pane* pane, const QRect& shown,
 {
     if (pane->docks().empty()) return;
     // Where the pane is drawn, which a split animation moves: the docks keep
-    // the cells that the layout gave them, and move with it.
-    std::vector<QRect> rects;
-    paneDockArea(pane, shown, &rects);
-    for (std::size_t i = 0; i < rects.size(); ++i) {
-        if (!rects[i].isEmpty()) out.push_back({&pane->docks()[i]->snapshot(), rects[i]});
+    // the cells that the layout gave them, and move with it. The rectangles
+    // reuse one vector: this runs for each pane drawn.
+    paneDockArea(pane, shown, &m_paneDockRects);
+    for (std::size_t i = 0; i < m_paneDockRects.size(); ++i) {
+        if (!m_paneDockRects[i].isEmpty()) out.push_back({&pane->docks()[i]->snapshot(), m_paneDockRects[i]});
     }
 }
 
@@ -297,13 +347,16 @@ void TerminalWindow::reportDockLayouts()
 {
     // Every change, not only the last of a burst: a script that drops one
     // would lay its text out for a width that the dock no longer has.
-    for (const auto& dock : m_docks) {
-        if (const auto layout = dock->takeLayoutChange()) {
-            emitDockEvent(*dock, QStringLiteral("on_dock_layout"),
-                          {{QStringLiteral("shown"), layout->shown}, {QStringLiteral("cols"), layout->cols},
-                           {QStringLiteral("rows"), layout->rows}},
-                          false);
-        }
+    for (const auto& dock : m_docks) reportDockLayout(*dock);
+}
+
+void TerminalWindow::reportDockLayout(DockArea& dock)
+{
+    if (const auto layout = dock.takeLayoutChange()) {
+        emitDockEvent(dock, QStringLiteral("on_dock_layout"),
+                      {{QStringLiteral("shown"), layout->shown}, {QStringLiteral("cols"), layout->cols},
+                       {QStringLiteral("rows"), layout->rows}},
+                      false);
     }
 }
 
@@ -318,13 +371,13 @@ void TerminalWindow::updateDockHover()
 {
     // Each pointer move comes here: a window with no dock and no item to
     // leave has nothing to look at.
-    if (m_docks.empty() && m_dockHover.owner.isEmpty() && shownPaneDocks().empty()) return;
+    if (m_docks.empty() && m_dockHover.owner.isEmpty() && !firstShownPaneDock([](DockArea*) { return true; })) return;
     // Only a pointer that a click on the item would reach: not one over the
     // chrome, outside the window, or in a drag that the panes, a divider,
     // the chrome or the overview took. A grab whose release went elsewhere
     // ends with its buttons.
     DockHover now;
-    const QPoint px = (m_pointer * devicePixelRatio()).toPoint();
+    const QPoint px = dockPixel(m_pointer);
     const bool held = QGuiApplication::mouseButtons() != Qt::NoButton;
     const bool dragging = (m_dividerDrag && !m_overview.open) || m_selectionPane || m_reportedButtons != Qt::NoButton
         || (held && (m_chromeGrab || m_overviewButtons != Qt::NoButton));
@@ -346,6 +399,23 @@ void TerminalWindow::updateDockHover()
     }
     if (const DockArea* dock = now.owner.isEmpty() ? nullptr : find(now))
         emitDockEvent(*dock, QStringLiteral("on_dock_hover"), {{QStringLiteral("item"), now.item}}, false);
+}
+
+void TerminalWindow::leaveDockHover()
+{
+    const DockHover before = std::exchange(m_dockHover, {});
+    if (before.owner.isEmpty()) return;
+    if (const DockArea* dock = findDock(before.owner, before.dock, before.pane))
+        emitDockEvent(*dock, QStringLiteral("on_dock_hover"), {}, false);
+}
+
+void TerminalWindow::dropDockPointer(const Pane* pane)
+{
+    // While the docks are still here to name: their scripts hear that the
+    // drag ended and the pointer left the item.
+    const quint32 id = pane ? pane->id() : 0;
+    if (m_dockDrag && (!pane || m_dockDrag->pane == id)) endDockDrag(false);
+    if (!m_dockHover.owner.isEmpty() && (!pane || m_dockHover.pane == id)) leaveDockHover();
 }
 
 void TerminalWindow::wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e)
@@ -377,35 +447,49 @@ void TerminalWindow::moveDockDrag(const QPointF& pos)
 {
     if (!m_dockDrag) return;
     DockDrag& drag = *m_dockDrag;
-    // An area that went took its drag with it (setScriptDock, eraseDocks),
-    // and so did a pane that closed or moved to another window.
+    // An undock and a pane that leaves end the drag while its area is here
+    // (setScriptDock, dropDockPointer). Only a script that went, which
+    // hears nothing more, leaves one with no area (eraseDocks).
     const DockArea* found = findDock(drag.owner, drag.dock, drag.pane);
     if (!found) {
         m_dockDrag.reset();
         return;
     }
     const DockArea& dock = *found;
-    if (!drag.started && (pos - drag.from).manhattanLength() < QGuiApplication::styleHints()->startDragDistance()) return;
-    const QPoint px = (pos * devicePixelRatio()).toPoint();
-    const auto& m = m_renderer->fonts().fonts->metrics();
-    // Cells of the area, also past its edges: a drag goes on outside it.
-    // An area that does not show has no cells to go by.
-    QPoint cell = drag.cell;
-    if (!dock.rect().isEmpty()) {
-        cell = QPoint(int(std::floor(double(px.x() - dock.rect().left()) / std::max(1, m.cellWidth))),
-                      int(std::floor(double(px.y() - dock.rect().top()) / std::max(1, m.cellHeight))));
+    // A pane's area that stopped showing (its tab went to the background, a
+    // zoom hid its pane, the overview opened) has nothing under the pointer.
+    if (dock.pane() && !showsDock(&dock)) {
+        endDockDrag(false);
+        return;
     }
+    if (!drag.started && (pos - drag.from).manhattanLength() < QGuiApplication::styleHints()->startDragDistance()) return;
+    const QPoint px = dockPixel(pos);
+    // Cells of the area, also past its edges: a drag goes on outside it. A
+    // window area that does not show has no cells to go by: the last cell,
+    // first the press's, holds.
+    const QPoint cell = dock.rect().isEmpty() ? drag.cell : dockCell(dock, px);
     const QString over = dock.rect().contains(px) ? dock.itemAt(px) : QString();
-    const char* phase = drag.started ? "move" : "start";
-    if (drag.started && over == drag.over && cell == drag.cell) return;
+    const bool moving = drag.started;
+    const char* phase = moving ? "move" : "start";
+    if (moving && over == drag.over && cell == drag.cell) return;
     drag.started = true;
     drag.over = over;
     drag.cell = cell;
     QVariantMap event{{QStringLiteral("phase"), QString::fromLatin1(phase)}, {QStringLiteral("item"), drag.item},
                       {QStringLiteral("col"), cell.x()}, {QStringLiteral("row"), cell.y()}};
     if (!over.isEmpty()) event.insert(QStringLiteral("over"), over);
-    // As hover: at most one call for each cell that the pointer crosses.
-    emitDockEvent(dock, QStringLiteral("on_dock_drag"), event, false);
+    // At most one call for each new item or cell under the pointer. A fast
+    // drag crosses cells faster than a script needs them: moves count
+    // toward the callback limit, and the next move or the end carries what
+    // a dropped one would have told. Start, end and cancel always go.
+    emitDockEvent(dock, QStringLiteral("on_dock_drag"), event, moving);
+}
+
+QPoint TerminalWindow::dockCell(const DockArea& dock, const QPoint& pixel) const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    return QPoint(int(std::floor(double(pixel.x() - dock.rect().left()) / std::max(1, m.cellWidth))),
+                  int(std::floor(double(pixel.y() - dock.rect().top()) / std::max(1, m.cellHeight))));
 }
 
 void TerminalWindow::endDockDrag(bool released, const QPointF& pos)
@@ -467,19 +551,6 @@ void TerminalWindow::setDockOptions(const AfterglowVt::TerminalOptions& options)
     if (any) applyPointerShape();
 }
 
-std::vector<DockArea*> TerminalWindow::shownPaneDocks() const
-{
-    // Only the panes drawn as laid out: the overview draws cards, which take
-    // the pointer, and a pane hidden by a zoom shows none of its docks.
-    std::vector<DockArea*> shown;
-    if (!m_splits || m_overview.open) return shown;
-    m_splits->forEachPane([&](Pane* pane, const QRect& rect) {
-        if (rect.isEmpty()) return;
-        for (const auto& dock : pane->docks()) if (!dock->rect().isEmpty()) shown.push_back(dock.get());
-    });
-    return shown;
-}
-
 DockArea* TerminalWindow::findDock(const QString& owner, const QString& id, quint32 pane) const
 {
     auto match = [&](const auto& dock) { return dock->owner() == owner && dock->id() == id; };
@@ -487,12 +558,22 @@ DockArea* TerminalWindow::findDock(const QString& owner, const QString& id, quin
         const auto it = std::find_if(m_docks.begin(), m_docks.end(), match);
         return it == m_docks.end() ? nullptr : it->get();
     }
-    for (Pane* p : panes()) {
-        if (p->id() != pane) continue;
-        const auto it = std::find_if(p->docks().begin(), p->docks().end(), match);
-        return it == p->docks().end() ? nullptr : it->get();
+    // Through the trees, not panes(): a drag asks at each pointer move.
+    DockArea* found = nullptr;
+    for (const auto& tab : m_tabs) {
+        if (!tab->splits || found) continue;
+        tab->splits->forEachPane([&](Pane* p, const QRect&) {
+            if (found || p->id() != pane) return;
+            const auto it = std::find_if(p->docks().begin(), p->docks().end(), match);
+            if (it != p->docks().end()) found = it->get();
+        });
     }
-    return nullptr;
+    return found;
+}
+
+int TerminalWindow::dividerTolerance() const
+{
+    return int(std::lround(4 * devicePixelRatio()));
 }
 
 DockArea* TerminalWindow::dockAt(const QPoint& pixel) const
@@ -502,10 +583,23 @@ DockArea* TerminalWindow::dockAt(const QPoint& pixel) const
     }
     // The window's docks are over the panes and the overview, the panes'
     // ones in the panes.
-    for (DockArea* dock : shownPaneDocks()) {
-        if (dock->rect().contains(pixel)) return dock;
-    }
-    return nullptr;
+    return firstShownPaneDock([&pixel](DockArea* d) { return d->rect().contains(pixel); });
+}
+
+bool TerminalWindow::dividerTakesDock(const QPoint& pixel) const
+{
+    // A divider's grab reaches into a pane's dock at the pane's edge, as
+    // into the pane's text. A window's dock is over the dividers.
+    if (!m_splits || m_overview.open || !m_splits->dividerAt(pixel, dividerTolerance())) return false;
+    const DockArea* dock = dockAt(pixel);
+    return dock && dock->pane() != 0;
+}
+
+Pane* TerminalWindow::paneUnder(const QPointF& logical) const
+{
+    const QPoint pixel = dockPixel(logical);
+    if (!m_splits || dockAt(pixel)) return nullptr;
+    return m_splits->paneAt(pixel);
 }
 
 QList<const DockArea*> TerminalWindow::accessibleDocks() const
@@ -514,7 +608,10 @@ QList<const DockArea*> TerminalWindow::accessibleDocks() const
     for (const auto& dock : m_docks) {
         if (!dock->rect().isEmpty()) shown.append(dock.get());
     }
-    for (const DockArea* dock : shownPaneDocks()) shown.append(dock);
+    firstShownPaneDock([&shown](DockArea* d) {
+        shown.append(d);
+        return false;
+    });
     return shown;
 }
 
@@ -523,8 +620,7 @@ bool TerminalWindow::showsDock(const DockArea* dock) const
     // By address first: an accessibility object can ask about a dock that went.
     if (std::any_of(m_docks.begin(), m_docks.end(), [dock](const auto& d) { return d.get() == dock; }))
         return !dock->rect().isEmpty();
-    const auto pane = shownPaneDocks();
-    return std::find(pane.begin(), pane.end(), dock) != pane.end();
+    return firstShownPaneDock([dock](DockArea* d) { return d == dock; }) != nullptr;
 }
 
 QRect TerminalWindow::globalRect(const QRect& pixels) const

@@ -37,7 +37,7 @@ export type Pane = {
     title: string,
     cwd: string,
     command: string, -- running now (OSC 133), "" at the prompt
-    cols: number,
+    cols: number, -- the text's cells, without the pane's docks
     rows: number,
     focused: boolean,
     context: string, -- where the shell runs when not here as you ("root", "deploy@prod-1"), else ""
@@ -45,7 +45,7 @@ export type Pane = {
 
 -- The pane overview: cards are the pane IDs of every tab in tab order while it is open, else the current tab's.
 export type Overview = { open: boolean, highlighted: number, cards: { number } }
--- cols and rows: the cells that fit in the window. A top or bottom dock is cols wide.
+-- cols and rows: the cells that fit in the window. A top or bottom window dock is cols wide.
 export type Window = { id: number, project: string, project_directory: string, focused: boolean, active_tab: number,
     active_pane: number, overview: Overview, cols: number, rows: number }
 export type Tab = { id: number, window: number, index: number, title: string, active: boolean, active_pane: number }
@@ -96,7 +96,8 @@ export type DockSpec = {
     fill: DockColor?, -- the background of the whole dock; default the theme's background
     lines: { { DockRun } }?, -- top, bottom: at most size lines; left, right: at most 256
 }
--- scope: the dock's scope. pane: a pane dock's pane, or the window's focused pane.
+-- Every dock event below has dock, scope and window. scope: the dock's scope. pane: a pane
+-- dock's pane, or the window's focused pane for a window dock.
 export type DockClickEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string, button: "left" | "middle" | "right",
     window: number, terminal: State }
 -- item: the item under the pointer; nil when the pointer left the dock's items.
@@ -104,13 +105,14 @@ export type DockHoverEvent = { pane: Pane?, dock: string, scope: "window" | "pan
 -- steps: whole wheel notches, at least 1. item: the item under the pointer, if any.
 export type DockWheelEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string?, direction: "up" | "down" | "left" | "right",
     steps: number, window: number, terminal: State }
--- Where the dock shows: cols and rows are its cells, 0 when it does not show.
 -- A left-button drag that began on item. phase: "start" once the pointer has moved the drag
--- distance, "move" when over or the cell changes, "end" at the release, "cancel" when the drag
--- was cut off. over: the item under the pointer, if any. col, row: the cell under the pointer,
--- from 0 at the dock's top left; past the dock's edges they go below 0 or past its size.
+-- distance, "move" when a pointer move changes over or the cell, "end" at the release, "cancel"
+-- when the drag was cut off. Moves count toward the callback limit. over: the item under the
+-- pointer, if any. col, row: the cell under the pointer, from 0 at the dock's top left; past the
+-- dock's edges they are below 0, or its size or more.
 export type DockDragEvent = { pane: Pane?, dock: string, scope: "window" | "pane", item: string, phase: "start" | "move" | "end" | "cancel",
     over: string?, col: number, row: number, window: number, terminal: State }
+-- Where the dock shows: cols and rows are its cells, 0 when it does not show.
 export type DockLayoutEvent = { pane: Pane?, dock: string, scope: "window" | "pane", shown: boolean, cols: number, rows: number, window: number,
     terminal: State }
 export type TabSwitchEvent = { pane: Pane, from_tab: number, to_tab: number, direction: number, terminal: State }

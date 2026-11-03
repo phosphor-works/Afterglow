@@ -281,7 +281,8 @@ public:
     /// effects) takes them. They are for the next render() or
     /// renderToImage() only, which forgets them: the snapshots must stay
     /// valid until it returns, and a frame without its own setDocks() draws
-    /// no docks.
+    /// no docks. A window dock has no docks of its own: its Pane::docks are
+    /// not drawn.
     void setDocks(std::vector<Pane> docks) { m_docks = std::move(docks); }
     /// Open, or still closing.
     bool overviewShowing() const;
@@ -397,7 +398,11 @@ private:
         std::uint32_t cursorOtherStart;
         std::uint32_t end;
         bool cursorBelowText;
-        QRect scissor;
+        QRect scissor; ///< the whole pane: its default background fills it
+        /// The pane less its docks: everything else it draws (cell
+        /// backgrounds, text, cursors, images) stays in it. In a layer
+        /// target nothing of a dock covers the pane's text there.
+        QRect content;
         std::vector<ImageDraw> images;
         std::uint32_t overlayFirst = 0, overlayEnd = 0; ///< another tab's overlays
         std::vector<DrawRange> docks = {}; ///< the pane's docks, drawn after it

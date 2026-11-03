@@ -30,6 +30,13 @@ using namespace Afterglow;
 
 namespace {
 
+// Runs the queued hops of a dispatch: results, effects that they apply, and
+// the calls that those effects post in turn.
+void pump(int turns = 6)
+{
+    for (int i = 0; i < turns; ++i) QCoreApplication::processEvents();
+}
+
 struct Recorder
 {
     QList<QVariantMap> applied;
@@ -1136,23 +1143,28 @@ return { on_bell = function(ev) return { afterglow.tab_menu(ev.pane), afterglow.
 
 TEST_F(ScriptHostTest, MoveTabNeedsAWholeIndexOfZeroOrMore)
 {
+    // The largest index passes on: only the window knows its tab count.
     write(user, "move.luau", R"(
 return { on_bell = function(ev)
-    return { afterglow.move_tab(ev.pane, 2), afterglow.move_tab(8, 0), afterglow.move_tab(ev.pane, -1),
-             afterglow.move_tab(ev.pane, 1.5), afterglow.move_tab(ev.pane, "1"), afterglow.move_tab(ev.pane) }
+    return { afterglow.move_tab(ev.pane, 2), afterglow.move_tab(8, 0), afterglow.move_tab(ev.pane, 2^31 - 1),
+             afterglow.move_tab(ev.pane, -1), afterglow.move_tab(ev.pane, 1.5), afterglow.move_tab(ev.pane, "1"),
+             afterglow.move_tab(ev.pane), afterglow.move_tab(ev.pane, 2^31), afterglow.move_tab(ev.pane, math.huge) }
 end }
 )");
     host->setEnabled(true);
     host->dispatch("on_bell", 7);
-    ASSERT_EQ(rec.applied.size(), 2);
+    ASSERT_EQ(rec.applied.size(), 3);
     EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("move_tab"));
     EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 7u);
     EXPECT_EQ(rec.applied[0]["index"].toInt(), 2);
     EXPECT_EQ(rec.applied[1]["pane"].toUInt(), 8u);
     EXPECT_EQ(rec.applied[1]["index"].toInt(), 0);
-    ASSERT_EQ(rec.results.size(), 6);
-    for (int i = 0; i < 2; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
-    for (int i = 2; i < 6; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    EXPECT_EQ(rec.applied[2]["index"].toDouble(), 2147483647.0);
+    const QString range = QStringLiteral("move_tab needs a tab index of 0 or more");
+    const QString reasons[] = {range, range, QStringLiteral("move_tab: index must be a number"), range, range, range};
+    ASSERT_EQ(rec.results.size(), 3 + int(std::size(reasons)));
+    for (int i = 0; i < 3; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
+    for (int i = 3; i < rec.results.size(); ++i) EXPECT_EQ(rec.results[i].second, reasons[i - 3]) << i;
 }
 
 TEST_F(ScriptHostTest, DocksHaveAWindowOrAPaneScope)
@@ -1179,9 +1191,9 @@ end }
     EXPECT_EQ(rec.applied[3]["scope"], QStringLiteral("window"));
     ASSERT_EQ(rec.results.size(), 7);
     for (int i = 0; i < 4; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << i;
-    EXPECT_TRUE(rec.results[4].second.contains(QStringLiteral("tab bar"))) << rec.results[4].second.toStdString();
-    EXPECT_TRUE(rec.results[5].second.contains(QStringLiteral("scope"))) << rec.results[5].second.toStdString();
-    EXPECT_TRUE(rec.results[6].second.contains(QStringLiteral("scope"))) << rec.results[6].second.toStdString();
+    EXPECT_EQ(rec.results[4].second, QStringLiteral("Only a window dock can replace the tab bar"));
+    EXPECT_EQ(rec.results[5].second, QStringLiteral("Dock scope must be window or pane"));
+    EXPECT_EQ(rec.results[6].second, QStringLiteral("Dock scope must be window or pane"));
 }
 
 TEST_F(ScriptHostTest, DockClicksReachOnlyTheDocksOwner)
@@ -1270,8 +1282,12 @@ TEST_F(ScriptHostTest, UndockReachesTheWindowAfterItsPaneClosed)
 {
     write(user, "closing.luau", R"(
 return {
-    on_bell = function(ev) return afterglow.dock(ev.pane, {id="bar", edge="top"}) end,
-    on_pane_closed = function(ev) return {afterglow.undock(ev.pane.id, "bar"), afterglow.focus(ev.pane.id)} end,
+    on_bell = function(ev)
+        return {afterglow.dock(ev.pane, {id="bar", edge="top"}), afterglow.dock(ev.pane, {id="title", edge="top", scope="pane"})}
+    end,
+    on_pane_closed = function(ev)
+        return {afterglow.undock(ev.pane.id, "bar"), afterglow.undock(ev.pane.id, "title", "pane"), afterglow.focus(ev.pane.id)}
+    end,
 }
 )");
     host->setEnabled(true);
@@ -1279,10 +1295,17 @@ return {
     paneState.remove(9);
     rec.applied.clear();
     host->dispatch("on_pane_closed", 9, {{"pane", QVariantMap{{"id", 9}, {"tab_id", 20}, {"window", 2}}}});
-    // The area stays in its window when its pane goes: only the window side can find it.
-    ASSERT_EQ(rec.applied.size(), 1);
+    // A window area stays in its window when its pane goes: only the window
+    // side can find it. A pane area closes with its pane: the undock still
+    // goes there, with its scope, and the window side answers no_pane.
+    ASSERT_EQ(rec.applied.size(), 2);
     EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("undock"));
     EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 9u);
+    EXPECT_EQ(rec.applied[0]["scope"], QStringLiteral("window"));
+    EXPECT_EQ(rec.applied[1]["kind"], QStringLiteral("undock"));
+    EXPECT_EQ(rec.applied[1]["pane"].toUInt(), 9u);
+    EXPECT_EQ(rec.applied[1]["scope"], QStringLiteral("pane"));
+    EXPECT_EQ(rec.applied[1]["id"], QStringLiteral("title"));
     EXPECT_TRUE(rec.results.last().second.contains("no pane 9")); // other pane effects are still refused
 }
 
@@ -1755,11 +1778,10 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
         }
         return {};
     };
-    auto pump=[] {for(int i=0;i<12;++i) QCoreApplication::processEvents();};
     host->setEnabled(true);
-    host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     EXPECT_TRUE(rec.applied.isEmpty());
-    ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump();
+    ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump(12);
     ScriptState::Snapshot value;
     ASSERT_TRUE(ScriptState(stateDir.path()).read("project-autosave",value).isEmpty());
     EXPECT_TRUE(value.value.value("enabled").toMap().value("dev").toBool());
@@ -1767,19 +1789,19 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
     EXPECT_EQ(rec.applied.first().value("kind"),"save_project");
     EXPECT_TRUE(rec.applied.first().value("overwrite").toBool());
     host->setEnabled(false);host->setEnabled(true);rec.applied.clear();
-    host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.first().value("name"),"dev");
     // Duplicate live instances of a named project cannot overwrite each other.
     windows.append(QVariantMap{{"id",2},{"project","dev"},{"active_pane",9}});
-    rec.applied.clear();host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    rec.applied.clear();host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     EXPECT_TRUE(rec.applied.isEmpty());windows.removeLast();
-    ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump();
+    ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump(12);
     ASSERT_FALSE(rec.applied.isEmpty());
     ASSERT_EQ(rec.applied.last().value("kind"),"open_project");
     EXPECT_EQ(rec.applied.last().value("name"),"dev");
     EXPECT_FALSE(rec.applied.last().value("new_instance").toBool());
-    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump();rec.applied.clear();
-    host->dispatch("on_timer",0,{{"name","autosave"}});pump();EXPECT_TRUE(rec.applied.isEmpty());
+    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump(12);rec.applied.clear();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);EXPECT_TRUE(rec.applied.isEmpty());
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
@@ -1802,7 +1824,6 @@ TEST_F(ScriptHostTest, TabLineDrawsATabLineAndPersistsToggle)
     windows={QVariantMap{{"id",1},{"project","dev"},{"active_pane",7}}};
     tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}},
           QVariantMap{{"id",11},{"window",1},{"index",1},{"title","vim"},{"active",false},{"active_pane",8}}};
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
     host->setEnabled(true);tick();
     ASSERT_EQ(rec.applied.size(),1);
@@ -1847,7 +1868,6 @@ TEST_F(ScriptHostTest, TabLineActsLikeATabBarAndFollowsItsDock)
                                     {"active",i==0},{"active_pane",i==0?7:(i==1?8:100+i)}});
     };
     setTabs(2);
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     host->setEnabled(true);pump();
     ASSERT_EQ(rec.applied.size(),1);
     const QString owner=rec.owners.last();
@@ -1960,60 +1980,129 @@ TEST_F(ScriptHostTest, TabLineActsLikeATabBarAndFollowsItsDock)
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
 
-TEST_F(ScriptHostTest, TabLineDragsATabOntoTheTabUnderThePointer)
+namespace {
+// The tab line over three tabs of window 1, and one tab of window 2. The
+// second tab is dragged: its pane, 8, is not the focused pane that the
+// events come through, 7.
+class TabLineDrag : public ScriptHostTest
 {
-    installPackage("tab-line");
-    write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
-    windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10},{"cols",200}}};
-    tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","a"},{"active",true},{"active_pane",7}},
-          QVariantMap{{"id",11},{"window",1},{"index",1},{"title","b"},{"active",false},{"active_pane",8}},
-          QVariantMap{{"id",12},{"window",1},{"index",2},{"title","c"},{"active",false},{"active_pane",9}}};
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
-    host->setEnabled(true);pump();
-    ASSERT_EQ(rec.applied.size(),1);
-    const QString owner=rec.owners.last();
-    auto drag=[&](const char* phase, const char* over) {
-        QVariantMap ev{{"dock","tabline"},{"window",1},{"item","tab:10"},{"phase",phase},{"col",3},{"row",0}};
+protected:
+    void SetUp() override
+    {
+        ScriptHostTest::SetUp();
+        installPackage("tab-line");
+        write(user,"tab-line/config.json",R"({"git":false,"segments":["cwd"]})");
+        windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7},{"active_tab",10},{"cols",200}},
+                 QVariantMap{{"id",2},{"project",""},{"active_pane",9},{"active_tab",20},{"cols",200}}};
+        tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","a"},{"active",true},{"active_pane",7}},
+              QVariantMap{{"id",11},{"window",1},{"index",1},{"title","b"},{"active",false},{"active_pane",8}},
+              QVariantMap{{"id",12},{"window",1},{"index",2},{"title","c"},{"active",false},{"active_pane",100}},
+              QVariantMap{{"id",20},{"window",2},{"index",0},{"title","d"},{"active",true},{"active_pane",9}}};
+        host->setEnabled(true);pump();
+        // A line for each window.
+        ASSERT_EQ(rec.applied.size(),2);
+        owner=rec.owners.last();
+    }
+    // Tab @p id is at @p index now, as the line's next state says.
+    void place(int id, int index)
+    {
+        for (QVariant& tab : tabs) {
+            QVariantMap map=tab.toMap();
+            if (map.value("id").toInt()==id) { map.insert("index",index);tab=map; }
+        }
+    }
+    // A drag event of @p item, as the window sends it: moves count toward
+    // the callback limit.
+    void drag(const char* item, const char* phase, const char* over)
+    {
+        QVariantMap ev{{"dock","tabline"},{"window",1},{"scope","window"},{"item",item},{"phase",phase},{"col",3},{"row",0}};
         if (over) ev.insert("over",over);
         rec.applied.clear();
-        host->dispatchTo(owner,"on_dock_drag",7,ev);pump();
-    };
-    auto moved=[&](int index) {
+        host->dispatchTo(owner,"on_dock_drag",7,ev,QByteArray(phase)=="move");pump();
+    }
+    bool moved(quint32 pane, int index) const
+    {
         return rec.applied.size()==1 && rec.applied[0].value("kind")=="move_tab"
-            && rec.applied[0].value("pane").toUInt()==7u && rec.applied[0].value("index").toInt()==index;
-    };
+            && rec.applied[0].value("pane").toUInt()==pane && rec.applied[0].value("index").toInt()==index;
+    }
+    void TearDown() override
+    {
+        for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+    }
+    QString owner;
+};
+} // namespace
+
+TEST_F(TabLineDrag, ATabTakesThePlaceOfTheTabUnderThePointer)
+{
     // Over its own cells, the tab stays.
-    drag("start","tab:10");
+    drag("tab:11","start","tab:11");
     EXPECT_TRUE(rec.applied.isEmpty());
-    // Onto the third tab: it takes that tab's place.
-    drag("move","tab:12");
-    EXPECT_TRUE(moved(2));
+    // Onto the third tab: it takes that tab's place, through its own pane.
+    drag("tab:11","move","tab:12");
+    EXPECT_TRUE(moved(8,2));
     // The line that shows the move is not there yet: more moves over the
     // same cells do not move the tab back.
-    tabs[0]=QVariantMap{{"id",10},{"window",1},{"index",2},{"title","a"},{"active",true},{"active_pane",7}};
-    tabs[2]=QVariantMap{{"id",12},{"window",1},{"index",0},{"title","c"},{"active",false},{"active_pane",9}};
-    drag("move","tab:12");
+    place(11,2);place(12,1);
+    drag("tab:11","move","tab:12");
     EXPECT_TRUE(rec.applied.isEmpty());
-    // Off the items, then onto a tab again: a new item moves it.
-    drag("move",nullptr);
+    // Off the items, then onto that tab again: a new item, at the place
+    // that the tab has now.
+    drag("tab:11","move",nullptr);
     EXPECT_TRUE(rec.applied.isEmpty());
-    drag("move","tab:11");
-    EXPECT_TRUE(moved(1));
+    drag("tab:11","move","tab:12");
+    EXPECT_TRUE(moved(8,1));
+    place(11,1);place(12,2);
     // The "+" button is no tab.
-    drag("move","new");
+    drag("tab:11","move","new");
     EXPECT_TRUE(rec.applied.isEmpty());
-    // The end forgets the item: the next drag starts anew.
-    drag("end","new");
+    drag("tab:11","end","new");
     EXPECT_TRUE(rec.applied.isEmpty());
-    drag("start","tab:11");
-    EXPECT_TRUE(moved(1));
-    drag("cancel",nullptr);
-    // A drag of the "+" button moves nothing.
-    rec.applied.clear();
-    host->dispatchTo(owner,"on_dock_drag",7,{{"dock","tabline"},{"window",1},{"item","new"},{"phase","move"},
-                                             {"over","tab:11"},{"col",0},{"row",0}});pump();
+    // A drag of the "+" button, or of "+N", moves nothing.
+    drag("new","start","new");
+    drag("new","move","tab:10");
     EXPECT_TRUE(rec.applied.isEmpty());
-    for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
+    drag("new","end","tab:10");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    drag("more:12","start","more:12");
+    drag("more:12","end","tab:10");
+    EXPECT_TRUE(rec.applied.isEmpty());
+}
+
+TEST_F(TabLineDrag, TheEndMovesATabThatTheLastMoveDidNotAndACancelMovesNone)
+{
+    // No move reached the script (moves count toward the callback limit):
+    // the end, over another tab, moves the tab.
+    drag("tab:11","start","tab:11");
+    drag("tab:11","end","tab:12");
+    EXPECT_TRUE(moved(8,2));
+    place(11,2);place(12,1);
+    // An end over the tab that the last move went to does not move it again.
+    drag("tab:11","start","tab:11");
+    drag("tab:11","move","tab:10");
+    EXPECT_TRUE(moved(8,0));
+    place(11,0);place(10,1);place(12,2);
+    drag("tab:11","end","tab:10");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    // A cancel moves nothing, also over another tab.
+    drag("tab:11","start","tab:11");
+    drag("tab:11","cancel","tab:12");
+    EXPECT_TRUE(rec.applied.isEmpty());
+}
+
+TEST_F(TabLineDrag, ATabMovesOntoAHiddenTabButNotIntoAnotherWindow)
+{
+    // "+N" stands for the nearest hidden tab: the dragged tab takes its place.
+    drag("tab:11","start","tab:11");
+    drag("tab:11","move","more:12");
+    EXPECT_TRUE(moved(8,2));
+    place(11,2);place(12,1);
+    // A tab moves only in its own window, also at the end of a drag.
+    drag("tab:11","end","tab:20");
+    EXPECT_TRUE(rec.applied.isEmpty());
+    drag("tab:11","start","tab:11");
+    drag("tab:11","move","tab:20");
+    EXPECT_TRUE(rec.applied.isEmpty());
 }
 
 TEST_F(ScriptHostTest, TabLinePacesTheLinesThatThePointerDraws)
@@ -2025,7 +2114,6 @@ TEST_F(ScriptHostTest, TabLinePacesTheLinesThatThePointerDraws)
     tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","a"},{"active",true},{"active_pane",7}},
           QVariantMap{{"id",11},{"window",1},{"index",1},{"title","b"},{"active",false},{"active_pane",8}},
           QVariantMap{{"id",12},{"window",1},{"index",2},{"title","c"},{"active",false},{"active_pane",9}}};
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     host->setEnabled(true);pump();
     ASSERT_EQ(rec.applied.size(),1);
     const QString owner=rec.owners.last();
@@ -2153,7 +2241,6 @@ TEST_F(ScriptHostTest, TabLineSendsADroppedLineAgain)
         refusal.clear();
         return result;
     };
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
     host->setEnabled(true);pump();
     ASSERT_EQ(rec.applied.size(),1);
@@ -2186,7 +2273,6 @@ TEST_F(ScriptHostTest, TabLineSendsALineAgainWhenItsResultIsLost)
         lose=false;
         return result;
     };
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
     host->setEnabled(true);pump();
     ASSERT_EQ(rec.applied.size(),1);
@@ -2210,7 +2296,6 @@ TEST_F(ScriptHostTest, TabLineCoalescesEventRedraws)
         QElapsedTimer clock;clock.start();
         while (clock.elapsed()<ms && !done()) { QCoreApplication::processEvents(); QThread::msleep(5); }
     };
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     host->setEnabled(true);pump();
     ASSERT_EQ(rec.applied.size(),1);
     for (int i=0;i<10;++i) { title(QString("t%1").arg(i)); host->dispatch("on_title",7,{}); }
@@ -2271,7 +2356,6 @@ TEST_F(ScriptHostTest, TabLineLeavesAOneTabWindowWithSingleTabOff)
     paneState[7]["cwd"]="/tmp/repository";
     windows={QVariantMap{{"id",1},{"project",""},{"active_pane",7}}};
     tabs={QVariantMap{{"id",10},{"window",1},{"index",0},{"title","fish"},{"active",true},{"active_pane",7}}};
-    auto pump=[]{for(int i=0;i<6;++i)QCoreApplication::processEvents();};
     auto tick=[&]{host->dispatch("on_timer",0,{{"name","refresh"}});pump();};
     host->setEnabled(true);pump();
     EXPECT_TRUE(rec.applied.isEmpty());
@@ -2298,17 +2382,16 @@ TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
         if(e.value("kind")=="select") return {"Cancelled",{},"cancelled"};
         return {};
     };
-    auto pump=[] {for(int i=0;i<12;++i)QCoreApplication::processEvents();};
-    host->setEnabled(true);ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump();
+    host->setEnabled(true);ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump(12);
     ASSERT_FALSE(rec.applied.isEmpty());
     EXPECT_EQ(rec.applied.last().value("kind"),"notify");
     EXPECT_EQ(rec.applied.last().value("body"),"Disk unavailable");
     fail=false;rec.applied.clear();
-    host->dispatch("on_timer",0,{{"name","autosave"}});pump();
+    host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.last().value("kind"),"save_project");
-    rec.applied.clear();ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump();
+    rec.applied.clear();ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump(12);
     ASSERT_EQ(rec.applied.size(),2);EXPECT_EQ(rec.applied.last().value("kind"),"select");
-    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump();
+    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump(12);
     ScriptState::Snapshot stored;
     ASSERT_TRUE(ScriptState(stateDir.path()).read("project-autosave",stored).isEmpty());
     EXPECT_FALSE(stored.value.value("enabled").toMap().contains("dev"));
@@ -3745,15 +3828,14 @@ TEST_F(ScriptHostTest, SceneControlsKeepsOnlyAcceptedValuesInItsLayer)
         return {{}, {{"id", choice}}, {}};
     };
     host->setEnabled(true);
-    auto pump = [] { for (int i = 0; i < 10; ++i) QCoreApplication::processEvents(); };
     auto edit = [&](const QString& id, const QString& value) {
         choice = id;
         pendingReply = {};
         ASSERT_TRUE(host->runAction("scene-controls.open", 7));
-        pump();
+        pump(10);
         ASSERT_TRUE(bool(pendingReply));
         pendingReply({{}, {{"text", value}}, {}});
-        pump();
+        pump(10);
     };
     edit("strength", "9");
     ASSERT_EQ(sent.size(), 1);
@@ -3771,7 +3853,7 @@ TEST_F(ScriptHostTest, SceneControlsKeepsOnlyAcceptedValuesInItsLayer)
     // After a preset, an edit keeps the preset's values, not the effective ones.
     choice = "@preset";
     ASSERT_TRUE(host->runAction("scene-controls.open", 7));
-    pump();
+    pump(10);
     edit("radius", "4");
     EXPECT_EQ(sent.last(), QVariantMap({{"strength", 0.8}, {"radius", 4}}));
 }

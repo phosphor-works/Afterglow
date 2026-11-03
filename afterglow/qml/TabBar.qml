@@ -27,6 +27,8 @@ QQC.ToolBar {
     property int dragFrom: -1
     property int dragTo: -1
     property real dragX: 0
+    // The tabs moved under the press (onTabsMoved): no drag until the next one.
+    property bool dragCut: false
     // Set for the frame a move lands in, so tabs take their new places at once.
     property bool settling: false
     // How long the strip scrolls and a tab slides to its new place.
@@ -87,6 +89,13 @@ QQC.ToolBar {
             bar.revealedTab = current
             bar.revealedCount = count
             Qt.callLater(bar.revealCurrent)
+        }
+        // A key or a script moved a tab: the press now holds another tab's
+        // place, so the drag stops until the next press.
+        function onTabsMoved() {
+            bar.dragFrom = -1
+            bar.dragTo = -1
+            bar.dragCut = true
         }
     }
     // The delegates are made again when the count changes, and a drag under
@@ -244,6 +253,7 @@ QQC.ToolBar {
 
                     onPressed: mouse => {
                         if (mouse.button === Qt.LeftButton) {
+                            bar.dragCut = false
                             pressPosition = mapToItem(bar, mouse.x, mouse.y)
                             grabOffset = mouse.x
                             if (bar.secondClick(tab.index))
@@ -253,7 +263,7 @@ QQC.ToolBar {
                         }
                     }
                     onPositionChanged: mouse => {
-                        if (!(mouse.buttons & Qt.LeftButton))
+                        if (!(mouse.buttons & Qt.LeftButton) || bar.dragCut)
                             return
                         const at = mapToItem(strip.contentItem, mouse.x, 0).x
                         const position = mapToItem(bar, mouse.x, mouse.y)

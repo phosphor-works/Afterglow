@@ -12,10 +12,11 @@
 // --signal CH=VALUE@AGE sets uSignal[CH] as if set AGE seconds earlier.
 // --wake-from COL,ROW renders a frame with the cursor there --wake-age
 // seconds earlier, so cursor effects show a jump. --dock EDGE:CELLS:TEXT adds
-// a script dock at a window edge, drawn after every chain as in the window.
-// Further options set the other renderer inputs (pointer, selection, search,
-// glide, scroll shift, hovered link, blink phase, bidi, contrast, hinting,
-// cell scale); --help lists them all.
+// a script dock at a window edge, drawn after every chain as in the window;
+// --pane-dock EDGE:CELLS:TEXT adds one at that edge of every pane, drawn with
+// the pane under its chains. Further options set the other renderer inputs
+// (pointer, selection, search, glide, scroll shift, hovered link, blink
+// phase, bidi, contrast, hinting, cell scale); --help lists them all.
 
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
@@ -33,14 +34,17 @@
 #include <QImage>
 #include <QImageReader>
 #include <QBuffer>
+#include <QMargins>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <memory>
+#include <numeric>
 #include <optional>
 
 namespace {
@@ -99,6 +103,78 @@ bool parsePair(const QString& text, QChar separator, double low, double high, do
     return aOk && bOk && std::isfinite(a) && std::isfinite(b) && a >= low && a <= high && b >= low && b <= high;
 }
 
+/// A script dock from --dock or --pane-dock.
+struct DockSpec
+{
+    QString edge;
+    int cells = 0;
+    QByteArray text;
+    bool side() const { return edge == QLatin1String("left") || edge == QLatin1String("right"); }
+    int extent(int cellWidth, int cellHeight) const { return cells * (side() ? cellWidth : cellHeight); }
+};
+
+/// Parses EDGE:CELLS:TEXT within the sizes scripts may use, or prints the
+/// limits for --@p option.
+std::optional<DockSpec> parseDock(const char* option, const QString& value)
+{
+    const qsizetype first = value.indexOf(QLatin1Char(':'));
+    const qsizetype second = first < 0 ? -1 : value.indexOf(QLatin1Char(':'), first + 1);
+    DockSpec spec{value.left(first), 0, {}};
+    bool cellsOk = false;
+    if (second >= 0) spec.cells = value.mid(first + 1, second - first - 1).toInt(&cellsOk);
+    if (!cellsOk || spec.cells < 1 || spec.cells > (spec.side() ? 80 : 8)
+        || !(spec.side() || spec.edge == QLatin1String("top") || spec.edge == QLatin1String("bottom"))) {
+        std::fprintf(stderr, "--%s requires EDGE:CELLS:TEXT, edge top, bottom, left or right, cells 1..8 for top and bottom, 1..80 for left and right\n",
+                     option);
+        return std::nullopt;
+    }
+    spec.text = value.mid(second + 1).toUtf8();
+    return spec;
+}
+
+/// What @p specs take at each edge, in pixels.
+QMargins dockInsets(const std::vector<DockSpec>& specs, int cellWidth, int cellHeight)
+{
+    QMargins insets;
+    for (const DockSpec& spec : specs) {
+        const int extent = spec.extent(cellWidth, cellHeight);
+        if (spec.edge == QLatin1String("top")) insets.setTop(insets.top() + extent);
+        else if (spec.edge == QLatin1String("bottom")) insets.setBottom(insets.bottom() + extent);
+        else if (spec.edge == QLatin1String("left")) insets.setLeft(insets.left() + extent);
+        else insets.setRight(insets.right() + extent);
+    }
+    return insets;
+}
+
+/// Each spec's rectangle in @p area, laid out as the window does: from the
+/// edge inwards, top and bottom across the whole width first, then left and
+/// right between them, each group in the order given.
+std::vector<QRect> stackDocks(const std::vector<DockSpec>& specs, QRect area, int cellWidth, int cellHeight)
+{
+    std::vector<std::size_t> order(specs.size());
+    std::iota(order.begin(), order.end(), std::size_t(0));
+    std::stable_partition(order.begin(), order.end(), [&](std::size_t i) { return !specs[i].side(); });
+    std::vector<QRect> rects(specs.size());
+    for (const std::size_t i : order) {
+        const DockSpec& spec = specs[i];
+        const int extent = spec.extent(cellWidth, cellHeight);
+        if (spec.edge == QLatin1String("top")) {
+            rects[i] = QRect(area.left(), area.top(), area.width(), extent);
+            area.setTop(area.top() + extent);
+        } else if (spec.edge == QLatin1String("bottom")) {
+            rects[i] = QRect(area.left(), area.bottom() + 1 - extent, area.width(), extent);
+            area.setBottom(area.bottom() - extent);
+        } else if (spec.edge == QLatin1String("left")) {
+            rects[i] = QRect(area.left(), area.top(), extent, area.height());
+            area.setLeft(area.left() + extent);
+        } else {
+            rects[i] = QRect(area.right() + 1 - extent, area.top(), extent, area.height());
+            area.setRight(area.right() - extent);
+        }
+    }
+    return rects;
+}
+
 int run(QGuiApplication& app)
 {
     QCommandLineParser parser;
@@ -130,7 +206,7 @@ int run(QGuiApplication& app)
                       QStringLiteral("b,m,t")});
     parser.addOption({QStringLiteral("scrollback-lines"), QStringLiteral("Synthetic combined history rows for a deterministic preview."),
                       QStringLiteral("n")});
-    parser.addOption({QStringLiteral("pixels"), QStringLiteral("Exact pane framebuffer size WIDTHxHEIGHT."), QStringLiteral("size")});
+    parser.addOption({QStringLiteral("pixels"), QStringLiteral("Exact pane framebuffer size WIDTHxHEIGHT, without its --pane-dock docks."), QStringLiteral("size")});
     parser.addOption({QStringLiteral("last-only"), QStringLiteral("Save only the final frame (benchmarking).")});
     parser.addOption({QStringLiteral("timings"), QStringLiteral("Report render/readback and PNG times, excluding the first frame (needs --frames 2 or more).")});
     parser.addOption({QStringLiteral("wake-from"), QStringLiteral("Previous cursor cell."), QStringLiteral("col,row")});
@@ -182,7 +258,7 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("search-current"), QStringLiteral("With --search: the current match (default none)."), QStringLiteral("n")});
     parser.addOption({QStringLiteral("hover-link"), QStringLiteral("Underline columns C0 to C1 of row ROW as a hovered link."), QStringLiteral("row,c0-c1")});
     parser.addOption({QStringLiteral("blink-off"), QStringLiteral("Draw the off phase of a blinking cursor and of blinking text.")});
-    parser.addOption({QStringLiteral("pane-dock"), QStringLiteral("A script dock at an edge of every pane (repeatable), as --dock: drawn in the pane, under its chains, overview and pane effects. Later ones go inward of earlier ones."),
+    parser.addOption({QStringLiteral("pane-dock"), QStringLiteral("A script dock at an edge of every pane (repeatable), as --dock: drawn in the pane, under its chains, overview and pane effects. The pane grows by the dock and its grid keeps its size."),
                       QStringLiteral("EDGE:CELLS:TEXT")});
     parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
                       QStringLiteral("edge:cells:text")});
@@ -466,50 +542,43 @@ int run(QGuiApplication& app)
         gridCols = int(c);
         gridRows = int(r);
     }
-    // Script docks, laid out as the window does: from the frame's edge
-    // inwards in the order given, top and bottom across the whole width,
-    // left and right between them. The panes keep their size.
-    struct DockSpec
-    {
-        QString edge;
-        int extent; ///< pixels
-        QByteArray text;
-    };
-    std::vector<DockSpec> dockSpecs;
-    int dockTop = 0, dockBottom = 0, dockLeft = 0, dockRight = 0;
+    // Script docks at the window's edges grow the frame, and docks at each
+    // pane's edges grow the pane: either way the grid keeps its size.
+    std::vector<DockSpec> dockSpecs, paneDockSpecs;
     for (const QString& value : parser.values(QStringLiteral("dock"))) {
-        const qsizetype first = value.indexOf(QLatin1Char(':'));
-        const qsizetype second = first < 0 ? -1 : value.indexOf(QLatin1Char(':'), first + 1);
-        const QString edge = value.left(first);
-        const bool side = edge == QLatin1String("left") || edge == QLatin1String("right");
-        bool cellsOk = false;
-        const int cells = second < 0 ? 0 : value.mid(first + 1, second - first - 1).toInt(&cellsOk);
-        if (second < 0 || !cellsOk || cells < 1 || cells > (side ? 80 : 8)
-            || !(side || edge == QLatin1String("top") || edge == QLatin1String("bottom"))) {
-            std::fprintf(stderr, "--dock requires EDGE:CELLS:TEXT, edge top, bottom, left or right, cells 1..8 for top and bottom, 1..80 for left and right\n");
-            return 1;
-        }
-        const int extent = cells * (side ? metrics.cellWidth : metrics.cellHeight);
-        int& inset = edge == QLatin1String("top")    ? dockTop
-            : edge == QLatin1String("bottom")        ? dockBottom
-            : edge == QLatin1String("left")          ? dockLeft
-                                                     : dockRight;
-        inset += extent;
-        dockSpecs.push_back({edge, extent, value.mid(second + 1).toUtf8()});
+        auto spec = parseDock("dock", value);
+        if (!spec) return 1;
+        dockSpecs.push_back(std::move(*spec));
     }
-    const qint64 fullWidth = split ? qint64(size.width()) * 2 + 2 : qint64(size.width() + 2) * gridCols - 2;
-    const qint64 fullHeight = qint64(size.height() + 2) * gridRows - 2;
-    const qint64 windowWidth = fullWidth + dockLeft + dockRight, windowHeight = fullHeight + dockTop + dockBottom;
+    for (const QString& value : parser.values(QStringLiteral("pane-dock"))) {
+        auto spec = parseDock("pane-dock", value);
+        if (!spec) return 1;
+        paneDockSpecs.push_back(std::move(*spec));
+    }
+    const QMargins dockInset = dockInsets(dockSpecs, metrics.cellWidth, metrics.cellHeight);
+    const QMargins paneInset = dockInsets(paneDockSpecs, metrics.cellWidth, metrics.cellHeight);
+    // The window shows a pane's docks only while they leave it this much.
+    if (!paneDockSpecs.empty() && (size.width() < 4 * metrics.cellWidth || size.height() < 2 * metrics.cellHeight)) {
+        std::fprintf(stderr, "--pane-dock needs a pane grid of at least 4 columns and 2 rows\n");
+        return 1;
+    }
+    const QSize paneSize = size.grownBy(paneInset);
+    const qint64 fullWidth = split ? qint64(paneSize.width()) * 2 + 2 : qint64(paneSize.width() + 2) * gridCols - 2;
+    const qint64 fullHeight = qint64(paneSize.height() + 2) * gridRows - 2;
+    const qint64 windowWidth = fullWidth + dockInset.left() + dockInset.right();
+    const qint64 windowHeight = fullHeight + dockInset.top() + dockInset.bottom();
     if (size.width() < 1 || size.height() < 1 || windowWidth > 8192 || windowHeight > 8192
         || windowWidth * windowHeight > 16 * 1024 * 1024) {
         std::fprintf(stderr, "framebuffer must fit within 8192 pixels per side and 16 megapixels\n");
         return 1;
     }
+    // Cell (0, 0) of a pane, from its top left: inside its docks.
+    const QPoint gridOffset(paneInset.left(), paneInset.top());
     const auto alpha = std::uint8_t(std::lround(std::clamp(parser.value(QStringLiteral("opacity")).toDouble(), 0.0, 1.0) * 255));
     AfterglowRender::WindowRenderer::Pane pane;
     pane.snapshot = &snapshot;
-    pane.params.rect = QRect(QPoint(0, 0), size);
-    pane.params.contentOrigin = QPoint(0, 0);
+    pane.params.rect = QRect(QPoint(0, 0), paneSize);
+    pane.params.contentOrigin = gridOffset;
     pane.params.focused = !parser.isSet(QStringLiteral("unfocused"));
     pane.params.backgroundAlpha = alpha;
     pane.params.scrollShift = scrollShift;
@@ -569,19 +638,19 @@ int run(QGuiApplication& app)
     const double time = parser.value(QStringLiteral("time")).toDouble();
     std::vector<AfterglowRender::WindowRenderer::Pane> panes{pane};
     std::vector<std::pair<QRect, std::uint32_t>> overlays;
-    QSize frameSize = size;
+    QSize frameSize = paneSize;
     AfterglowRender::PaneSnapshot twin = snapshot;
     if (split) {
         // Two panes with a divider between, as a split window shows them.
         const int divider = 2;
-        frameSize = QSize(size.width() * 2 + divider, size.height());
+        frameSize = QSize(paneSize.width() * 2 + divider, paneSize.height());
         AfterglowRender::WindowRenderer::Pane right = pane;
         right.snapshot = &twin;
-        right.params.rect = QRect(QPoint(size.width() + divider, 0), size);
-        right.params.contentOrigin = right.params.rect.topLeft();
+        right.params.rect = QRect(QPoint(paneSize.width() + divider, 0), paneSize);
+        right.params.contentOrigin = right.params.rect.topLeft() + gridOffset;
         right.params.focused = false;
         panes.push_back(right);
-        overlays.push_back({QRect(size.width(), 0, divider, size.height()), 0xFF0E0706u});
+        overlays.push_back({QRect(paneSize.width(), 0, divider, paneSize.height()), 0xFF0E0706u});
     }
     std::vector<AfterglowRender::PaneSnapshot> copies(std::size_t(gridCols * gridRows), snapshot);
     if (gridCols * gridRows > 1) {
@@ -593,121 +662,67 @@ int run(QGuiApplication& app)
                 AfterglowRender::WindowRenderer::Pane cell = pane;
                 // The first cell is the original snapshot, which --wake-from moves.
                 cell.snapshot = panes.empty() ? &snapshot : &copies[std::size_t(row * gridCols + col)];
-                cell.params.rect = QRect(QPoint(col * (size.width() + divider), row * (size.height() + divider)), size);
-                cell.params.contentOrigin = cell.params.rect.topLeft();
+                cell.params.rect = QRect(QPoint(col * (paneSize.width() + divider), row * (paneSize.height() + divider)), paneSize);
+                cell.params.contentOrigin = cell.params.rect.topLeft() + gridOffset;
                 cell.params.focused = panes.empty() && pane.params.focused;
                 panes.push_back(cell);
             }
         }
     }
     // Each dock is a terminal of its own that runs no program, without wrap,
-    // cursor, scrollback or bidi, as the window makes it.
+    // cursor, scrollback or bidi, as the window makes it, sized to its
+    // rectangle. The terminals stay while their snapshots are drawn.
+    AfterglowVt::TerminalOptions dockOptions = options;
+    dockOptions.maxScrollback = 0;
+    dockOptions.bidi = AfterglowVt::BidiMode::Off;
     std::vector<std::unique_ptr<AfterglowVt::Terminal>> dockTerminals;
+    auto captureDock = [&](const DockSpec& spec, const QRect& rect, AfterglowRender::PaneSnapshot& out) {
+        const int dockCols = std::max(2, rect.width() / metrics.cellWidth);
+        const int dockRows = std::max(1, rect.height() / metrics.cellHeight);
+        auto& dockTerminal = dockTerminals.emplace_back(std::make_unique<AfterglowVt::Terminal>(dockCols, dockRows, host, dockOptions));
+        dockTerminal->resize(dockCols, dockRows, metrics.cellWidth, metrics.cellHeight);
+        dockTerminal->feed("\x1b[?7l\x1b[?25l");
+        dockTerminal->feed(std::string_view(spec.text.constData(), std::size_t(spec.text.size())));
+        out.capture(*dockTerminal);
+    };
     std::vector<AfterglowRender::PaneSnapshot> dockSnapshots(dockSpecs.size());
     std::vector<AfterglowRender::WindowRenderer::Pane> docks;
     if (!dockSpecs.empty()) {
-        const QPoint offset(dockLeft, dockTop);
+        const QPoint offset(dockInset.left(), dockInset.top());
         for (auto& region : panes) {
             region.params.rect.translate(offset);
             region.params.contentOrigin += offset;
         }
         for (auto& overlay : overlays) overlay.first.translate(offset);
-        frameSize += QSize(dockLeft + dockRight, dockTop + dockBottom);
-        QRect area(QPoint(0, 0), frameSize);
-        std::vector<std::size_t> order(dockSpecs.size());
-        for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
-        std::stable_partition(order.begin(), order.end(), [&](std::size_t i) {
-            return dockSpecs[i].edge == QLatin1String("top") || dockSpecs[i].edge == QLatin1String("bottom");
-        });
-        AfterglowVt::TerminalOptions dockOptions = options;
-        dockOptions.maxScrollback = 0;
-        dockOptions.bidi = AfterglowVt::BidiMode::Off;
-        for (const std::size_t i : order) {
-            const DockSpec& spec = dockSpecs[i];
-            QRect rect;
-            if (spec.edge == QLatin1String("top")) {
-                rect = QRect(area.left(), area.top(), area.width(), spec.extent);
-                area.setTop(area.top() + spec.extent);
-            } else if (spec.edge == QLatin1String("bottom")) {
-                rect = QRect(area.left(), area.bottom() + 1 - spec.extent, area.width(), spec.extent);
-                area.setBottom(area.bottom() - spec.extent);
-            } else if (spec.edge == QLatin1String("left")) {
-                rect = QRect(area.left(), area.top(), spec.extent, area.height());
-                area.setLeft(area.left() + spec.extent);
-            } else {
-                rect = QRect(area.right() + 1 - spec.extent, area.top(), spec.extent, area.height());
-                area.setRight(area.right() - spec.extent);
-            }
-            const int dockCols = std::max(2, rect.width() / metrics.cellWidth);
-            const int dockRows = std::max(1, rect.height() / metrics.cellHeight);
-            auto& dockTerminal = dockTerminals.emplace_back(std::make_unique<AfterglowVt::Terminal>(dockCols, dockRows, host, dockOptions));
-            dockTerminal->resize(dockCols, dockRows, metrics.cellWidth, metrics.cellHeight);
-            dockTerminal->feed("\x1b[?7l\x1b[?25l");
-            dockTerminal->feed(std::string_view(spec.text.constData(), std::size_t(spec.text.size())));
-            dockSnapshots[i].capture(*dockTerminal);
+        frameSize = frameSize.grownBy(dockInset);
+        const std::vector<QRect> rects = stackDocks(dockSpecs, QRect(QPoint(0, 0), frameSize), metrics.cellWidth, metrics.cellHeight);
+        for (std::size_t i = 0; i < dockSpecs.size(); ++i) {
+            captureDock(dockSpecs[i], rects[i], dockSnapshots[i]);
             AfterglowRender::WindowRenderer::Pane dock;
             dock.snapshot = &dockSnapshots[i];
-            dock.params.rect = rect;
-            dock.params.contentOrigin = rect.topLeft();
+            dock.params.rect = rects[i];
+            dock.params.contentOrigin = rects[i].topLeft();
             dock.params.backgroundAlpha = alpha;
             docks.push_back(dock);
         }
     }
-    // Pane docks: the same area at the same edge of every pane, inside it,
-    // drawn with the pane and under its chains. The grid moves inward.
-    std::vector<std::unique_ptr<AfterglowVt::Terminal>> paneDockTerminals;
-    std::vector<AfterglowRender::PaneSnapshot> paneDockSnapshots(std::size_t(parser.values(QStringLiteral("pane-dock")).size()));
-    {
-        std::size_t index = 0;
-        std::vector<QRect> areas;
-        for (const auto& region : panes) areas.push_back(region.params.rect);
-        for (const QString& value : parser.values(QStringLiteral("pane-dock"))) {
-            const qsizetype first = value.indexOf(QLatin1Char(':'));
-            const qsizetype second = first < 0 ? -1 : value.indexOf(QLatin1Char(':'), first + 1);
-            const QString edge = value.left(first);
-            const bool side = edge == QLatin1String("left") || edge == QLatin1String("right");
-            bool cellsOk = false;
-            const int cells = second < 0 ? 0 : value.mid(first + 1, second - first - 1).toInt(&cellsOk);
-            if (second < 0 || !cellsOk || cells < 1 || cells > (side ? 80 : 8)
-                || !(side || edge == QLatin1String("top") || edge == QLatin1String("bottom"))) {
-                std::fprintf(stderr, "--pane-dock requires EDGE:CELLS:TEXT, as --dock does\n");
-                return 1;
-            }
-            const int extent = cells * (side ? metrics.cellWidth : metrics.cellHeight);
-            AfterglowVt::TerminalOptions dockOptions = options;
-            dockOptions.maxScrollback = 0;
-            dockOptions.bidi = AfterglowVt::BidiMode::Off;
-            const int dockCols = std::max(2, (side ? extent : size.width()) / metrics.cellWidth);
-            const int dockRows = std::max(1, (side ? size.height() : extent) / metrics.cellHeight);
-            auto& dockTerminal = paneDockTerminals.emplace_back(std::make_unique<AfterglowVt::Terminal>(dockCols, dockRows, host, dockOptions));
-            dockTerminal->resize(dockCols, dockRows, metrics.cellWidth, metrics.cellHeight);
-            dockTerminal->feed("\x1b[?7l\x1b[?25l");
-            const QByteArray text = value.mid(second + 1).toUtf8();
-            dockTerminal->feed(std::string_view(text.constData(), std::size_t(text.size())));
-            paneDockSnapshots[index].capture(*dockTerminal);
-            for (std::size_t i = 0; i < panes.size(); ++i) {
-                QRect& area = areas[i];
-                QRect rect;
-                if (edge == QLatin1String("top")) {
-                    rect = QRect(area.left(), area.top(), area.width(), extent);
-                    area.setTop(area.top() + extent);
-                    panes[i].params.contentOrigin.ry() += extent;
-                } else if (edge == QLatin1String("bottom")) {
-                    rect = QRect(area.left(), area.bottom() + 1 - extent, area.width(), extent);
-                    area.setBottom(area.bottom() - extent);
-                } else if (edge == QLatin1String("left")) {
-                    rect = QRect(area.left(), area.top(), extent, area.height());
-                    area.setLeft(area.left() + extent);
-                    panes[i].params.contentOrigin.rx() += extent;
-                } else {
-                    rect = QRect(area.right() + 1 - extent, area.top(), extent, area.height());
-                    area.setRight(area.right() - extent);
-                }
-                panes[i].docks.push_back({&paneDockSnapshots[index], rect});
-            }
-            ++index;
+    // Pane docks: the same areas at the same edges of every pane, inside it,
+    // drawn with the pane and under its chains. Every pane has the same
+    // size, so one terminal for each dock serves them all; each pane draws
+    // its own copy, as each pane's dock is its own in the window.
+    std::vector<AfterglowRender::PaneSnapshot> paneDockSnapshots(paneDockSpecs.size());
+    const std::vector<QRect> paneDockRects = stackDocks(paneDockSpecs, QRect(QPoint(0, 0), paneSize), metrics.cellWidth, metrics.cellHeight);
+    for (std::size_t i = 0; i < paneDockSpecs.size(); ++i) captureDock(paneDockSpecs[i], paneDockRects[i], paneDockSnapshots[i]);
+    // Stable addresses: copies are added after panes point at earlier ones.
+    std::deque<AfterglowRender::PaneSnapshot> paneDockCopies;
+    auto addPaneDocks = [&](AfterglowRender::WindowRenderer::Pane& region) {
+        region.docks.clear();
+        for (std::size_t i = 0; i < paneDockSpecs.size(); ++i) {
+            const AfterglowRender::PaneSnapshot& copy = paneDockCopies.emplace_back(paneDockSnapshots[i]);
+            region.docks.push_back({&copy, paneDockRects[i].translated(region.params.rect.topLeft())});
         }
-    }
+    };
+    for (auto& region : panes) addPaneDocks(region);
     if (parser.isSet(QStringLiteral("wake-from"))) {
         const QStringList at = parser.value(QStringLiteral("wake-from")).split(QLatin1Char(','));
         bool xOk = false, yOk = false;
@@ -776,6 +791,7 @@ int run(QGuiApplication& app)
                 copy.snapshot = &tabSnapshots[std::size_t(tab * perTab + i)];
                 copy.params.focused = false;
                 copy.params.highlighted = tab * perTab + i == highlight;
+                addPaneDocks(copy);
                 other.panes.push_back(copy);
             }
             other.overlays = overlays;
@@ -823,6 +839,7 @@ int run(QGuiApplication& app)
             auto copy = panes[i];
             copy.snapshot = &leftSnapshots[i];
             copy.params.focused = false;
+            addPaneDocks(copy);
             transition->from.panes.push_back(copy);
         }
         transition->from.overlays = overlays;

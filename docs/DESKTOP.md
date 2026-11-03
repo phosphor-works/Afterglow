@@ -58,7 +58,8 @@ Keys cannot run an action then, and an action from outside would replace the ans
 ### Docked areas
 
 Each [docked area](SCRIPTING.md#docked-areas) that shows is an object under its window.
-This includes the areas of the panes in the current tab, while the pane overview is closed.
+This includes the areas of the panes that show in the current tab, while the pane overview is closed.
+The geometry of a pane object does not include the areas of that pane.
 An area with items is a toolbar. An area without items is read-only static text.
 Its name is the text of the area, one line for each row.
 Each run with an `item` that takes cells is a button in the area.

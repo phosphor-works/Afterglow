@@ -998,11 +998,12 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 {
     if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()
         || !script->engine->hasFunction(script->module, handler)) return;
-    // Keys, dock clicks, hovers and layouts and on_load are not counted here:
-    // dropping a key would leave a key mode on while its keys vanish, and a
-    // dropped hover or layout would leave a script with an old state. Those
-    // that can come without limit (wheel turns, accessibility presses) were
-    // counted by dispatchTo. Timers and watchers have a budget of their own,
+    // Keys, dock clicks, hovers and layouts, the start, end and cancel of a
+    // dock drag and on_load are not counted here: dropping a key would leave
+    // a key mode on while its keys vanish, and a dropped hover or layout
+    // would leave a script with an old state. Those that can come without
+    // limit (wheel turns, drag moves, accessibility presses) were counted by
+    // dispatchTo. Timers and watchers have a budget of their own,
     // so a title storm that spends the events' budget does not stop them.
     const bool task = handler == QLatin1String("on_timer") || handler == QLatin1String("on_file_changed");
     if (task && !admitCallback(*script, true)) return;
@@ -1258,14 +1259,14 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             error = QStringLiteral("Status text exceeds its length limit");
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
             const QVariant id = raw.value(QStringLiteral("id"));
+            const QVariant scope = raw.value(QStringLiteral("scope"), QStringLiteral("window"));
             if (id.typeId() != QMetaType::QString || !validScriptId(id.toString()) || id.toString().size() > 32)
                 error = QStringLiteral("A dock id is a string of 1 to 32 ASCII letters, digits, - or _");
-            else if (const QVariant scope = raw.value(QStringLiteral("scope"), QStringLiteral("window"));
-                     scope != QLatin1String("window") && scope != QLatin1String("pane"))
+            else if (scope != QLatin1String("window") && scope != QLatin1String("pane"))
                 error = QStringLiteral("Dock scope must be window or pane");
             else if (kind == QLatin1String("dock"))
                 if (const QString problem = checkDock(raw, effect); !problem.isEmpty()) error = problem;
-            effect.insert(QStringLiteral("scope"), raw.value(QStringLiteral("scope"), QStringLiteral("window")).toString());
+            effect.insert(QStringLiteral("scope"), scope.toString());
         }
         if (kind == QLatin1String("signals")) {
             const auto values = raw.value(QStringLiteral("values")).toList();
@@ -1291,8 +1292,9 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("signal scope must be pane, tab or window");
             }
         }
-        // An undock may name a pane that has closed or moved: its area stays
-        // in the window it was docked in, where Control finds it.
+        // An undock may name a pane that has closed or moved: a window area
+        // stays in the window it was docked in, where Control finds it. A
+        // pane area goes with its pane and closes with it (no_pane then).
         const bool paneMustExist = info->pane && kind != QLatin1String("undock");
         const bool structural = info->structural || (kind == QLatin1String("action")
             && (!m_callbacks.structuralAction || m_callbacks.structuralAction(str(effect, "name"))));

@@ -205,13 +205,17 @@ function script.on_dock_wheel(ev)
 end
 -- A tab that is dragged onto another tab, or onto "+N", takes its place.
 -- Only a new item under the pointer moves it: the line that shows the move
--- comes after the move, and until then the pointer is over the old cells.
+-- comes after the move (on_pane_moved), and until then the pointer is over
+-- the old cells. Moves count toward the callback limit, so the end moves
+-- the tab too when the last item that it saw is not the one under it.
 function script.on_dock_drag(ev)
     if ev.dock~="tabline" then return nil end
     local id=tonumber(string.match(ev.item,"^tab:(%d+)$"))
-    if not id or ev.phase=="end" or ev.phase=="cancel" then dragged[ev.window]=nil;return nil end
-    if ev.over==dragged[ev.window] then return nil end
-    dragged[ev.window]=ev.over
+    if not id or ev.phase=="cancel" then dragged[ev.window]=nil;return nil end
+    if ev.phase=="start" then dragged[ev.window]=nil end
+    local last=dragged[ev.window]
+    dragged[ev.window]=if ev.phase=="end" then nil else ev.over
+    if ev.over==last then return nil end
     local target=ev.over and tonumber(string.match(ev.over,"^%a+:(%d+)$"))
     local from,to=tabById(ev.terminal,id),target and tabById(ev.terminal,target)
     if not from or not to or from==to or from.window~=to.window then return nil end

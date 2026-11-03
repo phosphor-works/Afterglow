@@ -220,9 +220,9 @@ Q_SIGNALS:
     /// A key for the script that holds the key mode.
     void scriptKey(const QString& owner, quint32 pane, const QVariantMap& key);
     /// An event of a script's dock for its owner's @p handler: on_dock_click,
-    /// on_dock_hover, on_dock_wheel or on_dock_layout. @p pane is the
-    /// window's focused pane. @p limited: the call counts toward the
-    /// callback limit.
+    /// on_dock_hover, on_dock_wheel, on_dock_drag or on_dock_layout. @p pane
+    /// is a pane dock's pane, or the window's focused pane for a window
+    /// dock. @p limited: the call counts toward the callback limit.
     void scriptDockEvent(const QString& owner, const QString& handler, quint32 pane, const QVariantMap& event, bool limited);
     /// The current tab changed; @p direction is 1 toward the right.
     void tabSwitched(quint32 fromTab, quint32 toTab, int direction);
@@ -250,8 +250,9 @@ private:
     void releasePaneUi(Pane* pane);
     /// Closes the prompts and modes that belong to @p pane, which is going
     /// away: its clipboard and paste prompts, title prompt, menu, URL mode,
-    /// selection drag, reported mouse buttons and a close confirmation about
-    /// it alone. Prompts about other panes stay.
+    /// selection drag, reported mouse buttons, a drag on or the pointer over
+    /// its docks, and a close confirmation about it alone. Prompts about
+    /// other panes stay.
     void dropPanePrompts(Pane* pane);
     /// Cancels the title prompt and closes the tab menu when they belong to
     /// tab @p tabId, which is going away: they would have nothing to act on.
@@ -333,9 +334,8 @@ private:
     };
     std::vector<ScriptAppearance> m_scriptAppearance;
     quint64 m_scriptAppearanceOrder = 0;
-    /// Scripts' docked areas, and the last order given to a change of place.
+    /// Scripts' docked areas at the window's edges.
     std::vector<std::unique_ptr<DockArea>> m_docks;
-    quint64 m_dockOrder = 0;
     /// The buttons pressed on a dock: their releases, and the moves while
     /// only they are held, are the dock's too.
     Qt::MouseButtons m_dockButtons;
@@ -347,7 +347,20 @@ private:
     QRect placeDocks();
     /// The panes' terminal options, for the docks too.
     void setDockOptions(const AfterglowVt::TerminalOptions& options);
+    /// The dock at @p pixel: a window's dock, or a shown pane's dock.
     DockArea* dockAt(const QPoint& pixel) const;
+    /// A plain left press at @p pixel grabs a divider whose grab reaches
+    /// into a pane's dock there, not the dock.
+    bool dividerTakesDock(const QPoint& pixel) const;
+    /// The pane whose own cells are at window logical point @p logical: not
+    /// one whose dock is there.
+    Pane* paneUnder(const QPointF& logical) const;
+    /// How far from a divider a press still grabs it, pixels.
+    int dividerTolerance() const;
+    /// The framebuffer pixel that holds window logical point @p logical.
+    QPoint dockPixel(const QPointF& logical) const;
+    /// The cell of @p dock at @p pixel, also past its edges.
+    QPoint dockCell(const DockArea& dock, const QPoint& pixel) const;
     /// A press on a dock: sends its item's click. False when no dock is there.
     bool pressDock(QMouseEvent* e);
     /// @p limited: the click counts toward the script's callback limit.
@@ -356,14 +369,15 @@ private:
     void emitDockEvent(const DockArea& dock, const QString& handler, QVariantMap event, bool limited);
     /// The wheel over a dock: whole steps go to its script.
     void wheelDock(DockArea& dock, const QPoint& pixel, QWheelEvent* e);
-    /// The dock item under the pointer, by owner and id: a dock can go
-    /// while the pointer is over it.
     /// A dock by owner, id and pane (0 for the window's), or null when it
     /// is not in this window.
     DockArea* findDock(const QString& owner, const QString& id, quint32 pane) const;
-    /// The docks of the current tab's panes that show, while no overview
-    /// draws them as cards.
-    std::vector<DockArea*> shownPaneDocks() const;
+    /// The first dock of the current tab's panes that shows, while no
+    /// overview draws them as cards, for which @p match is true.
+    template<typename Match>
+    DockArea* firstShownPaneDock(Match&& match) const;
+    /// The dock item under the pointer, by owner and id: a dock can go
+    /// while the pointer is over it.
     struct DockHover
     {
         QString owner, dock, item;
@@ -373,6 +387,12 @@ private:
     DockHover m_dockHover;
     /// Tells the scripts when the item under the pointer changes.
     void updateDockHover();
+    /// The pointer left the hovered item: its script hears of it.
+    void leaveDockHover();
+    /// The docks of @p pane (of every pane and the window when null) go or
+    /// stop showing here: their drag ends with "cancel", and their hovered
+    /// item hears that the pointer left it.
+    void dropDockPointer(const Pane* pane);
     /// Wheel travel over m_wheelDock that is not yet a whole step.
     QPoint m_dockWheel;
     DockHover m_wheelDock;
@@ -401,6 +421,7 @@ private:
     std::optional<QPointF> m_dockClickAt;
     /// Tells each dock's script where it shows, when that changed.
     void reportDockLayouts();
+    void reportDockLayout(DockArea& dock);
     /// Whether @p dock is one of this window's and shows.
     bool showsDock(const DockArea* dock) const;
     /// Framebuffer pixels to global logical ones.
@@ -559,14 +580,26 @@ private:
     /// the padding.
     QRect contentRect(const Pane* pane, const QRect& paneRect) const;
     /// What @p pane's docks that show leave of @p paneRect, with them at the
-    /// sizes that the last layout gave them. With @p rects, where each of
+    /// sizes that the last layout gave them, or what is left of @p paneRect. With @p rects, where each of
     /// them goes (empty when it does not show), in the order of docks().
     QRect paneDockArea(const Pane* pane, const QRect& paneRect, std::vector<QRect>* rects = nullptr) const;
     /// Lays out @p pane's docks in its layout rectangle @p paneRect, and
     /// tells their scripts. Returns what they leave.
     QRect placePaneDocks(Pane* pane, const QRect& paneRect);
+    /// Lays out @p pane at @p paneRect: its docks, then its grid and its
+    /// shell's size. An empty @p paneRect (a zoom hides the pane) hides its
+    /// docks and keeps the size.
+    void layoutPane(Pane* pane, const QRect& paneRect);
+    /// layoutPane for a pane in a tab that does not show, in its tab's last
+    /// layout.
+    void layoutBackgroundPane(Pane* pane);
     /// @p pane's docks, drawn at @p shown, into @p out.
     void addPaneDocks(Pane* pane, const QRect& shown, std::vector<AfterglowRender::WindowRenderer::Pane::Dock>& out);
+    /// placePaneDocks for each pane of tab @p tab, as its tree lays it out.
+    void placeTabDocks(int tab);
+    /// The pane docks' rectangles of placePaneDocks and addPaneDocks, kept
+    /// from frame to frame.
+    std::vector<QRect> m_paneDockRects;
     /// Cell under a window position, clamped to the pane's grid.
     QPoint cellAt(Pane* pane, const QPointF& pos) const;
     /// Cell row under @p pos without clamping; negative above, >= rows below.
@@ -834,6 +867,9 @@ private:
     /// Highlights card @p index, the short way round, or in @p direction (1
     /// forward, -1 back) when it is given.
     void moveOverview(int index, int direction = 0);
+    /// The cards were @p before and changed order (a tab moved): the deck
+    /// counts its position in the new order, so the card in front stays.
+    void rebaseOverview(const std::vector<Pane*>& before);
     void overviewKey(QKeyEvent* e);
     PhosphorAnimation::MotionSpec<qreal> overviewSpec();
     /// Advances the overview's motion. Closes it when its panes went away.

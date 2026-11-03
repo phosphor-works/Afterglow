@@ -125,7 +125,7 @@ For `NewTab` and `CreateWindow`, an empty working directory uses the `Window.wor
 | Signal | Arguments |
 | --- | --- |
 | `PaneCreated` | `u` pane |
-| `PaneMoved` | `u` pane |
+| `PaneMoved` | `u` pane. Sent when the pane moves to another split, tab or window, and for each pane of a tab that moves to another place in its window. |
 | `PaneClosed` | `u` pane |
 | `TitleChanged` | `u` pane, `s` title |
 | `Bell` | `u` pane |

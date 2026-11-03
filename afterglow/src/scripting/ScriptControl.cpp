@@ -149,8 +149,9 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             return {};
         }
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
-            // The window refuses a dock only past its count limits: a
-            // capacity, which tasks also report as rate_limited.
+            // On a live pane, the window refuses a dock only past its count
+            // limits: a capacity, which tasks also report as rate_limited.
+            // A pane that has gone, also for a pane area, is no_pane.
             const auto error = control.scriptDock(owner, pane, e);
             return {error, {}, code(error, QStringLiteral("rate_limited"))};
         }

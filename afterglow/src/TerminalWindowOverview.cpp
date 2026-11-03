@@ -72,7 +72,11 @@ void TerminalWindow::layoutOtherTabs()
     // shows them at the window's current size.
     const int dividerWidth = dividerPixels();
     for (std::size_t tab = 0; tab < m_tabs.size(); ++tab) {
-        if (int(tab) != m_currentTab && m_tabs[tab]->splits) m_tabs[tab]->splits->layout(paneArea(), dividerWidth);
+        if (int(tab) == m_currentTab || !m_tabs[tab]->splits) continue;
+        m_tabs[tab]->splits->layout(paneArea(), dividerWidth);
+        // The cards show the panes' docks: a pane that a zoom hid shows
+        // again in the overview, with its docks.
+        placeTabDocks(int(tab));
     }
 }
 
@@ -406,8 +410,13 @@ void TerminalWindow::restoreOverviewZooms(Pane* target)
         const int tab = zoomed ? tabOf(zoomed) : -1;
         if (tab < 0) continue;
         Pane* pane = tab == targetTab ? target : zoomed.data();
-        if (tab == m_currentTab) setPaneZoom(pane);
-        else m_tabs[std::size_t(tab)]->splits->setZoomedPane(pane);
+        if (tab == m_currentTab) {
+            setPaneZoom(pane);
+        } else {
+            // The panes that the zoom hides again hide their docks too.
+            m_tabs[std::size_t(tab)]->splits->setZoomedPane(pane);
+            placeTabDocks(tab);
+        }
     }
 }
 
@@ -483,6 +492,22 @@ void TerminalWindow::moveOverview(int index, int direction)
     m_overview.highlighted = panes[std::size_t(index)];
     m_overview.movedAt = std::chrono::steady_clock::now();
     scheduleRender();
+}
+
+void TerminalWindow::rebaseOverview(const std::vector<Pane*>& before)
+{
+    if (!overviewShowing()) return;
+    const auto after = overviewPanes();
+    const qreal value = m_overview.position.value();
+    const qreal now = rebased(value, before, after);
+    if (now == value) return;
+    // The motion goes on toward the highlighted card, the short way round
+    // from where the deck is now: also while the overview closes, when no
+    // frame aims it again (advanceOverview).
+    const auto at = std::find(after.begin(), after.end(), m_overview.highlighted.data());
+    if (at != after.end()) m_overview.positionTarget = shortWay(now, int(at - after.begin()), int(after.size()));
+    else m_overview.positionTarget += now - value;
+    m_overview.position.start(now, m_overview.positionTarget, overviewSpec());
 }
 
 void TerminalWindow::overviewKey(QKeyEvent* e)
