@@ -15,9 +15,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QTextStream>
+#include <QMetaMethod>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <optional>
 
@@ -32,7 +33,7 @@ Drives a running afterglow (Control.enabled in the config). Commands act on
 of the active window or of the window that was active last.
 
   ls [--json]                           list panes
-  send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e and \xHH for U+00HH unless --raw)
+  send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
   send-text --stdin                     type standard input
   get-text [--screen|--scrollback|--selection|--last-output]
                                         print pane text (needs Control.allowReadText)
@@ -60,13 +61,16 @@ Put text that starts with -- after a "--": send-text -- --stdin.
 )";
 
 // The events that `watch` subscribes to: the signals of ControlApi.
-const char* const Events[] = {"paneCreated", "paneMoved", "paneClosed", "titleChanged", "bell", "commandStarted",
-                              "commandFinished", "statusChanged", "focusChanged", "userVarChanged", "contextChanged"};
+QStringList events()
+{
+    QStringList names;
+    const QMetaObject& api = ControlApi::staticMetaObject;
+    for (int i = QObject::staticMetaObject.methodCount(); i < api.methodCount(); ++i) {
+        if (api.method(i).methodType() == QMetaMethod::Signal) names << QString::fromLatin1(api.method(i).name());
+    }
+    return names;
+}
 
-// The router refuses a request line over 1 MiB and closes the connection.
-// JSON can write a UTF-16 unit as six bytes (a control character): text
-// goes in parts that stay under the limit whatever they hold.
-constexpr qsizetype MaxTextPart = 128 * 1024;
 constexpr int ReplyTimeoutMs = 10000;
 
 int fail(const QString& message)
@@ -105,8 +109,16 @@ public:
     {
         IpcClient::Error error;
         auto frame = m_client.readEvent(&error);
-        if (!frame) report(error);
-        return frame;
+        if (frame) return frame;
+        // The target also goes when afterglow quits, which then closes the
+        // connection: only a socket that still answers had control turned off.
+        IpcClient::Error closed;
+        if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget) && !m_client.targets(ReplyTimeoutMs, &closed)) {
+            fail(QStringLiteral("afterglow quit"));
+        } else {
+            report(error);
+        }
+        return std::nullopt;
     }
 
 private:
@@ -116,14 +128,23 @@ private:
         // Each pane names the afterglow that runs it. Another one (a separate
         // build, or one started with --config) numbers its panes from 1 too.
         m_owner = qEnvironmentVariable("AFTERGLOW_SOCKET");
+        // A pane ID means something only to the afterglow that runs the pane:
+        // another one on the display has a pane with the same number.
+        if (m_owner.isEmpty() && !qEnvironmentVariableIsEmpty("AFTERGLOW_PANE_ID")) {
+            fail(QStringLiteral("the afterglow that runs this pane has no socket"));
+            return false;
+        }
         const QString path = m_owner.isEmpty() ? InstanceSocket::sharedPath() : m_owner;
         if (path.isEmpty()) {
             fail(QStringLiteral("XDG_RUNTIME_DIR is not set"));
             return false;
         }
-        if (m_client.connectTo(path, ReplyTimeoutMs, nullptr)) return true;
-        fail(m_owner.isEmpty() ? QStringLiteral("no running afterglow on this display")
-                               : QStringLiteral("the afterglow that runs this pane has exited"));
+        IpcClient::Error error;
+        if (m_client.connectTo(path, ReplyTimeoutMs, &error)) return true;
+        fail(QStringLiteral("%1 (%2)")
+                 .arg(m_owner.isEmpty() ? QStringLiteral("no running afterglow on this display")
+                                        : QStringLiteral("the afterglow that runs this pane has exited"),
+                      error.message));
         return false;
     }
 
@@ -134,6 +155,9 @@ private:
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
             fail(m_owner.isEmpty() ? QStringLiteral("Control.enabled is off in the running afterglow")
                                    : QStringLiteral("Control.enabled is off in the afterglow that runs this pane"));
+        } else if (error.timedOut) {
+            // A slow afterglow may still do what was asked.
+            fail(QStringLiteral("afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
         } else if (error.code.isEmpty()) {
             fail(QStringLiteral("lost afterglow: %1").arg(error.message));
         } else {
@@ -194,6 +218,31 @@ QString printable(const QString& text)
         if (u < 0x20 || u == 0x7f || (u >= 0x80 && u <= 0x9f)) c = QLatin1Char('?');
     }
     return out;
+}
+
+// Qt's JSON writer escapes only C0 controls: DEL and the C1 controls, which
+// a terminal can also act on, are escaped here. They occur only in strings.
+QByteArray terminalSafe(const QByteArray& json)
+{
+    QByteArray out;
+    out.reserve(json.size());
+    for (qsizetype i = 0; i < json.size(); ++i) {
+        const auto byte = static_cast<unsigned char>(json[i]);
+        if (byte == 0x7f) {
+            out += "\\u007f";
+        } else if (byte == 0xc2 && i + 1 < json.size() && static_cast<unsigned char>(json[i + 1]) >= 0x80
+                   && static_cast<unsigned char>(json[i + 1]) <= 0x9f) {
+            out += "\\u00" + QByteArray::number(static_cast<unsigned char>(json[++i]), 16);
+        } else {
+            out += char(byte);
+        }
+    }
+    return out;
+}
+
+void printJson(const QJsonDocument& document, QJsonDocument::JsonFormat format)
+{
+    std::printf("%s\n", terminalSafe(document.toJson(format)).constData());
 }
 
 // The running afterglow resolves directories itself: send it absolute ones.
@@ -260,6 +309,11 @@ int runCtl(int argc, char** argv)
     };
 
     const std::optional<QString> paneArg = takeValue(QStringLiteral("--pane"));
+    // These act on no pane: a --pane given to them is a mistake.
+    static const QStringList Paneless = {QStringLiteral("ls"), QStringLiteral("watch"), QStringLiteral("scripts"),
+                                         QStringLiteral("open-directory"), QStringLiteral("projects"),
+                                         QStringLiteral("open-project"), QStringLiteral("new-window")};
+    if (paneArg && Paneless.contains(command)) return usage(QStringLiteral("%1 takes no --pane").arg(command));
     auto targetPane = [&]() -> std::optional<qint64> {
         bool ok = false;
         if (paneArg) {
@@ -287,7 +341,7 @@ int runCtl(int argc, char** argv)
     auto printObject = [&client](const QString& fn, const QJsonArray& callArgs) {
         const auto result = client.call(fn, callArgs);
         if (!result) return 1;
-        std::printf("%s\n", QJsonDocument(result->toObject()).toJson(QJsonDocument::Compact).constData());
+        printJson(QJsonDocument(result->toObject()), QJsonDocument::Compact);
         return 0;
     };
 
@@ -298,7 +352,7 @@ int runCtl(int argc, char** argv)
         if (!result) return 1;
         const QJsonArray panes = result->toArray();
         if (json) {
-            std::printf("%s\n", QJsonDocument(panes).toJson(QJsonDocument::Indented).constData());
+            printJson(QJsonDocument(panes), QJsonDocument::Indented);
             return 0;
         }
         // TAB is the tab's position from 0, as in --json.
@@ -316,14 +370,14 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("watch")) {
         if (const auto error = extra(0)) return usage(*error);
-        for (const char* event : Events) {
-            if (!client.subscribe(QLatin1String(event))) return 1;
+        for (const QString& event : events()) {
+            if (!client.subscribe(event)) return 1;
         }
         while (const auto frame = client.readEvent()) {
             const QJsonObject line{
                 {QStringLiteral("event"), client.eventName(frame->value(QLatin1String(PhosphorIpc::Field::SubscriptionId)).toInteger())},
                 {QStringLiteral("args"), frame->value(QLatin1String(PhosphorIpc::Field::Args))}};
-            std::printf("%s\n", QJsonDocument(line).toJson(QJsonDocument::Compact).constData());
+            printJson(QJsonDocument(line), QJsonDocument::Compact);
             std::fflush(stdout);
         }
         return 1;
@@ -332,7 +386,7 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(0)) return usage(*error);
         const auto result = client.call(QStringLiteral("scriptDiagnostics"), {});
         if (!result) return 1;
-        std::printf("%s\n", QJsonDocument(result->toArray()).toJson(QJsonDocument::Compact).constData());
+        printJson(QJsonDocument(result->toArray()), QJsonDocument::Compact);
         return 0;
     }
     if (command == QLatin1String("open-directory")) {
@@ -391,10 +445,11 @@ int runCtl(int argc, char** argv)
                 text = unescape(text);
             }
         }
+        if (text.toUtf8().size() > CtlMaxText) return fail(QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20));
         // In parts, each whole: a surrogate pair never splits.
         qsizetype at = 0;
         do {
-            qsizetype size = std::min(MaxTextPart, text.size() - at);
+            qsizetype size = std::min(CtlTextPart, text.size() - at);
             if (at + size < text.size() && text[at + size - 1].isHighSurrogate()) --size;
             if (run(QStringLiteral("sendText"), {*pane, text.mid(at, size)}) != 0) return 1;
             at += size;
@@ -403,11 +458,14 @@ int runCtl(int argc, char** argv)
     }
     if (command == QLatin1String("get-text")) {
         QString scope = QStringLiteral("screen");
+        int scopes = 0;
         for (const char* s : {"scrollback", "selection", "last-output", "screen"}) {
             if (takeFlag(QStringLiteral("--") + QLatin1String(s))) {
                 scope = QLatin1String(s);
+                ++scopes;
             }
         }
+        if (scopes > 1) return usage(QStringLiteral("get-text takes one scope"));
         if (const auto error = extra(0)) return usage(*error);
         const auto result = client.call(QStringLiteral("getText"), {*pane, scope});
         if (!result) return 1;
@@ -453,7 +511,7 @@ int runCtl(int argc, char** argv)
         const int channel = args.value(0).toInt(&okChannel);
         const double value = args.value(1).toDouble(&okValue);
         if (const auto error = extra(2)) return usage(*error);
-        if (!okChannel || !okValue) {
+        if (!okChannel || !okValue || !std::isfinite(value)) {
             return usage(QStringLiteral("signal needs a channel and a number"));
         }
         return run(QStringLiteral("signal"), {*pane, channel, value});

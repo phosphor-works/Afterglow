@@ -49,7 +49,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `boldIsBright` | `false` |  | Use bright colors 8–15 for bold text with colors 0–7. |
 | `cursor` | `""` |  | Cursor color. An empty value uses the foreground. |
 | `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. |
-| `divider` | `"#3a3a42"` |  | Color of the dividers between panes. A theme without a divider color gets one between its background and text colors. |
+| `divider` | `"#3a3a42"` |  | Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its background and text colors. |
 | `foreground` | `"#d8d8d8"` |  | Default text color. |
 | `minimumContrast` | `1` | 1–21 | Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors. 4.5 is the WCAG AA normal-text threshold. |
 | `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
@@ -58,7 +58,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory, then the bundled themes, such as nord and afterglow-light, then the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory, then the bundled themes, such as nord and afterglow-light, then the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
@@ -67,15 +67,15 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `false` |  | Allow control clients to read pane text, including scrollback. |
-| `enabled` | `true` |  | Allow other programs to control Afterglow through its control socket and afterglow ctl. |
-| `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two title, status, context, user variable or bell events of one pane. Changes in between are merged, and the client gets the newest value. A value of 0 sends every change. |
+| `allowReadText` | `false` |  | Allow control clients to read pane text, including scrollback, the commands that run and the values of user variables. |
+| `enabled` | `true` |  | Allow other programs, such as afterglow ctl, to control Afterglow through its socket. Later launches of Afterglow use the socket also when this is off. |
+| `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
 
 ## Font
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane effects are shaders, and they run while a pane is remote or in another context. |
+| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane effects count as shaders. They run while a pane shows a shell on another host or as another user. |
 | `boldFamily` | `""` |  | Font family of bold text. An empty value uses family. |
 | `boldItalicFamily` | `""` |  | Font family of bold italic text. An empty value uses the italic family. |
 | `boldWeight` | `700` | 100–900 | Weight of bold text. It selects a static font and sets the weight axis of a variable font. |
@@ -88,7 +88,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `hinting` | `"light"` | `"none"`, `"light"`, `"full"` | How glyph outlines align to the pixel grid. The none mode preserves outlines. The light mode aligns vertical positions only. The full mode aligns both axes. |
 | `italicFamily` | `""` |  | Font family of italic text. An empty value uses family. |
 | `italicSlant` | `-11` | -90–90 | Slant of italic text in degrees, for variable fonts with a slant axis. |
-| `size` | `0` | 0–96 | Size in points, from 4 to 96. A value of 0 uses the size of the desktop's fixed-width font. |
+| `size` | `0` | 0–96 | Size in points, from 4 to 96. A value of 0 or less uses the size of the desktop's fixed-width font. |
 | `sizeStep` | `1` | 0.1–12 | Points that the font_bigger and font_smaller actions add or remove. |
 | `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators U+E0B0 to U+E0BF itself, so this setting does not change them. |
 | `weight` | `400` | 100–900 | Weight of regular text. It selects a static font and sets the weight axis of a variable font. |
@@ -98,7 +98,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `quota` | `320` | 16–4096 | Mebibytes of Kitty graphics images that each screen of a pane keeps. A pane has a main and an alternate screen. The oldest images go first when a screen is full. |
+| `quota` | `320` | 16–4096 | Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has a main and an alternate screen. The oldest images go first when a screen is full. |
 
 ## Hints
 
@@ -184,7 +184,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `bellSound` | `""` |  | Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file. |
 | `bellSoundInterval` | `250` | 0–10000 | Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 plays every bell. |
 | `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional paragraph layout mode. Application grids retain logical order. |
-| `clipboardRead` | `"ask"` | `"ask"`, `"allow"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
+| `clipboardRead` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
 | `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. |
 | `confirmUnsafePaste` | `true` |  | Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
@@ -192,23 +192,23 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `cursorBlink` | `true` |  | Make the cursor blink. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
-| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. |
+| `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. New panes use this value. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
 | `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
 | `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
 | `notifications` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). |
-| `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. |
+| `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. An empty value turns the pager off. |
 | `pasteReadTimeout` | `10` | 1–600 | Seconds after a paste in which the program can read the clipboard with the password of the paste event (OSC 5522). |
 | `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |
 | `scrollOnInput` | `true` |  | Scroll to the bottom on typing or paste. |
 | `scrollOnOutput` | `false` |  | Scroll to the bottom when new output arrives. |
 | `scrollback` | `10000` | 0–1000000 | Lines of history that each pane keeps. |
-| `shell` | `""` |  | Program to run. An empty value starts your login shell. |
+| `shell` | `""` |  | Program to run. An empty value starts your login shell. New panes use this value. |
 | `shellIntegration` | `true` |  | Integrate Bash, Zsh and Fish prompts in new panes automatically. |
-| `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session offers COLORTERM and TERM_PROGRAM to the server. |
-| `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. |
-| `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. |
+| `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session offers COLORTERM and TERM_PROGRAM to the server. New panes use this value. |
+| `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes use this value. |
+| `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes use this value. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
 | `wordSeparators` | `` "`\"'│\|:;,()[]{}<>" `` |  | Characters that end a word for double-click selection, besides spaces. |
 

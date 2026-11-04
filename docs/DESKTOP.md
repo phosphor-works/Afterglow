@@ -95,10 +95,10 @@ The acceptance test checks public AT-SPI interfaces. It does not certify every s
 When output scrolls the viewport, the text-change events remove the lines that left the top and insert only the new text.
 A screen reader that speaks inserted text then reads the new output, not the whole viewport.
 
-`Control.allowReadText` does not apply to accessibility clients.
-AT-SPI is a separate D-Bus bus. Any client on it can read the viewport text while accessibility is active, as with other toolkits.
+AT-SPI uses a separate D-Bus bus, the accessibility bus.
+While accessibility is active, any client on that bus can read the viewport text, as with other toolkits.
 Any client on it can also run the pane actions, for example Paste, Close Pane and New Window, and press docked-area buttons.
-The access settings of the control socket and scripts do not apply to these actions.
+The access settings of the control socket (`Control.enabled`, `Control.allowReadText`) and of scripts do not apply to these clients.
 
 ## Input methods and directionality
 

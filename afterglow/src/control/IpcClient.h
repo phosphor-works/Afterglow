@@ -3,12 +3,14 @@
 
 #pragma once
 
+#include <QDeadlineTimer>
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QList>
 #include <QLocalSocket>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 
@@ -29,16 +31,25 @@ public:
     {
         QString code;
         QString message;
+        bool timedOut = false; ///< connected, but no answer in time
+        bool tooLong = false; ///< not sent: over MaxLineBytes
     };
+
+    /// phosphor-ipc's router closes the connection on a longer request line.
+    static constexpr qsizetype MaxLineBytes = 1024 * 1024;
 
     bool connectTo(const QString& path, int timeoutMs, Error* error);
     bool connected() const { return m_socket.state() == QLocalSocket::ConnectedState; }
-    /// The process at the other end (SO_PEERCRED), or 0.
+    /// The process at the other end (SO_PEERCRED), or 0 when it runs as
+    /// another user.
     pid_t peerPid() const;
 
     /// The result of @p target.@p fn, or nothing with @p error set.
+    /// @p timeoutMs bounds the whole call, whatever arrives meanwhile.
     std::optional<QJsonValue> call(const QString& target, const QString& fn, const QJsonArray& args, int timeoutMs, Error* error);
     bool subscribe(const QString& target, const QString& event, int timeoutMs, Error* error);
+    /// The names of the targets on the socket.
+    std::optional<QStringList> targets(int timeoutMs, Error* error);
     /// The event name of a subscription.
     QString eventName(qint64 subscription) const { return m_subscriptions.value(subscription); }
 
@@ -47,9 +58,9 @@ public:
     std::optional<QJsonObject> readEvent(Error* error);
 
 private:
-    bool write(const QJsonObject& request, int timeoutMs, Error* error);
-    std::optional<QJsonObject> readFrame(int timeoutMs, Error* error);
-    std::optional<QJsonObject> readReply(qint64 id, int timeoutMs, Error* error);
+    bool write(const QJsonObject& request, const QDeadlineTimer& deadline, Error* error);
+    std::optional<QJsonObject> readFrame(const QDeadlineTimer& deadline, Error* error);
+    std::optional<QJsonObject> readReply(qint64 id, const QDeadlineTimer& deadline, Error* error);
 
     QLocalSocket m_socket;
     qint64 m_nextId = 0;

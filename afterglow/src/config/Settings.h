@@ -102,9 +102,9 @@ struct QuickTerminalSettings
 
 struct ControlSettings
 {
-    bool enabled = true; ///< the control socket (afterglow ctl)
+    bool enabled = true; ///< the "control" target on the process's socket (afterglow ctl)
     bool allowReadText = false; ///< let it read pane contents
-    int eventInterval = 100; ///< ms between two state events of one pane, 0 sends every change
+    int eventInterval = 100; ///< ms between two events of one kind for one pane, 0 sends every event
     bool operator==(const ControlSettings&) const = default;
 };
 
@@ -181,7 +181,7 @@ struct Settings
     CopyOnSelect copyOnSelect = CopyOnSelect::Primary;
     enum class Bell { None, Attention, Visual, Both };
     Bell bell = Bell::Attention;
-    bool notifications = true; ///< OSC 9 / 777 desktop notifications
+    bool notifications = true; ///< OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
     /// Notifications one pane may show in 10 seconds; 0 for no limit.
     /// Afterglow's own notices do not count.
     int notificationRateLimit = 20;
@@ -202,12 +202,12 @@ struct Settings
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     QString fileTransferPassword;
-    /// Programs reading the clipboard with OSC 52: "ask", "allow" or "deny".
-    QString clipboardRead = QStringLiteral("ask");
+    enum class Permission { Allow, Ask, Deny };
+    /// Programs reading the clipboard (OSC 52, OSC 5522).
+    Permission clipboardRead = Permission::Ask;
     /// Seconds after a paste in which its password lets a program read the
     /// clipboard (OSC 5522 paste events).
     int pasteReadTimeout = 10;
-    enum class Permission { Allow, Ask, Deny };
     /// Programs writing the clipboard (OSC 52, OSC 5522).
     Permission clipboardWrite = Permission::Allow;
     /// Kitty graphics read from a file, a temporary file or shared memory
@@ -215,7 +215,7 @@ struct Settings
     Permission graphicsFileTransfer = Permission::Allow;
     /// DECRQCRA checksum replies, which let any program read the screen back.
     bool allowScreenReadback = false;
-    std::size_t graphicsQuota = std::size_t(320) << 20; ///< bytes of kitty images kept per terminal
+    std::size_t graphicsQuota = std::size_t(320) << 20; ///< bytes of images (kitty, sixel, iTerm2) that each screen keeps
     /// Each a map of pattern, action and command, checked when read.
     QVariantList hintPatterns = defaultHintPatterns();
     /// Keys that label hints and URL hints, home row first. Unique, at least two.

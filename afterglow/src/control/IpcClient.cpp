@@ -8,7 +8,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 
+#include <algorithm>
+
 #include <sys/socket.h>
+#include <unistd.h>
 
 namespace Afterglow {
 
@@ -21,12 +24,28 @@ QLatin1String field(const char* name)
 
 void set(IpcClient::Error* error, const QString& code, const QString& message)
 {
-    if (error) *error = {code, message};
+    if (error) *error = {code, message, false, false};
+}
+
+void timedOut(IpcClient::Error* error)
+{
+    if (error) *error = {{}, QStringLiteral("no reply in time"), true, false};
 }
 
 bool isType(const QJsonObject& frame, const char* type)
 {
     return frame.value(field(PhosphorIpc::Field::Type)) == QLatin1String(type);
+}
+
+void setFromFrame(IpcClient::Error* error, const QJsonObject& frame)
+{
+    set(error, frame.value(field(PhosphorIpc::Field::Code)).toString(), frame.value(field(PhosphorIpc::Field::Message)).toString());
+}
+
+// QIODevice waits forever on -1: a deadline that has passed waits not at all.
+int waitTime(const QDeadlineTimer& deadline)
+{
+    return deadline.isForever() ? -1 : int(std::max<qint64>(0, deadline.remainingTime()));
 }
 
 } // namespace
@@ -45,35 +64,52 @@ pid_t IpcClient::peerPid() const
     socklen_t size = sizeof(credentials);
     const auto fd = int(m_socket.socketDescriptor());
     if (fd < 0 || getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &size) != 0) return 0;
-    return credentials.pid;
+    return credentials.uid == getuid() ? credentials.pid : 0;
 }
 
 std::optional<QJsonValue> IpcClient::call(const QString& target, const QString& fn, const QJsonArray& args, int timeoutMs,
                                           Error* error)
 {
+    const QDeadlineTimer deadline(timeoutMs);
     const qint64 id = ++m_nextId;
     if (!write({{field(PhosphorIpc::Field::Type), field(PhosphorIpc::RequestType::Call)},
                 {field(PhosphorIpc::Field::Id), id},
                 {field(PhosphorIpc::Field::Target), target},
                 {field(PhosphorIpc::Field::Fn), fn},
                 {field(PhosphorIpc::Field::Args), args}},
-               timeoutMs, error)) {
+               deadline, error)) {
         return std::nullopt;
     }
-    const auto frame = readReply(id, timeoutMs, error);
+    const auto frame = readReply(id, deadline, error);
     if (!frame) return std::nullopt;
     return frame->value(field(PhosphorIpc::Field::Result));
 }
 
+std::optional<QStringList> IpcClient::targets(int timeoutMs, Error* error)
+{
+    const QDeadlineTimer deadline(timeoutMs);
+    const qint64 id = ++m_nextId;
+    if (!write({{field(PhosphorIpc::Field::Type), field(PhosphorIpc::RequestType::List)}, {field(PhosphorIpc::Field::Id), id}},
+               deadline, error)) {
+        return std::nullopt;
+    }
+    const auto frame = readReply(id, deadline, error);
+    if (!frame) return std::nullopt;
+    QStringList names;
+    for (const QJsonValue& name : frame->value(field(PhosphorIpc::Field::Result)).toArray()) names << name.toString();
+    return names;
+}
+
 bool IpcClient::subscribe(const QString& target, const QString& event, int timeoutMs, Error* error)
 {
+    const QDeadlineTimer deadline(timeoutMs);
     const qint64 id = ++m_nextId;
     if (!write({{field(PhosphorIpc::Field::Type), field(PhosphorIpc::RequestType::Subscribe)},
                 {field(PhosphorIpc::Field::Id), id},
                 {field(PhosphorIpc::Field::Target), target},
                 {field(PhosphorIpc::Field::Signal), event}},
-               timeoutMs, error)
-        || !readReply(id, timeoutMs, error)) {
+               deadline, error)
+        || !readReply(id, deadline, error)) {
         return false;
     }
     m_subscriptions.insert(id, event);
@@ -83,38 +119,53 @@ bool IpcClient::subscribe(const QString& target, const QString& event, int timeo
 std::optional<QJsonObject> IpcClient::readEvent(Error* error)
 {
     while (true) {
-        const auto frame = m_frames.isEmpty() ? readFrame(-1, error) : std::optional(m_frames.takeFirst());
+        const auto frame = m_frames.isEmpty() ? readFrame(QDeadlineTimer::Forever, error) : std::optional(m_frames.takeFirst());
         if (!frame) return std::nullopt;
         if (isType(*frame, PhosphorIpc::ResponseType::Event)) return frame;
         // The server ends a subscription with an error that carries its id,
         // for example when it unregisters the target.
         const qint64 id = frame->value(field(PhosphorIpc::Field::Id)).toInteger();
         if (isType(*frame, PhosphorIpc::ResponseType::Error) && m_subscriptions.remove(id) > 0) {
-            set(error, frame->value(field(PhosphorIpc::Field::Code)).toString(),
-                frame->value(field(PhosphorIpc::Field::Message)).toString());
+            setFromFrame(error, *frame);
             return std::nullopt;
         }
     }
 }
 
-bool IpcClient::write(const QJsonObject& request, int timeoutMs, Error* error)
+bool IpcClient::write(const QJsonObject& request, const QDeadlineTimer& deadline, Error* error)
 {
-    m_socket.write(PhosphorIpc::writeLine(request));
-    if (m_socket.waitForBytesWritten(timeoutMs)) return true;
-    set(error, {}, m_socket.errorString());
-    return false;
+    const QByteArray line = PhosphorIpc::writeLine(request);
+    if (line.size() > MaxLineBytes) {
+        if (error) *error = {{}, QStringLiteral("the request is over %1 MiB").arg(MaxLineBytes >> 20), false, true};
+        return false;
+    }
+    m_socket.write(line);
+    while (m_socket.bytesToWrite() > 0) {
+        if (!m_socket.waitForBytesWritten(waitTime(deadline))) {
+            if (m_socket.state() == QLocalSocket::ConnectedState) {
+                timedOut(error);
+            } else {
+                set(error, {}, m_socket.errorString());
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
-std::optional<QJsonObject> IpcClient::readFrame(int timeoutMs, Error* error)
+std::optional<QJsonObject> IpcClient::readFrame(const QDeadlineTimer& deadline, Error* error)
 {
     while (!m_socket.canReadLine()) {
         if (m_socket.state() != QLocalSocket::ConnectedState && m_socket.bytesAvailable() == 0) {
             set(error, {}, QStringLiteral("the connection closed"));
             return std::nullopt;
         }
-        if (!m_socket.waitForReadyRead(timeoutMs) && !m_socket.canReadLine()) {
-            set(error, {}, m_socket.state() == QLocalSocket::ConnectedState ? QStringLiteral("no reply in time")
-                                                                             : QStringLiteral("the connection closed"));
+        if (!m_socket.waitForReadyRead(waitTime(deadline)) && !m_socket.canReadLine()) {
+            if (m_socket.state() == QLocalSocket::ConnectedState) {
+                timedOut(error);
+            } else {
+                set(error, {}, QStringLiteral("the connection closed"));
+            }
             return std::nullopt;
         }
     }
@@ -127,19 +178,25 @@ std::optional<QJsonObject> IpcClient::readFrame(int timeoutMs, Error* error)
     return doc.object();
 }
 
-std::optional<QJsonObject> IpcClient::readReply(qint64 id, int timeoutMs, Error* error)
+std::optional<QJsonObject> IpcClient::readReply(qint64 id, const QDeadlineTimer& deadline, Error* error)
 {
     while (true) {
-        const auto frame = readFrame(timeoutMs, error);
+        const auto frame = readFrame(deadline, error);
         if (!frame) return std::nullopt;
-        if (frame->value(field(PhosphorIpc::Field::Id)).toInteger() != id || isType(*frame, PhosphorIpc::ResponseType::Event)) {
+        const QJsonValue frameId = frame->value(field(PhosphorIpc::Field::Id));
+        // The server cannot name the request of a line that it could not
+        // read. Calls run one at a time, so it is this one.
+        if (frameId.isUndefined() && isType(*frame, PhosphorIpc::ResponseType::Error)) {
+            setFromFrame(error, *frame);
+            return std::nullopt;
+        }
+        if (frameId.toInteger() != id || isType(*frame, PhosphorIpc::ResponseType::Event)) {
             // An event, or a subscription that ended: readEvent's.
             m_frames.append(*frame);
             continue;
         }
         if (isType(*frame, PhosphorIpc::ResponseType::Error)) {
-            set(error, frame->value(field(PhosphorIpc::Field::Code)).toString(),
-                frame->value(field(PhosphorIpc::Field::Message)).toString());
+            setFromFrame(error, *frame);
             return std::nullopt;
         }
         return frame;

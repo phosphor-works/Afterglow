@@ -5,7 +5,7 @@
 
 Other programs can control Afterglow with the command line or the control socket.
 They can list panes, send text, create panes, set titles, show notifications and run actions.
-The `watch` command supplies events as JSON lines.
+The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
 
 ```sh
 afterglow ctl --help
@@ -18,9 +18,8 @@ The socket has two targets:
 | Target | Use |
 | --- | --- |
 | `control` | The calls and events of external control, while `Control.enabled` is on |
-| `launch` | A later launch of Afterglow hands its window to the running process |
+| `launch` | A later launch of Afterglow hands its window to the main process |
 
-The application ID is `com.phosphorworks.Afterglow`.
 Afterglow uses D-Bus only as a client of desktop services, such as notifications, taskbar progress and global shortcuts.
 It owns no D-Bus name.
 
@@ -32,17 +31,30 @@ Outside Afterglow, `afterglow ctl` uses the socket of the main process on the cu
 
 | Process | Socket |
 | --- | --- |
-| The main process: the first to listen on the display's socket | `$XDG_RUNTIME_DIR/afterglow-DISPLAY.sock` |
-| A process started with `-o`, `--config` or `--class`, or another build | `$XDG_RUNTIME_DIR/afterglow-DISPLAY-PID.sock` |
+| The main process: the first to take the display's socket | `$XDG_RUNTIME_DIR/afterglow-DISPLAY.sock` |
+| A process started with `-o`, `--config` or `--class`, another build, or a launch that cannot reach the main process | `$XDG_RUNTIME_DIR/afterglow-DISPLAY-PID.sock` |
 
-`DISPLAY` is the name in `WAYLAND_DISPLAY`, `wayland-0` when it is not set.
+`DISPLAY` is the value of `WAYLAND_DISPLAY`, or `wayland-0` when it is not set.
+In an absolute `WAYLAND_DISPLAY`, the first `/` is removed.
+Each character other than a letter, a digit, `-`, `_` and `.` becomes `_`.
 `PID` is the process ID.
-Only `afterglow ctl` in the panes of a separate process can reach that process.
+
+Outside its panes, `afterglow ctl` does not find a separate process.
+A client reaches it with its socket path, for example `AFTERGLOW_SOCKET=PATH afterglow ctl ls`.
+
+Without `XDG_RUNTIME_DIR`, Afterglow listens on no socket.
+Each launch then starts its own process, and `afterglow ctl` stops with an error.
+An Afterglow without a socket removes `AFTERGLOW_SOCKET` from its panes.
+In such a pane, `afterglow ctl` stops with an error, because the pane ID means nothing to another process.
+
+A process holds a lock on `PATH.lock` while it listens on the socket `PATH`.
+The system releases the lock when the process ends, also after a crash or `SIGKILL`.
+At start, Afterglow removes the `afterglow-*.sock` sockets in `$XDG_RUNTIME_DIR` that have no lock and refuse a connection.
 
 On `SIGTERM`, `SIGINT` or `SIGHUP`, Afterglow closes its windows and its socket, as after the last window.
-A second signal ends it at once.
-A crash or `SIGKILL` leaves the socket file.
-At start, Afterglow removes the `afterglow-*.sock` sockets in `$XDG_RUNTIME_DIR` that refuse a connection.
+Then it ends with that termination signal, so that the program that started it sees the cause.
+A second termination signal ends it at once.
+A termination signal that Afterglow got as ignored, for example `SIGHUP` under `nohup`, stays ignored.
 
 `afterglow ctl` selects the target pane in this order:
 
@@ -50,6 +62,9 @@ At start, Afterglow removes the `afterglow-*.sock` sockets in `$XDG_RUNTIME_DIR`
 2. The pane in `AFTERGLOW_PANE_ID`.
 3. The focused pane of the active window.
 4. The focused pane of the window that was active last.
+
+`ls`, `watch`, `scripts`, `open-directory`, `projects`, `open-project` and `new-window` act on no pane.
+They stop with a usage error when you give `--pane`.
 
 A terminal multiplexer such as tmux keeps the environment of the pane that started its server.
 Inside tmux, `AFTERGLOW_PANE_ID` can then name a different pane, or a pane that is closed.
@@ -63,7 +78,7 @@ set -ga update-environment AFTERGLOW_SOCKET
 ## Access settings
 
 Set `Control.allowReadText=true` to permit external terminal text queries.
-Set `Control.enabled=false` to close the control socket.
+Set `Control.enabled=false` to remove the `control` target.
 These settings are separate from [script text permissions](SCRIPTING.md#text-and-semantic-regions).
 
 | Item | With `Control.allowReadText=false` |
@@ -72,28 +87,28 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | `runAction` with `copy`, `paste`, `select_all` or `show_last_output` | Fails with an error. These actions move pane text to the clipboard, into another pane or into a pager. |
 | The `command` field of `listPanes` | Empty. |
 | The command in `commandStarted` and `commandFinished` | Empty. |
-| The value in `userVarChanged` | Empty. |
+| The value in `userVarChanged` | Empty, also for a value that waited while the setting changed. |
 | Titles in `listPanes` and `titleChanged` | Sent. A shell can put the running command in the title. |
 
-`Control.allowReadText` does not apply to accessibility clients.
-AT-SPI uses a separate bus.
-While accessibility is active, any client on that bus can read the text in the viewport.
-It can also run the [pane actions](DESKTOP.md#pane-actions) and press docked-area buttons. `Control.enabled` does not apply to them.
+These settings do not apply to accessibility clients.
+See [terminal text](DESKTOP.md#terminal-text).
 
 `Control.enabled=false` removes the `control` target, and ends its event subscriptions.
+Each subscriber then gets an `error` line with the subscription's `id` and the code `NO_SUCH_TARGET`.
 The socket stays open with the `launch` target, because later launches of Afterglow use it.
 Any program of the same user can call `launch.newWindow`, and that window can run a command.
 
 ## Protocol
 
 A client writes one request on each line and reads one reply on each line.
-Each request has an `id`, and the reply has the same `id`.
+Give each request an `id` that is not 0 and that no other request on the connection uses.
+The reply has the same `id`.
 
 ```json
 {"type": "call", "id": 1, "target": "control", "fn": "split", "args": [3, "right", []]}
 {"type": "reply", "id": 1, "result": 4}
 {"type": "call", "id": 2, "target": "control", "fn": "focus", "args": [99]}
-{"type": "error", "id": 2, "code": "CALL_FAILED", "message": "no pane 99", "detail": {}}
+{"type": "error", "id": 2, "code": "CALL_FAILED", "message": "no pane 99"}
 ```
 
 | Request `type` | Fields | Reply |
@@ -105,13 +120,17 @@ Each request has an `id`, and the reply has the same `id`.
 | `schema` | `target` | `result`: the calls and events of the target |
 
 A request that fails gets a line with `"type": "error"`, a `code` and a `message` in place of the reply.
+An error for a line that does not parse has no `id`.
 
 | Code | Cause |
 | --- | --- |
 | `CALL_FAILED` | The call ran and failed, for example for a pane that does not exist. The message tells why. |
+| `NO_SUCH_TARGET` | The target is not there: `control` while `Control.enabled` is off. Also ends a subscription, with the subscription's `id`. |
 | `NO_SUCH_FN` | No call has that name. |
-| `INVALID_ARG` | The number or the type of the arguments is wrong. |
 | `NO_SUCH_SIGNAL` | No event has that name. |
+| `NO_SUCH_SUBSCRIPTION` | `unsubscribe` names no subscription of this connection. |
+| `INVALID_ARG` | The number or the type of the arguments is wrong. |
+| `INVOCATION_FAILED` | The call could not run. |
 | `MALFORMED_REQUEST` | The line is not a valid request, or a limit is reached. |
 
 `phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
@@ -122,25 +141,36 @@ A request that fails gets a line with `"type": "error"`, a `code` and a `message
 All windows then share one GPU device.
 The handoff uses the `launch` target of the display's socket.
 
-1. The new process tries to listen on `afterglow-DISPLAY.sock`. Only one process can listen on a path, so the first one becomes the main process.
-2. When another process listens there, the new process reads its process ID from the connection.
+1. The new process tries to take `afterglow-DISPLAY.sock`. Only one process can hold a path, so the first one becomes the main process.
+2. When another process holds it, the new process reads that process's ID from the connection.
 3. When that process runs the same executable file, the new process sends `launch.newWindow` and exits.
 4. When it runs another file, such as another build, the new process starts on its own with `afterglow-DISPLAY-PID.sock`.
 
 A launch while the main process starts waits until it is ready, for 120 seconds at most.
-A process started with `-o`, `--config` or `--class` always starts on its own.
+After that time, the launch starts on its own.
+A launch also starts on its own when it cannot connect to the main process for 5 seconds.
+It does the same when the executable of the main process cannot be read.
+A launch whose command does not fit in a request of 1 MiB also starts on its own.
+A main process that refuses the launch with another error stops it with that error.
+A main process that quits stops answering, and a launch in that time takes the free path.
+A process started with `-o`, `--config` or `--class` always starts on its own, as the table in [which process and pane](#which-process-and-pane) shows.
+
+A window that a launch hands over runs with the environment of the main process, not of the launch.
+Start Afterglow with `-o`, `--config` or `--class` when a window needs the environment of the launch.
 
 | Call | Arguments | Result |
 | --- | --- | --- |
 | `newWindow` | working directory, command, options | None. Fails with `CALL_FAILED` when the program cannot start. |
-| `toggleQuickTerminal` | None | None |
+| `toggleQuickTerminal` | None | None. Fails with `CALL_FAILED` when the quick terminal's shell cannot start. |
 
 The `newWindow` options are `directoryGiven` (boolean), `title` (string), `hold` (boolean) and `activationToken` (string).
+When `directoryGiven` is false or missing, the `Window.workingDirectory` setting can replace the working directory.
 An empty command runs the shell.
 
 ## Control calls
 
-A pane argument is a pane ID.
+A pane argument is a pane ID: a whole number from 0 to 4294967295.
+Another number fails with `CALL_FAILED`.
 
 | Call | Arguments | Result |
 | --- | --- | --- |
@@ -191,7 +221,7 @@ For `newTab` and `newWindow`, an empty working directory uses the `Window.workin
 | Event | Arguments |
 | --- | --- |
 | `paneCreated` | pane |
-| `paneMoved` | pane. Sent when the pane moves to another split, tab or window, and for each pane of a tab that moves to another place in its window. |
+| `paneMoved` | pane. Sent when the pane moves to another split, tab or window. Also sent for each pane of a tab that moves in its window. |
 | `paneClosed` | pane |
 | `titleChanged` | pane, title |
 | `bell` | pane |
@@ -206,28 +236,40 @@ The states of `statusChanged` are `idle`, `working`, `done`, `blocked` and `erro
 When a program clears its last status, or the terminal resets, the state is `idle` and the text is empty.
 An empty context means that Afterglow knows of no remote, elevated or container context for the pane.
 
-`Control.eventInterval` sets the shortest time between two state events of one pane.
-The state events are `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name) and `bell`.
-A change in the interval waits, and a newer change replaces it.
-The client then gets the newest value when the interval ends.
-Before `paneClosed`, the client gets the changes of the pane that still wait.
+`Control.eventInterval` sets the shortest time in milliseconds between two events of one kind for one pane.
+The default is 100, and the range is 0 to 10000.
+These events are merged: `titleChanged`, `statusChanged`, `contextChanged`, `userVarChanged` (for each name) and `bell`.
+An event that comes before the interval ends waits, and a newer event of the same kind replaces it.
+Bells that wait become one `bell` event.
+The client gets the event that waits when the interval ends.
+Before any other event of the pane, such as `commandFinished` or `paneClosed`, the client gets the events of the pane that wait.
 The other events are never merged.
-Set `Control.eventInterval=0` to send every change.
+Set `Control.eventInterval=0` to send every event.
 
 ## Limits
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
 | Request line | 1 MiB | The socket closes the connection. `afterglow ctl send-text` sends long text in parts. |
+| `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` stops with an error and sends nothing. |
+| Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |
+| Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
-| Subscriptions on one connection | 256 | The subscription fails. |
+| Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
+| `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |
 
+`getText` has no size limit.
+A reply with a long scrollback can take more than the 10 seconds of `afterglow ctl`.
+
+Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
+Keys and other clients can type between two parts.
+
 ## Text escapes
 
-`afterglow ctl send-text` changes these escapes, unless you give `--raw`:
+`afterglow ctl send-text` changes these escapes, unless you give `--raw` or `--stdin`:
 
 | Escape | Character |
 | --- | --- |
@@ -235,7 +277,12 @@ Set `Control.eventInterval=0` to send every change.
 | `\r` | Carriage return |
 | `\t` | Tab |
 | `\e` | Escape |
+| `\\` | Backslash |
 | `\xHH` | The code point U+00HH, sent as UTF-8. Two hexadecimal digits are necessary. |
+
+A backslash before another character is removed, and the character stays.
+A `\x` without two hexadecimal digits stays as you typed it.
+A backslash at the end of the text stays.
 
 To send text that starts with `--`, put it after `--`: `afterglow ctl send-text -- --stdin`.
 

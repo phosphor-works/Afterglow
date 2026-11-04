@@ -1248,7 +1248,7 @@ void TerminalWindow::closeTab(int index)
     m_focused = nullptr;
     const int next = std::min(index, int(m_tabs.size()) - 1);
     switchTab(next);
-    // A switch for scripts and D-Bus, from a tab that no longer exists.
+    // A switch for scripts and control clients, from a tab that no longer exists.
     Q_EMIT tabSwitched(closingId, m_tabs[std::size_t(next)]->id, next < index ? -1 : 1);
 }
 
@@ -1274,7 +1274,7 @@ void TerminalWindow::moveTab(int from, int to)
     // (a key, a script) ends it.
     m_controller->notifyTabsMoved();
     Q_EMIT tabsChanged();
-    // The moved tab's panes are at a new tab index: scripts and D-Bus hear
+    // The moved tab's panes are at a new tab index: scripts and control clients hear
     // of it as of any move. The other tabs shift by one place.
     if (m_tabs[std::size_t(to)]->splits)
         m_tabs[std::size_t(to)]->splits->forEachPane([this](Pane* p, const QRect&) { Q_EMIT paneMoved(p); });
@@ -1391,7 +1391,7 @@ void TerminalWindow::openTabMenu(int index, const QPointF& pos)
 void TerminalWindow::setFocusedPane(Pane* pane)
 {
     // A pane focused while the overview closes onto another tab (a click,
-    // D-Bus, a script) wins over the chosen card.
+    // afterglow ctl, a script) wins over the chosen card.
     if (pane) m_overview.reveal = nullptr;
     if (pane == m_focused) {
         return;
@@ -3315,8 +3315,6 @@ void TerminalWindow::startHints()
             const auto pattern = value.toMap();
             const QString action = pattern.value(QStringLiteral("action"), QStringLiteral("copy")).toString();
             const auto command = pattern.value(QStringLiteral("command")).toStringList();
-            if (action != QLatin1String("copy") && action != QLatin1String("open") && action != QLatin1String("command")) continue;
-            if (action == QLatin1String("command") && (command.isEmpty() || command.size() > 32)) continue;
             const auto result = AfterglowVt::searchText(snapshot, pattern.value(QStringLiteral("pattern")).toString().toStdU32String(), true, *cancelled, characters, false);
             if (!result.error.empty()) qCWarning(lcWindow) << "hint pattern:" << QString::fromStdString(result.error);
             for (const auto& match : result.matches) {
@@ -3943,13 +3941,13 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         return;
     }
     const QString buffer = r.primary ? tr("primary selection") : tr("clipboard");
-    const QString policy = m_settings.settings().clipboardRead;
+    const Settings::Permission policy = m_settings.settings().clipboardRead;
     if (r.osc52) {
         // An OSC 52 read: no name or password to remember a grant by, so
         // the setting decides, or the user does each time.
-        if (policy == QLatin1String("deny") || (r.primary && !clipboard->supportsSelection())) {
+        if (policy == Settings::Permission::Deny || (r.primary && !clipboard->supportsSelection())) {
             pane->sendReply(r.osc52Reply({}));
-        } else if (policy == QLatin1String("allow")) {
+        } else if (policy == Settings::Permission::Allow) {
             answerClipboardRead(pane, r);
         } else if (m_pendingClipboardRead) {
             pane->sendReply(r.osc52Reply({})); // one prompt at a time
@@ -3970,7 +3968,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
         answerClipboardRead(pane, r);
         return;
     }
-    if (policy == QLatin1String("deny")) {
+    if (policy == Settings::Permission::Deny) {
         pane->sendReply(ClipboardAssembler::readStatus("EPERM", r));
         return;
     }
@@ -3992,7 +3990,7 @@ void TerminalWindow::clipboardRequest(Pane* pane, const AfterglowVt::ClipboardRe
             }
         }
     }
-    if (policy == QLatin1String("allow")) {
+    if (policy == Settings::Permission::Allow) {
         answerClipboardRead(pane, r);
         return;
     }

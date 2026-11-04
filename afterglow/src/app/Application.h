@@ -53,6 +53,7 @@ public:
     /// launcher's XDG_ACTIVATION_TOKEN, which lets the window take focus).
     /// Fails when the window's program cannot start.
     Q_INVOKABLE void newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
+    /// Fails when the quick terminal's shell cannot start.
     Q_INVOKABLE void toggleQuickTerminal();
 
 private:
@@ -75,9 +76,11 @@ public:
     ~Application() override;
 
     TerminalWindow* newWindow(const WindowOptions& options);
-    /// A launch's window: an error message, empty on success.
-    QString openForwarded(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
-    void toggleQuickTerminal();
+    /// The window of a launch, this process's own or a later one's (the
+    /// options of LaunchApi::newWindow): an error message, empty on success.
+    QString openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options);
+    /// An error message, empty on success.
+    QString toggleQuickTerminal();
 
 private:
     void bindShortcuts();

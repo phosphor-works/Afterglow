@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus)
+find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus Network)
 find_package(KF6WindowSystem REQUIRED) # KWin blur behind
 find_package(Qt6QuickPrivate CONFIG REQUIRED) # native chrome accessibility bridge
 find_package(Qt6GuiPrivate CONFIG REQUIRED) # rhi/qrhi.h for the chrome render target
@@ -49,9 +49,10 @@ qt_add_library(afterglow_app STATIC
     src/control/Control.cpp
     src/control/Control.h
     src/control/ControlSocket.cpp
+    src/control/ControlSocket.h
+    # Here, not with Ctl: the socket tests drive it too.
     src/control/IpcClient.cpp
     src/control/IpcClient.h
-    src/control/ControlSocket.h
     src/scripting/ScriptControl.cpp
     src/scripting/ScriptControl.h
     src/app/NotificationCenter.h
@@ -187,7 +188,7 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
-    Qt6::DBus KF6::WindowSystem
+    Qt6::DBus Qt6::Network KF6::WindowSystem
     PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

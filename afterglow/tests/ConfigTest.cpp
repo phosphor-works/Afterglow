@@ -26,6 +26,8 @@
 #include <cmath>
 #include <limits>
 
+#include <unistd.h>
+
 using namespace Afterglow;
 using AfterglowVt::Rgb;
 
@@ -655,7 +657,7 @@ TEST(KeyModes, LeaderSequenceAndMismatchFallback)
     QStringList errors;
     const auto singles = Keybinds::fromMap(bindings, &errors);
     const auto modes = KeyModes::fromConfig(bindings, {}, QStringLiteral("Ctrl+Space"), 1000, 5000, singles, &errors);
-    EXPECT_TRUE(errors.isEmpty()) << errors.join('\n').toStdString();
+    EXPECT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
     KeyModes::State state;
     QKeyEvent leader(QEvent::KeyPress, Qt::Key_Space, Qt::ControlModifier);
     QKeyEvent e(QEvent::KeyPress, Qt::Key_E, Qt::NoModifier);
@@ -916,14 +918,9 @@ TEST_F(ConfigTest, FontFollowsTheDesktopUntilSet)
     EXPECT_FLOAT_EQ(negative.settings().font.sizePoints, d.sizePoints);
 }
 
-TEST(Config, DoubleKeysRejectNonFiniteValues)
+TEST_F(ConfigTest, DoubleKeysRejectNonFiniteValues)
 {
-    QTemporaryDir dir;
-    const QString path = dir.filePath(QStringLiteral("config.json"));
-    QFile file(path);
-    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
-    file.write("{}");
-    file.close();
+    const QString path = write(QStringLiteral("config.json"), "{}");
     // Overrides are not parsed from text, so they can carry what JSON cannot.
     const QJsonObject overrides{{QStringLiteral("Font"),
                                  QJsonObject{{QStringLiteral("size"), std::numeric_limits<double>::quiet_NaN()},
@@ -985,12 +982,15 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     EXPECT_EQ(defaults.settings().statusNotificationInterval, 3000);
     EXPECT_EQ(defaults.settings().pasteReadTimeout, 10);
     EXPECT_EQ(defaults.settings().mouse.autoScrollInterval, 50);
+    EXPECT_EQ(defaults.settings().control.eventInterval, 100);
 
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Terminal": {"bellSoundInterval": 0, "pasteReadTimeout": 30},
         "Notifications": {"statusInterval": 0},
-        "Mouse": {"autoScrollInterval": 120}
+        "Mouse": {"autoScrollInterval": 120},
+        "Control": {"eventInterval": 0}
     })"));
+    EXPECT_EQ(custom.settings().control.eventInterval, 0);
     EXPECT_EQ(custom.settings().bellSoundInterval, 0);
     EXPECT_EQ(custom.settings().statusNotificationInterval, 0);
     EXPECT_EQ(custom.settings().pasteReadTimeout, 30);
@@ -999,8 +999,12 @@ TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
     SettingsStore clamped(write(QStringLiteral("clamped.json"), R"({
         "Terminal": {"bellSoundInterval": 99999, "pasteReadTimeout": 0},
         "Notifications": {"statusInterval": -5},
-        "Mouse": {"autoScrollInterval": 1}
+        "Mouse": {"autoScrollInterval": 1},
+        "Control": {"eventInterval": 99999}
     })"));
+    EXPECT_EQ(clamped.settings().control.eventInterval, 10000);
+    SettingsStore negative(write(QStringLiteral("negative.json"), R"({"Control": {"eventInterval": -5}})"));
+    EXPECT_EQ(negative.settings().control.eventInterval, 0);
     EXPECT_EQ(clamped.settings().bellSoundInterval, 10000);
     EXPECT_EQ(clamped.settings().statusNotificationInterval, 0);
     EXPECT_EQ(clamped.settings().pasteReadTimeout, 1);
@@ -1061,7 +1065,6 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     const Settings& d = defaults.settings();
     EXPECT_EQ(d.graphicsQuota, std::size_t(320) << 20);
     EXPECT_EQ(d.notificationRateLimit, 20);
-    EXPECT_EQ(d.control.eventInterval, 100);
     EXPECT_EQ(d.hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty"));
     EXPECT_EQ(d.quickTerminal.position, QuickTerminalSettings::Position::Top);
     EXPECT_TRUE(d.quickTerminal.screen.isEmpty());
@@ -1075,7 +1078,6 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Graphics": {"quota": 64},
         "Notifications": {"rateLimit": 0},
-        "Control": {"eventInterval": 0},
         "Hints": {"alphabet": "Q W E R"},
         "QuickTerminal": {"position": "bottom", "screen": " DP-1 "},
         "Audio": {"framerate": 500, "smoothing": 30, "extraSmoothing": 0.99, "lowerCutoff": 5, "higherCutoff": 12000}
@@ -1084,7 +1086,6 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     EXPECT_EQ(c.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.terminal.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.notificationRateLimit, 0);
-    EXPECT_EQ(c.control.eventInterval, 0);
     EXPECT_EQ(c.hintAlphabet, QStringLiteral("qwer"));
     EXPECT_TRUE(custom.problems().filter(QStringLiteral("Hints.alphabet")).isEmpty());
     EXPECT_EQ(c.quickTerminal.position, QuickTerminalSettings::Position::Bottom);
@@ -1103,10 +1104,9 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
         EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Hints.alphabet"))) << alphabet;
     }
     SettingsStore quotaFloor(write(QStringLiteral("quota.json"),
-                                   R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}, "Control": {"eventInterval": 99999}})"));
+                                   R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}})"));
     EXPECT_EQ(quotaFloor.settings().graphicsQuota, std::size_t(16) << 20);
     EXPECT_EQ(quotaFloor.settings().notificationRateLimit, 0);
-    EXPECT_EQ(quotaFloor.settings().control.eventInterval, 10000);
 }
 
 TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)
@@ -1300,6 +1300,65 @@ TEST_F(ConfigTest, FirstWriteCreatesAPrivateFileWithOnlyThatKey)
     EXPECT_EQ(QFile::permissions(path) & others, QFileDevice::Permissions{});
 }
 
+TEST_F(ConfigTest, ValuesOfTheWrongTypeAreReported)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({
+        "Window": {"blur": "maybe", "paneTitles": "yes"},
+        "Terminal": {"scrollback": "lots", "scrollLines": "7", "term": "  "},
+        "Font": {"size": "12pt", "gamma": "1.5"},
+        "Colors": {"background": 123}
+    })"));
+    const QStringList problems = store.problems();
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Window.blur must be true or false")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Terminal.scrollback must be a whole number")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Font.size must be a number")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.background is not a color")));
+    // What PhosphorConfig reads as the type is fine.
+    EXPECT_FALSE(mentions(problems, QStringLiteral("Window.paneTitles")));
+    EXPECT_FALSE(mentions(problems, QStringLiteral("Terminal.scrollLines")));
+    EXPECT_FALSE(mentions(problems, QStringLiteral("Font.gamma")));
+    EXPECT_EQ(store.settings().scrollLines, 7);
+    // An empty TERM would reach every program.
+    EXPECT_EQ(store.settings().term, Settings{}.term);
+}
+
+TEST_F(ConfigTest, HintPatternsThatDoNotCompileAreReported)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Hints": {"patterns": [
+        {"pattern": "(unclosed", "action": "copy"},
+        {"pattern": "[a-z]+", "action": "copy"}
+    ]}})"));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.patterns[0]: the pattern does not compile")));
+    ASSERT_EQ(store.settings().hintPatterns.size(), 1);
+    EXPECT_EQ(store.settings().hintPatterns.first().toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("[a-z]+"));
+}
+
+TEST_F(ConfigTest, AWriteThatCannotBeSavedChangesNothing)
+{
+    const QString directory = m_home.filePath(QStringLiteral("locked"));
+    ASSERT_TRUE(QDir().mkpath(directory));
+    const QString path = directory + QStringLiteral("/config.json");
+    {
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(R"({"Terminal": {"scrollLines": 5}})");
+    }
+    if (::geteuid() == 0) GTEST_SKIP() << "root writes anyway";
+    {
+        SettingsStore store(path);
+        ASSERT_TRUE(QFile::setPermissions(path, QFileDevice::ReadOwner));
+        ASSERT_TRUE(QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const bool written = store.write(QStringLiteral("Terminal"), QStringLiteral("scrollLines"), 9);
+        QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        EXPECT_FALSE(written);
+        EXPECT_EQ(store.persisted(QStringLiteral("Terminal"), QStringLiteral("scrollLines")).toInt(), 5);
+        // The store closes with the file writable again: it must not save the
+        // lost change then, over what the user has in the file.
+    }
+    EXPECT_TRUE(read(path).contains("\"scrollLines\": 5")) << read(path).toStdString();
+}
+
 TEST_F(ConfigTest, EnumKeysTakeOnlyTheirChoicesInAnyCase)
 {
     SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"cursorShape": "BAR", "bell": "Visual",
@@ -1309,7 +1368,7 @@ TEST_F(ConfigTest, EnumKeysTakeOnlyTheirChoicesInAnyCase)
     EXPECT_EQ(s.bell, Settings::Bell::Visual);
     // No aliases: "none" is not a choice, so the default.
     EXPECT_EQ(s.copyOnSelect, Settings::CopyOnSelect::Primary);
-    EXPECT_EQ(s.clipboardRead, QStringLiteral("deny"));
+    EXPECT_EQ(s.clipboardRead, Settings::Permission::Deny);
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.copyOnSelect must be one of")));
 }
 

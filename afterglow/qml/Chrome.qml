@@ -373,7 +373,7 @@ Item {
         onVisibleChanged: root.overlayChanged()
     }
 
-    // The prompts that a program, a script or D-Bus opens (a link, a close,
+    // The prompts that a program, a script or afterglow ctl opens (a link, a close,
     // a paste, a clipboard request) can open over any overlay and take the
     // keyboard: they come last, so they paint over it. Declaration order is
     // the paint order (every overlay has z 0).

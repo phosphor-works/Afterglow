@@ -29,20 +29,20 @@ TEST(QuitSignals, ASignalQuitsTheEventLoopOnce)
 {
     for (const int sig : {SIGTERM, SIGINT, SIGHUP}) {
         QuitSignals quit;
-        EXPECT_FALSE(isDefault(sig));
-        int received = 0;
-        QObject::connect(&quit, &QuitSignals::received, [&received](int s) { received = s; });
+        // A failed install would let the raise below end the test process.
+        ASSERT_FALSE(isDefault(sig));
         // The fallback ends a loop that the signal did not quit.
+        QObject guard;
         bool timedOut = false;
-        QTimer::singleShot(0, [sig] { raise(sig); });
-        QTimer::singleShot(3000, [&timedOut] {
+        QTimer::singleShot(0, &guard, [sig] { raise(sig); });
+        QTimer::singleShot(3000, &guard, [&timedOut] {
             timedOut = true;
             QCoreApplication::quit();
         });
         QCoreApplication::exec();
         EXPECT_FALSE(timedOut) << sig;
-        EXPECT_EQ(received, sig);
-        // A second signal would take the default action: a hung shutdown still ends.
+        EXPECT_EQ(quit.signal(), sig);
+        // A second signal would take the earlier action: a hung shutdown still ends.
         for (const int other : {SIGTERM, SIGINT, SIGHUP}) EXPECT_TRUE(isDefault(other)) << other;
     }
 }
@@ -56,11 +56,32 @@ TEST(QuitSignals, DestructorRestoresTheDefaults)
     for (const int sig : {SIGTERM, SIGINT, SIGHUP}) EXPECT_TRUE(isDefault(sig)) << sig;
 }
 
+TEST(QuitSignals, AnIgnoredSignalStaysIgnored)
+{
+    // nohup ignores SIGHUP: closing the terminal that started Afterglow must
+    // not end it.
+    std::signal(SIGHUP, SIG_IGN);
+    {
+        QuitSignals quit;
+        struct sigaction current{};
+        sigaction(SIGHUP, nullptr, &current);
+        EXPECT_EQ(current.sa_handler, SIG_IGN);
+        EXPECT_FALSE(isDefault(SIGTERM));
+        raise(SIGHUP);
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < 100) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        EXPECT_EQ(quit.signal(), 0);
+    }
+    struct sigaction after{};
+    sigaction(SIGHUP, nullptr, &after);
+    EXPECT_EQ(after.sa_handler, SIG_IGN);
+    std::signal(SIGHUP, SIG_DFL);
+}
+
 TEST(QuitSignals, AForkedChildDiesAsWithoutTheHandler)
 {
     QuitSignals quit;
-    bool received = false;
-    QObject::connect(&quit, &QuitSignals::received, [&received] { received = true; });
     // As a pty child between fork and its signal reset.
     const pid_t child = fork();
     ASSERT_GE(child, 0);
@@ -76,7 +97,7 @@ TEST(QuitSignals, AForkedChildDiesAsWithoutTheHandler)
     QElapsedTimer clock;
     clock.start();
     while (clock.elapsed() < 100) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-    EXPECT_FALSE(received);
+    EXPECT_EQ(quit.signal(), 0);
     EXPECT_FALSE(isDefault(SIGTERM));
 }
 
@@ -84,6 +105,9 @@ TEST(QuitSignals, AForkedChildDiesAsWithoutTheHandler)
 
 int main(int argc, char** argv)
 {
+    // The tests expect the default actions: a run under nohup, or as a
+    // background job of a script, starts with some of them ignored.
+    for (const int sig : {SIGTERM, SIGINT, SIGHUP}) std::signal(sig, SIG_DFL);
     QCoreApplication app(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

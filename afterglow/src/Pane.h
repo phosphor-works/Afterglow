@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -239,7 +240,11 @@ private:
     std::atomic_bool m_inputFailureQueued{false};
     /// Queues @p deliver to the GUI thread unless one is already queued.
     void queueOnce(std::atomic_bool& queued, std::function<void()> deliver);
+    /// GUI thread: titleUpdated when the title to show changed.
+    void announceTitle();
     std::atomic_bool m_bellQueued{false};
+    std::atomic_bool m_titleQueued{false};
+    std::atomic_bool m_userVarsQueued{false};
     std::atomic_bool m_flashQueued{false};
     std::atomic_bool m_clipboardQueued{false};
     std::atomic_bool m_pointerShapeQueued{false};
@@ -301,12 +306,15 @@ private:
     QString m_contextKind;
     QString m_reportedDirectory; ///< local, absolute; guarded by m_mutex
     QHash<QString, QString> m_userVars;
+    /// Changed user variables that wait for the GUI thread, guarded by m_mutex.
+    std::vector<std::pair<QString, QString>> m_pendingUserVars;
     Signals m_signals{};
     QString m_command; ///< guarded by m_mutex
     std::chrono::steady_clock::time_point m_commandStart;
     AfterglowVt::Terminal m_terminal;
     QString m_title;
-    QString m_shownTitle; ///< the last title announced, guarded by m_mutex
+    QString m_shownTitle; ///< the title to show, guarded by m_mutex
+    QString m_announcedTitle; ///< the last titleUpdated, GUI thread
 
     bool m_copyMode = false;
     bool m_copySelecting = false;
@@ -325,6 +333,13 @@ private:
     void captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string query, bool regex);
     bool m_searchRegex = false;
     std::uint64_t m_searchEpoch = 0;
+    static constexpr std::uint64_t NoRow = std::numeric_limits<std::uint64_t>::max();
+    /// The first row (a stable row id) that a region scroll moved since the
+    /// search started, guarded by m_mutex. Matches from there on are stale.
+    std::uint64_t m_movedFrom = NoRow;
+    /// The last search lost matches to moved text: the next search with the
+    /// same query starts again. GUI thread.
+    bool m_searchStale = false;
     bool m_searchAlt = false;
     QString m_searchNotice;
     std::vector<AfterglowVt::SearchMatch> m_searchMatches;

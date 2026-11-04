@@ -301,8 +301,9 @@ class Session:
                                     stdout=self.log, stderr=subprocess.STDOUT)
 
     def stop(self):
-        """Ends Afterglow with SIGTERM, as a session end does. exit_code is 0
-        after a clean exit, and negative when a signal or the kill ended it."""
+        """Ends Afterglow with SIGTERM, as a session end does. After its clean
+        shutdown Afterglow ends with the signal, so exit_code is -SIGTERM; it
+        is -SIGKILL when the shutdown hung and the kill ended it."""
         if self.app and self.app.poll() is None:
             self.app.terminate()
             try:
@@ -314,8 +315,16 @@ class Session:
             self.exit_code = self.app.returncode
 
     def control_socket(self):
-        """The control socket of the main Afterglow on the nested display."""
-        return Path(os.environ["XDG_RUNTIME_DIR"]) / f"afterglow-{self.env['WAYLAND_DISPLAY']}.sock"
+        """The control socket of the main Afterglow on the nested display, as
+        InstanceSocket::sharedPath names it. The harness display name has only
+        characters that the name keeps."""
+        return Path(self.env["XDG_RUNTIME_DIR"]) / f"afterglow-{self.env['WAYLAND_DISPLAY']}.sock"
+
+    def launch(self, *args, env=None):
+        """Starts Afterglow again, as a desktop launcher does, and returns its
+        exit code. A launch that hands its window over exits at once."""
+        return subprocess.run([self.binary, *map(str, args)], env=env or self.env, stdout=self.log,
+                              stderr=subprocess.STDOUT, timeout=20).returncode
 
     def close(self):
         self.stop()

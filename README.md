@@ -30,6 +30,7 @@ Start with the [documentation index](docs/README.md).
 - [Luau scripting](docs/SCRIPTING.md)
 - [Shader effects](docs/SHADERS.md)
 - [Desktop integration](docs/DESKTOP.md)
+- [External control](docs/CONTROL.md)
 - [Supported protocols and limits](docs/COMPATIBILITY.md)
 
 See the [Phosphor scene](data/examples/phosphor/README.md) for an audio-responsive example.

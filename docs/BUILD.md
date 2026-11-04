@@ -51,7 +51,7 @@ git clone https://github.com/fuddlesworth/PlasmaZones ../PlasmaZones
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout 4d14ed2a5
+git -C ../PlasmaZones checkout b071b07ed
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.

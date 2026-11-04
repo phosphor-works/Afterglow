@@ -140,7 +140,9 @@ void Application::bindShortcuts()
         m_shortcuts->unbind(QuickShortcutId);
     } else {
         m_shortcuts->bind(QuickShortcutId, QKeySequence::fromString(seq, QKeySequence::PortableText),
-                          QStringLiteral("Toggle the quick terminal"), [this] { toggleQuickTerminal(); });
+                          QStringLiteral("Toggle the quick terminal"), [this] {
+                              if (const QString error = toggleQuickTerminal(); !error.isEmpty()) qCWarning(lcApp).noquote() << error;
+                          });
     }
     m_shortcuts->flush();
     m_boundQuickShortcut = seq;
@@ -164,7 +166,7 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     return window;
 }
 
-QString Application::openForwarded(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+QString Application::openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
     TerminalWindow* w = newWindow({workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
                                    options.value(QStringLiteral("title")).toString(),
@@ -179,12 +181,14 @@ QString Application::openForwarded(const QString& workingDirectory, const QStrin
     return {};
 }
 
-void Application::toggleQuickTerminal()
+QString Application::toggleQuickTerminal()
 {
     if (!m_quick) {
         m_quick = newWindow({{}, {}, true, false, {}, false});
+        if (!m_quick) return QStringLiteral("cannot start the shell of the quick terminal");
     }
-    if (m_quick) m_quick->toggleQuick();
+    m_quick->toggleQuick();
+    return {};
 }
 
 void Application::quitWhenNoWindowsRemain()
@@ -201,14 +205,16 @@ LaunchApi::LaunchApi(Application& application)
 
 void LaunchApi::newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
-    if (const QString error = m_application.openForwarded(workingDirectory, command, options); !error.isEmpty()) {
+    if (const QString error = m_application.openLaunch(workingDirectory, command, options); !error.isEmpty()) {
         sendErrorReply(error);
     }
 }
 
 void LaunchApi::toggleQuickTerminal()
 {
-    m_application.toggleQuickTerminal();
+    if (const QString error = m_application.toggleQuickTerminal(); !error.isEmpty()) {
+        sendErrorReply(error);
+    }
 }
 
 } // namespace Afterglow

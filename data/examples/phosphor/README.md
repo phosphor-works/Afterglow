@@ -149,8 +149,8 @@ The command palette (**Ctrl+Shift+P**) also contains these actions:
 The charge lasts until the next command completes.
 
 Use the palette if desktop shortcuts intercept these keys.
-The demo process does not own `com.phosphorworks.Afterglow`.
-`afterglow ctl` reaches it only from its own panes.
+The demo is a separate process with its own socket, `afterglow-DISPLAY-PID.sock`.
+`afterglow ctl` in its panes reaches it.
 Elsewhere, use the palette or the shortcuts.
 
 ## Layers and signals

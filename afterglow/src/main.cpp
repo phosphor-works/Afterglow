@@ -29,12 +29,17 @@
 #include <QIcon>
 #include <QQuickWindow>
 
+#include <cerrno>
+#include <csignal>
 #include <exception>
 #include <sys/stat.h>
 
 namespace {
 
-enum class ForwardResult { Forwarded, DifferentExecutable, Unavailable, Failed };
+/// Unavailable: no answer (the main process is starting its socket or
+/// quitting). Unverified: its executable cannot be read. TooLong: the command
+/// does not fit in a request.
+enum class ForwardResult { Forwarded, DifferentExecutable, Unverified, Unavailable, TooLong, Failed };
 
 /// Share the GPU device with the main process when it runs this executable. A
 /// development build or an executable replaced by an upgrade must run its own
@@ -50,12 +55,14 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
     // answer: a restart cannot put another between the check and the request.
     const pid_t pid = client.peerPid();
     if (pid <= 0) {
-        return ForwardResult::Unavailable;
+        return ForwardResult::Unverified;
     }
     const QByteArray executable = QStringLiteral("/proc/%1/exe").arg(pid).toLocal8Bit();
     struct stat self{}, running{};
-    if (::stat("/proc/self/exe", &self) != 0 || ::stat(executable.constData(), &running) != 0) {
-        return ForwardResult::Unavailable;
+    if (::stat("/proc/self/exe", &self) != 0) return ForwardResult::Unverified;
+    if (::stat(executable.constData(), &running) != 0) {
+        // Gone since it answered the connection: it was quitting.
+        return errno == ENOENT || errno == ESRCH ? ForwardResult::Unavailable : ForwardResult::Unverified;
     }
     // Compare the files themselves: a rebuild can replace the binary while
     // an old process still runs at the same pathname.
@@ -70,13 +77,14 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
     QElapsedTimer clock;
     clock.start();
     const QString target = QLatin1String(Afterglow::LaunchApi::Target);
-    while (clock.elapsed() < ForwardTimeoutMs) {
-        const int left = int(ForwardTimeoutMs - clock.elapsed());
+    while (true) {
+        const qint64 left = ForwardTimeoutMs - clock.elapsed();
+        if (left <= 0) break;
         Afterglow::IpcClient::Error failure;
         const auto result = quick
-            ? client.call(target, QStringLiteral("toggleQuickTerminal"), {}, left, &failure)
+            ? client.call(target, QStringLiteral("toggleQuickTerminal"), {}, int(left), &failure)
             : client.call(target, QStringLiteral("newWindow"),
-                          {cwd, QJsonArray::fromStringList(command), QJsonObject::fromVariantMap(options)}, left, &failure);
+                          {cwd, QJsonArray::fromStringList(command), QJsonObject::fromVariantMap(options)}, int(left), &failure);
         if (result) return ForwardResult::Forwarded;
         // The process got the request and could not open the window (a bad -e
         // program): starting another process would fail the same way.
@@ -84,7 +92,13 @@ ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, 
             *error = failure.message;
             return ForwardResult::Failed;
         }
-        if (failure.code != QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) break;
+        if (failure.tooLong) return ForwardResult::TooLong;
+        if (failure.code.isEmpty()) break; // no answer
+        // Another error does not change when asked again (a request too long).
+        if (failure.code != QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
+            *error = QStringLiteral("the running instance refused the launch: %1").arg(failure.message);
+            return ForwardResult::Failed;
+        }
         QThread::msleep(100);
     }
     return ForwardResult::Unavailable;
@@ -159,6 +173,15 @@ int main(int argc, char** argv)
                   qPrintable(parser.positionalArguments().join(QLatin1Char(' '))));
         return 1;
     }
+    if (parser.isSet(execOption) && parser.positionalArguments().isEmpty()) {
+        qCritical("afterglow: -e needs a program");
+        return 1;
+    }
+    if (parser.isSet(quickOption)
+        && (parser.isSet(execOption) || parser.isSet(cwdOption) || parser.isSet(titleOption) || parser.isSet(holdOption))) {
+        qCritical("afterglow: --quick-terminal takes no -e, -d, --title or --hold");
+        return 1;
+    }
     // Any QtWayland platform (wayland, wayland-egl) has the Wayland interface.
     if (!app.nativeInterface<QNativeInterface::QWaylandApplication>()) {
         qCritical("afterglow runs on Wayland only (platform is %s)", qPrintable(QGuiApplication::platformName()));
@@ -169,11 +192,17 @@ int main(int argc, char** argv)
     const QString cwd = cwdGiven ? QDir(parser.value(cwdOption)).absolutePath() : QDir::currentPath();
     const QStringList command = parser.isSet(execOption) ? parser.positionalArguments() : QStringList{};
     const bool quick = parser.isSet(quickOption);
-    // The launcher's token lets the running instance's new window take focus.
+    // The launcher's token lets the new window take focus, in this process or
+    // in the running one. The window uses it once: the shells must not get it.
     const QVariantMap windowOptions{{QStringLiteral("directoryGiven"), cwdGiven},
                                     {QStringLiteral("title"), parser.value(titleOption)},
                                     {QStringLiteral("hold"), parser.isSet(holdOption)},
                                     {QStringLiteral("activationToken"), qEnvironmentVariable("XDG_ACTIVATION_TOKEN")}};
+    qunsetenv("XDG_ACTIVATION_TOKEN");
+    // An Afterglow started from a pane of another one must not hand that
+    // pane's identity to its scripts' programs. Its own panes get their own.
+    qunsetenv("AFTERGLOW_SOCKET");
+    qunsetenv("AFTERGLOW_PANE_ID");
 
     QJsonObject overrides;
     for (const QString& assignment : parser.values(overrideOption)) {
@@ -190,47 +219,92 @@ int main(int argc, char** argv)
     // changes them runs on its own instead of handing over.
     const bool separate = !configPath.isEmpty() || !overrides.isEmpty() || parser.isSet(classOption);
 
-    // The first process to listen on the display's socket is the main one.
-    // Binding is atomic: of two launches at the same moment, one wins and the
-    // other hands its window over. Launches that arrive while the main
-    // process starts wait on the socket until it is ready.
-    Afterglow::InstanceSocket socket;
-    if (!separate && !socket.listen(Afterglow::InstanceSocket::sharedPath())
-        && !Afterglow::InstanceSocket::sharedPath().isEmpty()) {
-        QString error;
-        switch (forwardToRunningInstance(Afterglow::InstanceSocket::sharedPath(), cwd, command, windowOptions, quick, &error)) {
-        case ForwardResult::Forwarded:
-            return 0;
-        case ForwardResult::Failed:
-            qCritical("afterglow: %s", qPrintable(error));
-            return 1;
-        case ForwardResult::DifferentExecutable:
-            qInfo("afterglow: the running instance uses a different executable; starting this build separately");
-            break;
-        case ForwardResult::Unavailable:
-            qWarning("afterglow: could not verify or contact the running instance; starting separately");
-            break;
+    int code = 0;
+    int quitSignal = 0;
+    {
+        // The first process to listen on the display's socket is the main
+        // one: of two launches at the same moment, one gets the path and the
+        // other hands its window over. Launches that arrive while the main
+        // process starts wait on the socket until it is ready.
+        Afterglow::InstanceSocket::removeStaleSockets();
+        Afterglow::InstanceSocket socket;
+        const QString shared = Afterglow::InstanceSocket::sharedPath();
+        if (shared.isEmpty()) {
+            qWarning("afterglow: XDG_RUNTIME_DIR is not set: no socket for launches and control");
+        } else if (!separate) {
+            using Listen = Afterglow::InstanceSocket::Listen;
+            // A main process that quits stops answering, then frees the path.
+            constexpr qint64 QuitWaitMs = 5000;
+            QElapsedTimer waited;
+            waited.start();
+            Listen listened = socket.listen(shared);
+            while (listened == Listen::Held) {
+                QString error;
+                const ForwardResult result = forwardToRunningInstance(shared, cwd, command, windowOptions, quick, &error);
+                if (result == ForwardResult::Forwarded) return 0;
+                if (result == ForwardResult::Failed) {
+                    qCritical("afterglow: %s", qPrintable(error));
+                    return 1;
+                }
+                if (result == ForwardResult::DifferentExecutable) {
+                    qInfo("afterglow: the running instance uses a different executable; starting this build separately");
+                    break;
+                }
+                if (result == ForwardResult::Unverified) {
+                    qWarning("afterglow: could not verify the running instance; starting separately");
+                    break;
+                }
+                if (result == ForwardResult::TooLong) {
+                    qInfo("afterglow: the command is too long to hand over; starting separately");
+                    break;
+                }
+                // A main process that quits closes its connections just before
+                // it frees the path: a late attempt still waits once for that.
+                const bool late = waited.elapsed() >= QuitWaitMs;
+                QThread::msleep(100);
+                listened = socket.listen(shared);
+                if (late && listened == Listen::Held) {
+                    qWarning("afterglow: the running instance does not answer; starting separately");
+                    break;
+                }
+            }
         }
-    }
-    if (!socket.listening()) socket.listen(Afterglow::InstanceSocket::ownPath());
+        // A process's own path is held only for the moment that another
+        // launch's sweep checks its lock.
+        for (int attempt = 0; !shared.isEmpty() && !socket.listening() && attempt < 20; ++attempt) {
+            if (socket.listen(Afterglow::InstanceSocket::ownPath()) != Afterglow::InstanceSocket::Listen::Held) break;
+            QThread::msleep(10);
+        }
 
-    try {
-        Afterglow::XkbKeyboard::instance(); // start following the compositor's keymap
-        // The chrome's Qt Quick scenes render on afterglow's Vulkan device.
-        QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
-        Afterglow::Application application(socket, configPath, overrides);
-        if (quick) {
-            application.toggleQuickTerminal();
-        } else {
-            if (!application.newWindow({cwd, command, false, cwdGiven, parser.value(titleOption), parser.isSet(holdOption)})) return 1;
-        }
-        // From here a termination signal closes the windows and the control
-        // socket like the last window does. Before, it ends the process: a
-        // launch that waits for a running instance stays easy to stop.
+        // From here a termination signal closes the windows and the socket,
+        // as the last window does. Before, it ends the process: a launch that
+        // waits for a running instance stays easy to stop.
         Afterglow::QuitSignals quitSignals;
-        return app.exec();
-    } catch (const std::exception& e) {
-        qCritical("afterglow: %s", e.what());
-        return 1;
+        try {
+            Afterglow::XkbKeyboard::instance(); // start following the compositor's keymap
+            // The chrome's Qt Quick scenes render on afterglow's Vulkan device.
+            QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+            Afterglow::Application application(socket, configPath, overrides);
+            // The quick terminal is a layer surface, which takes no activation token.
+            const QString error = quick ? application.toggleQuickTerminal() : application.openLaunch(cwd, command, windowOptions);
+            if (!error.isEmpty()) {
+                qCritical("afterglow: %s", qPrintable(error));
+                return 1;
+            }
+            // A signal during the start quits before the loop runs.
+            code = quitSignals.signal() != 0 ? 0 : app.exec();
+            quitSignal = quitSignals.signal();
+        } catch (const std::exception& e) {
+            qCritical("afterglow: %s", e.what());
+            return 1;
+        }
     }
+    // After the clean shutdown, end as the signal does: the parent (a shell,
+    // a session manager) sees that a signal ended Afterglow. What is left
+    // (QApplication, the keyboard singleton) holds nothing to save.
+    if (quitSignal != 0) {
+        std::signal(quitSignal, SIG_DFL);
+        std::raise(quitSignal);
+    }
+    return code;
 }

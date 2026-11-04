@@ -205,6 +205,9 @@ def main():
                 # Set only this runner's environment; children use its private Wayland socket.
                 previous = os.environ.copy()
                 os.environ.update(desktop.env)
+                # NestedDesktop leaves out the socket and pane of the user's pane.
+                for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID'):
+                    os.environ.pop(name, None)
                 try:
                     for repeat in range(1,args.repeats+1):
                         for case in cases:

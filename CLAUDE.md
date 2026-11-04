@@ -22,8 +22,9 @@ wrong, and points to the skills that hold the procedures.
   `../PlasmaZones/phosphor-libs`. Never edit that checkout from an Afterglow session. When Afterglow needs a Phosphor
   change, say what and why, and let the user decide.
 - **Never touch the user's running Afterglow.** This session usually runs inside one of its panes
-  (`AFTERGLOW_PANE_ID` is set). `afterglow ctl` without a private bus acts on the user's own terminal, and
-  `pkill afterglow` closes their windows. Test in a nested KWin with its own D-Bus (`ag-verify-live`).
+  (`AFTERGLOW_PANE_ID` is set). `afterglow ctl` uses the pane's `AFTERGLOW_SOCKET`, else the socket of the
+  user's Wayland display, so it acts on the user's own terminal. A private D-Bus does not change that.
+  `pkill afterglow` closes their windows. Test in a nested KWin with its own display (`ag-verify-live`).
 - **A build is not a test.** Check a visible change with `afterglow_renderpng` or the native window tests, at the
   edge cases (one pane, two panes, progress 0 and 1, the wrap point of a loop). The commit message says what you ran.
   A green suite has missed a transparent shader, a flicker at a wrap seam and an animation that never stopped.
@@ -100,7 +101,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Configuration | `afterglow/src/config/`: `Settings.*` (schema, defaults, `SettingsStore` over PhosphorConfig), `Keybinds.*`, `KeyModes.*`, `Theme.*`; `data/themes/` |
 | Shader library | `afterglow/src/shaders/`: `ShaderLibrary.*` (the pack registry, with package packs), `ShaderControls.*`; packs in `data/shaders/`, the contract in `data/shaders/shared/` |
 | Scripting | `afterglow/src/scripting/`: `ScriptHost.*` (Luau VMs, events, effect validation), `ScriptControl.cpp` (effects applied to windows), `ScriptPackage.*`, `ScriptState.*`, `ScriptTasks.*`, the prelude `afterglow.luau` and the declarations `afterglow.d.luau`; examples in `data/examples/scripts/` and `data/examples/packages/` |
-| Control | `afterglow/src/control/`: D-Bus control and `afterglow ctl` |
+| Control | `afterglow/src/control/`: `Control.cpp`, `ControlSocket.cpp` (the `control` target of the phosphor-ipc socket), `IpcClient.cpp`, `Ctl.cpp` (`afterglow ctl`); the socket and the launch handoff in `afterglow/src/app/InstanceSocket.cpp` and `main.cpp` |
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`), `data/shell-integration/`, `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `tools/conformance/`, `tools/fuzz/` |
 | Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py` |
@@ -130,7 +131,7 @@ The reviewers in `.claude/agents/review/` report findings for one area each. The
 - A motion that loops (the overview ring) needs a continuous position. Wrapping the target made the highlight jump
   back, and two cards flickered at the seam.
 - `newTab` did not start the tab transition, because the code read `m_splits` before the tab had one. Check a new
-  path through every entry point (keys, menu, script, D-Bus), not only the one you tested.
+  path through every entry point (keys, menu, script, `afterglow ctl`), not only the one you tested.
 - Package shader packs are keyed by a UUID derived from their id. A lookup by id must go through `packagedRef`.
 - Per-pixel loops over every card cost 10 ms at 4K with 27 panes. Find the nearest candidates first, then shade
   only those. Measure with `afterglow_renderpng --timings --pixels 3840x2160`.
