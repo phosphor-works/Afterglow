@@ -64,7 +64,7 @@ QString runtimeDirectory()
     return qEnvironmentVariable("XDG_RUNTIME_DIR");
 }
 
-// A process that ends without its destructors (a signal, a crash) leaves its
+// A process that ends without its destructors (a crash, SIGKILL) leaves its
 // socket file. Separate processes and nested displays use names that no later
 // process takes again, so nothing would remove them. A socket that refuses a
 // connection has no listener: a busy process still accepts one.

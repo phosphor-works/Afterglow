@@ -33,7 +33,9 @@ Outside Afterglow, `afterglow ctl` uses the socket of the main process on the cu
 `PID` is the process ID.
 Only `afterglow ctl` in the panes of a separate process can reach that process.
 
-A process that stops on a signal or a crash leaves its socket file.
+On `SIGTERM`, `SIGINT` or `SIGHUP`, Afterglow closes its windows and its socket, as after the last window.
+A second signal ends it at once.
+A crash or `SIGKILL` leaves the socket file.
 At start, Afterglow removes the `afterglow-*.sock` sockets in `$XDG_RUNTIME_DIR` that refuse a connection.
 
 `afterglow ctl` selects the target pane in this order:

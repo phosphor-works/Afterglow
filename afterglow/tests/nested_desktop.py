@@ -294,12 +294,15 @@ class Session:
         self.binary, self.env, self.log_path = binary, env, log_path
         self.log = log_path.open("w")
         self.app = None
+        self.exit_code = None
 
     def start(self, title):
         self.app = subprocess.Popen([self.binary, "--title", title], env=self.env,
                                     stdout=self.log, stderr=subprocess.STDOUT)
 
     def stop(self):
+        """Ends Afterglow with SIGTERM, as a session end does. exit_code is 0
+        after a clean exit, and negative when a signal or the kill ended it."""
         if self.app and self.app.poll() is None:
             self.app.terminate()
             try:
@@ -307,6 +310,12 @@ class Session:
             except subprocess.TimeoutExpired:
                 self.app.kill()
                 self.app.wait()
+        if self.app:
+            self.exit_code = self.app.returncode
+
+    def control_socket(self):
+        """The control socket of the main Afterglow on the nested display."""
+        return Path(os.environ["XDG_RUNTIME_DIR"]) / f"afterglow-{self.env['WAYLAND_DISPLAY']}.sock"
 
     def close(self):
         self.stop()

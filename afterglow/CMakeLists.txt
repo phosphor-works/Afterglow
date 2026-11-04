@@ -36,6 +36,8 @@ qt_add_library(afterglow_app STATIC
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
     src/app/Application.cpp
+    src/app/QuitSignals.cpp
+    src/app/QuitSignals.h
     src/app/NotificationCenter.cpp
     src/desktop/FileTransfer.cpp
     src/desktop/FileTransfer.h

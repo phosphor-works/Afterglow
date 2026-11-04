@@ -79,7 +79,11 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             check(navigator()['error'])
             module.write_text(original)
             wait(lambda: navigator().get('status') == 'active')
+            # SIGTERM closes Afterglow cleanly, and its control socket with it.
+            check(s.control_socket().exists(), 'no control socket while running')
             s.stop()
+            check(s.exit_code == 0, f'exit code {s.exit_code} after SIGTERM')
+            check(not s.control_socket().exists(), 'control socket left after SIGTERM')
             s.start('Afterglow navigator restored probe')
             wait(panes)
             wait(lambda: navigator().get('status') == 'active')

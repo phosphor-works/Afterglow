@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <cstdio>
 #include "app/Application.h"
+#include "app/QuitSignals.h"
 #include "app/Startup.h"
 #include "control/Ctl.h"
 #include "shell/Ssh.h"
@@ -94,7 +95,7 @@ int main(int argc, char** argv)
         std::fwrite(json.constData(), 1, std::size_t(json.size()), stdout);
         return 0;
     }
-    // afterglow ctl ...: a D-Bus client for a running afterglow, no GUI.
+    // afterglow ctl ...: a control socket client for a running afterglow, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
     }
@@ -218,6 +219,10 @@ int main(int argc, char** argv)
             if (!application.newWindow({cwd, command, false, cwdGiven, parser.value(titleOption), parser.isSet(holdOption)})) return 1;
         }
         if (launches) launches->replay(application);
+        // From here a termination signal closes the windows and the control
+        // socket like the last window does. Before, it ends the process: a
+        // launch that waits for a running instance stays easy to stop.
+        Afterglow::QuitSignals quitSignals;
         return app.exec();
     } catch (const std::exception& e) {
         qCritical("afterglow: %s", e.what());
