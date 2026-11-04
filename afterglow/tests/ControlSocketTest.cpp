@@ -162,28 +162,29 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
 
-    QJsonObject panes = call(client, QStringLiteral("listPanes"));
+    const QJsonObject panes = call(client, QStringLiteral("listPanes"));
     EXPECT_EQ(panes.value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
-    EXPECT_TRUE(panes.value(QStringLiteral("result")).toObject().value(QStringLiteral("panes")).toArray().isEmpty());
+    EXPECT_TRUE(panes.value(QStringLiteral("result")).isArray());
+    EXPECT_TRUE(panes.value(QStringLiteral("result")).toArray().isEmpty());
 
-    const QJsonObject focused = call(client, QStringLiteral("focusedPane"));
-    EXPECT_EQ(focused.value(QStringLiteral("result")).toObject().value(QStringLiteral("error")).toString(),
-              QStringLiteral("no focused pane"));
-
-    const QJsonObject text = call(client, QStringLiteral("sendText"), {7, QStringLiteral("x")});
-    EXPECT_TRUE(text.value(QStringLiteral("result")).toObject().value(QStringLiteral("error")).toString().contains(QLatin1Char('7')));
-
-    const QJsonObject scope = call(client, QStringLiteral("getText"), {1, QStringLiteral("everything")});
-    EXPECT_TRUE(scope.value(QStringLiteral("result")).toObject().value(QStringLiteral("error")).toString().startsWith(
-        QStringLiteral("scope is")));
-
+    // A call that fails gets an error reply with Control's message, and no result.
+    const auto failure = [this, &client](const QString& fn, const QJsonArray& args) {
+        const QJsonObject frame = call(client, fn, args);
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error")) << qPrintable(fn);
+        EXPECT_EQ(frame.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED")) << qPrintable(fn);
+        EXPECT_FALSE(frame.contains(QStringLiteral("result"))) << qPrintable(fn);
+        return frame.value(QStringLiteral("message")).toString();
+    };
+    EXPECT_EQ(failure(QStringLiteral("focusedPane"), {}), QStringLiteral("no focused pane"));
+    EXPECT_TRUE(failure(QStringLiteral("sendText"), {7, QStringLiteral("x")}).contains(QLatin1Char('7')));
+    EXPECT_TRUE(failure(QStringLiteral("getText"), {1, QStringLiteral("everything")}).startsWith(QStringLiteral("scope is")));
     // Reading pane text is off by default, and the check comes first.
-    const QJsonObject copy = call(client, QStringLiteral("runAction"), {1, QStringLiteral("copy")});
-    EXPECT_TRUE(copy.value(QStringLiteral("result")).toObject().value(QStringLiteral("error")).toString().contains(
-        QStringLiteral("Control.allowReadText")));
+    EXPECT_TRUE(failure(QStringLiteral("runAction"), {1, QStringLiteral("copy")}).contains(QStringLiteral("Control.allowReadText")));
 
+    // A call that succeeds after a failed one replies normally.
     const QJsonObject projects = call(client, QStringLiteral("projects"));
-    EXPECT_TRUE(projects.value(QStringLiteral("result")).toObject().value(QStringLiteral("projects")).isArray());
+    EXPECT_EQ(projects.value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
+    EXPECT_TRUE(projects.value(QStringLiteral("result")).isArray());
 
     // Only the API is callable, not the QObject's own slots.
     const QJsonObject unknown = call(client, QStringLiteral("deleteLater"));

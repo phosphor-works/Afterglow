@@ -80,8 +80,9 @@ int fail(const QString& message)
 class Client
 {
 public:
-    /// The call's result, or nothing after it reported the error.
-    std::optional<QJsonObject> call(const QString& fn, const QJsonArray& args)
+    /// The call's result, or nothing after it reported the error. A call
+    /// that failed comes back as an error frame (CALL_FAILED).
+    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args)
     {
         if (!connected()) return std::nullopt;
         const qint64 id = ++m_nextId;
@@ -94,12 +95,7 @@ public:
         }
         const auto frame = readReply(id);
         if (!frame) return std::nullopt;
-        const QJsonObject result = frame->value(QLatin1String(PhosphorIpc::Field::Result)).toObject();
-        if (const QJsonValue error = result.value(QLatin1String("error")); error.isString()) {
-            fail(error.toString());
-            return std::nullopt;
-        }
-        return result;
+        return frame->value(QLatin1String(PhosphorIpc::Field::Result));
     }
 
     bool subscribe(const QString& event)
@@ -340,19 +336,19 @@ int runCtl(int argc, char** argv)
         }
         const auto result = client.call(QStringLiteral("focusedPane"), {});
         if (!result) return std::nullopt;
-        return result->value(QLatin1String("pane")).toInteger();
+        return result->toInteger();
     };
     auto run = [&client](const QString& fn, const QJsonArray& callArgs) { return client.call(fn, callArgs) ? 0 : 1; };
     auto printPane = [&client](const QString& fn, const QJsonArray& callArgs) {
         const auto result = client.call(fn, callArgs);
         if (!result) return 1;
-        std::printf("%lld\n", result->value(QLatin1String("pane")).toInteger());
+        std::printf("%lld\n", result->toInteger());
         return 0;
     };
     auto printObject = [&client](const QString& fn, const QJsonArray& callArgs) {
         const auto result = client.call(fn, callArgs);
         if (!result) return 1;
-        std::printf("%s\n", QJsonDocument(*result).toJson(QJsonDocument::Compact).constData());
+        std::printf("%s\n", QJsonDocument(result->toObject()).toJson(QJsonDocument::Compact).constData());
         return 0;
     };
 
@@ -361,7 +357,7 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(0)) return usage(*error);
         const auto result = client.call(QStringLiteral("listPanes"), {});
         if (!result) return 1;
-        const QJsonArray panes = result->value(QLatin1String("panes")).toArray();
+        const QJsonArray panes = result->toArray();
         if (json) {
             std::printf("%s\n", QJsonDocument(panes).toJson(QJsonDocument::Indented).constData());
             return 0;
@@ -397,7 +393,7 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(0)) return usage(*error);
         const auto result = client.call(QStringLiteral("scriptDiagnostics"), {});
         if (!result) return 1;
-        std::printf("%s\n", QJsonDocument(result->value(QLatin1String("diagnostics")).toArray()).toJson(QJsonDocument::Compact).constData());
+        std::printf("%s\n", QJsonDocument(result->toArray()).toJson(QJsonDocument::Compact).constData());
         return 0;
     }
     if (command == QLatin1String("open-directory")) {
@@ -410,7 +406,7 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(0)) return usage(*error);
         const auto result = client.call(QStringLiteral("projects"), {});
         if (!result) return 1;
-        for (const QJsonValue& name : result->value(QLatin1String("projects")).toArray()) {
+        for (const QJsonValue& name : result->toArray()) {
             std::printf("%s\n", qPrintable(name.toString()));
         }
         return 0;
@@ -476,7 +472,7 @@ int runCtl(int argc, char** argv)
         if (const auto error = extra(0)) return usage(*error);
         const auto result = client.call(QStringLiteral("getText"), {*pane, scope});
         if (!result) return 1;
-        const QByteArray text = result->value(QLatin1String("text")).toString().toUtf8();
+        const QByteArray text = result->toString().toUtf8();
         std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
         if (!text.endsWith('\n')) {
             std::fputc('\n', stdout);

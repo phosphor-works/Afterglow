@@ -28,16 +28,6 @@ namespace {
 
 QString g_processPath;
 
-QVariantMap failed(const QString& error)
-{
-    return {{QStringLiteral("error"), error}};
-}
-
-QVariantMap reply(const QString& error, const QVariantMap& result = {})
-{
-    return error.isEmpty() ? result : failed(error);
-}
-
 // Commands and user variables can carry secrets: they leave the process
 // only with read access.
 QString readable(const SettingsStore& settings, const QString& text)
@@ -112,135 +102,147 @@ QString ControlApi::readable(const QString& text) const
     return Afterglow::readable(m_settings, text);
 }
 
-QVariantMap ControlApi::listPanes()
+bool ControlApi::failed(const QString& error)
+{
+    if (error.isEmpty()) return false;
+    sendErrorReply(error);
+    return true;
+}
+
+QVariantList ControlApi::listPanes()
 {
     QVariantList panes;
     for (PaneInfo& p : m_control.panes()) {
         p.command = readable(p.command);
         panes.append(Control::paneMap(p));
     }
-    return {{QStringLiteral("panes"), panes}};
+    return panes;
 }
 
-QVariantMap ControlApi::focusedPane()
+uint ControlApi::focusedPane()
 {
-    if (const auto pane = m_control.focusedPane()) return {{QStringLiteral("pane"), *pane}};
-    return failed(QStringLiteral("no focused pane"));
+    if (const auto pane = m_control.focusedPane()) return *pane;
+    failed(QStringLiteral("no focused pane"));
+    return 0;
 }
 
-QVariantMap ControlApi::sendText(uint pane, const QString& text)
+void ControlApi::sendText(uint pane, const QString& text)
 {
-    return reply(m_control.sendText(pane, text));
+    failed(m_control.sendText(pane, text));
 }
 
-QVariantMap ControlApi::getText(uint pane, const QString& scope)
+QString ControlApi::getText(uint pane, const QString& scope)
 {
     const auto s = Control::scopeFromName(scope);
-    if (!s) return failed(QStringLiteral("scope is screen, scrollback, selection or last-output"));
+    if (!s) {
+        failed(QStringLiteral("scope is screen, scrollback, selection or last-output"));
+        return {};
+    }
     QString text;
-    const QString error = m_control.readText(pane, *s, text);
-    return reply(error, {{QStringLiteral("text"), text}});
+    failed(m_control.readText(pane, *s, text));
+    return text;
 }
 
-QVariantMap ControlApi::split(uint pane, const QString& direction, const QStringList& command)
+uint ControlApi::split(uint pane, const QString& direction, const QStringList& command)
 {
     quint32 created = 0;
-    const QString error = m_control.split(pane, direction, command, {}, created);
-    return reply(error, {{QStringLiteral("pane"), created}});
+    failed(m_control.split(pane, direction, command, {}, created));
+    return created;
 }
 
-QVariantMap ControlApi::newTab(uint pane, const QString& workingDirectory, const QStringList& command)
+uint ControlApi::newTab(uint pane, const QString& workingDirectory, const QStringList& command)
 {
     quint32 created = 0;
-    const QString error = m_control.newTab(pane, workingDirectory, command, created);
-    return reply(error, {{QStringLiteral("pane"), created}});
+    failed(m_control.newTab(pane, workingDirectory, command, created));
+    return created;
 }
 
-QVariantMap ControlApi::newWindow(const QString& workingDirectory, const QStringList& command)
+uint ControlApi::newWindow(const QString& workingDirectory, const QStringList& command)
 {
     quint32 created = 0;
-    const QString error = m_control.newWindow(workingDirectory, command, created);
-    return reply(error, {{QStringLiteral("pane"), created}});
+    failed(m_control.newWindow(workingDirectory, command, created));
+    return created;
 }
 
-QVariantMap ControlApi::focus(uint pane)
+void ControlApi::focus(uint pane)
 {
-    return reply(m_control.focus(pane));
+    failed(m_control.focus(pane));
 }
 
-QVariantMap ControlApi::close(uint pane)
+void ControlApi::close(uint pane)
 {
-    return reply(m_control.close(pane));
+    failed(m_control.close(pane));
 }
 
-QVariantMap ControlApi::setTitle(uint pane, const QString& title)
+void ControlApi::setTitle(uint pane, const QString& title)
 {
-    return reply(m_control.setTitle(pane, title));
+    failed(m_control.setTitle(pane, title));
 }
 
-QVariantMap ControlApi::signal(uint pane, int channel, double value)
+void ControlApi::signal(uint pane, int channel, double value)
 {
-    return reply(m_control.signal(pane, channel, value));
+    failed(m_control.signal(pane, channel, value));
 }
 
-QVariantMap ControlApi::notify(uint pane, const QString& title, const QString& body)
+void ControlApi::notify(uint pane, const QString& title, const QString& body)
 {
-    return reply(m_control.notify(pane, title, body));
+    failed(m_control.notify(pane, title, body));
 }
 
-QVariantMap ControlApi::runAction(uint pane, const QString& action)
+void ControlApi::runAction(uint pane, const QString& action)
 {
     // These move pane text to the clipboard, into other panes or into a pager
     // file: the same reading that getText needs permission for.
     if (!m_settings.settings().control.allowReadText && Control::readsPaneText(action)) {
-        return failed(QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action));
+        failed(QStringLiteral("action %1 reads pane text, which is off (Control.allowReadText)").arg(action));
+        return;
     }
-    return reply(m_control.runAction(pane, action));
+    failed(m_control.runAction(pane, action));
 }
 
 QVariantMap ControlApi::movePane(uint pane, uint target, const QString& placement)
 {
     QVariantMap result;
-    const QString error = m_control.movePane(pane, target, placement, result);
-    return reply(error, result);
+    failed(m_control.movePane(pane, target, placement, result));
+    return result;
 }
 
 QVariantMap ControlApi::detachTab(uint pane)
 {
     QVariantMap result;
-    const QString error = m_control.detachTab(pane, result);
-    return reply(error, result);
+    failed(m_control.detachTab(pane, result));
+    return result;
 }
 
 QVariantMap ControlApi::openDirectory(const QString& directory, const QString& layout)
 {
     QVariantMap result;
-    const QString error = m_control.openDirectory(directory, layout, result);
-    return reply(error, result);
+    failed(m_control.openDirectory(directory, layout, result));
+    return result;
 }
 
-QVariantMap ControlApi::projects()
+QStringList ControlApi::projects()
 {
-    return {{QStringLiteral("projects"), m_control.projectNames()}};
+    return m_control.projectNames();
 }
 
 QVariantMap ControlApi::saveProject(uint pane, const QString& name, bool overwrite)
 {
     QVariantMap result;
-    const QString error = m_control.saveProject(pane, name, overwrite, result);
-    return reply(error, result);
+    failed(m_control.saveProject(pane, name, overwrite, result));
+    return result;
 }
 
 QVariantMap ControlApi::openProject(const QString& name, bool newInstance)
 {
     QVariantMap result;
-    const QString error = m_control.openProject(name, newInstance, result);
-    return reply(error, result);
+    failed(m_control.openProject(name, newInstance, result));
+    return result;
 }
 
-QVariantMap ControlApi::scriptDiagnostics()
+QVariantList ControlApi::scriptDiagnostics()
 {
-    return {{QStringLiteral("diagnostics"), m_control.scriptDiagnostics()}};
+    return m_control.scriptDiagnostics();
 }
 
 ControlSocket::ControlSocket(Control& control, SettingsStore& settings, const QString& path, QObject* parent)

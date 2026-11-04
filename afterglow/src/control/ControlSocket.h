@@ -5,6 +5,7 @@
 
 #include "Control.h"
 
+#include <PhosphorIpc/IpcCallContext.h>
 #include <PhosphorIpc/IpcRouter.h>
 
 #include <QElapsedTimer>
@@ -17,40 +18,41 @@ namespace Afterglow {
 
 class SettingsStore;
 
-/// The calls of the control socket's "control" target. Every call replies
-/// with an object, {"error": message} when it fails: the router has no error
-/// reply for a call that ran. The signals name the events that a client can
-/// subscribe to. ControlSocket sends them; Qt never emits them.
-class ControlApi : public QObject
+/// The calls of the control socket's "control" target. A call that fails
+/// sends an error reply (CALL_FAILED) with Control's message, and its return
+/// value is dropped. The signals name the events that a client can subscribe
+/// to. ControlSocket sends them; Qt never emits them.
+class ControlApi : public QObject, protected PhosphorIpc::IpcCallContext
 {
     Q_OBJECT
 
 public:
     ControlApi(Control& control, SettingsStore& settings, QObject* parent = nullptr);
 
-    Q_INVOKABLE QVariantMap listPanes();
-    Q_INVOKABLE QVariantMap focusedPane();
-    Q_INVOKABLE QVariantMap sendText(uint pane, const QString& text);
+    /// The pane objects of Control::paneMap.
+    Q_INVOKABLE QVariantList listPanes();
+    Q_INVOKABLE uint focusedPane();
+    Q_INVOKABLE void sendText(uint pane, const QString& text);
     /// @p scope: screen, scrollback, selection or last-output.
-    Q_INVOKABLE QVariantMap getText(uint pane, const QString& scope);
-    /// @p direction: left, right, up or down.
-    Q_INVOKABLE QVariantMap split(uint pane, const QString& direction, const QStringList& command);
-    Q_INVOKABLE QVariantMap newTab(uint pane, const QString& workingDirectory, const QStringList& command);
-    Q_INVOKABLE QVariantMap newWindow(const QString& workingDirectory, const QStringList& command);
-    Q_INVOKABLE QVariantMap focus(uint pane);
-    Q_INVOKABLE QVariantMap close(uint pane);
-    Q_INVOKABLE QVariantMap setTitle(uint pane, const QString& title);
-    Q_INVOKABLE QVariantMap signal(uint pane, int channel, double value);
-    Q_INVOKABLE QVariantMap notify(uint pane, const QString& title, const QString& body);
+    Q_INVOKABLE QString getText(uint pane, const QString& scope);
+    /// @p direction: left, right, up or down. Returns the new pane.
+    Q_INVOKABLE uint split(uint pane, const QString& direction, const QStringList& command);
+    Q_INVOKABLE uint newTab(uint pane, const QString& workingDirectory, const QStringList& command);
+    Q_INVOKABLE uint newWindow(const QString& workingDirectory, const QStringList& command);
+    Q_INVOKABLE void focus(uint pane);
+    Q_INVOKABLE void close(uint pane);
+    Q_INVOKABLE void setTitle(uint pane, const QString& title);
+    Q_INVOKABLE void signal(uint pane, int channel, double value);
+    Q_INVOKABLE void notify(uint pane, const QString& title, const QString& body);
     /// copy, paste, select_all and show_last_output need Control.allowReadText.
-    Q_INVOKABLE QVariantMap runAction(uint pane, const QString& action);
+    Q_INVOKABLE void runAction(uint pane, const QString& action);
     Q_INVOKABLE QVariantMap movePane(uint pane, uint target, const QString& placement);
     Q_INVOKABLE QVariantMap detachTab(uint pane);
     Q_INVOKABLE QVariantMap openDirectory(const QString& directory, const QString& layout);
-    Q_INVOKABLE QVariantMap projects();
+    Q_INVOKABLE QStringList projects();
     Q_INVOKABLE QVariantMap saveProject(uint pane, const QString& name, bool overwrite);
     Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance);
-    Q_INVOKABLE QVariantMap scriptDiagnostics();
+    Q_INVOKABLE QVariantList scriptDiagnostics();
 
 Q_SIGNALS:
     void paneCreated(uint pane);
@@ -71,6 +73,8 @@ Q_SIGNALS:
 
 private:
     QString readable(const QString& text) const;
+    /// Sends @p error as the call's error reply. True when there is one.
+    bool failed(const QString& error);
 
     Control& m_control;
     SettingsStore& m_settings;

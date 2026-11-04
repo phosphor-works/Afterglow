@@ -85,20 +85,28 @@ Each request has an `id`, and the reply has the same `id`.
 
 ```json
 {"type": "call", "id": 1, "target": "control", "fn": "split", "args": [3, "right", []]}
-{"type": "reply", "id": 1, "result": {"pane": 4}}
+{"type": "reply", "id": 1, "result": 4}
+{"type": "call", "id": 2, "target": "control", "fn": "focus", "args": [99]}
+{"type": "error", "id": 2, "code": "CALL_FAILED", "message": "no pane 99", "detail": {}}
 ```
 
 | Request `type` | Fields | Reply |
 | --- | --- | --- |
-| `call` | `target`, `fn`, `args` | `result`: the call's object |
+| `call` | `target`, `fn`, `args` | `result`: the call's result, `null` for a call with no result |
 | `subscribe` | `target`, `signal`: an event name | `result`: `null`. Then an `event` line for each event, with `subscriptionId` (the request's `id`) and `args`. |
 | `unsubscribe` | `subscriptionId` | `result`: `null` |
 | `list` | None | `result`: the target names |
 | `schema` | `target` | `result`: the calls and events of the target |
 
-Every call replies with an object.
-A call that fails replies with `{"error": "message"}` in `result`.
-A request that the socket cannot run, such as an unknown call or a wrong argument count, gets a line with `"type": "error"`, a `code` and a `message`.
+A request that fails gets a line with `"type": "error"`, a `code` and a `message` in place of the reply.
+
+| Code | Cause |
+| --- | --- |
+| `CALL_FAILED` | The call ran and failed, for example for a pane that does not exist. The message tells why. |
+| `NO_SUCH_FN` | No call has that name. |
+| `INVALID_ARG` | The number or the type of the arguments is wrong. |
+| `NO_SUCH_SIGNAL` | No event has that name. |
+| `MALFORMED_REQUEST` | The line is not a valid request, or a limit is reached. |
 
 `phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
 
@@ -120,26 +128,26 @@ A pane argument is a pane ID.
 
 | Call | Arguments | Result |
 | --- | --- | --- |
-| `listPanes` | None | `panes`: a [pane object](#pane-object) for each pane |
-| `focusedPane` | None | `pane`: the pane that step 3 or 4 of the target order selects |
-| `sendText` | pane, text | Empty |
-| `getText` | pane, scope | `text`. Scopes are `screen`, `scrollback`, `selection` and `last-output`. |
-| `split` | pane, direction, command | `pane`: the new pane. Directions are `left`, `right`, `up` and `down`. |
-| `newTab` | pane, working directory, command | `pane`: the new tab's pane |
-| `newWindow` | working directory, command | `pane`: the new window's pane |
-| `focus` | pane | Empty |
-| `close` | pane | Empty. The pane closes without a question, also when a program runs in it. |
-| `setTitle` | pane, title | Empty. An empty title gives the title back to the programs. |
-| `signal` | pane, channel, value | Empty. Channels are 0 to 7. |
-| `notify` | pane, title, body | Empty |
-| `runAction` | pane, action | Empty. Actions are keybind action names, or `script:ID.ACTION`. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. |
-| `movePane` | pane, target, placement | The pane after the move. See [projects](PROJECTS.md). |
-| `detachTab` | pane | The pane in its new window |
-| `openDirectory` | directory, layout | The window and its pane |
-| `projects` | None | `projects`: the saved project names |
-| `saveProject` | pane, name, overwrite | The name and the window |
-| `openProject` | name, new instance | The window and its panes |
-| `scriptDiagnostics` | None | `diagnostics`: script and package diagnostics |
+| `listPanes` | None | A [pane object](#pane-object) for each pane |
+| `focusedPane` | None | The pane that step 3 or 4 of the target order selects |
+| `sendText` | pane, text | None |
+| `getText` | pane, scope | The text. Scopes are `screen`, `scrollback`, `selection` and `last-output`. |
+| `split` | pane, direction, command | The new pane. Directions are `left`, `right`, `up` and `down`. |
+| `newTab` | pane, working directory, command | The new tab's pane |
+| `newWindow` | working directory, command | The new window's pane |
+| `focus` | pane | None |
+| `close` | pane | None. The pane closes without a question, also when a program runs in it. |
+| `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
+| `signal` | pane, channel, value | None. Channels are 0 to 7. |
+| `notify` | pane, title, body | None |
+| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.ACTION`. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. |
+| `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). |
+| `detachTab` | pane | An object: the pane in its new window |
+| `openDirectory` | directory, layout | An object: the window and its pane |
+| `projects` | None | The saved project names |
+| `saveProject` | pane, name, overwrite | An object: the name and the window |
+| `openProject` | name, new instance | An object: the window and its panes |
+| `scriptDiagnostics` | None | Script and package diagnostics |
 
 A command is an array of strings. An empty array runs the shell.
 A working directory must be absolute, `~`, or start with `~/`.
