@@ -6,7 +6,7 @@
 #include "../TerminalWindow.h"
 #include "../audio/AudioController.h"
 #include "../control/Control.h"
-#include "../control/ControlBus.h"
+#include "../control/ControlSocket.h"
 #include "../config/Settings.h"
 #include "../scripting/ScriptHost.h"
 #include "../shaders/ShaderLibrary.h"
@@ -78,7 +78,7 @@ private:
     ShaderLibrary m_shaders;
     // Before the services, which hand the script host to windows.
     Control m_control;
-    ControlBus m_controlBus;
+    ControlSocket m_controlSocket;
     ScriptHost m_scripts;
     AudioController m_audio;
     Services m_services;

@@ -1061,6 +1061,7 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     const Settings& d = defaults.settings();
     EXPECT_EQ(d.graphicsQuota, std::size_t(320) << 20);
     EXPECT_EQ(d.notificationRateLimit, 20);
+    EXPECT_EQ(d.control.eventInterval, 100);
     EXPECT_EQ(d.hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty"));
     EXPECT_EQ(d.quickTerminal.position, QuickTerminalSettings::Position::Top);
     EXPECT_TRUE(d.quickTerminal.screen.isEmpty());
@@ -1074,6 +1075,7 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     SettingsStore custom(write(QStringLiteral("custom.json"), R"({
         "Graphics": {"quota": 64},
         "Notifications": {"rateLimit": 0},
+        "Control": {"eventInterval": 0},
         "Hints": {"alphabet": "Q W E R"},
         "QuickTerminal": {"position": "bottom", "screen": " DP-1 "},
         "Audio": {"framerate": 500, "smoothing": 30, "extraSmoothing": 0.99, "lowerCutoff": 5, "higherCutoff": 12000}
@@ -1082,6 +1084,7 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
     EXPECT_EQ(c.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.terminal.graphicsQuota, std::size_t(64) << 20);
     EXPECT_EQ(c.notificationRateLimit, 0);
+    EXPECT_EQ(c.control.eventInterval, 0);
     EXPECT_EQ(c.hintAlphabet, QStringLiteral("qwer"));
     EXPECT_TRUE(custom.problems().filter(QStringLiteral("Hints.alphabet")).isEmpty());
     EXPECT_EQ(c.quickTerminal.position, QuickTerminalSettings::Position::Bottom);
@@ -1099,9 +1102,11 @@ TEST_F(ConfigTest, LimitsDefaultAndOverride)
         EXPECT_EQ(bad.settings().hintAlphabet, QStringLiteral("asdfjklghqweruiopzxcvbnmty")) << alphabet;
         EXPECT_TRUE(mentions(bad.problems(), QStringLiteral("Hints.alphabet"))) << alphabet;
     }
-    SettingsStore quotaFloor(write(QStringLiteral("quota.json"), R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}})"));
+    SettingsStore quotaFloor(write(QStringLiteral("quota.json"),
+                                   R"({"Graphics": {"quota": 1}, "Notifications": {"rateLimit": -4}, "Control": {"eventInterval": 99999}})"));
     EXPECT_EQ(quotaFloor.settings().graphicsQuota, std::size_t(16) << 20);
     EXPECT_EQ(quotaFloor.settings().notificationRateLimit, 0);
+    EXPECT_EQ(quotaFloor.settings().control.eventInterval, 10000);
 }
 
 TEST(Config, SchemaDefaultsHaveTheirDeclaredTypes)

@@ -128,7 +128,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A script key mode that starts while the pane overview is open ends when the overview closes.
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
-- External control through `afterglow ctl` and D-Bus, with access settings.
+- External control through `afterglow ctl` and a control socket, with access settings and merged state events.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 
 ### Performance

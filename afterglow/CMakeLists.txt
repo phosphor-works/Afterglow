@@ -44,8 +44,8 @@ qt_add_library(afterglow_app STATIC
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
-    src/control/ControlBus.cpp
-    src/control/ControlBus.h
+    src/control/ControlSocket.cpp
+    src/control/ControlSocket.h
     src/scripting/ScriptControl.cpp
     src/scripting/ScriptControl.h
     src/app/NotificationCenter.h
@@ -179,7 +179,7 @@ target_include_directories(afterglow_app PUBLIC src)
 target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
-    PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
+    PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
     Qt6::DBus KF6::WindowSystem
     PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
@@ -191,7 +191,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 set(AFTERGLOW_PRIVATE_LIBS AfterglowVt AfterglowRender AfterglowPty
     PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
     PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-    PhosphorDBus PhosphorScripting PhosphorAudio)
+    PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)

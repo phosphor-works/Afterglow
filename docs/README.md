@@ -12,7 +12,7 @@ Afterglow is a Linux terminal with GPU rendering, tabs, splits, shell integratio
 | Find a setting or default binding | [Configuration reference](CONFIGURATION.md) |
 | Use keybindings, selection, search or hints | [Input](INPUT.md) |
 | Move panes or save layouts | [Projects](PROJECTS.md) |
-| Control a running instance | [Command line and D-Bus](CONTROL.md) |
+| Control a running instance | [Command line and control socket](CONTROL.md) |
 | Write scripts | [Luau API](SCRIPTING.md) |
 | Install or write packages | [Packages and state](PACKAGES.md) |
 | Configure reactive effects | [Shaders](SHADERS.md) |

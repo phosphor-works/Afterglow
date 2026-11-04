@@ -27,7 +27,7 @@ source of the defaults, ranges, choices and descriptions. `docs/CONFIGURATION.md
 4. **The read.** Map the key into the struct in `SettingsStore::read()` (`st.read<T>(Group, QStringLiteral("key"))`).
 5. **The live apply.** Settings reload while Afterglow runs. Apply a change where the value is used: compare with
    the previous settings in `TerminalWindow::applySettings`, the reload handler in `app/Application.cpp`, or
-   `ControlBus::applySettings`. A setting that needs a restart says so in its description.
+   `ControlSocket::applySettings`. A setting that needs a restart says so in its description.
 6. **The test.** Add the default and an override to `afterglow/tests/ConfigTest.cpp`. Test the clamp for a numeric
    key and the fallback for an enum.
 7. **Build, then regenerate the reference:**

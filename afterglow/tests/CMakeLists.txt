@@ -37,6 +37,10 @@ target_link_libraries(afterglow_config_tests PRIVATE afterglow_config GTest::gte
 target_compile_definitions(afterglow_config_tests PRIVATE AFTERGLOW_THEME_DIR="${PROJECT_SOURCE_DIR}/data/themes")
 gtest_discover_tests(afterglow_config_tests)
 
+qt_add_executable(afterglow_control_tests ControlSocketTest.cpp)
+target_link_libraries(afterglow_control_tests PRIVATE afterglow_app GTest::gtest)
+gtest_discover_tests(afterglow_control_tests)
+
 qt_add_executable(afterglow_audio_tests AudioControllerTest.cpp)
 target_link_libraries(afterglow_audio_tests PRIVATE afterglow_audio GTest::gtest)
 gtest_discover_tests(afterglow_audio_tests)

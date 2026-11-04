@@ -67,8 +67,9 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `false` |  | Allow D-Bus clients to read pane text, including scrollback. |
-| `enabled` | `true` |  | Allow other programs to control Afterglow through D-Bus and afterglow ctl. |
+| `allowReadText` | `false` |  | Allow control clients to read pane text, including scrollback. |
+| `enabled` | `true` |  | Allow other programs to control Afterglow through its control socket and afterglow ctl. |
+| `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two title, status, context, user variable or bell events of one pane. Changes in between are merged, and the client gets the newest value. A value of 0 sends every change. |
 
 ## Font
 

@@ -96,11 +96,11 @@ class NestedDesktop:
                         QT_QPA_PLATFORM="wayland", WAYLAND_DISPLAY=self.socket,
                         QT_QPA_PLATFORMTHEME="generic", QT_QUICK_CONTROLS_STYLE="Basic",
                         QT_MESSAGE_PATTERN="%{if-category}%{category}: %{endif}%{message}")
-        # A harness started in an Afterglow pane inherits that pane's bus name and
-        # pane ID. `afterglow ctl` would then call the user's instance (a unique
-        # name of the session bus, unknown on the private bus) instead of the
-        # nested one, and default to a pane that the nested one does not have.
-        for name in ("AFTERGLOW_BUS_NAME", "AFTERGLOW_PANE_ID"):
+        # A harness started in an Afterglow pane inherits that pane's control
+        # socket and pane ID. `afterglow ctl` would then call the user's instance
+        # instead of the nested one, and default to a pane that the nested one
+        # does not have. Without them it finds the socket of the nested display.
+        for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID"):
             self.env.pop(name, None)
         (root / "kwinrc").write_text(KWINRC)
         self.log = (root / "kwin.log").open("w")

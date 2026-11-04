@@ -249,7 +249,7 @@ Each unfocused window keeps its selected tab and pane.
 Top-level active IDs are zero when no Afterglow window has keyboard focus.
 Pane, tab and window IDs exist only during the process lifetime.
 `tab_id` remains stable during tab reordering.
-`pane.tab` and the D-Bus tab field are zero-based positions.
+`pane.tab` and the `tab` field of the control socket are zero-based positions.
 
 Closed-pane events retain `id`, `tab_id` and `window`.
 The closed pane is absent from the live snapshot.

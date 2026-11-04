@@ -98,7 +98,7 @@ A screen reader that speaks inserted text then reads the new output, not the who
 `Control.allowReadText` does not apply to accessibility clients.
 AT-SPI is a separate D-Bus bus. Any client on it can read the viewport text while accessibility is active, as with other toolkits.
 Any client on it can also run the pane actions, for example Paste, Close Pane and New Window, and press docked-area buttons.
-The access settings of D-Bus control and scripts do not apply to these actions.
+The access settings of the control socket and scripts do not apply to these actions.
 
 ## Input methods and directionality
 

@@ -10,7 +10,7 @@ These instructions use the current source layout.
 
 - CMake 3.21 or later, pkg-config and a C++20 compiler.
 - Qt 6.10 or later. The Phosphor libraries need this version.
-- Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, Svg, WaylandClient and ShaderTools.
+- Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, Network, Svg, WaylandClient and ShaderTools.
 - Qt GuiPrivate, ShaderToolsPrivate, WaylandClientPrivate and QuickPrivate headers.
 - FreeType, HarfBuzz, FriBidi and fontconfig.
 - xkbcommon, wayland-client, `wayland-scanner`, zlib, xxHash and the 32-bit PCRE2 library.

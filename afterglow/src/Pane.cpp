@@ -9,11 +9,11 @@
 
 #include "app/NotificationCenter.h"
 #include "app/Startup.h"
+#include "control/ControlSocket.h"
 
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
-#include <QDBusConnection>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -107,10 +107,12 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_BUS_NAME"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_BUS_NAME"));
-    if (const QString bus = QDBusConnection::sessionBus().baseService(); !bus.isEmpty()) {
-        opts.environment.emplace_back("AFTERGLOW_BUS_NAME", bus.toStdString());
+    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
+    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_SOCKET"));
+    if (const QString socket = ControlSocket::processPath(); !socket.isEmpty()) {
+        opts.environment.emplace_back("AFTERGLOW_SOCKET", QFile::encodeName(socket).toStdString());
+    } else {
+        opts.unsetEnvironment.emplace_back("AFTERGLOW_SOCKET");
     }
     opts.cols = cols;
     opts.rows = rows;

@@ -102,8 +102,9 @@ struct QuickTerminalSettings
 
 struct ControlSettings
 {
-    bool enabled = true; ///< the D-Bus control interface (afterglow ctl)
+    bool enabled = true; ///< the control socket (afterglow ctl)
     bool allowReadText = false; ///< let it read pane contents
+    int eventInterval = 100; ///< ms between two state events of one pane, 0 sends every change
     bool operator==(const ControlSettings&) const = default;
 };
 

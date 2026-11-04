@@ -101,9 +101,9 @@ The next event of that kind starts the frames again.
 | --- | --- |
 | `cursorAge()` | The cursor moved. |
 | `focusAge()` | The pane focus changed. |
-| `signalAge()` | A script, `afterglow ctl signal` or D-Bus set a signal. |
+| `signalAge()` | A script, `afterglow ctl signal` or the control socket set a signal. |
 | `uEventAges` | The cursor moved, or the pane focus changed. |
-| `uSignal` | A script, `afterglow ctl signal` or D-Bus set a signal. |
+| `uSignal` | A script, `afterglow ctl signal` or the control socket set a signal. |
 
 Set `settleSeconds` to the time that the effect needs to finish at the largest parameter values.
 If the value is too short, the effect stops before its end. At the next redraw, it jumps to its current state.

@@ -38,7 +38,7 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command, bool empty) {
         return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false, empty});
     })
-    , m_controlBus(m_control, m_settings)
+    , m_controlSocket(m_control, m_settings)
     , m_scripts(scriptCallbacks(m_control))
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
 {

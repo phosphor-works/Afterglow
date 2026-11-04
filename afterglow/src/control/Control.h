@@ -38,13 +38,12 @@ struct PaneInfo
     int cols = 0;
     int rows = 0;
     bool focused = false; ///< the focused pane of the active window
-    // The fields below are not part of the D-Bus pane structure.
     /// Where the shell runs when not here as you ("root", "deploy@prod-1").
     QString context;
     quint32 tabId = 0; ///< stable within this process, unlike the tab's position (tab)
 };
 
-/// What afterglow lets other programs (D-Bus) and scripts (Luau) do: one
+/// What afterglow lets other programs (the control socket) and scripts (Luau) do: one
 /// layer, so both see the same model and the same rules. Operations return
 /// an error message, empty on success.
 class Control : public QObject
@@ -132,11 +131,11 @@ public:
     /// record: a closed pane is an error.
     QString scriptDock(const QString& owner, quint32 pane, const QVariantMap& effect);
     /// Opens the tab menu of @p pane's tab (afterglow.tab_menu). Scripts
-    /// only: no D-Bus method or ctl command opens it.
+    /// only: no control socket call or ctl command opens it.
     QString tabMenu(quint32 pane);
     /// Moves @p pane's tab to @p index in its window, without showing it
     /// (afterglow.move_tab). An index outside 0 to count - 1 fails. Scripts
-    /// only: D-Bus and ctl move a tab one place with the move_tab_left and
+    /// only: the control socket and ctl move a tab one place with the move_tab_left and
     /// move_tab_right actions.
     QString moveTab(quint32 pane, int index);
     void clearScriptOwner(const QString& owner);

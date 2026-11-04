@@ -5,7 +5,7 @@
 
 namespace Afterglow {
 
-/// `afterglow ctl ...`: drives a running afterglow over D-Bus.
+/// `afterglow ctl ...`: drives a running afterglow through its control socket.
 int runCtl(int argc, char** argv);
 
 } // namespace Afterglow

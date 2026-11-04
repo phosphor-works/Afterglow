@@ -134,7 +134,7 @@ Projects store launch layouts, not running sessions.
 They do not save scrollback, environment snapshots, remote sessions or process state.
 Examine commands in imported layouts before you open them.
 
-## Script and D-Bus results
+## Script and control results
 
 | Luau effect | Result fields |
 | --- | --- |
@@ -149,7 +149,7 @@ Project creation uses the structural action budget.
 Window snapshots contain `project`. An unnamed window has an empty project name.
 
 The [project script](../data/examples/scripts/projects.luau) shows a native selector.
-D-Bus supplies `Projects`, `SaveProject` and `OpenProject`.
+The [control socket](CONTROL.md#control-calls) supplies `projects`, `saveProject` and `openProject`.
 The CLI prints save and open results as JSON.
 
 `open_directory(path, layout?)` starts a shell or saved layout in a directory.

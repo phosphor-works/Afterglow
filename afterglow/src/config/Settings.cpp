@@ -546,9 +546,13 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
-         QStringLiteral("Allow other programs to control Afterglow through D-Bus and afterglow ctl.")},
+         QStringLiteral("Allow other programs to control Afterglow through its control socket and afterglow ctl.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
-         QStringLiteral("Allow D-Bus clients to read pane text, including scrollback.")},
+         QStringLiteral("Allow control clients to read pane text, including scrollback.")},
+        intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, 10000,
+               QStringLiteral("Shortest time in milliseconds between two title, status, context, user variable or bell "
+                              "events of one pane. Changes in between are merged, and the client gets the newest value. A "
+                              "value of 0 sends every change.")),
     };
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("allowReadText"), d.scriptsAllowReadText, QMetaType::Bool,
@@ -1300,6 +1304,7 @@ Settings SettingsStore::read()
     s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
+    s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
     s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
 
