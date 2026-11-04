@@ -3,7 +3,8 @@
 
 #include <AfterglowVt/ProgramStatus.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+
 #include "Utf8.h"
 
 #include <algorithm>
@@ -164,14 +165,14 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body, std::size_t te
         r.app = std::string(*app);
     }
     if (title) {
-        const auto decoded = title->size() <= MaxTitleEncoded ? detail::base64Decode(*title, detail::Base64Check::PaddingOptional) : std::nullopt;
+        const auto decoded = title->size() <= MaxTitleEncoded ? AfterglowProto::base64Decode(*title, AfterglowProto::Base64Check::PaddingOptional) : std::nullopt;
         if (!decoded || decoded->size() > MaxTitleDecoded || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.title = *decoded;
     }
     if (msg) {
-        const auto decoded = msg->size() <= MaxMsgEncoded ? detail::base64Decode(*msg, detail::Base64Check::PaddingOptional) : std::nullopt;
+        const auto decoded = msg->size() <= MaxMsgEncoded ? AfterglowProto::base64Decode(*msg, AfterglowProto::Base64Check::PaddingOptional) : std::nullopt;
         if (!decoded || decoded->size() > MaxMsgDecoded || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }

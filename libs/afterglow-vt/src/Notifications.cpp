@@ -3,7 +3,8 @@
 
 #include <AfterglowVt/Notifications.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+
 #include "Utf8.h"
 
 #include <algorithm>
@@ -52,7 +53,7 @@ bool decodeChunk(std::string& carry, std::string_view data, std::string& out)
     std::string joined = carry;
     joined += data;
     const std::size_t whole = joined.ends_with('=') ? joined.size() : joined.size() / 4 * 4;
-    if (!detail::base64DecodeAppend(out, std::string_view(joined).substr(0, whole), detail::Base64Check::PaddingOptional)) {
+    if (!AfterglowProto::base64DecodeAppend(out, std::string_view(joined).substr(0, whole), AfterglowProto::Base64Check::PaddingOptional)) {
         return false;
     }
     carry = joined.substr(whole);
@@ -220,7 +221,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     if (existing && !existing->carry.empty()) {
         if (base64 && existing->carryPayload == kind) {
             carry = existing->carry;
-        } else if (!detail::base64DecodeAppend(flushed, existing->carry, detail::Base64Check::PaddingOptional)) {
+        } else if (!AfterglowProto::base64DecodeAppend(flushed, existing->carry, AfterglowProto::Base64Check::PaddingOptional)) {
             return reject();
         }
     }
@@ -266,7 +267,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
 
     // Metadata of every chunk applies; later values win.
     for (const auto& [key, value] : keys) {
-        auto decoded = [&value]() { return detail::base64Decode(value, detail::Base64Check::PaddingOptional).value_or(std::string{}); };
+        auto decoded = [&value]() { return AfterglowProto::base64Decode(value, AfterglowProto::Base64Check::PaddingOptional).value_or(std::string{}); };
         switch (key) {
         case 'a': {
             std::size_t vpos = 0;
@@ -353,7 +354,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     // checked whole, after the carry is complete.
     if (!p->carry.empty()) {
         std::string tail;
-        if (!detail::base64DecodeAppend(tail, p->carry, detail::Base64Check::PaddingOptional)) {
+        if (!AfterglowProto::base64DecodeAppend(tail, p->carry, AfterglowProto::Base64Check::PaddingOptional)) {
             return reject();
         }
         target(*p, p->carryPayload) += tail;

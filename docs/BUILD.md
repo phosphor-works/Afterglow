@@ -13,10 +13,13 @@ These instructions use the current source layout.
 - Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, Network, Svg, WaylandClient and ShaderTools.
 - Qt GuiPrivate, ShaderToolsPrivate, WaylandClientPrivate and QuickPrivate headers.
 - FreeType, HarfBuzz, FriBidi and fontconfig.
-- xkbcommon, wayland-client, `wayland-scanner`, zlib, xxHash and the 32-bit PCRE2 library.
+- xkbcommon, wayland-client, `wayland-scanner` and the 32-bit PCRE2 library.
 - KF6 WindowSystem.
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The Phosphor libraries from a PlasmaZones checkout.
+
+The build compiles zlib and xxHash from the release archives in `extern/`.
+It does not use the copies that the system has.
 
 | Optional software | Function | Result when it is missing |
 | --- | --- | --- |

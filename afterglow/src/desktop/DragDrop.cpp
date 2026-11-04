@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DragDrop.h"
 #include "FileDrop.h"
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/DragDrop.h>
 #include <QBuffer>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
 #include <QDrag>
@@ -14,7 +15,6 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImageReader>
-#include <QMessageAuthenticationCode>
 #include <QMimeData>
 #include <QPainter>
 #include <QPointer>
@@ -46,14 +46,13 @@ namespace {
     constexpr qsizetype MaxPathLength = 4096;
     constexpr qsizetype MaxLinkTarget = 4096;
     constexpr int MaxMimeTypes = 256;
-    constexpr qsizetype MaxMimeName = 255;
     constexpr int MaxDirectoryEntries = 16384; // one listing
     constexpr int MaxListedEntries = 65536; // every listing of one drop
     constexpr std::size_t MaxDirectoryHandles = 256;
     constexpr std::size_t MaxQueuedReads = 64;
     constexpr std::size_t MaxPictures = 16;
     constexpr int MaxPictureSide = 4096;
-    constexpr qsizetype MaxPacket = 4096;
+    constexpr qsizetype MaxPacket = qsizetype(AfterglowProto::DndMaxPacket);
     constexpr qsizetype MaxCommand = 8192;
     constexpr qsizetype MaxControlPayload = 128 * 1024; // reassembled MIME lists and ids
     constexpr qsizetype MaxMachineId = 128;
@@ -64,21 +63,17 @@ namespace {
     constexpr int RemoteTimeoutMs = 120000;
     // Drop targets such as file managers copy dropped files after the drag ends.
     constexpr int FinishedTreeLifetimeMs = 10 * 60 * 1000;
-    QByteArray machineId()
+    std::string_view view(const QByteArray& bytes) { return { bytes.constData(), std::size_t(bytes.size()) }; }
+    QByteArray bytesOf(std::string_view bytes) { return { bytes.data(), qsizetype(bytes.size()) }; }
+    Meta metaOf(const AfterglowProto::DndMeta& meta)
     {
-        QFile file(QStringLiteral("/etc/machine-id"));
-        if (!file.open(QIODevice::ReadOnly))
-            return { };
-        return "1:"
-            + QMessageAuthenticationCode::hash(
-                file.readAll().trimmed(), "tty-dnd-protocol-machine-id", QCryptographicHash::Sha256)
-                  .toHex();
+        Meta m;
+        for (const auto& [key, value] : meta)
+            m.insert(bytesOf(key), bytesOf(value));
+        return m;
     }
-    bool validMime(const QByteArray& mime)
-    {
-        return !mime.isEmpty() && mime.contains('/') && mime.size() <= MaxMimeName
-            && std::all_of(mime.begin(), mime.end(), [](unsigned char c) { return c > 32 && c < 127; });
-    }
+    QByteArray machineId() { return bytesOf(AfterglowProto::dndMachineId()); }
+    bool validMime(const QByteArray& mime) { return AfterglowProto::dndValidMime(view(mime)); }
     QStringList mimeList(const QByteArray& data)
     {
         QStringList result;
@@ -124,13 +119,6 @@ namespace {
     bool receiverType(const QByteArray& type)
     {
         return type == "a" || type == "A" || type == "m" || type == "r";
-    }
-    QByteArray typeOf(const QByteArray& raw)
-    {
-        for (const auto& field : raw.split(':'))
-            if (field.startsWith("t="))
-                return field.mid(2);
-        return { };
     }
     // Writes one packet without keeping a descriptor open between packets.
     bool appendFile(const QString& path, const QByteArray& bytes, bool create)
@@ -194,8 +182,8 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     int allowed = 0, chosen = 0, finalAction = 0, sourceActions = 0;
     QPointer<QWindow> window;
     QPointer<QDrag> drag;
-    Meta chunks;
-    QByteArray chunkData;
+    // Chunked messages: payloads of data types are base64 of up to MaxData bytes.
+    AfterglowProto::DndAssembler chunks { std::size_t(4 * MaxData / 3 + 4), std::size_t(MaxControlPayload) };
     std::map<int, QByteArray> data;
     std::set<int> complete, failed;
     std::vector<QPixmap> pictures;
@@ -256,25 +244,12 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
             if (!id.isEmpty())
                 m["i"] = id;
         }
-        qsizetype offset = 0;
-        do {
-            const auto part = payload.mid(offset, MaxPacket);
-            offset += part.size();
-            m["m"] = offset < payload.size() ? "1" : "0";
-            QByteArray bytes("\x1b]72;");
-            bool first = true;
-            for (auto it = m.begin(); it != m.end(); ++it) {
-                if (!first)
-                    bytes += ':';
-                first = false;
-                bytes += it.key() + '=' + it.value();
-            }
-            bytes += ';';
-            bytes += part;
-            bytes += "\x1b\\";
+        AfterglowProto::DndMeta meta;
+        for (auto it = m.begin(); it != m.end(); ++it)
+            meta.emplace(it.key().toStdString(), it.value().toStdString());
+        for (const auto& packet : AfterglowProto::writeDnd(std::move(meta), view(payload)))
             if (owner)
-                Q_EMIT owner->reply(bytes);
-        } while (offset < payload.size());
+                Q_EMIT owner->reply(bytesOf(packet));
     }
     void sourceError(const QByteArray& error)
     {
@@ -301,8 +276,7 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     // Reports an error on the channel of the role that sent the message.
     void reject(const QByteArray& type, const QByteArray& error)
     {
-        chunks.clear();
-        chunkData.clear();
+        chunks.reset();
         if (receiverType(type))
             dropError({ }, error);
         else
@@ -350,8 +324,7 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         accepting = offering = pressed = false;
         clearDrop();
         clearSource();
-        chunks.clear();
-        chunkData.clear();
+        chunks.reset();
         receiverId.clear();
         sourceId.clear();
         receiverMachine.clear();
@@ -405,7 +378,7 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
             read.offset += bytes.size();
         }
         if (!bytes.isEmpty()) {
-            send(read.meta, bytes.toBase64());
+            send(read.meta, bytesOf(AfterglowProto::base64Encode(view(bytes))));
             dropActivity.restart();
         } else {
             const auto meta = read.meta;
@@ -1050,12 +1023,12 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
             sourceError("EINVAL");
             return;
         }
-        const auto decoded = QByteArray::fromBase64Encoding(payload, QByteArray::AbortOnBase64DecodingErrors);
+        const auto decoded = AfterglowProto::base64Decode(view(payload), AfterglowProto::Base64Check::StrictOrUnpadded);
         if (!decoded) {
             sourceError("EINVAL");
             return;
         }
-        const auto bytes = decoded.decoded;
+        const auto bytes = bytesOf(*decoded);
         const bool end = payload.isEmpty() || m.value("_end") == "1";
         if (type == "k") {
             remoteData(m, bytes, end);
@@ -1109,67 +1082,26 @@ void DragDrop::abort()
 void DragDrop::setInputBacklog(std::function<std::size_t()> backlog) { d->backlog = std::move(backlog); }
 bool DragDrop::acceptsDrops() const { return d->accepting; }
 bool DragDrop::offersDrags() const { return d->offering; }
-QByteArray DragDrop::queryReply(const QByteArray& command)
-{
-    const auto meta = command.first(command.indexOf(';') < 0 ? command.size() : command.indexOf(';'));
-    QByteArray type, id;
-    for (const auto& field : meta.split(':')) {
-        if (field.startsWith("t="))
-            type = field.mid(2);
-        if (field.startsWith("i=")) {
-            bool ok;
-            const auto n = field.mid(2).toLongLong(&ok);
-            if (!ok || n < INT32_MIN || n > UINT32_MAX)
-                return { };
-            id = field.mid(2);
-        }
-    }
-    if (type != "q" && type != "Q")
-        return { };
-    return QByteArray("\x1b]72;t=") + type + (id.isEmpty() ? QByteArray() : ":i=" + id) + ";\x1b\\";
-}
+QByteArray DragDrop::queryReply(const QByteArray& command) { return bytesOf(AfterglowProto::dndQueryReply(view(command))); }
 void DragDrop::handle(const QByteArray& command)
 {
     const auto state = d;
-    const auto separator = command.indexOf(';');
-    const auto raw = separator < 0 ? command : command.left(separator);
-    const auto payload = separator < 0 ? QByteArray() : command.mid(separator + 1);
-    if (command.size() > MaxCommand || payload.size() > MaxPacket) {
-        auto type = typeOf(raw);
+    const auto [raw, payload] = AfterglowProto::splitDnd(view(command));
+    if (command.size() > MaxCommand || qsizetype(payload.size()) > MaxPacket) {
+        auto type = bytesOf(AfterglowProto::dndType(raw));
         if (type.isEmpty())
-            type = state->chunks.value("t", "a");
+            type = bytesOf(state->chunks.type());
         state->reject(type, "EFBIG");
         if (command.size() > MaxCommand)
             state->reset();
         return;
     }
-    Meta m;
-    for (const auto& field : raw.split(':')) {
-        const auto pos = field.indexOf('=');
-        if (pos != 1)
-            continue;
-        const auto key = field.left(pos), value = field.mid(pos + 1);
-        if (!QByteArray("tixyXYom").contains(key))
-            continue;
-        if (m.contains(key)) {
-            state->reset();
-            return;
-        }
-        if (key == "t") {
-            if (value.size() != 1) {
-                state->reset();
-                return;
-            }
-        } else {
-            bool ok;
-            const auto n = value.toLongLong(&ok);
-            if (!ok || n < INT32_MIN || n > UINT32_MAX) {
-                state->reset();
-                return;
-            }
-        }
-        m[key] = value;
+    const auto parsed = AfterglowProto::parseDndMeta(raw);
+    if (!parsed) {
+        state->reset();
+        return;
     }
+    const Meta m = metaOf(*parsed);
     if (m.value("t") == "q" || m.value("t") == "Q") {
         // The PTY thread answers queries first. This path serves direct callers.
         const auto response = queryReply(command);
@@ -1177,36 +1109,26 @@ void DragDrop::handle(const QByteArray& command)
             Q_EMIT reply(response);
         return;
     }
-    const auto chunkType = state->chunks.value("t", "a");
-    if (m.value("t") == "e" || m.value("t") == "k" || (!state->chunks.isEmpty() && !receiverType(chunkType)))
+    const auto chunkType = bytesOf(state->chunks.type());
+    if (m.value("t") == "e" || m.value("t") == "k" || (state->chunks.active() && !receiverType(chunkType)))
         state->sourceActivity.restart();
-    if (!state->chunks.isEmpty() && receiverType(chunkType))
+    if (state->chunks.active() && receiverType(chunkType))
         state->dropActivity.restart();
-    if (!state->chunks.isEmpty()) {
-        if (m.contains("i") && m.value("i") != state->chunks.value("i")) {
-            state->reset();
-            return;
-        }
-        const bool data = chunkType == "p" || chunkType == "e" || chunkType == "k";
-        if (state->chunkData.size() + payload.size() > (data ? 4 * MaxData / 3 + 4 : MaxControlPayload)) {
-            state->reject(chunkType, "EFBIG");
-            return;
-        }
-        state->chunkData += payload;
-        if (m.value("m") != "1") {
-            auto meta = std::move(state->chunks);
-            auto bytes = std::move(state->chunkData);
-            state->chunks.clear();
-            state->chunkData.clear();
-            if (payload.isEmpty())
-                meta["_end"] = "1";
-            state->dispatch(meta, bytes);
-        }
-    } else if (m.value("m") == "1") {
-        state->chunks = m;
-        state->chunkData = payload;
-    } else
-        state->dispatch(m, payload);
+    AfterglowProto::DndMeta meta;
+    std::string bytes;
+    switch (state->chunks.feed(*parsed, payload, meta, bytes)) {
+    case AfterglowProto::DndAssembler::Result::Pending:
+        return;
+    case AfterglowProto::DndAssembler::Result::Mismatch:
+        state->reset();
+        return;
+    case AfterglowProto::DndAssembler::Result::TooLarge:
+        state->reject(chunkType, "EFBIG");
+        return;
+    case AfterglowProto::DndAssembler::Result::Ready:
+        state->dispatch(metaOf(meta), bytesOf(bytes));
+        return;
+    }
 }
 void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
 {

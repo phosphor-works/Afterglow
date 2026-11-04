@@ -77,8 +77,6 @@ target_link_libraries(afterglow_shaders PUBLIC Afterglow::Render PhosphorShaders
     PhosphorFsLoader::PhosphorFsLoader Qt6::Core)
 
 find_package(PkgConfig REQUIRED)
-find_package(ZLIB REQUIRED)
-pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 
@@ -188,8 +186,7 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
-    Qt6::DBus Qt6::Network KF6::WindowSystem
-    PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
+    Qt6::DBus Qt6::Network KF6::WindowSystem Afterglow::Proto)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Private libraries: afterglow's own and the phosphor ones it was built with.

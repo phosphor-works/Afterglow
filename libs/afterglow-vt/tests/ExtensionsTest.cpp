@@ -7,9 +7,9 @@
 // OSC 72 and 5113 sessions handed to the host.
 
 #include "TestUtil.h"
-#include "../src/Base64.h"
 #include "../src/ITerm2.h"
 
+#include <AfterglowProto/Base64.h>
 #include <AfterglowVt/Sixel.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -408,9 +408,9 @@ TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
     // 8 MiB is the most a download may hold.
     const std::string limit(8u * 1024 * 1024, 'x');
     t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size() + 1) + ":"
-           + detail::base64Encode(limit + "x") + "\x07");
+           + AfterglowProto::base64Encode(limit + "x") + "\x07");
     EXPECT_EQ(host.count, 2);
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + detail::base64Encode(limit)
+    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + AfterglowProto::base64Encode(limit)
            + "\x07");
     ASSERT_EQ(host.count, 3);
     EXPECT_EQ(host.data.size(), limit.size());

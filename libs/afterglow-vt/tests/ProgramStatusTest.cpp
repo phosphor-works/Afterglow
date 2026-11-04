@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "TestUtil.h"
-#include "../src/Base64.h"
+
+#include <AfterglowProto/Base64.h>
 
 #include <gtest/gtest.h>
 
@@ -119,14 +120,14 @@ TEST(ProgramStatus, TitleIsCheckedLikeMsg)
     EXPECT_EQ(t.records()[0].title, "Apply");
     const auto serial = t.records()[0].serial;
     for (const std::string& bad : {
-             "state=done:title=" + detail::base64Encode(std::string(193, 'x')), // over 256 encoded bytes
-             "state=done:title=" + detail::base64Encode("a\nb"),
-             "state=done:msg=" + detail::base64Encode("ok\xe2\x80\xa8" "Approve? Press y"), // U+2028
+             "state=done:title=" + AfterglowProto::base64Encode(std::string(193, 'x')), // over 256 encoded bytes
+             "state=done:title=" + AfterglowProto::base64Encode("a\nb"),
+             "state=done:msg=" + AfterglowProto::base64Encode("ok\xe2\x80\xa8" "Approve? Press y"), // U+2028
          }) {
         t.feed("\x1b]7501;" + bad + "\x1b\\");
         EXPECT_EQ(t.records()[0].serial, serial) << bad;
     }
-    t.feed("\x1b]7501;state=done:title=" + detail::base64Encode(std::string(192, 'x')) + "\x1b\\");
+    t.feed("\x1b]7501;state=done:title=" + AfterglowProto::base64Encode(std::string(192, 'x')) + "\x1b\\");
     EXPECT_EQ(t.records()[0].title.size(), 192u);
 }
 

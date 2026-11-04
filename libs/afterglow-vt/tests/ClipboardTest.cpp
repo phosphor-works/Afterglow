@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "TestUtil.h"
-#include "../src/Base64.h"
+
+#include <AfterglowProto/Base64.h>
 
 #include <gtest/gtest.h>
 
@@ -187,17 +188,17 @@ TEST(Clipboard, NamesAndTypesMustBePlainText)
 {
     Term t;
     // A name with a newline would forge a line in the permission prompt.
-    t.feed("\x1b]5522;type=read:pw=eA==:name=" + detail::base64Encode("make\nVerified by Afterglow")
+    t.feed("\x1b]5522;type=read:pw=eA==:name=" + AfterglowProto::base64Encode("make\nVerified by Afterglow")
            + ";dGV4dC9wbGFpbg==\x1b\\");
     // A type with a control character or a space.
-    t.feed("\x1b]5522;type=read;" + detail::base64Encode("text/plain\x1b[1m") + "\x1b\\");
+    t.feed("\x1b]5522;type=read;" + AfterglowProto::base64Encode("text/plain\x1b[1m") + "\x1b\\");
     EXPECT_TRUE(t.host.requests.empty());
-    t.feed("\x1b]5522;type=write:id=w\x1b\\\x1b]5522;type=wdata:mime=" + detail::base64Encode("text/\tplain")
+    t.feed("\x1b]5522;type=write:id=w\x1b\\\x1b]5522;type=wdata:mime=" + AfterglowProto::base64Encode("text/\tplain")
            + ";aGk=\x1b\\");
     EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=w\x1b\\");
     t.host.written.clear();
     t.feed("\x1b]5522;type=write:id=a\x1b\\\x1b]5522;type=walias:mime=dGV4dC9wbGFpbg==;"
-           + detail::base64Encode("STR\x7fING") + "\x1b\\");
+           + AfterglowProto::base64Encode("STR\x7fING") + "\x1b\\");
     EXPECT_EQ(t.host.written, "\x1b]5522;type=write:status=EINVAL:id=a\x1b\\");
 }
 
@@ -235,7 +236,7 @@ TEST(Clipboard, AWriteHoldsAtMost64Types)
     Term t;
     t.feed("\x1b]5522;type=write:id=w\x1b\\");
     for (int i = 0; i <= 64; ++i) {
-        t.feed("\x1b]5522;type=wdata:mime=" + detail::base64Encode("type/" + std::to_string(i)) + ";aGk=\x1b\\");
+        t.feed("\x1b]5522;type=wdata:mime=" + AfterglowProto::base64Encode("type/" + std::to_string(i)) + ";aGk=\x1b\\");
     }
     EXPECT_TRUE(t.host.written.empty());
     t.feed("\x1b]5522;type=wdata\x1b\\"); // the end reports the 65th type
@@ -250,8 +251,8 @@ TEST(Clipboard, WriteLimitCountsSmallChunksAcrossTypes)
     ClipboardAssembler a;
     ClipboardRequest out;
     std::string reply;
-    const std::string plain = "type=wdata:mime=" + detail::base64Encode("text/plain") + ";";
-    const std::string html = "type=wdata:mime=" + detail::base64Encode("text/html") + ";";
+    const std::string plain = "type=wdata:mime=" + AfterglowProto::base64Encode("text/plain") + ";";
+    const std::string html = "type=wdata:mime=" + AfterglowProto::base64Encode("text/html") + ";";
     ASSERT_EQ(a.feed("type=write:id=w", out, reply), ClipboardAssembler::Result::Pending);
     // text/plain: all but 3,000 bytes of the limit, in large chunks.
     constexpr std::size_t Rest = 3000;
@@ -279,4 +280,24 @@ TEST(Clipboard, WriteLimitCountsSmallChunksAcrossTypes)
     }
     EXPECT_EQ(a.feed(html + "A", out, reply), ClipboardAssembler::Result::Error);
     EXPECT_EQ(reply, "\x1b]5522;type=write:status=EFBIG:id=w\x1b\\");
+}
+
+TEST(Clipboard, ClientWriterOutputIsAssembled)
+{
+    // What a client writes with the protocol library reaches the host unchanged.
+    ClipboardRequest write;
+    write.kind = ClipboardRequest::Kind::Write;
+    write.id = "c1";
+    write.data = {{"text/plain", std::string(10000, 'x')}, {"text/html", "<b>x</b>"}};
+    write.aliases = {{"UTF8_STRING", "text/plain"}};
+    Term t;
+    t.feed(AfterglowProto::clipboardWriteRequest(write));
+    ASSERT_EQ(t.host.requests.size(), 1u);
+    EXPECT_EQ(t.host.requests[0], write);
+    ClipboardRequest read;
+    read.mimes = {"text/plain"};
+    read.id = "c2";
+    t.feed(AfterglowProto::clipboardReadRequest(read));
+    ASSERT_EQ(t.host.requests.size(), 2u);
+    EXPECT_EQ(t.host.requests[1], read);
 }

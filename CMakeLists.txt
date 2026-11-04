@@ -47,6 +47,7 @@ set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
 
 include(cmake/AfterglowPhosphor.cmake)
 
+add_subdirectory(libs/afterglow-proto)  # protocol formats shared with clients: transfer, drag and drop, images, clipboard (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas

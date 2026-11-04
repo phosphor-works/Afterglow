@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "TestUtil.h"
-#include "../src/Base64.h"
 #include "../src/ITerm2.h"
+
+#include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Zlib.h>
 
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -1469,12 +1471,6 @@ TEST(Graphics, InternalImageIsDrawnAtItsDisplaySize)
     EXPECT_EQ(vis[0].frame->width, 2u);
 }
 
-TEST(Base64, LenientPaddingEndsEachSegment)
-{
-    EXPECT_EQ(detail::base64Decode("QQ==Qg=="), "AB");
-    EXPECT_EQ(detail::base64Decode("QUJD\nREVG"), "ABCDEF");
-}
-
 TEST(ITerm2, CappedSizeKeepsTheShape)
 {
     detail::ITerm2File file;
@@ -1502,4 +1498,24 @@ TEST(ITerm2, ScaleFrameFiltersEachAxisOnItsOwn)
     EXPECT_NEAR(out.rgba[8], 64, 2);
     EXPECT_EQ(out.rgba[14], 255);
     EXPECT_EQ(out.rgba[7], 255);
+}
+
+TEST(Graphics, ClientWriterOutputIsStored)
+{
+    // What a client writes with the protocol library: zlib data in several chunks.
+    std::string raw;
+    std::uint32_t seed = 5;
+    for (int i = 0; i < 64 * 64 * 4; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        raw += char(seed >> 24);
+    }
+    const auto cmd = AfterglowProto::GraphicsCommand::parse("a=t,f=32,s=64,v=64,o=z,i=6");
+    const std::string stream = AfterglowProto::writeGraphics(cmd, AfterglowProto::zlibCompress(raw));
+    ASSERT_NE(stream.find("\x1b_Gm=1;"), std::string::npos);
+    Term t(20, 10);
+    t.t.feed(stream);
+    EXPECT_EQ(t.host.written, "\x1b_Gi=6;OK\x1b\\");
+    ASSERT_EQ(t.g().images().count(6), 1u);
+    const auto& pixels = t.g().images().at(6).frames[0]->rgba;
+    EXPECT_EQ(std::string(pixels.begin(), pixels.end()), raw);
 }

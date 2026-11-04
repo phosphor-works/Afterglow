@@ -71,10 +71,12 @@ endif()
 
 qt_add_executable(afterglow_transfer_tests FileTransferTest.cpp ../src/desktop/FileTransfer.cpp ../src/desktop/FileTransfer.h)
 target_include_directories(afterglow_transfer_tests PRIVATE ../src)
-target_link_libraries(afterglow_transfer_tests PRIVATE Qt6::Core ZLIB::ZLIB PkgConfig::XXHASH GTest::gtest)
+# zlib and xxHash directly: the tests check the service against them, not
+# against the protocol library it uses.
+target_link_libraries(afterglow_transfer_tests PRIVATE Qt6::Core Afterglow::Proto afterglow_zlib afterglow_xxhash GTest::gtest)
 gtest_discover_tests(afterglow_transfer_tests)
 
 qt_add_executable(afterglow_dnd_tests DragDropTest.cpp ../src/desktop/DragDrop.cpp ../src/desktop/DragDrop.h)
 target_include_directories(afterglow_dnd_tests PRIVATE ../src)
-target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui GTest::gtest)
+target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui Afterglow::Proto GTest::gtest)
 gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

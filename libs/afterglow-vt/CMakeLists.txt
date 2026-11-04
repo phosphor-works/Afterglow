@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 add_library(AfterglowVt SHARED
-    src/Clipboard.cpp
     src/Graphics.cpp
     src/ITerm2.cpp
     src/ShellContext.cpp
@@ -30,8 +29,8 @@ target_include_directories(AfterglowVt PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
-find_package(ZLIB REQUIRED)
-target_link_libraries(AfterglowVt PRIVATE ZLIB::ZLIB PkgConfig::PCRE2)
+# The protocol formats (images, clipboard, base64) that clients share.
+target_link_libraries(AfterglowVt PUBLIC Afterglow::Proto PRIVATE PkgConfig::PCRE2)
 # XTVERSION reports the project's version. A generated header, not a compile
 # definition, so tools/fuzz, which compiles these sources itself, has it too.
 file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/include/AfterglowVt/afterglowvt_version.h

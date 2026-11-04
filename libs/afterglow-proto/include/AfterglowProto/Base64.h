@@ -9,13 +9,17 @@
 #include <string>
 #include <string_view>
 
-namespace AfterglowVt::detail {
+namespace AfterglowProto {
 
 /// How much a decoder forgives.
 enum class Base64Check {
     Lenient, ///< skips padding and anything outside the alphabet
     PaddingOptional, ///< the alphabet only, trailing padding optional
     Strict, ///< RFC 4648: the alphabet, length a multiple of four, correct padding
+    /// Strict when padded. Unpadded input of any length is the alphabet
+    /// only, and a last character that cannot end a byte is dropped. What
+    /// kitty's file transfer and drag and drop clients send.
+    StrictOrUnpadded,
 };
 
 /// Decodes base64 onto the end of @p out; false (with @p out as it was)
@@ -31,7 +35,7 @@ inline bool base64DecodeAppend(std::string& out, std::string_view in, Base64Chec
         }
         return t;
     }();
-    if (check == Base64Check::Strict) {
+    if (check == Base64Check::Strict || (check == Base64Check::StrictOrUnpadded && in.ends_with('='))) {
         if (in.size() % 4 != 0) {
             return false;
         }
@@ -114,7 +118,8 @@ inline std::string base64Decode(std::string_view in)
     return *base64Decode(in, Base64Check::Lenient);
 }
 
-inline std::string base64Encode(std::string_view in)
+/// Encodes @p in, with the trailing padding unless @p pad is false.
+inline std::string base64Encode(std::string_view in, bool pad = true)
 {
     static constexpr char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
@@ -135,10 +140,16 @@ inline std::string base64Encode(std::string_view in)
         }
         out += chars[(n >> 18) & 63];
         out += chars[(n >> 12) & 63];
-        out += i + 1 < in.size() ? chars[(n >> 6) & 63] : '=';
-        out += '=';
+        if (i + 1 < in.size()) {
+            out += chars[(n >> 6) & 63];
+        } else if (pad) {
+            out += '=';
+        }
+        if (pad) {
+            out += '=';
+        }
     }
     return out;
 }
 
-} // namespace AfterglowVt::detail
+} // namespace AfterglowProto

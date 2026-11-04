@@ -6,7 +6,8 @@
 #include <AfterglowVt/Sixel.h>
 #include <AfterglowVt/afterglowvt_version.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+
 #include "ITerm2.h"
 #include "Utf8.h"
 
@@ -4345,7 +4346,7 @@ void Terminal::iterm2(std::string_view args, bool bel)
     } else if (key == "SetUserVar") {
         const auto eq2 = value.find('=');
         if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= 128) {
-            m_host.userVarChanged(value.substr(0, eq2), detail::base64Decode(value.substr(eq2 + 1, 64 * 1024)));
+            m_host.userVarChanged(value.substr(0, eq2), AfterglowProto::base64Decode(value.substr(eq2 + 1, 64 * 1024)));
         }
     } else if (key == "CurrentDir") {
         setWorkingDirectory(value);
@@ -4388,15 +4389,15 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
     if (!file.inlineImage) {
         constexpr std::size_t MaxDownload = 8u * 1024 * 1024;
         if (base64.size() > ((MaxDownload + 2) / 3) * 4 || file.size > MaxDownload) return;
-        const auto data = detail::base64Decode(base64, detail::Base64Check::Strict);
-        const auto name = detail::base64Decode(file.name, detail::Base64Check::Strict);
+        const auto data = AfterglowProto::base64Decode(base64, AfterglowProto::Base64Check::Strict);
+        const auto name = AfterglowProto::base64Decode(file.name, AfterglowProto::Base64Check::Strict);
         if (!data || !name || data->size() > MaxDownload || (file.size && file.size != data->size())) return;
         m_host.downloadFile(*name, *data);
         return;
     }
     if (m_cellWidth <= 0 || m_cellHeight <= 0) return;
     ImageFrame frame;
-    if (!m_host.decodeImage(detail::base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
+    if (!m_host.decodeImage(AfterglowProto::base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
         || frame.height == 0 || frame.rgba.size() != std::size_t(frame.width) * frame.height * 4) {
         return;
     }
@@ -4661,7 +4662,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             }
             continue;
         }
-        auto encoded = detail::base64Encode(key);
+        auto encoded = AfterglowProto::base64Encode(key);
         while (!encoded.empty() && encoded.back() == '=') {
             encoded.pop_back();
         }

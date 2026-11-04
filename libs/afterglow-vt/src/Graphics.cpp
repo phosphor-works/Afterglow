@@ -3,18 +3,15 @@
 
 #include <AfterglowVt/Graphics.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Terminal.h>
 
-#include <zlib.h>
-
 #include <algorithm>
-#include <charconv>
 #include <cerrno>
 #include <chrono>
 #include <climits>
-#include <cstdio>
 #include <filesystem>
 #include <cmath>
 #include <unordered_set>
@@ -48,28 +45,6 @@ constexpr int MaxDepth = 32; ///< relative placement chain links
 /// large edit.
 constexpr double WorkBytesPerSecond = double(std::size_t(1) << 30);
 constexpr double WorkBurst = double(std::size_t(1) << 30);
-
-bool inflateZlib(const std::string& in, std::string& out)
-{
-    z_stream zs{};
-    if (inflateInit(&zs) != Z_OK) {
-        return false;
-    }
-    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
-    zs.avail_in = uInt(in.size());
-    char buf[65536];
-    int rc = Z_OK;
-    while (rc == Z_OK) {
-        zs.next_out = reinterpret_cast<Bytef*>(buf);
-        zs.avail_out = sizeof buf;
-        rc = inflate(&zs, Z_NO_FLUSH);
-        const auto produced = sizeof buf - zs.avail_out;
-        if (produced > MaxPayload - out.size()) { rc = Z_DATA_ERROR; break; }
-        out.append(buf, produced);
-    }
-    inflateEnd(&zs);
-    return rc == Z_STREAM_END;
-}
 
 void blendOver(std::uint8_t* dst, const std::uint8_t* src)
 {
@@ -266,99 +241,10 @@ std::optional<PlaceholderCell> PlaceholderDecoder::next(const Screen& screen, co
 
 // --- command parsing --------------------------------------------------------
 
-struct GraphicsStore::Command
+// The keys are read by the protocol library, which clients share.
+struct GraphicsStore::Command : AfterglowProto::GraphicsCommand
 {
-    char action = 't';
-    char medium = 'd';
-    char del = 'a';
-    char compression = 0;
-    std::uint32_t format = 32;
-    std::uint32_t s = 0; // width, or animation state for a=a
-    std::uint32_t v = 0; // height, or loop count for a=a
-    std::uint32_t size = 0; // S
-    std::uint32_t offset = 0; // O
-    std::uint32_t id = 0; // i
-    std::uint32_t number = 0; // I
-    std::uint32_t placement = 0; // p
-    int more = 0;
-    int quiet = 0;
-    int x = 0;
-    int y = 0;
-    std::uint32_t ux = 0; // x and y unsigned, for the id range of d=r
-    std::uint32_t uy = 0;
-    int w = 0;
-    int h = 0;
-    int X = 0;
-    std::int64_t Y = 0; // 64-bit for a frame's background colour; Yi elsewhere
-    int Yi = 0;
-    int c = 0;
-    int r = 0;
-    int C = 0;
-    std::int32_t z = 0;
-    int U = 0;
-    std::uint32_t P = 0, Q = 0;
-    int H = 0, V = 0;
-    // Which keys the command carried, to tell a new command from a chunk.
-    bool hasAction = false;
-    bool hasId = false;
-    bool hasNumber = false;
-
-    static Command parse(std::string_view keys)
-    {
-        Command cmd;
-        std::size_t pos = 0;
-        while (pos < keys.size()) {
-            const auto comma = keys.find(',', pos);
-            const std::string_view kv = keys.substr(pos, comma == std::string_view::npos ? comma : comma - pos);
-            pos = comma == std::string_view::npos ? keys.size() : comma + 1;
-            if (kv.size() < 3 || kv[1] != '=') {
-                continue;
-            }
-            const char key = kv[0];
-            const std::string_view value = kv.substr(2);
-            if (key == 'a' || key == 't' || key == 'd' || key == 'o') {
-                const char ch = value.empty() ? 0 : value[0];
-                (key == 'a' ? cmd.action : key == 't' ? cmd.medium : key == 'd' ? cmd.del : cmd.compression) = ch;
-                cmd.hasAction = cmd.hasAction || key == 'a';
-                continue;
-            }
-            std::int64_t n = 0;
-            if (std::from_chars(value.data(), value.data() + value.size(), n).ec != std::errc{}) {
-                continue;
-            }
-            const auto u = std::uint32_t(std::clamp<std::int64_t>(n, 0, 0xFFFFFFFF));
-            const auto i = int(std::clamp<std::int64_t>(n, -0x7FFFFFFF, 0x7FFFFFFF));
-            switch (key) {
-            case 'f': cmd.format = u; break;
-            case 's': cmd.s = u; break;
-            case 'v': cmd.v = u; break;
-            case 'S': cmd.size = u; break;
-            case 'O': cmd.offset = u; break;
-            case 'i': cmd.id = u; cmd.hasId = true; break;
-            case 'I': cmd.number = u; cmd.hasNumber = true; break;
-            case 'p': cmd.placement = u; break;
-            case 'm': cmd.more = i; break;
-            case 'q': cmd.quiet = i; break;
-            case 'x': cmd.x = i; cmd.ux = u; break;
-            case 'y': cmd.y = i; cmd.uy = u; break;
-            case 'w': cmd.w = i; break;
-            case 'h': cmd.h = i; break;
-            case 'X': cmd.X = i; break;
-            case 'Y': cmd.Y = n; cmd.Yi = i; break;
-            case 'c': cmd.c = i; break;
-            case 'r': cmd.r = i; break;
-            case 'C': cmd.C = i; break;
-            case 'z': cmd.z = i; break;
-            case 'U': cmd.U = i; break;
-            case 'P': cmd.P = u; break;
-            case 'Q': cmd.Q = u; break;
-            case 'H': cmd.H = i; break;
-            case 'V': cmd.V = i; break;
-            default: break;
-            }
-        }
-        return cmd;
-    }
+    static Command parse(std::string_view keys) { return Command{AfterglowProto::GraphicsCommand::parse(keys)}; }
 };
 
 // --- origins ----------------------------------------------------------------
@@ -515,7 +401,7 @@ void GraphicsStore::dispatch(std::string_view payload, Context& ctx)
                     m_pending.data.clear();
                     respond(first, ctx, "EFBIG:image payload too large", true);
                 } else {
-                    detail::base64DecodeAppend(m_pending.data, data, detail::Base64Check::Lenient);
+                    AfterglowProto::base64DecodeAppend(m_pending.data, data, AfterglowProto::Base64Check::Lenient);
                     if (m_pending.data.size() > MaxPayload) {
                         m_pending.failed = true;
                         m_pending.data.clear();
@@ -543,7 +429,7 @@ void GraphicsStore::dispatch(std::string_view payload, Context& ctx)
         }
         return;
     }
-    std::string decoded = detail::base64Decode(data);
+    std::string decoded = AfterglowProto::base64Decode(data);
     if (decoded.size() > MaxPayload) {
         respond(cmd, ctx, "EFBIG:image payload too large", true);
         if (chunked) {
@@ -599,27 +485,7 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
     if (cmd.quiet >= 2 || (cmd.quiet == 1 && !isError)) {
         return;
     }
-    std::string out = "\x1b_G";
-    char buf[64];
-    int n = 0;
-    // i= only for a known id: a command that gives I= alone gets the id
-    // filled in once its image is found, and no i=0 otherwise.
-    if (cmd.id) {
-        n = std::snprintf(buf, sizeof buf, "i=%u", cmd.id);
-        out.append(buf, std::size_t(n));
-    }
-    if (cmd.number) {
-        n = std::snprintf(buf, sizeof buf, cmd.id ? ",I=%u" : "I=%u", cmd.number);
-        out.append(buf, std::size_t(n));
-    }
-    if (cmd.placement) {
-        n = std::snprintf(buf, sizeof buf, ",p=%u", cmd.placement);
-        out.append(buf, std::size_t(n));
-    }
-    out += ';';
-    out += status;
-    out += "\x1b\\";
-    ctx.reply(out);
+    ctx.reply(AfterglowProto::GraphicsReply{cmd.id, cmd.number, cmd.placement, std::string(status)}.write());
 }
 
 // --- transmission -----------------------------------------------------------
@@ -694,7 +560,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
     }
     if (cmd.compression == 'z') {
         std::string inflated;
-        if (!inflateZlib(data, inflated)) {
+        if (!AfterglowProto::graphicsInflate(data, inflated, MaxPayload)) {
             error = "EINVAL:zlib decompression failed";
             return false;
         }
@@ -801,7 +667,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     // At the image limit, an image nothing shows makes room; only when every
     // image is on screen is the new one refused. This comes after the decode,
     // so a command that fails costs the client no image.
-    const bool replaces = cmd.id && findImage(Command{.id = cmd.id});
+    const bool replaces = cmd.id && findImage(Command{{.id = cmd.id}});
     if (!replaces && m_images.size() >= MaxImages && !evictUnusedImage()) {
         respond(cmd, ctx, "ENOSPC:too many images", true);
         return;
@@ -1099,7 +965,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         const auto r = cellRect(index);
         return r && row >= r->row && row < r->row + r->rows && col >= r->col && col < r->col + r->cols;
     };
-    const Image* numbered = kind == 'n' ? findImage(Command{.number = cmd.number}) : nullptr;
+    const Image* numbered = kind == 'n' ? findImage(Command{{.number = cmd.number}}) : nullptr;
 
     // Decide first, then erase: the decisions read the placements.
     std::vector<char> doomed(m_placements.size(), 0);
@@ -1159,7 +1025,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
     }
     eraseFlagged(m_placements, doomed);
     if (freeImages) {
-        if (kind == 'i' && findImage(Command{.id = cmd.id})) {
+        if (kind == 'i' && findImage(Command{{.id = cmd.id}})) {
             touched.push_back(cmd.id);
         } else if (kind == 'n' && numbered) {
             touched.push_back(numbered->id);

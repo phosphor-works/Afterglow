@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-#include <AfterglowVt/Clipboard.h>
-
-#include "Base64.h"
-#include "Utf8.h"
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/Clipboard.h>
+#include <AfterglowProto/Text.h>
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 
-namespace AfterglowVt {
+namespace AfterglowProto {
 
 namespace {
 
@@ -138,8 +138,8 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
                     badValue = true;
                     return;
                 }
-                auto d = detail::base64Decode(value, detail::Base64Check::Strict);
-                if (!d || (typeName ? !isTypeName(*d) : !detail::isCleanText(*d))) {
+                auto d = base64Decode(value, Base64Check::Strict);
+                if (!d || (typeName ? !isTypeName(*d) : !isCleanText(*d))) {
                     badValue = true;
                     return;
                 }
@@ -156,7 +156,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             } else if (key == "loc") {
                 primary = value == "primary";
             } else if (key == "id") {
-                id = detail::sanitizeId(value);
+                id = sanitizeId(value);
             }
         }
         if (colon == std::string_view::npos) {
@@ -174,7 +174,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
         if (data.size() > 65536) {
             return Result::Ignored;
         }
-        const auto list = detail::base64Decode(data, detail::Base64Check::Strict);
+        const auto list = base64Decode(data, Base64Check::Strict);
         if (badValue || !list) {
             return Result::Ignored;
         }
@@ -235,7 +235,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             if (data.size() > 65536) {
                 return fail("EFBIG", reply);
             }
-            const auto aliases = detail::base64Decode(data, detail::Base64Check::Strict);
+            const auto aliases = base64Decode(data, Base64Check::Strict);
             if (mime.empty() || !aliases) {
                 return fail("EINVAL", reply);
             }
@@ -306,7 +306,7 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
         if (m_part.size() + (whole / 4 * 3 - padding) > MaxWrite - m_decoded) {
             return fail("EFBIG", reply);
         }
-        if (!detail::base64DecodeAppend(m_part, std::string_view(joined).substr(0, whole), detail::Base64Check::Strict)) {
+        if (!base64DecodeAppend(m_part, std::string_view(joined).substr(0, whole), Base64Check::Strict)) {
             return fail("EINVAL", reply);
         }
         m_padded = padding != 0;
@@ -324,7 +324,7 @@ std::string ClipboardAssembler::readStatus(std::string_view status, const Clipbo
         r += ":loc=primary";
     }
     if (!oneTimePassword.empty()) {
-        r += ":pw=" + detail::base64Encode(oneTimePassword);
+        r += ":pw=" + base64Encode(oneTimePassword);
     }
     r += "\x1b\\";
     return r;
@@ -334,13 +334,13 @@ std::string ClipboardAssembler::readData(std::string_view mime, std::string_view
                                          std::string_view oneTimePassword)
 {
     std::string out;
-    const std::string prefix = header("read", "DATA", request.id) + ":mime=" + detail::base64Encode(mime)
-        + (oneTimePassword.empty() ? std::string{} : ":pw=" + detail::base64Encode(oneTimePassword)) + ';';
+    const std::string prefix = header("read", "DATA", request.id) + ":mime=" + base64Encode(mime)
+        + (oneTimePassword.empty() ? std::string{} : ":pw=" + base64Encode(oneTimePassword)) + ';';
     std::size_t pos = 0;
     do {
         const std::string_view chunk = bytes.substr(pos, ReadChunk);
         out += prefix;
-        out += detail::base64Encode(chunk);
+        out += base64Encode(chunk);
         out += "\x1b\\";
         pos += ReadChunk;
     } while (pos < bytes.size());
@@ -357,9 +357,149 @@ std::string ClipboardRequest::osc52Reply(std::string_view text) const
     std::string r = "\x1b]52;";
     r += osc52Selection;
     r += ';';
-    r += detail::base64Encode(text);
+    r += base64Encode(text);
     r += osc52Bel ? "\x07" : "\x1b\\";
     return r;
 }
 
-} // namespace AfterglowVt
+namespace {
+
+/// The metadata that a read and the start of a write share.
+std::string requestHeader(std::string_view type, const ClipboardRequest& request)
+{
+    std::string r = "\x1b]5522;type=";
+    r += type;
+    if (request.primary) {
+        r += ":loc=primary";
+    }
+    if (!request.id.empty()) {
+        r += ":id=" + request.id;
+    }
+    // The terminal ignores a password that comes without a name.
+    if (!request.password.empty() && !request.name.empty()) {
+        r += ":pw=" + base64Encode(request.password) + ":name=" + base64Encode(request.name);
+    }
+    return r;
+}
+
+std::string joined(const std::vector<std::string>& parts)
+{
+    std::string out;
+    for (const auto& part : parts) {
+        if (!out.empty()) {
+            out += ' ';
+        }
+        out += part;
+    }
+    return out;
+}
+
+} // namespace
+
+std::string clipboardReadRequest(const ClipboardRequest& request)
+{
+    return requestHeader("read", request) + ';' + base64Encode(joined(request.mimes)) + "\x1b\\";
+}
+
+std::string clipboardWriteRequest(const ClipboardRequest& request)
+{
+    // Whole groups of three bytes in each chunk but the last, so that only
+    // the end of a type's stream is padded.
+    constexpr std::size_t Chunk = ClipboardAssembler::ReadChunk / 4 * 3;
+    std::string out = requestHeader("write", request) + "\x1b\\";
+    for (const auto& [mime, bytes] : request.data) {
+        const std::string prefix = "\x1b]5522;type=wdata:mime=" + base64Encode(mime) + ';';
+        std::size_t pos = 0;
+        do {
+            out += prefix;
+            out += base64Encode(std::string_view(bytes).substr(pos, Chunk));
+            out += "\x1b\\";
+            pos += Chunk;
+        } while (pos < bytes.size());
+    }
+    // Aliases are sent for each type they share, in the order given.
+    std::vector<std::pair<std::string, std::vector<std::string>>> aliases;
+    for (const auto& [alias, mime] : request.aliases) {
+        auto it = std::find_if(aliases.begin(), aliases.end(), [&](const auto& entry) { return entry.first == mime; });
+        if (it == aliases.end()) {
+            aliases.emplace_back(mime, std::vector<std::string>{});
+            it = std::prev(aliases.end());
+        }
+        it->second.push_back(alias);
+    }
+    for (const auto& [mime, names] : aliases) {
+        out += "\x1b]5522;type=walias:mime=" + base64Encode(mime) + ';' + base64Encode(joined(names)) + "\x1b\\";
+    }
+    out += "\x1b]5522;type=wdata\x1b\\";
+    return out;
+}
+
+std::optional<ClipboardReply> ClipboardReply::parse(std::string_view payload)
+{
+    const auto semi = payload.find(';');
+    const std::string_view metadata = payload.substr(0, semi);
+    const std::string_view data = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
+    ClipboardReply reply;
+    bool valid = true;
+    std::size_t pos = 0;
+    while (pos <= metadata.size()) {
+        const auto colon = metadata.find(':', pos);
+        const std::string_view kv = metadata.substr(pos, colon == std::string_view::npos ? colon : colon - pos);
+        const auto eq = kv.find('=');
+        if (eq != std::string_view::npos) {
+            const std::string_view key = kv.substr(0, eq);
+            const std::string_view value = kv.substr(eq + 1);
+            auto decode = [&](std::string& target) {
+                auto decoded = base64Decode(value, Base64Check::Strict);
+                valid = valid && decoded;
+                target = decoded.value_or(std::string{});
+            };
+            if (key == "type") {
+                reply.type = value;
+            } else if (key == "status") {
+                reply.status = value;
+            } else if (key == "id") {
+                reply.id = value;
+            } else if (key == "mime") {
+                decode(reply.mime);
+            } else if (key == "pw") {
+                decode(reply.password);
+            } else if (key == "loc") {
+                reply.primary = value == "primary";
+            }
+        }
+        if (colon == std::string_view::npos) {
+            break;
+        }
+        pos = colon + 1;
+    }
+    auto decoded = base64Decode(data, Base64Check::Strict);
+    if (!valid || !decoded) {
+        return std::nullopt;
+    }
+    reply.data = std::move(*decoded);
+    return reply;
+}
+
+std::optional<Osc52Message> Osc52Message::parse(std::string_view payload)
+{
+    const auto semi = payload.find(';');
+    if (semi == std::string_view::npos) {
+        return std::nullopt;
+    }
+    Osc52Message message;
+    message.selection = payload.substr(0, semi);
+    const std::string_view data = payload.substr(semi + 1);
+    message.query = data == "?";
+    if (!message.query) {
+        message.text = base64Decode(data);
+    }
+    return message;
+}
+
+std::string Osc52Message::write() const
+{
+    return "\x1b]52;" + selection + ';' + (query ? std::string("?") : base64Encode(text)) + "\x1b\\";
+}
+
+} // namespace AfterglowProto
