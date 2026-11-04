@@ -843,6 +843,10 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
             file->rsync = true;
             file->applier = std::make_unique<AfterglowProto::DeltaApplier>(
                 file->blockSize, quint64(file->basis->size()), std::size_t(MaxRsyncBuffer));
+            if (!file->applier->valid()) {
+                status(s, fid, "ENOMEM");
+                return;
+            }
         } else
             file->basis.reset();
     }
@@ -1385,6 +1389,11 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
     // The signature's bytes stay in the pane's budget: they move from the file to the stream.
     auto generator = std::make_unique<Delta>(std::move(file.basis), file.pending, &pendingBytes);
     file.pending = QByteArray();
+    // After the move: dropping the generator then releases the signature's budget once.
+    if (!generator->generator.valid()) {
+        status(s, fid, "ENOMEM");
+        return;
+    }
     stream(s, fid, nullptr, file.meta.value("zip") == "zlib", std::move(generator));
 }
 

@@ -102,6 +102,9 @@ public:
     DeltaGenerator(const DeltaGenerator&) = delete;
     DeltaGenerator& operator=(const DeltaGenerator&) = delete;
 
+    /// False when the hash state could not be allocated. produce() then fails.
+    bool valid() const;
+
     /// Appends operations to @p out until it holds @p want bytes, @p step
     /// bytes of the file were read, or the delta ends. False on a read
     /// error or a malformed signature.
@@ -150,6 +153,9 @@ public:
     ~DeltaApplier();
     DeltaApplier(const DeltaApplier&) = delete;
     DeltaApplier& operator=(const DeltaApplier&) = delete;
+
+    /// False when the hash state could not be allocated. apply() then fails.
+    bool valid() const;
 
     /// Applies the complete operations at the start of @p pending and
     /// returns how many bytes they took; the rest waits for more data.

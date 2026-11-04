@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <new>
 
 #include <xxhash.h>
 
@@ -32,18 +31,20 @@ void appendLittle(std::string& out, T value)
     }
 }
 
-/// A streaming XXH3-128.
+/// A streaming XXH3-128. A failed state allocation is reported by valid(),
+/// not thrown: the transfer service answers ENOMEM, and an exception would
+/// end the process from its worker thread.
 class StreamHash
 {
 public:
     StreamHash()
     {
-        if (!state) {
-            throw std::bad_alloc();
+        if (state) {
+            XXH3_128bits_reset(state);
         }
-        XXH3_128bits_reset(state);
     }
     ~StreamHash() { XXH3_freeState(state); }
+    bool valid() const { return state != nullptr; }
     StreamHash(const StreamHash&) = delete;
     StreamHash& operator=(const StreamHash&) = delete;
     void update(std::string_view bytes) { XXH3_128bits_update(state, bytes.data(), bytes.size()); }
@@ -160,6 +161,11 @@ DeltaGenerator::DeltaGenerator(std::string signature)
 
 DeltaGenerator::~DeltaGenerator() = default;
 
+bool DeltaGenerator::valid() const
+{
+    return m_hash->valid();
+}
+
 void DeltaGenerator::parse()
 {
     m_blockSize = signatureBlockSize(m_signature, UINT32_MAX).value_or(0);
@@ -188,6 +194,9 @@ void DeltaGenerator::flushLiteral(std::string& out)
 
 bool DeltaGenerator::produce(ByteSource& file, std::string& out, std::size_t want, std::size_t step)
 {
+    if (!valid()) {
+        return false;
+    }
     if (!m_parsed) {
         parse();
     }
@@ -276,6 +285,11 @@ DeltaApplier::DeltaApplier(std::uint32_t blockSize, std::uint64_t basisSize, std
 
 DeltaApplier::~DeltaApplier() = default;
 
+bool DeltaApplier::valid() const
+{
+    return m_hash->valid();
+}
+
 bool DeltaApplier::output(DeltaTarget& target, std::string_view bytes)
 {
     if (!target.write(bytes)) {
@@ -287,6 +301,9 @@ bool DeltaApplier::output(DeltaTarget& target, std::string_view bytes)
 
 std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTarget& target)
 {
+    if (!valid()) {
+        return std::nullopt;
+    }
     std::size_t at = 0;
     while (at < pending.size()) {
         const std::string_view rest = pending.substr(at);
