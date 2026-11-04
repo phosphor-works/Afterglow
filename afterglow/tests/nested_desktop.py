@@ -271,7 +271,14 @@ class NestedDesktop:
             self.key(name, ("Shift_L",) if char in SHIFTED else ())
 
     def screenshot(self, path):
-        subprocess.run(["import", "-window", hex(self.window), str(path)], check=True, timeout=10)
+        """Saves the nested desktop window as an artifact. No test reads it, so a
+        window that the host cannot grab at that moment (not viewable, for
+        example on another virtual desktop) gives a warning, not a failure."""
+        result = subprocess.run(["import", "-window", hex(self.window), str(path)],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            print(f"screenshot {path.name} not saved: {result.stderr.strip()}", file=sys.stderr)
+        return result.returncode == 0
 
     def __exit__(self, *_):
         if self.display:
