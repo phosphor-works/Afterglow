@@ -4,17 +4,17 @@
 #include "Ctl.h"
 
 #include "ControlSocket.h"
+#include "IpcClient.h"
+#include "../app/InstanceSocket.h"
 
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
-#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLocalSocket>
 #include <QTextStream>
 
 #include <algorithm>
@@ -75,135 +75,74 @@ int fail(const QString& message)
     return 1;
 }
 
-/// One connection to the control socket. Calls wait for their reply; events
-/// that arrive meanwhile wait for readEvent().
+/// The control target of the afterglow that runs this pane, else of the main
+/// one on this display. Connects on the first use and reports its own errors.
 class Client
 {
 public:
-    /// The call's result, or nothing after it reported the error. A call
-    /// that failed comes back as an error frame (CALL_FAILED).
     std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args)
     {
         if (!connected()) return std::nullopt;
-        const qint64 id = ++m_nextId;
-        if (!write({{QLatin1String(PhosphorIpc::Field::Type), QLatin1String(PhosphorIpc::RequestType::Call)},
-                    {QLatin1String(PhosphorIpc::Field::Id), id},
-                    {QLatin1String(PhosphorIpc::Field::Target), QLatin1String(ControlSocket::Target)},
-                    {QLatin1String(PhosphorIpc::Field::Fn), fn},
-                    {QLatin1String(PhosphorIpc::Field::Args), args}})) {
-            return std::nullopt;
-        }
-        const auto frame = readReply(id);
-        if (!frame) return std::nullopt;
-        return frame->value(QLatin1String(PhosphorIpc::Field::Result));
+        IpcClient::Error error;
+        auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, ReplyTimeoutMs, &error);
+        if (!result) report(error);
+        return result;
     }
 
     bool subscribe(const QString& event)
     {
         if (!connected()) return false;
-        const qint64 id = ++m_nextId;
-        if (!write({{QLatin1String(PhosphorIpc::Field::Type), QLatin1String(PhosphorIpc::RequestType::Subscribe)},
-                    {QLatin1String(PhosphorIpc::Field::Id), id},
-                    {QLatin1String(PhosphorIpc::Field::Target), QLatin1String(ControlSocket::Target)},
-                    {QLatin1String(PhosphorIpc::Field::Signal), event}})
-            || !readReply(id)) {
-            return false;
-        }
-        m_subscriptions.insert(id, event);
-        return true;
+        IpcClient::Error error;
+        if (m_client.subscribe(QLatin1String(ControlSocket::Target), event, ReplyTimeoutMs, &error)) return true;
+        report(error);
+        return false;
     }
 
-    /// The event name of a subscription.
-    QString eventName(qint64 subscription) const { return m_subscriptions.value(subscription); }
+    QString eventName(qint64 subscription) const { return m_client.eventName(subscription); }
 
-    /// The next event, or nothing when afterglow closed the connection.
+    /// The next event, or nothing after it reported why the stream ended.
     std::optional<QJsonObject> readEvent()
     {
-        if (!m_events.isEmpty()) return m_events.takeFirst();
-        while (true) {
-            const auto frame = readFrame(-1);
-            if (!frame) return std::nullopt;
-            if (isEvent(*frame)) return frame;
-        }
+        IpcClient::Error error;
+        auto frame = m_client.readEvent(&error);
+        if (!frame) report(error);
+        return frame;
     }
 
 private:
-    /// Connects on the first use. Reports its own errors.
     bool connected()
     {
-        if (m_socket.state() == QLocalSocket::ConnectedState) return true;
+        if (m_client.connected()) return true;
         // Each pane names the afterglow that runs it. Another one (a separate
         // build, or one started with --config) numbers its panes from 1 too.
-        const QString owner = qEnvironmentVariable("AFTERGLOW_SOCKET");
-        const QString path = owner.isEmpty() ? ControlSocket::sharedPath() : owner;
+        m_owner = qEnvironmentVariable("AFTERGLOW_SOCKET");
+        const QString path = m_owner.isEmpty() ? InstanceSocket::sharedPath() : m_owner;
         if (path.isEmpty()) {
             fail(QStringLiteral("XDG_RUNTIME_DIR is not set"));
             return false;
         }
-        m_socket.connectToServer(path);
-        if (m_socket.waitForConnected(ReplyTimeoutMs)) return true;
-        fail(owner.isEmpty() ? QStringLiteral("no running afterglow with Control.enabled")
-                             : QStringLiteral("the afterglow that runs this pane has exited or has Control.enabled off"));
+        if (m_client.connectTo(path, ReplyTimeoutMs, nullptr)) return true;
+        fail(m_owner.isEmpty() ? QStringLiteral("no running afterglow on this display")
+                               : QStringLiteral("the afterglow that runs this pane has exited"));
         return false;
     }
 
-    static bool isEvent(const QJsonObject& frame)
+    void report(const IpcClient::Error& error) const
     {
-        return frame.value(QLatin1String(PhosphorIpc::Field::Type)) == QLatin1String(PhosphorIpc::ResponseType::Event);
-    }
-
-    bool write(const QJsonObject& request)
-    {
-        m_socket.write(PhosphorIpc::writeLine(request));
-        if (m_socket.waitForBytesWritten(ReplyTimeoutMs)) return true;
-        fail(QStringLiteral("cannot send to afterglow: %1").arg(m_socket.errorString()));
-        return false;
-    }
-
-    std::optional<QJsonObject> readFrame(int timeoutMs)
-    {
-        while (!m_socket.canReadLine()) {
-            if (m_socket.state() != QLocalSocket::ConnectedState && m_socket.bytesAvailable() == 0) return std::nullopt;
-            if (!m_socket.waitForReadyRead(timeoutMs) && !m_socket.canReadLine()) return std::nullopt;
-        }
-        QJsonParseError error{};
-        const QJsonDocument doc = QJsonDocument::fromJson(m_socket.readLine(), &error);
-        if (!doc.isObject()) {
-            fail(QStringLiteral("afterglow sent an unreadable reply: %1").arg(error.errorString()));
-            m_reported = true;
-            return std::nullopt;
-        }
-        return doc.object();
-    }
-
-    std::optional<QJsonObject> readReply(qint64 id)
-    {
-        while (true) {
-            const auto frame = readFrame(ReplyTimeoutMs);
-            if (!frame) {
-                if (m_reported) return std::nullopt;
-                fail(m_socket.state() == QLocalSocket::ConnectedState ? QStringLiteral("afterglow did not reply")
-                                                                       : QStringLiteral("afterglow closed the connection"));
-                return std::nullopt;
-            }
-            if (isEvent(*frame)) {
-                m_events.append(*frame);
-                continue;
-            }
-            if (frame->value(QLatin1String(PhosphorIpc::Field::Id)).toInteger() != id) continue;
-            if (frame->value(QLatin1String(PhosphorIpc::Field::Type)) == QLatin1String(PhosphorIpc::ResponseType::Error)) {
-                fail(frame->value(QLatin1String(PhosphorIpc::Field::Message)).toString());
-                return std::nullopt;
-            }
-            return frame;
+        // The socket stays open for launches: the control target is what
+        // Control.enabled takes away, also from a running watch.
+        if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
+            fail(m_owner.isEmpty() ? QStringLiteral("Control.enabled is off in the running afterglow")
+                                   : QStringLiteral("Control.enabled is off in the afterglow that runs this pane"));
+        } else if (error.code.isEmpty()) {
+            fail(QStringLiteral("lost afterglow: %1").arg(error.message));
+        } else {
+            fail(error.message);
         }
     }
 
-    QLocalSocket m_socket;
-    qint64 m_nextId = 0;
-    QHash<qint64, QString> m_subscriptions;
-    QList<QJsonObject> m_events;
-    bool m_reported = false;
+    IpcClient m_client;
+    QString m_owner;
 };
 
 QString unescape(const QString& s)
@@ -387,7 +326,7 @@ int runCtl(int argc, char** argv)
             std::printf("%s\n", QJsonDocument(line).toJson(QJsonDocument::Compact).constData());
             std::fflush(stdout);
         }
-        return fail(QStringLiteral("afterglow closed the connection"));
+        return 1;
     }
     if (command == QLatin1String("scripts")) {
         if (const auto error = extra(0)) return usage(*error);

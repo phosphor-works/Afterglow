@@ -106,7 +106,7 @@ A world switch changes the same `Colors` settings and the window opacity as the 
 
 Shaders read `uSignal` values through `signalValue` and `signalAge`.
 Scripts use `afterglow.signal(pane, channel, value)`.
-Other programs use `afterglow ctl signal CHANNEL VALUE` or D-Bus `Signal`.
+Other programs use `afterglow ctl signal CHANNEL VALUE` or the `signal` call of the [control socket](../../../docs/CONTROL.md).
 
 | Channel | Name | Value |
 | --- | --- | --- |

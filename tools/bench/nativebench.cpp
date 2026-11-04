@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/Application.h"
+#include "app/InstanceSocket.h"
 #include "app/Startup.h"
 #include "scripting/ScriptHost.h"
 #include <QApplication>
@@ -181,7 +182,9 @@ int main(int argc, char** argv)
             {QStringLiteral("Audio"),QJsonObject{{QStringLiteral("enabled"),false}}},
             {QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("enabled"),false}}}};
         result.insert(QStringLiteral("settings"),settings);
-        Application app(str("config"),settings);
+        // No listening socket: a benchmark takes no launches or control.
+        InstanceSocket socket;
+        Application app(socket,str("config"),settings);
         struct ResetObserver {
             BenchApplication& qt;
             ~ResetObserver() { qt.measuring = false; qt.target = nullptr; qt.afterFrame = {}; }

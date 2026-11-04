@@ -5,20 +5,10 @@
 
 #include "../config/Settings.h"
 
-#include <QCoreApplication>
-#include <QDBusConnection>
-#include <QDBusConnectionInterface>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QLocalSocket>
 #include <QLoggingCategory>
 
 #include <algorithm>
 #include <limits>
-
-#include <sys/stat.h>
-#include <unistd.h>
 
 Q_LOGGING_CATEGORY(lcControl, "afterglow.control", QtInfoMsg)
 
@@ -26,66 +16,11 @@ namespace Afterglow {
 
 namespace {
 
-QString g_processPath;
-
 // Commands and user variables can carry secrets: they leave the process
 // only with read access.
 QString readable(const SettingsStore& settings, const QString& text)
 {
     return settings.settings().control.allowReadText ? text : QString();
-}
-
-// Qt's own default, so that the application and `afterglow ctl` agree when the
-// variable is unset. A display can be an absolute path: only its name counts.
-QString displayName()
-{
-    QString name = QFileInfo(qEnvironmentVariable("WAYLAND_DISPLAY")).fileName();
-    for (QChar& c : name) {
-        const char16_t u = c.unicode();
-        const bool plain = (u >= u'a' && u <= u'z') || (u >= u'A' && u <= u'Z') || (u >= u'0' && u <= u'9') || u == u'-'
-            || u == u'_' || u == u'.';
-        if (!plain) c = QLatin1Char('_');
-    }
-    return name.isEmpty() ? QStringLiteral("wayland-0") : name;
-}
-
-QString runtimeDirectory()
-{
-    return qEnvironmentVariable("XDG_RUNTIME_DIR");
-}
-
-// A process that ends without its destructors (a crash, SIGKILL) leaves its
-// socket file. Separate processes and nested displays use names that no later
-// process takes again, so nothing would remove them. A socket that refuses a
-// connection has no listener: a busy process still accepts one.
-void removeStaleSockets(const QString& runtime)
-{
-    const QDir dir(runtime);
-    for (const QString& name : dir.entryList({QStringLiteral("afterglow-*.sock")}, QDir::System | QDir::Hidden)) {
-        const QString path = dir.filePath(name);
-        struct stat info{};
-        if (::lstat(QFile::encodeName(path).constData(), &info) != 0 || !S_ISSOCK(info.st_mode) || info.st_uid != ::getuid()) {
-            continue;
-        }
-        QLocalSocket probe;
-        probe.connectToServer(path);
-        if (probe.waitForConnected(100)) {
-            probe.abort();
-            continue;
-        }
-        if (probe.error() == QLocalSocket::ConnectionRefusedError) {
-            QFile::remove(path);
-        }
-    }
-}
-
-QString defaultPath()
-{
-    const QDBusConnection bus = QDBusConnection::sessionBus();
-    const QDBusConnectionInterface* interface = bus.interface();
-    const bool owner = interface && !bus.baseService().isEmpty()
-        && interface->serviceOwner(QStringLiteral(AFTERGLOW_APP_ID)).value() == bus.baseService();
-    return owner ? ControlSocket::sharedPath() : ControlSocket::ownPath();
 }
 
 } // namespace
@@ -245,22 +180,17 @@ QVariantList ControlApi::scriptDiagnostics()
     return m_control.scriptDiagnostics();
 }
 
-ControlSocket::ControlSocket(Control& control, SettingsStore& settings, const QString& path, QObject* parent)
+ControlSocket::ControlSocket(Control& control, SettingsStore& settings, PhosphorIpc::IpcRouter& router, QObject* parent)
     : QObject(parent)
     , m_control(control)
     , m_settings(settings)
     , m_api(control, settings)
-    , m_path(path.isEmpty() ? defaultPath() : path)
+    , m_router(router)
     , m_due(this)
 {
-    g_processPath = m_path;
-    if (const QString runtime = runtimeDirectory(); !runtime.isEmpty()) removeStaleSockets(runtime);
     m_clock.start();
     m_due.setSingleShot(true);
     connect(&m_due, &QTimer::timeout, this, &ControlSocket::sendDue);
-    if (!m_router.registerTarget(QLatin1String(Target), &m_api)) {
-        qCWarning(lcControl) << "cannot register the control target";
-    }
 
     const auto pane = [](quint32 id) { return QJsonValue(qint64(id)); };
     connect(&control, &Control::paneCreated, this, [this, pane](quint32 p) { send("paneCreated", {pane(p)}); });
@@ -296,48 +226,24 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, const QS
 
 ControlSocket::~ControlSocket()
 {
-    m_router.stop();
     m_router.unregisterTarget(QLatin1String(Target), &m_api);
-    if (g_processPath == m_path) g_processPath.clear();
-}
-
-QString ControlSocket::processPath()
-{
-    return g_processPath;
-}
-
-QString ControlSocket::sharedPath()
-{
-    const QString runtime = runtimeDirectory();
-    if (runtime.isEmpty()) return {};
-    return QStringLiteral("%1/afterglow-%2.sock").arg(runtime, displayName());
-}
-
-QString ControlSocket::ownPath()
-{
-    const QString runtime = runtimeDirectory();
-    if (runtime.isEmpty()) return {};
-    return QStringLiteral("%1/afterglow-%2-%3.sock").arg(runtime, displayName()).arg(QCoreApplication::applicationPid());
 }
 
 void ControlSocket::applySettings()
 {
     const bool want = m_settings.settings().control.enabled;
-    if (want && !m_listening) {
-        if (m_path.isEmpty()) {
-            qCWarning(lcControl) << "no control socket: XDG_RUNTIME_DIR is not set";
-            return;
+    if (want != m_enabled) {
+        if (want) {
+            m_enabled = m_router.registerTarget(QLatin1String(Target), &m_api);
+            if (!m_enabled) qCWarning(lcControl) << "another object holds the control target";
+        } else {
+            // Ends the subscriptions too: a client must subscribe again
+            // after control comes back.
+            m_router.unregisterTarget(QLatin1String(Target), &m_api);
+            m_enabled = false;
+            m_merged.clear();
+            m_due.stop();
         }
-        m_listening = m_router.start(m_path);
-        if (!m_listening) {
-            qCWarning(lcControl).noquote() << "cannot listen on" << m_path
-                                           << "(another process listens there, or the directory is not writable)";
-        }
-    } else if (!want && m_listening) {
-        m_router.stop();
-        m_listening = false;
-        m_merged.clear();
-        m_due.stop();
     }
     // A shorter interval can make waiting events due sooner.
     if (!m_merged.isEmpty()) scheduleDue();
@@ -345,12 +251,12 @@ void ControlSocket::applySettings()
 
 void ControlSocket::send(const char* event, const QJsonArray& args)
 {
-    if (m_listening) m_router.broadcastEvent(QLatin1String(Target), QLatin1String(event), args);
+    if (m_enabled) m_router.broadcastEvent(QLatin1String(Target), QLatin1String(event), args);
 }
 
 void ControlSocket::sendMerged(const char* event, quint32 pane, const QString& name, const QJsonArray& args)
 {
-    if (!m_listening) return;
+    if (!m_enabled) return;
     if (m_settings.settings().control.eventInterval <= 0) {
         send(event, args);
         return;

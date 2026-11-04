@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/Application.h"
+#include "app/InstanceSocket.h"
 #include "app/Startup.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
@@ -55,6 +56,18 @@
 #include <utility>
 #include <gtest/gtest.h>
 using namespace Afterglow;
+namespace {
+
+/// The tests' Applications share a socket that listens nowhere: they take no
+/// launches, and leave the display's socket alone.
+Afterglow::InstanceSocket& testSocket()
+{
+    static Afterglow::InstanceSocket socket;
+    return socket;
+}
+
+} // namespace
+
 namespace {
 void drain(int ms = 100) {
     QElapsedTimer timer; timer.start();
@@ -226,7 +239,7 @@ protected:
         ASSERT_TRUE(directory.isValid());
         takeQmlErrors();
         // No cursor blink, so a window with nothing moving renders no frames.
-        application = std::make_unique<Application>(directory.filePath(QStringLiteral("afterglow.conf")),
+        application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")),
             QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
                         {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}}});
         WindowOptions options;
@@ -306,7 +319,7 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
 
     application.reset();
     chrome = nullptr;
-    application = std::make_unique<Application>(directory.filePath(QStringLiteral("single-tab.conf")),
+    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("single-tab.conf")),
         QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("tabBar"), QStringLiteral("always")}}}});
     WindowOptions singleOptions;
     singleOptions.command = {QStringLiteral("/bin/cat")};
@@ -338,7 +351,7 @@ class NativeRenderer : public ::testing::TestWithParam<bool> {};
 TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
-    Application application(directory.filePath(QStringLiteral("mesh.conf")),
+    Application application(testSocket(), directory.filePath(QStringLiteral("mesh.conf")),
         QJsonObject{{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("background"), GetParam() ? QJsonArray{QStringLiteral("mesh-reactor")} : QJsonArray{}}}},
                     {QStringLiteral("Audio"), QJsonObject{{QStringLiteral("enabled"), false}}},
                     {QStringLiteral("Window"), QJsonObject{{QStringLiteral("backgroundOpacity"), 0.9}}}});
@@ -767,7 +780,7 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     // new application's load still runs.
     for (int i = 0; i < 8; ++i) delete application->newWindow(options);
     application.reset();
-    application = std::make_unique<Application>(directory.filePath(QStringLiteral("afterglow.conf")), QJsonObject{});
+    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")), QJsonObject{});
     for (int i = 0; i < 8; ++i) delete application->newWindow(options);
     auto* fresh = application->newWindow(options);
     ASSERT_NE(fresh, nullptr);

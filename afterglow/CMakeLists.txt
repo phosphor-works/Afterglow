@@ -36,6 +36,8 @@ qt_add_library(afterglow_app STATIC
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
     src/app/Application.cpp
+    src/app/InstanceSocket.cpp
+    src/app/InstanceSocket.h
     src/app/QuitSignals.cpp
     src/app/QuitSignals.h
     src/app/NotificationCenter.cpp
@@ -47,6 +49,8 @@ qt_add_library(afterglow_app STATIC
     src/control/Control.cpp
     src/control/Control.h
     src/control/ControlSocket.cpp
+    src/control/IpcClient.cpp
+    src/control/IpcClient.h
     src/control/ControlSocket.h
     src/scripting/ScriptControl.cpp
     src/scripting/ScriptControl.h

@@ -6,21 +6,23 @@
 #include <QJsonDocument>
 #include <cstdio>
 #include "app/Application.h"
+#include "app/InstanceSocket.h"
 #include "app/QuitSignals.h"
 #include "app/Startup.h"
 #include "control/Ctl.h"
+#include "control/IpcClient.h"
 #include "shell/Ssh.h"
 
-#include <PhosphorDBus/Client.h>
+#include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCommandLineParser>
 #include <QApplication>
-#include <QDBusConnection>
-#include <QDBusConnectionInterface>
-#include <QDBusReply>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QThread>
 
 #include <cstring>
 #include <QGuiApplication>
@@ -28,35 +30,29 @@
 #include <QQuickWindow>
 
 #include <exception>
-#include <memory>
 #include <sys/stat.h>
 
 namespace {
 
 enum class ForwardResult { Forwarded, DifferentExecutable, Unavailable, Failed };
 
-/// Share the GPU device with an instance of this executable. A development
-/// build or an executable replaced by an upgrade must run its own code.
-/// @p error receives the running instance's reason when it answers Failed.
-ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& command, const QVariantMap& options, bool quick,
-                                       QString* error)
+/// Share the GPU device with the main process when it runs this executable. A
+/// development build or an executable replaced by an upgrade must run its own
+/// code. @p error receives the running process's reason when it answers Failed.
+ForwardResult forwardToRunningInstance(const QString& path, const QString& cwd, const QStringList& command,
+                                       const QVariantMap& options, bool quick, QString* error)
 {
-    const QDBusConnection bus = QDBusConnection::sessionBus();
-    QDBusConnectionInterface* interface = bus.interface();
-    if (!interface) {
+    Afterglow::IpcClient client;
+    if (!client.connectTo(path, 2000, nullptr)) {
         return ForwardResult::Unavailable;
     }
-    // Pin the unique owner so a service restart cannot change the process
-    // between checking its executable and sending the window request.
-    const QDBusReply<QString> owner = interface->serviceOwner(QLatin1String(Afterglow::Application::ServiceName));
-    if (!owner.isValid()) {
+    // The process at the other end of this connection is the one that will
+    // answer: a restart cannot put another between the check and the request.
+    const pid_t pid = client.peerPid();
+    if (pid <= 0) {
         return ForwardResult::Unavailable;
     }
-    const QDBusReply<uint> pid = interface->servicePid(owner.value());
-    if (!pid.isValid()) {
-        return ForwardResult::Unavailable;
-    }
-    const QByteArray executable = QStringLiteral("/proc/%1/exe").arg(pid.value()).toLocal8Bit();
+    const QByteArray executable = QStringLiteral("/proc/%1/exe").arg(pid).toLocal8Bit();
     struct stat self{}, running{};
     if (::stat("/proc/self/exe", &self) != 0 || ::stat(executable.constData(), &running) != 0) {
         return ForwardResult::Unavailable;
@@ -66,21 +62,30 @@ ForwardResult forwardToRunningInstance(const QString& cwd, const QStringList& co
     if (self.st_dev != running.st_dev || self.st_ino != running.st_ino) {
         return ForwardResult::DifferentExecutable;
     }
-    const PhosphorDBus::Client remote(bus, owner.value(), QLatin1String(Afterglow::Application::ObjectPath));
-    const QString iface = QLatin1String(Afterglow::Application::ServiceName);
-    // The owner is this executable, so it answers once its event loop runs.
-    // A timeout would start a second instance next to a slow one (the QtDBus
-    // default is 25 s): wait as long as any startup can take.
-    constexpr int ForwardTimeoutMs = 120'000;
-    const QDBusMessage reply = quick
-        ? remote.syncCall(iface, QStringLiteral("ToggleQuickTerminal"), {}, ForwardTimeoutMs)
-        : remote.syncCall(iface, QStringLiteral("NewWindow"), {cwd, command, options}, ForwardTimeoutMs);
-    if (reply.type() != QDBusMessage::ErrorMessage) return ForwardResult::Forwarded;
-    // The instance got the request and could not open the window (a bad -e
-    // program): starting another process would fail the same way.
-    if (reply.errorName() == QLatin1String("org.freedesktop.DBus.Error.Failed")) {
-        *error = reply.errorMessage();
-        return ForwardResult::Failed;
+    // The main process registers the launch target once it is ready (the GPU
+    // device, QML and scripts take a while). A request that it reads before
+    // gets NO_SUCH_TARGET: ask again. A timeout would start a second process
+    // next to a slow one, so wait as long as any startup can take.
+    constexpr qint64 ForwardTimeoutMs = 120'000;
+    QElapsedTimer clock;
+    clock.start();
+    const QString target = QLatin1String(Afterglow::LaunchApi::Target);
+    while (clock.elapsed() < ForwardTimeoutMs) {
+        const int left = int(ForwardTimeoutMs - clock.elapsed());
+        Afterglow::IpcClient::Error failure;
+        const auto result = quick
+            ? client.call(target, QStringLiteral("toggleQuickTerminal"), {}, left, &failure)
+            : client.call(target, QStringLiteral("newWindow"),
+                          {cwd, QJsonArray::fromStringList(command), QJsonObject::fromVariantMap(options)}, left, &failure);
+        if (result) return ForwardResult::Forwarded;
+        // The process got the request and could not open the window (a bad -e
+        // program): starting another process would fail the same way.
+        if (failure.code == QLatin1String(PhosphorIpc::ErrorCode::CallFailed)) {
+            *error = failure.message;
+            return ForwardResult::Failed;
+        }
+        if (failure.code != QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) break;
+        QThread::msleep(100);
     }
     return ForwardResult::Unavailable;
 }
@@ -185,15 +190,15 @@ int main(int argc, char** argv)
     // changes them runs on its own instead of handing over.
     const bool separate = !configPath.isEmpty() || !overrides.isEmpty() || parser.isSet(classOption);
 
-    // Reuse the session process only when it runs this executable.
-    const bool owner = !separate && QDBusConnection::sessionBus().registerService(QLatin1String(Afterglow::Application::ServiceName));
-    // Launches that arrive while this process starts (the GPU device, QML
-    // and scripts take a while) wait in the queue, not for an unknown object.
-    std::unique_ptr<Afterglow::LaunchQueue> launches;
-    if (owner) launches = std::make_unique<Afterglow::LaunchQueue>();
-    if (!separate && !owner) {
+    // The first process to listen on the display's socket is the main one.
+    // Binding is atomic: of two launches at the same moment, one wins and the
+    // other hands its window over. Launches that arrive while the main
+    // process starts wait on the socket until it is ready.
+    Afterglow::InstanceSocket socket;
+    if (!separate && !socket.listen(Afterglow::InstanceSocket::sharedPath())
+        && !Afterglow::InstanceSocket::sharedPath().isEmpty()) {
         QString error;
-        switch (forwardToRunningInstance(cwd, command, windowOptions, quick, &error)) {
+        switch (forwardToRunningInstance(Afterglow::InstanceSocket::sharedPath(), cwd, command, windowOptions, quick, &error)) {
         case ForwardResult::Forwarded:
             return 0;
         case ForwardResult::Failed:
@@ -207,18 +212,18 @@ int main(int argc, char** argv)
             break;
         }
     }
+    if (!socket.listening()) socket.listen(Afterglow::InstanceSocket::ownPath());
 
     try {
         Afterglow::XkbKeyboard::instance(); // start following the compositor's keymap
         // The chrome's Qt Quick scenes render on afterglow's Vulkan device.
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
-        Afterglow::Application application(configPath, overrides);
+        Afterglow::Application application(socket, configPath, overrides);
         if (quick) {
-            application.ToggleQuickTerminal();
+            application.toggleQuickTerminal();
         } else {
             if (!application.newWindow({cwd, command, false, cwdGiven, parser.value(titleOption), parser.isSet(holdOption)})) return 1;
         }
-        if (launches) launches->replay(application);
         // From here a termination signal closes the windows and the control
         // socket like the last window does. Before, it ends the process: a
         // launch that waits for a running instance stays easy to stop.

@@ -11,22 +11,28 @@ The `watch` command supplies events as JSON lines.
 afterglow ctl --help
 ```
 
-The control socket is a Unix socket that only your user can open.
+Each Afterglow process listens on a Unix socket that only your user can open.
 It uses the [phosphor-ipc](#protocol) protocol: one JSON object on each line.
-The calls and events are in the target `control`.
+The socket has two targets:
+
+| Target | Use |
+| --- | --- |
+| `control` | The calls and events of external control, while `Control.enabled` is on |
+| `launch` | A later launch of Afterglow hands its window to the running process |
 
 The application ID is `com.phosphorworks.Afterglow`.
-Afterglow keeps D-Bus only for the desktop: launches, notifications and taskbar progress.
+Afterglow uses D-Bus only as a client of desktop services, such as notifications, taskbar progress and global shortcuts.
+It owns no D-Bus name.
 
 ## Which process and pane
 
-Every pane sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SOCKET` to the control socket of its Afterglow process.
+Every pane sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SOCKET` to the socket of its Afterglow process.
 In a pane, `afterglow ctl` sends its commands to that process.
 Outside Afterglow, `afterglow ctl` uses the socket of the main process on the current Wayland display.
 
 | Process | Socket |
 | --- | --- |
-| The main process, which owns `com.phosphorworks.Afterglow` | `$XDG_RUNTIME_DIR/afterglow-DISPLAY.sock` |
+| The main process: the first to listen on the display's socket | `$XDG_RUNTIME_DIR/afterglow-DISPLAY.sock` |
 | A process started with `-o`, `--config` or `--class`, or another build | `$XDG_RUNTIME_DIR/afterglow-DISPLAY-PID.sock` |
 
 `DISPLAY` is the name in `WAYLAND_DISPLAY`, `wayland-0` when it is not set.
@@ -74,9 +80,9 @@ AT-SPI uses a separate bus.
 While accessibility is active, any client on that bus can read the text in the viewport.
 It can also run the [pane actions](DESKTOP.md#pane-actions) and press docked-area buttons. `Control.enabled` does not apply to them.
 
-`Control.enabled=false` closes only the control socket.
-The application object stays on D-Bus, because later launches of Afterglow use it.
-Any program of the same user can call its `NewWindow` method, and that window can run a command.
+`Control.enabled=false` removes the `control` target, and ends its event subscriptions.
+The socket stays open with the `launch` target, because later launches of Afterglow use it.
+Any program of the same user can call `launch.newWindow`, and that window can run a command.
 
 ## Protocol
 
@@ -110,16 +116,26 @@ A request that fails gets a line with `"type": "error"`, a `code` and a `message
 
 `phosphorctl` from the Phosphor shell can also use the socket: `phosphorctl --socket "$AFTERGLOW_SOCKET" list`.
 
-## Application methods
+## Launches
 
-These methods are on D-Bus, at the object path `/com/phosphorworks/Afterglow`.
+`afterglow` started again hands its window to the main process when that process runs the same executable.
+All windows then share one GPU device.
+The handoff uses the `launch` target of the display's socket.
 
-| Method | Arguments | Result |
+1. The new process tries to listen on `afterglow-DISPLAY.sock`. Only one process can listen on a path, so the first one becomes the main process.
+2. When another process listens there, the new process reads its process ID from the connection.
+3. When that process runs the same executable file, the new process sends `launch.newWindow` and exits.
+4. When it runs another file, such as another build, the new process starts on its own with `afterglow-DISPLAY-PID.sock`.
+
+A launch while the main process starts waits until it is ready, for 120 seconds at most.
+A process started with `-o`, `--config` or `--class` always starts on its own.
+
+| Call | Arguments | Result |
 | --- | --- | --- |
-| `NewWindow` | `s` working directory, `as` command, `a{sv}` options | None. Fails when the program cannot start. |
-| `ToggleQuickTerminal` | None | None |
+| `newWindow` | working directory, command, options | None. Fails with `CALL_FAILED` when the program cannot start. |
+| `toggleQuickTerminal` | None | None |
 
-The `NewWindow` options are `directoryGiven` (`b`), `title` (`s`), `hold` (`b`) and `activationToken` (`s`).
+The `newWindow` options are `directoryGiven` (boolean), `title` (string), `hold` (boolean) and `activationToken` (string).
 An empty command runs the shell.
 
 ## Control calls

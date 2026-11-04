@@ -80,10 +80,10 @@ private:
     SettingsStore& m_settings;
 };
 
-/// The control socket: a phosphor-ipc router with the "control" target,
-/// listening while Control.enabled is on. It sends Control's events to the
-/// clients that subscribed, and merges the state events of each pane that
-/// come faster than Control.eventInterval.
+/// External control on the process's socket (InstanceSocket): the "control"
+/// target, registered while Control.enabled is on. It sends Control's events
+/// to the clients that subscribed, and merges the state events of each pane
+/// that come faster than Control.eventInterval.
 class ControlSocket : public QObject
 {
     Q_OBJECT
@@ -91,24 +91,11 @@ class ControlSocket : public QObject
 public:
     static constexpr const char* Target = "control";
 
-    /// @p path: where to listen. Empty for sharedPath() when this process owns
-    /// the application's D-Bus name, else for ownPath().
-    ControlSocket(Control& control, SettingsStore& settings, const QString& path = {}, QObject* parent = nullptr);
+    ControlSocket(Control& control, SettingsStore& settings, PhosphorIpc::IpcRouter& router, QObject* parent = nullptr);
     ~ControlSocket() override;
 
-    QString path() const { return m_path; }
-    bool listening() const { return m_listening; }
-
-    /// The socket of the process's ControlSocket, for the panes'
-    /// AFTERGLOW_SOCKET. Set also while Control.enabled is off, so that
-    /// afterglow ctl in a pane does not reach another process. Empty when
-    /// there is no ControlSocket.
-    static QString processPath();
-    /// The socket of the session's Afterglow on this Wayland display. Empty
-    /// without XDG_RUNTIME_DIR.
-    static QString sharedPath();
-    /// The socket of a process that does not own the application's D-Bus name.
-    static QString ownPath();
+    /// The control target is on the router.
+    bool enabled() const { return m_enabled; }
 
 private:
     void applySettings();
@@ -134,9 +121,8 @@ private:
     Control& m_control;
     SettingsStore& m_settings;
     ControlApi m_api;
-    PhosphorIpc::IpcRouter m_router;
-    QString m_path;
-    bool m_listening = false;
+    PhosphorIpc::IpcRouter& m_router;
+    bool m_enabled = false;
     QHash<QString, Merged> m_merged;
     QElapsedTimer m_clock;
     QTimer m_due;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "app/InstanceSocket.h"
 #include "config/Settings.h"
 #include "control/Control.h"
 #include "control/ControlSocket.h"
@@ -51,6 +52,7 @@ protected:
     void TearDown() override
     {
         m_socket.reset();
+        m_instance.reset();
         qputenv("XDG_RUNTIME_DIR", m_previousRuntime);
     }
 
@@ -63,7 +65,9 @@ protected:
         file.close();
         m_settings = std::make_unique<SettingsStore>(path);
         m_control = std::make_unique<Control>(*m_settings, [](const QString&, const QStringList&, bool) { return nullptr; });
-        m_socket = std::make_unique<ControlSocket>(*m_control, *m_settings, socketPath());
+        m_instance = std::make_unique<InstanceSocket>();
+        ASSERT_TRUE(m_instance->listen(socketPath()));
+        m_socket = std::make_unique<ControlSocket>(*m_control, *m_settings, m_instance->router());
     }
 
     QString socketPath() const { return m_dir.filePath(QStringLiteral("control.sock")); }
@@ -146,6 +150,7 @@ protected:
     QByteArray m_previousRuntime;
     std::unique_ptr<SettingsStore> m_settings;
     std::unique_ptr<Control> m_control;
+    std::unique_ptr<InstanceSocket> m_instance;
     std::unique_ptr<ControlSocket> m_socket;
     qint64 m_id = 0;
     QHash<qint64, QString> m_events;
@@ -154,8 +159,8 @@ protected:
 TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
 {
     start();
-    ASSERT_TRUE(m_socket->listening());
-    EXPECT_EQ(ControlSocket::processPath(), socketPath());
+    ASSERT_TRUE(m_socket->enabled());
+    EXPECT_EQ(InstanceSocket::processPath(), socketPath());
     // Only the owner can connect.
     EXPECT_EQ(QFileInfo(socketPath()).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther),
               QFile::Permissions{});
@@ -195,21 +200,51 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
 TEST_F(ControlSocketTest, FollowsControlEnabled)
 {
     start(R"({"Control": {"enabled": false}})");
-    EXPECT_FALSE(m_socket->listening());
-    EXPECT_FALSE(QFileInfo::exists(socketPath()));
-    // Panes still name this process, so that afterglow ctl in them fails
-    // instead of reaching another one.
-    EXPECT_EQ(ControlSocket::processPath(), socketPath());
-
-    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
-    ASSERT_TRUE(m_socket->listening());
+    // The socket stays open for launches. Only the control target goes.
+    EXPECT_FALSE(m_socket->enabled());
+    EXPECT_TRUE(QFileInfo::exists(socketPath()));
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
+    QJsonObject off = call(client, QStringLiteral("listPanes"));
+    EXPECT_EQ(off.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_TARGET"));
 
+    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    ASSERT_TRUE(m_socket->enabled());
+    EXPECT_EQ(call(client, QStringLiteral("listPanes")).value(QStringLiteral("type")).toString(), QStringLiteral("reply"));
+    subscribe(client, QStringLiteral("titleChanged"));
+    const qint64 subscription = m_id;
+
+    // Turning control off ends the subscription, and the client hears it.
     m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), false);
-    EXPECT_FALSE(m_socket->listening());
+    EXPECT_FALSE(m_socket->enabled());
+    const auto ended = next(client);
+    ASSERT_TRUE(ended.has_value());
+    EXPECT_EQ(ended->value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(ended->value(QStringLiteral("id")).toInteger(), subscription);
+    EXPECT_EQ(ended->value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_TARGET"));
+    off = call(client, QStringLiteral("listPanes"));
+    EXPECT_EQ(off.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_TARGET"));
+
+    // Back on, the old subscription stays ended: no event without a new one.
+    m_settings->write(QStringLiteral("Control"), QStringLiteral("enabled"), true);
+    Q_EMIT m_control->titleChanged(1, QStringLiteral("after"));
+    EXPECT_TRUE(events(client, 100).isEmpty());
+}
+
+TEST_F(ControlSocketTest, OneProcessListensOnAPath)
+{
+    start();
+    // Another process (here another socket) cannot take a live path.
+    InstanceSocket second;
+    EXPECT_FALSE(second.listen(socketPath()));
+    EXPECT_FALSE(second.listening());
+    EXPECT_EQ(InstanceSocket::processPath(), socketPath());
+    // Gone, its file goes with it, and the path is free.
+    m_socket.reset();
+    m_instance.reset();
     EXPECT_FALSE(QFileInfo::exists(socketPath()));
-    EXPECT_TRUE(waitFor([&client] { return client.state() == QLocalSocket::UnconnectedState; }));
+    EXPECT_TRUE(InstanceSocket::processPath().isEmpty());
+    EXPECT_TRUE(second.listen(socketPath()));
 }
 
 TEST_F(ControlSocketTest, MergesFastStateEventsOfAPane)
