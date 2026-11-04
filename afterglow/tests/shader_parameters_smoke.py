@@ -115,9 +115,14 @@ return {
             check(f"QUERY_FAILED:{name}" not in log_text(), name)
             check(count(expected, name) > matching,
                   f"The {name} write was " + ("rejected" if accepted else "accepted"))
-        def settles(pane, index, expected):
-            """Waits until a shader value reaches the expected value."""
-            wait_for(lambda: abs(inspect(pane)[index]["values"]["strength"] - expected) < 0.001)
+        def settles(pane, index, expected, timeout=10):
+            """Waits until a shader value reaches the expected value. A read costs
+            the inspect script two effects of its 20 a second: faster reads get
+            dropped, and the read never answers."""
+            deadline = time.monotonic() + timeout
+            while abs(inspect(pane)[index]["values"]["strength"] - expected) >= 0.001:
+                check(time.monotonic() < deadline, f"strength did not reach {expected}")
+                time.sleep(0.25)
         state = config / "state/scripts/inspect.json"
         def inspect(pane, kind="read"):
             previous = json.loads(state.read_text())["revision"] if state.exists() else 0

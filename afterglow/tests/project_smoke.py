@@ -53,8 +53,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-t3-') as tmp:
             spare = int(ctl('new-tab', '--pane', first))
             ctl('detach-tab', '--pane', first)
             wait(lambda: len({p['window'] for p in panes()}) == 2)
-            # The detached pane reports its new window to scripts.
-            wait(lambda: moved(first) == window_of(first) != window_of(second))
+            # The detached pane reports its new window to scripts. Its whole tab
+            # went, second with it, and spare stayed behind.
+            wait(lambda: moved(first) == window_of(first) == window_of(second) != window_of(spare))
             ctl('move-pane', spare, 'right', '--pane', second)
             ctl('move-pane', second, 'left', '--pane', first)
             wait(lambda: len({p['window'] for p in panes()}) == 1)

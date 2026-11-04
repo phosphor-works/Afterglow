@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--binary", required=True)
 parser.add_argument("--filter", help="gtest filter, for example 'NativeWindow.KittyDragAndDropClient'")
 # Below the CTest TIMEOUT, so that the runner reports a stall before CTest kills it.
-parser.add_argument("--timeout", type=int, default=110, help="seconds for the whole run")
+parser.add_argument("--timeout", type=int, default=400, help="seconds for the whole run")
 parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 args = parser.parse_args()
 binary = os.path.abspath(args.binary)

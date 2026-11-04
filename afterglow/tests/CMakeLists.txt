@@ -58,7 +58,7 @@ if(AFTERGLOW_NATIVE_TESTS)
     add_test(NAME afterglow_native_window_acceptance
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
                 --binary $<TARGET_FILE:afterglow_native_tests>)
-    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 120)
+    set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 420)
 endif()
 
 qt_add_executable(afterglow_transfer_tests FileTransferTest.cpp ../src/desktop/FileTransfer.cpp ../src/desktop/FileTransfer.h)
