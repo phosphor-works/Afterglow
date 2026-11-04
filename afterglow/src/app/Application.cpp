@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "Application.h"
+#include "InstanceSocket.h"
 
 #include "NotificationCenter.h"
 #include "WindowStart.h"
@@ -15,7 +16,6 @@
 #include <PhosphorShortcuts/IBackend.h>
 #include <PhosphorShortcuts/Registry.h>
 
-#include <QDBusConnection>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QKeySequence>
@@ -31,16 +31,18 @@ const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 
 } // namespace
 
-Application::Application(const QString& configPath, const QJsonObject& overrides)
+Application::Application(InstanceSocket& socket, const QString& configPath, const QJsonObject& overrides)
     : m_settings(configPath.isEmpty() ? SettingsStore::defaultPath() : configPath, overrides)
     , m_device(m_settings.settings().font)
     , m_chromeComponent(&m_engine)
     , m_control(m_settings, [this](const QString& cwd, const QStringList& command, bool empty) {
         return newWindow({cwd, command, false, !cwd.isEmpty(), {}, false, empty});
     })
-    , m_controlBus(m_control, m_settings)
+    , m_socket(socket)
+    , m_controlSocket(m_control, m_settings, socket.router())
     , m_scripts(scriptCallbacks(m_control))
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
+    , m_launch(*this)
 {
     // Some platform-theme versions leave Qt Quick at its default Fusion style.
     // Prefer the desktop bridge on Plasma, preserving explicit style choices
@@ -102,16 +104,17 @@ Application::Application(const QString& configPath, const QJsonObject& overrides
     // Hidden windows (a tucked-away quick terminal) still count as open.
     QGuiApplication::setQuitOnLastWindowClosed(false);
 
-    // A LaunchQueue from main() may hold the path: it hands it over when it replays.
-    QDBusConnection bus = QDBusConnection::sessionBus();
-    if (!bus.objectRegisteredAt(QLatin1String(ObjectPath))) {
-        bus.registerObject(QLatin1String(ObjectPath), this, QDBusConnection::ExportScriptableSlots);
-    }
     bindShortcuts();
+    // Last: from here launches that waited on the socket get their windows.
+    if (!m_socket.router().registerTarget(QLatin1String(LaunchApi::Target), &m_launch)) {
+        qCWarning(lcApp) << "another object holds the launch target";
+    }
 }
 
 Application::~Application()
 {
+    // No new windows while the others close.
+    m_socket.router().unregisterTarget(QLatin1String(LaunchApi::Target), &m_launch);
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.
@@ -137,7 +140,9 @@ void Application::bindShortcuts()
         m_shortcuts->unbind(QuickShortcutId);
     } else {
         m_shortcuts->bind(QuickShortcutId, QKeySequence::fromString(seq, QKeySequence::PortableText),
-                          QStringLiteral("Toggle the quick terminal"), [this] { ToggleQuickTerminal(); });
+                          QStringLiteral("Toggle the quick terminal"), [this] {
+                              if (const QString error = toggleQuickTerminal(); !error.isEmpty()) qCWarning(lcApp).noquote() << error;
+                          });
     }
     m_shortcuts->flush();
     m_boundQuickShortcut = seq;
@@ -161,7 +166,7 @@ TerminalWindow* Application::newWindow(const WindowOptions& options)
     return window;
 }
 
-QString Application::openForwarded(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+QString Application::openLaunch(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
     TerminalWindow* w = newWindow({workingDirectory, command, false, options.value(QStringLiteral("directoryGiven")).toBool(),
                                    options.value(QStringLiteral("title")).toString(),
@@ -176,19 +181,14 @@ QString Application::openForwarded(const QString& workingDirectory, const QStrin
     return {};
 }
 
-void Application::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
-{
-    if (const QString error = openForwarded(workingDirectory, command, options); !error.isEmpty() && calledFromDBus()) {
-        sendErrorReply(QDBusError::Failed, error);
-    }
-}
-
-void Application::ToggleQuickTerminal()
+QString Application::toggleQuickTerminal()
 {
     if (!m_quick) {
         m_quick = newWindow({{}, {}, true, false, {}, false});
+        if (!m_quick) return QStringLiteral("cannot start the shell of the quick terminal");
     }
-    if (m_quick) m_quick->toggleQuick();
+    m_quick->toggleQuick();
+    return {};
 }
 
 void Application::quitWhenNoWindowsRemain()
@@ -198,55 +198,22 @@ void Application::quitWhenNoWindowsRemain()
     }
 }
 
-} // namespace Afterglow
-
-namespace Afterglow {
-
-LaunchQueue::LaunchQueue(QObject* parent)
-    : QObject(parent)
+LaunchApi::LaunchApi(Application& application)
+    : m_application(application)
 {
-    m_registered = QDBusConnection::sessionBus().registerObject(QLatin1String(Application::ObjectPath), this,
-                                                                QDBusConnection::ExportScriptableSlots);
 }
 
-void LaunchQueue::NewWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
+void LaunchApi::newWindow(const QString& workingDirectory, const QStringList& command, const QVariantMap& options)
 {
-    if (m_replayed) {
-        const QString error = m_application ? m_application->openForwarded(workingDirectory, command, options)
-                                            : QStringLiteral("afterglow is quitting");
-        if (!error.isEmpty()) sendErrorReply(QDBusError::Failed, error);
-        return;
+    if (const QString error = m_application.openLaunch(workingDirectory, command, options); !error.isEmpty()) {
+        sendErrorReply(error);
     }
-    setDelayedReply(true);
-    m_calls.append({message(), false, workingDirectory, command, options});
 }
 
-void LaunchQueue::ToggleQuickTerminal()
+void LaunchApi::toggleQuickTerminal()
 {
-    if (m_replayed) {
-        if (m_application) m_application->ToggleQuickTerminal();
-        else sendErrorReply(QDBusError::Failed, QStringLiteral("afterglow is quitting"));
-        return;
-    }
-    setDelayedReply(true);
-    m_calls.append({message(), true, {}, {}, {}});
-}
-
-void LaunchQueue::replay(Application& application)
-{
-    QDBusConnection bus = QDBusConnection::sessionBus();
-    if (m_registered) {
-        bus.unregisterObject(QLatin1String(Application::ObjectPath));
-        m_registered = false;
-        bus.registerObject(QLatin1String(Application::ObjectPath), &application, QDBusConnection::ExportScriptableSlots);
-    }
-    m_replayed = true;
-    m_application = &application;
-    for (const Call& call : std::exchange(m_calls, {})) {
-        QString error;
-        if (call.quick) application.ToggleQuickTerminal();
-        else error = application.openForwarded(call.workingDirectory, call.command, call.options);
-        bus.send(error.isEmpty() ? call.message.createReply() : call.message.createErrorReply(QDBusError::Failed, error));
+    if (const QString error = m_application.toggleQuickTerminal(); !error.isEmpty()) {
+        sendErrorReply(error);
     }
 }
 

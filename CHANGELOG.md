@@ -68,7 +68,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes.
 - Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99).
 - A notification limit for each pane (`Notifications.rateLimit`, 20 in 10 seconds by default). Notices from Afterglow itself do not count.
-- Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`), between two status notifications of a pane (`Notifications.statusInterval`) and between the rows of a selection drag that scrolls (`Mouse.autoScrollInterval`). `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
+- Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
+- `Mouse.autoScrollInterval` sets the time between the rows of a selection drag that scrolls.
+- `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
+- `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
 - Kitty drag and drop, including remote directory data and thumbnails.
 - Local file drops, quoted for the shell and sent as bracketed paste.
@@ -128,8 +131,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - A script key mode that starts while the pane overview is open ends when the overview closes.
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
-- External control through `afterglow ctl` and D-Bus, with access settings.
+- External control through `afterglow ctl` and a control socket, with access settings and merged state events.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
+- A different build on the same display starts on its own and does not hand its window over.
 
 ### Performance
 
@@ -161,9 +165,10 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - Tabs, menus and prompts in the desktop Qt style.
 - Settings in `~/.config/afterglow/config.json` that reload when the file changes, and `-o` overrides for one launch.
 - With no settings file, every setting has its default. The first change of a setting creates the file, which holds only the values that differ from the defaults. Only its owner can read the file.
-- Problems in the settings file, such as an unknown key or a value that is not a color, show as a notice.
+- Problems in the settings file show as a notice. Examples are an unknown key, a value of the wrong type and a value that is not a color.
 - A settings file that does not parse is never replaced. The current settings stay until it is correct.
 - The desktop's fixed-width font and size by default, with the `calt` and `liga` features. `Font.sizeStep` sets the font size step.
+- A clean exit on `SIGTERM`, `SIGINT` and `SIGHUP` that closes the windows and the control socket. A signal that Afterglow inherited as ignored stays ignored.
 
 ### Documentation
 

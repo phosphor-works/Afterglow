@@ -96,11 +96,11 @@ class NestedDesktop:
                         QT_QPA_PLATFORM="wayland", WAYLAND_DISPLAY=self.socket,
                         QT_QPA_PLATFORMTHEME="generic", QT_QUICK_CONTROLS_STYLE="Basic",
                         QT_MESSAGE_PATTERN="%{if-category}%{category}: %{endif}%{message}")
-        # A harness started in an Afterglow pane inherits that pane's bus name and
-        # pane ID. `afterglow ctl` would then call the user's instance (a unique
-        # name of the session bus, unknown on the private bus) instead of the
-        # nested one, and default to a pane that the nested one does not have.
-        for name in ("AFTERGLOW_BUS_NAME", "AFTERGLOW_PANE_ID"):
+        # A harness started in an Afterglow pane inherits that pane's control
+        # socket and pane ID. `afterglow ctl` would then call the user's instance
+        # instead of the nested one, and default to a pane that the nested one
+        # does not have. Without them it finds the socket of the nested display.
+        for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID"):
             self.env.pop(name, None)
         (root / "kwinrc").write_text(KWINRC)
         self.log = (root / "kwin.log").open("w")
@@ -294,12 +294,16 @@ class Session:
         self.binary, self.env, self.log_path = binary, env, log_path
         self.log = log_path.open("w")
         self.app = None
+        self.exit_code = None
 
     def start(self, title):
         self.app = subprocess.Popen([self.binary, "--title", title], env=self.env,
                                     stdout=self.log, stderr=subprocess.STDOUT)
 
     def stop(self):
+        """Ends Afterglow with SIGTERM, as a session end does. After its clean
+        shutdown Afterglow ends with the signal, so exit_code is -SIGTERM; it
+        is -SIGKILL when the shutdown hung and the kill ended it."""
         if self.app and self.app.poll() is None:
             self.app.terminate()
             try:
@@ -307,6 +311,20 @@ class Session:
             except subprocess.TimeoutExpired:
                 self.app.kill()
                 self.app.wait()
+        if self.app:
+            self.exit_code = self.app.returncode
+
+    def control_socket(self):
+        """The control socket of the main Afterglow on the nested display, as
+        InstanceSocket::sharedPath names it. The harness display name has only
+        characters that the name keeps."""
+        return Path(self.env["XDG_RUNTIME_DIR"]) / f"afterglow-{self.env['WAYLAND_DISPLAY']}.sock"
+
+    def launch(self, *args, env=None):
+        """Starts Afterglow again, as a desktop launcher does, and returns its
+        exit code. A launch that hands its window over exits at once."""
+        return subprocess.run([self.binary, *map(str, args)], env=env or self.env, stdout=self.log,
+                              stderr=subprocess.STDOUT, timeout=20).returncode
 
     def close(self):
         self.stop()

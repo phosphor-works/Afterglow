@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus)
+find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Widgets Qml Quick QuickControls2 DBus Network)
 find_package(KF6WindowSystem REQUIRED) # KWin blur behind
 find_package(Qt6QuickPrivate CONFIG REQUIRED) # native chrome accessibility bridge
 find_package(Qt6GuiPrivate CONFIG REQUIRED) # rhi/qrhi.h for the chrome render target
@@ -36,6 +36,10 @@ qt_add_library(afterglow_app STATIC
     src/animation/FrameClock.h
     src/animation/PaneMotion.h
     src/app/Application.cpp
+    src/app/InstanceSocket.cpp
+    src/app/InstanceSocket.h
+    src/app/QuitSignals.cpp
+    src/app/QuitSignals.h
     src/app/NotificationCenter.cpp
     src/desktop/FileTransfer.cpp
     src/desktop/FileTransfer.h
@@ -44,8 +48,11 @@ qt_add_library(afterglow_app STATIC
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
-    src/control/ControlBus.cpp
-    src/control/ControlBus.h
+    src/control/ControlSocket.cpp
+    src/control/ControlSocket.h
+    # Here, not with Ctl: the socket tests drive it too.
+    src/control/IpcClient.cpp
+    src/control/IpcClient.h
     src/scripting/ScriptControl.cpp
     src/scripting/ScriptControl.h
     src/app/NotificationCenter.h
@@ -179,9 +186,9 @@ target_include_directories(afterglow_app PUBLIC src)
 target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
     Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
-    PhosphorDBus::PhosphorDBus PhosphorScripting::PhosphorScripting
+    PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
-    Qt6::DBus KF6::WindowSystem
+    Qt6::DBus Qt6::Network KF6::WindowSystem
     PRIVATE ZLIB::ZLIB PkgConfig::XXHASH)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -191,7 +198,7 @@ install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 set(AFTERGLOW_PRIVATE_LIBS AfterglowVt AfterglowRender AfterglowPty
     PhosphorConfig PhosphorFsLoader PhosphorRegistry PhosphorShaders PhosphorRendering
     PhosphorWayland PhosphorLayer PhosphorAnimation PhosphorShortcuts
-    PhosphorDBus PhosphorScripting PhosphorAudio)
+    PhosphorDBus PhosphorIpc PhosphorScripting PhosphorAudio)
 set_target_properties(${AFTERGLOW_PRIVATE_LIBS} PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../..")
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)

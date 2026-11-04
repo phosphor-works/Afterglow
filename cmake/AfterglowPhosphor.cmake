@@ -39,6 +39,7 @@ endfunction()
 afterglow_add_phosphor_libs(
     phosphor-audio
     phosphor-dbus
+    phosphor-ipc
     phosphor-scripting
     phosphor-config
     phosphor-fsloader

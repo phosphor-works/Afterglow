@@ -62,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-headless-') as temporary:
         QT_QUICK_CONTROLS_STYLE='Basic',
         QT_QPA_PLATFORMTHEME='generic',
     )
+    # A run from an Afterglow pane must not hand the tests that pane's socket.
+    for name in ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID'):
+        env.pop(name, None)
     if args.icd:
         env.update(
             VK_DRIVER_FILES=str(Path(args.icd).resolve()),

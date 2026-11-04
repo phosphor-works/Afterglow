@@ -5,6 +5,7 @@
 #include "Theme.h"
 
 #include <AfterglowRender/Snapshot.h>
+#include <AfterglowVt/TextSearch.h>
 
 #include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorAudio/AudioDefaults.h>
@@ -25,6 +26,7 @@
 #include <QStandardPaths>
 #include <QStyleHints>
 
+#include <atomic>
 #include <cmath>
 #include <limits>
 
@@ -87,7 +89,7 @@ const Choice<Settings::Bell> BellChoices[] = {{"none", Settings::Bell::None},
                                               {"attention", Settings::Bell::Attention},
                                               {"visual", Settings::Bell::Visual},
                                               {"both", Settings::Bell::Both}};
-const Choice<Settings::Permission> ClipboardWriteChoices[] = {{"allow", Settings::Permission::Allow},
+const Choice<Settings::Permission> PermissionChoices[] = {{"allow", Settings::Permission::Allow},
                                                               {"ask", Settings::Permission::Ask},
                                                               {"deny", Settings::Permission::Deny}};
 const Choice<Settings::Permission> GraphicsTransferChoices[] = {{"allow", Settings::Permission::Allow},
@@ -327,7 +329,7 @@ PhosphorConfig::Schema buildSchema()
         stringKey(QStringLiteral("boldItalicFamily"), {},
                   QStringLiteral("Font family of bold italic text. An empty value uses the italic family.")),
         {QStringLiteral("size"), 0.0, QMetaType::Double,
-         QStringLiteral("Size in points, from %1 to %2. A value of 0 uses the size of the desktop's fixed-width font.")
+         QStringLiteral("Size in points, from %1 to %2. A value of 0 or less uses the size of the desktop's fixed-width font.")
              .arg(AfterglowRender::FontSpec::MinPoints)
              .arg(AfterglowRender::FontSpec::MaxPoints),
          [](const QVariant& v) {
@@ -365,7 +367,7 @@ PhosphorConfig::Schema buildSchema()
                                "The full mode aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
                 QStringLiteral("How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane "
-                               "effects are shaders, and they run while a pane is remote or in another context.")),
+                               "effects count as shaders. They run while a pane shows a shell on another host or as another user.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
     };
@@ -377,7 +379,7 @@ PhosphorConfig::Schema buildSchema()
                                  "themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
-                                 "after the brightness of the color scheme. A theme replaces each color that it sets. Afterglow "
+                                 "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow "
                                  "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative "
                                  "path starts at the directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
@@ -389,8 +391,8 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("palette"), defaultPalette(), QMetaType::QVariantList,
          QStringLiteral("The 16 ANSI colors, from black to bright white.")},
         colorKey(QStringLiteral("divider"), hex(WindowSettings::DefaultDivider),
-                 QStringLiteral("Color of the dividers between panes. A theme without a divider color gets one between its background and text "
-                                "colors.")),
+                 QStringLiteral("Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its "
+                                "background and text colors.")),
         doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1,
                   QStringLiteral("Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
@@ -415,18 +417,22 @@ PhosphorConfig::Schema buildSchema()
          QStringLiteral("Integrate Bash, Zsh and Fish prompts in new panes automatically.")},
         {QStringLiteral("sshIntegration"), d.sshIntegration, QMetaType::Bool,
          QStringLiteral("Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session "
-                        "offers COLORTERM and TERM_PROGRAM to the server.")},
+                        "offers COLORTERM and TERM_PROGRAM to the server. New panes use this value.")},
         enumKey(QStringLiteral("sshTerminfo"), d.sshTerminfo,
                 QStringLiteral("What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use "
-                               "xterm-256color there instead."),
+                               "xterm-256color there instead. New panes use this value."),
                 {QStringLiteral("install"), QStringLiteral("fallback")}),
         stringKey(QStringLiteral("pager"), d.pager,
-                  QStringLiteral("Command for viewing the last command output. Shell expansion is disabled.")),
+                  QStringLiteral("Command for viewing the last command output. Shell expansion is disabled. An empty value turns "
+                                 "the pager off.")),
         intKey(QStringLiteral("lastOutputLimit"), int(d.lastOutputLimit >> 10), 1, 65536,
                QStringLiteral("Kibibytes of the last command output that the pager gets. For longer output, the pager gets the "
                               "start and a note.")),
-        stringKey(QStringLiteral("shell"), {}, QStringLiteral("Program to run. An empty value starts your login shell.")),
-        stringKey(QStringLiteral("term"), d.term, QStringLiteral("Value of TERM for the programs in the panes.")),
+        stringKey(QStringLiteral("shell"), {},
+                  QStringLiteral("Program to run. An empty value starts your login shell. New panes use this value.")),
+        stringKey(QStringLiteral("term"), d.term,
+                  QStringLiteral("Value of TERM for the programs in the panes. An empty value uses the default. New panes use "
+                                 "this value.")),
         enumKey(QStringLiteral("cursorShape"), CursorShapeChoices, term.cursorShape,
                 QStringLiteral("Shape of the cursor until a program sets another one with DECSCUSR.")),
         {QStringLiteral("cursorBlink"), term.cursorBlink, QMetaType::Bool, QStringLiteral("Make the cursor blink.")},
@@ -461,19 +467,18 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Characters that end a word for double-click selection, besides spaces.")),
         {QStringLiteral("env"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Variables added to the shell's environment, such as { \"EDITOR\": \"nvim\" }. Each value must be a "
-                        "string.")},
+                        "string. New panes use this value.")},
         {QStringLiteral("confirmUnsafePaste"), d.confirmUnsafePaste, QMetaType::Bool,
          QStringLiteral("Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line "
                         "break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
                   QStringLiteral("Shared secret for Kitty file-transfer approval. An empty value always asks for approval.")),
-        enumKey(QStringLiteral("clipboardRead"), d.clipboardRead,
-                QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read."),
-                {QStringLiteral("ask"), QStringLiteral("allow"), QStringLiteral("deny")}),
+        enumKey(QStringLiteral("clipboardRead"), PermissionChoices, d.clipboardRead,
+                QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read.")),
         intKey(QStringLiteral("pasteReadTimeout"), d.pasteReadTimeout, 1, 600,
                QStringLiteral("Seconds after a paste in which the program can read the clipboard with the password of the paste "
                               "event (OSC 5522).")),
-        enumKey(QStringLiteral("clipboardWrite"), ClipboardWriteChoices, d.clipboardWrite,
+        enumKey(QStringLiteral("clipboardWrite"), PermissionChoices, d.clipboardWrite,
                 QStringLiteral("Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write.")),
         enumKey(QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, d.graphicsFileTransfer,
                 QStringLiteral("Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared "
@@ -546,9 +551,15 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
-         QStringLiteral("Allow other programs to control Afterglow through D-Bus and afterglow ctl.")},
+         QStringLiteral("Allow other programs, such as afterglow ctl, to control Afterglow through its socket. Later "
+                        "launches of Afterglow use the socket also when this is off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
-         QStringLiteral("Allow D-Bus clients to read pane text, including scrollback.")},
+         QStringLiteral("Allow control clients to read pane text, including scrollback, the commands that run and the "
+                        "values of user variables.")},
+        intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, 10000,
+               QStringLiteral("Shortest time in milliseconds between two events of one kind for one pane, for titles, status, "
+                              "context, bells and each user variable. A newer event replaces one that waits, and the bells in "
+                              "between become one. A value of 0 sends every event.")),
     };
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("allowReadText"), d.scriptsAllowReadText, QMetaType::Bool,
@@ -617,8 +628,8 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[GraphicsGroup] = {
         intKey(QStringLiteral("quota"), int(d.graphicsQuota >> 20), 16, 4096,
-               QStringLiteral("Mebibytes of Kitty graphics images that each screen of a pane keeps. A pane has a main and an "
-                              "alternate screen. The oldest images go first when a screen is full.")),
+               QStringLiteral("Mebibytes of images (Kitty graphics, sixel and iTerm2) that each screen of a pane keeps. A pane has "
+                              "a main and an alternate screen. The oldest images go first when a screen is full.")),
     };
     schema.groups[NotificationsGroup] = {
         intKey(QStringLiteral("rateLimit"), d.notificationRateLimit, 0, 1000,
@@ -681,6 +692,35 @@ AfterglowVt::Rgb toRgb(const QString& name, AfterglowVt::Rgb fallback)
     return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};
 }
 
+// What PhosphorConfig's JSON backend reads as each type: anything else
+// silently becomes the default.
+bool isBoolValue(const QJsonValue& raw)
+{
+    if (raw.isBool()) return true;
+    if (raw.isDouble()) return raw.toDouble() == 0.0 || raw.toDouble() == 1.0;
+    static const QStringList Words = {QStringLiteral("true"),  QStringLiteral("1"),  QStringLiteral("yes"), QStringLiteral("on"),
+                                      QStringLiteral("false"), QStringLiteral("0"), QStringLiteral("no"),  QStringLiteral("off")};
+    return raw.isString() && Words.contains(raw.toString().toLower());
+}
+
+bool isIntValue(const QJsonValue& raw)
+{
+    bool ok = false;
+    if (raw.isDouble()) {
+        const double d = raw.toDouble();
+        return d >= double(std::numeric_limits<int>::min()) && d <= double(std::numeric_limits<int>::max());
+    }
+    if (raw.isString()) raw.toString().toInt(&ok);
+    return ok;
+}
+
+bool isNumberValue(const QJsonValue& raw)
+{
+    bool ok = raw.isDouble();
+    if (raw.isString()) raw.toString().toDouble(&ok);
+    return ok;
+}
+
 /// Values the validators replaced with a default, and keys the schema does
 /// not know. The validators stay silent, since every read and the reference
 /// run them.
@@ -713,7 +753,13 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
             if (raw.isUndefined()) raw = file.value(group).toObject().value(def.key);
             if (raw.isUndefined()) continue;
             const QString name = group + QLatin1Char('.') + def.key;
-            if (def.expectedType == QMetaType::QVariantList && !raw.isArray()) {
+            if (def.expectedType == QMetaType::Bool && !isBoolValue(raw)) {
+                out << QStringLiteral("%1 must be true or false. Using the default").arg(name);
+            } else if (def.expectedType == QMetaType::Int && !isIntValue(raw)) {
+                out << QStringLiteral("%1 must be a whole number. Using the default").arg(name);
+            } else if (def.expectedType == QMetaType::Double && !isNumberValue(raw)) {
+                out << QStringLiteral("%1 must be a number. Using the default").arg(name);
+            } else if (def.expectedType == QMetaType::QVariantList && !raw.isArray()) {
                 out << QStringLiteral("%1 must be a list. Using the default").arg(name);
             } else if (def.expectedType == QMetaType::QVariantMap && !raw.isObject()) {
                 out << QStringLiteral("%1 must be an object. Using the default").arg(name);
@@ -724,7 +770,9 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                     out << QStringLiteral("%1 must be one of %2. Using the default").arg(name, names.join(QStringLiteral(", ")));
                 }
             } else if (group == Colors && def.expectedType == QMetaType::QString && def.key != QLatin1String("theme")) {
-                if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
+                if (!raw.isString()) {
+                    out << QStringLiteral("%1 is not a color. Using the default").arg(name);
+                } else if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
                     out << QStringLiteral("%1 is not a color. Using the default").arg(name);
                 }
             } else if (isCurveKey(group, def.key)) {
@@ -797,11 +845,6 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
         // "light:a,dark:b" themes follow the desktop, also while the file does not parse.
         connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, &SettingsStore::apply);
     }
-    if (QCoreApplication* app = QCoreApplication::instance()) {
-        // A new palette reaches the application as QEvent::ApplicationPaletteChange:
-        // Qt 6 deprecates QGuiApplication::paletteChanged.
-        app->installEventFilter(this);
-    }
     watch();
 }
 
@@ -863,9 +906,15 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
     if (!ensureFile()) {
         return false;
     }
+    // A change that cannot be saved must not stay in memory: it would apply
+    // at the next read, and the backend would write it over the user's next
+    // edit when it closes.
+    const QJsonObject saved = m_backend->jsonRootSnapshot();
     m_store->write(group, key, value);
     if (!m_backend->commit()) {
         qCWarning(lcConfig).noquote() << "cannot write" << m_path;
+        m_backend->replaceRoot(saved);
+        m_backend->clearDirty();
         return false;
     }
     apply();
@@ -966,6 +1015,16 @@ void SettingsStore::watch()
     if (m_plasmaTheme) {
         // A new desktop colour scheme rewrites kdeglobals.
         paths << Themes::plasmaSources();
+    }
+    // A new palette reaches the application as QEvent::ApplicationPaletteChange
+    // (Qt 6 deprecates QGuiApplication::paletteChanged). Only a plasma theme
+    // follows it, so only then does every event of the process pass here.
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        if (m_plasmaTheme) {
+            app->installEventFilter(this);
+        } else {
+            app->removeEventFilter(this);
+        }
     }
     paths << Themes::candidates(m_themeName, Themes::searchDirs(), QFileInfo(m_path).absolutePath());
     m_files.setPaths(paths);
@@ -1218,7 +1277,8 @@ Settings SettingsStore::read()
     s.sshIntegration = st.read<bool>(Terminal, QStringLiteral("sshIntegration"));
     s.sshTerminfo = st.read<QString>(Terminal, QStringLiteral("sshTerminfo"));
     s.shell = st.read<QString>(Terminal, QStringLiteral("shell"));
-    s.term = st.read<QString>(Terminal, QStringLiteral("term"));
+    s.term = st.read<QString>(Terminal, QStringLiteral("term")).trimmed();
+    if (s.term.isEmpty()) s.term = Settings{}.term;
     s.copyOnSelect = readEnum(st, Terminal, QStringLiteral("copyOnSelect"), CopyOnSelectChoices, s.copyOnSelect);
     s.bell = readEnum(st, Terminal, QStringLiteral("bell"), BellChoices, s.bell);
     s.notifications = st.read<bool>(Terminal, QStringLiteral("notifications"));
@@ -1246,9 +1306,9 @@ Settings SettingsStore::read()
         }
     }
     s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
-    s.clipboardRead = st.read<QString>(Terminal, QStringLiteral("clipboardRead"));
+    s.clipboardRead = readEnum(st, Terminal, QStringLiteral("clipboardRead"), PermissionChoices, s.clipboardRead);
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
-    s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), ClipboardWriteChoices, s.clipboardWrite);
+    s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);
     s.graphicsFileTransfer =
         readEnum(st, Terminal, QStringLiteral("graphicsFileTransfer"), GraphicsTransferChoices, s.graphicsFileTransfer);
     s.allowScreenReadback = st.read<bool>(Terminal, QStringLiteral("allowScreenReadback"));
@@ -1300,6 +1360,7 @@ Settings SettingsStore::read()
     s.quickTerminal.screen = st.read<QString>(Quick, QStringLiteral("screen")).trimmed();
     s.control.enabled = st.read<bool>(ControlGroup, QStringLiteral("enabled"));
     s.control.allowReadText = st.read<bool>(ControlGroup, QStringLiteral("allowReadText"));
+    s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
     s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
 
@@ -1346,7 +1407,8 @@ Settings SettingsStore::read()
                  st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed()};
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
-    // Hints: checked once here, not on every show_hints.
+    // Hints: checked once here, not on every show_hints, which uses only the
+    // entries that pass.
     s.hintAlphabet = st.read<QString>(HintsGroup, QStringLiteral("alphabet"));
     const QVariantList patterns = st.read<QVariantList>(HintsGroup, QStringLiteral("patterns"));
     if (patterns.size() > MaxHintPatterns) {
@@ -1368,6 +1430,12 @@ Settings SettingsStore::read()
         const QString action = entry.value(QStringLiteral("action"), QStringLiteral("copy")).toString();
         if (action != QLatin1String("copy") && action != QLatin1String("open") && action != QLatin1String("command")) {
             problem(where + QStringLiteral(": unknown action \"%1\". Use copy, open or command").arg(action));
+            continue;
+        }
+        const AfterglowVt::TextSearchResult compiled = AfterglowVt::searchText(
+            AfterglowVt::TextSnapshot{}, entry.value(QStringLiteral("pattern")).toString().toStdU32String(), true, std::atomic<bool>{false});
+        if (compiled.errorKind == AfterglowVt::SearchError::InvalidPattern || compiled.errorKind == AfterglowVt::SearchError::PatternTooLong) {
+            problem(where + QStringLiteral(": the pattern does not compile: %1").arg(QString::fromStdString(compiled.error)));
             continue;
         }
         if (action == QLatin1String("command")) {

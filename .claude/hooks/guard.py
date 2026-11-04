@@ -37,7 +37,7 @@ SEPARATORS = ';&|()\n`'
 # Words that run the command after them: skipped, with their options, to find the command itself
 WRAPPERS = set(
     'then do else elif if while until ! { } time nohup env exec command builtin xargs timeout nice ionice stdbuf setsid '
-    'unbuffer sudo doas'.split()
+    'unbuffer sudo doas dbus-run-session'.split()
 )
 
 MSG_LOCAL = (
@@ -55,6 +55,7 @@ UNKNOWN = object()
 # Wrapper options that take the next word as their value
 WRAPPER_VALUES = {
     'env': {'-C', '--chdir', '-u', '--unset', '-S', '--split-string'},
+    'dbus-run-session': {'--config-file', '--dbus-daemon'},
     'timeout': {'-s', '--signal', '-k', '--kill-after'},
     'nice': {'-n', '--adjustment'},
     'ionice': {'-c', '--class', '-n', '--classdata', '-p', '--pid'},
@@ -76,9 +77,11 @@ MSG_SUDO = 'Do not use sudo. The user installs system packages. Tell the user wh
 MSG_INSTALL = ('Never install the build (cmake --install, the install target). The user installs Afterglow. '
                'Only `cmake --install` into a temporary directory (--prefix /tmp/... or DESTDIR=/tmp/...) is allowed.')
 MSG_CTL = (
-    "`afterglow ctl` drives the user's running Afterglow, and this session runs inside one of its panes "
-    '($AFTERGLOW_PANE_ID), so it acts on the user\'s own terminal. Run it only inside the private bus of a test '
-    'session (dbus-run-session, or DBUS_SESSION_BUS_ADDRESS=...). Ask the user before you drive their instance.'
+    "`afterglow ctl` drives the user's running Afterglow: this session runs inside one of its panes, and ctl uses "
+    "the pane's $AFTERGLOW_SOCKET, else the socket of the user's Wayland display. A private D-Bus does not change "
+    'that. Give ctl the socket of a test session (AFTERGLOW_SOCKET=/path/to/test.sock), or remove the pane variables '
+    'and point it at another display (env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID WAYLAND_DISPLAY=...). Ask the user '
+    'before you drive their instance.'
 )
 
 
@@ -182,6 +185,7 @@ def split_wrappers(words):
         if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', w):  # VAR=value before a command
             if w.startswith(('GIT_DIR=', 'GIT_WORK_TREE=')):
                 wrappers.append('chdir:$')  # git then runs elsewhere
+            wrappers.append('set:' + w)
             i += 1
         elif name in WRAPPERS:
             wrappers.append(name)
@@ -190,6 +194,14 @@ def split_wrappers(words):
             while i < len(words) and (words[i].startswith('-') or re.match(r'^[\d.]+[smhd]?$', words[i])):
                 option = words[i]
                 takes = option in WRAPPER_VALUES.get(name, ())
+                if name == 'env' and option in ('-i', '-', '--ignore-environment'):
+                    wrappers.append('clear')
+                if name == 'env' and option in ('-u', '--unset') and i + 1 < len(words):
+                    wrappers.append('unset:' + words[i + 1])
+                elif name == 'env' and option.startswith('--unset='):
+                    wrappers.append('unset:' + option[len('--unset='):])
+                elif name == 'env' and option.startswith('-u') and len(option) > 2:
+                    wrappers.append('unset:' + option[2:])
                 if name == 'env' and option in ('-C', '--chdir') and i + 1 < len(words):
                     wrappers.append('chdir:' + words[i + 1])
                 elif name == 'env' and option.startswith('--chdir='):
@@ -348,9 +360,51 @@ def is_install(word, args, command=''):
     return word in ('ninja', 'make') and 'install' in args
 
 
-def private_bus(command, cmds):
-    """Whether the command line gives afterglow ctl a bus other than the user's session bus."""
-    return any(w == 'dbus-run-session' for _, w, _ in cmds) or 'DBUS_SESSION_BUS_ADDRESS=' in command
+def ctl_socket_name(display):
+    """The file name of a display's main socket, as InstanceSocket::sharedPath names it."""
+    display = (display or '')[1:] if (display or '').startswith('/') else (display or '')
+    return 'afterglow-%s.sock' % re.sub(r'[^A-Za-z0-9._-]', '_', display or 'wayland-0')
+
+
+def isolated_ctl(wrappers):
+    """Whether one afterglow ctl command reaches a socket other than the user's. Its VAR=value and env -u words
+    apply in order over this environment, and ctl picks its socket as Ctl.cpp does: AFTERGLOW_SOCKET, else the main
+    socket of WAYLAND_DISPLAY in XDG_RUNTIME_DIR. Only literal values count: an expansion can name the user's own
+    socket."""
+    env = dict(os.environ)
+    for w in wrappers:
+        if w == 'clear':
+            env.clear()
+        elif w.startswith('set:'):
+            name, value = w[len('set:'):].split('=', 1)
+            if any(mark in value for mark in ('$', '`')):
+                return False
+            env[name] = value
+        elif w.startswith('unset:'):
+            env.pop(w[len('unset:'):], None)
+    # The shell expands ~ in an assignment, and Qt puts a relative socket
+    # name under the temporary directory: only an absolute path is known here.
+    for name in ('AFTERGLOW_SOCKET', 'XDG_RUNTIME_DIR'):
+        if env.get(name) and not env[name].startswith('/'):
+            return False
+    if env.get('AFTERGLOW_SOCKET'):
+        target = env['AFTERGLOW_SOCKET']
+    elif env.get('AFTERGLOW_PANE_ID'):
+        return True  # ctl refuses a pane ID without its socket
+    elif env.get('XDG_RUNTIME_DIR'):
+        target = os.path.join(env['XDG_RUNTIME_DIR'], ctl_socket_name(env.get('WAYLAND_DISPLAY')))
+    else:
+        return True  # ctl stops: no socket to find
+    target = os.path.realpath(target)
+    runtime = os.environ.get('XDG_RUNTIME_DIR')
+    if os.environ.get('AFTERGLOW_SOCKET') and target == os.path.realpath(os.environ['AFTERGLOW_SOCKET']):
+        return False
+    if runtime and os.path.dirname(target) == os.path.realpath(runtime):
+        # The main socket of the user's display, or a separate process's on it.
+        own = ctl_socket_name(os.environ.get('WAYLAND_DISPLAY'))[: -len('.sock')]
+        if re.fullmatch(re.escape(own) + r'(-\d+)?\.sock', os.path.basename(target)):
+            return False
+    return True
 
 
 def check_bash(command, cwd=None):
@@ -385,7 +439,7 @@ def check_bash(command, cwd=None):
             return MSG_SUDO
         if is_install(word, args, command):
             return MSG_INSTALL
-        if word == 'afterglow' and args[:1] == ['ctl'] and not private_bus(command, cmds):
+        if word == 'afterglow' and args[:1] == ['ctl'] and not isolated_ctl(wrappers):
             return MSG_CTL
         if word == 'git':
             msg = check_git(args, places)

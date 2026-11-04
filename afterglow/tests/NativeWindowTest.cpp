@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app/Application.h"
+#include "app/InstanceSocket.h"
 #include "app/Startup.h"
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
@@ -56,12 +57,21 @@
 #include <gtest/gtest.h>
 using namespace Afterglow;
 namespace {
+
+/// The tests' Applications share a socket that listens nowhere: they take no
+/// launches, and never touch the sockets of the user's display.
+InstanceSocket& testSocket()
+{
+    static InstanceSocket socket;
+    return socket;
+}
+
 void drain(int ms = 100) {
     QElapsedTimer timer; timer.start();
     do { QCoreApplication::processEvents(); QThread::msleep(2); } while (timer.elapsed() < ms);
 }
 // Waits until @p condition holds or @p ms pass, and returns the condition.
-// A PTY echo, a search or a D-Bus round trip has no fixed time.
+// A PTY echo or a search has no fixed time.
 bool waitFor(const std::function<bool()>& condition, int ms = 3000) {
     QElapsedTimer timer; timer.start();
     while (!condition() && timer.elapsed() < ms) drain(10);
@@ -226,7 +236,7 @@ protected:
         ASSERT_TRUE(directory.isValid());
         takeQmlErrors();
         // No cursor blink, so a window with nothing moving renders no frames.
-        application = std::make_unique<Application>(directory.filePath(QStringLiteral("afterglow.conf")),
+        application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")),
             QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
                         {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}}});
         WindowOptions options;
@@ -306,7 +316,7 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
 
     application.reset();
     chrome = nullptr;
-    application = std::make_unique<Application>(directory.filePath(QStringLiteral("single-tab.conf")),
+    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("single-tab.conf")),
         QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("tabBar"), QStringLiteral("always")}}}});
     WindowOptions singleOptions;
     singleOptions.command = {QStringLiteral("/bin/cat")};
@@ -338,7 +348,7 @@ class NativeRenderer : public ::testing::TestWithParam<bool> {};
 TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
-    Application application(directory.filePath(QStringLiteral("mesh.conf")),
+    Application application(testSocket(), directory.filePath(QStringLiteral("mesh.conf")),
         QJsonObject{{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("background"), GetParam() ? QJsonArray{QStringLiteral("mesh-reactor")} : QJsonArray{}}}},
                     {QStringLiteral("Audio"), QJsonObject{{QStringLiteral("enabled"), false}}},
                     {QStringLiteral("Window"), QJsonObject{{QStringLiteral("backgroundOpacity"), 0.9}}}});
@@ -395,22 +405,30 @@ TEST_F(NativeWindow, LaunchOptionsAndClosedIdentity) {
     control.attachWindow(window);
     auto* original = window->focusedPane();
     quint32 created = 0;
+    // A launch cannot give a pane another pane's identity or socket.
     const QVariantMap env{{QStringLiteral("AFTERGLOW_LAUNCH_TEST"), QStringLiteral("native-options")},
-                          {QStringLiteral("AFTERGLOW_REMOVE_TEST"), false}};
+                          {QStringLiteral("AFTERGLOW_REMOVE_TEST"), false},
+                          {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("1")},
+                          {QStringLiteral("AFTERGLOW_SOCKET"), QStringLiteral("/launch")}};
     const QVariantMap options{{QStringLiteral("cwd"), directory.path()}, {QStringLiteral("env"), env},
                               {QStringLiteral("size"), .25}};
     qputenv("AFTERGLOW_REMOVE_TEST", "inherited");
+    // These tests listen on no socket: an inherited one must not reach the
+    // pane, where afterglow ctl would act on the afterglow that it names.
+    qputenv("AFTERGLOW_SOCKET", "/inherited");
     const QStringList command{QStringLiteral("/bin/sh"), QStringLiteral("-c"),
-        QStringLiteral("printf '%s|%s\\n' \"$AFTERGLOW_LAUNCH_TEST\" \"${AFTERGLOW_REMOVE_TEST-unset}\"; exec cat")};
+        QStringLiteral("printf '%s|%s|%s|%s\\n' \"$AFTERGLOW_LAUNCH_TEST\" \"${AFTERGLOW_REMOVE_TEST-unset}\" "
+                       "\"${AFTERGLOW_SOCKET-unset}\" \"$AFTERGLOW_PANE_ID\"; exec cat")};
     const auto error = control.split(original->id(), QStringLiteral("left"), command, options, created);
     qunsetenv("AFTERGLOW_REMOVE_TEST");
+    qunsetenv("AFTERGLOW_SOCKET");
     ASSERT_TRUE(error.isEmpty()) << error.toStdString();
     ASSERT_NE(created, 0u);
     auto* added = window->focusedPane();
     EXPECT_EQ(added->id(), created);
-    EXPECT_TRUE(waitFor([&] {
-        return added->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("native-options|unset"));
-    }));
+    const QString expected = QStringLiteral("native-options|unset|unset|%1").arg(created);
+    EXPECT_TRUE(waitFor([&] { return added->text(AfterglowVt::Terminal::TextScope::Screen).contains(expected); }))
+        << added->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     EXPECT_EQ(added->workingDirectory(), directory.path());
     // The window lays the split out at its next frame, and the shell can
     // print before that frame.
@@ -767,7 +785,7 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     // new application's load still runs.
     for (int i = 0; i < 8; ++i) delete application->newWindow(options);
     application.reset();
-    application = std::make_unique<Application>(directory.filePath(QStringLiteral("afterglow.conf")), QJsonObject{});
+    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")), QJsonObject{});
     for (int i = 0; i < 8; ++i) delete application->newWindow(options);
     auto* fresh = application->newWindow(options);
     ASSERT_NE(fresh, nullptr);
@@ -1693,7 +1711,7 @@ TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
     auto* cancel = chromeItemWithText(layer, QStringLiteral("Cancel"));
     ASSERT_NE(cancel, nullptr);
     cancel->forceActiveFocus();
-    // A keybind, D-Bus or a script opens the search under the prompt: the
+    // A keybind, afterglow ctl or a script opens the search under the prompt: the
     // keys must not go back to the panel, where Return pastes.
     chrome->setSearchOpen(true);
     // The search shows at the next frame and asks for the focus after it.
@@ -1946,14 +1964,30 @@ TEST_F(NativeWindow, PaneCoalescesBellsAndRepeatedTitlesAndUserVars) {
                                    "\x1b]2;after\x07\x1b]1337;SetUserVar=k=YWZ0ZXI=\x07\n";
     ASSERT_TRUE(pane->sendInput(twice));
     ASSERT_TRUE(waitFor([&] {
-        return !titles.isEmpty() && titles.last() == QStringLiteral("after") && vars.size() >= 2
-            && vars.last() != vars.first();
+        return !titles.isEmpty() && titles.last() == QStringLiteral("after") && !vars.isEmpty()
+            && vars.last() == QStringLiteral("after");
     })) << titles.join(QLatin1Char(',')).toStdString();
-    EXPECT_EQ(titles, (QStringList{QStringLiteral("same"), QStringLiteral("after")}));
-    EXPECT_EQ(vars.size(), 2) << vars.join(QLatin1Char(',')).toStdString();
+    ASSERT_TRUE(settleQueued());
+    // A title or a value that a newer one replaced before the GUI thread got
+    // it may be left out, and none comes twice.
+    EXPECT_LE(titles.size(), 2) << titles.join(QLatin1Char(',')).toStdString();
+    EXPECT_EQ(titles.removeDuplicates(), 0);
+    EXPECT_LE(vars.size(), 2) << vars.join(QLatin1Char(',')).toStdString();
+    EXPECT_EQ(vars.removeDuplicates(), 0);
+    const qsizetype before = titles.size();
     pane->setUserTitle(QStringLiteral("mine"));
     pane->setUserTitle(QStringLiteral("mine"));
-    EXPECT_EQ(titles.size(), 3);
+    EXPECT_EQ(titles.size(), before + 1);
+    // A burst of titles reaches the GUI thread as one delivery of the
+    // newest, not one for each title.
+    pane->setUserTitle({});
+    titles.clear();
+    pane->withTerminal([](AfterglowVt::Terminal& t) {
+        for (int i = 0; i < 1000; ++i) t.feed("\x1b]2;t" + std::to_string(i) + "\x07");
+    });
+    ASSERT_TRUE(waitFor([&] { return !titles.isEmpty() && titles.last() == QStringLiteral("t999"); }));
+    ASSERT_TRUE(settleQueued());
+    EXPECT_EQ(titles, QStringList{QStringLiteral("t999")});
 }
 
 TEST(KeyMapping, KeepsKeypadAndShiftedKeysUnderCtrl) {
@@ -2047,6 +2081,33 @@ TEST_F(NativeWindow, KeyRepeatsOfAKeyThatClosedAModeStayOutOfTheShell) {
     EXPECT_FALSE(second->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('2')));
 }
 
+TEST_F(NativeWindow, SearchDropsMatchesOfTextThatMovedAndStartsAgain) {
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    auto* pane = window->splitPane(window->focusedPane(), SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(pane, nullptr);
+    QStringList statuses;
+    QObject listener;
+    QObject::connect(pane, &Pane::searchStatusChanged, &listener, [&](const QString& status) { statuses << status; });
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[2J\x1b[Hone findme\r\ntwo findme\r\n"); });
+    pane->search(QStringLiteral("findme"), 0);
+    // A program inserts a line above both while the search takes its rows:
+    // the text moves between rows inside the scroll region.
+    pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b[H\x1b[L"); });
+    const auto said = [&](const QString& text) {
+        return std::any_of(statuses.begin(), statuses.end(), [&](const QString& s) { return s.contains(text); });
+    };
+    ASSERT_TRUE(waitFor([&] { return said(QStringLiteral("Text moved during the search")); }))
+        << statuses.join(QLatin1Char('|')).toStdString();
+    // The same query searches again, now over the moved text.
+    statuses.clear();
+    pane->search(QStringLiteral("findme"), 1);
+    ASSERT_FALSE(statuses.isEmpty());
+    EXPECT_EQ(statuses.first(), QStringLiteral("Searching…"));
+    EXPECT_TRUE(waitFor([&] { return said(QStringLiteral("of 2")); })) << statuses.join(QLatin1Char('|')).toStdString();
+    EXPECT_FALSE(said(QStringLiteral("moved")));
+}
+
 TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     auto* first = window->focusedPane();
     PaneLaunchOptions launch;
@@ -2059,7 +2120,7 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     drain();
     QKeyEvent down(QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
     QCoreApplication::sendEvent(window, &down);
-    // The focus moves while the key is held (a click, D-Bus, a script).
+    // The focus moves while the key is held (a click, afterglow ctl, a script).
     window->revealPane(right);
     for (int i = 0; i < 3; ++i) {
         QKeyEvent up(QEvent::KeyRelease, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"), true);
@@ -2073,6 +2134,12 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
     EXPECT_TRUE(waitFor([&] { return right->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('y')); }));
     EXPECT_FALSE(right->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('q')));
+    // The press reached the pane that got it. Its repeats after the focus
+    // moved went to no pane: the user no longer types there.
+    ASSERT_TRUE(middle->sendInput("\n"));
+    EXPECT_TRUE(waitFor([&] { return middle->text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('q')); }));
+    EXPECT_FALSE(middle->text(AfterglowVt::Terminal::TextScope::Screen).contains(QStringLiteral("qq")))
+        << middle->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
 }
 
 TEST_F(NativeWindow, TypingWhileTheOverviewClosesReachesTheChosenTab) {
@@ -2281,7 +2348,7 @@ TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn) {
     QMouseEvent release(QEvent::MouseButtonRelease, at, window->mapToGlobal(at), Qt::RightButton, Qt::NoButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &release);
     ASSERT_TRUE(chrome->contextMenuOpen());
-    // The focus moves while the menu is open (a script, D-Bus, a clipboard request).
+    // The focus moves while the menu is open (a script, afterglow ctl, a clipboard request).
     window->revealPane(second);
     chrome->activateMenuItem(int(Action::RenamePane));
     chrome->answerTitle(QStringLiteral("menu-pane"));
@@ -2975,7 +3042,7 @@ TEST_F(NativeWindow, MoveTabTellsOfTheMovedPanesAndKeepsTheOverviewOnItsCard) {
     QObject::connect(window, &TerminalWindow::paneMoved, &listener, [&](Pane* pane) { moved << pane->id(); });
     QObject::connect(&control, &Control::paneMoved, &listener, [&](quint32 pane) { announced << pane; });
 
-    // Scripts and D-Bus hear of each pane of the moved tab, and of no other.
+    // Scripts and control clients hear of each pane of the moved tab, and of no other.
     ASSERT_TRUE(window->moveTabOf(beside, 2).isEmpty());
     QList<quint32> expected{first->id(), beside->id()};
     std::sort(expected.begin(), expected.end());
@@ -4169,7 +4236,7 @@ TEST_F(NativeWindow, ReportedDirectoryWinsWhenLocalAndANewTabStartsThere) {
     report("\x1b]1337;CurrentDir=/afterglow-test-not-a-directory\x07");
     EXPECT_EQ(pane->workingDirectory(), fromProc);
     report("\x1b]1337;CurrentDir=" + spaced.toUtf8() + "\x07");
-    // new_tab from a pane starts where that pane is.
+    // newTab from a pane starts where that pane is.
     quint32 created = 0;
     ASSERT_TRUE(control.newTab(pane->id(), {}, {QStringLiteral("/bin/cat")}, created).isEmpty());
     Pane* added = nullptr;

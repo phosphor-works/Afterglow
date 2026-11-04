@@ -643,7 +643,7 @@ private:
         QPointer<Pane> focused;
         QString title; ///< set by the user; empty follows the focused pane
     };
-    /// What the tab bar, scripts and D-Bus show for @p tab, whose shown pane
+    /// What the tab bar, scripts and control clients show for @p tab, whose shown pane
     /// is @p focused: the user's title or the pane's, with script suffixes.
     QString tabTitle(const Tab& tab, const Pane* focused) const;
     QString m_projectName;

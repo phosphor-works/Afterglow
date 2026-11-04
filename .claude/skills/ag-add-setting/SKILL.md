@@ -11,23 +11,25 @@ SPDX-License-Identifier: GPL-3.0-or-later
 # Add a setting
 
 A value that a user could want to change is a setting. The schema in `afterglow/src/config/Settings.cpp` is the
-source of the defaults, ranges, choices and descriptions. `docs/CONFIGURATION.md` is generated from it.
+source of the ranges, choices and descriptions, and the structs in `Settings.h` hold the defaults.
+`docs/CONFIGURATION.md` is generated from them.
 
 `Animation.paneEffectDuration` is a complete example. Follow it with `grep -rn paneEffectDuration afterglow/`.
 
 ## Steps
 
 1. **The field.** Add it with its default to the struct in `afterglow/src/config/Settings.h`, with a short `///<`
-   comment. The default is in two places, here and in the schema. Keep them equal.
+   comment. This is the one place of the default: the schema reads it from the struct.
 2. **The schema.** Add a `KeyDef` to its group in `buildSchema()` in `Settings.cpp`. Use `intKey` or `doubleKey`
-   (with a minimum and maximum), `enumKey` (with its choices), `colorKey`, `stringKey` or the boolean helper. The
+   (with a minimum and maximum), `enumKey` (with its choices), `colorKey`, `curveKey`, `stringKey`, or a raw `KeyDef`
+   for a boolean, a list or a map. Pass `d.<field>` as the default. The
    store clamps and coerces from this definition, not from the struct.
 3. **The description.** It is user-facing prose under `docs/WRITING.md`: one or two short sentences, the unit, and
    what an empty or zero value means. No em dash between clauses, no semicolons between sentences.
 4. **The read.** Map the key into the struct in `SettingsStore::read()` (`st.read<T>(Group, QStringLiteral("key"))`).
 5. **The live apply.** Settings reload while Afterglow runs. Apply a change where the value is used: compare with
    the previous settings in `TerminalWindow::applySettings`, the reload handler in `app/Application.cpp`, or
-   `ControlBus::applySettings`. A setting that needs a restart says so in its description.
+   `ControlSocket::applySettings`. A setting that needs a restart says so in its description.
 6. **The test.** Add the default and an override to `afterglow/tests/ConfigTest.cpp`. Test the clamp for a numeric
    key and the fallback for an enum.
 7. **Build, then regenerate the reference:**

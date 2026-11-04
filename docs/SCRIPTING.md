@@ -249,7 +249,7 @@ Each unfocused window keeps its selected tab and pane.
 Top-level active IDs are zero when no Afterglow window has keyboard focus.
 Pane, tab and window IDs exist only during the process lifetime.
 `tab_id` remains stable during tab reordering.
-`pane.tab` and the D-Bus tab field are zero-based positions.
+`pane.tab` and the `tab` field of the [pane object](CONTROL.md#pane-object) are zero-based positions.
 
 Closed-pane events retain `id`, `tab_id` and `window`.
 The closed pane is absent from the live snapshot.
@@ -283,6 +283,9 @@ A tab that moves to another place in its window sends `on_pane_moved` for each o
 The other tabs also change their `index`, but they send no event.
 
 `on_user_var` runs when a variable changes. Setting the same value again sends no event.
+A program can set a title or a variable faster than Afterglow delivers the events.
+`on_title` and `on_user_var` then get the newest value, and the values in between are skipped.
+Do not use user variables to send a sequence of messages.
 
 `run_action(action, ev)` handles declared palette and key actions.
 `on_load`, `on_unload` and `on_config_changed` handle lifecycle changes.

@@ -7,13 +7,13 @@
 #include "desktop/Accessibility.h"
 #include "DockArea.h"
 
+#include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
 #include "app/Startup.h"
 
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
-#include <QDBusConnection>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -107,10 +107,12 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
-    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_BUS_NAME"; });
-    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_BUS_NAME"));
-    if (const QString bus = QDBusConnection::sessionBus().baseService(); !bus.isEmpty()) {
-        opts.environment.emplace_back("AFTERGLOW_BUS_NAME", bus.toStdString());
+    std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
+    std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_SOCKET"));
+    if (const QString socket = InstanceSocket::processPath(); !socket.isEmpty()) {
+        opts.environment.emplace_back("AFTERGLOW_SOCKET", QFile::encodeName(socket).toStdString());
+    } else {
+        opts.unsetEnvironment.emplace_back("AFTERGLOW_SOCKET");
     }
     opts.cols = cols;
     opts.rows = rows;
@@ -317,11 +319,16 @@ bool Pane::hasSelection() const
 
 QString Pane::selectedText() const
 {
-    std::lock_guard lock(m_mutex);
-    if (!m_selection.active || m_selectionOnAltScreen != m_terminal.modes().altScreen) {
-        return {};
+    std::string text;
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_selection.active || m_selectionOnAltScreen != m_terminal.modes().altScreen) {
+            return {};
+        }
+        text = m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries);
     }
-    return QString::fromStdString(m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries));
+    // The reader thread waits on the lock, and a selection can be megabytes.
+    return QString::fromStdString(text);
 }
 
 namespace {
@@ -454,21 +461,33 @@ void Pane::captureSearch(const std::shared_ptr<SearchJob>& job, std::u32string q
         watcher->deleteLater();
         if (job != m_searchJob || result.cancelled) return;
         m_searchJob.reset();
+        bool scrolled = false;
         {
             std::lock_guard lock(m_mutex);
             if (m_terminal.screen().layoutEpoch() != job->epoch || m_terminal.modes().altScreen != job->alt) {
                 // search() below sees the change and starts again.
                 result.matches.clear();
             }
+            // Text moved inside a scroll region while the search ran: from
+            // that row on, a match can name a row that holds other text now,
+            // and rows can be missing or found twice. The rows above stand.
+            // A program that keeps scrolling would restart a search forever,
+            // so the next search starts again instead.
+            const std::size_t found = result.matches.size();
+            std::erase_if(result.matches, [this](const auto& match) { return match.end.row >= m_movedFrom; });
+            scrolled = result.matches.size() != found || m_movedFrom != NoRow;
             std::erase_if(result.matches, [this](const auto& match) { return m_terminal.screen().absoluteIndexOf(match.start.row) < 0; });
             m_searchMatches = std::move(result.matches);
             m_searchCurrent = int(m_searchMatches.size()) - 1;
-            m_searchNotice = searchError(result);
+            m_searchNotice = scrolled ? tr("Text moved during the search. Search again") : searchError(result);
             if (result.truncated) m_searchNotice += tr(" (limited results)");
             if (m_searchCurrent >= 0) revealRow(m_terminal, std::size_t(m_terminal.screen().absoluteIndexOf(m_searchMatches.back().start.row)));
             ++m_selectionSerial;
         }
         search(QString::fromStdU32String(m_searchQuery), 0, m_searchRegex);
+        // A search that started again just now (the layout changed) takes
+        // the moved text fresh: only a result that stays is stale.
+        m_searchStale = scrolled && !m_searchJob;
         Q_EMIT contentChanged();
     });
     watcher->setFuture(QtConcurrent::run([job, query = std::move(query), regex] {
@@ -484,8 +503,9 @@ void Pane::search(const QString& query, int direction, bool regex)
         std::lock_guard lock(m_mutex);
         layoutChanged = m_searchEpoch != m_terminal.screen().layoutEpoch() || m_searchAlt != m_terminal.modes().altScreen;
     }
-    if (layoutChanged || needle != m_searchQuery || regex != m_searchRegex || !m_searchActive) {
+    if (layoutChanged || m_searchStale || needle != m_searchQuery || regex != m_searchRegex || !m_searchActive) {
         clearSearch();
+        m_searchStale = false;
         m_searchActive = true; m_searchRegex = regex; m_searchQuery = needle;
         m_searchNotice.clear();
         auto job = std::make_shared<SearchJob>();
@@ -493,6 +513,7 @@ void Pane::search(const QString& query, int direction, bool regex)
             std::lock_guard lock(m_mutex);
             const auto& screen = m_terminal.screen();
             job->epoch = m_searchEpoch = screen.layoutEpoch(); job->alt = m_searchAlt = m_terminal.modes().altScreen;
+            m_movedFrom = NoRow;
             job->lastRow = screen.rowsDropped() + screen.totalRows();
             job->nextRow = screen.rowsDropped();
         }
@@ -671,14 +692,23 @@ void Pane::setSearchColors(std::uint32_t match, std::uint32_t current, std::uint
 
 void Pane::setUserTitle(const QString& title)
 {
-    QString shown;
     {
         std::lock_guard lock(m_mutex);
         m_userTitle = title;
-        shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
-        if (shown == m_shownTitle) return;
-        m_shownTitle = shown;
+        m_shownTitle = m_userTitle.isEmpty() ? m_title : m_userTitle;
     }
+    announceTitle();
+}
+
+void Pane::announceTitle()
+{
+    QString shown;
+    {
+        std::lock_guard lock(m_mutex);
+        shown = m_shownTitle;
+    }
+    if (shown == m_announcedTitle) return;
+    m_announcedTitle = shown;
     Q_EMIT titleUpdated(shown);
 }
 
@@ -777,12 +807,14 @@ bool Pane::sendReply(std::string_view bytes)
 
 void Pane::titleChanged(std::string_view title)
 {
-    // pty thread, terminal locked. Programs set the same title at every prompt.
+    // pty thread, terminal locked. Programs set the same title at every
+    // prompt, and a loop can set thousands in a second: the GUI thread gets
+    // the newest one.
     m_title = QString::fromUtf8(title.data(), qsizetype(title.size()));
     const QString shown = m_userTitle.isEmpty() ? m_title : m_userTitle;
     if (shown == m_shownTitle) return;
     m_shownTitle = shown;
-    Q_EMIT titleUpdated(shown);
+    queueOnce(m_titleQueued, [this] { announceTitle(); });
 }
 
 void Pane::workingDirectoryChanged(std::string_view directory)
@@ -974,6 +1006,9 @@ void Pane::regionScrolled(const AfterglowVt::RegionScroll& scroll)
     // the active screen moves with the rows; what leaves the region goes.
     const bool altScreen = m_terminal.modes().altScreen;
     bool changed = false;
+    // A running search may have taken rows before the text moved between
+    // them. The other screen's rows have ids of their own.
+    if (altScreen == m_searchAlt) m_movedFrom = std::min(m_movedFrom, scroll.top);
     if (m_copyMode && m_selectionOnAltScreen == altScreen && scroll.contains(m_copyCursor)) {
         // A cursor whose row left stays at the edge the text went past.
         if (const auto moved = scroll.map(m_copyCursor)) m_copyCursor = *moved;
@@ -1035,7 +1070,18 @@ void Pane::userVarChanged(std::string_view name, std::string_view value)
         return; // enough
     }
     m_userVars.insert(n, v);
-    Q_EMIT userVarUpdated(n, v);
+    // Only the newest value of each name reaches the GUI thread, in the order
+    // of the last changes.
+    std::erase_if(m_pendingUserVars, [&n](const auto& p) { return p.first == n; });
+    m_pendingUserVars.emplace_back(n, v);
+    queueOnce(m_userVarsQueued, [this] {
+        std::vector<std::pair<QString, QString>> changed;
+        {
+            std::lock_guard lock(m_mutex);
+            changed.swap(m_pendingUserVars);
+        }
+        for (const auto& [name, value] : changed) Q_EMIT userVarUpdated(name, value);
+    });
 }
 
 QString Pane::contextLabel() const

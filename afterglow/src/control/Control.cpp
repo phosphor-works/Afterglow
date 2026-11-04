@@ -100,9 +100,14 @@ void Control::attachPane(Pane* pane)
         m_context.insert(id, label);
         Q_EMIT contextChanged(id, label);
     });
-    connect(pane, &Pane::commandBegan, this, [this, id](const QString& c) { Q_EMIT commandStarted(id, c); });
-    connect(pane, &Pane::commandEnded, this,
-            [this, id](const QString& c, int code, qint64 ms) { Q_EMIT commandFinished(id, c, code, ms); });
+    // These come from the pty thread, queued: a pane that closed meanwhile
+    // has already sent paneClosed.
+    connect(pane, &Pane::commandBegan, this, [this, id, guard = QPointer<Pane>(pane)](const QString& c) {
+        if (guard) Q_EMIT commandStarted(id, c);
+    });
+    connect(pane, &Pane::commandEnded, this, [this, id, guard = QPointer<Pane>(pane)](const QString& c, int code, qint64 ms) {
+        if (guard) Q_EMIT commandFinished(id, c, code, ms);
+    });
     connect(pane, &Pane::statusChanged, this, [this, id, guard = QPointer<Pane>(pane)] {
         if (!guard) {
             return;

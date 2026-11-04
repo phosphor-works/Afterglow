@@ -185,7 +185,7 @@ Use `afterglow.await` when you need a result.
 `uSignal[0..7]` holds a value for each pane and channel, and the seconds since it was set.
 Read them with `signalValue(channel)` and `signalAge(channel)`.
 A channel that was never set has an age of 1,000,000 seconds.
-Set a channel with `afterglow.signal`, `afterglow ctl signal` or D-Bus.
+Set a channel with `afterglow.signal`, `afterglow ctl signal` or the control socket.
 
 `afterglow.signals(pane, values, scope)` changes 1–8 distinct channels in one effect.
 Channels must be integers from 0 to 7. Values must fit in a finite float.

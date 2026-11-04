@@ -9,6 +9,7 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,13 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             before = len(panes())
             s.failing_ctl('open-directory', root / 'missing')
             check(len(panes()) == before)
+            # A second launch hands its window to this process and exits.
+            check(s.launch('--title', 'Afterglow handover probe') == 0, 'second launch did not hand over')
+            wait(lambda: len(panes()) == before + 1)
+            # A program that cannot start fails the launch with the main
+            # process's message.
+            check(s.launch('-e', root / 'no-such-program') == 1, 'a failed handover exited 0')
+            check(len(panes()) == before + 1)
             # Atomic module edits keep the last good package and then recover.
             module = package / 'history.luau'; original = module.read_text()
             module.write_text('invalid syntax !')
@@ -79,13 +87,17 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             check(navigator()['error'])
             module.write_text(original)
             wait(lambda: navigator().get('status') == 'active')
+            # SIGTERM closes Afterglow cleanly, and its control socket with it.
+            check(s.control_socket().exists(), 'no control socket while running')
             s.stop()
+            check(s.exit_code == -signal.SIGTERM, f'exit code {s.exit_code} after SIGTERM')
+            check(not s.control_socket().exists(), 'control socket left after SIGTERM')
             s.start('Afterglow navigator restored probe')
             wait(panes)
             wait(lambda: navigator().get('status') == 'active')
             check(saved()['revision'] == 4 and saved()['version'] == 2)
             check(saved()['value']['recent'][0]['value'] == str(project))
-            print('PASS: installed package, schema migration, Luau previous-project action, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history')
+            print('PASS: installed package, schema migration, Luau previous-project action, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
         except Exception:
             print(s.log_text(5000), file=sys.stderr)
             raise
