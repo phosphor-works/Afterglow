@@ -76,7 +76,8 @@ private:
         buffer.open(QIODevice::ReadOnly);
         QImageReader reader(&buffer, format);
         const auto size = reader.size();
-        if (size.isEmpty() || size.width() > 10000 || size.height() > 10000
+        if (size.isEmpty() || std::uint32_t(size.width()) > AfterglowProto::GraphicsMaxSide
+            || std::uint32_t(size.height()) > AfterglowProto::GraphicsMaxSide
             || quint64(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
         QImage img = reader.read();
         if (img.isNull() || img.size() != size) return false;

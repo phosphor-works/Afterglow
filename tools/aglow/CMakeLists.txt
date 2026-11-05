@@ -45,7 +45,9 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.stb_image" DESTINATION ${CMAK
 # is not ours to fix. SYSTEM keeps its header quiet where aglow includes it.
 add_library(aglow_stb_image STATIC StbImage.cpp)
 target_include_directories(aglow_stb_image SYSTEM PUBLIC "${AGLOW_STB_DIR}")
-target_compile_options(aglow_stb_image PRIVATE -w)
+# -fwrapv: the scalar IDCT and dequantization of stb overflow signed ints on
+# hostile input; wrapping is defined, not undefined.
+target_compile_options(aglow_stb_image PRIVATE -w -fwrapv)
 set_target_properties(aglow_stb_image PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF AUTOMOC OFF AUTOUIC OFF)
 
 add_executable(aglow
@@ -58,6 +60,8 @@ add_executable(aglow
     Icat.cpp
     Image.cpp
     Image.h
+    Mime.h
+    StbImage.h
     Transfer.cpp
     Tty.cpp
     Tty.h
@@ -102,7 +106,21 @@ if(BUILD_TESTING)
         add_test(NAME aglow_clipboard_pty
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_pty.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_clipboard_pty PROPERTIES TIMEOUT 120)
+        # Crafted images (GIF disposal and frame caps, BMP, TGA, PSD, HDR, PNM, PNG, JPEG).
+        add_test(NAME aglow_icat_decode
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_decode.py $<TARGET_FILE:aglow>)
+        set_tests_properties(aglow_icat_decode PROPERTIES TIMEOUT 120)
+        add_test(NAME aglow_clipboard_cases
+                 COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_cases.py $<TARGET_FILE:aglow>)
+        set_tests_properties(aglow_clipboard_cases PROPERTIES TIMEOUT 120)
     endif()
+    # The input parser and the command line, without a terminal.
+    find_package(GTest REQUIRED)
+    include(GoogleTest)
+    add_executable(aglow_tests tests/AglowInputTest.cpp Cli.cpp Tty.cpp)
+    target_link_libraries(aglow_tests PRIVATE Afterglow::Proto GTest::gtest_main)
+    set_target_properties(aglow_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
+    gtest_discover_tests(aglow_tests TEST_PREFIX "Aglow.")
     # What icat writes, drawn by the terminal's own renderer (which needs a Vulkan driver).
     if(AFTERGLOW_BUILD_TOOLS)
         if(Python3_Interpreter_FOUND)

@@ -73,6 +73,7 @@ add_library(AfterglowProto STATIC
     src/Clipboard.cpp
     src/Delta.cpp
     src/DndTree.cpp
+    src/DndUri.cpp
     src/DragDrop.cpp
     src/FdDelta.cpp
     src/Graphics.cpp

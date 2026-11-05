@@ -121,7 +121,7 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
     }
-    // afterglow transfer|dnd|icat|clipboard ...: the aglow next to this executable, no GUI.
+    // afterglow COMMAND ... for each of Aglow::Commands: the aglow next to this executable, no GUI.
     if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
         return Afterglow::Aglow::run(argc, argv);
     }
@@ -152,7 +152,20 @@ int main(int argc, char** argv)
     QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral(AFTERGLOW_APP_ID)));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("A GPU accelerated terminal"));
+    // The commands that run before Qt starts take no window and no options of their own here.
+    QString description = QStringLiteral(
+        "A GPU accelerated terminal\n\n"
+        "Commands that open no window:\n"
+        "  afterglow ctl ...       Control a running Afterglow.\n"
+        "  afterglow run ...       Run a script command of a running Afterglow.\n"
+        "  afterglow ssh ...       Run ssh with shell integration on the remote computer.\n");
+    if (Afterglow::Aglow::built()) {
+        for (const char* command : Afterglow::Aglow::Commands) {
+            description += QStringLiteral("  ") + QStringLiteral("afterglow %1 ...").arg(QLatin1String(command)).leftJustified(24)
+                + QStringLiteral("Run aglow %1.\n").arg(QLatin1String(command));
+        }
+    }
+    parser.setApplicationDescription(description);
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOption({QStringLiteral("config-reference"), QStringLiteral("Print the configuration reference as JSON. Use alone. No desktop required.")});
@@ -294,6 +307,9 @@ int main(int argc, char** argv)
         for (int attempt = 0; !shared.isEmpty() && !socket.listening() && attempt < 20; ++attempt) {
             if (socket.listen(Afterglow::InstanceSocket::ownPath()) != Afterglow::InstanceSocket::Listen::Held) break;
             QThread::msleep(10);
+        }
+        if (!shared.isEmpty() && !socket.listening()) {
+            qWarning("afterglow: cannot listen on a socket. afterglow ctl, afterglow run and new launches cannot reach this process");
         }
 
         // From here a termination signal closes the windows and the socket,

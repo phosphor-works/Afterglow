@@ -10,8 +10,9 @@
 #include <vector>
 
 /// Command lines in the form that kitten uses: --name=value, --name value,
-/// -n value, flags that take no value, options given more than once, and --
-/// before arguments that start with a dash.
+/// -n value, -nvalue, flags that take no value (also several in one word, as
+/// -xy), options given more than once, and -- before arguments that start
+/// with a dash.
 namespace Aglow::Cli {
 
 struct Option
@@ -23,6 +24,10 @@ struct Option
     std::string fallback; ///< the default value
     std::vector<std::string> choices;
     std::string help;
+    /// The values that an Int or a Float option takes. The default bounds
+    /// keep a value times 1000 (seconds to milliseconds) inside long long.
+    double min = -1e15;
+    double max = 1e15;
 };
 
 struct Command
@@ -38,6 +43,7 @@ class Parsed
 {
 public:
     /// The value of a String, Choice, Int or Float option, or its default.
+    /// parse() checked an Int or Float value against its kind and range.
     std::string value(std::string_view name) const;
     bool flag(std::string_view name) const;
     std::vector<std::string> list(std::string_view name) const;

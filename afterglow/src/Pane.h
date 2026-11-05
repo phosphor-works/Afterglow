@@ -392,6 +392,7 @@ private:
 
     AfterglowRender::PaneSnapshot m_snapshot;
     std::uint64_t m_snapshotGeneration = ~0ull;
+    std::size_t m_animationViewportTop = 0;
     std::uint64_t m_snapshotSelectionSerial = ~0ull;
     int m_snapshotExtraRows = 0;
     QElapsedTimer m_syncTimer;

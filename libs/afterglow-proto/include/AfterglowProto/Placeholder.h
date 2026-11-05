@@ -52,8 +52,10 @@ inline constexpr char32_t PlaceholderDiacritics[] = {
     0x1D1AA, 0x1D1AB, 0x1D1AC, 0x1D1AD, 0x1D242, 0x1D243, 0x1D244,
 };
 // clang-format on
+static_assert(std::is_sorted(std::begin(PlaceholderDiacritics), std::end(PlaceholderDiacritics)));
 
-/// The number of values that a diacritic can encode: rows, columns and id bytes up to it.
+/// How many values the diacritics encode. A row, a column or an id byte must
+/// be less than this to be written with one.
 inline constexpr std::size_t PlaceholderDiacriticCount = std::size(PlaceholderDiacritics);
 
 /// The value that @p cp encodes, or -1 when it is not one of the diacritics.

@@ -9,6 +9,7 @@ add_executable(afterglow_proto_tests
     ClipboardTest.cpp
     DeltaTest.cpp
     DragDropTest.cpp
+    DndUriTest.cpp
     GraphicsTest.cpp
     HelpersTest.cpp
     IpcTest.cpp

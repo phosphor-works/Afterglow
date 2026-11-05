@@ -174,8 +174,10 @@ def main():
         print("Unicode placeholders: passed", flush=True)
 
         # Placed at the first column: no move before the cells.
+        # The cursor ends on the first cell of the placement, and a placeholder
+        # image is drawn under the cursor, as kitty draws it: move it away.
         pixels = render("placeholder-placed", icat("--unicode-placeholder", "--place=4x2@0x1", "--align=left",
-                                                   str(root / "still.png")))
+                                                   str(root / "still.png")) + b"\x1b[%d;1H" % ROWS)
         check(near(pixels[cell_height + cell_height // 4][cell_width // 4], GREEN), pixels[cell_height + cell_height // 4][cell_width // 4])
         check(near(pixels[2 * cell_height][3 * cell_width], BLUE))
         print("Unicode placeholders with --place: passed", flush=True)

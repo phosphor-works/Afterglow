@@ -491,6 +491,10 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It "
                               "waits when a drag over the pane shows the program new types. The window does not draw while "
                               "it waits. A value of 0 does not wait.")),
+        intKey(QStringLiteral("dragTreeLifetime"), d.dragTreeLifetime, 1, 1440,
+               QStringLiteral("Minutes that Afterglow keeps the files of a Kitty drag from another computer after the drop. "
+                              "A drop target such as a file manager can copy them after the drag ends. A change applies to "
+                              "the drops that come after it.")),
         enumKey(QStringLiteral("clipboardRead"), PermissionChoices, d.clipboardRead,
                 QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read.")),
         intKey(QStringLiteral("pasteReadTimeout"), d.pasteReadTimeout, 1, 600,
@@ -1437,6 +1441,7 @@ Settings SettingsStore::read()
     s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
     s.fileTransferDeltaLimit = qint64(st.read<int>(Terminal, QStringLiteral("fileTransferDeltaLimit"))) << 30;
     s.dragAnswerWait = st.read<int>(Terminal, QStringLiteral("dragAnswerWait"));
+    s.dragTreeLifetime = st.read<int>(Terminal, QStringLiteral("dragTreeLifetime"));
     s.clipboardRead = readEnum(st, Terminal, QStringLiteral("clipboardRead"), PermissionChoices, s.clipboardRead);
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);

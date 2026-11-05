@@ -5,6 +5,7 @@
 #include <AfterglowProto/DndTree.h>
 #include <AfterglowProto/Text.h>
 
+#include <algorithm>
 #include <set>
 
 namespace AfterglowProto {
@@ -57,6 +58,19 @@ std::string dndJoinNames(const std::vector<std::string>& names)
     return out;
 }
 
+bool dndValidName(std::string_view name)
+{
+    if (name.empty() || name.size() > 255 || name == "." || name == ".."
+        || name.find_first_of(std::string_view("/\0", 2)) != std::string_view::npos) {
+        return false;
+    }
+    std::size_t i = 0;
+    char32_t cp = 0;
+    while (i < name.size() && nextUtf8(name, i, cp)) {
+    }
+    return i == name.size();
+}
+
 std::optional<std::vector<std::string>> dndSplitNames(std::string_view listing)
 {
     std::vector<std::string> names;
@@ -69,12 +83,7 @@ std::optional<std::vector<std::string>> dndSplitNames(std::string_view listing)
         const auto end = std::min(listing.find('\0', start), listing.size());
         const auto name = listing.substr(start, end - start);
         start = end + 1;
-        std::size_t i = 0;
-        char32_t cp = 0;
-        while (i < name.size() && nextUtf8(name, i, cp)) {
-        }
-        if (name.empty() || name.size() > 255 || i != name.size() || name.find('/') != std::string_view::npos
-            || name == "." || name == ".." || !seen.insert(name).second) {
+        if (!dndValidName(name) || !seen.insert(name).second) {
             return std::nullopt;
         }
         names.emplace_back(name);

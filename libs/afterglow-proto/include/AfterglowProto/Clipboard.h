@@ -61,6 +61,8 @@ public:
     /// last: whole groups of three, so that each packet decodes alone and the
     /// packets of a type also join into one stream with padding only at its end.
     static constexpr std::size_t DataChunk = MaxChunk / 3 * 3;
+    /// The most MIME types in one request, and the most aliases in a write.
+    static constexpr std::size_t MaxParts = 64;
 
     enum class Result : std::uint8_t { Pending, Ready, Ignored, Error };
 

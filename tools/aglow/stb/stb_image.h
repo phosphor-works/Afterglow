@@ -960,6 +960,7 @@ static int      stbi__gif_info(stbi__context *s, int *x, int *y, int *comp);
 static int      stbi__pnm_test(stbi__context *s);
 static void    *stbi__pnm_load(stbi__context *s, int *x, int *y, int *comp, int req_comp, stbi__result_info *ri);
 static int      stbi__pnm_info(stbi__context *s, int *x, int *y, int *comp);
+static int      stbi__pnm_info_maxv(stbi__context *s, int *x, int *y, int *comp, int *maxval); // aglow patch
 static int      stbi__pnm_is16(stbi__context *s);
 #endif
 
@@ -3236,6 +3237,15 @@ static int stbi__process_scan_header(stbi__jpeg *z)
       }
    }
 
+   // aglow patch: a scan that uses a Huffman table no DHT defined decoded as grey.
+   for (i=0; i < z->scan_n; ++i) {
+      int which = z->order[i];
+      if ((!z->progressive || (z->spec_start == 0 && z->succ_high == 0)) && z->huff_dc[z->img_comp[which].hd].size[0] == 0)
+         return stbi__err("missing DHT","Corrupt JPEG: a scan uses a Huffman table that is not defined");
+      if ((!z->progressive || z->spec_start != 0) && z->huff_ac[z->img_comp[which].ha].size[0] == 0)
+         return stbi__err("missing DHT","Corrupt JPEG: a scan uses a Huffman table that is not defined");
+   }
+
    return 1;
 }
 
@@ -3409,9 +3419,13 @@ static stbi_uc stbi__skip_jpeg_junk_at_end(stbi__jpeg *j)
 }
 
 // decode image to YCbCr format
+#ifndef STBI__AGLOW_MAX_JPEG_SCANS
+#define STBI__AGLOW_MAX_JPEG_SCANS 1000
+#endif
 static int stbi__decode_jpeg_image(stbi__jpeg *j)
 {
    int m;
+   int scans = 0;
    for (m = 0; m < 4; m++) {
       j->img_comp[m].raw_data = NULL;
       j->img_comp[m].raw_coeff = NULL;
@@ -3421,6 +3435,8 @@ static int stbi__decode_jpeg_image(stbi__jpeg *j)
    m = stbi__get_marker(j);
    while (!stbi__EOI(m)) {
       if (stbi__SOS(m)) {
+         // aglow patch: a bound on the scans, each of which walks the whole image.
+         if (++scans > STBI__AGLOW_MAX_JPEG_SCANS) return stbi__err("too many scans","Corrupt JPEG: too many scans");
          if (!stbi__process_scan_header(j)) return 0;
          if (!stbi__parse_entropy_coded_data(j)) return 0;
          if (j->marker == STBI__MARKER_none ) {
@@ -3437,10 +3453,13 @@ static int stbi__decode_jpeg_image(stbi__jpeg *j)
          if (NL != j->s->img_y) return stbi__err("bad DNL height", "Corrupt JPEG");
          m = stbi__get_marker(j);
       } else {
-         if (!stbi__process_marker(j, m)) return 1;
+         // aglow patch: was "return 1", which skipped stbi__jpeg_finish, so
+         // a progressive image without EOI kept uninitialized pixels.
+         if (!stbi__process_marker(j, m)) break;
          m = stbi__get_marker(j);
       }
    }
+   if (scans == 0) return stbi__err("no SOS","Corrupt JPEG: no image data");
    if (j->progressive)
       stbi__jpeg_finish(j);
    return 1;
@@ -3954,7 +3973,8 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
                   z->YCbCr_to_RGB_kernel(out, y, coutput[1], coutput[2], z->s->img_x, n);
                }
             } else if (z->s->img_n == 4) {
-               if (z->app14_color_transform == 0) { // CMYK
+               // aglow patch: no APP14 (-1) means CMYK, as in libjpeg, and any other transform YCCK.
+               if (z->app14_color_transform <= 0) { // CMYK
                   for (i=0; i < z->s->img_x; ++i) {
                      stbi_uc m = coutput[3][i];
                      out[0] = stbi__blinn_8x8(coutput[0][i], m);
@@ -3963,7 +3983,7 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
                      out[3] = 255;
                      out += n;
                   }
-               } else if (z->app14_color_transform == 2) { // YCCK
+               } else { // YCCK
                   z->YCbCr_to_RGB_kernel(out, y, coutput[1], coutput[2], z->s->img_x, n);
                   for (i=0; i < z->s->img_x; ++i) {
                      stbi_uc m = coutput[3][i];
@@ -3972,8 +3992,6 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
                      out[2] = stbi__blinn_8x8(255 - out[2], m);
                      out += n;
                   }
-               } else { // YCbCr + alpha?  Ignore the fourth channel for now
-                  z->YCbCr_to_RGB_kernel(out, y, coutput[1], coutput[2], z->s->img_x, n);
                }
             } else
                for (i=0; i < z->s->img_x; ++i) {
@@ -3992,7 +4010,7 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
                      out[1] = 255;
                   }
                }
-            } else if (z->s->img_n == 4 && z->app14_color_transform == 0) {
+            } else if (z->s->img_n == 4 && z->app14_color_transform <= 0) {
                for (i=0; i < z->s->img_x; ++i) {
                   stbi_uc m = coutput[3][i];
                   stbi_uc r = stbi__blinn_8x8(coutput[0][i], m);
@@ -4002,7 +4020,7 @@ static stbi_uc *load_jpeg_image(stbi__jpeg *z, int *out_x, int *out_y, int *comp
                   out[1] = 255;
                   out += n;
                }
-            } else if (z->s->img_n == 4 && z->app14_color_transform == 2) {
+            } else if (z->s->img_n == 4) {
                for (i=0; i < z->s->img_x; ++i) {
                   out[0] = stbi__blinn_8x8(255 - coutput[0][i], coutput[3][i]);
                   out[1] = 255;
@@ -4187,7 +4205,17 @@ typedef struct
    int   z_expandable;
 
    stbi__zhuffman z_length, z_distance;
+   int fixed_tables; // aglow patch: z_length and z_distance hold the fixed codes
+   unsigned int zout_cap; // aglow patch: the most output that may be expanded to, 0 for no limit
 } stbi__zbuf;
+
+// aglow patch: the zout_cap of the next stbi__do_zlib. A PNG sets it to the
+// size its image data can have, so that a deflate bomb ends there.
+static
+#ifdef STBI_THREAD_LOCAL
+STBI_THREAD_LOCAL
+#endif
+unsigned int stbi__aglow_zlib_cap;
 
 stbi_inline static int stbi__zeof(stbi__zbuf *z)
 {
@@ -4282,6 +4310,10 @@ static int stbi__zexpand(stbi__zbuf *z, char *zout, int n)  // need to make room
    while (cur + n > limit) {
       if(limit > UINT_MAX / 2) return stbi__err("outofmem", "Out of memory");
       limit *= 2;
+   }
+   if (z->zout_cap && limit > z->zout_cap) {
+      if (cur + n > z->zout_cap) return stbi__err("too much data", "Corrupt PNG: more image data than the image holds");
+      limit = z->zout_cap;
    }
    q = (char *) STBI_REALLOC_SIZED(z->zout_start, old_limit, limit);
    STBI_NOTUSED(old_limit);
@@ -4486,6 +4518,7 @@ static int stbi__parse_zlib(stbi__zbuf *a, int parse_header)
    a->num_bits = 0;
    a->code_buffer = 0;
    a->hit_zeof_once = 0;
+   a->fixed_tables = 0;
    do {
       final = stbi__zreceive(a,1);
       type = stbi__zreceive(a,2);
@@ -4496,9 +4529,15 @@ static int stbi__parse_zlib(stbi__zbuf *a, int parse_header)
       } else {
          if (type == 1) {
             // use fixed code lengths
-            if (!stbi__zbuild_huffman(&a->z_length  , stbi__zdefault_length  , STBI__ZNSYMS)) return 0;
-            if (!stbi__zbuild_huffman(&a->z_distance, stbi__zdefault_distance,  32)) return 0;
+            // aglow patch: built once for a run of fixed blocks. Rebuilt for
+            // each one, a stream of empty blocks cost a table build per 10 bits.
+            if (!a->fixed_tables) {
+               if (!stbi__zbuild_huffman(&a->z_length  , stbi__zdefault_length  , STBI__ZNSYMS)) return 0;
+               if (!stbi__zbuild_huffman(&a->z_distance, stbi__zdefault_distance,  32)) return 0;
+               a->fixed_tables = 1;
+            }
          } else {
+            a->fixed_tables = 0;
             if (!stbi__compute_huffman_codes(a)) return 0;
          }
          if (!stbi__parse_huffman_block(a)) return 0;
@@ -4513,6 +4552,7 @@ static int stbi__do_zlib(stbi__zbuf *a, char *obuf, int olen, int exp, int parse
    a->zout       = obuf;
    a->zout_end   = obuf + olen;
    a->z_expandable = exp;
+   a->zout_cap = stbi__aglow_zlib_cap;
 
    return stbi__parse_zlib(a, parse_header);
 }
@@ -5077,7 +5117,7 @@ static void stbi__de_iphone(stbi__png *z)
 
 static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
 {
-   stbi_uc palette[1024], pal_img_n=0;
+   stbi_uc palette[1024] = {0}, pal_img_n=0; // aglow patch: zeroed, for indices past PLTE
    stbi_uc has_trans=0, tc[3]={0};
    stbi__uint16 tc16[3];
    stbi__uint32 ioff=0, idata_limit=0, i, pal_len=0;
@@ -5111,6 +5151,8 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
             z->depth = stbi__get8(s);  if (z->depth != 1 && z->depth != 2 && z->depth != 4 && z->depth != 8 && z->depth != 16)  return stbi__err("1/2/4/8/16-bit only","PNG not supported: 1/2/4/8/16-bit only");
             color = stbi__get8(s);  if (color > 6)         return stbi__err("bad ctype","Corrupt PNG");
             if (color == 3 && z->depth == 16)                  return stbi__err("bad ctype","Corrupt PNG");
+            // aglow patch: truecolour and alpha types take only depths 8 and 16.
+            if ((color == 2 || color == 4 || color == 6) && z->depth < 8) return stbi__err("bad ctype","Corrupt PNG");
             if (color == 3) pal_img_n = 3; else if (color & 1) return stbi__err("bad ctype","Corrupt PNG");
             comp  = stbi__get8(s);  if (comp) return stbi__err("bad comp method","Corrupt PNG");
             filter= stbi__get8(s);  if (filter) return stbi__err("bad filter method","Corrupt PNG");
@@ -5181,6 +5223,9 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
             }
             if (c.length > (1u << 30)) return stbi__err("IDAT size limit", "IDAT section larger than 2^30 bytes");
             if ((int)(ioff + c.length) < (int)ioff) return 0;
+            // aglow patch: a chunk longer than the rest of the input is
+            // corrupt, not a reason to grow the buffer and run out of memory.
+            if (!s->read_from_callbacks && (stbi__uint32) (s->img_buffer_end - s->img_buffer) < c.length) return stbi__err("outofdata","Corrupt PNG");
             if (ioff + c.length > idata_limit) {
                stbi__uint32 idata_limit_old = idata_limit;
                stbi_uc *p;
@@ -5204,7 +5249,11 @@ static int stbi__parse_png_file(stbi__png *z, int scan, int req_comp)
             // initial guess for decoded data size to avoid unnecessary reallocs
             bpl = (s->img_x * z->depth + 7) / 8; // bytes per line, per component
             raw_len = bpl * s->img_y * s->img_n /* pixels */ + s->img_y /* filter mode per row */;
+            // aglow patch: no more output than the image holds, with room for
+            // the filter bytes and padding of the seven passes of Adam7.
+            stbi__aglow_zlib_cap = raw_len + 16u * s->img_y + 65536u;
             z->expanded = (stbi_uc *) stbi_zlib_decode_malloc_guesssize_headerflag((char *) z->idata, ioff, raw_len, (int *) &raw_len, !is_iphone);
+            stbi__aglow_zlib_cap = 0;
             if (z->expanded == NULL) return 0; // zlib should set error
             STBI_FREE(z->idata); z->idata = NULL;
             if ((req_comp == s->img_n+1 && req_comp != 3 && !pal_img_n) || has_trans)
@@ -5430,6 +5479,7 @@ static int stbi__bmp_set_mask_defaults(stbi__bmp_data *info, int compress)
          info->mr = 31u << 10;
          info->mg = 31u <<  5;
          info->mb = 31u <<  0;
+         info->ma = 0; // aglow patch: BI_RGB has no alpha, whatever mask a V4 or V5 header holds
       } else if (info->bpp == 32) {
          info->mr = 0xffu << 16;
          info->mg = 0xffu <<  8;
@@ -5467,6 +5517,8 @@ static void *stbi__bmp_parse_header(stbi__context *s, stbi__bmp_data *info)
       s->img_x = stbi__get32le(s);
       s->img_y = stbi__get32le(s);
    }
+   // aglow patch: abs() of the most negative height is undefined.
+   if (s->img_y == 0x80000000u) return stbi__errpuc("bad BMP", "bad BMP");
    if (stbi__get16le(s) != 1) return stbi__errpuc("bad BMP", "bad BMP");
    info->bpp = stbi__get16le(s);
    if (hsz != 12) {
@@ -5479,13 +5531,18 @@ static void *stbi__bmp_parse_header(stbi__context *s, stbi__bmp_data *info)
       stbi__get32le(s); // discard vres
       stbi__get32le(s); // discard colorsused
       stbi__get32le(s); // discard max important
-      if (hsz == 40 || hsz == 56) {
-         if (hsz == 56) {
-            stbi__get32le(s);
-            stbi__get32le(s);
-            stbi__get32le(s);
-            stbi__get32le(s);
-         }
+      if (hsz == 56) {
+         // aglow patch: a V3 header holds its four masks itself. They were
+         // skipped, and BI_BITFIELDS then read three more from the pixels.
+         info->mr = stbi__get32le(s);
+         info->mg = stbi__get32le(s);
+         info->mb = stbi__get32le(s);
+         info->ma = stbi__get32le(s);
+         if (compress != 3)
+            stbi__bmp_set_mask_defaults(info, compress);
+         else if (info->mr == info->mg && info->mg == info->mb)
+            return stbi__errpuc("bad BMP", "bad BMP");
+      } else if (hsz == 40) {
          if (info->bpp == 16 || info->bpp == 32) {
             if (compress == 0) {
                stbi__bmp_set_mask_defaults(info, compress);
@@ -5532,7 +5589,7 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
 {
    stbi_uc *out;
    unsigned int mr=0,mg=0,mb=0,ma=0, all_a;
-   stbi_uc pal[256][4];
+   stbi_uc pal[256][4] = {{0}}; // aglow patch: zeroed, for indices past the palette
    int psize=0,i,j,width;
    int flip_vertically, pad, target;
    stbi__bmp_data info;
@@ -5556,7 +5613,7 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
 
    if (info.hsz == 12) {
       if (info.bpp < 24)
-         psize = (info.offset - info.extra_read - 24) / 3;
+         psize = (info.offset - info.extra_read - info.hsz) / 3; // aglow patch: was "- 24", which lost 4 entries
    } else {
       if (info.bpp < 16)
          psize = (info.offset - info.extra_read - info.hsz) >> 2;
@@ -5598,7 +5655,7 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
    if (!out) return stbi__errpuc("outofmem", "Out of memory");
    if (info.bpp < 16) {
       int z=0;
-      if (psize == 0 || psize > 256) { STBI_FREE(out); return stbi__errpuc("invalid", "Corrupt BMP"); }
+      if (psize <= 0 || psize > 256) { STBI_FREE(out); return stbi__errpuc("invalid", "Corrupt BMP"); } // aglow patch: was == 0
       for (i=0; i < psize; ++i) {
          pal[i][2] = stbi__get8(s);
          pal[i][1] = stbi__get8(s);
@@ -5655,7 +5712,8 @@ static void *stbi__bmp_load(stbi__context *s, int *x, int *y, int *comp, int req
       int rshift=0,gshift=0,bshift=0,ashift=0,rcount=0,gcount=0,bcount=0,acount=0;
       int z = 0;
       int easy=0;
-      stbi__skip(s, info.offset - info.extra_read - info.hsz);
+      // aglow patch: the gap up to the pixels was skipped a second time here.
+      // With bpp >= 16 psize is 0, and the code above has skipped it already.
       if (info.bpp == 24) width = 3 * s->img_x;
       else if (info.bpp == 16) width = 2*s->img_x;
       else /* bpp = 32 and pad = 0 */ width=0;
@@ -5885,6 +5943,7 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
    int tga_bits_per_pixel = stbi__get8(s);
    int tga_comp, tga_rgb16=0;
    int tga_inverted = stbi__get8(s);
+   int tga_right_to_left = (tga_inverted >> 4) & 1; // aglow patch: was ignored
    // int tga_alpha_bits = tga_inverted & 15; // the 4 lowest bits - unused (useless?)
    //   image data
    unsigned char *tga_data;
@@ -5945,8 +6004,8 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
             return stbi__errpuc("bad palette", "Corrupt TGA");
          }
 
-         //   any data to skip? (offset usually = 0)
-         stbi__skip(s, tga_palette_start );
+         // aglow patch: tga_palette_start is the index of the first entry
+         // of the colour map, not a number of bytes to skip.
          //   load the palette
          tga_palette = (unsigned char*)stbi__malloc_mad2(tga_palette_len, tga_comp, 0);
          if (!tga_palette) {
@@ -5994,8 +6053,8 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
             if ( tga_indexed )
             {
                // read in index, then perform the lookup
-               int pal_idx = (tga_bits_per_pixel == 8) ? stbi__get8(s) : stbi__get16le(s);
-               if ( pal_idx >= tga_palette_len ) {
+               int pal_idx = ((tga_bits_per_pixel == 8) ? stbi__get8(s) : stbi__get16le(s)) - tga_palette_start;
+               if ( pal_idx < 0 || pal_idx >= tga_palette_len ) {
                   // invalid index
                   pal_idx = 0;
                }
@@ -6047,6 +6106,20 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
       }
    }
 
+   if (tga_right_to_left) {
+      for (j = 0; j < tga_height; ++j) {
+         unsigned char *row = tga_data + (size_t) j * tga_width * tga_comp;
+         int a, b;
+         for (a = 0, b = tga_width - 1; a < b; ++a, --b) {
+            for (i = 0; i < tga_comp; ++i) {
+               unsigned char temp = row[a*tga_comp + i];
+               row[a*tga_comp + i] = row[b*tga_comp + i];
+               row[b*tga_comp + i] = temp;
+            }
+         }
+      }
+   }
+
    // swap RGB - if the source data was RGB16, it already is in the right order
    if (tga_comp >= 3 && !tga_rgb16)
    {
@@ -6085,12 +6158,15 @@ static int stbi__psd_test(stbi__context *s)
    return r;
 }
 
-static int stbi__psd_decode_rle(stbi__context *s, stbi_uc *p, int pixelCount)
+// aglow patch: @p bytes per sample. A 16-bit channel is run-length encoded as
+// bytes too, and was decoded as if each byte were a sample. The high byte of
+// each sample is kept.
+static int stbi__psd_decode_rle(stbi__context *s, stbi_uc *p, int pixelCount, int bytes)
 {
-   int count, nleft, len;
+   int count, nleft, len, total = pixelCount * bytes;
 
    count = 0;
-   while ((nleft = pixelCount - count) > 0) {
+   while ((nleft = total - count) > 0) {
       len = stbi__get8(s);
       if (len == 128) {
          // No-op.
@@ -6098,10 +6174,10 @@ static int stbi__psd_decode_rle(stbi__context *s, stbi_uc *p, int pixelCount)
          // Copy next len+1 bytes literally.
          len++;
          if (len > nleft) return 0; // corrupt data
-         count += len;
          while (len) {
-            *p = stbi__get8(s);
-            p += 4;
+            stbi_uc val = stbi__get8(s);
+            if (count % bytes == 0) { *p = val; p += 4; }
+            ++count;
             len--;
          }
       } else if (len > 128) {
@@ -6111,10 +6187,9 @@ static int stbi__psd_decode_rle(stbi__context *s, stbi_uc *p, int pixelCount)
          len = 257 - len;
          if (len > nleft) return 0; // corrupt data
          val = stbi__get8(s);
-         count += len;
          while (len) {
-            *p = val;
-            p += 4;
+            if (count % bytes == 0) { *p = val; p += 4; }
+            ++count;
             len--;
          }
       }
@@ -6234,7 +6309,7 @@ static void *stbi__psd_load(stbi__context *s, int *x, int *y, int *comp, int req
                *p = (channel == 3 ? 255 : 0);
          } else {
             // Read the RLE data.
-            if (!stbi__psd_decode_rle(s, p, pixelCount)) {
+            if (!stbi__psd_decode_rle(s, p, pixelCount, bitdepth / 8)) {
                STBI_FREE(out);
                return stbi__errpuc("corrupt", "bad RLE data");
             }
@@ -6288,9 +6363,12 @@ static void *stbi__psd_load(stbi__context *s, int *x, int *y, int *comp, int req
                float a = pixel[3] / 65535.0f;
                float ra = 1.0f / a;
                float inv_a = 65535.0f * (1 - ra);
-               pixel[0] = (stbi__uint16) (pixel[0]*ra + inv_a);
-               pixel[1] = (stbi__uint16) (pixel[1]*ra + inv_a);
-               pixel[2] = (stbi__uint16) (pixel[2]*ra + inv_a);
+               int k;
+               // aglow patch: clamped, as a float out of range does not convert to an integer.
+               for (k = 0; k < 3; ++k) {
+                  float v = pixel[k]*ra + inv_a;
+                  pixel[k] = (stbi__uint16) (v < 0 ? 0 : v > 65535.0f ? 65535.0f : v);
+               }
             }
          }
       } else {
@@ -6300,9 +6378,12 @@ static void *stbi__psd_load(stbi__context *s, int *x, int *y, int *comp, int req
                float a = pixel[3] / 255.0f;
                float ra = 1.0f / a;
                float inv_a = 255.0f * (1 - ra);
-               pixel[0] = (unsigned char) (pixel[0]*ra + inv_a);
-               pixel[1] = (unsigned char) (pixel[1]*ra + inv_a);
-               pixel[2] = (unsigned char) (pixel[2]*ra + inv_a);
+               int k;
+               // aglow patch: clamped, as a float out of range does not convert to an integer.
+               for (k = 0; k < 3; ++k) {
+                  float v = pixel[k]*ra + inv_a;
+                  pixel[k] = (unsigned char) (v < 0 ? 0 : v > 255.0f ? 255.0f : v);
+               }
             }
          }
       }
@@ -7218,7 +7299,6 @@ static float *stbi__hdr_load(stbi__context *s, int *x, int *y, int *comp, int re
       for (j=0; j < height; ++j) {
          for (i=0; i < width; ++i) {
             stbi_uc rgbe[4];
-           main_decode_loop:
             stbi__getn(s, rgbe, 4);
             stbi__hdr_convert(hdr_data + j * width * req_comp + i * req_comp, rgbe, req_comp);
          }
@@ -7239,11 +7319,15 @@ static float *stbi__hdr_load(stbi__context *s, int *x, int *y, int *comp, int re
             rgbe[1] = (stbi_uc) c2;
             rgbe[2] = (stbi_uc) len;
             rgbe[3] = (stbi_uc) stbi__get8(s);
-            stbi__hdr_convert(hdr_data, rgbe, req_comp);
-            i = 1;
-            j = 0;
-            STBI_FREE(scanline);
-            goto main_decode_loop; // yes, this makes no sense
+            // aglow patch: this scanline is flat, and the next one may be
+            // encoded again. The goto wrote it into row 0 and read the rest
+            // of the image as flat from there.
+            stbi__hdr_convert(hdr_data + j * width * req_comp, rgbe, req_comp);
+            for (i = 1; i < width; ++i) {
+               stbi__getn(s, rgbe, 4);
+               stbi__hdr_convert(hdr_data + (j * width + i) * req_comp, rgbe, req_comp);
+            }
+            continue;
          }
          len <<= 8;
          len |= stbi__get8(s);
@@ -7344,7 +7428,7 @@ static int stbi__bmp_info(stbi__context *s, int *x, int *y, int *comp)
       return 0;
    }
    if (x) *x = s->img_x;
-   if (y) *y = s->img_y;
+   if (y) *y = abs((int) s->img_y); // aglow patch: a top-down BMP has a negative height
    if (comp) {
       if (info.bpp == 24 && info.ma == 0xff000000)
          *comp = 3;
@@ -7506,9 +7590,10 @@ static int      stbi__pnm_test(stbi__context *s)
 static void *stbi__pnm_load(stbi__context *s, int *x, int *y, int *comp, int req_comp, stbi__result_info *ri)
 {
    stbi_uc *out;
+   int maxv = 0;
    STBI_NOTUSED(ri);
 
-   ri->bits_per_channel = stbi__pnm_info(s, (int *)&s->img_x, (int *)&s->img_y, (int *)&s->img_n);
+   ri->bits_per_channel = stbi__pnm_info_maxv(s, (int *)&s->img_x, (int *)&s->img_y, (int *)&s->img_n, &maxv);
    if (ri->bits_per_channel == 0)
       return 0;
 
@@ -7527,6 +7612,27 @@ static void *stbi__pnm_load(stbi__context *s, int *x, int *y, int *comp, int req
    if (!stbi__getn(s, out, s->img_n * s->img_x * s->img_y * (ri->bits_per_channel / 8))) {
       STBI_FREE(out);
       return stbi__errpuc("bad PNM", "PNM file truncated");
+   }
+
+   {
+      // aglow patch: 16-bit samples are big-endian, and they were read in
+      // host order. A maximum value other than 255 or 65535 was not scaled.
+      size_t n = (size_t) s->img_n * s->img_x * s->img_y, k;
+      stbi__uint32 top = (stbi__uint32) maxv;
+      if (ri->bits_per_channel == 16) {
+         stbi__uint16 *q = (stbi__uint16 *) out;
+         for (k = 0; k < n; ++k) {
+            stbi__uint32 v = ((stbi__uint32) out[2*k] << 8) | out[2*k+1];
+            if (v > top) v = top;
+            q[k] = (stbi__uint16) ((v * 65535u + top / 2) / top);
+         }
+      } else if (top != 255) {
+         for (k = 0; k < n; ++k) {
+            stbi__uint32 v = out[k];
+            if (v > top) v = top;
+            out[k] = (stbi_uc) ((v * 255u + top / 2) / top);
+         }
+      }
    }
 
    if (req_comp && req_comp != s->img_n) {
@@ -7580,6 +7686,12 @@ static int      stbi__pnm_getinteger(stbi__context *s, char *c)
 
 static int      stbi__pnm_info(stbi__context *s, int *x, int *y, int *comp)
 {
+   return stbi__pnm_info_maxv(s, x, y, comp, NULL);
+}
+
+// aglow patch: stbi__pnm_info, which also gives the maximum value.
+static int      stbi__pnm_info_maxv(stbi__context *s, int *x, int *y, int *comp, int *maxval)
+{
    int maxv, dummy;
    char c, p, t;
 
@@ -7613,6 +7725,9 @@ static int      stbi__pnm_info(stbi__context *s, int *x, int *y, int *comp)
    stbi__pnm_skip_whitespace(s, &c);
 
    maxv = stbi__pnm_getinteger(s, &c);  // read max value
+   if (maxval) *maxval = maxv;
+   if (maxv == 0) // aglow patch: also an overflow, which stbi__pnm_getinteger returns as 0
+      return stbi__err("invalid max value", "PPM image header has a max value of 0");
    if (maxv > 65535)
       return stbi__err("max value > 65535", "PPM image supports only 8-bit and 16-bit images");
    else if (maxv > 255)

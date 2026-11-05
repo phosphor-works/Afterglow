@@ -141,6 +141,10 @@ std::string_view transferErrorName(int error)
         return "ENOTDIR";
     case ELOOP:
         return "ELOOP";
+    case EFBIG:
+        return "EFBIG";
+    case EINVAL:
+        return "EINVAL";
     default:
         return "EIO";
     }

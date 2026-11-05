@@ -4,6 +4,7 @@
 #pragma once
 
 #include <AfterglowProto/Delta.h>
+#include <AfterglowProto/Fd.h>
 
 #include <cstdint>
 #include <limits>
@@ -23,7 +24,8 @@ public:
     explicit FdSource(int fd, std::uint64_t limit = std::numeric_limits<std::uint64_t>::max());
     bool read(std::string& out, std::size_t max) override;
     bool atEnd() const override { return m_end; }
-    /// The bytes read so far.
+    /// The bytes read so far. A client compares them with the announced size
+    /// to find a file that shrank while it was read.
     std::uint64_t consumed() const { return m_consumed; }
 
 private:
@@ -36,7 +38,9 @@ private:
 /// A DeltaTarget that reads the blocks of the basis from @p basis with
 /// pread(2) and appends the new file to @p output with write(2). It stops
 /// the delta when the new file would pass @p limit bytes, so a small delta
-/// cannot fill the disk with copies of one block.
+/// cannot fill the disk with copies of one block. When it stops, errno
+/// tells why: EFBIG at the limit, EINVAL for a block past the largest file
+/// offset, else the error of the read or the write.
 class FdDeltaTarget : public DeltaTarget
 {
 public:
@@ -54,9 +58,5 @@ private:
     std::uint64_t m_limit;
     std::uint64_t m_written = 0;
 };
-
-/// Writes all of @p bytes to @p fd, again after EINTR and short writes.
-/// False on any other error, with errno set.
-bool writeAll(int fd, std::string_view bytes);
 
 } // namespace AfterglowProto

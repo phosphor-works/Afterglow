@@ -33,7 +33,9 @@ public:
 Q_SIGNALS:
     void sessionClosed(const QString& token);
     void reply(const QByteArray& bytes);
-    /// @p paths holds at most the first 100 of the @p total requested paths.
+    /// @p paths holds at most the first 100 of the @p total requested paths,
+    /// for display: control characters, line separators, bidirectional
+    /// controls and backslashes in them are written as \uXXXX.
     void permissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
 
 private:

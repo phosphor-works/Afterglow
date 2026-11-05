@@ -10,12 +10,14 @@
 
 #include <AfterglowProto/Version.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifndef AGLOW_VERSION
@@ -36,8 +38,15 @@ std::string currentDirectory()
     if (::getcwd(buffer, sizeof buffer)) {
         return buffer;
     }
+    // $PWD only when it is the working directory: it may be stale, or set by anyone.
     const char* pwd = std::getenv("PWD");
-    return pwd && *pwd == '/' ? std::string(pwd) : homeDirectory();
+    struct stat named { };
+    struct stat here { };
+    if (pwd && *pwd == '/' && ::stat(pwd, &named) == 0 && ::stat(".", &here) == 0 && named.st_dev == here.st_dev
+        && named.st_ino == here.st_ino) {
+        return pwd;
+    }
+    return {};
 }
 
 void report(std::string_view command, std::string_view message)
@@ -58,7 +67,8 @@ std::string humanSize(std::uint64_t bytes)
     static const char* units[] = { "B", "KiB", "MiB", "GiB", "TiB" };
     double value = double(bytes);
     int unit = 0;
-    while (value >= 1024 && unit < 4) {
+    // 1023.96 KiB prints as 1.0 MiB, not as 1024.0 KiB.
+    while (unit < 4 && (unit ? value >= 1023.95 : value >= 1024)) {
         value /= 1024;
         ++unit;
     }
@@ -100,9 +110,11 @@ const char* usage = "Usage: aglow COMMAND [options] [arguments]\n"
                     "  icat       Show images in the terminal\n"
                     "  clipboard  Read and write the clipboard, with any MIME type\n"
                     "\n"
-                    "Run aglow COMMAND --help for the options of a command.\n"
+                    "Run aglow COMMAND --help or aglow help COMMAND for the options of a command.\n"
+                    "\n"
+                    "Options:\n"
                     "  -h, --help     Show this help\n"
-                    "  -v, --version  Show the version of aglow and of its protocols\n";
+                    "  -v, --version  Show the version of aglow and of its protocol\n";
 
 } // namespace
 
@@ -136,6 +148,12 @@ int run(int argc, char** argv)
         return 1;
     }
     const std::string_view command = argv[1];
+    if (command == "help" && argc > 2) {
+        // aglow help COMMAND is aglow COMMAND --help.
+        static char helpOption[] = "--help";
+        char* helpArgs[] = { argv[0], argv[2], helpOption, nullptr };
+        return run(3, helpArgs);
+    }
     if (command == "--help" || command == "-h" || command == "help") {
         std::fputs(usage, stdout);
         return 0;

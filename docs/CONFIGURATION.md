@@ -197,6 +197,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
 | `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It waits when a drag over the pane shows the program new types. The window does not draw while it waits. A value of 0 does not wait. |
+| `dragTreeLifetime` | `10` | 1–1440 | Minutes that Afterglow keeps the files of a Kitty drag from another computer after the drop. A drop target such as a file manager can copy them after the drag ends. A change applies to the drops that come after it. |
 | `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. New panes use this value. |
 | `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |

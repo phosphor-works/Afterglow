@@ -51,7 +51,10 @@ FdDeltaTarget::FdDeltaTarget(int basis, int output, std::uint32_t blockSize, std
 
 bool FdDeltaTarget::readBlock(std::uint64_t index, std::string& out)
 {
-    if (m_blockSize == 0 || index > std::uint64_t(std::numeric_limits<off_t>::max()) / m_blockSize) {
+    // The last byte of the block, not only its start, must be a valid offset.
+    const auto largest = std::uint64_t(std::numeric_limits<off_t>::max());
+    if (m_blockSize == 0 || index > (largest - (m_blockSize - 1)) / m_blockSize) {
+        errno = EINVAL;
         return false;
     }
     const std::size_t old = out.size();
@@ -80,27 +83,13 @@ bool FdDeltaTarget::readBlock(std::uint64_t index, std::string& out)
 bool FdDeltaTarget::write(std::string_view bytes)
 {
     if (bytes.size() > m_limit - m_written) {
+        errno = EFBIG;
         return false;
     }
     if (!writeAll(m_output, bytes)) {
         return false;
     }
     m_written += bytes.size();
-    return true;
-}
-
-bool writeAll(int fd, std::string_view bytes)
-{
-    while (!bytes.empty()) {
-        const ssize_t n = ::write(fd, bytes.data(), bytes.size());
-        if (n < 0 && errno == EINTR) {
-            continue;
-        }
-        if (n <= 0) {
-            return false;
-        }
-        bytes.remove_prefix(std::size_t(n));
-    }
     return true;
 }
 

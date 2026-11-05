@@ -66,6 +66,10 @@ qt_add_library(afterglow_app STATIC
 
 qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/shell/Aglow.cpp src/shell/Aglow.h)
 target_link_libraries(afterglow PRIVATE afterglow_app Afterglow::Proto)
+# Without aglow, afterglow transfer, dnd, icat and clipboard say that it is not built.
+if(AFTERGLOW_BUILD_AGLOW)
+    target_compile_definitions(afterglow PRIVATE AFTERGLOW_HAS_AGLOW)
+endif()
 
 # Shader pack loading, shared with the developer render tool.
 # A binary under the build directory reads the packs and themes of the source

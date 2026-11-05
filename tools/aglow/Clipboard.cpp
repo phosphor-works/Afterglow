@@ -7,10 +7,11 @@
 
 #include "Cli.h"
 #include "Commands.h"
+#include "Mime.h"
 #include "Tty.h"
 
 #include <AfterglowProto/Clipboard.h>
-#include <AfterglowProto/FdDelta.h>
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/TransferClient.h>
@@ -24,6 +25,7 @@
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <map>
+#include <set>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -31,14 +33,21 @@ namespace Aglow {
 
 namespace {
 
+using AfterglowProto::ClipboardAssembler;
 using AfterglowProto::ClipboardReply;
 using AfterglowProto::ClipboardRequest;
+
+// The types of the clipboard that aglow looks at, of the list that the
+// terminal gives: enough for any clipboard, and a bound on a list that is not.
+constexpr std::size_t MaxListed = 1024;
+// A password is a line of text.
+constexpr std::size_t MaxPassword = 64 * 1024;
 
 const Cli::Command command {
     "clipboard",
     "[files to copy to or from]",
     "Read or write the system clipboard, also over SSH.",
-    "Without file arguments, aglow clipboard works as a filter: it copies standard input to the clipboard, or "
+    "Without file arguments, aglow clipboard works as a filter. It copies standard input to the clipboard, or "
     "with --get-clipboard it writes the text of the clipboard to standard output.\n"
     "\n"
     "With file arguments it copies data of any MIME type. The MIME type of each file comes from its name, or "
@@ -57,49 +66,30 @@ const Cli::Command command {
           "Use the primary selection rather than the clipboard, on systems that have one." },
         { "--mime -m", Cli::Option::Kind::List, "", {},
           "The MIME type of a file. Give it once for each file, in order, when the name does not tell the type. "
-          "When reading the clipboard, wildcards match types: 'text/*' copies the first textual type. The type . "
-          "lists the types on the clipboard." },
+          "When reading the clipboard, a wildcard matches types, so 'text/*' copies the first textual type. The "
+          "type . lists the types on the clipboard." },
         { "--alias -a", Cli::Option::Kind::List, "", {},
           "Two MIME types that mean the same data, as text/plain=text/x-rst. A write offers both types. A read "
           "uses the other type when the first one is not on the clipboard. When the data has a textual type but "
           "no text/plain, text/plain is added as an alias." },
         { "--wait-for-completion", Cli::Option::Kind::Flag, "", {},
-          "Wait until the terminal has the data before exiting. Only needed in filter mode with OSC 52: an OSC "
-          "5522 write always waits." },
+          "Wait until the terminal has the data before exiting. This matters only for a terminal that gets OSC "
+          "52, in filter mode or with one text file. aglow always waits for the answer to an OSC 5522 write." },
         { "--password", Cli::Option::Kind::String, "", {},
           "A password for the clipboard. When the user accepts it, later requests with it need no permission in "
           "this terminal. It is text:PASSWORD, fd:NUMBER (a file descriptor to read it from) or file:PATH. Give "
           "--human-name as well." },
         { "--human-name", Cli::Option::Kind::String, "", {},
           "The name of the program that the terminal shows when it asks for permission." },
-        { "--detection-timeout", Cli::Option::Kind::Float, "10", {},
-          "Seconds to wait for the terminal's answer." },
+        { "--detection-timeout", Cli::Option::Kind::Float, "10", {}, "Seconds to wait for the terminal's answer.",
+          0, 3600 },
     },
 };
 
-std::string guessMime(const std::string& path)
+// A MIME type as the protocol carries it: printable ASCII without spaces.
+bool typeName(std::string_view mime)
 {
-    static const std::map<std::string, std::string, std::less<>> types {
-        { "txt", "text/plain" }, { "text", "text/plain" }, { "md", "text/markdown" }, { "rst", "text/x-rst" },
-        { "html", "text/html" }, { "htm", "text/html" }, { "css", "text/css" }, { "csv", "text/csv" },
-        { "xml", "application/xml" }, { "json", "application/json" }, { "js", "text/javascript" },
-        { "rtf", "text/rtf" }, { "uri", "text/uri-list" }, { "uris", "text/uri-list" },
-        { "png", "image/png" }, { "jpg", "image/jpeg" }, { "jpeg", "image/jpeg" }, { "gif", "image/gif" },
-        { "webp", "image/webp" }, { "bmp", "image/bmp" }, { "svg", "image/svg+xml" }, { "tif", "image/tiff" },
-        { "tiff", "image/tiff" }, { "avif", "image/avif" }, { "pdf", "application/pdf" },
-        { "zip", "application/zip" }, { "sh", "text/x-shellscript" }, { "py", "text/x-python" },
-        { "c", "text/x-c" }, { "h", "text/x-c" }, { "cpp", "text/x-c++" }, { "log", "text/plain" },
-    };
-    const auto name = AfterglowProto::TransferPath::baseName(path);
-    const auto dot = name.rfind('.');
-    if (dot == std::string::npos || dot == 0) {
-        return {};
-    }
-    std::string extension = name.substr(dot + 1);
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return char(c >= 'A' && c <= 'Z' ? c + 32 : c); });
-    const auto it = types.find(extension);
-    return it == types.end() ? std::string() : it->second;
+    return !mime.empty() && std::all_of(mime.begin(), mime.end(), [](char c) { return c > 0x20 && c < 0x7F; });
 }
 
 bool textual(std::string_view mime)
@@ -108,7 +98,77 @@ bool textual(std::string_view mime)
         || mime == "application/javascript";
 }
 
-bool stream(const std::string& arg) { return arg == "-" || arg == "/dev/stdout" || arg == "/dev/stderr" || arg == "/dev/stdin"; }
+// Standard input as a source of data, and standard output and error as
+// places for it. Each name means only the stream that it names.
+bool inputStream(const std::string& arg) { return arg == "-" || arg == "/dev/stdin"; }
+bool outputStream(const std::string& arg) { return arg == "-" || arg == "/dev/stdout" || arg == "/dev/stderr"; }
+
+// How a message names @p arg.
+std::string displayName(const std::string& arg, bool get)
+{
+    if (arg == "-") {
+        return get ? "standard output" : "standard input";
+    }
+    if (arg == "/dev/stdin") {
+        return "standard input";
+    }
+    if (arg == "/dev/stdout") {
+        return "standard output";
+    }
+    if (arg == "/dev/stderr") {
+        return "standard error";
+    }
+    return printable(arg);
+}
+
+// The file that @p arg names: ~ under the home directory, a relative path
+// under the working directory (or as it is, when that has no path).
+std::string localPath(const std::string& arg)
+{
+    const auto cwd = currentDirectory();
+    if (cwd.empty() && !arg.starts_with('/') && !arg.starts_with('~')) {
+        return arg;
+    }
+    return AfterglowProto::TransferPath::absolute(arg, homeDirectory(), cwd);
+}
+
+// Reads all of @p fd, up to @p limit bytes. A directory and anything larger fail.
+bool readInput(int fd, std::size_t limit, std::string& out, std::string& error)
+{
+    struct stat st { };
+    if (::fstat(fd, &st) != 0) {
+        error = std::strerror(errno);
+        return false;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        error = "it is a directory";
+        return false;
+    }
+    const std::string tooLarge = "it is larger than " + humanSize(limit) + ", the most that aglow takes";
+    if (S_ISREG(st.st_mode) && std::uint64_t(st.st_size) > limit) {
+        error = tooLarge;
+        return false;
+    }
+    char buffer[65536];
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer, sizeof buffer);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0) {
+            error = std::strerror(errno);
+            return false;
+        }
+        if (n == 0) {
+            return true;
+        }
+        if (out.size() + std::size_t(n) > limit) {
+            error = tooLarge;
+            return false;
+        }
+        out.append(buffer, std::size_t(n));
+    }
+}
 
 std::string trimRight(std::string text)
 {
@@ -122,7 +182,7 @@ bool readPassword(std::string spec, std::string& password, std::string& error)
 {
     const auto colon = spec.find(':');
     if (colon == std::string::npos) {
-        error = "Invalid password: no password type in " + spec;
+        error = "Invalid password " + spec + ". Give it as text:PASSWORD, fd:NUMBER or file:PATH.";
         return false;
     }
     const auto type = spec.substr(0, colon);
@@ -131,6 +191,8 @@ bool readPassword(std::string spec, std::string& password, std::string& error)
         password = value;
         return true;
     }
+    // A descriptor that the caller passed stays open: it is the caller's.
+    AfterglowProto::UniqueFd owned;
     int fd = -1;
     if (type == "fd") {
         const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), fd);
@@ -139,20 +201,20 @@ bool readPassword(std::string spec, std::string& password, std::string& error)
             return false;
         }
     } else if (type == "file") {
-        fd = ::open(value.c_str(), O_RDONLY | O_CLOEXEC);
+        owned.reset(::open(localPath(value).c_str(), O_RDONLY | O_CLOEXEC));
+        fd = owned.get();
         if (fd < 0) {
-            error = "Failed to read from file " + value + ": " + std::strerror(errno);
+            error = "Failed to read from file " + printable(value) + ": " + std::strerror(errno);
             return false;
         }
     } else {
-        error = "Invalid password type: " + type;
+        error = "Invalid password type " + type + ". Give text, fd or file.";
         return false;
     }
     std::string text;
-    const bool ok = readAll(fd, text);
-    ::close(fd);
-    if (!ok) {
-        error = "Failed to read the password: " + std::string(std::strerror(errno));
+    std::string reason;
+    if (!readInput(fd, MaxPassword, text, reason)) {
+        error = "Failed to read the password: " + reason;
         return false;
     }
     password = trimRight(std::move(text));
@@ -168,7 +230,7 @@ std::string statusError(const std::string& status)
         return "Permission to use the clipboard was denied";
     }
     if (status == "EBUSY") {
-        return "The clipboard is busy, try again";
+        return "The clipboard is busy. Try again.";
     }
     if (status == "EFBIG") {
         return "The data is too large for the terminal";
@@ -216,6 +278,8 @@ public:
     // closed terminal, with @p error set. A request waits for its first
     // packet as long as the user takes to answer the terminal's prompt, as
     // kitten does: a timeout then would let the late answer reach the shell.
+    // The timeout starts once the terminal has taken all that aglow queued:
+    // a large write over a slow link is not an answer that is late.
     template<typename Stepper>
     bool wait(Stepper step, std::string& error, Limit limit)
     {
@@ -225,6 +289,9 @@ public:
             if (!m_tty.turn(100, inputs)) {
                 error = "The terminal closed";
                 return false;
+            }
+            if (m_tty.pending() > 0 && deadline != LLONG_MAX) {
+                deadline = nowMs() + m_timeout;
             }
             for (const auto& input : inputs) {
                 if (input.type == Input::Type::Interrupt) {
@@ -263,12 +330,15 @@ struct Output
     std::string mime;
     std::string remote;
     std::string data;
-    bool received = false;
 };
 
+// Writes the data as a shell redirection does: a file is truncated and keeps
+// its owner, mode, ACL and links; a new file gets 0666 less the umask; a link
+// is followed, also to a file that does not exist yet; a pipe or a device
+// takes the data as it is.
 bool writeOutput(const Output& output, std::string& error)
 {
-    if (stream(output.arg)) {
+    if (outputStream(output.arg)) {
         const int fd = output.arg == "/dev/stderr" ? STDERR_FILENO : STDOUT_FILENO;
         if (!AfterglowProto::writeAll(fd, output.data)) {
             error = "Failed to write the data: " + std::string(std::strerror(errno));
@@ -276,38 +346,16 @@ bool writeOutput(const Output& output, std::string& error)
         }
         return true;
     }
-    const auto path = AfterglowProto::TransferPath::absolute(output.arg, homeDirectory(), currentDirectory());
-    // A link, a pipe or a device that the user names is written through, as
-    // kitten writes to it. A regular file is replaced whole, and keeps its mode.
-    struct stat st { };
-    const bool exists = ::lstat(path.c_str(), &st) == 0;
-    if (exists && !S_ISREG(st.st_mode)) {
-        const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | (S_ISLNK(st.st_mode) ? O_TRUNC : 0));
-        const bool ok = fd >= 0 && AfterglowProto::writeAll(fd, output.data);
-        const int saved = errno;
-        if (fd >= 0 && ::close(fd) != 0 && ok) {
-            error = "Failed to write " + output.arg + ": " + std::strerror(errno);
-            return false;
-        }
-        if (!ok) {
-            error = "Failed to write " + output.arg + ": " + std::strerror(saved);
-        }
-        return ok;
+    const int fd = ::open(localPath(output.arg).c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    if (fd < 0) {
+        error = "Failed to write " + printable(output.arg) + ": " + std::strerror(errno);
+        return false;
     }
-    mode_t mode = st.st_mode & 07777;
-    if (!exists) {
-        mode = ::umask(0);
-        ::umask(mode);
-        mode = 0666 & ~mode;
-    }
-    std::string temporary = AfterglowProto::TransferPath::dirName(path) + "/.aglow-clipboard-XXXXXX";
-    const int fd = ::mkostemp(temporary.data(), O_CLOEXEC);
-    if (fd < 0 || !AfterglowProto::writeAll(fd, output.data) || ::fchmod(fd, mode) != 0 || ::close(fd) != 0
-        || ::rename(temporary.c_str(), path.c_str()) != 0) {
-        error = "Failed to write " + output.arg + ": " + std::strerror(errno);
-        if (fd >= 0) {
-            ::unlink(temporary.c_str());
-        }
+    const bool written = AfterglowProto::writeAll(fd, output.data);
+    const int saved = errno;
+    const bool closed = ::close(fd) == 0;
+    if (!written || !closed) {
+        error = "Failed to write " + printable(output.arg) + ": " + std::strerror(written ? errno : saved);
         return false;
     }
     return true;
@@ -346,8 +394,8 @@ int runClipboard(int argc, char** argv)
     std::multimap<std::string, std::string> aliases;
     for (const auto& spec : parsed->list("alias")) {
         const auto eq = spec.find('=');
-        if (eq == std::string::npos) {
-            report("clipboard", spec + " is not a valid MIME alias");
+        if (eq == std::string::npos || !typeName(spec.substr(0, eq)) || !typeName(spec.substr(eq + 1))) {
+            report("clipboard", printable(spec) + " is not a valid MIME alias. Give two MIME types as TYPE=TYPE.");
             return 1;
         }
         aliases.emplace(spec.substr(0, eq), spec.substr(eq + 1));
@@ -361,41 +409,73 @@ int runClipboard(int argc, char** argv)
     if (filter) {
         args.emplace_back(get ? "/dev/stdout" : "/dev/stdin");
     }
+    bool stdinTaken = false;
     for (std::size_t i = 0; i < args.size(); ++i) {
         Output file;
         file.arg = args[i];
-        file.mime = i < mimes.size() ? mimes[i] : stream(args[i]) ? "text/plain" : guessMime(args[i]);
+        if (!get && outputStream(file.arg) && !inputStream(file.arg)) {
+            report("clipboard", "Cannot copy from " + displayName(file.arg, get) + ", which is an output");
+            return 1;
+        }
+        if (get && file.arg == "/dev/stdin") {
+            report("clipboard", "Cannot write the clipboard to standard input");
+            return 1;
+        }
+        if (!get && inputStream(file.arg)) {
+            if (stdinTaken) {
+                report("clipboard", "Standard input can be read once only");
+                return 1;
+            }
+            stdinTaken = true;
+        }
+        const bool streamed = get ? outputStream(file.arg) : inputStream(file.arg);
+        file.mime = i < mimes.size() ? mimes[i] : streamed ? "text/plain" : Mime::typeOfName(file.arg);
         if (file.mime.empty()) {
-            report("clipboard", "Could not detect the MIME type for " + args[i] + ": use --mime to give it");
+            report("clipboard", "Could not detect the MIME type of " + displayName(file.arg, get) + ". Give it with --mime.");
+            return 1;
+        }
+        // A read takes "." and wildcards. Every type must be one that the protocol carries.
+        if (!typeName(file.mime) || (!get && (file.mime == "." || file.mime.find_first_of("*?[") != std::string::npos))) {
+            report("clipboard", printable(file.mime) + " is not a valid MIME type for " + displayName(file.arg, get));
             return 1;
         }
         files.push_back(std::move(file));
     }
     if (!get) {
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            for (std::size_t j = 0; j < i; ++j) {
+                if (files[i].mime == files[j].mime) {
+                    report("clipboard", displayName(files[j].arg, get) + " and " + displayName(files[i].arg, get)
+                                            + " have the same MIME type " + files[i].mime + ". Give each a type of its own with --mime.");
+                    return 1;
+                }
+            }
+        }
         // Read the inputs before the terminal is touched: a command piped
         // into aglow can itself write to the terminal.
+        std::size_t total = 0;
         for (auto& file : files) {
-            if (stream(file.arg)) {
+            int fd = STDIN_FILENO;
+            AfterglowProto::UniqueFd owned;
+            if (inputStream(file.arg)) {
                 if (::isatty(STDIN_FILENO) && filter) {
-                    report("clipboard", "Nothing to copy: pipe the data into aglow clipboard, or give files");
+                    report("clipboard", "Nothing to copy. Pipe the data into aglow clipboard, or give files.");
                     return 1;
                 }
-                if (!readAll(STDIN_FILENO, file.data)) {
-                    report("clipboard", "Failed to read standard input: " + std::string(std::strerror(errno)));
+            } else {
+                owned.reset(::open(localPath(file.arg).c_str(), O_RDONLY | O_CLOEXEC));
+                fd = owned.get();
+                if (fd < 0) {
+                    report("clipboard", "Failed to read " + displayName(file.arg, get) + ": " + std::strerror(errno));
                     return 1;
                 }
-                continue;
             }
-            const auto path = AfterglowProto::TransferPath::absolute(file.arg, homeDirectory(), currentDirectory());
-            const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-            if (fd < 0 || !readAll(fd, file.data)) {
-                report("clipboard", "Failed to read " + file.arg + ": " + std::strerror(errno));
-                if (fd >= 0) {
-                    ::close(fd);
-                }
+            // A write carries at most MaxWrite bytes of all its types together.
+            if (!readInput(fd, ClipboardAssembler::MaxWrite - total, file.data, error)) {
+                report("clipboard", "Failed to read " + displayName(file.arg, get) + ": " + error);
                 return 1;
             }
-            ::close(fd);
+            total += file.data.size();
         }
     }
     Tty tty;
@@ -435,14 +515,24 @@ int runClipboard(int argc, char** argv)
                     return input.type == Input::Type::Csi && input.data.ends_with('c') ? Session::Step::Done : Session::Step::Ignore;
                 }, error, Session::Limit::Answer);
             }
-            tty.restore();
+            // The data is the terminal's only once it has taken all of it.
+            if (!tty.restore() && error.empty()) {
+                error = "The terminal did not take all of the data";
+            }
             return error.empty() ? 0 : (report("clipboard", error), 1);
         }
         message.query = true;
-        tty.write(message.write());
+        tty.allowClipboardReply();
+        tty.drainOnRestore();
+        // DA1 after the query: a terminal that answers it but not the query
+        // has had the time it needs. The timeout runs from its answer.
+        tty.write(message.write() + "\x1b[c");
         std::string text;
         bool valid = false;
         const bool ok = session.wait([&](const Input& input) {
+            if (input.type == Input::Type::Csi && input.data.starts_with('?') && input.data.ends_with('c')) {
+                return Session::Step::More;
+            }
             if (input.type != Input::Type::Osc || !input.data.starts_with("52;")) {
                 return Session::Step::Ignore;
             }
@@ -455,7 +545,9 @@ int runClipboard(int argc, char** argv)
         }, error, Session::Limit::Request);
         tty.restore();
         if (!ok) {
-            report("clipboard", error);
+            report("clipboard", error.starts_with("Timed out")
+                                    ? "The terminal did not answer the OSC 52 read in time. It may not let programs read the clipboard."
+                                    : error);
             return 1;
         }
         if (!valid) {
@@ -487,6 +579,13 @@ int runClipboard(int argc, char** argv)
                 }
             }
         }
+        // The limits of a write, checked here: a terminal refuses a write that breaks them.
+        if (request.data.size() > ClipboardAssembler::MaxParts || request.aliases.size() > ClipboardAssembler::MaxParts) {
+            tty.restore();
+            report("clipboard", "A write takes at most " + std::to_string(ClipboardAssembler::MaxParts)
+                                    + " MIME types and as many aliases");
+            return 1;
+        }
         tty.write(AfterglowProto::clipboardWriteRequest(request));
         std::string status;
         const bool ok = session.wait([&](const Input& input) {
@@ -511,12 +610,17 @@ int runClipboard(int argc, char** argv)
         }
         return 0;
     }
-    // A read: first the list of types, which needs no permission, then the types that match.
+    // A read: first the list of types, which needs no permission, then the
+    // types that match. Replies still on their way when aglow stops are read
+    // before the terminal goes back to the shell.
+    tty.drainOnRestore();
     request.kind = ClipboardRequest::Kind::Read;
+    bool tooLarge = false;
     auto read = [&](const std::vector<std::string>& types, std::map<std::string, std::string>& data, std::string& status) {
         request.mimes = types;
         tty.write(AfterglowProto::clipboardReadRequest(request));
         std::size_t total = 0;
+        const bool listing = types.size() == 1 && types[0] == ".";
         return session.wait([&](const Input& input) {
             if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
                 return Session::Step::Ignore;
@@ -526,13 +630,16 @@ int runClipboard(int argc, char** argv)
                 return Session::Step::Ignore;
             }
             if (reply->status == "DATA") {
-                // As much as a terminal takes in a write: more is not a clipboard.
+                // Only the types asked for. Past what a terminal takes in a
+                // write the data is no clipboard, and the rest of it is read
+                // and dropped, so that none of it reaches the shell.
+                const bool wanted = listing ? data.contains(reply->mime) || data.size() < ClipboardAssembler::MaxParts
+                                            : std::find(types.begin(), types.end(), reply->mime) != types.end();
                 total += reply->data.size();
-                if (total > AfterglowProto::ClipboardAssembler::MaxWrite) {
-                    status = "EFBIG";
-                    return Session::Step::Done;
+                tooLarge |= total > ClipboardAssembler::MaxWrite;
+                if (wanted && !tooLarge) {
+                    data[reply->mime] += reply->data;
                 }
-                data[reply->mime] += reply->data;
                 return Session::Step::More;
             }
             if (reply->status == "OK") {
@@ -542,23 +649,33 @@ int runClipboard(int argc, char** argv)
             return Session::Step::Done;
         }, error, Session::Limit::Request);
     };
+    auto failed = [&](const std::string& status) {
+        tty.restore();
+        if (tooLarge) {
+            report("clipboard", "The clipboard holds more than " + humanSize(ClipboardAssembler::MaxWrite)
+                                    + ", the most that aglow reads");
+        } else {
+            report("clipboard", error.empty() ? statusError(status) : error);
+        }
+        return 1;
+    };
     std::map<std::string, std::string> listing;
     std::string status;
-    if (!read({ "." }, listing, status) || status != "DONE") {
-        tty.restore();
-        report("clipboard", error.empty() ? statusError(status) : error);
-        return 1;
+    if (!read({ "." }, listing, status) || status != "DONE" || tooLarge) {
+        return failed(status);
     }
     std::vector<std::string> available;
+    std::set<std::string> listed;
     for (const auto& [mime, bytes] : listing) {
         std::size_t start = 0;
-        while (start < bytes.size()) {
+        while (start < bytes.size() && available.size() < MaxListed) {
             auto end = bytes.find_first_of(" \n", start);
             if (end == std::string::npos) {
                 end = bytes.size();
             }
-            if (end > start) {
-                available.push_back(bytes.substr(start, end - start));
+            const auto type = bytes.substr(start, end - start);
+            if (typeName(type) && listed.insert(type).second) {
+                available.push_back(type);
             }
             start = end + 1;
         }
@@ -569,7 +686,7 @@ int runClipboard(int argc, char** argv)
             file.remote = ".";
             continue;
         }
-        auto has = [&](const std::string& mime) { return std::find(available.begin(), available.end(), mime) != available.end(); };
+        auto has = [&](const std::string& mime) { return listed.contains(mime); };
         if (has(file.mime)) {
             file.remote = file.mime;
         }
@@ -589,20 +706,23 @@ int runClipboard(int argc, char** argv)
         }
         if (file.remote.empty()) {
             tty.restore();
-            report("clipboard", "The MIME type " + file.mime + " for " + file.arg + " is not on the clipboard");
+            report("clipboard", "The MIME type " + file.mime + " for " + displayName(file.arg, get) + " is not on the clipboard");
             return 1;
         }
         if (std::find(wanted.begin(), wanted.end(), file.remote) == wanted.end()) {
             wanted.push_back(file.remote);
         }
     }
+    if (wanted.size() > ClipboardAssembler::MaxParts) {
+        tty.restore();
+        report("clipboard", "A read takes at most " + std::to_string(ClipboardAssembler::MaxParts) + " MIME types");
+        return 1;
+    }
     std::map<std::string, std::string> data;
     if (!wanted.empty()) {
         status.clear();
-        if (!read(wanted, data, status) || status != "DONE") {
-            tty.restore();
-            report("clipboard", error.empty() ? statusError(status) : error);
-            return 1;
+        if (!read(wanted, data, status) || status != "DONE" || tooLarge) {
+            return failed(status);
         }
     }
     tty.restore();
@@ -615,7 +735,7 @@ int runClipboard(int argc, char** argv)
         } else if (const auto it = data.find(file.remote); it != data.end()) {
             file.data = it->second;
         } else {
-            report("clipboard", "No data for " + file.arg + " with MIME type " + file.mime);
+            report("clipboard", "No data for " + displayName(file.arg, get) + " with MIME type " + file.mime);
             code = 1;
             continue;
         }

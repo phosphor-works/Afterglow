@@ -7,7 +7,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,7 +24,10 @@ struct TransferClientOptions
 {
     enum class Mode : std::uint8_t {
         Normal, ///< the last argument is the destination
-        Mirror, ///< every argument is a source, copied to the same path on the other computer
+        /// Every argument is a source, copied to the same path on the other
+        /// computer. A path given as ~, ~/x or relative is under the home
+        /// directory on both computers. An absolute path stays the same.
+        Mirror,
     };
     enum class Compress : std::uint8_t { Auto, Never, Always };
     Mode mode = Mode::Normal;
@@ -37,8 +39,9 @@ struct TransferClientOptions
     /// The password that skips the terminal's prompt, sent as its SHA-256
     /// form (transferPasswordHash()). Empty: the terminal asks the user.
     std::string password;
-    /// This computer's home directory and working directory. Relative paths
-    /// and ~/ resolve against them.
+    /// This computer's home directory and working directory, both absolute:
+    /// makeTransferSender() and makeTransferReceiver() refuse other paths.
+    /// Relative paths and ~/ resolve against them.
     std::string home;
     std::string cwd;
 };
@@ -48,8 +51,7 @@ struct TransferItem
 {
     enum class Type : std::uint8_t { Regular, Directory, Symlink, Link };
     Type type = Type::Regular;
-    /// The path on this computer, as the user named it (send) or as it is
-    /// written (receive).
+    /// The absolute path on this computer.
     std::string local;
     /// The path on the terminal's computer.
     std::string remote;
@@ -59,8 +61,6 @@ struct TransferItem
     bool finished = false;
     /// The terminal's status or the local error; empty on success.
     std::string error;
-    /// The file goes as a delta.
-    bool delta = false;
 };
 
 class TransferClient
@@ -87,8 +87,9 @@ public:
     /// Why the session failed or was canceled.
     const std::string& error() const { return m_error; }
     const std::vector<TransferItem>& items() const { return m_items; }
-    /// Bytes of signatures and deltas that crossed the terminal, and the size
-    /// of the files that went as deltas.
+    /// Bytes of signatures and of deltas that crossed the terminal, as they
+    /// went (after compression), in either direction. deltaFileBytes() is the
+    /// size of the files that arrived as deltas.
     std::uint64_t signatureBytes() const { return m_signatureBytes; }
     std::uint64_t deltaBytes() const { return m_deltaBytes; }
     std::uint64_t deltaFileBytes() const { return m_deltaFileBytes; }
@@ -98,8 +99,13 @@ public:
     void receive(std::string_view payload);
     /// Appends complete OSC sequences to @p out, until it holds about
     /// @p budget more bytes or nothing is ready. File data is read here, so
-    /// the caller bounds the memory and the work of one call.
+    /// the caller bounds the memory of one call. The work of one call is
+    /// bounded too: a delta of a file that did not change makes little
+    /// output for the bytes that it reads.
     void pull(std::string& out, std::size_t budget);
+    /// The last pull() stopped at its bound with work left: call it again
+    /// without waiting for the terminal.
+    bool hasWork() const { return m_hasWork; }
     /// The answer in State::Confirm: go on, or cancel the session.
     void confirm(bool proceed);
     /// Asks the terminal to end the session. It ends when the terminal
@@ -109,6 +115,9 @@ public:
 protected:
     TransferClient(TransferClientOptions options, std::string id);
     void queue(std::string message) { m_output += std::move(message); }
+    /// Queues the first message of the session (ac=send or ac=receive), with
+    /// the password hash when there is a password.
+    void start(std::string_view action, std::string_view count = {});
     void fail(std::string error);
     virtual void onReply(const TransferFields& reply) = 0;
     virtual void produce(std::string& out, std::size_t budget) = 0;
@@ -123,6 +132,7 @@ protected:
     std::uint64_t m_signatureBytes = 0;
     std::uint64_t m_deltaBytes = 0;
     std::uint64_t m_deltaFileBytes = 0;
+    bool m_hasWork = false;
 };
 
 /// Copies files from this computer to the terminal's computer (ac=send).
@@ -134,13 +144,11 @@ std::unique_ptr<TransferClient> makeTransferSender(const TransferClientOptions& 
 std::unique_ptr<TransferClient> makeTransferReceiver(const TransferClientOptions& options,
                                                      const std::vector<std::string>& args, std::string& error);
 
-/// Whether a file of @p path is worth compressing under @p strategy: Auto
-/// leaves out archives, images and video, as kitten transfer does.
-bool transferShouldCompress(std::string_view path, TransferClientOptions::Compress strategy);
-
 /// Path helpers with the meaning of Go's path/filepath, which kitten
 /// transfer uses to map paths: clean() folds "." and ".." and repeated
-/// slashes, baseName() and dirName() split the cleaned path.
+/// slashes, baseName() and dirName() split the cleaned path. Unlike Go, a
+/// leading ~ is a root that ".." cannot remove: ~/../x names a directory
+/// beside the home directory, which only the computer that has it can resolve.
 namespace TransferPath {
 std::string clean(std::string_view path);
 std::string join(std::string_view a, std::string_view b);

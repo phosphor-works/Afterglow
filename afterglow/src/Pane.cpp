@@ -237,6 +237,13 @@ bool Pane::refreshSnapshot(int extraRows)
     } else {
         m_promptTimer.invalidate();
     }
+    // Animations run only for images the viewport draws, and only PTY output
+    // ticks them, so a viewport that moves must tick them again. Queued: the
+    // tick takes m_mutex.
+    if (const std::size_t top = m_terminal.screen().viewportTop(); top != m_animationViewportTop) {
+        m_animationViewportTop = top;
+        QMetaObject::invokeMethod(this, &Pane::tickAnimations, Qt::QueuedConnection);
+    }
     if (m_terminal.generation() != m_snapshotGeneration || m_selectionSerial != m_snapshotSelectionSerial
         || extraRows != m_snapshotExtraRows) {
         const bool selectionHere = m_selection.active && m_selectionOnAltScreen == m_terminal.modes().altScreen;
@@ -890,7 +897,8 @@ namespace {
 
 bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    if (img.isNull() || img.width() > 10000 || img.height() > 10000
+    if (img.isNull() || std::uint32_t(img.width()) > AfterglowProto::GraphicsMaxSide
+        || std::uint32_t(img.height()) > AfterglowProto::GraphicsMaxSide
         || std::uint64_t(img.width()) * img.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
     img.convertTo(QImage::Format_RGBA8888);
     if (img.isNull()) return false;
@@ -925,7 +933,8 @@ bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t
     }
     QImageReader reader(&input, detected);
     const QSize size = reader.size();
-    if (!size.isValid() || size.isEmpty() || size.width() > 10000 || size.height() > 10000
+    if (!size.isValid() || size.isEmpty() || std::uint32_t(size.width()) > AfterglowProto::GraphicsMaxSide
+        || std::uint32_t(size.height()) > AfterglowProto::GraphicsMaxSide
         || std::uint64_t(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
     return toRgba(reader.read(), width, height, rgba);
 }

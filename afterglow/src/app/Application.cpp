@@ -8,6 +8,7 @@
 #include "ScriptSettings.h"
 #include "WindowStart.h"
 #include "../chrome/ChromeLayer.h"
+#include "../desktop/DragDrop.h"
 
 #include <QIcon>
 #include <QStandardPaths>
@@ -69,6 +70,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     });
     m_audio.configure(m_settings.settings().audio);
     NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit);
+    DragTrees::instance().setLifetime(std::chrono::minutes(m_settings.settings().dragTreeLifetime));
     QStringList iconPaths = QIcon::themeSearchPaths();
     for (const auto& path : QStandardPaths::locateAll(QStandardPaths::GenericDataLocation,
             QStringLiteral("icons"), QStandardPaths::LocateDirectory))
@@ -104,6 +106,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
             m_audio.configure(audio);
         }
         NotificationCenter::instance().setRateLimit(m_settings.settings().notificationRateLimit);
+        DragTrees::instance().setLifetime(std::chrono::minutes(m_settings.settings().dragTreeLifetime));
     });
 
     // Hidden windows (a tucked-away quick terminal) still count as open.

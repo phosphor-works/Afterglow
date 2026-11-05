@@ -5,9 +5,10 @@
 #include "ProtoBytes.h"
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/DragDrop.h>
+#include <AfterglowProto/DndTree.h>
 #include <QBuffer>
+#include <QCoreApplication>
 #include <QDir>
-#include <QDirIterator>
 #include <QDrag>
 #include <QDropEvent>
 #include <QElapsedTimer>
@@ -16,10 +17,10 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImageReader>
+#include <QLoggingCategory>
 #include <QMimeData>
 #include <QPainter>
 #include <QPointer>
-#include <QSet>
 #include <QStyleHints>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -27,7 +28,9 @@
 #include <QWindow>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <deque>
+#include <dirent.h>
 #include <fcntl.h>
 #include <functional>
 #include <map>
@@ -37,9 +40,10 @@
 
 namespace Afterglow {
 namespace {
+    Q_LOGGING_CATEGORY(lcDragDrop, "afterglow.desktop", QtInfoMsg)
     using Meta = QMap<QByteArray, QByteArray>;
     // Afterglow's limits. Only the packet size comes from the protocol, and a client cannot change any of them.
-    constexpr qsizetype MaxData = 64 * 1024 * 1024; // one MIME type or one remote entry
+    constexpr qsizetype MaxData = 64 * 1024 * 1024; // one MIME type, or one message of a remote entry
     constexpr qsizetype MaxTotal = 256 * 1024 * 1024; // cached source data, queued drop reads
     constexpr qsizetype MaxRemoteBytes = 1024LL * 1024 * 1024;
     constexpr int MaxRemoteEntries = 16384;
@@ -57,13 +61,11 @@ namespace {
     constexpr qsizetype MaxCommand = qsizetype(AfterglowProto::DndMaxCommand);
     constexpr qsizetype MaxControlPayload = 128 * 1024; // reassembled MIME lists and ids
     constexpr qsizetype MaxMachineId = 128;
-    constexpr qsizetype ReadChunk = MaxPacket / 4 * 3; // raw bytes whose base64 fills one packet
+    constexpr qsizetype ReadChunk = qsizetype(AfterglowProto::DndDataChunk);
     constexpr std::size_t MaxInputBacklog = 1024 * 1024;
     constexpr int BacklogRetryMs = 5;
     constexpr int RequestTimeoutMs = 30000;
     constexpr int RemoteTimeoutMs = 120000;
-    // Drop targets such as file managers copy dropped files after the drag ends.
-    constexpr int FinishedTreeLifetimeMs = 10 * 60 * 1000;
     using ProtoBytes::bytesOf;
     using ProtoBytes::view;
     Meta metaOf(const AfterglowProto::DndMeta& meta)
@@ -139,6 +141,52 @@ namespace {
         }
         return ::close(fd) == 0;
     }
+    // Lists the entries of the directory at @p path that a drop can read:
+    // regular files, directories and links. The names stay the bytes that
+    // they are on disk, so that a read of one finds it again. A name that a
+    // listing cannot hold (not UTF-8) is left out: the receiver refuses a
+    // listing with one, and with it every other entry. Returns the error
+    // for the read, or null.
+    const char* listDirectory(const QByteArray& path, std::vector<std::string>& entries, std::size_t limit)
+    {
+        const int fd = ::open(path.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0)
+            return errno == ENOENT ? "ENOENT" : "EPERM";
+        DIR* dir = ::fdopendir(fd);
+        if (!dir) {
+            ::close(fd);
+            return "EIO";
+        }
+        const char* error = nullptr;
+        for (;;) {
+            errno = 0;
+            const dirent* entry = ::readdir(dir);
+            if (!entry) {
+                if (errno != 0)
+                    error = "EIO";
+                break;
+            }
+            const std::string_view name(entry->d_name);
+            if (name == "." || name == "..")
+                continue;
+            struct stat st { };
+            if (::fstatat(::dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0
+                || !(S_ISREG(st.st_mode) || S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)))
+                continue;
+            if (!AfterglowProto::dndValidName(name)) {
+                qCWarning(lcDragDrop) << "a dropped directory holds a name that is not UTF-8, which the drop leaves out:"
+                                      << QByteArray(name.data(), qsizetype(name.size())).toPercentEncoding("/");
+                continue;
+            }
+            if (entries.size() >= limit) {
+                error = "ENOMEM";
+                break;
+            }
+            entries.emplace_back(name);
+        }
+        ::closedir(dir);
+        return error;
+    }
     class LazyMime : public QMimeData {
     public:
         QStringList names;
@@ -166,6 +214,72 @@ namespace {
         }
     };
 } // namespace
+DragTrees& DragTrees::instance()
+{
+    // The application's child: its trees go when the application ends.
+    static QPointer<DragTrees> trees;
+    if (!trees)
+        trees = new DragTrees(QCoreApplication::instance());
+    return *trees;
+}
+DragTrees::DragTrees(QObject* parent)
+    : QObject(parent)
+{
+    m_timer.setSingleShot(true);
+    QObject::connect(&m_timer, &QTimer::timeout, this, [this] { expire(); });
+}
+DragTrees::~DragTrees() = default;
+void DragTrees::setLifetime(std::chrono::milliseconds lifetime) { m_lifetime = lifetime; }
+std::shared_ptr<QTemporaryDir> DragTrees::create()
+{
+    auto directory = std::make_shared<QTemporaryDir>();
+    if (!directory->isValid())
+        return { };
+    const auto root = QFileInfo(directory->path()).canonicalFilePath();
+    if (root.isEmpty())
+        return { };
+    m_trees.push_back({ directory, QFile::encodeName(root), QDeadlineTimer(QDeadlineTimer::Forever) });
+    return directory;
+}
+void DragTrees::finish(const std::shared_ptr<QTemporaryDir>& tree)
+{
+    for (auto& entry : m_trees)
+        if (entry.directory == tree)
+            entry.expiry = QDeadlineTimer(m_lifetime);
+    expire();
+}
+void DragTrees::remove(const std::shared_ptr<QTemporaryDir>& tree)
+{
+    std::erase_if(m_trees, [&](const Tree& entry) { return entry.directory == tree; });
+}
+void DragTrees::expire()
+{
+    std::erase_if(m_trees, [](const Tree& entry) { return entry.expiry.hasExpired(); });
+    // Each tree has its own expiry: the timer waits for the next one.
+    QDeadlineTimer next(QDeadlineTimer::Forever);
+    for (const auto& entry : m_trees)
+        next = std::min(next, entry.expiry);
+    if (next.isForever())
+        m_timer.stop();
+    else
+        m_timer.start(std::max<qint64>(next.remainingTime(), 0));
+}
+bool DragTrees::holds(const QByteArray& path) const
+{
+    const auto slash = path.lastIndexOf('/');
+    const auto name = path.mid(slash + 1);
+    if (slash < 0 || name.isEmpty() || name == "." || name == "..")
+        return false;
+    const QByteArray parent = slash == 0 ? QByteArray("/") : path.left(slash);
+    char* resolved = ::realpath(parent.constData(), nullptr);
+    if (!resolved)
+        return false;
+    const QByteArray directory(resolved);
+    std::free(resolved);
+    return std::any_of(m_trees.begin(), m_trees.end(), [&](const Tree& tree) {
+        return directory == tree.root || directory.startsWith(tree.root + '/');
+    });
+}
 struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     QPointer<DragDrop> owner;
     bool accepting = false, offering = false, pressed = false, gesture = false, offered = false, started = false;
@@ -209,15 +323,17 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     qsizetype total = 0, pictureBytes = 0;
     Meta imageMeta;
     int imageIndex = 0;
+    // A directory that the drop receiver reads, by its handle. Its path and
+    // its names are the bytes on disk.
     struct Directory {
-        QString path;
-        QStringList entries;
+        QByteArray path;
+        std::vector<std::string> entries;
     };
-    std::map<int, Directory> directories;
+    std::map<qint64, Directory> directories;
     // Repeated requests for one directory share a listing.
-    std::map<QString, QStringList> listings;
+    std::map<QByteArray, std::vector<std::string>> listings;
     int listedEntries = 0;
-    int nextHandle = 2;
+    qint64 nextHandle = AfterglowProto::DndFirstHandle;
     QList<QUrl> dropUris;
     struct Read {
         Meta meta;
@@ -231,16 +347,27 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     QElapsedTimer dropActivity, sourceActivity;
     std::function<std::size_t()> backlog;
     std::function<void(int)> deliver;
-    std::unique_ptr<QTemporaryDir> temporary, finishedTree;
-    QTimer treeExpiry;
+    // The tree of a remote drag source. DragTrees owns it with this state
+    // while the drag runs, and alone after the drop.
+    std::shared_ptr<QTemporaryDir> temporary;
     struct Remote {
         QString path;
         QByteArray bytes;
         qint64 kind = -1;
+        qint64 parent = 0;
         bool done = false;
     };
     std::map<QByteArray, Remote> remote;
-    std::map<qint64, Directory> remoteDirs;
+    // A directory of the remote tree, open while some of its children are
+    // not done. Then no entry can name it, and its handle is closed.
+    struct RemoteDirectory {
+        QString path;
+        QStringList entries;
+        int open = 0;
+    };
+    std::map<qint64, RemoteDirectory> remoteDirs;
+    // Every handle of the drag: a closed one names no new directory.
+    std::set<qint64> remoteHandles;
     std::set<int> requestedRoots;
     QList<QUrl> remoteUrls;
     int remotePending = 0;
@@ -249,8 +376,6 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         : owner(o)
     {
         QObject::connect(&timer, &QTimer::timeout, owner, [this] { pump(); });
-        treeExpiry.setSingleShot(true);
-        QObject::connect(&treeExpiry, &QTimer::timeout, owner, [this] { finishedTree.reset(); });
     }
     static qint64 integer(const Meta& m, const char* key, qint64 fallback = 0)
     {
@@ -295,10 +420,18 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         gesture = false;
         failed.insert(-1);
     }
-    void dropError(Meta m, const QByteArray& error)
+    // An error in one read: the drop goes on, and the program can read the
+    // other entries.
+    void readError(Meta m, const QByteArray& error)
     {
         m["t"] = "R";
         send(m, error);
+    }
+    // An error that ends the drop: a limit of the whole drop, a message that
+    // is not valid, or a drop whose data the platform freed.
+    void dropError(Meta m, const QByteArray& error)
+    {
+        readError(std::move(m), error);
         if (dropped) {
             finished = true;
             finalAction = 0;
@@ -329,7 +462,7 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         chosen = finalAction = requested = 0;
         requestedMimes.clear();
         answered = false;
-        nextHandle = 2;
+        nextHandle = AfterglowProto::DndFirstHandle;
     }
     void clearSource()
     {
@@ -345,10 +478,15 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         imageMeta.clear();
         remote.clear();
         remoteDirs.clear();
+        remoteHandles.clear();
         requestedRoots.clear();
         remoteUrls.clear();
         remotePending = 0;
         remoteBytes = 0;
+        // A tree that is still the state's belongs to a drag that did not end
+        // in a drop: nothing reads it.
+        if (temporary)
+            DragTrees::instance().remove(temporary);
         temporary.reset();
     }
     void reset()
@@ -407,8 +545,10 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         if (read.file) {
             fromFile = read.file->read(ReadChunk);
             if (read.file->error() != QFileDevice::NoError) {
-                const auto m = read.meta;
-                dropError(m, "EIO");
+                // The file ends here for the program. The next read goes on.
+                const auto meta = read.meta;
+                reads.pop_front();
+                readError(meta, "EIO");
                 return;
             }
             bytes = view(fromFile);
@@ -428,87 +568,75 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
             send(meta);
         }
     }
-    void file(Meta m, const QString& path)
+    void file(Meta m, QByteArray raw)
     {
-        if (localSource) {
-            dropError(m, "EPERM");
+        // A trailing slash would follow a link.
+        while (raw.size() > 1 && raw.endsWith('/'))
+            raw.chop(1);
+        // A drag from this process names files that the program of another
+        // pane chose. The tree of a remote drag holds only what its source
+        // sent, so a drop can read that.
+        if (localSource && !DragTrees::instance().holds(raw)) {
+            readError(m, "EPERM");
             return;
         }
         struct stat st { };
-        const auto raw = QFile::encodeName(path);
         if (::lstat(raw.constData(), &st)) {
-            dropError(m, errno == ENOENT ? "ENOENT" : "EPERM");
+            readError(m, errno == ENOENT ? "ENOENT" : "EPERM");
             return;
         }
-        m["X"] = "0";
+        m["X"] = QByteArray::number(AfterglowProto::DndFileKind);
         if (S_ISLNK(st.st_mode)) {
             char buf[MaxLinkTarget];
             const auto n = ::readlink(raw.constData(), buf, sizeof buf);
             if (n < 0 || n == sizeof buf) {
-                dropError(m, "EIO");
+                readError(m, "EIO");
                 return;
             }
-            m["X"] = "1";
+            m["X"] = QByteArray::number(AfterglowProto::DndLinkKind);
             queue(m, QByteArray(buf, n));
         } else if (S_ISDIR(st.st_mode)) {
             if (directories.size() >= MaxDirectoryHandles) {
-                dropError(m, "ENOMEM");
+                readError(m, "ENOMEM");
                 return;
             }
-            auto listing = listings.find(path);
+            auto listing = listings.find(raw);
             if (listing == listings.end()) {
-                if (!QDir(path).isReadable()) {
-                    dropError(m, "EPERM");
+                std::vector<std::string> entries;
+                const auto limit = std::size_t(std::min(MaxDirectoryEntries, MaxListedEntries - listedEntries));
+                if (const char* error = listDirectory(raw, entries, limit)) {
+                    readError(m, error);
                     return;
                 }
-                QDirIterator iterator(path, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
-                QStringList entries;
-                while (iterator.hasNext()) {
-                    iterator.next();
-                    const auto info = iterator.fileInfo();
-                    if (!info.isFile() && !info.isDir() && !info.isSymLink())
-                        continue;
-                    if (entries.size() >= MaxDirectoryEntries || listedEntries + entries.size() >= MaxListedEntries) {
-                        dropError(m, "ENOMEM");
-                        return;
-                    }
-                    entries.append(info.fileName());
-                }
                 listedEntries += int(entries.size());
-                listing = listings.emplace(path, entries).first;
+                listing = listings.emplace(raw, std::move(entries)).first;
             }
-            QByteArray names;
-            for (const auto& entry : listing->second) {
-                if (!names.isEmpty())
-                    names += '\0';
-                names += entry.toUtf8();
-            }
-            const int handle = nextHandle++;
-            directories.emplace(handle, Directory { path, listing->second });
+            const qint64 handle = nextHandle++;
+            directories.emplace(handle, Directory { raw, listing->second });
             m["X"] = QByteArray::number(handle);
-            queue(m, names);
+            queue(m, bytesOf(AfterglowProto::dndJoinNames(listing->second)));
         } else if (S_ISREG(st.st_mode)) {
             const int fd = ::open(raw.constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
             if (fd < 0) {
-                dropError(m, "EPERM");
+                readError(m, "EPERM");
                 return;
             }
             struct stat actual { };
             if (::fstat(fd, &actual) || !S_ISREG(actual.st_mode)) {
                 ::close(fd);
-                dropError(m, "EINVAL");
+                readError(m, "EINVAL");
                 return;
             }
             auto stream = std::make_unique<QFile>();
             if (!stream->open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
                 ::close(fd);
-                dropError(m, "EIO");
+                readError(m, "EIO");
                 return;
             }
             reads.push_back({ m, std::move(stream), { }, 0 });
             timer.start(0);
         } else
-            dropError(m, "EINVAL");
+            readError(m, "EINVAL");
     }
     void request(const Meta& m)
     {
@@ -516,26 +644,30 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
             dropError(m, "EPERM");
             return;
         }
+        // Each error below fails the one read: the program can read the
+        // other entries, and again once a queued read is done.
         if (reads.size() >= MaxQueuedReads) {
-            dropError(m, "EMFILE");
+            readError(m, "EMFILE");
             return;
         }
-        const int x = number(m, "x"), y = number(m, "y"), parent = number(m, "Y");
+        const int x = number(m, "x"), y = number(m, "y");
+        const qint64 parent = integer(m, "Y");
         if (parent) {
             auto it = directories.find(parent);
             if (it == directories.end()) {
-                dropError(m, "EINVAL");
+                readError(m, "EINVAL");
                 return;
             }
             if (!x) {
                 directories.erase(it);
                 return;
             }
-            if (x < 1 || x > it->second.entries.size()) {
-                dropError(m, "ENOENT");
+            if (x < 1 || std::size_t(x) > it->second.entries.size()) {
+                readError(m, "ENOENT");
                 return;
             }
-            file(m, QDir(it->second.path).filePath(it->second.entries[x - 1]));
+            const auto& name = it->second.entries[std::size_t(x - 1)];
+            file(m, it->second.path + '/' + QByteArray(name.data(), qsizetype(name.size())));
             return;
         }
         if (!x) {
@@ -547,30 +679,30 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
             return;
         }
         if (x < 1 || x > dropMimes.size()) {
-            dropError(m, "EINVAL");
+            readError(m, "EINVAL");
             return;
         }
         const auto mime = dropMimes[x - 1];
         if (y) {
             if (mime != QLatin1String("text/uri-list") || !uriRead) {
-                dropError(m, "EINVAL");
+                readError(m, "EINVAL");
                 return;
             }
             if (y < 1 || y > dropUris.size()) {
-                dropError(m, "ENOENT");
+                readError(m, "ENOENT");
                 return;
             }
             const auto path = localFilePath(dropUris[y - 1]);
             if (path.isEmpty()) {
-                dropError(m, "EUNKNOWN");
+                readError(m, "EUNKNOWN");
                 return;
             }
-            file(m, path);
+            file(m, QFile::encodeName(path));
             return;
         }
         auto bytes = incoming->data(mime);
         if (bytes.size() > MaxData) {
-            dropError(m, "ENOMEM");
+            readError(m, "ENOMEM");
             return;
         }
         Meta response = m;
@@ -656,9 +788,14 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         // PTY, where the shell would read it as typed input.
         if (!started)
             return { };
+        // A refused reply resets the protocol: no later message may follow it.
+        const auto generation = resets;
         if (sourceAction && !leftButton())
             announceDrop();
-        send({ { "t", "e" }, { "x", "1" }, { "y", QByteArray::number(index) } }, { }, true);
+        if (resets == generation)
+            send({ { "t", "e" }, { "x", "1" }, { "y", QByteArray::number(index) } }, { }, true);
+        if (resets != generation)
+            return { };
         if (!complete.contains(index) && !failed.contains(index)) {
             send({ { "t", "e" }, { "x", "5" }, { "y", QByteArray::number(index) } }, { }, true);
             sourceActivity.restart();
@@ -734,6 +871,17 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         const auto action = operation->exec(Qt::DropActions(sourceActions), Qt::CopyAction);
         if (action != Qt::IgnoreAction)
             announceDrop();
+        // The tree goes to the process before the last reply: a reply that
+        // cannot be written ends the protocol, and the drop target may still
+        // be copying from the tree. A reset during exec() canceled the drag
+        // and removed the tree already.
+        if (temporary) {
+            if (action == Qt::IgnoreAction)
+                DragTrees::instance().remove(temporary);
+            else
+                DragTrees::instance().finish(temporary);
+            temporary.reset();
+        }
         // A reset during exec() cancelled the drag and ended the protocol.
         // o names the action that the drop took, so that a source deletes
         // its files only after a move. kitty sends no o, and clients that
@@ -746,10 +894,6 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
             drag->deleteLater();
         drag.clear();
         pressed = false;
-        if (temporary) {
-            finishedTree = std::move(temporary);
-            treeExpiry.start(FinishedTreeLifetimeMs);
-        }
         clearSource();
     }
     // For the data types (p, e and k) the payload is decoded already. It is
@@ -770,6 +914,11 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
     if (found == remote.end()) {
         if (remote.size() >= std::size_t(MaxRemoteEntries)) {
             sourceError("EMFILE");
+            return;
+        }
+        if (kind != AfterglowProto::DndFileKind && kind != AfterglowProto::DndLinkKind
+            && !AfterglowProto::dndIsDirectoryKind(kind)) {
+            sourceError("EINVAL");
             return;
         }
         QString path;
@@ -794,7 +943,10 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
                 return;
             }
             const auto base = temporary->filePath(QString::number(root));
-            QDir().mkpath(base);
+            if (!QDir().mkpath(base)) {
+                sourceError("EIO");
+                return;
+            }
             path = QDir(base).filePath(name);
         }
         if (path.size() > MaxPathLength) {
@@ -804,7 +956,8 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
         Remote item;
         item.path = path;
         item.kind = kind;
-        if (kind == 0 && !appendFile(path, { }, true)) {
+        item.parent = parent;
+        if (kind == AfterglowProto::DndFileKind && !appendFile(path, { }, true)) {
             sourceError("EIO");
             return;
         }
@@ -820,15 +973,18 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
         sourceError("EFBIG");
         return;
     }
-    if (entry.kind == 0) {
+    if (entry.kind == AfterglowProto::DndFileKind) {
         if (!bytes.isEmpty() && !appendFile(entry.path, bytes, false)) {
             sourceError("EIO");
             return;
         }
     } else {
-        // A link holds one target. A listing holds names of at most 255 bytes.
-        const qsizetype limit = entry.kind == 1 ? MaxLinkTarget : qsizetype(MaxDirectoryEntries) * 256;
-        if (entry.bytes.size() + bytes.size() > limit) {
+        // A link holds one target. A listing holds names of at most 255
+        // bytes. Both wait in memory until they end, so they count toward
+        // the cached data of the drag.
+        const qsizetype limit = entry.kind == AfterglowProto::DndLinkKind ? MaxLinkTarget : qsizetype(MaxDirectoryEntries) * 256;
+        total += bytes.size();
+        if (entry.bytes.size() + bytes.size() > limit || total > MaxTotal) {
             sourceError("EFBIG");
             return;
         }
@@ -840,7 +996,7 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
         sourceError("EINVAL");
         return;
     }
-    if (entry.kind == 1) {
+    if (entry.kind == AfterglowProto::DndLinkKind) {
         const QString target = QString::fromUtf8(entry.bytes);
         if (target.isEmpty() || target.toUtf8() != entry.bytes || target.contains(QChar(0))
             || QDir::isAbsolutePath(target) || !linkStaysInside(entry.path, entry.bytes, temporary->path())) {
@@ -851,34 +1007,49 @@ void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool en
             sourceError("EIO");
             return;
         }
-    } else if (entry.kind != 0) {
-        if (remoteDirs.contains(entry.kind) || remoteDirs.size() >= MaxDirectoryHandles || !QDir().mkdir(entry.path)) {
+    } else if (entry.kind != AfterglowProto::DndFileKind) {
+        // A handle names one directory of the drag, also after it closed.
+        if (remoteHandles.contains(entry.kind)) {
             sourceError("EINVAL");
             return;
         }
-        QStringList names;
-        QSet<QString> seen;
-        if (!entry.bytes.isEmpty())
-            for (const auto& raw : entry.bytes.split('\0')) {
-                const QString name = QString::fromUtf8(raw);
-                if (name.isEmpty() || raw.size() > 255 || name.toUtf8() != raw || name.contains(QLatin1Char('/'))
-                    || name == QLatin1String(".") || name == QLatin1String("..") || seen.contains(name)) {
-                    sourceError("EINVAL");
-                    return;
-                }
-                seen.insert(name);
-                names.append(name);
-                if (names.size() + remotePending > MaxRemoteEntries) {
-                    sourceError("EMFILE");
-                    return;
-                }
-            }
-        remoteDirs.emplace(entry.kind, Directory { entry.path, names });
-        remotePending += int(names.size());
+        const auto names = AfterglowProto::dndSplitNames(view(entry.bytes));
+        if (!names) {
+            sourceError("EINVAL");
+            return;
+        }
+        if (!names->empty() && remoteDirs.size() >= MaxDirectoryHandles) {
+            sourceError("EMFILE");
+            return;
+        }
+        if (qsizetype(names->size()) + remotePending > MaxRemoteEntries) {
+            sourceError("EMFILE");
+            return;
+        }
+        if (::mkdir(QFile::encodeName(entry.path).constData(), 0777) != 0) {
+            sourceError("EIO");
+            return;
+        }
+        QStringList entries;
+        for (const auto& name : *names)
+            entries.append(QString::fromUtf8(name.data(), qsizetype(name.size())));
+        remoteHandles.insert(entry.kind);
+        // A directory without entries closes at once.
+        if (!entries.isEmpty())
+            remoteDirs.emplace(entry.kind, RemoteDirectory { entry.path, entries, int(entries.size()) });
+        remotePending += int(entries.size());
     }
+    total -= entry.bytes.size();
     entry.bytes = QByteArray();
     entry.done = true;
     --remotePending;
+    // The last child of a directory closes it: no entry can name it again,
+    // and its handle no longer counts toward the open ones.
+    if (entry.parent) {
+        const auto dir = remoteDirs.find(entry.parent);
+        if (dir != remoteDirs.end() && --dir->second.open == 0)
+            remoteDirs.erase(dir);
+    }
 }
 bool DragDrop::State::prepareRemote()
 {
@@ -899,15 +1070,17 @@ bool DragDrop::State::prepareRemote()
             sourceError("EPERM");
             return false;
         }
-    finishedTree.reset();
-    treeExpiry.stop();
-    temporary = std::make_unique<QTemporaryDir>();
-    if (!temporary->isValid()) {
+    // The trees of earlier drags stay: a drop target can still be copying
+    // from them.
+    temporary = DragTrees::instance().create();
+    if (!temporary) {
         sourceError("EIO");
         return false;
     }
     remoteUrls = urls;
-    for (int n = 0; n < urls.size(); ++n)
+    // A refused reply resets the protocol: no later request may follow it.
+    const auto generation = resets;
+    for (int n = 0; n < urls.size() && resets == generation; ++n)
         if (urls[n].isLocalFile()) {
             requestedRoots.insert(n + 1);
             ++remotePending;
@@ -920,8 +1093,13 @@ bool DragDrop::State::prepareRemote()
                 || sourceActivity.elapsed() > RemoteTimeoutMs;
         },
         0);
-    if (failed.contains(-1) || !offered)
+    // The program canceled the drag (t=E) or stopped offering, or an error
+    // ended it: the partial tree goes, and the next offer of this press can
+    // start again.
+    if (failed.contains(-1) || !offered) {
+        clearSource();
         return false;
+    }
     if (!pressed) {
         sourceError("EPERM");
         return false;
@@ -940,7 +1118,7 @@ bool DragDrop::State::prepareRemote()
                 return false;
             }
             url = QUrl::fromLocalFile(
-                it->second.path + ((it->second.kind != 0 && it->second.kind != 1) ? QStringLiteral("/") : QString()));
+                it->second.path + (AfterglowProto::dndIsDirectoryKind(it->second.kind) ? QStringLiteral("/") : QString()));
         }
         replacement += url.toEncoded() + "\r\n";
     }
@@ -1036,7 +1214,15 @@ void DragDrop::State::dispatch(Meta m, QByteArray payload, bool end)
             // Leave the parser callback before entering the platform drag loop.
             starting = true;
             const auto state = owner->d;
-            QTimer::singleShot(0, owner, [state] { state->start(); });
+            // A reset before the start ended the protocol: the start must not
+            // answer the program, or the shell would read the answer as input.
+            QTimer::singleShot(0, owner, [state, generation = resets] {
+                if (state->resets != generation) {
+                    state->starting = false;
+                    return;
+                }
+                state->start();
+            });
         } else if (drag) {
             const int index = number(m, "x");
             drag->setPixmap(index >= 0 && index < int(pictures.size()) ? pictures[std::size_t(index)] : QPixmap());
@@ -1098,6 +1284,8 @@ void DragDrop::State::dispatch(Meta m, QByteArray payload, bool end)
             complete.insert(index);
             if (index < 0) {
                 picture(imageMeta, data[index]);
+                // The decoded picture counts toward pictureBytes instead.
+                total -= data[index].size();
                 data.erase(index);
                 imageIndex = 0;
             }

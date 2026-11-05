@@ -57,13 +57,15 @@ set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67d
 # checked at configure time by afterglow_vendored_file(). Bumping it: copy
 # the file from the new commit and change COMMIT and SHA256 together.
 
-# stb_image (MIT, Sean Barrett), v2.30: aglow icat decodes JPEG, GIF, BMP and
-# the other formats with it. REUSE.toml licenses the file.
+# stb_image (MIT, Sean Barrett), v2.30: aglow icat decodes JPEG, BMP and the
+# other formats with it. The file carries aglow's patches, which the top of
+# tools/aglow/StbImage.cpp lists, so SHA256 is that of the patched file and
+# COMMIT names the upstream base. REUSE.toml licenses the file.
 set(AFTERGLOW_VENDORED_stb_image_COMMIT "d14d46f6b44456eb88beac58cba833a4135d4c89")
 set(AFTERGLOW_VENDORED_stb_image_URL
     "https://raw.githubusercontent.com/nothings/stb/${AFTERGLOW_VENDORED_stb_image_COMMIT}/stb_image.h")
 set(AFTERGLOW_VENDORED_stb_image_FILE "tools/aglow/stb/stb_image.h")
-set(AFTERGLOW_VENDORED_stb_image_SHA256 "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3")
+set(AFTERGLOW_VENDORED_stb_image_SHA256 "f21c68b4d6fc99dba3abda241dff03c94b0aa07aab59fd14011cb76f27b12716")
 
 # CPM.cmake itself, the same release that PlasmaZones pins.
 set(AFTERGLOW_CPM_VERSION "0.43.2")

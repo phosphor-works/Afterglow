@@ -100,7 +100,7 @@ gtest_discover_tests(afterglow_transfer_tests)
 
 qt_add_executable(afterglow_dnd_tests DragDropTest.cpp ../src/desktop/DragDrop.cpp ../src/desktop/DragDrop.h)
 target_include_directories(afterglow_dnd_tests PRIVATE ../src)
-target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui Afterglow::Proto GTest::gtest)
+target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui Qt6::GuiPrivate Afterglow::Proto GTest::gtest)
 # A test drops a tree on the aglow of this build.
 if(AFTERGLOW_BUILD_AGLOW)
     target_compile_definitions(afterglow_dnd_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")

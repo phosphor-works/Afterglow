@@ -17,10 +17,11 @@
 /// (t=k), and the reads of a drop receiver (t=r with an X kind).
 ///
 /// Every entry has a kind (the X key): 0 for a regular file, 1 for a
-/// symbolic link (its data is the link's target), and any other number for
+/// symbolic link (its data is the link's target), and a number from 2 up for
 /// a directory. That number is the directory's handle, and its data is the
-/// names of its entries, separated by NUL bytes. The children of a directory
-/// name it with Y and their 1-based index in its listing.
+/// names of its entries, separated by NUL bytes. A negative kind is no entry.
+/// The children of a directory name it with Y and their 1-based index in its
+/// listing.
 namespace AfterglowProto {
 
 /// The raw bytes in one data message: their base64 fills one packet.
@@ -30,6 +31,12 @@ inline constexpr std::int64_t DndFileKind = 0;
 inline constexpr std::int64_t DndLinkKind = 1;
 inline constexpr std::int64_t DndFirstHandle = 2;
 
+/// Whether @p kind names a directory: its handle.
+constexpr bool dndIsDirectoryKind(std::int64_t kind)
+{
+    return kind >= DndFirstHandle;
+}
+
 /// The metadata of an entry that a drag source sends (t=k). @p root is the
 /// 1-based index of the entry's tree in text/uri-list. A child also names its
 /// directory's handle @p parent and its 1-based index @p child there; a root
@@ -38,7 +45,9 @@ DndMeta dndRemoteEntry(std::int64_t root, std::int64_t parent, std::int64_t chil
 /// The metadata of a drop receiver's read of a remote entry (t=r): a root
 /// entry is entry @p child of text/uri-list, the type at 1-based index
 /// @p mime of the drop; a child is entry @p child of the directory
-/// @p parent. With @p child 0, the read of a directory closes its handle.
+/// @p parent. With @p child 0, the read of a root entry (@p parent 0) reads
+/// the data of the type itself, and the read of a child closes the handle
+/// of the directory @p parent.
 DndMeta dndReadEntry(std::int64_t mime, std::int64_t parent, std::int64_t child);
 
 /// The packets of one data item (t=p, t=e or t=k): @p bytes in messages of
@@ -48,13 +57,20 @@ std::vector<std::string> dndDataPackets(const DndMeta& meta, std::string_view by
 
 /// A directory listing: @p names joined with NUL bytes.
 std::string dndJoinNames(const std::vector<std::string>& names);
-/// The names of a listing; nullopt when one is empty, longer than 255
-/// bytes, not UTF-8, holds a '/', is "." or "..", or repeats. An empty
-/// listing has no names.
+/// Whether a listing can name @p name: it is not empty, has at most 255
+/// bytes, is UTF-8, holds no '/' or NUL, and is not "." or "..". It can hold
+/// control characters, as a file name can: a program that prints one must
+/// make it printable first.
+bool dndValidName(std::string_view name);
+/// The names of a listing; nullopt when one is not valid (dndValidName) or
+/// repeats. An empty listing has no names.
 std::optional<std::vector<std::string>> dndSplitNames(std::string_view listing);
 
 /// Decodes the base64 of one item as its packets arrive, whether each packet
-/// decodes alone (Afterglow) or a group of four characters spans two packets.
+/// decodes alone (Afterglow) or a group of four characters spans two
+/// packets. A packet that decodes alone must pad its last group with '=':
+/// without the padding, its characters are read as the start of a group that
+/// the next packet ends, and no decoder can tell the two apart.
 class DndBase64Stream
 {
 public:

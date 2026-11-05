@@ -8,14 +8,18 @@
 #include "Commands.h"
 #include "Tty.h"
 
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/TransferClient.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
+#include <termios.h>
 #include <unistd.h>
 
 namespace Aglow {
@@ -32,6 +36,8 @@ constexpr long long CancelWaitMs = 5000;
 // Output that waits for the terminal before more file data is read.
 constexpr std::size_t WriteAhead = 256 * 1024;
 constexpr long long ProgressMs = 200;
+// The longest password that --permissions-bypass reads from a file or a descriptor.
+constexpr std::size_t MaxPassword = 4096;
 
 const Cli::Command command {
     "transfer",
@@ -57,23 +63,27 @@ const Cli::Command command {
           "where aglow runs." },
         { "--mode -m", Cli::Option::Kind::Choice, "normal", { "normal", "mirror" },
           "How to read the arguments. In mirror mode every argument is a file or directory on the sending computer, "
-          "copied to the same path on the receiving computer. Files under the home directory go under the home "
-          "directory of the receiving computer. In normal mode the last argument is the destination on the "
-          "receiving computer. It must be an existing directory unless a single file is copied, and it should "
-          "then end with a slash." },
+          "copied to the same path on the receiving computer. A path given as ~, as ~/ and a path, or as a relative "
+          "path is under the home directory on both computers. An absolute path stays the same. In normal mode the "
+          "last argument is the destination on the receiving computer. With more than one source, the destination "
+          "is a directory that receives them. With one source, end the destination with a slash to put the source "
+          "in that directory. Without the slash, the source is copied to the destination path itself. A received "
+          "source also goes into the destination when it is an existing directory here." },
         { "--compress", Cli::Option::Kind::Choice, "auto", { "auto", "never", "always" },
           "Whether to compress the data. auto leaves out files that are compressed already, such as archives, "
-          "images and video." },
+          "images, audio and video." },
         { "--permissions-bypass -p", Cli::Option::Kind::String, "", {},
           "The password that skips the permission prompt of the terminal. It must match the password of the "
           "terminal. White space at its start and end is removed. A value that starts with ., / or ~ is a file to "
-          "read the password from. - reads it from standard input. A number below 256 is a file descriptor to read "
-          "it from." },
+          "read the password from. A value of - reads it from standard input, without echo on a terminal. A number below 256 "
+          "is a file descriptor to read it from. A password given as the value itself is visible to other users in "
+          "the list of processes. Give a file or standard input instead." },
         { "--confirm-paths -c", Cli::Option::Kind::Flag, "", {},
           "Before any file data moves, show where each file goes and ask for confirmation." },
         { "--transmit-deltas -x", Cli::Option::Kind::Flag, "", {},
           "When a file exists on the receiving side, send only the changes (the rsync algorithm). This is slower "
-          "for small files or on a fast link." },
+          "for small files or on a fast link. When aglow receives, the terminal learns which destination files "
+          "exist here, their sizes and the hashes of their blocks." },
     },
 };
 
@@ -84,6 +94,62 @@ std::string trim(std::string text)
         return {};
     }
     return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+// Reads at most MaxPassword bytes of @p fd. A terminal gives one line,
+// without echo.
+bool readSecret(int fd, std::string& text, std::string& error)
+{
+    termios saved { };
+    const bool terminal = ::isatty(fd) && ::tcgetattr(fd, &saved) == 0;
+    sigset_t held { };
+    sigset_t old { };
+    if (terminal) {
+        // A signal while echo is off would leave the terminal without echo.
+        // It waits until the mode is back, and then has its effect.
+        sigemptyset(&held);
+        for (const int number : { SIGINT, SIGTERM, SIGHUP, SIGTSTP }) {
+            sigaddset(&held, number);
+        }
+        ::sigprocmask(SIG_BLOCK, &held, &old);
+        termios quiet = saved;
+        quiet.c_lflag &= ~tcflag_t(ECHO);
+        quiet.c_lflag |= ICANON;
+        ::tcsetattr(fd, TCSAFLUSH, &quiet);
+        AfterglowProto::writeAll(STDERR_FILENO, "Password: ");
+    }
+    int failure = 0;
+    char buffer[512];
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer, sizeof buffer);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0) {
+            failure = errno;
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        text.append(buffer, std::size_t(n));
+        if (text.size() > MaxPassword) {
+            error = "The password is longer than " + std::to_string(MaxPassword) + " bytes";
+            break;
+        }
+        if (terminal && text.find('\n') != std::string::npos) {
+            break;
+        }
+    }
+    if (terminal) {
+        ::tcsetattr(fd, TCSAFLUSH, &saved);
+        AfterglowProto::writeAll(STDERR_FILENO, "\n");
+        ::sigprocmask(SIG_SETMASK, &old, nullptr);
+    }
+    if (failure) {
+        error = "Cannot read the password: " + std::string(std::strerror(failure));
+    }
+    return error.empty();
 }
 
 bool readPassword(const std::string& location, std::string& password, std::string& error)
@@ -112,16 +178,58 @@ bool readPassword(const std::string& location, std::string& password, std::strin
         return true;
     }
     std::string text;
-    const bool ok = readAll(fd, text);
+    const bool ok = readSecret(fd, text, error);
     if (close) {
         ::close(fd);
     }
     if (!ok) {
-        error = "Cannot read the password: " + std::string(std::strerror(errno));
         return false;
     }
     password = trim(std::move(text));
     return true;
+}
+
+// "3 files and 1 directory": what a list of items holds.
+std::string describe(std::size_t files, std::size_t directories)
+{
+    const auto count = [](std::size_t n, const char* one, const char* many) {
+        return std::to_string(n) + " " + (n == 1 ? one : many);
+    };
+    if (files && directories) {
+        return count(files, "file", "files") + " and " + count(directories, "directory", "directories");
+    }
+    return directories ? count(directories, "directory", "directories") : count(files, "file", "files");
+}
+
+std::string describe(const std::vector<TransferItem>& items, bool failedOnly)
+{
+    std::size_t files = 0;
+    std::size_t directories = 0;
+    for (const auto& item : items) {
+        if (failedOnly && item.error.empty()) {
+            continue;
+        }
+        ++(item.type == TransferItem::Type::Directory ? directories : files);
+    }
+    return describe(files, directories);
+}
+
+// The first @p columns - 1 characters of @p line, so that it never wraps.
+// The line holds characters of one column each.
+std::string fit(std::string line, std::size_t columns)
+{
+    if (columns < 2) {
+        return line;
+    }
+    std::size_t characters = 0;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        // A UTF-8 continuation byte is part of the character before it.
+        if ((static_cast<unsigned char>(line[i]) & 0xc0) != 0x80 && ++characters == columns) {
+            line.resize(i);
+            break;
+        }
+    }
+    return line;
 }
 
 std::string_view typeLabel(TransferItem::Type type)
@@ -148,7 +256,6 @@ public:
         , m_sending(sending)
     {
         m_reported.assign(client.items().size(), false);
-        m_start = nowMs();
     }
 
     void update(bool force)
@@ -163,12 +270,15 @@ public:
             m_reported.resize(items.size(), false);
         }
         std::string out = "\r\x1b[K";
+        // Sizes come from the terminal: the sums saturate instead of wrapping.
+        constexpr auto Most = std::numeric_limits<std::uint64_t>::max();
         std::uint64_t total = 0;
         std::uint64_t done = 0;
         for (std::size_t i = 0; i < items.size(); ++i) {
             const auto& item = items[i];
-            total += item.size;
-            done += std::min(item.done, item.size);
+            total = item.size > Most - total ? Most : total + item.size;
+            const auto moved = std::min(item.done, item.size);
+            done = moved > Most - done ? Most : done + moved;
             if (item.finished && !m_reported[i] && !item.local.empty()) {
                 m_reported[i] = true;
                 const auto& shown = item.local;
@@ -180,9 +290,15 @@ public:
             }
         }
         static const char* spinner[] = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-        const double seconds = double(now - m_start) / 1000.0;
+        // The rate counts from the start of the data, not from the permission prompt.
+        if (m_start < 0 && m_client.state() == State::Running) {
+            m_start = now;
+        }
+        const double seconds = m_start < 0 ? 0.0 : double(now - m_start) / 1000.0;
         std::string line = std::string(spinner[(now / 100) % 10]) + " ";
-        if (m_client.state() == State::Asking) {
+        if (m_client.state() == State::Canceling) {
+            line += "Canceling the transfer…";
+        } else if (m_client.state() == State::Asking) {
             line += m_sending || !items.empty() ? "Waiting for the terminal…" : "Waiting for the file list…";
         } else if (total == 0) {
             line += "Transferring metadata…";
@@ -192,14 +308,10 @@ public:
                 line += " @ " + humanSize(std::uint64_t(double(done) / seconds)) + "/s";
             }
             const int width = 20;
-            const int filled = int(double(width) * double(done) / double(total));
+            const int filled = std::clamp(int(double(width) * double(done) / double(total)), 0, width);
             line += " [" + std::string(std::size_t(filled), '#') + std::string(std::size_t(width - filled), '.') + "]";
         }
-        const auto columns = std::size_t(m_tty.size().ws_col);
-        if (columns > 1 && line.size() > columns * 3) {
-            line.resize(columns);
-        }
-        m_tty.write(out + line);
+        m_tty.write(out + fit(std::move(line), std::size_t(m_tty.size().ws_col)));
     }
 
     void clear() { m_tty.write("\r\x1b[K"); }
@@ -209,7 +321,7 @@ private:
     const TransferClient& m_client;
     bool m_sending;
     std::vector<bool> m_reported;
-    long long m_start = 0;
+    long long m_start = -1;
     long long m_last = 0;
 };
 
@@ -238,12 +350,13 @@ int runTransfer(int argc, char** argv)
     options.compress = compress == "never"    ? TransferClientOptions::Compress::Never
         : compress == "always"                ? TransferClientOptions::Compress::Always
                                               : TransferClientOptions::Compress::Auto;
-    if (!readPassword(parsed->value("permissions-bypass"), options.password, error)) {
-        report("transfer", error);
-        return 1;
-    }
+    // Before the password: a read of standard input for a command that cannot run is wasted.
     if (parsed->args.empty()) {
         report("transfer", "Must specify at least one file to transfer");
+        return 1;
+    }
+    if (!readPassword(parsed->value("permissions-bypass"), options.password, error)) {
+        report("transfer", error);
         return 1;
     }
     const auto direction = parsed->value("direction");
@@ -258,7 +371,7 @@ int runTransfer(int argc, char** argv)
         return 1;
     }
     if (sending) {
-        std::printf("Found %zu files and directories, requesting transfer permission…\n", client->items().size());
+        std::printf("Found %s. Asking the terminal for permission…\n", describe(client->items(), false).c_str());
     }
     std::fflush(stdout);
     Tty tty;
@@ -267,77 +380,106 @@ int runTransfer(int argc, char** argv)
         return 1;
     }
     tty.enterModes("\x1b[?25l", "\x1b[?25h");
+    // Statuses that the terminal still sends when the loop stops are read,
+    // not typed into the shell.
+    tty.drainOnRestore();
     Progress progress(tty, *client, sending);
     long long cancelAt = -1;
     bool asked = false;
     bool ttyGone = false;
+    // A second cancel while the terminal has not answered the first.
+    bool abandoned = false;
+    // The signal that canceled the session: the exit status tells it, as a shell expects.
+    int caught = 0;
+    const auto ended = [&] {
+        const auto state = client->state();
+        return state == State::Done || state == State::Failed || state == State::Canceled;
+    };
     auto cancel = [&](std::string_view why) {
-        if (client->state() == State::Canceling) {
-            progress.clear();
-            tty.write("Waiting for the terminal to cancel the transfer…\n");
+        if (ended()) {
             return;
         }
-        progress.clear();
-        tty.write("\x1b[31m" + std::string(why) + "\x1b[39m\n");
+        if (client->state() == State::Canceling) {
+            abandoned = true;
+            return;
+        }
         client->cancel(why);
-        cancelAt = nowMs();
     };
-    while (!client->over()) {
-        if (client->state() == State::Confirm && !asked) {
-            asked = true;
-            progress.clear();
-            std::string list = "The following file transfers will be performed:\n";
-            for (const auto& item : client->items()) {
-                const auto& from = sending ? item.local : item.remote;
-                const auto& to = sending ? item.remote : item.local;
-                if (!from.empty() && !to.empty()) {
-                    list += std::string(typeLabel(item.type)) + " " + printable(from) + " → " + printable(to) + "\n";
+    try {
+        while (!client->over() && !abandoned) {
+            if (client->state() == State::Confirm && !asked) {
+                asked = true;
+                progress.clear();
+                std::string list = "The following file transfers will be performed:\n";
+                for (const auto& item : client->items()) {
+                    const auto& from = sending ? item.local : item.remote;
+                    const auto& to = sending ? item.remote : item.local;
+                    if (!from.empty() && !to.empty()) {
+                        list += std::string(typeLabel(item.type)) + " " + printable(from) + " → " + printable(to) + "\n";
+                    }
+                }
+                list += "Press \x1b[32my\x1b[39m to continue or \x1b[31mn\x1b[39m to abort\n";
+                tty.write(list);
+            }
+            if (tty.pending() < WriteAhead) {
+                std::string out;
+                client->pull(out, WriteAhead);
+                tty.write(out);
+            }
+            std::vector<Input> inputs;
+            // Work left in the client (a delta of a large file) goes on at once.
+            if (!tty.turn(tty.pending() ? 50 : client->hasWork() ? 0 : 100, inputs)) {
+                ttyGone = true;
+                break;
+            }
+            for (const auto& input : inputs) {
+                if (input.type == Input::Type::Osc && input.data.starts_with("5113;")) {
+                    client->receive(std::string_view(input.data).substr(5));
+                } else if (input.type == Input::Type::Interrupt) {
+                    cancel("Canceled by an interrupt");
+                } else if (input.type == Input::Type::Escape) {
+                    if (client->state() == State::Confirm) {
+                        client->confirm(false);
+                    } else {
+                        cancel("Canceled by the user");
+                    }
+                } else if (input.type == Input::Type::Text && client->state() == State::Confirm) {
+                    // The first answer in the text: a quick "y" can arrive with more keys.
+                    const auto answer = std::find_if(input.data.begin(), input.data.end(),
+                                                     [](char c) { return c == 'y' || c == 'Y' || c == 'n' || c == 'N'; });
+                    if (answer != input.data.end()) {
+                        client->confirm(*answer == 'y' || *answer == 'Y');
+                    }
                 }
             }
-            list += "Press \x1b[32my\x1b[39m to continue or \x1b[31mn\x1b[39m to abort\n";
-            tty.write(list);
-        }
-        if (tty.pending() < WriteAhead) {
-            std::string out;
-            client->pull(out, WriteAhead);
-            tty.write(out);
-        }
-        std::vector<Input> inputs;
-        if (!tty.turn(tty.pending() ? 50 : 100, inputs)) {
-            ttyGone = true;
-            break;
-        }
-        for (const auto& input : inputs) {
-            if (input.type == Input::Type::Osc && input.data.starts_with("5113;")) {
-                client->receive(std::string_view(input.data).substr(5));
-            } else if (input.type == Input::Type::Interrupt) {
-                cancel("Interrupt requested, cancelling transfer, transferred files are in undefined state");
-            } else if (input.type == Input::Type::Escape) {
-                if (client->state() == State::Confirm) {
-                    client->confirm(false);
-                    cancelAt = nowMs();
-                } else {
-                    cancel("Interrupt requested, cancelling transfer, transferred files are in undefined state");
+            if (const int signal = tty.takeSignal()) {
+                if (!ended() && !caught) {
+                    caught = signal;
                 }
-            } else if (input.type == Input::Type::Text && client->state() == State::Confirm) {
-                if (input.data == "y" || input.data == "Y") {
-                    client->confirm(true);
-                } else if (input.data == "n" || input.data == "N") {
-                    client->confirm(false);
-                    cancelAt = nowMs();
-                }
+                cancel(signal == SIGINT    ? "Canceled by an interrupt"
+                           : signal == SIGHUP ? "Canceled because the terminal hung up"
+                                              : "Canceled by a termination signal");
+            }
+            tty.takeResize();
+            // Also a cancel that the library sent for a reason of its own.
+            if (client->state() == State::Canceling && cancelAt < 0) {
+                cancelAt = nowMs();
+            }
+            if (cancelAt >= 0 && nowMs() - cancelAt > CancelWaitMs) {
+                break;
+            }
+            if (client->state() != State::Confirm) {
+                progress.update(false);
             }
         }
-        if (const int signal = tty.takeSignal()) {
-            cancel(signal == SIGINT ? "Interrupt requested, cancelling transfer" : "Terminate requested, cancelling transfer");
-        }
-        tty.takeResize();
-        if (cancelAt >= 0 && nowMs() - cancelAt > CancelWaitMs) {
-            break;
-        }
-        if (client->state() != State::Confirm) {
-            progress.update(false);
-        }
+    } catch (...) {
+        // The terminal ends the session too, else it waits for files that never come.
+        client->cancel("Internal error");
+        std::string out;
+        client->pull(out, WriteAhead);
+        // restore() writes it as the Tty goes out of scope.
+        tty.write(out);
+        throw;
     }
     if (!ttyGone) {
         progress.update(true);
@@ -346,14 +488,18 @@ int runTransfer(int argc, char** argv)
     tty.restore();
     int code = 0;
     const auto& items = client->items();
-    std::size_t failed = 0;
-    for (const auto& item : items) {
-        failed += item.error.empty() ? 0 : 1;
-    }
+    const bool failed = std::any_of(items.begin(), items.end(), [](const TransferItem& item) { return !item.error.empty(); });
     if (client->state() != State::Done) {
-        const auto& why = client->error();
-        report("transfer", why.empty() ? (ttyGone ? "The terminal closed" : "The transfer was canceled") : why);
-        code = 1;
+        std::string why = client->error();
+        if (why.empty()) {
+            why = ttyGone ? "The terminal closed" : "The transfer was canceled";
+        }
+        // Completed files took their names. The others left no file.
+        if (std::any_of(items.begin(), items.end(), [](const TransferItem& item) { return item.finished && item.error.empty(); })) {
+            why += ". The files that were complete before it are in place";
+        }
+        report("transfer", why);
+        code = caught ? 128 + caught : 1;
     } else {
         if (client->deltaFileBytes() > 0) {
             const auto moved = client->deltaBytes() + client->signatureBytes();
@@ -363,7 +509,7 @@ int runTransfer(int argc, char** argv)
                         100.0 * double(moved) / double(client->deltaFileBytes()));
         }
         if (failed) {
-            std::fprintf(stderr, "Transfer of %zu out of %zu files failed\n", failed, items.size());
+            std::fprintf(stderr, "Failed to transfer %s:\n", describe(items, true).c_str());
             for (const auto& item : items) {
                 if (!item.error.empty()) {
                     std::fprintf(stderr, "%s\n  %s\n", printable(item.local.empty() ? item.remote : item.local).c_str(),

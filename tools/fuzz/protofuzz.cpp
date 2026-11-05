@@ -197,8 +197,13 @@ void checkWritten(const AfterglowProto::GraphicsCommand& command, std::string_vi
         const std::size_t semi = body.find(';');
         const GraphicsCommand read = GraphicsCommand::parse(body.substr(0, semi));
         const bool last = end + 2 == written.size();
-        // The first command carries the keys. The others carry only m and q.
+        // The first command carries the keys. The others carry only m and q,
+        // and a=f for a frame.
         GraphicsCommand expected = at == 0 ? command : GraphicsCommand{};
+        if (at != 0 && command.action == 'f') {
+            expected.action = 'f';
+            expected.hasAction = true;
+        }
         expected.more = chunked && !last ? 1 : 0;
         expected.quiet = command.quiet;
         if (read != expected) {
