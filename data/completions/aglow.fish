@@ -10,6 +10,7 @@ complete -c aglow -n "not __fish_seen_subcommand_from $commands" -a icat -d 'Sho
 complete -c aglow -n "not __fish_seen_subcommand_from $commands" -a clipboard -d 'Read and write the clipboard, with any MIME type'
 complete -c aglow -n "not __fish_seen_subcommand_from $commands" -l version -s v -d 'Show the version'
 complete -c aglow -n "not __fish_seen_subcommand_from $commands" -l help -s h -d 'Show the help'
+complete -c aglow -n "__fish_seen_subcommand_from $commands" -l help -d 'Show the help'
 
 set -l t "__fish_seen_subcommand_from transfer"
 complete -c aglow -n $t -F

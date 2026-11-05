@@ -42,7 +42,11 @@ function __afterglow_window
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
         __afterglow_print ctl\t'Drive a running afterglow' run\t'Run a command of a script' \
-            ssh\t'ssh with the remote side prepared'
+            ssh\t'ssh with the remote side prepared' \
+            transfer\t'Copy files to and from the computer of the terminal' \
+            dnd\t'Drag files and data out of the terminal, and drop them in' \
+            icat\t'Show images in the terminal' \
+            clipboard\t'Read and write the clipboard, with any MIME type'
         return
     end
     set -l offer
@@ -229,6 +233,9 @@ function __afterglow_complete
             __afterglow_ctl $words[2..]
         case run
             __afterglow_run $words[2..]
+        case transfer dnd icat clipboard
+            # These run aglow, which completes the same arguments.
+            complete -C "$(string join ' ' -- aglow (string escape -- $words)) $(commandline -ct)"
         case '*'
             __afterglow_window $words
     end

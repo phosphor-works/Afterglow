@@ -254,6 +254,18 @@ _afterglow()
             _afterglow_run
             return
             ;;
+        transfer | dnd | icat | clipboard)
+            # These run aglow, whose completion reads its command at the same position.
+            if ! declare -F _aglow >/dev/null; then
+                if declare -F _comp_load >/dev/null; then
+                    _comp_load -- aglow
+                elif declare -F _completion_loader >/dev/null; then
+                    _completion_loader aglow
+                fi
+            fi
+            declare -F _aglow >/dev/null && _aglow
+            return
+            ;;
         esac
     fi
 
@@ -282,7 +294,7 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl run ssh
+        _afterglow_matching ctl run ssh transfer dnd icat clipboard
         return
     fi
     local start=1

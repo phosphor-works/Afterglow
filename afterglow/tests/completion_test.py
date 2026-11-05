@@ -130,7 +130,15 @@ class Shells:
         for d, stub in ((self.bin, STUB), (self.other, STUB.replace('$STUB_IDS', OTHER_ID))):
             (d / 'afterglow').write_text(stub)
             (d / 'afterglow').chmod(0o755)
+        # Fish loads the completion of a command only when the command is on PATH.
+        (self.bin / 'aglow').write_text('#!/bin/sh\nexit 1\n')
+        (self.bin / 'aglow').chmod(0o755)
         shutil.copy(COMPLETIONS / 'afterglow.fish', self.fish_dir / 'afterglow.fish')
+        shutil.copy(COMPLETIONS / 'aglow.fish', self.fish_dir / 'aglow.fish')
+        # Where bash-completion loads the completion of aglow from, as it does for an installed one.
+        bash_dir = tmp / '.local/share/bash-completion/completions'
+        bash_dir.mkdir(parents=True)
+        shutil.copy(COMPLETIONS / 'aglow.bash', bash_dir / 'aglow')
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ.get("PATH", "/usr/bin:/bin")}',
                         STUB_LOG=str(self.log), STUB_IDS='nav\nscene', HOME=str(tmp),
                         XDG_CONFIG_HOME=str(tmp / '.config'), XDG_DATA_HOME=str(tmp / '.local/share'),
@@ -150,7 +158,8 @@ class Shells:
         words = words or bash_words(line)[0]
         cword = len(words) - 1
         script = '''
-            [[ -n $HELPERS ]] && source "$HELPERS"
+            # Without bash-completion nothing loads a completion on demand: source it, as a user must.
+            if [[ -n $HELPERS ]]; then source "$HELPERS"; else source "$AGLOW"; fi
             source "$COMPLETION"
             COMP_CWORD=$1; shift
             COMP_WORDS=("$@")
@@ -160,7 +169,7 @@ class Shells:
             printf '%s\\n' "${COMPREPLY[@]}"
         '''
         env = dict(env or self.env, HELPERS=str(helpers or ''), COMPLETION=str(COMPLETIONS / 'afterglow.bash'),
-                   LINE=line)
+                   AGLOW=str(COMPLETIONS / 'aglow.bash'), LINE=line)
         out = self.run(['bash', '--norc', '--noprofile', '-c', script, 'bash', str(cword), *words], env)
         return {w.rstrip('/') for w in out.splitlines() if w}
 
@@ -208,7 +217,7 @@ def cases(ctl_commands, paneless):
         return lambda got: not set(words) & got
 
     files = {'adir', 'afile'}
-    yield 'afterglow ', {'ctl', 'run', 'ssh'}
+    yield 'afterglow ', {'ctl', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
     # The word at the cursor is the subcommand itself.
     yield 'afterglow ss', {'ssh'}
     # A subcommand only comes first.
@@ -257,6 +266,13 @@ def cases(ctl_commands, paneless):
     yield 'afterglow ctl open-directory adir ', {'--layout'}
     yield 'afterglow ctl action ', {'script:nav.open', 'script:nav.list'}
     yield 'afterglow ctl watch ', set()
+    # The commands of aglow complete as they do for aglow.
+    yield 'afterglow tr', {'transfer'}
+    yield 'afterglow transfer --direction ', {'upload', 'download', 'send', 'receive'}
+    yield 'afterglow transfer --mode n', {'normal'}
+    yield 'afterglow dnd --exit-on ', {'drag-finish', 'drop-finish', 'esc-key'}
+    yield 'afterglow icat --no-trailing', {'--no-trailing-newline'}
+    yield 'afterglow clipboard -', has('--help')
 
 
 FULL_CASES = ('afterglow -e ech', 'afterglow --title x -e ech', 'afterglow ctl split -- ech',

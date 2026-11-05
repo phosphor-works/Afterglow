@@ -131,6 +131,10 @@ _afterglow() {
         'ctl:drive a running afterglow'
         'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
+        'transfer:copy files to and from the computer of the terminal'
+        'dnd:drag files and data out of the terminal, and drop them in'
+        'icat:show images in the terminal'
+        'clipboard:read and write the clipboard, with any MIME type'
     )
     # A subcommand only comes first, and the word at the cursor is not one yet.
     if (( CURRENT > 2 )); then
@@ -149,6 +153,11 @@ _afterglow() {
             # The rest is ssh's command line.
             shift words; (( CURRENT-- ))
             _normal
+            return
+            ;;
+        transfer|dnd|icat|clipboard)
+            # These run aglow, whose completion reads its command at the same position.
+            (( $+functions[_aglow] )) && _aglow
             return
             ;;
         esac
