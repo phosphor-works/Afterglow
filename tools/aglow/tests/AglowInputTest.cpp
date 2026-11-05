@@ -548,6 +548,7 @@ TEST(AglowTty, TheDrainReadsPastOutputAfterTheLastQuery)
     terminal.say("\x1b[1;1R");
     const auto after = terminal.output.find("\x1b[6n");
     ASSERT_NE(after, std::string::npos);
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1, after) >= 1; }));
     const auto fences = terminal.count(Da1, after);
     EXPECT_GE(fences, 1u);
     for (std::size_t i = 0; i < fences; ++i) {
@@ -581,20 +582,23 @@ TEST(AglowTty, AReopenStartsWithoutTheLastSession)
         std::vector<std::string> answers;
         const long long deadline = nowMs() + 5000;
         bool continued = false;
-        while (!continued && nowMs() < deadline) {
+        // The key comes after the answers: once it is read, so are they.
+        bool key = false;
+        while (!(continued && key) && nowMs() < deadline) {
             inputs.clear();
             tty.turn(50, inputs);
             for (const auto& input : inputs) {
                 if (isDa1Answer(input)) {
                     answers.push_back(input.data);
                 }
+                key |= input.type == Input::Type::Text && input.data == "k";
             }
-            continued = tty.takeResize();
+            continued |= tty.takeResize();
         }
         turnFor(tty, 200, inputs);
         const long long start = nowMs();
         tty.restore();
-        if (!continued) {
+        if (!continued || !key) {
             return 1;
         }
         if (answers != std::vector<std::string> { "?62;2c" }) {
@@ -606,11 +610,97 @@ TEST(AglowTty, AReopenStartsWithoutTheLastSession)
     terminal.say("\x1b[?62;1c");
     // The second open, and its command's query.
     ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 4; }));
-    terminal.say("\x1b[?62;1c\x1b[?62;2c");
+    terminal.say("\x1b[?62;1c\x1b[?62;2ck");
     terminal.settle(100);
     const auto before = terminal.output.size();
     stopAndContinue(terminal);
     EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[=1;1u", before) != std::string::npos; }));
     EXPECT_EQ(terminal.wait(), 0);
     EXPECT_EQ(terminal.output.find("\x1b[?1002h", before), std::string::npos);
+}
+
+// The output that restore() writes while the terminal reads nothing.
+// Larger than the buffers of a pseudo-terminal, so that the first flush
+// waits.
+constexpr std::size_t Blocking = 256 * 1024;
+
+// A continue while restore() writes the output that came before the reset
+// sets the modes again: they go out before the reset, which turns them off.
+TEST(AglowTty, AContinueBeforeTheResetSetsTheModes)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.enterModes("\x1b[?1002h", "\x1b[?1002l", "\x1b[?1002h");
+        tty.write(std::string(Blocking, 'x'));
+        return tty.restore() ? 0 : 101;
+    }));
+    // Nothing is read: the program waits in the first flush of restore().
+    ::usleep(300 * 1000);
+    stopAndContinue(terminal);
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    terminal.say("\x1b[?62c");
+    EXPECT_EQ(terminal.wait(), 0);
+    const auto resumed = terminal.output.find("\x1b[?2004h\x1b[?1002h\x1b[=1;1u");
+    ASSERT_NE(resumed, std::string::npos);
+    EXPECT_LT(resumed, terminal.output.find("\x1b[?1002l"));
+}
+
+// The keys and the code cut short that restore() read go with its session:
+// a Tty that opens again gets neither.
+TEST(AglowTty, AReopenGetsNoInputOfTheLastSession)
+{
+    auto typed = [](const std::vector<Input>& inputs, char c) {
+        return std::any_of(inputs.begin(), inputs.end(), [&](const Input& i) {
+            return i.type == Input::Type::Text && i.data.find(c) != std::string::npos;
+        });
+    };
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([&] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        // The key after the answer to the query of the open.
+        std::vector<Input> inputs;
+        const long long answered = nowMs() + 3000;
+        while (!typed(inputs, 'a') && nowMs() < answered) {
+            tty.turn(50, inputs);
+        }
+        tty.write(std::string(Blocking, 'x'));
+        tty.restore();
+        if (!tty.open(error)) {
+            return 100;
+        }
+        inputs.clear();
+        const long long deadline = nowMs() + 3000;
+        while (!typed(inputs, 'z') && nowMs() < deadline) {
+            tty.turn(50, inputs);
+        }
+        tty.restore();
+        if (typed(inputs, 'q')) {
+            return 1;
+        }
+        return typed(inputs, 'z') ? 0 : 2;
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    terminal.say("\x1b[?62ca");
+    // The program waits in the first flush of restore(), and reads a key and
+    // the start of a title.
+    ::usleep(300 * 1000);
+    terminal.say("q");
+    ::usleep(100 * 1000);
+    terminal.say("\x1b]2;partial");
+    ::usleep(100 * 1000);
+    // The second open. A parser that still reads the title takes the key.
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 2; }));
+    terminal.say("z");
+    terminal.settle(100);
+    terminal.say("\x1b[?62c");
+    EXPECT_EQ(terminal.wait(), 0);
 }

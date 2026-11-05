@@ -382,7 +382,8 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
-`aglow_icat_decode` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them. `aglow_icat_render` also runs `afterglow_renderpng` without it.
+`aglow_icat_decode` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them.
+`aglow_icat_render` also runs `afterglow_renderpng` without it.
 It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 
 `aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.

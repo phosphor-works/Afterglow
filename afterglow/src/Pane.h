@@ -290,25 +290,27 @@ private:
     bool m_protocolLostReset = false; ///< guarded by m_mutex
     bool m_protocolStaleReset = false; ///< GUI thread
     /// Posts @p command to m_protocolCommands and wakes deliverProtocolCommands.
+    /// The caller holds m_mutex.
     void postProtocolCommand(std::function<void()> command);
-    /// GUI thread: runs a posted command, or parks it behind the replies
-    /// that file transfer still owes.
-    void runProtocolCommand(std::function<void()> command);
+    /// GUI thread: writes reports that waited, and frees their budget.
+    void writeReports(const std::string& reports);
     /// GUI thread: the file transfer worker wrote the replies of one command.
     void endAnswerHold();
-    // The posted protocol commands that have not run, the parked ones, and
-    // the file transfer commands whose replies are not written. While one
-    // waits, the terminal's own reports wait behind it: a program reads a DA1
-    // answer as the fence after the replies to what it wrote before the query.
+    // The posted protocol commands that have not run, and the file transfer
+    // commands whose replies are not written. While one waits, the terminal's
+    // own reports wait behind it: a program reads a DA1 answer as the fence
+    // after the replies to what it wrote before the query. Commands do not
+    // wait: a drag event takes OSC 72 answers while a file transfer works.
     std::atomic<std::size_t> m_protocolQueued{0};
     // The reports that wait behind protocol commands. One posted closure
     // writes each batch. A command posted after a batch closes it, and the
     // next report starts a new one. The bytes count in m_protocolBytes.
     std::shared_ptr<std::string> m_openReports; ///< guarded by m_mutex
-    // The file transfer commands whose replies the worker has not written.
-    // The commands posted after them wait in m_parkedCommands, in order.
-    int m_answerHolds = 0; ///< GUI thread
-    std::deque<std::function<void()>> m_parkedCommands; ///< GUI thread
+    // The file transfer commands taken and answered. Each parked batch waits
+    // until the commands taken before it are answered.
+    std::uint64_t m_answersBegun = 0; ///< GUI thread
+    std::uint64_t m_answersEnded = 0; ///< GUI thread
+    std::deque<std::pair<std::uint64_t, std::string>> m_parkedReports; ///< GUI thread
     // Counts the posted protocol commands, so that a drag event can wait for
     // the program's answer without an event loop.
     std::mutex m_postedMutex;

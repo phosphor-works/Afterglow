@@ -415,7 +415,8 @@ When `aglow dnd` receives files from another computer, it reads them through the
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
-| Directories that `aglow dnd` keeps open in one drop from another computer | 192 | A directory past the limit comes without its entries. `aglow dnd` reports that some dropped entries could not be read, and the drop is a copy, not a move. |
+| Directories that `aglow dnd` keeps open in one drop from another computer | 192 | A directory past the limit comes without its entries. `aglow dnd` reports that some dropped entries could not be read. The drop is a copy, not a move. When the source permits only a move, the drop takes no action. |
+
 Afterglow rejects file reads before a drop occurs.
 It also rejects file reads for a drag that starts in any Afterglow window.
 A read of a file in the temporary directory of a remote drag is the exception.

@@ -376,6 +376,17 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
     }
 }
 
+void InputParser::reset()
+{
+    m_state = State::Ground;
+    m_buffer.clear();
+    m_text.clear();
+    m_overflow = false;
+    m_unambiguous = false;
+    m_keyboardReply = -1;
+    m_pasteMatch = 0;
+}
+
 void InputParser::timeout(std::vector<Input>& out)
 {
     if (!waitingAfterEscape()) {
@@ -458,7 +469,6 @@ bool Tty::restore()
     if (m_fd < 0) {
         return m_restored;
     }
-    m_restoring = true;
     bool ok = flush(RestoreMs);
     std::string reset;
     if (!ok) {
@@ -476,6 +486,7 @@ bool Tty::restore()
         reset += PopKeyboard;
         reset += "\x1b[?2004l";
     }
+    m_restoring = true;
     m_out += reset;
     ok = flush(RestoreMs) && ok;
     if (ok && (m_drain || !m_queries.empty())) {
@@ -493,8 +504,11 @@ bool Tty::restore()
     ::close(m_fd);
     m_fd = -1;
     // A Tty that opens again starts a new session: the answers to queries
-    // that the drain gave up on would go to the queries of that one.
+    // that the drain gave up on would go to the queries of that one, and
+    // the keys that came during the restore were meant for this one.
     m_queries.clear();
+    m_kept.clear();
+    m_parser.reset();
     m_resume.clear();
     m_drain = false;
     m_restoring = false;
@@ -558,9 +572,9 @@ bool Tty::step(int timeoutMs, std::vector<Input>& inputs)
         }
     }
     // Back from a stop: the shell set its own modes meanwhile, and drew over
-    // the screen. During restore() the reset may be out already, and modes
-    // written after it would outlast the program: only the raw modes come
-    // back, so that the replies that the drain reads are not echoed.
+    // the screen. Once restore() has queued the reset, modes written after
+    // it would outlast the program: only the raw modes come back, so that
+    // the replies that the drain reads are not echoed.
     if (continued.exchange(false) && m_raw) {
         ::tcsetattr(m_fd, TCSANOW, &m_rawModes);
         if (!m_restoring) {
@@ -634,11 +648,12 @@ bool Tty::flush(int timeoutMs)
 bool Tty::drain(int timeoutMs)
 {
     // The terminal answers in order: what it sent before the answer to the
-    // last DA1 query is read here, and dropped. A query after all output
-    // marks the end: without one, the replies to what was written after the
-    // last query on its way would reach the shell.
+    // last DA1 query is read here, and dropped. With drainOnRestore(), a
+    // query after all output marks the end: without one, the replies to
+    // what was written after the last query on its way would reach the
+    // shell. Without it, restore() drains only up to the open queries.
     m_kept.clear();
-    if (m_drain || m_queries.empty()) {
+    if (m_drain) {
         query(true);
     }
     const long long start = nowMs();

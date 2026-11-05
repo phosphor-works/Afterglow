@@ -704,15 +704,17 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
             }
             return ok;
         };
+        auto directoryThere = [&] {
+            struct stat existing { };
+            return ::fstatat(to, name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(existing.st_mode);
+        };
         if (renameError == EXDEV) {
             // @p to is on another file system: the merge went into a mount
             // point or a btrfs subvolume inside the drop directory. A
             // directory that is there takes the entries one by one. Anything
             // else is copied next to its place, on that file system, and
             // renamed into it: it replaces a file as the rename would have.
-            struct stat existing { };
-            if (S_ISDIR(st.st_mode) && ::fstatat(to, name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0
-                && S_ISDIR(existing.st_mode)) {
+            if (S_ISDIR(st.st_mode) && directoryThere()) {
                 if (!merge()) {
                     return false;
                 }
@@ -742,8 +744,11 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
         }
         // EBUSY: the directory there is a mount point, which no rename
         // replaces. The merge goes into it, where each entry gets EXDEV.
+        // Other file systems (CIFS, FUSE) give EBUSY without a directory
+        // there, and the drop names that error.
         if (S_ISDIR(st.st_mode)
-            && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR || renameError == EBUSY)) {
+            && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR
+                || (renameError == EBUSY && directoryThere()))) {
             if (!merge()) {
                 return false;
             }

@@ -305,6 +305,9 @@ def command_cases(program, options):
     # A flag takes only a yes or no value after its "=", and the completion offers none, and no file.
     yield f'{program} transfer --confirm-paths=', set()
     yield f'{program} icat --hold=a', set()
+    # A flag right before the cursor takes no word: the next word is a file or an option.
+    yield f'{program} transfer --confirm-paths ', FILES
+    yield f'{program} icat --hold -', has('--align', '--fit')
     # An option that takes a file still gets one after its "=".
     yield f'{program} dnd --drag-thumbnail=a', last_part('=', FILES)
     # After "--" every word is a file, -h too.

@@ -32,17 +32,40 @@ from clipboard_pty import b64, check, run  # noqa: E402
 OPEN_SYSCALLS = {"x86_64": {"2", "257"}, "aarch64": {"56"}}.get(os.uname().machine, set())
 
 
-def blocked_in_open(pid):
-    """Whether PID waits in open() for the other end of a FIFO."""
+def wait_channel(pid):
+    """The wait channel of PID, or None when the kernel does not show it."""
     try:
         wchan = Path(f"/proc/{pid}/wchan").read_text().strip()
-        if wchan in ("wait_for_partner", "fifo_open"):
-            return True
-        if wchan not in ("", "0"):
-            return False
-        return Path(f"/proc/{pid}/syscall").read_text().split()[0] in OPEN_SYSCALLS
-    except (OSError, IndexError):
+    except OSError:
+        return None
+    return None if wchan in ("", "0") else wchan
+
+
+def open_call(pid):
+    """The line of /proc/PID/syscall when PID is in open() or openat(), or None."""
+    try:
+        line = Path(f"/proc/{pid}/syscall").read_text().strip()
+    except OSError:
+        return None
+    return line if line.split()[:1] and line.split()[0] in OPEN_SYSCALLS else None
+
+
+def can_see_open():
+    """Whether this kernel shows that a process waits in open(): by its wait channel, or by its system call."""
+    return wait_channel(os.getpid()) is not None or Path("/proc/self/syscall").exists() and bool(OPEN_SYSCALLS)
+
+
+def blocked_in_open(pid):
+    """Whether PID waits in open() for the other end of a FIFO. Without a wait channel, the same open() call
+    must show two times, 50 ms apart: an open() that does not block is over by then."""
+    wchan = wait_channel(pid)
+    if wchan is not None:
+        return wchan in ("wait_for_partner", "fifo_open")
+    first = open_call(pid)
+    if first is None:
         return False
+    time.sleep(0.05)
+    return open_call(pid) == first
 
 
 class ExtraReply:
@@ -117,6 +140,9 @@ def main():
         # aglow waits in that open().
         os.mkfifo(root / "fifo")
         fork = clipboard_pty.pty.fork
+        if not can_see_open():
+            print("a FIFO without a reader: skipped, the kernel shows no wait channel and no system call", flush=True)
+            return
         stop = threading.Event()
         blocked = threading.Event()
         watchers = []

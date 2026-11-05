@@ -44,6 +44,9 @@ public:
     /// They are that key when none follows in a short time: timeout().
     void timeout(std::vector<Input>& out);
     bool waitingAfterEscape() const;
+    /// Forgets a code or paste cut short and the keyboard mode, as for a
+    /// new terminal session. The settings of allowLongOsc() stay.
+    void reset();
     /// The terminal reports keys in kitty's keyboard protocol: the Esc key
     /// arrives as CSI 27 u, so a lone ESC is always the start of an escape code.
     void setKeysUnambiguous(bool on) { m_unambiguous = on; }
@@ -163,8 +166,8 @@ private:
     int m_fd = -1;
     bool m_raw = false;
     bool m_drain = false;
-    /// restore() runs: a continue sets the raw modes again, and the modes
-    /// of the command stay off.
+    /// restore() has queued the reset: a continue sets the raw modes again,
+    /// and the modes of the command stay off.
     bool m_restoring = false;
     /// A DA1 query that has no answer yet. The terminal answers in order.
     struct Query

@@ -250,6 +250,17 @@ QByteArray answers(Pane& pane, const char* script, const QList<QByteArray>& expe
     return input;
 }
 
+/// Routes the protocols as the window does.
+void route(Pane& pane)
+{
+    QObject::connect(&pane, &Pane::terminalProtocolRequested, &pane, [&pane](int code, const QByteArray& payload) {
+        if (code == 72)
+            pane.dragDrop()->handle(payload);
+        else if (code == 5113)
+            pane.fileTransfers()->handle(payload);
+    });
+}
+
 TEST_F(PaneProtocol, ReportsThatWaitForACommandShareOneQueuedCall)
 {
     // A program that writes one command and then a flood of queries does
@@ -286,33 +297,84 @@ TEST_F(PaneProtocol, ReportsThatWaitPastTheBudgetAreRefused)
 
 TEST_F(PaneProtocol, EachReportFollowsOnlyTheCommandsBeforeIt)
 {
-    QObject::connect(&pane, &Pane::terminalProtocolRequested, &pane, [this](int code, const QByteArray& payload) {
-        if (code == 72)
-            pane.dragDrop()->handle(payload);
-    });
+    route(pane);
     const QByteArray reply = "\x1b]72;m=0:t=E;EINVAL\x1b\\";
     const auto input = answers(pane, R"(printf '\033]72;t=e:x=1\033\\\033[c\033]72;t=e:x=1\033\\\033[cx')",
                                { reply + DeviceAttributes + reply + DeviceAttributes });
-    EXPECT_EQ(input, reply + DeviceAttributes + reply + DeviceAttributes);
+    EXPECT_EQ(input.toStdString(), (reply + DeviceAttributes + reply + DeviceAttributes).toStdString());
 }
 
 TEST_F(PaneProtocol, ADeviceReportFollowsTheRepliesOfTheFileTransferWorker)
 {
     // The worker answers a file transfer command after the command's closure
-    // returned. The report, and the drag and drop command after it, wait.
-    QObject::connect(&pane, &Pane::terminalProtocolRequested, &pane, [this](int code, const QByteArray& payload) {
-        if (code == 72)
-            pane.dragDrop()->handle(payload);
-        else if (code == 5113)
-            pane.fileTransfers()->handle(payload);
-    });
+    // returned. Each report waits for the commands before it, and only for those.
+    route(pane);
     // EINVAL, in base64.
-    const QByteArray status = "\x1b]5113;ac=status;id=x;st=RUlOVkFM\x1b\\";
-    const QByteArray reply = "\x1b]72;m=0:t=E;EINVAL\x1b\\";
+    const QByteArray first = "\x1b]5113;ac=status;id=x;st=RUlOVkFM\x1b\\";
+    const QByteArray second = "\x1b]5113;ac=status;id=y;st=RUlOVkFM\x1b\\";
     const auto input = answers(pane,
-        R"(printf '\033]5113;ac=receive;id=x;sz=0\033\\\033[c\033]72;t=e:x=1\033\\x')",
-        { status, QByteArray(DeviceAttributes), reply });
-    EXPECT_EQ(input, status + DeviceAttributes + reply);
+        R"(printf '\033]5113;ac=receive;id=x;sz=0\033\\\033[c\033]5113;ac=receive;id=y;sz=0\033\\\033[cx')",
+        { first + DeviceAttributes + second + DeviceAttributes });
+    EXPECT_EQ(input.toStdString(), (first + DeviceAttributes + second + DeviceAttributes).toStdString());
+}
+
+TEST_F(PaneProtocol, ADragCommandDoesNotWaitForAFileTransfer)
+{
+    // A drag event delivers the program's OSC 72 answer while the worker
+    // still owes the replies of a file transfer command.
+    route(pane);
+    feed("\x1b]5113;ac=receive;id=x;sz=0\x1b\\");
+    feed(commands(72, 1));
+    pane.deliverProtocolCommands();
+    EXPECT_EQ(codes, (QList<int> { 5113, 72 }));
+}
+
+TEST_F(PaneProtocol, ADeviceReportAfterACanceledDownloadIsAnswered)
+{
+    // A cancel drops the packets of the download that wait in the worker's
+    // queue. The report after it must not wait for them.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString large = dir.filePath(QStringLiteral("large"));
+    {
+        QFile source(large);
+        ASSERT_TRUE(source.open(QIODevice::WriteOnly));
+        QByteArray data(8 * 1024 * 1024, '\0');
+        quint32 seed = 1;
+        for (auto& c : data)
+            c = char((seed = seed * 1664525u + 1013904223u) >> 24);
+        source.write(data);
+    }
+    route(pane);
+    QObject::connect(&pane, &Pane::fileTransferPermissionRequested, &pane,
+                     [this](const QString& token, bool, const QStringList&, int) { pane.fileTransfers()->approve(token, true); });
+    const QString out = dir.filePath(QStringLiteral("input"));
+    AfterglowPty::SpawnOptions options;
+    options.argv = { "/bin/sh", "-c", R"(stty raw -echo && printf x && exec cat > "$0")", QFile::encodeName(out).toStdString() };
+    QString error;
+    ASSERT_TRUE(pane.start(options, QStringLiteral("xterm-256color"), 20, 5, 10, 20, &error)) << error.toStdString();
+    ASSERT_TRUE(waitFor([&] { return pane.text(AfterglowVt::Terminal::TextScope::Screen).contains(QLatin1Char('x')); }));
+    const std::string name = large.toUtf8().toBase64(QByteArray::OmitTrailingEquals).toStdString();
+    QByteArray input;
+    const auto read = [&](const QByteArray& wanted) {
+        return waitFor([&] {
+            QFile file(out);
+            input = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+            return input.contains(wanted);
+        });
+    };
+    feed("\x1b]5113;id=t;ac=receive;sz=1\x1b\\\x1b]5113;id=t;ac=file;fid=request;n=" + name + "\x1b\\");
+    ASSERT_TRUE(read("ac=file;"));
+    // The GUI thread runs the commands and no other events: the download
+    // fills the worker's queue.
+    feed("\x1b]5113;id=t;ac=file;fid=data;n=" + name + "\x1b\\");
+    pane.deliverProtocolCommands();
+    QThread::msleep(300);
+    feed("\x1b]5113;id=t;ac=cancel\x1b\\");
+    pane.deliverProtocolCommands();
+    QThread::msleep(300);
+    feed("\x1b[c");
+    EXPECT_TRUE(read(DeviceAttributes)) << input.right(200).toStdString();
 }
 
 TEST(PaneAnimation, AnImageScrolledBackIntoViewShowsItsCurrentFrameAtOnce)

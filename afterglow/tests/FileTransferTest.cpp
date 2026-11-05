@@ -967,9 +967,126 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
     EXPECT_EQ(prompted.last(), dir.filePath(QStringLiteral("99")));
     EXPECT_EQ(promptedTotal, 150);
 }
-// The client of afterglow-proto (aglow transfer) against this service, as
-// they talk through a terminal: each OSC 5113 sequence of one side reaches
-// the other side whole.
+// answered() follows every handled command once, also when the packets
+// that it waits for are dropped. The pane holds the terminal's reports until
+// then, so one that is missing stops them for the life of the pane.
+struct Answers : Transfer {
+    int answering = 0, answered = 0;
+    void SetUp() override
+    {
+        Transfer::SetUp();
+        QObject::connect(&service, &FileTransfer::answering, &service, [this] { ++answering; });
+        QObject::connect(&service, &FileTransfer::answered, &service, [this] { ++answered; });
+    }
+    // The GUI thread runs no events meanwhile: the worker fills its delivery
+    // window, and packets wait in its queue.
+    static void busy() { QThread::msleep(300); }
+    // A download of a large file whose packets wait in the queue.
+    bool download(const QByteArray& options = { })
+    {
+        QFile source(dir.filePath(QStringLiteral("large")));
+        if (!source.open(QIODevice::WriteOnly))
+            return false;
+        QByteArray data(8 * 1024 * 1024, '\0');
+        quint32 seed = 1;
+        for (auto& c : data)
+            c = char((seed = seed * 1664525u + 1013904223u) >> 24);
+        source.write(data);
+        source.close();
+        send("ac=receive;sz=1" + options);
+        send("ac=file;fid=request;n=" + path("large"));
+        if (!waitFor([&] { return !token.isEmpty(); }))
+            return false;
+        service.approve(token, true);
+        if (!waitFor([&] {
+                return std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("ac=file;"); });
+            }))
+            return false;
+        send("ac=file;fid=data;n=" + path("large"));
+        busy();
+        return true;
+    }
+    bool balanced()
+    {
+        waitFor([&] { return answered == answering; });
+        return answered == answering;
+    }
+};
+TEST_F(Answers, ACancelDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    send("ac=cancel");
+    busy();
+    ASSERT_TRUE(status("CANCELED"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AQuietCancelDuringADownloadAnswersEveryCommand)
+{
+    // The cancel of a quiet session queues no status of its own.
+    ASSERT_TRUE(download(";q=2"));
+    send("ac=cancel");
+    busy();
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AnAbortDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    service.abort();
+    busy();
+    ASSERT_TRUE(status("ENOMEM"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, ACommandOverTheLimitDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    service.handle("id=test;ac=data;x=" + QByteArray(qsizetype(AfterglowProto::TransferMaxCommand) + 1, 'a'));
+    busy();
+    ASSERT_TRUE(status("ENOMEM"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AResetDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    service.reset();
+    busy();
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, ProgressThatReplacesAWaitingProgressAnswersEveryCommand)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;n=" + path("upload"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    // More progress statuses than the delivery window holds: the newest
+    // replaces the one that waits.
+    for (int i = 0; i < 4000; ++i)
+        send("ac=data;fid=f;d=" + b64("data"));
+    busy();
+    send("ac=end_data;fid=f");
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, CommandsRefusedWhileTheInputQueueIsFullAreAnswered)
+{
+    // A listing keeps the worker busy while more than its input queue of
+    // 16 MiB waits for it.
+    ASSERT_TRUE(QDir(dir.path()).mkpath(QStringLiteral("many")));
+    for (int i = 0; i < 5000; ++i) {
+        QFile entry(dir.filePath(QStringLiteral("many/%1").arg(i)));
+        ASSERT_TRUE(entry.open(QIODevice::WriteOnly));
+    }
+    send("ac=receive;sz=1");
+    send("ac=file;fid=d;n=" + path("many"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    QByteArray command = "id=other;ac=data;fid=f;x=";
+    command += QByteArray(qsizetype(AfterglowProto::TransferMaxCommand) - command.size(), 'a');
+    for (int i = 0; i < 1200; ++i)
+        service.handle(command);
+    ASSERT_TRUE(status("ENOMEM"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
 // The descriptor limit of every pane's transfers is half of RLIMIT_NOFILE,
 // fixed at its first use. These tests reach it, so they run in a process with
 // a soft limit of 64 (afterglow_transfer_descriptor_limits), and skip in
@@ -1028,6 +1145,9 @@ TEST_F(TransferLimits, ADeltaReadAtTheLimitStreams)
     EXPECT_FALSE(std::any_of(replies.begin(), replies.end(),
         [](const auto& b) { return b.contains(";fid=last;") && b.contains("st=" + b64("EBUSY")); }));
 }
+// The client of afterglow-proto (aglow transfer) against this service, as
+// they talk through a terminal: each OSC 5113 sequence of one side reaches
+// the other side whole.
 struct Client : Transfer {
     QByteArray noise(int size, quint32 seed)
     {

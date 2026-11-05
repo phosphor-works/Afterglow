@@ -79,7 +79,7 @@ These cases give that error:
 - The file holds less data than `s` × `v` raw pixels.
 - The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
 
-Each screen of a pane has an image work budget. The main screen and the alternate screen each have their own budget.
+The main screen and the alternate screen of a pane each have their own image work budget.
 The budget is 1 GiB, and it fills again at 1 GiB each second.
 
 | Work over the budget | Error |
@@ -88,9 +88,8 @@ The budget is 1 GiB, and it fills again at 1 GiB each second.
 | A frame edit (`a=f`, `a=c`) | `EBUSY:too much frame editing` |
 
 The error ends with `, try again later` when the program can send the same command again.
-For `t=t` and `t=s`, the error does not end so.
-Afterglow deletes that temporary file or shared memory object by the rules above.
-A command that tries again with the same name gets `EBADF:failed to read image file`.
+When Afterglow deletes the temporary file or the shared memory object by the rules above, the error has no `, try again later`.
+A command that tries again with the same name then gets `EBADF:failed to read image file`.
 
 Afterglow reads the file in the thread that reads the program's output.
 While a read waits, for example on a network mount that does not answer, the pane does not change.

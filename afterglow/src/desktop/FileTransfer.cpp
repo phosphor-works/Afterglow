@@ -440,12 +440,15 @@ struct FileTransfer::Worker {
     struct Packet {
         QByteArray bytes, id, fid;
         bool progress = false;
+        // The position of the packet in what the worker queued. It rises
+        // along the queue: every removal keeps the order of the rest.
+        quint64 seq = 0;
     };
     std::deque<Packet> outgoing;
     qsizetype outgoingBytes = 0;
-    // The packets queued and delivered (or dropped) so far, and for each
-    // handled command that waits for answered(), the packets queued before it.
-    quint64 queuedPackets = 0, deliveredPackets = 0;
+    // The position of the last packet queued. For each handled command that
+    // waits for answered(), the position of the last packet that it queued.
+    quint64 queuedPackets = 0;
     std::deque<quint64> fences;
     QTimer* timer = nullptr;
     bool overflow = false;
@@ -499,7 +502,9 @@ struct FileTransfer::Worker {
                 }
                 wake();
             });
-            ++deliveredPackets;
+            // Between the packets: a reply of a later command does not
+            // come before the answer of an earlier one.
+            answer();
         }
         answer();
         // A slow reader (SSH) leaves input waiting in the PTY. Ask again until it drains.
@@ -517,11 +522,13 @@ struct FileTransfer::Worker {
         else if (timer->interval() != 1)
             timer->start(1);
     }
-    // answered() for the commands whose packets are delivered. Posted to the
-    // owner after those packets, so it runs after their reply().
+    // answered() for the commands whose packets left the queue: delivered,
+    // with their reply() posted to the owner before this, or dropped. Call it
+    // after each removal from the queue.
     void answer()
     {
-        while (!fences.empty() && fences.front() <= deliveredPackets) {
+        const quint64 done = outgoing.empty() ? queuedPackets : outgoing.front().seq - 1;
+        while (!fences.empty() && fences.front() <= done) {
             fences.pop_front();
             QMetaObject::invokeMethod(owner, [o = owner] { Q_EMIT o->answered(); });
         }
@@ -531,7 +538,6 @@ struct FileTransfer::Worker {
     {
         outgoing.clear();
         outgoingBytes = 0;
-        deliveredPackets = queuedPackets;
         answer();
     }
     // From any thread: deliver() runs again soon.
@@ -587,16 +593,17 @@ struct FileTransfer::Worker {
                 Qt::QueuedConnection);
             return;
         }
-        Packet packet { bytes, f.value("id"), f.value("fid"), view(f.value("st")) == Status::Progress };
+        Packet packet { bytes, f.value("id"), f.value("fid"), view(f.value("st")) == Status::Progress, 0 };
+        // A newer progress status takes the place of the one that waits, and its position.
         if (packet.progress && !outgoing.empty() && outgoing.back().progress && outgoing.back().id == packet.id
             && outgoing.back().fid == packet.fid) {
+            packet.seq = outgoing.back().seq;
             outgoingBytes -= outgoing.back().bytes.size();
             outgoing.pop_back();
-            --queuedPackets;
-        }
+        } else
+            packet.seq = ++queuedPackets;
         outgoingBytes += bytes.size();
         outgoing.push_back(std::move(packet));
-        ++queuedPackets;
         if (timer && !timer->isActive())
             timer->start(1);
     }
@@ -814,6 +821,9 @@ void FileTransfer::Worker::cancel(const QByteArray& id)
         outgoingBytes -= packet.bytes.size();
         return true;
     });
+    // A quiet session queues no status: the commands that waited only for
+    // the packets erased here are answered now.
+    answer();
     status(*it->second, { }, Status::Canceled);
     remove(id);
 }

@@ -39,13 +39,14 @@ constexpr std::uint32_t DefaultFrameGap = 40;
 constexpr std::string_view FileError = "EBADF:failed to read image file";
 
 /// The answer to a command over the work budget. It asks for a retry only
-/// when the command can be sent again as it was: the temporary file or the
-/// tagged shared memory object of a t=t or t=s command goes with the refusal.
-std::string busyError(char medium, std::string_view what)
+/// when the command can be sent again as it was: not when the refusal
+/// deleted its medium (@p released), the temporary file of a t=t command or
+/// the tagged shared memory object of a t=s command.
+std::string busyError(bool released, std::string_view what)
 {
     std::string error = "EBUSY:too much ";
     error += what;
-    if (medium != 't' && medium != 's') error += ", try again later";
+    if (!released) error += ", try again later";
     return error;
 }
 
@@ -232,15 +233,16 @@ bool temporaryFile(const std::filesystem::path& path)
 /// Deletes @p name in the directory @p parent, whose real path is
 /// @p parentPath, when the protocol hands it to the terminal: a regular file
 /// in a temporary directory, with the tag in its path (temporaryFile()).
-/// With @p opened, only when it is still the file that was read.
-void deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
+/// With @p opened, only when it is still the file that was read. Returns
+/// whether it deleted the file.
+bool deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
                          const struct stat* opened)
 {
-    if (!temporaryFile(parentPath / name)) return;
+    if (!temporaryFile(parentPath / name)) return false;
     struct stat current{};
-    if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return;
-    if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return;
-    unlinkat(parent, name.c_str(), 0);
+    if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return false;
+    if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return false;
+    return unlinkat(parent, name.c_str(), 0) == 0;
 }
 
 } // namespace
@@ -693,10 +695,11 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
     };
     // A refusal by the budget is not a failure to read: the file was opened
     // and found regular, which a read that succeeds tells the client too.
-    auto finish = [&error, &fail, &cmd](ReadResult result) {
+    bool released = false;
+    auto finish = [&error, &fail, &released](ReadResult result) {
         if (result == ReadResult::Done) return true;
         if (result == ReadResult::Busy) {
-            error = busyError(cmd.medium, "image data read");
+            error = busyError(released, "image data read");
             return false;
         }
         return fail();
@@ -737,7 +740,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         // A temporary file is the terminal's to delete whether or not it
         // could use it, as in kitty, so that refused ones do not pile up;
         // only the file that was opened, though.
-        if (cmd.medium == 't') deleteTemporaryFile(parent, actualParent, name, &opened);
+        if (cmd.medium == 't') released = deleteTemporaryFile(parent, actualParent, name, &opened);
         close(fd);
         close(parent);
         if (!finish(result)) return false;
@@ -757,7 +760,9 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         // Only an object named for the protocol is the terminal's to delete.
         // Any other name stays: a command must not delete an unrelated object
         // by naming it, and almost any object decodes as a tiny image.
-        if (name.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) shm_unlink(name.c_str());
+        if (name.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) {
+            released = shm_unlink(name.c_str()) == 0;
+        }
         if (!finish(result)) return false;
         break;
     }
@@ -776,26 +781,26 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
     return true;
 }
 
-void GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
+bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
 {
     // The same rules as loadPayload's: the name a t=s command gives, and the
     // real path of a t=t file below its temporary directory, must carry the tag.
     if (!m_fileTransfer || data.size() > 4096 || data.find('\0') != std::string::npos) {
-        return;
+        return false;
     }
     if (cmd.medium == 's') {
-        if (data.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) shm_unlink(data.c_str());
-        return;
+        return data.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos && shm_unlink(data.c_str()) == 0;
     }
-    if (cmd.medium != 't') return;
+    if (cmd.medium != 't') return false;
     std::error_code ec;
     const auto canonical = std::filesystem::canonical(data, ec);
-    if (ec) return;
+    if (ec) return false;
     const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (parent < 0) return;
+    if (parent < 0) return false;
     const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
-    if (!ec) deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
+    const bool released = !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
     close(parent);
+    return released;
 }
 
 bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out,
@@ -1395,8 +1400,8 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
         return;
     }
     if (!chargeWork(canvasBytes)) {
-        releaseMedium(cmd, data);
-        respond(cmd, ctx, busyError(cmd.medium, "frame editing"), true);
+        const bool released = releaseMedium(cmd, data);
+        respond(cmd, ctx, busyError(released, "frame editing"), true);
         return;
     }
     Command pix = cmd;
@@ -1516,7 +1521,7 @@ void GraphicsStore::compose(const Command& cmdIn, Context& ctx)
     }
     const FramePtr& target = img->frames[std::size_t(cmd.c - 1)];
     if (!chargeWork(target->rgba.size())) {
-        respond(cmd, ctx, busyError(cmd.medium, "frame editing"), true);
+        respond(cmd, ctx, busyError(false, "frame editing"), true);
         return;
     }
     auto dst = std::make_shared<ImageFrame>(*target);

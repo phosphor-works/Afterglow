@@ -818,7 +818,9 @@ void Pane::writeToPty(std::string_view bytes)
     // commands that the program wrote before it. What a command sends later
     // is not ordered: file data, an answer after a permission dialog, the
     // drag data that the pump timer sends after an "r" request. kitty sends
-    // these later too, and the client waits for them anyway.
+    // these later too, and the client waits for them anyway. The reply to an
+    // OSC 72 command after a report can come before a report that waits for
+    // file transfer. Each aglow command uses only one of the two protocols.
     if (m_protocolQueued.load() > 0) {
         const auto size = qsizetype(bytes.size());
         if (m_protocolBytes.fetch_add(size) + size > ProtocolBudget) {
@@ -836,8 +838,16 @@ void Pane::writeToPty(std::string_view bytes)
                     reports = std::move(*batch);
                     if (m_openReports == batch) m_openReports.reset();
                 }
-                m_protocolBytes.fetch_sub(qsizetype(reports.size()));
-                if (m_pty && !m_pty->write(reports)) reportInputFailure();
+                // The file transfer commands before this batch have begun
+                // their holds, and no command after it has run.
+                if (m_answersEnded != m_answersBegun) {
+                    if (!m_parkedReports.empty() && m_parkedReports.back().first == m_answersBegun)
+                        m_parkedReports.back().second += reports;
+                    else
+                        m_parkedReports.emplace_back(m_answersBegun, std::move(reports));
+                    return;
+                }
+                writeReports(reports);
             });
             m_openReports = std::move(batch);
         }
@@ -845,6 +855,12 @@ void Pane::writeToPty(std::string_view bytes)
         return;
     }
     if (m_pty && !m_pty->write(bytes)) reportInputFailure();
+}
+
+void Pane::writeReports(const std::string& reports)
+{
+    m_protocolBytes.fetch_sub(qsizetype(reports.size()));
+    if (m_pty && !m_pty->write(reports)) reportInputFailure();
 }
 
 bool Pane::sendReply(std::string_view bytes)
@@ -1376,9 +1392,9 @@ FileTransfer* Pane::fileTransfers()
         m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
         // The worker writes the replies of a command after its command
-        // closure returned. Until then the commands and reports after it wait.
+        // closure returned. Until then the reports after it wait.
         connect(m_fileTransfers.get(), &FileTransfer::answering, this, [this] {
-            ++m_answerHolds;
+            ++m_answersBegun;
             m_protocolQueued.fetch_add(1);
         });
         connect(m_fileTransfers.get(), &FileTransfer::answered, this, &Pane::endAnswerHold);
@@ -1482,8 +1498,10 @@ void Pane::postProtocolCommand(std::function<void()> command)
     m_protocolQueued.fetch_add(1);
     // A report after this command follows its replies.
     m_openReports.reset();
-    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)]() mutable {
-        runProtocolCommand(std::move(command));
+    // The count drops after the command and the replies that it wrote.
+    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)] {
+        command();
+        m_protocolQueued.fetch_sub(1);
     }, Qt::QueuedConnection);
     {
         std::lock_guard lock(m_postedMutex);
@@ -1491,27 +1509,15 @@ void Pane::postProtocolCommand(std::function<void()> command)
     }
     m_posted.notify_all();
 }
-void Pane::runProtocolCommand(std::function<void()> command)
-{
-    if (m_answerHolds > 0 || !m_parkedCommands.empty()) {
-        m_parkedCommands.push_back(std::move(command));
-        return;
-    }
-    // The count drops after the command and the replies that it wrote.
-    command();
-    m_protocolQueued.fetch_sub(1);
-}
 void Pane::endAnswerHold()
 {
-    --m_answerHolds;
-    // A parked file transfer command holds the rest again.
-    while (m_answerHolds == 0 && !m_parkedCommands.empty()) {
-        auto command = std::move(m_parkedCommands.front());
-        m_parkedCommands.pop_front();
-        command();
-        m_protocolQueued.fetch_sub(1);
+    // The worker answers the commands in order.
+    ++m_answersEnded;
+    while (!m_parkedReports.empty() && m_parkedReports.front().first <= m_answersEnded) {
+        writeReports(m_parkedReports.front().second);
+        m_parkedReports.pop_front();
     }
-    // Last: a report that the program writes meanwhile waits for the parked commands.
+    // Last: a report that the program writes meanwhile waits for the parked ones.
     m_protocolQueued.fetch_sub(1);
 }
 void Pane::deliverProtocolCommands(int waitMs)

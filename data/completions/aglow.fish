@@ -17,7 +17,8 @@ set -g __aglow_values_clipboard -m --mime -a --alias --password --human-name --d
 # only: a file of the same name later on the line is not one. After -h or
 # --help aglow shows the help and reads no other word, so the command
 # completes nothing more. The word after an option that takes a value is
-# that value, -h too.
+# that value, -h too, but not a word that starts with "--", which aglow
+# never takes as a value.
 function __aglow_command
     set -l words (commandline -xpc)
     if not set -q argv[1]
@@ -30,7 +31,7 @@ function __aglow_command
     for word in $words[3..]
         if test $value -eq 1
             set value 0
-            continue
+            string match -q -- '--*' $word; or continue
         end
         switch $word
             case --
@@ -39,19 +40,25 @@ function __aglow_command
                 return 1
             case '--*=*'
             case '--*'
-                contains -- $word $$values; and set value 1
+                if contains -- $word $$values
+                    set value 1
+                end
             case '-*'
                 # Flags together (-cp): a short option that takes a value
                 # takes the rest of the word, or the next word at its end.
                 set -l letters (string split '' -- (string sub -s 2 -- $word))
                 for k in (seq (count $letters))
                     if contains -- -$letters[$k] $$values
-                        test $k -eq (count $letters); and set value 1
+                        if test $k -eq (count $letters)
+                            set value 1
+                        end
                         break
                     end
                 end
         end
     end
+    # The status of the last test above is no answer.
+    return 0
 end
 
 # Whether the word at the cursor is a file operand. A word that starts with -

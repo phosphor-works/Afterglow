@@ -1574,15 +1574,39 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     s.apc("a=t,t=f,f=32,s=1,v=1,i=4", base64Encode(kept.path));
     EXPECT_EQ(s.host.written, "\x1b_Gi=4;EBUSY:too much image data read, try again later\x1b\\");
     EXPECT_TRUE(std::filesystem::exists(kept.path));
-    // A file read and a shared memory read draw on the same budget.
-    const ShmName shm{"/afterglow-graphics-busy-" + std::to_string(getpid())};
-    const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
-    ASSERT_GE(fd, 0);
-    ASSERT_EQ(write(fd, "RGBA", 4), 4);
-    close(fd);
+    // A t=t file without the tag is not the terminal's to delete: it stays,
+    // and the reply asks for a retry.
+    TempFile untagged("afterglow-graphics-busy-");
+    ASSERT_TRUE(untagged.write("RGBA"));
     s.host.written.clear();
-    s.apc("a=t,t=s,f=32,s=1,v=1,i=3", base64Encode(shm.name));
+    s.apc("a=t,t=t,f=32,s=1,v=1,i=5", base64Encode(untagged.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=5;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_TRUE(std::filesystem::exists(untagged.path));
+    // A file read and a shared memory read draw on the same budget. A tagged
+    // object goes with the refusal, and an untagged one stays.
+    const auto object = [](const std::string& name) {
+        const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+        const bool written = fd >= 0 && write(fd, "RGBA", 4) == 4;
+        if (fd >= 0) close(fd);
+        return written;
+    };
+    const auto exists = [](const std::string& name) {
+        const int fd = shm_open(name.c_str(), O_RDONLY, 0);
+        if (fd >= 0) close(fd);
+        return fd >= 0;
+    };
+    const ShmName tagged{"/afterglow-tty-graphics-protocol-busy-" + std::to_string(getpid())};
+    ASSERT_TRUE(object(tagged.name));
+    s.host.written.clear();
+    s.apc("a=t,t=s,f=32,s=1,v=1,i=3", base64Encode(tagged.name));
     EXPECT_EQ(s.host.written, "\x1b_Gi=3;EBUSY:too much image data read\x1b\\");
+    EXPECT_FALSE(exists(tagged.name));
+    const ShmName plain{"/afterglow-graphics-busy-" + std::to_string(getpid())};
+    ASSERT_TRUE(object(plain.name));
+    s.host.written.clear();
+    s.apc("a=t,t=s,f=32,s=1,v=1,i=6", base64Encode(plain.name));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=6;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_TRUE(exists(plain.name));
 }
 
 TEST(Graphics, FrameEditOverTheWorkBudgetIsBusy)

@@ -302,7 +302,8 @@ private:
     void respond(const Command& cmd, Context& ctx, std::string_view status, bool isError);
     /// Deletes the file or shared memory a refused t=t or t=s command names,
     /// when the protocol hands it to the terminal, without reading it.
-    void releaseMedium(const Command& cmd, const std::string& data) const;
+    /// Returns whether it deleted one.
+    bool releaseMedium(const Command& cmd, const std::string& data) const;
     Image* findImage(const Command& cmd);
     /// Rows a placement covers at the given cell size (1 when unknown).
     long long rowsCovered(const Placement& p, int cellWidth, int cellHeight) const;
