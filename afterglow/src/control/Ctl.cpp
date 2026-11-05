@@ -5,6 +5,7 @@
 
 #include "ControlSocket.h"
 #include "IpcClient.h"
+#include "../config/Keybinds.h"
 
 #include <AfterglowProto/Socket.h>
 #include <PhosphorIpc/IpcProtocol.h>
@@ -71,6 +72,8 @@ QStringList events()
     return names;
 }
 
+// Not a setting: a call that answers in a moment, which a client can repeat.
+// Its end tells the user that afterglow hangs, not that the call failed.
 constexpr int ReplyTimeoutMs = 10000;
 
 int fail(const QString& message)
@@ -104,6 +107,15 @@ public:
 
     QString eventName(qint64 subscription) const { return m_client.eventName(subscription); }
 
+    /// $AFTERGLOW_PANE_ID, when the socket is that of the afterglow that
+    /// runs this pane (AfterglowProto::findSocket), else 0. Empty after it
+    /// reported why it cannot connect.
+    std::optional<qint64> ownPane()
+    {
+        if (!connected()) return std::nullopt;
+        return m_pane;
+    }
+
     /// The next event, or nothing after it reported why the stream ended.
     std::optional<QJsonObject> readEvent()
     {
@@ -132,14 +144,21 @@ private:
             return false;
         }
         const QString path = QFile::decodeName(QByteArray::fromStdString(socket.path));
-        m_owner = socket.own ? path : QString();
+        m_own = socket.own;
+        m_pane = socket.pane;
         IpcClient::Error error;
         if (m_client.connectTo(path, ReplyTimeoutMs, &error)) return true;
         fail(QStringLiteral("%1 (%2)")
-                 .arg(m_owner.isEmpty() ? QStringLiteral("no running afterglow on this display")
-                                        : QStringLiteral("the afterglow that runs this pane has exited"),
+                 .arg(m_own ? QStringLiteral("%1 has exited").arg(owner()) : QStringLiteral("no running afterglow on this display"),
                       error.message));
         return false;
+    }
+
+    /// The afterglow at $AFTERGLOW_SOCKET, for messages: it runs this pane
+    /// only when $AFTERGLOW_PANE_ID names one.
+    QString owner() const
+    {
+        return m_pane ? QStringLiteral("the afterglow that runs this pane") : QStringLiteral("the afterglow at $AFTERGLOW_SOCKET");
     }
 
     void report(const IpcClient::Error& error) const
@@ -147,8 +166,7 @@ private:
         // The socket stays open for launches: the control target is what
         // Control.enabled takes away, also from a running watch.
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
-            fail(m_owner.isEmpty() ? QStringLiteral("Control.enabled is off in the running afterglow")
-                                   : QStringLiteral("Control.enabled is off in the afterglow that runs this pane"));
+            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running afterglow")));
         } else if (error.timedOut) {
             // A slow afterglow may still do what was asked.
             fail(QStringLiteral("afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
@@ -160,7 +178,8 @@ private:
     }
 
     IpcClient m_client;
-    QString m_owner;
+    bool m_own = false; ///< the socket of $AFTERGLOW_SOCKET
+    qint64 m_pane = 0;
 };
 
 QString unescape(const QString& s)
@@ -308,19 +327,23 @@ int runCtl(int argc, char** argv)
                                          QStringLiteral("open-directory"), QStringLiteral("projects"),
                                          QStringLiteral("open-project"), QStringLiteral("new-window")};
     if (paneArg && Paneless.contains(command)) return usage(QStringLiteral("%1 takes no --pane").arg(command));
-    auto targetPane = [&]() -> std::optional<qint64> {
-        bool ok = false;
+    // @p focused: for none, ask afterglow for its focused pane. Else 0 goes,
+    // which a script command takes for the focused pane or none.
+    auto targetPane = [&](bool focused) -> std::optional<qint64> {
         if (paneArg) {
+            // A pane ID as `afterglow run --pane` takes it: 0 names no pane.
+            bool ok = false;
             const uint id = paneArg->toUInt(&ok);
-            if (!ok) {
-                fail(QStringLiteral("--pane takes a number"));
+            if (!ok || id == 0 || paneArg->trimmed() != *paneArg) {
+                fail(QStringLiteral("--pane takes a pane ID from 1"));
                 return std::nullopt;
             }
             return id;
         }
-        if (const uint env = qEnvironmentVariable("AFTERGLOW_PANE_ID").toUInt(&ok); ok) {
-            return env;
-        }
+        // The lookup's, which is 0 unless the socket is this pane's afterglow.
+        const auto own = client.ownPane();
+        if (!own) return std::nullopt;
+        if (*own || !focused) return *own;
         const auto result = client.call(QStringLiteral("focusedPane"), {});
         if (!result) return std::nullopt;
         return result->toInteger();
@@ -414,7 +437,8 @@ int runCtl(int argc, char** argv)
         return printPane(QStringLiteral("newWindow"), {absolute(cwd), QJsonArray::fromStringList(trailing)});
     }
 
-    const std::optional<qint64> pane = targetPane();
+    const bool scriptAction = command == QLatin1String("action") && Keybinds::isScriptTarget(args.value(0));
+    const std::optional<qint64> pane = targetPane(!scriptAction);
     if (!pane) {
         return 1;
     }
@@ -433,7 +457,15 @@ int runCtl(int argc, char** argv)
             if (!in.open(stdin, QIODevice::ReadOnly)) {
                 return fail(QStringLiteral("cannot read standard input"));
             }
-            text = QString::fromUtf8(in.readAll());
+            // One byte past the limit tells that the input is over it.
+            QByteArray bytes;
+            while (bytes.size() <= CtlMaxText) {
+                const QByteArray part = in.read(CtlMaxText + 1 - bytes.size());
+                if (part.isEmpty()) break;
+                bytes += part;
+            }
+            if (bytes.size() > CtlMaxText) return fail(QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20));
+            text = QString::fromUtf8(bytes);
         } else {
             const bool raw = takeFlag(QStringLiteral("--raw"));
             if (const auto error = extra(-1)) return usage(*error);

@@ -100,21 +100,24 @@ function script.on_status(ev)
     return effects
 end
 
+local SIGNALS = { strike = STRIKE, glaze = GLAZE, ring = RING }
+
 function script.run_command(command, ev)
-    if not ev.pane then
+    if not SIGNALS[command] and command ~= "heat" then
         return nil
     end
-    if command == "strike" then
-        return afterglow.signal(ev.pane, STRIKE, 1)
-    elseif command == "glaze" then
-        return afterglow.signal(ev.pane, GLAZE, 1)
-    elseif command == "ring" then
-        return afterglow.signal(ev.pane, RING, 1)
-    elseif command == "heat" then
+    if #ev.args > 0 then
+        return { afterglow.output_error(ev, "usage: afterglow run glasshouse " .. command .. "\n"), afterglow.exit(ev, 2) }
+    end
+    -- A failure goes to stderr. A run from the palette shows it as a notification.
+    if not ev.pane then
+        return { afterglow.output_error(ev, "There is no pane to light.\n"), afterglow.exit(ev, 1) }
+    end
+    if command == "heat" then
         -- Warms as if a command were running; the next command cools it.
         return heat(ev.pane, 1)
     end
-    return nil
+    return afterglow.signal(ev.pane, SIGNALS[command], 1)
 end
 
 return script

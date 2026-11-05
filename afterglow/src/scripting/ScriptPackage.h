@@ -25,7 +25,7 @@ struct ScriptCommand
 };
 /// The limits of the commands field (package.json, metadata) and of set_commands.
 inline constexpr int MaxScriptCommands = 64;
-inline constexpr int MaxCommandText = 512; ///< characters of a summary, usage or palette title
+inline constexpr int MaxCommandText = 512; ///< UTF-16 units of a summary, usage or palette title
 /// Checks one command's fields (summary, usage, palette, stdin) and fills
 /// @p out. Returns an error, or empty.
 QString readCommand(const QString& name, const QVariantMap& fields, ScriptCommand& out);

@@ -10,6 +10,6 @@
     },
     "commands": {
         "open": {"summary": "Open the pane overview with the script's keys", "palette": "Pane overview (scripted keys)"},
-        "use-shaders": {"summary": "Choose the package's overview shader in the Use Package Shaders dialog"}
+        "use-shaders": {"summary": "Open the Use Package Shaders dialog, which offers the package's overview shader"}
     }
 }

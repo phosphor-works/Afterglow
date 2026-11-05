@@ -41,11 +41,34 @@ From a shell:
 ```sh
 afterglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
 afterglow run project-navigator list                       # favorite, recent and saved projects
+find ~/src -maxdepth 1 -mindepth 1 -type d | afterglow run project-navigator import
 ```
 
-`open DIR [LAYOUT]` opens a directory relative to the shell's directory. Without
-a layout it uses the last layout of the directory. `list` prints `KIND<TAB>VALUE`
-lines: `favorite`, `recent`, `recent-layout` and `layout`.
+| Command | Action |
+| --- | --- |
+| `open DIR [LAYOUT]` | Opens `DIR`, relative to the shell's directory. Without `LAYOUT`, it uses the last layout of the directory. |
+| `list` | Prints `KIND<TAB>VALUE` lines: `favorite`, `recent`, `recent-layout` and `layout`. |
+| `import` | Adds each directory on stdin, one on each line, to the favorites. |
+| `pick`, `favorite`, `previous` | The palette commands. |
+
+Only a `LAYOUT` that you give becomes the layout of the directory for the next time.
+When the directory is open already, Afterglow focuses its window and does not apply `LAYOUT`.
+`DIR` can start with `~` or `~/`. Give the full path for the home of another user.
+The package resolves symbolic links in directories with `realpath`, as Afterglow does.
+Thus one directory has one entry, also when the shell reached it through a link.
+Without `realpath`, a directory keeps the path that the shell gave.
+
+`list` leaves out a value that contains a tab or a line break, and says so on stderr.
+`import` skips a line that is not a path or that names a path over 256 bytes.
+
+| Exit status | Cause |
+| --- | --- |
+| 0 | The command completed. |
+| 1 | The command failed, or `import` skipped lines. The message is on stderr. |
+| 2 | Wrong arguments, or a `DIR` that cannot be a directory. |
+
+A command from the palette or a key has no shell.
+Its failure shows as a notification on the pane.
 
 Create `config.json` beside `package.json` to override the defaults:
 
@@ -80,9 +103,12 @@ A provider that is refused supplies no paths.
 | Provider run time | 5 seconds | The provider stops and supplies no paths. |
 | Provider output | 128 KiB | The provider stops. It supplies the complete paths that it printed. |
 | Choices in the picker | 400 | The picker does not show more choices. Favorites, recent projects, running projects and roots come first. |
+| Favorites | 100 | A new favorite fails. `import` skips the other lines and exits with status 1. |
+| Lines in one `import` | 61 | `import` reads the first 61 lines that are not empty. It does not read the other lines, and exits with status 1. |
 
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
+When the run of a command ends while it waits, for example at Ctrl+C on `afterglow run`, no selector opens after it.
 
 Favorites, the last 50 projects and layout choices survive reloads and restarts.
 The package keeps layout choices for favorites and recent directories only.

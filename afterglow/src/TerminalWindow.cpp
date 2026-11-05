@@ -289,7 +289,14 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         connect(m_controller, changed, this, [this] {
             refreshInputMethod();
             const bool held = m_controller->wantsKeyboard();
-            if (std::exchange(m_chromeHeldKeyboard, held) && !held && m_focused && m_windowFocused && QAccessible::isActive()) {
+            const bool wasHeld = std::exchange(m_chromeHeldKeyboard, held);
+            if (!wasHeld && held) {
+                // As for a mode: a composition in progress would stay drawn
+                // on the pane, and the event that clears it now goes to the chrome.
+                if (m_focused) m_focused->setPreedit({}, 0);
+                if (isActive()) QGuiApplication::inputMethod()->reset();
+            }
+            if (wasHeld && !held && m_focused && m_windowFocused && QAccessible::isActive()) {
                 QAccessibleEvent event(m_focused, QAccessible::Focus);
                 QAccessible::updateAccessibility(&event);
             }
@@ -332,7 +339,7 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
                 runScriptCommand(m_menuCommands[id - MenuScriptBase], pane, QStringLiteral("menu"));
             }
         } else if (paneAlive) {
-            runAction(pane, Action(id));
+            actOnPane(pane, Action(id));
         } else {
             constexpr std::array windowItems{Action::CommandPalette, Action::RenameTab, Action::NewTab, Action::CloseTab,
                                              Action::NewWindow, Action::CloseWindow, Action::OpenConfig, Action::ReloadConfig};
@@ -429,16 +436,19 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
 
 TerminalWindow::~TerminalWindow()
 {
-    for (auto* pane : findChildren<Pane*>(QString(), Qt::FindDirectChildrenOnly))
-        Q_EMIT paneClosing(pane->id(), tabIdOf(pane), id());
+    // The live panes, not the tabs': when the last tab closed, its panes
+    // went with deleteLater before this window did, and the tab still holds
+    // their addresses.
+    const QList<Pane*> live = findChildren<Pane*>(QString(), Qt::FindDirectChildrenOnly);
+    for (Pane* pane : live) Q_EMIT paneClosing(pane->id(), tabIdOf(pane), id());
     if (m_hintCancel) *m_hintCancel = true;
     finishScriptDialog(false, {});
     s_windows.removeAll(this);
     publishLauncherStatus();
     // The panes' docks too, while this window's object is still there to be
-    // their parent: the panes are freed only after this body.
+    // their parent: the panes that are left are freed only after this body.
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
-    for (Pane* pane : panes()) for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());
+    for (Pane* pane : live) for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());
     // The chrome renders on the device through this window; it goes first.
     delete m_chrome;
     m_chrome = nullptr;
@@ -1092,6 +1102,9 @@ void TerminalWindow::confirmClose(const QList<Pane*>& panes, const QString& what
         close();
         return;
     }
+    // One question at a time: a second one (the window's close while a tab's
+    // waits) would take over the answer to the first.
+    if (m_controller->confirmPromptOpen()) return;
     QString names = jobs.constLast();
     if (jobs.size() > 1) {
         names = jobs.mid(0, jobs.size() - 1).join(QStringLiteral(", ")) + QStringLiteral(" and ") + names;
@@ -1147,6 +1160,16 @@ void TerminalWindow::requestCloseTabs(const QList<int>& indices)
 }
 
 bool TerminalWindow::runAction(Pane* pane, Action action)
+{
+    // From outside (afterglow ctl, afterglow.action), not while a prompt, a
+    // menu, the palette, the search or a script dialog has the keyboard: a
+    // key could not act then either. The action would replace the prompt's
+    // pending answer (a close, a paste), or open over it.
+    if (m_scriptDialog || m_controller->wantsKeyboard()) return false;
+    return actOnPane(pane, action);
+}
+
+bool TerminalWindow::actOnPane(Pane* pane, Action action)
 {
     // What the tab menu does to a tab, a pane's action does to its tab
     // where it is: a tab line closes a tab without showing it first.
@@ -1230,10 +1253,13 @@ void TerminalWindow::closeTab(int index)
         return;
     }
     if (m_scriptDialog && tabOf(m_scriptDialog->pane) == index) finishScriptDialog(false, {});
+    // Its keys go to the focused pane, as closePane leaves them: the panes
+    // stay alive until their deferred delete, out of any tab.
+    if (m_scriptKeyMode && m_scriptKeyMode->pane && tabOf(m_scriptKeyMode->pane) == index) m_scriptKeyMode->pane = nullptr;
     for (Pane* p : panes()) if (tabOf(p) == index) m_shaderControls.removePane(p->id());
     std::erase_if(m_scriptAppearance, [this, index](const auto& item) { return tabOf(item.pane) == index; });
     if (m_tabs.size() == 1) {
-        qCInfo(lcWindow) << "last pane closed, closing the window";
+        qCInfo(lcWindow) << "last tab closed, closing the window";
         m_tabs[0]->splits->forEachPane([this](Pane* p, const QRect&) { Q_EMIT paneClosing(p->id(), tabIdOf(p), id()); p->deleteLater(); });
         m_closeConfirmed = true; // asked already, or its program ended
         close();
@@ -1427,10 +1453,7 @@ void TerminalWindow::setFocusedPane(Pane* pane)
     cancelKeyMode();
     // Hints and Unicode input act on the focused pane: they do not carry over.
     if ((m_urlMode.active || m_hintCancel) && m_urlMode.pane != pane) stopUrlMode();
-    if (m_unicodeInput) {
-        m_unicodeInput.reset();
-        showUnicodeInput();
-    }
+    stopUnicodeInput();
     m_focused = pane;
     // The input method reads the new pane's text at the next frame.
     m_inputMethodDirty = true;
@@ -2217,15 +2240,22 @@ void TerminalWindow::syncInputMethodEnabled()
 
 bool TerminalWindow::handleShortcut(QKeyEvent* e)
 {
+    const bool sequenceWasActive = m_keyMode.active();
     const auto result = m_settings.settings().keyModes.press(e, m_keyMode, m_keyModeClock.elapsed(), bindingBaseKey(e));
-    updateKeyMode();
+    // Only a key in a sequence or a table changes what the window shows for
+    // it: any other key would cost a frame.
+    if (sequenceWasActive || m_keyMode.active()) updateKeyMode();
     if (result.consumed) {
-        if (result.target.startsWith(QLatin1String(Keybinds::TextPrefix)) && m_focused) {
-            const QByteArray bytes = Keybinds::unescape(result.target.mid(qsizetype(std::strlen(Keybinds::TextPrefix))));
+        if (result.target.startsWith(Keybinds::TextPrefix) && m_focused) {
+            const QByteArray bytes = Keybinds::unescape(result.target.mid(Keybinds::TextPrefix.size()));
             m_focused->clearSelection();
             m_focused->sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())));
-        } else if (result.target.startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
-            runScriptCommand(result.target.mid(qsizetype(std::strlen(Keybinds::ScriptPrefix))), m_focused, QStringLiteral("key"));
+        } else if (result.target.startsWith(Keybinds::ScriptPrefix)) {
+            // The sequence took its keys already, so a command that no
+            // script has is reported here, not typed. A run is a process
+            // that a held key must not start again with each repeat.
+            if (!e->isAutoRepeat())
+                runScriptCommand(result.target.mid(Keybinds::ScriptPrefix.size()), m_focused, QStringLiteral("key"));
         } else {
             for (Action action : Keybinds::allActions()) {
                 if (Keybinds::token(action) == result.target) { performAction(action); break; }
@@ -2255,10 +2285,9 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
     }
     // A key bound to a command that no script has goes to the terminal.
     const QString script = kb.matchScript(e, bindingBaseKey(e));
-    const QList<ScriptCommand> commands = m_scripts.commands();
-    if (script.isEmpty() || std::none_of(commands.cbegin(), commands.cend(), [&](const ScriptCommand& c) { return c.token() == script; }))
-        return false;
-    runScriptCommand(script, m_focused, QStringLiteral("key"));
+    if (script.isEmpty() || !scriptCommand(script)) return false;
+    // Taken, but not run again for each repeat of a held key.
+    if (!e->isAutoRepeat()) runScriptCommand(script, m_focused, QStringLiteral("key"));
     return true;
 }
 
@@ -2456,7 +2485,11 @@ bool TerminalWindow::performAction(Action action)
         }
         switchTab((m_currentTab + int(m_tabs.size()) - 1) % int(m_tabs.size()));
         return true;
-    case Action::ShowHints: startHints(); return true;
+    case Action::ShowHints:
+        // The overview and a script's key mode keep the keys that the labels need.
+        if (m_overview.open || m_scriptKeyMode) return false;
+        startHints();
+        return true;
     case Action::ShowLastOutput: {
         if (!m_focused) return false;
         // Handled from here on: a failure is a notification, not a key for the program.
@@ -2495,7 +2528,13 @@ bool TerminalWindow::performAction(Action action)
     case Action::CopyMode:
         if (!m_focused) return false;
         if (m_copyPane) stopCopyMode();
-        else { cancelKeyMode(); stopUrlMode(); m_copyPane = m_focused; m_copyPane->beginCopyMode(); updateKeyMode(); }
+        else {
+            // Its keys come before the overview's and a script's key mode:
+            // not over them. The other modes end, as for the overview.
+            if (m_overview.open || m_scriptKeyMode) return false;
+            cancelKeyMode(); stopUrlMode(); stopUnicodeInput();
+            m_copyPane = m_focused; m_copyPane->beginCopyMode(); updateKeyMode();
+        }
         return true;
     case Action::Copy:
         copySelection(true);
@@ -2572,11 +2611,16 @@ bool TerminalWindow::performAction(Action action)
         return true;
     case Action::UrlsOpen:
     case Action::UrlsCopy:
+        // The overview and a script's key mode keep the keys that the labels need.
+        if (m_overview.open || m_scriptKeyMode) return false;
         startUrlMode(action == Action::UrlsCopy);
         return true;
     case Action::UnicodeInput:
         if (m_focused) {
-            stopUrlMode(); // labels and hex digits would take the same letters
+            // The overview and a script's key mode keep the keys they hold.
+            if (m_overview.open || m_scriptKeyMode) return false;
+            // Labels, copy-mode keys and a sequence would take the hex digits.
+            stopUrlMode(); stopCopyMode(); cancelKeyMode();
             m_unicodeInput = QString();
             showUnicodeInput();
         }
@@ -2656,10 +2700,6 @@ QStringList shortcutsOf(const Keybinds& keybinds, const KeyModes& modes, Action 
 {
     return keybinds.bindingsOf(action) + modes.bindingsOf(Keybinds::token(action));
 }
-QStringList scriptShortcutsOf(const Keybinds& keybinds, const KeyModes& modes, const QString& action)
-{
-    return keybinds.bindingsOfScript(action) + modes.bindingsOf(QLatin1String(Keybinds::ScriptPrefix) + action);
-}
 } // namespace
 
 QStringList TerminalWindow::actionShortcuts(Action action) const
@@ -2667,11 +2707,29 @@ QStringList TerminalWindow::actionShortcuts(Action action) const
     return shortcutsOf(m_settings.settings().keybinds, m_settings.settings().keyModes, action);
 }
 
+QStringList TerminalWindow::scriptCommandShortcuts(const QString& command) const
+{
+    return m_settings.settings().keybinds.bindingsOfScript(command)
+        + m_settings.settings().keyModes.bindingsOf(Keybinds::ScriptPrefix + command);
+}
+
+QList<ScriptCommand> TerminalWindow::listedScriptCommands() const
+{
+    QList<ScriptCommand> listed = m_scripts.commands();
+    listed.removeIf([](const ScriptCommand& c) { return c.palette.isEmpty(); });
+    return listed;
+}
+
+std::optional<ScriptCommand> TerminalWindow::scriptCommand(const QString& token) const
+{
+    const QList<ScriptCommand> commands = m_scripts.commands();
+    const auto found = std::find_if(commands.cbegin(), commands.cend(), [&](const ScriptCommand& c) { return c.token() == token; });
+    return found == commands.cend() ? std::nullopt : std::optional<ScriptCommand>(*found);
+}
+
 void TerminalWindow::updatePaletteActions()
 {
     QVariantList actions;
-    const Keybinds& kb = m_settings.settings().keybinds;
-    const KeyModes& modes = m_settings.settings().keyModes;
     for (Action a : Keybinds::allActions()) {
         // The palette cannot run itself, and while a script holds the keys
         // the palette cannot open: its chord is the only way.
@@ -2683,21 +2741,28 @@ void TerminalWindow::updatePaletteActions()
                                    {QStringLiteral("shortcut"), actionShortcuts(a).join(QStringLiteral("  "))}});
     }
     m_paletteCommands.clear();
-    for (const ScriptCommand& c : m_scripts.commands()) {
-        if (c.palette.isEmpty()) continue;
+    for (const ScriptCommand& c : listedScriptCommands()) {
+        // The script's id first: a script's title cannot pass for one of
+        // Afterglow's own actions ("Close Window").
         actions.append(QVariantMap{{QStringLiteral("id"), ScriptCommandBase + int(m_paletteCommands.size())},
-                                   {QStringLiteral("title"), c.palette},
-                                   {QStringLiteral("shortcut"), scriptShortcutsOf(kb, modes, c.token()).join(QStringLiteral("  "))}});
+                                   {QStringLiteral("title"), tr("%1: %2").arg(c.script, c.palette)},
+                                   {QStringLiteral("shortcut"), scriptCommandShortcuts(c.token()).join(QStringLiteral("  "))}});
         m_paletteCommands.append(c.token());
     }
     m_controller->setActions(actions);
 }
 
-void TerminalWindow::runScriptCommand(const QString& token, Pane* pane, const QString& source)
+void TerminalWindow::runScriptCommand(QString token, Pane* pane, const QString& source)
 {
-    // Palette, key and menu runs have no client: a refusal shows here.
+    // Palette, key and menu runs have no client: a refusal shows here, with
+    // the title that the run's own notifications have.
+    ScriptCommand named;
+    const int dot = int(token.indexOf(QLatin1Char('.')));
+    named.script = token.left(dot);
+    named.name = dot < 0 ? QString() : token.mid(dot + 1);
+    const QString title = scriptCommand(token).value_or(named).title();
     const QString error = m_scripts.runCommand(token, pane ? pane->id() : 0, source);
-    if (!error.isEmpty()) NotificationCenter::instance().showNotice(pane, tr("Could not run %1").arg(token), error);
+    if (!error.isEmpty()) NotificationCenter::instance().showNotice(pane, tr("Could not run %1").arg(title), error);
 }
 
 void TerminalWindow::runSearch(const QString& query, int direction)
@@ -2810,7 +2875,9 @@ void TerminalWindow::openLink(const QString& url)
         open();
         return;
     }
-    // Other schemes start other programs: the user sees the whole target first.
+    // Other schemes start other programs: the user sees the whole target
+    // first. Not over another question, whose answer this would take.
+    if (m_controller->confirmPromptOpen()) return;
     m_pendingConfirm = open;
     m_pendingConfirmPanes.clear();
     m_controller->askConfirm(QStringLiteral("Open this link?"),
@@ -3115,8 +3182,6 @@ TerminalWindow::LinkHover TerminalWindow::linkAt(Pane* pane, const QPointF& pos)
 
 void TerminalWindow::openContextMenu(const QPointF& pos)
 {
-    const Keybinds& kb = m_settings.settings().keybinds;
-    const KeyModes& modes = m_settings.settings().keyModes;
     auto entry = [](int id, const QString& title, const char* icon, const QString& shortcut = {}, bool enabled = true) {
         return QVariant(QVariantMap{{QStringLiteral("id"), id},
                                     {QStringLiteral("title"), title},
@@ -3179,12 +3244,11 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
                       action(Action::CloseWindow, QStringLiteral("Close Window"), "window-close")});
     m_menuCommands.clear();
     QVariantList scripts;
-    for (const ScriptCommand& c : m_scripts.commands()) {
-        if (c.palette.isEmpty()) continue;
+    for (const ScriptCommand& c : listedScriptCommands()) {
         // Ids from TabMenuRename on are the tab menu's.
         if (MenuScriptBase + m_menuCommands.size() >= TabMenuRename) break;
-        scripts << entry(MenuScriptBase + int(m_menuCommands.size()), c.palette, "",
-                         scriptShortcutsOf(kb, modes, c.token()).value(0));
+        // In the Scripts submenu, away from Afterglow's own items.
+        scripts << entry(MenuScriptBase + int(m_menuCommands.size()), c.palette, "", scriptCommandShortcuts(c.token()).value(0));
         m_menuCommands.append(c.token());
     }
     if (!scripts.isEmpty()) {
@@ -3195,6 +3259,12 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
                      {action(Action::OpenConfig, QStringLiteral("Open Config"), "document-open"),
                       action(Action::ReloadConfig, QStringLiteral("Reload Config"), "view-refresh")});
     m_controller->openContextMenu(pos, items);
+}
+
+bool TerminalWindow::chromePromptOpen() const
+{
+    return m_scriptDialog || m_controller->pasteConfirmOpen() || m_controller->clipboardPromptOpen()
+        || m_controller->contextMenuOpen() || m_controller->titlePromptOpen() || m_controller->confirmPromptOpen();
 }
 
 bool TerminalWindow::acceptsAccessibleActions() const
@@ -3311,6 +3381,7 @@ void TerminalWindow::startHints()
 {
     stopCopyMode();
     stopUrlMode();
+    stopUnicodeInput();
     cancelKeyMode();
     if (!m_focused) return;
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
@@ -3374,6 +3445,7 @@ void TerminalWindow::startUrlMode(bool copy)
 {
     stopCopyMode();
     cancelKeyMode();
+    stopUnicodeInput();
     stopUrlMode(); // hints still being found would replace these labels
     if (!m_focused) {
         return;
@@ -3531,6 +3603,13 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
     }
     m_urlMode.typed = typed;
     showUrlHints();
+}
+
+void TerminalWindow::stopUnicodeInput()
+{
+    if (!m_unicodeInput) return;
+    m_unicodeInput.reset();
+    showUnicodeInput();
 }
 
 void TerminalWindow::showUnicodeInput()
@@ -3847,9 +3926,11 @@ void TerminalWindow::keyPressEvent(QKeyEvent* e)
         m_consumedKeys.insert(physicalKey, false);
         cancelKeyMode();
         // The palette keybind still closes the palette, and the search
-        // keybind still moves to search, while the chrome has the keyboard.
+        // keybind still moves to search, while only they have the keyboard.
+        // Over a prompt or a menu they would open on top of it, and an
+        // action run from the palette would answer for it.
         const Action a = m_settings.settings().keybinds.match(e, bindingBaseKey(e));
-        if (!m_scriptDialog && (a == Action::CommandPalette || a == Action::Search)) {
+        if (!chromePromptOpen() && (a == Action::CommandPalette || a == Action::Search)) {
             performAction(a);
             return;
         }

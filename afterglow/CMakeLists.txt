@@ -255,7 +255,17 @@ install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR
 # Shell completion, where each shell looks for the completions of packages.
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.bash
         DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME afterglow)
-install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${CMAKE_INSTALL_DATADIR}/zsh/site-functions)
+# Zsh has no one place: with the prefix /usr, Debian and Ubuntu read
+# share/zsh/vendor-completions, not share/zsh/site-functions. The default is
+# empty so that it follows CMAKE_INSTALL_DATADIR at each configure: a cached
+# path would keep the DATADIR of the first one.
+set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
+    "Directory for the zsh completion, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
+set(_zsh_completion_dir "${AFTERGLOW_ZSH_COMPLETION_DIR}")
+if(_zsh_completion_dir STREQUAL "")
+    set(_zsh_completion_dir "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
+endif()
+install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${_zsh_completion_dir})
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.fish DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/packages/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/packages)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/projects/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/projects)

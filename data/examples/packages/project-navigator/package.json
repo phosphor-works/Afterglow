@@ -18,6 +18,7 @@
   "commands": {
     "open": {"summary": "Open a project directory, with a saved layout", "usage": "DIR [LAYOUT]"},
     "list": {"summary": "Print the favorite, recent and saved projects"},
+    "import": {"summary": "Add the directories on stdin to the favorites", "stdin": true},
     "pick": {"summary": "Choose a project in a picker", "palette": "Navigate projects"},
     "favorite": {"summary": "Pin or unpin the pane's project directory", "palette": "Toggle favorite project directory"},
     "previous": {"summary": "Open the previous project", "palette": "Previous project"}

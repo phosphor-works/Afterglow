@@ -4,7 +4,8 @@
 # Luau packages and saved state
 
 Afterglow supports single `.luau` files and local packages.
-A package is a directory inside `scripts/` beside the active configuration file.
+A package is a directory in a scripts directory, usually `scripts/` beside the active configuration file.
+Afterglow reads packages from every scripts directory, with the priority of [single files](SCRIPTING.md#install-a-script).
 The directory contains a `package.json` manifest.
 The directory can be a symlink, for example to a Git checkout.
 Afterglow checks the package paths against the directory that the symlink points to.
@@ -27,11 +28,14 @@ Afterglow checks the package paths against the directory that the symlink points
 ```
 
 The manifest ID must equal the directory name.
+It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
 `version` uses the `X.Y.Z` format. `api_version` must be `1`.
 Each module returns a table.
 `require("format")` loads the declared module once for each instance.
 `require("@utils")` loads the entry module of the included dependency.
-The dependency must have its own manifest and the exact declared version.
+The dependency must have its own manifest, the ID `utils` and the exact declared version.
+Afterglow reads only `id`, `version`, `api_version`, `entry`, `modules` and `dependencies` from the manifest of a dependency.
+Its other fields, such as `commands`, `config`, `assets` and `shaders`, have no effect.
 
 Imports use local files. Afterglow does not download dependencies.
 Dependencies share the caller's sandbox and state namespace.
@@ -51,7 +55,8 @@ An error in a module names the module file and its line.
 ## Commands
 
 `commands` maps each command name to its fields.
-The rules are the same as for `metadata.commands` of a single-file script (see [commands](SCRIPTING.md#commands)).
+The fields and their rules are the same as for `metadata.commands` of a single-file script (see [commands](SCRIPTING.md#commands)).
+A package can have at most 64 commands, with those of `afterglow.set_commands`.
 A package declares its commands only in `package.json`. `metadata.commands` in a package is an error.
 
 ```json
@@ -61,15 +66,6 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
   "import": {"summary": "Add projects from a list on stdin", "stdin": true}
 }
 ```
-
-| Field | Rule |
-| --- | --- |
-| Command name | 1 to 64 characters: letters, digits, `_` and `-` |
-| `summary` | Required. At most 512 characters |
-| `usage` | Optional. At most 512 characters |
-| `palette` | Optional palette title, at most 512 characters |
-| `stdin` | Optional boolean, default `false` |
-| Commands | At most 64 |
 
 The entry module must export `run_command(command, ev)`.
 `afterglow run <id>` lists the package's commands. `afterglow run <id> <command>` runs one.
@@ -217,4 +213,5 @@ The stored data remains available for a later installation.
 | [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
 
 Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
+A package in a system data directory, such as `/usr/share/afterglow/scripts`, also loads.
 Use the package instructions for configuration and commands.

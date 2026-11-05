@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <AfterglowProto/Text.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <string>
@@ -46,24 +47,7 @@ struct RecordingHost : ITerminalHost
     }
 };
 
-inline void appendUtf8(std::string& out, char32_t cp)
-{
-    if (cp < 0x80) {
-        out.push_back(char(cp));
-    } else if (cp < 0x800) {
-        out.push_back(char(0xC0 | (cp >> 6)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else if (cp < 0x10000) {
-        out.push_back(char(0xE0 | (cp >> 12)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    } else {
-        out.push_back(char(0xF0 | (cp >> 18)));
-        out.push_back(char(0x80 | ((cp >> 12) & 0x3F)));
-        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
-        out.push_back(char(0x80 | (cp & 0x3F)));
-    }
-}
+using AfterglowProto::appendUtf8;
 
 /// Row text: empty cells as spaces, tails skipped, trailing spaces trimmed.
 inline std::string rowText(const Screen& screen, const Row& row)

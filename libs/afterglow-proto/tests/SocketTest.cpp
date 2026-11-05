@@ -81,3 +81,39 @@ TEST(Socket, APaneWithoutASocketIsAnError)
     EXPECT_TRUE(lookup.path.empty());
     EXPECT_EQ(lookup.error, "the afterglow that runs this pane has no socket");
 }
+
+TEST(Socket, ARelativeRuntimeDirectoryIsNotUsed)
+{
+    // It would follow the working directory of each process.
+    const auto env = environment({{"XDG_RUNTIME_DIR", "run/user/1000"}, {"WAYLAND_DISPLAY", "wayland-1"}});
+    EXPECT_EQ(sharedSocketPath(env), "");
+    EXPECT_EQ(ownSocketPath(7, env), "");
+    const auto lookup = findSocket(env);
+    EXPECT_TRUE(lookup.path.empty());
+    EXPECT_EQ(lookup.error, "XDG_RUNTIME_DIR is not an absolute path");
+}
+
+TEST(Socket, BothSpellingsOfADisplayNameOneSocket)
+{
+    // Wayland reads a relative display in the runtime directory.
+    for (const char* runtime : {"/run/user/1000", "/run/user/1000/"}) {
+        const auto env = environment({{"XDG_RUNTIME_DIR", runtime}, {"WAYLAND_DISPLAY", "/run/user/1000/wayland-1"}});
+        EXPECT_TRUE(sharedSocketPath(env).ends_with("/afterglow-wayland-1.sock")) << sharedSocketPath(env);
+    }
+    // A display elsewhere keeps its whole path in the name.
+    const auto elsewhere = environment({{"XDG_RUNTIME_DIR", "/run/user/1000"}, {"WAYLAND_DISPLAY", "/tmp/wl"}});
+    EXPECT_EQ(sharedSocketPath(elsewhere), "/run/user/1000/afterglow-tmp_wl.sock");
+}
+
+TEST(Socket, APathTooLongForASocketIsAnError)
+{
+    const std::string runtime = "/" + std::string(MaxSocketPathBytes, 'r');
+    const auto shared = findSocket(environment({{"XDG_RUNTIME_DIR", runtime}}));
+    EXPECT_TRUE(shared.path.empty());
+    EXPECT_NE(shared.error.find("over 107 bytes"), std::string::npos) << shared.error;
+    const std::string longest = "/" + std::string(MaxSocketPathBytes - 1, 's');
+    EXPECT_EQ(findSocket(environment({{"AFTERGLOW_SOCKET", longest}})).path, longest);
+    const auto own = findSocket(environment({{"AFTERGLOW_SOCKET", longest + "s"}}));
+    EXPECT_TRUE(own.path.empty());
+    EXPECT_FALSE(own.error.empty());
+}

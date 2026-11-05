@@ -5,6 +5,7 @@
 #include "InstanceSocket.h"
 
 #include "NotificationCenter.h"
+#include "ScriptSettings.h"
 #include "WindowStart.h"
 #include "../chrome/ChromeLayer.h"
 
@@ -28,12 +29,6 @@ namespace Afterglow {
 
 namespace {
 const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
-
-ScriptHost::CommandLimits commandLimits(const Settings& s)
-{
-    return {s.scriptCommandTimeout, s.scriptCommandStdinLimit, s.scriptCommandRunLimit, s.scriptCommandOutputLimit};
-}
-
 } // namespace
 
 Application::Application(InstanceSocket& socket, const QString& configPath, const QJsonObject& overrides)
@@ -84,16 +79,18 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     connectScriptEvents(m_scripts, m_control);
     // Script packages bring their shader packs with them.
     connect(&m_scripts, &ScriptHost::packageShadersChanged, &m_shaders, &ShaderLibrary::setPackageShaders);
-    m_control.setScriptCommandRunner([this](const QString& command, quint32 pane) {
-        return m_scripts.runCommand(command, pane, QStringLiteral("control"));
+    m_control.setScriptCommandRunner([this](const QString& command, quint32 pane, const QString& source) {
+        // Off, the scripts have no commands: "no command" would hide why.
+        if (!m_scripts.isEnabled()) return QStringLiteral("scripts are off (Scripts.enabled)");
+        return m_scripts.runCommand(command, pane, source);
     });
-    m_scripts.setCommandLimits(commandLimits(m_settings.settings()));
     m_control.setScriptDiagnostics([this] { return m_scripts.diagnostics(); });
     auto scriptPaths = ScriptHost::defaultSearchPaths();
     scriptPaths.last() = QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/scripts");
     m_scripts.setSearchPaths(scriptPaths);
     m_scripts.setStateDirectory(QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/state/scripts"));
-    m_scripts.setEnabled(m_settings.settings().scripts);
+    // After the command socket, whose slot for the same settings runs first.
+    followScriptSettings(m_scripts, m_settings);
 
     connect(&m_settings, &SettingsStore::changed, this, [this](const Settings& previous) {
         if (m_settings.settings().font != previous.font) {
@@ -102,8 +99,6 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         if (m_settings.settings().quickTerminal.shortcut != previous.quickTerminal.shortcut) {
             bindShortcuts();
         }
-        m_scripts.setCommandLimits(commandLimits(m_settings.settings()));
-        m_scripts.setEnabled(m_settings.settings().scripts);
         QTimer::singleShot(0, &m_scripts, [this] { m_scripts.dispatch(QStringLiteral("on_config_changed"), 0); });
         if (const AudioSettings& audio = m_settings.settings().audio; audio != previous.audio) {
             m_audio.configure(audio);
@@ -123,6 +118,9 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
 
 Application::~Application()
 {
+    // What quitting ends is no news: the script command runs without a
+    // client, which the scripts end as they go, show no notice.
+    m_control.endNotices();
     // No new windows while the others close.
     m_socket.router().unregisterTarget(QLatin1String(LaunchApi::Target), &m_launch);
     // Windows render on the device and the chrome uses the QML engine.

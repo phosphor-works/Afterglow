@@ -25,22 +25,26 @@ Shell integration uses OSC 133.
 
 | Event | Effect |
 | --- | --- |
-| Command failure | Cracks spread from the prompt, glow, cool and disappear after a few seconds. Ctrl+C is excluded. |
+| Shell command failure | Cracks spread from the prompt, glow, cool and disappear after a few seconds. Ctrl+C is excluded. |
 | Success after at least 5 seconds, or OSC 7501 task completion | Light moves along the borders and text. |
-| Running command | Lamp and borders become warmer. They cool after completion. A short command does not flash the lamp. |
+| Running shell command | Lamp and borders become warmer. They cool after completion. A short shell command does not flash the lamp. |
 | Bell | A ring expands from the cursor and distorts the glass. |
 | OSC 7501 working status | Lamp intensity changes periodically. |
 | OSC 7501 blocked or error status | Glass uses the alert color. |
-| Command completion after at least 20 seconds in an unfocused pane | Desktop notification. |
+| Shell command completion after at least 20 seconds in an unfocused pane | Desktop notification. |
 
-The command palette includes the Glasshouse commands strike, glaze, ring and heat.
+The command palette includes the Glasshouse script commands `strike`, `glaze`, `ring` and `heat`.
 Run one with `afterglow run glasshouse strike`, or bind it with configuration such as:
 
 ```json
 {"Keybinds": {"bindings": {"script:glasshouse.strike": "Ctrl+Alt+S"}}}
 ```
 
-`afterglow ctl signal 0 1` triggers strike in the pane that runs the command.
+`heat` warms the lamp until the next shell command in the pane completes.
+`afterglow run` is a shell command too, and its end cools the lamp of its own pane.
+Thus give another pane to `afterglow run glasshouse heat`, with `--pane N`.
+
+`afterglow ctl signal 0 1` triggers strike in the pane that runs `afterglow ctl`.
 Outside Afterglow, it triggers strike in the focused pane.
 
 ## Install
@@ -54,11 +58,11 @@ Run from this example directory:
 bin/glasshouse-afterglow install
 ```
 
-The command copies the four packs and the script into `~/.config/afterglow`.
+`install` copies the four packs and the script into `~/.config/afterglow`.
 It adds `glasshouse.glsl` to `~/.config/afterglow/shaders/shared/` and replaces an older copy there.
 Other files in `shared/` remain unchanged.
 
-The command also merges these settings into `config.json`:
+`install` also merges these settings into `config.json`:
 
 | Setting | Change |
 | --- | --- |
@@ -111,14 +115,14 @@ Other programs use `afterglow ctl signal CHANNEL VALUE` or the `signal` call of 
 | Channel | Name | Value |
 | --- | --- | --- |
 | 0 | strike | Exit code. It also selects the crack pattern. |
-| 1 | glaze | Command duration in seconds. |
-| 2 | heat | 1 during a command. 0 after completion. |
+| 1 | glaze | Shell command duration in seconds. |
+| 2 | heat | 1 during a shell command. 0 after completion. |
 | 3 | ring | Any value. |
 | 4 | status | 1 working, 2 blocked, 3 error, 0 none. |
 
 `glasshouse-glass` takes its lamp heat from its `heat` parameter, not from signal 2.
 The script moves the parameter with a transition. The lamp warms over 5 seconds and cools over 2.5 seconds.
-A transition starts from the current heat, so a short command does not make the lamp jump.
+A transition starts from the current heat, so a short shell command does not make the lamp jump.
 
 ## Credits
 

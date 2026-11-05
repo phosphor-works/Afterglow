@@ -18,7 +18,7 @@ From a built checkout, run:
 data/examples/phosphor/bin/phosphor-afterglow launch --show --binary ./build/afterglow/afterglow
 ```
 
-Add `--mesh` to use the triangle-mesh reactor with the same Luau commands:
+Add `--mesh` to use the triangle-mesh reactor with the same script commands:
 
 ```sh
 data/examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
@@ -57,8 +57,9 @@ phosphor scene dark
 `--show` starts the demonstration in the first pane. `phosphor show` repeats it.
 The stages are idle, charge, fracture, recall, shock front and afterglow.
 The sequence uses the alternate screen. Completion or Ctrl+C restores the prompt.
-OSC 1337 user variables trigger real Luau commands.
-Ordinary commands charge the core. Failure fractures it. A success of 1.5 seconds or longer recalls its pieces.
+OSC 1337 user variables trigger the same steps as the script commands below.
+A running shell command charges the core. A failed shell command fractures it.
+A shell command that succeeds after 1.5 seconds or longer recalls its pieces.
 
 ## Scene controls
 
@@ -71,7 +72,7 @@ Install [scene-controls](../packages/scene-controls/README.md) in normal configu
 **Toggle contextual Phosphor exposure** enables one intensity decision each second from audio and history summaries.
 The host interpolates changes. Disable this option to release its overrides.
 Audio and history continue to affect the shader directly.
-Command activity uses host transitions. Fracture, recall and shock fronts use signal timestamps.
+Shell command activity uses host transitions. Fracture, recall and shock fronts use signal timestamps.
 
 See [measurements](PERFORMANCE.md) before choosing a preset for 4K.
 Quality tiers specify sampling quality, not guaranteed frame rates.
@@ -91,7 +92,7 @@ PhosphorAudio and CAVA analyze system playback, as in PlasmaZones.
 | Individual bands | Illuminate panel indicators and orbital segments. |
 
 Audio and Luau operate together.
-Command failure fractures the core. Success recalls it. Bells send shock fronts.
+A failed shell command fractures the core. A success recalls it. Bells send shock fronts.
 Silence preserves normal scene animation.
 The lens adds bloom before text composition.
 
@@ -137,20 +138,24 @@ The core uses one camera across the window. The scene remains stationary while d
 Quiet prompts in other panes make light and afterimages easier to see.
 The final view can show the reassembled core and the Afterglow desktop icon.
 
-The command palette (**Ctrl+Shift+P**) also contains these commands:
+The command palette (**Ctrl+Shift+P**) also contains these script commands:
 
-| Shortcut | Command | Signal |
-| --- | --- | --- |
-| Ctrl+Alt+1 | Phosphor: fracture the core | 0 |
-| Ctrl+Alt+2 | Phosphor: recall the fragments | 1 |
-| Ctrl+Alt+3 | Phosphor: send a shock front | 3 |
-| Ctrl+Alt+4 | Phosphor: charge the core | 2 |
+| Shortcut | Palette title | Script command | Signal |
+| --- | --- | --- | --- |
+| Ctrl+Alt+1 | Phosphor: fracture the core | `strike` | 0 |
+| Ctrl+Alt+2 | Phosphor: recall the fragments | `complete` | 1 |
+| Ctrl+Alt+3 | Phosphor: send a shock front | `ring` | 3 |
+| Ctrl+Alt+4 | Phosphor: charge the core | `heat` | 2 |
 
-The charge lasts until the next command completes.
+The charge lasts until the next shell command in the tab completes.
+The script command `cool` ends the charge. It is not in the palette.
 
 Use the palette if desktop shortcuts intercept these keys.
 The demo is a separate process with its own socket, `afterglow-DISPLAY-PID.sock`.
-`afterglow ctl` in its panes reaches it.
+`afterglow ctl` and `afterglow run` in its panes reach it.
+For example, `afterglow run phosphor strike` fractures the core.
+`afterglow run` is a shell command too, and its end cools the core of its tab.
+Thus give a pane of another tab to `afterglow run phosphor heat`, with `--pane N`.
 Elsewhere, use the palette or the shortcuts.
 
 ## Layers and signals
@@ -166,15 +171,15 @@ Elsewhere, use the palette or the shortcuts.
 The script reads `ev.terminal` snapshots and updates the event's tab with `afterglow.signals`.
 Each batch uses one timestamp across panes.
 It also works when loaded after panes exist. No separate pane registry is required.
-One completed command does not cool the core while another pane in that tab is running a command.
+One completed shell command does not cool the core while another pane in that tab runs a shell command.
 Background tabs and other windows retain separate state.
 Each signal stores a value and its shader update time.
 
 | Channel | Meaning |
 | --- | --- |
-| 0 | Failed command exit code. Ctrl+C and unknown codes are ignored. Also 1 for program status `error`. |
-| 1 | Successful command duration in seconds, for commands lasting at least 1.5 seconds. Also used for program status `done`. |
-| 2 | 1 during a command. 0 after completion. |
+| 0 | Failed shell command exit code. Ctrl+C and unknown codes are ignored. Also 1 for program status `error`. |
+| 1 | Successful shell command duration in seconds, for shell commands of at least 1.5 seconds. Also used for program status `done`. |
+| 2 | 1 during a shell command. 0 after completion. |
 | 3 | Bell event. |
 | 4 | Program status: 1 working, 2 blocked, 3 error, 0 otherwise. |
 
@@ -262,6 +267,6 @@ The interactive launcher uses system playback automatically.
 `--scrollback-lines 10000` supplies synthetic combined history.
 Without this option, the renderer sums actual retained rows from the supplied panes.
 
-Command activity uses `commandHeat` and a 650 ms host transition.
+Shell command activity uses `commandHeat` and a 650 ms host transition.
 Fracture, recall and shock fronts use signal timestamps.
 Install the shader pack and script together.

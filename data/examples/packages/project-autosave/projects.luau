@@ -10,11 +10,20 @@ function projects.normalize(value)
     end
     return {enabled=enabled}
 end
+-- The project name of the window that holds the pane, nil when it has none.
+function projects.of(state, pane)
+    local window
+    for _,p in ipairs(state.panes) do
+        if p.id==pane then window=p.window end
+    end
+    for _,w in ipairs(state.windows) do
+        if w.id==window and w.project and w.project~="" then return w.project end
+    end
+    return nil
+end
 function projects.current(ev)
     if not ev.pane then return nil end
-    for _,w in ipairs(ev.terminal.windows) do
-        if w.id==ev.pane.window and w.project~="" then return w.project end
-    end
+    return projects.of(ev.terminal, ev.pane.id)
 end
 function projects.candidates(state, enabled)
     local counts, windows = {}, {}

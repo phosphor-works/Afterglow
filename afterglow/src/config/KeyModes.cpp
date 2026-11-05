@@ -78,8 +78,6 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
     result.m_sequenceTimeout = sequenceTimeout;
     result.m_tableTimeout = tableTimeout;
     auto error = [&](const QString& text) { if (errors) errors->append(text); };
-    const QLatin1String tablePrefix(Keybinds::TablePrefix);
-    const QLatin1String textPrefix(Keybinds::TextPrefix);
     QStringList actions;
     for (Action a : Keybinds::allActions()) actions << Keybinds::token(a);
     auto add = [&](const QString& name, const QVariantMap& map) {
@@ -89,23 +87,28 @@ KeyModes KeyModes::fromConfig(const QVariantMap& bindings, const QVariantMap& ta
         auto& out = result.m_tables[name];
         for (auto it = map.begin(); it != map.end(); ++it) {
             const QString target = it.key();
-            const bool tableAction = target.startsWith(tablePrefix);
-            const bool pop = target == QLatin1String("pop_key_table");
-            if (!actions.contains(target) && !target.startsWith(QLatin1String(Keybinds::ScriptPrefix))
-                && !target.startsWith(textPrefix) && !tableAction && !pop) {
+            const bool tableAction = target.startsWith(Keybinds::TablePrefix);
+            const bool pop = target == Keybinds::PopKeyTable;
+            if (!actions.contains(target) && !target.startsWith(Keybinds::ScriptPrefix)
+                && !target.startsWith(Keybinds::TextPrefix) && !tableAction && !pop) {
                 if (!root) error(QStringLiteral("unknown key-table action %1").arg(target));
+                continue;
+            }
+            if (target.startsWith(Keybinds::ScriptPrefix) && !Keybinds::isScriptTarget(target)) {
+                // Keybinds::fromMap reports the root's.
+                if (!root) error(QStringLiteral("\"%1\" names no script command. Use script:<script id>.<command>").arg(target));
                 continue;
             }
             if (root && pop) {
                 // Outside a table it would only swallow its key.
-                error(QStringLiteral("pop_key_table works only inside a key table"));
+                error(QStringLiteral("%1 works only inside a key table").arg(Keybinds::PopKeyTable));
                 continue;
             }
-            if (tableAction && !tables.contains(target.mid(tablePrefix.size()))) {
-                error(QStringLiteral("unknown key table %1").arg(target.mid(tablePrefix.size())));
+            if (tableAction && !tables.contains(target.mid(Keybinds::TablePrefix.size()))) {
+                error(QStringLiteral("unknown key table %1").arg(target.mid(Keybinds::TablePrefix.size())));
                 continue;
             }
-            if (target.startsWith(textPrefix) && Keybinds::unescape(target.mid(textPrefix.size())).isEmpty()) {
+            if (target.startsWith(Keybinds::TextPrefix) && Keybinds::unescape(target.mid(Keybinds::TextPrefix.size())).isEmpty()) {
                 if (!root) error(QStringLiteral("invalid text binding %1").arg(target));
                 continue;
             }
@@ -201,14 +204,14 @@ KeyModes::Result KeyModes::press(const QKeyEvent* event, State& state, qint64 no
                         return {true, {}};
                     }
                     state.prefix.clear();
-                    if (binding.target.startsWith(QLatin1String(Keybinds::TablePrefix))) {
-                        state.table = binding.target.mid(int(qstrlen(Keybinds::TablePrefix)));
+                    if (binding.target.startsWith(Keybinds::TablePrefix)) {
+                        state.table = binding.target.mid(Keybinds::TablePrefix.size());
                         state.tableDeadline = now + m_tableTimeout;
                         arm(state);
                         return {true, {}};
                     }
                     // Leaves every table, not one level.
-                    if (binding.target == QLatin1String("pop_key_table")) { state = {}; return {true, {}}; }
+                    if (binding.target == Keybinds::PopKeyTable) { state = {}; return {true, {}}; }
                     arm(state);
                     return {true, binding.target};
                 }

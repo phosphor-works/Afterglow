@@ -10,6 +10,7 @@ script.metadata = {
         complete = { summary = "Recall the fragments", palette = "Phosphor: recall the fragments" },
         ring = { summary = "Send a shock front", palette = "Phosphor: send a shock front" },
         heat = { summary = "Charge the core", palette = "Phosphor: charge the core" },
+        cool = { summary = "Let the charged core cool" },
     },
 }
 
@@ -80,19 +81,27 @@ function script.on_status(ev)
     return broadcast(ev.pane, values)
 end
 
+-- The demonstration steps, by name: a channel and its value.
+local STEPS = { strike = { 0, 1 }, complete = { 1, 1 }, ring = { 3, 1 }, heat = { 2, 1 }, cool = { 2, 0 } }
+
 function script.run_command(command, ev)
-    if not ev.pane then return nil end
-    local channels = { strike = 0, complete = 1, ring = 3, heat = 2 }
-    local channel = channels[command]
-    if channel then return broadcast(ev.pane, { { channel, 1 } }) end
-    if command == "cool" then return broadcast(ev.pane, { { 2, 0 } }) end
-    return nil
+    local step = STEPS[command]
+    if not step then return nil end
+    if #ev.args > 0 then
+        return { afterglow.output_error(ev, "usage: afterglow run phosphor " .. command .. "\n"), afterglow.exit(ev, 2) }
+    end
+    -- A failure goes to stderr. A run from the palette shows it as a notification.
+    if not ev.pane then
+        return { afterglow.output_error(ev, "There is no pane to drive.\n"), afterglow.exit(ev, 1) }
+    end
+    return broadcast(ev.pane, { step })
 end
 
--- The showcase drives the same script commands through OSC 1337 user vars.
--- There are no timers in Luau and no fake build output to explain the effects.
+-- The showcase drives the same steps through OSC 1337 user variables, so
+-- that its script needs no fake build output to show the effects.
 function script.on_user_var(ev)
-    if ev.name == "phosphor" then return script.run_command(ev.value, ev) end
+    local step = ev.name == "phosphor" and STEPS[ev.value]
+    if step then return broadcast(ev.pane, { step }) end
     return nil
 end
 -- Every pack that shows command heat takes it as a parameter, which eases

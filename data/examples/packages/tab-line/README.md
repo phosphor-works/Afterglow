@@ -30,6 +30,8 @@ Run a command, change directory or switch tabs to see changes.
 Choose **Toggle the tab line** in the command palette to turn the line off and on.
 When the line is off, the windows show their usual tab bars.
 The choice survives restart. Bind the command as `script:tab-line.toggle`, or run `afterglow run tab-line toggle`.
+From a shell, the command returns after the change. It prints whether the line is on or off.
+When the choice cannot be stored, or another toggle is not complete, the command fails with exit status 1.
 
 A middle click that closes a tab and a click on `+` are structural effects.
 A script can open or close at most three tabs in ten seconds, together.

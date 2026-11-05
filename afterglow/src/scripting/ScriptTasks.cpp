@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ScriptTasks.h"
+#include "ScriptFiles.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
@@ -48,17 +49,10 @@ QThreadPool* filePool()
     }();
     return pool;
 }
-/// Bytes cut at a byte limit, without a partial UTF-8 sequence at the end.
-QString utf8Prefix(const QByteArray& bytes, qsizetype limit)
-{
-    if (bytes.size() <= limit) return QString::fromUtf8(bytes);
-    qsizetype end = limit;
-    while (end > 0 && (static_cast<unsigned char>(bytes[end]) & 0xc0) == 0x80) --end;
-    return QString::fromUtf8(bytes.left(end));
-}
 }
 struct ScriptTasks::Task : QObject {
     QString owner, id;
+    QString request; ///< the effect's request ID
     Completion complete;
     Event event;
     QProcess* process = nullptr;
@@ -100,13 +94,21 @@ void ScriptTasks::clear(const QString& owner)
     const auto tasks = m_tasks.value(owner).values();
     for (auto* task : tasks) finish(task, {}, false);
 }
+void ScriptTasks::cancel(const QString& owner, const QString& prefix)
+{
+    const auto tasks = m_tasks.value(owner).values();
+    // Only a task with a result is waited for: a timer or a watcher started by an awaited effect is the script's.
+    for (auto* task : tasks) {
+        if (task->complete && task->request.startsWith(prefix)) finish(task, {}, false);
+    }
+}
 Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion complete, Event event)
 {
     const QString kind = e.value(QStringLiteral("kind")).toString();
     const QString id = e.value(QStringLiteral("name")).toString();
     if (id.isEmpty() || id.size() > 64) return failure("invalid_effect", QStringLiteral("task name must contain 1 to 64 characters"));
     if (kind == QLatin1String("cancel")) {
-        if (auto* task = m_tasks.value(owner).value(id)) finish(task, failure("cancelled", QStringLiteral("Operation cancelled")));
+        if (auto* task = m_tasks.value(owner).value(id)) finish(task, failure("cancelled", QStringLiteral("Operation canceled")));
         return {};
     }
     if (m_tasks.value(owner).contains(id)) return failure("busy", QStringLiteral("A task with this name already exists"));
@@ -119,6 +121,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
     if (timeout < 0 || maxBytes < 0) return failure("invalid_effect", QStringLiteral("Invalid timeout_ms or max_bytes"));
     auto* task = new Task(this);
     task->owner = owner; task->id = id; task->event = std::move(event);
+    task->request = e.value(QStringLiteral("request_id")).toString();
     m_tasks[owner].insert(id, task);
     auto reject = [&](const QString& message) { finish(task, {}, false); return failure("invalid_effect", message); };
     if (kind == QLatin1String("timer")) {
@@ -169,7 +172,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
         connect(watcher, &QFutureWatcherBase::finished, task, [this, task, watcher] { finish(task, watcher->result()); });
         watcher->setFuture(QtConcurrent::run(filePool(), [path, maxBytes, cancelled = task->cancelled] {
             struct Release { ~Release() { fileSlots.release(); } } release;
-            if (*cancelled) return failure("cancelled", QStringLiteral("Operation cancelled"));
+            if (*cancelled) return failure("cancelled", QStringLiteral("Operation canceled"));
             const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
             if (fd < 0) return failure("io_error", QStringLiteral("Cannot open file"));
             struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
@@ -185,11 +188,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
                 bytes.append(chunk, qsizetype(count));
             }
             const bool truncated = bytes.size() > maxBytes;
-            if (truncated) {
-                int end = maxBytes;
-                while (end > 0 && (static_cast<unsigned char>(bytes[end]) & 0xc0) == 0x80) --end;
-                bytes.truncate(end);
-            }
+            if (truncated) bytes = utf8Prefix(std::move(bytes), maxBytes);
             return Result{{}, {{QStringLiteral("text"), QString::fromUtf8(bytes)}, {QStringLiteral("truncated"), truncated}}, {}};
         }));
         return {{}, {}, {}, true};
@@ -238,7 +237,7 @@ Result ScriptTasks::apply(const QString& owner, const QVariantMap& e, Completion
             const auto cut = target.size() + left;
             target += bytes;
             const auto& other = stderrChannel ? task->output : task->errors;
-            const QString kept = utf8Prefix(target, cut);
+            const QString kept = QString::fromUtf8(utf8Prefix(target, cut));
             const QString out = stderrChannel ? QString::fromUtf8(other) : kept;
             const QString err = stderrChannel ? kept : QString::fromUtf8(other);
             finish(task, {QStringLiteral("Process output limit reached"),

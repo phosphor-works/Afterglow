@@ -13,35 +13,38 @@ import math
 import os
 from pathlib import Path
 import shutil
-import signal
 import struct
 import subprocess
 import sys
 import tempfile
 import time
 import wave
-from nested_desktop import NestedDesktop, check, wait_for
+from nested_desktop import NestedDesktop, Session, check, exit_on_sigterm, install_inspector, run_on_private_bus, wait_for
 
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary',type=Path)
 parser.add_argument('--artifacts',type=Path,help='Directory for logs, screenshots and results (default: a new temporary directory)')
+parser.add_argument('--timeout',type=float,default=600,help='Seconds for the whole run (default: 600)')
 parser.add_argument('--private-bus',action='store_true',help=argparse.SUPPRESS)
 args=parser.parse_args(); binary=str(args.binary.resolve())
 if not args.private_bus:
-    # The top-level process: the run under the private bus has its own timeouts.
+    # The top-level process: --timeout bounds the run under the private bus.
     out=args.artifacts or Path(tempfile.mkdtemp(prefix='afterglow-scene-acceptance-'))
     out.mkdir(parents=True,exist_ok=True)
     print(f'Artifacts: {out}',flush=True)
-    sys.exit(subprocess.call(['dbus-run-session','--',sys.executable,__file__,binary,'--artifacts',str(out.resolve()),'--private-bus']))
+    sys.exit(run_on_private_bus([sys.executable,__file__,binary,'--artifacts',out.resolve(),'--private-bus'],args.timeout))
 if not args.artifacts: parser.error('--private-bus needs --artifacts')
 out=args.artifacts
 
 # SIGTERM runs the finally blocks, so the sink does not stay in the user's audio server.
-def stop(signum,frame): raise SystemExit(128+signum)
-signal.signal(signal.SIGTERM,stop)
+exit_on_sigterm()
 
 repo=Path(__file__).resolve().parents[2]
 sink='afterglow_scene_'+str(os.getpid())
+def stop_player(player):
+    player.terminate()
+    try:player.wait(timeout=5)
+    except subprocess.TimeoutExpired:player.kill();player.wait()
 module=subprocess.check_output(['pactl','load-module','module-null-sink','sink_name='+sink],text=True,timeout=10).strip()
 play=None
 try:
@@ -54,27 +57,7 @@ try:
         shutil.copytree(repo/'data/examples/phosphor/scripts',config/'scripts')
         for package in ['scene-controls','contextual-scene']:
             shutil.copytree(repo/'data/examples/packages'/package,config/'scripts'/package)
-        inspector=config/'scripts/inspect';inspector.mkdir()
-        (inspector/'package.json').write_text(json.dumps(dict(id='inspect',version='1.0.0',api_version=1,state_version=1,entry='main',
-            modules={'main':'init.luau'},commands={'read':{'summary':'Save the scene and shader state of the pane'}})))
-        # The run ends once the state is written: afterglow run returns after it.
-        (inspector/'init.luau').write_text('''
-local revision=0
-local function fail(ev,err) return {afterglow.output_error(ev,err.message.."\\n"),afterglow.exit(ev,1)} end
-return {
- on_load=function(ev) revision=ev.storage.revision end,
- run_command=function(_,ev)
-  local result,err=afterglow.await(afterglow.scene_state(ev.pane))
-  if not result then return fail(ev,err) end
-  local active,problem=afterglow.await(afterglow.shaders(ev.pane))
-  if not active then return fail(ev,problem) end
-  result.shaders=active.shaders
-  local saved,failure=afterglow.await(afterglow.state_write(result,revision))
-  if not saved then return fail(ev,failure) end
-  revision=saved.revision
- end,
-}
-''')
+        read_state=install_inspector(config)
         (root/'.bashrc').write_text("PS1='SCENE> '\n")
         settings=json.loads((repo/'data/examples/phosphor/config/phosphor.json').read_text())
         settings.update(json.loads((repo/'data/examples/phosphor/config/dark.json').read_text()))
@@ -90,28 +73,19 @@ return {
             wav.setparams((1,2,22050,0,'NONE','not compressed'))
             block=b''.join(struct.pack('<h',int(9000*(math.sin(2*math.pi*90*i/22050)+.3*math.sin(2*math.pi*900*i/22050)))) for i in range(22050))
             for _ in range(60): wav.writeframes(block)
-        with NestedDesktop(root) as desktop, (out/'application.log').open('w') as log:
+        with NestedDesktop(root) as desktop:
             env=dict(desktop.env,QT_FORCE_STDERR_LOGGING='1',QT_LOGGING_TO_CONSOLE='1')
-            app=subprocess.Popen([binary,'--title','Reactive scene acceptance'],env=env,stdout=log,stderr=subprocess.STDOUT)
-            def ctl(*args):
-                p=subprocess.run([binary,'ctl',*map(str,args)],env=env,capture_output=True,text=True,timeout=10)
-                if p.returncode: raise RuntimeError(p.stderr)
-                return p.stdout.strip()
-            def run(*args):
-                # Empty stdin: a script command never waits for input.
-                p=subprocess.run([binary,'run',*map(str,args)],env=env,input='',capture_output=True,text=True,timeout=20)
-                if p.returncode: raise RuntimeError(f'run {args} exited {p.returncode}: {p.stderr}')
-                return p.stdout
+            session=Session(binary,env,out/'application.log')
+            session.start('Reactive scene acceptance')
+            def ctl(*args):return session.ctl(*args,timeout=10)
+            run=session.run
             def panes():
                 try:return json.loads(ctl('ls','--json'))
-                except RuntimeError:return []
+                except (subprocess.CalledProcessError,subprocess.TimeoutExpired):return []
             def grid(pane):
                 found=next(p for p in panes() if p['id']==pane)
                 return found['cols'],found['rows']
-            state=config/'state/scripts/inspect.json'
-            def inspect(pane):
-                run('--pane',pane,'inspect','read')
-                return json.loads(state.read_text())['value']
+            def inspect(pane):return read_state(run,pane)
             def until(pane,predicate):
                 end=time.monotonic()+15
                 while time.monotonic()<end:
@@ -173,21 +147,19 @@ return {
                 path.write_text(json.dumps(settings))
                 wait_for(lambda:all(a<b for a,b in zip(grid(first),(cols,rows))))
                 time.sleep(.3);desktop.screenshot(out/'translucent-resized.png')
-                play.terminate();play.wait();play=None
+                stop_player(play);play=None
                 silence=until(first,lambda d:d['scene']['overall']<.01)
                 settings['Audio']['enabled']=False;path.write_text(json.dumps(settings));time.sleep(.8)
                 unavailable=until(first,lambda d:not d['scene']['audio_available'])
                 check(unavailable['scene']['overall']==0,unavailable)
-                log.flush()
+                session.log.flush()
                 check('too many effects' not in (out/'application.log').read_text().lower(),'A script hit the effect limit')
                 evidence=dict(audio=audio['scene'],history=history['scene'],charged=field(charged),
                               contextual=field(contextual),reset=field(reset),silence=silence['scene'],unavailable=unavailable['scene'])
                 (out/'results.json').write_text(json.dumps(evidence,indent=2)+'\n')
                 print('PASS: real CAVA audio + command transitions + 10k current-tab history; focus/splits/zoom/fullscreen; contextual toggle/reset; live font resize (opacity in translucent-resized.png); silence/disabled capture')
             finally:
-                app.terminate()
-                try:app.wait(timeout=5)
-                except subprocess.TimeoutExpired:app.kill();app.wait()
+                session.close()
 finally:
-    if play:play.terminate();play.wait()
+    if play:stop_player(play)
     subprocess.run(['pactl','unload-module',module],timeout=10)

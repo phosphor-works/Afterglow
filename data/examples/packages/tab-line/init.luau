@@ -4,7 +4,8 @@ local segments=require("segments")
 local script={metadata={name="Tab line"}}
 local config,enabled,tick={},true,0
 local git,exits,job,jobs={}, {}, nil, 0
-local toggling,togglePane=nil,0
+-- A toggle that waits for the stored choice.
+local toggling=false
 -- Event redraws closer together than this go out as one.
 local DrawMs=250
 -- By window: shown is the line that Afterglow accepted, pending the line that
@@ -16,14 +17,6 @@ local widths,hovered,dragged={}, {}, {}
 -- The tick of the draw timer's start or last call, while it runs. dirty marks
 -- a change that the timer must still draw.
 local drawing,dirty=nil,false
--- A notice needs a pane that is still open. Without one, the message goes to
--- the log that `afterglow ctl scripts` and the afterglow.scripts category show.
-local function failure(message,terminal)
-    for _,pane in ipairs(terminal.panes) do
-        if pane.id==togglePane then return afterglow.notify("Tab line",message,pane.id) end
-    end
-    return afterglow.log(message)
-end
 -- One bounded Git query: no shell, no network, no optional locks.
 -- core.fsmonitor in the repository's own config would run a command.
 local function query(args)
@@ -250,7 +243,6 @@ local function refresh(ev)
         job=nil
         table.insert(effects,afterglow.cancel("git"))
     end
-    if toggling and tick-toggling>=5 then toggling=nil end
     for _,effect in ipairs((flush(ev.terminal))) do table.insert(effects,effect) end
     if not enabled or config.git==false or job then return effects end
     -- One query at a time, for the focused pane of each window in turn. The
@@ -286,10 +278,39 @@ function script.on_timer(ev)
     drawing,dirty=tick,behind
     return effects
 end
+-- Turns the stored choice over. Returns the snapshot after the waits, or
+-- nil, an error message and whether the write may have applied.
+local function toggle()
+    local stored,err=afterglow.await(afterglow.state_read())
+    if not stored then return nil,err.message end
+    local written,failure,result=afterglow.await(afterglow.state_write({enabled=stored.value.enabled==false},stored.revision))
+    -- A cancel can come after the write applied and before its result.
+    if not written then return nil,failure.message,failure.code=="cancelled" end
+    enabled=written.value.enabled~=false
+    return result.terminal
+end
 function script.run_command(command,ev)
-    if command~="toggle" or toggling then return nil end
-    toggling=tick;togglePane=ev.pane and ev.pane.id or ev.terminal.active_pane
-    return afterglow.request("state",afterglow.state_read())
+    if command~="toggle" then return nil end
+    if #ev.args>0 then
+        return {afterglow.output_error(ev,"usage: afterglow run tab-line toggle\n"),afterglow.exit(ev,2)}
+    end
+    -- A failure goes to stderr. A run from the palette shows it as a notification.
+    if toggling then return {afterglow.output_error(ev,"The tab line is changing already.\n"),afterglow.exit(ev,1)} end
+    toggling=true
+    local ok,terminal,problem,unknown=pcall(toggle)
+    toggling=false
+    if not ok then error(terminal,0) end
+    if not terminal then
+        local effects={afterglow.output_error(ev,problem.."\n"),afterglow.exit(ev,1)}
+        -- The stored choice may have turned over: read it again, so that the
+        -- line and the next toggle start from it (see on_result).
+        if unknown then table.insert(effects,afterglow.request("state",afterglow.state_read())) end
+        return effects
+    end
+    -- Off, the lines go and the windows get their tab bars back.
+    local effects=flush(terminal)
+    table.insert(effects,afterglow.output(ev,enabled and "The tab line is on\n" or "The tab line is off\n"))
+    return effects
 end
 local function gitResult(ev)
     local data,code=ev.data or {},ev.error and ev.error.code
@@ -338,19 +359,15 @@ function script.on_result(ev)
         -- once would send results faster than Afterglow takes them.
         return nil
     end
+    if ev.request_id=="state" then
+        if not ev.ok then return nil end
+        enabled=ev.data.value.enabled~=false
+        return (flush(ev.terminal))
+    end
     local jobId=tonumber(string.match(ev.request_id,"^git:(%d+)$"))
     if jobId then
         if not job or job.id~=jobId then return nil end
         return gitResult(ev)
-    elseif ev.request_id=="state" then
-        if not ev.ok then toggling=nil;return failure(ev.error.message,ev.terminal) end
-        return afterglow.request("saved",afterglow.state_write({enabled=ev.data.value.enabled==false},ev.data.revision))
-    elseif ev.request_id=="saved" then
-        toggling=nil
-        if not ev.ok then return failure(ev.error.message,ev.terminal) end
-        enabled=ev.data.value.enabled~=false
-        -- Off, the lines go and the windows get their tab bars back.
-        return (flush(ev.terminal))
     end
     return nil
 end

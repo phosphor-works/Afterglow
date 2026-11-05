@@ -151,6 +151,9 @@ struct HighlightColors
 
 /// The default Hints.patterns: file and line references, copied.
 QVariantList defaultHintPatterns();
+/// The Hints.patterns entries that Afterglow uses, and the arguments of a command action.
+inline constexpr qsizetype MaxHintPatterns = 16;
+inline constexpr qsizetype MaxHintCommandArguments = 32;
 
 /// Everything afterglow reads from its config file.
 struct Settings
@@ -166,12 +169,15 @@ struct Settings
     LinkSettings links;
     HighlightColors colors;
     double fontSizeStep = 1.0; ///< points that font_bigger and font_smaller add or take away
-    bool scriptsAllowReadText = true;
+    bool scriptsAllowReadText = true; ///< scripts may read pane text, selections and semantic regions
     bool scripts = true; ///< run Luau scripts from the scripts directories
     int scriptCommandTimeout = 600000; ///< milliseconds that one command run may take
-    int scriptCommandStdinLimit = 1024 * 1024; ///< bytes of stdin that a command run gets
+    /// Bytes of standard input that a command run may get; more refuses the
+    /// run. The setting is in KiB. This field and ScriptHost::CommandLimits are in bytes.
+    qint64 scriptCommandStdinLimit = qint64(1024) << 10;
     int scriptCommandRunLimit = 16; ///< command runs of one script at once
-    int scriptCommandOutputLimit = 16 * 1024 * 1024; ///< bytes of stdout and stderr of one command run
+    /// Bytes of UTF-8 standard output and standard error of one command run (the setting is in KiB).
+    qint64 scriptCommandOutputLimit = qint64(16384) << 10;
     QString pager = QStringLiteral("less -R");
     std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
     bool shellIntegration = true;
@@ -225,7 +231,7 @@ struct Settings
     Permission graphicsFileTransfer = Permission::Allow;
     /// DECRQCRA checksum replies, which let any program read the screen back.
     bool allowScreenReadback = false;
-    std::size_t graphicsQuota = std::size_t(320) << 20; ///< bytes of images (kitty, sixel, iTerm2) that each screen keeps
+    std::size_t graphicsQuota = AfterglowVt::GraphicsStore::DefaultQuota; ///< bytes of images (kitty, sixel, iTerm2) that each screen keeps
     /// Each a map of pattern, action and command, checked when read.
     QVariantList hintPatterns = defaultHintPatterns();
     /// Keys that label hints and URL hints, home row first. Unique, at least two.
@@ -244,7 +250,7 @@ struct Settings
 /// The config file (~/.config/afterglow/config.json) on phosphor-config,
 /// with live reload when the file changes. The file holds only the values
 /// that differ from the defaults; a missing file means every default, and
-/// the first write() creates it, readable by the owner only.
+/// the first write() or ensureFile() creates it, readable by the owner only.
 class SettingsStore : public QObject
 {
     Q_OBJECT
@@ -257,7 +263,8 @@ public:
     SettingsStore(const QString& path, const QJsonObject& overrides, QObject* parent = nullptr);
     ~SettingsStore() override;
 
-    /// A theme from the desktop's colours follows a new application palette.
+    /// A theme from the desktop's colours follows a new application palette,
+    /// and a font from the desktop follows a new desktop font.
     bool eventFilter(QObject* watched, QEvent* event) override;
 
     static QString defaultPath();
@@ -275,7 +282,7 @@ public:
     /// theme could come from and, for a plasma theme, the kdeglobals files.
     QStringList watchedPaths() const { return m_files.paths(); }
     /// What the last read could not use: a file that does not parse, unknown
-    /// keys, bad values, missing themes. Each is also logged.
+    /// keys, bad values, missing themes. Each is logged when it appears.
     QStringList problems() const { return m_fileProblems + m_readProblems; }
 
     /// Re-reads the file. A file that cannot be read, does not parse or does
@@ -285,7 +292,8 @@ public:
     /// Writes one key to the config file and reloads. A value equal to the
     /// default removes the key. Command-line overrides keep winning over the
     /// file. False for an undeclared key, or when the file cannot be read
-    /// back (it would lose what it holds) or written.
+    /// back (it would lose what it holds) or written. A write that the file
+    /// refuses still applies what the file holds.
     bool write(const QString& group, const QString& key, const QVariant& value);
     /// What the file holds for one key, or its default: the value without
     /// command-line overrides. A write built on a current value (a shader
@@ -299,8 +307,10 @@ public:
     static bool addOverride(QJsonObject& overrides, const QString& assignment);
 
 Q_SIGNALS:
-    /// Emitted after a reload changed anything; settings() holds the new values.
+    /// Emitted when settings() changed: after a reload of the file or a
+    /// theme, a write(), a new desktop color scheme, palette or font.
     void changed(const Settings& previous);
+    /// Emitted once for each read whose problems() differ from the last.
     void problemsChanged(const QStringList& problems);
 
 private:
@@ -309,9 +319,13 @@ private:
     bool loadFile();
     /// Reads the backend's document, emitting changed() if that changes anything.
     void apply();
+    /// apply() once, after Qt has delivered the desktop's events of one change.
+    void queueApply();
     void watch();
     Settings read();
-    void setProblems(QStringList* list, const QStringList& problems);
+    /// Emits problemsChanged() if problems() differ from the last published
+    /// (or the startup) list.
+    void publishProblems();
     /// The desktop prefers dark colours (for "light:a,dark:b" themes).
     bool darkScheme() const;
 
@@ -327,8 +341,13 @@ private:
     /// and whether it laid the desktop's colours over it. watch() follows them.
     QString m_themeName;
     bool m_plasmaTheme = false;
+    /// Font.family or Font.size comes from the desktop's fixed-width font.
+    bool m_desktopFont = false;
+    /// An apply() for the desktop events is posted and has not run yet.
+    bool m_applyQueued = false;
     QStringList m_fileProblems;
     QStringList m_readProblems;
+    QStringList m_publishedProblems;
     PhosphorFsLoader::WatchedFileSet m_files; ///< the config file, its theme and kdeglobals
 };
 

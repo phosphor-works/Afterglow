@@ -13,15 +13,17 @@ import signal
 import subprocess
 import sys
 import tempfile
-from nested_desktop import NestedDesktop, Session, check
+from nested_desktop import NestedDesktop, Session, check, exit_on_sigterm, run_on_private_bus
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
+parser.add_argument("--timeout", type=float, default=300, help="Seconds for the whole run (default: 300)")
 parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 options = parser.parse_args()
 binary = str(options.binary.resolve())
 if not options.private_bus:
-    sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary, "--private-bus"]))
+    sys.exit(run_on_private_bus([sys.executable, __file__, binary, "--private-bus"], options.timeout))
+exit_on_sigterm()
 with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
     root = Path(tmp); (root / '.bashrc').write_text("PS1='T3> '\n")
     conf = root / 'afterglow'; (conf / 'scripts').mkdir(parents=True)
@@ -49,10 +51,10 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             first = wait(panes)[0]['id']; wait(lambda: 'T3>' in screen(first))
             wait(lambda: navigator().get('status') == 'active')
             check(saved()['version'] == 2 and saved()['revision'] == 2, saved())
-            # A Luau command from the shell -> native launch -> result -> durable
-            # history. The run ends once the history is saved.
             listed = s.run('project-navigator', 'list').stdout
             check(f'recent\t{project}' in listed and f'favorite\t{project}' in listed, listed)
+            # A Luau command from the shell -> native launch -> result -> durable
+            # history. The run ends once the history is saved.
             s.run('--pane', first, 'project-navigator', 'previous')
             check(saved()['revision'] == 3, saved())
             wait(lambda: len(panes()) == 2)
@@ -66,8 +68,9 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             check(result.stdout == 'Favorite removed\n', result.stdout)
             check(saved()['revision'] == 4 and str(project) not in saved()['value']['favorites'], saved())
             # A usage error and an unknown command exit with status 2.
-            check(s.run('project-navigator', 'open', check_status=False).returncode == 2)
-            check(s.run('project-navigator', 'nope', check_status=False).returncode == 2)
+            for command in ('open', 'nope'):
+                result = s.run('project-navigator', command, check_status=False)
+                check(result.returncode == 2, f'run project-navigator {command} exited {result.returncode}: {result.stderr}')
             second = int(ctl('split', '--pane', newpane, '--right'))
             wait(lambda: 'T3>' in screen(second))
             ctl('save-project', 'two-pane', '--pane', newpane)

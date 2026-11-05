@@ -4,6 +4,7 @@
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Text.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 
@@ -16,24 +17,7 @@ const Json::Array EmptyArray;
 const Json::Object EmptyObject;
 const Value NullValue;
 
-void appendUtf8(std::string& out, char32_t cp)
-{
-    if (cp < 0x80) {
-        out += char(cp);
-    } else if (cp < 0x800) {
-        out += char(0xC0 | (cp >> 6));
-        out += char(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        out += char(0xE0 | (cp >> 12));
-        out += char(0x80 | ((cp >> 6) & 0x3F));
-        out += char(0x80 | (cp & 0x3F));
-    } else {
-        out += char(0xF0 | (cp >> 18));
-        out += char(0x80 | ((cp >> 12) & 0x3F));
-        out += char(0x80 | ((cp >> 6) & 0x3F));
-        out += char(0x80 | (cp & 0x3F));
-    }
-}
+constexpr std::string_view Replacement = "\xEF\xBF\xBD"; // U+FFFD
 
 class Reader
 {
@@ -46,19 +30,25 @@ public:
     std::optional<Value> document(std::string* error)
     {
         auto value = read(0);
-        skipSpace();
-        if (value && m_at != m_text.size()) {
-            fail("text after the value");
-            value.reset();
+        if (value) {
+            skipSpace();
+            if (m_at != m_text.size()) {
+                fail("text after the value");
+                value.reset();
+            }
         }
-        if (!value && error) *error = m_error + " at byte " + std::to_string(m_at);
+        if (!value && error) *error = m_error + " at byte " + std::to_string(m_errorAt);
         return value;
     }
 
 private:
+    /// The first failure is the one reported, where it happened.
     bool fail(const char* why)
     {
-        if (m_error.empty()) m_error = why;
+        if (m_error.empty()) {
+            m_error = why;
+            m_errorAt = m_at;
+        }
         return false;
     }
 
@@ -76,13 +66,14 @@ private:
         return true;
     }
 
+    /// A value inside @p depth containers.
     std::optional<Value> read(int depth)
     {
-        if (depth > MaxDepth) {
-            fail("nesting too deep");
+        skipSpace();
+        if (++m_values > MaxValues) {
+            fail("too many values");
             return std::nullopt;
         }
-        skipSpace();
         if (m_at >= m_text.size()) {
             fail("the text ends before a value");
             return std::nullopt;
@@ -103,9 +94,12 @@ private:
             return std::nullopt;
         }
         case '[':
-            return array(depth);
         case '{':
-            return object(depth);
+            if (depth >= MaxDepth) {
+                fail("nesting too deep");
+                return std::nullopt;
+            }
+            return m_text[m_at] == '[' ? array(depth + 1) : object(depth + 1);
         default:
             return number();
         }
@@ -114,56 +108,97 @@ private:
     std::optional<Value> number()
     {
         // JSON's grammar, checked before from_chars, which also takes "inf",
-        // "nan", hexadecimal and a leading "+".
+        // "nan", leading zeros, "1." and ".5". Floating-point from_chars
+        // needs libstdc++ 11 or libc++ 20. strtod would follow LC_NUMERIC,
+        // which a Qt application sets from the user's locale.
         const std::size_t start = m_at;
         auto digits = [this] {
             const std::size_t from = m_at;
             while (m_at < m_text.size() && m_text[m_at] >= '0' && m_text[m_at] <= '9') ++m_at;
             return m_at > from;
         };
-        if (m_at < m_text.size() && m_text[m_at] == '-') ++m_at;
+        const bool negative = m_at < m_text.size() && m_text[m_at] == '-';
+        if (negative) ++m_at;
+        const std::size_t intStart = m_at;
         if (m_at < m_text.size() && m_text[m_at] == '0') {
             ++m_at;
         } else if (!digits()) {
             fail("an invalid value");
             return std::nullopt;
         }
+        const std::size_t intEnd = m_at;
+        std::size_t fracStart = m_at, fracEnd = m_at;
         if (m_at < m_text.size() && m_text[m_at] == '.') {
             ++m_at;
+            fracStart = m_at;
             if (!digits()) {
                 fail("a number with no digits after the point");
                 return std::nullopt;
             }
+            fracEnd = m_at;
         }
+        long exponent = 0;
         if (m_at < m_text.size() && (m_text[m_at] == 'e' || m_text[m_at] == 'E')) {
             ++m_at;
+            const bool down = m_at < m_text.size() && m_text[m_at] == '-';
             if (m_at < m_text.size() && (m_text[m_at] == '+' || m_text[m_at] == '-')) ++m_at;
+            const std::size_t from = m_at;
             if (!digits()) {
                 fail("a number with no digits in its exponent");
                 return std::nullopt;
             }
+            // Past the range of a double for any count of digits that this
+            // text can hold, so that underflows() still tells small from large.
+            const long cap = long(m_text.size()) + 400;
+            for (std::size_t i = from; i < m_at; ++i) exponent = std::min(exponent * 10 + (m_text[i] - '0'), cap);
+            if (down) exponent = -exponent;
         }
         double value = 0;
         const auto [end, ec] = std::from_chars(m_text.data() + start, m_text.data() + m_at, value);
+        if (ec == std::errc::result_out_of_range && underflows(intStart, intEnd, fracStart, fracEnd, exponent)) {
+            // Below the smallest double: the nearest one is zero.
+            return Value(negative ? -0.0 : 0.0);
+        }
         if (ec != std::errc() || end != m_text.data() + m_at || !std::isfinite(value)) {
+            m_at = start;
             fail("a number out of range");
             return std::nullopt;
         }
         return Value(value);
     }
 
+    /// Whether the number of these digits and @p exponent is below 1, so
+    /// that out of range means too small rather than too large.
+    bool underflows(std::size_t intStart, std::size_t intEnd, std::size_t fracStart, std::size_t fracEnd, long exponent) const
+    {
+        long magnitude = 0; // the power of ten of the first digit that is not 0
+        const auto isZero = [](char c) { return c == '0'; };
+        const auto digit = std::find_if_not(m_text.begin() + std::ptrdiff_t(intStart), m_text.begin() + std::ptrdiff_t(intEnd), isZero);
+        if (digit != m_text.begin() + std::ptrdiff_t(intEnd)) {
+            magnitude = long(m_text.begin() + std::ptrdiff_t(intEnd) - digit) - 1;
+        } else {
+            const auto fraction = std::find_if_not(m_text.begin() + std::ptrdiff_t(fracStart),
+                                                   m_text.begin() + std::ptrdiff_t(fracEnd), isZero);
+            magnitude = -long(fraction - (m_text.begin() + std::ptrdiff_t(fracStart))) - 1;
+        }
+        return magnitude + exponent < 0;
+    }
+
+    /// The four hex digits at m_at, which it then passes. Nothing, with
+    /// m_at unchanged, when they are not.
     std::optional<char32_t> hex4()
     {
         if (m_text.size() - m_at < 4) return std::nullopt;
         char32_t v = 0;
-        for (int i = 0; i < 4; ++i) {
-            const char c = m_text[m_at++];
+        for (std::size_t i = 0; i < 4; ++i) {
+            const char c = m_text[m_at + i];
             v <<= 4;
             if (c >= '0' && c <= '9') v |= char32_t(c - '0');
             else if (c >= 'a' && c <= 'f') v |= char32_t(c - 'a' + 10);
             else if (c >= 'A' && c <= 'F') v |= char32_t(c - 'A' + 10);
             else return std::nullopt;
         }
+        m_at += 4;
         return v;
     }
 
@@ -171,6 +206,20 @@ private:
     {
         ++m_at; // the opening quote
         while (true) {
+            // Text that needs no decoding goes in at once. Valid UTF-8
+            // passes through, anything else is refused below.
+            const std::size_t from = m_at;
+            while (m_at < m_text.size()) {
+                const auto c = static_cast<unsigned char>(m_text[m_at]);
+                if (c == '"' || c == '\\' || c < 0x20) break;
+                if (c < 0x80) {
+                    ++m_at;
+                    continue;
+                }
+                char32_t cp = 0;
+                if (!nextUtf8(m_text, m_at, cp)) break;
+            }
+            out.append(m_text.substr(from, m_at - from));
             if (m_at >= m_text.size()) return fail("an unterminated string");
             const auto c = static_cast<unsigned char>(m_text[m_at]);
             if (c == '"') {
@@ -178,16 +227,14 @@ private:
                 return true;
             }
             if (c < 0x20) return fail("a control character in a string");
-            if (c != '\\') {
-                // Valid UTF-8 passes through, anything else is refused.
-                std::size_t next = m_at;
-                char32_t cp = 0;
-                if (!nextUtf8(m_text, next, cp)) return fail("a string that is not UTF-8");
-                out.append(m_text.substr(m_at, next - m_at));
-                m_at = next;
-                continue;
-            }
-            if (++m_at >= m_text.size()) return fail("an unterminated string");
+            if (c != '\\') return fail("a string that is not UTF-8");
+            // A bad escape is reported at its backslash.
+            const std::size_t escape = m_at;
+            const auto invalid = [this, escape](const char* why) {
+                m_at = escape;
+                return fail(why);
+            };
+            if (++m_at >= m_text.size()) return invalid("an unterminated string");
             const char e = m_text[m_at++];
             switch (e) {
             case '"': out += '"'; break;
@@ -200,7 +247,7 @@ private:
             case 't': out += '\t'; break;
             case 'u': {
                 auto cp = hex4();
-                if (!cp) return fail("an invalid \\u escape");
+                if (!cp) return invalid("an invalid \\u escape");
                 if (*cp >= 0xD800 && *cp <= 0xDBFF && m_text.substr(m_at, 2) == "\\u") {
                     const std::size_t back = m_at;
                     m_at += 2;
@@ -215,11 +262,13 @@ private:
                 break;
             }
             default:
-                return fail("an invalid escape");
+                return invalid("an invalid escape");
             }
         }
     }
 
+    /// The members of an array that is inside @p depth containers, itself
+    /// included.
     std::optional<Value> array(int depth)
     {
         ++m_at;
@@ -230,7 +279,7 @@ private:
             return Value(std::move(items));
         }
         while (true) {
-            auto item = read(depth + 1);
+            auto item = read(depth);
             if (!item) return std::nullopt;
             items.push_back(std::move(*item));
             skipSpace();
@@ -270,7 +319,7 @@ private:
                 return std::nullopt;
             }
             ++m_at;
-            auto value = read(depth + 1);
+            auto value = read(depth);
             if (!value) return std::nullopt;
             members.emplace_back(std::move(key), std::move(*value));
             skipSpace();
@@ -289,7 +338,9 @@ private:
 
     std::string_view m_text;
     std::size_t m_at = 0;
+    std::size_t m_values = 0;
     std::string m_error;
+    std::size_t m_errorAt = 0;
 };
 
 void writeValue(std::string& out, const Value& value)
@@ -307,12 +358,14 @@ void writeValue(std::string& out, const Value& value)
             out += "null"; // JSON has no infinity or NaN
             break;
         }
+        // The longest double, "-2.2250738585072014e-308", has 24 bytes.
         char buffer[32];
-        // Whole numbers as integers: the shortest form of 1e21 is "1e+21".
-        const auto [end, ec] = std::abs(d) < 9007199254740992.0 && d == std::floor(d)
+        // Whole numbers as integers: the shortest form of 1e15 is "1e+15".
+        const auto [end, ec] = std::abs(d) < MaxExactInteger && d == std::floor(d)
             ? std::to_chars(buffer, buffer + sizeof buffer, std::int64_t(d))
             : std::to_chars(buffer, buffer + sizeof buffer, d);
-        if (ec == std::errc()) out.append(buffer, end);
+        // The buffer holds any number, and the output stays JSON regardless.
+        out += ec == std::errc() ? std::string_view(buffer, std::size_t(end - buffer)) : std::string_view("null");
         break;
     }
     case Value::Type::String:
@@ -345,34 +398,26 @@ void writeValue(std::string& out, const Value& value)
     }
 }
 
-/// Calls @p emit with each piece of @p text as appendString() writes it.
-template<typename Emit>
-void escape(std::string_view text, Emit&& emit)
+/// The escape of @p cp in a JSON string, or empty when it goes as it is.
+/// The one rule of appendString() and nextStringPiece().
+std::string_view escapeOf(char32_t cp, char (&buffer)[6])
 {
     static constexpr char Hex[] = "0123456789abcdef";
-    std::size_t i = 0;
-    while (i < text.size()) {
-        const std::size_t start = i;
-        char32_t cp = 0;
-        if (!nextUtf8(text, i, cp)) {
-            emit(std::string_view("\xEF\xBF\xBD")); // U+FFFD for the byte
-            i = start + 1;
-            continue;
-        }
-        switch (cp) {
-        case '"': emit(std::string_view("\\\"")); break;
-        case '\\': emit(std::string_view("\\\\")); break;
-        case '\n': emit(std::string_view("\\n")); break;
-        case '\r': emit(std::string_view("\\r")); break;
-        case '\t': emit(std::string_view("\\t")); break;
-        default:
-            if (cp < 0x20) {
-                const char escaped[] = {'\\', 'u', '0', '0', Hex[cp >> 4], Hex[cp & 0xF]};
-                emit(std::string_view(escaped, sizeof escaped));
-            } else {
-                emit(text.substr(start, i - start));
-            }
-        }
+    switch (cp) {
+    case '"': return "\\\"";
+    case '\\': return "\\\\";
+    case '\n': return "\\n";
+    case '\r': return "\\r";
+    case '\t': return "\\t";
+    default:
+        if (cp >= 0x20) return {};
+        buffer[0] = '\\';
+        buffer[1] = 'u';
+        buffer[2] = '0';
+        buffer[3] = '0';
+        buffer[4] = Hex[cp >> 4];
+        buffer[5] = Hex[cp & 0xF];
+        return {buffer, sizeof buffer};
     }
 }
 
@@ -392,7 +437,7 @@ std::optional<std::int64_t> Value::toInteger() const
 {
     if (!isNumber()) return std::nullopt;
     const double d = std::get<double>(m_data);
-    if (d != std::floor(d) || std::abs(d) > 9007199254740992.0) return std::nullopt;
+    if (d != std::floor(d) || !(std::abs(d) < MaxExactInteger)) return std::nullopt;
     return std::int64_t(d);
 }
 
@@ -413,10 +458,14 @@ const Json::Object& Value::toObject() const
 
 const Value* Value::find(std::string_view key) const
 {
-    for (const auto& [name, value] : toObject()) {
-        if (name == key) return &value;
-    }
-    return nullptr;
+    const Json::Object& members = toObject();
+    const auto it = std::find_if(members.rbegin(), members.rend(), [key](const auto& member) { return member.first == key; });
+    return it == members.rend() ? nullptr : &it->second;
+}
+
+Value* Value::find(std::string_view key)
+{
+    return const_cast<Value*>(std::as_const(*this).find(key));
 }
 
 const Value& Value::operator[](std::string_view key) const
@@ -440,15 +489,40 @@ std::string write(const Value& value)
 void appendString(std::string& out, std::string_view text)
 {
     out += '"';
-    escape(text, [&out](std::string_view piece) { out += piece; });
+    std::size_t plain = 0; // the start of the text that goes out as it is
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const std::size_t start = i;
+        char32_t cp = 0;
+        char buffer[6];
+        std::string_view piece;
+        if (!nextUtf8(text, i, cp)) {
+            i = start + 1;
+            piece = Replacement;
+        } else {
+            piece = escapeOf(cp, buffer);
+        }
+        if (piece.empty()) continue;
+        out.append(text.substr(plain, start - plain));
+        out += piece;
+        plain = i;
+    }
+    out.append(text.substr(plain));
     out += '"';
 }
 
-std::size_t stringSize(std::string_view text)
+std::size_t nextStringPiece(std::string_view text, std::size_t& at)
 {
-    std::size_t size = 2;
-    escape(text, [&size](std::string_view piece) { size += piece.size(); });
-    return size;
+    if (at >= text.size()) return 0;
+    const std::size_t start = at;
+    char32_t cp = 0;
+    if (!nextUtf8(text, at, cp)) {
+        at = start + 1;
+        return Replacement.size();
+    }
+    char buffer[6];
+    const std::string_view escaped = escapeOf(cp, buffer);
+    return escaped.empty() ? at - start : escaped.size();
 }
 
 } // namespace AfterglowProto::Json

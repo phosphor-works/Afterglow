@@ -4,6 +4,7 @@
 #pragma once
 
 #include <QHash>
+#include <QLatin1StringView>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -88,12 +89,14 @@ enum class Action {
 class Keybinds
 {
 public:
-    static constexpr const char* ScriptPrefix = "script:";
+    static constexpr QLatin1StringView ScriptPrefix{"script:"};
     /// "text:<bytes>" sends the bytes to the terminal, with C escapes:
     /// \e \r \n \t \\ \xHH \uHHHH. { "text:\\x1b\\r": "Shift+Return" }
-    static constexpr const char* TextPrefix = "text:";
+    static constexpr QLatin1StringView TextPrefix{"text:"};
     /// "table:<name>" activates a key table (KeyModes).
-    static constexpr const char* TablePrefix = "table:";
+    static constexpr QLatin1StringView TablePrefix{"table:"};
+    /// Leaves every key table; bound only inside one (KeyModes).
+    static constexpr QLatin1StringView PopKeyTable{"pop_key_table"};
     /// The modifiers that take part in matching; others (keypad, group switch) are ignored.
     static constexpr Qt::KeyboardModifiers RelevantMods =
         Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier;
@@ -102,11 +105,16 @@ public:
     /// Default bindings in config form, for the schema default.
     static QVariantMap defaultMap();
     /// Builds bindings from config, falling back to the defaults for actions
-    /// not mentioned. A key that the config binds explicitly leaves every
-    /// default that used it; two explicit bindings of one key are an error,
-    /// and the first (in key order) keeps it. Unknown actions and unparsable
-    /// keys are reported in @p errors.
+    /// not mentioned. The targets are actions, "script:" commands and "text:"
+    /// bytes; "table:" targets and pop_key_table are KeyModes', and skipped.
+    /// A key that the config binds explicitly leaves every default that used
+    /// it; two explicit bindings of one key are an error, and the first (in
+    /// key order) keeps it. Unknown actions, script targets without a script
+    /// and a command, text that sends nothing and unparsable keys are
+    /// reported in @p errors.
     static Keybinds fromMap(const QVariantMap& map, QStringList* errors = nullptr);
+    /// Whether @p target is "script:<script id>.<command>" with both parts.
+    static bool isScriptTarget(const QString& target);
     /// Whether @p sequence starts with the Leader token ("Leader" or "Leader, X"),
     /// in any case. KeyModes replaces it with Keybinds.leader.
     static bool usesLeader(const QString& sequence);
@@ -140,7 +148,8 @@ public:
     /// Human-readable bindings of @p action, for menus and the command palette,
     /// in the order the config lists them.
     QStringList bindingsOf(Action action) const;
-    QStringList bindingsOfScript(const QString& action) const;
+    /// The same for a script command ("<script id>.<command>", as matchScript returns it).
+    QStringList bindingsOfScript(const QString& command) const;
 
     bool operator==(const Keybinds&) const = default;
 

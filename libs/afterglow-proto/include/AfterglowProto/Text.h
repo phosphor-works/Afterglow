@@ -7,8 +7,8 @@
 #include <string>
 #include <string_view>
 
-// Checks for the text fields of protocol messages. The terminal runs them on
-// the fields that a program sends.
+// Text helpers for protocol messages: UTF-8 decoding and encoding, and the
+// checks that the terminal runs on the fields that a program sends.
 namespace AfterglowProto {
 
 /// Decodes the code point at @p i and advances @p i past it. Returns false,
@@ -38,6 +38,26 @@ inline bool nextUtf8(std::string_view s, std::size_t& i, char32_t& cp)
     }
     i += std::size_t(extra) + 1;
     return true;
+}
+
+/// Appends @p cp as UTF-8. @p cp must be a code point: at most U+10FFFF.
+inline void appendUtf8(std::string& out, char32_t cp)
+{
+    if (cp < 0x80) {
+        out.push_back(char(cp));
+    } else if (cp < 0x800) {
+        out.push_back(char(0xC0 | (cp >> 6)));
+        out.push_back(char(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(char(0xE0 | (cp >> 12)));
+        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(char(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(char(0xF0 | (cp >> 18)));
+        out.push_back(char(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(char(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(char(0x80 | (cp & 0x3F)));
+    }
 }
 
 inline constexpr bool isControl(char32_t cp)

@@ -274,21 +274,26 @@ Keybinds Keybinds::fromMap(const QVariantMap& map, QStringList* errors)
     for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
         const QString& target = it.key();
         // Key tables and their exit live in KeyModes.
-        if (target.startsWith(QLatin1String(TablePrefix)) || target == QLatin1String("pop_key_table")) continue;
+        if (target.startsWith(TablePrefix) || target == PopKeyTable) continue;
         const auto action = std::find_if(std::begin(Actions), std::end(Actions),
                                           [&](const ActionInfo& a) { return target == QLatin1String(a.token); });
         if (action != std::end(Actions)) {
             for (const QString& s : sequencesOf(target, it.value())) {
                 if (const auto combo = claim(s, target)) kb.m_byKey.insert(*combo, action->action);
             }
-        } else if (target.startsWith(QLatin1String(ScriptPrefix))) {
+        } else if (target.startsWith(ScriptPrefix)) {
+            // "script:foo" would bind a key that only ever fails to run.
+            if (!isScriptTarget(target)) {
+                error(QStringLiteral("\"%1\" names no script command. Use script:<script id>.<command>").arg(target));
+                continue;
+            }
             for (const QString& s : sequencesOf(target, it.value())) {
                 if (const auto combo = claim(s, target)) {
-                    kb.m_scriptByKey.insert(*combo, target.mid(int(qstrlen(ScriptPrefix))));
+                    kb.m_scriptByKey.insert(*combo, target.mid(ScriptPrefix.size()));
                 }
             }
-        } else if (target.startsWith(QLatin1String(TextPrefix))) {
-            const QByteArray bytes = unescape(target.mid(int(qstrlen(TextPrefix))));
+        } else if (target.startsWith(TextPrefix)) {
+            const QByteArray bytes = unescape(target.mid(TextPrefix.size()));
             if (bytes.isEmpty()) {
                 error(QStringLiteral("\"%1\" sends nothing. Check its escapes").arg(target));
                 continue;
@@ -431,11 +436,19 @@ QByteArray Keybinds::unescape(const QString& text)
     return out;
 }
 
-QStringList Keybinds::bindingsOfScript(const QString& action) const
+bool Keybinds::isScriptTarget(const QString& target)
+{
+    if (!target.startsWith(ScriptPrefix)) return false;
+    // ScriptHost splits the command at the first dot, as here.
+    const qsizetype dot = target.indexOf(QLatin1Char('.'), ScriptPrefix.size());
+    return dot > ScriptPrefix.size() && dot < target.size() - 1;
+}
+
+QStringList Keybinds::bindingsOfScript(const QString& command) const
 {
     QStringList out;
     for (int combo : m_order) {
-        if (const auto it = m_scriptByKey.constFind(combo); it != m_scriptByKey.constEnd() && *it == action) {
+        if (const auto it = m_scriptByKey.constFind(combo); it != m_scriptByKey.constEnd() && *it == command) {
             out.append(QKeySequence(QKeyCombination::fromCombined(combo)).toString(QKeySequence::NativeText));
         }
     }

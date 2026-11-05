@@ -28,12 +28,13 @@ namespace {
 
 QString g_processPath;
 
-// Qt's own default, so that the application and `afterglow ctl` agree when the
-// variable is unset. An absolute display can name a socket anywhere: the whole
-// path keeps two of them apart.
+// Where the sockets are, as AfterglowProto::sharedSocketPath finds them: no
+// directory without an absolute XDG_RUNTIME_DIR, and then no socket to clean up.
+// A leading '/' as there: QDir::isAbsolutePath takes a Qt resource path too.
 QString runtimeDirectory()
 {
-    return qEnvironmentVariable("XDG_RUNTIME_DIR");
+    const QString directory = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    return directory.startsWith(QLatin1Char('/')) ? directory : QString();
 }
 
 QByteArray lockPath(const QString& socket)

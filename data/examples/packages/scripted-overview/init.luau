@@ -1,28 +1,52 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- A package that ships a script and the shader it drives. Copy this folder
--- into ~/.config/afterglow/scripts, run "Use Package Shaders…" (or
--- `afterglow run scripted-overview use-shaders`) to set Shaders.overview to
--- scripted-overview.wall, and bind "script:scripted-overview.open". The script owns the keyboard: a/d, h/l or
--- the arrow keys move, w/s jump between tabs, Enter or Space chooses, q or
--- Escape closes. The key mode starts while the overview is open, so it ends
--- when the overview closes, also when a click closes it.
+-- into ~/.config/afterglow/scripts, and run "Use Package Shaders…" (or
+-- `afterglow run scripted-overview use-shaders`). The dialog lists the
+-- package's suggestion, Shaders.overview = scripted-overview.wall, and
+-- writes it when you choose it. Then bind "script:scripted-overview.open".
+-- The script owns the keyboard: a/d, h/l or the arrow keys move, w/s jump
+-- between tabs, Enter or Space chooses, q or Escape closes. The key mode
+-- starts while the overview is open, so it ends when the overview closes,
+-- also when a click closes it.
 local script = {}
 script.metadata = { name = "Scripted overview" }
 
-local function windowOf(ev)
-    for _, window in ev.terminal.windows do
-        if ev.pane and window.id == ev.pane.window then return window end
+-- The window that holds the pane in the snapshot.
+local function windowOf(terminal, pane)
+    local id = nil
+    for _, p in terminal.panes do
+        if pane and p.id == pane.id then id = p.window end
+    end
+    for _, window in terminal.windows do
+        if window.id == id then return window end
     end
     return nil
 end
 
+-- A failure goes to stderr. A run from the palette or a key shows it as a notification.
+local function fail(ev, message)
+    return { afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1) }
+end
+
 function script.run_command(command, ev)
-    if not ev.pane then return nil end
-    -- The dialog that writes the package's suggested shaders into the config.
-    if command == "use-shaders" then return afterglow.action(ev.pane, "use_package_shaders") end
-    local opened, err = afterglow.await(afterglow.overview(ev.pane, "open"))
-    if not opened then return afterglow.notify("Scripted overview", err.message, ev.pane) end
+    if command ~= "open" and command ~= "use-shaders" then return nil end
+    if #ev.args > 0 then
+        return { afterglow.output_error(ev, "usage: afterglow run scripted-overview " .. command .. "\n"), afterglow.exit(ev, 2) }
+    end
+    if not ev.pane then return fail(ev, "There is no pane to act on.") end
+    if command == "use-shaders" then
+        -- Another dialog in the window refuses it.
+        local shown, err = afterglow.await(afterglow.action(ev.pane, "use_package_shaders"))
+        if not shown then return fail(ev, err.message) end
+        return nil
+    end
+    local opened, err, result = afterglow.await(afterglow.overview(ev.pane, "open"))
+    if not opened then return fail(ev, err.message) end
+    -- A click can close the overview before its result arrives. A key mode
+    -- that started then would not end with the overview.
+    local window = windowOf(result.terminal, ev.pane)
+    if not window or not window.overview.open then return nil end
     return afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close")
 end
 
@@ -46,8 +70,9 @@ local function tabJump(ev, window, step)
 end
 
 function script.on_key(ev)
-    local window = windowOf(ev)
-    if not window then return nil end
+    local window = windowOf(ev.terminal, ev.pane)
+    -- The key mode belongs to the overview: without one, give the keyboard back.
+    if not window or not window.overview.open then return afterglow.end_key_mode() end
     -- Letters arrive as typed: "A" with Caps Lock or Shift. Named keys keep their case.
     local key = #ev.key == 1 and string.lower(ev.key) or ev.key
     if key == "a" or key == "h" or key == "Left" then return afterglow.overview_move(ev.pane, -1) end

@@ -71,6 +71,17 @@ target_link_libraries(afterglow_shader_tests PRIVATE afterglow_shaders GTest::gt
 target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 gtest_discover_tests(afterglow_shader_tests)
 
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    # The shell completions against a stub afterglow. Exit status 77: no shell to test.
+    add_test(NAME afterglow_shell_completion COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/completion_test.py)
+    set_tests_properties(afterglow_shell_completion PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # Fails when docs/CONFIGURATION.md is not what the schema generates.
+    add_test(NAME afterglow_configuration_reference
+        COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/generate-reference.py --check $<TARGET_FILE:afterglow>)
+    set_tests_properties(afterglow_configuration_reference PROPERTIES TIMEOUT 60)
+endif()
+
 option(AFTERGLOW_NATIVE_TESTS "Run integration tests in a nested KWin desktop (requires DISPLAY)" OFF)
 if(AFTERGLOW_NATIVE_TESTS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)

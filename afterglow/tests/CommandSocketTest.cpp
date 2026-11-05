@@ -8,6 +8,7 @@
 // AFTERGLOW_SOCKET these tests must never reach.
 
 #include "app/InstanceSocket.h"
+#include "app/ScriptSettings.h"
 #include "config/Settings.h"
 #include "control/CommandSocket.h"
 #include "control/Control.h"
@@ -64,6 +65,7 @@ struct Saved
 
 const QByteArray Script = R"(
 local flooded = 0
+local results = {}
 return {
     metadata = { commands = {
         greet = { summary = "Greet", usage = "[NAME] [STATUS]", palette = "Greet" },
@@ -73,7 +75,13 @@ return {
         where = { summary = "Print the pane, directory and source" },
         flood = { summary = "Write MIB parts of 1 MiB, each awaited", usage = "MIB" },
         count = { summary = "Print how many flood parts have gone" },
+        spew = { summary = "Write MIB parts of 1 MiB at once, then exit 3", usage = "MIB" },
+        twin = { summary = "Write 5 MiB, then nothing, each with a result" },
+        results = { summary = "Print the results of twin" },
     } },
+    on_result = function(ev)
+        table.insert(results, ev.request_id .. "=" .. tostring(ev.ok))
+    end,
     run_command = function(command, ev)
         if command == "greet" then
             return {
@@ -98,6 +106,21 @@ return {
             return afterglow.output(ev, "done\n")
         elseif command == "count" then
             return afterglow.output(ev, tostring(flooded))
+        elseif command == "spew" then
+            local part = string.rep("z", 1048576)
+            local effects = {}
+            for _ = 1, tonumber(ev.args[1]) do
+                table.insert(effects, afterglow.output(ev, part))
+            end
+            table.insert(effects, afterglow.exit(ev, 3))
+            return effects
+        elseif command == "twin" then
+            return {
+                afterglow.request("big", afterglow.output(ev, string.rep("y", 5 * 1048576))),
+                afterglow.request("empty", afterglow.output(ev, "")),
+            }
+        elseif command == "results" then
+            return afterglow.output(ev, table.concat(results, " "))
         elseif command == "where" then
             return afterglow.output(ev, tostring(ev.pane and ev.pane.id) .. " " .. ev.cwd .. " " .. ev.source .. "\n")
         end
@@ -175,10 +198,9 @@ protected:
         m_scripts = std::make_unique<ScriptHost>(scriptCallbacks(*m_control));
         m_scripts->setStateDirectory(m_dir.filePath(QStringLiteral("state")));
         m_scripts->setSearchPaths({scripts()});
-        const Settings& s = m_settings->settings();
-        m_scripts->setCommandLimits({s.scriptCommandTimeout, s.scriptCommandStdinLimit, s.scriptCommandRunLimit, s.scriptCommandOutputLimit});
-        m_scripts->setEnabled(true);
+        // In Application's order: the socket's slot for the settings runs first.
         m_commands = std::make_unique<CommandSocket>(*m_control, *m_scripts, *m_settings, m_instance->router());
+        followScriptSettings(*m_scripts, *m_settings);
         return true;
     }
 
@@ -221,11 +243,73 @@ protected:
         return frames;
     }
 
-    QJsonObject call(QLocalSocket& client, const QString& fn, const QJsonArray& args = {})
+    /// The last of @p frames, the answer that until() waited for.
+    static QJsonObject last(const QList<QJsonObject>& frames)
     {
-        const auto frames = until(client, send(client, fn, args));
+        if (frames.isEmpty()) ADD_FAILURE() << "no answer";
         return frames.isEmpty() ? QJsonObject{} : frames.last();
     }
+
+    QJsonObject call(QLocalSocket& client, const QString& fn, const QJsonArray& args = {})
+    {
+        return last(until(client, send(client, fn, args)));
+    }
+
+    QStringList schemaNames(QLocalSocket& client, const char* kind)
+    {
+        QStringList names;
+        const QJsonObject schema = last(until(client, send(client, {}, {}, QStringLiteral("schema"))));
+        for (const QJsonValue& f : schema.value(QStringLiteral("result")).toObject().value(QLatin1String(kind)).toArray())
+            names << f.toObject().value(QStringLiteral("name")).toString();
+        return names;
+    }
+
+    /// What a client read until the answers to @p ids came.
+    struct Drained
+    {
+        QString out;
+        QString err;
+        QHash<qint64, QJsonObject> answers;
+    };
+
+    /// Reads, from now without a limit, until the answers to @p ids came.
+    /// With @p acknowledge it acknowledges the event lines as CONTROL.md
+    /// says: once the runs of the connection have 256 KiB together, each
+    /// run's count. An ack of each run on its own, at 256 KiB, would stall
+    /// many small runs that fill the window together.
+    Drained drain(QLocalSocket& client, const QList<qint64>& ids, bool acknowledge, int timeoutMs = 20000)
+    {
+        client.setReadBufferSize(0);
+        Drained got;
+        QHash<QString, qint64> unacknowledged;
+        qint64 total = 0;
+        const bool done = pumpUntil([&] {
+            while (client.canReadLine()) {
+                const QByteArray line = client.readLine();
+                const QJsonObject frame = QJsonDocument::fromJson(line).object();
+                if (frame.value(QStringLiteral("type")) == QLatin1String("event")) {
+                    const QJsonArray args = frame.value(QStringLiteral("args")).toArray();
+                    (frame.value(QStringLiteral("signal")) == QLatin1String("stdout") ? got.out : got.err) += args.at(1).toString();
+                    const QString run = args.at(0).toString();
+                    unacknowledged[run] += line.size();
+                    total += line.size();
+                    if (acknowledge && total >= 256 * 1024) {
+                        for (auto count = unacknowledged.cbegin(); count != unacknowledged.cend(); ++count)
+                            send(client, QStringLiteral("ack"), {count.key(), double(count.value())});
+                        unacknowledged.clear();
+                        total = 0;
+                    }
+                } else if (const qint64 id = frame.value(QStringLiteral("id")).toInteger(); ids.contains(id)) {
+                    got.answers.insert(id, frame);
+                }
+            }
+            return got.answers.size() == ids.size();
+        }, timeoutMs);
+        EXPECT_TRUE(done) << "answers for " << got.answers.size() << " of " << ids.size() << " calls";
+        return got;
+    }
+
+    static int exitOf(const QJsonObject& answer) { return answer.value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(-1); }
 
     static QString output(const QList<QJsonObject>& frames, const char* signal)
     {
@@ -259,7 +343,7 @@ TEST_F(CommandSocketTest, ListsTheCommandsAndEachInTheSchema)
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
     const QJsonArray list = call(client, QStringLiteral("list")).value(QStringLiteral("result")).toArray();
-    ASSERT_EQ(list.size(), 7);
+    ASSERT_EQ(list.size(), 10);
     auto entry = [&list](const char* name) {
         for (const QJsonValue& v : list)
             if (v.toObject().value(QStringLiteral("command")) == QLatin1String(name)) return v.toObject();
@@ -272,22 +356,17 @@ TEST_F(CommandSocketTest, ListsTheCommandsAndEachInTheSchema)
     EXPECT_EQ(greet.value(QStringLiteral("palette")), QStringLiteral("Greet"));
     EXPECT_TRUE(entry("read").value(QStringLiteral("stdin")).toBool());
 
-    const QJsonObject schema = until(client, send(client, {}, {}, QStringLiteral("schema"))).last();
-    QStringList functions, signalNames;
-    for (const QJsonValue& f : schema.value(QStringLiteral("result")).toObject().value(QStringLiteral("functions")).toArray())
-        functions << f.toObject().value(QStringLiteral("name")).toString();
-    for (const QJsonValue& s : schema.value(QStringLiteral("result")).toObject().value(QStringLiteral("signals")).toArray())
-        signalNames << s.toObject().value(QStringLiteral("name")).toString();
+    const QStringList functions = schemaNames(client, "functions");
     for (const char* name : {"list", "input", "run", "ack", "cancel", "cmds.greet", "cmds.read", "cmds.plain", "cmds.wait", "cmds.where"})
         EXPECT_TRUE(functions.contains(QLatin1String(name))) << name;
-    EXPECT_EQ(signalNames, (QStringList{QStringLiteral("stdout"), QStringLiteral("stderr")}));
+    EXPECT_EQ(schemaNames(client, "signals"), (QStringList{QStringLiteral("stdout"), QStringLiteral("stderr")}));
 
     // A command's entry runs it, with a run ID of the terminal's.
     const auto frames = until(client, send(client, QStringLiteral("cmds.greet"), QJsonArray{QJsonValue(QJsonArray{QStringLiteral("schema"), QStringLiteral("4")})}));
     EXPECT_EQ(output(frames, "stdout"), QStringLiteral("hello schema\n"));
-    EXPECT_EQ(frames.last().value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(), 4);
+    EXPECT_EQ(exitOf(last(frames)), 4);
 
-    // A command that a script adds or drops changes the schema.
+    // A command that a script adds or drops changes the schema. The events stay.
     QFile file(scripts() + QStringLiteral("/cmds.luau"));
     ASSERT_TRUE(file.open(QIODevice::WriteOnly));
     file.write("return {metadata = {commands = {only = {summary = 'Only'}}}, run_command = function() end}");
@@ -295,12 +374,18 @@ TEST_F(CommandSocketTest, ListsTheCommandsAndEachInTheSchema)
     m_scripts->reload();
     ASSERT_TRUE(waitFor([&] {
         QCoreApplication::processEvents();
-        const auto result = until(client, send(client, {}, {}, QStringLiteral("schema"))).last();
-        QStringList names;
-        for (const QJsonValue& f : result.value(QStringLiteral("result")).toObject().value(QStringLiteral("functions")).toArray())
-            names << f.toObject().value(QStringLiteral("name")).toString();
+        const QStringList names = schemaNames(client, "functions");
         return names.contains(QStringLiteral("cmds.only")) && !names.contains(QStringLiteral("cmds.greet"));
     }));
+    EXPECT_EQ(schemaNames(client, "signals"), (QStringList{QStringLiteral("stdout"), QStringLiteral("stderr")}));
+    // With no command at all, the events are still there.
+    ASSERT_TRUE(QFile::remove(scripts() + QStringLiteral("/cmds.luau")));
+    m_scripts->reload();
+    ASSERT_TRUE(waitFor([&] {
+        QCoreApplication::processEvents();
+        return !schemaNames(client, "functions").contains(QStringLiteral("cmds.only"));
+    }));
+    EXPECT_EQ(schemaNames(client, "signals"), (QStringList{QStringLiteral("stdout"), QStringLiteral("stderr")}));
 }
 
 TEST_F(CommandSocketTest, ARunRepliesWhenItEndsAndItsEventsGoToTheCallerOnly)
@@ -314,10 +399,8 @@ TEST_F(CommandSocketTest, ARunRepliesWhenItEndsAndItsEventsGoToTheCallerOnly)
     // A list call on the same connection answers while the run waits.
     const qint64 list = send(client, QStringLiteral("list"), {});
     QList<QJsonObject> frames = until(client, list);
-    ASSERT_FALSE(frames.isEmpty());
-    EXPECT_EQ(frames.last().value(QStringLiteral("type")), QStringLiteral("reply"));
+    EXPECT_EQ(last(frames).value(QStringLiteral("type")), QStringLiteral("reply"));
     frames += until(client, run);
-    ASSERT_FALSE(frames.isEmpty());
     EXPECT_EQ(output(frames, "stdout"), QStringLiteral("start\ndone\n"));
     for (const QJsonObject& f : std::as_const(frames)) {
         if (f.value(QStringLiteral("type")) != QLatin1String("event")) continue;
@@ -325,7 +408,7 @@ TEST_F(CommandSocketTest, ARunRepliesWhenItEndsAndItsEventsGoToTheCallerOnly)
         EXPECT_EQ(f.value(QStringLiteral("target")), QStringLiteral("commands"));
         EXPECT_EQ(f.value(QStringLiteral("args")).toArray().at(0), QStringLiteral("r1"));
     }
-    EXPECT_EQ(frames.last().value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(), 0);
+    EXPECT_EQ(exitOf(last(frames)), 0);
     // The other client got nothing.
     EXPECT_FALSE(next(other, 200));
 
@@ -335,29 +418,62 @@ TEST_F(CommandSocketTest, ARunRepliesWhenItEndsAndItsEventsGoToTheCallerOnly)
     const auto badPane = call(client, QStringLiteral("run"), {QStringLiteral("r3"), QStringLiteral("cmds"), QStringLiteral("greet"),
                                                               QJsonArray{}, QString(), 99});
     EXPECT_EQ(badPane.value(QStringLiteral("message")), QStringLiteral("no pane 99"));
+    // The directory is the client's: empty or absolute.
+    const auto relative = call(client, QStringLiteral("run"), {QStringLiteral("r4"), QStringLiteral("cmds"), QStringLiteral("where"),
+                                                               QJsonArray{}, QStringLiteral("work"), 0});
+    EXPECT_EQ(relative.value(QStringLiteral("type")), QStringLiteral("error"));
+    EXPECT_TRUE(relative.value(QStringLiteral("message")).toString().contains(QStringLiteral("absolute"))) << qPrintable(relative.value(QStringLiteral("message")).toString());
 }
 
-TEST_F(CommandSocketTest, StdinComesBeforeTheRunAndStopsAtTheLimit)
+TEST_F(CommandSocketTest, StdinOverTheLimitIsRefusedNotCut)
 {
-    ASSERT_TRUE(start(R"({"Scripts": {"commandStdinLimit": 8}})"));
+    ASSERT_TRUE(start(R"({"Scripts": {"commandStdinLimit": 1}})"));
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
-    EXPECT_TRUE(call(client, QStringLiteral("input"), {QStringLiteral("in"), QStringLiteral("abc"), false})
-                    .value(QStringLiteral("result")).toBool());
-    // At the limit the terminal takes no more, and keeps what fits.
-    EXPECT_FALSE(call(client, QStringLiteral("input"), {QStringLiteral("in"), QStringLiteral("defghij"), false})
-                     .value(QStringLiteral("result")).toBool());
-    EXPECT_EQ(call(client, QStringLiteral("input"), {QStringLiteral("in"), QStringLiteral("k"), true}).value(QStringLiteral("type")),
-              QStringLiteral("error"));
+    auto input = [&](const QString& run, const QString& text, bool eof) {
+        return call(client, QStringLiteral("input"), {run, text, eof});
+    };
+    // Exactly at the limit of 1 KiB, in UTF-8 bytes, is taken whole.
+    EXPECT_TRUE(input(QStringLiteral("in"), QString(1000, QLatin1Char('a')), false).value(QStringLiteral("result")).toBool());
+    EXPECT_TRUE(input(QStringLiteral("in"), QString(24, QLatin1Char('b')), false).value(QStringLiteral("result")).toBool());
+    EXPECT_TRUE(input(QStringLiteral("in"), QString(), true).value(QStringLiteral("result")).toBool());
+    EXPECT_EQ(input(QStringLiteral("in"), QStringLiteral("k"), true).value(QStringLiteral("type")), QStringLiteral("error"));
     const auto frames = until(client, send(client, QStringLiteral("run"), {QStringLiteral("in"), QStringLiteral("cmds"),
                                                                            QStringLiteral("read"), QJsonArray{}, QString(), 0}));
-    EXPECT_EQ(output(frames, "stdout"), QStringLiteral("abcdefgh"));
-    // Input after the run started is refused, and a command without stdin gets none.
-    EXPECT_EQ(call(client, QStringLiteral("input"), {QStringLiteral("p"), QStringLiteral("x"), true}).value(QStringLiteral("result")),
-              false);
+    EXPECT_EQ(output(frames, "stdout"), QString(1000, QLatin1Char('a')) + QString(24, QLatin1Char('b')));
+    EXPECT_EQ(m_commands->waitingInputBytes(), 0);
+
+    // One byte more is refused with its own code, and the run's input goes.
+    EXPECT_TRUE(input(QStringLiteral("over"), QString(512, QChar(0xe9)), false).value(QStringLiteral("result")).toBool());
+    EXPECT_EQ(m_commands->waitingInputBytes(), 1024);
+    const QJsonObject over = input(QStringLiteral("over"), QStringLiteral("x"), false);
+    EXPECT_EQ(over.value(QStringLiteral("type")), QStringLiteral("error"));
+    EXPECT_EQ(over.value(QStringLiteral("code")), QLatin1String(CommandSocket::InputTooLarge));
+    EXPECT_EQ(over.value(QStringLiteral("message")), QStringLiteral("Standard input is over 1 KiB (Scripts.commandStdinLimit)"));
+    EXPECT_EQ(m_commands->waitingInputs(), 0);
+    EXPECT_EQ(m_commands->waitingInputBytes(), 0);
+
+    // Input to a run that has started is refused.
+    const qint64 waiting = send(client, QStringLiteral("run"), {QStringLiteral("w"), QStringLiteral("cmds"), QStringLiteral("wait"),
+                                                              QJsonArray{QStringLiteral("60000")}, QString(), 0});
+    ASSERT_TRUE(waitFor([&] { return client.canReadLine(); })); // its first output
+    const QJsonObject started = input(QStringLiteral("w"), QStringLiteral("x"), false);
+    EXPECT_EQ(started.value(QStringLiteral("type")), QStringLiteral("error"));
+    EXPECT_TRUE(started.value(QStringLiteral("message")).toString().contains(QStringLiteral("has started")))
+        << qPrintable(started.value(QStringLiteral("message")).toString());
+    send(client, QStringLiteral("cancel"), {QStringLiteral("w")});
+    EXPECT_EQ(exitOf(last(until(client, waiting))), 130);
+
+    // A command without stdin gets none, also when the client sent some.
+    EXPECT_TRUE(input(QStringLiteral("p"), QStringLiteral("x"), true).value(QStringLiteral("result")).toBool());
     const auto plain = until(client, send(client, QStringLiteral("run"), {QStringLiteral("p"), QStringLiteral("cmds"),
                                                                           QStringLiteral("plain"), QJsonArray{}, QString(), 0}));
     EXPECT_EQ(output(plain, "stdout"), QStringLiteral("plain nil\n"));
+
+    // A limit of 0 refuses any input, and takes none.
+    m_settings->write(QStringLiteral("Scripts"), QStringLiteral("commandStdinLimit"), 0);
+    EXPECT_EQ(input(QStringLiteral("z"), QStringLiteral("x"), true).value(QStringLiteral("code")), QLatin1String(CommandSocket::InputTooLarge));
+    EXPECT_TRUE(input(QStringLiteral("e"), QString(), true).value(QStringLiteral("result")).toBool());
 }
 
 TEST_F(CommandSocketTest, ARunIdBelongsToItsConnection)
@@ -366,8 +482,9 @@ TEST_F(CommandSocketTest, ARunIdBelongsToItsConnection)
     QLocalSocket client, other;
     ASSERT_TRUE(connect(client));
     ASSERT_TRUE(connect(other));
+    // Long enough that only the cancel ends it.
     const qint64 first = send(client, QStringLiteral("run"), {QStringLiteral("same"), QStringLiteral("cmds"), QStringLiteral("wait"),
-                                                            QJsonArray{QStringLiteral("300")}, QString(), 0});
+                                                            QJsonArray{QStringLiteral("60000")}, QString(), 0});
     ASSERT_TRUE(waitFor([&] { return client.canReadLine(); })); // its first output
     const auto again = call(client, QStringLiteral("run"), {QStringLiteral("same"), QStringLiteral("cmds"), QStringLiteral("greet"),
                                                             QJsonArray{}, QString(), 0});
@@ -380,8 +497,19 @@ TEST_F(CommandSocketTest, ARunIdBelongsToItsConnection)
     // The first run is cancelled: its reply has status 130.
     send(client, QStringLiteral("cancel"), {QStringLiteral("same")});
     const auto frames = until(client, first);
-    EXPECT_EQ(frames.last().value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(), 130);
+    EXPECT_EQ(exitOf(last(frames)), 130);
     EXPECT_FALSE(output(frames, "stdout").contains(QStringLiteral("done")));
+    // An ack names a run of this connection, and a count of bytes.
+    EXPECT_EQ(call(client, QStringLiteral("ack"), {QStringLiteral("same"), 10}).value(QStringLiteral("type")), QStringLiteral("error"));
+    EXPECT_EQ(call(client, QStringLiteral("cancel"), {QStringLiteral("same")}).value(QStringLiteral("type")), QStringLiteral("error"));
+    const qint64 held = send(client, QStringLiteral("run"), {QStringLiteral("held"), QStringLiteral("cmds"), QStringLiteral("wait"),
+                                                           QJsonArray{QStringLiteral("60000")}, QString(), 0});
+    ASSERT_TRUE(waitFor([&] { return client.canReadLine(); }));
+    const QJsonObject negative = call(client, QStringLiteral("ack"), {QStringLiteral("held"), -1});
+    EXPECT_EQ(negative.value(QStringLiteral("message")), QStringLiteral("ack takes a number of bytes"));
+    EXPECT_EQ(call(other, QStringLiteral("ack"), {QStringLiteral("held"), 10}).value(QStringLiteral("type")), QStringLiteral("error"));
+    send(client, QStringLiteral("cancel"), {QStringLiteral("held")});
+    EXPECT_EQ(exitOf(last(until(client, held))), 130);
 }
 
 TEST_F(CommandSocketTest, AClosedConnectionDropsItsStdinAndCancelsItsRuns)
@@ -417,21 +545,29 @@ TEST_F(CommandSocketTest, FollowsControlAndScriptsEnabled)
     EXPECT_TRUE(m_commands->enabled());
     QLocalSocket client;
     ASSERT_TRUE(connect(client));
-    const qint64 run = send(client, QStringLiteral("run"), {QStringLiteral("r"), QStringLiteral("cmds"), QStringLiteral("wait"),
-                                                          QJsonArray{QStringLiteral("60000")}, QString(), 0});
-    ASSERT_TRUE(waitFor([&] { return client.canReadLine(); }));
-    // Turning scripts off ends the target and fails the run that waits.
-    m_settings->write(QStringLiteral("Scripts"), QStringLiteral("enabled"), false);
-    EXPECT_FALSE(m_commands->enabled());
-    const auto frames = until(client, run);
-    ASSERT_FALSE(frames.isEmpty());
-    EXPECT_EQ(frames.last().value(QStringLiteral("type")), QStringLiteral("error"));
-    EXPECT_EQ(call(client, QStringLiteral("list")).value(QStringLiteral("code")), QStringLiteral("NO_SUCH_TARGET"));
+    for (const char* group : {"Control", "Scripts"}) {
+        const qint64 run = send(client, QStringLiteral("run"), {QLatin1String(group), QStringLiteral("cmds"), QStringLiteral("wait"),
+                                                              QJsonArray{QStringLiteral("60000")}, QString(), 0});
+        ASSERT_TRUE(waitFor([&] { return client.canReadLine(); }));
+        // Turning either off ends the target and fails the run that waits,
+        // with the reason, before the scripts stop.
+        m_settings->write(QLatin1String(group), QStringLiteral("enabled"), false);
+        EXPECT_FALSE(m_commands->enabled());
+        const QJsonObject failed = last(until(client, run));
+        EXPECT_EQ(failed.value(QStringLiteral("type")), QStringLiteral("error"));
+        EXPECT_TRUE(failed.value(QStringLiteral("message")).toString().contains(QStringLiteral("commands are off")))
+            << qPrintable(failed.value(QStringLiteral("message")).toString());
+        EXPECT_EQ(call(client, QStringLiteral("list")).value(QStringLiteral("code")), QStringLiteral("NO_SUCH_TARGET"));
+        EXPECT_EQ(m_scripts->isEnabled(), QLatin1String(group) == QLatin1String("Control"));
+        m_settings->write(QLatin1String(group), QStringLiteral("enabled"), true);
+        EXPECT_TRUE(m_commands->enabled());
+        EXPECT_TRUE(m_scripts->isEnabled());
+    }
 }
 
 TEST_F(CommandSocketTest, ASlowReaderHoldsTheRunBackAndKeepsItsConnection)
 {
-    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 67108864}})"));
+    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 65536}})"));
     QLocalSocket client, other;
     ASSERT_TRUE(connect(client));
     ASSERT_TRUE(connect(other));
@@ -440,64 +576,231 @@ TEST_F(CommandSocketTest, ASlowReaderHoldsTheRunBackAndKeepsItsConnection)
     client.setReadBufferSize(64 * 1024);
     const qint64 run = send(client, QStringLiteral("run"), {QStringLiteral("flood"), QStringLiteral("cmds"), QStringLiteral("flood"),
                                                           QJsonArray{QStringLiteral("20")}, QString(), 0});
-    pumpUntil([] { return false; }, 1500);
+    // Four lines of 1 MiB and a little fill the window. The fifth part waits.
+    ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() > 0; }));
     EXPECT_EQ(client.state(), QLocalSocket::ConnectedState);
-    // The handler's await waits: it has sent about the window, not 20 MiB.
     const int parts = output(until(other, send(other, QStringLiteral("run"), {QStringLiteral("c"), QStringLiteral("cmds"),
                                                                             QStringLiteral("count"), QJsonArray{}, QString(), 0})),
                              "stdout").toInt();
-    EXPECT_GE(parts, 3);
-    EXPECT_LE(parts, 6);
+    EXPECT_EQ(parts, 4);
     // Reading and acknowledging, as afterglow run does, lets it go on.
-    client.setReadBufferSize(0);
-    qint64 total = 0, unacknowledged = 0;
-    QJsonObject reply;
-    ASSERT_TRUE(pumpUntil([&] {
-        while (client.canReadLine()) {
-            const QByteArray line = client.readLine();
-            const QJsonObject frame = QJsonDocument::fromJson(line).object();
-            if (frame.value(QStringLiteral("type")) == QLatin1String("event")) {
-                total += frame.value(QStringLiteral("args")).toArray().at(1).toString().size();
-                unacknowledged += line.size();
-                if (unacknowledged >= 256 * 1024) {
-                    send(client, QStringLiteral("ack"), {QStringLiteral("flood"), double(unacknowledged)});
-                    unacknowledged = 0;
-                }
-            } else if (frame.value(QStringLiteral("id")).toInteger() == run) {
-                reply = frame;
-                return true;
-            }
-        }
-        return false;
-    }, 20000));
-    EXPECT_EQ(total, 20 * 1048576 + 5);
-    EXPECT_EQ(reply.value(QStringLiteral("result")).toObject().value(QStringLiteral("exit")).toInt(), 0);
+    const Drained got = drain(client, {run}, true);
+    EXPECT_EQ(got.out.size(), 20 * 1048576 + 5);
+    EXPECT_EQ(exitOf(got.answers.value(run)), 0);
     EXPECT_EQ(client.state(), QLocalSocket::ConnectedState);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
+}
+
+TEST_F(CommandSocketTest, TheRunsOfAConnectionShareItsWindow)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client, other;
+    ASSERT_TRUE(connect(client));
+    ASSERT_TRUE(connect(other));
+    client.setReadBufferSize(64 * 1024);
+    const qint64 a = send(client, QStringLiteral("run"), {QStringLiteral("a"), QStringLiteral("cmds"), QStringLiteral("flood"),
+                                                        QJsonArray{QStringLiteral("6")}, QString(), 0});
+    const qint64 b = send(client, QStringLiteral("run"), {QStringLiteral("b"), QStringLiteral("cmds"), QStringLiteral("flood"),
+                                                        QJsonArray{QStringLiteral("6")}, QString(), 0});
+    // Both runs have a part that waits: the window of the connection is full.
+    ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() >= 2 * 2 * 1048576; }));
+    const int parts = output(until(other, send(other, QStringLiteral("run"), {QStringLiteral("c"), QStringLiteral("cmds"),
+                                                                            QStringLiteral("count"), QJsonArray{}, QString(), 0})),
+                             "stdout").toInt();
+    EXPECT_EQ(parts, 4); // not four for each run
+    const Drained got = drain(client, {a, b}, true);
+    EXPECT_EQ(got.out.size(), 12 * 1048576 + 10);
+    EXPECT_EQ(exitOf(got.answers.value(a)), 0);
+    EXPECT_EQ(exitOf(got.answers.value(b)), 0);
+}
+
+TEST_F(CommandSocketTest, ManySmallRunsFillTheWindowAndTheClientAcknowledgesTheirTotal)
+{
+    // Two scripts, as one runs at most 16 commands at once.
+    const QByteArray quarter = R"(
+return {
+    metadata = { commands = { quarter = { summary = "Write 250 KiB, wait MS, then write done", usage = "MS" } } },
+    run_command = function(command, ev)
+        assert(afterglow.await(afterglow.output(ev, string.rep("q", 250 * 1024))))
+        afterglow.sleep(tonumber(ev.args[1]))
+        return afterglow.output(ev, "done\n")
+    end,
+}
+)";
+    for (const char* id : {"wide1", "wide2"}) {
+        QFile file(scripts() + QStringLiteral("/%1.luau").arg(QLatin1String(id)));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(quarter);
+    }
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    // Twenty runs of a line each just under 256 KiB: seventeen lines pass
+    // 4 MiB, and no run alone has 256 KiB to acknowledge. Each run stays,
+    // with its share of the window, until its "done" goes.
+    QList<qint64> runs;
+    for (int i = 0; i < 20; ++i) {
+        runs << send(client, QStringLiteral("run"), {QStringLiteral("q%1").arg(i), i % 2 ? QStringLiteral("wide2") : QStringLiteral("wide1"),
+                                                   QStringLiteral("quarter"), QJsonArray{QStringLiteral("500")}, QString(), 0});
+    }
+    ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() > 0; }));
+    const Drained got = drain(client, runs, true, 10000);
+    EXPECT_EQ(got.out.size(), 20 * (250 * 1024 + 5));
+    for (const qint64 run : std::as_const(runs)) EXPECT_EQ(exitOf(got.answers.value(run)), 0);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
+}
+
+TEST_F(CommandSocketTest, ACancelDropsTheOutputThatWaits)
+{
+    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 65536}})"));
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    client.setReadBufferSize(64 * 1024);
+    // A run that waits for its output to go. Without the drop, its reply
+    // would wait for acknowledgments that never come.
+    const qint64 flood = send(client, QStringLiteral("run"), {QStringLiteral("f"), QStringLiteral("cmds"), QStringLiteral("flood"),
+                                                            QJsonArray{QStringLiteral("20")}, QString(), 0});
+    ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() > 0; }));
+    send(client, QStringLiteral("cancel"), {QStringLiteral("f")});
+    Drained got = drain(client, {flood}, false);
+    EXPECT_EQ(exitOf(got.answers.value(flood)), 130);
+    EXPECT_EQ(got.out.size(), 4 * 1048576);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
+
+    // A run that ended, with its output waiting, keeps its own status.
+    client.setReadBufferSize(64 * 1024);
+    const qint64 spew = send(client, QStringLiteral("run"), {QStringLiteral("s"), QStringLiteral("cmds"), QStringLiteral("spew"),
+                                                           QJsonArray{QStringLiteral("8")}, QString(), 0});
+    ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() >= 4 * 2 * 1048576; }));
+    send(client, QStringLiteral("cancel"), {QStringLiteral("s")});
+    got = drain(client, {spew}, false);
+    EXPECT_EQ(exitOf(got.answers.value(spew)), 3);
+    EXPECT_EQ(got.out.size(), 4 * 1048576);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
+}
+
+TEST_F(CommandSocketTest, AnEmptyWriteKeepsTheResultOfTheWriteBefore)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    const Drained got = drain(client, {send(client, QStringLiteral("run"), {QStringLiteral("t"), QStringLiteral("cmds"),
+                                                                          QStringLiteral("twin"), QJsonArray{}, QString(), 0})},
+                              true);
+    EXPECT_EQ(got.out.size(), 5 * 1048576);
+    // Both results come, in the order of the writes.
+    QString results;
+    ASSERT_TRUE(waitFor([&] {
+        results = output(until(client, send(client, QStringLiteral("run"), {QStringLiteral("r") + QString::number(m_id),
+                                                                          QStringLiteral("cmds"), QStringLiteral("results"),
+                                                                          QJsonArray{}, QString(), 0})),
+                         "stdout");
+        return results.contains(QStringLiteral("empty"));
+    })) << qPrintable(results);
+    EXPECT_EQ(results, QStringLiteral("big=true empty=true"));
+}
+
+TEST_F(CommandSocketTest, WaitingOutputHasACapForTheWholeProcess)
+{
+    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 65536}})"));
+    m_commands->setMaxWaitingOutputBytes(3 * 1048576);
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    client.setReadBufferSize(64 * 1024);
+    // Four parts go, the fifth waits, and the sixth would pass the cap: the
+    // run ends with status 1 and says why, before its reply.
+    const qint64 spew = send(client, QStringLiteral("run"), {QStringLiteral("s"), QStringLiteral("cmds"), QStringLiteral("spew"),
+                                                           QJsonArray{QStringLiteral("8")}, QString(), 0});
+    const Drained got = drain(client, {spew}, true);
+    EXPECT_EQ(exitOf(got.answers.value(spew)), 1);
+    EXPECT_EQ(got.out.size(), 5 * 1048576);
+    EXPECT_TRUE(got.err.contains(QStringLiteral("over 3 MiB"))) << qPrintable(got.err);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
+}
+
+TEST_F(CommandSocketTest, AClientWithoutAcknowledgmentsThatReadsNothingIsClosed)
+{
+    ASSERT_TRUE(start(R"({"Scripts": {"commandRunLimit": 1, "commandOutputLimit": 65536}})"));
+    QLocalSocket client, other;
+    ASSERT_TRUE(connect(client));
+    ASSERT_TRUE(connect(other));
+    // A call of the schema entry sends without a window: the router closes
+    // the connection once 16 MiB wait for it, and the run ends.
+    client.setReadBufferSize(64 * 1024);
+    send(client, QStringLiteral("cmds.flood"), QJsonArray{QJsonValue(QJsonArray{QStringLiteral("20")})});
+    ASSERT_TRUE(waitFor([&] {
+        const auto reply = call(other, QStringLiteral("run"), {QStringLiteral("g") + QString::number(m_id), QStringLiteral("cmds"),
+                                                               QStringLiteral("greet"), QJsonArray{}, QString(), 0});
+        return reply.value(QStringLiteral("type")) == QLatin1String("reply");
+    }, 20000));
+    const int parts = output(until(other, send(other, QStringLiteral("run"), {QStringLiteral("c"), QStringLiteral("cmds"),
+                                                                            QStringLiteral("count"), QJsonArray{}, QString(), 0})),
+                             "stdout").toInt();
+    EXPECT_GE(parts, 15);
+    EXPECT_LT(parts, 20);
+    EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
 }
 
 TEST_F(CommandSocketTest, WaitingStdinHasACapForTheWholeProcess)
 {
-    ASSERT_TRUE(start(R"({"Scripts": {"commandStdinLimit": 16777216}})"));
-    QLocalSocket client;
+    ASSERT_TRUE(start(R"({"Scripts": {"commandStdinLimit": 4096}})"));
+    constexpr qint64 Limit = 4096 * 1024;
+    QLocalSocket client, other;
     ASSERT_TRUE(connect(client));
-    const QString part(1000000, QLatin1Char('x'));
-    for (int run = 0; run < 4; ++run) {
-        bool more = true;
-        while (more) {
-            const QJsonObject reply = call(client, QStringLiteral("input"), {QStringLiteral("in%1").arg(run), part, false});
-            ASSERT_EQ(reply.value(QStringLiteral("type")), QStringLiteral("reply"));
-            more = reply.value(QStringLiteral("result")).toBool();
+    ASSERT_TRUE(connect(other));
+    // Each run takes its limit, in parts that fit in a request line.
+    auto fill = [&](QLocalSocket& socket, const QString& run) {
+        for (qint64 sent = 0; sent < Limit;) {
+            const qint64 size = std::min<qint64>(1000000, Limit - sent);
+            const QJsonObject reply = call(socket, QStringLiteral("input"), {run, QString(size, QLatin1Char('x')), false});
+            ASSERT_EQ(reply.value(QStringLiteral("type")), QStringLiteral("reply")) << qPrintable(run);
+            sent += size;
         }
-    }
+    };
+    // Fifteen runs on one connection and one on another: exactly the cap.
+    for (int run = 0; run < 15; ++run) fill(client, QStringLiteral("a%1").arg(run));
+    fill(other, QStringLiteral("b0"));
     EXPECT_EQ(m_commands->waitingInputBytes(), CommandSocket::MaxWaitingInputBytes);
-    const QJsonObject over = call(client, QStringLiteral("input"), {QStringLiteral("in4"), QStringLiteral("x"), false});
+    const QJsonObject over = call(other, QStringLiteral("input"), {QStringLiteral("b1"), QStringLiteral("x"), false});
     EXPECT_EQ(over.value(QStringLiteral("type")), QStringLiteral("error"));
     EXPECT_TRUE(over.value(QStringLiteral("message")).toString().contains(QStringLiteral("at most 64 MiB")));
+    // The refused run left nothing that waits.
+    EXPECT_EQ(m_commands->waitingInputs(), 16);
+    // Sixteen runs of one connection can wait, not seventeen.
+    EXPECT_EQ(call(client, QStringLiteral("input"), {QStringLiteral("a15"), QString(), false}).value(QStringLiteral("type")),
+              QStringLiteral("reply"));
+    const QJsonObject many = call(client, QStringLiteral("input"), {QStringLiteral("a16"), QString(), false});
+    EXPECT_TRUE(many.value(QStringLiteral("message")).toString().contains(QStringLiteral("16 runs wait"))) << qPrintable(many.value(QStringLiteral("message")).toString());
     // A cancel and a closed connection give the room back.
-    call(client, QStringLiteral("cancel"), {QStringLiteral("in0")});
-    EXPECT_EQ(m_commands->waitingInputBytes(), 3 * 16777216);
+    call(client, QStringLiteral("cancel"), {QStringLiteral("a0")});
+    EXPECT_EQ(m_commands->waitingInputBytes(), 15 * Limit);
     client.disconnectFromServer();
+    ASSERT_TRUE(waitFor([&] { return m_commands->waitingInputBytes() == Limit; }));
+    other.disconnectFromServer();
     ASSERT_TRUE(waitFor([&] { return m_commands->waitingInputBytes() == 0; }));
+}
+
+TEST_F(CommandSocketTest, AScriptCommandActionRunsWithoutAPane)
+{
+    ASSERT_TRUE(start());
+    QStringList started;
+    m_control->setScriptCommandRunner([&started](const QString& command, quint32 pane, const QString& source) {
+        started << QStringLiteral("%1 %2 %3").arg(command).arg(pane).arg(source);
+        return QString();
+    });
+    // No pane has the focus: as for afterglow run, the command runs with none.
+    EXPECT_EQ(m_control->runAction(0, QStringLiteral("script:cmds.where")), QString());
+    // A script cannot start one: its run would look like one from afterglow ctl.
+    EXPECT_EQ(m_control->runScriptAction(0, QStringLiteral("script:cmds.where")), QStringLiteral("scripts cannot run script commands"));
+    EXPECT_EQ(started, (QStringList{QStringLiteral("cmds.where 0 control")}));
+    // A pane that is not there, and a target without a command, are errors.
+    EXPECT_EQ(m_control->runAction(5, QStringLiteral("script:cmds.where")), QStringLiteral("no pane 5"));
+    EXPECT_FALSE(m_control->runAction(0, QStringLiteral("script:cmds")).isEmpty());
+    EXPECT_FALSE(m_control->runAction(0, QStringLiteral("script:cmds.")).isEmpty());
+    EXPECT_EQ(started.size(), 1);
+    // A keybind action needs its pane.
+    EXPECT_EQ(m_control->runAction(0, QStringLiteral("new_tab")), QStringLiteral("no pane 0"));
+    m_control->setScriptCommandRunner({}); // it holds this test's list
 }
 
 TEST_F(CommandSocketTest, TheProtoClientSpeaksTheRoutersWireFormat)
@@ -510,13 +813,13 @@ TEST_F(CommandSocketTest, TheProtoClientSpeaksTheRoutersWireFormat)
         ASSERT_TRUE(ipc.connect(path, &error)) << error.message;
         const auto list = ipc.call("commands", "list", {}, 5000, &error);
         ASSERT_TRUE(list) << error.message;
-        ASSERT_EQ(list->toArray().size(), 7u);
+        ASSERT_EQ(list->toArray().size(), 10u);
         EXPECT_EQ(list->toArray()[0]["command"].toString(), "count");
 
         // Stdin before the run, then a deferred reply after the run's events.
-        const auto more = ipc.call("commands", "input", {"id1", "from stdin \x01 é", true}, 5000, &error);
-        ASSERT_TRUE(more) << error.message;
-        EXPECT_FALSE(more->toBool());
+        const auto taken = ipc.call("commands", "input", {"id1", "from stdin \x01 é", true}, 5000, &error);
+        ASSERT_TRUE(taken) << error.message;
+        EXPECT_TRUE(taken->toBool());
         const auto run = ipc.send("commands", "run", {"id1", "cmds", "read", Json::Array{}, "/", 0}, &error);
         ASSERT_TRUE(run);
         std::string out;
@@ -541,7 +844,9 @@ TEST_F(CommandSocketTest, TheProtoClientSpeaksTheRoutersWireFormat)
         int events = 0;
         while (ipc.next(frame, 5000) == IpcConnection::Read::Frame && !IpcConnection::answers(frame, *waiting)) ++events;
         EXPECT_EQ(events, 2); // start and done
-        EXPECT_EQ((*IpcConnection::answer(frame, &error))["exit"].toInteger(), 0);
+        const auto waited = IpcConnection::answer(frame, &error);
+        ASSERT_TRUE(waited) << error.message;
+        EXPECT_EQ((*waited)["exit"].toInteger(), 0);
 
         // Errors carry the router's or the target's code.
         EXPECT_FALSE(ipc.call("commands", "run", {"id3", "cmds", "nope", Json::Array{}, "/", 0}, 5000, &error));
@@ -561,7 +866,8 @@ class RunBinaryTest : public CommandSocketTest
 protected:
     struct Result
     {
-        int status = -1;
+        int status = -1; ///< as a shell reports it: 128 + the signal that ended the process
+        int signal = 0; ///< the signal that ended the process, else 0
         QString out;
         QString err;
     };
@@ -593,8 +899,10 @@ protected:
             process.kill();
             process.waitForFinished();
         }
-        return {process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1,
-                QString::fromUtf8(process.readAllStandardOutput()), QString::fromUtf8(process.readAllStandardError())};
+        // QProcess gives the signal that ended a process as its exit code.
+        const int signal = process.exitStatus() == QProcess::CrashExit ? process.exitCode() : 0;
+        return {signal ? 128 + signal : process.exitCode(), signal, QString::fromUtf8(process.readAllStandardOutput()),
+                QString::fromUtf8(process.readAllStandardError())};
     }
 };
 
@@ -687,15 +995,18 @@ TEST_F(RunBinaryTest, ChoosesThePaneAsCtlDoes)
     EXPECT_TRUE(r.err.contains(QStringLiteral("has no socket"))) << qPrintable(r.err);
 }
 
-TEST_F(RunBinaryTest, ASignalCancelsTheRun)
+TEST_F(RunBinaryTest, ASignalCancelsTheRunAndEndsTheClient)
 {
     ASSERT_TRUE(start(R"({"Scripts": {"commandRunLimit": 1}})"));
+    // The client ends by the signal, after the cancel: a shell loop of runs
+    // stops at Ctrl+C, and the shell reports 130 or 143.
     for (const auto& [signal, status] : {std::pair{SIGINT, 130}, std::pair{SIGTERM, 143}}) {
         const Result r = run({QStringLiteral("cmds"), QStringLiteral("wait"), QStringLiteral("60000")}, {}, false, {},
                              [&, signal = signal](QProcess& process) {
                                  ASSERT_TRUE(pumpUntil([&] { return process.canReadLine(); }));
                                  ::kill(pid_t(process.processId()), signal);
                              });
+        EXPECT_EQ(r.signal, signal);
         EXPECT_EQ(r.status, status);
         EXPECT_EQ(r.out, QStringLiteral("start\n"));
     }
@@ -705,7 +1016,7 @@ TEST_F(RunBinaryTest, ASignalCancelsTheRun)
 
 TEST_F(RunBinaryTest, AcknowledgesOutputPastTheWindow)
 {
-    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 67108864}})"));
+    ASSERT_TRUE(start(R"({"Scripts": {"commandOutputLimit": 65536}})"));
     const Result r = run({QStringLiteral("cmds"), QStringLiteral("flood"), QStringLiteral("20")});
     EXPECT_EQ(r.status, 0) << qPrintable(r.err);
     EXPECT_EQ(r.out.size(), 20 * 1048576 + 5);
@@ -717,12 +1028,51 @@ TEST_F(RunBinaryTest, ASignalEndsAWaitForStdin)
     ASSERT_TRUE(start());
     // Stdin stays open with no end. Once a part of it has reached the
     // terminal, the client waits for more, and a signal must end that wait.
-    const Result r = run({QStringLiteral("cmds"), QStringLiteral("read")}, QByteArray(1200 * 1024, 'x'), true, {},
+    // Less than the limit of 1 MiB: past it, the run would fail first.
+    const Result r = run({QStringLiteral("cmds"), QStringLiteral("read")}, QByteArray(600 * 1024, 'x'), true, {},
                          [this](QProcess& process) {
                              ASSERT_TRUE(pumpUntil([this] { return m_commands->waitingInputBytes() > 0; }));
                              ::kill(pid_t(process.processId()), SIGTERM);
                          });
+    EXPECT_EQ(r.signal, SIGTERM);
     EXPECT_EQ(r.status, 143);
+    ASSERT_TRUE(pumpUntil([this] { return m_commands->waitingInputBytes() == 0; }));
+}
+
+TEST_F(RunBinaryTest, AClosedStdoutEndsTheRunAndTheClientBySigpipe)
+{
+    ASSERT_TRUE(start(R"({"Scripts": {"commandRunLimit": 1, "commandOutputLimit": 65536}})"));
+    // head reads one byte, then closes the pipe that the client writes to.
+    QProcess reader, process;
+    reader.setStandardOutputFile(QProcess::nullDevice());
+    process.setProcessEnvironment(environment());
+    process.setStandardOutputProcess(&reader);
+    // As a shell starts it: the test process may ignore SIGPIPE.
+    process.setChildProcessModifier([] { ::signal(SIGPIPE, SIG_DFL); });
+    process.start(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("run"), QStringLiteral("cmds"), QStringLiteral("flood"), QStringLiteral("20")});
+    reader.start(QStringLiteral("head"), {QStringLiteral("-c"), QStringLiteral("1")});
+    ASSERT_TRUE(process.waitForStarted());
+    process.closeWriteChannel();
+    ASSERT_TRUE(pumpUntil([&] { return process.state() == QProcess::NotRunning; }, 15000));
+    EXPECT_EQ(process.exitStatus(), QProcess::CrashExit);
+    EXPECT_EQ(process.exitCode(), SIGPIPE);
+    reader.waitForFinished();
+    // The run ended in the terminal too: with a limit of one, another starts.
+    ASSERT_TRUE(pumpUntil([&] { return run({QStringLiteral("cmds"), QStringLiteral("greet")}).status == 0; }));
+}
+
+TEST_F(RunBinaryTest, StdinOverTheLimitIsAUsageError)
+{
+    ASSERT_TRUE(start(R"({"Scripts": {"commandStdinLimit": 1}})"));
+    Result r = run({QStringLiteral("cmds"), QStringLiteral("read")}, QByteArray(1025, 'x'));
+    EXPECT_EQ(r.status, 2);
+    EXPECT_TRUE(r.err.contains(QStringLiteral("Standard input is over 1 KiB (Scripts.commandStdinLimit)"))) << qPrintable(r.err);
+    EXPECT_TRUE(r.out.isEmpty()) << qPrintable(r.out);
+    // Exactly the limit is taken whole.
+    r = run({QStringLiteral("cmds"), QStringLiteral("read")}, QByteArray(1024, 'x'));
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    EXPECT_EQ(r.out, QString(1024, QLatin1Char('x')));
+    EXPECT_EQ(m_commands->waitingInputs(), 0);
 }
 
 TEST_F(RunBinaryTest, AnInheritedIgnoredSigintStaysIgnored)
@@ -739,17 +1089,25 @@ TEST_F(RunBinaryTest, AnInheritedIgnoredSigintStaysIgnored)
     EXPECT_FALSE(pumpUntil([&] { return process.state() == QProcess::NotRunning; }, 500));
     ::kill(pid_t(process.processId()), SIGTERM);
     ASSERT_TRUE(pumpUntil([&] { return process.state() == QProcess::NotRunning; }));
-    EXPECT_EQ(process.exitCode(), 143);
+    EXPECT_EQ(process.exitStatus(), QProcess::CrashExit);
+    EXPECT_EQ(process.exitCode(), SIGTERM);
 }
 
 TEST_F(RunBinaryTest, ArgumentsOverOneRequestAreAUsageError)
 {
     ASSERT_TRUE(start());
+    // 256 arguments within their length, about 2 MiB of UTF-8 together.
     QStringList args{QStringLiteral("cmds"), QStringLiteral("greet")};
-    for (int i = 0; i < 300; ++i) args << QString(4000, QLatin1Char('x'));
-    const Result r = run(args);
+    for (int i = 0; i < 256; ++i) args << QString(4000, QChar(0xe9));
+    Result r = run(args);
     EXPECT_EQ(r.status, 2);
     EXPECT_TRUE(r.err.contains(QStringLiteral("too long"))) << qPrintable(r.err);
+    // One argument more than the terminal takes.
+    QStringList many{QStringLiteral("cmds"), QStringLiteral("greet")};
+    for (int i = 0; i < 257; ++i) many << QStringLiteral("x");
+    r = run(many);
+    EXPECT_EQ(r.status, 2);
+    EXPECT_TRUE(r.err.contains(QStringLiteral("256 arguments"))) << qPrintable(r.err);
 }
 
 TEST_F(RunBinaryTest, SaysWhenCommandsAreOff)

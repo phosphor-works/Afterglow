@@ -2,34 +2,52 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Zsh completion for afterglow. Script package IDs and their commands come
-# from the running afterglow (afterglow run --complete).
+# Zsh completion for afterglow. Script IDs and their commands come from the
+# running afterglow (afterglow run --complete).
 
 _afterglow_run() {
     local -a ids commands
-    _arguments -s -S \
-        '(-n --no-stdin)'{-n,--no-stdin}'[do not pass standard input to the command]' \
-        '--pane[the pane that the command acts on]:pane ID:' \
-        '(- *)--help[show the usage]' \
-        '1:script package:->id' \
+    # Options only before the script ID. --help only alone: after an option
+    # it would name a script.
+    _arguments -s -S -A '-*' \
+        '(- *)'{-h,--help}'[show the usage]' \
+        '(-h --help -n --no-stdin)'{-n,--no-stdin}'[do not pass standard input to the command]' \
+        '(-h --help)--pane[the pane that the command acts on]:pane ID:' \
+        '1:script:->id' \
         '2:command:->command' \
-        '*::argument:_files' && return
+        '*::argument:->argument' && return
     case $state in
     id)
-        ids=(${(f)"$(afterglow run --complete 2>/dev/null)"})
-        _describe -t ids 'script package' ids
+        ids=(${(f)"$("$self" run --complete 2>/dev/null)"})
+        _describe -t ids 'script' ids
         ;;
     command)
         # COMMAND<TAB>SUMMARY lines, as name:description pairs.
-        commands=(${${(f)"$(afterglow run --complete ${line[1]} 2>/dev/null)"}/$'\t'/:})
-        commands+=('--help:list the package'"'"'s commands')
+        commands=(${${(f)"$("$self" run --complete "${line[1]}" 2>/dev/null)"}/$'\t'/:})
+        commands+=('--help:list the script'"'"'s commands')
         _describe -t commands 'command' commands
+        ;;
+    argument)
+        # The command's own arguments: files, most likely. ID --help takes none.
+        [[ $line[2] == (-h|--help) ]] || _files
         ;;
     esac
 }
 
+# The script commands that ctl action starts, as script:ID.COMMAND.
+_afterglow_actions() {
+    local id entry
+    local -a actions
+    for id in ${(f)"$("$self" run --complete 2>/dev/null)"}; do
+        for entry in ${(f)"$("$self" run --complete "$id" 2>/dev/null)"}; do
+            actions+=("script\\:$id.${entry%%$'\t'*}:${entry#*$'\t'}")
+        done
+    done
+    _describe -t actions 'script command' actions
+}
+
 _afterglow_ctl() {
-    local -a commands
+    local -a commands help
     commands=(
         'ls:list panes'
         'send-text:type text into the pane'
@@ -53,53 +71,91 @@ _afterglow_ctl() {
         'watch:print events'
     )
     if (( CURRENT == 2 )); then
-        _describe -t commands 'ctl command' commands
+        if [[ $PREFIX == -* ]]; then
+            help=('-h:show the usage' '--help:show the usage')
+            _describe -t options 'option' help
+        else
+            _describe -t commands 'ctl command' commands
+        fi
         return
     fi
-    case $words[2] in
-    get-text) _arguments '--pane[the pane]:pane ID:' '(--screen --scrollback --selection --last-output)'{--screen,--scrollback,--selection,--last-output} ;;
-    split) _arguments '--pane[the pane]:pane ID:' '(--left --right --up --down)'{--left,--right,--up,--down} '*:command:_normal' ;;
-    new-tab) _arguments '--pane[the pane]:pane ID:' '--cwd[working directory]:directory:_directories' '*:command:_normal' ;;
-    new-window) _arguments '--cwd[working directory]:directory:_directories' '*:command:_normal' ;;
-    send-text) _arguments '--pane[the pane]:pane ID:' '--raw[send the text as it is]' '--stdin[send standard input]' '*:text:' ;;
+    # From here, words[1] is the ctl command.
+    shift words; (( CURRENT-- ))
+    local pane='--pane[the pane]:pane ID:'
+    case $words[1] in
+    split|new-tab|new-window)
+        # A command to run follows "--", and only options come before it.
+        local dash=${words[(i)--]}
+        if (( dash < CURRENT )); then
+            shift $dash words; (( CURRENT -= dash ))
+            _normal
+            return
+        fi
+        ;;
+    esac
+    case $words[1] in
     ls) _arguments '--json[print JSON]' ;;
+    send-text)
+        _arguments -S $pane '(--stdin)--raw[send the text as it is]' '(--raw *)--stdin[send standard input]' \
+            '(--stdin)*:text:' ;;
+    get-text)
+        _arguments $pane \
+            '(--screen --scrollback --selection --last-output)'{--screen,--scrollback,--selection,--last-output} ;;
+    split) _arguments $pane '(--left --right --up --down)'{--left,--right,--up,--down} ;;
+    move-pane)
+        _arguments $pane '1:target pane ID (0 for new-tab and new-window):' \
+            '2:placement:(left right up down new-tab new-window)' ;;
+    new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' ;;
+    new-window) _arguments '--cwd[working directory]:directory:_directories' ;;
+    set-title) _arguments -S $pane '*:title:' ;;
+    signal) _arguments $pane '1:channel:(0 1 2 3 4 5 6 7)' '2:value:' ;;
+    notify) _arguments -S $pane '1:title:' '*:body:' ;;
     open-directory) _arguments '--layout[a saved layout]:layout:' '1:directory:_directories' ;;
-    save-project) _arguments '--pane[the pane]:pane ID:' '--overwrite[replace a project with the name]' '1:name:' ;;
+    save-project) _arguments $pane '--overwrite[replace a project with the name]' '1:name:' ;;
     open-project) _arguments '--new[launch the layout again]' '1:name:' ;;
+    action) _arguments $pane '1:action:_afterglow_actions' ;;
     watch|scripts|projects) ;;
-    *) _arguments '--pane[the pane]:pane ID:' '*:argument:' ;;
+    *) _arguments $pane ;;
     esac
 }
 
 _afterglow() {
-    local curcontext=$curcontext state line
+    local curcontext=$curcontext state state_descr line
+    typeset -A opt_args
+    # The afterglow that is being completed, which need not be the one on PATH. The word is as typed: (Q) removes
+    # its quotes.
+    local self=${(Q)words[1]}
+    [[ $self == '~/'* ]] && self=$HOME/${self#'~/'}
     local -a subcommands
     subcommands=(
         'ctl:drive a running afterglow'
-        'run:run a command of a script package'
+        'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
     )
-    if (( CURRENT == 2 )) && [[ $words[2] != -* ]]; then
+    # A subcommand only comes first, and the word at the cursor is not one yet.
+    if (( CURRENT > 2 )); then
+        case $words[2] in
+        ctl)
+            shift words; (( CURRENT-- ))
+            _afterglow_ctl
+            return
+            ;;
+        run)
+            shift words; (( CURRENT-- ))
+            _afterglow_run
+            return
+            ;;
+        ssh)
+            # The rest is ssh's command line.
+            shift words; (( CURRENT-- ))
+            _normal
+            return
+            ;;
+        esac
+    elif [[ $PREFIX != -* ]]; then
         _describe -t subcommands 'subcommand' subcommands
+        return
     fi
-    case $words[2] in
-    ctl)
-        shift words; (( CURRENT-- ))
-        _afterglow_ctl
-        return
-        ;;
-    run)
-        shift words; (( CURRENT-- ))
-        _afterglow_run
-        return
-        ;;
-    ssh)
-        # The rest is ssh's command line.
-        shift words; (( CURRENT-- ))
-        _normal
-        return
-        ;;
-    esac
     _arguments -s -S \
         '(-d --working-directory)'{-d,--working-directory}'[start in the directory]:directory:_directories' \
         '(-e --execute)'{-e,--execute}'[run the rest of the command line instead of the shell]:*::command:_normal' \
@@ -109,7 +165,7 @@ _afterglow() {
         '--config[read settings from the file]:config file:_files' \
         '*'{-o,--override}'[override a setting (Group.key=value)]:setting:' \
         '--class[Wayland app id for window rules]:app id:' \
-        '--config-reference[print the configuration reference as JSON]' \
+        '(- *)--config-reference[print the configuration reference as JSON]' \
         '(- *)'{-h,--help}'[show the help]' \
         '(- *)'{-v,--version}'[show the version]'
 }

@@ -2,18 +2,25 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the settings reference from the executable's runtime schema.
-Usage: python3 tools/generate-reference.py build/afterglow/afterglow
+Usage: python3 tools/generate-reference.py [--check] build/afterglow/afterglow
+With --check, write nothing: print a diff and exit 1 when docs/CONFIGURATION.md
+is not what the executable generates.
 """
+import difflib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-if len(sys.argv) != 2:
-    raise SystemExit('Usage: python3 tools/generate-reference.py build/afterglow/afterglow')
+USAGE = 'Usage: python3 tools/generate-reference.py [--check] build/afterglow/afterglow'
+args = sys.argv[1:]
+check = bool(args) and args[0] == '--check'
+if check: args = args[1:]
+if len(args) != 1 or args[0].startswith('-'):
+    raise SystemExit(USAGE)
 repo = Path(__file__).resolve().parents[1]
-reference = json.loads(subprocess.check_output([str(Path(sys.argv[1]).resolve()), '--config-reference'],
+reference = json.loads(subprocess.check_output([str(Path(args[0]).resolve()), '--config-reference'],
                                                text=True, encoding='utf-8', timeout=30))
 def code(value):
     text = json.dumps(value, ensure_ascii=False).replace('|', '\\|')
@@ -43,9 +50,17 @@ for group, keys in reference['groups'].items():
 lines += ['## Default bindings', '', '| Action | Keys |', '| --- | --- |']
 for name, value in reference['groups']['Keybinds']['bindings']['default'].items():
     lines.append(f'| `{name}` | {code(value)} |')
-# Replace the reference in one step, so that a failed run leaves the old one.
+text = '\n'.join(lines) + '\n'
 target = repo / 'docs/CONFIGURATION.md'
+if check:
+    current = target.read_text(encoding='utf-8') if target.exists() else ''
+    if current == text: sys.exit(0)
+    sys.stdout.writelines(difflib.unified_diff(current.splitlines(keepends=True), text.splitlines(keepends=True),
+                                               'docs/CONFIGURATION.md', 'generated'))
+    print('docs/CONFIGURATION.md is out of date. Run: python3 tools/generate-reference.py build/afterglow/afterglow')
+    sys.exit(1)
+# Replace the reference in one step, so that a failed run leaves the old one.
 with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=target.parent, prefix='.CONFIGURATION.', delete=False) as out:
-    out.write('\n'.join(lines) + '\n')
+    out.write(text)
 os.chmod(out.name, 0o644)
 os.replace(out.name, target)
