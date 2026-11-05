@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <fcntl.h>
 #include <functional>
+#include <optional>
 #include <gtest/gtest.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -972,11 +973,24 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
 // then, so one that is missing stops them for the life of the pane.
 struct Answers : Transfer {
     int answering = 0, answered = 0;
+    // Called with the number of each answer as it comes.
+    std::function<void(int)> onAnswer;
     void SetUp() override
     {
         Transfer::SetUp();
         QObject::connect(&service, &FileTransfer::answering, &service, [this] { ++answering; });
-        QObject::connect(&service, &FileTransfer::answered, &service, [this] { ++answered; });
+        QObject::connect(&service, &FileTransfer::answered, &service, [this] {
+            ++answered;
+            if (onAnswer)
+                onAnswer(answered);
+        });
+    }
+    // A command whose status waits behind the delivery window: a cancel of
+    // an unknown session. Returns its number.
+    int probe()
+    {
+        service.handle("id=probe;ac=cancel");
+        return answering;
     }
     // The GUI thread runs no events meanwhile: the worker fills its delivery
     // window, and packets wait in its queue.
@@ -1048,9 +1062,55 @@ TEST_F(Answers, ACommandOverTheLimitDuringADownloadAnswersEveryCommand)
 TEST_F(Answers, AResetDuringADownloadAnswersEveryCommand)
 {
     ASSERT_TRUE(download());
+    probe();
     service.reset();
     busy();
+    // The reset answers the commands that waited for the packets it dropped.
+    // Without that, the answer waits for a later delivery, which one pass
+    // over the events posted so far does not reach.
+    QCoreApplication::sendPostedEvents(&service, QEvent::MetaCall);
+    EXPECT_EQ(answered, answering);
     ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AnAnswerFollowsThePacketsQueuedBeforeIt)
+{
+    ASSERT_TRUE(download());
+    const int command = probe();
+    std::optional<bool> replied;
+    onAnswer = [&](int n) {
+        if (n == command)
+            replied = repliedFor("probe");
+    };
+    busy();
+    ASSERT_TRUE(waitFor([&] { return replied.has_value(); }));
+    EXPECT_TRUE(*replied);
+    send("ac=cancel");
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AnAnswerDoesNotWaitForTheProgressThatReplacedItsOwn)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;n=" + path("upload"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    // Fill the delivery window, so that the progress statuses wait.
+    for (int i = 0; i < 4000; ++i)
+        send("ac=data;fid=f;d=" + b64("data"));
+    send("ac=data;fid=f;d=" + b64("x"));
+    const int first = answering;
+    // Its progress status replaces that of the command before.
+    send("ac=data;fid=f;d=" + b64("y"));
+    const QByteArray last = "st=" + b64("PROGRESS") + ";sz=" + QByteArray::number(4000 * 4 + 2);
+    std::optional<bool> passed;
+    onAnswer = [&](int n) {
+        if (n == first)
+            passed = std::any_of(replies.begin(), replies.end(), [&](const auto& b) { return b.contains(last); });
+    };
+    busy();
+    ASSERT_TRUE(waitFor([&] { return passed.has_value(); }));
+    EXPECT_FALSE(*passed);
+    send("ac=end_data;fid=f");
+    ASSERT_TRUE(fileStatus("f", "OK"));
     EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
 }
 TEST_F(Answers, ProgressThatReplacesAWaitingProgressAnswersEveryCommand)
@@ -1082,9 +1142,20 @@ TEST_F(Answers, CommandsRefusedWhileTheInputQueueIsFullAreAnswered)
     service.approve(token, true);
     QByteArray command = "id=other;ac=data;fid=f;x=";
     command += QByteArray(qsizetype(AfterglowProto::TransferMaxCommand) - command.size(), 'a');
-    for (int i = 0; i < 1200; ++i)
-        service.handle(command);
-    ASSERT_TRUE(status("ENOMEM"));
+    // 1200 commands are more than the queue holds. A worker that keeps up
+    // with them gets more, until the queue refuses one.
+    const auto refused = [&] {
+        return std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("ENOMEM")); });
+    };
+    for (int round = 0; round < 50 && !refused(); ++round) {
+        for (int i = 0; i < 1200; ++i)
+            service.handle(command);
+        QElapsedTimer settle;
+        settle.start();
+        while (!refused() && settle.elapsed() < 100)
+            QCoreApplication::processEvents();
+    }
+    ASSERT_TRUE(refused());
     EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
 }
 // The descriptor limit of every pane's transfers is half of RLIMIT_NOFILE,

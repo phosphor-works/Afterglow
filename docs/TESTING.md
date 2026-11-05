@@ -317,6 +317,7 @@ Its listings try to write through links, to replace files outside the destinatio
 
 The `TransferLimits.*` tests fill the descriptor limit of file transfers, which is half of the soft `RLIMIT_NOFILE`.
 CTest runs them as `afterglow_transfer_descriptor_limits`, with a soft limit of 64.
+That entry fails when one of the tests skips or when no test runs, because then the limit did not apply.
 In other runs, they report Skipped.
 
 CTest runs the relay tests below as `afterglow_transfer_kitten_relay` and `afterglow_transfer_aglow_relay`.

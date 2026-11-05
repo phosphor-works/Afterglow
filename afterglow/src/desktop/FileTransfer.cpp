@@ -447,7 +447,9 @@ struct FileTransfer::Worker {
     std::deque<Packet> outgoing;
     qsizetype outgoingBytes = 0;
     // The position of the last packet queued. For each handled command that
-    // waits for answered(), the position of the last packet that it queued.
+    // waits for answered(), the position of the last packet that anything
+    // queued before the command was handled. A fence waits until every packet
+    // up to it has left the queue, delivered or dropped.
     quint64 queuedPackets = 0;
     std::deque<quint64> fences;
     QTimer* timer = nullptr;
@@ -594,14 +596,15 @@ struct FileTransfer::Worker {
             return;
         }
         Packet packet { bytes, f.value("id"), f.value("fid"), view(f.value("st")) == Status::Progress, 0 };
-        // A newer progress status takes the place of the one that waits, and its position.
+        // A newer progress status drops the one that waits. It takes a new
+        // position: a command whose fence covered the dropped one is not held
+        // until the newer status, which can belong to a later command, goes out.
         if (packet.progress && !outgoing.empty() && outgoing.back().progress && outgoing.back().id == packet.id
             && outgoing.back().fid == packet.fid) {
-            packet.seq = outgoing.back().seq;
             outgoingBytes -= outgoing.back().bytes.size();
             outgoing.pop_back();
-        } else
-            packet.seq = ++queuedPackets;
+        }
+        packet.seq = ++queuedPackets;
         outgoingBytes += bytes.size();
         outgoing.push_back(std::move(packet));
         if (timer && !timer->isActive())
@@ -732,8 +735,9 @@ FileTransfer::~FileTransfer() = default;
 void FileTransfer::handle(const QByteArray& command)
 {
     Q_EMIT answering();
-    // Posted after the work of the command, on every path: the worker answers
-    // once the packets that the work queued are delivered.
+    // Posted after the work of the command, on every path. The worker answers
+    // once every packet queued before then has left its queue, delivered or
+    // dropped: those of the command, and those of anything before it.
     const auto fence = qScopeGuard([w = m_worker.get()] {
         QMetaObject::invokeMethod(w->context, [w] {
             w->fences.push_back(w->queuedPackets);

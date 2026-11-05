@@ -152,6 +152,9 @@ public:
 private:
     /// One poll: writes, then reads into @p inputs.
     bool step(int timeoutMs, std::vector<Input>& inputs);
+    /// After a stop: the raw modes again and, before the reset, the modes
+    /// of the command.
+    void takeContinue();
     /// Writes everything queued, for up to @p timeoutMs. Inputs that arrive
     /// meanwhile are kept for the next turn().
     bool flush(int timeoutMs);

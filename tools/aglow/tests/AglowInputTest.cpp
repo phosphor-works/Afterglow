@@ -639,8 +639,9 @@ TEST(AglowTty, AContinueBeforeTheResetSetsTheModes)
         tty.write(std::string(Blocking, 'x'));
         return tty.restore() ? 0 : 101;
     }));
-    // Nothing is read: the program waits in the first flush of restore().
-    ::usleep(300 * 1000);
+    // The output of restore(): the program waits in its first flush, which
+    // one read does not end.
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find('x') != std::string::npos; }));
     stopAndContinue(terminal);
     ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
     terminal.say("\x1b[?62c");
@@ -692,7 +693,7 @@ TEST(AglowTty, AReopenGetsNoInputOfTheLastSession)
     terminal.say("\x1b[?62ca");
     // The program waits in the first flush of restore(), and reads a key and
     // the start of a title.
-    ::usleep(300 * 1000);
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find('x') != std::string::npos; }));
     terminal.say("q");
     ::usleep(100 * 1000);
     terminal.say("\x1b]2;partial");
@@ -703,4 +704,83 @@ TEST(AglowTty, AReopenGetsNoInputOfTheLastSession)
     terminal.settle(100);
     terminal.say("\x1b[?62c");
     EXPECT_EQ(terminal.wait(), 0);
+}
+
+// A continue that wakes the poll of an idle program is taken by restore()
+// when no step() took it: the modes go out before the reset.
+TEST(AglowTty, AContinueJustBeforeTheRestoreSetsTheModes)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.enterModes("\x1b[?1002h", "\x1b[?1002l", "\x1b[?1002h");
+        std::vector<Input> inputs;
+        const long long answered = nowMs() + 3000;
+        while (std::none_of(inputs.begin(), inputs.end(), [](const Input& i) { return i.data == "a"; })
+               && nowMs() < answered) {
+            tty.turn(50, inputs);
+        }
+        tty.write("ready");
+        while (tty.pending() > 0) {
+            tty.turn(50, inputs);
+        }
+        // Idle: the continue ends this poll with EINTR.
+        tty.turn(5000, inputs);
+        return tty.restore() ? 0 : 101;
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    terminal.say("\x1b[?62ca");
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("ready") != std::string::npos; }));
+    terminal.settle(100);
+    const auto before = terminal.output.size();
+    stopAndContinue(terminal);
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l", before) != std::string::npos; }));
+    EXPECT_EQ(terminal.wait(), 0);
+    const auto resumed = terminal.output.find("\x1b[?2004h\x1b[?1002h\x1b[=1;1u", before);
+    ASSERT_NE(resumed, std::string::npos);
+    EXPECT_LT(resumed, terminal.output.find("\x1b[?1002l", before));
+}
+
+// A reset that the terminal did not take in time goes with its session: a
+// Tty that opens again does not write the rest of it after what the
+// program wrote meanwhile.
+TEST(AglowTty, AReopenWritesNoResetOfTheLastSession)
+{
+    int sync[2];
+    ASSERT_EQ(::pipe(sync), 0);
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([&] {
+        ::close(sync[0]);
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.enterModes("\x1b[?1002h", "\x1b[?1002l");
+        tty.write(std::string(Blocking, 'x'));
+        // The terminal reads nothing: the output and then the reset time out.
+        const char restored = tty.restore() ? '1' : '0';
+        [[maybe_unused]] const auto n = ::write(sync[1], &restored, 1);
+        if (!tty.open(error)) {
+            return 100;
+        }
+        return tty.restore() ? 0 : 101;
+    }));
+    ::close(sync[1]);
+    pollfd fd { sync[0], POLLIN, 0 };
+    ASSERT_EQ(::poll(&fd, 1, 10000), 1);
+    char restored = 0;
+    ASSERT_EQ(::read(sync[0], &restored, 1), 1);
+    ::close(sync[0]);
+    EXPECT_EQ(restored, '0');
+    // The reset of the second session, and the answer that its drain waits for.
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    terminal.say("\x1b[?62c");
+    EXPECT_EQ(terminal.wait(), 0);
+    EXPECT_EQ(terminal.count("\x1b[?2004l"), 1u);
+    EXPECT_EQ(terminal.output.find("\x1b[?1002l"), std::string::npos);
 }

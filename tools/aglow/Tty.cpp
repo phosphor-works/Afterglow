@@ -470,24 +470,25 @@ bool Tty::restore()
         return m_restored;
     }
     bool ok = flush(RestoreMs);
-    std::string reset;
     if (!ok) {
         // The terminal took no more in time. The rest goes, so that the
         // reset can, and ST ends an escape code that was cut short: in one,
         // the terminal would read the reset as part of it.
-        m_out.clear();
+        m_out.assign("\x1b\\");
         m_outAt = 0;
-        reset = "\x1b\\";
         // The queries that did not go out get no answer.
         std::erase_if(m_queries, [&](const Query& q) { return q.end > m_written; });
     }
-    reset += std::exchange(m_reset, {});
-    if (m_raw) {
-        reset += PopKeyboard;
-        reset += "\x1b[?2004l";
-    }
+    // A continue that no step() took yet: a poll that it woke returns
+    // EINTR, and with nothing queued flush() makes no step(). Its modes go
+    // before the reset, which turns them off with the stacks in balance.
+    takeContinue();
     m_restoring = true;
-    m_out += reset;
+    m_out += std::exchange(m_reset, {});
+    if (m_raw) {
+        m_out += PopKeyboard;
+        m_out += "\x1b[?2004l";
+    }
     ok = flush(RestoreMs) && ok;
     if (ok && (m_drain || !m_queries.empty())) {
         drain(RestoreMs);
@@ -509,6 +510,11 @@ bool Tty::restore()
     m_queries.clear();
     m_kept.clear();
     m_parser.reset();
+    // The rest of a reset that timed out would go out after what the
+    // program wrote meanwhile, out of its context: a cut escape code ends
+    // at the next ESC.
+    m_out.clear();
+    m_outAt = 0;
     m_resume.clear();
     m_drain = false;
     m_restoring = false;
@@ -559,6 +565,26 @@ void Tty::takeReplies(std::vector<Input>& inputs, std::size_t from)
     inputs.erase(own, inputs.end());
 }
 
+void Tty::takeContinue()
+{
+    // Back from a stop: the shell set its own modes meanwhile, and drew over
+    // the screen. Once restore() has queued the reset, modes written after
+    // it would outlast the program: only the raw modes come back, so that
+    // the replies that the drain reads are not echoed.
+    if (!continued.exchange(false) || !m_raw) {
+        return;
+    }
+    ::tcsetattr(m_fd, TCSANOW, &m_rawModes);
+    if (!m_restoring) {
+        // The resume first: a screen switch in it takes the keyboard mode
+        // to the stack of that screen.
+        m_out += "\x1b[?2004h";
+        m_out += m_resume;
+        m_out += SetKeyboard;
+        resized = true;
+    }
+}
+
 bool Tty::step(int timeoutMs, std::vector<Input>& inputs)
 {
     pollfd fds[2] = { { m_fd, short(POLLIN | (pending() ? POLLOUT : 0)), 0 }, { signalPipe[0], POLLIN, 0 } };
@@ -571,21 +597,7 @@ bool Tty::step(int timeoutMs, std::vector<Input>& inputs)
         while (::read(signalPipe[0], drain, sizeof drain) > 0) {
         }
     }
-    // Back from a stop: the shell set its own modes meanwhile, and drew over
-    // the screen. Once restore() has queued the reset, modes written after
-    // it would outlast the program: only the raw modes come back, so that
-    // the replies that the drain reads are not echoed.
-    if (continued.exchange(false) && m_raw) {
-        ::tcsetattr(m_fd, TCSANOW, &m_rawModes);
-        if (!m_restoring) {
-            // The resume first: a screen switch in it takes the keyboard
-            // mode to the stack of that screen.
-            m_out += "\x1b[?2004h";
-            m_out += m_resume;
-            m_out += SetKeyboard;
-            resized = true;
-        }
-    }
+    takeContinue();
     if (fds[0].revents & POLLOUT) {
         const ssize_t n = ::write(m_fd, m_out.data() + m_outAt, pending());
         if (n > 0) {

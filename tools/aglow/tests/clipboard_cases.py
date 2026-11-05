@@ -50,9 +50,26 @@ def open_call(pid):
     return line if line.split()[:1] and line.split()[0] in OPEN_SYSCALLS else None
 
 
-def can_see_open():
-    """Whether this kernel shows that a process waits in open(): by its wait channel, or by its system call."""
-    return wait_channel(os.getpid()) is not None or Path("/proc/self/syscall").exists() and bool(OPEN_SYSCALLS)
+def can_see_open(directory):
+    """Whether blocked_in_open() sees a child that waits in open() of a FIFO in DIRECTORY. The child is a probe:
+    this process cannot read a wait channel of its own, because it runs while it reads it."""
+    fifo = Path(directory) / "probe-fifo"
+    os.mkfifo(fifo)
+    pid = os.fork()
+    if pid == 0:
+        os.open(fifo, os.O_WRONLY)
+        os._exit(0)
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if blocked_in_open(pid):
+                return True
+            time.sleep(0.01)
+        return False
+    finally:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        fifo.unlink()
 
 
 def blocked_in_open(pid):
@@ -140,9 +157,10 @@ def main():
         # aglow waits in that open().
         os.mkfifo(root / "fifo")
         fork = clipboard_pty.pty.fork
-        if not can_see_open():
-            print("a FIFO without a reader: skipped, the kernel shows no wait channel and no system call", flush=True)
-            return
+        if not can_see_open(root):
+            print("a FIFO without a reader: skipped, this kernel does not show a process that waits in open()",
+                  flush=True)
+            sys.exit(77)
         stop = threading.Event()
         blocked = threading.Event()
         watchers = []

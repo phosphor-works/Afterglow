@@ -205,7 +205,9 @@ if(BUILD_TESTING)
         set_tests_properties(aglow_icat_decode PROPERTIES TIMEOUT 120 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
         add_test(NAME aglow_clipboard_cases
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_cases.py $<TARGET_FILE:aglow>)
-        set_tests_properties(aglow_clipboard_cases PROPERTIES TIMEOUT 120)
+        # It skips (77) on a kernel that does not show a process that waits in
+        # open(), after the other cases ran.
+        set_tests_properties(aglow_clipboard_cases PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
         # What icat writes, drawn by the terminal's own renderer. It needs a
         # Vulkan driver, and it skips (77) without one.
         if(AFTERGLOW_BUILD_TOOLS)
