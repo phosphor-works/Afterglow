@@ -5,8 +5,11 @@
 
 #include "Control.h"
 #include "../config/Settings.h"
+#include "../scripting/ScriptFiles.h"
 
 #include <AfterglowProto/Random.h>
+
+#include <PhosphorIpc/IpcProtocol.h>
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -129,18 +132,17 @@ bool CommandApi::input(const QString& run, const QString& chunk, bool eof)
     }
     // Cut at the limit, on a whole character: what is past it is dropped.
     const qint64 limit = m_socket.m_scripts.commandLimits().inputBytes;
-    QByteArray bytes = chunk.toUtf8();
-    if (entry->inputBytes + bytes.size() > limit) {
-        bytes.truncate(limit - entry->inputBytes);
-        while (!bytes.isEmpty() && (static_cast<unsigned char>(bytes.back()) & 0xC0) == 0x80) bytes.chop(1);
-        if (!bytes.isEmpty() && static_cast<unsigned char>(bytes.back()) >= 0xC0) bytes.chop(1);
-        entry->inputBytes = limit;
-    } else {
-        entry->inputBytes += bytes.size();
+    const QByteArray bytes = chunk.toUtf8();
+    const QByteArray kept = utf8Prefix(bytes, limit - entry->input.size());
+    if (m_socket.m_waitingInputBytes + kept.size() > CommandSocket::MaxWaitingInputBytes) {
+        sendErrorReply(QStringLiteral("afterglow keeps at most %1 MiB of input for runs that have not started")
+                           .arg(CommandSocket::MaxWaitingInputBytes >> 20));
+        return false;
     }
-    entry->input += QString::fromUtf8(bytes);
+    entry->input += kept;
+    m_socket.m_waitingInputBytes += kept.size();
     entry->hasInput = true;
-    entry->eof = eof || entry->inputBytes >= limit;
+    entry->eof = eof || kept.size() < bytes.size() || entry->input.size() >= limit;
     return !entry->eof;
 }
 
@@ -173,7 +175,24 @@ void CommandApi::run(const QString& run, const QString& script, const QString& c
         if (!connection) sendErrorReply(QStringLiteral("a run needs a client connection"));
         return;
     }
-    m_socket.start(connection, run, {script, command, args, cwd, *target, std::nullopt, QStringLiteral("shell")}, std::move(reply));
+    m_socket.start(connection, run, {script, command, args, cwd, *target, std::nullopt, QStringLiteral("shell")}, std::move(reply),
+                   true);
+}
+
+void CommandApi::ack(const QString& run, double bytes)
+{
+    const quint64 connection = connectionId();
+    const auto entry = m_socket.find(connection, run);
+    if (!entry || !entry->started) {
+        sendErrorReply(QStringLiteral("no run %1 on this connection").arg(run));
+        return;
+    }
+    if (!std::isfinite(bytes) || bytes < 0) {
+        sendErrorReply(QStringLiteral("ack takes a number of bytes"));
+        return;
+    }
+    entry->unacknowledged = std::max<qint64>(0, entry->unacknowledged - qint64(std::min(bytes, 9.0e15)));
+    m_socket.pump(connection, run);
 }
 
 void CommandApi::cancel(const QString& run)
@@ -185,7 +204,14 @@ void CommandApi::cancel(const QString& run)
         return;
     }
     if (!entry->started) {
+        m_socket.releaseInput(*entry);
         m_socket.m_runs[connection].remove(run); // only its input waited
+        return;
+    }
+    if (entry->exit) {
+        // The run ended and its output waits: the client wants none of it.
+        entry->output.clear();
+        m_socket.pump(connection, run);
         return;
     }
     m_socket.m_scripts.cancelCommand(entry->handle, Cancelled);
@@ -206,9 +232,10 @@ void CommandApi::runEntry(const QString& token, const QStringList& args)
         return;
     }
     const auto dot = token.indexOf(QLatin1Char('.'));
+    // A client of the schema entry (phosphorctl) does not acknowledge.
     m_socket.start(connectionId(), QString::fromStdString(*id),
                    {token.left(dot), token.mid(dot + 1), args, {}, *target, std::nullopt, QStringLiteral("control")},
-                   std::move(reply));
+                   std::move(reply), false);
 }
 
 CommandSocket::CommandSocket(Control& control, ScriptHost& scripts, SettingsStore& settings, PhosphorIpc::IpcRouter& router,
@@ -254,6 +281,7 @@ void CommandSocket::applySettings()
 void CommandSocket::dropAll(const QString& message)
 {
     const auto all = std::exchange(m_runs, {});
+    m_waitingInputBytes = 0;
     for (const Runs& runs : all) {
         for (const auto& run : runs) {
             run->reply.fail(message);
@@ -267,22 +295,36 @@ void CommandSocket::connectionClosed(quint64 connection)
     // Nobody reads the output any more, and what waited for a run is dropped.
     const Runs runs = m_runs.take(connection);
     for (const auto& run : runs) {
+        releaseInput(*run);
         if (run->handle) m_scripts.cancelCommand(run->handle, Cancelled);
     }
 }
 
+void CommandSocket::releaseInput(Run& run)
+{
+    if (run.started) return;
+    m_waitingInputBytes -= run.input.size();
+    run.input.clear();
+}
+
 void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::CommandRequest request,
-                          PhosphorIpc::IpcPendingReply reply)
+                          PhosphorIpc::IpcPendingReply reply, bool credit)
 {
     Runs& runs = m_runs[connection];
     std::shared_ptr<Run> entry = runs.value(id);
     if (!entry) entry = runs.insert(id, std::make_shared<Run>()).value();
+    if (entry->hasInput) request.input = QString::fromUtf8(entry->input);
+    releaseInput(*entry);
     entry->started = true;
+    entry->credit = credit;
     entry->reply = std::move(reply);
-    if (entry->hasInput) request.input = std::exchange(entry->input, {});
     ScriptHost::CommandSink sink;
-    sink.output = [this, connection, id](const QString& text) { return send(connection, "stdout", id, text); };
-    sink.error = [this, connection, id](const QString& text) { return send(connection, "stderr", id, text); };
+    sink.output = [this, connection, id](const QString& text, std::function<void()> sent) {
+        return send(connection, "stdout", id, text, std::move(sent));
+    };
+    sink.error = [this, connection, id](const QString& text, std::function<void()> sent) {
+        return send(connection, "stderr", id, text, std::move(sent));
+    };
     sink.finished = [this, connection, id](int status) { finish(connection, id, status); };
     QString error;
     bool unknown = false;
@@ -296,25 +338,58 @@ void CommandSocket::start(quint64 connection, const QString& id, ScriptHost::Com
     if (const auto run = find(connection, id)) run->handle = handle;
 }
 
-bool CommandSocket::send(quint64 connection, const char* event, const QString& id, const QString& text)
+bool CommandSocket::send(quint64 connection, const char* event, const QString& id, const QString& text, std::function<void()> sent)
 {
+    const auto run = find(connection, id);
+    if (!run) return false;
     for (qsizetype at = 0; at < text.size();) {
         qsizetype size = std::min(EventText, text.size() - at);
         if (at + size < text.size() && text[at + size - 1].isHighSurrogate()) --size;
-        // False: the client has gone, or fell more than 16 MiB behind.
-        if (!m_router.sendEvent(connection, QLatin1String(Target), QLatin1String(event), {id, text.mid(at, size)})) return false;
+        run->output.push_back({event, text.mid(at, size), {}});
         at += size;
+    }
+    if (run->output.empty()) {
+        if (sent) sent();
+        return true;
+    }
+    run->output.back().sent = std::move(sent);
+    return pump(connection, id);
+}
+
+bool CommandSocket::pump(quint64 connection, const QString& id)
+{
+    const auto run = find(connection, id);
+    if (!run) return false;
+    while (!run->output.empty() && (!run->credit || run->unacknowledged < AckWindow)) {
+        Output out = std::move(run->output.front());
+        run->output.pop_front();
+        const QJsonArray args{id, out.text};
+        // The client counts the lines it reads: the same bytes.
+        if (run->credit) {
+            run->unacknowledged += PhosphorIpc::writeLine(PhosphorIpc::buildEvent(QLatin1String(Target), QLatin1String(out.event), args)).size();
+        }
+        // False: the client has gone, or fell more than 16 MiB behind.
+        if (!m_router.sendEvent(connection, QLatin1String(Target), QLatin1String(out.event), args)) {
+            run->output.clear();
+            return false;
+        }
+        if (out.sent) out.sent();
+    }
+    if (run->output.empty() && run->exit) {
+        const int status = *run->exit;
+        m_runs[connection].remove(id);
+        run->reply.finish(QJsonObject{{QStringLiteral("exit"), status}});
     }
     return true;
 }
 
 void CommandSocket::finish(quint64 connection, const QString& id, int status)
 {
-    const auto it = m_runs.find(connection);
-    if (it == m_runs.end()) return;
-    const std::shared_ptr<Run> run = it->take(id);
-    if (it->isEmpty()) m_runs.erase(it);
-    if (run) run->reply.finish(QJsonObject{{QStringLiteral("exit"), status}});
+    const auto run = find(connection, id);
+    if (!run) return;
+    // The reply goes after the output that waits for the client.
+    run->exit = status;
+    pump(connection, id);
 }
 
 int CommandSocket::waitingInputs() const

@@ -72,6 +72,12 @@ public:
         std::function<void(const QString& owner)> cleanup;
         /// A handler of the owner failed: whatever it holds must not trap the user.
         std::function<void(const QString& owner)> failed;
+        /// Closes the dialogs that the owner opened with request IDs that
+        /// start with @p prefix: the effects that an ended run waited for.
+        std::function<void(const QString& owner, const QString& prefix)> closeDialogs;
+        /// Afterglow's own notice: on @p pane, or for the whole window when
+        /// it is 0 or has closed.
+        std::function<void(quint32 pane, const QString& title, const QString& body)> notice;
     };
 
     /// Where a command run's output goes. A run with no client (the palette,
@@ -80,9 +86,13 @@ public:
     /// notification.
     struct CommandSink
     {
-        /// False when the client has gone: the run is cancelled.
-        std::function<bool(const QString& text)> output;
-        std::function<bool(const QString& text)> error;
+        /// Takes @p text for stdout or stderr, and calls @p sent once the
+        /// text has gone to the client, which can be later: a client that
+        /// reads slowly holds it back. False when the client has gone: the
+        /// run is cancelled.
+        using Write = std::function<bool(const QString& text, std::function<void()> sent)>;
+        Write output;
+        Write error;
         std::function<void(int status)> finished;
     };
 
@@ -224,9 +234,11 @@ private:
     /// Ends the run @p handle of @p script. @p message goes to its stderr.
     /// @p waiting: its handler may still wait, and its flows are dropped.
     void finishRun(const ScriptPtr& script, quint64 handle, int status, const QString& message, bool waiting);
-    /// Writes to a run's stdout or stderr, within Scripts.commandOutputLimit.
-    /// Returns an error, or empty.
-    QString writeRun(const ScriptPtr& script, quint64 handle, const QString& text, bool error);
+    /// Writes to a run's stdout or stderr, within Scripts.commandOutputLimit,
+    /// and calls @p sent when the text has gone. Returns an error, or empty.
+    QString writeRun(const ScriptPtr& script, quint64 handle, const QString& text, bool error, std::function<void()> sent);
+    /// An ended run's handler that still runs: it resumed with "cancelled".
+    bool endedRun(const Script& script, quint64 run) const;
     void publishPackageShaders();
     /// Creates or drops the directory set to match m_enabled.
     void applyEnabled();
@@ -265,8 +277,10 @@ private:
     CommandLimits m_limits;
     quint64 m_nextRun = 0;
     QHash<quint64, std::weak_ptr<Script>> m_runScripts; ///< the script of each live run
-    /// The run whose handler the running call is, and whether it finished.
+    /// The run whose handler the running call is, whether that run had
+    /// ended before the call, and whether its handler finished.
     quint64 m_callRun = 0;
+    bool m_callRunEnded = false;
     bool m_callRunDone = false;
     // Last, so a pending rescan cannot run into a partly destroyed host.
     std::unique_ptr<PhosphorFsLoader::WatchedDirectorySet> m_directories; ///< while enabled

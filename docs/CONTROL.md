@@ -295,11 +295,13 @@ Thus a run from cron or from `ssh host cmd` does not wait for input that never e
 | --- | --- |
 | 0 to 255 | The exit status of the command |
 | 1 | An error: no Afterglow, commands off, a failed handler, a run over a limit |
-| 2 | A usage error, or a script or command that does not exist |
+| 2 | A usage error, a script or command that does not exist, or arguments that do not fit in one request of 1 MiB |
 | 124 | The run took longer than `Scripts.commandTimeout` |
 | 130 | `SIGINT`. `afterglow run` cancels the run, then exits |
 | 141 | Standard output closed. `afterglow run` cancels the run, then exits |
 | 143 | `SIGTERM`. `afterglow run` cancels the run, then exits |
+
+A `SIGINT` or `SIGTERM` that `afterglow run` got as ignored, for example under `nohup`, stays ignored.
 
 `afterglow run --complete` prints the script IDs that have commands, one on each line.
 `afterglow run --complete ID` prints `COMMAND<TAB>SUMMARY` lines.
@@ -312,7 +314,8 @@ They are in `share/bash-completion/completions/afterglow`, `share/zsh/site-funct
 | --- | --- | --- |
 | `list` | None | The commands: objects with `script`, `command`, `summary`, `usage`, `palette` and `stdin` |
 | `input` | run, text, end | `true` while the run takes more input. Send standard input before `run`, in parts |
-| `run` | run, script, command, arguments, directory, pane | `{"exit": STATUS}` when the run ends. A pane of 0 is the focused pane |
+| `run` | run, script, command, arguments, directory, pane | `{"exit": STATUS}` when the run ends and its output has gone. A pane of 0 is the focused pane |
+| `ack` | run, bytes | None. The client wrote these bytes of the run's event lines, see [flow control](#flow-control) |
 | `cancel` | run | None. The run ends, and its `run` reply has exit status 130 |
 | `SCRIPT.COMMAND` | arguments | `{"exit": STATUS}`. Runs the command from the focused pane |
 
@@ -333,10 +336,30 @@ Afterglow keeps the input of an ID until `run` comes or the connection closes.
 It cuts the input at `Scripts.commandStdinLimit`, and then `input` returns `false`.
 A command without `stdin` gets no input, also when the client sent some.
 
+Afterglow keeps the input as UTF-8. All the input that waits for `run`, of all connections together, has a limit of 64 MiB.
+An `input` over that limit fails, and the input that waits stays.
+
 When a connection closes, Afterglow cancels its runs and drops its input.
 `Control.enabled=false` or `Scripts.enabled=false` removes the target, and the `run` calls that wait fail.
 
 `afterglow ctl watch` prints only the events of its subscriptions.
+
+### Flow control
+
+The socket closes a connection that has more than 16 MiB of output waiting for it.
+To keep a slow client connected, Afterglow sends the output of a `run` only a window ahead of what the client acknowledges:
+
+1. The client reads an event line of the run.
+2. The client writes the text to its output.
+3. The client adds the size of the line in bytes, with its line feed, to a count.
+4. When the count is 256 KiB or more, the client calls `ack` with the run and the count, and starts the count again at 0.
+
+Afterglow sends output while the bytes that the client did not acknowledge are less than 4 MiB.
+The rest waits in Afterglow, and the script's wait for `afterglow.output` waits with it.
+The output that waits counts toward `Scripts.commandOutputLimit`.
+The reply of `run` comes after all the output of the run.
+
+A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its client does not send `ack`.
 
 ## Limits
 
@@ -352,6 +375,9 @@ When a connection closes, Afterglow cancels its runs and drops its input.
 | `afterglow run` reply time for `list`, `input` and `cancel` | 10 seconds | `afterglow run` stops with exit status 1. It waits for the end of a run without a limit |
 | `input` part that `afterglow run` sends | 512 KiB of JSON string | `afterglow run` sends longer input in parts. |
 | Runs whose input waits for `run`, on one connection | 16 | `input` fails. |
+| Input that waits for `run`, in all connections | 64 MiB of UTF-8 | `input` fails. |
+| Output of a `run` that the client did not acknowledge | 4 MiB of event lines | The rest of the output waits in Afterglow. See [flow control](#flow-control). |
+| Arguments of `afterglow run` | One request of 1 MiB | `afterglow run` exits with status 2. |
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |

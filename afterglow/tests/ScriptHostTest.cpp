@@ -76,10 +76,19 @@ protected:
             return applyHook ? applyHook(e) : ScriptHost::EffectResult{};
         };
         c.cleanup = [this](const QString& owner) { cleaned << owner; };
+        c.closeDialogs = [this](const QString& owner, const QString& prefix) {
+            closedDialogs << prefix;
+            // The window answers the dialog that it closes, as TerminalWindow does.
+            Q_UNUSED(owner);
+            if (pendingReply && pendingRequest.startsWith(prefix))
+                std::exchange(pendingReply, {})({QStringLiteral("Dialog canceled"), {}, QStringLiteral("cancelled")});
+        };
+        c.notice = [this](quint32 pane, const QString& title, const QString& body) { notices.append({pane, title, body}); };
         c.failed = [this](const QString& owner) { failedOwners << owner; };
         c.applyOwned = [this, apply = c.apply](const QString& owner, const QVariantMap& effect, std::function<void(ScriptHost::EffectResult)> complete) {
             rec.owners.append(owner);
             if (effect.value(QStringLiteral("kind")) == QLatin1String("prompt")) {
+                pendingRequest = effect.value(QStringLiteral("request_id")).toString();
                 pendingReply = std::move(complete);
                 return ScriptHost::EffectResult{{}, {}, {}, true};
             }
@@ -125,14 +134,24 @@ protected:
         QString err;
         std::optional<int> status;
         bool gone = false; ///< the output sink reports a client that left
+        bool hold = false; ///< the client reads nothing: writes wait in held
+        QList<std::function<void()>> held;
     };
     /// Starts @p command of @p script for a client that @p client records.
     quint64 start(const QString& script, const QString& command, Client& client, QStringList args = {}, quint32 pane = 7,
                   std::optional<QString> input = std::nullopt, QString* error = nullptr, bool* unknown = nullptr)
     {
         ScriptHost::CommandSink sink;
-        sink.output = [&client](const QString& text) { client.out += text; return !client.gone; };
-        sink.error = [&client](const QString& text) { client.err += text; return !client.gone; };
+        auto write = [&client](QString& to) {
+            return [&client, &to](const QString& text, std::function<void()> sent) {
+                to += text;
+                if (client.hold) client.held.append(std::move(sent));
+                else if (sent) sent();
+                return !client.gone;
+            };
+        };
+        sink.output = write(client.out);
+        sink.error = write(client.err);
         sink.finished = [&client](int status) { client.status = status; };
         return host->startCommand({script, command, args, QStringLiteral("/work"), pane, input, QStringLiteral("shell")},
                                   std::move(sink), error, unknown);
@@ -150,6 +169,15 @@ protected:
     QStringList cleaned;
     QStringList failedOwners;
     std::function<void(ScriptHost::EffectResult)> pendingReply;
+    QString pendingRequest; ///< of the prompt that pendingReply answers
+    QStringList closedDialogs; ///< request ID prefixes
+    struct Notice
+    {
+        quint32 pane;
+        QString title;
+        QString body;
+    };
+    QList<Notice> notices;
     std::unique_ptr<ScriptHost> host;
 };
 
@@ -3509,28 +3537,26 @@ TEST_F(ScriptHostTest, CommandRunGetsItsEventAndWritesItsOutput)
 TEST_F(ScriptHostTest, CommandRunWithNoClientShowsItsErrorsAsANotification)
 {
     write(user, "cmds.luau", RunScript);
-    QString out;
-    applyHook = [&](const QVariantMap& e) {
-        if (e["kind"] == "notify") out = e["body"].toString();
-        return ScriptHost::EffectResult{};
-    };
     host->setEnabled(true);
     // The palette's run has no client: stdout is dropped, stderr shows.
     ASSERT_TRUE(run("cmds.greet", 7));
-    ASSERT_EQ(rec.applied.size(), 1);
-    EXPECT_EQ(rec.applied[0]["kind"], "notify");
-    EXPECT_EQ(rec.applied[0]["title"], "Greet someone");
-    EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 7u);
-    EXPECT_EQ(out, "careful");
+    ASSERT_EQ(notices.size(), 1);
+    EXPECT_EQ(notices[0].pane, 7u);
+    EXPECT_EQ(notices[0].title, "Greet someone");
+    EXPECT_EQ(notices[0].body, "careful");
     // A non-zero status with no stderr names the status, under "<script> <command>".
-    rec.applied.clear();
     ASSERT_TRUE(run("cmds.status", 7));
-    ASSERT_EQ(rec.applied.size(), 1);
-    EXPECT_EQ(rec.applied[0]["title"], "cmds status");
-    EXPECT_EQ(out, "Exited with status 4");
+    ASSERT_EQ(notices.size(), 2);
+    EXPECT_EQ(notices[1].title, "cmds status");
+    EXPECT_EQ(notices[1].body, "Exited with status 4");
+    // With no pane (a palette with no focused pane), it shows for the window.
+    ASSERT_TRUE(run("cmds.status", 0));
+    ASSERT_EQ(notices.size(), 3);
+    EXPECT_EQ(notices[2].pane, 0u);
+    EXPECT_EQ(notices[2].body, "Exited with status 4");
     // Success with no stderr is silent.
-    rec.applied.clear();
     ASSERT_TRUE(run("cmds.loud", 7));
+    EXPECT_EQ(notices.size(), 3);
     EXPECT_TRUE(rec.applied.isEmpty());
     EXPECT_FALSE(run("cmds.nope", 7));
 }
@@ -3550,7 +3576,7 @@ TEST_F(ScriptHostTest, CommandRunEndsWhenItsWaitingHandlerDoes)
     EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
 }
 
-TEST_F(ScriptHostTest, CommandRunsTimeOutAndCancelWithoutResuming)
+TEST_F(ScriptHostTest, CommandRunsTimeOutAndCancel)
 {
     write(user, "cmds.luau", RunScript);
     host->setEnabled(true);
@@ -3562,7 +3588,8 @@ TEST_F(ScriptHostTest, CommandRunsTimeOutAndCancelWithoutResuming)
     ASSERT_TRUE(await([&] { return slow.status.has_value(); }));
     EXPECT_EQ(slow.status, ScriptHost::CommandTimedOut);
     EXPECT_TRUE(slow.err.contains("Scripts.commandTimeout")) << slow.err.toStdString();
-    EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
+    // The handler resumed with "cancelled" and returns: nothing waits.
+    EXPECT_TRUE(await([&] { return host->diagnostics().first().toMap()["waiting"].toInt() == 0; }));
 
     host->setCommandLimits({});
     Client cancelled;
@@ -3571,7 +3598,7 @@ TEST_F(ScriptHostTest, CommandRunsTimeOutAndCancelWithoutResuming)
     EXPECT_EQ(cancelled.status, 130);
     host->cancelCommand(handle, 1); // over already
     EXPECT_EQ(cancelled.status, 130);
-    // The sleep's result comes and finds no handler to resume.
+    // The sleep's own result comes later, and finds no handler to resume.
     QElapsedTimer quiet;
     quiet.start();
     while (quiet.elapsed() < 500) QCoreApplication::processEvents();
@@ -3628,7 +3655,7 @@ TEST_F(ScriptHostTest, CommandRunsStayWithinTheirLimits)
     host->setCommandLimits(limits);
     Client one, two, three, four;
     const quint64 first = start("cmds", "wait", one, {"200"});
-    start("cmds", "wait", two, {"200"});
+    const quint64 second = start("cmds", "wait", two, {"200"});
     QString error;
     bool unknown = true;
     EXPECT_EQ(start("cmds", "greet", three, {}, 7, std::nullopt, &error, &unknown), 0u);
@@ -3648,6 +3675,9 @@ TEST_F(ScriptHostTest, CommandRunsStayWithinTheirLimits)
     Client read;
     start("cmds", "read", read, {}, 7, QStringLiteral("abcé"));
     EXPECT_EQ(read.out, "got abc");
+    // Ended before the clients go out of scope.
+    host->cancelCommand(second, 130);
+    EXPECT_EQ(two.status, 130);
 }
 
 TEST_F(ScriptHostTest, ARetiredScriptEndsItsRunsAndWithdrawsItsCommands)
@@ -3721,6 +3751,160 @@ TEST_F(ScriptHostTest, PackageCommandsComeFromItsManifest)
     host->reload();
     ASSERT_EQ(host->commands().size(), 1);
     EXPECT_EQ(host->commands()[0].token(), "pkg.come");
+}
+
+namespace {
+
+/// Handlers that wait when their run ends, and clean up after it.
+const QByteArray CancelScript = R"(
+local busy = false
+local cleaned = {}
+return {
+    metadata = { commands = {
+        typo = { summary = "Await a misspelled effect" },
+        typofail = { summary = "Fail after a misspelled effect" },
+        guarded = { summary = "Ask in a dialog, one at a time" },
+        sleeper = { summary = "Sleep inside a pcall" },
+        overflow = { summary = "Write past the limit, then open a dialog" },
+        sent = { summary = "Wait until the output has gone" },
+        cleaned = { summary = "Print what cleaned up" },
+    } },
+    run_command = function(command, ev)
+        if command == "typo" then
+            local _, err = afterglow.await({ kind = "list_project" })
+            return afterglow.output(ev, err.code .. "\n")
+        elseif command == "typofail" then
+            afterglow.await({ kind = "list_project" })
+            error("after the typo")
+        elseif command == "guarded" or command == "sleeper" then
+            if busy then return afterglow.output(ev, "busy\n") end
+            busy = true
+            local ok, result, err = pcall(function()
+                if command == "sleeper" then return afterglow.sleep(10000) end
+                return afterglow.await(afterglow.prompt(ev.pane, "Name"))
+            end)
+            busy = false
+            table.insert(cleaned, command .. ":" .. tostring(ok) .. ":" .. tostring(err and err.code))
+            -- The run has ended: this goes nowhere, and is no error.
+            return { afterglow.output(ev, "too late\n"), afterglow.exit(ev, 9), afterglow.log("cleaned " .. command) }
+        elseif command == "overflow" then
+            return { afterglow.output(ev, string.rep("x", 100)), afterglow.prompt(ev.pane, "After the limit") }
+        elseif command == "sent" then
+            assert(afterglow.await(afterglow.output(ev, "a")))
+            return afterglow.output(ev, "b")
+        elseif command == "cleaned" then
+            return afterglow.output(ev, table.concat(cleaned, ","))
+        end
+    end,
+}
+)";
+
+} // namespace
+
+TEST_F(ScriptHostTest, AnAwaitedEffectThatIsRefusedResumesItsRun)
+{
+    write(user, "cancel.luau", CancelScript);
+    host->setEnabled(true);
+    // A misspelled kind is refused at once: its refusal resumes the handler,
+    // as that run, so the run ends with it and not at the time limit.
+    Client typo, fail;
+    start("cancel", "typo", typo);
+    ASSERT_TRUE(await([&] { return typo.status.has_value(); }, 2000));
+    EXPECT_EQ(typo.status, 0);
+    EXPECT_EQ(typo.out, "invalid_effect\n");
+    start("cancel", "typofail", fail);
+    ASSERT_TRUE(await([&] { return fail.status.has_value(); }, 2000));
+    EXPECT_EQ(fail.status, 1);
+    EXPECT_TRUE(fail.err.contains("after the typo")) << fail.err.toStdString();
+}
+
+TEST_F(ScriptHostTest, AnEndedRunResumesItsHandlerOnceWithCancelled)
+{
+    write(user, "cancel.luau", CancelScript);
+    host->setEnabled(true);
+    Client first;
+    const quint64 handle = start("cancel", "guarded", first);
+    ASSERT_TRUE(bool(pendingReply));
+    const QString prompt = pendingRequest;
+    host->cancelCommand(handle, 130);
+    EXPECT_EQ(first.status, 130);
+    // The run's dialog closed, and the handler's cleanup ran.
+    ASSERT_EQ(closedDialogs.size(), 1);
+    EXPECT_TRUE(prompt.startsWith(closedDialogs[0]));
+    EXPECT_FALSE(bool(pendingReply));
+    pump();
+    Client cleaned;
+    start("cancel", "cleaned", cleaned);
+    EXPECT_EQ(cleaned.out, "guarded:true:cancelled");
+    // Its output and exit after the end went nowhere, with no error.
+    EXPECT_EQ(first.out, "");
+    for (const auto& [effect, error] : std::as_const(rec.results)) {
+        if (effect["kind"] == "output" || effect["kind"] == "exit") {
+            EXPECT_TRUE(error.isEmpty()) << error.toStdString();
+        }
+    }
+    const QVariantMap diagnostics = host->diagnostics().first().toMap();
+    EXPECT_EQ(diagnostics["handler_errors"].toInt(), 0);
+    EXPECT_EQ(diagnostics["waiting"].toInt(), 0);
+    // Its busy flag came back: the next run asks again.
+    Client second;
+    start("cancel", "guarded", second);
+    EXPECT_EQ(second.out, "");
+    EXPECT_TRUE(bool(pendingReply));
+}
+
+TEST_F(ScriptHostTest, ATimedOutRunCleansUpAndAClientThatLeftToo)
+{
+    write(user, "cancel.luau", CancelScript);
+    host->setEnabled(true);
+    ScriptHost::CommandLimits limits;
+    limits.timeoutMs = 50;
+    host->setCommandLimits(limits);
+    Client sleeper;
+    start("cancel", "sleeper", sleeper);
+    ASSERT_TRUE(await([&] { return sleeper.status.has_value(); }));
+    EXPECT_EQ(sleeper.status, ScriptHost::CommandTimedOut);
+    host->setCommandLimits({});
+    Client cleaned;
+    start("cancel", "cleaned", cleaned);
+    EXPECT_EQ(cleaned.out, "sleeper:true:cancelled");
+    EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
+}
+
+TEST_F(ScriptHostTest, NoEffectOfARunAppliesAfterItEndsInTheSameList)
+{
+    write(user, "cancel.luau", CancelScript);
+    host->setEnabled(true);
+    ScriptHost::CommandLimits limits;
+    limits.outputBytes = 50;
+    host->setCommandLimits(limits);
+    Client overflow;
+    start("cancel", "overflow", overflow);
+    EXPECT_EQ(overflow.status, 1);
+    // The dialog after the output that ended the run did not open.
+    EXPECT_FALSE(bool(pendingReply));
+    EXPECT_TRUE(rec.owners.isEmpty()); // a prompt would be an owned effect
+    for (const auto& [effect, error] : std::as_const(rec.results)) EXPECT_NE(effect["kind"], "prompt");
+}
+
+TEST_F(ScriptHostTest, AnAwaitedOutputWaitsUntilItsTextHasGone)
+{
+    write(user, "cancel.luau", CancelScript);
+    host->setEnabled(true);
+    Client client;
+    client.hold = true;
+    start("cancel", "sent", client);
+    EXPECT_EQ(client.out, "a");
+    pump(12);
+    // The client has not taken it: the handler still waits.
+    EXPECT_FALSE(client.status);
+    EXPECT_EQ(client.out, "a");
+    ASSERT_EQ(client.held.size(), 1);
+    client.hold = false;
+    client.held.takeFirst()();
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }));
+    EXPECT_EQ(client.out, "ab");
+    EXPECT_EQ(client.status, 0);
 }
 
 TEST_F(ScriptHostTest, ExamplePackageCommandsWorkFromTheShell)

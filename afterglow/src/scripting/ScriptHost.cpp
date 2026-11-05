@@ -75,6 +75,9 @@ struct ScriptHost::Script
     /// The run of each flow (the await runtime's waiting handler), so that a
     /// result that resumes a run's handler runs as that run.
     QHash<qint64, quint64> flowRuns;
+    /// Runs that ended while their handler waited: it resumed with
+    /// "cancelled" and may still run, as no run, until it returns.
+    QSet<quint64> endedRuns;
     int failures = 0;
     quint64 calls = 0, handlerErrors = 0, effectErrors = 0;
     quint64 droppedCallbacks = 0, droppedEffects = 0, droppedResults = 0;
@@ -953,13 +956,7 @@ quint64 ScriptHost::startCommand(const CommandRequest& request, CommandSink sink
     ev.insert(QStringLiteral("cwd"), request.cwd.isEmpty() ? pane.value(QStringLiteral("cwd")).toString() : request.cwd);
     if (command->input && request.input) {
         // Cut at the limit, on a whole character.
-        QByteArray bytes = request.input->toUtf8();
-        if (bytes.size() > m_limits.inputBytes) {
-            bytes.truncate(m_limits.inputBytes);
-            while (!bytes.isEmpty() && (static_cast<unsigned char>(bytes.back()) & 0xC0) == 0x80) bytes.chop(1);
-            if (!bytes.isEmpty() && static_cast<unsigned char>(bytes.back()) >= 0xC0) bytes.chop(1);
-        }
-        ev.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
+        ev.insert(QStringLiteral("stdin"), QString::fromUtf8(utf8Prefix(request.input->toUtf8(), m_limits.inputBytes)));
     }
     call(script, QStringLiteral("__command"), {id, request.command, ev}, ActionTimeoutMs, request.pane, handle);
     return handle;
@@ -986,30 +983,50 @@ void ScriptHost::finishRun(const ScriptPtr& script, quint64 handle, int status, 
     script->runs.erase(it);
     m_runScripts.remove(handle);
     run->timer.reset();
+    QList<qint64> flows;
     for (auto flow = script->flowRuns.begin(); flow != script->flowRuns.end();) {
-        if (flow.value() == handle) flow = script->flowRuns.erase(flow);
-        else ++flow;
+        if (flow.value() == handle) {
+            flows << flow.key();
+            flow = script->flowRuns.erase(flow);
+        } else {
+            ++flow;
+        }
     }
-    // What the handler waits for no longer resumes it: a result that comes
-    // later finds no flow.
-    if (waiting && !script->retiring && !script->disabled)
-        script->invoke(QStringLiteral("__cancel_run"), {QString::number(handle)}, EventTimeoutMs);
     const QString text = message.isEmpty() || message.endsWith(QLatin1Char('\n')) ? message : message + QLatin1Char('\n');
     if (run->sink.finished) {
-        if (!text.isEmpty() && run->sink.error) run->sink.error(text);
+        if (!text.isEmpty() && run->sink.error) run->sink.error(text, {});
         run->sink.finished(status);
-        return;
+    } else {
+        // No client: what it would have read shows as a notification, on
+        // the run's pane or for the window when it has none.
+        const QString errors = (run->errors + text).trimmed();
+        if ((status != 0 || !errors.isEmpty()) && m_callbacks.notice) {
+            m_callbacks.notice(run->pane, run->title,
+                               errors.isEmpty() ? QStringLiteral("Exited with status %1").arg(status)
+                                                : loggable(errors.right(MaxLogCharacters), MaxLogCharacters));
+        }
     }
-    // No client: what it would have read shows as a notification.
-    const QString errors = (run->errors + text).trimmed();
-    if ((status == 0 && errors.isEmpty()) || !m_callbacks.apply || !run->pane) return;
-    m_callbacks.apply({{QStringLiteral("kind"), QStringLiteral("notify")}, {QStringLiteral("pane"), run->pane},
-                       {QStringLiteral("title"), run->title},
-                       {QStringLiteral("body"), errors.isEmpty() ? QStringLiteral("Exited with status %1").arg(status)
-                                                                 : loggable(errors.right(MaxLogCharacters), MaxLogCharacters)}});
+    if (!waiting || script->retiring || script->disabled) return;
+    // The handler may wait for something that will now never resume it. Its
+    // dialogs close, and it resumes once with "cancelled", so that its
+    // cleanup (a pcall, a busy flag) runs. Its output and exit go nowhere:
+    // the client has its status already.
+    if (m_callbacks.closeDialogs) {
+        for (const qint64 flow : std::as_const(flows))
+            m_callbacks.closeDialogs(script->owner, AwaitPrefix + QString::number(flow) + QLatin1Char(':'));
+    }
+    script->endedRuns.insert(handle);
+    call(script, QStringLiteral("__cancel_run"),
+         {QString::number(handle), message.isEmpty() ? QStringLiteral("The run was cancelled") : message.trimmed()},
+         ActionTimeoutMs, run->pane, handle);
 }
 
-QString ScriptHost::writeRun(const ScriptPtr& script, quint64 handle, const QString& text, bool error)
+bool ScriptHost::endedRun(const Script& script, quint64 run) const
+{
+    return script.endedRuns.contains(run);
+}
+
+QString ScriptHost::writeRun(const ScriptPtr& script, quint64 handle, const QString& text, bool error, std::function<void()> sent)
 {
     const auto it = script->runs.find(handle);
     if (it == script->runs.end()) return QStringLiteral("The run has ended");
@@ -1023,12 +1040,13 @@ QString ScriptHost::writeRun(const ScriptPtr& script, quint64 handle, const QStr
     }
     run->outputBytes += bytes;
     const auto& write = error ? run->sink.error : run->sink.output;
-    if (!run->sink.finished) {
+    if (!run->sink.finished || !write) {
         // Kept for the notification, at most what it shows.
         if (error) run->errors = (run->errors + text).right(MaxLogCharacters);
+        if (sent) sent();
         return {};
     }
-    if (write && !write(text)) {
+    if (!write(text, std::move(sent))) {
         finishRun(script, handle, 1, {}, true);
         return QStringLiteral("The client of the run has gone");
     }
@@ -1154,11 +1172,27 @@ void ScriptHost::call(const ScriptPtr& script, const QString& function, const QV
                       quint32 eventPane, quint64 run)
 {
     script->callTimeoutMs = timeoutMs;
+    const bool ended = run && endedRun(*script, run);
+    // The handler of an ended run stops being tracked once it returns, fails
+    // or waits for nothing more.
+    auto forgetEnded = [&script, run] {
+        script->endedRuns.remove(run);
+        for (auto flow = script->flowRuns.begin(); flow != script->flowRuns.end();) {
+            if (flow.value() == run) flow = script->flowRuns.erase(flow);
+            else ++flow;
+        }
+    };
     const auto out = script->invoke(function, args, timeoutMs);
     if (out.status != LuauEngine::CallStatus::Ok) {
         const QString why = out.status == LuauEngine::CallStatus::TimedOut
             ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
             : ScriptPackage::locate(script->modules, out.message);
+        if (ended) {
+            // Often the "cancelled" error passed on: not a failure of the script.
+            forgetEnded();
+            qCInfo(lcScripts).noquote() << script->id << "run_command stopped after its run ended:" << why;
+            return;
+        }
         ++script->handlerErrors;
         if (m_callbacks.failed) m_callbacks.failed(script->owner);
         const QString name = function == QLatin1String("__resume") ? QStringLiteral("a handler after await")
@@ -1179,11 +1213,15 @@ void ScriptHost::call(const ScriptPtr& script, const QString& function, const QV
     // Effects that the handler waits for belong to its run, and the runtime
     // reports the end of a run's handler in the result.
     const quint64 outerRun = std::exchange(m_callRun, run);
+    const bool outerEnded = std::exchange(m_callRunEnded, ended);
     const bool outerDone = std::exchange(m_callRunDone, false);
     applyResult(script, out.result, eventPane);
     const bool done = std::exchange(m_callRunDone, outerDone);
     m_callRun = outerRun;
-    if (run && done) {
+    m_callRunEnded = outerEnded;
+    if (ended) {
+        if (done || std::find(script->flowRuns.cbegin(), script->flowRuns.cend(), run) == script->flowRuns.cend()) forgetEnded();
+    } else if (run && done) {
         const auto it = script->runs.find(run);
         if (it != script->runs.end()) finishRun(script, run, it->second->status, {}, false);
     }
@@ -1224,10 +1262,14 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& value, qui
             Q_EMIT effectApplied(script->id, {}, error);
             return;
         }
+        // A run that ends inside the list (its output limit, a client that
+        // left) takes the rest of the list with it: those effects were its.
+        const quint64 run = m_callRunEnded ? 0 : m_callRun;
         for (const QVariant& v : effects) {
             if (script->disabled || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
                 break;
             }
+            if (run && !script->runs.count(run)) break;
             if (!v.isValid()) {
                 continue; // a nil in the list, as in {cond and effect or nil, other}
             }
@@ -1260,6 +1302,10 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     const QVariant requestValue = raw.value(QStringLiteral("request_id"));
     const QString request = requestValue.toString();
     const bool validRequest = requestValue.typeId() == QMetaType::QString && !request.isEmpty() && request.size() <= 64;
+    // What a run's handler waits for resumes it as that run, also when the
+    // effect is refused below: the refusal is its result.
+    if (const qint64 flow = validRequest ? flowOf(request) : -1; m_callRun && flow >= 0 && !script->flowRuns.contains(flow))
+        script->flowRuns.insert(flow, m_callRun);
     if (requestValue.isValid() && !validRequest) {
         error = QStringLiteral("request_id must be a nonempty string of at most 64 characters");
     } else if (!info) {
@@ -1267,9 +1313,6 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     } else {
         if (validRequest) {
             effect.insert(QStringLiteral("request_id"), request);
-            // What a run's handler waits for resumes it as that run.
-            if (const qint64 flow = flowOf(request); m_callRun && flow >= 0 && !script->flowRuns.contains(flow))
-                script->flowRuns.insert(flow, m_callRun);
         }
         if (info->pane) {
             const QVariant value = raw.value(QStringLiteral("pane"));
@@ -1589,9 +1632,21 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             const quint64 handle = str(effect, "run").toULongLong();
             const auto run = script->runs.find(handle);
             result.code = QStringLiteral("no_run");
-            if (run == script->runs.end()) error = QStringLiteral("No run %1: it has ended").arg(str(effect, "run"));
-            else if (kind == QLatin1String("exit")) run->second->status = int(effect.value(QStringLiteral("code")).toDouble());
-            else error = writeRun(script, handle, str(effect, "text"), kind == QLatin1String("output_error"));
+            if (endedRun(*script, handle)) {
+                // Its handler resumed with "cancelled": the client has its status already.
+            } else if (run == script->runs.end()) {
+                error = QStringLiteral("No run %1: it has ended").arg(str(effect, "run"));
+            } else if (kind == QLatin1String("exit")) {
+                run->second->status = int(effect.value(QStringLiteral("code")).toDouble());
+            } else {
+                // Its result comes once the text has gone to the client, which
+                // can be later for a client that reads slowly.
+                auto done = completion(script, request, kind, eventPane);
+                error = writeRun(script, handle, str(effect, "text"), kind == QLatin1String("output_error"),
+                                 [done = std::move(done)] { done({}); });
+                if (error.isEmpty()) result.deferred = true;
+                else result.code = QStringLiteral("operation_failed");
+            }
         } else if (kind == QLatin1String("timer") || kind == QLatin1String("cancel") || kind == QLatin1String("exec")
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
             result = m_tasks->apply(script->owner, effect, completion(script, request, kind, eventPane),
@@ -1681,7 +1736,7 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
         }
         // A result that resumes a run's handler runs as that run, while it lasts.
         quint64 run = handler == QLatin1String("__resume") ? script->flowRuns.value(flowOf(event.value(QStringLiteral("request_id")).toString())) : 0;
-        if (run && !script->runs.count(run)) run = 0;
+        if (run && !script->runs.count(run) && !endedRun(*script, run)) run = 0;
         call(script, handler, {event}, handler == QLatin1String("on_result") ? EventTimeoutMs : timeoutMs, eventPane, run);
     });
 }

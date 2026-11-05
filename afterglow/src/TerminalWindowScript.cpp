@@ -29,7 +29,7 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
     }
     if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
     setFocusedPane(pane);
-    m_scriptDialog = ScriptDialog{owner, pane, std::move(reply)};
+    m_scriptDialog = ScriptDialog{owner, pane, std::move(reply), effect.value(QStringLiteral("request_id")).toString()};
     QVariantMap model = effect;
     model.insert(QStringLiteral("open"), true);
     m_controller->setScriptDialog(model);
@@ -312,6 +312,11 @@ QString TerminalWindow::pulsePane(Pane* pane, int effect, int durationMs, int co
     m_panePulse.insert(pane, {std::chrono::steady_clock::now(), durationMs, effect, color});
     scheduleRender();
     return {};
+}
+
+void TerminalWindow::closeScriptDialog(const QString& owner, const QString& prefix)
+{
+    if (m_scriptDialog && m_scriptDialog->owner == owner && m_scriptDialog->request.startsWith(prefix)) finishScriptDialog(false, {});
 }
 
 void TerminalWindow::clearScriptOwner(const QString& owner)

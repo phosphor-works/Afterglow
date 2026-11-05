@@ -162,6 +162,8 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         return apply(e);
     };
     c.cleanup = [&control](const QString& owner) { control.clearScriptOwner(owner); };
+    c.closeDialogs = [&control](const QString& owner, const QString& prefix) { control.closeScriptDialogs(owner, prefix); };
+    c.notice = [&control](quint32 pane, const QString& title, const QString& body) { control.notice(pane, title, body); };
     // A failing script never keeps the keyboard.
     c.failed = [&control](const QString& owner) { control.endScriptKeyMode(owner); };
     return c;

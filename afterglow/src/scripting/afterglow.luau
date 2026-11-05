@@ -108,18 +108,19 @@ local function drive(co, ...)
         local count = #effects
         if waiting < MaxWaiting and outstanding + count <= MaxOutstanding then
             local id = tostring(nextFlow + 1)
-            local out = {}
+            local out, kinds = {}, {}
             for i, effect in ipairs(effects) do
                 local tagged = table.clone(effect)
                 tagged.request_id = AwaitPrefix .. id .. ":" .. i
                 out[i] = tagged
+                kinds[i] = effect.kind
             end
             -- Registered only once the effects are built: a time limit inside
             -- the loop must not leave a flow that no result resumes.
             nextFlow += 1
             waiting += 1
             outstanding += count
-            flows[id] = { co = co, many = many, count = count, remaining = count, results = {} }
+            flows[id] = { co = co, many = many, count = count, remaining = count, results = {}, kinds = kinds }
             return out
         end
         -- A new table for each effect, so changing one result changes no other.
@@ -187,16 +188,32 @@ local function abandon(since)
 end
 
 -- Afterglow calls this when it ends a run whose handler may still wait (a
--- cancel, a time limit, a client that went away): no result resumes it again.
-local function cancelRun(run)
+-- cancel, a time limit, a client that went away). No result resumes the
+-- handler after this: it resumes once here, with a "cancelled" error for
+-- each effect it waits for that has no result yet, so that its cleanup runs.
+-- A run has one handler, which waits for one flow at most.
+local function cancelRun(run, message)
     for id, flow in pairs(flows) do
         if commandRuns[flow.co] == run then
             flows[id] = nil
             waiting -= 1
             outstanding -= flow.remaining
-            commandRuns[flow.co] = nil
+            local function cancelled(i)
+                return { ok = false, kind = flow.kinds[i], request_id = AwaitPrefix .. id .. ":" .. i, data = {},
+                    error = { code = "cancelled", message = message } }
+            end
+            if flow.many then
+                local all = {}
+                for i = 1, flow.count do
+                    all[i] = flow.results[i] or cancelled(i)
+                end
+                return drive(flow.co, all)
+            end
+            local event = cancelled(1)
+            return drive(flow.co, nil, event.error, event)
         end
     end
+    return nil
 end
 
 -- Afterglow starts each command run through this, as a handler of its own.

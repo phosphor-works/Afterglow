@@ -450,7 +450,7 @@ The handler of a command with `palette` must work with `args` empty.
 
 | Effect | Behavior |
 | --- | --- |
-| `afterglow.output(run, text)` | Writes text to the client's stdout. You can wait for it |
+| `afterglow.output(run, text)` | Writes text to the client's stdout. When you wait for it, it returns after the text has gone to the client |
 | `afterglow.output_error(run, text)` | Writes text to the client's stderr |
 | `afterglow.exit(run, code)` | Sets the exit status, 0 to 255. The default is 0 |
 
@@ -478,6 +478,7 @@ end
 
 A run with no client (from the palette, a key, the menu or `afterglow ctl action`) drops its stdout.
 When it writes to stderr or ends with a status other than 0, a notification shows on its pane.
+A run with no pane, such as one from a palette without a focused pane, shows the notification for the window.
 The notification has the palette title of the command, else `<id> <command>`.
 
 ### Command limits
@@ -492,8 +493,25 @@ The notification has the palette title of the command, else `<id> <command>`.
 
 One command can have several runs at once.
 The output effects and `exit` are outside the effect budget. `Scripts.commandOutputLimit` bounds them.
-A run ends when its client leaves, at a cancel, at the time limit, and when the script stops.
-What its handler waits for then does not resume it.
+A client that reads its output slowly holds the run back.
+A wait for `afterglow.output` then takes longer. The output that waits counts toward `Scripts.commandOutputLimit`.
+
+### Cancel
+
+A run also ends when its client leaves, at a cancel, at the time limit and at the output limit.
+When its handler waits at that moment, these steps occur:
+
+1. The dialogs and selectors that the handler waits for close.
+2. The handler resumes once, as from `afterglow.await`, with `nil` and the error code `cancelled`.
+3. `afterglow.await_all` gives the results that came before the end, and `cancelled` for the others.
+
+The handler can then clean up, for example clear a busy flag after a `pcall`.
+This part has the 100 ms limit of each part of a command.
+Its `afterglow.output`, `afterglow.output_error` and `afterglow.exit` go nowhere, because the client has its exit status already. They are not errors.
+Its other effects apply as usual.
+An error in this part is not a handler failure.
+
+When the script stops (a change, a removal, `Scripts.enabled=false` or repeated failures), its handlers do not resume.
 
 ### Commands at runtime
 

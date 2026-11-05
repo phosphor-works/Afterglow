@@ -158,6 +158,8 @@ public:
     /// The cells that fit in the window: a top or bottom dock is as wide.
     QSize gridSize() const;
     void clearScriptOwner(const QString& owner);
+    /// Cancels the owner's dialog when its request ID starts with @p prefix.
+    void closeScriptDialog(const QString& owner, const QString& prefix);
     QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
     /// A script's key mode: the window's keys go to the script's on_key until
     /// it ends the mode, fails or unloads. One script at a time.
@@ -322,7 +324,7 @@ private:
     bool scriptKeyModeKey(QKeyEvent* e);
     void stopCopyMode();
     QPointer<Pane> m_copyPane;
-    struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; };
+    struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; QString request; };
     std::optional<ScriptDialog> m_scriptDialog;
     void finishScriptDialog(bool accepted, const QString& value);
     struct ScriptAppearance {

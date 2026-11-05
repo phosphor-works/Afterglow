@@ -546,6 +546,11 @@ QString Control::notify(quint32 id, const QString& title, const QString& body)
     return {};
 }
 
+void Control::notice(quint32 id, const QString& title, const QString& body)
+{
+    NotificationCenter::instance().showNotice(find(id), textPrefix(title, 256), textPrefix(body, 2048));
+}
+
 QString Control::copy(const QString& text)
 {
     // Refused, not cut: the caller would not know the clipboard holds less.
@@ -696,6 +701,11 @@ QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMa
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
     return pane ? window->scriptShader(owner, pane, effect, result) : noPane(id);
+}
+
+void Control::closeScriptDialogs(const QString& owner, const QString& prefix)
+{
+    for (auto window : m_windows) if (window) window->closeScriptDialog(owner, prefix);
 }
 
 void Control::clearScriptOwner(const QString& owner)

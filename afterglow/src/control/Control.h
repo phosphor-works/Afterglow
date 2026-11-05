@@ -104,6 +104,8 @@ public:
     /// Validates the complete batch before updating the anchor's pane/tab/window.
     QString signalsBatch(quint32 pane, const QString& scope, const QVariantList& values, QVariantList& updated);
     QString notify(quint32 pane, const QString& title, const QString& body);
+    /// Afterglow's own notice on @p pane, or for the window when it is 0 or has closed.
+    void notice(quint32 pane, const QString& title, const QString& body);
     /// Refuses text longer than MaxCopyLength UTF-16 units.
     QString copy(const QString& text);
     static constexpr qsizetype MaxCopyLength = 1 << 22;
@@ -141,6 +143,8 @@ public:
     /// move_tab_right actions.
     QString moveTab(quint32 pane, int index);
     void clearScriptOwner(const QString& owner);
+    /// Cancels the owner's dialogs whose request IDs start with @p prefix.
+    void closeScriptDialogs(const QString& owner, const QString& prefix);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
     QString overview(quint32 pane, const QString& operation, QVariantMap& result);

@@ -15,6 +15,7 @@
 #include <optional>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 
 namespace AfterglowProto::Run {
@@ -59,11 +60,20 @@ std::string printable(std::string_view text)
     return out;
 }
 
+// The self-pipe of the signal handler: the run loop waits on it.
+int g_wake[2] = {-1, -1};
+volatile std::sig_atomic_t g_signal = 0;
+
+/// False when the write failed, or a signal came while it blocked (a reader
+/// that does not read): the caller then checks the signal first.
 bool writeAll(int fd, std::string_view data)
 {
     while (!data.empty()) {
         const ssize_t n = ::write(fd, data.data(), data.size());
-        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EINTR) {
+            if (g_signal) return false;
+            continue;
+        }
         if (n <= 0) return false;
         data.remove_prefix(std::size_t(n));
     }
@@ -173,9 +183,6 @@ std::string listing(const std::vector<Command>& commands, std::string_view only)
     return out;
 }
 
-// The self-pipe of the signal handler: the run loop waits on it.
-int g_wake[2] = {-1, -1};
-volatile std::sig_atomic_t g_signal = 0;
 
 extern "C" void onSignal(int number)
 {
@@ -197,9 +204,13 @@ public:
         struct sigaction action{};
         action.sa_handler = onSignal;
         sigemptyset(&action.sa_mask);
-        // No SA_RESTART: a read of stdin must return when a signal comes.
-        ::sigaction(SIGINT, &action, &m_int);
-        ::sigaction(SIGTERM, &action, &m_term);
+        // No SA_RESTART: a read of stdin must return when a signal comes. A
+        // signal that came ignored stays ignored (nohup, a background job of
+        // a shell without job control), as in QuitSignals.cpp.
+        for (const auto& [number, old] : {std::pair{SIGINT, &m_int}, std::pair{SIGTERM, &m_term}}) {
+            ::sigaction(number, nullptr, old);
+            if (old->sa_handler != SIG_IGN) ::sigaction(number, &action, nullptr);
+        }
         struct sigaction ignore{};
         ignore.sa_handler = SIG_IGN;
         sigemptyset(&ignore.sa_mask);
@@ -237,12 +248,18 @@ int sendInput(Client& client, const std::string& run)
     bool eof = false;
     while (true) {
         while (!eof && buffer.size() < InputPartBytes * 2) {
+            // A signal that comes between two reads must not wait for the
+            // producer's next data.
+            if (Signals::status()) return Signals::status();
+            pollfd fds[2] = {{client.env().input, POLLIN, 0}, {g_wake[0], POLLIN, 0}};
+            if (::poll(fds, 2, -1) < 0 && errno != EINTR) {
+                return client.fail(std::string("cannot read standard input: ") + std::strerror(errno));
+            }
+            if (Signals::status()) return Signals::status();
+            if (!(fds[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) continue;
             char chunk[65536];
             const ssize_t n = ::read(client.env().input, chunk, sizeof chunk);
-            if (n < 0 && errno == EINTR) {
-                if (Signals::status()) return Signals::status();
-                continue;
-            }
+            if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
             if (n < 0) return client.fail(std::string("cannot read standard input: ") + std::strerror(errno));
             if (n == 0) eof = true;
             buffer.append(chunk, std::size_t(n));
@@ -251,8 +268,9 @@ int sendInput(Client& client, const std::string& run)
         const std::size_t size = inputPart(buffer, eof);
         const bool last = eof && size == buffer.size();
         IpcConnection::Error error;
-        const auto more = client.ipc().call(Target, "input", {run, buffer.substr(0, size), last}, ReplyTimeoutMs, &error);
+        const auto more = client.ipc().call(Target, "input", {run, buffer.substr(0, size), last}, ReplyTimeoutMs, &error, g_wake[0]);
         if (!more) {
+            if (error.interrupted) return Signals::status();
             client.report(error);
             return 1;
         }
@@ -291,6 +309,8 @@ int runCommand(Client& client, const Command& command, const std::vector<std::st
                                       {*run, command.script, command.name, std::move(arguments), workingDirectory(client.env()), pane},
                                       &error);
     if (!id) {
+        // Too many or too long arguments for one request: a usage error.
+        if (error.code == IpcConnection::RequestTooLong) return client.fail("the arguments are too long for one request (1 MiB)", UsageError);
         client.report(error);
         return 1;
     }
@@ -298,9 +318,13 @@ int runCommand(Client& client, const Command& command, const std::vector<std::st
         IpcConnection::Error ignored;
         client.ipc().send(Target, "cancel", {*run}, &ignored);
     };
+    // What this client wrote of the run's event lines and has not
+    // acknowledged: the terminal sends AckWindow bytes ahead at most.
+    std::size_t written = 0;
     while (true) {
         Json::Value frame;
-        const auto status = client.ipc().next(frame, -1, signals.fd());
+        std::size_t bytes = 0;
+        const auto status = client.ipc().next(frame, -1, signals.fd(), &bytes);
         if (status == IpcConnection::Read::Woken) {
             cancel();
             return Signals::status();
@@ -322,11 +346,21 @@ int runCommand(Client& client, const Command& command, const std::vector<std::st
         if (type != "event" || frame["target"].toString() != Target || eventArgs.size() != 2
             || eventArgs[0].toString() != *run)
             continue;
-        if (signal == "stdout" && !writeAll(client.env().output, eventArgs[1].toString())) {
-            cancel();
-            return BrokenPipe;
+        const bool out = signal == "stdout";
+        if ((out || signal == "stderr") && !writeAll(out ? client.env().output : client.env().error, eventArgs[1].toString())) {
+            // A signal while a reader held the write back, or a closed stdout.
+            // A stderr that fails loses its text and nothing else.
+            if (Signals::status() || out) {
+                cancel();
+                return Signals::status() ? Signals::status() : BrokenPipe;
+            }
         }
-        if (signal == "stderr") writeAll(client.env().error, eventArgs[1].toString());
+        written += bytes;
+        if (written >= AckBytes) {
+            IpcConnection::Error ignored;
+            client.ipc().send(Target, "ack", {*run, std::int64_t(written)}, &ignored);
+            written = 0;
+        }
     }
 }
 

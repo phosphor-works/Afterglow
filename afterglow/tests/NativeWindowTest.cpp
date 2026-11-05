@@ -6,6 +6,7 @@
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include <QMessageBox>
+#include <optional>
 #include <QJsonArray>
 #include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
@@ -938,6 +939,26 @@ struct AccessibleEvents {
         return int(std::count_if(events.cbegin(), events.cend(), [&](const Event& e) { return e.type == type && e.iface == iface; }));
     }
 };
+TEST_F(NativeWindow, AnEndedRunClosesOnlyItsOwnDialog) {
+    Pane* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    std::optional<QString> answer;
+    const QVariantMap prompt{{QStringLiteral("kind"), QStringLiteral("prompt")}, {QStringLiteral("title"), QStringLiteral("Name")},
+                             {QStringLiteral("request_id"), QStringLiteral("afterglow.await:3:1")}};
+    ASSERT_TRUE(window->showScriptDialog(QStringLiteral("a@1"), pane, prompt,
+                                         [&](const QString& error, const QVariantMap&) { answer = error; }).isEmpty());
+    ASSERT_TRUE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
+    // Another flow's prefix, and another owner, leave it open.
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:4:"));
+    window->closeScriptDialog(QStringLiteral("b@2"), QStringLiteral("afterglow.await:3:"));
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:31:"));
+    EXPECT_FALSE(answer.has_value());
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:3:"));
+    ASSERT_TRUE(answer.has_value());
+    EXPECT_EQ(*answer, QStringLiteral("Dialog canceled"));
+    EXPECT_FALSE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
+}
 TEST_F(NativeWindow, PaletteMenuAndKeyRunScriptCommands) {
     // A script beside the config: one command in the palette, one only for keys.
     ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));

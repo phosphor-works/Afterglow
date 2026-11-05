@@ -25,6 +25,12 @@ inline constexpr std::size_t InputPartBytes = 512 * 1024;
 /// the terminal limits it (Scripts.commandTimeout).
 inline constexpr int ReplyTimeoutMs = 10000;
 
+/// The terminal sends a run's output this many bytes ahead of what the client
+/// acknowledged (CommandSocket::AckWindow). The client acknowledges in steps
+/// of AckBytes, the event lines that it wrote, '\n' included.
+inline constexpr std::size_t AckWindowBytes = 4 * 1024 * 1024;
+inline constexpr std::size_t AckBytes = 256 * 1024;
+
 /// The error code of a run for a script or command that does not exist.
 inline constexpr const char* NoSuchCommand = "NO_SUCH_COMMAND";
 

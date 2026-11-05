@@ -79,7 +79,7 @@ std::optional<std::int64_t> IpcConnection::send(const std::string& target, const
     std::string line = Json::write(Json::Object{{"type", "call"}, {"id", id}, {"target", target}, {"fn", fn},
                                                 {"args", std::move(args)}});
     if (line.size() >= MaxRequestBytes) {
-        set(error, {}, "the request is over 1 MiB");
+        set(error, RequestTooLong, "the request is over 1 MiB");
         return std::nullopt;
     }
     line += '\n';
@@ -99,16 +99,21 @@ std::optional<std::int64_t> IpcConnection::send(const std::string& target, const
 }
 
 std::optional<Json::Value> IpcConnection::call(const std::string& target, const std::string& fn, Json::Array args,
-                                               int timeoutMs, Error* error)
+                                               int timeoutMs, Error* error, int wakeFd)
 {
     const auto id = send(target, fn, std::move(args), error);
     if (!id) return std::nullopt;
     const std::int64_t deadline = now() + timeoutMs;
     while (true) {
         Json::Value frame;
-        const Read status = readFrame(frame, int(std::max<std::int64_t>(0, deadline - now())), -1);
+        std::size_t bytes = 0;
+        const Read status = readFrame(frame, int(std::max<std::int64_t>(0, deadline - now())), wakeFd, &bytes);
         if (status == Read::Timeout) {
             set(error, {}, "no reply in time", true);
+            return std::nullopt;
+        }
+        if (status == Read::Woken) {
+            if (error) *error = {{}, "interrupted", false, true};
             return std::nullopt;
         }
         if (status != Read::Frame) {
@@ -118,18 +123,19 @@ std::optional<Json::Value> IpcConnection::call(const std::string& target, const 
         // The router cannot name the request of a line it could not read;
         // this client waits for one call at a time, so it is this one.
         if (answers(frame, *id) || (frame["type"].toString() == "error" && !frame.find("id"))) return answer(frame, error);
-        m_waiting.push_back(std::move(frame));
+        m_waiting.emplace_back(std::move(frame), bytes);
     }
 }
 
-IpcConnection::Read IpcConnection::next(Json::Value& frame, int timeoutMs, int wakeFd)
+IpcConnection::Read IpcConnection::next(Json::Value& frame, int timeoutMs, int wakeFd, std::size_t* bytes)
 {
     if (!m_waiting.empty()) {
-        frame = std::move(m_waiting.front());
+        frame = std::move(m_waiting.front().first);
+        if (bytes) *bytes = m_waiting.front().second;
         m_waiting.pop_front();
         return Read::Frame;
     }
-    return readFrame(frame, timeoutMs, wakeFd);
+    return readFrame(frame, timeoutMs, wakeFd, bytes);
 }
 
 bool IpcConnection::answers(const Json::Value& frame, std::int64_t id)
@@ -145,13 +151,14 @@ std::optional<Json::Value> IpcConnection::answer(const Json::Value& frame, Error
     return std::nullopt;
 }
 
-IpcConnection::Read IpcConnection::readFrame(Json::Value& frame, int timeoutMs, int wakeFd)
+IpcConnection::Read IpcConnection::readFrame(Json::Value& frame, int timeoutMs, int wakeFd, std::size_t* bytes)
 {
     const std::int64_t deadline = timeoutMs < 0 ? -1 : now() + timeoutMs;
     while (true) {
         if (const auto end = m_buffer.find('\n'); end != std::string::npos) {
             const std::string line = m_buffer.substr(0, end);
             m_buffer.erase(0, end + 1);
+            if (bytes) *bytes = line.size() + 1;
             if (line.empty()) continue;
             auto parsed = Json::parse(line);
             if (!parsed || !parsed->isObject()) {

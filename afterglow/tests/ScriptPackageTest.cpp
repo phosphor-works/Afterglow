@@ -83,6 +83,21 @@ TEST(ScriptPackage, ReadsAndChecksItsCommands)
     put(file, manifest({{"commands", many}}));
     EXPECT_EQ(ScriptPackage::read(file, p), QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands));
 }
+TEST(ScriptFiles, Utf8PrefixKeepsACharacterThatEndsAtTheLimit)
+{
+    for (const QByteArray& character : {QByteArray("\xC3\xA9"), QByteArray("\xE6\xBC\xA2"), QByteArray("\xF0\x9F\x98\x80")}) {
+        const QByteArray text = "ab" + character + "cd";
+        const qsizetype end = 2 + character.size();
+        // Ends exactly at the limit: it stays.
+        EXPECT_EQ(utf8Prefix(text, end), "ab" + character) << character.size();
+        // Cut through: it goes whole.
+        for (qsizetype limit = 3; limit < end; ++limit) EXPECT_EQ(utf8Prefix(text, limit), "ab") << character.size() << limit;
+        EXPECT_EQ(utf8Prefix(text, end + 1), "ab" + character + "c");
+    }
+    EXPECT_EQ(utf8Prefix("abc", 10), "abc");
+    EXPECT_EQ(utf8Prefix("abc", 0), "");
+    EXPECT_EQ(utf8Prefix("abc", -1), "");
+}
 TEST(ScriptState, AtomicRevisionChecksAndRoundTrip)
 {
     QTemporaryDir dir; ScriptState store(dir.path()); ScriptState::Snapshot s;
