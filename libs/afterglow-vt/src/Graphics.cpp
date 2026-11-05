@@ -38,6 +38,17 @@ constexpr std::uint32_t DefaultFrameGap = 40;
 /// cannot read exists, what kind it is or how long it is.
 constexpr std::string_view FileError = "EBADF:failed to read image file";
 
+/// The answer to a command over the work budget. It asks for a retry only
+/// when the command can be sent again as it was: the temporary file or the
+/// tagged shared memory object of a t=t or t=s command goes with the refusal.
+std::string busyError(char medium, std::string_view what)
+{
+    std::string error = "EBUSY:too much ";
+    error += what;
+    if (medium != 't' && medium != 's') error += ", try again later";
+    return error;
+}
+
 void blendOver(std::uint8_t* dst, const std::uint8_t* src)
 {
     const unsigned a = src[3];
@@ -682,10 +693,10 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
     };
     // A refusal by the budget is not a failure to read: the file was opened
     // and found regular, which a read that succeeds tells the client too.
-    auto finish = [&error, &fail](ReadResult result) {
+    auto finish = [&error, &fail, &cmd](ReadResult result) {
         if (result == ReadResult::Done) return true;
         if (result == ReadResult::Busy) {
-            error = "EBUSY:too much image data read, try again later";
+            error = busyError(cmd.medium, "image data read");
             return false;
         }
         return fail();
@@ -1385,7 +1396,7 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
     }
     if (!chargeWork(canvasBytes)) {
         releaseMedium(cmd, data);
-        respond(cmd, ctx, "EBUSY:too much frame editing, try again later", true);
+        respond(cmd, ctx, busyError(cmd.medium, "frame editing"), true);
         return;
     }
     Command pix = cmd;
@@ -1505,7 +1516,7 @@ void GraphicsStore::compose(const Command& cmdIn, Context& ctx)
     }
     const FramePtr& target = img->frames[std::size_t(cmd.c - 1)];
     if (!chargeWork(target->rgba.size())) {
-        respond(cmd, ctx, "EBUSY:too much frame editing, try again later", true);
+        respond(cmd, ctx, busyError(cmd.medium, "frame editing"), true);
         return;
     }
     auto dst = std::make_shared<ImageFrame>(*target);

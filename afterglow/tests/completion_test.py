@@ -302,7 +302,7 @@ def command_cases(program, options):
     yield f'{program} icat -h ', set()
     yield f'{program} transfer --help ', set()
     yield f'{program} dnd -h -', set()
-    # A flag takes no value: what follows its "=" is not a file.
+    # A flag takes only a yes or no value after its "=", and the completion offers none, and no file.
     yield f'{program} transfer --confirm-paths=', set()
     yield f'{program} icat --hold=a', set()
     # An option that takes a file still gets one after its "=".
@@ -320,6 +320,14 @@ def bash_cases(program):
     yield f'{program} clipboard --mime text/plain --mi', {'--mime'}
     # "--" ends the options.
     yield f'{program} transfer -- -', set()
+
+
+def value_cases(program):
+    """Cases for bash and fish. The _arguments of zsh takes a -h in the place of a value as the help."""
+    # The value of an option is no option, -h too.
+    yield f'{program} dnd --drop-dest -h ', FILES
+    yield f'{program} transfer -cp -h ', FILES
+    yield f'{program} transfer -p -h ', FILES
 
 
 def aglow_cases(options):
@@ -432,7 +440,8 @@ def main():
         shells = Shells(Path(tmp))
         tested = []
         helpers = next((p for p in BASH_COMPLETION if p.exists()), None)
-        bash_extra = [*bash_cases('afterglow'), *bash_cases('aglow')]
+        values = [*value_cases('afterglow'), *value_cases('aglow')]
+        bash_extra = [*bash_cases('afterglow'), *bash_cases('aglow'), *values]
         if shutil.which('bash'):
             for completion in ('afterglow.bash', 'aglow.bash'):
                 shells.run(['bash', '-n', str(COMPLETIONS / completion)])
@@ -453,7 +462,8 @@ def main():
         if shutil.which('fish'):
             for completion in ('afterglow.fish', 'aglow.fish'):
                 shells.run(['fish', '--no-config', '--no-execute', str(COMPLETIONS / completion)])
-            check_shell('fish', each(shells.fish), each(lambda line: shells.fish(line, shells.aglow_env)), sources)
+            check_shell('fish', each(shells.fish), each(lambda line: shells.fish(line, shells.aglow_env)), sources,
+                        extra=values)
             check(shells.fish('afterglow ctl action script:nav.o') == {'script:nav.open'}, 'fish: action script:nav.o')
             tested.append('fish')
         else:

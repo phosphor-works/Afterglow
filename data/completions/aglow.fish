@@ -3,11 +3,21 @@
 # Fish completion for aglow: its commands, their options and the values of the options.
 # afterglow transfer, dnd, icat and clipboard use it too (afterglow.fish).
 
+# The options of each command that take a value, as the next word or after
+# "=", from the declarations below.
+set -g __aglow_values_transfer -d --direction -m --mode --compress -p --permissions-bypass
+set -g __aglow_values_dnd --drag --drop --drop-dest --copy-mode --confirm-drop-timeout --drop-anywhere \
+    --drag-thumbnail --drag-thumbnail-size --exit-on
+set -g __aglow_values_icat --align --place --fit --background --mirror --transfer-mode --detection-timeout \
+    --use-window-size --stdin -z --z-index -l --loop --passthrough --image-id --engine
+set -g __aglow_values_clipboard -m --mime -a --alias --password --human-name --detection-timeout
+
 # Whether the command of the line is $argv[1], or with no argument whether
 # the line has no command yet. The command is the first word after aglow
 # only: a file of the same name later on the line is not one. After -h or
 # --help aglow shows the help and reads no other word, so the command
-# completes nothing more.
+# completes nothing more. The word after an option that takes a value is
+# that value, -h too.
 function __aglow_command
     set -l words (commandline -xpc)
     if not set -q argv[1]
@@ -15,20 +25,39 @@ function __aglow_command
         return
     end
     test (count $words) -ge 2; and test "$words[2]" = $argv[1]; or return
+    set -l values __aglow_values_$argv[1]
+    set -l value 0
     for word in $words[3..]
+        if test $value -eq 1
+            set value 0
+            continue
+        end
         switch $word
             case --
                 return 0
             case -h --help
                 return 1
+            case '--*=*'
+            case '--*'
+                contains -- $word $$values; and set value 1
+            case '-*'
+                # Flags together (-cp): a short option that takes a value
+                # takes the rest of the word, or the next word at its end.
+                set -l letters (string split '' -- (string sub -s 2 -- $word))
+                for k in (seq (count $letters))
+                    if contains -- -$letters[$k] $$values
+                        test $k -eq (count $letters); and set value 1
+                        break
+                    end
+                end
         end
     end
 end
 
 # Whether the word at the cursor is a file operand. A word that starts with -
-# is an option, and fish completes the part after = of an option that takes
-# no value (--hold=) as a word of its own: neither is a file. After "--"
-# every word is a file.
+# is an option, and fish completes the part after = of a flag (--hold=) as a
+# word of its own: a flag takes only a yes or no value there, which the
+# completion does not offer, and no file. After "--" every word is a file.
 function __aglow_operand
     contains -- -- (commandline -xpc); and return
     not string match -q -- '-*' (commandline -ct)

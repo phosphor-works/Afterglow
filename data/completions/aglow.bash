@@ -145,8 +145,9 @@ _aglow()
         --*)
             _aglow_entry "${word%%=*}" || continue
             given+="${entry%% *}|"
-            # A flag followed by "=" expects a value too, so that what comes
-            # after the "=" completes as the flag's value: nothing.
+            # A flag takes only a yes or no value after "=" (--hold=no), and
+            # the completion offers none: what comes after the "=" completes
+            # as the flag's value, to nothing.
             if [[ $word != *=* ]] && [[ $entry == *" "* || ${words[i + 1]} == = ]]; then
                 expect=$entry
             fi

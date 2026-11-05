@@ -191,6 +191,13 @@ The `kitten` client of Kitty also works with Afterglow.
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
 
 `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
+When they cannot run it, they exit with one of these statuses, as a shell does:
+
+| Status | Cause |
+| --- | --- |
+| 127 | There is no `aglow` next to `afterglow`, or the build has no `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`). |
+| 126 | There is an `aglow` next to `afterglow`, but it cannot run. For example, it is not executable. |
+
 `aglow --version` shows its version and the version of its protocol.
 Run `aglow COMMAND --help` for the options of a command.
 
@@ -231,7 +238,8 @@ Before it exits, `aglow icat` removes the temporary files and shared memory obje
 | Pixels of all frames at the size that they show (width × height × 4 bytes) | 320 MiB | `aglow icat` shows the first frame only, with a warning. |
 | Frames of an animated GIF | 1,024 | `aglow icat` shows the first frame only, with a warning. |
 
-Ctrl+C stops `aglow icat` between two parts of the output.
+Ctrl+C stops `aglow icat` between two parts of the output, and while a child process decodes an image.
+SIGTERM and SIGHUP also stop it at these points.
 
 ### aglow clipboard
 
@@ -304,7 +312,7 @@ Give the option one of these values instead:
 | Sessions per pane | 8 | The new session gets `EBUSY`. |
 | Files per session | 16,384 | The file gets `EINVAL`. A receive listing gets `EFBIG`. |
 | Open files of regular and delta transfers per pane | 128 | The file gets `EBUSY` until another file completes. A delta upload holds two. |
-| Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. |
+| Open files of the transfers of all panes | Half of the `RLIMIT_NOFILE` soft limit of Afterglow | The file gets `EBUSY`. A delta upload holds three: its output, its old file and the stream of its signature. |
 | Outgoing file streams per pane | 128 | The file gets `EBUSY`. |
 | Decoded data per packet | 4,096 bytes | The file fails with an error status. |
 | Command size | 16,384 bytes | Every transfer in the pane is canceled with `ENOMEM`. |
@@ -368,8 +376,13 @@ aglow dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
 `aglow dnd --drop MIME:PATH` writes the dropped data to a temporary file next to `PATH`.
 It replaces `PATH` only when the drop succeeds, so a failed drop leaves the file as it was.
 The new file keeps the mode and the group of the file that it replaces.
-`aglow dnd` writes in place, as a shell redirection does, when `PATH` is a device, a FIFO or a link.
-It also writes in place a file with more than one name, a file of another owner, and a file in a directory that it cannot write.
+`aglow dnd` writes in place, as a shell redirection does, in these cases:
+
+- `PATH` is a device, a FIFO or a link.
+- The file has more than one name.
+- The file has another owner.
+- The file is in a directory that `aglow dnd` cannot write.
+- The file has a group that `aglow dnd` cannot give to a new file, because the user is not a member of the group.
 
 With `--confirm-drop-overwrite`, `aglow dnd` asks before a drop replaces existing files.
 Press Enter to replace them, or Esc to cancel the drop. Pasted text is no answer.
@@ -396,6 +409,13 @@ When a drag ends, Afterglow tells the source the action that the drop took (the 
 
 Kitty does not send the `o` key. Clients that follow Kitty ignore it.
 `aglow dnd` deletes the files of a remote move only when the drop ended as a move.
+It keeps a file that changed after `aglow dnd` sent its data, and shows a message.
+
+When `aglow dnd` receives files from another computer, it reads them through the terminal.
+
+| Item | Limit | At the limit |
+| --- | --- | --- |
+| Directories that `aglow dnd` keeps open in one drop from another computer | 192 | A directory past the limit comes without its entries. `aglow dnd` reports that some dropped entries could not be read, and the drop is a copy, not a move. |
 Afterglow rejects file reads before a drop occurs.
 It also rejects file reads for a drag that starts in any Afterglow window.
 A read of a file in the temporary directory of a remote drag is the exception.

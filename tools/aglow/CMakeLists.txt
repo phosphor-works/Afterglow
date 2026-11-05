@@ -183,6 +183,12 @@ if(BUILD_TESTING)
     aglow_add_run_test(afterglow_without_aglow 127 "afterglow icat: cannot run .*/without-aglow/aglow: "
                        $<TARGET_FILE:afterglow> icat --help)
     unset(AGLOW_RUN_OPTIONS)
+    # An aglow next to it that cannot run: 126, as a shell answers.
+    set(AGLOW_RUN_OPTIONS "-DCOPY_TO=${CMAKE_CURRENT_BINARY_DIR}/aglow-not-executable" -DNOT_EXECUTABLE=ON)
+    aglow_add_run_test(afterglow_aglow_not_executable 126
+                       "afterglow icat: cannot run .*/aglow-not-executable/aglow: Permission denied"
+                       $<TARGET_FILE:afterglow> icat --help)
+    unset(AGLOW_RUN_OPTIONS)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)

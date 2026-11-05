@@ -49,8 +49,8 @@ DndUri fileUri(std::string_view rest)
         return uri;
     }
     // A file URI has no query or fragment. A '?' or '#' here is part of a
-    // name that the source did not escape: cut at it, the path would name
-    // another file, which a move would delete.
+    // name that the source did not escape. Cut at it, the path would name
+    // another file, which a move would delete: such a URI names no file here.
     if (path.find_first_of("?#") != std::string_view::npos) {
         return uri;
     }

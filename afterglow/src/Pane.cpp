@@ -803,15 +803,45 @@ void Pane::reportInputFailure()
     }, Qt::QueuedConnection);
 }
 
+namespace {
+/// The bytes that the pane holds for the GUI thread: the protocol commands,
+/// and the reports that wait behind them.
+constexpr qsizetype ProtocolBudget = 16 * 1024 * 1024;
+} // namespace
+
 void Pane::writeToPty(std::string_view bytes)
 {
-    // The replies to protocol commands are written on the GUI thread when
-    // the commands run. A report that the terminal answers at once must not
-    // pass the replies to commands that the program wrote before it.
+    // m_mutex held, on the pty thread or the GUI thread (a resize). The
+    // replies to protocol commands are written on the GUI thread when the
+    // commands run, and for file transfer when the worker has handled them.
+    // A report that the terminal answers at once must not pass the replies to
+    // commands that the program wrote before it. What a command sends later
+    // is not ordered: file data, an answer after a permission dialog, the
+    // drag data that the pump timer sends after an "r" request. kitty sends
+    // these later too, and the client waits for them anyway.
     if (m_protocolQueued.load() > 0) {
-        postProtocolCommand([this, report = std::string(bytes)] {
-            if (m_pty && !m_pty->write(report)) reportInputFailure();
-        });
+        const auto size = qsizetype(bytes.size());
+        if (m_protocolBytes.fetch_add(size) + size > ProtocolBudget) {
+            m_protocolBytes.fetch_sub(size);
+            reportInputFailure();
+            return;
+        }
+        // One closure for each run of reports, however many the program asks for.
+        if (!m_openReports) {
+            auto batch = std::make_shared<std::string>();
+            postProtocolCommand([this, batch] {
+                std::string reports;
+                {
+                    std::lock_guard lock(m_mutex);
+                    reports = std::move(*batch);
+                    if (m_openReports == batch) m_openReports.reset();
+                }
+                m_protocolBytes.fetch_sub(qsizetype(reports.size()));
+                if (m_pty && !m_pty->write(reports)) reportInputFailure();
+            });
+            m_openReports = std::move(batch);
+        }
+        m_openReports->append(bytes);
         return;
     }
     if (m_pty && !m_pty->write(bytes)) reportInputFailure();
@@ -1345,6 +1375,13 @@ FileTransfer* Pane::fileTransfers()
         // input queue fills and a refused reply ends it.
         m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
+        // The worker writes the replies of a command after its command
+        // closure returned. Until then the commands and reports after it wait.
+        connect(m_fileTransfers.get(), &FileTransfer::answering, this, [this] {
+            ++m_answerHolds;
+            m_protocolQueued.fetch_add(1);
+        });
+        connect(m_fileTransfers.get(), &FileTransfer::answered, this, &Pane::endAnswerHold);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
             // A held pane's program has exited: no input failed, nothing reads it.
@@ -1405,7 +1442,7 @@ void Pane::terminalProtocol(int code, std::string_view payload)
         return;
     }
     const auto charge = bytes.size() + 128;
-    if (m_protocolBytes.fetch_add(charge) + charge > 16 * 1024 * 1024) {
+    if (m_protocolBytes.fetch_add(charge) + charge > ProtocolBudget) {
         m_protocolBytes.fetch_sub(charge);
         m_protocolBlocked = true;
         m_protocolLost = lostAfter(DragDrop::Lost::Nothing, code);
@@ -1443,16 +1480,39 @@ void Pane::terminalProtocol(int code, std::string_view payload)
 void Pane::postProtocolCommand(std::function<void()> command)
 {
     m_protocolQueued.fetch_add(1);
-    // The count drops after the command and the replies that it wrote.
-    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)] {
-        command();
-        m_protocolQueued.fetch_sub(1);
+    // A report after this command follows its replies.
+    m_openReports.reset();
+    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)]() mutable {
+        runProtocolCommand(std::move(command));
     }, Qt::QueuedConnection);
     {
         std::lock_guard lock(m_postedMutex);
         ++m_postedSerial;
     }
     m_posted.notify_all();
+}
+void Pane::runProtocolCommand(std::function<void()> command)
+{
+    if (m_answerHolds > 0 || !m_parkedCommands.empty()) {
+        m_parkedCommands.push_back(std::move(command));
+        return;
+    }
+    // The count drops after the command and the replies that it wrote.
+    command();
+    m_protocolQueued.fetch_sub(1);
+}
+void Pane::endAnswerHold()
+{
+    --m_answerHolds;
+    // A parked file transfer command holds the rest again.
+    while (m_answerHolds == 0 && !m_parkedCommands.empty()) {
+        auto command = std::move(m_parkedCommands.front());
+        m_parkedCommands.pop_front();
+        command();
+        m_protocolQueued.fetch_sub(1);
+    }
+    // Last: a report that the program writes meanwhile waits for the parked commands.
+    m_protocolQueued.fetch_sub(1);
 }
 void Pane::deliverProtocolCommands(int waitMs)
 {

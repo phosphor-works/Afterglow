@@ -81,7 +81,7 @@ cmake -DPHOSPHOR_DEPS_FETCH=/path/to/archives -P ../PlasmaZones/cmake/PhosphorDe
 cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
 ```
 
-The directory also holds an empty `.lock` file for each archive. You do not need to copy these files.
+This command also puts an empty `.lock` file next to each Afterglow archive that it downloads. You do not need to copy these files.
 
 4. Copy the Afterglow and PlasmaZones directories into one parent directory on the build computer.
 

@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -290,10 +291,24 @@ private:
     bool m_protocolStaleReset = false; ///< GUI thread
     /// Posts @p command to m_protocolCommands and wakes deliverProtocolCommands.
     void postProtocolCommand(std::function<void()> command);
-    // The posted protocol commands that have not run. While one waits, the
-    // terminal's own reports wait behind it: a program reads a DA1 answer as
-    // the fence after the replies to what it wrote before the query.
+    /// GUI thread: runs a posted command, or parks it behind the replies
+    /// that file transfer still owes.
+    void runProtocolCommand(std::function<void()> command);
+    /// GUI thread: the file transfer worker wrote the replies of one command.
+    void endAnswerHold();
+    // The posted protocol commands that have not run, the parked ones, and
+    // the file transfer commands whose replies are not written. While one
+    // waits, the terminal's own reports wait behind it: a program reads a DA1
+    // answer as the fence after the replies to what it wrote before the query.
     std::atomic<std::size_t> m_protocolQueued{0};
+    // The reports that wait behind protocol commands. One posted closure
+    // writes each batch. A command posted after a batch closes it, and the
+    // next report starts a new one. The bytes count in m_protocolBytes.
+    std::shared_ptr<std::string> m_openReports; ///< guarded by m_mutex
+    // The file transfer commands whose replies the worker has not written.
+    // The commands posted after them wait in m_parkedCommands, in order.
+    int m_answerHolds = 0; ///< GUI thread
+    std::deque<std::function<void()>> m_parkedCommands; ///< GUI thread
     // Counts the posted protocol commands, so that a drag event can wait for
     // the program's answer without an event loop.
     std::mutex m_postedMutex;

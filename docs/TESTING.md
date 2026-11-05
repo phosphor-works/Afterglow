@@ -54,7 +54,7 @@ They need this software:
 - ImageMagick `import`, for the tests that take screenshots.
 - `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
 
-Each drag-and-drop test of the native window suite that uses a client runs two times: one time with `kitten dnd` and one time with `aglow dnd`.
+A drag-and-drop test of the native window suite that uses a client runs two times. It runs one time with `kitten dnd` and one time with `aglow dnd`.
 The Wayland file drop test (`NativeWaylandFileDrop`) uses no client. It runs one time.
 The `Aglow*` tests use the `aglow` of the build. In a build without `aglow`, they skip.
 
@@ -315,6 +315,10 @@ Two test suites have the name `Client`:
 The `Proto.Hostile.*` tests run the client against a hostile terminal that the test plays.
 Its listings try to write through links, to replace files outside the destination, and to send more data than they announce.
 
+The `TransferLimits.*` tests fill the descriptor limit of file transfers, which is half of the soft `RLIMIT_NOFILE`.
+CTest runs them as `afterglow_transfer_descriptor_limits`, with a soft limit of 64.
+In other runs, they report Skipped.
+
 CTest runs the relay tests below as `afterglow_transfer_kitten_relay` and `afterglow_transfer_aglow_relay`.
 `afterglow_transfer_kitten_relay` reports Skipped when `kitten` is not installed.
 With `AFTERGLOW_NATIVE_TESTS=ON`, CTest also runs the `--kitty` test as `afterglow_transfer_kitty`.
@@ -365,6 +369,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `aglow_version` | Checks the output of `aglow --version` | None |
 | `afterglow_runs_aglow`, `afterglow_passes_aglow_arguments`, `afterglow_passes_aglow_status` | Run `aglow` through `afterglow icat` and `afterglow transfer`, and check its usage text and exit status | None |
 | `afterglow_without_aglow` | Runs a copy of `afterglow` that has no `aglow` next to it, and checks the error and status 127 | None |
+| `afterglow_aglow_not_executable` | Runs a copy of `afterglow` next to an `aglow` that it cannot execute, and checks the error and status 126 | None |
 | `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
@@ -377,7 +382,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
-`aglow_icat_render` runs `aglow` and `afterglow_renderpng` without `TMUX`, so the test does not change the settings of a tmux that runs it.
+`aglow_icat_decode` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them. `aglow_icat_render` also runs `afterglow_renderpng` without it.
 It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 
 `aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.

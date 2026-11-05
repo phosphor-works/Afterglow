@@ -427,8 +427,19 @@ TEST(AglowTty, AKeyboardReplyWithoutTheFlagKeepsTheEscTimeout)
     EXPECT_EQ(terminal.wait(), 0);
 }
 
+// Stops @p terminal's program and lets it go on.
+static void stopAndContinue(PlayedTerminal& terminal)
+{
+    ::kill(terminal.pid, SIGSTOP);
+    int status = 0;
+    ASSERT_EQ(::waitpid(terminal.pid, &status, WUNTRACED), terminal.pid);
+    ASSERT_TRUE(WIFSTOPPED(status));
+    ::kill(terminal.pid, SIGCONT);
+}
+
 // After a stop, the modes that the shell may have changed come back, and
-// the command draws its screen again.
+// the command draws its screen again. The keyboard mode is set after the
+// resume, on the screen that it switches to, and no stop pushes it again.
 TEST(AglowTty, AContinueRestoresTheModesAndRedraws)
 {
     PlayedTerminal terminal;
@@ -438,12 +449,13 @@ TEST(AglowTty, AContinueRestoresTheModesAndRedraws)
         if (!tty.open(error)) {
             return 100;
         }
-        tty.enterModes("\x1b[22;2t\x1b[?1002h", "\x1b[?1002l\x1b[23;2t", "\x1b[?1002h");
-        const long long deadline = nowMs() + 5000;
+        tty.enterModes("\x1b[22;2t\x1b[?1049h\x1b[?1002h", "\x1b[?1002l\x1b[?1049l\x1b[23;2t", "\x1b[?1049h\x1b[?1002h");
+        int continues = 0;
+        const long long deadline = nowMs() + 8000;
         while (nowMs() < deadline) {
             std::vector<Input> inputs;
             tty.turn(50, inputs);
-            if (tty.takeResize()) {
+            if (tty.takeResize() && ++continues == 2) {
                 turnFor(tty, 200, inputs);
                 return 0;
             }
@@ -453,14 +465,152 @@ TEST(AglowTty, AContinueRestoresTheModesAndRedraws)
     ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
     terminal.say("\x1b[?62c");
     terminal.settle(100);
-    const auto before = terminal.output.size();
-    ::kill(terminal.pid, SIGSTOP);
-    int status = 0;
-    ASSERT_EQ(::waitpid(terminal.pid, &status, WUNTRACED), terminal.pid);
-    ASSERT_TRUE(WIFSTOPPED(status));
-    ::kill(terminal.pid, SIGCONT);
-    EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004h\x1b[=1;1u\x1b[?1002h", before) != std::string::npos; }));
-    // The title is pushed once: the reset pops it once.
-    EXPECT_EQ(terminal.count("\x1b[22;2t"), 1u);
+    constexpr std::string_view Resumed = "\x1b[?2004h\x1b[?1049h\x1b[?1002h\x1b[=1;1u";
+    for (int i = 0; i < 2; ++i) {
+        const auto before = terminal.output.size();
+        stopAndContinue(terminal);
+        EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find(Resumed, before) != std::string::npos; }));
+    }
     EXPECT_EQ(terminal.wait(), 0);
+    // The title and the keyboard mode are pushed once each: the reset pops
+    // them once each.
+    EXPECT_EQ(terminal.count("\x1b[22;2t"), 1u);
+    EXPECT_EQ(terminal.count("\x1b[>1u"), 2u);
+    EXPECT_EQ(terminal.count("\x1b[<u"), 2u);
+}
+
+// A continue while restore() waits for the drain sets no mode again: the
+// reset is out, and the modes would outlast the program.
+TEST(AglowTty, AContinueDuringTheRestoreSetsNoModes)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.enterModes("\x1b[?1002h", "\x1b[?1002l", "\x1b[?1002h");
+        tty.drainOnRestore();
+        std::vector<Input> inputs;
+        turnFor(tty, 200, inputs);
+        return tty.restore() ? 0 : 101;
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    terminal.say("\x1b[?62;1c");
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    const auto reset = terminal.output.find("\x1b[?2004l");
+    stopAndContinue(terminal);
+    terminal.settle(300);
+    terminal.say("\x1b[?62;2c");
+    EXPECT_EQ(terminal.wait(), 0);
+    EXPECT_EQ(terminal.output.find("\x1b[?2004h", reset), std::string::npos);
+    EXPECT_EQ(terminal.output.find("\x1b[=1;1u", reset), std::string::npos);
+    EXPECT_EQ(terminal.output.find("\x1b[?1002h", reset), std::string::npos);
+}
+
+// With drainOnRestore(), the drain reads past the replies to what was
+// written after the last query on its way, also when that query has no
+// answer yet: a terminal that sends them late does not type them into the
+// shell.
+TEST(AglowTty, TheDrainReadsPastOutputAfterTheLastQuery)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.drainOnRestore();
+        tty.queryAttributes();
+        // A cursor position report, which the terminal answers after the query.
+        tty.write("\x1b[6n");
+        if (!tty.restore()) {
+            return 101;
+        }
+        ::usleep(600 * 1000);
+        const int fd = ::open("/dev/tty", O_RDONLY | O_NOCTTY | O_CLOEXEC);
+        termios modes { };
+        ::tcgetattr(fd, &modes);
+        modes.c_lflag &= ~tcflag_t(ICANON);
+        ::tcsetattr(fd, TCSANOW, &modes);
+        int waiting = 0;
+        ::ioctl(fd, FIONREAD, &waiting);
+        return std::min(waiting, 99);
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    terminal.settle(100);
+    // The answers to the queries of the open and of the command, then the
+    // report a little later, then the answers to the queries after it.
+    terminal.say("\x1b[?62;1c\x1b[?62;2c");
+    terminal.settle(300);
+    terminal.say("\x1b[1;1R");
+    const auto after = terminal.output.find("\x1b[6n");
+    ASSERT_NE(after, std::string::npos);
+    const auto fences = terminal.count(Da1, after);
+    EXPECT_GE(fences, 1u);
+    for (std::size_t i = 0; i < fences; ++i) {
+        terminal.say("\x1b[?62;" + std::to_string(i + 3) + "c");
+    }
+    EXPECT_EQ(terminal.wait(), 0);
+}
+
+// A Tty that opens again after a drain that gave up starts with no query
+// and no resume of the last session: the next answers go to their own
+// queries, and restore() waits for no query of the last session.
+TEST(AglowTty, AReopenStartsWithoutTheLastSession)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.enterModes("", "", "\x1b[?1002h");
+        tty.queryAttributes();
+        std::vector<Input> inputs;
+        // Past the wait for the command's query, which gets no answer.
+        turnFor(tty, 2100, inputs);
+        tty.restore();
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.queryAttributes();
+        std::vector<std::string> answers;
+        const long long deadline = nowMs() + 5000;
+        bool continued = false;
+        while (!continued && nowMs() < deadline) {
+            inputs.clear();
+            tty.turn(50, inputs);
+            for (const auto& input : inputs) {
+                if (isDa1Answer(input)) {
+                    answers.push_back(input.data);
+                }
+            }
+            continued = tty.takeResize();
+        }
+        turnFor(tty, 200, inputs);
+        const long long start = nowMs();
+        tty.restore();
+        if (!continued) {
+            return 1;
+        }
+        if (answers != std::vector<std::string> { "?62;2c" }) {
+            return 2;
+        }
+        return nowMs() - start < 1000 ? 0 : 3;
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 2; }));
+    terminal.say("\x1b[?62;1c");
+    // The second open, and its command's query.
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 4; }));
+    terminal.say("\x1b[?62;1c\x1b[?62;2c");
+    terminal.settle(100);
+    const auto before = terminal.output.size();
+    stopAndContinue(terminal);
+    EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[=1;1u", before) != std::string::npos; }));
+    EXPECT_EQ(terminal.wait(), 0);
+    EXPECT_EQ(terminal.output.find("\x1b[?1002h", before), std::string::npos);
 }

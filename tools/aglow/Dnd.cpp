@@ -49,7 +49,8 @@ constexpr int MoveOnDrop = 2;
 constexpr std::size_t MaxInFlight = 32;
 // Directory handles that a remote drop keeps open in the terminal, with the
 // reads in flight, each of which can open one. Afterglow refuses a read
-// with ENOMEM past 256. A tree deeper than this leaves out what is below.
+// with ENOMEM past 256. A tree that keeps more directories open than this
+// leaves out what is below them.
 constexpr std::size_t MaxOpenHandles = 192;
 constexpr std::size_t MaxPreSent = 64 * 1024 * 1024;
 constexpr std::size_t WriteAhead = 256 * 1024;
@@ -107,8 +108,8 @@ const Cli::Command command {
           "question." },
         { "--confirm-drop-timeout", Cli::Option::Kind::Float, "20", {},
           "The seconds that the question of --confirm-drop-overwrite waits for an answer, counted from the last "
-          "message of the drop. Then the drop is canceled. Afterglow stops waiting for a drop after 30 seconds "
-          "without a message from aglow, and the time that aglow takes to copy the files counts too.",
+          "message of the drop, so the time that aglow takes to copy the files counts too. Then the drop is "
+          "canceled. Afterglow stops waiting for a drop after 30 seconds without a message from aglow.",
           1, 25 },
         { "--drop-anywhere", Cli::Option::Kind::Choice, "disallowed", { "disallowed", "copy", "move" },
           "Accept drops anywhere in the window, not only on the Copy and Move boxes, with this action." },
@@ -704,10 +705,11 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
             return ok;
         };
         if (renameError == EXDEV) {
-            // A mount point inside the drop directory. A directory that is
-            // there takes the entries one by one. Anything else is copied
-            // next to its place, on that file system, and renamed into it:
-            // it replaces a file as the rename would have.
+            // @p to is on another file system: the merge went into a mount
+            // point or a btrfs subvolume inside the drop directory. A
+            // directory that is there takes the entries one by one. Anything
+            // else is copied next to its place, on that file system, and
+            // renamed into it: it replaces a file as the rename would have.
             struct stat existing { };
             if (S_ISDIR(st.st_mode) && ::fstatat(to, name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0
                 && S_ISDIR(existing.st_mode)) {
@@ -738,7 +740,10 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
             removeTree(fromPath + "/" + name);
             continue;
         }
-        if (S_ISDIR(st.st_mode) && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR)) {
+        // EBUSY: the directory there is a mount point, which no rename
+        // replaces. The merge goes into it, where each entry gets EXDEV.
+        if (S_ISDIR(st.st_mode)
+            && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR || renameError == EBUSY)) {
             if (!merge()) {
                 return false;
             }
@@ -2260,10 +2265,12 @@ int Dnd::run()
     // The alternate screen, no wrapping, no cursor, and mouse reports, so
     // that a press starts no selection in the terminal. The title goes back
     // to the one before. After a stop, the modes come back without a second
-    // title push and screen switch, which the reset would not undo.
+    // title push, which the reset would not undo. The alternate screen comes
+    // back too: a full-screen program that ran during the stop left the main
+    // screen on, and each screen has a keyboard mode stack of its own.
     m_tty.enterModes("\x1b[22;2t\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\",
                      "\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?7h\x1b[?1049l\x1b[23;2t",
-                     "\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\");
+                     "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\");
     // Chunks of a read can still be on their way when the program ends.
     m_tty.drainOnRestore();
     // A terminal that answers DA1 before the query has no drag and drop.

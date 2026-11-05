@@ -79,9 +79,18 @@ These cases give that error:
 - The file holds less data than `s` × `v` raw pixels.
 - The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
 
-A read that takes the pane over its image work budget gives the error `EBUSY:too much image data read, try again later`.
+Each screen of a pane has an image work budget. The main screen and the alternate screen each have their own budget.
 The budget is 1 GiB, and it fills again at 1 GiB each second.
-Afterglow also deletes the temporary file or the shared memory object in this case, by the rules above.
+
+| Work over the budget | Error |
+| --- | --- |
+| A read from a file (`t=f`), a temporary file (`t=t`) or shared memory (`t=s`) | `EBUSY:too much image data read` |
+| A frame edit (`a=f`, `a=c`) | `EBUSY:too much frame editing` |
+
+The error ends with `, try again later` when the program can send the same command again.
+For `t=t` and `t=s`, the error does not end so.
+Afterglow deletes that temporary file or shared memory object by the rules above.
+A command that tries again with the same name gets `EBADF:failed to read image file`.
 
 Afterglow reads the file in the thread that reads the program's output.
 While a read waits, for example on a network mount that does not answer, the pane does not change.

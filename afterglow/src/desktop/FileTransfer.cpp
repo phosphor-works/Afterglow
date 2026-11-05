@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QLoggingCategory>
 #include <QMutex>
+#include <QScopeGuard>
 #include <QSet>
 #include <QTemporaryFile>
 #include <QThread>
@@ -442,6 +443,10 @@ struct FileTransfer::Worker {
     };
     std::deque<Packet> outgoing;
     qsizetype outgoingBytes = 0;
+    // The packets queued and delivered (or dropped) so far, and for each
+    // handled command that waits for answered(), the packets queued before it.
+    quint64 queuedPackets = 0, deliveredPackets = 0;
+    std::deque<quint64> fences;
     QTimer* timer = nullptr;
     bool overflow = false;
     explicit Worker(FileTransfer* o)
@@ -494,7 +499,9 @@ struct FileTransfer::Worker {
                 }
                 wake();
             });
+            ++deliveredPackets;
         }
+        answer();
         // A slow reader (SSH) leaves input waiting in the PTY. Ask again until it drains.
         if (!outgoing.empty() && backlogBytes.load() >= MaxInputBacklog && !backlogQueried.exchange(true))
             QMetaObject::invokeMethod(owner, [this] {
@@ -509,6 +516,23 @@ struct FileTransfer::Worker {
             timer->start(BacklogPollMs);
         else if (timer->interval() != 1)
             timer->start(1);
+    }
+    // answered() for the commands whose packets are delivered. Posted to the
+    // owner after those packets, so it runs after their reply().
+    void answer()
+    {
+        while (!fences.empty() && fences.front() <= deliveredPackets) {
+            fences.pop_front();
+            QMetaObject::invokeMethod(owner, [o = owner] { Q_EMIT o->answered(); });
+        }
+    }
+    // Drops what waits for delivery. The commands that wait for it are answered.
+    void clearOutgoing()
+    {
+        outgoing.clear();
+        outgoingBytes = 0;
+        deliveredPackets = queuedPackets;
+        answer();
     }
     // From any thread: deliver() runs again soon.
     void wake()
@@ -553,8 +577,7 @@ struct FileTransfer::Worker {
                 [this, epoch = clearedEpoch] {
                     if (clearedEpoch != epoch)
                         return;
-                    outgoing.clear();
-                    outgoingBytes = 0;
+                    clearOutgoing();
                     overflow = false;
                     for (auto& [id, session] : sessions)
                         status(*session, { }, "ENOMEM");
@@ -569,9 +592,11 @@ struct FileTransfer::Worker {
             && outgoing.back().fid == packet.fid) {
             outgoingBytes -= outgoing.back().bytes.size();
             outgoing.pop_back();
+            --queuedPackets;
         }
         outgoingBytes += bytes.size();
         outgoing.push_back(std::move(packet));
+        ++queuedPackets;
         if (timer && !timer->isActive())
             timer->start(1);
     }
@@ -582,8 +607,11 @@ struct FileTransfer::Worker {
             // Written to the PTY now, it would reach the shell as typed input.
             if (!success) {
                 auto& [count, first] = s.finishFailures[bytesOf(status)];
-                if (count++ == 0)
-                    first = file;
+                if (count++ == 0) {
+                    const auto known = s.files.find(file);
+                    first = known != s.files.end() && !known->second->path.isEmpty()
+                        ? shown(known->second->path).toUtf8() : file;
+                }
             }
             return;
         }
@@ -696,6 +724,15 @@ FileTransfer::FileTransfer(QObject* parent)
 FileTransfer::~FileTransfer() = default;
 void FileTransfer::handle(const QByteArray& command)
 {
+    Q_EMIT answering();
+    // Posted after the work of the command, on every path: the worker answers
+    // once the packets that the work queued are delivered.
+    const auto fence = qScopeGuard([w = m_worker.get()] {
+        QMetaObject::invokeMethod(w->context, [w] {
+            w->fences.push_back(w->queuedPackets);
+            w->answer();
+        });
+    });
     if (command.size() > MaxCommand) {
         abort();
         return;
@@ -731,8 +768,7 @@ void FileTransfer::reset()
 {
     const auto epoch = m_worker->resetEpoch.fetch_add(1) + 1;
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), epoch] {
-        w->outgoing.clear();
-        w->outgoingBytes = 0;
+        w->clearOutgoing();
         w->overflow = false;
         w->clearedEpoch = epoch;
         while (!w->sessions.empty())
@@ -743,8 +779,7 @@ void FileTransfer::abort()
 {
     const auto epoch = m_worker->resetEpoch.fetch_add(1) + 1;
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), epoch] {
-        w->outgoing.clear();
-        w->outgoingBytes = 0;
+        w->clearOutgoing();
         w->overflow = false;
         w->clearedEpoch = epoch;
         for (auto& [id, session] : w->sessions)
@@ -1387,9 +1422,9 @@ void FileTransfer::Worker::list(Session& s)
         struct stat st { };
         const auto path = QFile::encodeName(entry.path);
         // A status names the request, and a client fails the whole source on
-        // it. A child that cannot be listed is left out instead: one that
-        // went away since its directory was read, or whose name is not UTF-8
-        // (QDirIterator decodes it, and the decoded name does not exist).
+        // it. A child that went away since its directory was read is left out
+        // instead. A child whose name is not UTF-8 never gets here:
+        // QDirIterator skips it without a word, so it is not counted either.
         if (::lstat(path.constData(), &st)) {
             if (entry.depth > 0) {
                 if (leftOut.count++ == 0) {

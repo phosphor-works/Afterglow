@@ -112,7 +112,9 @@ public:
     /// turn them off (@p reset). restore() writes @p reset, also when the
     /// command ends with an exception. After a stop, the shell may have
     /// changed modes: @p resume turns those of @p set back on that a second
-    /// write of @p set would change otherwise (a title push, a saved cursor).
+    /// write of @p set would change otherwise (a title push). The keyboard
+    /// mode is set after @p resume, so that it goes to the stack of the
+    /// screen that @p resume switches to.
     void enterModes(std::string_view set, std::string reset, std::string resume = {});
     /// The bytes queued and not written yet.
     std::size_t pending() const { return m_out.size() - m_outAt; }
@@ -123,11 +125,12 @@ public:
     /// Takes an OSC 52 reply as large as a clipboard write (OSC 5522's
     /// limit, in base64). Without it, every escape code stops at 1 MiB.
     void allowClipboardReply();
-    /// restore() asks the terminal for its attributes and reads up to the
-    /// answer: the replies that are still on their way are read, not typed
-    /// into the shell. For a command whose terminal may still be sending.
-    /// restore() always reads up to the answers of the DA1 queries that
-    /// have none yet.
+    /// restore() asks the terminal for its attributes after all other
+    /// output and reads up to the answer: the replies that are still on
+    /// their way are read, not typed into the shell. For a command whose
+    /// terminal may still be sending. Without it, restore() reads up to the
+    /// answers of the DA1 queries that have none yet. It holds until
+    /// restore(): a Tty that opens again starts without it.
     void drainOnRestore() { m_drain = true; }
     winsize size() const;
     /// Catches SIGINT, SIGTERM, SIGHUP and SIGWINCH without a terminal in
@@ -160,6 +163,9 @@ private:
     int m_fd = -1;
     bool m_raw = false;
     bool m_drain = false;
+    /// restore() runs: a continue sets the raw modes again, and the modes
+    /// of the command stay off.
+    bool m_restoring = false;
     /// A DA1 query that has no answer yet. The terminal answers in order.
     struct Query
     {

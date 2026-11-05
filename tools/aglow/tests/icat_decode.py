@@ -191,6 +191,15 @@ def children(pid):
     return found
 
 
+def limits(pid):
+    """The lines of /proc/PID/limits that the decoder child sets, or None when PID is gone."""
+    try:
+        lines = Path(f"/proc/{pid}/limits").read_text().splitlines()
+    except OSError:
+        return None
+    return [line for line in lines if line.startswith(("Max cpu time", "Max address space"))]
+
+
 def alive(pid):
     """Whether PID runs or is stopped: not a zombie, and not gone."""
     try:
@@ -416,6 +425,9 @@ def main():
                 code, out, err = run(aglow, tree)
                 check(code == 1 and len(transmissions(out)) == 1 and "closed" in err, code, err)
                 print("a subdirectory that cannot be read: passed", flush=True)
+            else:
+                print("a subdirectory that cannot be read: skipped, this user reads a directory of mode 0",
+                      flush=True)
         finally:
             os.chmod(tree / "closed", 0o755)
 
@@ -430,11 +442,18 @@ def main():
                                        env=ENVIRONMENT)
             decoder = None
             try:
+                # The child sets its limits after PR_SET_PDEATHSIG. Stopped before that, it would not go
+                # with a killed aglow: wait until its limits differ from those of aglow.
                 deadline = time.monotonic() + 30
                 while decoder is None and process.poll() is None and time.monotonic() < deadline:
                     found = children(process.pid)
-                    decoder = found[0] if found else None
-                check(decoder is not None, "no decoder child")
+                    if found:
+                        own = limits(found[0])
+                        if own is not None and own != limits(process.pid):
+                            decoder = found[0]
+                    if decoder is None:
+                        time.sleep(0.005)
+                check(decoder is not None, "no decoder child that passed its setup")
                 os.kill(decoder, signal.SIGSTOP)
                 process.send_signal(stop)
                 code = process.wait(timeout=10)

@@ -27,7 +27,8 @@ constexpr std::size_t MaxEscape = 1024 * 1024;
 // A lone ESC is the Esc key when no byte follows it in this time.
 constexpr long long EscapeKeyMs = 50;
 // restore() waits this long for the terminal to take the queued output, and
-// then as long again for the reset and for the reply that ends the drain.
+// then as long again for the reset. Each DA1 query that has no answer yet
+// gets this long from when it was written.
 constexpr int RestoreMs = 2000;
 // Written bytes leave the queue in one move once there are this many and
 // they are at least half of it, so that each byte moves at most once.
@@ -457,6 +458,7 @@ bool Tty::restore()
     if (m_fd < 0) {
         return m_restored;
     }
+    m_restoring = true;
     bool ok = flush(RestoreMs);
     std::string reset;
     if (!ok) {
@@ -490,6 +492,12 @@ bool Tty::restore()
     }
     ::close(m_fd);
     m_fd = -1;
+    // A Tty that opens again starts a new session: the answers to queries
+    // that the drain gave up on would go to the queries of that one.
+    m_queries.clear();
+    m_resume.clear();
+    m_drain = false;
+    m_restoring = false;
     m_restored = ok;
     return ok;
 }
@@ -550,13 +558,19 @@ bool Tty::step(int timeoutMs, std::vector<Input>& inputs)
         }
     }
     // Back from a stop: the shell set its own modes meanwhile, and drew over
-    // the screen.
+    // the screen. During restore() the reset may be out already, and modes
+    // written after it would outlast the program: only the raw modes come
+    // back, so that the replies that the drain reads are not echoed.
     if (continued.exchange(false) && m_raw) {
         ::tcsetattr(m_fd, TCSANOW, &m_rawModes);
-        m_out += "\x1b[?2004h";
-        m_out += SetKeyboard;
-        m_out += m_resume;
-        resized = true;
+        if (!m_restoring) {
+            // The resume first: a screen switch in it takes the keyboard
+            // mode to the stack of that screen.
+            m_out += "\x1b[?2004h";
+            m_out += m_resume;
+            m_out += SetKeyboard;
+            resized = true;
+        }
     }
     if (fds[0].revents & POLLOUT) {
         const ssize_t n = ::write(m_fd, m_out.data() + m_outAt, pending());
@@ -620,10 +634,11 @@ bool Tty::flush(int timeoutMs)
 bool Tty::drain(int timeoutMs)
 {
     // The terminal answers in order: what it sent before the answer to the
-    // last DA1 query is read here, and dropped. Without a query on its way,
-    // one more marks the end.
+    // last DA1 query is read here, and dropped. A query after all output
+    // marks the end: without one, the replies to what was written after the
+    // last query on its way would reach the shell.
     m_kept.clear();
-    if (m_queries.empty()) {
+    if (m_drain || m_queries.empty()) {
         query(true);
     }
     const long long start = nowMs();

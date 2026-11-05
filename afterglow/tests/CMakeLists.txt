@@ -117,6 +117,11 @@ target_include_directories(afterglow_transfer_tests PRIVATE ../src)
 # against the protocol library it uses.
 target_link_libraries(afterglow_transfer_tests PRIVATE Qt6::Core Afterglow::Proto afterglow_zlib afterglow_xxhash GTest::gtest)
 gtest_discover_tests(afterglow_transfer_tests)
+# The TransferLimits tests reach the descriptor limit of transfers, half of
+# RLIMIT_NOFILE. They skip unless the soft limit is 64 or less.
+add_test(NAME afterglow_transfer_descriptor_limits
+    COMMAND sh -c "ulimit -n 64 && exec \"$0\" --gtest_filter='TransferLimits.*'" $<TARGET_FILE:afterglow_transfer_tests>)
+set_tests_properties(afterglow_transfer_descriptor_limits PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]" TIMEOUT 60)
 
 qt_add_executable(afterglow_dnd_tests DragDropTest.cpp ../src/desktop/DragDrop.cpp ../src/desktop/DragDrop.h)
 target_include_directories(afterglow_dnd_tests PRIVATE ../src)

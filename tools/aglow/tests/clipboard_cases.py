@@ -28,6 +28,23 @@ import clipboard_pty  # noqa: E402
 from clipboard_pty import b64, check, run  # noqa: E402
 
 
+# The numbers of open and openat, for a kernel that shows no wait channel.
+OPEN_SYSCALLS = {"x86_64": {"2", "257"}, "aarch64": {"56"}}.get(os.uname().machine, set())
+
+
+def blocked_in_open(pid):
+    """Whether PID waits in open() for the other end of a FIFO."""
+    try:
+        wchan = Path(f"/proc/{pid}/wchan").read_text().strip()
+        if wchan in ("wait_for_partner", "fifo_open"):
+            return True
+        if wchan not in ("", "0"):
+            return False
+        return Path(f"/proc/{pid}/syscall").read_text().split()[0] in OPEN_SYSCALLS
+    except (OSError, IndexError):
+        return False
+
+
 class ExtraReply:
     """os for clipboard_pty, with a DATA reply for text/html that the terminal adds to its list of types."""
 
@@ -96,20 +113,32 @@ def main():
         print("the list of types: passed", flush=True)
 
         # A FIFO without a reader: aglow waits in open(), as a shell redirection does, and Ctrl+C ends
-        # it. The terminal has long been restored when the signal comes.
+        # it. The terminal has been restored when aglow opens its output, so the signal comes only once
+        # aglow waits in that open().
         os.mkfifo(root / "fifo")
         fork = clipboard_pty.pty.fork
+        stop = threading.Event()
+        blocked = threading.Event()
+        watchers = []
 
-        def interrupt(pid):
-            try:
-                os.kill(pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
+        def interrupt_when_blocked(pid):
+            deadline = time.monotonic() + 8
+            while not stop.is_set() and time.monotonic() < deadline:
+                if blocked_in_open(pid):
+                    blocked.set()
+                    try:
+                        os.kill(pid, signal.SIGINT)
+                    except ProcessLookupError:
+                        pass
+                    return
+                stop.wait(0.01)
 
         def interrupt_later():
             pid, fd = fork()
             if pid:
-                threading.Timer(3, interrupt, (pid,)).start()
+                watcher = threading.Thread(target=interrupt_when_blocked, args=(pid,), daemon=True)
+                watchers.append(watcher)
+                watcher.start()
             return pid, fd
 
         clipboard_pty.pty.fork = interrupt_later
@@ -117,6 +146,10 @@ def main():
             code = run(aglow, ["--get-clipboard", "--mime", "text/plain", "fifo"], root, clipboard, timeout=10)
         finally:
             clipboard_pty.pty.fork = fork
+            stop.set()
+            for watcher in watchers:
+                watcher.join()
+        check(blocked.is_set(), "aglow never waited in open() of the FIFO")
         check(code == -signal.SIGINT, code)
         print("a FIFO without a reader: passed", flush=True)
 

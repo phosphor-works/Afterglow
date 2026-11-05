@@ -1554,7 +1554,8 @@ TEST(Graphics, IdWithNumberStillDeletesItsTemporaryMedium)
 TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
 {
     // A budget of one 1x1 image with no refill: the second read is refused
-    // as busy, not as a failure to read. The temporary file still goes.
+    // as busy, not as a failure to read. The temporary file still goes, so
+    // the reply does not ask for a retry with it.
     Store s(20, 5);
     s.g.setWorkBudget(4, 0);
     TempFile first("afterglow-tty-graphics-protocol-");
@@ -1563,9 +1564,16 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     ASSERT_TRUE(second.write("RGBA"));
     s.apc("a=t,t=t,f=32,s=1,v=1,i=1", base64Encode(first.path));
     s.apc("a=t,t=t,f=32,s=1,v=1,i=2", base64Encode(second.path));
-    EXPECT_EQ(s.host.written, "\x1b_Gi=1;OK\x1b\\\x1b_Gi=2;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1;OK\x1b\\\x1b_Gi=2;EBUSY:too much image data read\x1b\\");
     EXPECT_EQ(s.g.images().count(2), 0u);
     EXPECT_FALSE(std::filesystem::exists(second.path));
+    // A t=f file stays, and a retry can read it when the budget fills again.
+    TempFile kept("afterglow-graphics-busy-");
+    ASSERT_TRUE(kept.write("RGBA"));
+    s.host.written.clear();
+    s.apc("a=t,t=f,f=32,s=1,v=1,i=4", base64Encode(kept.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=4;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_TRUE(std::filesystem::exists(kept.path));
     // A file read and a shared memory read draw on the same budget.
     const ShmName shm{"/afterglow-graphics-busy-" + std::to_string(getpid())};
     const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
@@ -1574,7 +1582,31 @@ TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
     close(fd);
     s.host.written.clear();
     s.apc("a=t,t=s,f=32,s=1,v=1,i=3", base64Encode(shm.name));
-    EXPECT_EQ(s.host.written, "\x1b_Gi=3;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_EQ(s.host.written, "\x1b_Gi=3;EBUSY:too much image data read\x1b\\");
+}
+
+TEST(Graphics, FrameEditOverTheWorkBudgetIsBusy)
+{
+    // Frame edits draw on the work budget too. The reply asks for a retry
+    // only when the command can be sent again: a temporary file goes.
+    Store s(20, 5);
+    s.apc("a=t,f=32,s=1,v=1,i=1,q=2", base64Encode(rgba(1, 1, 255, 0, 0)));
+    s.apc("a=f,f=32,s=1,v=1,i=1,q=2", base64Encode(rgba(1, 1, 0, 0, 255)));
+    ASSERT_EQ(s.g.images().at(1).frames.size(), 2u);
+    s.g.setWorkBudget(0, 0);
+    s.host.written.clear();
+    s.apc("a=f,f=32,s=1,v=1,i=1", base64Encode(rgba(1, 1, 0, 255, 0)));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1,r=3;EBUSY:too much frame editing, try again later\x1b\\");
+    s.host.written.clear();
+    s.apc("a=c,i=1,r=1,c=2");
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1;EBUSY:too much frame editing, try again later\x1b\\");
+    TempFile file("afterglow-tty-graphics-protocol-");
+    ASSERT_TRUE(file.write("RGBA"));
+    s.host.written.clear();
+    s.apc("a=f,t=t,f=32,s=1,v=1,i=1", base64Encode(file.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1,r=3;EBUSY:too much frame editing\x1b\\");
+    EXPECT_FALSE(std::filesystem::exists(file.path));
+    EXPECT_EQ(s.g.images().at(1).frames.size(), 2u);
 }
 
 TEST(Graphics, RefusedCommandDeletesATemporaryFileByItsRealName)

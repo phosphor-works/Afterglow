@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <functional>
 #include <gtest/gtest.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <xxhash.h>
@@ -47,6 +48,11 @@ struct DesktopLog {
     {
         QMutexLocker lock(&mutex);
         return std::any_of(lines.begin(), lines.end(), [&](const QString& line) { return line.contains(text); });
+    }
+    qsizetype count(const QString& text) const
+    {
+        QMutexLocker lock(&mutex);
+        return std::count_if(lines.begin(), lines.end(), [&](const QString& line) { return line.contains(text); });
     }
 };
 bool waitFor(const std::function<bool()>& predicate)
@@ -518,6 +524,37 @@ TEST_F(Transfer, LinksThatNameEachOtherReportALoop)
     EXPECT_TRUE(log.contains(QStringLiteral("ENOENT")));
     EXPECT_FALSE(QFileInfo(dir.filePath(QStringLiteral("a"))).isSymLink());
 }
+TEST_F(Transfer, FailuresAtTheFinishAreLoggedInOneLine)
+{
+    ASSERT_TRUE(start());
+    for (int i = 0; i < 5; ++i) {
+        const QByteArray fid = "l" + QByteArray::number(i);
+        send("ac=file;fid=" + fid + ";ft=symlink;n=" + b64(dir.filePath(QString::fromLatin1(fid)).toUtf8()));
+        send("ac=end_data;fid=" + fid + ";d=" + b64("fid:missing"));
+    }
+    DesktopLog log;
+    ASSERT_TRUE(barrier());
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    ASSERT_TRUE(barrier());
+    EXPECT_EQ(log.count(QStringLiteral("failed at the finish")), 1);
+    EXPECT_TRUE(log.contains(QStringLiteral("ENOENT for 5 files")));
+}
+TEST_F(Transfer, AFailureAtTheFinishNamesThePathOfTheFile)
+{
+    // The fid is the client's name for the file. The log names the file.
+    ASSERT_TRUE(start());
+    send("ac=file;fid=clientfid;ft=symlink;n=" + path("dangling-link"));
+    send("ac=end_data;fid=clientfid;d=" + b64("fid:missing"));
+    DesktopLog log;
+    ASSERT_TRUE(barrier());
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    ASSERT_TRUE(barrier());
+    ASSERT_EQ(log.count(QStringLiteral("failed at the finish")), 1);
+    EXPECT_TRUE(log.contains(QStringLiteral("ENOENT for 1 file (") + dir.filePath(QStringLiteral("dangling-link")) + QLatin1Char(')')));
+    EXPECT_FALSE(log.contains(QStringLiteral("clientfid")));
+}
 TEST_F(Transfer, AnUploadIntoAnExistingDirectoryKeepsItsMode)
 {
     // ~/.config/nvim as a link to a directory: the upload goes in it, and
@@ -656,6 +693,37 @@ TEST_F(Transfer, AListingLeavesOutTheSpecialFilesOfADirectory)
     };
     EXPECT_TRUE(listed("tree/a"));
     EXPECT_FALSE(listed("tree/pipe"));
+}
+TEST_F(Transfer, ChildrenLeftOutOfAListingAreLoggedInOneLine)
+{
+    // A directory that can be read but not searched: the listing sees the
+    // names of its children, and lstat() of each one fails, as for children
+    // that went away since their directory was read.
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root searches any directory";
+    const QString locked = dir.filePath(QStringLiteral("tree/locked"));
+    ASSERT_TRUE(QDir().mkpath(locked));
+    for (const char* name : { "a", "b", "c" }) {
+        QFile file(locked + QLatin1Char('/') + QLatin1String(name));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    }
+    ASSERT_EQ(::chmod(QFile::encodeName(locked).constData(), 0400), 0);
+    // QTemporaryDir cannot remove the children of a directory that it cannot search.
+    struct Unlock {
+        QByteArray path;
+        ~Unlock() { ::chmod(path.constData(), 0700); }
+    } unlock { QFile::encodeName(locked) };
+    DesktopLog log;
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + path("tree"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(waitFor([&] {
+        return std::count_if(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("OK")); }) == 2;
+    }));
+    ASSERT_TRUE(barrier());
+    EXPECT_EQ(log.count(QStringLiteral("left out")), 1);
+    EXPECT_TRUE(log.contains(QStringLiteral("left out 3 entries")));
 }
 TEST_F(Transfer, RsyncCopyCannotWritePastTheDeclaredSize)
 {
@@ -902,6 +970,64 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
 // The client of afterglow-proto (aglow transfer) against this service, as
 // they talk through a terminal: each OSC 5113 sequence of one side reaches
 // the other side whole.
+// The descriptor limit of every pane's transfers is half of RLIMIT_NOFILE,
+// fixed at its first use. These tests reach it, so they run in a process with
+// a soft limit of 64 (afterglow_transfer_descriptor_limits), and skip in
+// another one.
+struct TransferLimits : Transfer {
+    std::size_t limit = 0;
+    void SetUp() override
+    {
+        rlimit nofile { };
+        if (::getrlimit(RLIMIT_NOFILE, &nofile) != 0 || nofile.rlim_cur > 64)
+            GTEST_SKIP() << "Needs a soft RLIMIT_NOFILE of 64 or less (ulimit -n 64)";
+        limit = std::max<std::size_t>(nofile.rlim_cur / 2, 16);
+        Transfer::SetUp();
+    }
+};
+TEST_F(TransferLimits, ADeltaUploadWithNoDescriptorForItsSignatureIsRefusedBeforeItStarts)
+{
+    // A delta upload holds its output, its basis and the signature stream.
+    QFile basis(dir.filePath(QStringLiteral("basis")));
+    ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
+    ASSERT_EQ(basis.write(QByteArray(8192, 'b')), 8192);
+    basis.close();
+    ASSERT_TRUE(start());
+    for (qsizetype i = 0; i < qsizetype(limit) - 2; ++i)
+        send("ac=file;fid=" + QByteArray::number(i) + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
+    ASSERT_TRUE(fileStatus(QByteArray::number(qsizetype(limit) - 3), "STARTED"));
+    send("ac=file;tt=rsync;fid=delta;n=" + path("basis"));
+    ASSERT_TRUE(fileStatus("delta", "EBUSY"));
+    ASSERT_TRUE(barrier());
+    // A refusal is the file's only status.
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(),
+        [](const auto& b) { return b.contains(";fid=delta;") && b.contains("st=" + b64("STARTED")); }));
+}
+TEST_F(TransferLimits, ADeltaReadAtTheLimitStreams)
+{
+    // The basis of a delta read becomes the descriptor of its stream.
+    QFile source(dir.filePath(QStringLiteral("source")));
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly));
+    ASSERT_EQ(source.write(QByteArray(8192, 's')), 8192);
+    source.close();
+    send("ac=receive;sz=1");
+    send("ac=file;fid=request;n=" + path("source"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    for (qsizetype i = 0; i < qsizetype(limit) - 1; ++i)
+        send("ac=file;tt=rsync;fid=r" + QByteArray::number(i) + ";n=" + path("source"));
+    send("ac=file;tt=rsync;fid=last;n=" + path("source"));
+    ASSERT_TRUE(barrier());
+    ASSERT_FALSE(std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("EBUSY")); }));
+    // A signature with no blocks: the delta is the whole file as literals.
+    QByteArray signature(12, '\0');
+    signature[8] = 64;
+    send("ac=end_data;fid=last;d=" + b64(signature));
+    ASSERT_TRUE(ended("last"));
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(),
+        [](const auto& b) { return b.contains(";fid=last;") && b.contains("st=" + b64("EBUSY")); }));
+}
 struct Client : Transfer {
     QByteArray noise(int size, quint32 seed)
     {
