@@ -5,5 +5,11 @@
   "state_version": 1,
   "entry": "main",
   "modules": {"main": "init.luau", "projects": "projects.luau"},
-  "config": {"interval_seconds": 60}
+  "config": {"interval_seconds": 60},
+  "commands": {
+    "save": {"summary": "Save the window's project now", "usage": "[NAME]", "palette": "Save project now"},
+    "enable": {"summary": "Autosave the window's saved project", "palette": "Enable autosave for this saved project"},
+    "disable": {"summary": "Stop autosaving the window's project", "palette": "Disable autosave for this saved project"},
+    "restore": {"summary": "Choose an autosaved project and open it", "palette": "Restore an autosaved project"}
+  }
 }

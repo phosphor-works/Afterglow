@@ -14,8 +14,8 @@ class IpcRouter;
 namespace Afterglow {
 
 /// The process's Unix socket: one phosphor-ipc router for launches (target
-/// "launch") and external control (target "control"). Only the user can open
-/// it.
+/// "launch"), external control (target "control") and the commands of
+/// scripts (target "commands", CommandSocket). Only the user can open it.
 ///
 /// The main process of a Wayland display listens on sharedPath(). A process
 /// that runs on its own (-o, --config, --class, another build) listens on

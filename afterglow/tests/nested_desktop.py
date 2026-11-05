@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -39,6 +40,92 @@ def check(condition, *detail):
     not turn the checks off, or skip the X calls that some checks make."""
     if not condition:
         raise AssertionError(*detail)
+
+
+def run_on_private_bus(argv, timeout):
+    """Runs ARGV under dbus-run-session, so that the nested KWin does not join the user's session bus, and returns
+    its exit status. The run has a process group of its own. At the time limit or an interrupt, SIGTERM goes to the
+    whole group, so that the harness stops KWin and Afterglow and removes what it made (exit_on_sigterm). SIGKILL
+    follows for what is left 15 s later."""
+    process = subprocess.Popen(["dbus-run-session", "--", *map(str, argv)], start_new_session=True)
+    try:
+        return process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print(f"Timed out after {timeout} s", file=sys.stderr)
+        code = 124
+    except KeyboardInterrupt:
+        code = 128 + signal.SIGINT
+    deadline = time.monotonic() + 15
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            break
+        # The group lives on in the harness's children after dbus-run-session ends.
+        while time.monotonic() < deadline:
+            # A zombie is still in its group: reap dbus-run-session, or the group never empties.
+            process.poll()
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        deadline = time.monotonic() + 5
+    process.wait()
+    return code
+
+
+def exit_on_sigterm():
+    """Makes SIGTERM end the harness by SystemExit, so that its finally blocks and with statements stop KWin and
+    Afterglow and remove the temporary files. Python's default for SIGTERM ends the process at once. The process
+    that run_on_private_bus starts calls this first."""
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
+
+
+# A package for harnesses that read the scene and shader state of a pane. `afterglow run --pane N inspect read`
+# saves both in the package's state file and returns after the write.
+INSPECT_PACKAGE = {"id": "inspect", "version": "1.0.0", "api_version": 1, "state_version": 1, "entry": "main",
+                   "modules": {"main": "init.luau"},
+                   "commands": {"read": {"summary": "Save the scene and shader state of the pane"}}}
+INSPECT_MODULE = '''
+local revision=0
+local function fail(ev,err) return {afterglow.output_error(ev,err.message.."\\n"),afterglow.exit(ev,1)} end
+return {
+ on_load=function(ev) revision=ev.storage.revision end,
+ run_command=function(_,ev)
+  local result,err=afterglow.await(afterglow.scene_state(ev.pane))
+  if not result then return fail(ev,err) end
+  local active,problem=afterglow.await(afterglow.shaders(ev.pane))
+  if not active then return fail(ev,problem) end
+  result.shaders=active.shaders
+  local saved,failure=afterglow.await(afterglow.state_write(result,revision))
+  if not saved then return fail(ev,failure) end
+  revision=saved.revision
+ end,
+}
+'''
+
+
+def install_inspector(config):
+    """Installs the inspect package in the Afterglow configuration directory CONFIG. Returns a function of a run
+    function and a pane that reads the pane's state: a dict with "scene" and "shaders"."""
+    package = Path(config) / "scripts/inspect"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps(INSPECT_PACKAGE))
+    (package / "init.luau").write_text(INSPECT_MODULE)
+    state = Path(config) / "state/scripts/inspect.json"
+    # A read applies three effects, and a script applies at most 20 in any second (ScriptHost::MaxEffectsPerSecond):
+    # back-to-back reads would get their state_write dropped. Five reads that start in one second, and all three
+    # effects of the read before them, make 18.
+    reads = []
+
+    def inspect(run, pane):
+        if len(reads) == 5:
+            time.sleep(max(0.0, reads.pop(0) + 1.0 - time.monotonic()))
+        reads.append(time.monotonic())
+        run("--pane", pane, "inspect", "read")
+        return json.loads(state.read_text())["value"]
+    return inspect
 
 
 def wait_for(condition, timeout=10):
@@ -295,7 +382,7 @@ class NestedDesktop:
 
 
 class Session:
-    """One Afterglow application in a nested desktop, driven through `afterglow ctl`."""
+    """One Afterglow application in a nested desktop, driven through `afterglow ctl` and `afterglow run`."""
 
     def __init__(self, binary, env, log_path):
         self.binary, self.env, self.log_path = binary, env, log_path
@@ -341,9 +428,9 @@ class Session:
         self.log.flush()
         return self.log_path.read_text(errors="replace")[-size:]
 
-    def ctl(self, *args):
+    def ctl(self, *args, timeout=5):
         return subprocess.check_output([self.binary, "ctl", *map(str, args)], env=self.env,
-                                       stderr=subprocess.PIPE, text=True, timeout=5).strip()
+                                       stderr=subprocess.PIPE, text=True, timeout=timeout).strip()
 
     def failing_ctl(self, *args):
         """Runs a ctl command that must fail, and returns its error text."""
@@ -351,6 +438,15 @@ class Session:
                                 capture_output=True, text=True, timeout=5)
         check(result.returncode != 0, f"ctl {args} succeeded: {result.stdout}")
         return result.stderr
+
+    def run(self, *args, check_status=True, timeout=20):
+        """Runs `afterglow run ARGS`, a script command, and returns its result.
+        Its stdin is empty, so a command never waits for input."""
+        result = subprocess.run([self.binary, "run", *map(str, args)], env=self.env, input="",
+                                capture_output=True, text=True, timeout=timeout)
+        if check_status:
+            check(result.returncode == 0, f"run {args} exited {result.returncode}: {result.stderr}")
+        return result
 
     def panes(self):
         return json.loads(self.ctl("ls", "--json"))

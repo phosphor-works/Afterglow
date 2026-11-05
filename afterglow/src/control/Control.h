@@ -53,17 +53,19 @@ class Control : public QObject
 public:
     enum class TextScope { Screen, Scrollback, Selection, LastOutput };
     using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
-    /// Runs a script action ("<script id>.<action id>"); false if there is none.
-    using ScriptActionRunner = std::function<bool(const QString& action, quint32 pane)>;
+    /// Starts a script command ("<script id>.<command>") with no arguments and
+    /// no client, from @p source (ev.source). Returns an error, or empty.
+    using ScriptCommandRunner = std::function<QString(const QString& command, quint32 pane, const QString& source)>;
 
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
-    void setScriptActionRunner(ScriptActionRunner runner) { m_scriptActions = std::move(runner); }
+    void setScriptCommandRunner(ScriptCommandRunner runner) { m_scriptCommands = std::move(runner); }
 
     QList<PaneInfo> panes() const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
+    bool hasPane(quint32 id) const { return find(id); }
     /// The focused pane of the active window, else of the window that was
     /// active last: `afterglow ctl` run from another program's window.
     std::optional<quint32> focusedPane() const;
@@ -85,10 +87,13 @@ public:
     QString sendText(quint32 pane, const QString& text);
     /// Honours Control.allowReadText.
     QString readText(quint32 pane, TextScope scope, QString& out);
-    /// Bounded script query, subject to Scripts.allowReadText.
-    QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result);
-    QString semanticRegions(quint32 pane, QVariantMap& result);
-    QString readRegion(quint32 pane, const QString& region, int limit, QVariantMap& result);
+    /// Bounded script query, subject to Scripts.allowReadText. With
+    /// @p clientRun, for a command run whose output goes to a client
+    /// (`afterglow run`, a socket call), also to Control.allowReadText: the
+    /// text would leave afterglow as control text does.
+    QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result, bool clientRun);
+    QString semanticRegions(quint32 pane, QVariantMap& result, bool clientRun);
+    QString readRegion(quint32 pane, const QString& region, int limit, QVariantMap& result, bool clientRun);
     QString split(quint32 pane, const QString& direction, const QStringList& command, const QVariantMap& options, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, quint32& created);
     QString newTab(quint32 pane, const QString& workingDirectory, const QStringList& command, const QVariantMap& options, quint32& created);
@@ -103,6 +108,14 @@ public:
     /// Validates the complete batch before updating the anchor's pane/tab/window.
     QString signalsBatch(quint32 pane, const QString& scope, const QVariantList& values, QVariantList& updated);
     QString notify(quint32 pane, const QString& title, const QString& body);
+    /// A script's notice (the end of a command run without a client) on
+    /// @p pane, or for the window when it is 0 or has closed. It counts
+    /// against Notifications.rateLimit: the pane's, or without a pane one
+    /// limit for all the notices without a pane.
+    void notice(quint32 pane, const QString& title, const QString& body);
+    /// From now on notice() shows nothing: the application quits, and what
+    /// quitting ends is no news.
+    void endNotices() { m_noticesEnded = true; }
     /// Refuses text longer than MaxCopyLength UTF-16 units.
     QString copy(const QString& text);
     static constexpr qsizetype MaxCopyLength = 1 << 22;
@@ -111,11 +124,15 @@ public:
     /// program opened the URL, which Qt cannot tell.
     QString openUrl(const QString& url);
     /// A keybind action by its config name (split_right, new_tab...), or a
-    /// script action as "script:<script id>.<action id>". A keybind action
+    /// script command as "script:<script id>.<command>", which starts with no
+    /// arguments and returns before the run ends. A keybind action
     /// shows the pane's tab first, except the tab actions that act on that
-    /// tab where it is (TerminalWindow::runAction).
+    /// tab where it is (TerminalWindow::runAction). A script command, as
+    /// for `afterglow run`, takes @p pane 0 for the focused pane, and runs
+    /// with no pane when none has the focus.
     QString runAction(quint32 pane, const QString& action);
-    /// runAction for a script: the actions that read pane text need Scripts.allowReadText.
+    /// runAction for a script: the actions that read pane text need
+    /// Scripts.allowReadText, and script commands are refused.
     QString runScriptAction(quint32 pane, const QString& action);
     /// copy, paste, select_all and show_last_output move pane text to the
     /// clipboard, into another pane or into a file, with no user step between.
@@ -139,9 +156,12 @@ public:
     /// move_tab_right actions.
     QString moveTab(quint32 pane, int index);
     void clearScriptOwner(const QString& owner);
+    /// Cancels the owner's dialogs whose request IDs start with @p prefix.
+    void closeScriptDialogs(const QString& owner, const QString& prefix);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
-    QString overview(quint32 pane, const QString& operation, QVariantMap& result);
+    /// The overview for @p owner's script: see TerminalWindow::scriptOverview.
+    QString overview(const QString& owner, quint32 pane, const QString& operation, QVariantMap& result);
     QString overviewMove(quint32 pane, quint32 target, int step, QVariantMap& result);
     QString pulse(quint32 pane, int effect, int durationMs, int color);
     /// Where a pane split from: {"split_from": pane ID, "edge": 1-4}, empty when it did not.
@@ -187,8 +207,9 @@ private:
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
-    ScriptActionRunner m_scriptActions;
+    ScriptCommandRunner m_scriptCommands;
     std::function<QVariantList()> m_scriptDiagnostics;
+    bool m_noticesEnded = false;
     QList<QPointer<TerminalWindow>> m_windows;
     QPointer<TerminalWindow> m_lastActive;
     QHash<quint32, QPair<quint32, quint32>> m_closingPanes;

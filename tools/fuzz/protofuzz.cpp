@@ -15,12 +15,16 @@
 //   5 clipboard replies, OSC 52 messages and clipboard requests
 //   6 zlib data, inflated whole with a limit and in steps
 //   7 the text checks that sanitize ids and names
+//   8 JSON for the phosphor-ipc client, written and read again, and the
+//     stdin parts of `afterglow run`
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
 #include <AfterglowProto/Delta.h>
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Json.h>
+#include <AfterglowProto/Run.h>
 #include <AfterglowProto/Text.h>
 #include <AfterglowProto/Transfer.h>
 #include <AfterglowProto/Zlib.h>
@@ -308,6 +312,52 @@ void text(std::string_view input)
     }
 }
 
+void json(std::string_view input)
+{
+    namespace Json = AfterglowProto::Json;
+    // A document that reads writes as JSON that reads as the same value.
+    if (const auto value = Json::parse(input)) {
+        const auto again = Json::parse(Json::write(*value));
+        if (!again || *again != *value) {
+            __builtin_trap();
+        }
+    }
+    // Any bytes as a string: JSON, of the size that its pieces add up to.
+    const std::string written = Json::write(Json::Value(input));
+    std::size_t size = 2;
+    std::size_t at = 0;
+    while (const std::size_t piece = Json::nextStringPiece(input, at)) {
+        size += piece;
+    }
+    if (at != input.size() || size != written.size() || !Json::parse(written)) {
+        __builtin_trap();
+    }
+    // A stdin part is a start of the input, under the limit once written,
+    // and ends on a piece: never inside a UTF-8 sequence. The input repeats
+    // past the part size, which -max_len keeps far below: each byte writes
+    // as one byte at least.
+    if (input.empty()) return;
+    std::string big;
+    while (big.size() <= AfterglowProto::Run::InputPartBytes + 4) big += input;
+    for (const bool eof : {false, true}) {
+        const std::size_t part = AfterglowProto::Run::inputPart(big, eof);
+        if (part == 0 || part > big.size()) {
+            __builtin_trap();
+        }
+        // The walk gives the written size too: two quotes and the pieces.
+        std::size_t end = 0;
+        std::size_t bytes = 2;
+        while (end < part) {
+            const std::size_t piece = Json::nextStringPiece(big, end);
+            if (!piece) break;
+            bytes += piece;
+        }
+        if (end != part || bytes > AfterglowProto::Run::InputPartBytes) {
+            __builtin_trap();
+        }
+    }
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -316,7 +366,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view input(reinterpret_cast<const char*>(data + 1), size - 1);
-    switch (data[0] % 8) {
+    switch (data[0] % 9) {
     case 0:
         transfer(input);
         break;
@@ -340,6 +390,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         break;
     case 7:
         text(input);
+        break;
+    case 8:
+        json(input);
         break;
     }
     return 0;

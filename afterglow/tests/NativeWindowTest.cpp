@@ -6,6 +6,7 @@
 #include "desktop/DragDrop.h"
 #include "desktop/FileTransfer.h"
 #include <QMessageBox>
+#include <optional>
 #include <QJsonArray>
 #include "chrome/ChromeController.h"
 #include "chrome/ChromeLayer.h"
@@ -195,6 +196,58 @@ const DockArea* paneDock(const Pane* pane, const char* id) {
         if (dock->id() == QLatin1String(id)) return dock.get();
     return nullptr;
 }
+void sendKey(TerminalWindow* window, int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
+             const QString& text = {}, bool autoRepeat = false) {
+    QKeyEvent down(QEvent::KeyPress, key, modifiers, text, autoRepeat);
+    QCoreApplication::sendEvent(window, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, modifiers, text, autoRepeat);
+    QCoreApplication::sendEvent(window, &up);
+}
+class NotificationServer : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.Notifications")
+public:
+    int count = 0, closes = 0;
+    uint next = 0;
+    QList<QSize> images;
+    QString appName, appIcon, desktopEntry;
+    QStringList titles;
+public Q_SLOTS:
+    uint Notify(const QString& name, uint replaces, const QString& icon, const QString& title, const QString&,
+                const QStringList&, const QVariantMap& hints, int) {
+        ++count;
+        titles.append(title);
+        appName = name;
+        appIcon = icon;
+        desktopEntry = hints.value(QStringLiteral("desktop-entry")).toString();
+        QSize size;
+        if (hints.contains(QStringLiteral("image-data"))) {
+            const auto arg = hints.value(QStringLiteral("image-data")).value<QDBusArgument>();
+            int width = 0, height = 0, stride = 0, bits = 0, channels = 0; bool alpha = false; QByteArray bytes;
+            arg.beginStructure(); arg >> width >> height >> stride >> alpha >> bits >> channels >> bytes; arg.endStructure();
+            size = {width, height};
+        }
+        images.append(size);
+        return replaces ? replaces : ++next;
+    }
+    void CloseNotification(uint) { ++closes; }
+};
+// A NotificationServer on the session bus, as the desktop's own would be.
+class RegisteredNotificationServer {
+public:
+    NotificationServer server;
+    bool registered = false;
+    RegisteredNotificationServer() {
+        auto bus = QDBusConnection::sessionBus();
+        registered = bus.registerService(QStringLiteral("org.freedesktop.Notifications"))
+            && bus.registerObject(QStringLiteral("/org/freedesktop/Notifications"), &server, QDBusConnection::ExportAllSlots);
+    }
+    ~RegisteredNotificationServer() {
+        auto bus = QDBusConnection::sessionBus();
+        bus.unregisterObject(QStringLiteral("/org/freedesktop/Notifications"));
+        bus.unregisterService(QStringLiteral("org.freedesktop.Notifications"));
+    }
+};
 // The dock events that windows send one script, in order.
 struct DockEvent {
     QString handler;
@@ -229,6 +282,21 @@ private:
     QString m_owner;
     QObject m_context;
 };
+// The settings of a test's Application, with @p overrides over them by
+// group. No cursor blink, so a window with nothing moving renders no frames.
+// No scripts, so that the scripts installed for the user do not run in the
+// tests: a test that needs scripts turns them on.
+QJsonObject testSettings(const QJsonObject& overrides = {}) {
+    QJsonObject settings{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}},
+                         {QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), false}}}};
+    for (auto group = overrides.begin(); group != overrides.end(); ++group) {
+        QJsonObject merged = settings.value(group.key()).toObject();
+        const QJsonObject values = group.value().toObject();
+        for (auto value = values.begin(); value != values.end(); ++value) merged.insert(value.key(), value.value());
+        settings.insert(group.key(), merged);
+    }
+    return settings;
+}
 class NativeWindow : public ::testing::Test {
 protected:
     QTemporaryDir directory;
@@ -237,12 +305,21 @@ protected:
     void SetUp() override {
         ASSERT_TRUE(directory.isValid());
         takeQmlErrors();
-        // No cursor blink, so a window with nothing moving renders no frames.
         application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")),
-            QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}},
-                        {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}}});
+            testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("paneTitles"), true}}}}));
+        openWindow({QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+    }
+    // Replaces the application with one that reads @p config beside the
+    // fixture's, with @p settings, and opens its window on @p command.
+    void restartApplication(const QString& config, const QJsonObject& settings, const QStringList& command) {
+        application.reset();
+        window = nullptr;
+        application = std::make_unique<Application>(testSocket(), directory.filePath(config), settings);
+        openWindow(command);
+    }
+    void openWindow(const QStringList& command) {
         WindowOptions options;
-        options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+        options.command = command;
         window = application->newWindow(options);
         ASSERT_NE(window, nullptr);
         window->resize(900, 600);
@@ -266,6 +343,7 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     auto* other = window->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
     // The tab bar takes the drag only once the chrome scene, made in the
     // background, exists and has drawn the two tabs. Before that the first
@@ -319,7 +397,7 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     application.reset();
     chrome = nullptr;
     application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("single-tab.conf")),
-        QJsonObject{{QStringLiteral("Window"), QJsonObject{{QStringLiteral("tabBar"), QStringLiteral("always")}}}});
+        testSettings({{QStringLiteral("Window"), QJsonObject{{QStringLiteral("tabBar"), QStringLiteral("always")}}}}));
     WindowOptions singleOptions;
     singleOptions.command = {QStringLiteral("/bin/cat")};
     window = application->newWindow(singleOptions);
@@ -351,9 +429,9 @@ TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     Application application(testSocket(), directory.filePath(QStringLiteral("mesh.conf")),
-        QJsonObject{{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("background"), GetParam() ? QJsonArray{QStringLiteral("mesh-reactor")} : QJsonArray{}}}},
-                    {QStringLiteral("Audio"), QJsonObject{{QStringLiteral("enabled"), false}}},
-                    {QStringLiteral("Window"), QJsonObject{{QStringLiteral("backgroundOpacity"), 0.9}}}});
+        testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("background"), GetParam() ? QJsonArray{QStringLiteral("mesh-reactor")} : QJsonArray{}}}},
+                      {QStringLiteral("Audio"), QJsonObject{{QStringLiteral("enabled"), false}}},
+                      {QStringLiteral("Window"), QJsonObject{{QStringLiteral("backgroundOpacity"), 0.9}}}}));
     WindowOptions options;
     options.command = {QStringLiteral("/bin/cat")};
     QPointer<TerminalWindow> source = application.newWindow(options);
@@ -485,6 +563,7 @@ TEST_F(NativeWindow, PasteConfirmationRetainsOriginalPane) {
     QGuiApplication::clipboard()->setText(QStringLiteral("original-pane-line-one\noriginal-pane-line-two\n"));
     ASSERT_TRUE(window->runAction(first, Action::Paste));
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(chrome->pasteConfirmOpen());
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
@@ -552,6 +631,7 @@ TEST_F(NativeWindow, ChromeTreatsTitlesAndMenuLabelsLiterally) {
     }
     EXPECT_GT(literalLabels, 0);
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     chrome->openContextMenu({10, 10}, {QVariantMap{{QStringLiteral("id"), 1}, {QStringLiteral("title"), title}, {QStringLiteral("icon"), QStringLiteral("document-open")}}});
     const auto menuRows = [&] {
         QList<QQuickItem*> rows;
@@ -591,6 +671,7 @@ TEST_F(NativeWindow, FocusUpdatesTabTitleAndRetiresPreviousSearch) {
     ASSERT_NE(second, nullptr);
     second->setUserTitle(QStringLiteral("second"));
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     window->revealPane(first);
     EXPECT_EQ(chrome->tabTitles().front(), QStringLiteral("first"));
     // Finish split layout before capturing a search epoch.
@@ -635,6 +716,7 @@ TEST_F(NativeWindow, SwapFailurePreservesZoomAndSuccessRestoresVisiblePanes) {
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
     ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     // The titles follow the next frame, which has no fixed time.
     ASSERT_TRUE(waitFor([&] { return chrome->paneTitles().size() == 1; }));
     const auto zoomed = window->accessiblePaneRect(first);
@@ -674,7 +756,9 @@ TEST_F(NativeWindow, RotationMovesLivePanesAndClearsZoom) {
     EXPECT_EQ(window->accessiblePaneRect(third), slots[0]);
     EXPECT_EQ(window->accessiblePaneRect(first), slots[1]);
     EXPECT_EQ(window->accessiblePaneRect(second), slots[2]);
-    EXPECT_TRUE(waitFor([&] { return window->findChild<ChromeController*>()->paneTitles().size() == 3; }));
+    auto* titles = window->findChild<ChromeController*>();
+    ASSERT_NE(titles, nullptr);
+    EXPECT_TRUE(waitFor([&] { return titles->paneTitles().size() == 3; }));
     EXPECT_EQ(window->focusedPane(), first);
     ASSERT_TRUE(window->runAction(first, Action::RotatePanesCounterclockwise));
     EXPECT_TRUE(waitFor([&] { return window->accessiblePaneRect(first) == slots[0]; }));
@@ -682,6 +766,7 @@ TEST_F(NativeWindow, RotationMovesLivePanesAndClearsZoom) {
 
 TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     QVariantList entries;
     for (int i = 0; i < 3; ++i)
         entries.append(QVariantMap{{QStringLiteral("id"), 40000 + i}, {QStringLiteral("title"), QString::number(i)}});
@@ -716,6 +801,7 @@ TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
             EXPECT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
         }
         auto* chrome = fresh->findChild<ChromeController*>();
+        ASSERT_NE(chrome, nullptr);
         if (kind == QLatin1String("title")) chrome->askTitle(QStringLiteral("Title"), QStringLiteral("existing title"));
         else if (kind == QLatin1String("palette")) chrome->setPaletteOpen(true);
         else if (kind == QLatin1String("search")) chrome->setSearchOpen(true);
@@ -787,7 +873,7 @@ TEST_F(NativeWindow, WindowsDeletedWhileTheirChromeLoadsLeaveTheNextChromeSound)
     // new application's load still runs.
     for (int i = 0; i < 8; ++i) delete application->newWindow(options);
     application.reset();
-    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")), QJsonObject{});
+    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("afterglow.conf")), testSettings());
     for (int i = 0; i < 8; ++i) delete application->newWindow(options);
     auto* fresh = application->newWindow(options);
     ASSERT_NE(fresh, nullptr);
@@ -876,6 +962,7 @@ TEST_F(NativeWindow, InputMethodQueriesFollowChromeEditor) {
 }
 TEST_F(NativeWindow, ChromeButtonsReceiveKeyReleases) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     chrome->setSearchOpen(true);
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
@@ -938,6 +1025,326 @@ struct AccessibleEvents {
         return int(std::count_if(events.cbegin(), events.cend(), [&](const Event& e) { return e.type == type && e.iface == iface; }));
     }
 };
+TEST_F(NativeWindow, AnEndedRunClosesOnlyItsOwnDialog) {
+    Pane* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    // Shared with the reply: after a failed check the test returns, and the
+    // window answers the dialog later, when the fixture closes it.
+    const auto answer = std::make_shared<std::optional<QString>>();
+    const QVariantMap prompt{{QStringLiteral("kind"), QStringLiteral("prompt")}, {QStringLiteral("title"), QStringLiteral("Name")},
+                             {QStringLiteral("request_id"), QStringLiteral("afterglow.await:31:1")}};
+    ASSERT_TRUE(window->showScriptDialog(QStringLiteral("a@1"), pane, prompt,
+                                         [answer](const QString& error, const QVariantMap&) { *answer = error; }).isEmpty());
+    ASSERT_TRUE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
+    // Another flow, one whose number starts with the same digit, and another
+    // owner leave it open.
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:4:"));
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:3:"));
+    window->closeScriptDialog(QStringLiteral("b@2"), QStringLiteral("afterglow.await:31:"));
+    EXPECT_FALSE(answer->has_value());
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:31:"));
+    ASSERT_TRUE(answer->has_value());
+    EXPECT_EQ(**answer, QStringLiteral("Dialog canceled"));
+    EXPECT_FALSE(chrome->scriptDialog().value(QStringLiteral("open")).toBool());
+}
+// Sends a press of @p key, @p repeats auto-repeats of it as a held key
+// sends them (release and press pairs), and its release.
+void holdKey(TerminalWindow* window, int key, Qt::KeyboardModifiers modifiers, const QString& text, int repeats) {
+    QKeyEvent down(QEvent::KeyPress, key, modifiers, text);
+    QCoreApplication::sendEvent(window, &down);
+    for (int i = 0; i < repeats; ++i) {
+        QKeyEvent up(QEvent::KeyRelease, key, modifiers, text, true);
+        QCoreApplication::sendEvent(window, &up);
+        QKeyEvent again(QEvent::KeyPress, key, modifiers, text, true);
+        QCoreApplication::sendEvent(window, &again);
+    }
+    QKeyEvent up(QEvent::KeyRelease, key, modifiers, text);
+    QCoreApplication::sendEvent(window, &up);
+}
+TEST_F(NativeWindow, PaletteMenuAndKeyRunScriptCommands) {
+    // A script beside the config: one command in the palette, one only for
+    // keys. Each run has its number, so that a run too many shows.
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/marker.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+local runs = 0
+return {
+    metadata = { commands = {
+        mark = { summary = "Title the pane", palette = "Mark this pane" },
+        keyed = { summary = "Not in the palette" },
+    } },
+    run_command = function(command, ev)
+        runs += 1
+        local run = runs
+        afterglow.sleep(1) -- what a run returns after a wait still applies
+        return { afterglow.set_title(ev.pane, command .. " " .. run .. " from " .. ev.source .. " with " .. #ev.args),
+                 afterglow.output(ev, "dropped") }
+    end,
+}
+)");
+    script.close();
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    // The fixture turns scripts off.
+    const QJsonObject marks{{QStringLiteral("script:marker.keyed"), QStringLiteral("K")},
+                            {QStringLiteral("script:marker.missing"), QStringLiteral("J")}};
+    restartApplication(QStringLiteral("commands.conf"),
+        testSettings({{QStringLiteral("Scripts"), QJsonObject{{QStringLiteral("enabled"), true}}},
+                      {QStringLiteral("Keybinds"), QJsonObject{
+                          {QStringLiteral("bindings"), QJsonObject{{QStringLiteral("script:marker.keyed"), QStringLiteral("Ctrl+Alt+M")},
+                                                                   {QStringLiteral("table:marks"), QStringLiteral("Ctrl+Alt+T")}}},
+                          {QStringLiteral("tables"), QJsonObject{{QStringLiteral("marks"), marks}}}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    // Two panes: each entry point names the pane it runs on.
+    Pane* first = window->focusedPane();
+    ASSERT_NE(first, nullptr);
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_EQ(window->focusedPane(), second);
+    const auto title = [](const QVariant& entry) { return entry.toMap().value(QStringLiteral("title")).toString(); };
+
+    // The palette lists only the command with a palette title, after the
+    // id of its script, and runs it on the focused pane.
+    const auto scriptEntries = [&] {
+        QVariantList found;
+        for (const QVariant& entry : chrome->actions())
+            if (title(entry).startsWith(QLatin1String("marker: "))) found.append(entry);
+        return found;
+    };
+    ASSERT_TRUE(waitFor([&] { return !scriptEntries().isEmpty(); }));
+    const QVariantList entries = scriptEntries();
+    ASSERT_EQ(entries.size(), 1);
+    EXPECT_EQ(title(entries[0]), QStringLiteral("marker: Mark this pane"));
+    chrome->runAction(entries[0].toMap().value(QStringLiteral("id")).toInt());
+    EXPECT_TRUE(waitFor([&] { return second->userTitle() == QLatin1String("mark 1 from palette with 0"); }))
+        << second->userTitle().toStdString();
+
+    // A key runs the command that the palette does not list: once for a
+    // press, also when the key is held and repeats.
+    holdKey(window, Qt::Key_M, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("m"), 4);
+    EXPECT_TRUE(waitFor([&] { return second->userTitle() == QLatin1String("keyed 2 from key with 0"); }))
+        << second->userTitle().toStdString();
+    // The runs that the repeats would start have had their time.
+    drain(200);
+    EXPECT_EQ(second->userTitle(), QStringLiteral("keyed 2 from key with 0"));
+
+    // A key table runs it too, also once for a held key.
+    sendKey(window, Qt::Key_T, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("t"));
+    holdKey(window, Qt::Key_K, Qt::NoModifier, QStringLiteral("k"), 4);
+    EXPECT_TRUE(waitFor([&] { return second->userTitle() == QLatin1String("keyed 3 from key with 0"); }))
+        << second->userTitle().toStdString();
+    drain(200);
+    EXPECT_EQ(second->userTitle(), QStringLiteral("keyed 3 from key with 0"));
+    // The table took the key of a command that no script has: the refusal
+    // shows, with the command's title.
+    sendKey(window, Qt::Key_J, Qt::NoModifier, QStringLiteral("j"));
+    EXPECT_TRUE(waitFor([&] { return notices.server.count >= 1; }));
+    EXPECT_EQ(notices.server.titles.value(0), QStringLiteral("Could not run marker missing"));
+    sendKey(window, Qt::Key_Escape);
+    EXPECT_TRUE(chrome->keyMode().isEmpty()) << chrome->keyMode().toStdString();
+    EXPECT_TRUE(first->userTitle().isEmpty()) << first->userTitle().toStdString();
+
+    // The context menu lists the palette command, alone, in its Scripts
+    // submenu. It runs on the pane that the menu opened on, also when the
+    // focus moved since.
+    window->openPaneMenu(first);
+    QVariantList scripts;
+    int submenus = 0;
+    for (const QVariant& item : chrome->contextMenu().value(QStringLiteral("items")).toList()) {
+        if (title(item) != QLatin1String("Scripts")) continue;
+        ++submenus;
+        scripts = item.toMap().value(QStringLiteral("items")).toList();
+    }
+    ASSERT_EQ(submenus, 1);
+    ASSERT_EQ(scripts.size(), 1);
+    EXPECT_EQ(title(scripts[0]), QStringLiteral("Mark this pane"));
+    window->revealPane(second);
+    chrome->activateMenuItem(scripts[0].toMap().value(QStringLiteral("id")).toInt());
+    EXPECT_TRUE(waitFor([&] { return first->userTitle() == QLatin1String("mark 4 from menu with 0"); }))
+        << first->userTitle().toStdString();
+    EXPECT_EQ(second->userTitle(), QStringLiteral("keyed 3 from key with 0"));
+
+    // The runs wrote only to stdout, which no client reads: no notice but
+    // the refusal.
+    ASSERT_TRUE(settleQueued());
+    drain(200);
+    EXPECT_EQ(notices.server.titles, QStringList{QStringLiteral("Could not run marker missing")});
+}
+TEST_F(NativeWindow, AnOpenPromptKeepsItsAnswerFromOutsideActionsAndChords) {
+    Pane* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    SettingsStore settings(directory.filePath(QStringLiteral("control.conf")));
+    Control control(settings, {});
+    control.attachWindow(window);
+    const auto chord = [&](int key) { sendKey(window, key, Qt::ControlModifier | Qt::ShiftModifier); };
+    // A paste that asks first.
+    QList<bool> pasted;
+    QObject listener;
+    QObject::connect(chrome, &ChromeController::pasteAnswered, &listener, [&](bool paste) { pasted << paste; });
+    QGuiApplication::clipboard()->setText(QStringLiteral("prompt-line-one\nprompt-line-two\n"));
+    ASSERT_TRUE(window->runAction(pane, Action::Paste));
+    ASSERT_TRUE(chrome->pasteConfirmOpen());
+    ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
+    // afterglow ctl and afterglow.action act as a key would: not now.
+    EXPECT_FALSE(window->runAction(pane, Action::SplitRight));
+    EXPECT_FALSE(control.runAction(pane->id(), QStringLiteral("split_right")).isEmpty());
+    EXPECT_FALSE(control.runAction(pane->id(), QStringLiteral("search")).isEmpty());
+    EXPECT_EQ(window->panes().size(), 1);
+    // The palette and search chords do not open over the prompt, where an
+    // action from the palette would answer for it.
+    chord(Qt::Key_P);
+    chord(Qt::Key_F);
+    EXPECT_FALSE(chrome->paletteOpen());
+    EXPECT_FALSE(chrome->searchOpen());
+    EXPECT_TRUE(chrome->pasteConfirmOpen());
+    EXPECT_TRUE(pasted.isEmpty());
+    chrome->answerPaste(false);
+    EXPECT_EQ(pasted, QList<bool>{false});
+    // With the prompt answered, they act again. Over the search, the
+    // palette chord opens and closes the palette.
+    EXPECT_TRUE(control.runAction(pane->id(), QStringLiteral("search")).isEmpty());
+    ASSERT_TRUE(chrome->searchOpen());
+    chord(Qt::Key_P);
+    EXPECT_TRUE(chrome->paletteOpen());
+    chord(Qt::Key_P);
+    EXPECT_FALSE(chrome->paletteOpen());
+    chrome->setSearchOpen(false);
+
+    // A script's dialog: the same.
+    const auto answer = std::make_shared<std::optional<QString>>();
+    const QVariantMap prompt{{QStringLiteral("kind"), QStringLiteral("prompt")}, {QStringLiteral("title"), QStringLiteral("Name")},
+                             {QStringLiteral("request_id"), QStringLiteral("afterglow.await:1:1")}};
+    ASSERT_TRUE(window->showScriptDialog(QStringLiteral("a@1"), pane, prompt,
+                                         [answer](const QString& error, const QVariantMap&) { *answer = error; }).isEmpty());
+    EXPECT_FALSE(window->runAction(pane, Action::NewTab));
+    EXPECT_EQ(window->tabs().size(), 1u);
+    chord(Qt::Key_P);
+    EXPECT_FALSE(chrome->paletteOpen());
+    EXPECT_FALSE(answer->has_value());
+    window->closeScriptDialog(QStringLiteral("a@1"), QStringLiteral("afterglow.await:1:"));
+    ASSERT_TRUE(answer->has_value());
+
+    // A close that asks first keeps its question: the window's own close,
+    // which would ask too, does not take over the answer.
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/cat")};
+    Pane* background = window->openTab(launch, nullptr);
+    ASSERT_NE(background, nullptr);
+    window->revealPane(pane);
+    const quint32 backgroundTab = window->tabIdOf(background);
+    ASSERT_TRUE(window->runAction(background, Action::CloseTab));
+    ASSERT_TRUE(chrome->confirmPromptOpen());
+    const QString heading = chrome->confirmPrompt().value(QStringLiteral("heading")).toString();
+    QPointer<TerminalWindow> alive = window;
+    QCloseEvent close;
+    QCoreApplication::sendEvent(window, &close);
+    EXPECT_TRUE(chrome->confirmPromptOpen());
+    EXPECT_EQ(chrome->confirmPrompt().value(QStringLiteral("heading")).toString(), heading);
+    EXPECT_FALSE(window->runAction(pane, Action::CloseWindow));
+    chrome->answerConfirm(true);
+    ASSERT_TRUE(waitFor([&] { return window->tabs().size() == 1u; }));
+    EXPECT_NE(window->tabs()[0].id, backgroundTab);
+    ASSERT_TRUE(settleQueued());
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    EXPECT_FALSE(alive.isNull());
+}
+TEST_F(NativeWindow, AWindowWhoseOnlyPaneClosesGoesAfterThePaneAndItsDock) {
+    // The last tab's panes go with deleteLater before their window does.
+    // The window must not reach them through the tab, which still holds
+    // their addresses: a pane dock's accessible area is what it would read.
+    // Only a build with AddressSanitizer (the debug preset) can show that
+    // read of freed memory: elsewhere this test mostly passes without the fix.
+    QAccessible::setActive(true);
+    const auto inactive = qScopeGuard([] { QAccessible::setActive(false); });
+    QPointer<Pane> pane = window->focusedPane();
+    ASSERT_TRUE(pane);
+    ASSERT_EQ(window->tabs().size(), 1u);
+    ASSERT_EQ(window->panes().size(), 1);
+    ASSERT_TRUE(window->setScriptDock(QStringLiteral("a@1"), dockEffect(QStringLiteral("title"), QStringLiteral("top"), 1,
+        {dockRun(QStringLiteral("OnlyTitle"), QStringLiteral("t"))}, QStringLiteral("pane")), pane).isEmpty());
+    QAccessible::Id area = 0;
+    ASSERT_TRUE(waitFor([&] {
+        QAccessibleInterface* root = window->accessibleRoot();
+        for (int i = 0; root && i < root->childCount(); ++i) {
+            QAccessibleInterface* child = root->child(i);
+            if (child && child->object() == nullptr && child->text(QAccessible::Name).contains(QLatin1String("OnlyTitle")))
+                area = QAccessible::uniqueId(child);
+        }
+        return area != 0;
+    }));
+    QPointer<TerminalWindow> closing = window;
+    window->requestClosePane(pane);
+    ASSERT_TRUE(waitFor([&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return closing.isNull();
+    }));
+    window = nullptr;
+    EXPECT_TRUE(pane.isNull());
+    EXPECT_EQ(QAccessible::accessibleInterface(area), nullptr);
+}
+TEST_F(NativeWindow, AnOverlayThatTakesTheKeyboardClearsThePanesComposition) {
+    Pane* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    const auto drawn = [&] {
+        pane->refreshSnapshot();
+        QString text;
+        for (const auto& cell : pane->snapshot().cells)
+            if (cell.cp) text += QString::fromUcs4(&cell.cp, 1);
+        return text;
+    };
+    QInputMethodEvent compose(QStringLiteral("zqxcomposed"), {});
+    QCoreApplication::sendEvent(window, &compose);
+    ASSERT_TRUE(drawn().contains(QLatin1String("zqxcomposed")));
+    // The input method's own clearing event would go to the search field.
+    chrome->setSearchOpen(true);
+    EXPECT_FALSE(drawn().contains(QLatin1String("zqxcomposed")));
+    chrome->setSearchOpen(false);
+}
+TEST_F(NativeWindow, CopyModeAndUnicodeInputEndEachOtherAndWaitForAScriptsKeyMode) {
+    Pane* pane = window->focusedPane();
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    const auto unicodeOpen = [&] { return chrome->unicodeInput().value(QStringLiteral("active")).toBool(); };
+    const auto copying = [&] { return chrome->keyMode().startsWith(QLatin1String("Copy")); };
+    ASSERT_TRUE(window->runAction(pane, Action::CopyMode));
+    ASSERT_TRUE(copying()) << chrome->keyMode().toStdString();
+    ASSERT_TRUE(window->runAction(pane, Action::UnicodeInput));
+    EXPECT_TRUE(unicodeOpen());
+    EXPECT_FALSE(copying()) << chrome->keyMode().toStdString();
+    ASSERT_TRUE(window->runAction(pane, Action::CopyMode));
+    EXPECT_FALSE(unicodeOpen());
+    EXPECT_TRUE(copying()) << chrome->keyMode().toStdString();
+    ASSERT_TRUE(window->runAction(pane, Action::CopyMode)); // and out again
+    EXPECT_FALSE(copying());
+    // Hints end Unicode input too.
+    ASSERT_TRUE(window->runAction(pane, Action::UnicodeInput));
+    ASSERT_TRUE(unicodeOpen());
+    ASSERT_TRUE(window->runAction(pane, Action::ShowHints));
+    EXPECT_FALSE(unicodeOpen());
+    // A script's key mode keeps its keys: copy mode's, Unicode input's and
+    // the labels' would come before them.
+    ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), pane, QStringLiteral("Script keys")).isEmpty());
+    EXPECT_FALSE(window->runAction(pane, Action::CopyMode));
+    EXPECT_FALSE(window->runAction(pane, Action::UnicodeInput));
+    EXPECT_FALSE(window->runAction(pane, Action::ShowHints));
+    EXPECT_FALSE(window->runAction(pane, Action::UrlsOpen));
+    EXPECT_FALSE(window->runAction(pane, Action::UrlsCopy));
+    EXPECT_TRUE(chrome->urlHints().isEmpty());
+    EXPECT_EQ(chrome->keyMode(), QStringLiteral("Script keys"));
+    EXPECT_FALSE(unicodeOpen());
+    window->endScriptKeyMode(QStringLiteral("script@1"));
+}
 TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     QAccessible::setActive(true);
     const auto inactive = qScopeGuard([] { QAccessible::setActive(false); });
@@ -1166,33 +1573,6 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
     EXPECT_EQ(heard.count(QAccessible::ObjectReorder, root), 1);
     EXPECT_EQ(findDock(), nullptr);
 }
-class NotificationServer : public QObject {
-    Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.Notifications")
-public:
-    int count = 0, closes = 0;
-    uint next = 0;
-    QList<QSize> images;
-    QString appName, appIcon, desktopEntry;
-public Q_SLOTS:
-    uint Notify(const QString& name, uint replaces, const QString& icon, const QString&, const QString&,
-                const QStringList&, const QVariantMap& hints, int) {
-        ++count;
-        appName = name;
-        appIcon = icon;
-        desktopEntry = hints.value(QStringLiteral("desktop-entry")).toString();
-        QSize size;
-        if (hints.contains(QStringLiteral("image-data"))) {
-            const auto arg = hints.value(QStringLiteral("image-data")).value<QDBusArgument>();
-            int width = 0, height = 0, stride = 0, bits = 0, channels = 0; bool alpha = false; QByteArray bytes;
-            arg.beginStructure(); arg >> width >> height >> stride >> alpha >> bits >> channels >> bytes; arg.endStructure();
-            size = {width, height};
-        }
-        images.append(size);
-        return replaces ? replaces : ++next;
-    }
-    void CloseNotification(uint) { ++closes; }
-};
 TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
     NotificationServer server;
     auto bus = QDBusConnection::sessionBus();
@@ -1476,27 +1856,36 @@ TEST_F(NativeWindow, ScriptQueriesAreBoundedAndRespectTextPolicy) {
     pane->startSelection(pane->selectionPointAt(0,0),AfterglowVt::SelectionMode::Normal,true);
     pane->extendSelection(pane->selectionPointAt(5,0));
     QVariantMap data;
-    ASSERT_TRUE(control.readTextBounded(pane->id(),QStringLiteral("selection"),3,data).isEmpty());
+    ASSERT_TRUE(control.readTextBounded(pane->id(),QStringLiteral("selection"),3,data,false).isEmpty());
     EXPECT_TRUE(data[QStringLiteral("available")].toBool());
     EXPECT_TRUE(data[QStringLiteral("truncated")].toBool());
     EXPECT_LE(data[QStringLiteral("text")].toString().toUtf8().size(),3);
-    ASSERT_TRUE(control.semanticRegions(pane->id(),data).isEmpty());
+    ASSERT_TRUE(control.semanticRegions(pane->id(),data,false).isEmpty());
     const auto regions=data[QStringLiteral("regions")].toList();
     ASSERT_GE(regions.size(),3);
     QString output;
     for(const auto& item:regions) if(item.toMap()[QStringLiteral("kind")]==QStringLiteral("output"))
         output=item.toMap()[QStringLiteral("id")].toString();
     ASSERT_FALSE(output.isEmpty());
-    ASSERT_TRUE(control.readRegion(pane->id(),output,3,data).isEmpty());
+    ASSERT_TRUE(control.readRegion(pane->id(),output,3,data,false).isEmpty());
     EXPECT_EQ(data[QStringLiteral("text")].toString(),QStringLiteral("res"));
     EXPECT_TRUE(data[QStringLiteral("truncated")].toBool());
     SettingsStore denied(directory.filePath(QStringLiteral("denied.conf")),
         QJsonObject{{QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("allowReadText"),false}}}});
     Control blocked(denied,{}); blocked.attachWindow(window);
-    EXPECT_FALSE(blocked.readTextBounded(pane->id(),QStringLiteral("screen"),100,data).isEmpty());
-    EXPECT_FALSE(blocked.readTextBounded(pane->id(),QStringLiteral("selection"),100,data).isEmpty());
-    EXPECT_FALSE(blocked.semanticRegions(pane->id(),data).isEmpty());
-    EXPECT_FALSE(blocked.readRegion(pane->id(),output,100,data).isEmpty());
+    EXPECT_FALSE(blocked.readTextBounded(pane->id(),QStringLiteral("screen"),100,data,false).isEmpty());
+    EXPECT_FALSE(blocked.readTextBounded(pane->id(),QStringLiteral("selection"),100,data,false).isEmpty());
+    EXPECT_FALSE(blocked.semanticRegions(pane->id(),data,false).isEmpty());
+    EXPECT_FALSE(blocked.readRegion(pane->id(),output,100,data,false).isEmpty());
+    // A run for afterglow run reads pane text only with Control.allowReadText too.
+    SettingsStore local(directory.filePath(QStringLiteral("local.conf")),
+        QJsonObject{{QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("allowReadText"),true}}},
+                    {QStringLiteral("Control"),QJsonObject{{QStringLiteral("allowReadText"),false}}}});
+    Control scriptsOnly(local,{}); scriptsOnly.attachWindow(window);
+    EXPECT_TRUE(scriptsOnly.readTextBounded(pane->id(),QStringLiteral("screen"),100,data,false).isEmpty());
+    EXPECT_FALSE(scriptsOnly.readTextBounded(pane->id(),QStringLiteral("screen"),100,data,true).isEmpty());
+    EXPECT_FALSE(scriptsOnly.semanticRegions(pane->id(),data,true).isEmpty());
+    EXPECT_FALSE(scriptsOnly.readRegion(pane->id(),output,100,data,true).isEmpty());
 }
 
 
@@ -1538,6 +1927,7 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
         drain();
     };
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
     drain();
     ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
@@ -1677,6 +2067,7 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
         drain();
     };
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), second, QStringLiteral("Script keys")).isEmpty());
     EXPECT_EQ(chrome->keyMode(), QStringLiteral("Script keys"));
     EXPECT_FALSE(window->startScriptKeyMode(QStringLiteral("other@2"), second, {}).isEmpty());
@@ -1689,9 +2080,15 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
     EXPECT_TRUE(keys[1].value(QStringLiteral("ctrl")).toBool());
     EXPECT_EQ(keys[1].value(QStringLiteral("text")), QString());
     EXPECT_EQ(keys[2].value(QStringLiteral("text")), QStringLiteral("q"));
-    // The script drives the overview while it holds the keys.
+    // The script drives the overview while it holds the keys. Another
+    // script cannot open it then, nor move the focus for it: the keys would
+    // not reach the overview.
     QVariantMap state;
-    ASSERT_TRUE(window->scriptOverview(second, QStringLiteral("open"), state).isEmpty());
+    ASSERT_EQ(window->focusedPane(), second);
+    EXPECT_FALSE(window->scriptOverview(QStringLiteral("other@2"), first, QStringLiteral("open"), state).isEmpty());
+    EXPECT_FALSE(window->overviewOpen());
+    EXPECT_EQ(window->focusedPane(), second);
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), second, QStringLiteral("open"), state).isEmpty());
     EXPECT_TRUE(state.value(QStringLiteral("open")).toBool());
     EXPECT_EQ(state.value(QStringLiteral("cards")).toList().size(), 2);
     press(Qt::Key_Right); // to the script, not the overview
@@ -1700,7 +2097,7 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
     EXPECT_EQ(keys.last().value(QStringLiteral("key")), QStringLiteral("Right"));
     ASSERT_TRUE(window->scriptOverviewMove(second, nullptr, 1, state).isEmpty());
     EXPECT_EQ(state.value(QStringLiteral("highlighted")).toUInt(), first->id());
-    ASSERT_TRUE(window->scriptOverview(second, QStringLiteral("choose"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), second, QStringLiteral("choose"), state).isEmpty());
     EXPECT_FALSE(state.value(QStringLiteral("open")).toBool());
     EXPECT_EQ(window->focusedPane(), first);
     // Ending the mode, or the script going away, returns the keys.
@@ -1730,16 +2127,10 @@ QQuickItem* chromeItemWithText(ChromeLayer* layer, const QString& text) {
         if (item->isVisible() && item->property("text").toString() == text) return item;
     return nullptr;
 }
-void sendKey(TerminalWindow* window, int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
-             const QString& text = {}, bool autoRepeat = false) {
-    QKeyEvent down(QEvent::KeyPress, key, modifiers, text, autoRepeat);
-    QCoreApplication::sendEvent(window, &down);
-    QKeyEvent up(QEvent::KeyRelease, key, modifiers, text, autoRepeat);
-    QCoreApplication::sendEvent(window, &up);
-}
 
 TEST_F(NativeWindow, ReturnOnAFocusedButtonAnswersThatButton) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     int confirmed = -1;
     QObject listener;
@@ -1756,6 +2147,7 @@ TEST_F(NativeWindow, ReturnOnAFocusedButtonAnswersThatButton) {
 
 TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     QList<bool> answers;
     QObject listener;
@@ -1765,8 +2157,9 @@ TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
     auto* cancel = chromeItemWithText(layer, QStringLiteral("Cancel"));
     ASSERT_NE(cancel, nullptr);
     cancel->forceActiveFocus();
-    // A keybind, afterglow ctl or a script opens the search under the prompt: the
-    // keys must not go back to the panel, where Return pastes.
+    // Should anything open the search under the prompt (keys, afterglow ctl
+    // and scripts cannot), the keys must not go back to the panel, where
+    // Return pastes.
     chrome->setSearchOpen(true);
     // The search shows at the next frame and asks for the focus after it.
     ASSERT_TRUE(nextFrame(window));
@@ -1779,6 +2172,7 @@ TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
 
 TEST_F(NativeWindow, ReturnInThePastePreviewDoesNotPaste) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     chrome->askPaste(QStringLiteral("one\ntwo"), 2);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
@@ -1795,6 +2189,7 @@ TEST_F(NativeWindow, ReturnInThePastePreviewDoesNotPaste) {
 
 TEST_F(NativeWindow, ClipboardPromptDeniesOnTypedReturnAndPlainA) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     QList<int> answers;
     QObject listener;
@@ -1818,6 +2213,7 @@ TEST_F(NativeWindow, ClipboardPromptDeniesOnTypedReturnAndPlainA) {
 
 TEST_F(NativeWindow, AReopenedClipboardPromptStartsOnDeny) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     QList<int> answers;
     QObject listener;
@@ -1843,6 +2239,7 @@ TEST_F(NativeWindow, AReopenedClipboardPromptStartsOnDeny) {
 
 TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     chrome->setSearchOpen(true);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
@@ -1864,6 +2261,7 @@ TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
 TEST_F(NativeWindow, ReopenedSearchFindsTheKeptQueryAgain) {
     auto* pane = window->focusedPane();
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     pane->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b[2J\x1b[Hneedle"); });
     chrome->setSearchOpen(true);
@@ -1878,6 +2276,7 @@ TEST_F(NativeWindow, ReopenedSearchFindsTheKeptQueryAgain) {
 
 TEST_F(NativeWindow, TitlePromptFollowsANewRequest) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     chrome->askTitle(QStringLiteral("Tab title"), QStringLiteral("first"));
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
@@ -1904,6 +2303,7 @@ TEST_F(NativeWindow, PaneTitleLabelsSurviveTitleChanges) {
     ASSERT_EQ(before.size(), 2);
     first->setUserTitle(QStringLiteral("renamed"));
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(waitFor([&] {
         const auto titles = chrome->paneTitles();
         return std::any_of(titles.begin(), titles.end(), [](const QVariant& entry) {
@@ -2309,6 +2709,7 @@ TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
     drain();
     const quint32 tab = window->activeTabId();
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     // The request originates on the PTY thread; its GUI receiver reads the pane title under the pane mutex.
     std::thread request([background] {
         background->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b]52;c;?\x07"); });
@@ -2324,6 +2725,7 @@ TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
 
 TEST_F(NativeWindow, ScriptKeyModeEndsWithItsReservedChord) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     int keys = 0;
     QObject listener;
     QObject::connect(window, &TerminalWindow::scriptKey, &listener, [&](const QString&, quint32, const QVariantMap&) { ++keys; });
@@ -2396,6 +2798,7 @@ TEST_F(NativeWindow, ContextMenuActsOnThePaneItOpenedOn) {
         return !window->accessiblePaneRect(first).isEmpty() && !window->accessiblePaneRect(second).isEmpty();
     }));
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     const QPointF at = window->mapFromGlobal(window->accessiblePaneRect(first).center());
     QMouseEvent press(QEvent::MouseButtonPress, at, window->mapToGlobal(at), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &press);
@@ -2418,6 +2821,7 @@ TEST_F(NativeWindow, ATabThatClosesTakesItsTabMenuWithIt) {
     drain();
     ASSERT_EQ(window->tabs().size(), 2);
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     chrome->tabMenu(1, 50, 15);
     ASSERT_TRUE(chrome->contextMenuOpen());
     // Its program ends: the tab closes, and a menu left open would act on nothing.
@@ -2437,6 +2841,7 @@ TEST_F(NativeWindow, ATabThatClosesLeavesAPaneMenuOpen) {
     window->revealPane(first);
     drain(300);
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     // The tab menu of the background tab, dismissed without a choice.
     chrome->tabMenu(1, 50, 15);
     ASSERT_TRUE(chrome->contextMenuOpen());
@@ -2494,6 +2899,7 @@ TEST_F(NativeWindow, ScriptDocksTakeCellsFromThePanesAndCanReplaceTheTabBar) {
 
     // With two tabs the tab bar shows, until a top dock takes its place.
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     auto* other = window->openTab(launch, nullptr);
@@ -2596,12 +3002,12 @@ TEST_F(NativeWindow, DockClicksReachTheScriptThroughControlAndNoPointerInputReac
     // With the overview open, a click on the dock is the dock's: the
     // overview stays open.
     QVariantMap state;
-    ASSERT_TRUE(window->scriptOverview(pane, QStringLiteral("open"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), pane, QStringLiteral("open"), state).isEmpty());
     mouseAt(window, QEvent::MouseButtonPress, onItem, Qt::LeftButton, Qt::LeftButton);
     mouseAt(window, QEvent::MouseButtonRelease, onItem, Qt::LeftButton, Qt::NoButton);
     EXPECT_TRUE(window->overviewOpen());
     ASSERT_EQ(clicks.size(), 4);
-    ASSERT_TRUE(window->scriptOverview(pane, QStringLiteral("close"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), pane, QStringLiteral("close"), state).isEmpty());
 
     // A larger font places the dock again, and its item still takes clicks.
     ASSERT_TRUE(window->runAction(pane, Action::FontBigger));
@@ -2684,6 +3090,7 @@ TEST_F(NativeWindow, DocksTellTheirScriptOfTheirCellsTheHoveredItemAndTheWheel) 
     // An overlay that opens under a pointer that does not move takes it off
     // the item, and gives it back when it closes.
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
     move(QRectF(firstRect).center().x() / dpr);
@@ -3015,6 +3422,7 @@ TEST_F(NativeWindow, MoveTabMovesATabWithoutShowingItAndRefusesAPlaceThatIsNoTab
     ASSERT_EQ(window->tabIndexOf(third), 2);
     // Titles that tell the tabs apart, also in the chrome.
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     const std::pair<Pane*, QString> names[] = {{first, QStringLiteral("one")}, {second, QStringLiteral("two")}, {third, QStringLiteral("three")}};
     for (const auto& [pane, name] : names) {
         ASSERT_TRUE(window->runAction(pane, Action::RenameTab));
@@ -3133,7 +3541,7 @@ TEST_F(NativeWindow, MoveTabTellsOfTheMovedPanesAndKeepsTheOverviewOnItsCard) {
     EXPECT_NEAR(window->overviewPosition().first, 0.0, 1e-3);
     EXPECT_NEAR(window->overviewPosition().second, 0.0, 1e-3);
     QVariantMap state;
-    ASSERT_TRUE(window->scriptOverview(third, QStringLiteral("close"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), third, QStringLiteral("close"), state).isEmpty());
     EXPECT_TRUE(waitFor([&] { return !window->overviewOpen(); }));
 }
 
@@ -3782,7 +4190,7 @@ TEST_F(NativeWindow, APaneDockDragEndsWhenItsPaneClosesOrStopsShowing) {
     expectCancel(hidden->id());
     releaseLeft(window, item + QPointF(20, 0));
     QVariantMap state;
-    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("close"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), first, QStringLiteral("close"), state).isEmpty());
     EXPECT_TRUE(waitFor([&] { return !window->overviewOpen(); }));
     window->clearScriptOwner(QStringLiteral("a@1"));
 }
@@ -3885,6 +4293,7 @@ TEST_F(NativeWindow, TabActionsOfAPaneActOnItsTabWithoutShowingItAndScriptsOpenI
     EXPECT_EQ(window->focusedPane(), first);
     // Its cat still runs, so the window asks first.
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(window->runAction(second, Action::CloseTab));
     ASSERT_TRUE(chrome->confirmPromptOpen());
     EXPECT_EQ(window->focusedPane(), first);
@@ -3985,6 +4394,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
     Control control(settings, {});
     control.attachWindow(window);
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     // Three tabs, so that the tab bar stays when one pane moves away.
@@ -4011,6 +4421,7 @@ TEST_F(NativeWindow, ControlUndocksThroughAPaneThatMovedOrClosed) {
     auto* resident = destination->focusedPane();
     ASSERT_NE(resident, nullptr);
     auto* destinationChrome = destination->findChild<ChromeController*>();
+    ASSERT_NE(destinationChrome, nullptr);
     ASSERT_TRUE(window->movePaneTo(moving, destination, resident, SplitTree::Direction::Right).isEmpty());
     ASSERT_TRUE(waitFor([&] { return destinationChrome->paneArea().height() > 0; }));
     expectIdle(destination);
@@ -4128,6 +4539,7 @@ TEST_F(NativeWindow, ADividerDragKeepsTheSplitCursorThroughItsFrames) {
     // Two tabs, so that a tab bar shows above the split.
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(waitFor([&] { return chrome->tabBarHeight() > 0; }));
     auto* first = window->focusedPane();
     ASSERT_NE(first, nullptr);
@@ -4164,6 +4576,7 @@ TEST_F(NativeWindow, ADividerDragKeepsTheSplitCursorThroughItsFrames) {
 
 TEST_F(NativeWindow, ATabBarDockThatDoesNotFitLeavesTheTabBarInPlace) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
@@ -4188,6 +4601,7 @@ TEST_F(NativeWindow, ATabBarDockThatDoesNotFitLeavesTheTabBarInPlace) {
 
 TEST_F(NativeWindow, ATabBarDockThatAFontChangeHidesGivesTheTabBarBack) {
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     ASSERT_NE(window->openTab(launch, nullptr), nullptr);
@@ -4341,19 +4755,20 @@ TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove) {
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
     drain();
     auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
     // A key mode from before the overview stays when it closes.
     ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), first, QStringLiteral("Before")).isEmpty());
     QVariantMap state;
-    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("open"), state).isEmpty());
-    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("close"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), first, QStringLiteral("open"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), first, QStringLiteral("close"), state).isEmpty());
     EXPECT_EQ(chrome->keyMode(), QStringLiteral("Before"));
     window->clearScriptOwner(QStringLiteral("script@1"));
     // One started while the overview is open ends with it: closeOverview is
     // where a click, a script and the keys all close it.
-    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("open"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), first, QStringLiteral("open"), state).isEmpty());
     ASSERT_TRUE(window->startScriptKeyMode(QStringLiteral("script@1"), first, QStringLiteral("Overview keys")).isEmpty());
     EXPECT_EQ(chrome->keyMode(), QStringLiteral("Overview keys"));
-    ASSERT_TRUE(window->scriptOverview(first, QStringLiteral("choose"), state).isEmpty());
+    ASSERT_TRUE(window->scriptOverview(QStringLiteral("script@1"), first, QStringLiteral("choose"), state).isEmpty());
     EXPECT_FALSE(window->overviewOpen());
     EXPECT_TRUE(chrome->keyMode().isEmpty());
     // The next key reaches the shell, not the script.

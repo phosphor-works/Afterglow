@@ -41,6 +41,8 @@ They switch, move, detach and close tabs, close the window, change the font and 
 They also equalize and rotate splits, and open the overview, shaders, projects, the configuration and the palette.
 End Script Key Mode is not a pane action.
 Use the command palette or the tab bar for these actions.
+Script commands are not pane actions.
+Run them from the command palette, the context menu or a key binding.
 
 The name of a pane action is its title in the command palette, for example `Split Right`.
 A screen reader says this name.

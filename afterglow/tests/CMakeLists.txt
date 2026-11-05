@@ -41,6 +41,13 @@ qt_add_executable(afterglow_control_tests ControlSocketTest.cpp)
 target_link_libraries(afterglow_control_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_control_tests)
 
+qt_add_executable(afterglow_command_tests CommandSocketTest.cpp)
+target_link_libraries(afterglow_command_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
+# The tests run `afterglow run` itself against their own socket.
+target_compile_definitions(afterglow_command_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
+add_dependencies(afterglow_command_tests afterglow)
+gtest_discover_tests(afterglow_command_tests)
+
 qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
 target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -63,6 +70,17 @@ qt_add_executable(afterglow_shader_tests ShaderControlsTest.cpp)
 target_link_libraries(afterglow_shader_tests PRIVATE afterglow_shaders GTest::gtest)
 target_compile_definitions(afterglow_shader_tests PRIVATE AFTERGLOW_SHADER_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 gtest_discover_tests(afterglow_shader_tests)
+
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    # The shell completions against a stub afterglow. Exit status 77: no shell to test.
+    add_test(NAME afterglow_shell_completion COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/completion_test.py)
+    set_tests_properties(afterglow_shell_completion PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    # Fails when docs/CONFIGURATION.md is not what the schema generates.
+    add_test(NAME afterglow_configuration_reference
+        COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/generate-reference.py --check $<TARGET_FILE:afterglow>)
+    set_tests_properties(afterglow_configuration_reference PROPERTIES TIMEOUT 60)
+endif()
 
 option(AFTERGLOW_NATIVE_TESTS "Run integration tests in a nested KWin desktop (requires DISPLAY)" OFF)
 if(AFTERGLOW_NATIVE_TESTS)

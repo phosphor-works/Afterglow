@@ -15,11 +15,19 @@ import subprocess
 import sys
 import tempfile
 import time
-from nested_desktop import NestedDesktop, check, wait_for
+from nested_desktop import NestedDesktop, check, exit_on_sigterm, run_on_private_bus, wait_for
+
+# git finds a repository through these before -C or a path: a run from a git hook, which exports GIT_DIR, would
+# create the test repositories in the developer's own.
+GIT_ENV = {k: v for k, v in os.environ.items()
+           if k not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+                        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}}
+GIT_ENV |= {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
 parser.add_argument("--artifacts", type=Path, help="directory for screenshots and the log (default: a new temporary directory)")
+parser.add_argument("--timeout", type=float, default=300, help="Seconds for the whole run (default: 300)")
 parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 args = parser.parse_args()
 binary = str(args.binary.resolve())
@@ -27,8 +35,9 @@ if not args.private_bus:
     if args.artifacts is None:
         args.artifacts = Path(tempfile.mkdtemp(prefix="afterglow-navigator-ui-"))
         print(f"Artifacts: {args.artifacts}", flush=True)
-    sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary,
-                             "--artifacts", str(args.artifacts), "--private-bus"]))
+    sys.exit(run_on_private_bus([sys.executable, __file__, binary, "--artifacts", args.artifacts, "--private-bus"],
+                                args.timeout))
+exit_on_sigterm()
 args.artifacts.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
     root = Path(temp)
@@ -43,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
     alpha, beta = repositories / "alpha", repositories / "beta"
     for repo in (alpha, beta):
         repo.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30, env=GIT_ENV)
     package = config / "scripts/project-navigator"
     source = Path(__file__).resolve().parents[2] / "data/examples/packages/project-navigator"
     with NestedDesktop(root) as desktop, (args.artifacts / "application.log").open("w") as log:
@@ -99,11 +108,17 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
         def configured(roots):
             (package / "config.json").write_text(json.dumps({"roots": list(map(str, roots)), "fd": True, "zoxide": False}))
         focused = [None]
-        def action(pane, name="open"):
+        def command(pane, name="pick"):
             focused[0] = pane
             ctl("focus", "--pane", pane)
             ctl("action", "script:project-navigator." + name, "--pane", pane)
-            time.sleep(0.7)  # asynchronous provider and compositor frames
+            # The picker fills from an asynchronous provider, and a script dialog
+            # shows nothing that the control socket reports.
+            time.sleep(0.7)
+        def loads():
+            """How many times the navigator has loaded, from its log lines."""
+            log.flush()
+            return log_path.read_text(errors="replace").count("loaded project-navigator from")
         def choose(text, capture=None):
             desktop.text(text)
             if capture:
@@ -125,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             wait_for(lambda: len(panes()) == 2)
             ctl("save-project", "two-pane", "--pane", first)
             # Discovery is real fd, selections are real keyboard/QML events.
-            action(first)
+            command(first)
             choose("alpha", "discovery")
             choose("two-pane", "layout")
             wait_for(lambda: len(panes()) == 4)
@@ -134,17 +149,17 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             check(len(opened) == 2, panes())
             active = opened[0]["id"]
             pid = identity(active)
-            action(active, "favorite")
+            command(active, "favorite")
             wait_for(lambda: state()["value"]["favorites"].get(str(alpha)))
             revision = state()["revision"]
-            action(first)
+            command(first)
             choose("alpha", "favorite-running")
             wait_for(lambda: state()["revision"] > revision)
             check(len(panes()) == 4, "Opening a running directory duplicated its window")
             check(identity(active) == pid, "The reused pane lost its shell")
-            # Cancelling the picker must leave actions usable and storage unchanged.
+            # Cancelling the picker must leave commands usable and storage unchanged.
             revision = state()["revision"]
-            action(active)
+            command(active)
             desktop.key("Escape")
             keys_reach(active, "picker-cancelled-ok")
             check(state()["revision"] == revision)
@@ -152,16 +167,17 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             external = root / "external"
             gamma = external / "gamma"
             gamma.mkdir(parents=True)
-            subprocess.run(["git", "init", "-q", str(gamma)], check=True)
+            subprocess.run(["git", "init", "-q", str(gamma)], check=True, timeout=30, env=GIT_ENV)
+            reloads = loads()
             configured([external])
-            time.sleep(0.7)
-            action(first)
+            wait_for(lambda: loads() > reloads)
+            command(first)
             choose("gamma", "config-reload")
             choose("shell", "shell-layout")
             wait_for(lambda: len(panes()) == 5)
             wait_for(lambda: state()["value"]["recent"][0]["value"] == str(gamma))
             # Uninstall while its selector is open: UI disappears and state survives.
-            action(first)
+            command(first)
             before = (config / "state/scripts/project-navigator.json").read_bytes()
             shutil.move(package, root / "removed-package")
             wait_for(lambda: status() == {})
@@ -176,7 +192,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
             first = wait_for(panes)[0]["id"]
             wait_for(lambda: "L3>" in screen(first))
             check(state()["value"]["favorites"][str(alpha)])
-            action(first)
+            command(first)
             choose("alpha", "restored-favorites")
             # Last-used layout is first: Enter alone should restore two panes.
             desktop.screenshot(args.artifacts / "remembered-layout.png")

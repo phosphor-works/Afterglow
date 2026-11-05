@@ -275,7 +275,7 @@ Afterglow keeps at most 4,096 overrides, one for each script, instance and pane.
 An update past this limit fails with an error.
 Hidden windows catch up when they render again.
 
-[shader-parameters.luau](../data/examples/scripts/shader-parameters.luau) adds Bloom boost and reset actions.
+[shader-parameters.luau](../data/examples/scripts/shader-parameters.luau) adds Bloom boost and reset commands.
 Install it in `~/.config/afterglow/scripts/` and enable Bloom in a shader chain.
 It targets the current tab, or the window for a window effect.
 It reports when Bloom is absent.

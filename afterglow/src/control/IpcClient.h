@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <AfterglowProto/Ipc.h>
+
 #include <QDeadlineTimer>
 #include <QHash>
 #include <QJsonObject>
@@ -36,7 +38,7 @@ public:
     };
 
     /// phosphor-ipc's router closes the connection on a longer request line.
-    static constexpr qsizetype MaxLineBytes = 1024 * 1024;
+    static constexpr qsizetype MaxLineBytes = qsizetype(AfterglowProto::IpcConnection::MaxRequestBytes); ///< the router's
 
     bool connectTo(const QString& path, int timeoutMs, Error* error);
     bool connected() const { return m_socket.state() == QLocalSocket::ConnectedState; }

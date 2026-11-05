@@ -4,7 +4,8 @@
 # Luau packages and saved state
 
 Afterglow supports single `.luau` files and local packages.
-A package is a directory inside `scripts/` beside the active configuration file.
+A package is a directory in a scripts directory, usually `scripts/` beside the active configuration file.
+Afterglow reads packages from every scripts directory, with the priority of [single files](SCRIPTING.md#install-a-script).
 The directory contains a `package.json` manifest.
 The directory can be a symlink, for example to a Git checkout.
 Afterglow checks the package paths against the directory that the symlink points to.
@@ -21,16 +22,20 @@ Afterglow checks the package paths against the directory that the symlink points
   "modules": {"main": "init.luau", "format": "format.luau"},
   "config": {"enabled": true},
   "dependencies": {"utils": {"path": "vendor/utils", "version": "1.0.0"}},
-  "assets": {"theme": "assets/theme.json"}
+  "assets": {"theme": "assets/theme.json"},
+  "commands": {"format": {"summary": "Format the pane's last output", "palette": "Format output"}}
 }
 ```
 
 The manifest ID must equal the directory name.
+It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
 `version` uses the `X.Y.Z` format. `api_version` must be `1`.
 Each module returns a table.
 `require("format")` loads the declared module once for each instance.
 `require("@utils")` loads the entry module of the included dependency.
-The dependency must have its own manifest and the exact declared version.
+The dependency must have its own manifest, the ID `utils` and the exact declared version.
+Afterglow reads only `id`, `version`, `api_version`, `entry`, `modules` and `dependencies` from the manifest of a dependency.
+Its other fields, such as `commands`, `config`, `assets` and `shaders`, have no effect.
 
 Imports use local files. Afterglow does not download dependencies.
 Dependencies share the caller's sandbox and state namespace.
@@ -46,6 +51,24 @@ Cycles and undeclared imports cause an error.
 
 A package over a limit does not load. `afterglow ctl scripts` shows the error.
 An error in a module names the module file and its line.
+
+## Commands
+
+`commands` maps each command name to its fields.
+The fields and their rules are the same as for `metadata.commands` of a single-file script (see [commands](SCRIPTING.md#commands)).
+A package can have at most 64 commands, with those of `afterglow.set_commands`.
+A package declares its commands only in `package.json`. `metadata.commands` in a package is an error.
+
+```json
+"commands": {
+  "open": {"summary": "Open a project directory", "usage": "DIR [LAYOUT]", "palette": "Open project…"},
+  "list": {"summary": "Print the saved projects"},
+  "import": {"summary": "Add projects from a list on stdin", "stdin": true}
+}
+```
+
+The entry module must export `run_command(command, ev)`.
+`afterglow run <id>` lists the package's commands. `afterglow run <id> <command>` runs one.
 
 ## Configuration and assets
 
@@ -65,7 +88,7 @@ This applies to modules, dependencies, assets, `config.json`, the shader directo
 Afterglow does not check the stages and includes that a shader pack reads.
 
 Afterglow monitors source files, dependency manifests and configuration together.
-A change replaces the complete instance. This includes a change to `shaders` or `pulses`.
+A change replaces the complete instance. This includes a change to `shaders`, `pulses` or `commands`.
 Compilation, initialization or migration errors keep the previous working instance.
 
 ## Saved state
@@ -111,7 +134,7 @@ Increase `state_version` when the stored structure changes.
 Export `migrate(value, oldVersion, newVersion)` to return the new object.
 Afterglow calls `migrate` once, from the stored version to the current `state_version`.
 Handle every older version in that one call.
-Migration and `on_load` each use the 100 ms action deadline.
+Migration and `on_load` each use the 100 ms command deadline.
 
 Afterglow validates migration output before activation.
 It writes the new state only after the replacement compiles and initializes.
@@ -190,4 +213,5 @@ The stored data remains available for a later installation.
 | [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
 
 Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
-Use the package instructions for configuration and actions.
+A package in a system data directory, such as `/usr/share/afterglow/scripts`, also loads.
+Use the package instructions for configuration and commands.

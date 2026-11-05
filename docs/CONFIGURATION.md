@@ -51,14 +51,14 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `cursorText` | `""` |  | Text color under a block cursor. An empty value uses the background. |
 | `divider` | `"#3a3a42"` |  | Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its background and text colors. |
 | `foreground` | `"#d8d8d8"` |  | Default text color. |
-| `minimumContrast` | `1` | 1–21 | Minimum text contrast ratio. Adjust text below this ratio. A value of 1 preserves colors. 4.5 is the WCAG AA normal-text threshold. |
+| `minimumContrast` | `1` | 1–21 | Minimum contrast ratio between text and its background. Afterglow changes the color of text with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for normal text. |
 | `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
 | `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. |
 | `searchMatch` | `"#e5c07b"` |  | Background color of search matches. |
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory, then the bundled themes, such as nord and afterglow-light, then the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
@@ -67,8 +67,8 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `false` |  | Allow control clients to read pane text, including scrollback, the commands that run and the values of user variables. |
-| `enabled` | `true` |  | Allow other programs, such as afterglow ctl, to control Afterglow through its socket. Later launches of Afterglow use the socket also when this is off. |
+| `allowReadText` | `false` |  | Allow control clients to read pane text, including scrollback, the commands that run and the values of user variables. A script command that runs for afterglow run reads pane text only when this setting and Scripts.allowReadText are both on. |
+| `enabled` | `true` |  | Allow other programs, such as afterglow ctl and afterglow run, to control Afterglow through its socket. The afterglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. |
 | `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
 
 ## Font
@@ -88,7 +88,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `hinting` | `"light"` | `"none"`, `"light"`, `"full"` | How glyph outlines align to the pixel grid. The none mode preserves outlines. The light mode aligns vertical positions only. The full mode aligns both axes. |
 | `italicFamily` | `""` |  | Font family of italic text. An empty value uses family. |
 | `italicSlant` | `-11` | -90–90 | Slant of italic text in degrees, for variable fonts with a slant axis. |
-| `size` | `0` | 0–96 | Size in points, from 4 to 96. A value of 0 or less uses the size of the desktop's fixed-width font. |
+| `size` | `0` | 0–96 | Size in points. A value of 0 or less uses the size of the desktop's fixed-width font. Afterglow clamps other values to 4–96. |
 | `sizeStep` | `1` | 0.1–12 | Points that the font_bigger and font_smaller actions add or remove. |
 | `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators U+E0B0 to U+E0BF itself, so this setting does not change them. |
 | `weight` | `400` | 100–900 | Weight of regular text. It selects a static font and sets the weight axis of a variable font. |
@@ -111,8 +111,8 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or list. An empty string removes the binding. |
-| `leader` | `""` |  | Key that Leader stands for in sequences. It has no default. |
+| `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or a list of them. An empty string removes the binding. Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send text and table:NAME to open a key table. |
+| `leader` | `""` |  | Key that Leader stands for in sequences. The default is empty. With an empty value, a binding that uses Leader is an error. |
 | `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before an incomplete sequence is canceled. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
 | `tables` | `{}` |  | Named action-to-key maps, activated with table:NAME. |
@@ -132,13 +132,13 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | --- | --- | --- | --- |
 | `autoScrollInterval` | `50` | 10–1000 | Milliseconds between the rows that a selection scrolls while you drag it past the top or bottom of a pane. |
 | `middleClick` | `"primary"` | `"primary"`, `"clipboard"`, `"none"` | What a middle click pastes. The none value turns middle-click paste off. |
-| `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The copy-or-paste action copies an existing selection or pastes otherwise. The extend action extends the selection. |
+| `rightClick` | `"menu"` | `"menu"`, `"paste"`, `"copy-or-paste"`, `"extend"` | What a right click does. The menu value opens the context menu. The paste value pastes the clipboard. The copy-or-paste value copies an existing selection, or else pastes. The extend value extends the selection. |
 
 ## Notifications
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `rateLimit` | `20` | 0–1000 | Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. Notices from Afterglow itself do not count. |
+| `rateLimit` | `20` | 0–1000 | Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. Notices from Afterglow itself do not count, except those of script commands. |
 | `statusInterval` | `3000` | 0–600000 | Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. A value of 0 shows each one. |
 
 ## QuickTerminal
@@ -157,8 +157,12 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `true` |  | Allow local Luau scripts to query pane text, selections and semantic regions. |
-| `enabled` | `true` |  | Run Luau scripts from ~/.config/afterglow/scripts and from afterglow/scripts in each XDG data directory. |
+| `allowReadText` | `true` |  | Allow Luau scripts to read pane text, selections and semantic regions, and to run actions that read pane text. In a script command that runs for afterglow run, read_text, read_region and semantic_regions also need Control.allowReadText. |
+| `commandOutputLimit` | `16384` | 64–262144 | Kibibytes of UTF-8 text that one run of a script command can write to standard output and standard error together. A run that writes more ends, and afterglow run exits with status 1. A run from a key, a menu or the palette counts only its standard error. |
+| `commandRunLimit` | `16` | 1–16 | Runs of the commands of one script at the same time. A run over the limit fails, and afterglow run exits with status 1. Each run that waits uses one of the 16 waiting handlers of its script. |
+| `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from afterglow run. A run with more input fails, and afterglow run exits with status 2. A value of 0 refuses any input. |
+| `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and afterglow run exits with status 124. A change applies to the runs that start after it. |
+| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The afterglow run command also needs Control.enabled. |
 
 ## Shaders
 
@@ -167,7 +171,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text. |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
-| `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. |
+| `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
 | `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. An empty value turns it off. |
 | `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. |
 | `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once. |
@@ -180,7 +184,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | --- | --- | --- | --- |
 | `allowScreenReadback` | `false` |  | Answer DECRQCRA checksum requests. These let any program in the pane read the screen back. |
 | `ambiguousWide` | `false` |  | Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. |
-| `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | Response to the bell. The attention value marks the window urgent. The visual value flashes the pane. The both value does both. |
+| `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | Response to the bell. The none value does nothing. The attention value marks the window urgent. The visual value flashes the pane. The both value does both. |
 | `bellSound` | `""` |  | Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file. |
 | `bellSoundInterval` | `250` | 0–10000 | Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 plays every bell. |
 | `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional paragraph layout mode. Application grids retain logical order. |
@@ -188,11 +192,11 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
 | `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. |
 | `confirmUnsafePaste` | `true` |  | Ask before pasting text that holds a line break, unless the program uses bracketed paste. A line break could run a command. |
-| `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Where new selections are copied: the primary selection, the clipboard too, or nowhere with off. |
+| `copyOnSelect` | `"primary"` | `"primary"`, `"clipboard"`, `"off"` | Where Afterglow copies a new selection. The primary value copies it to the primary selection. The clipboard value copies it to the clipboard too. The off value does not copy it. |
 | `cursorBlink` | `true` |  | Make the cursor blink. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
-| `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop, when a drag over its pane shows it new types. The window does not draw while it waits. A value of 0 does not wait. |
+| `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop. It waits when a drag over the pane shows the program new types. The window does not draw while it waits. A value of 0 does not wait. |
 | `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. New panes use this value. |
 | `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
@@ -205,14 +209,14 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |
 | `scrollOnInput` | `true` |  | Scroll to the bottom on typing or paste. |
 | `scrollOnOutput` | `false` |  | Scroll to the bottom when new output arrives. |
-| `scrollback` | `10000` | 0–1000000 | Lines of history that each pane keeps. |
-| `shell` | `""` |  | Program to run. An empty value starts your login shell. New panes use this value. |
+| `scrollback` | `10000` | 0–1000000 | Lines of history that each pane keeps. A value of 0 keeps no history. |
+| `shell` | `""` |  | Program that new panes run, as a name or a path. It gets no arguments. An empty value starts your login shell. |
 | `shellIntegration` | `true` |  | Integrate Bash, Zsh and Fish prompts in new panes automatically. |
 | `sshIntegration` | `true` |  | Run ssh through afterglow ssh in integrated shells. The pane label then shows the host, and the session offers COLORTERM and TERM_PROGRAM to the server. New panes use this value. |
 | `sshTerminfo` | `"install"` | `"install"`, `"fallback"` | What to do when TERM is afterglow: install its terminfo entry on each ssh host, or use xterm-256color there instead. New panes use this value. |
 | `term` | `"xterm-256color"` |  | Value of TERM for the programs in the panes. An empty value uses the default. New panes use this value. |
 | `textBlinkInterval` | `500` | 100–5000 | Duration in milliseconds for each visible and hidden phase of blinking text (SGR 5). |
-| `wordSeparators` | `` "`\"'│\|:;,()[]{}<>" `` |  | Characters that end a word for double-click selection, besides spaces. |
+| `wordSeparators` | `` "`\"'│\|:;,()[]{}<>" `` |  | Characters that end a word for double-click selection, besides spaces. With an empty value, only spaces end a word. |
 
 ## Window
 
@@ -230,7 +234,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `scrollbarHideDelay` | `1200` | 0–60000 | Milliseconds an auto scrollbar stays visible after the last scroll or after the pointer leaves. |
 | `startMode` | `"normal"` | `"normal"`, `"maximized"`, `"fullscreen"` | How new windows open. |
 | `tabBar` | `"auto"` | `"auto"`, `"always"`, `"never"` | When the tab bar shows. The auto value shows it while there are two or more tabs. |
-| `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, panes and windows. Use inherit, home or a path. Inherit uses the focused pane's directory or the launcher's directory. The afterglow -d option overrides this setting. |
+| `workingDirectory` | `"inherit"` |  | Starting directory for new tabs, panes and windows. Use inherit, home or a path. The inherit value, or an empty value, uses the focused pane's directory or the launcher's directory. The afterglow -d option overrides this setting. |
 
 ## Default bindings
 

@@ -38,7 +38,7 @@ Example files do not activate themselves.
 Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
 Keep the directory name, manifest ID and module filenames unchanged.
 Follow the package's instructions for required settings.
-Reopen the palette after reload to see new actions.
+Reopen the palette after reload to see new commands.
 
 `afterglow --help` lists launch options.
 `afterglow ctl --help` lists live control commands.

@@ -309,24 +309,29 @@ void TerminalWindow::advanceTabTransition(std::uint8_t backgroundAlpha, bool& ho
     m_renderer->setTabTransition(std::move(transition));
 }
 
-bool TerminalWindow::openOverview()
+bool TerminalWindow::overviewOpensOn(const Pane* pane) const
 {
-    if (m_overview.open || !m_overviewAvailable || !m_splits || !m_focused) return false;
+    if (!m_overviewAvailable || !m_splits || !pane) return false;
     // The overview takes the keyboard: not while a dialog or the chrome has it.
     if (m_scriptDialog || m_controller->wantsKeyboard()) return false;
-    // Refused before the unzoom below, which would snap the panes: the
-    // focused pane is no card past the card limit or with no room to draw.
+    // Refused before the unzoom in openOverview, which would snap the panes:
+    // the pane is no card past the card limit or with no room to draw.
     if (paneArea().isEmpty()) return false;
     std::size_t ahead = 0;
     bool found = false;
     for (std::size_t tab = 0; tab < m_tabs.size() && !found; ++tab) {
         if (!m_tabs[tab]->splits) continue;
-        m_tabs[tab]->splits->forEachPane([&](Pane* pane, const QRect&) {
-            if (pane == m_focused) found = true;
+        m_tabs[tab]->splits->forEachPane([&](Pane* p, const QRect&) {
+            if (p == pane) found = true;
             else if (!found) ++ahead;
         });
     }
-    if (!found || ahead >= std::size_t(AfterglowRender::MaxShaderPanes)) return false;
+    return found && ahead < std::size_t(AfterglowRender::MaxShaderPanes);
+}
+
+bool TerminalWindow::openOverview()
+{
+    if (m_overview.open || !overviewOpensOn(m_focused)) return false;
     const bool fresh = !overviewShowing();
     const auto before = overviewPanes();
     // Every tab shows all of its panes; closing zooms them again.
@@ -366,10 +371,7 @@ bool TerminalWindow::openOverview()
     cancelKeyMode();
     stopCopyMode();
     stopUrlMode();
-    if (m_unicodeInput) {
-        m_unicodeInput.reset();
-        showUnicodeInput();
-    }
+    stopUnicodeInput();
     if (fresh) {
         // Hidden tabs were laid out again at the window's size: their cards
         // start there, not from where they were when last shown.

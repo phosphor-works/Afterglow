@@ -47,7 +47,8 @@ QString pick(const QString& spec, bool dark);
 /// Ghostty's (~/.config/ghostty/themes, then ghostty/themes in each XDG data
 /// directory), Kitty's (~/.config/kitty/themes) and Konsole's (konsole in
 /// each XDG data directory). A build-tree binary puts the checkout's themes
-/// before the XDG data directories.
+/// before the XDG data directories. The data directories' entries are listed
+/// whether they exist or not, so that a watch of them sees a new one.
 QStringList searchDirs();
 
 /// Every file that could hold theme @p name, in search order: name.json,

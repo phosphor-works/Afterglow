@@ -5,16 +5,21 @@ local base, peak = 0.8, 1.3
 local sample, visited = nil, {}
 local target, generation = nil, 0
 return {
- metadata={name="Contextual scene",actions={{id="toggle",title="Toggle contextual Phosphor exposure"}}},
+ metadata={name="Contextual scene"},
  on_load=function(ev)
     base=math.clamp(tonumber(ev.package.config.base_intensity) or 0.8,0,3)
     peak=math.clamp(tonumber(ev.package.config.peak_intensity) or 1.3,base,3)
  end,
- run_action=function(_,ev)
+ run_command=function(command,ev)
+    if command~="toggle" then return nil end
+    if #ev.args>0 then
+        return {afterglow.output_error(ev,"usage: afterglow run contextual-scene toggle\n"),afterglow.exit(ev,2)}
+    end
     enabled=not enabled
     generation+=1
     pending=false; target=nil
-    if enabled then return afterglow.timer("scene",1,1000) end
+    local said=afterglow.output(ev,enabled and "Contextual exposure on\n" or "Contextual exposure off\n")
+    if enabled then return {afterglow.timer("scene",1,1000),said} end
     local effects={afterglow.cancel("scene")}
     for window,entry in pairs(visited) do
         for _,pane in ipairs(ev.terminal.panes) do
@@ -23,7 +28,8 @@ return {
             end
         end
     end
-    visited={}; pending=false
+    visited={}
+    table.insert(effects,said)
     return effects
  end,
  on_timer=function(ev)

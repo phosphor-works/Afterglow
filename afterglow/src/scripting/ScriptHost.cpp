@@ -28,6 +28,7 @@
 #include <cmath>
 #include <deque>
 #include <limits>
+#include <map>
 #include <optional>
 #include <utility>
 
@@ -56,26 +57,56 @@ struct ScriptHost::Script
     int stateVersion = 1;
     bool migrateState = false;
     QVariant initialEffects;
+    qint64 initialFlowsBefore = 0, initialFlowsAfter = 0; ///< the flows that on_load registered
     std::unique_ptr<LuauEngine> engine;
     int module = -1;
-    QList<ScriptAction> actions;
+    QList<ScriptCommand> commands; ///< the manifest's, then those of set_commands
+    /// A command run: where its output goes, and how it ends.
+    struct Run
+    {
+        QString title;
+        CommandSink sink;
+        quint32 pane = 0;
+        qint64 outputBytes = 0;
+        qint64 outputLimit = 0; ///< Scripts.commandOutputLimit when the run started
+        int status = 0;
+        QString errors; ///< stderr of a run with no client, for its notification
+        std::unique_ptr<QTimer> timer; ///< Scripts.commandTimeout
+    };
+    std::map<quint64, std::shared_ptr<Run>> runs;
+    /// The run of each flow (the await runtime's waiting handler), so that a
+    /// result that resumes a run's handler runs as that run. A run's handler
+    /// waits for one flow at a time, so a run has one entry at most.
+    QHash<qint64, quint64> flowRuns;
+    /// Runs that ended while their handler waited: it resumed with
+    /// "cancelled" and may still run, as no run, until it returns.
+    QSet<quint64> endedRuns;
+    /// Ended runs whose "cancelled" resume has not run yet. Results for
+    /// their flows that were queued before it are dropped: the handler
+    /// resumes once, with "cancelled", and starts nothing new in between.
+    QSet<quint64> cancelsDue;
     int failures = 0;
     quint64 calls = 0, handlerErrors = 0, effectErrors = 0;
     quint64 droppedCallbacks = 0, droppedEffects = 0, droppedResults = 0;
     qint64 lastCallNs = 0, maxCallNs = 0, totalCallNs = 0;
     QString lastError;
     bool disabled = false;
+    QString disabledReason; ///< the stderr of the runs that its disable ended
     std::deque<qint64> effects; ///< when recent effects ran, for the budgets
     std::deque<qint64> structural;
     std::deque<qint64> docks;
     std::deque<qint64> results;
     int pendingResults = 0;
-    int sleeping = 0;
-    int callTimeoutMs = ActionTimeoutMs; ///< of the running handler; its awaited results resume with it
-    LuauEngine::CallOutcome invoke(const QString& function, const QVariantList& args, int timeoutMs)
+    /// Sleeps that have not ended, by timer, with their request IDs.
+    QHash<QTimer*, QString> sleeps;
+    int callTimeoutMs = CommandCallTimeoutMs; ///< of the running handler; its awaited results resume with it
+    /// The last flow ID that the await runtime gave.
+    qint64 flowCount() const { return engine->moduleField(module, QStringLiteral("__flows")).toLongLong(); }
+    /// Calls @p function. @p before: the flow count before the call.
+    LuauEngine::CallOutcome invoke(const QString& function, const QVariantList& args, int timeoutMs, qint64* before = nullptr)
     {
-        const QString flows = QStringLiteral("__flows");
-        const qint64 flowsBefore = engine->moduleField(module, flows).toLongLong();
+        const qint64 flowsBefore = flowCount();
+        if (before) *before = flowsBefore;
         QElapsedTimer elapsed;
         elapsed.start();
         auto outcome = engine->callModule(module, function, args, timeoutMs);
@@ -87,7 +118,7 @@ struct ScriptHost::Script
         // effects it waits for. When the call fails after that (the effects
         // are too large to convert), no result will resume the flow, and it
         // would hold a waiting slot for good.
-        if (outcome.status != LuauEngine::CallStatus::Ok && engine->moduleField(module, flows).toLongLong() > flowsBefore) {
+        if (outcome.status != LuauEngine::CallStatus::Ok && flowCount() > flowsBefore) {
             engine->callModule(module, QStringLiteral("__abandon"), {flowsBefore}, timeoutMs);
         }
         return outcome;
@@ -266,8 +297,9 @@ QString luauType(const QVariant& value)
 }
 
 /// Text from a script, safe for a log line: bounded, and with no control
-/// characters that could drive the terminal that shows the log.
-QString loggable(QString text, int limit)
+/// characters that could drive the terminal that shows the log. @p lines
+/// keeps line breaks, for a notice, which shows them as such.
+QString loggable(QString text, int limit, bool lines = false)
 {
     if (text.size() > limit) {
         text.truncate(limit);
@@ -276,9 +308,23 @@ QString loggable(QString text, int limit)
     }
     for (QChar& c : text) {
         const char16_t u = c.unicode();
-        if ((u < 0x20 && u != u'\t') || (u >= 0x7f && u < 0xa0)) c = QChar::ReplacementCharacter;
+        if ((u < 0x20 && u != u'\t' && !(lines && u == u'\n')) || (u >= 0x7f && u < 0xa0)) c = QChar::ReplacementCharacter;
     }
     return text;
+}
+
+/// The last @p limit UTF-16 units of @p text, without half of a surrogate pair at the start.
+QString tail(const QString& text, qsizetype limit)
+{
+    QString out = text.right(limit);
+    if (!out.isEmpty() && out.front().isLowSurrogate()) out.remove(0, 1);
+    return out;
+}
+
+/// A byte limit as the setting gives it: in KiB, which it always is outside tests.
+QString byteLimit(qint64 bytes)
+{
+    return bytes % 1024 == 0 ? QStringLiteral("%1 KiB").arg(bytes >> 10) : QStringLiteral("%1 bytes").arg(bytes);
 }
 
 QString str(const QVariantMap& m, const char* key)
@@ -326,7 +372,10 @@ const EffectKind Kinds[] = {
     {"exec", false, false, {"name", "cwd"}, true, {"timeout_ms", "max_bytes"}},
     {"read_file", false, false, {"name", "path"}, false, {"timeout_ms", "max_bytes"}},
     {"watch_file", false, false, {"name", "path"}, false},
-    {"set_actions", false, false, {}, false},
+    {"set_commands", false, false, {}, false},
+    {"output", false, false, {"run", "text"}, false},
+    {"output_error", false, false, {"run", "text"}, false},
+    {"exit", false, false, {"run"}, false, {"code"}},
     {"select", true, false, {"title"}, false},
     {"prompt", true, false, {"title", "text"}, false},
     {"status", true, false, {"text", "tab_title"}, false},
@@ -366,14 +415,31 @@ const EffectKind Kinds[] = {
 };
 
 /// Kinds outside the effect budget. A sleep is bounded by MaxSleeping and its
-/// result counts as one. Ending a key mode, cancelling a task or removing a
+/// result counts as one result. Ending a key mode, cancelling a task or removing a
 /// dock only gives something back, and must work when a burst has spent the
-/// budget. An undock removes at most the docks that budgeted effects made.
+/// budget. An undock removes at most the docks that budgeted effects made. A
+/// command's output and status stay with its own client, which
+/// Scripts.commandOutputLimit bounds: a command that prints a line for each
+/// item must not run into the budget of the effects that act on the terminal.
 bool budgetFree(const QString& kind)
 {
     return kind == QLatin1String("sleep") || kind == QLatin1String("end_key_mode") || kind == QLatin1String("cancel")
-        || kind == QLatin1String("undock");
+        || kind == QLatin1String("undock") || kind == QLatin1String("output") || kind == QLatin1String("output_error")
+        || kind == QLatin1String("exit");
 }
+
+/// The flow ID of a request ID that the await runtime gave, else -1.
+qint64 flowOf(const QString& request)
+{
+    if (!request.startsWith(AwaitPrefix)) return -1;
+    const QString rest = request.mid(AwaitPrefix.size());
+    bool ok = false;
+    const qint64 flow = rest.left(rest.indexOf(QLatin1Char(':'))).toLongLong(&ok);
+    return ok ? flow : -1;
+}
+
+/// The run that the await runtime reports as finished, in the call's result.
+const QString RunDone = QStringLiteral("__run_done");
 
 /// The channels a signal can set: the size of the shaders' uSignal array
 /// (TerminalUniformsTail in ShaderProgram.h, Pane::SignalCount). This
@@ -502,8 +568,9 @@ QStringList ScriptHost::performScan(const QStringList& directories)
         // with a file there, as a later directory wins over an earlier one.
         QStringList candidates;
         for (const QString& dir : directories) {
-            const QFileInfoList files = QDir(dir).entryInfoList({QStringLiteral("*.luau")}, QDir::Files | QDir::Readable,
-                                                                QDir::Name);
+            // Unreadable files too: their load fails, which diagnostics show,
+            // and the watch sees a change of their permissions.
+            const QFileInfoList files = QDir(dir).entryInfoList({QStringLiteral("*.luau")}, QDir::Files, QDir::Name);
             for (const QFileInfo& f : files) {
                 if (!f.fileName().endsWith(QLatin1String(".d.luau"))) {
                     watched << f.absoluteFilePath();
@@ -543,11 +610,14 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 // change to any of it must replace the instance.
                 QVariantMap pulses;
                 for (auto p = package.pulses.cbegin(); p != package.pulses.cend(); ++p) pulses.insert(p.key(), p.value());
+                QVariantList commands;
+                for (const ScriptCommand& c : std::as_const(package.commands))
+                    commands.append(QVariantList{c.name, c.summary, c.usage, c.palette, c.input});
                 const QVariantMap identity{{QStringLiteral("id"), package.id}, {QStringLiteral("version"), package.version},
                     {QStringLiteral("state_version"), package.stateVersion}, {QStringLiteral("assets"), package.assets},
                     {QStringLiteral("config"), package.config}, {QStringLiteral("shaders"), package.shaderDirectory},
                     {QStringLiteral("packs"), package.shaderPacks}, {QStringLiteral("suggests"), package.suggests},
-                    {QStringLiteral("pulses"), pulses}};
+                    {QStringLiteral("pulses"), pulses}, {QStringLiteral("commands"), commands}};
                 source += "\n-- metadata: " + QCryptographicHash::hash(QJsonDocument::fromVariant(identity).toJson(), QCryptographicHash::Sha256).toHex();
             } else {
                 failure = readScriptFile(path, MaxScriptBytes, source);
@@ -566,12 +636,14 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             ScriptPtr script;
             if (!failure.isEmpty()) {
                 m_loadErrors[path] = failure;
-                qCWarning(lcScripts).noquote() << path << failure;
+                qCWarning(lcScripts).noquote() << path << loggable(failure, MaxLogCharacters);
             } else if (same != m_scripts.end()) {
                 script = *same;
             } else if (known && !memo->error.isEmpty()) {
                 m_loadErrors[path] = memo->error; // unchanged and still broken
                 if (memo->state) m_stateFailures.insert(path);
+                // A broken edit of a superseded script: still superseded.
+                if (!memo->id.isEmpty() && holders.contains(memo->id)) supersede(path, memo->id, holders.value(memo->id));
                 memos.insert(path, *memo);
             } else if (known && holders.contains(memo->id)) {
                 supersede(path, memo->id, holders.value(memo->id)); // unchanged and still superseded
@@ -584,7 +656,10 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             if (!script) {
                 if (isPackage && m_stateFailures.contains(path)) {
                     // Fixing or removing the state file retries the package.
-                    watched << m_stateDirectory << QDir(m_stateDirectory).filePath(package.id + QStringLiteral(".json"));
+                    // The file exists: its own watch sees an edit, a
+                    // replacement and a removal, and the writes of other
+                    // packages to the directory do not rescan.
+                    watched << QDir(m_stateDirectory).filePath(package.id + QStringLiteral(".json"));
                 }
                 // A broken edit keeps its last working instance and resources.
                 const auto old = std::find_if(m_scripts.begin(), m_scripts.end(), [&](const ScriptPtr& s) { return s->path == path; });
@@ -593,7 +668,8 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             }
             if (const auto holder = holders.constFind(script->id); holder != holders.cend()) {
                 supersede(path, script->id, *holder);
-                memos.insert(path, {stamp, script->id, {}});
+                // A broken edit of a superseded script keeps its error for diagnostics.
+                memos.insert(path, {stamp, script->id, m_loadErrors.value(path), m_stateFailures.contains(path)});
                 continue;
             }
             holders.insert(script->id, path);
@@ -612,6 +688,8 @@ QStringList ScriptHost::performScan(const QStringList& directories)
                 script->storage.revision, script->storage.value, committed);
             if (!error.isEmpty()) {
                 m_loadErrors[script->path] = error;
+                // Fixing the state file, or removing it, retries the migration.
+                watched << QDir(m_stateDirectory).filePath(script->id + QStringLiteral(".json"));
                 qCWarning(lcScripts).noquote() << script->id << "migration not committed:" << error;
                 // The live instance keeps running: the one at this path, or
                 // the one with this id that a higher-priority path replaced.
@@ -635,7 +713,7 @@ QStringList ScriptHost::performScan(const QStringList& directories)
             qCWarning(lcScripts) << it.key() << "uses the id" << supersededIds.value(it.key()) << "of" << it.value()
                                  << "and is not loaded";
     }
-    const QList<ScriptAction> before = actions();
+    const QList<ScriptCommand> before = commands();
     const auto previous = m_scripts;
     for (const auto& script : previous) {
         if (std::find(loaded.begin(), loaded.end(), script) == loaded.end()) retire(script);
@@ -648,15 +726,20 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     for (const auto& script : current) {
         if (std::find(previous.begin(), previous.end(), script) == previous.end()) {
             if (script->package) {
-                script->callTimeoutMs = ActionTimeoutMs;
+                script->callTimeoutMs = CommandCallTimeoutMs;
                 const QVariant effects = std::exchange(script->initialEffects, QVariant());
+                // The effects of its on_load, which ran in load(), and the flows it registered there.
+                const CallContext outer = std::exchange(m_call, {script.get(), 0, false, false, script->initialFlowsBefore,
+                                                                 script->initialFlowsAfter});
                 applyResult(script, effects, 0);
+                m_call = outer;
             } else {
                 emitOwned(script, QStringLiteral("on_load"), {}, 0);
             }
         }
     }
-    announceActions(before);
+    // Once for the whole scan: its on_load effects and disables announce nothing.
+    if (outer && commands() != before) Q_EMIT commandsChanged();
     for (const ScriptPtr& s : m_scripts) {
         watched << s->path; // editors that save in place change only the file
     }
@@ -665,15 +748,10 @@ QStringList ScriptHost::performScan(const QStringList& directories)
     return watched;
 }
 
-void ScriptHost::announceActions(const QList<ScriptAction>& before)
+void ScriptHost::announceCommands(const QList<ScriptCommand>& before)
 {
-    const QList<ScriptAction> after = actions();
-    const bool changed = before.size() != after.size()
-        || !std::equal(before.cbegin(), before.cend(), after.cbegin(),
-                       [](const ScriptAction& a, const ScriptAction& b) { return a.token == b.token && a.title == b.title; });
-    if (changed) {
-        Q_EMIT actionsChanged();
-    }
+    // A scan announces its change once, at its end.
+    if (!m_scanning && commands() != before) Q_EMIT commandsChanged();
 }
 
 void ScriptHost::publishPackageShaders()
@@ -688,12 +766,13 @@ void ScriptHost::publishPackageShaders()
     }
 }
 
-void ScriptHost::disable(const ScriptPtr& script)
+void ScriptHost::disable(const ScriptPtr& script, const QString& reason)
 {
-    const QList<ScriptAction> before = actions();
+    const QList<ScriptCommand> before = commands();
     script->disabled = true;
+    script->disabledReason = reason;
     retire(script);
-    announceActions(before);
+    announceCommands(before);
     publishPackageShaders();
 }
 
@@ -716,6 +795,8 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     script->module = script->engine->loadModule(chunk, "return afterglow.__wrap((function(...) " + source + "\nend)(...))", &error);
     if (script->module < 0) {
         if (package) error = ScriptPackage::locate(package->modules, error);
+        // A script's own error (its module code calls error()) can be of any length and hold anything.
+        error = loggable(error, MaxLogCharacters);
         m_loadErrors[path] = error;
         qCWarning(lcScripts).noquote() << path << "did not load:" << error;
         return nullptr;
@@ -731,8 +812,8 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         script->id = QFileInfo(path).completeBaseName();
     }
     if (!validScriptId(script->id)) {
-        m_loadErrors[path] = QStringLiteral("Invalid script id");
-        qCWarning(lcScripts) << path << "has an unusable id" << script->id << "(letters, digits, _ and - only)";
+        m_loadErrors[path] = QStringLiteral("The script id %1 must be %2").arg(loggable(script->id, 64), ScriptIdRule);
+        qCWarning(lcScripts).noquote() << path << m_loadErrors.value(path);
         return nullptr;
     }
     static quint64 nextOwner = 0;
@@ -741,28 +822,21 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
     if (script->name.isEmpty()) {
         script->name = script->id;
     }
-    const bool runs = script->engine->hasFunction(script->module, QStringLiteral("run_action"));
-    QSet<QString> actionIds;
-    for (const QVariant& v : meta.value(QStringLiteral("actions")).toList()) {
-        const QVariantMap a = v.toMap();
-        const QString id = str(a, "id");
-        const QString title = str(a, "title");
-        // The same rules as set_actions.
-        if (!validScriptId(id) || actionIds.contains(id) || title.size() > 512) {
-            qCWarning(lcScripts) << path << "has an action with an unusable or repeated id, or a long title:" << id;
-            continue;
-        }
-        if (!runs) {
-            qCWarning(lcScripts) << path << "lists actions but has no run_action function";
-            break;
-        }
-        if (script->actions.size() >= MaxActions) {
-            qCWarning(lcScripts) << path << "lists more than" << MaxActions << "actions";
-            break;
-        }
-        actionIds.insert(id);
-        script->actions.append({script->id + QLatin1Char('.') + id, title.isEmpty() ? id : title});
+    // A package declares its commands in package.json, a single file in its metadata.
+    error.clear();
+    const QVariant declared = meta.value(QStringLiteral("commands"));
+    if (package && declared.isValid()) error = QStringLiteral("A package declares its commands in package.json");
+    else if (package) script->commands = package->commands;
+    else if (declared.isValid()) error = readCommands(declared, script->commands);
+    if (error.isEmpty() && !script->commands.isEmpty()
+        && !script->engine->hasFunction(script->module, QStringLiteral("run_command")))
+        error = QStringLiteral("A script with commands needs a run_command function");
+    if (!error.isEmpty()) {
+        m_loadErrors[path] = loggable(error, MaxLogCharacters);
+        qCWarning(lcScripts).noquote() << path << m_loadErrors.value(path);
+        return nullptr;
     }
+    for (ScriptCommand& command : script->commands) command.script = script->id;
     if (package) {
         script->package = true;
         script->modules = package->modules;
@@ -774,12 +848,11 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
             {QStringLiteral("api_version"), 1}, {QStringLiteral("assets"), package->assets}, {QStringLiteral("home"), QDir::homePath()}, {QStringLiteral("config"), package->config}};
         error = ScriptState(m_stateDirectory).read(script->id, script->storage);
         if (error.isEmpty() && script->storage.version > script->stateVersion) error = QStringLiteral("Stored state is newer than this package");
-        if (!error.isEmpty()) m_stateFailures.insert(path);
         if (error.isEmpty() && script->storage.version > 0 && script->storage.version < script->stateVersion) {
             if (!script->engine->hasFunction(script->module, QStringLiteral("migrate"))) error = QStringLiteral("State migration function is missing");
             else {
                 const auto migrated = script->invoke(QStringLiteral("migrate"),
-                    {script->storage.value, script->storage.version, script->stateVersion}, ActionTimeoutMs);
+                    {script->storage.value, script->storage.version, script->stateVersion}, CommandCallTimeoutMs);
                 if (migrated.status != LuauEngine::CallStatus::Ok)
                     error = QStringLiteral("Migration failed: ") + ScriptPackage::locate(package->modules, migrated.message);
                 else if (migrated.result.typeId() != QMetaType::QVariantMap)
@@ -791,16 +864,25 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
                 }
             }
         }
+        // Read or migrated, the error came from the stored state: fixing or
+        // removing its file retries the package.
+        if (!error.isEmpty()) m_stateFailures.insert(path);
         if (error.isEmpty() && script->engine->hasFunction(script->module, QStringLiteral("on_load"))) {
             const QVariantMap storage{{QStringLiteral("value"), script->storage.value}, {QStringLiteral("version"), script->stateVersion},
                 {QStringLiteral("revision"), script->storage.revision + (script->migrateState ? 1 : 0)}};
             const auto initialized = script->invoke(QStringLiteral("on_load"),
-                {QVariantMap{{QStringLiteral("terminal"), state()}, {QStringLiteral("package"), script->packageInfo}, {QStringLiteral("storage"), storage}}}, ActionTimeoutMs);
+                {QVariantMap{{QStringLiteral("terminal"), state()}, {QStringLiteral("package"), script->packageInfo}, {QStringLiteral("storage"), storage}}},
+                CommandCallTimeoutMs, &script->initialFlowsBefore);
             if (initialized.status != LuauEngine::CallStatus::Ok)
                 error = QStringLiteral("Initialization failed: ") + ScriptPackage::locate(package->modules, initialized.message);
             else script->initialEffects = initialized.result;
+            script->initialFlowsAfter = script->flowCount();
         }
-        if (!error.isEmpty()) { m_loadErrors[path] = error; qCWarning(lcScripts).noquote() << path << error; return nullptr; }
+        if (!error.isEmpty()) {
+            m_loadErrors[path] = loggable(error, MaxLogCharacters);
+            qCWarning(lcScripts).noquote() << path << m_loadErrors.value(path);
+            return nullptr;
+        }
     }
     qCInfo(lcScripts).noquote() << "loaded" << script->id << "from" << path;
     return script;
@@ -866,42 +948,213 @@ bool ScriptHost::isDisabled(const QString& id) const
     return false;
 }
 
-QList<ScriptHost::ScriptAction> ScriptHost::actions() const
+QList<ScriptCommand> ScriptHost::commands() const
 {
-    QList<ScriptAction> out;
+    QList<ScriptCommand> out;
     for (const ScriptPtr& s : m_scripts) {
-        if (!s->disabled) {
-            out.append(s->actions);
-        }
+        if (!s->disabled && !s->retiring) out.append(s->commands);
     }
     return out;
 }
 
-bool ScriptHost::runAction(const QString& token, quint32 pane)
+quint64 ScriptHost::startCommand(const CommandRequest& request, CommandSink sink, QString* error, bool* unknown)
 {
-    const auto dot = token.indexOf(QLatin1Char('.'));
-    if (dot <= 0) {
-        return false;
-    }
-    const QString id = token.left(dot);
+    auto refuse = [&](const QString& why, bool missing = false) -> quint64 {
+        if (error) *error = why;
+        if (unknown) *unknown = missing;
+        return 0;
+    };
     // Copied: a reload during the call must not free the script under it.
     const std::vector<ScriptPtr> scripts = m_scripts;
-    for (const ScriptPtr& s : scripts) {
-        if (s->id != id || s->disabled || s->retiring) {
-            continue;
-        }
-        auto it = std::find_if(s->actions.cbegin(), s->actions.cend(), [&](const ScriptAction& a) { return a.token == token; });
-        if (it == s->actions.cend()) {
-            return false;
-        }
-        QVariantMap ev{{QStringLiteral("terminal"), state()}};
-        if (pane) {
-            ev.insert(QStringLiteral("pane"), eventPane(pane));
-        }
-        call(s, QStringLiteral("run_action"), {token.mid(dot + 1), ev}, ActionTimeoutMs, pane);
-        return true;
+    // A disabled script is retired for good, but stays in the list until its
+    // file changes: it is found, so that the refusal can say why.
+    const auto found = std::find_if(scripts.begin(), scripts.end(), [&](const ScriptPtr& s) {
+        return s->id == request.script && (!s->retiring || s->disabled);
+    });
+    const ScriptPtr script = found == scripts.end() ? nullptr : *found;
+    // Its commands are withdrawn, but it is there: the user can find out why.
+    if (script && script->disabled)
+        return refuse(QStringLiteral("Script %1 is disabled. afterglow ctl scripts shows why").arg(script->id));
+    const auto command = script ? std::find_if(script->commands.cbegin(), script->commands.cend(),
+                                               [&](const ScriptCommand& c) { return c.name == request.command; })
+                                : QList<ScriptCommand>::const_iterator();
+    if (!script || command == script->commands.cend())
+        return refuse(QStringLiteral("No command %1 in %2").arg(request.command, request.script), true);
+    if (int(script->runs.size()) >= m_limits.runs)
+        return refuse(QStringLiteral("Script %1 runs %2 commands already, its limit (Scripts.commandRunLimit)")
+                          .arg(script->id).arg(m_limits.runs));
+    if (request.args.size() > MaxCommandArgs) return refuse(QStringLiteral("A command takes at most %1 arguments").arg(MaxCommandArgs));
+    for (const QString& arg : request.args) {
+        if (arg.size() > MaxCommandArgLength)
+            return refuse(QStringLiteral("A command argument has at most %1 UTF-16 units").arg(MaxCommandArgLength));
     }
-    return false;
+    const quint64 handle = ++m_nextRun;
+    const QString id = QString::number(handle);
+    auto run = std::make_shared<Script::Run>();
+    run->title = command->title();
+    run->sink = std::move(sink);
+    run->pane = request.pane;
+    // The limits that the run started with: a settings change does not move them.
+    run->outputLimit = m_limits.outputBytes;
+    run->timer = std::make_unique<QTimer>();
+    run->timer->setSingleShot(true);
+    connect(run->timer.get(), &QTimer::timeout, this, [this, handle, timeout = m_limits.timeoutMs] {
+        cancelCommand(handle, CommandTimedOut,
+                      QStringLiteral("The command ran for %1 seconds, its limit (Scripts.commandTimeout)").arg(timeout / 1000.0));
+    });
+    run->timer->start(m_limits.timeoutMs);
+    script->runs.emplace(handle, run);
+    m_runScripts.insert(handle, script);
+
+    QVariantMap ev{{QStringLiteral("args"), request.args}, {QStringLiteral("source"), request.source},
+                   {QStringLiteral("run"), id}, {QStringLiteral("terminal"), state()}};
+    QVariantMap pane;
+    if (request.pane) {
+        pane = eventPane(request.pane);
+        ev.insert(QStringLiteral("pane"), pane);
+    }
+    ev.insert(QStringLiteral("cwd"), request.cwd.isEmpty() ? pane.value(QStringLiteral("cwd")).toString() : request.cwd);
+    // Whole: the client refuses a run with more than Scripts.commandStdinLimit.
+    if (command->input && request.input) ev.insert(QStringLiteral("stdin"), *request.input);
+    call(script, QStringLiteral("__command"), {id, request.command, ev}, CommandCallTimeoutMs, request.pane, handle);
+    return handle;
+}
+
+QString ScriptHost::runCommand(const QString& token, quint32 pane, const QString& source)
+{
+    const auto dot = token.indexOf(QLatin1Char('.'));
+    if (dot < 0) return QStringLiteral("A script command is <script id>.<command>, not %1").arg(token);
+    QString error;
+    startCommand({token.left(dot), token.mid(dot + 1), {}, {}, pane, std::nullopt, source}, {}, &error);
+    return error;
+}
+
+void ScriptHost::cancelCommand(quint64 run, int status, const QString& message)
+{
+    if (const ScriptPtr script = m_runScripts.value(run).lock()) finishRun(script, run, status, message, true);
+}
+
+void ScriptHost::finishRun(const ScriptPtr& script, quint64 handle, int status, const QString& message, bool waiting)
+{
+    const auto it = script->runs.find(handle);
+    if (it == script->runs.end()) return;
+    const std::shared_ptr<Script::Run> run = it->second;
+    script->runs.erase(it);
+    m_runScripts.remove(handle);
+    run->timer.reset();
+    const QString text = message.isEmpty() || message.endsWith(QLatin1Char('\n')) ? message : message + QLatin1Char('\n');
+    if (run->sink.finished) {
+        if (!text.isEmpty() && run->sink.error) run->sink.error(text, {});
+        run->sink.finished(status);
+    } else {
+        // No client: its stderr and the reason it ended show as a
+        // notification: on the run's pane, or one that belongs to no pane
+        // when the run has none.
+        const QString errors = (run->errors + text).trimmed();
+        if ((status != 0 || !errors.isEmpty()) && m_callbacks.notice) {
+            m_callbacks.notice(run->pane, run->title,
+                               errors.isEmpty() ? QStringLiteral("Exited with status %1").arg(status)
+                                                : loggable(tail(errors, MaxLogCharacters), MaxLogCharacters, true));
+        }
+    }
+    QList<qint64> flows;
+    for (auto flow = script->flowRuns.cbegin(); flow != script->flowRuns.cend(); ++flow) {
+        if (flow.value() == handle) flows << flow.key();
+    }
+    if (!waiting || script->retiring || script->disabled) {
+        for (const qint64 flow : std::as_const(flows)) script->flowRuns.remove(flow);
+        return;
+    }
+    // The handler may wait for something that will now never resume it. It
+    // resumes once with "cancelled", so that its cleanup (a pcall, a busy
+    // flag) runs. Its output and exit go nowhere: the client has its status
+    // already. Not now: the run can end inside an effect of a handler, or of
+    // another script, and a VM must not run inside its own effects. Its flow
+    // keeps its run until then, so that a result queued before the end is
+    // recognized and dropped (cancelsDue). Queued before what stops below
+    // queues its own results, so the handler learns why the run ended.
+    script->endedRuns.insert(handle);
+    script->cancelsDue.insert(handle);
+    QTimer::singleShot(0, this, [this, weak = std::weak_ptr<Script>(script), handle, pane = run->pane,
+                                 reason = message.isEmpty() ? QStringLiteral("The run was canceled") : message.trimmed()] {
+        const ScriptPtr script = weak.lock();
+        if (script) script->cancelsDue.remove(handle);
+        // Its handler returned or failed meanwhile: nothing waits.
+        if (!script || !script->endedRuns.contains(handle)) return;
+        if (script->disabled || script->retiring || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
+            script->endedRuns.remove(handle);
+            script->flowRuns.removeIf([handle](QHash<qint64, quint64>::iterator flow) { return flow.value() == handle; });
+            return;
+        }
+        // The result events of the effects that it waited for, as a result has them.
+        QVariantMap context{{QStringLiteral("terminal"), state()}};
+        if (pane) context.insert(QStringLiteral("pane"), eventPane(pane));
+        call(script, QStringLiteral("__cancel_run"), {QString::number(handle), reason, context}, CommandCallTimeoutMs, pane, handle);
+    });
+    // What the handler waits for stops: its dialogs close, and its processes,
+    // file reads and sleeps end and free their slots.
+    for (const qint64 flow : std::as_const(flows)) {
+        const QString prefix = AwaitPrefix + QString::number(flow) + QLatin1Char(':');
+        if (m_callbacks.closeDialogs) m_callbacks.closeDialogs(script->owner, prefix);
+        m_tasks->cancel(script->owner, prefix);
+        stopSleeps(*script, prefix);
+    }
+}
+
+void ScriptHost::stopSleeps(Script& script, const QString& prefix)
+{
+    for (auto it = script.sleeps.begin(); it != script.sleeps.end();) {
+        if (it.value().startsWith(prefix)) {
+            delete it.key();
+            it = script.sleeps.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool ScriptHost::endedRun(const Script& script, quint64 run) const
+{
+    return script.endedRuns.contains(run);
+}
+
+ScriptHost::EffectResult ScriptHost::writeRun(const ScriptPtr& script, quint64 handle, const QString& text, bool error,
+                                              std::function<void(bool delivered)> sent)
+{
+    const auto it = script->runs.find(handle);
+    if (it == script->runs.end()) return {QStringLiteral("The run has ended"), {}, QStringLiteral("no_run")};
+    const std::shared_ptr<Script::Run> run = it->second;
+    const auto& write = error ? run->sink.error : run->sink.output;
+    const bool client = run->sink.toClient(error);
+    // A run with no client drops its stdout, which costs nothing. Its
+    // stderr is kept for the notification.
+    if (client || error) {
+        const qint64 bytes = text.toUtf8().size();
+        if (run->outputBytes + bytes > run->outputLimit) {
+            const QString why = QStringLiteral("The command's output is over %1, its limit (Scripts.commandOutputLimit)")
+                                    .arg(byteLimit(run->outputLimit));
+            finishRun(script, handle, 1, why, true);
+            return {why, {}, QStringLiteral("operation_failed")};
+        }
+        run->outputBytes += bytes;
+    }
+    if (!client) {
+        // Kept for the notification, at most what it shows.
+        if (error) run->errors = tail(run->errors + text, MaxLogCharacters);
+        if (sent) sent(true);
+        return {{}, {}, {}, true};
+    }
+    // Once: whatever a sink that refuses the text does, the result is reported once.
+    auto once = std::make_shared<std::function<void(bool)>>(std::move(sent));
+    auto report = [once](bool delivered) {
+        if (auto callback = std::exchange(*once, {})) callback(delivered);
+    };
+    if (!write(text, report)) {
+        finishRun(script, handle, 1, {}, true);
+        report(false);
+        return {QStringLiteral("The run's output could not go to its client"), {}, QStringLiteral("cancelled"), true};
+    }
+    return {{}, {}, {}, true};
 }
 
 void ScriptHost::dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event, bool limited)
@@ -988,9 +1241,17 @@ void ScriptHost::retire(const ScriptPtr& script)
 {
     if (script->retiring) return;
     script->retiring = true;
+    // Its runs end before on_unload: none of them can finish after this.
+    while (!script->runs.empty()) {
+        finishRun(script, script->runs.begin()->first, 1,
+                  script->disabled ? script->disabledReason
+                                   : QStringLiteral("The script stopped: it was changed, removed or turned off"),
+                  false);
+    }
     if (!script->disabled && script->engine->hasFunction(script->module, QStringLiteral("on_unload")))
         call(script, QStringLiteral("on_unload"), {QVariantMap{{QStringLiteral("terminal"), state()}}}, EventTimeoutMs, 0);
     m_tasks->clear(script->owner);
+    stopSleeps(*script, {});
     if (m_callbacks.cleanup) m_callbacks.cleanup(script->owner);
 }
 
@@ -1013,32 +1274,93 @@ void ScriptHost::emitOwned(const ScriptPtr& script, const QString& handler, QVar
 }
 
 void ScriptHost::call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
-                      quint32 eventPane)
+                      quint32 eventPane, quint64 run)
 {
-    script->callTimeoutMs = timeoutMs;
-    const auto out = script->invoke(function, args, timeoutMs);
+    // Restored on return: a call that an effect makes (on_unload) must not
+    // change the time limit that the outer handler's awaited results get.
+    struct Restore
+    {
+        int& value;
+        int saved;
+        ~Restore() { value = saved; }
+    } restore{script->callTimeoutMs, std::exchange(script->callTimeoutMs, timeoutMs)};
+    const bool ended = run && endedRun(*script, run);
+    // The handler of an ended run stops being tracked once it returns, fails
+    // or waits for nothing more.
+    auto forgetEnded = [&script, run] {
+        script->endedRuns.remove(run);
+        script->flowRuns.removeIf([run](QHash<qint64, quint64>::iterator flow) { return flow.value() == run; });
+    };
+    qint64 flowsBefore = 0;
+    const auto out = script->invoke(function, args, timeoutMs, &flowsBefore);
     if (out.status != LuauEngine::CallStatus::Ok) {
+        // The script's own error text can be of any length and hold anything.
         const QString why = out.status == LuauEngine::CallStatus::TimedOut
             ? QStringLiteral("took longer than %1 ms").arg(timeoutMs)
-            : ScriptPackage::locate(script->modules, out.message);
-        ++script->handlerErrors;
+            : loggable(ScriptPackage::locate(script->modules, out.message), MaxLogCharacters);
+        // Whatever the owner holds must not trap the user, also after a
+        // failure that does not count.
         if (m_callbacks.failed) m_callbacks.failed(script->owner);
-        const QString name = function == QLatin1String("__resume") ? QStringLiteral("a handler after await") : function;
+        if (ended) {
+            // Often the "cancelled" error passed on: not a failure of the script.
+            forgetEnded();
+            qCInfo(lcScripts).noquote() << script->id << "run_command stopped after its run ended:" << why;
+            return;
+        }
+        ++script->handlerErrors;
+        const QString name = function == QLatin1String("__resume") ? QStringLiteral("a handler after await")
+            : function == QLatin1String("__command")                ? QStringLiteral("run_command")
+                                                                    : function;
         script->lastError = name + QStringLiteral(": ") + why;
         qCWarning(lcScripts).noquote() << script->id << name << "failed:" << why;
+        // An unloading script goes away anyway: its failure disables nothing.
+        if (script->retiring) return;
+        // The handler has stopped: its run ends, with the error on stderr.
+        if (run) {
+            finishRun(script, run, 1,
+                      (function == QLatin1String("__command") ? QStringLiteral("The command failed: ")
+                                                              : QStringLiteral("The command failed after a wait: "))
+                          + why,
+                      false);
+        }
         if (++script->failures >= MaxFailures) {
             qCWarning(lcScripts).noquote() << script->id << "is disabled after" << MaxFailures
                                            << "failures in a row, until its file changes";
-            disable(script);
+            disable(script, QStringLiteral("The script was disabled after %1 failures in a row").arg(MaxFailures));
         }
         return;
     }
     script->failures = 0;
+    // Effects that the handler waits for belong to its run, and the runtime
+    // reports the end of a run's handler in the result.
+    const CallContext outer = std::exchange(m_call, {script.get(), run, ended, false, flowsBefore, script->flowCount()});
     applyResult(script, out.result, eventPane);
+    const bool done = m_call.done;
+    m_call = outer;
+    // Also a run that ended inside its own effects (its output limit, a
+    // client that left): a handler that returned leaves nothing to resume.
+    if (run && endedRun(*script, run)) {
+        if (done || std::find(script->flowRuns.cbegin(), script->flowRuns.cend(), run) == script->flowRuns.cend()) forgetEnded();
+    } else if (run && done) {
+        const auto it = script->runs.find(run);
+        if (it != script->runs.end()) finishRun(script, run, it->second->status, {}, false);
+    }
 }
 
-void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, quint32 eventPane)
+void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& value, quint32 eventPane)
 {
+    QVariant result = value;
+    const bool own = m_call.script == script.get();
+    // {__run_done = run, result = effects}: the run's handler has returned.
+    // Only the run of this call can end here, so a script that makes one up
+    // ends nothing but itself.
+    if (own && m_call.run && result.typeId() == QMetaType::QVariantMap) {
+        const QVariantMap map = result.toMap();
+        if (map.value(RunDone).toString() == QString::number(m_call.run)) {
+            m_call.done = true;
+            result = map.value(QStringLiteral("result"));
+        }
+    }
     if (script->retiring || !result.isValid()) {
         return;
     }
@@ -1061,10 +1383,20 @@ void ScriptHost::applyResult(const ScriptPtr& script, const QVariant& result, qu
             Q_EMIT effectApplied(script->id, {}, error);
             return;
         }
-        for (const QVariant& v : effects) {
+        // A run that ends inside the list (its output limit, a client that
+        // left) takes the rest of the list with it: those effects were its.
+        const quint64 run = own && !m_call.ended ? m_call.run : 0;
+        for (qsizetype i = 0; i < effects.size(); ++i) {
             if (script->disabled || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
                 break;
             }
+            if (run && !script->runs.count(run)) {
+                const auto dropped = std::count_if(effects.begin() + i, effects.end(), [](const QVariant& v) { return v.isValid(); });
+                script->droppedEffects += dropped;
+                qCInfo(lcScripts).noquote() << script->id << "dropped" << dropped << "effects of run" << run << "after it ended";
+                break;
+            }
+            const QVariant& v = effects[i];
             if (!v.isValid()) {
                 continue; // a nil in the list, as in {cond and effect or nil, other}
             }
@@ -1096,8 +1428,23 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     result.code = QStringLiteral("invalid_effect");
     const QVariant requestValue = raw.value(QStringLiteral("request_id"));
     const QString request = requestValue.toString();
-    const bool validRequest = requestValue.typeId() == QMetaType::QString && !request.isEmpty() && request.size() <= 64;
-    if (requestValue.isValid() && !validRequest) {
+    const bool own = m_call.script == script.get();
+    // The await runtime tags the effects of a flow in the call that
+    // registers it. A tag for another flow is made up: its result would
+    // resume a handler that waits for something else, with a forged result.
+    const qint64 flow = flowOf(request);
+    const bool forged = request.startsWith(AwaitPrefix) && !(own && flow > m_call.flowsBefore && flow <= m_call.flowsAfter);
+    const bool validRequest = requestValue.typeId() == QMetaType::QString && !request.isEmpty() && request.size() <= 64 && !forged;
+    // What a run's handler waits for resumes it as that run, also when the
+    // effect is refused below: the refusal is its result. The handler waits
+    // for this flow only now.
+    if (validRequest && flow >= 0 && own && m_call.run) {
+        script->flowRuns.removeIf([&](QHash<qint64, quint64>::iterator f) { return f.value() == m_call.run && f.key() != flow; });
+        script->flowRuns.insert(flow, m_call.run);
+    }
+    if (forged) {
+        error = QStringLiteral("Request IDs that start with %1 belong to afterglow.await").arg(AwaitPrefix);
+    } else if (requestValue.isValid() && !validRequest) {
         error = QStringLiteral("request_id must be a nonempty string of at most 64 characters");
     } else if (!info) {
         error = QStringLiteral("unknown effect \"%1\"").arg(kind);
@@ -1175,8 +1522,18 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 effect.insert(QStringLiteral("effect"), QString::number(number));
         }
         if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
-            if (!integer(raw.value(QStringLiteral("max_bytes"), 65536), 1, 1024 * 1024))
-                error = QStringLiteral("max_bytes must be a whole number from 1 to 1048576");
+            const QVariant limit = raw.value(QStringLiteral("max_bytes"), 65536);
+            if (!integer(limit, 1, 1024 * 1024)) error = QStringLiteral("max_bytes must be a whole number from 1 to 1048576");
+            // The helpers' default, also for an effect built by hand.
+            effect.insert(QStringLiteral("max_bytes"), limit.toDouble());
+        }
+        // Pane text that a run's handler reads can go to its client, a
+        // process outside the window: Control.allowReadText decides then.
+        if ((kind == QLatin1String("read_text") || kind == QLatin1String("read_region")
+             || kind == QLatin1String("semantic_regions"))
+            && own && m_call.run && !m_call.ended) {
+            const auto run = script->runs.find(m_call.run);
+            if (run != script->runs.end() && run->second->sink.finished) effect.insert(QStringLiteral("client_run"), true);
         }
         if (kind == QLatin1String("shader_parameters") || kind == QLatin1String("shader_preset")) {
             const auto values = raw.value(QStringLiteral("values"));
@@ -1221,23 +1578,51 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             else if (beside == (target == 0))
                 error = QStringLiteral("left, right, up and down need a target pane. new-tab and new-window take none");
         }
-        if (kind == QLatin1String("set_actions") || kind == QLatin1String("select")) {
-            const auto key = kind == QLatin1String("select") ? QStringLiteral("items") : QStringLiteral("actions");
-            const auto entries = raw.value(key).toList();
-            const int limit = kind == QLatin1String("select") ? 500 : MaxActions;
+        if (kind == QLatin1String("select")) {
+            const auto entries = raw.value(QStringLiteral("items")).toList();
             QVariantList checked;
             QSet<QString> ids;
-            if (kind == QLatin1String("set_actions") && !script->engine->hasFunction(script->module, QStringLiteral("run_action"))) error = QStringLiteral("set_actions requires run_action");
-            if (entries.size() > limit) error = QStringLiteral("Too many entries");
-            if (kind == QLatin1String("select") && entries.isEmpty()) error = QStringLiteral("A selector needs at least one item");
+            if (entries.size() > 500) error = QStringLiteral("Too many entries");
+            if (entries.isEmpty()) error = QStringLiteral("A selector needs at least one item");
             for (const auto& item : entries) {
                 const auto map = item.toMap();
                 const auto id = str(map, "id"), title = str(map, "title");
-                if (id.isEmpty() || id.size() > 64 || title.size() > 512 || ids.contains(id)
-                    || (kind == QLatin1String("set_actions") && !validScriptId(id))) { error = QStringLiteral("Invalid or duplicate entry"); break; }
+                if (id.isEmpty() || id.size() > 64 || title.size() > 512 || ids.contains(id)) { error = QStringLiteral("Invalid or duplicate entry"); break; }
                 ids.insert(id); checked << QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("title"), title.isEmpty() ? id : title}};
             }
-            effect.insert(key, checked);
+            effect.insert(QStringLiteral("items"), checked);
+        }
+        if (kind == QLatin1String("set_commands")) {
+            // The shape and the rules of the manifest's commands table.
+            QList<ScriptCommand> runtime;
+            QList<ScriptCommand> manifest;
+            for (const ScriptCommand& c : std::as_const(script->commands)) {
+                if (!c.runtime) manifest.append(c);
+            }
+            if (!script->engine->hasFunction(script->module, QStringLiteral("run_command")))
+                error = QStringLiteral("set_commands needs a run_command function");
+            else if (const QString problem = readCommands(raw.value(QStringLiteral("commands")), runtime); !problem.isEmpty())
+                error = problem;
+            else if (manifest.size() + runtime.size() > MaxScriptCommands)
+                error = QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands);
+            QVariantMap checked;
+            for (ScriptCommand& command : runtime) {
+                if (error.isEmpty() && std::any_of(manifest.cbegin(), manifest.cend(), [&](const ScriptCommand& c) { return c.name == command.name; }))
+                    error = QStringLiteral("Command %1 is in the manifest already").arg(command.name);
+                checked.insert(command.name, QVariantMap{{QStringLiteral("summary"), command.summary},
+                                                         {QStringLiteral("usage"), command.usage},
+                                                         {QStringLiteral("palette"), command.palette},
+                                                         {QStringLiteral("stdin"), command.input}});
+            }
+            effect.insert(QStringLiteral("commands"), checked);
+        }
+        if (kind == QLatin1String("output") || kind == QLatin1String("output_error") || kind == QLatin1String("exit")) {
+            if (raw.value(QStringLiteral("run")).typeId() != QMetaType::QString)
+                error = QStringLiteral("%1 needs the run of a run_command event (ev.run)").arg(kind);
+            else if (kind != QLatin1String("exit") && raw.value(QStringLiteral("text")).typeId() != QMetaType::QString)
+                error = QStringLiteral("%1 needs text").arg(kind);
+            else if (kind == QLatin1String("exit") && !integer(raw.value(QStringLiteral("code")), 0, 255))
+                error = QStringLiteral("An exit status is a whole number from 0 to 255");
         }
         if (kind == QLatin1String("override")) {
             const auto values = raw.value(QStringLiteral("values")).toMap();
@@ -1260,7 +1645,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         if (kind == QLatin1String("dock") || kind == QLatin1String("undock")) {
             const QVariant id = raw.value(QStringLiteral("id"));
             const QVariant scope = raw.value(QStringLiteral("scope"), QStringLiteral("window"));
-            if (id.typeId() != QMetaType::QString || !validScriptId(id.toString()) || id.toString().size() > 32)
+            if (id.typeId() != QMetaType::QString || !validName(id.toString()) || id.toString().size() > 32)
                 error = QStringLiteral("A dock id is a string of 1 to 32 ASCII letters, digits, - or _");
             else if (scope != QLatin1String("window") && scope != QLatin1String("pane"))
                 error = QStringLiteral("Dock scope must be window or pane");
@@ -1331,8 +1716,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         } else if (kind == QLatin1String("sleep") && !(effect.value(QStringLiteral("delay_ms")).toDouble() >= 0
                                                       && effect.value(QStringLiteral("delay_ms")).toDouble() <= MaxSleepMs)) {
             error = QStringLiteral("sleep needs 0 to %1 ms").arg(MaxSleepMs);
-        } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
-            error = QStringLiteral("scripts cannot run script actions");
+        } else if (kind == QLatin1String("action") && effect.value(QStringLiteral("name")).toString().startsWith(Keybinds::ScriptPrefix)) {
+            error = QStringLiteral("Scripts cannot run script commands");
         } else if (kind == QLatin1String("signal")
                    && !validSignal(effect.value(QStringLiteral("channel")), effect.value(QStringLiteral("value")))) {
             error = QStringLiteral("invalid signal channel/value");
@@ -1354,32 +1739,75 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             if (error.isEmpty()) result.data = {{QStringLiteral("value"), saved.value}, {QStringLiteral("version"), saved.version ? saved.version : script->stateVersion},
                                                {QStringLiteral("revision"), saved.revision}};
         } else if (kind == QLatin1String("sleep")) {
-            if (script->sleeping >= MaxSleeping) {
+            if (script->sleeps.size() >= MaxSleeping) {
                 result.code = QStringLiteral("busy");
                 error = QStringLiteral("Too many sleeps");
             } else {
-                ++script->sleeping;
                 result.deferred = true;
-                QTimer::singleShot(qRound(effect.value(QStringLiteral("delay_ms")).toDouble()), this,
-                    [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs] {
-                        if (auto script = weak.lock()) {
-                            --script->sleeping;
-                            queueResult(script, request, kind, {}, eventPane, timeout);
-                        }
-                    });
+                // Kept, so that the end of a run stops the sleep its handler waits for.
+                auto* timer = new QTimer(this);
+                timer->setSingleShot(true);
+                script->sleeps.insert(timer, request);
+                connect(timer, &QTimer::timeout, this,
+                        [this, timer, weak = std::weak_ptr<Script>(script), request, kind, eventPane, timeout = script->callTimeoutMs] {
+                            timer->deleteLater();
+                            const auto script = weak.lock();
+                            if (script && script->sleeps.remove(timer)) queueResult(script, request, kind, {}, eventPane, timeout);
+                        });
+                timer->start(qRound(effect.value(QStringLiteral("delay_ms")).toDouble()));
             }
         } else if (kind == QLatin1String("log")) {
             qCInfo(lcScripts).noquote() << script->id + QLatin1Char(':')
                                         << loggable(effect.value(QStringLiteral("message")).toString(), MaxLogCharacters);
-        } else if (kind == QLatin1String("set_actions")) {
-            QList<ScriptAction> actions;
-            for (const auto& value : effect.value(QStringLiteral("actions")).toList()) {
-                const auto item = value.toMap();
-                actions.append({script->id + QLatin1Char('.') + str(item, "id"), str(item, "title")});
+        } else if (kind == QLatin1String("set_commands")) {
+            QList<ScriptCommand> commands;
+            for (const ScriptCommand& c : std::as_const(script->commands)) {
+                if (!c.runtime) commands.append(c);
             }
-            const QList<ScriptAction> before = this->actions();
-            script->actions = actions;
-            announceActions(before);
+            const QVariantMap runtime = effect.value(QStringLiteral("commands")).toMap();
+            for (auto it = runtime.cbegin(); it != runtime.cend(); ++it) {
+                const auto item = it.value().toMap();
+                commands.append({script->id, it.key(), str(item, "summary"), str(item, "usage"), str(item, "palette"),
+                                 item.value(QStringLiteral("stdin")).toBool(), true});
+            }
+            const QList<ScriptCommand> before = this->commands();
+            script->commands = commands;
+            announceCommands(before);
+        } else if (kind == QLatin1String("output") || kind == QLatin1String("output_error") || kind == QLatin1String("exit")) {
+            // A script reaches its own runs only.
+            const quint64 handle = str(effect, "run").toULongLong();
+            const auto run = script->runs.find(handle);
+            result.code = QStringLiteral("no_run");
+            if (own && m_call.run == handle && endedRun(*script, handle)) {
+                // Its own handler resumed with "cancelled": the client has its
+                // status already. Another handler is told that the run has ended.
+            } else if (run == script->runs.end()) {
+                // Another script's live run is none of this one's either.
+                error = QStringLiteral("Run %1 has ended, or is not a run of this script").arg(loggable(str(effect, "run"), 64));
+            } else if (kind == QLatin1String("exit")) {
+                run->second->status = int(effect.value(QStringLiteral("code")).toDouble());
+            } else {
+                // Its result comes once the text has gone to the client, which
+                // can be later for a client that reads slowly, or once the
+                // text was dropped. Text that went to a client is not counted
+                // toward the results each second: the run's output and time
+                // limits bound it. A run with no client drops its stdout at
+                // once, so a handler that awaits it in a loop would resume on
+                // each pass of the event loop: text that no client takes is
+                // counted, and so is an empty text.
+                const QString text = str(effect, "text");
+                const bool counted = text.isEmpty() || !run->second->sink.toClient(kind == QLatin1String("output_error"));
+                result = writeRun(script, handle, text, kind == QLatin1String("output_error"),
+                    [this, weak = std::weak_ptr<Script>(script), request, kind, eventPane, counted,
+                     timeout = script->callTimeoutMs](bool delivered) {
+                        const auto script = weak.lock();
+                        if (!script || request.isEmpty()) return;
+                        queueResult(script, request, kind,
+                                    delivered ? EffectResult{}
+                                              : EffectResult{QStringLiteral("The run has ended"), {}, QStringLiteral("cancelled")},
+                                    eventPane, timeout, counted || !delivered);
+                    });
+            }
         } else if (kind == QLatin1String("timer") || kind == QLatin1String("cancel") || kind == QLatin1String("exec")
                    || kind == QLatin1String("read_file") || kind == QLatin1String("watch_file")) {
             result = m_tasks->apply(script->owner, effect, completion(script, request, kind, eventPane),
@@ -1424,7 +1852,7 @@ std::function<void(ScriptHost::EffectResult)> ScriptHost::completion(const Scrip
 }
 
 void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, const QString& kind,
-                             const EffectResult& result, quint32 eventPane, int timeoutMs)
+                             const EffectResult& result, quint32 eventPane, int timeoutMs, bool counted)
 {
     // An awaited result resumes its handler, under that handler's time limit.
     const QString handler = request.startsWith(AwaitPrefix) ? QStringLiteral("__resume") : QStringLiteral("on_result");
@@ -1435,16 +1863,19 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
     while (!script->results.empty() && now - script->results.front() >= 1000) {
         script->results.pop_front();
     }
-    if (script->pendingResults >= MaxPendingResults || int(script->results.size()) >= MaxResultsPerSecond) {
+    const bool queued = script->pendingResults >= MaxPendingResults;
+    if (queued || (counted && int(script->results.size()) >= MaxResultsPerSecond)) {
         ++script->droppedResults;
         script->lastError = QStringLiteral("Too many operation results");
         // Include refusals in this budget: a handler that retries a rejected
         // request from on_result must not create an endless queued feedback loop.
         qCWarning(lcScripts) << script->id << "disabled: too many operation results";
-        disable(script);
+        disable(script, queued ? QStringLiteral("The script was disabled: %1 operation results waited for it").arg(MaxPendingResults)
+                               : QStringLiteral("The script was disabled: it got more than %1 operation results in one second")
+                                     .arg(MaxResultsPerSecond));
         return;
     }
-    script->results.push_back(now);
+    if (counted) script->results.push_back(now);
     ++script->pendingResults;
     QVariantMap event{{QStringLiteral("request_id"), request}, {QStringLiteral("kind"), kind},
                       {QStringLiteral("ok"), result.error.isEmpty()}, {QStringLiteral("data"), result.data}};
@@ -1463,11 +1894,17 @@ void ScriptHost::queueResult(const ScriptPtr& script, const QString& request, co
         if (script->disabled || std::find(m_scripts.begin(), m_scripts.end(), script) == m_scripts.end()) {
             return;
         }
+        // A result that resumes a run's handler runs as that run, while it lasts.
+        quint64 run = handler == QLatin1String("__resume") ? script->flowRuns.value(flowOf(event.value(QStringLiteral("request_id")).toString())) : 0;
+        // Queued before the run ended: its "cancelled" resume, still due,
+        // answers this flow instead.
+        if (run && script->cancelsDue.contains(run)) return;
+        if (run && !script->runs.count(run) && !endedRun(*script, run)) run = 0;
         event.insert(QStringLiteral("terminal"), state());
         if (eventPane) {
             event.insert(QStringLiteral("pane"), this->eventPane(eventPane));
         }
-        call(script, handler, {event}, handler == QLatin1String("on_result") ? EventTimeoutMs : timeoutMs, eventPane);
+        call(script, handler, {event}, handler == QLatin1String("on_result") ? EventTimeoutMs : timeoutMs, eventPane, run);
     });
 }
 

@@ -23,16 +23,15 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
     // Onto the dialog's pane: the original card could be in another tab,
     // and its deferred reveal would leave the dialog behind.
     closeOverview(pane);
-    if (m_unicodeInput) {
-        m_unicodeInput.reset();
-        showUnicodeInput();
-    }
+    stopUnicodeInput();
     if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
     setFocusedPane(pane);
-    m_scriptDialog = ScriptDialog{owner, pane, std::move(reply)};
+    m_scriptDialog = ScriptDialog{owner, pane, std::move(reply), effect.value(QStringLiteral("request_id")).toString()};
     QVariantMap model = effect;
     model.insert(QStringLiteral("open"), true);
     m_controller->setScriptDialog(model);
+    // The dialog shows here; the window does not jump forward for a script.
+    if (!isActive()) alert(0);
     scheduleRender();
     return {};
 }
@@ -200,10 +199,7 @@ QString TerminalWindow::startScriptKeyMode(const QString& owner, Pane* pane, con
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("A dialog has the keyboard");
     stopCopyMode(); cancelKeyMode(); stopUrlMode();
-    if (m_unicodeInput) {
-        m_unicodeInput.reset();
-        showUnicodeInput();
-    }
+    stopUnicodeInput();
     m_scriptKeyMode = ScriptKeyMode{owner, textPrefix(label, 160), pane, m_overview.open};
     updateKeyMode();
     return {};
@@ -228,13 +224,15 @@ QVariantMap TerminalWindow::overviewState() const
             {QStringLiteral("cards"), cards}};
 }
 
-QString TerminalWindow::scriptOverview(Pane* pane, const QString& operation, QVariantMap& result)
+QString TerminalWindow::scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result)
 {
     if (operation == QLatin1String("open")) {
         if (!m_overview.open) {
-            // Refuse before moving the user's focus for an overview that cannot open.
-            if (!m_overviewAvailable || m_scriptDialog || m_controller->wantsKeyboard())
-                return QStringLiteral("The overview is not available");
+            // Refuse before moving the user's focus for an overview that
+            // cannot open on the pane.
+            if (!overviewOpensOn(pane ? pane : m_focused.data())) return QStringLiteral("The overview is not available");
+            // Another script's key mode would take the overview's keys from the user.
+            if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
             if (pane && pane != m_focused) revealPane(pane);
             if (!openOverview()) return QStringLiteral("The overview is not available");
         }
@@ -281,7 +279,7 @@ bool TerminalWindow::usePackageShaders()
     const QVariantMap dialog{{QStringLiteral("kind"), QStringLiteral("select")},
         {QStringLiteral("title"), tr("Use package shaders (writes the config file)")}, {QStringLiteral("items"), items}};
     const QString error = showScriptDialog(QStringLiteral("afterglow"), m_focused, dialog,
-        [this, suggestions](const QString& error, const QVariantMap& data) {
+        [this, suggestions, pane = QPointer<Pane>(m_focused.data())](const QString& error, const QVariantMap& data) {
             bool chosen = false;
             const int index = data.value(QStringLiteral("id")).toString().toInt(&chosen);
             if (!error.isEmpty() || !chosen || index < 0 || index >= suggestions.size()) return;
@@ -298,7 +296,8 @@ bool TerminalWindow::usePackageShaders()
                 value = QVariant(QVariantList(chain.cbegin(), chain.cend()));
             }
             if (!m_settings.write(QStringLiteral("Shaders"), key, value)) {
-                NotificationCenter::instance().showNotice(m_focused, tr("Could not use the package shaders"),
+                // On the pane that asked: the focus can have moved since.
+                NotificationCenter::instance().showNotice(pane, tr("Could not use the package shaders"),
                                                           tr("Shaders.%1 could not be written to the config file.").arg(key));
             }
         });
@@ -312,6 +311,11 @@ QString TerminalWindow::pulsePane(Pane* pane, int effect, int durationMs, int co
     m_panePulse.insert(pane, {std::chrono::steady_clock::now(), durationMs, effect, color});
     scheduleRender();
     return {};
+}
+
+void TerminalWindow::closeScriptDialog(const QString& owner, const QString& prefix)
+{
+    if (m_scriptDialog && m_scriptDialog->owner == owner && m_scriptDialog->request.startsWith(prefix)) finishScriptDialog(false, {});
 }
 
 void TerminalWindow::clearScriptOwner(const QString& owner)
