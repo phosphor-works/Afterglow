@@ -781,6 +781,30 @@ TEST_F(ConfigTest, BidiAndScriptReadPolicyHaveExplicitDefaultsAndOverrides)
     EXPECT_FALSE(configured.settings().scriptsAllowReadText);
 }
 
+TEST_F(ConfigTest, ScriptCommandLimitsHaveDefaultsOverridesAndRanges)
+{
+    const auto path = write(QStringLiteral("commands.json"), "{}");
+    const Settings defaults = SettingsStore(path).settings();
+    EXPECT_EQ(defaults.scriptCommandTimeout, 600000);
+    EXPECT_EQ(defaults.scriptCommandStdinLimit, 1048576);
+    EXPECT_EQ(defaults.scriptCommandRunLimit, 16);
+    EXPECT_EQ(defaults.scriptCommandOutputLimit, 16777216);
+    const Settings set = SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{
+        {QStringLiteral("commandTimeout"), 5000}, {QStringLiteral("commandStdinLimit"), 0},
+        {QStringLiteral("commandRunLimit"), 2}, {QStringLiteral("commandOutputLimit"), 100000}}}}).settings();
+    EXPECT_EQ(set.scriptCommandTimeout, 5000);
+    EXPECT_EQ(set.scriptCommandStdinLimit, 0);
+    EXPECT_EQ(set.scriptCommandRunLimit, 2);
+    EXPECT_EQ(set.scriptCommandOutputLimit, 100000);
+    const Settings clamped = SettingsStore(path, QJsonObject{{QStringLiteral("Scripts"), QJsonObject{
+        {QStringLiteral("commandTimeout"), 10}, {QStringLiteral("commandStdinLimit"), 1 << 30},
+        {QStringLiteral("commandRunLimit"), 0}, {QStringLiteral("commandOutputLimit"), 1}}}}).settings();
+    EXPECT_EQ(clamped.scriptCommandTimeout, 1000);
+    EXPECT_EQ(clamped.scriptCommandStdinLimit, 16777216);
+    EXPECT_EQ(clamped.scriptCommandRunLimit, 1);
+    EXPECT_EQ(clamped.scriptCommandOutputLimit, 65536);
+}
+
 TEST_F(ConfigTest, ExternalThemeWatchRecoversCreationReplacementAndDeletion)
 {
     int argc = 1;

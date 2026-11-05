@@ -158,6 +158,10 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `allowReadText` | `true` |  | Allow local Luau scripts to query pane text, selections and semantic regions. |
+| `commandOutputLimit` | `16777216` | 65536–268435456 | Bytes of output and error text that one run of a script command can write. At the limit the run stops with exit status 1. |
+| `commandRunLimit` | `16` | 1–256 | Runs of the commands of one script at the same time. A run over the limit fails with exit status 1. |
+| `commandStdinLimit` | `1048576` | 0–16777216 | Bytes of standard input that a script command gets from afterglow run. Afterglow cuts the input at this size. A value of 0 gives the command empty input. |
+| `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take, also while it waits. At the limit the run stops with exit status 124. |
 | `enabled` | `true` |  | Run Luau scripts from ~/.config/afterglow/scripts and from afterglow/scripts in each XDG data directory. |
 
 ## Shaders

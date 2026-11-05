@@ -295,7 +295,7 @@ class NestedDesktop:
 
 
 class Session:
-    """One Afterglow application in a nested desktop, driven through `afterglow ctl`."""
+    """One Afterglow application in a nested desktop, driven through `afterglow ctl` and `afterglow run`."""
 
     def __init__(self, binary, env, log_path):
         self.binary, self.env, self.log_path = binary, env, log_path
@@ -351,6 +351,15 @@ class Session:
                                 capture_output=True, text=True, timeout=5)
         check(result.returncode != 0, f"ctl {args} succeeded: {result.stdout}")
         return result.stderr
+
+    def run(self, *args, stdin=None, check_status=True, timeout=20):
+        """Runs `afterglow run ARGS`, a script command, and returns its result.
+        Its stdin is empty unless given, so a command never waits for input."""
+        result = subprocess.run([self.binary, "run", *map(str, args)], env=self.env, input=stdin or "",
+                                capture_output=True, text=True, timeout=timeout)
+        if check_status:
+            check(result.returncode == 0, f"run {args} exited {result.returncode}: {result.stderr}")
+        return result
 
     def panes(self):
         return json.loads(self.ctl("ls", "--json"))

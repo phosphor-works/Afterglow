@@ -13,6 +13,8 @@
 #include "control/IpcClient.h"
 #include "shell/Ssh.h"
 
+#include <AfterglowProto/Run.h>
+
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCommandLineParser>
@@ -117,6 +119,10 @@ int main(int argc, char** argv)
     // afterglow ctl ...: a control socket client for a running afterglow, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
+    }
+    // afterglow run ...: a script command, its output and its exit status, no GUI.
+    if (argc >= 2 && std::strcmp(argv[1], "run") == 0) {
+        return AfterglowProto::Run::main({argv + 2, argv + argc});
     }
     // afterglow ssh ...: ssh with the remote side prepared, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {

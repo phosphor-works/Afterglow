@@ -3,6 +3,7 @@
 
 #include "InstanceSocket.h"
 
+#include <AfterglowProto/Socket.h>
 #include <PhosphorIpc/IpcRouter.h>
 
 #include <QCoreApplication>
@@ -30,19 +31,6 @@ QString g_processPath;
 // Qt's own default, so that the application and `afterglow ctl` agree when the
 // variable is unset. An absolute display can name a socket anywhere: the whole
 // path keeps two of them apart.
-QString displayName()
-{
-    QString name = qEnvironmentVariable("WAYLAND_DISPLAY");
-    if (name.startsWith(QLatin1Char('/'))) name.remove(0, 1);
-    for (QChar& c : name) {
-        const char16_t u = c.unicode();
-        const bool plain = (u >= u'a' && u <= u'z') || (u >= u'A' && u <= u'Z') || (u >= u'0' && u <= u'9') || u == u'-'
-            || u == u'_' || u == u'.';
-        if (!plain) c = QLatin1Char('_');
-    }
-    return name.isEmpty() ? QStringLiteral("wayland-0") : name;
-}
-
 QString runtimeDirectory()
 {
     return qEnvironmentVariable("XDG_RUNTIME_DIR");
@@ -187,16 +175,13 @@ QString InstanceSocket::processPath()
 
 QString InstanceSocket::sharedPath()
 {
-    const QString runtime = runtimeDirectory();
-    if (runtime.isEmpty()) return {};
-    return QStringLiteral("%1/afterglow-%2.sock").arg(runtime, displayName());
+    // The clients find the path through the same function (AfterglowProto::findSocket).
+    return QFile::decodeName(QByteArray::fromStdString(AfterglowProto::sharedSocketPath()));
 }
 
 QString InstanceSocket::ownPath()
 {
-    const QString runtime = runtimeDirectory();
-    if (runtime.isEmpty()) return {};
-    return QStringLiteral("%1/afterglow-%2-%3.sock").arg(runtime, displayName()).arg(QCoreApplication::applicationPid());
+    return QFile::decodeName(QByteArray::fromStdString(AfterglowProto::ownSocketPath(QCoreApplication::applicationPid())));
 }
 
 } // namespace Afterglow

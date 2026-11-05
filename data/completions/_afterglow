@@ -1,0 +1,117 @@
+#compdef afterglow
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Zsh completion for afterglow. Script package IDs and their commands come
+# from the running afterglow (afterglow run --complete).
+
+_afterglow_run() {
+    local -a ids commands
+    _arguments -s -S \
+        '(-n --no-stdin)'{-n,--no-stdin}'[do not pass standard input to the command]' \
+        '--pane[the pane that the command acts on]:pane ID:' \
+        '(- *)--help[show the usage]' \
+        '1:script package:->id' \
+        '2:command:->command' \
+        '*::argument:_files' && return
+    case $state in
+    id)
+        ids=(${(f)"$(afterglow run --complete 2>/dev/null)"})
+        _describe -t ids 'script package' ids
+        ;;
+    command)
+        # COMMAND<TAB>SUMMARY lines, as name:description pairs.
+        commands=(${${(f)"$(afterglow run --complete ${line[1]} 2>/dev/null)"}/$'\t'/:})
+        commands+=('--help:list the package'"'"'s commands')
+        _describe -t commands 'command' commands
+        ;;
+    esac
+}
+
+_afterglow_ctl() {
+    local -a commands
+    commands=(
+        'ls:list panes'
+        'send-text:type text into the pane'
+        'get-text:print pane text'
+        'split:split the pane'
+        'move-pane:move the pane beside another'
+        'detach-tab:move the pane'"'"'s tab to a new window'
+        'new-tab:open a tab'
+        'new-window:open a window'
+        'focus:focus the pane'
+        'close:close the pane'
+        'set-title:set the pane'"'"'s title'
+        'signal:set a shader signal'
+        'notify:show a desktop notification'
+        'scripts:show script diagnostics'
+        'open-directory:open a directory'
+        'projects:list saved projects'
+        'save-project:save the window layout'
+        'open-project:open a saved project'
+        'action:run a keybind action or start a script command'
+        'watch:print events'
+    )
+    if (( CURRENT == 2 )); then
+        _describe -t commands 'ctl command' commands
+        return
+    fi
+    case $words[2] in
+    get-text) _arguments '--pane[the pane]:pane ID:' '(--screen --scrollback --selection --last-output)'{--screen,--scrollback,--selection,--last-output} ;;
+    split) _arguments '--pane[the pane]:pane ID:' '(--left --right --up --down)'{--left,--right,--up,--down} '*:command:_normal' ;;
+    new-tab) _arguments '--pane[the pane]:pane ID:' '--cwd[working directory]:directory:_directories' '*:command:_normal' ;;
+    new-window) _arguments '--cwd[working directory]:directory:_directories' '*:command:_normal' ;;
+    send-text) _arguments '--pane[the pane]:pane ID:' '--raw[send the text as it is]' '--stdin[send standard input]' '*:text:' ;;
+    ls) _arguments '--json[print JSON]' ;;
+    open-directory) _arguments '--layout[a saved layout]:layout:' '1:directory:_directories' ;;
+    save-project) _arguments '--pane[the pane]:pane ID:' '--overwrite[replace a project with the name]' '1:name:' ;;
+    open-project) _arguments '--new[launch the layout again]' '1:name:' ;;
+    watch|scripts|projects) ;;
+    *) _arguments '--pane[the pane]:pane ID:' '*:argument:' ;;
+    esac
+}
+
+_afterglow() {
+    local curcontext=$curcontext state line
+    local -a subcommands
+    subcommands=(
+        'ctl:drive a running afterglow'
+        'run:run a command of a script package'
+        'ssh:ssh with the remote side prepared'
+    )
+    if (( CURRENT == 2 )) && [[ $words[2] != -* ]]; then
+        _describe -t subcommands 'subcommand' subcommands
+    fi
+    case $words[2] in
+    ctl)
+        shift words; (( CURRENT-- ))
+        _afterglow_ctl
+        return
+        ;;
+    run)
+        shift words; (( CURRENT-- ))
+        _afterglow_run
+        return
+        ;;
+    ssh)
+        # The rest is ssh's command line.
+        shift words; (( CURRENT-- ))
+        _normal
+        return
+        ;;
+    esac
+    _arguments -s -S \
+        '(-d --working-directory)'{-d,--working-directory}'[start in the directory]:directory:_directories' \
+        '(-e --execute)'{-e,--execute}'[run the rest of the command line instead of the shell]:*::command:_normal' \
+        '--title[give the window a title]:title:' \
+        '--hold[keep the window open after the program exits]' \
+        '--quick-terminal[show or hide the quick terminal]' \
+        '--config[read settings from the file]:config file:_files' \
+        '*'{-o,--override}'[override a setting (Group.key=value)]:setting:' \
+        '--class[Wayland app id for window rules]:app id:' \
+        '--config-reference[print the configuration reference as JSON]' \
+        '(- *)'{-h,--help}'[show the help]' \
+        '(- *)'{-v,--version}'[show the version]'
+}
+
+_afterglow "$@"

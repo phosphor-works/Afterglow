@@ -5,12 +5,12 @@ local base, peak = 0.8, 1.3
 local sample, visited = nil, {}
 local target, generation = nil, 0
 return {
- metadata={name="Contextual scene",actions={{id="toggle",title="Toggle contextual Phosphor exposure"}}},
+ metadata={name="Contextual scene"},
  on_load=function(ev)
     base=math.clamp(tonumber(ev.package.config.base_intensity) or 0.8,0,3)
     peak=math.clamp(tonumber(ev.package.config.peak_intensity) or 1.3,base,3)
  end,
- run_action=function(_,ev)
+ run_command=function(_,ev)
     enabled=not enabled
     generation+=1
     pending=false; target=nil

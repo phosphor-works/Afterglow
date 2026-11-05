@@ -55,18 +55,23 @@ try:
         for package in ['scene-controls','contextual-scene']:
             shutil.copytree(repo/'data/examples/packages'/package,config/'scripts'/package)
         inspector=config/'scripts/inspect';inspector.mkdir()
-        (inspector/'package.json').write_text(json.dumps(dict(id='inspect',version='1.0.0',api_version=1,state_version=1,entry='main',modules={'main':'init.luau'})))
+        (inspector/'package.json').write_text(json.dumps(dict(id='inspect',version='1.0.0',api_version=1,state_version=1,entry='main',
+            modules={'main':'init.luau'},commands={'read':{'summary':'Save the scene and shader state of the pane'}})))
+        # The run ends once the state is written: afterglow run returns after it.
         (inspector/'init.luau').write_text('''
-local revision, result=0,{}
+local revision=0
+local function fail(ev,err) return {afterglow.output_error(ev,err.message.."\\n"),afterglow.exit(ev,1)} end
 return {
  on_load=function(ev) revision=ev.storage.revision end,
- metadata={actions={{id="read"}}},
- run_action=function(_,ev) return afterglow.request("scene",afterglow.scene_state(ev.pane)) end,
- on_result=function(ev)
-  if not ev.ok then return afterglow.log(ev.error.message) end
-  if ev.request_id=="scene" then result=ev.data; return afterglow.request("shaders",afterglow.shaders(ev.pane))
-  elseif ev.request_id=="shaders" then result.shaders=ev.data.shaders; return afterglow.request("saved",afterglow.state_write(result,revision))
-  elseif ev.request_id=="saved" then revision=ev.data.revision end
+ run_command=function(_,ev)
+  local result,err=afterglow.await(afterglow.scene_state(ev.pane))
+  if not result then return fail(ev,err) end
+  local active,problem=afterglow.await(afterglow.shaders(ev.pane))
+  if not active then return fail(ev,problem) end
+  result.shaders=active.shaders
+  local saved,failure=afterglow.await(afterglow.state_write(result,revision))
+  if not saved then return fail(ev,failure) end
+  revision=saved.revision
  end,
 }
 ''')
@@ -92,6 +97,11 @@ return {
                 p=subprocess.run([binary,'ctl',*map(str,args)],env=env,capture_output=True,text=True,timeout=10)
                 if p.returncode: raise RuntimeError(p.stderr)
                 return p.stdout.strip()
+            def run(*args):
+                # Empty stdin: a script command never waits for input.
+                p=subprocess.run([binary,'run',*map(str,args)],env=env,input='',capture_output=True,text=True,timeout=20)
+                if p.returncode: raise RuntimeError(f'run {args} exited {p.returncode}: {p.stderr}')
+                return p.stdout
             def panes():
                 try:return json.loads(ctl('ls','--json'))
                 except RuntimeError:return []
@@ -100,9 +110,7 @@ return {
                 return found['cols'],found['rows']
             state=config/'state/scripts/inspect.json'
             def inspect(pane):
-                revision=json.loads(state.read_text())['revision'] if state.exists() else 0
-                ctl('action','script:inspect.read','--pane',pane)
-                wait_for(lambda: state.exists() and json.loads(state.read_text())['revision']>revision)
+                run('--pane',pane,'inspect','read')
                 return json.loads(state.read_text())['value']
             def until(pane,predicate):
                 end=time.monotonic()+15
@@ -138,9 +146,9 @@ return {
                 until(first,lambda d:field(d)['commandHeat']<.05)
                 for _ in range(4):
                     focus(first);focus(second)
-                ctl('action','script:contextual-scene.toggle','--pane',first)
+                run('--pane',first,'contextual-scene','toggle')
                 contextual=until(first,lambda d:abs(field(d)['intensity']-1.05)>.02)
-                ctl('action','script:contextual-scene.toggle','--pane',first)
+                run('--pane',first,'contextual-scene','toggle')
                 reset=until(first,lambda d:abs(field(d)['intensity']-1.05)<.001)
                 third=int(ctl('new-tab','--pane',first));time.sleep(.3)
                 empty=inspect(third)

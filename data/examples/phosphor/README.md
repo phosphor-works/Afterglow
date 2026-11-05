@@ -18,7 +18,7 @@ From a built checkout, run:
 data/examples/phosphor/bin/phosphor-afterglow launch --show --binary ./build/afterglow/afterglow
 ```
 
-Add `--mesh` to use the triangle-mesh reactor with the same Luau actions:
+Add `--mesh` to use the triangle-mesh reactor with the same Luau commands:
 
 ```sh
 data/examples/phosphor/bin/phosphor-afterglow launch --mesh --show --binary ./build/afterglow/afterglow
@@ -57,7 +57,7 @@ phosphor scene dark
 `--show` starts the demonstration in the first pane. `phosphor show` repeats it.
 The stages are idle, charge, fracture, recall, shock front and afterglow.
 The sequence uses the alternate screen. Completion or Ctrl+C restores the prompt.
-OSC 1337 user variables trigger real Luau actions.
+OSC 1337 user variables trigger real Luau commands.
 Ordinary commands charge the core. Failure fractures it. A success of 1.5 seconds or longer recalls its pieces.
 
 ## Scene controls
@@ -137,9 +137,9 @@ The core uses one camera across the window. The scene remains stationary while d
 Quiet prompts in other panes make light and afterimages easier to see.
 The final view can show the reassembled core and the Afterglow desktop icon.
 
-The command palette (**Ctrl+Shift+P**) also contains these actions:
+The command palette (**Ctrl+Shift+P**) also contains these commands:
 
-| Shortcut | Action | Signal |
+| Shortcut | Command | Signal |
 | --- | --- | --- |
 | Ctrl+Alt+1 | Phosphor: fracture the core | 0 |
 | Ctrl+Alt+2 | Phosphor: recall the fragments | 1 |

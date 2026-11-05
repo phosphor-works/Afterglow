@@ -60,9 +60,12 @@ Recovery uses the latest completed periodic or manual save.
 Separate Afterglow processes do not synchronize live layouts.
 Use one application instance for each autosaved project.
 
-## Actions and removal
+## Commands and removal
 
-Action names are `script:project-autosave.enable`, `.disable`, `.save` and `.restore`.
+The commands are `enable`, `disable`, `save` and `restore`.
+Bind them as `script:project-autosave.enable` and so on.
+From a shell, `afterglow run project-autosave save [NAME]` saves the window's project now.
+Without a name, it uses the window's project name.
 Remove `scripts/project-autosave/` to uninstall.
 The host removes timers and pending interfaces.
 Saved layouts remain in `projects/` beside the configuration.

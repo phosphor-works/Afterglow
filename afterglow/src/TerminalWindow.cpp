@@ -77,8 +77,8 @@
 Q_LOGGING_CATEGORY(lcWindow, "afterglow.window", QtInfoMsg)
 
 namespace {
-/// Command palette ids from here on are script actions.
-constexpr int ScriptActionBase = 10000;
+/// Command palette ids from here on are script commands.
+constexpr int ScriptCommandBase = 10000;
 /// Context menu items that are not actions.
 constexpr int MenuOpenLink = 20000;
 constexpr int MenuCopyLink = 20001;
@@ -254,15 +254,15 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
     // Through the action, which tells the user when the tab cannot open.
     connect(m_controller, &ChromeController::newTabRequested, this, [this] { performAction(Action::NewTab); });
     connect(m_controller, &ChromeController::actionRequested, this, [this](int id) {
-        if (id >= ScriptActionBase) {
-            if (id - ScriptActionBase < m_paletteScriptActions.size()) {
-                m_scripts.runAction(m_paletteScriptActions[id - ScriptActionBase], m_focused ? m_focused->id() : 0);
+        if (id >= ScriptCommandBase) {
+            if (id - ScriptCommandBase < m_paletteCommands.size()) {
+                runScriptCommand(m_paletteCommands[id - ScriptCommandBase], m_focused, QStringLiteral("palette"));
             }
             return;
         }
         performAction(Action(id));
     });
-    connect(&m_scripts, &ScriptHost::actionsChanged, this, &TerminalWindow::updatePaletteActions);
+    connect(&m_scripts, &ScriptHost::commandsChanged, this, &TerminalWindow::updatePaletteActions);
     connect(m_controller, &ChromeController::historyRequested, this, [this](double position) {
         // Hint labels sit on the rows the view had, as in scrollPane.
         if (m_focused && m_urlMode.active && m_urlMode.pane == m_focused) stopUrlMode();
@@ -328,8 +328,8 @@ TerminalWindow::TerminalWindow(Services& services, const WindowOptions& options)
         } else if (id >= TabMenuRename) {
             runTabMenuItem(id);
         } else if (id >= MenuScriptBase) {
-            if (id - MenuScriptBase < m_menuScriptActions.size() && paneAlive) {
-                m_scripts.runAction(m_menuScriptActions[id - MenuScriptBase], pane->id());
+            if (id - MenuScriptBase < m_menuCommands.size() && paneAlive) {
+                runScriptCommand(m_menuCommands[id - MenuScriptBase], pane, QStringLiteral("menu"));
             }
         } else if (paneAlive) {
             runAction(pane, Action(id));
@@ -2225,7 +2225,7 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
             m_focused->clearSelection();
             m_focused->sendInput(std::string_view(bytes.constData(), std::size_t(bytes.size())));
         } else if (result.target.startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
-            m_scripts.runAction(result.target.mid(qsizetype(std::strlen(Keybinds::ScriptPrefix))), m_focused ? m_focused->id() : 0);
+            runScriptCommand(result.target.mid(qsizetype(std::strlen(Keybinds::ScriptPrefix))), m_focused, QStringLiteral("key"));
         } else {
             for (Action action : Keybinds::allActions()) {
                 if (Keybinds::token(action) == result.target) { performAction(action); break; }
@@ -2253,8 +2253,13 @@ bool TerminalWindow::handleShortcut(QKeyEvent* e)
         m_focused->sendInput(std::string_view(text.constData(), std::size_t(text.size())));
         return true;
     }
+    // A key bound to a command that no script has goes to the terminal.
     const QString script = kb.matchScript(e, bindingBaseKey(e));
-    return !script.isEmpty() && m_scripts.runAction(script, m_focused ? m_focused->id() : 0);
+    const QList<ScriptCommand> commands = m_scripts.commands();
+    if (script.isEmpty() || std::none_of(commands.cbegin(), commands.cend(), [&](const ScriptCommand& c) { return c.token() == script; }))
+        return false;
+    runScriptCommand(script, m_focused, QStringLiteral("key"));
+    return true;
 }
 
 bool TerminalWindow::performAction(Action action)
@@ -2677,14 +2682,22 @@ void TerminalWindow::updatePaletteActions()
                                    {QStringLiteral("title"), Keybinds::title(a)},
                                    {QStringLiteral("shortcut"), actionShortcuts(a).join(QStringLiteral("  "))}});
     }
-    m_paletteScriptActions.clear();
-    for (const ScriptHost::ScriptAction& a : m_scripts.actions()) {
-        actions.append(QVariantMap{{QStringLiteral("id"), ScriptActionBase + int(m_paletteScriptActions.size())},
-                                   {QStringLiteral("title"), a.title},
-                                   {QStringLiteral("shortcut"), scriptShortcutsOf(kb, modes, a.token).join(QStringLiteral("  "))}});
-        m_paletteScriptActions.append(a.token);
+    m_paletteCommands.clear();
+    for (const ScriptCommand& c : m_scripts.commands()) {
+        if (c.palette.isEmpty()) continue;
+        actions.append(QVariantMap{{QStringLiteral("id"), ScriptCommandBase + int(m_paletteCommands.size())},
+                                   {QStringLiteral("title"), c.palette},
+                                   {QStringLiteral("shortcut"), scriptShortcutsOf(kb, modes, c.token()).join(QStringLiteral("  "))}});
+        m_paletteCommands.append(c.token());
     }
     m_controller->setActions(actions);
+}
+
+void TerminalWindow::runScriptCommand(const QString& token, Pane* pane, const QString& source)
+{
+    // Palette, key and menu runs have no client: a refusal shows here.
+    const QString error = m_scripts.runCommand(token, pane ? pane->id() : 0, source);
+    if (!error.isEmpty()) NotificationCenter::instance().showNotice(pane, tr("Could not run %1").arg(token), error);
 }
 
 void TerminalWindow::runSearch(const QString& query, int direction)
@@ -3164,14 +3177,15 @@ void TerminalWindow::openContextMenu(const QPointF& pos)
     items << submenu(QStringLiteral("Window"), "window-new",
                      {action(Action::NewWindow, QStringLiteral("New Window"), "window-new"),
                       action(Action::CloseWindow, QStringLiteral("Close Window"), "window-close")});
-    m_menuScriptActions.clear();
+    m_menuCommands.clear();
     QVariantList scripts;
-    for (const ScriptHost::ScriptAction& a : m_scripts.actions()) {
+    for (const ScriptCommand& c : m_scripts.commands()) {
+        if (c.palette.isEmpty()) continue;
         // Ids from TabMenuRename on are the tab menu's.
-        if (MenuScriptBase + m_menuScriptActions.size() >= TabMenuRename) break;
-        scripts << entry(MenuScriptBase + int(m_menuScriptActions.size()), a.title, "",
-                         scriptShortcutsOf(kb, modes, a.token).value(0));
-        m_menuScriptActions.append(a.token);
+        if (MenuScriptBase + m_menuCommands.size() >= TabMenuRename) break;
+        scripts << entry(MenuScriptBase + int(m_menuCommands.size()), c.palette, "",
+                         scriptShortcutsOf(kb, modes, c.token()).value(0));
+        m_menuCommands.append(c.token());
     }
     if (!scripts.isEmpty()) {
         items << submenu(QStringLiteral("Scripts"), "dialog-scripts", scripts);

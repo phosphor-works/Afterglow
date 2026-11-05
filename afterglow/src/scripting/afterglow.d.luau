@@ -11,21 +11,21 @@
 --       id = "my-script",              -- optional, defaults to the file name
 --       name = "My Script",
 --       description = "What it does",
---       actions = { { id = "hello", title = "Say Hello" } },
+--       commands = { hello = { summary = "Say hello", usage = "[NAME]", palette = "Say Hello" } },
 --   }
 --   function script.on_command_finished(ev: CommandFinishedEvent): Effects? ... end
---   function script.run_action(action: string, ev: ActionEvent): Effects? ... end
+--   function script.run_command(command: string, ev: CommandEvent): Effects? ... end
 --   return script
 --
 -- Handlers run sandboxed with a short time limit and no direct access to files
 -- or processes. They return an effect, a list of effects, or nil, and can wait
--- for an effect's result with afterglow.await. Actions appear
--- in the command palette and bind in Keybinds.bindings as
--- "script:<id>.<action>".
+-- for an effect's result with afterglow.await. Commands run from the shell
+-- (`afterglow run <id> <command>`), from the command palette when they have a
+-- palette title, and from Keybinds.bindings as "script:<id>.<command>".
+-- A package declares its commands in package.json, not in metadata.
 --
 -- A helper that takes a pane targets the event's pane when the pane is nil.
--- In an event without a pane (on_load, on_config_changed, an action run with
--- no pane) such an effect fails: pass ev.terminal.active_pane instead.
+-- In an event without a pane (on_load, on_config_changed) such an effect fails: pass ev.terminal.active_pane instead.
 
 export type LaunchOptions = { cwd: string?, env: {[string]: string | false}?, size: number? }
 
@@ -72,7 +72,18 @@ export type CommandFinishedEvent = {
     terminal: State,
 }
 export type StatusEvent = { pane: Pane, state: string, text: string, terminal: State }
-export type ActionEvent = { pane: Pane?, terminal: State } -- the targeted pane, if any
+export type HostEvent = { pane: Pane?, terminal: State } -- the targeted pane, if any
+-- A command run. A run from the palette, a key, the menu or `afterglow ctl action` has
+-- no arguments. It ends when the handler returns, also after it waited.
+export type CommandEvent = {
+    args: { string }, -- at most 256, each at most 4096 characters
+    cwd: string, -- the client's directory, or the pane's
+    pane: Pane?,
+    stdin: string?, -- the whole stdin, for a command with stdin = true run from the shell
+    source: "shell" | "palette" | "key" | "menu" | "control",
+    run: string, -- for afterglow.output, output_error and exit
+    terminal: State,
+}
 export type UserVarEvent = { pane: Pane, name: string, value: string, terminal: State } -- iTerm2 SetUserVar
 export type ContextEvent = { pane: Pane, context: string, terminal: State } -- OSC 3008 / RemoteHost; "" back home
 -- A split also says which pane it split from and the edge they share: 1 left, 2 top, 3 right, 4 bottom.
@@ -186,13 +197,13 @@ export type Effects = Effect | { Effect }
 --   on_dock_wheel(ev: DockWheelEvent) -- the mouse wheel over this script's dock
 --   on_dock_drag(ev: DockDragEvent) -- a drag that began on an item of this script's dock
 --   on_dock_layout(ev: DockLayoutEvent) -- this script's dock showed, went or changed its size
---   run_action(action: string, ev: ActionEvent)
+--   run_command(command: string, ev: CommandEvent)
 -- Packages receive on_load(ev: PackageLoadEvent); migrate(value, oldVersion, newVersion)
 -- returns a new state object. Migration/init failures retain the old instance.
---   on_load(ev: ActionEvent)             on_unload(ev: ActionEvent)
---   on_config_changed(ev: ActionEvent)
---   on_timer(ev: ActionEvent & { name: string })
---   on_file_changed(ev: ActionEvent & { name: string, path: string, exists: boolean })
+--   on_load(ev: HostEvent)             on_unload(ev: HostEvent)
+--   on_config_changed(ev: HostEvent)
+--   on_timer(ev: HostEvent & { name: string })
+--   on_file_changed(ev: HostEvent & { name: string, path: string, exists: boolean })
 --   on_result(ev: ResultEvent) -- for effects with a request_id: afterglow.request, exec and read_file
 
 export type PackageLoadEvent = {
@@ -237,7 +248,14 @@ declare afterglow: {
     -- path is absolute.
     read_file: (name: string, path: string, options: { timeout_ms: number?, max_bytes: number? }?) -> Effect,
     watch_file: (name: string, path: string) -> Effect,
-    set_actions: (actions: { { id: string, title: string } }) -> Effect,
+    -- Commands added at runtime, beside the manifest's. A name that the manifest has is refused.
+    set_commands: (commands: { { name: string, summary: string, usage: string?, palette: string?, stdin: boolean? } }) -> Effect,
+    -- To the stdout and stderr of `afterglow run`, within Scripts.commandOutputLimit. A run
+    -- with no client drops stdout and shows stderr in a notification.
+    output: (run: string | CommandEvent, text: string) -> Effect,
+    output_error: (run: string | CommandEvent, text: string) -> Effect,
+    -- The run's exit status, 0-255 (default 0).
+    exit: (run: string | CommandEvent, code: number) -> Effect,
     select: (pane: PaneRef, title: string, items: { { id: string, title: string } }) -> Effect,
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,

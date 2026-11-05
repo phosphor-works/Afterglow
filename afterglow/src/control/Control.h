@@ -53,14 +53,15 @@ class Control : public QObject
 public:
     enum class TextScope { Screen, Scrollback, Selection, LastOutput };
     using WindowFactory = std::function<TerminalWindow*(const QString& workingDirectory, const QStringList& command, bool empty)>;
-    /// Runs a script action ("<script id>.<action id>"); false if there is none.
-    using ScriptActionRunner = std::function<bool(const QString& action, quint32 pane)>;
+    /// Starts a script command ("<script id>.<command>") with no arguments and
+    /// no client. Returns an error, or empty.
+    using ScriptCommandRunner = std::function<QString(const QString& command, quint32 pane)>;
 
     Control(SettingsStore& settings, WindowFactory newWindow, QObject* parent = nullptr);
 
     /// Follows a window's panes; every window registers on creation.
     void attachWindow(TerminalWindow* window);
-    void setScriptActionRunner(ScriptActionRunner runner) { m_scriptActions = std::move(runner); }
+    void setScriptCommandRunner(ScriptCommandRunner runner) { m_scriptCommands = std::move(runner); }
 
     QList<PaneInfo> panes() const;
     std::optional<PaneInfo> paneInfo(quint32 id) const;
@@ -111,7 +112,8 @@ public:
     /// program opened the URL, which Qt cannot tell.
     QString openUrl(const QString& url);
     /// A keybind action by its config name (split_right, new_tab...), or a
-    /// script action as "script:<script id>.<action id>". A keybind action
+    /// script command as "script:<script id>.<command>", which starts with no
+    /// arguments and returns before the run ends. A keybind action
     /// shows the pane's tab first, except the tab actions that act on that
     /// tab where it is (TerminalWindow::runAction).
     QString runAction(quint32 pane, const QString& action);
@@ -187,7 +189,7 @@ private:
 
     SettingsStore& m_settings;
     WindowFactory m_newWindow;
-    ScriptActionRunner m_scriptActions;
+    ScriptCommandRunner m_scriptCommands;
     std::function<QVariantList()> m_scriptDiagnostics;
     QList<QPointer<TerminalWindow>> m_windows;
     QPointer<TerminalWindow> m_lastActive;

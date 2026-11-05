@@ -168,6 +168,10 @@ struct Settings
     double fontSizeStep = 1.0; ///< points that font_bigger and font_smaller add or take away
     bool scriptsAllowReadText = true;
     bool scripts = true; ///< run Luau scripts from the scripts directories
+    int scriptCommandTimeout = 600000; ///< milliseconds that one command run may take
+    int scriptCommandStdinLimit = 1024 * 1024; ///< bytes of stdin that a command run gets
+    int scriptCommandRunLimit = 16; ///< command runs of one script at once
+    int scriptCommandOutputLimit = 16 * 1024 * 1024; ///< bytes of stdout and stderr of one command run
     QString pager = QStringLiteral("less -R");
     std::size_t lastOutputLimit = std::size_t(1024) << 10; ///< bytes of the last output that show_last_output hands the pager
     bool shellIntegration = true;

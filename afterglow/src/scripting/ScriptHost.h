@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "ScriptPackage.h"
+
 #include <PhosphorFsLoader/IScanStrategy.h>
 
 #include <QElapsedTimer>
@@ -14,6 +16,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace PhosphorScripting {
@@ -28,13 +31,12 @@ class WatchedDirectorySet;
 namespace Afterglow {
 
 class ScriptTasks;
-struct ScriptPackage;
 
-/// Luau scripts that react to terminal events and add actions. Each script
+/// Luau scripts that react to terminal events and add commands. Each script
 /// runs in its own sandboxed engine with a heap cap and a time limit per
 /// call. Handlers do not touch the terminal: they return effects, which the
-/// host checks and rate limits. It keeps state, sleeps, logs and actions
-/// itself, gives timers, processes and file reads to its tasks, and hands
+/// host checks and rate limits. It keeps state, sleeps, logs, commands and
+/// their runs itself, gives timers, processes and file reads to its tasks, and hands
 /// the rest to @ref Callbacks::applyOwned or @ref Callbacks::apply.
 ///
 /// The search path lists directories lowest priority first; a script with
@@ -72,10 +74,36 @@ public:
         std::function<void(const QString& owner)> failed;
     };
 
-    struct ScriptAction
+    /// Where a command run's output goes. A run with no client (the palette,
+    /// a key, the menu, `afterglow ctl action`) has no finished function: its
+    /// stdout is dropped, and its stderr and a non-zero status show as a
+    /// notification.
+    struct CommandSink
     {
-        QString token; ///< "<script id>.<action id>"
-        QString title;
+        /// False when the client has gone: the run is cancelled.
+        std::function<bool(const QString& text)> output;
+        std::function<bool(const QString& text)> error;
+        std::function<void(int status)> finished;
+    };
+
+    struct CommandRequest
+    {
+        QString script;
+        QString command;
+        QStringList args;
+        QString cwd; ///< empty: the pane's directory
+        quint32 pane = 0;
+        std::optional<QString> input; ///< the client's stdin, for a command with stdin
+        QString source; ///< shell, palette, key, menu or control
+    };
+
+    /// Scripts.command*: see their descriptions in Settings.cpp.
+    struct CommandLimits
+    {
+        int timeoutMs = 600000;
+        qint64 inputBytes = 1024 * 1024;
+        int runs = 16;
+        qint64 outputBytes = 16 * 1024 * 1024;
     };
 
     static constexpr int EventTimeoutMs = 20;
@@ -89,7 +117,10 @@ public:
     /// marks them), and the generic actions that do.
     static constexpr int MaxStructuralPer10s = 3;
     static constexpr int MaxEffectsPerCall = 64;
-    static constexpr int MaxActions = 32; ///< palette actions of one script
+    static constexpr int MaxCommandArgs = 256;
+    static constexpr int MaxCommandArgLength = 4096; ///< UTF-16 units of one argument
+    /// The exit status of a run that ran out of time.
+    static constexpr int CommandTimedOut = 124;
     /// Results, queued or each second, disable a script past these: a
     /// handler that answers each result with a new request loops without
     /// end. A script that requests every effect its budgets let it apply,
@@ -130,15 +161,26 @@ public:
     QVariantList diagnostics() const;
     /// Whether a script stopped running after repeated failures. A test hook.
     bool isDisabled(const QString& id) const;
-    QList<ScriptAction> actions() const;
+    /// The commands of the running scripts, by script and then by name.
+    QList<ScriptCommand> commands() const;
+    void setCommandLimits(const CommandLimits& limits) { m_limits = limits; }
+    const CommandLimits& commandLimits() const { return m_limits; }
     /// The shader directories of loaded packages, by package ID.
     QMap<QString, QString> packageShaders() const { return m_packageShaders; }
     /// Shader settings loaded packages suggest: {package, key, ref}.
     QVariantList packageSuggestions() const;
 
-    /// Runs a script action with @p pane (0 for none) as its event's pane.
-    /// False if there is no such action.
-    bool runAction(const QString& token, quint32 pane);
+    /// Starts a run of a command. Returns its handle, or 0 with @p error
+    /// set; @p unknown says that there is no such script or command. The run
+    /// can end, and @p sink finish, before this returns.
+    quint64 startCommand(const CommandRequest& request, CommandSink sink, QString* error, bool* unknown = nullptr);
+    /// Starts @p token ("<script id>.<command>") with no arguments and no
+    /// client, as the palette, a key, the menu and `afterglow ctl action` do.
+    /// Returns an error, or empty.
+    QString runCommand(const QString& token, quint32 pane, const QString& source);
+    /// Ends a run with @p status and drops what its handler waits for. A
+    /// handle that has ended already is ignored.
+    void cancelCommand(quint64 run, int status, const QString& message = {});
     /// Calls @p handler (on_command_finished...) in every script that has it.
     /// The event's "pane" is filled in from @p pane.
     void dispatch(const QString& handler, quint32 pane, QVariantMap event = {});
@@ -147,7 +189,7 @@ public:
     void dispatchTo(const QString& owner, const QString& handler, quint32 pane, QVariantMap event = {}, bool limited = false);
 
 Q_SIGNALS:
-    void actionsChanged();
+    void commandsChanged();
     /// Loaded packages' shader directories changed (packageShaders()).
     void packageShadersChanged(const QMap<QString, QString>& directories);
     /// After every effect, with the error if it was refused or failed. Tests
@@ -159,8 +201,9 @@ private:
     using ScriptPtr = std::shared_ptr<Script>;
 
     ScriptPtr load(const QString& path, const QByteArray& source, const ScriptPackage* package = nullptr) const;
+    /// Runs a handler. @p run is the command run whose handler it is, 0 for none.
     void call(const ScriptPtr& script, const QString& function, const QVariantList& args, int timeoutMs,
-              quint32 eventPane);
+              quint32 eventPane, quint64 run = 0);
     void applyResult(const ScriptPtr& script, const QVariant& result, quint32 eventPane);
     void applyEffect(const ScriptPtr& script, const QVariantMap& effect, quint32 eventPane);
     QVariantMap state() const;
@@ -177,7 +220,13 @@ private:
     QVariantMap eventPane(quint32 pane) const;
     /// Stops a script at run time and withdraws what it contributes.
     void disable(const ScriptPtr& script);
-    void announceActions(const QList<ScriptAction>& before);
+    void announceCommands(const QList<ScriptCommand>& before);
+    /// Ends the run @p handle of @p script. @p message goes to its stderr.
+    /// @p waiting: its handler may still wait, and its flows are dropped.
+    void finishRun(const ScriptPtr& script, quint64 handle, int status, const QString& message, bool waiting);
+    /// Writes to a run's stdout or stderr, within Scripts.commandOutputLimit.
+    /// Returns an error, or empty.
+    QString writeRun(const ScriptPtr& script, quint64 handle, const QString& text, bool error);
     void publishPackageShaders();
     /// Creates or drops the directory set to match m_enabled.
     void applyEnabled();
@@ -213,6 +262,12 @@ private:
     std::vector<ScriptPtr> m_scripts;
     QMap<QString, QString> m_packageShaders;
     QElapsedTimer m_clock;
+    CommandLimits m_limits;
+    quint64 m_nextRun = 0;
+    QHash<quint64, std::weak_ptr<Script>> m_runScripts; ///< the script of each live run
+    /// The run whose handler the running call is, and whether it finished.
+    quint64 m_callRun = 0;
+    bool m_callRunDone = false;
     // Last, so a pending rescan cannot run into a partly destroyed host.
     std::unique_ptr<PhosphorFsLoader::WatchedDirectorySet> m_directories; ///< while enabled
 };

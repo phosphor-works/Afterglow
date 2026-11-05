@@ -1,17 +1,14 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- A package that ships a script and the shader it drives. Copy this folder
--- into ~/.config/afterglow/scripts, run "Use Package Shaders…" to set
--- Shaders.overview to scripted-overview.wall, and bind
--- "script:scripted-overview.open". The script owns the keyboard: a/d, h/l or
+-- into ~/.config/afterglow/scripts, run "Use Package Shaders…" (or
+-- `afterglow run scripted-overview use-shaders`) to set Shaders.overview to
+-- scripted-overview.wall, and bind "script:scripted-overview.open". The script owns the keyboard: a/d, h/l or
 -- the arrow keys move, w/s jump between tabs, Enter or Space chooses, q or
 -- Escape closes. The key mode starts while the overview is open, so it ends
 -- when the overview closes, also when a click closes it.
 local script = {}
-script.metadata = {
-    name = "Scripted overview",
-    actions = { { id = "open", title = "Pane overview (scripted keys)" } },
-}
+script.metadata = { name = "Scripted overview" }
 
 local function windowOf(ev)
     for _, window in ev.terminal.windows do
@@ -20,8 +17,10 @@ local function windowOf(ev)
     return nil
 end
 
-function script.run_action(_, ev)
+function script.run_command(command, ev)
     if not ev.pane then return nil end
+    -- The dialog that writes the package's suggested shaders into the config.
+    if command == "use-shaders" then return afterglow.action(ev.pane, "use_package_shaders") end
     local opened, err = afterglow.await(afterglow.overview(ev.pane, "open"))
     if not opened then return afterglow.notify("Scripted overview", err.message, ev.pane) end
     return afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close")

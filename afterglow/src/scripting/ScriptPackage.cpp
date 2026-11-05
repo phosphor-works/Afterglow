@@ -185,6 +185,11 @@ struct Builder
                 out.assets.insert(it.key(), file);
             }
             if (!shaders(base, id, manifest)) return {};
+            if (const auto commands = manifest.value(QStringLiteral("commands")); !commands.isUndefined()) {
+                if (!commands.isObject()) { error = QStringLiteral("commands must be an object of command names"); return {}; }
+                error = readCommands(commands.toObject().toVariantMap(), out.commands);
+                if (!error.isEmpty()) return {};
+            }
             const auto configPath = path(base, QStringLiteral("config.json"));
             if (QFileInfo::exists(configPath)) {
                 const auto overrides = json(configPath).toVariantMap();
@@ -229,6 +234,56 @@ struct Builder
     }
 };
 }
+QString readCommand(const QString& name, const QVariantMap& fields, ScriptCommand& out)
+{
+    out = {};
+    out.name = name;
+    if (!identifier(name)) return QStringLiteral("Command name %1 is not 1 to 64 letters, digits, _ and -").arg(name);
+    for (auto it = fields.begin(); it != fields.end(); ++it) {
+        const QString& key = it.key();
+        const QVariant& value = it.value();
+        if (key == QLatin1String("stdin")) {
+            if (value.typeId() != QMetaType::Bool) return QStringLiteral("Command %1: stdin must be a boolean").arg(name);
+            out.input = value.toBool();
+            continue;
+        }
+        QString* text = key == QLatin1String("summary") ? &out.summary
+            : key == QLatin1String("usage")             ? &out.usage
+            : key == QLatin1String("palette")           ? &out.palette
+                                                        : nullptr;
+        if (!text) return QStringLiteral("Command %1 has an unknown field %2").arg(name, key);
+        const QString string = value.toString();
+        if (value.typeId() != QMetaType::QString || string.size() > MaxCommandText
+            || std::any_of(string.begin(), string.end(), [](QChar c) { return c.category() == QChar::Other_Control; }))
+            return QStringLiteral("Command %1: %2 must be text of at most %3 characters, with no control characters")
+                .arg(name, key).arg(MaxCommandText);
+        *text = string;
+    }
+    if (out.summary.isEmpty()) return QStringLiteral("Command %1 needs a summary").arg(name);
+    return {};
+}
+
+QString readCommands(const QVariant& table, QList<ScriptCommand>& out)
+{
+    out.clear();
+    // An empty Luau table has no keys to tell a map from a list.
+    if (table.typeId() == QMetaType::QVariantList && table.toList().isEmpty()) return {};
+    if (table.typeId() != QMetaType::QVariantMap) return QStringLiteral("commands must map command names to their fields");
+    const QVariantMap commands = table.toMap();
+    if (commands.size() > MaxScriptCommands) return QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands);
+    for (auto it = commands.begin(); it != commands.end(); ++it) {
+        if (it.value().typeId() != QMetaType::QVariantMap)
+            return QStringLiteral("Command %1 must be a table of fields, with a summary").arg(it.key());
+        ScriptCommand command;
+        if (const QString error = readCommand(it.key(), it.value().toMap(), command); !error.isEmpty()) {
+            out.clear();
+            return error;
+        }
+        out.append(command);
+    }
+    return {};
+}
+
 QString ScriptPackage::read(const QString& manifest, ScriptPackage& result)
 {
     result = {};

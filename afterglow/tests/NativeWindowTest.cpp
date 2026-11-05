@@ -938,6 +938,73 @@ struct AccessibleEvents {
         return int(std::count_if(events.cbegin(), events.cend(), [&](const Event& e) { return e.type == type && e.iface == iface; }));
     }
 };
+TEST_F(NativeWindow, PaletteMenuAndKeyRunScriptCommands) {
+    // A script beside the config: one command in the palette, one only for keys.
+    ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("scripts"))));
+    QFile script(directory.filePath(QStringLiteral("scripts/marker.luau")));
+    ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+    script.write(R"(
+return {
+    metadata = { commands = {
+        mark = { summary = "Title the pane", palette = "Mark this pane" },
+        keyed = { summary = "Not in the palette" },
+    } },
+    run_command = function(command, ev)
+        afterglow.sleep(1) -- the run ends after a wait, too
+        return { afterglow.set_title(ev.pane, command .. " from " .. ev.source .. " with " .. #ev.args), afterglow.output(ev, "dropped") }
+    end,
+}
+)");
+    script.close();
+    application.reset();
+    application = std::make_unique<Application>(testSocket(), directory.filePath(QStringLiteral("commands.conf")),
+        QJsonObject{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false}}},
+                    {QStringLiteral("Keybinds"), QJsonObject{{QStringLiteral("bindings"),
+                        QJsonObject{{QStringLiteral("script:marker.keyed"), QStringLiteral("Ctrl+Alt+M")}}}}}});
+    WindowOptions options;
+    options.command = {QStringLiteral("/bin/cat")};
+    window = application->newWindow(options);
+    ASSERT_NE(window, nullptr);
+    window->resize(900, 600);
+    window->show();
+    ASSERT_TRUE(waitFor([this] { return window->isExposed() && window->submittedFrames() > 0; }));
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    Pane* pane = window->focusedPane();
+    // The palette lists the command with a palette title, and only that one.
+    int id = -1;
+    ASSERT_TRUE(waitFor([&] {
+        for (const QVariant& entry : chrome->actions()) {
+            const QVariantMap map = entry.toMap();
+            if (map.value(QStringLiteral("title")) == QLatin1String("Mark this pane")) id = map.value(QStringLiteral("id")).toInt();
+            EXPECT_NE(map.value(QStringLiteral("title")), QStringLiteral("Not in the palette"));
+        }
+        return id >= 0;
+    }));
+    chrome->runAction(id);
+    EXPECT_TRUE(waitFor([&] { return pane->userTitle() == QLatin1String("mark from palette with 0"); }))
+        << pane->userTitle().toStdString();
+    // The key runs a command that the palette does not list.
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_M, Qt::ControlModifier | Qt::AltModifier, QStringLiteral("m"));
+    QCoreApplication::sendEvent(window, &press);
+    EXPECT_TRUE(waitFor([&] { return pane->userTitle() == QLatin1String("keyed from key with 0"); }))
+        << pane->userTitle().toStdString();
+    // The context menu's Scripts submenu runs it too.
+    window->openPaneMenu(pane);
+    int menuId = -1;
+    std::function<void(const QVariantList&)> find = [&](const QVariantList& items) {
+        for (const QVariant& item : items) {
+            const QVariantMap map = item.toMap();
+            if (map.value(QStringLiteral("title")) == QLatin1String("Mark this pane")) menuId = map.value(QStringLiteral("id")).toInt();
+            find(map.value(QStringLiteral("items")).toList());
+        }
+    };
+    find(chrome->contextMenu().value(QStringLiteral("items")).toList());
+    ASSERT_GE(menuId, 0);
+    chrome->activateMenuItem(menuId);
+    EXPECT_TRUE(waitFor([&] { return pane->userTitle() == QLatin1String("mark from menu with 0"); }))
+        << pane->userTitle().toStdString();
+}
 TEST_F(NativeWindow, AccessiblePaneRunsThePaneActionsOfThePalette) {
     QAccessible::setActive(true);
     const auto inactive = qScopeGuard([] { QAccessible::setActive(false); });

@@ -465,6 +465,8 @@ private:
     void updateChrome();
     /// The command palette's list: every action and the scripts' actions.
     void updatePaletteActions();
+    /// Starts a script command from the palette, a key or the menu, with no arguments.
+    void runScriptCommand(const QString& token, Pane* pane, const QString& source);
     bool chromeVisible() const;
     /// Routes a pointer event to the chrome when it is over it (or the chrome
     /// holds a press). Returns true if the chrome took it.
@@ -630,7 +632,7 @@ private:
     /// Starts or stops audio capture for the chains that show now.
     void updateAudioCapture();
     bool m_readsMouse = false; ///< a chain reads the pointer: it moving is a frame
-    QStringList m_paletteScriptActions; ///< palette id ScriptActionBase + i runs entry i
+    QStringList m_paletteCommands; ///< palette id ScriptCommandBase + i runs script command i
     ChromeController* m_controller = nullptr;
     ChromeLayer* m_chrome = nullptr;
     bool m_chromeGrab = false;
@@ -899,7 +901,7 @@ private:
     /// The link modifier (Links.modifier) is held, or none is needed.
     bool linkModifierHeld() const;
     QString m_menuLink; ///< the link the menu was opened on
-    QStringList m_menuScriptActions; ///< menu id MenuScriptBase + i runs entry i
+    QStringList m_menuCommands; ///< menu id MenuScriptBase + i runs script command i
     /// The pane the context menu was opened on: its items act on it, even
     /// when the focus moved while the menu was open.
     QPointer<Pane> m_menuPane;

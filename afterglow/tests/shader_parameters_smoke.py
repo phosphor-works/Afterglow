@@ -41,13 +41,13 @@ with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
     inspector = config / "scripts/inspect"
     inspector.mkdir(parents=True)
     (inspector / "package.json").write_text(json.dumps({"id": "inspect", "version": "1.0.0", "api_version": 1,
-        "state_version": 1, "entry": "main", "modules": {"main": "init.luau"}}))
+        "state_version": 1, "entry": "main", "modules": {"main": "init.luau"},
+        "commands": {"read": {"summary": "Inspect shader parameters"}, "scene": {"summary": "Inspect scene"}}}))
     (inspector / "init.luau").write_text('''
 local revision = 0
 return {
  on_load=function(ev) revision=ev.storage.revision end,
- metadata={actions={{id="read",title="Inspect shader parameters"},{id="scene",title="Inspect scene"}}},
- run_action=function(action,ev) return afterglow.request("read",action=="scene" and afterglow.scene_state(ev.pane) or afterglow.shaders(ev.pane)) end,
+ run_command=function(action,ev) return afterglow.request("read",action=="scene" and afterglow.scene_state(ev.pane) or afterglow.shaders(ev.pane)) end,
  on_result=function(ev)
   if ev.request_id=="read" and ev.ok then
    return afterglow.request("saved",afterglow.state_write(ev.data,revision))
@@ -63,9 +63,8 @@ return {
     writer = config / "scripts/writer.luau"
     writer.write_text('''
 return {
- metadata={actions={{id="pane",title="Pane"},{id="tab",title="Tab"},{id="window",title="Window"},
-          {id="transition",title="Transition"},{id="bad",title="Invalid"},{id="reset",title="Reset"}}},
- run_action=function(action,ev) return afterglow.request(action,afterglow.shaders(ev.pane)) end,
+ metadata={commands={pane={summary="Pane",palette="Pane"},tab={summary="Tab",palette="Tab"},window={summary="Window",palette="Window"},transition={summary="Transition",palette="Transition"},bad={summary="Invalid",palette="Invalid"},reset={summary="Reset",palette="Reset"}}},
+ run_command=function(action,ev) return afterglow.request(action,afterglow.shaders(ev.pane)) end,
  on_result=function(ev)
   -- Each line names its action, so the harness waits for the answer to that action.
   local done=string.match(ev.request_id,"^done:(.+)$")
@@ -174,8 +173,8 @@ return {
             # separate script carries the old id, so a reload of the writer
             # cannot lose it.
             stale = config / "scripts/stale.luau"
-            stale.write_text('return {metadata={actions={{id="write",title="Stale"}}},'
-                ' run_action=function(_,ev) return afterglow.request("done",afterglow.shader_parameters(ev.pane,'
+            stale.write_text('return {metadata={commands={write={summary="Stale",palette="Stale"}}},'
+                ' run_command=function(_,ev) return afterglow.request("done",afterglow.shader_parameters(ev.pane,'
                 + json.dumps(before[0]["instance"]) + ',{strength=1.2})) end,'
                 ' on_result=function(ev) return afterglow.log(ev.ok and "STALE_OK" or "STALE_REJECTED") end}\n')
             wait_for(lambda: any(s["id"] == "stale" for s in json.loads(ctl("scripts"))))

@@ -32,8 +32,20 @@ Open the command palette and choose:
   (or the pane's working directory for an ordinary window).
 - **Previous project**: return to the most recent different project.
 
-The keybinding actions are `script:project-navigator.open`,
-`script:project-navigator.favorite` and `script:project-navigator.previous`.
+These are the commands `pick`, `favorite` and `previous`. Bind them as
+`script:project-navigator.pick`, `script:project-navigator.favorite` and
+`script:project-navigator.previous`.
+
+From a shell:
+
+```sh
+afterglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
+afterglow run project-navigator list                       # favorite, recent and saved projects
+```
+
+`open DIR [LAYOUT]` opens a directory relative to the shell's directory. Without
+a layout it uses the last layout of the directory. `list` prints `KIND<TAB>VALUE`
+lines: `favorite`, `recent`, `recent-layout` and `layout`.
 
 Create `config.json` beside `package.json` to override the defaults:
 
@@ -79,12 +91,12 @@ Storage is scoped to `project-navigator`, under
 `state/scripts/project-navigator.json` beside the active configuration. Schema 2
 includes a migration example from schema 1's arrays of favorite and recent paths.
 State conflicts preserve the newer file and report the failed save. The next
-action reads current state again. A launch can succeed even if saving its history
+command reads current state again. A launch can succeed even if saving its history
 fails. `afterglow ctl scripts` reports package load errors and retained last-good
 instances.
 
 `providers.luau` handles discovery and parsing. `history.luau` handles bounded
-state and migrations. `init.luau` coordinates actions and correlated results.
+state and migrations. `init.luau` coordinates commands and correlated results.
 The package uses only declared local imports and Afterglow effects.
 
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
@@ -130,7 +142,7 @@ An invalid edit leaves the last working version active. `afterglow ctl scripts`
 shows `last-good` and the error. Correct the edit to recover. Open dialogs and
 provider jobs from a successfully replaced version are canceled.
 
-Remove the `scripts/project-navigator/` directory to uninstall. Its actions,
+Remove the `scripts/project-navigator/` directory to uninstall. Its commands,
 open selector and jobs are removed automatically. Favorites and history stay in
 `state/scripts/project-navigator.json` beside the configuration file, so a new
 installation restores them.

@@ -6,10 +6,10 @@ local script = {}
 script.metadata = {
     id = "projects",
     name = "Projects",
-    actions = {{id="open", title="Choose saved project (Luau)"}},
+    commands = { open = { summary = "Choose saved project (Luau)", palette = "Choose saved project (Luau)" } },
 }
-function script.run_action(action, ev)
-    if action ~= "open" or not ev.pane then return nil end
+function script.run_command(command, ev)
+    if command ~= "open" or not ev.pane then return nil end
     local projects, err = afterglow.await(afterglow.list_projects())
     if not projects then return afterglow.notify("Projects", err.message, ev.pane) end
     local items = {}

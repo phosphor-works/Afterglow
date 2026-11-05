@@ -33,8 +33,8 @@ Shell integration uses OSC 133.
 | OSC 7501 blocked or error status | Glass uses the alert color. |
 | Command completion after at least 20 seconds in an unfocused pane | Desktop notification. |
 
-The command palette includes Glasshouse strike, glaze, ring and heat actions.
-Bind an action with configuration such as:
+The command palette includes the Glasshouse commands strike, glaze, ring and heat.
+Run one with `afterglow run glasshouse strike`, or bind it with configuration such as:
 
 ```json
 {"Keybinds": {"bindings": {"script:glasshouse.strike": "Ctrl+Alt+S"}}}

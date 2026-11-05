@@ -3,8 +3,8 @@
 -- Select and copy a retained shell prompt, input or output region.
 local function notify(pane, text) return afterglow.notify("Shell regions", text, pane) end
 return {
-    metadata = {name="Shell regions", actions={{id="copy", title="Copy a shell semantic region"}}},
-    run_action = function(_, ev)
+    metadata = {name="Shell regions", commands = { copy = { summary = "Copy a shell semantic region", palette = "Copy a shell semantic region" } }},
+    run_command = function(_, ev)
         if not ev.pane then return nil end
         local pane = ev.pane.id
         local found, err = afterglow.await(afterglow.semantic_regions(pane))

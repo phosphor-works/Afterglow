@@ -4,7 +4,7 @@
 # External control
 
 Other programs can control Afterglow with the command line or the control socket.
-They can list panes, send text, create panes, set titles, show notifications and run actions.
+They can list panes, send text, create panes, set titles, show notifications, run actions and run the commands of scripts.
 The `watch` command writes each event as a JSON line, such as `{"args":[3,"vim"],"event":"titleChanged"}`.
 
 ```sh
@@ -18,6 +18,7 @@ The socket has two targets:
 | Target | Use |
 | --- | --- |
 | `control` | The calls and events of external control, while `Control.enabled` is on |
+| `commands` | The [commands of scripts](#script-commands), while `Control.enabled` and `Scripts.enabled` are on |
 | `launch` | A later launch of Afterglow hands its window to the main process |
 
 Afterglow uses D-Bus only as a client of desktop services, such as notifications, taskbar progress and global shortcuts.
@@ -26,8 +27,8 @@ It owns no D-Bus name.
 ## Which process and pane
 
 Every pane sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SOCKET` to the socket of its Afterglow process.
-In a pane, `afterglow ctl` sends its commands to that process.
-Outside Afterglow, `afterglow ctl` uses the socket of the main process on the current Wayland display.
+In a pane, `afterglow ctl` and `afterglow run` send their requests to that process.
+Outside Afterglow, they use the socket of the main process on the current Wayland display.
 
 | Process | Socket |
 | --- | --- |
@@ -43,9 +44,9 @@ Outside its panes, `afterglow ctl` does not find a separate process.
 A client reaches it with its socket path, for example `AFTERGLOW_SOCKET=PATH afterglow ctl ls`.
 
 Without `XDG_RUNTIME_DIR`, Afterglow listens on no socket.
-Each launch then starts its own process, and `afterglow ctl` stops with an error.
+Each launch then starts its own process, and `afterglow ctl` and `afterglow run` stop with an error.
 An Afterglow without a socket removes `AFTERGLOW_SOCKET` from its panes.
-In such a pane, `afterglow ctl` stops with an error, because the pane ID means nothing to another process.
+In such a pane, `afterglow ctl` and `afterglow run` stop with an error, because the pane ID means nothing to another process.
 
 A process holds a lock on `PATH.lock` while it listens on the socket `PATH`.
 The system releases the lock when the process ends, also after a crash or `SIGKILL`.
@@ -101,6 +102,7 @@ Any program of the same user can call `launch.newWindow`, and that window can ru
 ## Protocol
 
 A client writes one request on each line and reads one reply on each line.
+Each line is one JSON object in UTF-8, and ends with a line feed (`\n`).
 Give each request an `id` that is not 0 and that no other request on the connection uses.
 The reply has the same `id`.
 
@@ -122,9 +124,26 @@ The reply has the same `id`.
 A request that fails gets a line with `"type": "error"`, a `code` and a `message` in place of the reply.
 An error for a line that does not parse has no `id`.
 
+A call can answer after other calls on the connection, when its target answers later.
+`run` of the `commands` target does this: it answers when the run ends.
+Use the `id` to find the reply of each request.
+
+An event goes to a subscriber with `subscriptionId`.
+An event for one connection only has `target` and `signal` in place of `subscriptionId`.
+The output of a script command comes in this form:
+
+```json
+{"type": "event", "target": "commands", "signal": "stdout", "args": ["5f0c...", "hello\n"]}
+```
+
+Everything that the socket writes to a connection arrives in the order it was written.
+The events of a run arrive before the reply of the run.
+
 | Code | Cause |
 | --- | --- |
 | `CALL_FAILED` | The call ran and failed, for example for a pane that does not exist. The message tells why. |
+| `CALL_ABANDONED` | The target could not answer a call that it answers later. |
+| `NO_SUCH_COMMAND` | `run` names a script or a command that does not exist. |
 | `NO_SUCH_TARGET` | The target is not there: `control` while `Control.enabled` is off. Also ends a subscription, with the subscription's `id`. |
 | `NO_SUCH_FN` | No call has that name. |
 | `NO_SUCH_SIGNAL` | No event has that name. |
@@ -186,7 +205,7 @@ Another number fails with `CALL_FAILED`.
 | `setTitle` | pane, title | None. An empty title gives the title back to the programs. |
 | `signal` | pane, channel, value | None. Channels are 0 to 7. |
 | `notify` | pane, title, body | None |
-| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.ACTION`. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. |
+| `runAction` | pane, action | None. Actions are keybind action names, or `script:ID.COMMAND`, which starts a [script command](#script-commands) with no arguments and returns before it ends. A keybind action runs in the pane's tab and shows it first. `close_tab`, `rename_tab`, `move_tab_left`, `move_tab_right` and `detach_tab` do not show it. `close_tab` asks first when a program runs in the tab and `Terminal.confirmClose` is on. The call returns before the answer. |
 | `movePane` | pane, target, placement | An object: the pane after the move. See [projects](PROJECTS.md). |
 | `detachTab` | pane | An object: the pane in its new window |
 | `openDirectory` | directory, layout | An object: the window and its pane |
@@ -246,6 +265,79 @@ Before any other event of the pane, such as `commandFinished` or `paneClosed`, t
 The other events are never merged.
 Set `Control.eventInterval=0` to send every event.
 
+## Script commands
+
+`afterglow run` runs a command of a script and passes its output through.
+It exits with the command's exit status.
+See [commands](SCRIPTING.md#commands) for the script side.
+
+### afterglow run
+
+```sh
+afterglow run                                      # list the commands
+afterglow run ID --help                            # the commands of one script
+afterglow run [-n] [--pane N] ID COMMAND [ARGS…]   # run a command
+```
+
+| Option | Effect |
+| --- | --- |
+| `-n`, `--no-stdin` | Does not pass standard input to the command |
+| `--pane N` | The pane that the command acts on |
+
+The words after `COMMAND` go to the command, options too.
+The command acts on the pane of `--pane N`, else on `AFTERGLOW_PANE_ID`, else on the focused pane.
+`afterglow run` finds its Afterglow as `afterglow ctl` does (see [which process and pane](#which-process-and-pane)).
+
+`afterglow run` reads standard input only for a command with `stdin`, and only when standard input is not a terminal.
+Thus a run from cron or from `ssh host cmd` does not wait for input that never ends.
+
+| Exit status | Cause |
+| --- | --- |
+| 0 to 255 | The exit status of the command |
+| 1 | An error: no Afterglow, commands off, a failed handler, a run over a limit |
+| 2 | A usage error, or a script or command that does not exist |
+| 124 | The run took longer than `Scripts.commandTimeout` |
+| 130 | `SIGINT`. `afterglow run` cancels the run, then exits |
+| 141 | Standard output closed. `afterglow run` cancels the run, then exits |
+| 143 | `SIGTERM`. `afterglow run` cancels the run, then exits |
+
+`afterglow run --complete` prints the script IDs that have commands, one on each line.
+`afterglow run --complete ID` prints `COMMAND<TAB>SUMMARY` lines.
+The shell completions for bash, zsh and fish use them.
+They are in `share/bash-completion/completions/afterglow`, `share/zsh/site-functions/_afterglow` and `share/fish/vendor_completions.d/afterglow.fish`.
+
+### The commands target
+
+| Call | Arguments | Result |
+| --- | --- | --- |
+| `list` | None | The commands: objects with `script`, `command`, `summary`, `usage`, `palette` and `stdin` |
+| `input` | run, text, end | `true` while the run takes more input. Send standard input before `run`, in parts |
+| `run` | run, script, command, arguments, directory, pane | `{"exit": STATUS}` when the run ends. A pane of 0 is the focused pane |
+| `cancel` | run | None. The run ends, and its `run` reply has exit status 130 |
+| `SCRIPT.COMMAND` | arguments | `{"exit": STATUS}`. Runs the command from the focused pane |
+
+| Event | Arguments |
+| --- | --- |
+| `stdout` | run, text |
+| `stderr` | run, text |
+
+The events go only to the connection that called `run`. They have no `subscriptionId`.
+A subscription to them gets nothing.
+
+The client makes up the run ID, for example 16 random bytes in hexadecimal.
+A run ID is 1 to 64 letters, digits, `_` and `-`. It belongs to one connection.
+A `run` with an ID that a running run of the connection uses fails.
+
+Stdin is complete before the handler starts, because the handler gets it as one string.
+Afterglow keeps the input of an ID until `run` comes or the connection closes.
+It cuts the input at `Scripts.commandStdinLimit`, and then `input` returns `false`.
+A command without `stdin` gets no input, also when the client sent some.
+
+When a connection closes, Afterglow cancels its runs and drops its input.
+`Control.enabled=false` or `Scripts.enabled=false` removes the target, and the `run` calls that wait fail.
+
+`afterglow ctl watch` prints only the events of its subscriptions.
+
 ## Limits
 
 | Item | Limit | At the limit |
@@ -257,6 +349,10 @@ Set `Control.eventInterval=0` to send every event.
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
 | `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. |
+| `afterglow run` reply time for `list`, `input` and `cancel` | 10 seconds | `afterglow run` stops with exit status 1. It waits for the end of a run without a limit |
+| `input` part that `afterglow run` sends | 512 KiB of JSON string | `afterglow run` sends longer input in parts. |
+| Runs whose input waits for `run`, on one connection | 16 | `input` fails. |
+| `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
 | `notify` body | 2048 UTF-16 units | The body is cut. |

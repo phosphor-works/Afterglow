@@ -15,6 +15,7 @@
 #include <QJsonObject>
 #include <signal.h>
 #include <algorithm>
+#include <optional>
 #include <cerrno>
 #include <sys/stat.h>
 
@@ -111,6 +112,32 @@ protected:
         }
     }
 
+    /// Starts a command with no client and no arguments, as the palette does.
+    bool run(const QString& token, quint32 pane)
+    {
+        return host->runCommand(token, pane, QStringLiteral("palette")).isEmpty();
+    }
+
+    /// What a run with a client got: its output, its errors and its status.
+    struct Client
+    {
+        QString out;
+        QString err;
+        std::optional<int> status;
+        bool gone = false; ///< the output sink reports a client that left
+    };
+    /// Starts @p command of @p script for a client that @p client records.
+    quint64 start(const QString& script, const QString& command, Client& client, QStringList args = {}, quint32 pane = 7,
+                  std::optional<QString> input = std::nullopt, QString* error = nullptr, bool* unknown = nullptr)
+    {
+        ScriptHost::CommandSink sink;
+        sink.output = [&client](const QString& text) { client.out += text; return !client.gone; };
+        sink.error = [&client](const QString& text) { client.err += text; return !client.gone; };
+        sink.finished = [&client](int status) { client.status = status; };
+        return host->startCommand({script, command, args, QStringLiteral("/work"), pane, input, QStringLiteral("shell")},
+                                  std::move(sink), error, unknown);
+    }
+
     QVariantList windows, tabs;
     QTemporaryDir system;
     QTemporaryDir user;
@@ -128,12 +155,15 @@ protected:
 
 } // namespace
 
-TEST_F(ScriptHostTest, LoadsMetadataAndActions)
+TEST_F(ScriptHostTest, LoadsMetadataAndCommands)
 {
     write(user, QStringLiteral("hello.luau"), R"(
 local s = {}
-s.metadata = { id = "greeter", name = "Greeter", actions = { { id = "hi", title = "Say hi" }, { id = "bad id!" } } }
-function s.run_action(action, ev) return nil end
+s.metadata = { id = "greeter", name = "Greeter", commands = {
+    hi = { summary = "Say hi", usage = "[NAME]", palette = "Say hi" },
+    ["read-list"] = { summary = "Read names", stdin = true },
+} }
+function s.run_command(command, ev) return nil end
 return s
 )");
     write(user, QStringLiteral("afterglow.d.luau"), "this is not code");
@@ -141,19 +171,62 @@ return s
     EXPECT_EQ(host->scriptIds(), QStringList{QStringLiteral("greeter")});
     // The declarations file is not loaded, so it is not even a failure.
     EXPECT_EQ(host->diagnostics().size(), 1);
-    const auto actions = host->actions();
-    ASSERT_EQ(actions.size(), 1);
-    EXPECT_EQ(actions[0].token, QStringLiteral("greeter.hi"));
-    EXPECT_EQ(actions[0].title, QStringLiteral("Say hi"));
+    const auto commands = host->commands();
+    ASSERT_EQ(commands.size(), 2);
+    EXPECT_EQ(commands[0].token(), QStringLiteral("greeter.hi"));
+    EXPECT_EQ(commands[0].summary, QStringLiteral("Say hi"));
+    EXPECT_EQ(commands[0].usage, QStringLiteral("[NAME]"));
+    EXPECT_EQ(commands[0].palette, QStringLiteral("Say hi"));
+    EXPECT_FALSE(commands[0].input);
+    EXPECT_EQ(commands[1].token(), QStringLiteral("greeter.read-list"));
+    EXPECT_TRUE(commands[1].palette.isEmpty()); // in neither the palette nor the menu
+    EXPECT_EQ(commands[1].title(), QStringLiteral("greeter read-list"));
+    EXPECT_TRUE(commands[1].input);
+}
+
+TEST_F(ScriptHostTest, ManifestCommandsAreChecked)
+{
+    const QByteArray handler = " run_command = function() end }";
+    const std::pair<const char*, const char*> cases[] = {
+        {"{ ['bad id!'] = { summary = 'x' } }", "is not 1 to 64"},
+        {"{ go = { usage = 'X' } }", "needs a summary"},
+        {"{ go = { summary = 'x', stdin = 'yes' } }", "stdin must be a boolean"},
+        {"{ go = { summary = 'x', title = 'y' } }", "unknown field title"},
+        {"{ go = { summary = string.rep('x', 513) } }", "at most 512"},
+        {"{ go = { summary = 'a\\nb' } }", "no control characters"},
+        {"{ go = 'x' }", "must be a table of fields"},
+        {"{ 'go' }", "must map command names"},
+    };
+    int i = 0;
+    for (const auto& [commands, error] : cases) {
+        const QString name = QStringLiteral("bad%1.luau").arg(i++);
+        write(user, name, "return { metadata = { commands = " + QByteArray(commands) + " }," + handler);
+    }
+    QByteArray many;
+    for (int k = 0; k <= MaxScriptCommands; ++k) many += "c" + QByteArray::number(k) + " = { summary = 'x' },";
+    write(user, QStringLiteral("many.luau"), "return { metadata = { commands = {" + many + "} }," + handler);
+    write(user, QStringLiteral("nohandler.luau"), "return { metadata = { commands = { go = { summary = 'x' } } } }");
+    host->setEnabled(true);
+    EXPECT_TRUE(host->scriptIds().isEmpty());
+    QStringList errors;
+    for (const QVariant& d : host->diagnostics()) errors << d.toMap().value(QStringLiteral("error")).toString();
+    i = 0;
+    for (const auto& [commands, error] : cases) {
+        EXPECT_TRUE(std::any_of(errors.cbegin(), errors.cend(), [&](const QString& e) { return e.contains(QLatin1String(error)); }))
+            << commands << " " << error;
+        ++i;
+    }
+    EXPECT_TRUE(errors.contains(QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands)));
+    EXPECT_TRUE(errors.contains(QStringLiteral("A script with commands needs a run_command function")));
 }
 
 TEST_F(ScriptHostTest, UserScriptReplacesSystemScript)
 {
-    write(system, QStringLiteral("a.luau"), "return { metadata = { id = 'same', actions = { { id = 'sys' } } }, run_action = function() end }");
-    write(user, QStringLiteral("b.luau"), "return { metadata = { id = 'same', actions = { { id = 'user' } } }, run_action = function() end }");
+    write(system, QStringLiteral("a.luau"), "return { metadata = { id = 'same', commands={sys={summary='sys',palette='sys'}} }, run_command = function() end }");
+    write(user, QStringLiteral("b.luau"), "return { metadata = { id = 'same', commands={user={summary='user',palette='user'}} }, run_command = function() end }");
     host->setEnabled(true);
-    ASSERT_EQ(host->actions().size(), 1);
-    EXPECT_EQ(host->actions()[0].token, QStringLiteral("same.user"));
+    ASSERT_EQ(host->commands().size(), 1);
+    EXPECT_EQ(host->commands()[0].token(), QStringLiteral("same.user"));
 }
 
 TEST_F(ScriptHostTest, BrokenScriptsAreSkipped)
@@ -191,12 +264,12 @@ return {
     EXPECT_EQ(e.value(QStringLiteral("body")), QStringLiteral("failed after 1500 ms"));
 }
 
-TEST_F(ScriptHostTest, ActionsReturnEffectLists)
+TEST_F(ScriptHostTest, CommandsReturnEffectLists)
 {
     write(user, QStringLiteral("a.luau"), R"(
 return {
-    metadata = { actions = { { id = "go" } } },
-    run_action = function(action, ev)
+    metadata = { commands={go={summary="go",palette="go"}} },
+    run_command = function(action, ev)
         return {
             afterglow.split(ev.pane, "down", "htop"),
             afterglow.send_text(ev.pane, "echo " .. action .. "\n"),
@@ -209,8 +282,8 @@ return {
 }
 )");
     host->setEnabled(true);
-    EXPECT_FALSE(host->runAction(QStringLiteral("a.nope"), 7));
-    ASSERT_TRUE(host->runAction(QStringLiteral("a.go"), 7));
+    EXPECT_FALSE(run(QStringLiteral("a.nope"), 7));
+    ASSERT_TRUE(run(QStringLiteral("a.go"), 7));
     ASSERT_EQ(rec.applied.size(), 2); // log stays in the host; the rest are refused
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("kind")), QStringLiteral("split"));
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("command")).toStringList(), QStringList{QStringLiteral("htop")});
@@ -227,12 +300,12 @@ TEST_F(ScriptHostTest, PaneEffectsNeedAPane)
 {
     write(user, QStringLiteral("a.luau"), R"(
 return {
-    metadata = { actions = { { id = "go" } } },
-    run_action = function(action, ev) return afterglow.close(ev.pane) end,
+    metadata = { commands={go={summary="go",palette="go"}} },
+    run_command = function(action, ev) return afterglow.close(ev.pane) end,
 }
 )");
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction(QStringLiteral("a.go"), 0));
+    ASSERT_TRUE(run(QStringLiteral("a.go"), 0));
     EXPECT_TRUE(rec.applied.isEmpty());
     ASSERT_EQ(rec.results.size(), 1);
     EXPECT_FALSE(rec.results[0].second.isEmpty());
@@ -264,28 +337,28 @@ TEST_F(ScriptHostTest, RepeatedFailuresDisableAScript)
 {
     write(user, QStringLiteral("loop.luau"), R"(
 return {
-    metadata = { actions = { { id = "spin" } } },
+    metadata = { commands={spin={summary="spin",palette="spin"}} },
     on_bell = function(ev) while true do end end,
-    run_action = function() error("nope") end,
+    run_command = function() error("nope") end,
 }
 )");
     host->setEnabled(true);
-    ASSERT_EQ(host->actions().size(), 1);
+    ASSERT_EQ(host->commands().size(), 1);
     for (int i = 0; i < ScriptHost::MaxFailures - 1; ++i) {
         host->dispatch(QStringLiteral("on_bell"), 7); // times out
     }
     EXPECT_FALSE(host->isDisabled(QStringLiteral("loop")));
-    host->runAction(QStringLiteral("loop.spin"), 7);
+    run(QStringLiteral("loop.spin"), 7);
     EXPECT_TRUE(host->isDisabled(QStringLiteral("loop")));
-    EXPECT_TRUE(host->actions().isEmpty());
+    EXPECT_TRUE(host->commands().isEmpty());
 
     // Still disabled while the file is unchanged; an edit brings it back.
     host->reload();
     EXPECT_TRUE(host->isDisabled(QStringLiteral("loop")));
-    write(user, QStringLiteral("loop.luau"), "return { metadata = { actions = { { id = 'spin' } } }, run_action = function() end }");
+    write(user, QStringLiteral("loop.luau"), "return { metadata = { commands={spin={summary='spin',palette='spin'}} }, run_command = function() end }");
     host->reload();
     EXPECT_FALSE(host->isDisabled(QStringLiteral("loop")));
-    EXPECT_EQ(host->actions().size(), 1);
+    EXPECT_EQ(host->commands().size(), 1);
 }
 
 TEST_F(ScriptHostTest, ScriptsAreSandboxed)
@@ -307,12 +380,12 @@ return {
 
 TEST_F(ScriptHostTest, DisablingUnloads)
 {
-    write(user, QStringLiteral("a.luau"), "return { metadata = { actions = { { id = 'x' } } }, run_action = function() end }");
+    write(user, QStringLiteral("a.luau"), "return { metadata = { commands={x={summary='x',palette='x'}} }, run_command = function() end }");
     host->setEnabled(true);
-    EXPECT_EQ(host->actions().size(), 1);
+    EXPECT_EQ(host->commands().size(), 1);
     host->setEnabled(false);
     EXPECT_TRUE(host->scriptIds().isEmpty());
-    EXPECT_FALSE(host->runAction(QStringLiteral("a.x"), 7));
+    EXPECT_FALSE(run(QStringLiteral("a.x"), 7));
 }
 
 TEST_F(ScriptHostTest, ExamplesLoad)
@@ -337,7 +410,7 @@ TEST_F(ScriptHostTest, SemanticRegionExampleCopiesSelectedOutput)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    ASSERT_TRUE(run("semantic-regions.copy", 7));
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 4);
     EXPECT_EQ(rec.applied[1]["items"].toList().front().toMap()["id"].toString(), "42");
@@ -345,7 +418,7 @@ TEST_F(ScriptHostTest, SemanticRegionExampleCopiesSelectedOutput)
     EXPECT_EQ(rec.applied[2]["max_bytes"].toInt(), 262144);
     EXPECT_EQ(rec.applied[3]["kind"].toString(), "copy");
     EXPECT_EQ(rec.applied[3]["text"].toString(), "command output\n");
-    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    ASSERT_TRUE(run("semantic-regions.copy", 7));
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     EXPECT_EQ(rec.applied.size(), 8);
 }
@@ -363,7 +436,7 @@ TEST_F(ScriptHostTest, SemanticRegionExampleReportsARefusedSelector)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    ASSERT_TRUE(run("semantic-regions.copy", 7));
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 3);
     EXPECT_EQ(rec.applied[2]["kind"].toString(), "notify");
@@ -371,7 +444,7 @@ TEST_F(ScriptHostTest, SemanticRegionExampleReportsARefusedSelector)
     // Escape is not an error.
     selectCode = "cancelled";
     rec.applied.clear();
-    ASSERT_TRUE(host->runAction("semantic-regions.copy", 7));
+    ASSERT_TRUE(run("semantic-regions.copy", 7));
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 2);
     EXPECT_EQ(rec.applied[1]["kind"].toString(), "select");
@@ -435,8 +508,8 @@ TEST_F(ScriptHostTest, GlasshouseMapsShellEventsToSignals)
     EXPECT_EQ(signalsSent(), (Sent{{4, 0.0}, {1, 1.0}}));
     host->dispatch(QStringLiteral("on_bell"), 7);
     EXPECT_EQ(signalsSent(), (Sent{{3, 1.0}}));
-    EXPECT_EQ(host->actions().size(), 4);
-    ASSERT_TRUE(host->runAction(QStringLiteral("glasshouse.strike"), 7));
+    EXPECT_EQ(host->commands().size(), 4);
+    ASSERT_TRUE(run(QStringLiteral("glasshouse.strike"), 7));
     EXPECT_EQ(signalsSent(), (Sent{{0, 1.0}}));
 }
 
@@ -449,7 +522,7 @@ TEST_F(ScriptHostTest, ContextualSceneSamplesTransitionsAndCleansUp)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("contextual-scene.toggle",7));
+    ASSERT_TRUE(run("contextual-scene.toggle",7));
     QElapsedTimer timer;timer.start();
     bool updated=false;
     while(timer.elapsed()<1500 && !updated) {
@@ -461,7 +534,7 @@ TEST_F(ScriptHostTest, ContextualSceneSamplesTransitionsAndCleansUp)
     }
     ASSERT_TRUE(updated);
     rec.applied.clear();
-    ASSERT_TRUE(host->runAction("contextual-scene.toggle",7));
+    ASSERT_TRUE(run("contextual-scene.toggle",7));
     bool reset=false;
     for(const auto& e:std::as_const(rec.applied)) if(e.value("kind")=="shader_parameters") {
         reset=true; EXPECT_TRUE(e.value("values").toMap().isEmpty()); EXPECT_EQ(e.value("scope"),"window");
@@ -532,7 +605,7 @@ TEST_F(ScriptHostTest, PhosphorDemoActionsAndStatus)
     host->setEnabled(true);
     for (const auto& [action, channel] : std::initializer_list<std::pair<const char*, int>>{
              {"strike", 0}, {"complete", 1}, {"ring", 3}, {"heat", 2}}) {
-        ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.") + QString::fromLatin1(action), 7));
+        ASSERT_TRUE(run(QStringLiteral("phosphor.") + QString::fromLatin1(action), 7));
         ASSERT_EQ(rec.applied.size(), channel == 2 ? 2 : 1);
         const auto value = rec.applied[0].value(QStringLiteral("values")).toList().first().toMap();
         EXPECT_EQ(value.value(QStringLiteral("channel")).toInt(), channel);
@@ -561,7 +634,7 @@ TEST_F(ScriptHostTest, PhosphorUsesTabBatchesWithoutAPaneRegistry)
     paneState.remove(8);
     host->dispatch(QStringLiteral("on_pane_closed"), 8);
     rec.applied.clear();
-    ASSERT_TRUE(host->runAction(QStringLiteral("phosphor.complete"), 7));
+    ASSERT_TRUE(run(QStringLiteral("phosphor.complete"), 7));
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("pane")).toUInt(), 7u);
     EXPECT_EQ(rec.applied[0].value(QStringLiteral("values")).toList().first().toMap().value(QStringLiteral("channel")).toInt(), 1);
@@ -946,21 +1019,21 @@ TEST(ScriptTasksTest, WatchSurvivesAtomicFileReplacement)
     }
 }
 
-TEST_F(ScriptHostTest, LifecycleTimersJobsAndDynamicActions)
+TEST_F(ScriptHostTest, LifecycleTimersJobsAndDynamicCommands)
 {
     write(user, "lifecycle.luau", R"(
 return {
     on_load = function()
         return {afterglow.copy("loaded"), afterglow.timer("tick", 1),
                 afterglow.exec("job", {"/bin/sh", "-c", "printf hello"}),
-                afterglow.set_actions({{id="dynamic",title="Dynamic"}})}
+                afterglow.set_commands({{name="dynamic",summary="Dynamic",palette="Dynamic"}})}
     end,
     on_timer = function(ev) return afterglow.copy(ev.name) end,
     on_result = function(ev)
         assert(ev.ok)
         return afterglow.copy(ev.data.stdout)
     end,
-    run_action = function() return afterglow.copy("action") end,
+    run_command = function() return afterglow.copy("command") end,
 }
 )");
     host->setEnabled(true);
@@ -968,16 +1041,16 @@ return {
     QStringList text;
     for (const auto& e : rec.applied) text << e["text"].toString();
     EXPECT_TRUE(text.contains("loaded")); EXPECT_TRUE(text.contains("tick")); EXPECT_TRUE(text.contains("hello"));
-    ASSERT_EQ(host->actions().size(), 1);
-    EXPECT_EQ(host->actions()[0].token, QStringLiteral("lifecycle.dynamic"));
+    ASSERT_EQ(host->commands().size(), 1);
+    EXPECT_EQ(host->commands()[0].token(), QStringLiteral("lifecycle.dynamic"));
     host->reload(); // unchanged source keeps its instance
     EXPECT_EQ(rec.applied.size(), 3);
     write(user, "lifecycle.luau", "return {"); host->reload(); // broken edit retains last good
-    EXPECT_EQ(host->actions().size(), 1);
-    EXPECT_TRUE(host->runAction("lifecycle.dynamic", 7));
-    EXPECT_EQ(rec.applied.last()["text"], QStringLiteral("action"));
+    EXPECT_EQ(host->commands().size(), 1);
+    EXPECT_TRUE(run("lifecycle.dynamic", 7));
+    EXPECT_EQ(rec.applied.last()["text"], QStringLiteral("command"));
     host->setEnabled(false);
-    EXPECT_TRUE(host->actions().isEmpty());
+    EXPECT_TRUE(host->commands().isEmpty());
 }
 
 TEST_F(ScriptHostTest, InvalidOwnedUiEffectsNeverReachTheWindow)
@@ -990,7 +1063,7 @@ return { on_bell = function(ev)
         afterglow.override(ev.pane, {shell="evil"}),
         afterglow.select(ev.pane, "Duplicate", {{id="x"},{id="x"}}),
         afterglow.prompt(ev.pane, "Too long", string.rep("x",4097)),
-        afterglow.set_actions({{id="no-handler"}}),
+        afterglow.set_commands({{name="no-handler",summary="x"}}),
         afterglow.override(ev.pane, {backgroundOpacity=0.5,cursorBlink=false}),
     }
 end }
@@ -998,9 +1071,9 @@ end }
     host->setEnabled(true); host->dispatch("on_bell", 7);
     ASSERT_EQ(rec.applied.size(), 1);
     EXPECT_EQ(rec.applied[0]["kind"], QStringLiteral("override"));
-    // The prompt and set_actions never reach apply even when accepted, so check them here.
+    // The prompt and set_commands never reach apply even when accepted, so check them here.
     EXPECT_FALSE(bool(pendingReply));
-    EXPECT_TRUE(host->actions().isEmpty());
+    EXPECT_TRUE(host->commands().isEmpty());
     ASSERT_EQ(rec.results.size(), 7);
     for (int i = 0; i < 6; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
     EXPECT_TRUE(rec.results[6].second.isEmpty());
@@ -1436,7 +1509,7 @@ TEST_F(ScriptHostTest, BuildInspectorExtractsDiagnosticsIntoASelector)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("build-inspector.inspect", 7));
+    ASSERT_TRUE(run("build-inspector.inspect", 7));
     QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 2);
     EXPECT_EQ(rec.applied[1]["kind"], QStringLiteral("select"));
@@ -1493,7 +1566,7 @@ TEST_F(ScriptHostTest, ProjectExampleChainsListingSelectionAndLaunch)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("projects.open", 7));
+    ASSERT_TRUE(run("projects.open", 7));
     for (int i = 0; i < 5; ++i) QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 3);
     EXPECT_EQ(rec.applied[1].value("kind").toString(), QStringLiteral("select"));
@@ -1590,12 +1663,12 @@ TEST_F(ScriptHostTest, NavigatorLaunchesChosenLayoutAndPersistsFavoritesAcrossRe
     };
     host->setEnabled(true);
     ASSERT_EQ(host->scriptIds(),QStringList{"project-navigator"});
-    ASSERT_TRUE(host->runAction("project-navigator.open",7));
+    ASSERT_TRUE(run("project-navigator.pick",7));
     for (int i=0;i<10;++i) QCoreApplication::processEvents();
     bool launched=false;
     for (const auto& e : rec.applied) if (e.value("kind")=="open_directory") { launched=true; EXPECT_EQ(e.value("layout"),"dev"); }
     EXPECT_TRUE(launched);
-    ASSERT_TRUE(host->runAction("project-navigator.favorite",7));
+    ASSERT_TRUE(run("project-navigator.favorite",7));
     for (int i=0;i<5;++i) QCoreApplication::processEvents();
     ScriptState::Snapshot stored; ScriptState store(stateDir.path());
     ASSERT_TRUE(store.read("project-navigator",stored).isEmpty());
@@ -1651,12 +1724,12 @@ TEST_F(ScriptHostTest, NavigatorMissingProviderAndCancelledPickerRemainUsable)
         }
         return {};
     };
-    host->setEnabled(true); ASSERT_TRUE(host->runAction("project-navigator.open",7));
+    host->setEnabled(true); ASSERT_TRUE(run("project-navigator.pick",7));
     QElapsedTimer clock;clock.start();
     while (!selected && clock.elapsed()<3000) { QCoreApplication::processEvents(); QThread::msleep(5); }
     ASSERT_TRUE(selected);
     for (int i=0;i<5;++i) QCoreApplication::processEvents();
-    ASSERT_TRUE(host->runAction("project-navigator.favorite",7));
+    ASSERT_TRUE(run("project-navigator.favorite",7));
     for (int i=0;i<5;++i) QCoreApplication::processEvents();
     ScriptState::Snapshot stored;
     ASSERT_TRUE(ScriptState(stateDir.path()).read("project-navigator",stored).isEmpty());
@@ -1689,7 +1762,7 @@ TEST_F(ScriptHostTest, NavigatorNamesAProviderThatTimedOut)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("project-navigator.open", 7));
+    ASSERT_TRUE(run("project-navigator.pick", 7));
     ASSERT_TRUE(await([&] { return !title.isEmpty(); }));
     EXPECT_TRUE(title.contains("(unavailable: fd-1 timed out)")) << title.toStdString();
 }
@@ -1697,12 +1770,12 @@ TEST_F(ScriptHostTest, NavigatorNamesAProviderThatTimedOut)
 TEST_F(ScriptHostTest, PackageReloadAndRemovalRetireJobsTimersWatchesAndUi)
 {
     QDir().mkpath(user.filePath("lifecycle"));
-    write(user, "lifecycle/package.json", R"({"id":"lifecycle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "lifecycle/package.json", R"({"id":"lifecycle","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},
+        "commands":{"dialog":{"summary":"dialog","palette":"dialog"}}})");
     write(files, "watched", "original");
     write(user, "lifecycle/init.luau", R"(
 local generation
 return {
- metadata={actions={{id="dialog"}}},
  on_load=function(ev)
   generation=ev.package.config.generation
   return {afterglow.timer("tick",250,250),
@@ -1710,7 +1783,7 @@ return {
    afterglow.request("job",afterglow.exec("job",{"/bin/sh","-c",'echo $$ > "$1"; exec sleep 60',"probe",ev.package.config.pid})),
    afterglow.status(7,"generation "..generation)}
  end,
- run_action=function(_,ev) return afterglow.request("dialog",afterglow.prompt(ev.pane,"Pending")) end,
+ run_command=function(_,ev) return afterglow.request("dialog",afterglow.prompt(ev.pane,"Pending")) end,
  on_timer=function() return afterglow.copy("tick-"..generation) end,
  on_file_changed=function() return afterglow.copy("watch-"..generation) end,
  on_result=function(ev) return afterglow.copy("late-"..generation) end,
@@ -1733,7 +1806,7 @@ return {
     ASSERT_TRUE(wait([&]{return pid()>0;}));
     qint64 previousPid=pid();
     for (int generation=1;generation<=5;++generation) {
-        ASSERT_TRUE(host->runAction("lifecycle.dialog",7));
+        ASSERT_TRUE(run("lifecycle.dialog",7));
         auto obsoleteReply=std::move(pendingReply);
         ASSERT_TRUE(bool(obsoleteReply));
         config(generation); host->reload();
@@ -1750,13 +1823,13 @@ return {
             const auto text=effect.value("text").toString();
             EXPECT_TRUE(text==marker || text==QStringLiteral("tick-%1").arg(generation)) << text.toStdString();
         }
-        EXPECT_EQ(host->actions().size(),1);
+        EXPECT_EQ(host->commands().size(),1);
     }
     ASSERT_TRUE(QDir(user.filePath("lifecycle")).removeRecursively());
     host->reload();
     ASSERT_TRUE(wait([&]{return ::kill(pid_t(previousPid),0)==-1 && errno==ESRCH;}));
     EXPECT_EQ(cleaned.size(),6);
-    EXPECT_TRUE(host->actions().isEmpty());
+    EXPECT_TRUE(host->commands().isEmpty());
     EXPECT_TRUE(host->diagnostics().isEmpty());
     rec.applied.clear();
     write(files,"watched","after removal");
@@ -1781,7 +1854,7 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
     host->setEnabled(true);
     host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     EXPECT_TRUE(rec.applied.isEmpty());
-    ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump(12);
+    ASSERT_TRUE(run("project-autosave.enable",7));pump(12);
     ScriptState::Snapshot value;
     ASSERT_TRUE(ScriptState(stateDir.path()).read("project-autosave",value).isEmpty());
     EXPECT_TRUE(value.value.value("enabled").toMap().value("dev").toBool());
@@ -1795,12 +1868,12 @@ TEST_F(ScriptHostTest, AutosaveIsOptInPersistsAndRestoresOnlySelectedProjects)
     windows.append(QVariantMap{{"id",2},{"project","dev"},{"active_pane",9}});
     rec.applied.clear();host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     EXPECT_TRUE(rec.applied.isEmpty());windows.removeLast();
-    ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump(12);
+    ASSERT_TRUE(run("project-autosave.restore",7));pump(12);
     ASSERT_FALSE(rec.applied.isEmpty());
     ASSERT_EQ(rec.applied.last().value("kind"),"open_project");
     EXPECT_EQ(rec.applied.last().value("name"),"dev");
     EXPECT_FALSE(rec.applied.last().value("new_instance").toBool());
-    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump(12);rec.applied.clear();
+    ASSERT_TRUE(run("project-autosave.disable",7));pump(12);rec.applied.clear();
     host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);EXPECT_TRUE(rec.applied.isEmpty());
     for(const auto& result:rec.results) EXPECT_TRUE(result.second.isEmpty()) << result.second.toStdString();
 }
@@ -1847,7 +1920,7 @@ TEST_F(ScriptHostTest, TabLineDrawsATabLineAndPersistsToggle)
     EXPECT_EQ(rec.applied.last().value("kind"),"focus");
     EXPECT_EQ(rec.applied.last().value("pane").toUInt(),8u);
     // Off, the window gets its tab bar back, and the choice survives a restart.
-    ASSERT_TRUE(host->runAction("tab-line.toggle",7));pump();
+    ASSERT_TRUE(run("tab-line.toggle",7));pump();
     EXPECT_EQ(rec.applied.last().value("kind"),"undock");
     EXPECT_EQ(rec.applied.last().value("id"),"tabline");
     host->setEnabled(false);host->setEnabled(true);rec.applied.clear();tick();
@@ -2162,7 +2235,7 @@ local function texts(runs)
  end
  return table.concat(out,"|")
 end
-return {on_load=function()
+return {run_command=function() end,on_load=function()
  assert(s.git("main\n"," M file.cpp\n")=="main *")
  assert(s.git("feature\n","")=="feature")
  assert(s.git("a1b2c3d\n")=="a1b2c3d")
@@ -2382,16 +2455,16 @@ TEST_F(ScriptHostTest, AutosaveRecoversFromSaveFailureAndCancelledRestore)
         if(e.value("kind")=="select") return {"Cancelled",{},"cancelled"};
         return {};
     };
-    host->setEnabled(true);ASSERT_TRUE(host->runAction("project-autosave.enable",7));pump(12);
+    host->setEnabled(true);ASSERT_TRUE(run("project-autosave.enable",7));pump(12);
     ASSERT_FALSE(rec.applied.isEmpty());
     EXPECT_EQ(rec.applied.last().value("kind"),"notify");
     EXPECT_EQ(rec.applied.last().value("body"),"Disk unavailable");
     fail=false;rec.applied.clear();
     host->dispatch("on_timer",0,{{"name","autosave"}});pump(12);
     ASSERT_EQ(rec.applied.size(),1);EXPECT_EQ(rec.applied.last().value("kind"),"save_project");
-    rec.applied.clear();ASSERT_TRUE(host->runAction("project-autosave.restore",7));pump(12);
+    rec.applied.clear();ASSERT_TRUE(run("project-autosave.restore",7));pump(12);
     ASSERT_EQ(rec.applied.size(),2);EXPECT_EQ(rec.applied.last().value("kind"),"select");
-    ASSERT_TRUE(host->runAction("project-autosave.disable",7));pump(12);
+    ASSERT_TRUE(run("project-autosave.disable",7));pump(12);
     ScriptState::Snapshot stored;
     ASSERT_TRUE(ScriptState(stateDir.path()).read("project-autosave",stored).isEmpty());
     EXPECT_FALSE(stored.value.value("enabled").toMap().contains("dev"));
@@ -2438,13 +2511,13 @@ TEST_F(ScriptHostTest, ShaderParameterExampleDiscoversThenTargetsReturnedInstanc
         return ScriptHost::EffectResult{};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction(QStringLiteral("shader-parameters.boost"), 7));
+    ASSERT_TRUE(run(QStringLiteral("shader-parameters.boost"), 7));
     QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 2);
     EXPECT_EQ(rec.applied[1].value(QStringLiteral("instance")), QStringLiteral("window-instance"));
     EXPECT_EQ(rec.applied[1].value(QStringLiteral("scope")), QStringLiteral("window"));
     EXPECT_DOUBLE_EQ(rec.applied[1].value(QStringLiteral("values")).toMap().value(QStringLiteral("strength")).toDouble(), 1.2);
-    ASSERT_TRUE(host->runAction(QStringLiteral("shader-parameters.reset"), 7));
+    ASSERT_TRUE(run(QStringLiteral("shader-parameters.reset"), 7));
     QCoreApplication::processEvents();
     ASSERT_EQ(rec.applied.size(), 4);
     EXPECT_TRUE(rec.applied.last().value(QStringLiteral("values")).toMap().isEmpty());
@@ -2452,11 +2525,11 @@ TEST_F(ScriptHostTest, ShaderParameterExampleDiscoversThenTargetsReturnedInstanc
 
 TEST_F(ScriptHostTest, SearchDirectoryPriorityWinsOverMetadataIdFilenameOrder)
 {
-    write(system, "z-system.luau", "return {metadata={id='same',actions={{id='system'}}},run_action=function() end}");
-    write(user, "a-user.luau", "return {metadata={id='same',actions={{id='user'}}},run_action=function() end}");
+    write(system, "z-system.luau", "return {metadata={id='same',commands={system={summary='system',palette='system'}}},run_command=function() end}");
+    write(user, "a-user.luau", "return {metadata={id='same',commands={user={summary='user',palette='user'}}},run_command=function() end}");
     host->setEnabled(true);
-    ASSERT_EQ(host->actions().size(), 1);
-    EXPECT_EQ(host->actions()[0].token, QStringLiteral("same.user"));
+    ASSERT_EQ(host->commands().size(), 1);
+    EXPECT_EQ(host->commands()[0].token(), QStringLiteral("same.user"));
 }
 
 TEST_F(ScriptHostTest, LaunchOptionsPreserveEnvironmentSizeAndDirection)
@@ -2589,8 +2662,8 @@ TEST_F(ScriptHostTest, AwaitChainsEffectsInOneHandler)
 {
     write(user, "chain.luau", R"(
 return {
-    metadata = {actions = {{id = "copy", title = "Copy"}}},
-    run_action = function(_, ev)
+    metadata = {commands={copy={summary="Copy",palette="Copy"}}},
+    run_command = function(_, ev)
         local pane = ev.pane.id
         local regions = afterglow.await(afterglow.semantic_regions(pane))
         local choice = afterglow.await(afterglow.select(pane, "Region", {{id = regions.regions[1].id, title = "first"}}))
@@ -2608,7 +2681,7 @@ return {
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("chain.copy", 7));
+    ASSERT_TRUE(run("chain.copy", 7));
     ASSERT_TRUE(await([&] { return rec.applied.size() == 4; }));
     EXPECT_TRUE(rec.applied[0]["request_id"].toString().startsWith("afterglow.await:"));
     EXPECT_EQ(rec.applied[1]["items"].toList().front().toMap()["id"], "42");
@@ -2761,8 +2834,8 @@ TEST_F(ScriptHostTest, ResumedHandlersKeepTheirTimeLimitAndErrorAccounting)
 {
     write(user, "resumed.luau", R"(
 return {
-    metadata = {actions = {{id = "spin", title = "Spin"}}},
-    run_action = function()
+    metadata = {commands={spin={summary="Spin",palette="Spin"}}},
+    run_command = function()
         afterglow.sleep(0)
         local t = os.clock()
         while os.clock() - t < 0.035 do end -- 35 ms: over an event's 20 ms, well within an action's 100 ms
@@ -2772,7 +2845,7 @@ return {
 }
 )");
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("resumed.spin", 7));
+    ASSERT_TRUE(run("resumed.spin", 7));
     ASSERT_TRUE(await([&] {
         return !host->diagnostics().isEmpty() && host->diagnostics().first().toMap()["handler_errors"].toULongLong() == 1;
     }));
@@ -2789,8 +2862,8 @@ TEST_F(ScriptHostTest, AwaitWithEffectsTooLargeToConvertFreesItsWaitingSlot)
 {
     write(user, "large.luau", R"(
 return {
-    metadata = {actions = {{id = "large", title = "Large"}, {id = "small", title = "Small"}}},
-    run_action = function(action, ev)
+    metadata = {commands={large={summary="Large",palette="Large"},small={summary="Small",palette="Small"}}},
+    run_command = function(action, ev)
         if action == "large" then
             -- Each level holds the one below twice: 2^20 conversions, little memory.
             local wide = {}
@@ -2811,8 +2884,8 @@ return {
     // Three failures, then a success that resets the run of failures: 18
     // abandoned waits in all, more than the 16 that can wait at once.
     for (int round = 0; round < 6; ++round) {
-        for (int i = 0; i < 3; ++i) ASSERT_TRUE(host->runAction("large.large", 7));
-        ASSERT_TRUE(host->runAction("large.small", 7));
+        for (int i = 0; i < 3; ++i) ASSERT_TRUE(run("large.large", 7));
+        ASSERT_TRUE(run("large.small", 7));
         ASSERT_TRUE(await([&] {
             return std::count_if(rec.applied.cbegin(), rec.applied.cend(),
                                  [](const QVariantMap& e) { return e["kind"] == QLatin1String("copy"); }) == round + 1;
@@ -2833,8 +2906,8 @@ TEST_F(ScriptHostTest, AwaitTooLargeToConvertFreesEveryFlowTheCallRegistered)
     // too, so one failed call can leave more than one flow behind.
     write(user, "nested.luau", R"(
 return {
-    metadata = {actions = {{id = "large", title = "Large"}}},
-    run_action = function(action, ev)
+    metadata = {commands={large={summary="Large",palette="Large"}}},
+    run_command = function(action, ev)
         afterglow.__wrap({h = function() afterglow.await(afterglow.log("inner")) end}).h()
         local wide = {}
         for _ = 1, 20 do
@@ -2847,7 +2920,7 @@ return {
 }
 )");
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("nested.large", 7));
+    ASSERT_TRUE(run("nested.large", 7));
     const auto stats = host->diagnostics().first().toMap();
     EXPECT_EQ(stats["handler_errors"].toULongLong(), 1u);
     EXPECT_EQ(stats["waiting"].toInt(), 0);
@@ -3135,20 +3208,20 @@ TEST_F(ScriptHostTest, EventsOverTheCallbackBudgetBuildNoSnapshot)
     EXPECT_EQ(host->diagnostics().first().toMap()["dropped_callbacks"].toULongLong(), 10u);
 }
 
-TEST_F(ScriptHostTest, RuntimeDisableWithdrawsPackageShadersAndActions)
+TEST_F(ScriptHostTest, RuntimeDisableWithdrawsPackageShadersAndCommands)
 {
     QDir().mkpath(user.filePath("broken/shaders/wall"));
     write(user, "broken/package.json", R"({"id":"broken","version":"1.0.0","api_version":1,"entry":"main",
-        "modules":{"main":"init.luau"},"shaders":{"path":"shaders"}})");
+        "modules":{"main":"init.luau"},"shaders":{"path":"shaders"},"commands":{"go":{"summary":"go"}}})");
     write(user, "broken/shaders/wall/metadata.json", R"({"id":"broken.wall","name":"Wall","fragmentShader":"effect.frag"})");
     write(user, "broken/init.luau", R"(
-return {metadata = {actions = {{id = "go"}}}, run_action = function() end, on_bell = function() error("broken") end}
+return {run_command = function() end, on_bell = function() error("broken") end}
 )");
     QList<QMap<QString, QString>> announced;
     QObject::connect(host.get(), &ScriptHost::packageShadersChanged, host.get(),
                      [&](const QMap<QString, QString>& dirs) { announced << dirs; });
-    int actionChanges = 0;
-    QObject::connect(host.get(), &ScriptHost::actionsChanged, host.get(), [&] { ++actionChanges; });
+    int commandChanges = 0;
+    QObject::connect(host.get(), &ScriptHost::commandsChanged, host.get(), [&] { ++commandChanges; });
     host->setEnabled(true);
     ASSERT_EQ(announced.size(), 1);
     EXPECT_TRUE(announced[0].contains("broken"));
@@ -3156,7 +3229,7 @@ return {metadata = {actions = {{id = "go"}}}, run_action = function() end, on_be
     EXPECT_TRUE(host->isDisabled("broken"));
     ASSERT_EQ(announced.size(), 2);
     EXPECT_TRUE(announced[1].isEmpty());
-    EXPECT_EQ(actionChanges, 2); // loaded, then withdrawn
+    EXPECT_EQ(commandChanges, 2); // loaded, then withdrawn
 }
 
 TEST_F(ScriptHostTest, PackageShadersExistBeforeOnLoadEffects)
@@ -3257,34 +3330,462 @@ return {
     }));
 }
 
-TEST_F(ScriptHostTest, UnchangedActionListsAnnounceNothing)
+TEST_F(ScriptHostTest, UnchangedCommandListsAnnounceNothing)
 {
-    write(user, "actions.luau", R"(
+    write(user, "dynamic.luau", R"(
 return {
-    run_action = function() end,
-    on_bell = function() return afterglow.set_actions({{id = "one", title = "One"}}) end,
+    run_command = function() end,
+    on_bell = function() return afterglow.set_commands({{name = "one", summary = "One"}}) end,
 }
 )");
     host->setEnabled(true);
     int changes = 0;
-    QObject::connect(host.get(), &ScriptHost::actionsChanged, host.get(), [&] { ++changes; });
+    QObject::connect(host.get(), &ScriptHost::commandsChanged, host.get(), [&] { ++changes; });
     host->dispatch("on_bell", 7);
     host->dispatch("on_bell", 7);
     EXPECT_EQ(changes, 1);
 }
 
-TEST_F(ScriptHostTest, MetadataActionsFollowTheSetActionsRules)
+TEST_F(ScriptHostTest, SetCommandsFollowsTheManifestRules)
 {
-    QByteArray actions;
-    for (int i = 0; i < 40; ++i) actions += "{id='a" + QByteArray::number(i) + "'},";
-    write(user, "many.luau", "return {metadata = {actions = {{id='a0'}, " + actions + "{id='long', title=string.rep('x', 513)}}},"
-                             " run_action = function() end}");
+    write(user, "dynamic.luau", R"(
+local lists = {
+    {{name = "extra", summary = "Extra", usage = "X", palette = "Extra", stdin = true}},
+    {{name = "fixed", summary = "Clash"}},
+    {{name = "a", summary = "A"}, {name = "a", summary = "Again"}},
+    {{name = "bad name", summary = "x"}},
+    {{name = "nosummary"}},
+    {{name = "x", summary = "x", title = "y"}},
+    "not a list",
+}
+return {
+    metadata = {commands = {fixed = {summary = "Fixed"}}},
+    run_command = function() end,
+    on_bell = function(ev) return afterglow.set_commands(lists[ev.pane.id - 6]) end,
+    on_focus = function()
+        local many = {}
+        for i = 1, 64 do many[i] = {name = "m" .. i, summary = "x"} end
+        return afterglow.set_commands(many)
+    end,
+    on_title = function() return afterglow.set_commands({}) end,
+}
+)");
     host->setEnabled(true);
-    const auto list = host->actions();
-    ASSERT_EQ(list.size(), ScriptHost::MaxActions);
-    QSet<QString> tokens;
-    for (const auto& a : list) tokens.insert(a.token);
-    EXPECT_EQ(tokens.size(), ScriptHost::MaxActions);
+    host->dispatch("on_bell", 7);
+    auto tokens = [this] {
+        QStringList out;
+        for (const ScriptCommand& c : host->commands()) out << c.token();
+        return out;
+    };
+    ASSERT_EQ(tokens(), (QStringList{"dynamic.fixed", "dynamic.extra"}));
+    const ScriptCommand extra = host->commands()[1];
+    EXPECT_TRUE(extra.runtime && extra.input);
+    EXPECT_EQ(extra.usage, "X");
+    EXPECT_EQ(extra.palette, "Extra");
+    QStringList errors;
+    for (quint32 pane : {8u, 9u}) {
+        rec.results.clear();
+        host->dispatch("on_bell", pane);
+        ASSERT_EQ(rec.results.size(), 1);
+        errors << rec.results[0].second;
+    }
+    EXPECT_EQ(errors[0], "Command fixed is in the manifest already");
+    EXPECT_EQ(errors[1], "Command a is in the list twice");
+    // The refused lists changed nothing.
+    EXPECT_EQ(tokens(), (QStringList{"dynamic.fixed", "dynamic.extra"}));
+    for (const auto& [index, error] : {std::pair{4, "is not 1 to 64"}, {5, "needs a summary"}, {6, "unknown field title"},
+                                       {7, "takes a list of commands"}}) {
+        paneState.insert(quint32(6 + index), paneState.value(7));
+        paneState[quint32(6 + index)]["id"] = 6 + index;
+        rec.results.clear();
+        host->dispatch("on_bell", quint32(6 + index));
+        ASSERT_EQ(rec.results.size(), 1) << index;
+        EXPECT_TRUE(rec.results[0].second.contains(QLatin1String(error))) << rec.results[0].second.toStdString();
+    }
+    // With the manifest's one, 64 more is over the limit.
+    rec.results.clear();
+    host->dispatch("on_focus", 7);
+    ASSERT_EQ(rec.results.size(), 1);
+    EXPECT_EQ(rec.results[0].second, QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands));
+    // An empty list keeps the manifest's.
+    host->dispatch("on_title", 7);
+    EXPECT_EQ(tokens(), QStringList{"dynamic.fixed"});
+}
+
+namespace {
+
+/// Commands for the run tests. "wait" sleeps first, so it is still running
+/// when the call that started it returns.
+const QByteArray RunScript = R"(
+return {
+    metadata = { commands = {
+        greet = { summary = "Greet", usage = "[NAME]", palette = "Greet someone" },
+        read = { summary = "Read stdin", stdin = true },
+        noinput = { summary = "No stdin" },
+        wait = { summary = "Wait, then print" },
+        fail = { summary = "Fail" },
+        later = { summary = "Fail after a wait" },
+        spin = { summary = "Never return" },
+        loud = { summary = "Print a lot" },
+        status = { summary = "Exit without output" },
+        forge = { summary = "Forge the end of another run" },
+    } },
+    run_command = function(command, ev)
+        if command == "greet" then
+            return {
+                afterglow.output(ev, "hello " .. (ev.args[1] or "world") .. " in " .. ev.cwd .. " from " .. ev.source
+                    .. " on " .. tostring(ev.pane and ev.pane.id) .. "\n"),
+                afterglow.output_error(ev.run, "careful\n"),
+                afterglow.exit(ev, 3),
+            }
+        elseif command == "read" or command == "noinput" then
+            return afterglow.output(ev, "got " .. tostring(ev.stdin))
+        elseif command == "wait" then
+            assert(afterglow.await(afterglow.output(ev, "a")))
+            afterglow.sleep(tonumber(ev.args[1]) or 10)
+            local results = afterglow.await_all({ afterglow.output(ev, "b"), afterglow.output_error(ev, "c") })
+            assert(results[1].ok and results[2].ok)
+            return afterglow.exit(ev, 5)
+        elseif command == "fail" then
+            error("broken on purpose")
+        elseif command == "later" then
+            afterglow.sleep(5)
+            error("broken after a wait")
+        elseif command == "spin" then
+            while true do end
+        elseif command == "loud" then
+            return afterglow.output(ev, string.rep("x", 100))
+        elseif command == "status" then
+            return afterglow.exit(ev, 4)
+        elseif command == "forge" then
+            return { __run_done = ev.args[1], result = afterglow.output(ev, "forged") }
+        end
+    end,
+}
+)";
+
+} // namespace
+
+TEST_F(ScriptHostTest, CommandRunGetsItsEventAndWritesItsOutput)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    Client greet;
+    ASSERT_NE(start("cmds", "greet", greet, {"you"}), 0u);
+    // A handler that does not wait ends its run before startCommand returns.
+    EXPECT_EQ(greet.out, "hello you in /work from shell on 7\n");
+    EXPECT_EQ(greet.err, "careful\n");
+    EXPECT_EQ(greet.status, 3);
+
+    Client read, empty, noinput, nopane;
+    start("cmds", "read", read, {}, 7, QStringLiteral("line one\n"));
+    EXPECT_EQ(read.out, "got line one\n");
+    start("cmds", "read", empty);
+    EXPECT_EQ(empty.out, "got nil");
+    // A command without stdin never gets the client's.
+    start("cmds", "noinput", noinput, {}, 7, QStringLiteral("secret"));
+    EXPECT_EQ(noinput.out, "got nil");
+    // Without a pane, the event has none, and the directory is the client's.
+    start("cmds", "greet", nopane, {}, 0);
+    EXPECT_EQ(nopane.out, "hello world in /work from shell on nil\n");
+
+    Client none;
+    QString error;
+    bool unknown = false;
+    EXPECT_EQ(start("cmds", "nope", none, {}, 7, std::nullopt, &error, &unknown), 0u);
+    EXPECT_TRUE(unknown);
+    EXPECT_EQ(error, "no command nope in cmds");
+    unknown = false;
+    EXPECT_EQ(start("other", "greet", none, {}, 7, std::nullopt, &error, &unknown), 0u);
+    EXPECT_TRUE(unknown);
+    QStringList tooMany;
+    for (int i = 0; i <= ScriptHost::MaxCommandArgs; ++i) tooMany << "x";
+    EXPECT_EQ(start("cmds", "greet", none, tooMany, 7, std::nullopt, &error, &unknown), 0u);
+    EXPECT_FALSE(unknown);
+    EXPECT_EQ(start("cmds", "greet", none, {QString(ScriptHost::MaxCommandArgLength + 1, 'x')}, 7, std::nullopt, &error), 0u);
+    EXPECT_FALSE(none.status);
+}
+
+TEST_F(ScriptHostTest, CommandRunWithNoClientShowsItsErrorsAsANotification)
+{
+    write(user, "cmds.luau", RunScript);
+    QString out;
+    applyHook = [&](const QVariantMap& e) {
+        if (e["kind"] == "notify") out = e["body"].toString();
+        return ScriptHost::EffectResult{};
+    };
+    host->setEnabled(true);
+    // The palette's run has no client: stdout is dropped, stderr shows.
+    ASSERT_TRUE(run("cmds.greet", 7));
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["kind"], "notify");
+    EXPECT_EQ(rec.applied[0]["title"], "Greet someone");
+    EXPECT_EQ(rec.applied[0]["pane"].toUInt(), 7u);
+    EXPECT_EQ(out, "careful");
+    // A non-zero status with no stderr names the status, under "<script> <command>".
+    rec.applied.clear();
+    ASSERT_TRUE(run("cmds.status", 7));
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["title"], "cmds status");
+    EXPECT_EQ(out, "Exited with status 4");
+    // Success with no stderr is silent.
+    rec.applied.clear();
+    ASSERT_TRUE(run("cmds.loud", 7));
+    EXPECT_TRUE(rec.applied.isEmpty());
+    EXPECT_FALSE(run("cmds.nope", 7));
+}
+
+TEST_F(ScriptHostTest, CommandRunEndsWhenItsWaitingHandlerDoes)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    Client client;
+    ASSERT_NE(start("cmds", "wait", client), 0u);
+    EXPECT_EQ(client.out, "a");
+    EXPECT_FALSE(client.status);
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }));
+    EXPECT_EQ(client.out, "ab");
+    EXPECT_EQ(client.err, "c");
+    EXPECT_EQ(client.status, 5);
+    EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
+}
+
+TEST_F(ScriptHostTest, CommandRunsTimeOutAndCancelWithoutResuming)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    ScriptHost::CommandLimits limits;
+    limits.timeoutMs = 50;
+    host->setCommandLimits(limits);
+    Client slow;
+    start("cmds", "wait", slow, {"400"});
+    ASSERT_TRUE(await([&] { return slow.status.has_value(); }));
+    EXPECT_EQ(slow.status, ScriptHost::CommandTimedOut);
+    EXPECT_TRUE(slow.err.contains("Scripts.commandTimeout")) << slow.err.toStdString();
+    EXPECT_EQ(host->diagnostics().first().toMap()["waiting"].toInt(), 0);
+
+    host->setCommandLimits({});
+    Client cancelled;
+    const quint64 handle = start("cmds", "wait", cancelled, {"200"});
+    host->cancelCommand(handle, 130);
+    EXPECT_EQ(cancelled.status, 130);
+    host->cancelCommand(handle, 1); // over already
+    EXPECT_EQ(cancelled.status, 130);
+    // The sleep's result comes and finds no handler to resume.
+    QElapsedTimer quiet;
+    quiet.start();
+    while (quiet.elapsed() < 500) QCoreApplication::processEvents();
+    EXPECT_EQ(cancelled.out, "a");
+    EXPECT_EQ(slow.out, "a");
+    EXPECT_EQ(host->diagnostics().first().toMap()["handler_errors"].toInt(), 0);
+}
+
+TEST_F(ScriptHostTest, CommandRunOfAClientThatLeftIsCancelled)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    Client client;
+    start("cmds", "wait", client, {"20"});
+    EXPECT_EQ(client.out, "a");
+    client.gone = true;
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }));
+    EXPECT_EQ(client.status, 1);
+    // Its output after that is refused.
+    QStringList errors;
+    for (const auto& [effect, error] : std::as_const(rec.results))
+        if (effect["kind"] == "output") errors << error;
+    EXPECT_TRUE(errors.contains("The client of the run has gone"));
+}
+
+TEST_F(ScriptHostTest, FailedCommandHandlersEndTheirRunOnStderr)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    Client fail, later, spin;
+    start("cmds", "fail", fail);
+    EXPECT_EQ(fail.status, 1);
+    EXPECT_TRUE(fail.err.contains("run_command failed:")) << fail.err.toStdString();
+    EXPECT_TRUE(fail.err.contains("broken on purpose")) << fail.err.toStdString();
+    start("cmds", "later", later);
+    EXPECT_FALSE(later.status);
+    ASSERT_TRUE(await([&] { return later.status.has_value(); }));
+    EXPECT_EQ(later.status, 1);
+    EXPECT_TRUE(later.err.contains("a handler after await failed")) << later.err.toStdString();
+    EXPECT_TRUE(later.err.contains("broken after a wait")) << later.err.toStdString();
+    start("cmds", "spin", spin);
+    EXPECT_EQ(spin.status, 1);
+    EXPECT_TRUE(spin.err.contains("took longer than 100 ms")) << spin.err.toStdString();
+}
+
+TEST_F(ScriptHostTest, CommandRunsStayWithinTheirLimits)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    ScriptHost::CommandLimits limits;
+    limits.runs = 2;
+    limits.outputBytes = 50;
+    limits.inputBytes = 4;
+    host->setCommandLimits(limits);
+    Client one, two, three, four;
+    const quint64 first = start("cmds", "wait", one, {"200"});
+    start("cmds", "wait", two, {"200"});
+    QString error;
+    bool unknown = true;
+    EXPECT_EQ(start("cmds", "greet", three, {}, 7, std::nullopt, &error, &unknown), 0u);
+    EXPECT_FALSE(unknown);
+    EXPECT_TRUE(error.contains("Scripts.commandRunLimit")) << error.toStdString();
+    host->cancelCommand(first, 130);
+    EXPECT_NE(start("cmds", "greet", three), 0u);
+    EXPECT_EQ(three.status, 3);
+
+    Client loud;
+    start("cmds", "loud", loud);
+    EXPECT_EQ(loud.status, 1);
+    EXPECT_TRUE(loud.out.isEmpty());
+    EXPECT_TRUE(loud.err.contains("Scripts.commandOutputLimit")) << loud.err.toStdString();
+
+    // Stdin is cut at the limit, on a whole character.
+    Client read;
+    start("cmds", "read", read, {}, 7, QStringLiteral("abcé"));
+    EXPECT_EQ(read.out, "got abc");
+}
+
+TEST_F(ScriptHostTest, ARetiredScriptEndsItsRunsAndWithdrawsItsCommands)
+{
+    write(user, "cmds.luau", RunScript);
+    host->setEnabled(true);
+    Client client;
+    start("cmds", "wait", client, {"300"});
+    write(user, "cmds.luau", "return {metadata = {commands = {other = {summary = 'Other'}}}, run_command = function() end}");
+    host->reload();
+    EXPECT_EQ(client.status, 1);
+    EXPECT_TRUE(client.err.contains("The script stopped")) << client.err.toStdString();
+    ASSERT_EQ(host->commands().size(), 1);
+    EXPECT_EQ(host->commands()[0].token(), "cmds.other");
+    QFile::remove(user.filePath("cmds.luau"));
+    host->reload();
+    EXPECT_TRUE(host->commands().isEmpty());
+}
+
+TEST_F(ScriptHostTest, ARunEndsOnlyItself)
+{
+    write(user, "cmds.luau", RunScript);
+    write(user, "other.luau", R"(
+return {
+    on_bell = function(ev) return { __run_done = "1", result = afterglow.copy("x") } end,
+    on_focus = function(ev) return afterglow.output("1", "not mine") end,
+}
+)");
+    host->setEnabled(true);
+    Client waiting, forger;
+    const quint64 handle = start("cmds", "wait", waiting, {"100"});
+    // Another run's handler cannot end it, and another script cannot write to it.
+    start("cmds", "forge", forger, {QString::number(handle)});
+    EXPECT_EQ(forger.status, 0);
+    EXPECT_FALSE(waiting.status);
+    host->dispatch("on_bell", 7);
+    host->dispatch("on_focus", 7);
+    EXPECT_FALSE(waiting.status);
+    EXPECT_EQ(waiting.out, "a");
+    ASSERT_TRUE(await([&] { return waiting.status.has_value(); }));
+    EXPECT_EQ(waiting.status, 5);
+    QStringList errors;
+    for (const auto& [effect, error] : std::as_const(rec.results)) errors << error;
+    EXPECT_TRUE(errors.contains("No run 1: it has ended"));
+}
+
+TEST_F(ScriptHostTest, PackageCommandsComeFromItsManifest)
+{
+    QDir().mkpath(user.filePath("pkg"));
+    write(user, "pkg/package.json", R"({"id":"pkg","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},
+        "commands":{"go":{"summary":"Go","usage":"WHERE","stdin":true}}})");
+    write(user, "pkg/init.luau", "return {run_command = function(_, ev) return afterglow.output(ev, ev.args[1]) end}");
+    QDir().mkpath(user.filePath("meta"));
+    write(user, "meta/package.json", R"({"id":"meta","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"}})");
+    write(user, "meta/init.luau", "return {metadata = {commands = {go = {summary = 'Go'}}}, run_command = function() end}");
+    host->setEnabled(true);
+    EXPECT_EQ(host->scriptIds(), QStringList{"pkg"});
+    ASSERT_EQ(host->commands().size(), 1);
+    EXPECT_EQ(host->commands()[0].token(), "pkg.go");
+    EXPECT_EQ(host->commands()[0].usage, "WHERE");
+    EXPECT_TRUE(host->commands()[0].input);
+    Client client;
+    start("pkg", "go", client, {"there"});
+    EXPECT_EQ(client.out, "there");
+    QStringList errors;
+    for (const QVariant& d : host->diagnostics()) errors << d.toMap()["error"].toString();
+    EXPECT_TRUE(errors.contains("A package declares its commands in package.json"));
+    // A change to its commands loads the package again.
+    write(user, "pkg/package.json", R"({"id":"pkg","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"init.luau"},
+        "commands":{"come":{"summary":"Come"}}})");
+    host->reload();
+    ASSERT_EQ(host->commands().size(), 1);
+    EXPECT_EQ(host->commands()[0].token(), "pkg.come");
+}
+
+TEST_F(ScriptHostTest, ExamplePackageCommandsWorkFromTheShell)
+{
+    installPackage("project-navigator");
+    write(user, "project-navigator/config.json", R"({"roots":[],"fd":false,"zoxide":false})");
+    installPackage("scene-controls");
+    installPackage("project-autosave");
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        const QString kind = e["kind"].toString();
+        if (kind == "open_directory") return {{}, {{"window_id", 3}, {"cwd", e["cwd"]}, {"reused", false}}, {}};
+        if (kind == "list_projects") return {{}, {{"names", QVariantList{"dev"}}}, {}};
+        if (kind == "shaders") {
+            const QVariantMap parameter{{"id", "strength"}, {"name", "Strength"}, {"type", "float"}, {"supported", true}};
+            const QVariantMap shader{{"instance", "bloom-1"}, {"shader", "bloom"}, {"layer", "pane"},
+                                     {"parameters", QVariantList{parameter}}, {"values", QVariantMap{{"strength", 1.0}}}};
+            return {{}, {{"shaders", QVariantList{shader}}}, {}};
+        }
+        return {};
+    };
+    host->setEnabled(true);
+    ASSERT_EQ(host->scriptIds().size(), 3);
+
+    Client open;
+    start("project-navigator", "open", open, {"repo"});
+    ASSERT_TRUE(await([&] { return open.status.has_value(); }));
+    EXPECT_EQ(open.status, 0) << open.err.toStdString();
+    const auto opened = std::find_if(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) { return e["kind"] == "open_directory"; });
+    ASSERT_NE(opened, rec.applied.cend());
+    EXPECT_EQ((*opened)["cwd"], "/work/repo");
+    Client list;
+    start("project-navigator", "list", list);
+    ASSERT_TRUE(await([&] { return list.status.has_value(); }));
+    EXPECT_EQ(list.out, "recent\t/work/repo\nlayout\tdev\n");
+    Client usage;
+    start("project-navigator", "open", usage);
+    ASSERT_TRUE(await([&] { return usage.status.has_value(); }));
+    EXPECT_EQ(usage.status, 2);
+    EXPECT_TRUE(usage.err.startsWith("usage:"));
+
+    Client get, set, wrong;
+    start("scene-controls", "get", get);
+    ASSERT_TRUE(await([&] { return get.status.has_value(); }));
+    EXPECT_EQ(get.out, "bloom-1\tstrength\t1\n");
+    rec.applied.clear();
+    start("scene-controls", "set", set, {"strength", "1.5"});
+    ASSERT_TRUE(await([&] { return set.status.has_value(); }));
+    EXPECT_EQ(set.status, 0) << set.err.toStdString();
+    EXPECT_EQ(set.out, "bloom-1\tstrength\t1.5\n");
+    ASSERT_EQ(rec.applied.size(), 2);
+    EXPECT_EQ(rec.applied[1]["kind"], "shader_parameters");
+    EXPECT_EQ(rec.applied[1]["scope"], "tab");
+    EXPECT_EQ(rec.applied[1]["values"].toMap()["strength"].toDouble(), 1.5);
+    start("scene-controls", "set", wrong, {"strength", "lots"});
+    ASSERT_TRUE(await([&] { return wrong.status.has_value(); }));
+    EXPECT_EQ(wrong.status, 2);
+
+    Client save;
+    rec.applied.clear();
+    start("project-autosave", "save", save, {"demo"});
+    ASSERT_TRUE(await([&] { return save.status.has_value(); }));
+    EXPECT_EQ(save.out, "Saved demo\n");
+    ASSERT_EQ(rec.applied.size(), 1);
+    EXPECT_EQ(rec.applied[0]["kind"], "save_project");
+    EXPECT_EQ(rec.applied[0]["name"], "demo");
 }
 
 TEST_F(ScriptHostTest, EffectChecksRefuseBadShapesBeforeTheHost)
@@ -3562,11 +4063,11 @@ TEST_F(ScriptHostTest, UnloadRunsOnRetireButNotForADisabledScript)
 {
     // An on_unload that raises an error reaches the failed callback: that shows it ran.
     write(user, "observed.luau", "return {on_unload = function() error('unloaded') end}");
-    write(user, "broken.luau", R"(return {metadata={actions={{id="go"}}},
-        run_action=function() error("boom") end, on_unload=function() error("unloaded") end})");
+    write(user, "broken.luau", R"(return {metadata={commands={go={summary="go",palette="go"}}},
+        run_command=function() error("boom") end, on_unload=function() error("unloaded") end})");
     host->setEnabled(true);
     while (!host->isDisabled("broken")) {
-        ASSERT_TRUE(host->runAction("broken.go", 7));
+        ASSERT_TRUE(run("broken.go", 7));
         ASSERT_LE(failedOwners.size(), 5);
     }
     const auto failures = failedOwners.size();
@@ -3615,7 +4116,7 @@ TEST_F(ScriptHostTest, ExampleScriptsCreatePulseAndNotify)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("create-and-title.split", 7));
+    ASSERT_TRUE(run("create-and-title.split", 7));
     ASSERT_TRUE(await([&] { return rec.applied.size() == 2; }));
     EXPECT_EQ(rec.applied[0]["kind"], "split");
     EXPECT_DOUBLE_EQ(rec.applied[0]["options"].toMap()["size"].toDouble(), 0.35);
@@ -3734,7 +4235,7 @@ TEST_F(ScriptHostTest, NavigatorOpensAProjectWithoutAskingForALayout)
     };
     paneState[7]["cwd"] = "/tmp";
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("project-navigator.open", 7));
+    ASSERT_TRUE(run("project-navigator.pick", 7));
     ASSERT_TRUE(await([&] {
         return std::any_of(rec.applied.begin(), rec.applied.end(), [](const auto& e) { return e.value("kind") == "open_project"; });
     }));
@@ -3766,7 +4267,7 @@ TEST_F(ScriptHostTest, NavigatorReusesARunningDirectoryWithoutAskingForALayout)
     };
     paneState[7]["cwd"] = "/tmp";
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("project-navigator.open", 7));
+    ASSERT_TRUE(run("project-navigator.pick", 7));
     ASSERT_TRUE(await([&] {
         return std::any_of(rec.applied.begin(), rec.applied.end(), [](const auto& e) { return e.value("kind") == "open_directory"; });
     }));
@@ -3793,7 +4294,7 @@ TEST_F(ScriptHostTest, SceneControlsEscapeShowsNoNotice)
         return {};
     };
     host->setEnabled(true);
-    ASSERT_TRUE(host->runAction("scene-controls.open", 7));
+    ASSERT_TRUE(run("scene-controls.open", 7));
     for (int i = 0; i < 10; ++i) QCoreApplication::processEvents();
     for (const auto& e : rec.applied) EXPECT_NE(e["kind"], "notify");
 }
@@ -3831,7 +4332,7 @@ TEST_F(ScriptHostTest, SceneControlsKeepsOnlyAcceptedValuesInItsLayer)
     auto edit = [&](const QString& id, const QString& value) {
         choice = id;
         pendingReply = {};
-        ASSERT_TRUE(host->runAction("scene-controls.open", 7));
+        ASSERT_TRUE(run("scene-controls.open", 7));
         pump(10);
         ASSERT_TRUE(bool(pendingReply));
         pendingReply({{}, {{"text", value}}, {}});
@@ -3852,7 +4353,7 @@ TEST_F(ScriptHostTest, SceneControlsKeepsOnlyAcceptedValuesInItsLayer)
     await([] { return false; }, 1100);
     // After a preset, an edit keeps the preset's values, not the effective ones.
     choice = "@preset";
-    ASSERT_TRUE(host->runAction("scene-controls.open", 7));
+    ASSERT_TRUE(run("scene-controls.open", 7));
     pump(10);
     edit("radius", "4");
     EXPECT_EQ(sent.last(), QVariantMap({{"strength", 0.8}, {"radius", 4}}));

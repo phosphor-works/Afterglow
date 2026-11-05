@@ -12,11 +12,11 @@ end
 script.metadata = {
     id = "build-inspector",
     name = "Build inspector",
-    actions = {{ id = "inspect", title = "Inspect last build output" }},
+    commands = { inspect = { summary = "Inspect last build output", palette = "Inspect last build output" } },
 }
 
-function script.run_action(action, ev)
-    if action ~= "inspect" or not ev.pane then return nil end
+function script.run_command(command, ev)
+    if command ~= "inspect" or not ev.pane then return nil end
     local pane = ev.pane
     local output, err = afterglow.await(afterglow.read_text(pane, "last-output", 262144))
     -- Scripts.allowReadText can refuse the read: say so in the window.

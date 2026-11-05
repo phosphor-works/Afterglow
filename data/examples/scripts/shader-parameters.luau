@@ -2,18 +2,18 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Example: Shaders.pane = ["bloom"] in config.json.
 return {
-    metadata = { name = "Live shader parameters", actions = {
-        { id = "boost", title = "Boost Bloom in this tab or window" },
-        { id = "reset", title = "Reset Bloom in this tab or window" },
-    } },
-    run_action = function(action, ev)
+    metadata = { name = "Live shader parameters", commands = {
+    boost = { summary = "Boost Bloom in this tab or window", palette = "Boost Bloom in this tab or window" },
+    reset = { summary = "Reset Bloom in this tab or window", palette = "Reset Bloom in this tab or window" },
+} },
+    run_command = function(command, ev)
         if not ev.pane then return nil end
         local active, err = afterglow.await(afterglow.shaders(ev.pane))
         if not active then return afterglow.notify("Shader parameters", err.message, ev.pane) end
         for _, shader in active.shaders or {} do
             if shader.shader == "bloom" then
                 local scope = shader.layer == "window" and "window" or "tab"
-                local values = action == "boost" and { strength = 1.2, radius = 10 } or {}
+                local values = command == "boost" and { strength = 1.2, radius = 10 } or {}
                 return afterglow.shader_parameters(ev.pane, shader.instance, values, scope)
             end
         end

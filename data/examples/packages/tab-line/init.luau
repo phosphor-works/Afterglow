@@ -1,7 +1,7 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 local segments=require("segments")
-local script={metadata={name="Tab line",actions={{id="toggle",title="Toggle the tab line"}}}}
+local script={metadata={name="Tab line"}}
 local config,enabled,tick={},true,0
 local git,exits,job,jobs={}, {}, nil, 0
 local toggling,togglePane=nil,0
@@ -286,8 +286,8 @@ function script.on_timer(ev)
     drawing,dirty=tick,behind
     return effects
 end
-function script.run_action(action,ev)
-    if action~="toggle" or toggling then return nil end
+function script.run_command(command,ev)
+    if command~="toggle" or toggling then return nil end
     toggling=tick;togglePane=ev.pane and ev.pane.id or ev.terminal.active_pane
     return afterglow.request("state",afterglow.state_read())
 end

@@ -84,7 +84,7 @@ enum class Action {
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",
 /// "font_bigger": ["Ctrl+=", "Ctrl++"], "copy": "" } where an empty string
-/// unbinds the action. Script actions bind as "script:<script id>.<action id>".
+/// unbinds the action. Script commands bind as "script:<script id>.<command>".
 class Keybinds
 {
 public:
@@ -131,7 +131,7 @@ public:
     /// keyboard state of its own.
     static QList<int> combinations(const QKeyEvent* event, char32_t base = 0);
     bool isBound(int key) const { return m_byKey.contains(key) || m_scriptByKey.contains(key) || m_textByKey.contains(key); }
-    /// The script action ("<script id>.<action id>") bound to a key press, or empty.
+    /// The script command ("<script id>.<command>") bound to a key press, or empty.
     QString matchScript(const QKeyEvent* event, char32_t base = 0) const;
     /// The bytes a "text:" binding sends for a key press, or empty.
     QByteArray matchText(const QKeyEvent* event, char32_t base = 0) const;

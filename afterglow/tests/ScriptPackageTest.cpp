@@ -5,6 +5,7 @@
 #include "scripting/ScriptFiles.h"
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
@@ -44,6 +45,43 @@ TEST(ScriptPackage, BoundsSourcesAndRejectsEscapesAndIncompatibleVersions)
     ASSERT_TRUE(QFile::link(outside.filePath("module.luau"), dir.filePath("link.luau")));
     put(file, manifest({{"modules",QJsonObject{{"main","link.luau"}}}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
+}
+TEST(ScriptPackage, ReadsAndChecksItsCommands)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    put(dir.filePath("init.luau"), "return {}");
+    put(file, manifest({{"commands", QJsonObject{
+        {"open", QJsonObject{{"summary", "Open a project"}, {"usage", "DIR [LAYOUT]"}, {"palette", "Open project…"}}},
+        {"import", QJsonObject{{"summary", "Add projects from stdin"}, {"stdin", true}}}}}}));
+    ScriptPackage p;
+    ASSERT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    ASSERT_EQ(p.commands.size(), 2);
+    EXPECT_EQ(p.commands[0].name, "import"); // by name
+    EXPECT_TRUE(p.commands[0].input);
+    EXPECT_TRUE(p.commands[0].palette.isEmpty());
+    EXPECT_EQ(p.commands[1].usage, "DIR [LAYOUT]");
+    EXPECT_EQ(p.commands[1].palette, QStringLiteral("Open project…"));
+    EXPECT_FALSE(p.commands[1].input);
+    const std::pair<QJsonValue, const char*> bad[] = {
+        {QJsonArray{"open"}, "commands must be an object"},
+        {QJsonObject{{"open", "Open"}}, "must be a table of fields"},
+        {QJsonObject{{"open", QJsonObject{}}}, "needs a summary"},
+        {QJsonObject{{"open", QJsonObject{{"summary", 3}}}}, "must be text"},
+        {QJsonObject{{"open", QJsonObject{{"summary", "x"}, {"stdin", "yes"}}}}, "stdin must be a boolean"},
+        {QJsonObject{{"open", QJsonObject{{"summary", "x"}, {"title", "x"}}}}, "unknown field title"},
+        {QJsonObject{{"op en", QJsonObject{{"summary", "x"}}}}, "is not 1 to 64"},
+        {QJsonObject{{"open", QJsonObject{{"summary", QString(513, 'x')}}}}, "at most 512"},
+    };
+    for (const auto& [commands, error] : bad) {
+        put(file, manifest({{"commands", commands}}));
+        const QString message = ScriptPackage::read(file, p);
+        EXPECT_TRUE(message.contains(QLatin1String(error))) << message.toStdString();
+    }
+    QJsonObject many;
+    for (int i = 0; i <= MaxScriptCommands; ++i) many.insert(QStringLiteral("c%1").arg(i), QJsonObject{{"summary", "x"}});
+    put(file, manifest({{"commands", many}}));
+    EXPECT_EQ(ScriptPackage::read(file, p), QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands));
 }
 TEST(ScriptState, AtomicRevisionChecksAndRoundTrip)
 {

@@ -35,11 +35,11 @@ script.metadata = {
     id = "glasshouse",
     name = "Glasshouse",
     description = "Shell events drive the Glasshouse glass: cracks, glaze, heat and the bell",
-    actions = {
-        { id = "strike", title = "Glasshouse: strike the glass" },
-        { id = "glaze", title = "Glasshouse: glaze the glass" },
-        { id = "ring", title = "Glasshouse: ring the glass" },
-        { id = "heat", title = "Glasshouse: heat the lamp until the next command" },
+    commands = {
+        strike = { summary = "Strike the glass", palette = "Glasshouse: strike the glass" },
+        glaze = { summary = "Glaze the glass", palette = "Glasshouse: glaze the glass" },
+        ring = { summary = "Ring the glass", palette = "Glasshouse: ring the glass" },
+        heat = { summary = "Heat the lamp until the next command", palette = "Glasshouse: heat the lamp until the next command" },
     },
 }
 
@@ -100,17 +100,17 @@ function script.on_status(ev)
     return effects
 end
 
-function script.run_action(action, ev)
+function script.run_command(command, ev)
     if not ev.pane then
         return nil
     end
-    if action == "strike" then
+    if command == "strike" then
         return afterglow.signal(ev.pane, STRIKE, 1)
-    elseif action == "glaze" then
+    elseif command == "glaze" then
         return afterglow.signal(ev.pane, GLAZE, 1)
-    elseif action == "ring" then
+    elseif command == "ring" then
         return afterglow.signal(ev.pane, RING, 1)
-    elseif action == "heat" then
+    elseif command == "heat" then
         -- Warms as if a command were running; the next command cools it.
         return heat(ev.pane, 1)
     end

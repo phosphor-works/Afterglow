@@ -15,6 +15,17 @@ cp -r data/examples/packages/scene-controls ~/.config/afterglow/scripts/
 3. Select a preset or edit a parameter.
 
 The editor also saves current values and resets this package's changes.
+
+From a shell, the commands read and set the parameters of the pane's shaders:
+
+```sh
+afterglow run scene-controls get              # INSTANCE<TAB>PARAMETER<TAB>VALUE lines
+afterglow run scene-controls get strength     # one parameter
+afterglow run scene-controls set strength 1.4
+```
+
+`set` changes the first shader of the pane that has the parameter, in the same layer as the editor.
+A boolean takes `true` or `false`. A number that does not read fails with exit status 2.
 Selectors and prompts use native controls, keyboard input and the system theme.
 Escape cancels. Changes target the current tab, or the whole window for window effects.
 Shader changes expire the selection. Reopen the editor after a shader change.

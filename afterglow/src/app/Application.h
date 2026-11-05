@@ -6,6 +6,7 @@
 #include "../TerminalWindow.h"
 #include "../audio/AudioController.h"
 #include "../control/Control.h"
+#include "../control/CommandSocket.h"
 #include "../control/ControlSocket.h"
 #include "../config/Settings.h"
 #include "../scripting/ScriptHost.h"
@@ -100,6 +101,8 @@ private:
     InstanceSocket& m_socket;
     ControlSocket m_controlSocket;
     ScriptHost m_scripts;
+    // After the scripts, so its runs end before the scripts go.
+    CommandSocket m_commandSocket;
     AudioController m_audio;
     Services m_services;
 

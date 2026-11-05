@@ -100,7 +100,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
 - Bindings that match Shift+Tab and shifted symbols, and that use the Latin layout for letters on other keyboard layouts.
-- A command palette for actions, projects and script actions.
+- A command palette for actions, projects and script commands.
 
 ### Shader effects
 
@@ -133,6 +133,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
+- Script commands. A script or package declares commands with a summary, usage and an optional palette title. `afterglow run ID COMMAND` runs one from a shell with its arguments, standard input, output and exit status. The palette, the context menu, keys and `afterglow ctl action` run them too. `Scripts.commandTimeout`, `Scripts.commandStdinLimit`, `Scripts.commandRunLimit` and `Scripts.commandOutputLimit` set their limits.
+- Shell completion for bash, zsh and fish, with the commands of the running scripts.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.
 

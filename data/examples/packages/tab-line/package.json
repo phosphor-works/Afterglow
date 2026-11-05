@@ -23,5 +23,8 @@
     "git": true,
     "git_changes": false,
     "git_refresh_seconds": 15
+  },
+  "commands": {
+    "toggle": {"summary": "Show or hide the tab line", "palette": "Toggle the tab line"}
   }
 }

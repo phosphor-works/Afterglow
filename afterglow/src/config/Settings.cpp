@@ -574,6 +574,18 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from ~/.config/afterglow/scripts and from afterglow/scripts in each XDG data "
                         "directory.")},
+        intKey(QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
+               QStringLiteral("Longest time in milliseconds that one run of a script command can take, also while it waits. "
+                              "At the limit the run stops with exit status 124.")),
+        intKey(QStringLiteral("commandStdinLimit"), d.scriptCommandStdinLimit, 0, 16777216,
+               QStringLiteral("Bytes of standard input that a script command gets from afterglow run. Afterglow cuts the "
+                              "input at this size. A value of 0 gives the command empty input.")),
+        intKey(QStringLiteral("commandRunLimit"), d.scriptCommandRunLimit, 1, 256,
+               QStringLiteral("Runs of the commands of one script at the same time. A run over the limit fails with exit "
+                              "status 1.")),
+        intKey(QStringLiteral("commandOutputLimit"), d.scriptCommandOutputLimit, 65536, 268435456,
+               QStringLiteral("Bytes of output and error text that one run of a script command can write. At the limit the "
+                              "run stops with exit status 1.")),
     };
     const AudioSettings& audio = d.audio;
     schema.groups[AudioGroup] = {
@@ -1372,6 +1384,10 @@ Settings SettingsStore::read()
     s.control.eventInterval = st.read<int>(ControlGroup, QStringLiteral("eventInterval"));
     s.scripts = st.read<bool>(ScriptsGroup, QStringLiteral("enabled"));
     s.scriptsAllowReadText = st.read<bool>(ScriptsGroup, QStringLiteral("allowReadText"));
+    s.scriptCommandTimeout = st.read<int>(ScriptsGroup, QStringLiteral("commandTimeout"));
+    s.scriptCommandStdinLimit = st.read<int>(ScriptsGroup, QStringLiteral("commandStdinLimit"));
+    s.scriptCommandRunLimit = st.read<int>(ScriptsGroup, QStringLiteral("commandRunLimit"));
+    s.scriptCommandOutputLimit = st.read<int>(ScriptsGroup, QStringLiteral("commandOutputLimit"));
 
     s.audio.enabled = st.read<bool>(AudioGroup, QStringLiteral("enabled"));
     s.audio.inputMethod = st.read<QString>(AudioGroup, QStringLiteral("inputMethod"));

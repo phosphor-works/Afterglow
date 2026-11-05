@@ -5,8 +5,8 @@
 
 #include "ControlSocket.h"
 #include "IpcClient.h"
-#include "../app/InstanceSocket.h"
 
+#include <AfterglowProto/Socket.h>
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCoreApplication>
@@ -54,7 +54,7 @@ of the active window or of the window that was active last.
   save-project NAME [--overwrite]       save the pane's window layout
   open-project NAME [--new]             switch to a project or launch its layout
   action NAME                           run a keybind action (split_right, new_tab...)
-                                        or a script action (script:ID.ACTION)
+                                        or start a script command (script:ID.COMMAND)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -125,20 +125,14 @@ private:
     bool connected()
     {
         if (m_client.connected()) return true;
-        // Each pane names the afterglow that runs it. Another one (a separate
-        // build, or one started with --config) numbers its panes from 1 too.
-        m_owner = qEnvironmentVariable("AFTERGLOW_SOCKET");
-        // A pane ID means something only to the afterglow that runs the pane:
-        // another one on the display has a pane with the same number.
-        if (m_owner.isEmpty() && !qEnvironmentVariableIsEmpty("AFTERGLOW_PANE_ID")) {
-            fail(QStringLiteral("the afterglow that runs this pane has no socket"));
+        // The afterglow that runs this pane, else the main one on the display.
+        const AfterglowProto::SocketLookup socket = AfterglowProto::findSocket();
+        if (socket.path.empty()) {
+            fail(QString::fromStdString(socket.error));
             return false;
         }
-        const QString path = m_owner.isEmpty() ? InstanceSocket::sharedPath() : m_owner;
-        if (path.isEmpty()) {
-            fail(QStringLiteral("XDG_RUNTIME_DIR is not set"));
-            return false;
-        }
+        const QString path = QFile::decodeName(QByteArray::fromStdString(socket.path));
+        m_owner = socket.own ? path : QString();
         IpcClient::Error error;
         if (m_client.connectTo(path, ReplyTimeoutMs, &error)) return true;
         fail(QStringLiteral("%1 (%2)")
@@ -374,6 +368,9 @@ int runCtl(int argc, char** argv)
             if (!client.subscribe(event)) return 1;
         }
         while (const auto frame = client.readEvent()) {
+            // An event for this connection alone (another target's output)
+            // has no subscription, and no name here.
+            if (!frame->contains(QLatin1String(PhosphorIpc::Field::SubscriptionId))) continue;
             const QJsonObject line{
                 {QStringLiteral("event"), client.eventName(frame->value(QLatin1String(PhosphorIpc::Field::SubscriptionId)).toInteger())},
                 {QStringLiteral("args"), frame->value(QLatin1String(PhosphorIpc::Field::Args))}};

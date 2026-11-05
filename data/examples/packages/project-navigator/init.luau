@@ -3,14 +3,7 @@
 local providers = require("providers")
 local history = require("history")
 local script = {}
-script.metadata = {
-    name="Project navigator",
-    actions={
-        {id="open", title="Navigate projects"},
-        {id="favorite", title="Toggle favorite project directory"},
-        {id="previous", title="Previous project"},
-    },
-}
+script.metadata = {name="Project navigator"}
 local config, home, saved, revision
 local busy = false
 script.migrate = history.migrate
@@ -18,8 +11,14 @@ function script.on_load(ev)
     config, home = ev.package.config, ev.package.home
     saved, revision = history.normalize(ev.storage.value), ev.storage.revision
 end
-local function notice(message, pane)
-    return afterglow.notify("Project navigator", message, pane)
+-- A message for the user: on stdout or stderr for a run from the shell, else
+-- a notification on the pane.
+local function notice(ev, message, failed)
+    if ev.source == "shell" then
+        if failed then return {afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1)} end
+        return afterglow.output(ev, message .. "\n")
+    end
+    return afterglow.notify("Project navigator", message, ev.pane and ev.pane.id)
 end
 -- Cuts text to at most max bytes without splitting a UTF-8 sequence.
 local function trim(text, max)
@@ -41,18 +40,18 @@ local function save()
     revision = written.revision
     return nil
 end
-local function launch(pane, item, layout)
+local function launch(ev, item, layout)
     local opened, err
     if item.kind == "project" then
         opened, err = afterglow.await(afterglow.open_project(item.value))
     else
         opened, err = afterglow.await(afterglow.open_directory(item.value, layout))
     end
-    if not opened then return notice(err.message, pane) end
+    if not opened then return notice(ev, err.message, true) end
     if opened.cwd then item.value = opened.cwd end
     saved = history.remember(saved, item, layout)
     local failed = save()
-    if failed then return notice("History was not saved: " .. failed, pane) end
+    if failed then return notice(ev, "History was not saved: " .. failed, true) end
     return nil
 end
 -- Everything to offer: saved and running projects, configured roots, and the
@@ -156,29 +155,59 @@ local function layoutFor(pane, item, projects)
     if names[choice.id] == nil then return nil, "Selection expired" end
     return names[choice.id]
 end
-local function favorite(pane, current)
+local function favorite(ev, current)
     local path = providers.path(current, home)
-    if not path then return notice("The current pane has no local directory.", pane) end
+    if not path then return notice(ev, "The current pane has no local directory.", true) end
     if #path > history.MaxKey then
-        return notice("This directory path is too long to save as a favorite (over 256 bytes).", pane)
+        return notice(ev, "This directory path is too long to save as a favorite (over 256 bytes).", true)
     end
     if not saved.favorites[path] then
         local count = 0
         for _ in pairs(saved.favorites) do count += 1 end
-        if count >= 100 then return notice("Favorite limit reached (100). Unpin another directory first.", pane) end
+        if count >= 100 then return notice(ev, "Favorite limit reached (100). Unpin another directory first.", true) end
     end
     saved.favorites[path] = not saved.favorites[path] or nil
     saved = history.normalize(saved)
     local message = saved.favorites[path] and "Favorite saved" or "Favorite removed"
     local failed = save()
-    if failed then return notice("History was not saved: " .. failed, pane) end
-    return notice(message, pane)
+    if failed then return notice(ev, "History was not saved: " .. failed, true) end
+    return notice(ev, message)
 end
-local function navigate(action, ev)
-    local pane = ev.pane.id
+-- A directory from the command line: relative to where afterglow run ran.
+local function resolve(path, cwd)
+    if path == "~" or string.sub(path, 1, 2) == "~/" then return home .. string.sub(path, 2) end
+    if string.sub(path, 1, 1) == "/" or cwd == "" then return path end
+    return cwd .. "/" .. path
+end
+-- Favorites, then the recent history, then the saved layouts: KIND<TAB>VALUE lines.
+local function list(ev)
+    local lines, favorites = {}, {}
+    for path in pairs(saved.favorites) do table.insert(favorites, path) end
+    table.sort(favorites)
+    for _, path in ipairs(favorites) do table.insert(lines, "favorite\t" .. path) end
+    for _, item in ipairs(saved.recent) do
+        table.insert(lines, (item.kind == "project" and "recent-layout\t" or "recent\t") .. item.value)
+    end
+    local projects = afterglow.await(afterglow.list_projects())
+    for _, name in ipairs(projects and projects.names or {}) do table.insert(lines, "layout\t" .. name) end
+    if #lines == 0 then return nil end
+    return afterglow.output(ev, table.concat(lines, "\n") .. "\n")
+end
+local function navigate(command, ev)
+    local pane = ev.pane and ev.pane.id
     local stored, err, result = afterglow.await(afterglow.state_read())
-    if not stored then return notice(err.message, pane) end
+    if not stored then return notice(ev, err.message, true) end
     saved, revision = history.normalize(stored.value), stored.revision
+    if command == "list" then return list(ev) end
+    if command == "open" then
+        local directory = ev.args[1]
+        if not directory or #ev.args > 2 then
+            return {afterglow.output_error(ev, "usage: afterglow run project-navigator open DIR [LAYOUT]\n"), afterglow.exit(ev, 2)}
+        end
+        directory = resolve(directory, ev.cwd)
+        return launch(ev, {kind="directory", value=directory}, ev.args[2] or saved.templates[directory] or "")
+    end
+    if not pane then return notice(ev, "There is no pane to act on.", true) end
     local current, currentProject = ev.pane.cwd, nil
     for _, window in ipairs(result.terminal.windows) do
         if window.id == ev.pane.window then
@@ -186,35 +215,35 @@ local function navigate(action, ev)
             currentProject = window.project
         end
     end
-    if action == "favorite" then return favorite(pane, current) end
-    if action == "previous" then
+    if command == "favorite" then return favorite(ev, current) end
+    if command == "previous" then
         for _, item in ipairs(saved.recent) do
             if (item.kind == "directory" and item.value ~= current)
                 or (item.kind == "project" and item.value ~= currentProject) then
-                return launch(pane, item, saved.templates[item.value])
+                return launch(ev, item, saved.templates[item.value])
             end
         end
-        return notice("No previous project yet.", pane)
+        return notice(ev, "No previous project yet.", true)
     end
     local entries, projects, failed = candidates(result.terminal)
     local item, problem = pick(pane, entries, failed)
     if not item then
-        if problem then return notice(problem, pane) end
+        if problem then return notice(ev, problem, true) end
         return nil
     end
     local layout, failure = layoutFor(pane, item, projects)
     if layout == nil then
-        if failure then return notice(failure, pane) end
+        if failure then return notice(ev, failure, true) end
         return nil
     end
-    return launch(pane, item, layout)
+    return launch(ev, item, layout)
 end
-function script.run_action(action, ev)
-    if not ev.pane then return nil end
+function script.run_command(command, ev)
+    if command == "list" then return navigate(command, ev) end
     -- One operation at a time: each one reads and writes the saved history.
-    if busy then return notice("A project operation is already open.", ev.pane.id) end
+    if busy then return notice(ev, "A project operation is already open.", true) end
     busy = true
-    local ok, effects = pcall(navigate, action, ev)
+    local ok, effects = pcall(navigate, command, ev)
     busy = false
     if not ok then error(effects, 0) end
     return effects

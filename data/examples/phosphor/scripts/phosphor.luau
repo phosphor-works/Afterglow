@@ -5,11 +5,11 @@ local script = {}
 script.metadata = {
     id = "phosphor", name = "Phosphor",
     description = "Charge, fracture and recall a shared 3D containment core",
-    actions = {
-        { id = "strike", title = "Phosphor: fracture the core" },
-        { id = "complete", title = "Phosphor: recall the fragments" },
-        { id = "ring", title = "Phosphor: send a shock front" },
-        { id = "heat", title = "Phosphor: charge the core" },
+    commands = {
+        strike = { summary = "Fracture the core", palette = "Phosphor: fracture the core" },
+        complete = { summary = "Recall the fragments", palette = "Phosphor: recall the fragments" },
+        ring = { summary = "Send a shock front", palette = "Phosphor: send a shock front" },
+        heat = { summary = "Charge the core", palette = "Phosphor: charge the core" },
     },
 }
 
@@ -80,19 +80,19 @@ function script.on_status(ev)
     return broadcast(ev.pane, values)
 end
 
-function script.run_action(action, ev)
+function script.run_command(command, ev)
     if not ev.pane then return nil end
     local channels = { strike = 0, complete = 1, ring = 3, heat = 2 }
-    local channel = channels[action]
+    local channel = channels[command]
     if channel then return broadcast(ev.pane, { { channel, 1 } }) end
-    if action == "cool" then return broadcast(ev.pane, { { 2, 0 } }) end
+    if command == "cool" then return broadcast(ev.pane, { { 2, 0 } }) end
     return nil
 end
 
--- The showcase drives the same script actions through OSC 1337 user vars.
+-- The showcase drives the same script commands through OSC 1337 user vars.
 -- There are no timers in Luau and no fake build output to explain the effects.
 function script.on_user_var(ev)
-    if ev.name == "phosphor" then return script.run_action(ev.value, ev) end
+    if ev.name == "phosphor" then return script.run_command(ev.value, ev) end
     return nil
 end
 -- Every pack that shows command heat takes it as a parameter, which eases

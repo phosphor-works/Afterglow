@@ -13,7 +13,7 @@ The [configuration reference](CONFIGURATION.md#default-bindings) lists the defau
 | --- | --- |
 | Built-in action name | Runs a terminal action |
 | `text:<bytes>` | Sends bytes to the terminal |
-| `script:<id>.<action>` | Runs a script action |
+| `script:<id>.<command>` | Starts a script command with no arguments (see [commands](SCRIPTING.md#commands)) |
 | `table:<name>` | Activates a key table |
 
 Text bindings support `\e`, `\r`, `\n`, `\t`, `\\`, `\xHH` and `\uHHHH`.

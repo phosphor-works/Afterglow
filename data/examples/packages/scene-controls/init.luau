@@ -25,9 +25,69 @@ local function edit(p,value)
     flow.pending[p.id]=value
     return afterglow.request("applied",afterglow.shader_parameters(flow.pane,flow.shader.instance,table.clone(flow.pending),scope(),{duration_ms=350}))
 end
+local function failure(ev,message,status)
+    return {afterglow.output_error(ev,message.."\n"),afterglow.exit(ev,status or 1)}
+end
+-- The pane's shaders, or nil and an error effect.
+local function shaders(ev)
+    if not ev.pane then return nil,failure(ev,"There is no pane to read.") end
+    local data,err=afterglow.await(afterglow.shaders(ev.pane))
+    if not data then return nil,failure(ev,err.message) end
+    return data.shaders
+end
+-- get [PARAM]: INSTANCE<TAB>PARAMETER<TAB>VALUE lines for the pane's shaders.
+local function get(ev)
+    if #ev.args>1 then return failure(ev,"usage: afterglow run scene-controls get [PARAM]",2) end
+    local list,problem=shaders(ev)
+    if not list then return problem end
+    local lines={}
+    for _,shader in ipairs(list) do
+        for _,p in ipairs(shader.parameters) do
+            if p.supported and (ev.args[1]==nil or ev.args[1]==p.id) then
+                table.insert(lines,shader.instance.."\t"..p.id.."\t"..format(p,shader.values[p.id]))
+            end
+        end
+    end
+    if #lines==0 then return failure(ev,ev.args[1] and ("No parameter "..ev.args[1]) or "Enable a shader pack first.") end
+    return afterglow.output(ev,table.concat(lines,"\n").."\n")
+end
+-- set PARAM VALUE: the first of the pane's shaders that has PARAM takes VALUE,
+-- in this package's layer, as the editor sets it.
+local function set(ev)
+    if #ev.args~=2 then return failure(ev,"usage: afterglow run scene-controls set PARAM VALUE",2) end
+    local list,problem=shaders(ev)
+    if not list then return problem end
+    local name,text=ev.args[1],ev.args[2]
+    for _,shader in ipairs(list) do
+        for _,p in ipairs(shader.parameters) do
+            if p.supported and p.id==name then
+                local value=text
+                if p.type=="float" or p.type=="int" then
+                    value=tonumber(text)
+                    if not value then return failure(ev,name.." takes a number",2) end
+                elseif p.type=="bool" then
+                    if text~="true" and text~="false" then return failure(ev,name.." takes true or false",2) end
+                    value=text=="true"
+                end
+                local window=shader.layer=="window"
+                local key=shader.instance.."|"..(window and "window" or tostring(ev.pane.tab_id))
+                local values=table.clone(layers[key] and layers[key].values or {})
+                values[p.id]=value
+                local applied,err=afterglow.await(afterglow.shader_parameters(ev.pane,shader.instance,table.clone(values),
+                    window and "window" or "tab",{duration_ms=350}))
+                if not applied then return failure(ev,err.message) end
+                layers[key]={window=ev.pane.window,instance=shader.instance,values=values}
+                return afterglow.output(ev,shader.instance.."\t"..p.id.."\t"..format(p,value).."\n")
+            end
+        end
+    end
+    return failure(ev,"No parameter "..name.." in the pane's shaders")
+end
 return {
- metadata={name="Scene controls",actions={{id="open",title="Edit scene parameters and presets"}}},
- run_action=function(_,ev)
+ metadata={name="Scene controls"},
+ run_command=function(command,ev)
+    if command=="get" then return get(ev) end
+    if command=="set" then return set(ev) end
     if not ev.pane then return nil end
     if flow then return afterglow.notify("Scene controls","Finish or cancel the open editor first.",ev.pane) end
     flow={pane=ev.pane.id,tab=ev.pane.tab_id,window=ev.pane.window}

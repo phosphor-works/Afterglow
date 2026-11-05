@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-navigator-") as temp:
         def configured(roots):
             (package / "config.json").write_text(json.dumps({"roots": list(map(str, roots)), "fd": True, "zoxide": False}))
         focused = [None]
-        def action(pane, name="open"):
+        def action(pane, name="pick"):
             focused[0] = pane
             ctl("focus", "--pane", pane)
             ctl("action", "script:project-navigator." + name, "--pane", pane)

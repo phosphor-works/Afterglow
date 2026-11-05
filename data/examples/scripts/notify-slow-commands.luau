@@ -11,7 +11,7 @@ script.metadata = {
     id = "notify-slow-commands",
     name = "Notify on slow commands",
     description = "A desktop notification when a long command finishes out of sight",
-    actions = { { id = "test", title = "Test the slow-command notification" } },
+    commands = { test = { summary = "Test the slow-command notification", palette = "Test the slow-command notification" } },
 }
 
 function script.on_command_finished(ev)
@@ -24,8 +24,8 @@ function script.on_command_finished(ev)
     return afterglow.notify(ev.command ~= "" and ev.command or "Command", outcome .. " after " .. seconds .. " s")
 end
 
-function script.run_action(action, ev)
-    if action == "test" then
+function script.run_command(command, ev)
+    if command == "test" then
         return afterglow.notify("Slow command", "This is what it will look like")
     end
     return nil

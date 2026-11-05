@@ -21,7 +21,8 @@ Afterglow checks the package paths against the directory that the symlink points
   "modules": {"main": "init.luau", "format": "format.luau"},
   "config": {"enabled": true},
   "dependencies": {"utils": {"path": "vendor/utils", "version": "1.0.0"}},
-  "assets": {"theme": "assets/theme.json"}
+  "assets": {"theme": "assets/theme.json"},
+  "commands": {"format": {"summary": "Format the pane's last output", "palette": "Format output"}}
 }
 ```
 
@@ -47,6 +48,32 @@ Cycles and undeclared imports cause an error.
 A package over a limit does not load. `afterglow ctl scripts` shows the error.
 An error in a module names the module file and its line.
 
+## Commands
+
+`commands` maps each command name to its fields.
+The rules are the same as for `metadata.commands` of a single-file script (see [commands](SCRIPTING.md#commands)).
+A package declares its commands only in `package.json`. `metadata.commands` in a package is an error.
+
+```json
+"commands": {
+  "open": {"summary": "Open a project directory", "usage": "DIR [LAYOUT]", "palette": "Open project…"},
+  "list": {"summary": "Print the saved projects"},
+  "import": {"summary": "Add projects from a list on stdin", "stdin": true}
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| Command name | 1 to 64 characters: letters, digits, `_` and `-` |
+| `summary` | Required. At most 512 characters |
+| `usage` | Optional. At most 512 characters |
+| `palette` | Optional palette title, at most 512 characters |
+| `stdin` | Optional boolean, default `false` |
+| Commands | At most 64 |
+
+The entry module must export `run_command(command, ev)`.
+`afterglow run <id>` lists the package's commands. `afterglow run <id> <command>` runs one.
+
 ## Configuration and assets
 
 An optional `config.json` beside the manifest adds or replaces top-level `config` values.
@@ -65,7 +92,7 @@ This applies to modules, dependencies, assets, `config.json`, the shader directo
 Afterglow does not check the stages and includes that a shader pack reads.
 
 Afterglow monitors source files, dependency manifests and configuration together.
-A change replaces the complete instance. This includes a change to `shaders` or `pulses`.
+A change replaces the complete instance. This includes a change to `shaders`, `pulses` or `commands`.
 Compilation, initialization or migration errors keep the previous working instance.
 
 ## Saved state
@@ -111,7 +138,7 @@ Increase `state_version` when the stored structure changes.
 Export `migrate(value, oldVersion, newVersion)` to return the new object.
 Afterglow calls `migrate` once, from the stored version to the current `state_version`.
 Handle every older version in that one call.
-Migration and `on_load` each use the 100 ms action deadline.
+Migration and `on_load` each use the 100 ms command deadline.
 
 Afterglow validates migration output before activation.
 It writes the new state only after the replacement compiles and initializes.
@@ -190,4 +217,4 @@ The stored data remains available for a later installation.
 | [Scripted overview](../data/examples/packages/scripted-overview/README.md) | Drives the pane overview from its own keys, with its own overview shader |
 
 Copy a complete package directory into `~/.config/afterglow/scripts/` to install it.
-Use the package instructions for configuration and actions.
+Use the package instructions for configuration and commands.

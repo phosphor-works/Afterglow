@@ -29,6 +29,11 @@ namespace Afterglow {
 namespace {
 const QString QuickShortcutId = QStringLiteral("toggle-quick-terminal");
 
+ScriptHost::CommandLimits commandLimits(const Settings& s)
+{
+    return {s.scriptCommandTimeout, s.scriptCommandStdinLimit, s.scriptCommandRunLimit, s.scriptCommandOutputLimit};
+}
+
 } // namespace
 
 Application::Application(InstanceSocket& socket, const QString& configPath, const QJsonObject& overrides)
@@ -41,6 +46,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     , m_socket(socket)
     , m_controlSocket(m_control, m_settings, socket.router())
     , m_scripts(scriptCallbacks(m_control))
+    , m_commandSocket(m_control, m_scripts, m_settings, socket.router())
     , m_services{m_device, m_settings, m_chromeComponent, m_shaders, m_scripts, m_audio}
     , m_launch(*this)
 {
@@ -78,7 +84,10 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
     connectScriptEvents(m_scripts, m_control);
     // Script packages bring their shader packs with them.
     connect(&m_scripts, &ScriptHost::packageShadersChanged, &m_shaders, &ShaderLibrary::setPackageShaders);
-    m_control.setScriptActionRunner([this](const QString& action, quint32 pane) { return m_scripts.runAction(action, pane); });
+    m_control.setScriptCommandRunner([this](const QString& command, quint32 pane) {
+        return m_scripts.runCommand(command, pane, QStringLiteral("control"));
+    });
+    m_scripts.setCommandLimits(commandLimits(m_settings.settings()));
     m_control.setScriptDiagnostics([this] { return m_scripts.diagnostics(); });
     auto scriptPaths = ScriptHost::defaultSearchPaths();
     scriptPaths.last() = QFileInfo(m_settings.path()).absolutePath() + QStringLiteral("/scripts");
@@ -93,6 +102,7 @@ Application::Application(InstanceSocket& socket, const QString& configPath, cons
         if (m_settings.settings().quickTerminal.shortcut != previous.quickTerminal.shortcut) {
             bindShortcuts();
         }
+        m_scripts.setCommandLimits(commandLimits(m_settings.settings()));
         m_scripts.setEnabled(m_settings.settings().scripts);
         QTimer::singleShot(0, &m_scripts, [this] { m_scripts.dispatch(QStringLiteral("on_config_changed"), 0); });
         if (const AudioSettings& audio = m_settings.settings().audio; audio != previous.audio) {
@@ -118,7 +128,7 @@ Application::~Application()
     // Windows render on the device and the chrome uses the QML engine.
     qDeleteAll(TerminalWindow::windows());
     // The scripts go before Control: its callbacks into them must not outlive them.
-    m_control.setScriptActionRunner({});
+    m_control.setScriptCommandRunner({});
     m_control.setScriptDiagnostics({});
 }
 
