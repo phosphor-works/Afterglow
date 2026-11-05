@@ -151,7 +151,10 @@ namespace {
         const auto raw = QFile::encodeName(path);
         bool ok = false;
         const auto mode = f.value("prm").toLongLong(&ok);
-        if (ok && mode >= 0 && !symlink && ::chmod(raw.constData(), mode_t(mode & 07777)))
+        // The permission bits only: a program on another computer cannot make
+        // a set-user-ID, set-group-ID or sticky file here (kitten drops them
+        // too). The mode never goes through a symbolic link.
+        if (ok && mode >= 0 && !symlink && ::fchmodat(AT_FDCWD, raw.constData(), mode_t(mode & 0777), AT_SYMLINK_NOFOLLOW))
             return false;
         // Times before 1970 are negative. Only -1 means "not given".
         const auto ns = f.value("mod").toLongLong(&ok);

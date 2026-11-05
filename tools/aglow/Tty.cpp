@@ -6,6 +6,7 @@
 #include <AfterglowProto/Text.h>
 
 #include <atomic>
+#include <utility>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -21,6 +22,9 @@ namespace {
 // Escape codes from the terminal are bounded: the largest reply of the
 // protocols here is a few KiB. A longer one is dropped whole.
 constexpr std::size_t MaxEscape = 1024 * 1024;
+// An OSC 52 answer holds the whole clipboard text in one sequence: as much
+// as a terminal takes in an OSC 5522 write, in base64.
+constexpr std::size_t MaxOsc52 = 176 * 1024 * 1024;
 // A lone ESC is the Esc key when no byte follows it in this time.
 constexpr long long EscapeKeyMs = 50;
 
@@ -156,7 +160,8 @@ void InputParser::feed(std::string_view bytes, std::vector<Input>& out)
                 m_state = State::Ground;
             } else if (byte == 0x1b) {
                 m_state = State::StringEscape;
-            } else if (m_buffer.size() < MaxEscape) {
+            } else if (m_buffer.size() < MaxEscape
+                       || (m_string == Input::Type::Osc && m_buffer.size() < MaxOsc52 && m_buffer.starts_with("52;"))) {
                 m_buffer += c;
             } else {
                 m_overflow = true;
@@ -224,6 +229,7 @@ void Tty::restore()
     if (m_fd < 0) {
         return;
     }
+    m_out += std::exchange(m_reset, {});
     flush(2000);
     if (m_raw) {
         // TCSAFLUSH: replies that arrive late are dropped, not typed into the shell.
@@ -307,6 +313,8 @@ winsize Tty::size() const
     ::ioctl(m_fd, TIOCGWINSZ, &size);
     return size;
 }
+
+void Tty::watchSignals() { catchSignals(); }
 
 int Tty::takeSignal() { return caughtSignal.exchange(0); }
 

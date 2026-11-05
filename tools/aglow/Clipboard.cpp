@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -192,24 +193,33 @@ public:
         bool supported = false;
         const bool answered = wait([&](const Input& input) {
             if (input.type != Input::Type::Csi) {
-                return false;
+                return Step::Ignore;
             }
             if (input.data.starts_with("?5522;") && input.data.ends_with("$y")) {
                 const char state = input.data.size() > 6 ? input.data[6] : '0';
                 supported = state != '0' && state != '4';
-                return false;
+                return Step::Ignore;
             }
-            return input.data.starts_with('?') && input.data.ends_with('c');
-        }, error);
+            return input.data.starts_with('?') && input.data.ends_with('c') ? Step::Done : Step::Ignore;
+        }, error, Limit::Answer);
         return answered && supported;
     }
 
-    // Runs until @p done returns true for an input. False on a timeout, an
-    // interrupt or a closed terminal, with @p error set.
-    template<typename Done>
-    bool wait(Done done, std::string& error)
+    enum class Step { Ignore, More, Done };
+    enum class Limit {
+        Answer, ///< a query that every terminal answers at once: the timeout runs from the start
+        Request, ///< a request the terminal may hold for a permission prompt: the timeout runs from its last packet
+    };
+
+    // Runs until @p step returns Done for an input, More for each packet of
+    // the request, Ignore for the rest. False on a timeout, an interrupt or a
+    // closed terminal, with @p error set. A request waits for its first
+    // packet as long as the user takes to answer the terminal's prompt, as
+    // kitten does: a timeout then would let the late answer reach the shell.
+    template<typename Stepper>
+    bool wait(Stepper step, std::string& error, Limit limit)
     {
-        const long long deadline = nowMs() + m_timeout;
+        long long deadline = limit == Limit::Answer ? nowMs() + m_timeout : LLONG_MAX;
         for (;;) {
             std::vector<Input> inputs;
             if (!m_tty.turn(100, inputs)) {
@@ -221,8 +231,14 @@ public:
                     error = "Interrupted";
                     return false;
                 }
-                if (done(input)) {
+                switch (step(input)) {
+                case Step::Done:
                     return true;
+                case Step::More:
+                    deadline = nowMs() + m_timeout;
+                    break;
+                case Step::Ignore:
+                    break;
                 }
             }
             if (m_tty.takeSignal()) {
@@ -261,9 +277,32 @@ bool writeOutput(const Output& output, std::string& error)
         return true;
     }
     const auto path = AfterglowProto::TransferPath::absolute(output.arg, homeDirectory(), currentDirectory());
+    // A link, a pipe or a device that the user names is written through, as
+    // kitten writes to it. A regular file is replaced whole, and keeps its mode.
+    struct stat st { };
+    const bool exists = ::lstat(path.c_str(), &st) == 0;
+    if (exists && !S_ISREG(st.st_mode)) {
+        const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | (S_ISLNK(st.st_mode) ? O_TRUNC : 0));
+        const bool ok = fd >= 0 && AfterglowProto::writeAll(fd, output.data);
+        const int saved = errno;
+        if (fd >= 0 && ::close(fd) != 0 && ok) {
+            error = "Failed to write " + output.arg + ": " + std::strerror(errno);
+            return false;
+        }
+        if (!ok) {
+            error = "Failed to write " + output.arg + ": " + std::strerror(saved);
+        }
+        return ok;
+    }
+    mode_t mode = st.st_mode & 07777;
+    if (!exists) {
+        mode = ::umask(0);
+        ::umask(mode);
+        mode = 0666 & ~mode;
+    }
     std::string temporary = AfterglowProto::TransferPath::dirName(path) + "/.aglow-clipboard-XXXXXX";
     const int fd = ::mkostemp(temporary.data(), O_CLOEXEC);
-    if (fd < 0 || !AfterglowProto::writeAll(fd, output.data) || ::fchmod(fd, 0644) != 0 || ::close(fd) != 0
+    if (fd < 0 || !AfterglowProto::writeAll(fd, output.data) || ::fchmod(fd, mode) != 0 || ::close(fd) != 0
         || ::rename(temporary.c_str(), path.c_str()) != 0) {
         error = "Failed to write " + output.arg + ": " + std::strerror(errno);
         if (fd >= 0) {
@@ -392,7 +431,9 @@ int runClipboard(int argc, char** argv)
             tty.write(message.write());
             if (parsed->flag("wait-for-completion")) {
                 tty.write("\x1b[c");
-                session.wait([](const Input& input) { return input.type == Input::Type::Csi && input.data.ends_with('c'); }, error);
+                session.wait([](const Input& input) {
+                    return input.type == Input::Type::Csi && input.data.ends_with('c') ? Session::Step::Done : Session::Step::Ignore;
+                }, error, Session::Limit::Answer);
             }
             tty.restore();
             return error.empty() ? 0 : (report("clipboard", error), 1);
@@ -400,19 +441,25 @@ int runClipboard(int argc, char** argv)
         message.query = true;
         tty.write(message.write());
         std::string text;
+        bool valid = false;
         const bool ok = session.wait([&](const Input& input) {
             if (input.type != Input::Type::Osc || !input.data.starts_with("52;")) {
-                return false;
+                return Session::Step::Ignore;
             }
             const auto reply = AfterglowProto::Osc52Message::parse(std::string_view(input.data).substr(3));
             if (reply) {
+                valid = true;
                 text = reply->text;
             }
-            return true;
-        }, error);
+            return Session::Step::Done;
+        }, error, Session::Limit::Request);
         tty.restore();
         if (!ok) {
             report("clipboard", error);
+            return 1;
+        }
+        if (!valid) {
+            report("clipboard", "The terminal answered with an OSC 52 reply that is not valid");
             return 1;
         }
         files[0].data = text;
@@ -444,15 +491,15 @@ int runClipboard(int argc, char** argv)
         std::string status;
         const bool ok = session.wait([&](const Input& input) {
             if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
-                return false;
+                return Session::Step::Ignore;
             }
             const auto reply = ClipboardReply::parse(std::string_view(input.data).substr(5));
             if (!reply || reply->type != "write" || reply->id != AfterglowProto::sanitizeId(request.id)) {
-                return false;
+                return Session::Step::Ignore;
             }
             status = reply->status;
-            return true;
-        }, error);
+            return Session::Step::Done;
+        }, error, Session::Limit::Request);
         tty.restore();
         if (!ok) {
             report("clipboard", error);
@@ -469,24 +516,31 @@ int runClipboard(int argc, char** argv)
     auto read = [&](const std::vector<std::string>& types, std::map<std::string, std::string>& data, std::string& status) {
         request.mimes = types;
         tty.write(AfterglowProto::clipboardReadRequest(request));
+        std::size_t total = 0;
         return session.wait([&](const Input& input) {
             if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
-                return false;
+                return Session::Step::Ignore;
             }
             const auto reply = ClipboardReply::parse(std::string_view(input.data).substr(5));
             if (!reply || reply->type != "read" || reply->id != AfterglowProto::sanitizeId(request.id)) {
-                return false;
+                return Session::Step::Ignore;
             }
             if (reply->status == "DATA") {
+                // As much as a terminal takes in a write: more is not a clipboard.
+                total += reply->data.size();
+                if (total > AfterglowProto::ClipboardAssembler::MaxWrite) {
+                    status = "EFBIG";
+                    return Session::Step::Done;
+                }
                 data[reply->mime] += reply->data;
-                return false;
+                return Session::Step::More;
             }
             if (reply->status == "OK") {
-                return false;
+                return Session::Step::More;
             }
             status = reply->status;
-            return true;
-        }, error);
+            return Session::Step::Done;
+        }, error, Session::Limit::Request);
     };
     std::map<std::string, std::string> listing;
     std::string status;

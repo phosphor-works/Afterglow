@@ -139,6 +139,23 @@ TEST_F(Transfer, CompressedFileAndLinksCommit)
     EXPECT_EQ(contents("link"), "hello world");
     EXPECT_EQ(contents("hard"), "hello world");
 }
+TEST_F(Transfer, ModesKeepOnlyThePermissionBits)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;sz=2;prm=" + QByteArray::number(06777) + ";n=" + path("setid"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    send("ac=end_data;fid=f;d=" + b64("ok"));
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    send("ac=file;fid=d;ft=directory;prm=" + QByteArray::number(01777) + ";n=" + path("sticky"));
+    ASSERT_TRUE(fileStatus("d", "OK"));
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    struct stat st { };
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("setid"))).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0777u);
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("sticky"))).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0777u);
+}
 TEST_F(Transfer, CancellationPreservesExistingFileAndRemovesTemporaryFiles)
 {
     QFile original(dir.filePath("file"));

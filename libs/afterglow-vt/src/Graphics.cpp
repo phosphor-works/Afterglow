@@ -31,7 +31,7 @@ int placeholderDiacriticValue(char32_t cp)
 
 namespace {
 
-constexpr std::uint32_t MaxDimension = 10000;
+constexpr std::uint32_t MaxDimension = AfterglowProto::GraphicsMaxSide;
 constexpr std::size_t MaxPayload = GraphicsStore::DefaultQuota;
 constexpr std::size_t MaxControl = 4096;
 constexpr int MaxDepth = 32; ///< relative placement chain links

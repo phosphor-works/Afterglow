@@ -217,8 +217,12 @@ aglow clipboard --get-clipboard
 It decodes JPEG, GIF, BMP and other formats to pixels, and sends them compressed with zlib.
 When the terminal can read local files, `aglow icat` sends an image through shared memory or a temporary file.
 Otherwise, it sends the data through the terminal connection.
+It refuses an image with a side longer than 10,000 pixels, or decoded pixels larger than 320 MiB, before it decodes the image.
+An animated GIF whose frames are larger than 320 MiB shows its first frame only.
+Ctrl+C stops `aglow icat` between two images or two frames.
 `aglow clipboard` uses the Kitty clipboard protocol (OSC 5522).
 In a terminal without it, `aglow clipboard` uses OSC 52, which carries plain text only.
+A read waits as long as the permission prompt of the terminal stays open. Press Ctrl+C to stop it.
 
 ## Kitty file transfer
 
@@ -246,6 +250,7 @@ aglow transfer --transmit-deltas ./report.txt /absolute/destination/report.txt
 ```
 
 The protocol supports directories, regular files, symbolic links, hard links, permissions and modification times.
+Afterglow keeps the read, write and execute bits of a mode. It drops the set-user-ID, set-group-ID and sticky bits, as `kitten` does.
 It supports zlib compression, delta transfers, progress reports and cancellation.
 Afterglow writes each incoming regular file to a temporary file in its destination directory.
 After validation, Afterglow replaces the destination and reports success.
@@ -284,6 +289,15 @@ Kitty 0.49.2 can omit empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.
 `aglow transfer` receives empty files.
 
+`aglow transfer` does not trust the file list that a terminal sends when it receives files:
+
+- It writes each file only into the directory of its parent entry, which must be a directory of the same transfer.
+- It refuses a list in which two entries have the same path, or a path is not absolute.
+- It follows no symbolic link when it writes, also none that was there before.
+- In mirror mode, each top entry must be the path that you gave.
+- It stops a file at the size in the list, and refuses data after the end of a compressed file.
+- A transfer that ends early leaves no temporary file.
+
 ## Kitty drag and drop
 
 Afterglow supports the [Kitty drag-and-drop protocol](https://sw.kovidgoyal.net/kitty/dnd-protocol/) on OSC 72.
@@ -302,6 +316,8 @@ aglow dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
 
 A program must enable the protocol before it receives drag events.
 A source offer requires a physical left-button drag gesture.
+When a drag ends, Afterglow tells the source the action that the drop took (the `o` key of `t=e:x=4`).
+`aglow dnd` deletes the files of a remote move only when the drop ended as a move.
 Afterglow rejects file reads before a drop occurs.
 It also rejects file reads for a drag that starts in any Afterglow window.
 Afterglow sends a desktop MIME type name to the program only when the name obeys these rules:

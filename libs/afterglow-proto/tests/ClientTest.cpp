@@ -10,6 +10,7 @@
 #include <AfterglowProto/FdDelta.h>
 #include <AfterglowProto/TransferClient.h>
 #include <AfterglowProto/Version.h>
+#include <AfterglowProto/Zlib.h>
 
 #include <gtest/gtest.h>
 
@@ -17,6 +18,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <regex>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -287,6 +289,253 @@ TEST(Client, CancelWaitsForTheTerminal)
     EXPECT_FALSE(sender->over());
     sender->receive(reply(sender->id(), { { "ac", "status" }, { "st", "CANCELED" } }));
     EXPECT_TRUE(sender->over());
+}
+
+// A terminal that answers a session as the test tells it to, including with
+// listings that a hostile terminal could send.
+struct FakeTerminal
+{
+    FakeTerminal(TransferClient& c, std::string h)
+        : client(c)
+        , home(std::move(h))
+    {
+    }
+    TransferClient& client;
+    std::string home;
+    bool answerRequests = true;
+    std::vector<std::vector<std::pair<std::string, std::string>>> listing;
+    std::map<std::string, std::string> contents; // data for the requests, by remote path
+    std::map<std::string, std::string> started; // extra STARTED fields for a send, by remote path
+    std::vector<TransferFields> sent;
+    bool finished = false;
+
+    void say(std::vector<std::pair<std::string, std::string>> fields)
+    {
+        client.receive(reply(client.id(), std::move(fields)));
+    }
+    // Runs the session until the client stops or @p rounds pass.
+    void run(int rounds = 200)
+    {
+        std::size_t specs = 0;
+        for (int round = 0; round < rounds && !client.over(); ++round) {
+            std::string out;
+            client.pull(out, 1 << 20);
+            for (const auto& m : messages(out)) {
+                sent.push_back(m);
+                const auto& action = m.at("ac");
+                if (action == "receive" || action == "send") {
+                    specs = action == "receive" ? std::stoul(m.at("sz")) : 0;
+                    if (!specs) {
+                        say({ { "ac", "status" }, { "st", "OK" } });
+                    }
+                } else if (action == "cancel") {
+                    say({ { "ac", "status" }, { "st", "CANCELED" } });
+                } else if (action == "finish") {
+                    finished = true;
+                } else if (action == "file" && specs > 0) {
+                    if (--specs == 0) {
+                        say({ { "ac", "status" }, { "st", "OK" } });
+                        for (auto entry : listing) {
+                            entry.emplace_back("ac", "file");
+                            say(entry);
+                        }
+                        say({ { "ac", "status" }, { "st", "OK" }, { "n", home } });
+                    }
+                } else if (action == "file" && m.contains("ft")) {
+                    std::vector<std::pair<std::string, std::string>> answer { { "ac", "status" }, { "fid", m.at("fid") },
+                        { "st", m.at("ft") == "directory" ? "OK" : "STARTED" } };
+                    if (started.contains(m.at("n"))) {
+                        answer.emplace_back("tt", started.at(m.at("n")));
+                    }
+                    say(answer);
+                } else if (action == "file" && answerRequests) {
+                    const auto data = contents.contains(m.at("n")) ? contents.at(m.at("n")) : std::string();
+                    say({ { "ac", "end_data" }, { "fid", m.at("fid") }, { "d", data } });
+                }
+            }
+        }
+    }
+};
+
+struct Hostile : testing::Test
+{
+    TempDir dir;
+    std::string victim;
+    void SetUp() override
+    {
+        victim = (dir.path / "victim").string();
+        std::filesystem::create_directories(victim);
+        ::chmod(victim.c_str(), 0700);
+    }
+    std::unique_ptr<TransferClient> receiver(std::vector<std::string> args, TransferClientOptions::Mode mode = TransferClientOptions::Mode::Normal)
+    {
+        auto options = optionsIn(dir);
+        options.mode = mode;
+        std::string error;
+        auto client = makeTransferReceiver(options, args, error);
+        EXPECT_TRUE(client) << error;
+        return client;
+    }
+    bool victimTouched() const
+    {
+        struct stat st { };
+        return ::stat(victim.c_str(), &st) != 0 || (st.st_mode & 07777) != 0700
+            || std::filesystem::directory_iterator(victim) != std::filesystem::directory_iterator();
+    }
+    static bool ended(const TransferClient& client)
+    {
+        return client.state() == TransferClient::State::Canceled || client.state() == TransferClient::State::Failed;
+    }
+};
+
+TEST_F(Hostile, AHardLinkThroughALinkOfTheSameTransferIsRefused)
+{
+    // A link x to the victim, then a hard link x/k: written through x, it
+    // would land in the victim's directory.
+    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = {
+        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
+        { { "fid", "0" }, { "n", "/r/tree/a" }, { "st", "2" }, { "pr", "1" }, { "sz", "5" } },
+        { { "fid", "0" }, { "n", "/r/tree/x" }, { "st", "3" }, { "pr", "1" }, { "ft", "symlink" } },
+        { { "fid", "0" }, { "n", "/r/tree/x/k" }, { "st", "4" }, { "pr", "3" }, { "ft", "link" }, { "d", "2" } },
+    };
+    terminal.contents = { { "/r/tree/a", "hello" }, { "/r/tree/x", victim } };
+    terminal.run();
+    EXPECT_TRUE(ended(*client));
+    EXPECT_FALSE(victimTouched());
+}
+
+TEST_F(Hostile, ADuplicateNameCannotChangeTheModeThroughALink)
+{
+    // A link s to the victim, then a directory s with mode 0777.
+    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = {
+        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
+        { { "fid", "0" }, { "n", "/r/tree/s" }, { "st", "2" }, { "pr", "1" }, { "ft", "symlink" } },
+        { { "fid", "0" }, { "n", "/r/tree/s" }, { "st", "3" }, { "pr", "1" }, { "ft", "directory" }, { "prm", "511" } },
+    };
+    terminal.contents = { { "/r/tree/s", victim } };
+    terminal.run();
+    EXPECT_TRUE(ended(*client));
+    EXPECT_FALSE(victimTouched());
+}
+
+TEST_F(Hostile, AFileUnderALinkThatWasThereBeforeIsNotWrittenThroughIt)
+{
+    const auto dest = dir.path / "dest";
+    std::filesystem::create_directories(dest);
+    std::filesystem::create_directory_symlink(victim, dest / "tree");
+    auto client = receiver({ "/r/tree", dest.string() + "/" });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = {
+        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
+        { { "fid", "0" }, { "n", "/r/tree/f" }, { "st", "2" }, { "pr", "1" }, { "sz", "3" } },
+    };
+    terminal.contents = { { "/r/tree/f", "bad" } };
+    terminal.run();
+    EXPECT_FALSE(victimTouched());
+    ASSERT_EQ(client->items().size(), 2u);
+    EXPECT_FALSE(client->items()[1].error.empty());
+}
+
+TEST_F(Hostile, MirrorModeWritesOnlyThePathsThatWereAskedFor)
+{
+    const auto asked = (dir.path / "asked").string();
+    auto client = receiver({ asked }, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = {
+        { { "fid", "0" }, { "n", victim }, { "st", "1" }, { "ft", "directory" } },
+        { { "fid", "0" }, { "n", victim + "/planted" }, { "st", "2" }, { "pr", "1" }, { "sz", "3" } },
+    };
+    terminal.contents = { { victim + "/planted", "bad" } };
+    terminal.run();
+    EXPECT_TRUE(ended(*client));
+    EXPECT_FALSE(victimTouched());
+}
+
+TEST_F(Hostile, ARelativeListingPathIsRefused)
+{
+    auto client = receiver({ "tree" }, TransferClientOptions::Mode::Mirror);
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = { { { "fid", "0" }, { "n", "tree" }, { "st", "1" }, { "sz", "1" } } };
+    terminal.run(50);
+    EXPECT_TRUE(ended(*client));
+}
+
+TEST_F(Hostile, ModesLoseSetIdAndStickyBits)
+{
+    auto client = receiver({ "/r/f", (dir.path / "f").string() });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "2" }, { "prm", std::to_string(06777) } } };
+    terminal.contents = { { "/r/f", "ok" } };
+    terminal.run();
+    EXPECT_EQ(client->state(), TransferClient::State::Done);
+    struct stat st { };
+    ASSERT_EQ(::stat((dir.path / "f").c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0777u);
+}
+
+TEST_F(Hostile, DataPastTheListedSizeIsRefused)
+{
+    auto client = receiver({ "/r/f", (dir.path / "f").string() });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "2" } } };
+    terminal.contents = { { "/r/f", "much more than two bytes" } };
+    terminal.run();
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "f"));
+    ASSERT_EQ(client->items().size(), 1u);
+    EXPECT_FALSE(client->items()[0].error.empty());
+}
+
+TEST_F(Hostile, DataAfterTheEndOfTheZlibStreamIsRefused)
+{
+    auto client = receiver({ "/r/f.txt", (dir.path / "f.txt").string() });
+    FakeTerminal terminal { *client, "/home/r" };
+    const auto text = noise(5000, 7);
+    terminal.listing = { { { "fid", "0" }, { "n", "/r/f.txt" }, { "st", "1" }, { "sz", "5000" } } };
+    // The whole file, then bytes that would be written raw after it.
+    terminal.contents = { { "/r/f.txt", zlibCompress(text) + "tail" } };
+    terminal.run();
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "f.txt"));
+    ASSERT_EQ(client->items().size(), 1u);
+    EXPECT_FALSE(client->items()[0].error.empty());
+}
+
+TEST_F(Hostile, AnEndedSessionLeavesNoTemporaryFile)
+{
+    auto client = receiver({ "/r/f", (dir.path / "out" / "f").string() });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", "100" } } };
+    terminal.answerRequests = false;
+    terminal.run(3);
+    // One packet of the file arrives, then the session ends without its end.
+    std::string fid;
+    for (const auto& m : terminal.sent) {
+        if (m.at("ac") == "file" && m.at("fid").starts_with('r')) {
+            fid = m.at("fid");
+        }
+    }
+    ASSERT_FALSE(fid.empty());
+    terminal.say({ { "ac", "data" }, { "fid", fid }, { "d", "partial" } });
+    ASSERT_TRUE(std::filesystem::exists(dir.path / "out"));
+    EXPECT_FALSE(std::filesystem::is_empty(dir.path / "out"));
+    client.reset();
+    EXPECT_TRUE(std::filesystem::is_empty(dir.path / "out"));
+}
+
+TEST_F(Hostile, ASignatureForAFileSentWholeIsRefused)
+{
+    dir.write("big", noise(10000, 8));
+    auto options = optionsIn(dir);
+    std::string error;
+    auto client = makeTransferSender(options, { "big", "/remote/big" }, error);
+    ASSERT_TRUE(client) << error;
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.started = { { "/remote/big", "rsync" } };
+    terminal.run();
+    EXPECT_TRUE(ended(*client));
 }
 
 TEST(Client, RemoteEntriesNameTheirParents)

@@ -35,7 +35,7 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core and the protocol library. Requires clang for C and C++. |
-| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Adds `aglow_static`, `aglow_version` and `afterglow_runs_aglow` to CTest, and `aglow_icat_render` with `AFTERGLOW_BUILD_TOOLS`. |
+| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Adds `aglow_version`, `afterglow_runs_aglow` and `aglow_clipboard_pty` to CTest. Adds `aglow_static` when `readelf` is installed and no sanitizer is on, and `aglow_icat_render` with `AFTERGLOW_BUILD_TOOLS`. |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 
@@ -52,7 +52,7 @@ They need this software:
 - An X11 or XWayland display, libX11 and `xprop`.
 - `dbus-run-session`.
 - ImageMagick `import`, for the tests that take screenshots.
-- `kitten`, for the compatibility twins of the drag-and-drop tests of the native window suite. Without it, those tests skip. The `aglow` tests need no other software.
+- `kitten`, for the compatibility twins of the drag-and-drop tests of the native window suite. Without it, those tests skip. The `aglow` twins do not need `kitten`.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.
 
@@ -282,7 +282,7 @@ The compressed archive keeps all samples and environment metadata.
 Run the file-transfer and drag-and-drop service tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndTree|AglowDrop)\.'
+ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndTree|AglowDrop|AglowDrag)\.'
 ```
 
 Run the tests of the protocol library, which has these formats and the other wire formats.
@@ -293,6 +293,8 @@ ctest --test-dir build --output-on-failure -R '^Proto\.'
 ```
 
 The `Client.*` tests run the transfer client of the protocol library, which `aglow transfer` uses, against the service.
+The `Proto.Hostile.*` tests run the client against a hostile terminal that the test plays.
+Its listings try to write through links, to replace files outside the destination, and to send more data than they announce.
 They send and receive a tree with links and a delta.
 
 Run interoperability tests with the installed `kitten` client:
@@ -322,10 +324,16 @@ python3 afterglow/tests/kitty_transfer_interop.py --kitty --aglow build/afterglo
 
 `AglowDrop.ReadsARemoteTreeThroughTheTerminal` runs `aglow dnd` in a pseudo-terminal and drops a directory tree on it.
 The service reports the drop as remote, so `aglow dnd` reads the tree through directory handles.
+`AglowDrop.WithoutAMachineIdTheFilesAreReadThroughTheTerminal` hides `/etc/machine-id` from `aglow dnd` with `unshare`.
+Without `unshare` and user namespaces, it skips.
+`AglowDrag.ACanceledMoveKeepsTheFiles` plays the terminal for a remote drag, and checks that only a finished move deletes the files.
 
 The native window suite uses `aglow dnd` for text drags and remote directory drags.
 The same tests run with `kitten dnd` as compatibility tests. Without `kitten`, those tests skip.
 
-The `aglow_icat_render` test draws the output of `aglow icat` with `afterglow_renderpng`.
+The `aglow_icat_render` test draws the output of `aglow icat` with `afterglow_renderpng`, so it needs a Vulkan driver.
 It checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
+It also checks that an image larger than a terminal takes is refused before it is decoded.
+The `aglow_clipboard_pty` test plays a terminal for `aglow clipboard` in a pseudo-terminal.
 The `aglow_static` test checks that `readelf -d` lists no shared library for `aglow`.
+Without `readelf`, the configuration prints a message and leaves the test out.

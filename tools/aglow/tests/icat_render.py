@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 fuddlesworth
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """aglow icat through afterglow_renderpng: what aglow writes is what a terminal shows.
 
 Usage: icat_render.py AGLOW AFTERGLOW_RENDERPNG
@@ -122,16 +122,21 @@ def main():
             (root / (name + ".vt")).write_bytes(stream)
             screen = root / (name + "-screen.png")
             subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), str(root / (name + ".vt")), str(screen)],
-                           check=True, stdout=subprocess.DEVNULL)
+                           check=True, stdout=subprocess.DEVNULL, timeout=120)
             return read_png(screen)
 
         blank = render("blank", b"")
         cell_width, cell_height = len(blank[0]) // COLUMNS, len(blank) // ROWS
         window = f"{COLUMNS},{ROWS},{COLUMNS * cell_width},{ROWS * cell_height}"
 
-        def icat(*arguments):
+        def run_icat(*arguments):
             return subprocess.run([aglow, "icat", "--use-window-size", window, "--transfer-mode=stream", "--stdin=no",
-                                   *arguments], check=True, stdout=subprocess.PIPE).stdout
+                                   *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+
+        def icat(*arguments):
+            result = run_icat(*arguments)
+            check(result.returncode == 0, result.stderr.decode(errors="replace"))
+            return result.stdout
 
         # Red on the left, blue on the right, a green square in the top left corner.
         (root / "still.png").write_bytes(png(8 * cell_width, 4 * cell_height, lambda x, y: (
@@ -167,6 +172,24 @@ def main():
         check(near(pixels[cell_height // 2][left + cell_width // 2], GREEN))
         check(near(pixels[3 * cell_height][left + 6 * cell_width], BLUE))
         print("Unicode placeholders: passed", flush=True)
+
+        # Placed at the first column: no move before the cells.
+        pixels = render("placeholder-placed", icat("--unicode-placeholder", "--place=4x2@0x1", "--align=left",
+                                                   str(root / "still.png")))
+        check(near(pixels[cell_height + cell_height // 4][cell_width // 4], GREEN), pixels[cell_height + cell_height // 4][cell_width // 4])
+        check(near(pixels[2 * cell_height][3 * cell_width], BLUE))
+        print("Unicode placeholders with --place: passed", flush=True)
+
+        # A header that names more pixels than a terminal takes is refused
+        # before anything is decoded. The data after it is not an image.
+        header = b"IHDR" + struct.pack(">IIBBBBB", 12000, 12000, 8, 6, 0, 0, 0)
+        huge = (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + header + struct.pack(">I", zlib.crc32(header))
+                + png(1, 1, lambda x, y: RED)[33:])
+        (root / "huge.png").write_bytes(huge)
+        result = run_icat("--mirror=horizontal", str(root / "huge.png"))
+        check(result.returncode == 1 and b"12000x12000" in result.stderr, result.returncode, result.stderr)
+        check(b"\x1b_G" not in result.stdout, "nothing is sent for a refused image")
+        print("an image larger than a terminal takes is refused: passed", flush=True)
 
         (root / "anim.gif").write_bytes(gif(4 * cell_width, 2 * cell_height, [RED, GREEN, BLUE]))
         stream = icat("--image-id=7", str(root / "anim.gif"))

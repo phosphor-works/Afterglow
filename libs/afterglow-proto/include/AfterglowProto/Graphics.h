@@ -15,6 +15,11 @@ namespace AfterglowProto {
 
 /// The base64 bytes in one chunk of a chunked transmission.
 inline constexpr std::size_t GraphicsChunk = 4096;
+/// The longest side of an image that Afterglow takes, in pixels. A client
+/// scales larger images down or refuses them.
+inline constexpr std::uint32_t GraphicsMaxSide = 10000;
+/// Afterglow's image memory for each screen by default (Graphics.quota).
+inline constexpr std::size_t GraphicsDefaultQuota = std::size_t(320) << 20;
 
 /// The control keys of one command. A key that is absent has the default.
 struct GraphicsCommand

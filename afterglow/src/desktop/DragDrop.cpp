@@ -735,8 +735,13 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         if (action != Qt::IgnoreAction)
             announceDrop();
         // A reset during exec() cancelled the drag and ended the protocol.
+        // o names the action that the drop took, so that a source deletes
+        // its files only after a move. kitty sends no o, and clients that
+        // follow kitty ignore it.
         if (started)
-            send({ { "t", "e" }, { "x", "4" }, { "y", action == Qt::IgnoreAction ? "1" : "0" } }, { }, true);
+            send({ { "t", "e" }, { "x", "4" }, { "y", action == Qt::IgnoreAction ? "1" : "0" },
+                     { "o", QByteArray::number(int(action) & 3) } },
+                { }, true);
         if (drag)
             drag->deleteLater();
         drag.clear();

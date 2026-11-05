@@ -266,7 +266,7 @@ int runTransfer(int argc, char** argv)
         report("transfer", error);
         return 1;
     }
-    tty.write("\x1b[?25l");
+    tty.enterModes("\x1b[?25l", "\x1b[?25h");
     Progress progress(tty, *client, sending);
     long long cancelAt = -1;
     bool asked = false;
@@ -342,7 +342,6 @@ int runTransfer(int argc, char** argv)
     if (!ttyGone) {
         progress.update(true);
         progress.clear();
-        tty.write("\x1b[?25h");
     }
     tty.restore();
     int code = 0;
@@ -353,7 +352,7 @@ int runTransfer(int argc, char** argv)
     }
     if (client->state() != State::Done) {
         const auto& why = client->error();
-        std::fprintf(stderr, "%s\n", printable(why.empty() ? (ttyGone ? "The terminal closed" : "The transfer was canceled") : why).c_str());
+        report("transfer", why.empty() ? (ttyGone ? "The terminal closed" : "The transfer was canceled") : why);
         code = 1;
     } else {
         if (client->deltaFileBytes() > 0) {

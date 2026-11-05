@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -42,6 +43,16 @@ constexpr int MoveOnDrop = 2;
 constexpr std::size_t MaxInFlight = 32;
 constexpr std::size_t MaxPreSent = 64 * 1024 * 1024;
 constexpr std::size_t WriteAhead = 256 * 1024;
+// What the terminal can make this side hold: a list of MIME types, a list of
+// URIs (Afterglow sends 64 MiB of one type at most), a link target, a
+// directory listing (16,384 names of 255 bytes), and the entries of a tree.
+constexpr std::size_t MaxControl = 1024 * 1024;
+constexpr std::size_t MaxInMemory = 64 * 1024 * 1024;
+constexpr std::size_t MaxLinkTarget = 4096;
+constexpr std::size_t MaxListing = 16384 * 256;
+constexpr std::size_t MaxRemoteEntries = 1 << 20;
+// The decoded drag image, before it is scaled down: Afterglow takes 64 MiB of them for a drag.
+constexpr std::size_t ThumbnailBudget = 64 * 1024 * 1024;
 
 const Cli::Command command {
     "dnd",
@@ -120,6 +131,10 @@ struct DropDest
             return AfterglowProto::writeAll(STDOUT_FILENO, bytes);
         }
         if (path.empty()) {
+            if (buffer.size() + bytes.size() > MaxInMemory) {
+                errno = EFBIG;
+                return false;
+            }
             buffer += bytes;
             return true;
         }
@@ -186,6 +201,7 @@ struct RemoteEntry
     std::size_t finished = 0;
     bool skipped = false;
     bool started = false;
+    bool complete = false; ///< its last packet arrived
     int fd = -1;
     std::string buffer;
     AfterglowProto::DndBase64Stream decoder;
@@ -435,10 +451,15 @@ bool renameContents(const std::string& staging, const std::string& dest, std::st
         if (::rename(from.c_str(), to.c_str()) == 0) {
             continue;
         }
+        const int renameError = errno;
         struct stat st { };
-        if (::lstat(from.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && (errno == EEXIST || errno == ENOTEMPTY || errno == EISDIR)) {
-            if (::mkdir(to.c_str(), st.st_mode & 07777) != 0 && errno != EEXIST) {
-                error = to + ": " + std::strerror(errno);
+        struct stat there { };
+        // Merged only into a directory that is one: a link that an earlier
+        // drop left there must not take this drop out of the drop directory.
+        if (::lstat(from.c_str(), &st) == 0 && S_ISDIR(st.st_mode)
+            && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR)) {
+            if (::lstat(to.c_str(), &there) != 0 || !S_ISDIR(there.st_mode)) {
+                error = to + ": " + (S_ISLNK(there.st_mode) ? "a symbolic link is in the way" : std::strerror(ENOTDIR));
                 return false;
             }
             if (!renameContents(from, to, error)) {
@@ -446,7 +467,7 @@ bool renameContents(const std::string& staging, const std::string& dest, std::st
             }
             continue;
         }
-        error = to + ": " + std::strerror(errno);
+        error = to + ": " + std::strerror(renameError);
         return false;
     }
     return true;
@@ -506,6 +527,7 @@ private:
     // Drags
     void potentialDrag(int x, int y);
     void dragImage();
+    /// @p operation is the o key, or -1 when the event has none.
     void dragEvent(int x, int y, int operation);
     void dataRequest(int index);
     void remoteRequest(int index);
@@ -531,6 +553,7 @@ private:
 
     Tty& m_tty;
     const Cli::Parsed& m_options;
+    const std::string m_machine = AfterglowProto::dndMachineId();
     bool m_allowDrops = false;
     bool m_allowDrags = false;
     bool m_quit = false;
@@ -574,6 +597,7 @@ private:
         std::deque<RemoteEntry*> pendingDirs;
         std::deque<DndMeta> waiting;
         std::size_t inFlight = 0;
+        std::size_t entries = 0;
         std::vector<std::string> overwrites;
     } m_drop;
     // Chunked messages from the terminal: the packets after the first carry only m.
@@ -795,10 +819,7 @@ void Dnd::dragImage()
         int w = 0;
         int h = 0;
         if (imageSize(bytes, w, h)) {
-            image = decodeImage(bytes, error);
-            if (image) {
-                image->frames.resize(1);
-            }
+            image = decodeImage(bytes, ThumbnailBudget, error);
         }
     };
     for (const auto& s : dragSources) {
@@ -822,24 +843,23 @@ void Dnd::dragImage()
         return;
     }
     const auto limit = std::max<long long>(16, m_options.integer("drag-thumbnail-size"));
-    if (std::max(image->width, image->height) > limit) {
-        const double scale = double(limit) / std::max(image->width, image->height);
-        resizeImage(*image, std::max(1, int(image->width * scale)), std::max(1, int(image->height * scale)));
+    int width = image->width;
+    int height = image->height;
+    if (std::max(width, height) > limit) {
+        const double scale = double(limit) / std::max(width, height);
+        width = std::max(1, int(width * scale));
+        height = std::max(1, int(height * scale));
     }
-    const bool opaque = imageOpaque(*image);
-    std::string pixels;
+    std::string pixels = resizeFrame(image->frame(0), image->width, image->height, width, height);
+    const bool opaque = frameOpaque(pixels);
     if (opaque) {
-        for (std::size_t i = 0; i < image->frames[0].rgba.size(); i += 4) {
-            pixels.append(image->frames[0].rgba, i, 3);
-        }
-    } else {
-        pixels = image->frames[0].rgba;
+        pixels = dropAlpha(pixels);
     }
     sendPackets(AfterglowProto::dndDataPackets({ { "t", "p" },
                                                  { "x", "-1" },
                                                  { "y", opaque ? "24" : "32" },
-                                                 { "X", std::to_string(image->width) },
-                                                 { "Y", std::to_string(image->height) } },
+                                                 { "X", std::to_string(width) },
+                                                 { "Y", std::to_string(height) } },
                                                pixels));
 }
 
@@ -875,14 +895,17 @@ void Dnd::dragEvent(int x, int y, int operation)
         m_drag.acceptedMime = y;
         break;
     case 2:
-        m_drag.operation = operation;
+        m_drag.operation = std::max(0, operation);
         break;
     case 3:
         m_drag.dropped = true;
         break;
     case 4: {
-        const bool dropped = m_drag.dropped;
-        const bool move = m_drag.operation == MoveOnDrop;
+        // y=1: the drag was canceled or refused, whatever happened before.
+        // The action is the one the drop took: Afterglow names it in o.
+        // Without it (kitty), it is the last one that the target chose.
+        const bool dropped = m_drag.dropped && y == 0;
+        const bool move = (operation >= 0 ? operation : m_drag.operation) == MoveOnDrop;
         resetDrag();
         if (dropped && exitOn("drag-finish")) {
             m_quit = true;
@@ -1061,6 +1084,7 @@ void Dnd::resetDrop()
     m_drop.pendingDirs.clear();
     m_drop.waiting.clear();
     m_drop.inFlight = 0;
+    m_drop.entries = 0;
     m_drop.overwrites.clear();
 }
 
@@ -1112,6 +1136,10 @@ void Dnd::dropMove(int x, int y, bool more, std::string_view mimes, bool drop, i
     m_drop.x = x;
     m_drop.y = y;
     if (!mimes.empty()) {
+        if (m_drop.mimeBuffer.size() + mimes.size() > MaxControl) {
+            fail("The terminal sent a list of MIME types that is too long");
+            return;
+        }
         m_drop.mimeBuffer += mimes;
         if (more) {
             return;
@@ -1208,7 +1236,9 @@ void Dnd::dropData(const DndMeta& meta, std::string_view payload, bool more)
         fail("The terminal sent drop data for a MIME type that was not asked for: " + mime);
         return;
     }
-    if (mime == "text/uri-list" && meta.contains("X") && meta.at("X") == "1") {
+    // Without a machine id of its own, this side cannot tell that the files
+    // are here: it reads them through the terminal, as from another computer.
+    if (mime == "text/uri-list" && ((meta.contains("X") && meta.at("X") == "1") || m_machine.empty())) {
         m_drop.remoteClient = true;
     }
     if (!more && payload.empty()) {
@@ -1291,9 +1321,24 @@ void Dnd::allMimeDataDropped()
         m_drop.open = m_drop.root.get();
         return;
     }
-    // Files of this computer: copied here directly.
+    // Files of this computer: copied here directly. A directory that holds
+    // the drop directory would be copied into its own copy without end.
     const bool links = !(m_drop.action == CopyOnDrop && m_options.value("copy-mode") == "independent");
     std::string error;
+    char resolved[PATH_MAX];
+    const std::string into = ::realpath(dropDir.c_str(), resolved) ? std::string(resolved) : dropDir;
+    for (const auto& uri : m_drop.uris) {
+        if (uri.kind != ParsedUri::Kind::File || uri.path.empty()) {
+            continue;
+        }
+        const std::string source = ::realpath(uri.path.c_str(), resolved) ? std::string(resolved) : uri.path;
+        if (uri.path == "/" || source == "/" || into == source || into.starts_with(source + "/")) {
+            m_notice = "The drop failed: " + printable(uri.path) + " holds the drop directory";
+            endDrop(false);
+            render();
+            return;
+        }
+    }
     for (const auto& uri : m_drop.uris) {
         if (uri.kind == ParsedUri::Kind::File && !uri.path.empty() && !copyTree(uri.path, m_drop.staging, links, error)) {
             m_notice = "The drop failed: " + error;
@@ -1381,11 +1426,15 @@ void Dnd::remoteDropData(const DndMeta& meta, std::string_view payload, bool mor
         m_drop.current = open->children[std::size_t(index)].get();
     }
     auto* entry = m_drop.current;
+    if (entry->complete || entry->skipped) {
+        fail("The terminal sent data for an entry that is complete");
+        return;
+    }
     if (!entry->started) {
         entry->started = true;
         entry->kind = number("X");
         if (entry->kind == AfterglowProto::DndFileKind) {
-            entry->fd = ::open((entry->base + "/" + entry->name).c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+            entry->fd = ::open((entry->base + "/" + entry->name).c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
             if (entry->fd < 0) {
                 fail("Cannot create " + entry->base + "/" + entry->name + ": " + std::strerror(errno));
                 return;
@@ -1395,6 +1444,12 @@ void Dnd::remoteDropData(const DndMeta& meta, std::string_view payload, bool mor
     std::string bytes;
     if (!entry->decoder.feed(payload, bytes)) {
         fail("The terminal sent invalid base64");
+        return;
+    }
+    // A link holds one target, a listing its names: both are bounded.
+    const std::size_t limit = entry->kind == AfterglowProto::DndLinkKind ? MaxLinkTarget : MaxListing;
+    if (entry->fd < 0 && entry->buffer.size() + bytes.size() > limit) {
+        fail("The terminal sent too much data for " + entry->name);
         return;
     }
     if (more || !payload.empty()) {
@@ -1436,6 +1491,11 @@ void Dnd::remoteDropData(const DndMeta& meta, std::string_view payload, bool mor
                 fail("The terminal sent an unsafe name in the directory " + entry->name);
                 return;
             }
+            m_drop.entries += names->size();
+            if (m_drop.entries > MaxRemoteEntries) {
+                fail("The terminal sent too many entries");
+                return;
+            }
             for (const auto& name : *names) {
                 auto child = std::make_unique<RemoteEntry>();
                 child->base = path;
@@ -1445,6 +1505,7 @@ void Dnd::remoteDropData(const DndMeta& meta, std::string_view payload, bool mor
         }
         entry->buffer.clear();
     }
+    entry->complete = true;
     m_drop.current = nullptr;
     ++open->finished;
     requestDone();
@@ -1504,7 +1565,7 @@ void Dnd::dispatch(const DndMeta& meta, std::string_view payload, bool more)
             render();
         }
     } else if (type == "e") {
-        dragEvent(number("x"), number("y"), number("o"));
+        dragEvent(number("x"), number("y"), meta.contains("o") ? number("o") : -1);
     } else if (type == "k") {
         remoteRequest(number("x") - 1);
     }
@@ -1517,8 +1578,9 @@ int Dnd::run()
     resetDrop();
     // The alternate screen, no wrapping, no cursor, and mouse reports, so
     // that a press starts no selection in the terminal.
-    m_tty.write("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\");
-    const auto machine = AfterglowProto::dndMachineId();
+    m_tty.enterModes("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\",
+                     "\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?7h\x1b[?1049l");
+    const auto& machine = m_machine;
     if (m_allowDrops) {
         std::string list;
         for (const auto& d : dropDests) {
@@ -1590,8 +1652,7 @@ int Dnd::run()
     if (m_allowDrags) {
         send({ { "t", "o" }, { "x", "2" } });
     }
-    m_tty.write("\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?7h\x1b[?1049l");
-    m_tty.flush(2000);
+    m_tty.restore();
     if (!m_error.empty()) {
         report("dnd", m_error);
         return 1;
@@ -1710,12 +1771,11 @@ int runDnd(int argc, char** argv)
             return 1;
         }
         ::close(fd);
-        dnd.thumbnail = decodeImage(bytes, error);
+        dnd.thumbnail = decodeImage(bytes, ThumbnailBudget, error);
         if (!dnd.thumbnail) {
             report("dnd", "Cannot decode " + thumbnail + ": " + error);
             return 1;
         }
-        dnd.thumbnail->frames.resize(1);
     }
     const auto dropDest = parsed->value("drop-dest");
     dnd.dropDir = dropDest.empty() ? cwd : Path::absolute(dropDest, home, cwd);

@@ -59,6 +59,14 @@ public:
     int fd() const { return m_fd; }
 
     void write(std::string_view bytes) { m_out += bytes; }
+    /// Sets the modes that a command turns on (@p set) and the bytes that
+    /// turn them off (@p reset). restore() writes @p reset, also when the
+    /// command ends with an exception.
+    void enterModes(std::string_view set, std::string reset)
+    {
+        m_out += set;
+        m_reset = std::move(reset);
+    }
     std::size_t pending() const { return m_out.size(); }
     /// Writes what the terminal takes and reads what it sends, for up to
     /// @p timeoutMs (0: once, -1: until something happens). False when the
@@ -68,6 +76,9 @@ public:
     /// meanwhile are kept for the next turn().
     bool flush(int timeoutMs);
     winsize size() const;
+    /// Catches SIGINT, SIGTERM, SIGHUP and SIGWINCH without a terminal in
+    /// raw mode, so that a command can stop between two writes.
+    static void watchSignals();
     /// A signal caught since the last call (SIGINT, SIGTERM or SIGHUP), or 0.
     int takeSignal();
     /// The window changed size since the last call.
@@ -78,6 +89,7 @@ private:
     bool m_raw = false;
     termios m_saved { };
     std::string m_out;
+    std::string m_reset;
     InputParser m_parser;
     std::vector<Input> m_kept;
     long long m_escapeSince = -1;

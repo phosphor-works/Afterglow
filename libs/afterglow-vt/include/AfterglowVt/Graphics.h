@@ -158,7 +158,7 @@ public:
         std::function<void()> lineFeed;
     };
 
-    static constexpr std::size_t DefaultQuota = std::size_t(320) << 20;
+    static constexpr std::size_t DefaultQuota = AfterglowProto::GraphicsDefaultQuota;
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
     static constexpr std::size_t MaxFrames = 1024;

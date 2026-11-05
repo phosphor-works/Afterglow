@@ -231,8 +231,9 @@ def main():
         aglow = str(Path(args.aglow).resolve())
         if not args.private_bus:
             # KWin and kitty must not join the user's session bus.
+            # Four transfers of at most 60 s each, and the start of KWin.
             sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, *sys.argv[1:],
-                                      "--private-bus"]))
+                                      "--private-bus"], timeout=600))
         with tempfile.TemporaryDirectory(prefix="afterglow-kitty-terminal-") as temporary:
             kitty = Kitty(Path(temporary))
             try:

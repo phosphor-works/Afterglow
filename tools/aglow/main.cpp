@@ -6,6 +6,7 @@
 // needs neither kitty nor Afterglow on the computer where it runs.
 
 #include "Commands.h"
+#include "Tty.h"
 
 #include <AfterglowProto/Version.h>
 
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <unistd.h>
 
 #ifndef AGLOW_VERSION
@@ -40,7 +42,15 @@ std::string currentDirectory()
 
 void report(std::string_view command, std::string_view message)
 {
-    std::fprintf(stderr, "aglow %.*s: %.*s\n", int(command.size()), command.data(), int(message.size()), message.data());
+    // Messages hold file names and what the terminal sent: never escape codes.
+    // printable() keeps no line break: a message of several lines keeps them.
+    std::string lines;
+    for (std::size_t start = 0; start <= message.size();) {
+        const auto end = std::min(message.find('\n', start), message.size());
+        lines += (start ? "\n  " : "") + printable(message.substr(start, end - start));
+        start = end + 1;
+    }
+    std::fprintf(stderr, "aglow %s: %s\n", printable(command).c_str(), lines.c_str());
 }
 
 std::string humanSize(std::uint64_t bytes)
@@ -96,7 +106,30 @@ const char* usage = "Usage: aglow COMMAND [options] [arguments]\n"
 
 } // namespace
 
+namespace {
+
+int run(int argc, char** argv);
+
+} // namespace
+
+// Every command restores the terminal when it ends: the Tty that it opened
+// does so as the stack unwinds. An exception that no handler catches would
+// end the program without unwinding, so main catches them all.
 int main(int argc, char** argv)
+{
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& error) {
+        Aglow::report(argc > 1 ? argv[1] : "", std::string("internal error: ") + error.what());
+    } catch (...) {
+        Aglow::report(argc > 1 ? argv[1] : "", "internal error");
+    }
+    return 1;
+}
+
+namespace {
+
+int run(int argc, char** argv)
 {
     if (argc < 2) {
         std::fputs(usage, stderr);
@@ -123,6 +156,8 @@ int main(int argc, char** argv)
     if (command == "clipboard") {
         return Aglow::runClipboard(argc - 2, argv + 2);
     }
-    std::fprintf(stderr, "aglow: unknown command: %s\n\n%s", argv[1], usage);
+    std::fprintf(stderr, "aglow: unknown command: %s\n\n%s", Aglow::printable(argv[1]).c_str(), usage);
     return 1;
 }
+
+} // namespace

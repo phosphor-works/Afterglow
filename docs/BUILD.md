@@ -17,6 +17,10 @@ These instructions use the current source layout.
 - KF6 WindowSystem.
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The Phosphor libraries from a PlasmaZones checkout.
+- The static C and C++ runtime libraries (`libc.a` and `libstdc++.a`), for `aglow`.
+  Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
+  Without them, the configuration stops with a message.
+  To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
 
 The build compiles zlib-ng and xxHash from their [source archives](#source-archives).
 These are C sources, so the build needs the C compiler.
@@ -166,7 +170,8 @@ If you do, shell integration is off, and the executable can miss its plugin, sha
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
-It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
+It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions and the stb_image license as `LICENSE.stb_image`.
+A build with sanitizers, such as the `debug` preset, links `aglow` dynamically, because a static program cannot use them.
 To build without `aglow`, add `-DAFTERGLOW_BUILD_AGLOW=OFF` to the configuration command.
 Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.

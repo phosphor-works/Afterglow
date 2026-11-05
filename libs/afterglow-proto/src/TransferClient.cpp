@@ -163,6 +163,8 @@ constexpr std::size_t MaxLiteral = 16 * 1024 * 1024;
 // A client keeps well below it: files wait for their metadata or their request.
 constexpr std::size_t MaxOpenFiles = 32;
 constexpr std::size_t MaxListing = 1 << 20;
+// Bytes of the names and ids in a listing. Afterglow sends at most 8 MiB.
+constexpr std::size_t MaxListingBytes = 64 * 1024 * 1024;
 constexpr std::size_t MaxLinkTarget = 4096;
 
 std::string number(std::int64_t value)
@@ -248,20 +250,6 @@ bool makeDirectories(const std::string& path)
         return false;
     }
     return ::mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
-}
-
-// A temporary file next to @p path, renamed over it when complete. It gets
-// the mode of a new file, which the listing's mode replaces at the end.
-int temporaryNear(const std::string& path, std::string& name)
-{
-    name = TransferPath::dirName(path) + "/.aglow-transfer-XXXXXX";
-    const int fd = ::mkostemp(name.data(), O_CLOEXEC);
-    if (fd >= 0) {
-        const mode_t mask = ::umask(0);
-        ::umask(mask);
-        ::fchmod(fd, 0666 & ~mask);
-    }
-    return fd;
 }
 
 // Deflates or passes through the bytes of one file, and cuts them into data messages.
@@ -406,8 +394,28 @@ public:
         std::unique_ptr<Packer> packer;
         bool inputDone = false;
         bool ended = false;
+        // The metadata asked for a delta (tt=rsync): only then may a signature come.
+        bool deltaAsked = false;
         File() = default;
-        File(File&&) = default;
+        File(File&& other) noexcept
+            : fid(std::move(other.fid))
+            , path(std::move(other.path))
+            , st(other.st)
+            , linkData(std::move(other.linkData))
+            , compress(other.compress)
+            , rsyncCapable(other.rsyncCapable)
+            , phase(other.phase)
+            , fd(std::exchange(other.fd, -1))
+            , signature(std::move(other.signature))
+            , source(std::move(other.source))
+            , generator(std::move(other.generator))
+            , packer(std::move(other.packer))
+            , inputDone(other.inputDone)
+            , ended(other.ended)
+            , deltaAsked(other.deltaAsked)
+        {
+        }
+        File& operator=(File&&) = delete;
         ~File()
         {
             if (fd >= 0) {
@@ -656,6 +664,7 @@ void Sender::sendMetadata(std::string& out)
         if (rsync) {
             f.emplace_back("tt", "rsync");
         }
+        file.deltaAsked = rsync;
         out += encodeTransfer(f);
         file.phase = File::Phase::Waiting;
         if (item.type == Type::Regular) {
@@ -756,7 +765,13 @@ void Sender::onReply(const TransferFields& f)
         if (item.type == Type::Directory) {
             return;
         }
-        file.phase = field(f, "tt") == "rsync" && item.type == Type::Regular ? File::Phase::Signature : File::Phase::Ready;
+        // A terminal that sends a signature for a file sent whole is refused:
+        // it would make this side hash files that nobody asked to compare.
+        if (field(f, "tt") == "rsync" && !file.deltaAsked) {
+            cancel("The terminal asked for a delta that was not offered");
+            return;
+        }
+        file.phase = file.deltaAsked && field(f, "tt") == "rsync" ? File::Phase::Signature : File::Phase::Ready;
         return;
     }
     if (status == TransferStatus::Progress) {
@@ -898,6 +913,83 @@ void Sender::produce(std::string& out, std::size_t budget)
 }
 
 // ── Receiving ───────────────────────────────────────────────────────────────
+//
+// The terminal is not trusted here: its listing names the files, and a
+// hostile one could name them to make this side write outside the
+// destination. Each entry is placed as names under a base directory, and
+// every write goes through directory descriptors that are opened one level
+// at a time with O_NOFOLLOW: no link is followed, whether the transfer made
+// it or it was there before.
+
+// Opens the directory that holds the last of @p parts under @p base, making
+// the directories on the way when @p create is set. -1, with errno set, when
+// a level is missing, is not a directory, or is a symbolic link.
+int openParent(int base, const std::vector<std::string>& parts, bool create)
+{
+    int fd = ::fcntl(base, F_DUPFD_CLOEXEC, 0);
+    for (std::size_t i = 0; fd >= 0 && i + 1 < parts.size(); ++i) {
+        if (create && ::mkdirat(fd, parts[i].c_str(), 0755) != 0 && errno != EEXIST) {
+            const int error = errno;
+            ::close(fd);
+            errno = error;
+            return -1;
+        }
+        const int next = ::openat(fd, parts[i].c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        const int error = errno;
+        ::close(fd);
+        errno = error;
+        fd = next;
+    }
+    return fd;
+}
+
+// Creates a new file with a random name in @p dir; it never replaces one.
+int createTemporary(int dir, std::string_view prefix, std::string& name)
+{
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        const auto suffix = randomHex(6);
+        if (!suffix) {
+            errno = EIO;
+            return -1;
+        }
+        name = std::string(prefix) + *suffix;
+        const int fd = ::openat(dir, name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd >= 0 || errno != EEXIST) {
+            return fd;
+        }
+    }
+    errno = EEXIST;
+    return -1;
+}
+
+// The mode of a new file under the umask, for a file without a mode in the listing.
+mode_t creationMode()
+{
+    const mode_t mask = ::umask(0);
+    ::umask(mask);
+    return 0666 & ~mask;
+}
+
+// The permission bits of a listing's mode. Set-user-ID, set-group-ID and the
+// sticky bit are dropped, as kitten does.
+mode_t permissions(std::int64_t mode) { return mode_t(mode) & 0777; }
+
+timespec timeOf(std::int64_t ns)
+{
+    timespec time { time_t(ns / 1000000000), long(ns % 1000000000) };
+    if (time.tv_nsec < 0) {
+        time.tv_nsec += 1000000000;
+        --time.tv_sec;
+    }
+    return time;
+}
+
+// A name for an entry: a single path component.
+bool validName(std::string_view name)
+{
+    return !name.empty() && name.size() <= 255 && name != "." && name != ".." && name.find('/') == std::string_view::npos
+        && name.find('\0') == std::string_view::npos;
+}
 
 class Receiver final : public TransferClient
 {
@@ -910,11 +1002,17 @@ public:
         std::string target; // d: the id of a link's target
         std::optional<std::int64_t> mtime;
         std::optional<std::int64_t> mode;
+        bool sizeKnown = false;
+        // Where the entry goes: names under a base directory.
+        std::size_t base = SIZE_MAX;
+        std::vector<std::string> parts;
         std::string fid; // the id of the data request
         bool requested = false;
         bool rsync = false;
         bool compressed = false;
         bool opened = false;
+        bool streamEnded = false;
+        int dir = -1; // the directory that the file goes in
         int out = -1;
         int basis = -1;
         std::string temporary;
@@ -923,28 +1021,79 @@ public:
         std::unique_ptr<DeltaApplier> applier;
         std::unique_ptr<FdDeltaTarget> deltaTarget;
         std::string pending;
-        std::uint64_t received = 0;
         std::uint32_t blockSize = 0;
         std::uint64_t basisSize = 0;
         Remote() = default;
-        Remote(Remote&&) = default;
+        Remote(Remote&& other) noexcept
+            : spec(other.spec)
+            , remoteId(std::move(other.remoteId))
+            , parent(std::move(other.parent))
+            , target(std::move(other.target))
+            , mtime(other.mtime)
+            , mode(other.mode)
+            , sizeKnown(other.sizeKnown)
+            , base(other.base)
+            , parts(std::move(other.parts))
+            , fid(std::move(other.fid))
+            , requested(other.requested)
+            , rsync(other.rsync)
+            , compressed(other.compressed)
+            , opened(other.opened)
+            , streamEnded(other.streamEnded)
+            , dir(std::exchange(other.dir, -1))
+            , out(std::exchange(other.out, -1))
+            , basis(std::exchange(other.basis, -1))
+            , temporary(std::move(other.temporary))
+            , linkValue(std::move(other.linkValue))
+            , inflater(std::move(other.inflater))
+            , applier(std::move(other.applier))
+            , deltaTarget(std::move(other.deltaTarget))
+            , pending(std::move(other.pending))
+            , blockSize(other.blockSize)
+            , basisSize(other.basisSize)
+        {
+            other.temporary.clear();
+        }
+        Remote& operator=(Remote&&) = delete;
+        // A transfer that ends early, for any reason, leaves no temporary file.
         ~Remote() { close(); }
         void close()
         {
-            if (out >= 0) {
-                ::close(out);
-                out = -1;
+            if (!temporary.empty() && dir >= 0) {
+                ::unlinkat(dir, temporary.c_str(), 0);
             }
-            if (basis >= 0) {
-                ::close(basis);
-                basis = -1;
+            temporary.clear();
+            for (int* fd : { &out, &basis, &dir }) {
+                if (*fd >= 0) {
+                    ::close(*fd);
+                    *fd = -1;
+                }
             }
         }
+    };
+
+    struct Base
+    {
+        std::string path;
+        int fd = -1;
     };
 
     Receiver(TransferClientOptions options, std::string id)
         : TransferClient(std::move(options), std::move(id))
     {
+    }
+
+    ~Receiver() override
+    {
+        m_remote.clear();
+        if (m_signFd >= 0) {
+            ::close(m_signFd);
+        }
+        for (auto& base : m_bases) {
+            if (base.fd >= 0) {
+                ::close(base.fd);
+            }
+        }
     }
 
     bool setUp(const std::vector<std::string>& args, std::string& error)
@@ -988,11 +1137,15 @@ protected:
 private:
     void listed(const TransferFields& f);
     bool collect();
-    bool place(std::vector<std::size_t>& order, const std::vector<std::size_t>& entries, const std::string& base);
+    std::size_t addBase(const std::string& path);
+    bool place(const std::vector<std::size_t>& entries, std::size_t base, std::set<std::string>& taken);
     void data(std::size_t index, const TransferFields& f, bool end);
+    bool write(std::size_t index, std::string_view chunk);
     void done(std::size_t index, std::string error);
     void finalize();
+    bool makeLink(std::size_t index, std::string& error);
     bool request(std::size_t index, std::string& out, std::size_t budget);
+    std::string expectedSpec(const std::string& spec) const;
 
     std::vector<std::string> m_specs;
     std::string m_destination;
@@ -1001,7 +1154,9 @@ private:
     std::string m_remoteHome;
     bool m_granted = false;
     bool m_listed = false;
+    std::size_t m_listingBytes = 0;
     std::vector<Remote> m_remote;
+    std::vector<Base> m_bases;
     std::vector<std::size_t> m_order; // the entries placed on this computer, parents first
     std::map<std::string, std::size_t> m_byFid;
     std::size_t m_nextRequest = 0;
@@ -1103,10 +1258,6 @@ void Receiver::listed(const TransferFields& f)
         cancel("Unexpected response from the terminal (unknown file id)");
         return;
     }
-    if (m_remote.size() >= MaxListing) {
-        cancel("The terminal listed too many files");
-        return;
-    }
     Remote remote;
     remote.spec = spec;
     remote.remoteId = field(f, "st");
@@ -1116,14 +1267,19 @@ void Receiver::listed(const TransferFields& f)
     remote.mode = parseNumber(f, "prm");
     TransferItem item;
     item.remote = field(f, "n");
+    m_listingBytes += item.remote.size() + remote.remoteId.size() + remote.parent.size() + remote.target.size();
+    if (m_remote.size() >= MaxListing || m_listingBytes > MaxListingBytes) {
+        cancel("The terminal listed too many files");
+        return;
+    }
     const auto type = field(f, "ft");
     item.type = type == "directory" ? Type::Directory : type == "symlink" ? Type::Symlink : type == "link" ? Type::Link : Type::Regular;
-    if (const auto size = parseNumber(f, "sz"); size && *size > 0 && item.type == Type::Regular) {
+    if (const auto size = parseNumber(f, "sz"); size && *size >= 0 && item.type == Type::Regular) {
         item.size = std::uint64_t(*size);
+        remote.sizeKnown = true;
     }
-    const auto name = TransferPath::baseName(item.remote);
-    if (remote.remoteId.empty() || item.remote.empty() || name == "." || name == ".." || name == "/"
-        || item.remote.find('\0') != std::string::npos) {
+    // The terminal lists absolute paths. Only the last name of each is used here.
+    if (remote.remoteId.empty() || !item.remote.starts_with('/') || !validName(TransferPath::baseName(item.remote))) {
         cancel("The terminal listed an invalid path: " + item.remote);
         return;
     }
@@ -1132,17 +1288,29 @@ void Receiver::listed(const TransferFields& f)
     m_items.push_back(std::move(item));
 }
 
-// Places @p entries (one spec) under @p base, as kitten's make_tree does: each
-// entry goes into the local copy of its parent.
-bool Receiver::place(std::vector<std::size_t>& order, const std::vector<std::size_t>& entries, const std::string& base)
+std::size_t Receiver::addBase(const std::string& path)
+{
+    for (std::size_t i = 0; i < m_bases.size(); ++i) {
+        if (m_bases[i].path == path) {
+            return i;
+        }
+    }
+    m_bases.push_back({ path, -1 });
+    return m_bases.size() - 1;
+}
+
+// Places @p entries (one spec) under @p base: each entry goes into the local
+// copy of its parent, which must be a directory of the same spec. Two
+// entries may not take one local path.
+bool Receiver::place(const std::vector<std::size_t>& entries, std::size_t base, std::set<std::string>& taken)
 {
     std::map<std::string, std::size_t> byId;
     for (const auto i : entries) {
-        byId[m_remote[i].remoteId] = i;
+        if (!byId.emplace(m_remote[i].remoteId, i).second) {
+            return false;
+        }
     }
-    std::map<std::size_t, bool> placed;
-    // Each entry needs its parent's path first. The listing can come in any
-    // order, and a parent that is missing or a cycle stops the transfer.
+    std::set<std::size_t> placed;
     std::function<bool(std::size_t, int)> placeOne = [&](std::size_t i, int depth) {
         if (placed.contains(i)) {
             return true;
@@ -1150,18 +1318,35 @@ bool Receiver::place(std::vector<std::size_t>& order, const std::vector<std::siz
         if (depth > 4096) {
             return false;
         }
-        const auto& parent = m_remote[i].parent;
-        std::string where = base;
-        if (!parent.empty()) {
-            const auto it = byId.find(parent);
-            if (it == byId.end() || !placeOne(it->second, depth + 1)) {
+        auto& remote = m_remote[i];
+        std::vector<std::string> parts;
+        if (!remote.parent.empty()) {
+            const auto it = byId.find(remote.parent);
+            if (it == byId.end() || it->second == i || m_items[it->second].type != Type::Directory
+                || !placeOne(it->second, depth + 1)) {
                 return false;
             }
-            where = m_items[it->second].local;
+            parts = m_remote[it->second].parts;
+            parts.push_back(TransferPath::baseName(m_items[i].remote));
+        } else {
+            // A root takes the name that the caller set, or its own.
+            parts = remote.parts.empty() ? std::vector<std::string> { TransferPath::baseName(m_items[i].remote) } : remote.parts;
         }
-        m_items[i].local = TransferPath::join(where, TransferPath::baseName(m_items[i].remote));
-        placed[i] = true;
-        order.push_back(i);
+        if (!validName(parts.back())) {
+            return false;
+        }
+        std::string key = m_bases[base].path;
+        for (const auto& part : parts) {
+            key += "/" + part;
+        }
+        if (!taken.insert(key).second) {
+            return false;
+        }
+        remote.parts = std::move(parts);
+        remote.base = base;
+        m_items[i].local = TransferPath::clean(key);
+        placed.insert(i);
+        m_order.push_back(i);
         return true;
     };
     for (const auto i : entries) {
@@ -1172,41 +1357,82 @@ bool Receiver::place(std::vector<std::size_t>& order, const std::vector<std::siz
     return true;
 }
 
+// The remote path that a spec names, as the terminal resolves it: ~ and
+// relative paths under its home.
+std::string Receiver::expectedSpec(const std::string& spec) const
+{
+    if (spec.starts_with('/')) {
+        return TransferPath::clean(spec);
+    }
+    if (!m_remoteHome.starts_with('/')) {
+        return {};
+    }
+    if (spec == "~") {
+        return TransferPath::clean(m_remoteHome);
+    }
+    return TransferPath::join(m_remoteHome, spec.starts_with("~/") ? std::string_view(spec).substr(2) : std::string_view(spec));
+}
+
 bool Receiver::collect()
 {
     std::vector<std::vector<std::size_t>> bySpec(m_specs.size());
     for (std::size_t i = 0; i < m_remote.size(); ++i) {
         bySpec[m_remote[i].spec].push_back(i);
     }
-    // The root of a spec is its shortest path.
-    std::vector<std::string> specPaths(m_specs.size());
+    // The root of a spec is the entry without a parent. There is one.
+    std::vector<std::size_t> roots(m_specs.size(), SIZE_MAX);
     for (std::size_t s = 0; s < m_specs.size(); ++s) {
-        auto& entries = bySpec[s];
-        std::stable_sort(entries.begin(), entries.end(),
-                         [&](std::size_t a, std::size_t b) { return m_items[a].remote.size() < m_items[b].remote.size(); });
-        specPaths[s] = m_items[entries.front()].remote;
+        for (const auto i : bySpec[s]) {
+            if (m_remote[i].parent.empty()) {
+                if (roots[s] != SIZE_MAX) {
+                    cancel("The terminal listed more than one root for " + m_specs[s]);
+                    return false;
+                }
+                roots[s] = i;
+            }
+        }
+        if (roots[s] == SIZE_MAX) {
+            cancel("The terminal listed no root for " + m_specs[s]);
+            return false;
+        }
     }
     const auto local = [&](const std::string& path) { return TransferPath::absolute(path, m_options.home, m_options.cwd); };
+    std::set<std::string> taken;
+    const auto broken = "The terminal sent a listing whose entries do not form a tree";
     if (m_options.mode == TransferClientOptions::Mode::Mirror) {
-        // Paths under the remote home go under the home of this computer.
-        std::string home = m_remoteHome;
-        while (home.size() > 1 && home.ends_with('/')) {
-            home.pop_back();
+        // Each root must be the path that the user asked for: the listing
+        // cannot pick the paths that are written here.
+        std::string home = TransferPath::clean(m_remoteHome);
+        for (std::size_t s = 0; s < m_specs.size(); ++s) {
+            const auto expected = expectedSpec(m_specs[s]);
+            const auto& root = m_items[roots[s]].remote;
+            if (expected.empty() || TransferPath::clean(root) != expected) {
+                cancel("The terminal listed " + root + " for " + m_specs[s]);
+                return false;
+            }
         }
-        std::string common = specPaths.front();
-        for (const auto& path : specPaths) {
-            while (!(path == common || path.starts_with(common + "/") || common == "/")) {
+        std::string common = TransferPath::clean(m_items[roots.front()].remote);
+        for (const auto r : roots) {
+            const auto path = TransferPath::clean(m_items[r].remote);
+            while (!(common == "/" || path == common || path.starts_with(common + "/"))) {
                 common = TransferPath::dirName(common);
             }
         }
-        if (!home.empty() && (common == home || common.starts_with(home + "/"))) {
-            for (auto& path : specPaths) {
+        const bool underHome = home.starts_with('/') && home != "/" && (common == home || common.starts_with(home + "/"));
+        for (std::size_t s = 0; s < m_specs.size(); ++s) {
+            auto path = TransferPath::clean(m_items[roots[s]].remote);
+            if (underHome) {
+                // Paths under the remote home go under the home of this computer.
                 path = "~/" + TransferPath::relative(home, path);
             }
-        }
-        for (std::size_t s = 0; s < m_specs.size(); ++s) {
-            if (!place(m_order, bySpec[s], TransferPath::dirName(local(specPaths[s])))) {
-                cancel("The terminal sent a listing without the parents of its files");
+            const auto where = local(path);
+            if (where == "/") {
+                cancel("Cannot receive into /");
+                return false;
+            }
+            m_remote[roots[s]].parts = { TransferPath::baseName(where) };
+            if (!place(bySpec[s], addBase(TransferPath::dirName(where)), taken)) {
+                cancel(broken);
                 return false;
             }
         }
@@ -1216,16 +1442,29 @@ bool Receiver::collect()
         const bool intoDirectory = m_destination.ends_with('/') || m_remote.size() > 1
             || (::stat(destination.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
         for (std::size_t s = 0; s < m_specs.size(); ++s) {
+            std::size_t base;
             if (intoDirectory) {
-                if (!place(m_order, bySpec[s], destination)) {
-                    cancel("The terminal sent a listing without the parents of its files");
+                base = addBase(destination);
+            } else {
+                if (destination == "/") {
+                    cancel("Cannot receive into /");
                     return false;
                 }
-            } else {
-                const auto i = bySpec[s].front();
-                m_items[i].local = destination;
-                m_order.push_back(i);
+                base = addBase(TransferPath::dirName(destination));
+                m_remote[roots[s]].parts = { TransferPath::baseName(destination) };
             }
+            if (!place(bySpec[s], base, taken)) {
+                cancel(broken);
+                return false;
+            }
+        }
+    }
+    // The bases are the directories that the user named, or their parents.
+    for (auto& base : m_bases) {
+        if (!makeDirectories(base.path)
+            || (base.fd = ::open(base.path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+            cancel("Cannot open " + base.path + ": " + std::strerror(errno));
+            return false;
         }
     }
     for (const auto i : m_order) {
@@ -1249,9 +1488,21 @@ bool Receiver::request(std::size_t index, std::string& out, std::size_t budget)
     if (!remote.requested) {
         remote.requested = true;
         ++m_inFlight;
+        // A delta needs the old file at the destination: a regular file, not a link.
+        int existing = -1;
+        if (m_options.deltas && item.type == Type::Regular) {
+            const int dir = openParent(m_bases[remote.base].fd, remote.parts, false);
+            if (dir >= 0) {
+                existing = ::openat(dir, remote.parts.back().c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+                ::close(dir);
+            }
+        }
         struct stat st { };
-        const bool exists = ::lstat(item.local.c_str(), &st) == 0;
-        remote.rsync = m_options.deltas && item.type == Type::Regular && exists && S_ISREG(st.st_mode) && st.st_size > 4096;
+        remote.rsync = existing >= 0 && ::fstat(existing, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 4096;
+        if (!remote.rsync && existing >= 0) {
+            ::close(existing);
+            existing = -1;
+        }
         remote.compressed = item.type == Type::Regular && item.size > 4096 && transferShouldCompress(item.remote, m_options.compress);
         Fields f { { "ac", "file" }, { "id", m_id }, { "fid", remote.fid }, { "n", item.remote },
             { "tt", remote.rsync ? "rsync" : "simple" } };
@@ -1262,14 +1513,7 @@ bool Receiver::request(std::size_t index, std::string& out, std::size_t budget)
         if (!remote.rsync) {
             return true;
         }
-        m_signFd = ::open(item.local.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        if (m_signFd < 0 || ::fstat(m_signFd, &st) != 0) {
-            // The terminal waits for a signature: an empty one is invalid and ends the file there.
-            const Fields end { { "ac", "end_data" }, { "id", m_id }, { "fid", remote.fid } };
-            out += encodeTransfer(end);
-            done(index, errnoText(errno));
-            return true;
-        }
+        m_signFd = existing;
         m_signing = index;
         m_signSize = std::uint64_t(st.st_size);
         m_signOffset = 0;
@@ -1277,7 +1521,7 @@ bool Receiver::request(std::size_t index, std::string& out, std::size_t budget)
         m_signBuffer = m_signer->header();
         remote.blockSize = m_signer->blockSize();
         remote.basisSize = m_signSize;
-        remote.basis = ::dup(m_signFd);
+        remote.basis = ::fcntl(m_signFd, F_DUPFD_CLOEXEC, 0);
     }
     // The signature, a few blocks at a time.
     const std::uint32_t block = m_signer->blockSize();
@@ -1354,6 +1598,38 @@ void Receiver::produce(std::string& out, std::size_t budget)
     }
 }
 
+// Writes decompressed bytes of a file: as they are, or as delta operations.
+// Never past the size that the listing gave.
+bool Receiver::write(std::size_t index, std::string_view chunk)
+{
+    auto& remote = m_remote[index];
+    auto& item = m_items[index];
+    if (!remote.rsync) {
+        if (remote.sizeKnown && chunk.size() > item.size - item.done) {
+            errno = EFBIG;
+            return false;
+        }
+        if (!writeAll(remote.out, chunk)) {
+            return false;
+        }
+        item.done += chunk.size();
+        return true;
+    }
+    if (remote.pending.size() + chunk.size() > MaxLiteral + 64) {
+        errno = EFBIG;
+        return false;
+    }
+    remote.pending += chunk;
+    const auto used = remote.applier->apply(remote.pending, *remote.deltaTarget);
+    if (!used) {
+        errno = remote.deltaTarget->written() >= item.size && remote.sizeKnown ? EFBIG : EINVAL;
+        return false;
+    }
+    remote.pending.erase(0, *used);
+    item.done = remote.deltaTarget->written();
+    return true;
+}
+
 void Receiver::data(std::size_t index, const TransferFields& f, bool end)
 {
     auto& remote = m_remote[index];
@@ -1363,7 +1639,10 @@ void Receiver::data(std::size_t index, const TransferFields& f, bool end)
         return;
     }
     const auto bytes = field(f, "d");
-    remote.received += bytes.size();
+    if (bytes.size() > PacketData) {
+        done(index, "EFBIG:a data packet holds more than 4096 bytes");
+        return;
+    }
     if (remote.rsync) {
         m_deltaBytes += bytes.size();
     }
@@ -1384,11 +1663,12 @@ void Receiver::data(std::size_t index, const TransferFields& f, bool end)
     }
     if (!remote.opened) {
         remote.opened = true;
-        if (!makeDirectories(TransferPath::dirName(item.local))) {
+        remote.dir = openParent(m_bases[remote.base].fd, remote.parts, true);
+        if (remote.dir < 0) {
             done(index, errnoText(errno));
             return;
         }
-        remote.out = temporaryNear(item.local, remote.temporary);
+        remote.out = createTemporary(remote.dir, ".aglow-transfer-", remote.temporary);
         if (remote.out < 0) {
             remote.temporary.clear();
             done(index, errnoText(errno));
@@ -1403,73 +1683,65 @@ void Receiver::data(std::size_t index, const TransferFields& f, bool end)
         }
         if (remote.rsync) {
             // The block size and the size of the signature that went out.
-            const std::uint32_t block = remote.blockSize;
-            remote.applier = std::make_unique<DeltaApplier>(block, remote.basisSize, MaxLiteral);
-            // The new file is no larger than its announced size, when the terminal gave one.
-            const std::uint64_t limit = item.size ? item.size : std::numeric_limits<std::uint64_t>::max();
-            remote.deltaTarget = std::make_unique<FdDeltaTarget>(remote.basis, remote.out, block, limit);
+            remote.applier = std::make_unique<DeltaApplier>(remote.blockSize, remote.basisSize, MaxLiteral);
+            const std::uint64_t limit = remote.sizeKnown ? item.size : std::numeric_limits<std::uint64_t>::max();
+            remote.deltaTarget = std::make_unique<FdDeltaTarget>(remote.basis, remote.out, remote.blockSize, limit);
             if (!remote.applier->valid()) {
                 done(index, "ENOMEM");
                 return;
             }
         }
     }
-    auto write = [&](std::string_view chunk) {
-        if (!remote.rsync) {
-            if (!writeAll(remote.out, chunk)) {
-                return false;
-            }
-            item.done += chunk.size();
-            return true;
-        }
-        if (remote.pending.size() + chunk.size() > MaxLiteral + 64) {
-            errno = EFBIG;
-            return false;
-        }
-        remote.pending += chunk;
-        const auto used = remote.applier->apply(remote.pending, *remote.deltaTarget);
-        if (!used) {
-            errno = EINVAL;
-            return false;
-        }
-        remote.pending.erase(0, *used);
-        item.done = remote.deltaTarget->written();
-        return true;
-    };
     bool ok = true;
-    if (remote.inflater) {
-        remote.inflater->setInput(bytes);
-        char buffer[ReadStep];
-        for (;;) {
-            std::size_t produced = 0;
-            const auto result = remote.inflater->step(buffer, sizeof buffer, produced);
-            if (produced && !write(std::string_view(buffer, produced))) {
-                ok = false;
-                break;
-            }
-            if (result == ZlibStream::Result::End) {
-                remote.inflater.reset();
-                break;
-            }
-            // Out of input: zlib reports no progress as an error.
-            if (remote.inflater->inputLeft() == 0 && produced < sizeof buffer) {
-                break;
-            }
-            if (result == ZlibStream::Result::Error) {
-                errno = EINVAL;
-                ok = false;
-                break;
+    errno = 0;
+    if (remote.compressed) {
+        // Nothing may follow the end of the stream, in this packet or a later one.
+        if (remote.streamEnded && !bytes.empty()) {
+            errno = EINVAL;
+            ok = false;
+        }
+        if (ok && !remote.streamEnded) {
+            remote.inflater->setInput(bytes);
+            char buffer[ReadStep];
+            for (;;) {
+                std::size_t produced = 0;
+                const auto result = remote.inflater->step(buffer, sizeof buffer, produced);
+                if (produced && !write(index, std::string_view(buffer, produced))) {
+                    ok = false;
+                    break;
+                }
+                if (result == ZlibStream::Result::End) {
+                    remote.streamEnded = true;
+                    if (remote.inflater->inputLeft() != 0) {
+                        errno = EINVAL;
+                        ok = false;
+                    }
+                    break;
+                }
+                // Out of input: zlib reports no progress as an error.
+                if (remote.inflater->inputLeft() == 0 && produced < sizeof buffer) {
+                    break;
+                }
+                if (result == ZlibStream::Result::Error) {
+                    errno = EINVAL;
+                    ok = false;
+                    break;
+                }
             }
         }
-        if (ok && end && remote.inflater) {
+        if (ok && end && !remote.streamEnded) {
             errno = EINVAL;
             ok = false;
         }
     } else if (!bytes.empty()) {
-        ok = write(bytes);
+        ok = write(index, bytes);
     }
     if (ok && end && remote.rsync && (!remote.applier->finished() || !remote.pending.empty())) {
         errno = EINVAL;
+        ok = false;
+    }
+    if (ok && end && remote.sizeKnown && item.done != item.size) {
+        errno = EIO;
         ok = false;
     }
     if (!ok) {
@@ -1479,8 +1751,16 @@ void Receiver::data(std::size_t index, const TransferFields& f, bool end)
     if (!end) {
         return;
     }
-    remote.close();
-    if (::rename(remote.temporary.c_str(), item.local.c_str()) != 0) {
+    // Mode and times go on the descriptor, before the file takes its name.
+    const auto& name = remote.parts.back();
+    const mode_t mode = remote.mode && *remote.mode >= 0 ? permissions(*remote.mode) : creationMode();
+    bool committed = ::fchmod(remote.out, mode) == 0;
+    if (committed && remote.mtime) {
+        const timespec times[2] = { timeOf(*remote.mtime), timeOf(*remote.mtime) };
+        committed = ::futimens(remote.out, times) == 0;
+    }
+    committed = committed && ::renameat(remote.dir, remote.temporary.c_str(), remote.dir, name.c_str()) == 0;
+    if (!committed) {
         done(index, errnoText(errno));
         return;
     }
@@ -1508,10 +1788,6 @@ void Receiver::done(std::size_t index, std::string error)
     remote.applier.reset();
     remote.deltaTarget.reset();
     std::string().swap(remote.pending);
-    if (!remote.temporary.empty()) {
-        ::unlink(remote.temporary.c_str());
-        remote.temporary.clear();
-    }
     if (remote.requested) {
         --m_inFlight;
     }
@@ -1524,79 +1800,124 @@ void Receiver::done(std::size_t index, std::string error)
     }
 }
 
+// A symbolic link or a hard link, made at a temporary name and renamed over
+// the entry's name. A hard link names a file of this transfer that arrived.
+bool Receiver::makeLink(std::size_t index, std::string& error)
+{
+    const auto& remote = m_remote[index];
+    const auto& item = m_items[index];
+    const int dir = openParent(m_bases[remote.base].fd, remote.parts, true);
+    if (dir < 0) {
+        error = errnoText(errno);
+        return false;
+    }
+    std::size_t targetIndex = SIZE_MAX;
+    if (!remote.target.empty()) {
+        for (const auto i : m_order) {
+            if (m_remote[i].remoteId == remote.target) {
+                targetIndex = i;
+                break;
+            }
+        }
+        if (targetIndex == SIZE_MAX) {
+            ::close(dir);
+            error = "ENOENT:the link's target is not in the transfer";
+            return false;
+        }
+    }
+    std::string temporary;
+    int result = -1;
+    for (int attempt = 0; attempt < 64 && result != 0; ++attempt) {
+        temporary = ".aglow-link-" + randomHex(6).value_or("0");
+        if (item.type == Type::Link) {
+            const auto& target = m_remote[targetIndex];
+            if (m_items[targetIndex].type != Type::Regular || !m_items[targetIndex].error.empty()) {
+                ::close(dir);
+                error = "EINVAL:a hard link must name a file of the transfer that arrived";
+                return false;
+            }
+            const int from = openParent(m_bases[target.base].fd, target.parts, false);
+            result = from < 0 ? -1 : ::linkat(from, target.parts.back().c_str(), dir, temporary.c_str(), 0);
+            if (from >= 0) {
+                const int saved = errno;
+                ::close(from);
+                errno = saved;
+            }
+        } else {
+            std::string text = remote.linkValue;
+            if (targetIndex != SIZE_MAX) {
+                text = m_items[targetIndex].local;
+                if (!remote.linkValue.starts_with('/')) {
+                    text = TransferPath::relative(TransferPath::dirName(item.local), text);
+                }
+            }
+            if (text.empty() || text.find('\0') != std::string::npos) {
+                ::close(dir);
+                error = "EINVAL:the link has no target";
+                return false;
+            }
+            result = ::symlinkat(text.c_str(), dir, temporary.c_str());
+        }
+        if (result != 0 && errno != EEXIST) {
+            break;
+        }
+    }
+    if (result == 0 && ::renameat(dir, temporary.c_str(), dir, remote.parts.back().c_str()) != 0) {
+        const int saved = errno;
+        ::unlinkat(dir, temporary.c_str(), 0);
+        errno = saved;
+        result = -1;
+    }
+    if (result == 0 && item.type == Type::Symlink && remote.mtime) {
+        const timespec times[2] = { timeOf(*remote.mtime), timeOf(*remote.mtime) };
+        ::utimensat(dir, remote.parts.back().c_str(), times, AT_SYMLINK_NOFOLLOW);
+    }
+    const int saved = errno;
+    ::close(dir);
+    if (result != 0) {
+        error = errnoText(saved);
+        return false;
+    }
+    return true;
+}
+
 void Receiver::finalize()
 {
-    std::map<std::string, std::size_t> byId;
+    // Directories first, parents before children, so that links can go in them.
     for (const auto i : m_order) {
-        byId[m_remote[i].remoteId] = i;
-    }
-    auto setTimes = [&](std::size_t i) {
+        auto& item = m_items[i];
+        if (item.type != Type::Directory) {
+            continue;
+        }
+        item.finished = true;
         const auto& remote = m_remote[i];
-        const auto& path = m_items[i].local;
-        if (remote.mode && m_items[i].type != Type::Symlink && m_items[i].type != Type::Link) {
-            ::chmod(path.c_str(), mode_t(*remote.mode & 07777));
+        const int dir = openParent(m_bases[remote.base].fd, remote.parts, true);
+        int made = -1;
+        if (dir >= 0 && (::mkdirat(dir, remote.parts.back().c_str(), 0755) == 0 || errno == EEXIST)) {
+            made = ::openat(dir, remote.parts.back().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         }
-        if (remote.mtime) {
-            const auto ns = *remote.mtime;
-            timespec time { time_t(ns / 1000000000), long(ns % 1000000000) };
-            if (time.tv_nsec < 0) {
-                time.tv_nsec += 1000000000;
-                --time.tv_sec;
-            }
-            const timespec times[2] = { time, time };
-            ::utimensat(AT_FDCWD, path.c_str(), times, AT_SYMLINK_NOFOLLOW);
+        if (made < 0) {
+            item.error = errnoText(errno);
+        } else {
+            ::close(made);
         }
-    };
+        if (dir >= 0) {
+            ::close(dir);
+        }
+    }
     for (const auto i : m_order) {
         auto& item = m_items[i];
         const auto& remote = m_remote[i];
-        if (item.type == Type::Directory) {
-            if (!makeDirectories(item.local)) {
-                item.error = errnoText(errno);
-            }
-            item.finished = true;
-            continue;
-        }
-        if (item.type == Type::Regular || !item.error.empty()) {
+        if (item.type == Type::Regular || item.type == Type::Directory || !item.error.empty()) {
             continue;
         }
         if (item.type == Type::Link && remote.target.empty()) {
             continue; // requested as a file, and failed or arrived
         }
-        std::string target;
-        if (!remote.target.empty()) {
-            const auto it = byId.find(remote.target);
-            if (it == byId.end()) {
-                item.error = "ENOENT:the link's target is not in the transfer";
-                item.finished = true;
-                continue;
-            }
-            target = m_items[it->second].local;
-            if (item.type == Type::Symlink && !remote.linkValue.starts_with('/')) {
-                target = TransferPath::relative(TransferPath::dirName(item.local), target);
-            }
-        } else {
-            target = remote.linkValue;
-        }
-        if (target.empty()) {
-            item.error = "EINVAL:the link has no target";
-            item.finished = true;
-            continue;
-        }
         item.finished = true;
-        if (!makeDirectories(TransferPath::dirName(item.local))) {
-            item.error = errnoText(errno);
-            continue;
-        }
-        ::unlink(item.local.c_str());
-        const int result = item.type == Type::Link ? ::link(target.c_str(), item.local.c_str()) : ::symlink(target.c_str(), item.local.c_str());
-        if (result != 0) {
-            item.error = errnoText(errno);
-        }
-    }
-    for (const auto i : m_order) {
-        if (m_items[i].type != Type::Directory && m_items[i].error.empty()) {
-            setTimes(i);
+        std::string error;
+        if (!makeLink(i, error)) {
+            item.error = error;
         }
     }
     // Children change the times of their directory: the deepest directories go first.
@@ -1606,12 +1927,25 @@ void Receiver::finalize()
             directories.push_back(i);
         }
     }
-    std::stable_sort(directories.begin(), directories.end(), [&](std::size_t a, std::size_t b) {
-        return std::count(m_items[a].local.begin(), m_items[a].local.end(), '/')
-            > std::count(m_items[b].local.begin(), m_items[b].local.end(), '/');
-    });
+    std::stable_sort(directories.begin(), directories.end(),
+                     [&](std::size_t a, std::size_t b) { return m_remote[a].parts.size() > m_remote[b].parts.size(); });
     for (const auto i : directories) {
-        setTimes(i);
+        const auto& remote = m_remote[i];
+        const int dir = openParent(m_bases[remote.base].fd, remote.parts, false);
+        const int fd = dir < 0 ? -1 : ::openat(dir, remote.parts.back().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd >= 0) {
+            if (remote.mode && *remote.mode >= 0) {
+                ::fchmod(fd, permissions(*remote.mode));
+            }
+            if (remote.mtime) {
+                const timespec times[2] = { timeOf(*remote.mtime), timeOf(*remote.mtime) };
+                ::futimens(fd, times);
+            }
+            ::close(fd);
+        }
+        if (dir >= 0) {
+            ::close(dir);
+        }
     }
 }
 

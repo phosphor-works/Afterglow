@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <functional>
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/mman.h>
@@ -58,8 +59,8 @@ const Cli::Command command {
           "Horizontal alignment of the image." },
         { "--place", Cli::Option::Kind::String, "", {},
           "Where on the screen to show the image, as WIDTHxHEIGHT@LEFTxTOP in cells, from the top left corner at "
-          "0x0. The image is scaled to fit the rectangle and aligned in it with --align. The cursor stays where it "
-          "was." },
+          "0x0. The image is scaled to fit the rectangle and aligned in it with --align. The cursor ends at the top "
+          "left corner of the image, not on the line after it." },
         { "--scale-up", Cli::Option::Kind::Flag, "", {},
           "Scale images that are smaller than the area up to fill as much of it as they can. The area comes from "
           "--place or --fit." },
@@ -102,6 +103,10 @@ const Cli::Command command {
         { "--image-id", Cli::Option::Kind::Int, "0", {},
           "The graphics protocol id of the image. More images take the ids that follow it. 0 picks one when it is "
           "needed." },
+        { "--engine", Cli::Option::Kind::String, "auto", {},
+          "The engine that decodes images: auto or builtin, which are the same in aglow. aglow has no ImageMagick "
+          "engine (magick)." },
+        { "--silent", Cli::Option::Kind::Flag, "", {}, "Not used. kitten icat keeps it for compatibility, and so does aglow." },
         { "--no-trailing-newline -n", Cli::Option::Kind::Flag, "", {},
           "Leave the cursor after the image, not on the next line. Has no effect with --place." },
     },
@@ -320,10 +325,11 @@ std::string sharedMemory(std::string_view bytes)
 class Icat
 {
 public:
-    Icat(const Settings& settings, const Screen& screen, int out)
+    Icat(const Settings& settings, const Screen& screen, int out, std::function<bool()> stop)
         : m_s(settings)
         , m_screen(screen)
         , m_out(out)
+        , m_stop(std::move(stop))
     {
     }
 
@@ -337,6 +343,7 @@ private:
     const Settings& m_s;
     const Screen& m_screen;
     int m_out;
+    std::function<bool()> m_stop;
 };
 
 bool Icat::transmit(GraphicsCommand command, std::string_view data, std::string& error)
@@ -398,21 +405,24 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
     const bool png = isPng(bytes);
     // A PNG that needs no change goes as it is: the terminal decodes it.
     if (!png || scaled || m_s.mirrorH || m_s.mirrorV || m_s.background || bytes.starts_with("GIF8")) {
-        image = decodeImage(bytes, error);
+        // Within the image memory of the terminal, checked before decoding.
+        image = decodeImage(bytes, AfterglowProto::GraphicsDefaultQuota, error);
         if (!image) {
             return "cannot decode the image: " + error;
         }
+    }
+    // Each frame is changed and sent on its own: one copy at a time.
+    auto prepare = [&](int index) {
+        std::string rgba = image->frame(index);
         if (m_s.mirrorH || m_s.mirrorV) {
-            mirrorImage(*image, m_s.mirrorH, m_s.mirrorV);
+            mirrorFrame(rgba, image->width, image->height, m_s.mirrorH, m_s.mirrorV);
         }
         if (m_s.background) {
-            flattenImage(*image, (*m_s.background)[0], (*m_s.background)[1], (*m_s.background)[2]);
+            flattenFrame(rgba, (*m_s.background)[0], (*m_s.background)[1], (*m_s.background)[2]);
         }
-        resizeImage(*image, canvasWidth, canvasHeight);
-        if (m_s.loops == 0 && image->frames.size() > 1) {
-            image->frames.resize(1);
-        }
-    }
+        return resizeFrame(rgba, image->width, image->height, canvasWidth, canvasHeight);
+    };
+    const int frames = !image ? 1 : m_s.loops == 0 ? 1 : image->frameCount();
     // Where the image goes, in cells.
     const int cellWidth = m_screen.cellWidth();
     const int cellHeight = m_screen.cellHeight();
@@ -441,10 +451,10 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
             moveX += m_s.place->width - widthCells;
         }
     }
-    if (m_s.placeholder && std::size_t(std::max(widthCells, heightCells)) >= AfterglowProto::PlaceholderDiacriticCount) {
+    if (m_s.placeholder && std::size_t(std::max(widthCells, heightCells)) > AfterglowProto::PlaceholderDiacriticCount) {
         return "the image is too large for Unicode placeholders, which allow " + std::to_string(AfterglowProto::PlaceholderDiacriticCount) + " cells at most";
     }
-    const bool animated = image && image->frames.size() > 1;
+    const bool animated = frames > 1;
     std::uint32_t number = 0;
     if (id == 0 && m_s.placeholder) {
         id = randomId(true);
@@ -490,18 +500,6 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
             return error;
         }
     } else {
-        const bool opaque = imageOpaque(*image);
-        auto pixels = [&](const Image::Frame& frame) {
-            if (!opaque) {
-                return frame.rgba;
-            }
-            std::string rgb;
-            rgb.reserve(frame.rgba.size() / 4 * 3);
-            for (std::size_t i = 0; i < frame.rgba.size(); i += 4) {
-                rgb.append(frame.rgba, i, 3);
-            }
-            return rgb;
-        };
         GraphicsCommand control;
         control.action = 'a';
         control.hasAction = true;
@@ -513,8 +511,17 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
             control.number = number;
             control.hasNumber = true;
         }
-        for (std::size_t n = 0; n < image->frames.size(); ++n) {
-            const auto& frame = image->frames[n];
+        for (int n = 0; n < frames; ++n) {
+            if (m_stop()) {
+                return "interrupted";
+            }
+            const int delay = image->delay(n);
+            std::string data = prepare(n);
+            // An opaque frame goes as RGB: a quarter fewer bytes.
+            const bool opaque = frameOpaque(data);
+            if (opaque) {
+                data = dropAlpha(data);
+            }
             GraphicsCommand command = n == 0 ? first : GraphicsCommand {};
             if (n > 0) {
                 command.action = 'f';
@@ -524,14 +531,13 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
                 command.hasId = first.hasId;
                 command.number = first.number;
                 command.hasNumber = first.hasNumber;
-                command.z = frame.delayMs;
+                command.z = delay;
                 // Each frame is the whole canvas: it replaces the one before.
                 command.X = 1;
             }
             command.format = opaque ? 24 : 32;
-            command.s = std::uint32_t(image->width);
-            command.v = std::uint32_t(image->height);
-            std::string data = pixels(frame);
+            command.s = std::uint32_t(canvasWidth);
+            command.v = std::uint32_t(canvasHeight);
             if (m_s.medium == Medium::Stream) {
                 // Over the stream, zlib saves most of the bytes of raw pixels.
                 data = AfterglowProto::zlibCompress(data);
@@ -546,7 +552,7 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
             if (animated && n == 0) {
                 GraphicsCommand gap = control;
                 gap.r = 1;
-                gap.z = frame.delayMs;
+                gap.z = delay;
                 if (m_s.loops < 0) {
                     gap.v = 1;
                 } else if (m_s.loops > 0) {
@@ -566,8 +572,10 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
             + std::to_string(id & 255) + "m";
         std::string restore = "\x1b[39m";
         if (moveY > 0) {
-            text += "\x1b" "7\x1b[" + std::to_string(moveY) + ";0H";
-            restore += "\x1b" "8";
+            // With --place the cursor ends at the top left corner of the
+            // image, as after the graphics command with C=1.
+            text += "\x1b[" + std::to_string(moveY) + ";1H";
+            restore += "\x1b[" + std::to_string(moveY) + ";" + std::to_string(moveX) + "H";
         }
         auto utf8 = [](char32_t cp) {
             std::string out;
@@ -590,9 +598,10 @@ std::string Icat::show(const std::string& name, std::string_view bytes, std::uin
         };
         const auto high = utf8(AfterglowProto::PlaceholderDiacritics[(id >> 24) & 255]);
         for (int row = 0; row < heightCells; ++row) {
-            if (moveX > 0) {
+            // CSI 0 C would move one column: column 1 takes no move.
+            if (moveX > 1) {
                 text += "\x1b[" + std::to_string(moveX - 1) + "C";
-            } else if (moveBy > 0) {
+            } else if (moveX == 0 && moveBy > 0) {
                 text += std::string(std::size_t(moveBy), ' ');
             }
             for (int column = 0; column < widthCells; ++column) {
@@ -754,6 +763,10 @@ int runIcat(int argc, char** argv)
         settings.z = std::int32_t(std::clamp<std::int64_t>(std::int64_t(value) + origin, INT32_MIN, INT32_MAX));
     }
     settings.loops = parsed->integer("loop");
+    if (const auto engine = parsed->value("engine"); engine != "auto" && engine != "builtin") {
+        report("icat", "--engine must be auto or builtin: aglow decodes images itself and has no " + engine + " engine");
+        return 1;
+    }
     settings.noNewline = parsed->flag("no-trailing-newline");
     const auto passthrough = parsed->value("passthrough");
     settings.tmux = passthrough == "tmux" || (passthrough == "detect" && std::getenv("TMUX") && *std::getenv("TMUX"));
@@ -833,7 +846,7 @@ int runIcat(int argc, char** argv)
     const auto mode = parsed->value("transfer-mode");
     const bool detecting = parsed->flag("detect-support");
     Tty tty;
-    const bool needTty = (!settings.tmux && (mode == "detect" || detecting)) || parsed->flag("hold");
+    const bool needTty = !settings.tmux && (mode == "detect" || detecting);
     if (needTty && !tty.open(error)) {
         report("icat", error);
         return 1;
@@ -865,10 +878,20 @@ int runIcat(int argc, char** argv)
             report("icat", "Could not turn on tmux passthrough (tmux set -p allow-passthrough on)");
         }
     }
-    Icat icat(settings, screen, out);
+    // Raw mode is only for the answers of the terminal. While the images go
+    // out, Ctrl+C is a signal again, and it stops the sending between two
+    // commands, so that no command is cut in half.
+    tty.restore();
+    Tty::watchSignals();
+    bool interrupted = false;
+    Icat icat(settings, screen, out, [&] { return interrupted = interrupted || tty.takeSignal() != 0; });
     auto id = std::uint32_t(parsed->integer("image-id"));
     int code = 0;
     for (const auto& source : sources) {
+        if (interrupted || tty.takeSignal()) {
+            interrupted = true;
+            break;
+        }
         std::string bytes;
         if (source.empty()) {
             if (!readAll(STDIN_FILENO, bytes)) {
@@ -889,6 +912,9 @@ int runIcat(int argc, char** argv)
             }
         }
         const auto failure = icat.show(source, bytes, id);
+        if (interrupted) {
+            break;
+        }
         if (!failure.empty()) {
             report("icat", (source.empty() ? std::string("<stdin>") : source) + ": " + failure);
             code = 1;
@@ -897,7 +923,15 @@ int runIcat(int argc, char** argv)
             ++id;
         }
     }
+    if (interrupted) {
+        report("icat", "interrupted");
+        return 130;
+    }
     if (parsed->flag("hold")) {
+        if (!tty.open(error)) {
+            report("icat", error);
+            return 1;
+        }
         for (bool done = false; !done;) {
             std::vector<Input> inputs;
             if (!tty.turn(-1, inputs) || tty.takeSignal()) {
