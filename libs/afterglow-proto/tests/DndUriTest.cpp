@@ -43,8 +43,10 @@ TEST(DndUri, OnlyFilesOfThisComputerAreFiles)
                                         "https://example.org/g\r\n"
                                         "# a comment\r\n"
                                         "\r\n"
-                                        "  file:///h/../i?x#y  \r\n");
-    ASSERT_EQ(parsed.size(), 7u);
+                                        "  file:///h/../i  \r\n"
+                                        "file:///j?x\r\n"
+                                        "file:///k#y\r\n");
+    ASSERT_EQ(parsed.size(), 9u);
     EXPECT_EQ(parsed[0].kind, DndUri::Kind::File);
     EXPECT_EQ(parsed[0].path, "/a");
     EXPECT_EQ(parsed[1].kind, DndUri::Kind::File);
@@ -57,6 +59,9 @@ TEST(DndUri, OnlyFilesOfThisComputerAreFiles)
     EXPECT_EQ(parsed[5].kind, DndUri::Kind::Other);
     EXPECT_EQ(parsed[6].kind, DndUri::Kind::File);
     EXPECT_EQ(parsed[6].path, "/i");
+    // A name with a '?' or '#' that the source did not escape: /j and /k are other files.
+    EXPECT_EQ(parsed[7].kind, DndUri::Kind::Other);
+    EXPECT_EQ(parsed[8].kind, DndUri::Kind::Other);
 }
 
 TEST(DndUri, DataUris)

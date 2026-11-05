@@ -127,9 +127,10 @@ _aglow()
     _aglow_table "${words[1]}" || return
 
     # The words before the cursor: the options given, whether "--" ended them,
-    # and the option whose value comes next. Without bash-completion, readline
-    # splits --option=value into three words, with "=" in the middle.
-    local i j word entry given="|" expect="" ended=""
+    # whether -h or --help asked for the help, and the option whose value
+    # comes next. Without bash-completion, readline splits --option=value into
+    # three words, with "=" in the middle.
+    local i j word entry given="|" expect="" ended="" helped=""
     for ((i = 2; i < cword; i++)); do
         word=${words[i]}
         if [[ $ended ]]; then
@@ -140,10 +141,15 @@ _aglow()
         fi
         case $word in
         --) ended=1 ;;
+        -h | --help) helped=1 ;;
         --*)
             _aglow_entry "${word%%=*}" || continue
             given+="${entry%% *}|"
-            [[ $entry == *" "* && $word != *=* ]] && expect=$entry
+            # A flag followed by "=" expects a value too, so that what comes
+            # after the "=" completes as the flag's value: nothing.
+            if [[ $word != *=* ]] && [[ $entry == *" "* || ${words[i + 1]} == = ]]; then
+                expect=$entry
+            fi
             ;;
         -?*)
             # Flags together (-cx), and an option whose value is the rest or the next word.
@@ -159,6 +165,8 @@ _aglow()
         esac
     done
 
+    # aglow shows the help and reads no other word.
+    [[ $helped ]] && return
     if [[ $ended ]]; then
         _aglow_files
         return

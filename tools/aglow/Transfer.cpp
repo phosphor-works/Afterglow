@@ -10,6 +10,7 @@
 
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/TransferClient.h>
+#include <AfterglowProto/TransferPath.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -18,7 +19,9 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <iterator>
 #include <limits>
+#include <poll.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -63,8 +66,10 @@ const Cli::Command command {
           "where aglow runs." },
         { "--mode -m", Cli::Option::Kind::Choice, "normal", { "normal", "mirror" },
           "How to read the arguments. In mirror mode every argument is a file or directory on the sending computer, "
-          "copied to the same path on the receiving computer. A path given as ~, as ~/ and a path, or as a relative "
-          "path is under the home directory on both computers. An absolute path stays the same. In normal mode the "
+          "copied to the same path on the receiving computer. When aglow sends, a relative path starts at the working "
+          "directory, and a path under the home directory goes under the home directory of the other computer. When "
+          "aglow receives, a path given as ~, as ~/ and a path, or as a relative path is under the home directory on "
+          "both computers. An absolute path stays the same. In normal mode the "
           "last argument is the destination on the receiving computer. With more than one source, the destination "
           "is a directory that receives them. With one source, end the destination with a slash to put the source "
           "in that directory. Without the slash, the source is copied to the destination path itself. A received "
@@ -96,60 +101,128 @@ std::string trim(std::string text)
     return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
 }
 
+volatile sig_atomic_t g_secretSignal = 0;
+
+extern "C" void onSecretSignal(int number)
+{
+    g_secretSignal = number;
+}
+
 // Reads at most MaxPassword bytes of @p fd. A terminal gives one line,
 // without echo.
+//
+// On a terminal, the signals that end or stop the program stay blocked
+// except while it waits for the line: a signal then ends the wait, the
+// terminal gets its echo back, and the signal has its usual effect. After a
+// stop the prompt starts again, since the terminal dropped the typed text.
 bool readSecret(int fd, std::string& text, std::string& error)
 {
     termios saved { };
-    const bool terminal = ::isatty(fd) && ::tcgetattr(fd, &saved) == 0;
-    sigset_t held { };
-    sigset_t old { };
-    if (terminal) {
-        // A signal while echo is off would leave the terminal without echo.
-        // It waits until the mode is back, and then has its effect.
-        sigemptyset(&held);
-        for (const int number : { SIGINT, SIGTERM, SIGHUP, SIGTSTP }) {
-            sigaddset(&held, number);
+    if (!::isatty(fd) || ::tcgetattr(fd, &saved) != 0) {
+        int failure = 0;
+        char buffer[512];
+        for (;;) {
+            const ssize_t n = ::read(fd, buffer, sizeof buffer);
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n <= 0) {
+                failure = n < 0 ? errno : 0;
+                break;
+            }
+            text.append(buffer, std::size_t(n));
+            if (text.size() > MaxPassword) {
+                error = "The password is longer than " + std::to_string(MaxPassword) + " bytes";
+                return false;
+            }
         }
+        if (failure) {
+            error = "Cannot read the password: " + std::string(std::strerror(failure));
+            return false;
+        }
+        return true;
+    }
+    constexpr int Signals[] = { SIGINT, SIGTERM, SIGHUP, SIGTSTP };
+    sigset_t held { };
+    sigemptyset(&held);
+    for (const int number : Signals) {
+        sigaddset(&held, number);
+    }
+    for (;;) {
+        sigset_t old { };
         ::sigprocmask(SIG_BLOCK, &held, &old);
+        // No SA_RESTART: the wait must end. A signal that the program
+        // started with ignored stays ignored.
+        struct sigaction catcher { };
+        catcher.sa_handler = onSecretSignal;
+        sigemptyset(&catcher.sa_mask);
+        struct sigaction previous[std::size(Signals)] { };
+        for (std::size_t i = 0; i < std::size(Signals); ++i) {
+            ::sigaction(Signals[i], nullptr, &previous[i]);
+            if (previous[i].sa_handler != SIG_IGN) {
+                ::sigaction(Signals[i], &catcher, nullptr);
+            }
+        }
+        g_secretSignal = 0;
         termios quiet = saved;
         quiet.c_lflag &= ~tcflag_t(ECHO);
         quiet.c_lflag |= ICANON;
         ::tcsetattr(fd, TCSAFLUSH, &quiet);
         AfterglowProto::writeAll(STDERR_FILENO, "Password: ");
-    }
-    int failure = 0;
-    char buffer[512];
-    for (;;) {
-        const ssize_t n = ::read(fd, buffer, sizeof buffer);
-        if (n < 0 && errno == EINTR) {
-            continue;
+        int failure = 0;
+        char buffer[512];
+        text.clear();
+        while (!g_secretSignal) {
+            // ppoll unblocks the signals only for the wait, so that none
+            // comes between a check and a read that would block.
+            pollfd ready { fd, POLLIN, 0 };
+            if (::ppoll(&ready, 1, nullptr, &old) < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                failure = errno;
+                break;
+            }
+            const ssize_t n = ::read(fd, buffer, sizeof buffer);
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n <= 0) {
+                failure = n < 0 ? errno : 0;
+                break;
+            }
+            text.append(buffer, std::size_t(n));
+            if (text.size() > MaxPassword) {
+                error = "The password is longer than " + std::to_string(MaxPassword) + " bytes";
+                break;
+            }
+            if (text.find('\n') != std::string::npos) {
+                break;
+            }
         }
-        if (n < 0) {
-            failure = errno;
-            break;
-        }
-        if (n == 0) {
-            break;
-        }
-        text.append(buffer, std::size_t(n));
-        if (text.size() > MaxPassword) {
-            error = "The password is longer than " + std::to_string(MaxPassword) + " bytes";
-            break;
-        }
-        if (terminal && text.find('\n') != std::string::npos) {
-            break;
-        }
-    }
-    if (terminal) {
         ::tcsetattr(fd, TCSAFLUSH, &saved);
         AfterglowProto::writeAll(STDERR_FILENO, "\n");
+        for (std::size_t i = 0; i < std::size(Signals); ++i) {
+            ::sigaction(Signals[i], &previous[i], nullptr);
+        }
+        const int caught = g_secretSignal;
         ::sigprocmask(SIG_SETMASK, &old, nullptr);
+        if (caught) {
+            // With the disposition back, the signal ends or stops the
+            // program here, as it would have without the prompt.
+            ::raise(caught);
+            if (caught == SIGTSTP) {
+                continue;
+            }
+            text.clear();
+            error = "The password prompt was interrupted";
+            return false;
+        }
+        if (failure) {
+            error = "Cannot read the password: " + std::string(std::strerror(failure));
+        }
+        return error.empty();
     }
-    if (failure) {
-        error = "Cannot read the password: " + std::string(std::strerror(failure));
-    }
-    return error.empty();
 }
 
 bool readPassword(const std::string& location, std::string& password, std::string& error)
@@ -355,6 +428,10 @@ int runTransfer(int argc, char** argv)
         report("transfer", "Must specify at least one file to transfer");
         return 1;
     }
+    if (options.mode == TransferClientOptions::Mode::Normal && parsed->args.size() < 2) {
+        report("transfer", "Must specify at least one source and a destination");
+        return 1;
+    }
     if (!readPassword(parsed->value("permissions-bypass"), options.password, error)) {
         report("transfer", error);
         return 1;
@@ -379,7 +456,7 @@ int runTransfer(int argc, char** argv)
         report("transfer", error);
         return 1;
     }
-    tty.enterModes("\x1b[?25l", "\x1b[?25h");
+    tty.enterModes("\x1b[?25l", "\x1b[?25h", "\x1b[?25l");
     // Statuses that the terminal still sends when the loop stops are read,
     // not typed into the shell.
     tty.drainOnRestore();
@@ -436,6 +513,10 @@ int runTransfer(int argc, char** argv)
                 if (input.type == Input::Type::Osc && input.data.starts_with("5113;")) {
                     client->receive(std::string_view(input.data).substr(5));
                 } else if (input.type == Input::Type::Interrupt) {
+                    // Ctrl+C in raw mode is the key, not SIGINT: the exit status is the same.
+                    if (!ended() && !caught) {
+                        caught = SIGINT;
+                    }
                     cancel("Canceled by an interrupt");
                 } else if (input.type == Input::Type::Escape) {
                     if (client->state() == State::Confirm) {

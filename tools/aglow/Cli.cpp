@@ -199,7 +199,9 @@ std::optional<Parsed> parse(const Command& command, int argc, char** argv, std::
         } else if (i + 1 < argc && !std::string_view(argv[i + 1]).starts_with("--")) {
             value = argv[++i];
         } else {
-            error = "The option " + name + " needs a value. A value that starts with -- goes as " + name + "=VALUE";
+            // -d=VALUE would give the short option the value "=VALUE".
+            error = "The option " + name + " needs a value. A value that starts with -- goes as " + name
+                + (name.starts_with("--") ? "=VALUE" : "VALUE");
             return false;
         }
         if (!checkValue(option, name, value, error)) {

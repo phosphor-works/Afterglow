@@ -5,8 +5,10 @@
 // patched stb_image and aglow's own GIF decoder, called in this process as
 // the decoder child of aglow calls them, so that the sanitizers see each
 // read and write. aglow itself decodes in a child process with limits on its
-// memory and CPU time. This target bounds the work the same way: images of
-// at most 4 MiB, and 64 frames.
+// memory and CPU time. This target bounds the work by the size instead: a
+// canvas of at most 2^20 pixels (4 MiB of RGBA), and 64 frames. The work of
+// a GIF frame is bounded by its canvas and its data, whatever size the frame
+// claims, so the canvas bounds it here too.
 
 #include "StbImage.h"
 

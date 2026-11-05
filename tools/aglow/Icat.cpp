@@ -231,8 +231,11 @@ bool hasImageExtension(const std::string& name)
 }
 
 // The image files under @p path, in name order. A directory that a link leads
-// back to is read once: @p seen holds the directories read so far.
-bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::pair<dev_t, ino_t>>& seen, std::string& error)
+// back to is read once: @p seen holds the directories read so far. Only the
+// directory that the command names must be readable (@p top): a subdirectory
+// that cannot be read is left out, with the reason in @p skipped.
+bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::pair<dev_t, ino_t>>& seen,
+          std::vector<std::string>& skipped, std::string& error, bool top = true)
 {
     struct stat self { };
     if (::stat(path.c_str(), &self) != 0 || !seen.emplace(self.st_dev, self.st_ino).second) {
@@ -240,7 +243,12 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
     }
     DIR* dir = ::opendir(path.c_str());
     if (!dir) {
-        error = "Cannot read the directory " + printable(path) + ": " + std::strerror(errno);
+        const std::string reason = "Cannot read the directory " + printable(path) + ": " + std::strerror(errno);
+        if (!top) {
+            skipped.push_back(reason);
+            return true;
+        }
+        error = reason;
         return false;
     }
     std::vector<std::string> names;
@@ -259,9 +267,7 @@ bool walk(const std::string& path, std::vector<std::string>& out, std::set<std::
             continue;
         }
         if (S_ISDIR(st.st_mode)) {
-            if (!walk(child, out, seen, error)) {
-                return false;
-            }
+            walk(child, out, seen, skipped, error, false);
         } else if (hasImageExtension(name)) {
             out.push_back(child);
         }
@@ -883,7 +889,8 @@ Detection detect(Tty& tty, long long timeoutMs, bool& direct, bool& file, bool& 
         query.size = 3;
         out += AfterglowProto::writeGraphics(query, memoryName);
     }
-    tty.write(out + "\x1b[c");
+    tty.write(out);
+    tty.queryAttributes();
     const long long deadline = nowMs() + timeoutMs;
     Detection result = Detection::Silent;
     while (result == Detection::Silent && nowMs() < deadline) {
@@ -930,7 +937,7 @@ void removeUnread(Tty& tty, long long timeoutMs, Medium medium, const std::vecto
     }
     std::string error;
     if (::isatty(STDOUT_FILENO) && tty.open(error)) {
-        tty.write("\x1b[c");
+        tty.queryAttributes();
         const long long deadline = nowMs() + timeoutMs;
         bool answered = false;
         while (!answered && nowMs() < deadline) {
@@ -1128,6 +1135,9 @@ int runIcat(int argc, char** argv)
             sources.push_back(std::move(input));
         }
     }
+    // A subdirectory that cannot be read fails the command at its end, after
+    // the images that can be shown, as a file that cannot be read does.
+    bool unread = false;
     for (const auto& arg : parsed->args) {
         std::string path = arg;
         if (path.starts_with("file:")) {
@@ -1146,10 +1156,15 @@ int runIcat(int argc, char** argv)
         if (S_ISDIR(st.st_mode)) {
             std::vector<std::string> found;
             std::set<std::pair<dev_t, ino_t>> seen;
-            if (!walk(path, found, seen, error)) {
+            std::vector<std::string> skipped;
+            if (!walk(path, found, seen, skipped, error)) {
                 report("icat", error);
                 return 1;
             }
+            for (const auto& reason : skipped) {
+                report("icat", reason);
+            }
+            unread |= !skipped.empty();
             if (found.empty()) {
                 report("icat", "The directory " + printable(arg) + " has no image files");
                 return 1;
@@ -1232,7 +1247,7 @@ int runIcat(int argc, char** argv)
     auto stop = [&] { return interrupted = interrupted || tty.takeSignal() != 0; };
     Icat icat(settings, screen, out, stop);
     auto id = std::uint32_t(parsed->integer("image-id"));
-    int code = 0;
+    int code = unread ? 1 : 0;
     for (auto& source : sources) {
         if (stop()) {
             break;

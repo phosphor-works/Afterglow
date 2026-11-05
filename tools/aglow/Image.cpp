@@ -5,6 +5,7 @@
 
 #include "Commands.h"
 #include "StbImage.h"
+#include "Tty.h"
 
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Graphics.h>
@@ -17,6 +18,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -166,10 +169,49 @@ bool send(int fd, const Record& record, std::string_view payload = {})
         && AfterglowProto::writeAll(fd, payload);
 }
 
-bool readExact(int fd, void* data, std::size_t size)
+// The signals that Tty catches to stop a command. While the parent waits
+// for the child, they are blocked, and ppoll() takes them in its mask only:
+// a signal that arrives at any time ends the wait, where a read() that
+// SA_RESTART restarts would wait for the child to end.
+class SignalGate
+{
+public:
+    SignalGate()
+    {
+        sigset_t stops;
+        sigemptyset(&stops);
+        for (const int number : { SIGINT, SIGTERM, SIGHUP }) {
+            sigaddset(&stops, number);
+        }
+        ::sigprocmask(SIG_BLOCK, &stops, &m_waiting);
+    }
+    ~SignalGate() { ::sigprocmask(SIG_SETMASK, &m_waiting, nullptr); }
+    SignalGate(const SignalGate&) = delete;
+    SignalGate& operator=(const SignalGate&) = delete;
+    /// The mask from before the gate, for ppoll().
+    const sigset_t* waiting() const { return &m_waiting; }
+
+private:
+    sigset_t m_waiting;
+};
+
+// Reads @p size bytes from the child. False at its end, and with
+// @p interrupted set when a signal that Tty caught stops the command.
+bool readChild(int fd, void* data, std::size_t size, const SignalGate& gate, bool& interrupted)
 {
     auto* p = static_cast<char*>(data);
     while (size > 0) {
+        if (Tty::signalPending()) {
+            interrupted = true;
+            return false;
+        }
+        pollfd ready { fd, POLLIN, 0 };
+        if (::ppoll(&ready, 1, nullptr, gate.waiting()) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
         const ssize_t n = ::read(fd, p, size);
         if (n < 0 && errno == EINTR) {
             continue;
@@ -221,11 +263,18 @@ struct Limits
     rlim_t seconds = 0; ///< of CPU time
 };
 
-[[noreturn]] void runChild(int fd, std::string_view bytes, const Limits& limits)
+[[noreturn]] void runChild(int fd, std::string_view bytes, const Limits& limits, pid_t parent)
 {
+    // The child ends with the parent, also when a signal kills the parent
+    // before it can kill the child.
+    ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (::getppid() != parent) {
+        ::_exit(1);
+    }
     // The signals that the parent catches kill the child, so that Ctrl+C
-    // stops a long decode. SIGPIPE ends it when the parent stops reading.
-    for (const int number : { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH }) {
+    // stops a long decode, and SIGCONT no longer runs the parent's handler.
+    // SIGPIPE ends the child when the parent stops reading.
+    for (const int number : { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGWINCH, SIGCONT }) {
         struct sigaction inherited { };
         if (::sigaction(number, nullptr, &inherited) == 0 && inherited.sa_handler != SIG_IGN) {
             std::signal(number, SIG_DFL);
@@ -274,6 +323,40 @@ struct Limits
     }
     ::_exit(code);
 }
+
+// The decoder child, killed and reaped however decodeImage() ends, also by
+// an exception.
+class Child
+{
+public:
+    explicit Child(pid_t pid)
+        : m_pid(pid)
+    {
+    }
+    ~Child()
+    {
+        if (m_pid > 0) {
+            finish(true);
+        }
+    }
+    Child(const Child&) = delete;
+    Child& operator=(const Child&) = delete;
+    /// Waits for the child to end, after SIGKILL when @p kill. Its wait status.
+    int finish(bool kill)
+    {
+        if (kill) {
+            ::kill(m_pid, SIGKILL);
+        }
+        int status = 0;
+        while (::waitpid(m_pid, &status, 0) < 0 && errno == EINTR) {
+        }
+        m_pid = -1;
+        return status;
+    }
+
+private:
+    pid_t m_pid;
+};
 
 // Why the child ended before it sent its result.
 std::string childFailure(int status)
@@ -383,6 +466,7 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     }
     AfterglowProto::UniqueFd reader(fds[0]);
     AfterglowProto::UniqueFd writer(fds[1]);
+    const pid_t parent = ::getpid();
     const pid_t pid = ::fork();
     if (pid < 0) {
         error = std::string("cannot start the image decoder: ") + std::strerror(errno);
@@ -391,15 +475,19 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
     if (pid == 0) {
         reader.release();
         ::close(fds[0]);
-        runChild(fds[1], bytes, limits);
+        runChild(fds[1], bytes, limits, parent);
     }
+    Child child(pid);
     writer.reset();
 
     bool finished = false;
     bool tooMany = false;
+    bool interrupted = false;
+    const SignalGate gate;
+    auto readExact = [&](void* data, std::size_t size) { return readChild(reader.get(), data, size, gate, interrupted); };
     for (;;) {
         Record record;
-        if (!readExact(reader.get(), &record, sizeof record)) {
+        if (!readExact(&record, sizeof record)) {
             break;
         }
         if (record.kind == Kind::Frame) {
@@ -409,7 +497,7 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
                 break;
             }
             std::string pixels(std::size_t(frameBytes), '\0');
-            if (!readExact(reader.get(), pixels.data(), pixels.size())) {
+            if (!readExact(pixels.data(), pixels.size())) {
                 break;
             }
             image.m_frames.push_back(std::move(pixels));
@@ -429,7 +517,7 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
             break;
         }
         std::string text(std::size_t(record.length), '\0');
-        if (!readExact(reader.get(), text.data(), text.size())) {
+        if (!readExact(text.data(), text.size())) {
             break;
         }
         if (record.kind == Kind::Error) {
@@ -439,17 +527,20 @@ std::optional<Image> decodeImage(std::string_view bytes, std::size_t budget, std
         image.m_warning = text;
     }
     reader.reset();
-    if (!finished) {
-        ::kill(pid, SIGKILL);
-    }
-    int status = 0;
-    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    const int status = child.finish(!finished);
+    if (interrupted) {
+        error = "interrupted";
+        return std::nullopt;
     }
     if (tooMany && !image.m_frames.empty()) {
         // An animation whose frames do not all fit shows its first frame only.
         image.m_frames.resize(1);
         image.m_delays.assign(1, 0);
-        image.m_warning.clear();
+        image.m_warning = limits.maxFrames == AfterglowProto::GraphicsMaxFrames
+            ? "the animation has more than " + std::to_string(limits.maxFrames)
+                + " frames, the most that a terminal keeps, so only its first frame shows"
+            : "the frames of the animation do not all fit in the " + humanSize(budget)
+                + " that aglow allows for it, so only its first frame shows";
         return image;
     }
     if (!finished || image.m_frames.empty()) {

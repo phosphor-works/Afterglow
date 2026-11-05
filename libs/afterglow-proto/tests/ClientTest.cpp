@@ -8,13 +8,18 @@
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/DndTree.h>
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/FdDelta.h>
 #include <AfterglowProto/TransferClient.h>
+#include <AfterglowProto/TransferPath.h>
 #include <AfterglowProto/Zlib.h>
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
@@ -22,9 +27,12 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <pthread.h>
 #include <set>
 #include <stdexcept>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 using namespace AfterglowProto;
@@ -94,6 +102,62 @@ std::string reply(const std::string& id, std::vector<std::pair<std::string, std:
     }
     const auto encoded = encodeTransfer(f);
     return encoded.substr(7, encoded.size() - 9);
+}
+
+int g_testWake = -1;
+
+extern "C" void wakeOnSignal(int)
+{
+    const char byte = 1;
+    [[maybe_unused]] const ssize_t ignored = ::write(g_testWake, &byte, 1);
+}
+
+TEST(Client, AWakeEndsAWriteThatASignalCutShort)
+{
+    // A pipe of one page takes half of the bytes, and the write blocks. The
+    // signal then makes write(2) return the half that went, not EINTR.
+    int pipeFds[2];
+    int wakeFds[2];
+    ASSERT_EQ(::pipe2(pipeFds, O_CLOEXEC), 0);
+    ASSERT_EQ(::pipe2(wakeFds, O_CLOEXEC | O_NONBLOCK), 0);
+    ASSERT_GT(::fcntl(pipeFds[1], F_SETPIPE_SZ, 4096), 0);
+    const auto room = std::size_t(::fcntl(pipeFds[1], F_GETPIPE_SZ));
+    g_testWake = wakeFds[1];
+    struct sigaction action { };
+    action.sa_handler = wakeOnSignal;
+    sigemptyset(&action.sa_mask);
+    struct sigaction old { };
+    ::sigaction(SIGUSR1, &action, &old);
+    const pthread_t writer = ::pthread_self();
+    std::atomic<bool> done { false };
+    std::thread helper([&] {
+        // The pipe is full only while the writer is inside its write(2).
+        int queued = 0;
+        while (!done && (::ioctl(pipeFds[0], FIONREAD, &queued) != 0 || std::size_t(queued) < room)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        ::pthread_kill(writer, SIGUSR1);
+        // A write that missed the wake would block for good: let it end.
+        for (int i = 0; i < 200 && !done; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::string sink(room * 2, '\0');
+        while (!done && ::read(pipeFds[0], sink.data(), sink.size()) > 0) {
+        }
+    });
+    const bool wrote = writeAll(pipeFds[1], std::string(room * 2, 'x'), wakeFds[0]);
+    const int failure = errno;
+    done = true;
+    ::close(pipeFds[1]);
+    helper.join();
+    ::sigaction(SIGUSR1, &old, nullptr);
+    g_testWake = -1;
+    for (const int fd : { pipeFds[0], wakeFds[0], wakeFds[1] }) {
+        ::close(fd);
+    }
+    EXPECT_FALSE(wrote);
+    EXPECT_EQ(failure, EINTR);
 }
 
 TEST(Client, FdSourceStopsAtItsLimit)
@@ -594,6 +658,71 @@ TEST(Client, ADeltaOfAnUnchangedFileReadsInSteps)
     EXPECT_GT(pulls, 2);
 }
 
+TEST(Client, TheSignaturesOfASessionStopAtTheirMemory)
+{
+    // Each signature is below the limit of one file. Together they pass the session's.
+    TempDir dir;
+    dir.write("a", noise(10000, 12));
+    dir.write("b", noise(10000, 13));
+    auto options = optionsIn(dir);
+    options.deltas = true;
+    options.signatureMemory = 6000;
+    std::string error;
+    auto sender = makeTransferSender(options, { "a", "b", "/d/" }, error);
+    ASSERT_TRUE(sender) << error;
+    const auto byName = announced(*sender);
+    const std::string part(TransferMaxData, 's');
+    for (const auto* name : { "/d/a", "/d/b" }) {
+        ASSERT_EQ(byName.at(name).at("tt"), "rsync");
+        const auto fid = byName.at(name).at("fid");
+        sender->receive(reply(sender->id(), { { "ac", "status" }, { "fid", fid }, { "st", "STARTED" }, { "tt", "rsync" } }));
+        EXPECT_EQ(sender->state(), TransferClient::State::Running);
+        sender->receive(reply(sender->id(), { { "ac", "data" }, { "fid", fid }, { "d", part } }));
+    }
+    EXPECT_EQ(sender->state(), TransferClient::State::Canceling);
+    EXPECT_EQ(sender->error(), "The terminal sent more signatures than this side can hold");
+}
+
+TEST(Client, AReceiverSignsALargeFileInSteps)
+{
+    // The signature of a file that is there already is small output for the
+    // bytes that it reads: the output budget alone would read all 40 MiB at once.
+    TempDir dir;
+    const std::size_t size = 40 << 20;
+    dir.write("f", std::string(size, 'a'));
+    auto options = optionsIn(dir);
+    options.deltas = true;
+    std::string error;
+    auto client = makeTransferReceiver(options, { "/r/f", (dir.path / "f").string() }, error);
+    ASSERT_TRUE(client) << error;
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", std::to_string(size) } } };
+    terminal.answerRequests = false;
+    const auto sentSince = [&](std::size_t from, const std::string& action) {
+        return std::any_of(terminal.sent.begin() + std::ptrdiff_t(from), terminal.sent.end(),
+                           [&](const TransferFields& m) { return m.at("ac") == action; });
+    };
+    std::size_t from = 0;
+    bool requested = false;
+    for (int round = 0; round < 20 && !requested; ++round) {
+        from = terminal.sent.size();
+        terminal.step();
+        requested = std::any_of(terminal.sent.begin() + std::ptrdiff_t(from), terminal.sent.end(), [](const TransferFields& m) {
+            return m.at("ac") == "file" && m.contains("tt") && m.at("tt") == "rsync";
+        });
+    }
+    ASSERT_TRUE(requested);
+    EXPECT_TRUE(client->hasWork());
+    EXPECT_FALSE(sentSince(from, "end_data"));
+    int pulls = 1;
+    while (client->hasWork() && pulls < 100) {
+        terminal.step();
+        ++pulls;
+    }
+    EXPECT_TRUE(sentSince(0, "end_data"));
+    EXPECT_GT(pulls, 2);
+}
+
 struct Hostile : testing::Test
 {
     TempDir dir;
@@ -857,6 +986,27 @@ TEST_F(Hostile, AChildWhosePathIsNotUnderItsParentIsRefused)
     terminal.run();
     EXPECT_TRUE(ended(*client));
     EXPECT_FALSE(std::filesystem::exists(dir.path / "dest"));
+}
+
+TEST_F(Hostile, AParentListedWithAnUncleanPathComesBeforeItsChild)
+{
+    // /r/tree/./././d is longer than its child /r/tree/d/c. The child must
+    // still take its base and its local path from that parent.
+    auto client = receiver({ "/r/tree", (dir.path / "dest").string() + "/" });
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = {
+        { { "fid", "0" }, { "n", "/r/tree" }, { "st", "1" }, { "ft", "directory" } },
+        { { "fid", "0" }, { "n", "/r/tree/./././././././d" }, { "st", "2" }, { "pr", "1" }, { "ft", "directory" } },
+        { { "fid", "0" }, { "n", "/r/tree/d/c" }, { "st", "3" }, { "pr", "2" }, { "sz", "1" } },
+    };
+    terminal.contents = { { "/r/tree/d/c", "x" } };
+    terminal.run();
+    ASSERT_EQ(client->state(), TransferClient::State::Done) << client->error();
+    const auto tree = dir.path / "dest/tree";
+    ASSERT_EQ(client->items().size(), 3u);
+    EXPECT_EQ(client->items()[1].local, (tree / "d").string());
+    EXPECT_EQ(client->items()[2].local, (tree / "d/c").string());
+    EXPECT_EQ(readFile((tree / "d/c").string()), "x");
 }
 
 TEST_F(Hostile, APathLongerThanPathMaxIsRefused)

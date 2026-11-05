@@ -29,7 +29,9 @@
 #   cmake -DAFTERGLOW_DEPS_FETCH=<dir> -P cmake/AfterglowDependencies.cmake
 #
 # downloads every archive into <dir> under its FILE name and checks it, so
-# <dir> can be given as AFTERGLOW_DEPS_ARCHIVES.
+# <dir> can be given as AFTERGLOW_DEPS_ARCHIVES. Each download also leaves an
+# empty FILE.lock in <dir> (see _afterglow_download). AFTERGLOW_DEPS_ARCHIVES
+# reads only the archives, so the lock files need not be copied with them.
 #
 # Bumping a pin: change its VERSION, URL, FILE and SHA256 together, with the
 # hash taken from a download that you checked against a second source.
@@ -67,7 +69,7 @@ set(AFTERGLOW_VENDORED_stb_image_COMMIT "d14d46f6b44456eb88beac58cba833a4135d4c8
 set(AFTERGLOW_VENDORED_stb_image_URL
     "https://raw.githubusercontent.com/nothings/stb/${AFTERGLOW_VENDORED_stb_image_COMMIT}/stb_image.h")
 set(AFTERGLOW_VENDORED_stb_image_FILE "tools/aglow/stb/stb_image.h")
-set(AFTERGLOW_VENDORED_stb_image_SHA256 "f21c68b4d6fc99dba3abda241dff03c94b0aa07aab59fd14011cb76f27b12716")
+set(AFTERGLOW_VENDORED_stb_image_SHA256 "9ffe0bebf6a68d3fe05ba9a803d611f83c67a4c76acca0a8cf7d73e29d61248b")
 
 # CPM.cmake itself, the same release that PlasmaZones pins.
 set(AFTERGLOW_CPM_VERSION "0.43.2")
@@ -81,6 +83,9 @@ get_filename_component(_AFTERGLOW_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOL
 # checks, so a broken download never sits under the real name. FILE can be in
 # a cache that other build directories share: a lock keeps two configures from
 # writing one .part file, and the one that waited finds the file in place.
+# The empty FILE.lock stays after the download. Removing it would break the
+# lock: a configure that waits holds the removed file, and the next one would
+# lock a new file of the same name at the same time.
 function(_afterglow_download url file sha256)
     file(LOCK "${file}.lock" GUARD FUNCTION TIMEOUT 600)
     if(EXISTS "${file}")

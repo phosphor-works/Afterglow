@@ -6,6 +6,7 @@
 #include <AfterglowProto/FdDelta.h>
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/TransferClient.h>
+#include <AfterglowProto/TransferPath.h>
 #include <AfterglowProto/Zlib.h>
 
 #include <algorithm>
@@ -42,9 +43,6 @@ constexpr std::size_t DeltaStep = 1024 * 1024;
 constexpr std::size_t WorkStep = 16 * 1024 * 1024;
 // A signature of the largest block size for a file of 1 TiB is 20 MiB.
 constexpr std::size_t MaxSignature = 64 * 1024 * 1024;
-// The signatures that a sender holds at once: up to MaxOpenFiles files can
-// wait for theirs to be used.
-constexpr std::size_t MaxSignatures = 256 * 1024 * 1024;
 // One literal of a delta that the receiver buffers whole.
 constexpr std::size_t MaxLiteral = 16 * 1024 * 1024;
 // Afterglow refuses a regular file with EBUSY when 128 are open in one pane.
@@ -405,7 +403,7 @@ public:
         bool metadataSent = false;
         UniqueFd fd;
         std::string signature;
-        // Bytes of signature that this file holds against MaxSignatures.
+        // Bytes of signature that this file holds against options.signatureMemory.
         std::size_t signatureHeld = 0;
         std::unique_ptr<FdSource> source;
         std::unique_ptr<DeltaGenerator> generator;
@@ -780,7 +778,7 @@ void Sender::onReply(const TransferFields& f)
             cancel("The terminal sent a signature that is too large");
             return;
         }
-        if (m_signaturesHeld + data.size() > MaxSignatures) {
+        if (m_signaturesHeld + data.size() > m_options.signatureMemory) {
             cancel("The terminal sent more signatures than this side can hold");
             return;
         }
@@ -1408,14 +1406,34 @@ bool Receiver::link()
         }
         remote.parent = parent;
     }
-    // A path is longer than its parent's, so a parent is never deeper: the
-    // depths and the order follow from the lengths of the paths.
-    m_order.resize(m_remote.size());
-    for (std::size_t i = 0; i < m_order.size(); ++i) {
-        m_order[i] = i;
+    // The order walks the parent links from the roots, so a parent always
+    // comes before its children, whatever the listed paths look like: the
+    // terminal may list a directory as /a/./b and its child as /a/b/c. The
+    // children of one directory stay together, for the directory cache.
+    std::vector<std::size_t> firstChild(m_remote.size(), SIZE_MAX);
+    std::vector<std::size_t> lastChild(m_remote.size(), SIZE_MAX);
+    std::vector<std::size_t> nextSibling(m_remote.size(), SIZE_MAX);
+    m_order.clear();
+    m_order.reserve(m_remote.size());
+    for (std::size_t i = 0; i < m_remote.size(); ++i) {
+        const auto parent = m_remote[i].parent;
+        if (parent == SIZE_MAX) {
+            m_order.push_back(i);
+        } else if (firstChild[parent] == SIZE_MAX) {
+            firstChild[parent] = lastChild[parent] = i;
+        } else {
+            lastChild[parent] = nextSibling[lastChild[parent]] = i;
+        }
     }
-    std::stable_sort(m_order.begin(), m_order.end(),
-                     [&](std::size_t a, std::size_t b) { return m_items[a].remote.size() < m_items[b].remote.size(); });
+    for (std::size_t k = 0; k < m_order.size(); ++k) {
+        for (auto child = firstChild[m_order[k]]; child != SIZE_MAX; child = nextSibling[child]) {
+            m_order.push_back(child);
+        }
+    }
+    // An entry that no root reaches is in a cycle of parents.
+    if (m_order.size() != m_remote.size()) {
+        return false;
+    }
     std::set<std::pair<std::size_t, std::string_view>> names;
     for (const auto i : m_order) {
         auto& remote = m_remote[i];

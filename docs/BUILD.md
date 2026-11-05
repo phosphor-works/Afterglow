@@ -81,6 +81,8 @@ cmake -DPHOSPHOR_DEPS_FETCH=/path/to/archives -P ../PlasmaZones/cmake/PhosphorDe
 cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
 ```
 
+The directory also holds an empty `.lock` file for each archive. You do not need to copy these files.
+
 4. Copy the Afterglow and PlasmaZones directories into one parent directory on the build computer.
 
 5. Copy the archive directory to the build computer.
@@ -99,7 +101,7 @@ If you set only one option, the configuration downloads CPM.cmake and the archiv
 The repository includes `tools/aglow/stb/stb_image.h`, which `aglow icat` uses to decode images.
 The file has patches of `aglow`, which the start of `tools/aglow/StbImage.cpp` lists.
 `cmake/AfterglowDependencies.cmake` pins the file to its upstream base commit and to the SHA-256 hash of the patched file.
-When the build includes `aglow`, a configuration with a changed file stops with an error.
+When the build includes `aglow`, or the fuzz targets (`AFTERGLOW_BUILD_FUZZERS`), a configuration with a changed file stops with an error.
 
 ## Qt private APIs
 

@@ -1,14 +1,24 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// The input parser and the command line of aglow, without a terminal.
+// The input parser and the command line of aglow, without a terminal, and
+// the Tty against a terminal that the test plays in a pseudo-terminal.
 
 #include "../Cli.h"
 #include "../Tty.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <csignal>
+#include <fcntl.h>
+#include <functional>
+#include <poll.h>
+#include <pty.h>
 #include <string>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
 using namespace Aglow;
@@ -45,6 +55,97 @@ const Cli::Command command {
         { "--timeout", Cli::Option::Kind::Float, "10", {}, "" },
     },
 };
+
+// A program whose controlling terminal is a new pseudo-terminal. The test
+// plays the terminal on the master side. The program runs in a child
+// process, and its result is the exit status.
+struct PlayedTerminal
+{
+    pid_t pid = -1;
+    int master = -1;
+    std::string output;
+
+    ~PlayedTerminal()
+    {
+        if (pid > 0) {
+            ::kill(pid, SIGKILL);
+            ::waitpid(pid, nullptr, 0);
+        }
+        if (master >= 0) {
+            ::close(master);
+        }
+    }
+    bool start(const std::function<int()>& program)
+    {
+        winsize size { 24, 80, 0, 0 };
+        pid = ::forkpty(&master, nullptr, nullptr, &size);
+        if (pid == 0) {
+            ::_exit(program());
+        }
+        return pid > 0;
+    }
+    // Reads what the program writes until @p done, for up to @p ms.
+    bool readUntil(const std::function<bool()>& done, int ms = 5000)
+    {
+        const long long deadline = nowMs() + ms;
+        while (!done()) {
+            const long long left = deadline - nowMs();
+            if (left <= 0) {
+                return false;
+            }
+            pollfd fd { master, POLLIN, 0 };
+            if (::poll(&fd, 1, int(left)) > 0) {
+                char buffer[4096];
+                const auto n = ::read(master, buffer, sizeof buffer);
+                if (n <= 0) {
+                    return done();
+                }
+                output.append(buffer, std::size_t(n));
+            }
+        }
+        return true;
+    }
+    void settle(int ms) { readUntil([] { return false; }, ms); }
+    void say(std::string_view bytes) { ASSERT_EQ(::write(master, bytes.data(), bytes.size()), ssize_t(bytes.size())); }
+    std::size_t count(std::string_view text, std::size_t from = 0) const
+    {
+        std::size_t n = 0;
+        for (auto at = output.find(text, from); at != std::string::npos; at = output.find(text, at + text.size())) {
+            ++n;
+        }
+        return n;
+    }
+    // The exit status of the program, or -1 when it does not end in @p ms.
+    int wait(int ms = 8000)
+    {
+        const long long deadline = nowMs() + ms;
+        while (nowMs() < deadline) {
+            int status = 0;
+            if (::waitpid(pid, &status, WNOHANG) == pid) {
+                pid = -1;
+                return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            }
+            settle(20);
+        }
+        return -1;
+    }
+};
+
+constexpr std::string_view Da1 = "\x1b[c";
+
+// Turns @p tty for @p ms, and keeps what came in @p inputs.
+void turnFor(Tty& tty, int ms, std::vector<Input>& inputs)
+{
+    const long long deadline = nowMs() + ms;
+    while (nowMs() < deadline) {
+        tty.turn(int(std::max(1LL, deadline - nowMs())), inputs);
+    }
+}
+
+bool isDa1Answer(const Input& input)
+{
+    return input.type == Input::Type::Csi && input.data.starts_with('?') && input.data.ends_with('c');
+}
 
 } // namespace
 
@@ -116,7 +217,11 @@ TEST(AglowInput, UnambiguousKeysNeverTimeOut)
     EXPECT_TRUE(out.empty());
     out = parse(parser, "[?1u");
     EXPECT_TRUE(out.empty());
-    EXPECT_TRUE(parser.takeKeyboardReply());
+    EXPECT_EQ(parser.takeKeyboardReply(), 1);
+    EXPECT_EQ(parser.takeKeyboardReply(), -1);
+    // The protocol, with no flag on: the push did not take.
+    parse(parser, "\x1b[?0u");
+    EXPECT_EQ(parser.takeKeyboardReply(), 0);
 }
 
 TEST(AglowInput, PasteIsNoAnswer)
@@ -193,4 +298,169 @@ TEST(AglowCli, AValueOptionDoesNotTakeTheNextOption)
     const auto parsed = run(command, { "--direction=--flag" }, error);
     ASSERT_TRUE(parsed) << error;
     EXPECT_EQ(parsed->value("direction"), "--flag");
+}
+
+TEST(AglowCli, AMissingValueNamesTheFormThatTakesIt)
+{
+    std::string error;
+    EXPECT_FALSE(run(command, { "-d" }, error));
+    EXPECT_EQ(error, "The option -d needs a value. A value that starts with -- goes as -dVALUE");
+    EXPECT_FALSE(run(command, { "--direction" }, error));
+    EXPECT_EQ(error, "The option --direction needs a value. A value that starts with -- goes as --direction=VALUE");
+}
+
+// The answer to a command's own DA1 query reaches the command, and the
+// answer to the Tty's query at open does not.
+TEST(AglowTty, ACommandGetsTheAnswerToItsQueryOnly)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.queryAttributes();
+        std::vector<Input> inputs;
+        turnFor(tty, 500, inputs);
+        tty.restore();
+        return int(std::count_if(inputs.begin(), inputs.end(), isDa1Answer));
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 2; }));
+    terminal.say("\x1b[?62;1c\x1b[?62;2c");
+    EXPECT_EQ(terminal.wait(), 1);
+}
+
+// restore() reads up to the answer of every DA1 query on its way, also of
+// those that a command made: the last answer is not typed into the shell.
+TEST(AglowTty, TheDrainWaitsForTheAnswersToCommandQueries)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.drainOnRestore();
+        tty.queryAttributes();
+        std::vector<Input> inputs;
+        turnFor(tty, 200, inputs);
+        if (!tty.restore()) {
+            return 101;
+        }
+        // What came after the restore waits for the shell. In canonical
+        // mode, FIONREAD counts only whole lines.
+        ::usleep(600 * 1000);
+        const int fd = ::open("/dev/tty", O_RDONLY | O_NOCTTY | O_CLOEXEC);
+        termios modes { };
+        ::tcgetattr(fd, &modes);
+        modes.c_lflag &= ~tcflag_t(ICANON);
+        ::tcsetattr(fd, TCSANOW, &modes);
+        int waiting = 0;
+        ::ioctl(fd, FIONREAD, &waiting);
+        return std::min(waiting, 99);
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    terminal.say("\x1b[?62;1c");
+    // The reset: every query that the drain waits for went before it, or right after it.
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004l") != std::string::npos; }));
+    terminal.settle(100);
+    // The answers to the queries still open, one at a time: a drain that
+    // ends at the first leaves the second to the shell.
+    const auto open = terminal.count(Da1) - 1;
+    ASSERT_GE(open, 1u);
+    for (std::size_t i = 0; i < open; ++i) {
+        terminal.say("\x1b[?62;" + std::to_string(i + 2) + "c");
+        terminal.settle(300);
+    }
+    EXPECT_EQ(terminal.wait(), 0);
+}
+
+// A terminal that never answers DA1 gets the time of one wait from the
+// query: a program that ran longer than that ends at once.
+TEST(AglowTty, NoWaitForATerminalThatDoesNotAnswer)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.drainOnRestore();
+        std::vector<Input> inputs;
+        turnFor(tty, 2300, inputs);
+        const long long start = nowMs();
+        tty.restore();
+        // Tenths of a second.
+        return int(std::min(99LL, (nowMs() - start) / 100));
+    }));
+    EXPECT_LT(terminal.wait(), 5);
+}
+
+// CSI ? 0 u: the terminal knows kitty's keyboard protocol, and the push
+// did not take. The Esc key is then a lone ESC.
+TEST(AglowTty, AKeyboardReplyWithoutTheFlagKeepsTheEscTimeout)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        const long long deadline = nowMs() + 3000;
+        while (nowMs() < deadline) {
+            std::vector<Input> inputs;
+            tty.turn(50, inputs);
+            if (std::any_of(inputs.begin(), inputs.end(), [](const Input& i) { return i.type == Input::Type::Escape; })) {
+                return 0;
+            }
+        }
+        return 1;
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    terminal.say("\x1b[?0u\x1b[?62c");
+    terminal.settle(200);
+    terminal.say("\x1b");
+    EXPECT_EQ(terminal.wait(), 0);
+}
+
+// After a stop, the modes that the shell may have changed come back, and
+// the command draws its screen again.
+TEST(AglowTty, AContinueRestoresTheModesAndRedraws)
+{
+    PlayedTerminal terminal;
+    ASSERT_TRUE(terminal.start([] {
+        Tty tty;
+        std::string error;
+        if (!tty.open(error)) {
+            return 100;
+        }
+        tty.enterModes("\x1b[22;2t\x1b[?1002h", "\x1b[?1002l\x1b[23;2t", "\x1b[?1002h");
+        const long long deadline = nowMs() + 5000;
+        while (nowMs() < deadline) {
+            std::vector<Input> inputs;
+            tty.turn(50, inputs);
+            if (tty.takeResize()) {
+                turnFor(tty, 200, inputs);
+                return 0;
+            }
+        }
+        return 1;
+    }));
+    ASSERT_TRUE(terminal.readUntil([&] { return terminal.count(Da1) >= 1; }));
+    terminal.say("\x1b[?62c");
+    terminal.settle(100);
+    const auto before = terminal.output.size();
+    ::kill(terminal.pid, SIGSTOP);
+    int status = 0;
+    ASSERT_EQ(::waitpid(terminal.pid, &status, WUNTRACED), terminal.pid);
+    ASSERT_TRUE(WIFSTOPPED(status));
+    ::kill(terminal.pid, SIGCONT);
+    EXPECT_TRUE(terminal.readUntil([&] { return terminal.output.find("\x1b[?2004h\x1b[=1;1u\x1b[?1002h", before) != std::string::npos; }));
+    // The title is pushed once: the reset pops it once.
+    EXPECT_EQ(terminal.count("\x1b[22;2t"), 1u);
+    EXPECT_EQ(terminal.wait(), 0);
 }

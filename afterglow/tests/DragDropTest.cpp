@@ -5,6 +5,7 @@
 #include <AfterglowProto/DndTree.h>
 #include <AfterglowProto/DragDrop.h>
 #include <QDir>
+#include <QDrag>
 #include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFileInfo>
@@ -797,6 +798,43 @@ TEST_F(DndSource, ACanceledRemoteDragRemovesItsTreeAtOnce)
     EXPECT_TRUE(contains("o=0:t=e:x=4:y=1"));
     EXPECT_TRUE(tempEmpty());
 }
+TEST_F(DndSource, ATreeRemainsWhenTheReplyToItsDropCannotBeWritten)
+{
+    auto& trees = DragTrees::instance();
+    trees.setLifetime(std::chrono::seconds(2));
+    offer("1:remote-machine", "text/uri-list");
+    data(0, "file:///home/someone/notes.txt\r\n");
+    bool made = false, refuse = false;
+    QObject::connect(&service, &DragDrop::reply, &service, [&](const QByteArray& b) {
+        if (b.contains("t=k")) {
+            made = !tempEmpty();
+            QTimer::singleShot(0, &service, [&] {
+                service.handle("t=k:x=1:X=0;" + QByteArray("remote notes").toBase64());
+                service.handle("t=k:x=1:X=0;");
+            });
+        } else if (refuse && b.contains("x=3")) {
+            // The pane ends the protocol when it cannot write a reply.
+            service.end();
+        } else if (b.contains("t=E")) {
+            // The offscreen platform drops nothing: play the drop that a
+            // desktop makes. The pointer is released over a target that
+            // takes the copy and reads the paths, which announces the drop.
+            auto* drag = window.findChild<QDrag*>();
+            ASSERT_TRUE(drag);
+            Q_EMIT drag->actionChanged(Qt::CopyAction);
+            QGuiApplicationPrivate::mouse_buttons = Qt::NoButton;
+            refuse = true;
+            drag->mimeData()->data(QStringLiteral("text/uri-list"));
+        }
+    });
+    startDrag();
+    ASSERT_TRUE(waitUntil([&] { return contains("x=3"); }));
+    EXPECT_TRUE(made);
+    // The drop target can still copy from the tree.
+    EXPECT_FALSE(tempEmpty());
+    EXPECT_TRUE(waitUntil([&] { return tempEmpty(); }));
+    trees.setLifetime(DragTrees::DefaultLifetime);
+}
 TEST_F(DndSource, ATreeWithMoreDirectoriesThanOpenHandlesIsCopied)
 {
     offer("1:remote-machine", "text/uri-list");
@@ -1458,6 +1496,123 @@ TEST_F(AglowDrag, WithoutTheActionOfTheDropTheLastChosenOneCounts)
     dragAndDrop();
     say("t=e:x=4:y=0");
     EXPECT_TRUE(waitFor([&] { return !QFileInfo::exists(file); }));
+#endif
+}
+// --drop MIME:PATH writes through a link, keeps the mode of the file that it
+// replaces, and writes a device in place (F671).
+TEST_F(AglowDrop, DroppedDataKeepsTheLinkAndTheModeOfItsFile)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString real = directory.filePath(QStringLiteral("real"));
+    const QString link = directory.filePath(QStringLiteral("link"));
+    const QString kept = directory.filePath(QStringLiteral("kept"));
+    ASSERT_TRUE(writeFile(real, "old"));
+    ASSERT_EQ(::symlink("real", QFile::encodeName(link).constData()), 0);
+    ASSERT_TRUE(writeFile(kept, "old"));
+    ASSERT_EQ(::chmod(QFile::encodeName(kept).constData(), 0600), 0);
+    ASSERT_TRUE(start(directory.path(), { QStringLiteral(AFTERGLOW_AGLOW), QStringLiteral("dnd"), QStringLiteral("--drop-anywhere=copy"),
+        QStringLiteral("--drop"), QStringLiteral("text/plain:") + link, QStringLiteral("--drop"), QStringLiteral("text/html:") + kept }));
+    ASSERT_TRUE(waitFor([&] { return service.acceptsDrops(); }));
+    QMimeData mime;
+    mime.setText(QStringLiteral("new text"));
+    mime.setHtml(QStringLiteral("<p>new</p>"));
+    EXPECT_EQ(drop(mime), Qt::CopyAction);
+    ASSERT_TRUE(waitFor([&] { return count("o=1:t=r;") == 1; }));
+    EXPECT_TRUE(QFileInfo(link).isSymLink());
+    EXPECT_EQ(readFile(real), "new text");
+    EXPECT_EQ(readFile(kept), "<p>new</p>");
+    struct stat st { };
+    ASSERT_EQ(::stat(QFile::encodeName(kept).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0600u);
+#endif
+}
+TEST_F(AglowDrop, DroppedDataGoesToDevStdout)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString out = directory.filePath(QStringLiteral("out"));
+    ASSERT_TRUE(start(directory.path(), { QStringLiteral("sh"), QStringLiteral("-c"),
+        QStringLiteral("exec \"$0\" dnd --drop-anywhere=copy --drop text/plain:/dev/stdout >\"$1\""), QStringLiteral(AFTERGLOW_AGLOW), out }));
+    ASSERT_TRUE(waitFor([&] { return service.acceptsDrops(); }));
+    QMimeData mime;
+    mime.setText(QStringLiteral("to the device"));
+    EXPECT_EQ(drop(mime), Qt::CopyAction);
+    ASSERT_TRUE(waitFor([&] { return count("o=1:t=r;") == 1; }));
+    EXPECT_EQ(readFile(out), "to the device");
+#endif
+}
+// Enter pressed twice before the program reads is still Enter alone (F683).
+TEST_F(AglowOverwrite, EnterTwiceInOneReadReplacesTheFile)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_NO_FATAL_FAILURE(startProgram());
+    EXPECT_EQ(dropAnswering([&] { write("\r\r"); }), Qt::CopyAction);
+    EXPECT_EQ(readFile(target), "new data");
+#endif
+}
+// A remote tree deeper than the handles that the program keeps open in the
+// terminal: the terminal never runs out of handles (F678). Each directory
+// keeps its handle while the program reads the one below it, as long as
+// it holds more files than the reads in flight. tmpfs lists the newest
+// entry first: the directory, created last.
+TEST_F(AglowDrop, ADeepRemoteTreeStaysInTheHandleBudget)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString tree = directory.filePath(QStringLiteral("tree"));
+    const QString destination = directory.filePath(QStringLiteral("destination"));
+    QString level = tree;
+    ASSERT_TRUE(QDir().mkpath(tree));
+    for (int depth = 0; depth < 270; ++depth) {
+        for (int i = 0; i < 40; ++i)
+            ASSERT_TRUE(writeFile(level + QStringLiteral("/f") + QString::number(i), "x"));
+        level += QStringLiteral("/d");
+        ASSERT_TRUE(QDir().mkdir(level));
+    }
+    ASSERT_TRUE(QDir().mkpath(destination));
+    ASSERT_TRUE(start(destination, { QStringLiteral(AFTERGLOW_AGLOW), QStringLiteral("dnd"), QStringLiteral("--drop-anywhere=copy") }));
+    ASSERT_TRUE(waitFor([&] { return service.acceptsDrops(); }));
+    if (hasMachineId()) {
+        ASSERT_TRUE(waitFor([&] { return saw("t=a:x=1"); }));
+    }
+    service.handle("t=a:x=1;1:remote-test-machine");
+    EXPECT_EQ(dropTree(tree), Qt::CopyAction);
+    EXPECT_FALSE(contains("ENOMEM"));
+    EXPECT_EQ(readFile(destination + QStringLiteral("/tree/d/f0")), "x");
+#endif
+}
+// A file that changed after its data went is not the file that the target
+// has: a move keeps it (F674).
+TEST_F(AglowDrag, AMoveKeepsAFileThatChangedAfterItsDataWent)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_TRUE(start(directory.path(), { QStringLiteral(AFTERGLOW_AGLOW), QStringLiteral("dnd"), file }));
+    ASSERT_TRUE(waitFor([&] { return saw("t=o:x=1"); }));
+    dragAndDrop();
+    {
+        // Written in place: the same inode.
+        QFile written(file);
+        ASSERT_TRUE(written.open(QIODevice::Append));
+        ASSERT_EQ(written.write(" and more"), 9);
+    }
+    say("t=e:o=2:x=4:y=0");
+    // After a move, the program has nothing left to drag.
+    EXPECT_TRUE(waitFor([&] { return saw("t=o:x=2"); }));
+    EXPECT_EQ(readFile(file), "payload and more");
 #endif
 }
 } // namespace

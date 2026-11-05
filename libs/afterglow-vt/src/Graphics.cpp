@@ -31,12 +31,6 @@ constexpr std::uint32_t MaxDimension = AfterglowProto::GraphicsMaxSide;
 constexpr std::size_t MaxPayload = GraphicsStore::DefaultQuota;
 constexpr std::size_t MaxControl = 4096;
 constexpr int MaxDepth = 32; ///< relative placement chain links
-/// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of a
-/// few bytes, and a file read costs its length for a few bytes of path. Both
-/// run on the thread that feeds the terminal: their bytes are limited per
-/// second, with a burst for one large edit or read.
-constexpr double WorkBytesPerSecond = double(std::size_t(1) << 30);
-constexpr double WorkBurst = double(std::size_t(1) << 30);
 /// The gap of a new frame without z=, as in kitty. The root frame has none.
 constexpr std::uint32_t DefaultFrameGap = 40;
 /// The one answer to every failure to read a file or shared memory object.
@@ -150,28 +144,36 @@ bool forbiddenFile(const std::filesystem::path& path)
     return false;
 }
 
+enum class ReadResult { Done, Failed, Busy };
+
 /// Reads @p size bytes (0: the rest of the file) from @p offset. Past
 /// @p limit, the read stops there when @p cut is set (raw pixels, of which
 /// no more are used) and fails otherwise. The length comes from fstat before
-/// anything is read, and @p charge must accept it.
+/// anything is read, and @p charge must accept it: Busy when it does not.
+///
+/// The read runs on the thread that feeds the terminal, under the pane's
+/// lock. The budget bounds how many bytes it reads, not how long a stalled
+/// mount (a hard NFS mount, a FUSE server that does not answer) keeps that
+/// thread waiting: the pane stops until the read returns. Turning file
+/// transmission off is the remedy for a user with such mounts.
 template<typename Charge>
-bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t limit, bool cut, std::string& data,
-                 Charge&& charge)
+ReadResult readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t limit, bool cut,
+                       std::string& data, Charge&& charge)
 {
     struct stat st{};
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0
         || std::uint64_t(offset) > std::uint64_t(st.st_size)) {
-        return false;
+        return ReadResult::Failed;
     }
     const std::uint64_t remaining = std::uint64_t(st.st_size) - offset;
     std::uint64_t want = size ? std::min<std::uint64_t>(size, remaining) : remaining;
     if (cut) {
         want = std::min<std::uint64_t>(want, limit);
     } else if (want > limit || size > limit) {
-        return false;
+        return ReadResult::Failed;
     }
     if (!charge(std::size_t(want))) {
-        return false;
+        return ReadResult::Busy;
     }
     data.resize(std::size_t(want));
     std::size_t done = 0;
@@ -180,9 +182,9 @@ bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t l
         if (n > 0) done += std::size_t(n);
         else if (n < 0 && errno == EINTR) continue;
         else if (n == 0) { data.resize(done); break; }
-        else { data.clear(); return false; }
+        else { data.clear(); return ReadResult::Failed; }
     }
-    return true;
+    return ReadResult::Done;
 }
 
 bool insideDirectory(const std::filesystem::path& path, const std::filesystem::path& directory)
@@ -196,8 +198,10 @@ bool insideDirectory(const std::filesystem::path& path, const std::filesystem::p
 /// Whether the protocol hands the file at resolved @p path to the terminal to
 /// delete: it lies in /tmp, /dev/shm or $TMPDIR (each resolved, so a trailing
 /// slash or a symbolic link in the setting still matches), and its path below
-/// that directory carries the tag. The directory's own name does not count:
-/// a $TMPDIR named for the protocol would hand over every file in it.
+/// that directory carries the tag. This is stricter than kitty, which looks
+/// for the tag in the whole path: with a $TMPDIR whose own name holds the
+/// tag, a command could name any regular file in it for the terminal to
+/// delete.
 bool temporaryFile(const std::filesystem::path& path)
 {
     std::error_code ec;
@@ -428,6 +432,12 @@ bool GraphicsStore::dispatch(std::string_view payload, Context& ctx)
     // a feature query is answered at once: neither touches an upload in
     // progress.
     if (cmd.id && cmd.number) {
+        // Refused before the payload is decoded, but a t=t or t=s name is
+        // still the terminal's to delete, as for any other refusal. A name
+        // fits in a few KiB of base64: longer data names nothing.
+        if ((cmd.medium == 't' || cmd.medium == 's') && data.size() <= 8192) {
+            releaseMedium(cmd, AfterglowProto::base64Decode(data));
+        }
         respond(cmd, ctx, "EINVAL:both an image id and an image number", true);
         return false;
     }
@@ -670,6 +680,16 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         error = FileError;
         return false;
     };
+    // A refusal by the budget is not a failure to read: the file was opened
+    // and found regular, which a read that succeeds tells the client too.
+    auto finish = [&error, &fail](ReadResult result) {
+        if (result == ReadResult::Done) return true;
+        if (result == ReadResult::Busy) {
+            error = "EBUSY:too much image data read, try again later";
+            return false;
+        }
+        return fail();
+    };
     auto charge = [this](std::size_t bytes) { return chargeWork(bytes); };
     switch (cmd.medium) {
     case 'd':
@@ -702,13 +722,14 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
             close(parent);
             return fail();
         }
-        const bool success = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
+        const ReadResult result = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
         // A temporary file is the terminal's to delete whether or not it
-        // could use it; only the file that was read, though.
+        // could use it, as in kitty, so that refused ones do not pile up;
+        // only the file that was opened, though.
         if (cmd.medium == 't') deleteTemporaryFile(parent, actualParent, name, &opened);
         close(fd);
         close(parent);
-        if (!success) return fail();
+        if (!finish(result)) return false;
         break;
     }
     case 's': {
@@ -720,13 +741,13 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         if (fd < 0) return fail();
         // pread is safe if the sender truncates the object concurrently; mmap
         // would instead deliver SIGBUS to the terminal process.
-        const bool success = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
+        const ReadResult result = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
         close(fd);
         // Only an object named for the protocol is the terminal's to delete.
         // Any other name stays: a command must not delete an unrelated object
         // by naming it, and almost any object decodes as a tiny image.
         if (name.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) shm_unlink(name.c_str());
-        if (!success) return fail();
+        if (!finish(result)) return false;
         break;
     }
     default:
@@ -1769,20 +1790,16 @@ void GraphicsStore::pruneOrphans()
     }
 }
 
-void GraphicsStore::clearPlacements(const Screen& screen, bool includeHistory, int cellWidth, int cellHeight)
+void GraphicsStore::clearPlacements(const Screen& screen, int cellWidth, int cellHeight)
 {
-    if (includeHistory) {
-        m_placements.clear();
-    } else {
-        const long long history = static_cast<long long>(screen.historySize());
-        const long long total = static_cast<long long>(screen.totalRows());
-        std::erase_if(m_placements, [&](const Placement& p) {
-            if (p.parentImage || p.isVirtual) return false;
-            const long long top = anchorIndex(p, screen);
-            const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
-            return bottom > history || bottom <= 0 || top >= total;
-        });
-    }
+    const long long history = static_cast<long long>(screen.historySize());
+    const long long total = static_cast<long long>(screen.totalRows());
+    std::erase_if(m_placements, [&](const Placement& p) {
+        if (p.parentImage || p.isVirtual) return false;
+        const long long top = anchorIndex(p, screen);
+        const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
+        return bottom > history || bottom <= 0 || top >= total;
+    });
     settle();
 }
 
@@ -2061,15 +2078,22 @@ void GraphicsStore::settle()
     }
 }
 
+void GraphicsStore::setWorkBudget(std::size_t burst, std::size_t bytesPerSecond)
+{
+    m_workBurst = double(burst);
+    m_workRate = double(bytesPerSecond);
+    m_workBytes = -1;
+}
+
 bool GraphicsStore::chargeWork(std::size_t bytes)
 {
     const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())
                                  .count();
     if (m_workBytes < 0) {
-        m_workBytes = WorkBurst;
+        m_workBytes = m_workBurst;
     } else {
-        m_workBytes = std::min(WorkBurst, m_workBytes + double(now - m_workStampNs) * 1e-9 * WorkBytesPerSecond);
+        m_workBytes = std::min(m_workBurst, m_workBytes + double(now - m_workStampNs) * 1e-9 * m_workRate);
     }
     m_workStampNs = now;
     if (double(bytes) > m_workBytes) {

@@ -19,10 +19,11 @@ namespace AfterglowProto {
 /// process made non-blocking still takes everything. False on any other
 /// error, with errno set: EIO when write(2) wrote nothing and gave no error.
 ///
-/// With @p wake at 0 or more, a signal or a readable @p wake ends the wait:
-/// the call returns false with errno EINTR, so that a caller whose signal
-/// handler writes to a self-pipe can act on the signal. Without @p wake, a
-/// signal does not end the write.
+/// With @p wake at 0 or more, a readable @p wake ends the write: the call
+/// returns false with errno EINTR. A signal ends it only through @p wake: its
+/// handler writes to that self-pipe, and is installed without SA_RESTART so
+/// that a blocking write(2) returns. A signal that leaves @p wake empty, or
+/// any signal without @p wake, does not end the write.
 inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
 {
     const auto woken = [wake] {
@@ -33,6 +34,13 @@ inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
         const ssize_t n = ::write(fd, bytes.data(), bytes.size());
         if (n > 0) {
             bytes.remove_prefix(std::size_t(n));
+            // A blocking write that a signal interrupts after some bytes
+            // returns their count, not EINTR: the next write would block
+            // with the wake unread.
+            if (!bytes.empty() && woken()) {
+                errno = EINTR;
+                return false;
+            }
             continue;
         }
         if (n == 0) {

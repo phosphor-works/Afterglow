@@ -14,12 +14,13 @@
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Random.h>
 #include <AfterglowProto/Text.h>
-#include <AfterglowProto/TransferClient.h>
+#include <AfterglowProto/TransferPath.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <climits>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -132,8 +133,9 @@ std::string localPath(const std::string& arg)
     return AfterglowProto::TransferPath::absolute(arg, homeDirectory(), cwd);
 }
 
-// Reads all of @p fd, up to @p limit bytes. A directory and anything larger fail.
-bool readInput(int fd, std::size_t limit, std::string& out, std::string& error)
+// Reads all of @p fd, up to @p limit bytes. A directory fails, and anything
+// larger fails with @p tooLarge.
+bool readInput(int fd, std::size_t limit, const std::string& tooLarge, std::string& out, std::string& error)
 {
     struct stat st { };
     if (::fstat(fd, &st) != 0) {
@@ -144,7 +146,6 @@ bool readInput(int fd, std::size_t limit, std::string& out, std::string& error)
         error = "it is a directory";
         return false;
     }
-    const std::string tooLarge = "it is larger than " + humanSize(limit) + ", the most that aglow takes";
     if (S_ISREG(st.st_mode) && std::uint64_t(st.st_size) > limit) {
         error = tooLarge;
         return false;
@@ -213,7 +214,7 @@ bool readPassword(std::string spec, std::string& password, std::string& error)
     }
     std::string text;
     std::string reason;
-    if (!readInput(fd, MaxPassword, text, reason)) {
+    if (!readInput(fd, MaxPassword, "it is larger than " + humanSize(MaxPassword) + ", the most that aglow takes", text, reason)) {
         error = "Failed to read the password: " + reason;
         return false;
     }
@@ -251,7 +252,8 @@ public:
     // answers in every terminal, so a missing answer is a no.
     bool supports5522(std::string& error)
     {
-        m_tty.write("\x1b[?5522$p\x1b[c");
+        m_tty.write("\x1b[?5522$p");
+        m_tty.queryAttributes();
         bool supported = false;
         const bool answered = wait([&](const Input& input) {
             if (input.type != Input::Type::Csi) {
@@ -331,6 +333,20 @@ struct Output
     std::string remote;
     std::string data;
 };
+
+// Once the terminal is restored, aglow has nothing left to undo: SIGINT,
+// SIGTERM and SIGHUP end it as they end a shell redirection, also while
+// open() waits for a FIFO to get a reader. Tty's handlers restart that
+// open(), so that Ctrl+C could not end it.
+void endOnSignals()
+{
+    for (const int number : { SIGINT, SIGTERM, SIGHUP }) {
+        struct sigaction current { };
+        if (::sigaction(number, nullptr, &current) == 0 && current.sa_handler != SIG_IGN) {
+            std::signal(number, SIG_DFL);
+        }
+    }
+}
 
 // Writes the data as a shell redirection does: a file is truncated and keeps
 // its owner, mode, ACL and links; a new file gets 0666 less the umask; a link
@@ -471,7 +487,10 @@ int runClipboard(int argc, char** argv)
                 }
             }
             // A write carries at most MaxWrite bytes of all its types together.
-            if (!readInput(fd, ClipboardAssembler::MaxWrite - total, file.data, error)) {
+            const std::string limit = humanSize(ClipboardAssembler::MaxWrite) + ", the most that aglow copies at one time";
+            const std::string tooLarge = total == 0 ? "it is larger than " + limit
+                                                    : "with the inputs before it, the data is larger than " + limit;
+            if (!readInput(fd, ClipboardAssembler::MaxWrite - total, tooLarge, file.data, error)) {
                 report("clipboard", "Failed to read " + displayName(file.arg, get) + ": " + error);
                 return 1;
             }
@@ -510,7 +529,7 @@ int runClipboard(int argc, char** argv)
             message.text = files[0].data;
             tty.write(message.write());
             if (parsed->flag("wait-for-completion")) {
-                tty.write("\x1b[c");
+                tty.queryAttributes();
                 session.wait([](const Input& input) {
                     return input.type == Input::Type::Csi && input.data.ends_with('c') ? Session::Step::Done : Session::Step::Ignore;
                 }, error, Session::Limit::Answer);
@@ -526,7 +545,8 @@ int runClipboard(int argc, char** argv)
         tty.drainOnRestore();
         // DA1 after the query: a terminal that answers it but not the query
         // has had the time it needs. The timeout runs from its answer.
-        tty.write(message.write() + "\x1b[c");
+        tty.write(message.write());
+        tty.queryAttributes();
         std::string text;
         bool valid = false;
         const bool ok = session.wait([&](const Input& input) {
@@ -555,6 +575,7 @@ int runClipboard(int argc, char** argv)
             return 1;
         }
         files[0].data = text;
+        endOnSignals();
         return writeOutput(files[0], error) ? 0 : (report("clipboard", error), 1);
     }
     if (!get) {
@@ -620,7 +641,6 @@ int runClipboard(int argc, char** argv)
         request.mimes = types;
         tty.write(AfterglowProto::clipboardReadRequest(request));
         std::size_t total = 0;
-        const bool listing = types.size() == 1 && types[0] == ".";
         return session.wait([&](const Input& input) {
             if (input.type != Input::Type::Osc || !input.data.starts_with("5522;")) {
                 return Session::Step::Ignore;
@@ -633,8 +653,7 @@ int runClipboard(int argc, char** argv)
                 // Only the types asked for. Past what a terminal takes in a
                 // write the data is no clipboard, and the rest of it is read
                 // and dropped, so that none of it reaches the shell.
-                const bool wanted = listing ? data.contains(reply->mime) || data.size() < ClipboardAssembler::MaxParts
-                                            : std::find(types.begin(), types.end(), reply->mime) != types.end();
+                const bool wanted = std::find(types.begin(), types.end(), reply->mime) != types.end();
                 total += reply->data.size();
                 tooLarge |= total > ClipboardAssembler::MaxWrite;
                 if (wanted && !tooLarge) {
@@ -666,7 +685,8 @@ int runClipboard(int argc, char** argv)
     }
     std::vector<std::string> available;
     std::set<std::string> listed;
-    for (const auto& [mime, bytes] : listing) {
+    if (const auto it = listing.find("."); it != listing.end()) {
+        const std::string& bytes = it->second;
         std::size_t start = 0;
         while (start < bytes.size() && available.size() < MaxListed) {
             auto end = bytes.find_first_of(" \n", start);
@@ -726,6 +746,7 @@ int runClipboard(int argc, char** argv)
         }
     }
     tty.restore();
+    endOnSignals();
     int code = 0;
     for (auto& file : files) {
         if (file.remote == ".") {

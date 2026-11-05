@@ -18,6 +18,7 @@
 // (pointer, selection, search, glide, scroll shift, hovered link, blink
 // phase, bidi, contrast, hinting, cell scale); --help lists them all.
 
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowRender/GpuDevice.h>
 #include <AfterglowRender/GridRenderer.h>
 #include <AfterglowRender/Snapshot.h>
@@ -39,6 +40,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <deque>

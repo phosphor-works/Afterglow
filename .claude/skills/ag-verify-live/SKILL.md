@@ -35,7 +35,9 @@ closes windows or kills processes there damages their work.
    ```
 
 The default filter is `NativeWindow.*:KeyMapping.*`: every native test but `Shaders/NativeRenderer.*`.
-`KeyMapping.*` runs here and not in CTest, because it maps keys through the keymap of the compositor's seat.
+`KeyMapping.*` runs here and not in the default CTest suite, because it maps keys through the keymap of the
+compositor's seat. With `AFTERGLOW_NATIVE_TESTS=ON`, CTest runs the whole binary in a nested KWin, `KeyMapping.*`
+included.
 Options:
 
 | Option | Default | Effect |
@@ -58,9 +60,9 @@ Skipped with "Run through native_window_acceptance.py for real compositor input"
 - `NativeWindow.KittyDragAndDropClient` and `NativeWindow.AglowDragAndDropClient`
 - `NativeWindow.KittyRemoteDragDirectory` and `NativeWindow.AglowRemoteDragDirectory`
 
-Each drag-and-drop test runs two times, with two clients. The `Kitty*` tests run `kitten dnd`, and skip when
-`kitten` is not installed. The `Aglow*` tests run the `aglow dnd` of the build, and skip in a build without `aglow`
-(`AFTERGLOW_BUILD_AGLOW=OFF`).
+Each client drag-and-drop test runs two times, with two clients. `NativeWaylandFileDrop` uses no client and runs
+one time. The `Kitty*` tests run `kitten dnd`, and skip when `kitten` is not installed. The `Aglow*` tests run the
+`aglow dnd` of the build, and skip in a build without `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`).
 
 `NativeWindow.APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks` skips when the compositor's pointer enters its
 new window, because the test needs a window that the pointer never entered.

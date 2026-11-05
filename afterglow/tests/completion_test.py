@@ -298,10 +298,23 @@ def command_cases(program, options):
     # A file named like a command is a file: its options are not those of transfer.
     yield f'{program} icat transfer --dir', set()
     yield f'{program} clipboard -', has('--help')
+    # After -h or --help aglow reads no other word: no file, no option.
+    yield f'{program} icat -h ', set()
+    yield f'{program} transfer --help ', set()
+    yield f'{program} dnd -h -', set()
+    # A flag takes no value: what follows its "=" is not a file.
+    yield f'{program} transfer --confirm-paths=', set()
+    yield f'{program} icat --hold=a', set()
+    # An option that takes a file still gets one after its "=".
+    yield f'{program} dnd --drag-thumbnail=a', last_part('=', FILES)
+    # After "--" every word is a file, -h too.
+    yield f'{program} transfer -- ', FILES
+    yield f'{program} transfer -- -h ', FILES
 
 
 def bash_cases(program):
-    """What only bash does here: zsh and fish handle "--" and given options themselves."""
+    """Cases for bash only. Zsh leaves out a given option and stops at "--" through _arguments, not through
+    aglow's own code. Fish offers a given option again, as fish completions do."""
     # An option that is given is not offered again, except one that repeats.
     yield f'{program} transfer -c --con', set()
     yield f'{program} clipboard --mime text/plain --mi', {'--mime'}

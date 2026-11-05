@@ -377,8 +377,11 @@ public:
         return m_hasSelectionBg ? &m_selectionBg
                                 : (m_options.selectionBackground ? &*m_options.selectionBackground : nullptr);
     }
-    /// Advances image animations. Returns the next time (steady clock, ms) a
-    /// frame is due, or 0 when nothing is animating.
+    /// Advances the animations of images drawn in the viewport of the active
+    /// screen. Returns the next time (steady clock, ms) a frame is due, or 0
+    /// when nothing in view is animating. An animation out of view asks for
+    /// no frames, so the caller calls again when the viewport scrolls or the
+    /// screen changes.
     std::uint64_t advanceAnimations(std::uint64_t nowMs);
     int cellWidth() const noexcept { return m_cellWidth; }
     int cellHeight() const noexcept { return m_cellHeight; }

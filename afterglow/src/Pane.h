@@ -290,6 +290,10 @@ private:
     bool m_protocolStaleReset = false; ///< GUI thread
     /// Posts @p command to m_protocolCommands and wakes deliverProtocolCommands.
     void postProtocolCommand(std::function<void()> command);
+    // The posted protocol commands that have not run. While one waits, the
+    // terminal's own reports wait behind it: a program reads a DA1 answer as
+    // the fence after the replies to what it wrote before the query.
+    std::atomic<std::size_t> m_protocolQueued{0};
     // Counts the posted protocol commands, so that a drag event can wait for
     // the program's answer without an event loop.
     std::mutex m_postedMutex;
@@ -317,6 +321,9 @@ private:
                    std::vector<std::uint8_t>& rgba) override;
 
     /// Advances image animations and arms the timer for the next frame.
+    /// True when a frame changed.
+    bool advanceAnimations();
+    /// advanceAnimations(), and a contentChanged() for a frame that changed.
     void tickAnimations();
 
     // IPtyListener (pty thread)

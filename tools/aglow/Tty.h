@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <sys/ioctl.h>
@@ -53,8 +54,9 @@ public:
         m_longPrefix = std::move(prefix);
         m_longLimit = limit;
     }
-    /// The terminal said which keyboard protocol flags are on (CSI ? flags u).
-    bool takeKeyboardReply() { return std::exchange(m_keyboardReply, false); }
+    /// The keyboard protocol flags that the terminal said are on (CSI ?
+    /// flags u) since the last call, or -1.
+    int takeKeyboardReply() { return std::exchange(m_keyboardReply, -1); }
 
 private:
     enum class State { Ground, Escape, Csi, Ss3, String, StringEscape, Paste };
@@ -67,7 +69,7 @@ private:
     std::string m_text;
     bool m_overflow = false;
     bool m_unambiguous = false;
-    bool m_keyboardReply = false;
+    int m_keyboardReply = -1;
     std::size_t m_pasteMatch = 0;
     std::string m_longPrefix;
     std::size_t m_longLimit = 0;
@@ -101,10 +103,17 @@ public:
     bool restore();
 
     void write(std::string_view bytes) { m_out += bytes; }
+    /// Asks the terminal for its primary device attributes (DA1). The answer
+    /// comes as Input::Type::Csi "?...c", after the answers to everything
+    /// written before. A command asks through here, never with write(), so
+    /// that restore() knows which answers are still on their way.
+    void queryAttributes() { query(false); }
     /// Sets the modes that a command turns on (@p set) and the bytes that
     /// turn them off (@p reset). restore() writes @p reset, also when the
-    /// command ends with an exception.
-    void enterModes(std::string_view set, std::string reset);
+    /// command ends with an exception. After a stop, the shell may have
+    /// changed modes: @p resume turns those of @p set back on that a second
+    /// write of @p set would change otherwise (a title push, a saved cursor).
+    void enterModes(std::string_view set, std::string reset, std::string resume = {});
     /// The bytes queued and not written yet.
     std::size_t pending() const { return m_out.size() - m_outAt; }
     /// Writes what the terminal takes and reads what it sends, for up to
@@ -117,6 +126,8 @@ public:
     /// restore() asks the terminal for its attributes and reads up to the
     /// answer: the replies that are still on their way are read, not typed
     /// into the shell. For a command whose terminal may still be sending.
+    /// restore() always reads up to the answers of the DA1 queries that
+    /// have none yet.
     void drainOnRestore() { m_drain = true; }
     winsize size() const;
     /// Catches SIGINT, SIGTERM, SIGHUP and SIGWINCH without a terminal in
@@ -127,7 +138,9 @@ public:
     /// A signal was caught that takeSignal() has not taken yet: for work
     /// that runs long between two turns, and stops on it.
     static bool signalPending();
-    /// The window changed size since the last call.
+    /// The window changed size, or the program went on after a stop, since
+    /// the last call. Either way the command draws its screen again: the
+    /// shell drew over it, and a stopped program gets no SIGWINCH.
     bool takeResize();
 
 private:
@@ -136,15 +149,27 @@ private:
     /// Writes everything queued, for up to @p timeoutMs. Inputs that arrive
     /// meanwhile are kept for the next turn().
     bool flush(int timeoutMs);
-    /// Reads until the reply to a DA1 query arrives, for up to @p timeoutMs.
+    /// Reads until the DA1 queries have their answers. The terminal gets
+    /// @p timeoutMs for each query from when it was written.
     bool drain(int timeoutMs);
+    /// Queues a DA1 query. @p own: the Tty's own, whose answer no command sees.
+    void query(bool own);
     /// Takes the answers to the Tty's own queries out of @p inputs, from @p from on.
     void takeReplies(std::vector<Input>& inputs, std::size_t from);
 
     int m_fd = -1;
     bool m_raw = false;
     bool m_drain = false;
-    int m_fences = 0; ///< DA1 queries of the Tty that have no answer yet
+    /// A DA1 query that has no answer yet. The terminal answers in order.
+    struct Query
+    {
+        bool own = false;
+        unsigned long long end = 0; ///< m_written once its last byte is written
+        long long writtenAt = -1;
+    };
+    std::deque<Query> m_queries;
+    unsigned long long m_written = 0; ///< the bytes written since open()
+    std::string m_resume;
     bool m_restored = true;
     termios m_saved { };
     termios m_rawModes { };

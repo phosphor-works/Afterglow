@@ -73,6 +73,14 @@ void drain(int ms = 100) {
     QElapsedTimer timer; timer.start();
     do { QCoreApplication::processEvents(); QThread::msleep(2); } while (timer.elapsed() < ms);
 }
+// Deletes what a test's Application left with deleteLater, then drains what
+// those deletes post. processEvents() never delivers a DeferredDelete posted
+// outside an event loop, as the test body and a TearDown are: only an
+// explicit send does.
+void drainDeferredDeletes() {
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    drain();
+}
 // Waits until @p condition holds or @p ms pass, and returns the condition.
 // A PTY echo or a search has no fixed time.
 bool waitFor(const std::function<bool()>& condition, int ms = 3000) {
@@ -361,7 +369,7 @@ protected:
     }
     void TearDown() override {
         application.reset();
-        drain();
+        drainDeferredDeletes();
         expectNoQmlErrors();
     }
 };
@@ -467,7 +475,7 @@ protected:
     void SetUp() override { takeQmlErrors(); }
     // The test's Application is gone by now: drain its deferred deletes.
     void TearDown() override {
-        drain();
+        drainDeferredDeletes();
         expectNoQmlErrors();
     }
 };
@@ -2306,10 +2314,15 @@ TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
     chrome->setSearchOpen(true);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     chrome->openContextMenu({10, 10}, {QVariantMap{{QStringLiteral("id"), 1}, {QStringLiteral("title"), QStringLiteral("Item")}}});
-    // The menu shows at the next frame and asks for the focus after it.
-    ASSERT_TRUE(chrome->contextMenuOpen());
-    ASSERT_TRUE(nextFrame(window));
-    ASSERT_TRUE(settleQueued());
+    // contextMenuOpen() is true at once, and the menu takes the keys a turn
+    // later. focusedItem() would find the search field all along, so the
+    // wait reads the active focus item: the menu's key handler, a child of
+    // the item that holds the menu's levels.
+    ASSERT_TRUE(waitFor([&] {
+        auto* root = layer->rootItem();
+        auto* focus = root && root->window() ? root->window()->activeFocusItem() : nullptr;
+        return focus && focus->parentItem() && focus->parentItem()->property("currents").isValid();
+    }));
     chrome->closeContextMenu();
     // The search field keeps its scoped focus while the menu is open, so
     // focusedItem() finds it at once; the keys reach it only with active focus.
@@ -2820,7 +2833,6 @@ TEST_F(NativeWindow, ChromeSceneIsMadeBeforeTheFirstFrameThatShowsIt) {
     auto* layer = window->findChild<ChromeLayer*>();
     ASSERT_NE(layer, nullptr);
     auto* chrome = window->findChild<ChromeController*>();
-    ASSERT_NE(layer, nullptr);
     ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(chrome->paneTitles().isEmpty());
     EXPECT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));

@@ -102,6 +102,10 @@ SPDX-License-Identifier = "MIT"
 # Upstream offers MIT or the Unlicense: Afterglow takes it under MIT.
 
 # The notices that install with a static aglow (tools/aglow/CMakeLists.txt).
+# The text of the GCC Runtime Library Exception goes with them as
+# notices/COPYING.RUNTIME, its name in the GCC sources. It is not in LICENSES/:
+# no file of Afterglow is under the exception, and REUSE allows no licence
+# file there that no file uses. REUSE covers no COPYING.* file.
 [[annotations]]
 path = ["tools/aglow/notices/*.txt"]
 SPDX-FileCopyrightText = "2026 fuddlesworth"

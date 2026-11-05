@@ -59,8 +59,11 @@ int run(int argc, char** argv)
     }
     args.push_back(nullptr);
     ::execv(path.c_str(), args.data());
-    std::fprintf(stderr, "afterglow %s: cannot run %s: %s\n", argv[1], path.c_str(), std::strerror(errno));
-    return 127;
+    const int failure = errno;
+    std::fprintf(stderr, "afterglow %s: cannot run %s: %s\n", argv[1], path.c_str(), std::strerror(failure));
+    // As a shell answers: 127 when there is no aglow, 126 when there is one
+    // that cannot run (no permission, not an executable).
+    return failure == ENOENT || failure == ENOTDIR ? 127 : 126;
 }
 
 } // namespace Afterglow::Aglow

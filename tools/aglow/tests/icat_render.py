@@ -15,7 +15,9 @@ afterglow_renderpng draws with Vulkan, which needs a Wayland display: Qt's
 offscreen platform has no Vulkan. Without a display or a Vulkan device the
 test exits with 77, which CTest reports as skipped. aglow runs with
 --passthrough=none and without TMUX, so that it never changes the settings
-of a tmux that runs the test.
+of a tmux that runs the test. afterglow_renderpng runs on the wayland
+platform with the generic platform theme, so that the desktop's theme plugin
+(and the session bus and portal that it opens) is not loaded.
 """
 import os
 import re
@@ -133,6 +135,7 @@ def main():
         print("skipped: afterglow_renderpng needs a Wayland display for Vulkan, and WAYLAND_DISPLAY is not set")
         sys.exit(SKIP)
     environment = {key: value for key, value in os.environ.items() if key != "TMUX"}
+    render_environment = dict(environment, QT_QPA_PLATFORM="wayland", QT_QPA_PLATFORMTHEME="generic")
     with tempfile.TemporaryDirectory(prefix="aglow-icat-") as temporary:
         root = Path(temporary)
 
@@ -140,13 +143,15 @@ def main():
             (root / (name + ".vt")).write_bytes(stream)
             screen = root / (name + "-screen.png")
             result = subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), str(root / (name + ".vt")),
-                                     str(screen)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120)
+                                     str(screen)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                    env=render_environment, timeout=120)
             check(result.returncode == 0, name, result.returncode, result.stderr.decode(errors="replace"))
             return read_png(screen)
 
         # The first render tells a missing Vulkan from a failure of the test.
         probe = subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), "-", str(root / "probe.png")],
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120)
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               env=render_environment, timeout=120)
         if probe.returncode != 0 and b"Vulkan" in probe.stderr:
             print("skipped:", probe.stderr.decode(errors="replace").strip())
             sys.exit(SKIP)

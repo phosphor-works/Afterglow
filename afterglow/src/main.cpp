@@ -35,6 +35,7 @@
 #include <cerrno>
 #include <csignal>
 #include <exception>
+#include <optional>
 #include <sys/stat.h>
 
 namespace {
@@ -148,7 +149,9 @@ int main(int argc, char** argv)
 
     // Desktop Qt Quick styles can delegate their painting to the widget style.
     // QApplication initializes that style and follows the platform's palette.
-    QApplication app(argc, argv);
+    // It ends before a quit signal is raised again, as at a return.
+    std::optional<QApplication> app;
+    app.emplace(argc, argv);
     QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral(AFTERGLOW_APP_ID)));
 
     QCommandLineParser parser;
@@ -194,7 +197,7 @@ int main(int argc, char** argv)
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
                                  QStringLiteral("[command...]"));
-    parser.process(app);
+    parser.process(*app);
 
     // Handled before Qt starts when it is the only argument.
     if (parser.isSet(QStringLiteral("config-reference"))) {
@@ -216,7 +219,7 @@ int main(int argc, char** argv)
         return 1;
     }
     // Any QtWayland platform (wayland, wayland-egl) has the Wayland interface.
-    if (!app.nativeInterface<QNativeInterface::QWaylandApplication>()) {
+    if (!app->nativeInterface<QNativeInterface::QWaylandApplication>()) {
         qCritical("afterglow runs on Wayland only (platform is %s)", qPrintable(QGuiApplication::platformName()));
         return 1;
     }
@@ -328,7 +331,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             // A signal during the start quits before the loop runs.
-            code = quitSignals.signal() != 0 ? 0 : app.exec();
+            code = quitSignals.signal() != 0 ? 0 : app->exec();
             quitSignal = quitSignals.signal();
         } catch (const std::exception& e) {
             qCritical("afterglow: %s", e.what());
@@ -336,9 +339,12 @@ int main(int argc, char** argv)
         }
     }
     // After the clean shutdown, end as the signal does: the parent (a shell,
-    // a session manager) sees that a signal ended Afterglow. What is left
-    // (QApplication, the keyboard singleton) holds nothing to save.
+    // a session manager) sees that a signal ended Afterglow. The raise skips
+    // the destructors that a return runs, so QApplication ends first: its
+    // children hold files to remove (the trees of remote drags). What is left
+    // (the keyboard singleton) holds nothing to save.
     if (quitSignal != 0) {
+        app.reset();
         std::signal(quitSignal, SIG_DFL);
         std::raise(quitSignal);
     }

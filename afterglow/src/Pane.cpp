@@ -11,6 +11,7 @@
 #include "app/NotificationCenter.h"
 #include "app/Startup.h"
 
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
@@ -804,6 +805,15 @@ void Pane::reportInputFailure()
 
 void Pane::writeToPty(std::string_view bytes)
 {
+    // The replies to protocol commands are written on the GUI thread when
+    // the commands run. A report that the terminal answers at once must not
+    // pass the replies to commands that the program wrote before it.
+    if (m_protocolQueued.load() > 0) {
+        postProtocolCommand([this, report = std::string(bytes)] {
+            if (m_pty && !m_pty->write(report)) reportInputFailure();
+        });
+        return;
+    }
     if (m_pty && !m_pty->write(bytes)) reportInputFailure();
 }
 
@@ -1107,7 +1117,7 @@ QString Pane::contextKind() const
     return m_contextKind;
 }
 
-void Pane::tickAnimations()
+bool Pane::advanceAnimations()
 {
     using namespace std::chrono;
     const auto now = std::uint64_t(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
@@ -1124,7 +1134,12 @@ void Pane::tickAnimations()
     } else {
         m_animationTimer.stop();
     }
-    if (changed && sender() == &m_animationTimer) {
+    return changed;
+}
+
+void Pane::tickAnimations()
+{
+    if (advanceAnimations()) {
         Q_EMIT contentChanged();
     }
 }
@@ -1208,7 +1223,7 @@ void Pane::ptyData(std::string_view bytes)
             this,
             [this] {
                 m_notifyPending.store(false);
-                tickAnimations();
+                advanceAnimations();
                 Q_EMIT contentChanged();
             },
             Qt::QueuedConnection);
@@ -1427,7 +1442,12 @@ void Pane::terminalProtocol(int code, std::string_view payload)
 }
 void Pane::postProtocolCommand(std::function<void()> command)
 {
-    QMetaObject::invokeMethod(&m_protocolCommands, std::move(command), Qt::QueuedConnection);
+    m_protocolQueued.fetch_add(1);
+    // The count drops after the command and the replies that it wrote.
+    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)] {
+        command();
+        m_protocolQueued.fetch_sub(1);
+    }, Qt::QueuedConnection);
     {
         std::lock_guard lock(m_postedMutex);
         ++m_postedSerial;

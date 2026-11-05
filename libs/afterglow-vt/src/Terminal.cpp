@@ -1428,7 +1428,7 @@ void Terminal::eraseDisplay(int mode, bool selective)
         for (int y = 0; y < rows(); ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
-        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, false, m_cellWidth, m_cellHeight);
+        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, m_cellWidth, m_cellHeight);
         break;
     case 3:
         // Only the saved lines go (xterm): images on the screen stay with its text.
@@ -2739,7 +2739,7 @@ void Terminal::setColumnMode(bool wide)
         for (int y = 0; y < rows(); ++y) {
             m_active->eraseRow(m_active->row(y), StyleTable::DefaultId);
         }
-        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, false, m_cellWidth, m_cellHeight);
+        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, m_cellWidth, m_cellHeight);
         m_extraCursors.clear();
     }
     setCursor(0, 0);

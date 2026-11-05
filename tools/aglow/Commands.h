@@ -19,7 +19,8 @@ int runClipboard(int argc, char** argv);
 std::string homeDirectory();
 /// The working directory; empty when it has no path (it was deleted).
 std::string currentDirectory();
-/// Prints "aglow <command>: <message>" on stderr.
+/// Prints "<program> <command>: <message>" on stderr, with Cli::program()
+/// ("aglow", or "afterglow" when `afterglow icat` runs it).
 void report(std::string_view command, std::string_view message);
 /// 512 B, 1.5 KiB, 20.0 MiB.
 std::string humanSize(std::uint64_t bytes);

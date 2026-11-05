@@ -262,7 +262,7 @@ void DragTrees::expire()
     if (next.isForever())
         m_timer.stop();
     else
-        m_timer.start(std::max<qint64>(next.remainingTime(), 0));
+        m_timer.start(std::chrono::ceil<std::chrono::milliseconds>(next.remainingTimeAsDuration()));
 }
 bool DragTrees::holds(const QByteArray& path) const
 {
@@ -466,6 +466,9 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     }
     void clearSource()
     {
+        // A reply that cannot be written after the drop (x=3) resets the
+        // protocol, while the drop target may already copy from the tree.
+        const bool droppedTree = dropAnnounced;
         offered = started = gesture = false;
         dropAnnounced = false;
         sourceAction = 0;
@@ -483,9 +486,11 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         remoteUrls.clear();
         remotePending = 0;
         remoteBytes = 0;
-        // A tree that is still the state's belongs to a drag that did not end
-        // in a drop: nothing reads it.
-        if (temporary)
+        // Any other tree that is still the state's belongs to a drag that did
+        // not end in a drop: nothing reads it.
+        if (temporary && droppedTree)
+            DragTrees::instance().finish(temporary);
+        else if (temporary)
             DragTrees::instance().remove(temporary);
         temporary.reset();
     }
@@ -877,7 +882,7 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         // The tree goes to the process before the last reply: a reply that
         // cannot be written ends the protocol, and the drop target may still
         // be copying from the tree. A reset during exec() canceled the drag
-        // and removed the tree already.
+        // and gave the tree to the process or removed it already.
         if (temporary) {
             if (action == Qt::IgnoreAction)
                 DragTrees::instance().remove(temporary);

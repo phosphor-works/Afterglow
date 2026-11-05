@@ -7,17 +7,27 @@ Usage: icat_decode.py AGLOW
 
 Each image is built here, byte by byte, to hit one decoder bug that aglow
 fixed: GIF disposal, background and graphic control extension semantics, the
-two_back read of GHSL-2023-145, the frame limit, LZW without a leading clear
-code, 16-bit PNM, BMP gaps and top-down rows, invalid PNG depths, the EXIF
-orientation of a JPEG, and a corrupt file, which the decoder child must turn
-into an error and not a crash of aglow.
+two_back read of GHSL-2023-145, the frame limit and its warning, LZW without
+a leading clear code, a frame far larger than its canvas, interlaced frames,
+the least code size, 16-bit PNM, BMP gaps and top-down rows, invalid PNG
+depths, the EXIF orientation of a JPEG, a JPEG without Huffman tables (as
+Motion JPEG), the size of a PIC past the limit, and a corrupt file, which the
+decoder child must turn into an error and not a crash of aglow. It also checks
+that a subdirectory that cannot be read leaves out only itself, and that a
+signal to aglow ends a decode that does not end, and the decoder child with it.
+
+aglow runs with --passthrough=none and without TMUX, so that it never changes
+the settings of a tmux that runs the test.
 """
 import base64
+import os
 import re
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zlib
 from pathlib import Path
 
@@ -63,6 +73,39 @@ def lzw(indices, min_code=2, lead_clear=True):
     return bytes(out + b"\0")
 
 
+def lzw_long(count, min_code=2):
+    """GIF image data of index 0 only: each code one pixel longer than the one before, up to a full
+    table, then COUNT codes of the longest string (about 4090 pixels each)."""
+    clear = 1 << min_code
+    size = min_code + 1
+    available = clear + 2
+    codes = [(clear, size), (0, size)]
+    while available < 4096:
+        codes.append((available, size))
+        available += 1
+        if available == 1 << size and size < 12:
+            size += 1
+    codes += [(4095, size)] * count
+    codes.append((clear + 1, size))
+    bits = 0
+    held = 0
+    data = bytearray()
+    for code, width in codes:
+        bits |= code << held
+        held += width
+        while held >= 8:
+            data.append(bits & 255)
+            bits >>= 8
+            held -= 8
+    if held:
+        data.append(bits & 255)
+    out = bytearray([min_code])
+    for at in range(0, len(data), 255):
+        chunk = data[at:at + 255]
+        out += bytes([len(chunk)]) + chunk
+    return bytes(out + b"\0")
+
+
 PALETTE = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)]
 
 
@@ -76,7 +119,7 @@ def gif(width, height, background, frames, trailer=True, raster=None):
             disposal, delay, transparent = frame["gce"]
             packed = disposal << 2 | (1 if transparent is not None else 0)
             out += b"\x21\xf9\x04" + struct.pack("<BHB", packed, delay, transparent or 0) + b"\0"
-        out += b"\x2c" + struct.pack("<HHHHB", left, top, w, h, 0)
+        out += b"\x2c" + struct.pack("<HHHHB", left, top, w, h, 0x40 if frame.get("interlaced") else 0)
         out += raster if raster is not None else lzw(frame["indices"])
     if trailer:
         out += b"\x3b"
@@ -120,12 +163,51 @@ def jpeg_rotated():
     return b"\xff\xd8" + exif + quant + frame + dc + ac + scan + data + b"\xff\xd9"
 
 
+def jpeg_without_tables():
+    """A grey baseline JPEG of one block without a DHT segment, as a Motion JPEG frame: its scan is coded
+    with the tables of Annex K of the JPEG standard. It is about 159 grey."""
+    def segment(marker, body):
+        return b"\xff" + bytes([marker]) + struct.pack(">H", len(body) + 2) + body
+    quant = segment(0xDB, b"\x00" + bytes([8] * 64))
+    frame = segment(0xC0, struct.pack(">BHHB", 8, 8, 8, 1) + b"\x01\x11\x00")
+    scan = segment(0xDA, b"\x01\x01\x00\x00\x3f\x00")
+    # DC category 5 is "110" in Annex K, then 31 as "11111". The AC end of block is "1010". Padded with ones.
+    data = bytes([0b11011111, 0b10101111])
+    return b"\xff\xd8" + quant + frame + scan + data + b"\xff\xd9"
+
+
+def children(pid):
+    """The processes whose parent is PID."""
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = Path(f"/proc/{entry}/stat").read_text()
+        except OSError:
+            continue
+        if stat.rsplit(")", 1)[1].split()[1] == str(pid):
+            found.append(int(entry))
+    return found
+
+
+def alive(pid):
+    """Whether PID runs or is stopped: not a zombie, and not gone."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+    except OSError:
+        return False
+
+
 # What aglow sends.
 
+ENVIRONMENT = {key: value for key, value in os.environ.items() if key != "TMUX"}
+
+
 def run(aglow, path, *options):
-    result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none",
+    result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
                              "--use-window-size=80,24,800,480", *options, str(path)],
-                            capture_output=True, timeout=60)
+                            capture_output=True, env=ENVIRONMENT, timeout=60)
     return result.returncode, result.stdout, result.stderr.decode(errors="replace")
 
 
@@ -210,7 +292,31 @@ def main():
         frames = [{"rect": (0, 0, 1, 1), "indices": [i % 4], "gce": (1, 1, None)} for i in range(1100)]
         code, sent, err = show("many.gif", gif(1, 1, 0, frames))
         check(code == 0 and len(sent) == 1 and sent[0]["keys"]["a"] == "T", err, len(sent))
+        check("only its first frame shows" in err, err)
         print("GIF frame limit: passed", flush=True)
+
+        # A frame of 65535 pixels a side on a canvas of one, with data that spells strings of 4090
+        # pixels: decoding stops once no pixel can land, in far less than the CPU limit of the child.
+        start = time.monotonic()
+        code, sent, err = show("huge-frame.gif", gif(1, 1, 0, [{"rect": (0, 0, 65535, 65535)}], raster=lzw_long(1000000)))
+        check(code == 0 and pixels(sent[0]) == [red], err, sent and pixels(sent[0]))
+        check(time.monotonic() - start < 4, time.monotonic() - start)
+        # The same on a canvas of 2 by 2: the pixels that land are those of the first two rows.
+        code, sent, err = show("huge-frame-2.gif", gif(2, 2, 0, [{"rect": (0, 0, 65535, 65535)}], raster=lzw_long(64)))
+        check(code == 0 and pixels(sent[0]) == [red] * 4, err, sent and pixels(sent[0]))
+        # A frame partly off the canvas, and an interlaced frame whose fourth row is below it.
+        code, sent, err = show("offset.gif", gif(3, 3, 0, [{"rect": (1, 1, 4, 2), "indices": [0, 1, 2, 3, 1, 2, 3, 0]}]))
+        check(code == 0 and pixels(sent[0]) == [clear] * 4 + [red, green] + [clear, green, blue], err,
+              sent and pixels(sent[0]))
+        code, sent, err = show("interlaced.gif", gif(1, 3, 0, [{"rect": (0, 0, 1, 4), "indices": [0, 1, 2, 3],
+                                                                "interlaced": True}]))
+        check(code == 0 and pixels(sent[0]) == [red, blue, green], err, sent and pixels(sent[0]))
+        print("GIF frames larger than the canvas, and interlaced: passed", flush=True)
+
+        # GIF89a takes 2 as the least code size: 1 is corrupt.
+        code, sent, err = show("code-size-1.gif", gif(1, 1, 0, [{"rect": (0, 0, 1, 1)}], raster=lzw([1], min_code=1)))
+        check(code == 1 and not sent and "corrupt" in err, code, err)
+        print("GIF least code size: passed", flush=True)
 
         # LZW data that starts without a clear code, and a frame larger than the screen, clipped.
         code, sent, err = show("noclear.gif", gif(2, 1, 0, [{"rect": (0, 0, 2, 1)}], raster=lzw([1, 2], lead_clear=False)))
@@ -280,14 +386,72 @@ def main():
         check(all(abs(px[0] - 159) <= 2 for px in row[:8]) and all(abs(px[0] - 128) <= 2 for px in row[8:]), row)
         print("JPEG EXIF orientation: passed", flush=True)
 
+        # A JPEG without DHT takes the Huffman tables of Annex K, as libjpeg does.
+        code, sent, err = show("motion.jpg", jpeg_without_tables())
+        check(code == 0 and all(abs(px[0] - 159) <= 2 for px in pixels(sent[0])), err, sent and pixels(sent[0]))
+        print("JPEG without Huffman tables: passed", flush=True)
+
+        # A PIC past the longest side is too large, with its size, and not an unknown file.
+        pic = b"\x53\x80\xf6\x34" + b"\0" * 84 + b"PICT" + struct.pack(">HH", 20000, 20000) + b"\0" * 8 + bytes([0, 8, 0, 0xF0])
+        code, sent, err = show("huge.pic", pic)
+        check(code == 1 and not sent and "20000x20000" in err, code, err)
+        print("PIC past the size limit: passed", flush=True)
+
         # Corrupt data is an error from the decoder, and aglow goes on to the next image.
         corrupt = root / "corrupt.png"
         corrupt.write_bytes(valid[:41] + b"\xff" * 64)
-        result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none",
+        result = subprocess.run([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none", "--passthrough=none",
                                  "--use-window-size=80,24,800,480", "--mirror=horizontal", str(corrupt),
-                                 str(root / "good.png")], capture_output=True, timeout=60)
+                                 str(root / "good.png")], capture_output=True, env=ENVIRONMENT, timeout=60)
         check(result.returncode == 1 and len(transmissions(result.stdout)) == 1, result.returncode, result.stderr)
         print("corrupt data: passed", flush=True)
+
+        # A subdirectory that cannot be read is left out with a message, and the images beside it show.
+        tree = root / "tree"
+        (tree / "closed").mkdir(parents=True)
+        (tree / "image.png").write_bytes(valid)
+        os.chmod(tree / "closed", 0)
+        try:
+            if not os.access(tree / "closed", os.R_OK):
+                code, out, err = run(aglow, tree)
+                check(code == 1 and len(transmissions(out)) == 1 and "closed" in err, code, err)
+                print("a subdirectory that cannot be read: passed", flush=True)
+        finally:
+            os.chmod(tree / "closed", 0o755)
+
+        # A decode that never ends: the child is stopped. SIGTERM to aglow alone ends the wait and the
+        # child, and when aglow is killed, the child goes with it.
+        width = height = 8000
+        (root / "big.png").write_bytes(png(width, height, 8, 2, (b"\0" * (1 + width * 3)) * height))
+        for stop in (signal.SIGTERM, signal.SIGKILL):
+            process = subprocess.Popen([aglow, "icat", "--transfer-mode=stream", "--stdin=no", "--fit=none",
+                                        "--passthrough=none", "--use-window-size=80,24,800,480", "--mirror=horizontal",
+                                        str(root / "big.png")], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                       env=ENVIRONMENT)
+            decoder = None
+            try:
+                deadline = time.monotonic() + 30
+                while decoder is None and process.poll() is None and time.monotonic() < deadline:
+                    found = children(process.pid)
+                    decoder = found[0] if found else None
+                check(decoder is not None, "no decoder child")
+                os.kill(decoder, signal.SIGSTOP)
+                process.send_signal(stop)
+                code = process.wait(timeout=10)
+                deadline = time.monotonic() + 10
+                while alive(decoder) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                check(not alive(decoder), "the decoder child outlived aglow")
+                if stop == signal.SIGTERM:
+                    check(code == 130 and b"interrupted" in process.stderr.read(), code)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                if decoder is not None and alive(decoder):
+                    os.kill(decoder, signal.SIGKILL)
+                process.stderr.close()
+        print("a signal ends a decode: passed", flush=True)
 
 
 if __name__ == "__main__":

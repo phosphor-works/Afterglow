@@ -17,7 +17,7 @@
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Text.h>
-#include <AfterglowProto/TransferClient.h>
+#include <AfterglowProto/TransferPath.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -44,12 +44,12 @@ namespace Path = AfterglowProto::TransferPath;
 
 constexpr int CopyOnDrop = 1;
 constexpr int MoveOnDrop = 2;
-// Reads that wait for the terminal at one time. Afterglow ends a drop with
+// Reads that wait for the terminal at one time. Afterglow fails a read with
 // EMFILE past 64 queued reads.
 constexpr std::size_t MaxInFlight = 32;
 // Directory handles that a remote drop keeps open in the terminal, with the
 // reads in flight, each of which can open one. Afterglow refuses a read
-// with ENOMEM past 256.
+// with ENOMEM past 256. A tree deeper than this leaves out what is below.
 constexpr std::size_t MaxOpenHandles = 192;
 constexpr std::size_t MaxPreSent = 64 * 1024 * 1024;
 constexpr std::size_t WriteAhead = 256 * 1024;
@@ -106,8 +106,9 @@ const Cli::Command command {
           "Ask before a drop of files replaces existing files. Files that replace nothing are copied without a "
           "question." },
         { "--confirm-drop-timeout", Cli::Option::Kind::Float, "20", {},
-          "The seconds that the question of --confirm-drop-overwrite waits for an answer. Then the drop is "
-          "canceled. Afterglow stops waiting for a drop after 30 seconds without a message from aglow.",
+          "The seconds that the question of --confirm-drop-overwrite waits for an answer, counted from the last "
+          "message of the drop. Then the drop is canceled. Afterglow stops waiting for a drop after 30 seconds "
+          "without a message from aglow, and the time that aglow takes to copy the files counts too.",
           1, 25 },
         { "--drop-anywhere", Cli::Option::Kind::Choice, "disallowed", { "disallowed", "copy", "move" },
           "Accept drops anywhere in the window, not only on the Copy and Move boxes, with this action." },
@@ -230,8 +231,9 @@ struct DropDest
     bool toStdout = false;
     bool completed = false;
     int fd = -1;
-    // A file goes to a temporary name next to it, and replaces the file only
-    // when the drop succeeds: a failed drop leaves the file as it was.
+    // A file of its own goes to a temporary name next to it, and replaces the
+    // file only when the drop succeeds: a failed drop leaves the file as it
+    // was. Other paths are written in place (see open()).
     std::string temporary;
     std::string buffer;
     AfterglowProto::DndBase64Stream decoder;
@@ -249,21 +251,51 @@ struct DropDest
             buffer += bytes;
             return true;
         }
-        if (fd < 0) {
-            if (!makeDirectories(Path::dirName(path))) {
-                return false;
-            }
-            std::string name = Path::dirName(path) + "/." + Path::baseName(path) + ".aglow-XXXXXX";
-            fd = ::mkostemp(name.data(), O_CLOEXEC);
-            if (fd < 0) {
-                return false;
-            }
-            temporary = name;
-            if (::fchmod(fd, 0666 & ~umask) != 0) {
-                return false;
-            }
+        if (fd < 0 && !open(umask)) {
+            return false;
         }
         return AfterglowProto::writeAll(fd, bytes);
+    }
+    bool open(mode_t umask)
+    {
+        if (!makeDirectories(Path::dirName(path))) {
+            return false;
+        }
+        struct stat st { };
+        const bool exists = ::lstat(path.c_str(), &st) == 0;
+        if (!exists && errno != ENOENT) {
+            return false;
+        }
+        // A rename would put a new file in the place of a device or FIFO
+        // (/dev/stdout), of a link, of a file with other names, or of a file
+        // of another owner: those are written in place, as a shell
+        // redirection writes them.
+        if (!exists || (S_ISREG(st.st_mode) && st.st_nlink == 1 && st.st_uid == ::geteuid())) {
+            std::string name = Path::dirName(path) + "/." + Path::baseName(path) + ".aglow-XXXXXX";
+            const int temp = ::mkostemp(name.data(), O_CLOEXEC);
+            if (temp < 0) {
+                // A file that can be written in a directory that cannot.
+                if (!exists || (errno != EACCES && errno != EPERM)) {
+                    return false;
+                }
+            } else if (::fchmod(temp, exists ? st.st_mode & 0777 : 0666 & ~umask) == 0
+                       && (!exists || ::fchown(temp, uid_t(-1), st.st_gid) == 0)) {
+                fd = temp;
+                temporary = std::move(name);
+                return true;
+            } else {
+                const int error = errno;
+                ::close(temp);
+                ::unlink(name.c_str());
+                // The group of the file, which this user is not a member of.
+                if (error != EPERM) {
+                    errno = error;
+                    return false;
+                }
+            }
+        }
+        fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666 & ~umask);
+        return fd >= 0;
     }
     bool close()
     {
@@ -306,13 +338,37 @@ struct Region
 };
 
 // A file, link or directory that went to the drop target, as it was then:
-// a move removes only these, and only when they are still the same.
+// a move removes only these, and only when they are still the same. The
+// same inode is not enough: a file written after its data went keeps it.
 struct Transferred
 {
     std::string path;
     dev_t dev = 0;
     ino_t ino = 0;
     bool directory = false;
+    off_t size = 0;
+    timespec mtime { };
+
+    Transferred() = default;
+    Transferred(std::string p, const struct stat& st)
+        : path(std::move(p))
+        , dev(st.st_dev)
+        , ino(st.st_ino)
+        , directory(S_ISDIR(st.st_mode))
+        , size(st.st_size)
+        , mtime(st.st_mtim)
+    {
+    }
+    /// Whether @p st, from lstat now, is still this entry. A directory
+    /// changes as its entries go: only the inode counts for it.
+    bool same(const struct stat& st) const
+    {
+        if (st.st_dev != dev || st.st_ino != ino || S_ISDIR(st.st_mode) != directory) {
+            return false;
+        }
+        return directory
+            || (st.st_size == size && st.st_mtim.tv_sec == mtime.tv_sec && st.st_mtim.tv_nsec == mtime.tv_nsec);
+    }
 };
 
 // Data that goes to the terminal in pieces: a file, or bytes in memory.
@@ -488,7 +544,7 @@ struct TreeCopy
                 error = dest + ": " + errorText(errno);
                 return false;
             }
-            copied.push_back({ from, st.st_dev, st.st_ino, true });
+            copied.emplace_back(from, st);
             const auto names = listDirectory(from);
             if (!names) {
                 error = from + ": " + errorText(errno);
@@ -515,7 +571,7 @@ struct TreeCopy
                 return false;
             }
             ::utimensat(AT_FDCWD, dest.c_str(), times, AT_SYMLINK_NOFOLLOW);
-            copied.push_back({ from, st.st_dev, st.st_ino, false });
+            copied.emplace_back(from, st);
             return true;
         }
         if (!S_ISREG(st.st_mode)) {
@@ -526,7 +582,7 @@ struct TreeCopy
             error = dest + ": " + errorText(errno);
             return false;
         }
-        copied.push_back({ from, st.st_dev, st.st_ino, false });
+        copied.emplace_back(from, st);
         return true;
     }
 };
@@ -559,7 +615,7 @@ Removal removeTransferred(const std::vector<Transferred>& entries)
     Removal result;
     for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
         struct stat st { };
-        if (::lstat(it->path.c_str(), &st) != 0 || st.st_dev != it->dev || st.st_ino != it->ino) {
+        if (::lstat(it->path.c_str(), &st) != 0 || !it->same(st)) {
             ++result.kept;
             continue;
         }
@@ -628,21 +684,9 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
             continue;
         }
         const int renameError = errno;
-        if (renameError == EXDEV) {
-            // A mount point inside the drop directory.
-            TreeCopy copy;
-            copy.links = false;
-            copy.umask = umask;
-            if (!copy.copy(fromPath + "/" + name, toPath)) {
-                error = copy.error;
-                return false;
-            }
-            removeTree(fromPath + "/" + name);
-            continue;
-        }
-        if (S_ISDIR(st.st_mode) && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR)) {
-            // Merged only into a directory that is one: a link that an
-            // earlier drop left there is not followed.
+        // Merged only into a directory that is one: a link that an earlier
+        // drop left there is not followed.
+        auto merge = [&] {
             const int child = ::openat(from, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
             const int target = ::openat(to, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
             const int openError = errno;
@@ -657,7 +701,45 @@ bool renameContents(int from, int to, const std::string& fromPath, const std::st
             if (child < 0 || target < 0) {
                 error = there + ": " + (openError == ELOOP ? std::string("a symbolic link is in the way") : errorText(openError));
             }
+            return ok;
+        };
+        if (renameError == EXDEV) {
+            // A mount point inside the drop directory. A directory that is
+            // there takes the entries one by one. Anything else is copied
+            // next to its place, on that file system, and renamed into it:
+            // it replaces a file as the rename would have.
+            struct stat existing { };
+            if (S_ISDIR(st.st_mode) && ::fstatat(to, name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0
+                && S_ISDIR(existing.st_mode)) {
+                if (!merge()) {
+                    return false;
+                }
+                continue;
+            }
+            std::string temporary = toPath + "/" + std::string(StagingPrefix) + "XXXXXX";
+            if (!::mkdtemp(temporary.data())) {
+                error = toPath + ": " + errorText(errno);
+                return false;
+            }
+            TreeCopy copy;
+            copy.links = false;
+            copy.umask = umask;
+            bool ok = copy.copy(fromPath + "/" + name, temporary);
             if (!ok) {
+                error = copy.error;
+            } else if (::renameat(AT_FDCWD, (temporary + "/" + name).c_str(), to, name.c_str()) != 0) {
+                error = there + ": " + errorText(errno);
+                ok = false;
+            }
+            removeTree(temporary);
+            if (!ok) {
+                return false;
+            }
+            removeTree(fromPath + "/" + name);
+            continue;
+        }
+        if (S_ISDIR(st.st_mode) && (renameError == EEXIST || renameError == ENOTEMPTY || renameError == EISDIR)) {
+            if (!merge()) {
                 return false;
             }
             continue;
@@ -699,6 +781,9 @@ private:
     bool exitOn(std::string_view event) const;
     void send(const DndMeta& meta, std::string_view payload = {})
     {
+        if (const auto t = meta.find("t"); t != meta.end() && t->second == "r") {
+            m_drop.activity = nowMs();
+        }
         for (const auto& packet : AfterglowProto::writeDnd(meta, payload)) {
             m_tty.write(packet);
         }
@@ -830,6 +915,9 @@ private:
         std::size_t entries = 0;
         std::vector<std::string> overwrites;
         long long deadline = 0; ///< when the overwrite question expires
+        // The last message of the drop either way: the terminal waits for
+        // the program from then on.
+        long long activity = 0;
     } m_drop;
     // Chunked messages from the terminal: the packets after the first carry only m.
     bool m_chunking = false;
@@ -1292,7 +1380,7 @@ void Dnd::pump()
                 return;
             }
             Job job;
-            job.source = Transferred { item.path, st.st_dev, st.st_ino, S_ISDIR(st.st_mode) };
+            job.source = Transferred(item.path, st);
             if (S_ISDIR(st.st_mode)) {
                 const auto all = listDirectory(item.path);
                 if (!all) {
@@ -1411,6 +1499,7 @@ void Dnd::resetDrop()
     m_drop.entries = 0;
     m_drop.overwrites.clear();
     m_drop.deadline = 0;
+    m_drop.activity = 0;
 }
 
 void Dnd::endDrop(bool success)
@@ -1798,7 +1887,9 @@ void Dnd::allDropDataReceived()
         if (m_options.flag("confirm-drop-overwrite")) {
             overwrites(m_drop.staging, dropDir, "", m_drop.overwrites);
             if (!m_drop.overwrites.empty()) {
-                m_drop.deadline = nowMs() + (long long)(m_options.real("confirm-drop-timeout") * 1000);
+                // The terminal waits from its last message, not from the
+                // question: a copy here took some of that time.
+                m_drop.deadline = m_drop.activity + (long long)(m_options.real("confirm-drop-timeout") * 1000);
                 render();
                 return;
             }
@@ -1906,6 +1997,13 @@ void Dnd::entryDone(RemoteEntry* entry)
     if (!entry->skipped && AfterglowProto::dndIsDirectoryKind(entry->kind)) {
         if (entry->children.empty()) {
             send(AfterglowProto::dndReadEntry(0, entry->kind, 0));
+        } else if (m_drop.dirs.size() >= MaxOpenHandles) {
+            // The read that scheduleReads() lets go with every handle in use
+            // opened one more. Kept open, each level of a deeper tree would
+            // add one: the directory comes without its entries.
+            send(AfterglowProto::dndReadEntry(0, entry->kind, 0));
+            entry->children.clear();
+            ++m_drop.failed;
         } else {
             m_drop.dirs[entry->kind] = entry;
             m_drop.stack.push_back(entry);
@@ -2102,6 +2200,9 @@ void Dnd::packet(std::string_view command)
 void Dnd::dispatch(const DndMeta& meta, std::string_view payload, bool more)
 {
     const auto type = meta.contains("t") ? meta.at("t") : std::string("a");
+    if (type == "M" || type == "r" || type == "R") {
+        m_drop.activity = nowMs();
+    }
     if (type == "m" || type == "M") {
         dropMove(metaInt(meta, "x"), metaInt(meta, "y"), more, payload, type == "M", metaInt(meta, "o"));
     } else if (type == "R") {
@@ -2158,14 +2259,16 @@ int Dnd::run()
     resetDrop();
     // The alternate screen, no wrapping, no cursor, and mouse reports, so
     // that a press starts no selection in the terminal. The title goes back
-    // to the one before.
+    // to the one before. After a stop, the modes come back without a second
+    // title push and screen switch, which the reset would not undo.
     m_tty.enterModes("\x1b[22;2t\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\",
-                     "\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?7h\x1b[?1049l\x1b[23;2t");
+                     "\x1b[?1006l\x1b[?1002l\x1b[?25h\x1b[?7h\x1b[?1049l\x1b[23;2t",
+                     "\x1b[?7l\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b]2;Drag and drop\x1b\\");
     // Chunks of a read can still be on their way when the program ends.
     m_tty.drainOnRestore();
     // A terminal that answers DA1 before the query has no drag and drop.
     send({ { "t", "q" } });
-    m_tty.write("\x1b[c");
+    m_tty.queryAttributes();
     const auto& machine = m_machine;
     if (m_allowDrops) {
         std::vector<std::string> mimes;
@@ -2215,9 +2318,10 @@ int Dnd::run()
                 } else if (exitOn("esc-key")) {
                     m_quit = true;
                 }
-            } else if (input.type == Input::Type::Text && confirming() && input.data == "\r") {
-                // Enter alone: a paste arrives as Paste, and typed text ahead of
-                // it is no answer.
+            } else if (input.type == Input::Type::Text && confirming() && !input.data.empty()
+                       && input.data.find_first_not_of('\r') == std::string::npos) {
+                // Enter alone, also pressed twice in one read: a paste arrives
+                // as Paste, and typed text ahead of it is no answer.
                 confirmDrop(true);
             }
         }

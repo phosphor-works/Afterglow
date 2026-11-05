@@ -5,14 +5,33 @@
 
 # Whether the command of the line is $argv[1], or with no argument whether
 # the line has no command yet. The command is the first word after aglow
-# only: a file of the same name later on the line is not one.
+# only: a file of the same name later on the line is not one. After -h or
+# --help aglow shows the help and reads no other word, so the command
+# completes nothing more.
 function __aglow_command
     set -l words (commandline -xpc)
     if not set -q argv[1]
         test (count $words) -eq 1
         return
     end
-    test (count $words) -ge 2; and test "$words[2]" = $argv[1]
+    test (count $words) -ge 2; and test "$words[2]" = $argv[1]; or return
+    for word in $words[3..]
+        switch $word
+            case --
+                return 0
+            case -h --help
+                return 1
+        end
+    end
+end
+
+# Whether the word at the cursor is a file operand. A word that starts with -
+# is an option, and fish completes the part after = of an option that takes
+# no value (--hold=) as a word of its own: neither is a file. After "--"
+# every word is a file.
+function __aglow_operand
+    contains -- -- (commandline -xpc); and return
+    not string match -q -- '-*' (commandline -ct)
 end
 
 # The password of -p: a file only when the word starts with ., / or ~, as aglow
@@ -50,7 +69,7 @@ for command in transfer dnd icat clipboard
 end
 
 set -l t '__aglow_command transfer'
-complete -c aglow -n $t -F
+complete -c aglow -n "$t; and __aglow_operand" -F
 complete -c aglow -n $t -s d -l direction -x -a 'upload download send receive' -d 'Send or receive files'
 complete -c aglow -n $t -s m -l mode -x -a 'normal mirror' -d 'How to read the arguments'
 complete -c aglow -n $t -l compress -x -a 'auto never always' -d 'Compress the data'
@@ -59,7 +78,7 @@ complete -c aglow -n $t -s c -l confirm-paths -d 'Confirm where each file goes'
 complete -c aglow -n $t -s x -l transmit-deltas -d 'Send only the changes'
 
 set -l d '__aglow_command dnd'
-complete -c aglow -n $d -F
+complete -c aglow -n "$d; and __aglow_operand" -F
 complete -c aglow -n $d -l drag -x -d 'Offer a file as a MIME type (MIME:PATH)'
 complete -c aglow -n $d -l drop -x -d 'Write a dropped MIME type to a file (MIME:PATH)'
 complete -c aglow -n $d -l drop-dest -x -a '(__fish_complete_directories)' -d 'Directory for dropped files'
@@ -72,7 +91,7 @@ complete -c aglow -n $d -l drag-thumbnail-size -x -d 'Largest side of the drag i
 complete -c aglow -n $d -l exit-on -x -a '(__aglow_events)' -d 'Events to exit on'
 
 set -l i '__aglow_command icat'
-complete -c aglow -n $i -F
+complete -c aglow -n "$i; and __aglow_operand" -F
 complete -c aglow -n $i -l align -x -a 'center left right' -d 'Horizontal alignment'
 complete -c aglow -n $i -l place -x -d 'Where to show the image (WIDTHxHEIGHT@LEFTxTOP)'
 complete -c aglow -n $i -l scale-up -d 'Scale small images up'
@@ -98,7 +117,7 @@ complete -c aglow -n $i -l silent -d 'Not used, for compatibility'
 complete -c aglow -n $i -s n -l no-trailing-newline -d 'Leave the cursor after the image'
 
 set -l c '__aglow_command clipboard'
-complete -c aglow -n $c -F
+complete -c aglow -n "$c; and __aglow_operand" -F
 complete -c aglow -n $c -s g -l get-clipboard -d 'Write the clipboard out'
 complete -c aglow -n $c -s p -l use-primary -d 'Use the primary selection'
 complete -c aglow -n $c -s m -l mime -x -d 'MIME type of a file'

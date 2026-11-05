@@ -166,6 +166,12 @@ public:
     static constexpr std::size_t DefaultQuota = AfterglowProto::GraphicsDefaultQuota;
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
+    /// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of
+    /// a few bytes, and a file read costs its length for a few bytes of path.
+    /// Both run on the thread that feeds the terminal: their bytes are
+    /// limited per second, with a burst for one large edit or read.
+    static constexpr std::size_t DefaultWorkBurst = std::size_t(1) << 30;
+    static constexpr std::size_t DefaultWorkBytesPerSecond = std::size_t(1) << 30;
     static constexpr std::size_t MaxFrames = AfterglowProto::GraphicsMaxFrames;
 
     /// Handles an APC payload that starts with 'G'.
@@ -195,14 +201,13 @@ public:
     bool advanceAnimations(const Screen& screen, int cellWidth, int cellHeight, std::uint64_t nowMs,
                            std::uint64_t& nextDeadlineMs);
 
-    /// Without @p includeHistory (ED 2): drops the placements that reach into
-    /// the active area, and those whose rows have all left the scrollback.
-    /// Virtual placements and relative children stay; a child goes with its
-    /// parent. The cell size measures how many rows an image covers; 0 counts
-    /// only its top row. With @p includeHistory: drops every placement, and
-    /// keeps the images. The alternate screen's clear (1049, 1047) uses
-    /// clear(), which drops the images too.
-    void clearPlacements(const Screen& screen, bool includeHistory, int cellWidth = 0, int cellHeight = 0);
+    /// A clear of the screen (ED 2, DECCOLM): drops the placements that
+    /// reach into the active area, and those whose rows have all left the
+    /// scrollback. Virtual placements and relative children stay; a child
+    /// goes with its parent. The cell size measures how many rows an image
+    /// covers; 0 counts only its top row. The alternate screen's clear
+    /// (1049, 1047) uses clear(), which drops the images too.
+    void clearPlacements(const Screen& screen, int cellWidth = 0, int cellHeight = 0);
 
     /// Reflow renumbers rows. anchorRows() and anchorColumns() give each
     /// placement's absolute row and column for Screen::resize() to track;
@@ -235,6 +240,9 @@ public:
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
     void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
+    /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
+    /// once, refilled at @p bytesPerSecond.
+    void setWorkBudget(std::size_t burst, std::size_t bytesPerSecond);
 
     /// Stores an internal image (sixel, or an iTerm2 inline image) placed
     /// with its top-left at visible cell (@p col, @p row). Earlier internal
@@ -270,8 +278,8 @@ private:
     /// not grow past @p inflateLimit bytes. A file or shared memory object
     /// gives at most @p readLimit bytes: raw pixels past it are not read,
     /// and longer compressed or PNG data is refused. Every failure to read
-    /// one gets the same error, and the bytes read count against the work
-    /// budget.
+    /// one gets the same error. The bytes to read count against the work
+    /// budget, and a read the budget refuses gets EBUSY.
     bool loadPayload(const Command& cmd, std::string& data, std::size_t readLimit, std::size_t inflateLimit,
                      std::string& error);
     bool decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out, std::string& error);
@@ -333,6 +341,8 @@ private:
     std::size_t m_quota = DefaultQuota;
     bool m_fileTransfer = true;
     double m_workBytes = -1; ///< work budget left; below 0 before first use
+    double m_workBurst = double(DefaultWorkBurst);
+    double m_workRate = double(DefaultWorkBytesPerSecond);
     std::int64_t m_workStampNs = 0;
 };
 

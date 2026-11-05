@@ -80,7 +80,7 @@ set(AGLOW_NOTICES "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.stb_image")
 # C library, as section 6 of the LGPL asks. A dynamic aglow uses the system's
 # libraries, which come with their own notices.
 if(AGLOW_STATIC)
-    set(AGLOW_GCC_EXCEPTION "${PROJECT_SOURCE_DIR}/LICENSES/GCC-exception-3.1.txt")
+    set(AGLOW_GCC_EXCEPTION "${CMAKE_CURRENT_SOURCE_DIR}/notices/COPYING.RUNTIME")
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/notices/libstdc++.txt" AGLOW_LIBSTDCXX_TEXT)
     file(READ "${AGLOW_GCC_EXCEPTION}" AGLOW_GCC_EXCEPTION_TEXT)
     aglow_write_file("${CMAKE_CURRENT_BINARY_DIR}/LICENSE.libstdc++" "${AGLOW_LIBSTDCXX_TEXT}${AGLOW_GCC_EXCEPTION_TEXT}")
@@ -167,6 +167,7 @@ if(BUILD_TESTING)
         add_test(NAME ${name}
                  COMMAND ${CMAKE_COMMAND} -DRESULT=${result} "-DREGEX=${regex}" ${AGLOW_RUN_OPTIONS}
                          -P "${CMAKE_CURRENT_SOURCE_DIR}/RunCheck.cmake" -- ${ARGN})
+        set_tests_properties(${name} PROPERTIES TIMEOUT 60)
     endfunction()
     string(REPLACE "." "\\." AGLOW_VERSION_REGEX "${PROJECT_VERSION}")
     aglow_add_run_test(aglow_version 0 "^aglow ${AGLOW_VERSION_REGEX} \\(protocol [0-9]+\\)" $<TARGET_FILE:aglow> --version)
@@ -192,7 +193,10 @@ if(BUILD_TESTING)
         # Crafted images (GIF disposal and frame caps, BMP, TGA, PSD, HDR, PNM, PNG, JPEG).
         add_test(NAME aglow_icat_decode
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_decode.py $<TARGET_FILE:aglow>)
-        set_tests_properties(aglow_icat_decode PROPERTIES TIMEOUT 120)
+        # A TMUX that names no server: the test must keep it from aglow, or aglow
+        # wraps its commands for tmux and runs tmux set on the pane of a developer.
+        set(AGLOW_FOREIGN_TMUX "TMUX=${CMAKE_CURRENT_BINARY_DIR}/no-tmux-server,0,0")
+        set_tests_properties(aglow_icat_decode PROPERTIES TIMEOUT 120 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
         add_test(NAME aglow_clipboard_cases
                  COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/clipboard_cases.py $<TARGET_FILE:aglow>)
         set_tests_properties(aglow_clipboard_cases PROPERTIES TIMEOUT 120)
@@ -202,7 +206,8 @@ if(BUILD_TESTING)
             add_test(NAME aglow_icat_render
                      COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/icat_render.py
                              $<TARGET_FILE:aglow> $<TARGET_FILE:afterglow_renderpng>)
-            set_tests_properties(aglow_icat_render PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
+            set_tests_properties(aglow_icat_render PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77
+                                 ENVIRONMENT "${AGLOW_FOREIGN_TMUX}")
         endif()
     endif()
     # The input parser and the command line, without a terminal.

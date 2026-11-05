@@ -208,10 +208,16 @@ aglow clipboard --get-clipboard --mime image/png ./copy.png
 `aglow icat` shows PNG, JPEG, GIF, BMP, TGA, HDR and PIC images.
 It also shows PSD images in RGB, and binary PGM and PPM images. It does not show PBM images.
 It sends a PNG image that needs no change as it is.
-It decodes the other images, and PNG images that it must scale or mirror, to pixels.
+It decodes the other images to pixels. It also decodes a PNG image that it must scale or mirror, or draw on a color (`--background`).
 It turns a JPEG image as its EXIF orientation tells.
 A child process decodes each image, with limits on its memory and CPU time.
 A corrupt image stops only that process, and `aglow icat` reports an error.
+A GIF that is damaged after its first frame plays the frames before the damage, and `aglow icat` shows a warning.
+
+For a directory, `aglow icat` shows the image files in it and in its subdirectories, in name order.
+It finds them by the file name extension.
+A subdirectory that it cannot read is left out with a message.
+`aglow icat` then shows the other images, and exits with status 1.
 
 When the terminal can read local files, `aglow icat` sends an image through shared memory or a temporary file.
 Otherwise, it sends the image through the terminal connection, and it compresses pixels with zlib.
@@ -221,8 +227,9 @@ Before it exits, `aglow icat` removes the temporary files and shared memory obje
 | --- | --- | --- |
 | Side of an image | 10,000 pixels | `aglow icat` refuses the image before it decodes it. `--scale-up` never makes a larger side. |
 | Decoded pixels of one frame (width × height × 4 bytes) | 320 MiB | `aglow icat` refuses the image before it decodes it. |
-| Decoded pixels of all frames of an animated GIF | 320 MiB | `aglow icat` shows the first frame only. |
-| Frames of an animated GIF | 1,024 | `aglow icat` shows the first frame only. |
+| Decoded pixels of all frames of an animated GIF | 320 MiB | `aglow icat` shows the first frame only, with a warning. |
+| Pixels of all frames at the size that they show (width × height × 4 bytes) | 320 MiB | `aglow icat` shows the first frame only, with a warning. |
+| Frames of an animated GIF | 1,024 | `aglow icat` shows the first frame only, with a warning. |
 
 Ctrl+C stops `aglow icat` between two parts of the output.
 
@@ -358,9 +365,16 @@ aglow dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
 ```
 
 `aglow dnd` refuses an empty argument.
+`aglow dnd --drop MIME:PATH` writes the dropped data to a temporary file next to `PATH`.
+It replaces `PATH` only when the drop succeeds, so a failed drop leaves the file as it was.
+The new file keeps the mode and the group of the file that it replaces.
+`aglow dnd` writes in place, as a shell redirection does, when `PATH` is a device, a FIFO or a link.
+It also writes in place a file with more than one name, a file of another owner, and a file in a directory that it cannot write.
+
 With `--confirm-drop-overwrite`, `aglow dnd` asks before a drop replaces existing files.
 Press Enter to replace them, or Esc to cancel the drop. Pasted text is no answer.
 The question waits for `--confirm-drop-timeout` seconds, 20 by default, from 1 to 25.
+The time starts at the last message of the drop, so the time that `aglow dnd` takes to copy the files counts too.
 Then `aglow dnd` cancels the drop with a message.
 Afterglow cancels a drop after 30 seconds without a message, so the limit is below that.
 

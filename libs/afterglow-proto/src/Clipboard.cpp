@@ -27,7 +27,6 @@ std::string header(std::string_view type, std::string_view status, std::string_v
 }
 
 constexpr std::size_t MaxMetadata = 16384;
-constexpr std::size_t MaxParts = ClipboardAssembler::MaxParts;
 
 /// The value of @p key in "k=v:k=v" metadata.
 std::string_view metadataValue(std::string_view metadata, std::string_view key)

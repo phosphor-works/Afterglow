@@ -54,7 +54,8 @@ They need this software:
 - ImageMagick `import`, for the tests that take screenshots.
 - `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
 
-Each drag-and-drop test of the native window suite runs two times: one time with `kitten dnd` and one time with `aglow dnd`.
+Each drag-and-drop test of the native window suite that uses a client runs two times: one time with `kitten dnd` and one time with `aglow dnd`.
+The Wayland file drop test (`NativeWaylandFileDrop`) uses no client. It runs one time.
 The `Aglow*` tests use the `aglow` of the build. In a build without `aglow`, they skip.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.
@@ -142,7 +143,7 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 ### Fuzzing
 
 The fuzz targets need clang for C and C++, and a separate build directory.
-The targets compile the terminal core, the protocol library, zlib-ng and xxHash with the sanitizers.
+The targets compile the terminal core, the protocol library, zlib-ng, xxHash and the image decoders of `aglow` with the sanitizers.
 Build only the fuzz targets in a fuzz build directory.
 The commands below turn off the tests and build the three targets by name.
 A fuzz build does not build `aglow`, because a static program cannot use the sanitizer runtimes.
@@ -172,6 +173,13 @@ Run the protocol target with its own corpus:
 ```sh
 mkdir -p build-fuzz/corpus-proto
 ./build-fuzz/tools/fuzz/afterglow_protofuzz -max_total_time=300 -max_len=65536 build-fuzz/corpus-proto/
+```
+
+Run the image target with its own corpus:
+
+```sh
+mkdir -p build-fuzz/corpus-image
+./build-fuzz/tools/fuzz/afterglow_imagefuzz -max_total_time=300 -max_len=65536 build-fuzz/corpus-image/
 ```
 
 A run passes when the fuzzer stops at the time limit without a crash report.
@@ -369,6 +377,8 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
+`aglow_icat_render` runs `aglow` and `afterglow_renderpng` without `TMUX`, so the test does not change the settings of a tmux that runs it.
+It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.
 
 `aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
 It also gives `aglow icat` a PNG header of 12,000 × 12,000 pixels.

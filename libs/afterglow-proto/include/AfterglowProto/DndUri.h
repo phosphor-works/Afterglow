@@ -19,7 +19,7 @@ struct DndUri
     enum class Kind : std::uint8_t {
         File, ///< a file of this computer: file:///path, file://localhost/path or file:/path
         Data, ///< a data: URI with its bytes
-        Other, ///< anything else: another scheme, a file of another host, a path with a NUL
+        Other, ///< anything else: another scheme, a file of another host, a path with a NUL, a query or a fragment
     };
     Kind kind = Kind::Other;
     /// File: the absolute, clean path.
@@ -42,6 +42,7 @@ std::string dndFileUri(std::string_view path, bool directory);
 /// The URIs of a text/uri-list, one for each line that is not empty and not
 /// a comment, in their order. Lines end with CRLF or LF. A file URI with a
 /// host other than "localhost" names a file of another computer: Kind::Other.
+/// So does one with a '?' or '#', which names no file for certain.
 std::vector<DndUri> parseDndUriList(std::string_view text);
 
 } // namespace AfterglowProto

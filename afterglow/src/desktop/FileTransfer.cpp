@@ -82,9 +82,11 @@ namespace {
     // Regular files and rsync reads in progress: one pane's count, and every pane's.
     struct Descriptors {
         std::size_t pane = 0;
-        bool full(std::size_t more) const
+        // @p streams: descriptors of outgoing streams, which count against every
+        // pane's limit and not against this pane's.
+        bool full(std::size_t more, std::size_t streams = 0) const
         {
-            return pane + more > MaxActiveFiles || g_descriptors.load() + more > descriptorLimit();
+            return pane + more > MaxActiveFiles || g_descriptors.load() + more + streams > descriptorLimit();
         }
         void add(std::size_t count)
         {
@@ -343,8 +345,11 @@ struct FileTransfer::Worker {
         QByteArray id;
         QString token;
         bool sending = false, approved = false, asking = false;
-        // The client sent ac=finish and reads no more: what goes wrong now is logged.
+        // The client sent ac=finish and reads no more: what goes wrong now is
+        // logged in one line for the session. Each error counts its files
+        // and keeps the first one; the errors are a short fixed set.
         bool finishing = false;
+        std::map<QByteArray, std::pair<int, QByteArray>> finishFailures;
         int quiet = 0, expected = 0;
         // Requests received so far. list() frees the requests themselves, so
         // their count cannot say whether the session still collects them.
@@ -575,8 +580,11 @@ struct FileTransfer::Worker {
         const bool success = AfterglowProto::transferSuccess(status);
         if (s.finishing) {
             // Written to the PTY now, it would reach the shell as typed input.
-            if (!success)
-                qCWarning(lcFileTransfer) << "File transfer" << s.id << "file" << file << "failed at the finish:" << bytesOf(status);
+            if (!success) {
+                auto& [count, first] = s.finishFailures[bytesOf(status)];
+                if (count++ == 0)
+                    first = file;
+            }
             return;
         }
         if (s.quiet == 2 || (s.quiet == 1 && success))
@@ -952,8 +960,9 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         return;
     }
     const bool rsync = f.value("tt") == "rsync" && type == "regular" && exists;
-    // A delta upload also holds its basis open.
-    if (rsync && activeFiles.full(2)) {
+    // A delta upload also holds its basis open, and its signature goes out
+    // from a temporary file.
+    if (rsync && activeFiles.full(2, 1)) {
         status(s, fid, "EBUSY");
         return;
     }
@@ -1071,9 +1080,14 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
     }
     const bool delta = file->rsync;
     s.files.emplace(fid, std::move(file));
-    status(s, fid, Status::Started, -1, { { "tt", delta ? "rsync" : "simple" } });
-    if (signature && !stream(s, fid, std::move(signature), false))
+    // The stream before STARTED: another pane can take the last descriptor
+    // meanwhile, and a refusal must be the file's only status. Its data goes
+    // out from the timer, after STARTED.
+    if (signature && !stream(s, fid, std::move(signature), false)) {
         s.files.erase(fid);
+        return;
+    }
+    status(s, fid, Status::Started, -1, { { "tt", delta ? "rsync" : "simple" } });
 }
 
 bool FileTransfer::Worker::rawWrite(File& file, std::string_view bytes)
@@ -1224,6 +1238,13 @@ void FileTransfer::Worker::finish(Session& s)
         if (!setDirectoryMetadata(file->path, file->meta))
             status(s, fid, errorName());
     s.createdDirs.clear();
+    if (!s.finishFailures.empty()) {
+        QByteArray failures;
+        for (const auto& [error, files] : s.finishFailures)
+            failures += (failures.isEmpty() ? "" : ", ") + error + " for " + QByteArray::number(files.first)
+                + (files.first == 1 ? " file (" : " files (the first ") + files.second + ")";
+        qCWarning(lcFileTransfer).noquote() << "File transfer" << s.id << "failed at the finish:" << failures;
+    }
 }
 
 bool FileTransfer::Worker::commitLink(Session& s, const QByteArray& fid)
@@ -1345,6 +1366,18 @@ void FileTransfer::Worker::list(Session& s)
     s.requestBytes = 0;
     std::vector<Request>().swap(s.requests);
     std::map<std::pair<quint64, quint64>, QByteArray> inodes;
+    // One log line for the listing, however many children it leaves out.
+    struct LeftOut {
+        int count = 0;
+        QString first;
+        QByteArray error;
+        ~LeftOut()
+        {
+            if (count)
+                qCInfo(lcFileTransfer) << "File transfer: left out" << count << "entries from a listing, the first"
+                                       << first << error;
+        }
+    } leftOut;
     while (!pending.empty()) {
         // A cancel or reset ends the session. A partial listing is never reported as complete.
         if (stopped(stop))
@@ -1359,7 +1392,10 @@ void FileTransfer::Worker::list(Session& s)
         // (QDirIterator decodes it, and the decoded name does not exist).
         if (::lstat(path.constData(), &st)) {
             if (entry.depth > 0) {
-                qCInfo(lcFileTransfer) << "File transfer: left out" << entry.path << "from a listing:" << bytesOf(errorName());
+                if (leftOut.count++ == 0) {
+                    leftOut.first = entry.path;
+                    leftOut.error = bytesOf(errorName());
+                }
                 continue;
             }
             status(s, entry.request, errorName());
@@ -1656,6 +1692,8 @@ void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
     std::string signature;
     signature.swap(file.pending);
     auto generator = std::make_unique<Delta>(std::move(file.basis), std::move(signature), &pendingBytes);
+    // The basis now counts as the stream's descriptor, not the file's.
+    file.releaseIo();
     // After the move: dropping the generator then releases the signature's budget once.
     if (!generator->generator.valid()) {
         status(s, fid, "ENOMEM");

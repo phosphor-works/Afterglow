@@ -1292,7 +1292,7 @@ TEST(Graphics, ClearScreenKeepsVirtualPlacementsAndDropsImagesReachingIt)
     s.apc("a=p,i=3,C=1,q=2"); // wholly in the history after the next scroll
     s.screen.scrollUp(Region{0, 4, 0, 19}, 1, StyleTable::DefaultId, true);
     ASSERT_EQ(s.g.placements().size(), 3u);
-    s.g.clearPlacements(s.screen, false, 10, 20);
+    s.g.clearPlacements(s.screen, 10, 20);
     ASSERT_EQ(s.g.placements().size(), 2u);
     EXPECT_TRUE(std::any_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.isVirtual; }));
     EXPECT_TRUE(std::none_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.imageId == 2; }));
@@ -1528,6 +1528,53 @@ TEST(Graphics, CommandRefusedBeforeReadingDeletesItsTemporaryFile)
         EXPECT_NE(t.host.written.find("i=1;E"), std::string::npos) << keys << ": " << t.host.written;
         EXPECT_FALSE(std::filesystem::exists(file.path)) << keys;
     }
+}
+
+TEST(Graphics, IdWithNumberStillDeletesItsTemporaryMedium)
+{
+    // Refused before its payload is read, like the commands above: the
+    // temporary file and the tagged shared memory object still go.
+    TempFile file("afterglow-tty-graphics-protocol-");
+    ASSERT_TRUE(file.write("RGBA"));
+    const ShmName shm{"/afterglow-tty-graphics-protocol-both-" + std::to_string(getpid())};
+    const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(write(fd, "RGBA", 4), 4);
+    close(fd);
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1,I=2", base64Encode(file.path)));
+    t.t.feed(apc("a=t,t=s,f=32,s=1,v=1,i=3,I=4", base64Encode(shm.name)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,I=2;EINVAL:both an image id and an image number\x1b\\"
+                              "\x1b_Gi=3,I=4;EINVAL:both an image id and an image number\x1b\\");
+    EXPECT_FALSE(std::filesystem::exists(file.path));
+    EXPECT_EQ(shm_open(shm.name.c_str(), O_RDONLY, 0), -1);
+    EXPECT_TRUE(t.g().images().empty());
+}
+
+TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
+{
+    // A budget of one 1x1 image with no refill: the second read is refused
+    // as busy, not as a failure to read. The temporary file still goes.
+    Store s(20, 5);
+    s.g.setWorkBudget(4, 0);
+    TempFile first("afterglow-tty-graphics-protocol-");
+    TempFile second("afterglow-tty-graphics-protocol-");
+    ASSERT_TRUE(first.write("RGBA"));
+    ASSERT_TRUE(second.write("RGBA"));
+    s.apc("a=t,t=t,f=32,s=1,v=1,i=1", base64Encode(first.path));
+    s.apc("a=t,t=t,f=32,s=1,v=1,i=2", base64Encode(second.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1;OK\x1b\\\x1b_Gi=2;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_EQ(s.g.images().count(2), 0u);
+    EXPECT_FALSE(std::filesystem::exists(second.path));
+    // A file read and a shared memory read draw on the same budget.
+    const ShmName shm{"/afterglow-graphics-busy-" + std::to_string(getpid())};
+    const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(write(fd, "RGBA", 4), 4);
+    close(fd);
+    s.host.written.clear();
+    s.apc("a=t,t=s,f=32,s=1,v=1,i=3", base64Encode(shm.name));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=3;EBUSY:too much image data read, try again later\x1b\\");
 }
 
 TEST(Graphics, RefusedCommandDeletesATemporaryFileByItsRealName)

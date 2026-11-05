@@ -36,6 +36,8 @@ constexpr std::size_t CompactAt = 64 * 1024;
 // arrive as CSI ... u. Terminals without it ignore these codes.
 constexpr std::string_view PushKeyboard = "\x1b[>1u";
 constexpr std::string_view PopKeyboard = "\x1b[<u";
+// Sets the flags of the mode that the push made, and leaves the stack as it is.
+constexpr std::string_view SetKeyboard = "\x1b[=1;1u";
 
 int signalPipe[2] = { -1, -1 };
 std::atomic<int> caughtSignal { 0 };
@@ -200,9 +202,10 @@ void InputParser::endCsi(std::vector<Input>& out)
         m_overflow = false;
         return;
     }
-    // The answer to CSI ? u: the terminal speaks kitty's keyboard protocol.
+    // The answer to CSI ? u: the terminal speaks kitty's keyboard protocol,
+    // with these flags on.
     if (data.size() >= 2 && data.front() == '?' && data.back() == 'u' && allDigits(std::string_view(data).substr(1, data.size() - 2))) {
-        m_keyboardReply = true;
+        m_keyboardReply = std::max(0, keyField(std::string_view(data).substr(1, data.size() - 2)));
         return;
     }
     // Esc and Ctrl+C in kitty's keyboard protocol (CSI 27 u, CSI 99;5 u) and
@@ -422,18 +425,25 @@ bool Tty::open(std::string& error)
     // The answer to DA1 comes after that answer, or alone without it.
     m_out += "\x1b[?2004h";
     m_out += PushKeyboard;
-    m_out += "\x1b[?u\x1b[c";
-    m_fences = 1;
+    m_out += "\x1b[?u";
+    query(true);
     return true;
 }
 
-void Tty::enterModes(std::string_view set, std::string reset)
+void Tty::query(bool own)
+{
+    m_out += "\x1b[c";
+    m_queries.push_back({ own, m_written + pending() });
+}
+
+void Tty::enterModes(std::string_view set, std::string reset, std::string resume)
 {
     // Kitty keeps a keyboard mode stack for each screen: set may switch to
     // the alternate one, which gets its own push.
     m_out += set;
     m_out += PushKeyboard;
     m_reset = std::string(PopKeyboard) + std::move(reset);
+    m_resume = std::move(resume);
 }
 
 void Tty::allowClipboardReply()
@@ -456,6 +466,8 @@ bool Tty::restore()
         m_out.clear();
         m_outAt = 0;
         reset = "\x1b\\";
+        // The queries that did not go out get no answer.
+        std::erase_if(m_queries, [&](const Query& q) { return q.end > m_written; });
     }
     reset += std::exchange(m_reset, {});
     if (m_raw) {
@@ -464,7 +476,7 @@ bool Tty::restore()
     }
     m_out += reset;
     ok = flush(RestoreMs) && ok;
-    if (ok && (m_drain || m_fences > 0)) {
+    if (ok && (m_drain || !m_queries.empty())) {
         drain(RestoreMs);
     }
     if (m_raw) {
@@ -508,16 +520,19 @@ bool Tty::turn(int timeoutMs, std::vector<Input>& inputs)
 
 void Tty::takeReplies(std::vector<Input>& inputs, std::size_t from)
 {
-    if (m_parser.takeKeyboardReply()) {
-        m_parser.setKeysUnambiguous(true);
+    if (const int flags = m_parser.takeKeyboardReply(); flags >= 0) {
+        // Flag 1 is the one that the push asked for: with it off, Esc is a lone ESC.
+        m_parser.setKeysUnambiguous((flags & 1) != 0);
     }
-    // The answers to this Tty's own DA1 queries: the commands never see them.
+    // Each DA1 answer belongs to the oldest query: the answers to this Tty's
+    // own queries never reach the commands.
     const auto own = std::remove_if(inputs.begin() + std::ptrdiff_t(from), inputs.end(), [&](const Input& input) {
-        if (m_fences > 0 && input.type == Input::Type::Csi && input.data.starts_with('?') && input.data.ends_with('c')) {
-            --m_fences;
-            return true;
+        if (m_queries.empty() || input.type != Input::Type::Csi || !input.data.starts_with('?') || !input.data.ends_with('c')) {
+            return false;
         }
-        return false;
+        const bool mine = m_queries.front().own;
+        m_queries.pop_front();
+        return mine;
     });
     inputs.erase(own, inputs.end());
 }
@@ -534,14 +549,25 @@ bool Tty::step(int timeoutMs, std::vector<Input>& inputs)
         while (::read(signalPipe[0], drain, sizeof drain) > 0) {
         }
     }
-    // Back from a stop: the shell set its own modes meanwhile.
+    // Back from a stop: the shell set its own modes meanwhile, and drew over
+    // the screen.
     if (continued.exchange(false) && m_raw) {
         ::tcsetattr(m_fd, TCSANOW, &m_rawModes);
+        m_out += "\x1b[?2004h";
+        m_out += SetKeyboard;
+        m_out += m_resume;
+        resized = true;
     }
     if (fds[0].revents & POLLOUT) {
         const ssize_t n = ::write(m_fd, m_out.data() + m_outAt, pending());
         if (n > 0) {
             m_outAt += std::size_t(n);
+            m_written += std::size_t(n);
+            for (auto& q : m_queries) {
+                if (q.writtenAt < 0 && q.end <= m_written) {
+                    q.writtenAt = nowMs();
+                }
+            }
             if (m_outAt == m_out.size()) {
                 m_out.clear();
                 m_outAt = 0;
@@ -593,14 +619,19 @@ bool Tty::flush(int timeoutMs)
 
 bool Tty::drain(int timeoutMs)
 {
-    // The terminal answers in order: what it sent before the answer to DA1
-    // is read here, and dropped.
+    // The terminal answers in order: what it sent before the answer to the
+    // last DA1 query is read here, and dropped. Without a query on its way,
+    // one more marks the end.
     m_kept.clear();
-    m_out += "\x1b[c";
-    ++m_fences;
-    const long long deadline = nowMs() + timeoutMs;
-    while (m_fences > 0) {
-        const long long left = deadline - nowMs();
+    if (m_queries.empty()) {
+        query(true);
+    }
+    const long long start = nowMs();
+    while (!m_queries.empty()) {
+        // The oldest query had its time and got no answer: the terminal does
+        // not answer DA1, and no wait helps.
+        const auto& oldest = m_queries.front();
+        const long long left = (oldest.writtenAt < 0 ? start : oldest.writtenAt) + timeoutMs - nowMs();
         if (left <= 0) {
             return false;
         }

@@ -4,7 +4,7 @@
 #include <AfterglowProto/DndUri.h>
 
 #include <AfterglowProto/Base64.h>
-#include <AfterglowProto/TransferClient.h>
+#include <AfterglowProto/TransferPath.h>
 
 #include <algorithm>
 #include <cstring>
@@ -48,8 +48,12 @@ DndUri fileUri(std::string_view rest)
     if (!path.starts_with('/')) {
         return uri;
     }
-    // A query or a fragment is not part of a file's path.
-    path = path.substr(0, std::min(path.find_first_of("?#"), path.size()));
+    // A file URI has no query or fragment. A '?' or '#' here is part of a
+    // name that the source did not escape: cut at it, the path would name
+    // another file, which a move would delete.
+    if (path.find_first_of("?#") != std::string_view::npos) {
+        return uri;
+    }
     const auto decoded = dndPercentDecode(path);
     if (!decoded) {
         return uri;

@@ -292,8 +292,9 @@ def main():
                     os.environ[name] = str(Path(home) / sub)
                 for name in ("WAYLAND_DISPLAY", "DISPLAY"):
                     os.environ.pop(name, None)
-                # Four transfers of at most 60 s each, and the start of KWin.
-                sys.exit(run_on_private_bus([sys.executable, __file__, *sys.argv[1:], "--private-bus"], 600))
+                # Four transfers of at most 60 s each, and the start of KWin. -I as CTest runs this
+                # script: the run on the private bus reads no PYTHON* variable and no user site either.
+                sys.exit(run_on_private_bus([sys.executable, "-I", __file__, *sys.argv[1:], "--private-bus"], 600))
         exit_on_sigterm()
         with tempfile.TemporaryDirectory(prefix="afterglow-kitty-terminal-") as temporary:
             kitty = Kitty(Path(temporary))

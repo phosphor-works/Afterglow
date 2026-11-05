@@ -10,8 +10,9 @@
 //
 // aglow patches tools/aglow/stb/stb_image.h in place. Each patch carries an
 // "aglow patch" comment there:
-//  - JPEG: a scan that uses a Huffman table that no DHT defined is refused
-//    (it decoded as grey).
+//  - JPEG: a scan that uses a Huffman table that no DHT defined takes the
+//    table of Annex K for tables 0 and 1, as libjpeg does (Motion JPEG
+//    leaves them out), and is refused for tables 2 and 3. It decoded as grey.
 //  - JPEG: an image ends at 1000 scans, as each scan walks the whole image
 //    (STBI__AGLOW_MAX_JPEG_SCANS).
 //  - JPEG: a marker that fails after the scans ends the image and runs
@@ -38,6 +39,8 @@
 //  - PSD: 16-bit RLE channels decode byte by byte, and the matte removal
 //    clamps its values.
 //  - HDR: a flat scanline among run-length encoded ones decodes in place.
+//  - PIC: a side longer than STBI_MAX_DIMENSIONS is "too large", as in the
+//    other readers. Past 2^28 pixels, the file was not a PIC.
 //  - PNM: 16-bit samples are big-endian, every sample scales from the
 //    maximum value, and a maximum value of 0 is refused.
 //
@@ -149,7 +152,10 @@ private:
 // GIF as browsers show it: each frame drawn over the canvas that the one
 // before left, a graphic control extension that applies to the next frame
 // only, frames clipped to the logical screen, and LZW streams with no
-// leading clear code or with a clear deferred past a full table.
+// leading clear code or with a clear deferred past a full table. One rule is
+// stb_image's and not the browsers': the pixels that the first frame does
+// not cover show the background colour of the global table, where a browser
+// leaves them transparent.
 class GifDecoder
 {
 public:
@@ -217,7 +223,8 @@ bool GifDecoder::raster(const Palette& palette, const Rect& rect, bool interlace
     if (m_in.truncated()) {
         return true;
     }
-    if (minCode < 1 || minCode > 8) {
+    // GIF89a takes 2 as the least code size, also for an image of two colours.
+    if (minCode < 2 || minCode > 8) {
         return false;
     }
     // The sub-blocks, as one stream of bytes.
@@ -246,40 +253,71 @@ bool GifDecoder::raster(const Palette& palette, const Rect& rect, bool interlace
     };
 
     const std::size_t total = rect.width * rect.height;
+    // The part of the frame that is on the canvas: its first visibleWidth
+    // columns of its first visibleHeight rows.
+    const std::size_t visibleWidth = rect.left < m_width ? std::min(rect.width, m_width - rect.left) : 0;
+    const std::size_t visibleHeight = rect.top < m_height ? std::min(rect.height, m_height - rect.top) : 0;
+    const std::size_t visible = visibleWidth * visibleHeight;
     std::size_t done = 0;
+    std::size_t landed = 0; ///< pixels of the frame that were on the canvas
     std::size_t column = 0;
     std::size_t row = 0;
     int pass = 0;
     static constexpr std::size_t PassStart[4] = { 0, 4, 2, 1 };
     static constexpr std::size_t PassStep[4] = { 8, 8, 4, 2 };
     std::size_t step = interlaced ? PassStep[0] : 1;
-    auto put = [&](std::uint8_t index) {
-        const std::size_t x = rect.left + column;
-        const std::size_t y = rect.top + row;
-        if (x < m_width && y < m_height && palette[index][3] != 0) {
-            std::memcpy(&m_canvas[(y * m_width + x) * 4], palette[index].data(), 4);
+    // Moves @p n pixels on, up to the end of the row or of the pass at most.
+    auto advance = [&](std::size_t n) {
+        done += n;
+        column += n;
+        if (column < rect.width) {
+            return;
         }
-        ++done;
-        if (++column == rect.width) {
-            column = 0;
-            row += step;
-            while (interlaced && row >= rect.height && pass < 3) {
-                ++pass;
-                row = PassStart[pass];
-                step = PassStep[pass];
-            }
+        row += column / rect.width * step;
+        column %= rect.width;
+        while (interlaced && row >= rect.height && pass < 3) {
+            ++pass;
+            row = PassStart[pass];
+            step = PassStep[pass];
         }
     };
-    // Each code puts at least one pixel, and decoding stops when the frame is
-    // full: the work is bounded by the frame, whatever the data holds.
+    // A frame can claim 65535 pixels a side on a canvas of one. Pixels off
+    // the canvas move on as one run, up to the end of their row or, below
+    // the canvas, of their pass, and decoding stops when no pixel that is
+    // left can land on the canvas. A string is spelled out only when one of
+    // its pixels lands, so the work is bounded by the canvas and the data,
+    // whatever size the frame claims.
     auto emit = [&](std::size_t code) {
         const std::size_t length = m_length[code];
-        for (std::size_t i = length; i-- > 0;) {
-            m_string[i] = m_suffix[code];
-            code = m_prefix[code];
-        }
-        for (std::size_t i = 0; i < length && done < total; ++i) {
-            put(m_string[i]);
+        bool spelled = false;
+        for (std::size_t at = 0; at < length && done < total;) {
+            std::size_t run = 0;
+            if (row < visibleHeight && column < visibleWidth) {
+                if (!spelled) {
+                    for (std::size_t i = length, c = code; i-- > 0;) {
+                        m_string[i] = m_suffix[c];
+                        c = m_prefix[c];
+                    }
+                    spelled = true;
+                }
+                run = std::min(length - at, visibleWidth - column);
+                std::uint8_t* out = &m_canvas[((rect.top + row) * m_width + rect.left + column) * 4];
+                for (std::size_t i = 0; i < run; ++i) {
+                    const auto& colour = palette[m_string[at + i]];
+                    if (colour[3] != 0) {
+                        std::memcpy(out + i * 4, colour.data(), 4);
+                    }
+                }
+                landed += run;
+            } else if (row < visibleHeight) {
+                run = std::min(length - at, rect.width - column);
+            } else {
+                const std::size_t rows = (rect.height - 1 - row) / step + 1;
+                run = std::min(length - at, rows * rect.width - column);
+            }
+            run = std::min(run, total - done);
+            at += run;
+            advance(run);
         }
     };
 
@@ -297,7 +335,7 @@ bool GifDecoder::raster(const Palette& palette, const Rect& rect, bool interlace
     std::uint32_t bits = 0;
     int count = 0;
     bool corrupt = false;
-    while (done < total) {
+    while (done < total && landed < visible) {
         bool more = true;
         while (count < size) {
             const int value = next();

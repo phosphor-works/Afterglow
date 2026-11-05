@@ -77,10 +77,21 @@ These cases give that error:
 - The file is in `/proc`, `/sys` or `/dev`, except `/dev/shm`.
 - The name is longer than 4,096 bytes.
 - The file holds less data than `s` × `v` raw pixels.
+- The data is PNG (`f=100`) or compressed (`o=z`), and the part to read is longer than 320 MiB.
+
+A read that takes the pane over its image work budget gives the error `EBUSY:too much image data read, try again later`.
+The budget is 1 GiB, and it fills again at 1 GiB each second.
+Afterglow also deletes the temporary file or the shared memory object in this case, by the rules above.
+
+Afterglow reads the file in the thread that reads the program's output.
+While a read waits, for example on a network mount that does not answer, the pane does not change.
+To prevent this, set `Terminal.graphicsFileTransfer` to `"deny"`.
 
 A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
 Afterglow does not support the indexed formats `f=8` and `f=16`, or the `N` key.
-The delete commands `d=f` and `d=F` delete the frames of an animation.
+The delete commands `d=f` and `d=F` delete one frame of an animation for each command.
+The `r` key selects the frame (the first frame is 1). Without `r`, the command deletes the first frame.
+On an image with one frame, `d=F` deletes the image, and `d=f` keeps it.
 
 Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
 Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel.
@@ -176,7 +187,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 | Command | Protocol | Interoperability checks |
 | --- | --- | --- |
 | `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`) and through a pseudo-terminal, against Kitty 0.49.2 (`kitty_transfer_interop.py`), and against a hostile terminal (`Proto.Hostile.*`) |
-| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), and as the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`) |
+| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), as the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`), and with the question before a drop replaces a file (`AglowOverwrite.*`) |
 | `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images. No test covers tmux passthrough. |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 

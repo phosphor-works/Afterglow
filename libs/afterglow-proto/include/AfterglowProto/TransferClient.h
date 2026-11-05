@@ -4,8 +4,8 @@
 #pragma once
 
 #include <AfterglowProto/Transfer.h>
-#include <AfterglowProto/TransferPath.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -26,8 +26,10 @@ struct TransferClientOptions
     enum class Mode : std::uint8_t {
         Normal, ///< the last argument is the destination
         /// Every argument is a source, copied to the same path on the other
-        /// computer. A path given as ~, ~/x or relative is under the home
-        /// directory on both computers. An absolute path stays the same.
+        /// computer. A sender resolves a relative path against its working
+        /// directory, and a source under its home goes under the other home.
+        /// A receiver takes ~, ~/x and a relative path as under the home on
+        /// both computers, and an absolute path as the same path.
         Mirror,
     };
     enum class Compress : std::uint8_t { Auto, Never, Always };
@@ -35,6 +37,10 @@ struct TransferClientOptions
     Compress compress = Compress::Auto;
     /// Send deltas against the files that exist at the destination (tt=rsync).
     bool deltas = false;
+    /// The bytes of signatures that a sender holds at once: up to 32 files
+    /// can wait for theirs to be used. A terminal that sends more ends the
+    /// session.
+    std::size_t signatureMemory = 256 * 1024 * 1024;
     /// Stop in State::Confirm before any file data moves.
     bool confirmPaths = false;
     /// The password that skips the terminal's prompt, sent as its SHA-256
