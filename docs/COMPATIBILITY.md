@@ -4,7 +4,9 @@
 # Terminal compatibility
 
 Afterglow targets Linux and Wayland with Vulkan.
-The protocol implementation is in `libs/afterglow-vt`. Renderer tests also check GPU pixels.
+The terminal core in `libs/afterglow-vt` parses the protocols.
+The message formats of file transfer, drag and drop, graphics and clipboard are in `libs/afterglow-proto`.
+Renderer tests also check GPU pixels.
 The following table describes tested features. It does not claim complete xterm, Kitty or iTerm2 compatibility.
 
 ## Supported protocol features
@@ -64,6 +66,23 @@ To refuse Kitty transmissions from files, temporary files and shared memory (`t=
 The program then gets an `EPERM` error, and Afterglow opens no file.
 Inline transmissions (`t=d`) always work.
 
+Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
+Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel.
+
+| Case | Result |
+| --- | --- |
+| `o` has a value that is not `z` | The program gets an `EINVAL` error. |
+| `f` is not 24, 32 or 100 | The program gets an `EINVAL` error. |
+| Raw pixels without `s` or `v`, or with a value above 10,000 | The program gets an `EINVAL` error. |
+| Raw pixels where `s` × `v` × 4 bytes is more than 320 MiB | The program gets an `EFBIG` error. |
+| Raw pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+| Uncompressed raw pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
+| Raw pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
+| PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline or from a file or shared memory | The program gets an `EFBIG` error. |
+| PNG data with `o=z` that decompresses to more than `Graphics.quota` or 320 MiB | The program gets an `EINVAL` error. |
+| A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
+| A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
+
 ## Multiple cursors
 
 Color operations 30 (text), 40 (fill) and query 101 are supported.
@@ -98,6 +117,9 @@ Persistent cursor buffers retain separate history per layer within the shared al
 ## Notifications, links and shell contexts
 
 OSC 99 notification bodies can contain more than one line. Tabs become spaces.
+OSC 9 and OSC 777 notification text gets the same check as OSC 99 text.
+The text must be valid UTF-8 with no C0, DEL or C1 control characters.
+Afterglow ignores a notification that fails the check.
 A base64 payload can be divided at any character between chunks.
 OSC 8 link text (URIs and ids) of each screen has a 16 MiB limit. Above it, new text prints without a link.
 OSC 3008 contexts form a stack. A `start` for a context that is open ends the contexts inside it.
@@ -148,6 +170,7 @@ The suite also checks these features:
 - Clipboard and notification extensions.
 
 See `libs/afterglow-vt/tests` for exact accepted sequences.
+See `libs/afterglow-proto/tests` for the message formats.
 Support for a protocol does not imply support for every optional operation.
 
 Run focused tests:

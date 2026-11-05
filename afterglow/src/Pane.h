@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "desktop/DragDrop.h"
 #include "desktop/TerminalText.h"
 
 #include <AfterglowPty/Pty.h>
@@ -21,6 +22,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -45,7 +47,6 @@ struct PaneStatusRecord
 };
 
 class FileTransfer;
-class DragDrop;
 class DockArea;
 
 /// One terminal: the emulator state, the child process on its pty, and the
@@ -83,6 +84,12 @@ public:
     DragDrop* dragDrop();
     bool hasFileTransfers() const noexcept { return m_fileTransfers != nullptr; }
     bool hasDragDrop() const noexcept { return m_dragDrop != nullptr; }
+    /// Terminal.dragAnswerWait, for the drag and drop handler now and later.
+    void setDragAnswerWait(int ms);
+    /// GUI thread: delivers the program's protocol commands that wait for the
+    /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
+    /// deliver, first waits up to that long for the next one. Runs no event loop.
+    void deliverProtocolCommands(int waitMs = 0);
     /// The areas that scripts dock at the pane's edges. The window lays them
     /// out and draws them. They go where the pane goes, and close with it.
     std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
@@ -228,7 +235,12 @@ Q_SIGNALS:
     void desktopNotificationRequested(const AfterglowVt::NotificationRequest& request);
     /// An OSC 5522 clipboard read or write (queued to the GUI thread).
     void clipboardRequested(const AfterglowVt::ClipboardRequest& request);
+    /// An OSC 72 or OSC 5113 command, or a terminal reset (code 0).
     void terminalProtocolRequested(int code, const QByteArray& payload);
+    /// Commands were dropped: the program wrote them faster than they were
+    /// handled. @p lost tells what the dropped commands held for drag and drop.
+    /// @p reset: they held a terminal reset, which ended every file transfer.
+    void terminalProtocolLost(DragDrop::Lost lost, bool reset);
     /// @p paths holds at most the first 100 of @p total paths.
     void fileTransferPermissionRequested(const QString& token, bool writing, const QStringList& paths, int total);
     void closed();
@@ -264,10 +276,30 @@ private:
     void terminalProtocol(int code, std::string_view payload) override;
     std::unique_ptr<FileTransfer> m_fileTransfers;
     std::unique_ptr<DragDrop> m_dragDrop;
+    int m_dragAnswerWait = DragDrop::DefaultAnswerWaitMs;
     std::vector<std::unique_ptr<DockArea>> m_docks;
     std::atomic<qsizetype> m_protocolBytes{0};
     std::atomic<quint64> m_protocolGeneration{0};
-    std::atomic<bool> m_protocolBlocked{false};
+    // The commands dropped after an overflow form one gap in what the
+    // program wrote: those that waited for the GUI thread (stale, from an
+    // older generation), then those that came while the pane was blocked.
+    bool m_protocolBlocked = false; ///< guarded by m_mutex
+    DragDrop::Lost m_protocolLost = DragDrop::Lost::Nothing; ///< guarded by m_mutex: the blocked commands
+    DragDrop::Lost m_protocolStale = DragDrop::Lost::Nothing; ///< GUI thread: the stale commands
+    bool m_protocolLostReset = false; ///< guarded by m_mutex
+    bool m_protocolStaleReset = false; ///< GUI thread
+    /// Posts @p command to m_protocolCommands and wakes deliverProtocolCommands.
+    void postProtocolCommand(std::function<void()> command);
+    // Counts the posted protocol commands, so that a drag event can wait for
+    // the program's answer without an event loop.
+    std::mutex m_postedMutex;
+    std::condition_variable m_posted;
+    std::uint64_t m_postedSerial = 0; ///< guarded by m_postedMutex
+    std::uint64_t m_deliveredSerial = 0; ///< GUI thread: the serial that the last delivery read
+    // The protocol commands are posted to this object, not to the pane, so a
+    // drag event can deliver them, and only them, before it answers
+    // (DragDrop::setCommandDelivery).
+    QObject m_protocolCommands;
     void programStatusChanged() override;
     void flash() override;
     void commandStarted(std::string_view command) override;

@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "FileTransfer.h"
-#include <QCryptographicHash>
+#include "ProtoBytes.h"
+#include <AfterglowProto/Delta.h>
+#include <AfterglowProto/Transfer.h>
+#include <AfterglowProto/Zlib.h>
 #include <QDir>
 #include <QDirIterator>
 #include <QElapsedTimer>
@@ -12,13 +15,8 @@
 #include <QThread>
 #include <QTimer>
 #include <QUuid>
-#include <QtEndian>
-#include <zlib.h>
-#define XXH_INLINE_ALL
 #include <algorithm>
 #include <atomic>
-#include <cmath>
-#include <cstring>
 #include <deque>
 #include <fcntl.h>
 #include <map>
@@ -26,17 +24,19 @@
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <unordered_set>
 #include <utility>
-#include <xxhash.h>
 
 namespace Afterglow {
 namespace {
     using Fields = QMap<QByteArray, QByteArray>;
-    // Protocol limits. They are fixed: a client cannot negotiate them.
+    using ProtoBytes::bytesOf;
+    using ProtoBytes::view;
+    namespace Status = AfterglowProto::TransferStatus;
+    // Afterglow's limits on what the transfers of one pane can make it hold.
+    // The protocol sets none, and a client has no way to change them.
     constexpr qsizetype MaxQueuedBytes = 16 * 1024 * 1024; // each of the input and output queues
-    constexpr qsizetype MaxCommand = 16384;
-    constexpr qsizetype MaxPacketData = 4096;
+    constexpr qsizetype MaxCommand = qsizetype(AfterglowProto::TransferMaxCommand);
+    constexpr qsizetype MaxPacketData = qsizetype(AfterglowProto::TransferMaxData);
     constexpr int MaxFiles = 16384; // per session
     constexpr std::size_t MaxSessions = 8;
     constexpr std::size_t MaxActiveFiles = 128; // regular files and rsync reads in progress
@@ -44,8 +44,9 @@ namespace {
     constexpr int MaxDepth = 128;
     constexpr qsizetype MaxRequestBytes = 4 * 1024 * 1024; // requested paths of all receive sessions
     constexpr qsizetype MaxRsyncBuffer = 16 * 1024 * 1024; // one signature or one literal
-    // File bytes after which one pump() stops scanning a delta. A refill
-    // before that check reads up to two blocks (32 MiB at most) more.
+    // Bytes after which one pump() stops scanning a delta. A block hashed for
+    // a weak match counts as its length, so this bounds the hashing too. A
+    // refill before that check reads up to two blocks (2 MiB at most) more.
     constexpr qsizetype DeltaStep = 1024 * 1024;
     constexpr std::size_t MaxPendingBytes = 64 * 1024 * 1024; // every rsync buffer of the pane
     constexpr qsizetype DeliveryWindow = 65536;
@@ -53,53 +54,19 @@ namespace {
     constexpr qsizetype ListingHeadroom = 64 * 1024; // statuses queued behind a listing
     constexpr int DenialCooldownMs = 10000;
     constexpr qsizetype MaxPromptPaths = 100;
-    bool safe(const QByteArray& s)
-    {
-        return !s.isEmpty() && s.size() <= 128 && std::all_of(s.begin(), s.end(), [](unsigned char c) {
-            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                || QByteArrayLiteral("_:./@-").contains(char(c));
-        });
-    }
+    bool safe(const QByteArray& s) { return AfterglowProto::transferSafeId(view(s)); }
     std::optional<Fields> decode(const QByteArray& raw)
     {
-        if (raw.size() > MaxCommand)
+        const auto decoded = AfterglowProto::decodeTransfer(view(raw));
+        if (!decoded)
             return std::nullopt;
         Fields f;
-        for (const auto& field : raw.split(';')) {
-            const auto at = field.indexOf('=');
-            if (at <= 0)
-                continue;
-            const auto key = field.left(at), value = field.mid(at + 1);
-            static const QList<QByteArray> keys { "ac", "id", "fid", "n", "st", "d", "pw", "sz", "q", "ft", "zip", "tt",
-                "prm", "mod", "pr" };
-            if (!keys.contains(key))
-                continue;
-            if (f.contains(key))
-                return std::nullopt;
-            if (key == "n" || key == "st" || key == "d" || key == "pw") {
-                const auto decoded = QByteArray::fromBase64Encoding(value, QByteArray::AbortOnBase64DecodingErrors);
-                if (!decoded)
-                    return std::nullopt;
-                f[key] = decoded.decoded;
-            } else
-                f[key] = value;
-        }
-        if (!safe(f.value("id")) || (f.contains("fid") && !safe(f.value("fid"))))
-            return std::nullopt;
+        for (const auto& [key, value] : *decoded)
+            f.insert(bytesOf(key), bytesOf(value));
         return f;
     }
     // The session id of a cancel request, read without decoding the base64 fields.
-    QByteArray cancelId(const QByteArray& raw)
-    {
-        QByteArray action, id;
-        for (const auto& field : raw.split(';')) {
-            if (action.isEmpty() && field.startsWith("ac="))
-                action = field.mid(3);
-            else if (id.isEmpty() && field.startsWith("id="))
-                id = field.mid(3);
-        }
-        return action == "cancel" && safe(id) ? id : QByteArray();
-    }
+    QByteArray cancelId(const QByteArray& raw) { return bytesOf(AfterglowProto::transferCancelId(view(raw))); }
     // Later code reads only these fields. The data, password and status fields can be large.
     Fields metadata(const Fields& f)
     {
@@ -111,19 +78,12 @@ namespace {
     }
     QByteArray encode(const Fields& fields)
     {
-        QByteArray out = QByteArrayLiteral("\x1b]5113;");
-        bool first = true;
-        for (auto it = fields.begin(); it != fields.end(); ++it) {
-            if (!first)
-                out += ';';
-            first = false;
-            out += it.key();
-            out += '=';
-            out += (it.key() == "n" || it.key() == "st" || it.key() == "d" || it.key() == "pw")
-                ? it.value().toBase64(QByteArray::OmitTrailingEquals)
-                : it.value();
-        }
-        return out + QByteArrayLiteral("\x1b\\");
+        // Views of the map's bytes, in its (sorted) order: the values are not copied before encoding.
+        std::vector<std::pair<std::string_view, std::string_view>> f;
+        f.reserve(std::size_t(fields.size()));
+        for (auto it = fields.begin(); it != fields.end(); ++it)
+            f.emplace_back(view(it.key()), view(it.value()));
+        return bytesOf(AfterglowProto::encodeTransfer(f));
     }
     QString pathOf(const QByteArray& value)
     {
@@ -141,26 +101,34 @@ namespace {
                 return { };
         return QDir::cleanPath(path);
     }
-    QByteArray errorName()
-    {
-        switch (errno) {
-        case EACCES:
-        case EPERM:
-            return "EPERM";
-        case ENOENT:
-            return "ENOENT";
-        case ENOSPC:
-            return "ENOSPC";
-        case EEXIST:
-            return "EEXIST";
-        case ENOTDIR:
-            return "ENOTDIR";
-        case ELOOP:
-            return "ELOOP";
-        default:
-            return "EIO";
+    std::string_view errorName() { return AfterglowProto::transferErrorName(errno); }
+    // A delta's file, read as the generator asks for it.
+    class FileSource : public AfterglowProto::ByteSource {
+    public:
+        explicit FileSource(QFile& file)
+            : m_file(file)
+        {
         }
-    }
+        bool read(std::string& out, std::size_t max) override
+        {
+            const std::size_t old = out.size();
+            out.resize(old + max);
+            const qint64 n = m_file.read(out.data() + old, qint64(max));
+            out.resize(old + std::size_t(std::max<qint64>(n, 0)));
+            // Sources are regular files, where an empty read is the end.
+            // QFile::atEnd() compares the position with st_size, which is 0
+            // for a file in /proc that holds data: the delta would rebuild an
+            // empty file.
+            if (n == 0)
+                m_end = true;
+            return n >= 0;
+        }
+        bool atEnd() const override { return m_end; }
+
+    private:
+        QFile& m_file;
+        bool m_end = false;
+    };
     // A file without a mode from the client gets the mode a new file would get.
     mode_t creationMask()
     {
@@ -209,61 +177,57 @@ struct FileTransfer::Worker {
         QString path;
         std::unique_ptr<QTemporaryFile> output;
         std::unique_ptr<QFile> basis;
-        QByteArray linkData, pending;
+        QByteArray linkData;
+        // A delta upload's operations that are not complete yet, or a delta read's signature.
+        std::string pending;
         qint64 written = 0;
-        bool committed = false, complete = false, failed = false, compressed = false, rsync = false, ended = false;
-        bool overBudget = false;
-        z_stream stream { };
-        XXH3_state_t* hash = XXH3_createState();
+        bool committed = false, complete = false, failed = false, rsync = false, ended = false;
+        bool overBudget = false, tooLarge = false;
+        std::unique_ptr<AfterglowProto::ZlibStream> inflater;
+        // Applies the operations of a delta upload, and checks the file hash.
+        std::unique_ptr<AfterglowProto::DeltaApplier> applier;
         // Descriptors this file holds against the pane limit: its output, and a delta basis.
         std::size_t* activeCount = nullptr;
         std::size_t held = 1;
         std::size_t* pendingTotal;
         quint32 blockSize = 0;
-        bool hashSeen = false;
         File(std::size_t* count, std::size_t* pendingBytes)
             : activeCount(count)
             , pendingTotal(pendingBytes)
         {
             if (activeCount)
                 ++*activeCount;
-            if (hash)
-                XXH3_128bits_reset(hash);
         }
-        ~File()
+        ~File() { releaseIo(); }
+        bool addPending(std::string_view bytes)
         {
-            releaseIo();
-            XXH3_freeState(hash);
-        }
-        bool addPending(const QByteArray& bytes)
-        {
-            if (*pendingTotal + std::size_t(bytes.size()) > MaxPendingBytes) {
+            if (*pendingTotal + bytes.size() > MaxPendingBytes) {
                 overBudget = true;
                 return false;
             }
             pending += bytes;
-            *pendingTotal += std::size_t(bytes.size());
+            *pendingTotal += bytes.size();
             return true;
         }
-        void dropPending(qsizetype count)
+        // What stays is less than one operation, so the move is short.
+        void dropPending(std::size_t count)
         {
-            pending.remove(0, count);
-            *pendingTotal -= std::size_t(count);
+            pending.erase(0, count);
+            *pendingTotal -= count;
         }
         void clearPending()
         {
-            *pendingTotal -= std::size_t(pending.size());
-            pending.clear();
+            *pendingTotal -= pending.size();
+            std::string().swap(pending);
         }
         void releaseIo()
         {
             output.reset();
             basis.reset();
             clearPending();
-            if (compressed) {
-                inflateEnd(&stream);
-                compressed = false;
-            }
+            inflater.reset();
+            // A finished file stays in the session until it ends. Free the hash state now.
+            applier.reset();
             if (activeCount) {
                 *activeCount -= held;
                 activeCount = nullptr;
@@ -296,80 +260,36 @@ struct FileTransfer::Worker {
     // between steps. Outgoing streams are one queue: the next file waits.
     struct Delta {
         std::unique_ptr<QFile> basis;
-        // Stays charged to the pane's rsync budget until the stream ends. It
-        // is read into the tables only when the stream reaches the front, so
-        // that the streams queued behind it hold no tables.
-        QByteArray signature;
-        std::size_t* pendingTotal = nullptr;
-        std::size_t charged = 0;
-        quint32 blockSize = 0;
-        // Keyed by both hashes: many blocks with one weak hash cost one lookup, not a scan.
-        std::unordered_set<quint32> weakHashes;
-        std::map<std::pair<quint32, quint64>, quint64> blocks;
-        XXH3_state_t* hash = XXH3_createState();
-        QByteArray buffer, literal;
-        qsizetype position = 0;
-        quint32 a = 0, b = 0;
-        bool fresh = true, parsed = false, done = false;
-        Delta()
+        FileSource source;
+        std::size_t* pendingTotal;
+        std::size_t charged;
+        // The generator reads the signature into its tables only when the
+        // stream reaches the front, so that the streams queued behind it
+        // hold no tables. The signature stays charged to the pane's rsync
+        // budget until the stream ends.
+        AfterglowProto::DeltaGenerator generator;
+        Delta(std::unique_ptr<QFile> file, std::string signature, std::size_t* total)
+            : basis(std::move(file))
+            , source(*basis)
+            , pendingTotal(total)
+            , charged(signature.size())
+            , generator(std::move(signature))
         {
-            if (hash)
-                XXH3_128bits_reset(hash);
         }
-        ~Delta()
-        {
-            XXH3_freeState(hash);
-            if (pendingTotal)
-                *pendingTotal -= charged;
-        }
+        ~Delta() { *pendingTotal -= charged; }
         Delta(const Delta&) = delete;
         Delta& operator=(const Delta&) = delete;
-        void parse()
-        {
-            for (qsizetype at = 12; at <= signature.size() - 20; at += 20) {
-                quint64 index = 0, strong = 0;
-                quint32 weak = 0;
-                for (int byte = 0; byte < 8; ++byte) {
-                    index |= quint64(quint8(signature[at + byte])) << (byte * 8);
-                    strong |= quint64(quint8(signature[at + 12 + byte])) << (byte * 8);
-                }
-                for (int byte = 0; byte < 4; ++byte)
-                    weak |= quint32(quint8(signature[at + 8 + byte])) << (byte * 8);
-                weakHashes.insert(weak);
-                blocks.try_emplace({ weak, strong }, index);
-            }
-            signature = QByteArray();
-            parsed = true;
-        }
-        void flushLiteral(QByteArray& out)
-        {
-            if (literal.isEmpty())
-                return;
-            QByteArray op(5, '\0');
-            op[0] = 1;
-            qToLittleEndian(quint32(literal.size()), op.data() + 1);
-            XXH3_128bits_update(hash, literal.constData(), std::size_t(literal.size()));
-            out += op;
-            out += literal;
-            literal.clear();
-        }
-        // Appends operations to OUT until it holds WANT bytes, DeltaStep bytes
-        // of the file were read, or the delta ends. False on a read error.
-        bool produce(QByteArray& out, qsizetype want);
     };
     struct Stream {
         Fields fields;
         std::unique_ptr<QFile> source;
         std::unique_ptr<Delta> delta; // in place of the source
-        QByteArray generated;         // delta operations not sent yet
+        // Delta operations. The first generatedSent bytes went out already.
+        std::string generated;
+        std::size_t generatedSent = 0;
         QByteArray input;
-        z_stream z { };
-        bool compressed = false, eof = false;
-        ~Stream()
-        {
-            if (compressed)
-                deflateEnd(&z);
-        }
+        std::unique_ptr<AfterglowProto::ZlibStream> deflater;
+        bool eof = false;
     };
     // What long work checks to stop early: a reset, or a cancel of its own session.
     struct Watch {
@@ -398,9 +318,15 @@ struct FileTransfer::Worker {
     std::atomic<bool> backlogQueried { false };
     std::map<QByteArray, std::unique_ptr<Session>> sessions;
     QString password;
+    qint64 deltaLimit = DefaultDeltaLimit;
     QElapsedTimer denied;
     // Outgoing packets are paced. Keep at most a bounded amount queued.
-    std::deque<QByteArray> outgoing;
+    // Each keeps the fields that a cancel and a newer progress status look for.
+    struct Packet {
+        QByteArray bytes, id, fid;
+        bool progress = false;
+    };
+    std::deque<Packet> outgoing;
     qsizetype outgoingBytes = 0;
     QTimer* timer = nullptr;
     bool overflow = false;
@@ -433,11 +359,15 @@ struct FileTransfer::Worker {
         // A reset is on its way. Everything queued before it is stale.
         if (resetEpoch.load() != clearedEpoch)
             return;
-        // Fill the delivery window, not one packet for each tick.
-        for (int i = 0; i < 64 && !streams.empty() && outgoingBytes < DeliveryWindow; ++i)
+        // Fill the delivery window, not one packet for each tick. Each pump()
+        // is bounded, and a reset or the pane's close stops the loop between them.
+        for (int i = 0; i < 64 && !streams.empty() && outgoingBytes < DeliveryWindow; ++i) {
+            if (thread.isInterruptionRequested() || resetEpoch.load() != clearedEpoch)
+                return;
             pump();
+        }
         while (!outgoing.empty() && deliveryBytes.load() < DeliveryWindow && backlogBytes.load() < MaxInputBacklog) {
-            auto bytes = std::move(outgoing.front());
+            auto bytes = std::move(outgoing.front().bytes);
             outgoing.pop_front();
             outgoingBytes -= bytes.size();
             deliveryBytes.fetch_add(bytes.size());
@@ -459,7 +389,9 @@ struct FileTransfer::Worker {
         if (outgoing.empty() && streams.empty())
             timer->stop();
     }
-    Watch watch(const QByteArray& id) const { return { id, resetEpoch.load(), ~quint64(0) }; }
+    // From the reset that the worker applied, not the latest one: the work
+    // of a packet that was queued before a reset sees that reset.
+    Watch watch(const QByteArray& id) const { return { id, clearedEpoch, ~quint64(0) }; }
     bool stopped(Watch& w)
     {
         if (thread.isInterruptionRequested() || resetEpoch.load() != w.reset)
@@ -485,9 +417,13 @@ struct FileTransfer::Worker {
         if (outgoingBytes + bytes.size() > MaxQueuedBytes) {
             overflow = true;
             // Queued, never direct: callers still hold the session that this removes.
+            // A reset or an abort that runs first ends the same sessions and
+            // clears the flag. The sessions after it did not overflow.
             QMetaObject::invokeMethod(
                 context,
-                [this] {
+                [this, epoch = clearedEpoch] {
+                    if (clearedEpoch != epoch)
+                        return;
                     outgoing.clear();
                     outgoingBytes = 0;
                     overflow = false;
@@ -499,27 +435,25 @@ struct FileTransfer::Worker {
                 Qt::QueuedConnection);
             return;
         }
-        if (f.value("st") == "PROGRESS" && !outgoing.empty()) {
-            const auto old = decode(outgoing.back().mid(7, outgoing.back().size() - 9));
-            if (old && old->value("st") == "PROGRESS" && old->value("id") == f.value("id")
-                && old->value("fid") == f.value("fid")) {
-                outgoingBytes -= outgoing.back().size();
-                outgoing.pop_back();
-            }
+        Packet packet { bytes, f.value("id"), f.value("fid"), view(f.value("st")) == Status::Progress };
+        if (packet.progress && !outgoing.empty() && outgoing.back().progress && outgoing.back().id == packet.id
+            && outgoing.back().fid == packet.fid) {
+            outgoingBytes -= outgoing.back().bytes.size();
+            outgoing.pop_back();
         }
         outgoingBytes += bytes.size();
-        outgoing.push_back(bytes);
+        outgoing.push_back(std::move(packet));
         if (timer && !timer->isActive())
             timer->start(1);
     }
-    void status(Session& s, const QByteArray& file, const QByteArray& status, qint64 size = -1, Fields extra = { })
+    void status(Session& s, const QByteArray& file, std::string_view status, qint64 size = -1, Fields extra = { })
     {
-        const bool success = status == "OK" || status == "STARTED" || status == "PROGRESS" || status == "CANCELED";
+        const bool success = AfterglowProto::transferSuccess(status);
         if (s.quiet == 2 || (s.quiet == 1 && success))
             return;
         extra["ac"] = "status";
         extra["id"] = s.id;
-        extra["st"] = status;
+        extra["st"] = bytesOf(status);
         if (!file.isEmpty())
             extra["fid"] = file;
         if (size >= 0)
@@ -579,18 +513,19 @@ struct FileTransfer::Worker {
                     return;
                 }
                 s.approved = true;
-                status(s, { }, "OK");
+                status(s, { }, Status::Ok);
                 if (!s.sending)
                     list(s);
                 return;
             }
     }
-    void fail(Session& s, const QByteArray& fid, const QByteArray& error)
+    void fail(Session& s, const QByteArray& fid, std::string_view error)
     {
         s.files.at(fid)->failed = true;
         status(s, fid, error);
     }
-    void handle(const QByteArray& raw);
+    void handle(const QByteArray& raw, const QByteArray& cancelled);
+    void cancel(const QByteArray& id);
     void list(Session& s);
     void receiveFile(Session& s, const Fields& f);
     void data(Session& s, const Fields& f);
@@ -603,8 +538,9 @@ struct FileTransfer::Worker {
         std::unique_ptr<Delta> delta = { });
     QByteArray read(Stream& item, bool& error, bool& atEnd);
     void pump();
-    bool write(Session& s, File& file, const QByteArray& bytes);
-    bool rawWrite(File& file, const QByteArray& bytes);
+    bool write(File& file, std::string_view bytes, Watch& stop);
+    struct DeltaTarget;
+    bool rawWrite(File& file, std::string_view bytes);
     void delta(Session& s, const QByteArray& fid, File& file);
 };
 
@@ -637,7 +573,7 @@ void FileTransfer::handle(const QByteArray& command)
     }
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), command, cancelled] {
         w->queuedBytes.fetch_sub(command.size());
-        w->handle(command);
+        w->handle(command, cancelled);
         if (!cancelled.isEmpty())
             w->forgetCancel(cancelled);
     });
@@ -653,6 +589,7 @@ void FileTransfer::reset()
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), epoch] {
         w->outgoing.clear();
         w->outgoingBytes = 0;
+        w->overflow = false;
         w->clearedEpoch = epoch;
         while (!w->sessions.empty())
             w->remove(w->sessions.begin()->first);
@@ -677,16 +614,52 @@ void FileTransfer::setPassword(const QString& password)
 {
     QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), password] { w->password = password; });
 }
+void FileTransfer::setDeltaLimit(qint64 bytes)
+{
+    QMetaObject::invokeMethod(m_worker->context, [w = m_worker.get(), bytes] { w->deltaLimit = bytes; });
+}
 void FileTransfer::setInputBacklog(std::function<std::size_t()> backlog) { m_worker->backlog = std::move(backlog); }
 
-void FileTransfer::Worker::handle(const QByteArray& raw)
+void FileTransfer::Worker::cancel(const QByteArray& id)
 {
-    if (overflow)
+    const auto it = sessions.find(id);
+    if (it == sessions.end()) {
+        Session unknown;
+        unknown.id = id;
+        status(unknown, { }, Status::Canceled);
+        return;
+    }
+    std::erase_if(outgoing, [&](const Packet& packet) {
+        if (packet.id != id)
+            return false;
+        outgoingBytes -= packet.bytes.size();
+        return true;
+    });
+    status(*it->second, { }, Status::Canceled);
+    remove(id);
+}
+
+void FileTransfer::Worker::handle(const QByteArray& raw, const QByteArray& cancelled)
+{
+    // A reset is queued behind this packet: the packet came before it, and the
+    // reset ends its session. Nothing it asks for may reach the disk.
+    if (overflow || resetEpoch.load() != clearedEpoch)
         return;
     const auto decoded = decode(raw);
-    if (!decoded)
+    if (!decoded) {
+        // handle() on the GUI thread read the id of this cancel and stopped
+        // the session's work already. Finish the cancel, so that the client
+        // gets an answer and the session does not wait with its work cut short.
+        if (!cancelled.isEmpty())
+            cancel(cancelled);
         return;
+    }
     const auto& f = *decoded;
+    // Before the other checks: the GUI thread applied this cancel already.
+    if (f.value("ac") == "cancel") {
+        cancel(f.value("id"));
+        return;
+    }
     for (const auto& key : { QByteArray("sz"), QByteArray("prm"), QByteArray("mod"), QByteArray("q") }) {
         if (!f.contains(key))
             continue;
@@ -724,8 +697,7 @@ void FileTransfer::Worker::handle(const QByteArray& raw)
             status(*s, { }, "EINVAL");
             return;
         }
-        const QByteArray expected = QByteArrayLiteral("sha256:")
-            + QCryptographicHash::hash(id + ';' + password.toUtf8(), QCryptographicHash::Sha256).toHex();
+        const QByteArray expected = bytesOf(AfterglowProto::transferPasswordHash(view(id), password.toStdString()));
         const auto supplied = f.value("pw");
         unsigned difference = unsigned(supplied.size() != expected.size());
         if (supplied.size() == expected.size())
@@ -757,23 +729,10 @@ void FileTransfer::Worker::handle(const QByteArray& raw)
     if (it == sessions.end()) {
         Session unknown;
         unknown.id = id;
-        status(unknown, { }, action == "cancel" ? "CANCELED" : "ENOENT");
+        status(unknown, { }, "ENOENT");
         return;
     }
     Session& s = *it->second;
-    if (action == "cancel") {
-        std::erase_if(outgoing, [&](const auto& packet) {
-            const auto fields = decode(packet.mid(7, packet.size() - 9));
-            if (fields && fields->value("id") == id) {
-                outgoingBytes -= packet.size();
-                return true;
-            }
-            return false;
-        });
-        status(s, { }, "CANCELED");
-        remove(id);
-        return;
-    }
     if (!s.sending && s.requested < s.expected) {
         const auto path = pathOf(f.value("n"));
         if (action != "file" || path.isEmpty() || !safe(f.value("fid"))) {
@@ -793,7 +752,7 @@ void FileTransfer::Worker::handle(const QByteArray& raw)
         s.requests.push_back({ f.value("fid"), path });
         if (++s.requested == s.expected) {
             if (s.approved) {
-                status(s, { }, "OK");
+                status(s, { }, Status::Ok);
                 list(s);
             } else if (!ask(s))
                 remove(id);
@@ -866,10 +825,6 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         return;
     }
     auto file = std::make_unique<File>(type == "regular" ? &activeFiles : nullptr, &pendingBytes);
-    if (!file->hash) {
-        status(s, fid, "ENOMEM");
-        return;
-    }
     file->meta = metadata(f);
     file->path = path;
     // Record new parents from the top down, so that removal in reverse goes deepest first.
@@ -894,7 +849,7 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
             s.createdDirs.push_back(path);
         file->complete = true;
         s.files.emplace(fid, std::move(file));
-        status(s, fid, "OK");
+        status(s, fid, Status::Ok);
         settle(s, fid);
         return;
     }
@@ -907,11 +862,11 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         }
     }
     if (zip == "zlib" && type == "regular") {
-        if (inflateInit(&file->stream) != Z_OK) {
+        file->inflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Inflate);
+        if (!file->inflater->valid()) {
             status(s, fid, "ENOMEM");
             return;
         }
-        file->compressed = true;
     }
     std::unique_ptr<QTemporaryFile> signature;
     if (rsync) {
@@ -925,67 +880,81 @@ void FileTransfer::Worker::receiveFile(Session& s, const Fields& f)
         if (opened) {
             ++activeFiles;
             ++file->held;
+            // One size for the signature, the applier and the read below. A
+            // basis that grows while it is read must not add records past the
+            // block count that the applier accepts, or keep the loop going.
+            const auto basisSize = quint64(basisStat.st_size);
+            AfterglowProto::SignatureBuilder builder(basisSize);
+            file->blockSize = builder.blockSize();
+            // Before the basis is read: a file that cannot be applied costs no signature.
+            file->applier = std::make_unique<AfterglowProto::DeltaApplier>(
+                file->blockSize, basisSize, std::size_t(MaxRsyncBuffer));
+            if (!file->applier->valid()) {
+                status(s, fid, "ENOMEM");
+                return;
+            }
             signature = std::make_unique<QTemporaryFile>();
-            if (!signature->open()) {
+            const auto header = bytesOf(builder.header());
+            if (!signature->open() || signature->write(header) != header.size()) {
                 status(s, fid, "EIO");
                 return;
             }
-            file->blockSize = quint32(std::max(64.0, std::ceil(std::sqrt(double(file->basis->size())))));
-            QByteArray header(12, '\0');
-            qToLittleEndian(file->blockSize, header.data() + 8);
-            signature->write(header);
-            quint64 index = 0;
-            while (!file->basis->atEnd()) {
-                const auto block = file->basis->read(file->blockSize);
-                if (block.isEmpty() || stopped(stop)) {
+            for (quint64 offset = 0; offset < basisSize; offset += file->blockSize) {
+                // A short read means the basis shrank, or it states more than
+                // it holds (sysfs): it no longer matches the signature.
+                const auto want = qint64(std::min<quint64>(file->blockSize, basisSize - offset));
+                const auto block = file->basis->read(want);
+                if (block.size() != want || stopped(stop)) {
                     status(s, fid, "EIO");
                     return;
                 }
-                quint32 a = 0, b = 0;
-                for (unsigned char c : block) {
-                    a += c;
-                    b += a;
-                }
-                QByteArray record(20, '\0');
-                qToLittleEndian(index++, record.data());
-                qToLittleEndian((a & 0xffffu) | (b << 16), record.data() + 8);
-                qToLittleEndian(quint64(XXH3_64bits(block.constData(), std::size_t(block.size()))), record.data() + 12);
+                const auto record = bytesOf(builder.record(view(block)));
                 if (signature->write(record) != record.size()) {
                     status(s, fid, "EIO");
                     return;
                 }
             }
-            signature->seek(0);
+            if (!signature->seek(0)) {
+                status(s, fid, "EIO");
+                return;
+            }
             file->rsync = true;
         } else
             file->basis.reset();
     }
     const bool delta = file->rsync;
     s.files.emplace(fid, std::move(file));
-    status(s, fid, "STARTED", -1, { { "tt", delta ? "rsync" : "simple" } });
+    status(s, fid, Status::Started, -1, { { "tt", delta ? "rsync" : "simple" } });
     if (signature && !stream(s, fid, std::move(signature), false))
         s.files.erase(fid);
 }
 
-bool FileTransfer::Worker::rawWrite(File& file, const QByteArray& bytes)
+bool FileTransfer::Worker::rawWrite(File& file, std::string_view bytes)
 {
     if (thread.isInterruptionRequested())
         return false;
+    const auto size = qint64(bytes.size());
     if (file.output) {
-        // Copy operations can multiply a small packet. Never write past the declared size.
+        // Copy operations can multiply a small packet. Never write past the
+        // declared size. kitten transfer declares none, so a delta upload
+        // without a size stops at the configured limit.
         bool known = false;
         const auto declared = file.meta.value("sz").toLongLong(&known);
-        if (known && declared >= 0 && file.written + bytes.size() > declared)
+        if (known && declared >= 0) {
+            if (file.written + size > declared)
+                return false;
+        } else if (file.rsync && deltaLimit > 0 && file.written + size > deltaLimit) {
+            file.tooLarge = true;
             return false;
-        if (file.output->write(bytes) != bytes.size())
+        }
+        if (file.output->write(bytes.data(), size) != size)
             return false;
-        XXH3_128bits_update(file.hash, bytes.constData(), std::size_t(bytes.size()));
     } else {
-        if (file.linkData.size() + bytes.size() > 4096)
+        if (file.linkData.size() + size > 4096)
             return false;
-        file.linkData += bytes;
+        file.linkData.append(bytes.data(), qsizetype(size));
     }
-    file.written += bytes.size();
+    file.written += size;
     return true;
 }
 
@@ -998,13 +967,14 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
     auto& file = *it->second;
     const auto bytes = f.value("d");
     if (!s.sending && file.rsync) {
-        if (bytes.size() > MaxPacketData || file.pending.size() + bytes.size() > MaxRsyncBuffer) {
+        if (bytes.size() > MaxPacketData
+            || file.pending.size() + std::size_t(bytes.size()) > std::size_t(MaxRsyncBuffer)) {
             file.failed = true;
             file.releaseIo();
             status(s, fid, "EFBIG");
             return;
         }
-        if (!file.addPending(bytes)) {
+        if (!file.addPending(view(bytes))) {
             file.failed = true;
             file.releaseIo();
             status(s, fid, "ENOMEM");
@@ -1017,43 +987,44 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
         }
         return;
     }
+    // One watch for the whole packet: a cancel or reset stops it between any two writes.
+    auto stop = watch(s.id);
     bool ok = bytes.size() <= MaxPacketData;
-    if (ok && file.compressed) {
-        file.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(bytes.constData()));
-        file.stream.avail_in = uInt(bytes.size());
+    if (ok && file.inflater) {
+        file.inflater->setInput(view(bytes));
         if (file.ended && !bytes.isEmpty())
             ok = false;
-        while (ok && file.stream.avail_in > 0) {
+        while (ok && file.inflater->inputLeft() > 0) {
             char buffer[65536];
-            file.stream.next_out = reinterpret_cast<Bytef*>(buffer);
-            file.stream.avail_out = sizeof buffer;
-            const int result = inflate(&file.stream, Z_NO_FLUSH);
-            ok = (result == Z_OK || result == Z_STREAM_END)
-                && write(s, file, QByteArray(buffer, sizeof buffer - file.stream.avail_out));
-            if (result == Z_STREAM_END) {
+            std::size_t produced = 0;
+            const auto result = file.inflater->step(buffer, sizeof buffer, produced);
+            ok = result != AfterglowProto::ZlibStream::Result::Error
+                && write(file, std::string_view(buffer, produced), stop);
+            if (result == AfterglowProto::ZlibStream::Result::End) {
                 file.ended = true;
-                ok &= file.stream.avail_in == 0;
+                ok &= file.inflater->inputLeft() == 0;
                 break;
             }
-            if (thread.isInterruptionRequested()) {
+            // A packet of 4 KiB can inflate to megabytes.
+            if (stopped(stop)) {
                 ok = false;
                 break;
             }
         }
     } else if (ok)
-        ok = write(s, file, bytes);
+        ok = write(file, view(bytes), stop);
     const bool end = f.value("ac") == "end_data";
-    if (end && file.compressed && !file.ended)
+    if (end && file.inflater && !file.ended)
         ok = false;
-    if (end && file.rsync && (!file.hashSeen || !file.pending.isEmpty()))
+    if (end && file.rsync && (!file.applier || !file.applier->finished() || !file.pending.empty()))
         ok = false;
     if (end && file.meta.contains("sz") && file.meta.value("sz").toLongLong() >= 0 && file.output)
         ok &= file.written == file.meta.value("sz").toLongLong();
     if (!ok) {
         file.failed = true;
-        const bool overBudget = file.overBudget;
+        const std::string_view error = file.overBudget ? "ENOMEM" : file.tooLarge ? "EFBIG" : "EIO";
         file.releaseIo();
-        status(s, fid, overBudget ? "ENOMEM" : "EIO");
+        status(s, fid, error);
         settle(s, fid);
         return;
     }
@@ -1078,7 +1049,7 @@ void FileTransfer::Worker::data(Session& s, const Fields& f)
         file.committed = true;
     }
     if (!end || file.output)
-        status(s, fid, end ? "OK" : "PROGRESS", file.written);
+        status(s, fid, end ? Status::Ok : Status::Progress, file.written);
     if (end) {
         file.releaseIo();
         if (!isLink(file.meta) || commitLink(s, fid))
@@ -1149,7 +1120,7 @@ bool FileTransfer::Worker::commitLink(Session& s, const QByteArray& fid)
         fail(s, fid, errorName());
     else {
         file.committed = true;
-        status(s, fid, "OK", file.written);
+        status(s, fid, Status::Ok, file.written);
     }
     return true;
 }
@@ -1293,7 +1264,7 @@ void FileTransfer::Worker::list(Session& s)
     }
     for (const auto& [path, f] : s.listing)
         send(f);
-    status(s, { }, "OK", -1, { { "n", QDir::homePath().toUtf8() } });
+    status(s, { }, Status::Ok, -1, { { "n", QDir::homePath().toUtf8() } });
 }
 
 bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique_ptr<QFile> source, bool compress,
@@ -1308,11 +1279,11 @@ bool FileTransfer::Worker::stream(Session& s, const QByteArray& fid, std::unique
     item->source = std::move(source);
     item->delta = std::move(delta);
     if (compress) {
-        if (deflateInit(&item->z, Z_DEFAULT_COMPRESSION) != Z_OK) {
+        item->deflater = std::make_unique<AfterglowProto::ZlibStream>(AfterglowProto::ZlibStream::Mode::Deflate);
+        if (!item->deflater->valid()) {
             status(s, fid, "ENOMEM");
             return false;
         }
-        item->compressed = true;
     }
     streams.push_back(std::move(item));
     if (timer && !timer->isActive())
@@ -1325,19 +1296,27 @@ QByteArray FileTransfer::Worker::read(Stream& item, bool& error, bool& atEnd)
     if (!item.delta) {
         QByteArray data = item.source->read(MaxPacketData);
         error = item.source->error() != QFileDevice::NoError;
-        // Sources are regular files, where an empty read is the end. atEnd()
-        // alone compares with st_size, which a file in /sys or /proc states
-        // larger than what it holds: the stream would never end.
-        atEnd = item.source->atEnd() || data.isEmpty();
+        // Sources are regular files, where only an empty read is the end.
+        // QFile::atEnd() compares the position with st_size once its 16 KiB
+        // read buffer is empty. A file in /proc states 0 and holds more, so
+        // the stream would stop after the first buffer. A file in /sys can
+        // state more than it holds.
+        atEnd = data.isEmpty();
         return data;
     }
-    if (!item.delta->produce(item.generated, MaxPacketData)) {
-        error = true;
-        return { };
+    auto& generator = item.delta->generator;
+    if (item.generated.size() - item.generatedSent < std::size_t(MaxPacketData) && !generator.done()) {
+        // Drop what went out only before more is made: this moves less than one packet.
+        item.generated.erase(0, item.generatedSent);
+        item.generatedSent = 0;
+        if (!generator.produce(item.delta->source, item.generated, std::size_t(MaxPacketData), std::size_t(DeltaStep))) {
+            error = true;
+            return { };
+        }
     }
-    QByteArray data = item.generated.left(MaxPacketData);
-    item.generated.remove(0, data.size());
-    atEnd = item.delta->done && item.generated.isEmpty();
+    QByteArray data = bytesOf(std::string_view(item.generated).substr(item.generatedSent, std::size_t(MaxPacketData)));
+    item.generatedSent += std::size_t(data.size());
+    atEnd = generator.done() && item.generatedSent == item.generated.size();
     return data;
 }
 
@@ -1348,25 +1327,23 @@ void FileTransfer::Worker::pump()
     auto& item = *streams.front();
     QByteArray data;
     bool end = false, error = false;
-    if (!item.compressed) {
+    if (!item.deflater) {
         data = read(item, error, end);
     } else {
-        if (item.z.avail_in == 0 && !item.eof) {
+        if (item.deflater->inputLeft() == 0 && !item.eof) {
             item.input = read(item, error, item.eof);
-            item.z.next_in = reinterpret_cast<Bytef*>(item.input.data());
-            item.z.avail_in = uInt(item.input.size());
+            item.deflater->setInput(view(item.input));
         }
         // A delta step can end with nothing to send yet. Without input,
         // deflate would report no progress.
-        if (!error && item.z.avail_in == 0 && !item.eof)
+        if (!error && item.deflater->inputLeft() == 0 && !item.eof)
             return;
         data.resize(MaxPacketData);
-        item.z.next_out = reinterpret_cast<Bytef*>(data.data());
-        item.z.avail_out = MaxPacketData;
-        const auto result = deflate(&item.z, item.eof ? Z_FINISH : Z_NO_FLUSH);
-        data.resize(MaxPacketData - item.z.avail_out);
-        end = result == Z_STREAM_END;
-        error |= result != Z_OK && result != Z_STREAM_END;
+        std::size_t produced = 0;
+        const auto result = item.deflater->step(data.data(), std::size_t(MaxPacketData), produced, item.eof);
+        data.resize(qsizetype(produced));
+        end = result == AfterglowProto::ZlibStream::Result::End;
+        error |= result == AfterglowProto::ZlibStream::Result::Error;
     }
     auto f = item.fields;
     if (error) {
@@ -1446,10 +1423,6 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
     }
     if (f.value("tt") == "rsync") {
         auto file = std::make_unique<File>(&activeFiles, &pendingBytes);
-        if (!file->hash) {
-            status(s, fid, "ENOMEM");
-            return;
-        }
         file->meta = metadata(f);
         file->basis = std::move(source);
         file->rsync = true;
@@ -1459,168 +1432,69 @@ void FileTransfer::Worker::sendFile(Session& s, const Fields& f)
     stream(s, fid, std::move(source), zip == "zlib");
 }
 
-bool FileTransfer::Worker::write(Session& s, File& file, const QByteArray& bytes)
+// Copies blocks of the basis for a delta upload, and stops on a cancel or reset.
+struct FileTransfer::Worker::DeltaTarget : AfterglowProto::DeltaTarget {
+    Worker& worker;
+    File& file;
+    Watch& stop;
+    DeltaTarget(Worker& w, File& f, Watch& watch)
+        : worker(w)
+        , file(f)
+        , stop(watch)
+    {
+    }
+    // Read straight into the applier's buffer: a block is copied once on its way to the file.
+    bool readBlock(std::uint64_t index, std::string& out) override
+    {
+        if (worker.stopped(stop))
+            return false;
+        const auto at = qint64(index * file.blockSize);
+        if (file.basis->pos() != at && !file.basis->seek(at))
+            return false;
+        const std::size_t old = out.size();
+        out.resize(old + file.blockSize);
+        const qint64 n = file.basis->read(out.data() + old, qint64(file.blockSize));
+        out.resize(old + std::size_t(std::max<qint64>(n, 0)));
+        return n >= 0;
+    }
+    // Copy operations can multiply a small packet. rawWrite() stops at the
+    // declared size, or at the delta limit when the client declared none.
+    bool write(std::string_view bytes) override { return worker.rawWrite(file, bytes); }
+};
+
+bool FileTransfer::Worker::write(File& file, std::string_view bytes, Watch& stop)
 {
     if (!file.rsync)
         return rawWrite(file, bytes);
-    if (!file.addPending(bytes))
+    if (!file.applier || !file.addPending(bytes))
         return false;
-    while (!file.pending.isEmpty()) {
-        const auto type = quint8(file.pending[0]);
-        if (file.hashSeen)
-            return false;
-        qsizetype used = 0;
-        if (type == 1) {
-            if (file.pending.size() < 5)
-                break;
-            const auto size = qFromLittleEndian<quint32>(file.pending.constData() + 1);
-            if (size > MaxRsyncBuffer)
-                return false;
-            if (file.pending.size() < 5 + qsizetype(size))
-                break;
-            if (!rawWrite(file, file.pending.mid(5, size)))
-                return false;
-            used = 5 + size;
-        } else if (type == 0 || type == 3) {
-            const qsizetype length = type == 0 ? 9 : 13;
-            if (file.pending.size() < length)
-                break;
-            const auto first = qFromLittleEndian<quint64>(file.pending.constData() + 1);
-            const quint64 count = type == 0 ? 1 : quint64(qFromLittleEndian<quint32>(file.pending.constData() + 9)) + 1;
-            const quint64 total = (quint64(file.basis->size()) + file.blockSize - 1) / file.blockSize;
-            if (first >= total || count > total - first)
-                return false;
-            if (!file.basis->seek(qint64(first * file.blockSize)))
-                return false;
-            auto stop = watch(s.id);
-            for (quint64 i = 0; i < count; ++i) {
-                if (stopped(stop))
-                    return false;
-                const auto block = file.basis->read(file.blockSize);
-                if (block.isEmpty() || !rawWrite(file, block))
-                    return false;
-            }
-            used = length;
-        } else if (type == 2) {
-            if (file.pending.size() < 3)
-                break;
-            const auto length = qFromLittleEndian<quint16>(file.pending.constData() + 1);
-            if (length != 16)
-                return false;
-            if (file.pending.size() < 19)
-                break;
-            XXH128_canonical_t expected { };
-            XXH128_canonicalFromHash(&expected, XXH3_128bits_digest(file.hash));
-            if (std::memcmp(expected.digest, file.pending.constData() + 3, 16) != 0)
-                return false;
-            file.hashSeen = true;
-            used = 19;
-        } else
-            return false;
-        file.dropPending(used);
-    }
+    DeltaTarget target(*this, file, stop);
+    const auto used = file.applier->apply(file.pending, target);
+    if (!used)
+        return false;
+    file.dropPending(*used);
     return true;
 }
 
 void FileTransfer::Worker::delta(Session& s, const QByteArray& fid, File& file)
 {
-    const auto& signature = file.pending;
-    if (signature.size() < 12 || (signature.size() - 12) % 20 != 0 || signature.left(8) != QByteArray(8, '\0')) {
+    // kitty refuses a signature block over DeltaMaxBlockSize, so no client sends one, and the bound
+    // keeps a refill and the hash of one block small.
+    if (!AfterglowProto::signatureBlockSize(file.pending, AfterglowProto::DeltaMaxBlockSize)) {
         status(s, fid, "EINVAL");
         return;
     }
-    const auto blockSize = qFromLittleEndian<quint32>(signature.constData() + 8);
-    if (blockSize == 0 || blockSize > MaxRsyncBuffer) {
-        status(s, fid, "EINVAL");
-        return;
-    }
-    auto generator = std::make_unique<Delta>();
-    if (!generator->hash) {
+    // The signature's bytes stay in the pane's budget: they move, with no
+    // copy, from the file to the stream.
+    std::string signature;
+    signature.swap(file.pending);
+    auto generator = std::make_unique<Delta>(std::move(file.basis), std::move(signature), &pendingBytes);
+    // After the move: dropping the generator then releases the signature's budget once.
+    if (!generator->generator.valid()) {
         status(s, fid, "ENOMEM");
         return;
     }
-    generator->blockSize = blockSize;
-    generator->basis = std::move(file.basis);
-    // The signature's bytes stay in the pane's budget: they move from the file to the stream.
-    generator->pendingTotal = &pendingBytes;
-    generator->charged = std::size_t(file.pending.size());
-    generator->signature = std::exchange(file.pending, QByteArray());
     stream(s, fid, nullptr, file.meta.value("zip") == "zlib", std::move(generator));
 }
 
-bool FileTransfer::Worker::Delta::produce(QByteArray& out, qsizetype want)
-{
-    if (!parsed)
-        parse();
-    qsizetype scanned = 0;
-    while (!done && out.size() < want && scanned < DeltaStep) {
-        if (buffer.size() - position <= blockSize && !basis->atEnd()) {
-            buffer.remove(0, position);
-            position = 0;
-            buffer += basis->read(std::max<qint64>(65536, 2 * qint64(blockSize)));
-            if (basis->error() != QFileDevice::NoError)
-                return false;
-            fresh = true;
-        }
-        const auto length = std::min<qsizetype>(blockSize, buffer.size() - position);
-        if (!length) {
-            flushLiteral(out);
-            XXH128_canonical_t digest { };
-            XXH128_canonicalFromHash(&digest, XXH3_128bits_digest(hash));
-            QByteArray final(3, '\0');
-            final[0] = 2;
-            qToLittleEndian(quint16(16), final.data() + 1);
-            final.append(reinterpret_cast<const char*>(digest.digest), 16);
-            out += final;
-            done = true;
-            break;
-        }
-        if (fresh) {
-            a = b = 0;
-            for (qsizetype n = 0; n < length; ++n) {
-                a += quint8(buffer[position + n]);
-                b += a;
-            }
-            a &= 0xffffu;
-            b &= 0xffffu;
-        }
-        std::optional<quint64> match;
-        const quint32 weak = a | (b << 16);
-        if (weakHashes.contains(weak)) {
-            const auto strong = XXH3_64bits(buffer.constData() + position, std::size_t(length));
-            if (const auto found = blocks.find({ weak, strong }); found != blocks.end())
-                match = found->second;
-        }
-        if (match) {
-            flushLiteral(out);
-            QByteArray op(9, '\0');
-            qToLittleEndian(*match, op.data() + 1);
-            out += op;
-            XXH3_128bits_update(hash, buffer.constData() + position, std::size_t(length));
-            position += length;
-            scanned += length;
-            fresh = true;
-        } else {
-            literal += buffer[position];
-            const quint32 old = quint8(buffer[position]);
-            if (position + length < buffer.size()) {
-                const quint32 next = quint8(buffer[position + length]);
-                a = (a - old + next) & 0xffffu;
-                b = (b - quint32(length) * old + a) & 0xffffu;
-                fresh = false;
-            } else if (basis->atEnd()) {
-                // At the end of the file the window shrinks: roll the old byte out only.
-                a = (a - old) & 0xffffu;
-                b = (b - quint32(length) * old) & 0xffffu;
-                fresh = false;
-            } else
-                fresh = true; // the next pass refills the buffer
-            ++position;
-            ++scanned;
-            if (literal.size() >= 65536)
-                flushLiteral(out);
-        }
-    }
-    return true;
-}
 } // namespace Afterglow

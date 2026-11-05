@@ -3,7 +3,8 @@
 
 #include <AfterglowVt/Notifications.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+
 #include "Utf8.h"
 
 #include <algorithm>
@@ -12,6 +13,10 @@
 namespace AfterglowVt {
 
 namespace {
+
+using AfterglowProto::Base64Check;
+using AfterglowProto::base64Decode;
+using AfterglowProto::base64DecodeAppend;
 
 // The spec caps a chunk at 4096 encoded bytes. Twice that is accepted, to be
 // lenient with senders that miscount.
@@ -52,7 +57,7 @@ bool decodeChunk(std::string& carry, std::string_view data, std::string& out)
     std::string joined = carry;
     joined += data;
     const std::size_t whole = joined.ends_with('=') ? joined.size() : joined.size() / 4 * 4;
-    if (!detail::base64DecodeAppend(out, std::string_view(joined).substr(0, whole), detail::Base64Check::PaddingOptional)) {
+    if (!base64DecodeAppend(out, std::string_view(joined).substr(0, whole), Base64Check::PaddingOptional)) {
         return false;
     }
     carry = joined.substr(whole);
@@ -220,7 +225,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     if (existing && !existing->carry.empty()) {
         if (base64 && existing->carryPayload == kind) {
             carry = existing->carry;
-        } else if (!detail::base64DecodeAppend(flushed, existing->carry, detail::Base64Check::PaddingOptional)) {
+        } else if (!base64DecodeAppend(flushed, existing->carry, Base64Check::PaddingOptional)) {
             return reject();
         }
     }
@@ -266,7 +271,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
 
     // Metadata of every chunk applies; later values win.
     for (const auto& [key, value] : keys) {
-        auto decoded = [&value]() { return detail::base64Decode(value, detail::Base64Check::PaddingOptional).value_or(std::string{}); };
+        auto decoded = [&value]() { return base64Decode(value, Base64Check::PaddingOptional).value_or(std::string{}); };
         switch (key) {
         case 'a': {
             std::size_t vpos = 0;
@@ -353,7 +358,7 @@ NotificationAssembler::Result NotificationAssembler::feed(std::string_view paylo
     // checked whole, after the carry is complete.
     if (!p->carry.empty()) {
         std::string tail;
-        if (!detail::base64DecodeAppend(tail, p->carry, detail::Base64Check::PaddingOptional)) {
+        if (!base64DecodeAppend(tail, p->carry, Base64Check::PaddingOptional)) {
             return reject();
         }
         target(*p, p->carryPayload) += tail;

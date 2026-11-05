@@ -3,18 +3,15 @@
 
 #include <AfterglowVt/Graphics.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Terminal.h>
 
-#include <zlib.h>
-
 #include <algorithm>
-#include <charconv>
 #include <cerrno>
 #include <chrono>
 #include <climits>
-#include <cstdio>
 #include <filesystem>
 #include <cmath>
 #include <unordered_set>
@@ -48,28 +45,6 @@ constexpr int MaxDepth = 32; ///< relative placement chain links
 /// large edit.
 constexpr double WorkBytesPerSecond = double(std::size_t(1) << 30);
 constexpr double WorkBurst = double(std::size_t(1) << 30);
-
-bool inflateZlib(const std::string& in, std::string& out)
-{
-    z_stream zs{};
-    if (inflateInit(&zs) != Z_OK) {
-        return false;
-    }
-    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(in.data()));
-    zs.avail_in = uInt(in.size());
-    char buf[65536];
-    int rc = Z_OK;
-    while (rc == Z_OK) {
-        zs.next_out = reinterpret_cast<Bytef*>(buf);
-        zs.avail_out = sizeof buf;
-        rc = inflate(&zs, Z_NO_FLUSH);
-        const auto produced = sizeof buf - zs.avail_out;
-        if (produced > MaxPayload - out.size()) { rc = Z_DATA_ERROR; break; }
-        out.append(buf, produced);
-    }
-    inflateEnd(&zs);
-    return rc == Z_STREAM_END;
-}
 
 void blendOver(std::uint8_t* dst, const std::uint8_t* src)
 {
@@ -171,7 +146,11 @@ bool forbiddenFile(const std::filesystem::path& path)
     return false;
 }
 
-bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::string& data, std::string& error)
+/// Reads @p size bytes (0: the rest of the file) from @p offset. Past
+/// @p limit, the read stops there when @p cut is set (raw pixels, of which
+/// no more are used) and fails otherwise.
+bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t limit, bool cut, std::string& data,
+                 std::string& error)
 {
     struct stat st{};
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0
@@ -180,8 +159,13 @@ bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::string& 
         return false;
     }
     const std::uint64_t remaining = std::uint64_t(st.st_size) - offset;
-    const std::uint64_t want = size ? std::min<std::uint64_t>(size, remaining) : remaining;
-    if (want > MaxPayload || size > MaxPayload) { error = "EFBIG:image payload too large"; return false; }
+    std::uint64_t want = size ? std::min<std::uint64_t>(size, remaining) : remaining;
+    if (cut) {
+        want = std::min<std::uint64_t>(want, limit);
+    } else if (want > limit || size > limit) {
+        error = "EFBIG:image payload too large";
+        return false;
+    }
     data.resize(std::size_t(want));
     std::size_t done = 0;
     while (done < data.size()) {
@@ -216,6 +200,20 @@ bool temporaryLocation(const std::filesystem::path& path)
         if (!resolved && insideDirectory(path, real)) return true;
     }
     return false;
+}
+
+/// Deletes @p name in the directory @p parent, whose real path is
+/// @p parentPath, when the protocol hands it to the terminal: a regular file
+/// whose name carries the tag, in a temporary directory. With @p opened, only
+/// when it is still the file that was read.
+void deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
+                         const struct stat* opened)
+{
+    if (name.string().find(TemporaryTag) == std::string::npos || !temporaryLocation(parentPath / name)) return;
+    struct stat current{};
+    if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return;
+    if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return;
+    unlinkat(parent, name.c_str(), 0);
 }
 
 } // namespace
@@ -266,99 +264,10 @@ std::optional<PlaceholderCell> PlaceholderDecoder::next(const Screen& screen, co
 
 // --- command parsing --------------------------------------------------------
 
-struct GraphicsStore::Command
+// The keys are read by the protocol library, which clients share.
+struct GraphicsStore::Command : AfterglowProto::GraphicsCommand
 {
-    char action = 't';
-    char medium = 'd';
-    char del = 'a';
-    char compression = 0;
-    std::uint32_t format = 32;
-    std::uint32_t s = 0; // width, or animation state for a=a
-    std::uint32_t v = 0; // height, or loop count for a=a
-    std::uint32_t size = 0; // S
-    std::uint32_t offset = 0; // O
-    std::uint32_t id = 0; // i
-    std::uint32_t number = 0; // I
-    std::uint32_t placement = 0; // p
-    int more = 0;
-    int quiet = 0;
-    int x = 0;
-    int y = 0;
-    std::uint32_t ux = 0; // x and y unsigned, for the id range of d=r
-    std::uint32_t uy = 0;
-    int w = 0;
-    int h = 0;
-    int X = 0;
-    std::int64_t Y = 0; // 64-bit for a frame's background colour; Yi elsewhere
-    int Yi = 0;
-    int c = 0;
-    int r = 0;
-    int C = 0;
-    std::int32_t z = 0;
-    int U = 0;
-    std::uint32_t P = 0, Q = 0;
-    int H = 0, V = 0;
-    // Which keys the command carried, to tell a new command from a chunk.
-    bool hasAction = false;
-    bool hasId = false;
-    bool hasNumber = false;
-
-    static Command parse(std::string_view keys)
-    {
-        Command cmd;
-        std::size_t pos = 0;
-        while (pos < keys.size()) {
-            const auto comma = keys.find(',', pos);
-            const std::string_view kv = keys.substr(pos, comma == std::string_view::npos ? comma : comma - pos);
-            pos = comma == std::string_view::npos ? keys.size() : comma + 1;
-            if (kv.size() < 3 || kv[1] != '=') {
-                continue;
-            }
-            const char key = kv[0];
-            const std::string_view value = kv.substr(2);
-            if (key == 'a' || key == 't' || key == 'd' || key == 'o') {
-                const char ch = value.empty() ? 0 : value[0];
-                (key == 'a' ? cmd.action : key == 't' ? cmd.medium : key == 'd' ? cmd.del : cmd.compression) = ch;
-                cmd.hasAction = cmd.hasAction || key == 'a';
-                continue;
-            }
-            std::int64_t n = 0;
-            if (std::from_chars(value.data(), value.data() + value.size(), n).ec != std::errc{}) {
-                continue;
-            }
-            const auto u = std::uint32_t(std::clamp<std::int64_t>(n, 0, 0xFFFFFFFF));
-            const auto i = int(std::clamp<std::int64_t>(n, -0x7FFFFFFF, 0x7FFFFFFF));
-            switch (key) {
-            case 'f': cmd.format = u; break;
-            case 's': cmd.s = u; break;
-            case 'v': cmd.v = u; break;
-            case 'S': cmd.size = u; break;
-            case 'O': cmd.offset = u; break;
-            case 'i': cmd.id = u; cmd.hasId = true; break;
-            case 'I': cmd.number = u; cmd.hasNumber = true; break;
-            case 'p': cmd.placement = u; break;
-            case 'm': cmd.more = i; break;
-            case 'q': cmd.quiet = i; break;
-            case 'x': cmd.x = i; cmd.ux = u; break;
-            case 'y': cmd.y = i; cmd.uy = u; break;
-            case 'w': cmd.w = i; break;
-            case 'h': cmd.h = i; break;
-            case 'X': cmd.X = i; break;
-            case 'Y': cmd.Y = n; cmd.Yi = i; break;
-            case 'c': cmd.c = i; break;
-            case 'r': cmd.r = i; break;
-            case 'C': cmd.C = i; break;
-            case 'z': cmd.z = i; break;
-            case 'U': cmd.U = i; break;
-            case 'P': cmd.P = u; break;
-            case 'Q': cmd.Q = u; break;
-            case 'H': cmd.H = i; break;
-            case 'V': cmd.V = i; break;
-            default: break;
-            }
-        }
-        return cmd;
-    }
+    static Command parse(std::string_view keys) { return Command{AfterglowProto::GraphicsCommand::parse(keys)}; }
 };
 
 // --- origins ----------------------------------------------------------------
@@ -485,24 +394,24 @@ private:
 
 void GraphicsStore::handle(std::string_view payload, Context& ctx)
 {
-    dispatch(payload, ctx);
-    settle();
+    if (dispatch(payload, ctx)) {
+        settle();
+    }
 }
 
-void GraphicsStore::dispatch(std::string_view payload, Context& ctx)
+bool GraphicsStore::dispatch(std::string_view payload, Context& ctx)
 {
     const auto semi = payload.find(';');
     const std::string_view keys = payload.substr(0, semi);
     const std::string_view data = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
     const Command cmd = Command::parse(keys);
-    pruneDead(ctx.screen, ctx.cellWidth, ctx.cellHeight);
 
     if (m_pending.active) {
         // Chunks after the first carry only m= and q=. A command that names
         // another action or image is new: the client that left this transfer
         // unfinished is gone, and its tail must not swallow the next client's
         // first command.
-        const Command first = Command::parse(m_pending.controlData);
+        const Command first{m_pending.first};
         const bool another = (cmd.hasAction && cmd.action != first.action) || (cmd.hasId && cmd.id != first.id)
             || (cmd.hasNumber && cmd.number != first.number);
         if (another) {
@@ -515,7 +424,7 @@ void GraphicsStore::dispatch(std::string_view payload, Context& ctx)
                     m_pending.data.clear();
                     respond(first, ctx, "EFBIG:image payload too large", true);
                 } else {
-                    detail::base64DecodeAppend(m_pending.data, data, detail::Base64Check::Lenient);
+                    AfterglowProto::base64DecodeAppend(m_pending.data, data, AfterglowProto::Base64Check::Lenient);
                     if (m_pending.data.size() > MaxPayload) {
                         m_pending.failed = true;
                         m_pending.data.clear();
@@ -523,43 +432,49 @@ void GraphicsStore::dispatch(std::string_view payload, Context& ctx)
                     }
                 }
             }
-            if (cmd.more == 1) return;
+            // A chunk that is not the last only adds to the buffer: it
+            // changes no image or placement, so there is nothing to prune
+            // or settle until the last one.
+            if (cmd.more == 1) return false;
             std::string all = std::move(m_pending.data);
             const bool failed = m_pending.failed;
             m_pending = Pending{};
+            pruneDead(ctx.screen, ctx.cellWidth, ctx.cellHeight);
             if (!failed) execute(first, std::move(all), ctx);
-            return;
+            return true;
         }
     }
+    pruneDead(ctx.screen, ctx.cellWidth, ctx.cellHeight);
 
     const bool chunked = cmd.more == 1 && (cmd.action == 't' || cmd.action == 'T' || cmd.action == 'q' || cmd.action == 'f');
     const bool oversized = keys.size() > MaxControl || data.size() > ((MaxPayload + 2) / 3) * 4;
     if (oversized) {
         respond(cmd, ctx, "EFBIG:image payload too large", true);
         if (chunked) {
-            m_pending.controlData.assign(keys.substr(0, MaxControl));
+            m_pending.first = cmd;
             m_pending.active = true;
             m_pending.failed = true;
         }
-        return;
+        return true;
     }
-    std::string decoded = detail::base64Decode(data);
+    std::string decoded = AfterglowProto::base64Decode(data);
     if (decoded.size() > MaxPayload) {
         respond(cmd, ctx, "EFBIG:image payload too large", true);
         if (chunked) {
-            m_pending.controlData.assign(keys);
+            m_pending.first = cmd;
             m_pending.active = true;
             m_pending.failed = true;
         }
-        return;
+        return true;
     }
     if (chunked) {
-        m_pending.controlData.assign(keys);
+        m_pending.first = cmd;
         m_pending.data = std::move(decoded);
         m_pending.active = true;
-        return;
+        return true;
     }
     execute(cmd, std::move(decoded), ctx);
+    return true;
 }
 
 void GraphicsStore::execute(const Command& cmd, std::string data, Context& ctx)
@@ -599,33 +514,15 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
     if (cmd.quiet >= 2 || (cmd.quiet == 1 && !isError)) {
         return;
     }
-    std::string out = "\x1b_G";
-    char buf[64];
-    int n = 0;
-    // i= only for a known id: a command that gives I= alone gets the id
-    // filled in once its image is found, and no i=0 otherwise.
-    if (cmd.id) {
-        n = std::snprintf(buf, sizeof buf, "i=%u", cmd.id);
-        out.append(buf, std::size_t(n));
-    }
-    if (cmd.number) {
-        n = std::snprintf(buf, sizeof buf, cmd.id ? ",I=%u" : "I=%u", cmd.number);
-        out.append(buf, std::size_t(n));
-    }
-    if (cmd.placement) {
-        n = std::snprintf(buf, sizeof buf, ",p=%u", cmd.placement);
-        out.append(buf, std::size_t(n));
-    }
-    out += ';';
-    out += status;
-    out += "\x1b\\";
-    ctx.reply(out);
+    ctx.reply(AfterglowProto::GraphicsReply{cmd.id, cmd.number, cmd.placement, std::string(status)}.write());
 }
 
 // --- transmission -----------------------------------------------------------
 
-bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::string& error)
+bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size_t readLimit, std::size_t inflateLimit,
+                                std::string& error)
 {
+    const bool cut = cmd.compression == 0 && (cmd.format == 24 || cmd.format == 32);
     const bool fromFile = cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's';
     if (fromFile && !m_fileTransfer) {
         error = "EPERM:file transmission is turned off";
@@ -655,16 +552,10 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
             if (fd >= 0) close(fd);
             close(parent); error = "EBADF:not a readable regular file"; return false;
         }
-        const bool success = readPayload(fd, cmd.offset, cmd.size, data, error);
+        const bool success = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, error);
         // A temporary file is the terminal's to delete whether or not it
         // could use it; only the file that was read, though.
-        if (cmd.medium == 't' && name.string().find(TemporaryTag) != std::string::npos
-            && temporaryLocation(actualParent / name)) {
-            struct stat current{};
-            if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) == 0
-                && current.st_dev == opened.st_dev && current.st_ino == opened.st_ino)
-                unlinkat(parent, name.c_str(), 0);
-        }
+        if (cmd.medium == 't') deleteTemporaryFile(parent, actualParent, name, &opened);
         close(fd);
         close(parent);
         if (!success) return false;
@@ -679,7 +570,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
         if (fd < 0) { error = "EBADF:cannot open shared memory"; return false; }
         // pread is safe if the sender truncates the object concurrently; mmap
         // would instead deliver SIGBUS to the terminal process.
-        const bool success = readPayload(fd, cmd.offset, cmd.size, data, error);
+        const bool success = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, error);
         close(fd);
         // Only an object named for the protocol is the terminal's to delete.
         // Any other name stays: a command must not delete an unrelated object
@@ -694,7 +585,7 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
     }
     if (cmd.compression == 'z') {
         std::string inflated;
-        if (!inflateZlib(data, inflated)) {
+        if (!AfterglowProto::graphicsInflate(data, inflated, inflateLimit)) {
             error = "EINVAL:zlib decompression failed";
             return false;
         }
@@ -705,49 +596,69 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::stri
 
 void GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
 {
-    if (!m_fileTransfer || data.size() > 4096 || data.find('\0') != std::string::npos
-        || data.find(TemporaryTag) == std::string::npos) {
+    // The same rules as loadPayload's: the name a t=s command gives, and the
+    // real name of a t=t file, must carry the tag.
+    if (!m_fileTransfer || data.size() > 4096 || data.find('\0') != std::string::npos) {
         return;
     }
     if (cmd.medium == 's') {
-        shm_unlink(data.c_str());
+        if (data.find(TemporaryTag) != std::string::npos) shm_unlink(data.c_str());
         return;
     }
     if (cmd.medium != 't') return;
     std::error_code ec;
     const auto canonical = std::filesystem::canonical(data, ec);
-    if (ec || canonical.filename().string().find(TemporaryTag) == std::string::npos) return;
+    if (ec) return;
     const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (parent < 0) return;
     const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
-    const auto name = canonical.filename();
-    struct stat st{};
-    if (!ec && temporaryLocation(actualParent / name) && fstatat(parent, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0
-        && S_ISREG(st.st_mode)) {
-        unlinkat(parent, name.c_str(), 0);
-    }
+    if (!ec) deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
     close(parent);
 }
 
 bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out,
                                  std::string& error)
 {
-    if (!loadPayload(cmd, data, error)) {
+    // What the command declares is checked before anything is read or
+    // inflated: a few hundred KiB of o=z data can expand to any size, so a
+    // raw image may inflate only to the size it declares.
+    //
+    // PNG and o=z bytes have the limit of inline data in every medium. The
+    // quota applies to the decoded image (transmit() checks it), so a PNG
+    // file longer than the quota whose pixels fit is kept.
+    const bool raw = cmd.format == 24 || cmd.format == 32;
+    const std::size_t bpp = cmd.format / 8;
+    std::size_t readLimit = MaxPayload;
+    std::size_t inflateLimit = std::min(m_quota, MaxPayload);
+    if (cmd.compression != 0 && cmd.compression != 'z') {
+        error = "EINVAL:unknown compression";
+    } else if (!raw && cmd.format != 100) {
+        error = "EINVAL:unknown format";
+    } else if (raw && (cmd.s == 0 || cmd.v == 0 || cmd.s > MaxDimension || cmd.v > MaxDimension)) {
+        error = "EINVAL:missing or invalid image size";
+    } else if (raw && std::size_t(cmd.s) * cmd.v * 4 > MaxPayload) {
+        error = "EFBIG:image payload too large";
+    } else if (raw && std::size_t(cmd.s) * cmd.v * 4 > m_quota) {
+        error = "ENOSPC:image larger than the storage quota";
+    } else if (raw) {
+        // Raw pixels past the image are never used, so they are not read.
+        inflateLimit = std::size_t(cmd.s) * cmd.v * bpp;
+        if (cmd.compression == 0) readLimit = inflateLimit;
+    }
+    if (!error.empty()) {
+        releaseMedium(cmd, data);
         return false;
     }
-    if (cmd.format == 100) {
+    if (!loadPayload(cmd, data, readLimit, inflateLimit, error)) {
+        return false;
+    }
+    if (!raw) {
         if (!ctx.host.decodePng(data, out.width, out.height, out.rgba)) {
             error = "EBADPNG:failed to decode PNG data";
             return false;
         }
-    } else if (cmd.format == 24 || cmd.format == 32) {
-        const std::size_t bpp = cmd.format / 8;
-        if (cmd.s == 0 || cmd.v == 0 || cmd.s > MaxDimension || cmd.v > MaxDimension) {
-            error = "EINVAL:missing or invalid image size";
-            return false;
-        }
+    } else {
         const std::size_t expected = std::size_t(cmd.s) * cmd.v * bpp;
-        if (std::size_t(cmd.s) * cmd.v * 4 > MaxPayload) { error = "EFBIG:image payload too large"; return false; }
         if (data.size() < expected) {
             error = "ENODATA:insufficient image data";
             return false;
@@ -765,9 +676,6 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
                 out.rgba[j + 3] = 255;
             }
         }
-    } else {
-        error = "EINVAL:unknown format";
-        return false;
     }
     if (out.width == 0 || out.height == 0 || out.width > MaxDimension || out.height > MaxDimension) {
         error = "EINVAL:invalid image dimensions";
@@ -801,7 +709,7 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     // At the image limit, an image nothing shows makes room; only when every
     // image is on screen is the new one refused. This comes after the decode,
     // so a command that fails costs the client no image.
-    const bool replaces = cmd.id && findImage(Command{.id = cmd.id});
+    const bool replaces = cmd.id && findImage(Command{{.id = cmd.id}});
     if (!replaces && m_images.size() >= MaxImages && !evictUnusedImage()) {
         respond(cmd, ctx, "ENOSPC:too many images", true);
         return;
@@ -906,7 +814,7 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx)
     Screen& scr = ctx.screen;
     Placement pl;
     pl.imageId = img->id;
-    pl.placementId = cmd.placement ? cmd.placement : m_nextPlacementId++;
+    pl.placementId = cmd.placement ? cmd.placement : allocatePlacementId(pl.imageId);
     pl.parentImage = cmd.P;
     pl.parentPlacement = cmd.Q;
     pl.relativeX = cmd.H;
@@ -978,6 +886,20 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx)
         scr.cursor.x = wraps ? 0 : int(targetX);
     }
     respond(cmd, ctx, "OK", false);
+}
+
+std::uint32_t GraphicsStore::allocatePlacementId(std::uint32_t imageId)
+{
+    // A client may name any p= in this range too: a chosen id skips those in
+    // use, so that a placement without p= never replaces one with it. 0 is
+    // never chosen, since p=0 means "no placement id".
+    std::uint32_t id;
+    do {
+        id = m_nextPlacementId++;
+        if (m_nextPlacementId == 0) m_nextPlacementId = 1u << 31;
+    } while (std::any_of(m_placements.begin(), m_placements.end(),
+                         [&](const Placement& p) { return p.imageId == imageId && p.placementId == id; }));
+    return id;
 }
 
 std::uint32_t GraphicsStore::allocateSixelId()
@@ -1099,7 +1021,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         const auto r = cellRect(index);
         return r && row >= r->row && row < r->row + r->rows && col >= r->col && col < r->col + r->cols;
     };
-    const Image* numbered = kind == 'n' ? findImage(Command{.number = cmd.number}) : nullptr;
+    const Image* numbered = kind == 'n' ? findImage(Command{{.number = cmd.number}}) : nullptr;
 
     // Decide first, then erase: the decisions read the placements.
     std::vector<char> doomed(m_placements.size(), 0);
@@ -1159,7 +1081,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
     }
     eraseFlagged(m_placements, doomed);
     if (freeImages) {
-        if (kind == 'i' && findImage(Command{.id = cmd.id})) {
+        if (kind == 'i' && findImage(Command{{.id = cmd.id}})) {
             touched.push_back(cmd.id);
         } else if (kind == 'n' && numbered) {
             touched.push_back(numbered->id);

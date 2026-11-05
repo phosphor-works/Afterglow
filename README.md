@@ -41,5 +41,7 @@ See the [release notes](CHANGELOG.md) for supported features.
 The application uses GPL-3.0-or-later. The libraries in `libs/` use LGPL-2.1-or-later.
 Most bundled shader packs use LGPL-2.1-or-later. Third-party themes use MIT.
 The icon uses CC-BY-SA-4.0.
+The binaries include zlib-ng (Zlib license), xxHash (BSD-2-Clause), valijson (BSD-2-Clause), Luau (MIT) and Lua (MIT).
 Each file, or `REUSE.toml` for a file without a header, identifies its license.
-The [LICENSES directory](LICENSES) contains the license texts.
+The [LICENSES directory](LICENSES) contains the license texts of the files in this repository.
+The installation also includes the license texts of zlib-ng, xxHash, valijson, Luau and Lua.

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "desktop/FileTransfer.h"
+#include <AfterglowProto/Transfer.h>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -69,6 +70,28 @@ struct Transfer : testing::Test {
             return std::any_of(replies.begin(), replies.end(), [&](const auto& b) {
                 return b.contains(";fid=" + fid + ";") && b.contains("st=" + b64(value));
             });
+        });
+    }
+    // The data of every data and end_data reply for @p fid, decoded.
+    QByteArray received(const QByteArray& fid)
+    {
+        QByteArray data;
+        for (const QByteArray& reply : std::as_const(replies)) {
+            if (!reply.contains(";fid=" + fid + ";") || !(reply.contains("ac=data;") || reply.contains("ac=end_data;")))
+                continue;
+            const qsizetype at = reply.indexOf(";d=");
+            if (at < 0)
+                continue;
+            const qsizetype end = reply.indexOf(';', at + 3);
+            data += QByteArray::fromBase64(reply.mid(at + 3, end - at - 3));
+        }
+        return data;
+    }
+    bool ended(const QByteArray& fid)
+    {
+        return waitFor([&] {
+            return std::any_of(replies.begin(), replies.end(),
+                [&](const auto& b) { return b.contains("ac=end_data;") && b.contains(";fid=" + fid + ";"); });
         });
     }
     QByteArray path(const char* name) { return b64(dir.filePath(QString::fromLatin1(name)).toUtf8()); }
@@ -149,10 +172,41 @@ TEST_F(Transfer, ReadRequiresApprovalAndStreamsContent)
     ASSERT_TRUE(waitFor(
         [&] { return std::any_of(replies.begin(), replies.end(), [](auto b) { return b.contains("ac=file"); }); }));
     send("ac=file;fid=data;n=" + path("file"));
-    ASSERT_TRUE(waitFor([&] {
-        return std::any_of(replies.begin(), replies.end(),
-            [](auto b) { return b.contains("ac=end_data") && b.contains(b64("source data")); });
-    }));
+    ASSERT_TRUE(ended("data"));
+    EXPECT_EQ(received("data"), "source data");
+}
+
+// A file in /proc states st_size 0 and holds data. QFile::atEnd() is true
+// each time its 16 KiB read buffer is empty, so the stream must end at an
+// empty read, not at the first buffer.
+TEST_F(Transfer, ReadOfFileWithSizeZeroSendsMoreThanOneBuffer)
+{
+    const QByteArray name = "/proc/self/smaps";
+    QFile probe(QString::fromLatin1(name));
+    struct stat st { };
+    if (::stat(name.constData(), &st) || st.st_size != 0 || !probe.open(QIODevice::ReadOnly))
+        GTEST_SKIP() << "needs a /proc file that states size 0";
+    // The test reads the file itself. The mappings change while the worker
+    // runs, so the test compares the shape of the contents, not each byte.
+    const QByteArray own = probe.readAll();
+    if (own.size() <= 16384)
+        GTEST_SKIP() << "needs a /proc file larger than one read buffer";
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + b64(name));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    ASSERT_TRUE(waitFor(
+        [&] { return std::any_of(replies.begin(), replies.end(), [](auto b) { return b.contains("ac=file"); }); }));
+    send("ac=file;fid=plain;n=" + b64(name));
+    ASSERT_TRUE(ended("plain"));
+    const QByteArray data = received("plain");
+    EXPECT_GT(data.size(), 16384);
+    EXPECT_EQ(data.left(data.indexOf('\n')), own.left(own.indexOf('\n')));
+    // Each mapping ends with its VmFlags line: a cut stream ends inside one.
+    ASSERT_TRUE(data.endsWith('\n'));
+    const QByteArray last = data.left(data.size() - 1);
+    EXPECT_TRUE(last.mid(last.lastIndexOf('\n') + 1).startsWith("VmFlags:"));
 }
 
 // A sysfs attribute states st_size 4096 and holds a few bytes: QFile::atEnd()
@@ -223,6 +277,25 @@ TEST_F(Transfer, ResourceAbortReportsFailureAndClosesSession)
 {
     ASSERT_TRUE(start());
     service.abort();
+    ASSERT_TRUE(status("ENOMEM"));
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+}
+// The terminal forwards a command over the limit cut to one byte past it.
+// A command at the limit is read. One byte more aborts every session.
+TEST_F(Transfer, CommandOverTheLimitAbortsTheSessions)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;n=" + path("file"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    QByteArray command = "id=test;ac=data;fid=f;d=" + b64("at the limit") + ";x=";
+    command += QByteArray(qsizetype(AfterglowProto::TransferMaxCommand) - command.size(), 'a');
+    ASSERT_EQ(std::size_t(command.size()), AfterglowProto::TransferMaxCommand);
+    service.handle(command);
+    send("ac=end_data;fid=f");
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    EXPECT_EQ(contents("file"), "at the limit");
+    EXPECT_EQ(closed, 0);
+    service.handle(command + 'a');
     ASSERT_TRUE(status("ENOMEM"));
     ASSERT_TRUE(waitFor([&] { return closed == 1; }));
 }
@@ -409,14 +482,19 @@ TEST_F(Transfer, SmallFileWithLargeBlockSizeDeltaFinishes)
     service.approve(token, true);
     ASSERT_TRUE(status("OK"));
     send("ac=file;tt=rsync;fid=r;n=" + path("source"));
-    // The largest block size with no blocks: the whole file is one shrinking window.
+    // A block size over kitty's 1 MiB is refused.
     QByteArray signature(12, '\0');
-    signature[10] = 0;
     signature[11] = 1;
     send("ac=end_data;fid=r;d=" + b64(signature));
+    EXPECT_TRUE(fileStatus("r", "EINVAL"));
+    send("ac=file;tt=rsync;fid=r2;n=" + path("source"));
+    // The largest block size with no blocks: the whole file is one shrinking window.
+    signature[11] = 0;
+    signature[10] = 0x10;
+    send("ac=end_data;fid=r2;d=" + b64(signature));
     EXPECT_TRUE(waitFor([&] {
         return std::any_of(replies.begin(), replies.end(),
-            [](const auto& b) { return b.contains("ac=end_data;") && b.contains(";fid=r;"); });
+            [](const auto& b) { return b.contains("ac=end_data;") && b.contains(";fid=r2;"); });
     }));
 }
 TEST_F(Transfer, LargeDeltaRebuildsTheFileFromBlocksAndLiterals)
@@ -467,20 +545,8 @@ TEST_F(Transfer, LargeDeltaRebuildsTheFileFromBlocksAndLiterals)
         const bool last = at + 4096 >= signature.size();
         send(QByteArray(last ? "ac=end_data" : "ac=data") + ";fid=r;d=" + b64(signature.mid(at, 4096)));
     }
-    ASSERT_TRUE(waitFor([&] {
-        return std::any_of(replies.begin(), replies.end(),
-            [](const auto& b) { return b.contains("ac=end_data;") && b.contains(";fid=r;"); });
-    }));
-    QByteArray delta;
-    for (const QByteArray& reply : std::as_const(replies)) {
-        if (!reply.contains(";fid=r;") || !(reply.contains("ac=data;") || reply.contains("ac=end_data;")))
-            continue;
-        const qsizetype at = reply.indexOf(";d=");
-        if (at < 0)
-            continue;
-        const qsizetype end = reply.indexOf(';', at + 3);
-        delta += QByteArray::fromBase64(reply.mid(at + 3, end - at - 3));
-    }
+    ASSERT_TRUE(ended("r"));
+    const QByteArray delta = received("r");
     // Apply the operations to the receiver's copy.
     QByteArray rebuilt;
     int blocks = 0;
@@ -512,6 +578,94 @@ TEST_F(Transfer, LargeDeltaRebuildsTheFileFromBlocksAndLiterals)
     EXPECT_TRUE(rebuilt == changed);
     // Most of the basis travels as block references.
     EXPECT_GT(blocks, 100);
+}
+// A reset that the GUI thread queued behind a packet ends the packet's
+// session: the packet must not create a file first.
+TEST_F(Transfer, PacketQueuedBeforeAResetIsDropped)
+{
+    // A listing that keeps the worker busy while the packets and the reset queue up.
+    ASSERT_TRUE(QDir(dir.path()).mkpath(QStringLiteral("many")));
+    for (int i = 0; i < 5000; ++i) {
+        QFile entry(dir.filePath(QStringLiteral("many/%1").arg(i)));
+        ASSERT_TRUE(entry.open(QIODevice::WriteOnly));
+    }
+    ASSERT_TRUE(start());
+    token.clear();
+    service.handle("id=busy;ac=receive;sz=1");
+    service.handle("id=busy;ac=file;fid=d;n=" + path("many"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    send("ac=file;fid=f;n=" + path("late"));
+    send("ac=end_data;fid=f;d=" + b64("late"));
+    service.reset();
+    ASSERT_TRUE(waitFor([&] { return closed == 2; }));
+    EXPECT_FALSE(QFile::exists(dir.filePath("late")));
+    EXPECT_TRUE(QDir(dir.path()).entryList({ QStringLiteral(".afterglow-*") }, QDir::Files | QDir::Hidden).isEmpty());
+}
+// handle() stops the session's work as soon as it reads a cancel's id. A
+// cancel that does not decode must still end the session with an answer.
+TEST_F(Transfer, CancelThatDoesNotDecodeStillCancels)
+{
+    ASSERT_TRUE(start());
+    send("ac=cancel;d=!!!");
+    ASSERT_TRUE(status("CANCELED"));
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    token.clear();
+    ASSERT_TRUE(start());
+    send("ac=cancel;ac=cancel");
+    ASSERT_TRUE(waitFor([&] { return closed == 2; }));
+}
+// A file in /proc states st_size 0 and holds data. QFile::atEnd() is true
+// before the first read, so a delta of it must end at an empty read.
+TEST_F(Transfer, DeltaReadOfFileWithSizeZeroSendsItsContents)
+{
+    const QByteArray name = "/proc/self/status";
+    struct stat st { };
+    if (::stat(name.constData(), &st) || st.st_size != 0)
+        GTEST_SKIP() << "needs a /proc file that states size 0";
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + b64(name));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    ASSERT_TRUE(waitFor(
+        [&] { return std::any_of(replies.begin(), replies.end(), [](auto b) { return b.contains("ac=file"); }); }));
+    send("ac=file;tt=rsync;fid=r;n=" + b64(name));
+    QByteArray signature(12, '\0');
+    signature[8] = 64; // no records: the whole file goes as literals
+    send("ac=end_data;fid=r;d=" + b64(signature));
+    ASSERT_TRUE(ended("r"));
+    const QByteArray delta = received("r");
+    ASSERT_GE(delta.size(), 5);
+    ASSERT_EQ(delta[0], 1); // a literal, not only the hash of an empty file
+    const auto length = qFromLittleEndian<quint32>(delta.constData() + 1);
+    EXPECT_GT(length, 0u);
+    EXPECT_TRUE(delta.mid(5, length).startsWith("Name:"));
+}
+// kitten transfer sends no sz. Its delta uploads are accepted, and copy
+// operations stop at the configured limit.
+TEST_F(Transfer, DeltaUploadWithoutSizeStopsAtTheLimit)
+{
+    QFile basis(dir.filePath("basis"));
+    ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
+    basis.write(QByteArray(1000, 'a'));
+    basis.close();
+    service.setDeltaLimit(1500);
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;tt=rsync;n=" + path("basis"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    EXPECT_TRUE(std::any_of(replies.begin(), replies.end(), [](const auto& b) {
+        return b.contains(";fid=f;") && b.contains("st=" + b64("STARTED")) && b.contains(";tt=rsync");
+    }));
+    // One copy operation of all 16 blocks: 1,000 bytes. The second passes the limit.
+    QByteArray copy(13, '\0');
+    copy[0] = 3;
+    copy[9] = 15;
+    send("ac=data;fid=f;d=" + b64(copy));
+    ASSERT_TRUE(fileStatus("f", "PROGRESS"));
+    send("ac=data;fid=f;d=" + b64(copy));
+    ASSERT_TRUE(fileStatus("f", "EFBIG"));
+    EXPECT_EQ(contents("basis"), QByteArray(1000, 'a'));
 }
 TEST_F(Transfer, OnePromptAtATimeAndDenialCoolsDown)
 {

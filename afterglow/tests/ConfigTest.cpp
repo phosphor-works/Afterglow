@@ -3,6 +3,8 @@
 
 #include "config/Settings.h"
 #include "config/Theme.h"
+#include "desktop/DragDrop.h"
+#include "desktop/FileTransfer.h"
 
 #include <AfterglowRender/Snapshot.h>
 
@@ -973,6 +975,36 @@ TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
     EXPECT_EQ(low.settings().lastOutputLimit, std::size_t(1) << 10);
     SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"lastOutputLimit": 999999}})"));
     EXPECT_EQ(high.settings().lastOutputLimit, std::size_t(65536) << 10);
+}
+
+TEST_F(ConfigTest, FileTransferDeltaLimitIsGibibytesWithAClamp)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().fileTransferDeltaLimit, qint64(64) << 30);
+    // The transfer service keeps the same default for a worker that gets no setting.
+    EXPECT_EQ(Settings{}.fileTransferDeltaLimit, FileTransfer::DefaultDeltaLimit);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"fileTransferDeltaLimit": 2}})"));
+    EXPECT_EQ(custom.settings().fileTransferDeltaLimit, qint64(2) << 30);
+
+    SettingsStore off(write(QStringLiteral("off.json"), R"({"Terminal": {"fileTransferDeltaLimit": 0}})"));
+    EXPECT_EQ(off.settings().fileTransferDeltaLimit, 0);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"fileTransferDeltaLimit": 99999999}})"));
+    EXPECT_EQ(high.settings().fileTransferDeltaLimit, qint64(1048576) << 30);
+}
+
+TEST_F(ConfigTest, DragAnswerWaitIsMillisecondsWithAClamp)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().dragAnswerWait, 100);
+    // The drag and drop handler keeps the same default for a pane that gets no setting.
+    EXPECT_EQ(Settings{}.dragAnswerWait, DragDrop::DefaultAnswerWaitMs);
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"dragAnswerWait": 250}})"));
+    EXPECT_EQ(custom.settings().dragAnswerWait, 250);
+    SettingsStore off(write(QStringLiteral("off.json"), R"({"Terminal": {"dragAnswerWait": 0}})"));
+    EXPECT_EQ(off.settings().dragAnswerWait, 0);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"dragAnswerWait": 99999}})"));
+    EXPECT_EQ(high.settings().dragAnswerWait, 1000);
 }
 
 TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)

@@ -191,6 +191,19 @@ TEST(TextSizing, ExplicitBlockPreservesLongTextAndRejectsOverlongUtf8)
     EXPECT_EQ(t.at(0, 0).codepoint(), Unicode::ReplacementCharacter);
 }
 
+TEST(TextSizing, IllFormedBytesBecomeReplacementsAndControlsGo)
+{
+    Term t(20, 3);
+    // A cut sequence (E2 82) gives one U+FFFD for each byte. An encoded C1
+    // control (U+0085) and a DEL are dropped.
+    t.feed("\x1b]66;s=1;a\xe2\x82\xc2\x85\x7f" "b\x07");
+    EXPECT_EQ(t.at(0, 0).codepoint(), U'a');
+    EXPECT_EQ(t.at(1, 0).codepoint(), Unicode::ReplacementCharacter);
+    EXPECT_EQ(t.at(2, 0).codepoint(), Unicode::ReplacementCharacter);
+    EXPECT_EQ(t.at(3, 0).codepoint(), U'b');
+    EXPECT_EQ(t.t.screen().cursor.x, 4);
+}
+
 TEST(TextSizing, MetadataAndTextAreBounded)
 {
     Term t(20, 3);

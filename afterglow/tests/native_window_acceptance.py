@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
                         coordinates[:] = map(int, marker.read_text().split())
                     except (FileNotFoundError, ValueError):
                         return False
-                    return len(coordinates) == 4
+                    return len(coordinates) in (4, 5)
                 remaining = deadline - time.monotonic()
                 try:
                     if remaining <= 0:
@@ -59,10 +59,16 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
                     wait_for(ready, timeout=remaining)
                 except AssertionError:
                     raise AssertionError(f"The native tests did not finish within {args.timeout} s") from None
-                if len(coordinates) == 4:
+                if len(coordinates) in (4, 5):
                     marker.unlink(missing_ok=True)
                     Path(str(marker) + ".pressed").unlink(missing_ok=True)
-                    start_x, start_y, end_x, end_y = coordinates
+                    hovered = Path(str(marker) + ".hovered")
+                    hovered.unlink(missing_ok=True)
+                    start_x, start_y, end_x, end_y = coordinates[:4]
+                    # A fifth token 1: release only when the test says that
+                    # the drop target accepts the drag, as a person waits for
+                    # the cursor. A slow first frame must not race the release.
+                    await_hover = len(coordinates) == 5 and coordinates[4] == 1
                     # Feed only the nested compositor's X11 backend. KWin then
                     # generates real Wayland pointer serials and negotiates QDrag.
                     # Host XWayland may suppress XTest button events during grabs.
@@ -75,6 +81,12 @@ with tempfile.TemporaryDirectory(prefix="afterglow-native-") as temporary:
                             desktop.pointer(6, start_x + (end_x - start_x) * step // 10,
                                             start_y + (end_y - start_y) * step // 10, held=True)
                             time.sleep(.04)
+                        if await_hover:
+                            try:
+                                wait_for(lambda: hovered.exists() or process.poll() is not None, timeout=5)
+                            except AssertionError:
+                                print(f"{marker}: the drop target did not accept the drag in 5 s; releasing",
+                                      file=sys.stderr)
                     finally:
                         desktop.pointer(5, end_x, end_y, held=True)
             raise SystemExit(process.wait(timeout=30))

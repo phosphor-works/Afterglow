@@ -6,7 +6,10 @@
 #include <AfterglowVt/Sixel.h>
 #include <AfterglowVt/afterglowvt_version.h>
 
-#include "Base64.h"
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/DragDrop.h>
+#include <AfterglowProto/Transfer.h>
+
 #include "ITerm2.h"
 #include "Utf8.h"
 
@@ -21,6 +24,9 @@ namespace AfterglowVt {
 
 namespace {
 
+using AfterglowProto::Base64Check;
+using AfterglowProto::base64Decode;
+using AfterglowProto::base64Encode;
 
 constexpr char32_t DecSpecialGraphics[32] = {
     0x00A0, 0x25C6, 0x2592, 0x2409, 0x240C, 0x240D, 0x240A, 0x00B0, 0x00B1, 0x2424, 0x240B,
@@ -37,6 +43,11 @@ constexpr int MaxRepliesPerSequence = 256;
 /// Longest working directory a program can report, in bytes (a percent-encoded
 /// OSC 7 URI of a path up to PATH_MAX fits).
 constexpr std::size_t MaxWorkingDirectory = 8192;
+
+/// What OSC 9 and OSC 777 notification text may hold besides printable text.
+/// No line feed: the parser drops C0 bytes inside an OSC string, so the text
+/// is one line (only OSC 99, through base64, can carry a newline).
+constexpr unsigned NotifyText = detail::TextAllow::LineSeparators;
 
 std::array<Rgb, 256> buildPalette(const std::array<Rgb, 16>& base)
 {
@@ -1296,33 +1307,12 @@ void Terminal::textSizing(std::string_view args)
     // Decode the text; ill-formed sequences become U+FFFD, controls and NUL go.
     std::u32string cps;
     for (std::size_t i = 0; i < text.size();) {
-        const auto b = static_cast<unsigned char>(text[i]);
-        const int extra = b < 0x80 ? 0 : (b & 0xE0) == 0xC0 ? 1 : (b & 0xF0) == 0xE0 ? 2 : (b & 0xF8) == 0xF0 ? 3 : -1;
-        char32_t cp = Unicode::ReplacementCharacter;
-        int used = 1;
-        if (extra >= 0 && i + std::size_t(extra) < text.size() + (extra == 0 ? 1 : 0)) {
-            char32_t value = extra == 0 ? b : b & (0x3F >> extra);
-            bool ok = true;
-            for (int k = 1; k <= extra; ++k) {
-                if (i + std::size_t(k) >= text.size()) {
-                    ok = false;
-                    break;
-                }
-                const auto c = static_cast<unsigned char>(text[i + std::size_t(k)]);
-                if ((c & 0xC0) != 0x80) {
-                    ok = false;
-                    break;
-                }
-                value = (value << 6) | (c & 0x3F);
-            }
-            static constexpr char32_t minimum[] = {0, 0x80, 0x800, 0x10000};
-            if (ok && value >= minimum[extra] && value <= 0x10FFFF && !(value >= 0xD800 && value <= 0xDFFF)) {
-                cp = value;
-                used = extra + 1;
-            }
+        char32_t cp = 0;
+        if (!detail::nextUtf8(text, i, cp)) {
+            cp = Unicode::ReplacementCharacter;
+            ++i;
         }
-        i += std::size_t(used);
-        if (cp >= 0x20 && cp != 0x7F && !(cp >= 0x80 && cp < 0xA0)) {
+        if (!detail::isControl(cp)) {
             cps.push_back(cp);
         }
     }
@@ -3863,23 +3853,27 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         // iTerm2 notification, or a ConEmu command when it starts with a
         // number: "9;4;st;pr" is its progress report, which feeds program
         // status until a program speaks OSC 7501, "9;9;path" its directory.
+        // The number may have leading zeros, so its arguments start after
+        // its own digits. A number too large to read is still a ConEmu
+        // command, one that afterglow does not know.
+        const std::size_t digits = std::min(rest.find_first_not_of("0123456789"), rest.size());
+        const bool conEmuForm = digits > 0 && (digits == rest.size() || rest[digits] == ';');
         int conEmu = -1;
-        if (const auto digits = rest.find_first_not_of("0123456789");
-            digits != 0 && (digits == std::string_view::npos || rest[digits] == ';')) {
-            std::from_chars(rest.data(), rest.data() + std::min(rest.size(), digits), conEmu);
+        if (conEmuForm) {
+            std::from_chars(rest.data(), rest.data() + digits, conEmu);
         }
+        const std::string_view args = conEmuForm && digits < rest.size() ? rest.substr(digits + 1) : std::string_view{};
         if (conEmu == 9) {
-            std::string_view path = rest.size() > 2 ? rest.substr(2) : std::string_view{};
+            std::string_view path = args;
             if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
                 path = path.substr(1, path.size() - 2);
             }
             setWorkingDirectory(path);
-        } else if (conEmu >= 0 && conEmu != 4) {
+        } else if (conEmuForm && conEmu != 4) {
             // Another ConEmu command: not a notification.
         } else if (conEmu == 4) {
             int st = 0;
             int pr = 0;
-            const std::string_view args = rest.size() > 2 ? rest.substr(2) : std::string_view{};
             const auto semi2 = args.find(';');
             std::from_chars(args.data(), args.data() + (semi2 == std::string_view::npos ? args.size() : semi2), st);
             if (semi2 != std::string_view::npos) {
@@ -3888,16 +3882,19 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
             if (m_programStatus.applyLegacyProgress(st, pr)) {
                 m_host.programStatusChanged();
             }
-        } else if (!rest.empty()) {
+        } else if (!rest.empty() && detail::isCleanText(rest, NotifyText)) {
             m_host.notify({}, rest);
         }
         break;
     }
+    // An oversized command goes on cut to one byte over the limit: the host
+    // sees it is too large and ends the session with an error, where a
+    // dropped chunk would leave a message that silently lacks data.
     case 72:
-        if (rest.size() <= 8192) m_host.terminalProtocol(72, rest);
+        m_host.terminalProtocol(72, rest.substr(0, AfterglowProto::DndMaxCommand + 1));
         break;
     case 5113:
-        if (rest.size() <= 16384) m_host.terminalProtocol(5113, rest);
+        m_host.terminalProtocol(5113, rest.substr(0, AfterglowProto::TransferMaxCommand + 1));
         break;
     case 66:
         textSizing(rest);
@@ -3960,7 +3957,11 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         if (rest.starts_with("notify;")) {
             const std::string_view args = rest.substr(7);
             const auto semi2 = args.find(';');
-            m_host.notify(args.substr(0, semi2), semi2 == std::string_view::npos ? std::string_view{} : args.substr(semi2 + 1));
+            const std::string_view title = args.substr(0, semi2);
+            const std::string_view body = semi2 == std::string_view::npos ? std::string_view{} : args.substr(semi2 + 1);
+            if (detail::isCleanText(title, NotifyText) && detail::isCleanText(body, NotifyText)) {
+                m_host.notify(title, body);
+            }
         }
         break;
     }
@@ -4013,12 +4014,7 @@ void Terminal::oscDispatch(std::string_view payload, bool bel)
         request.osc52 = true;
         request.osc52Bel = bel;
         // The reply echoes the selection: only xterm's selection letters go back.
-        std::string echoed;
-        for (char c : selection.substr(0, 16)) {
-            if (std::string_view("cpqs01234567").find(c) != std::string_view::npos) {
-                echoed += c;
-            }
-        }
+        std::string echoed = AfterglowProto::osc52Letters(selection);
         request.osc52Selection = echoed.empty() ? std::string("c") : std::move(echoed);
         if (!m_host.clipboardRequest(request)) {
             reply(request.osc52Reply({}));
@@ -4345,7 +4341,7 @@ void Terminal::iterm2(std::string_view args, bool bel)
     } else if (key == "SetUserVar") {
         const auto eq2 = value.find('=');
         if (eq2 != std::string_view::npos && eq2 > 0 && eq2 <= 128) {
-            m_host.userVarChanged(value.substr(0, eq2), detail::base64Decode(value.substr(eq2 + 1, 64 * 1024)));
+            m_host.userVarChanged(value.substr(0, eq2), base64Decode(value.substr(eq2 + 1, 64 * 1024)));
         }
     } else if (key == "CurrentDir") {
         setWorkingDirectory(value);
@@ -4388,15 +4384,15 @@ void Terminal::iterm2File(std::string_view args, std::string_view base64)
     if (!file.inlineImage) {
         constexpr std::size_t MaxDownload = 8u * 1024 * 1024;
         if (base64.size() > ((MaxDownload + 2) / 3) * 4 || file.size > MaxDownload) return;
-        const auto data = detail::base64Decode(base64, detail::Base64Check::Strict);
-        const auto name = detail::base64Decode(file.name, detail::Base64Check::Strict);
+        const auto data = base64Decode(base64, Base64Check::Strict);
+        const auto name = base64Decode(file.name, Base64Check::Strict);
         if (!data || !name || data->size() > MaxDownload || (file.size && file.size != data->size())) return;
         m_host.downloadFile(*name, *data);
         return;
     }
     if (m_cellWidth <= 0 || m_cellHeight <= 0) return;
     ImageFrame frame;
-    if (!m_host.decodeImage(detail::base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
+    if (!m_host.decodeImage(base64Decode(base64), frame.width, frame.height, frame.rgba) || frame.width == 0
         || frame.height == 0 || frame.rgba.size() != std::size_t(frame.width) * frame.height * 4) {
         return;
     }
@@ -4661,11 +4657,7 @@ void Terminal::oscColorControl(std::string_view args, bool bel)
             }
             continue;
         }
-        auto encoded = detail::base64Encode(key);
-        while (!encoded.empty() && encoded.back() == '=') {
-            encoded.pop_back();
-        }
-        response += ";unknown=" + encoded;
+        response += ";unknown=" + base64Encode(key, false);
     }
     if (!response.empty()) {
         reply("\x1b]21" + response + (bel ? "\x07" : "\x1b\\"));

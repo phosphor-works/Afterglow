@@ -7,9 +7,11 @@
 // OSC 72 and 5113 sessions handed to the host.
 
 #include "TestUtil.h"
-#include "../src/Base64.h"
 #include "../src/ITerm2.h"
 
+#include <AfterglowProto/Base64.h>
+#include <AfterglowProto/DragDrop.h>
+#include <AfterglowProto/Transfer.h>
 #include <AfterglowVt/Sixel.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -17,6 +19,7 @@
 
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
+using AfterglowProto::base64Encode;
 
 namespace {
 
@@ -211,18 +214,30 @@ TEST(Extensions, HostSessionsAreBoundedAndReset)
     } host;
     Terminal t(20, 4, host);
     t.feed("\x1b]72;abc\x07");
-    t.feed("\x1b]72;" + std::string(8193, 'x') + "\x07");
     t.feed("\x1b]5113;x\x07");
-    t.feed("\x1b]5113;" + std::string(16385, 'x') + "\x07");
     ASSERT_EQ(host.calls.size(), 2u);
     EXPECT_EQ(host.calls[0], (std::pair<int, std::string>{72, "abc"}));
     EXPECT_EQ(host.calls[1], (std::pair<int, std::string>{5113, "x"}));
+    // A command at the limit goes through whole. One over it goes on cut to
+    // one byte over the limit, so that the host ends the session with an
+    // error and does not lose a chunk without a word.
+    const std::string dnd = "t=r:i=1;" + std::string(AfterglowProto::DndMaxCommand - 8, 'x');
+    const std::string transfer = "ac=data;" + std::string(AfterglowProto::TransferMaxCommand - 8, 'y');
+    t.feed("\x1b]72;" + dnd + "\x07");
+    t.feed("\x1b]72;" + dnd + "zzzz\x07");
+    t.feed("\x1b]5113;" + transfer + "\x07");
+    t.feed("\x1b]5113;" + transfer + "zzzz\x07");
+    ASSERT_EQ(host.calls.size(), 6u);
+    EXPECT_EQ(host.calls[2], (std::pair<int, std::string>{72, dnd}));
+    EXPECT_EQ(host.calls[3], (std::pair<int, std::string>{72, dnd + "z"}));
+    EXPECT_EQ(host.calls[4], (std::pair<int, std::string>{5113, transfer}));
+    EXPECT_EQ(host.calls[5], (std::pair<int, std::string>{5113, transfer + "z"}));
     // A reset and the end of the program both end the sessions.
     t.feed("\x1b" "c");
     t.programExited();
-    ASSERT_EQ(host.calls.size(), 4u);
-    EXPECT_EQ(host.calls[2], (std::pair<int, std::string>{0, ""}));
-    EXPECT_EQ(host.calls[3], (std::pair<int, std::string>{0, ""}));
+    ASSERT_EQ(host.calls.size(), 8u);
+    EXPECT_EQ(host.calls[6], (std::pair<int, std::string>{0, ""}));
+    EXPECT_EQ(host.calls[7], (std::pair<int, std::string>{0, ""}));
 }
 
 TEST(Extensions, ITerm2Commands)
@@ -373,6 +388,32 @@ TEST(Extensions, ConEmuCommands)
     EXPECT_TRUE(host.notified.empty()); // other ConEmu commands are not notifications
     t.feed("\x1b]9;42 is the answer\x07");
     EXPECT_EQ(host.notified, "|42 is the answer");
+    host.notified.clear();
+    // A number too large to read is still a command, not a message.
+    t.feed("\x1b]9;99999999999;x\x07\x1b]9;99999999999\x07");
+    EXPECT_TRUE(host.notified.empty());
+    // A leading zero: the path starts after the number's own digits.
+    t.feed("\x1b]9;09;/srv\x07");
+    EXPECT_EQ(host.cwd, "/srv");
+    EXPECT_TRUE(host.notified.empty());
+}
+
+TEST(Extensions, LegacyNotificationsRejectControlsAndBadUtf8)
+{
+    Host host;
+    Terminal t(20, 4, host);
+    // OSC 9 and OSC 777 text goes through the same check as OSC 99 text.
+    for (const std::string text : {"a\x7f" "b", "a\xc2\x85" "b", "a\xff" "b", "a\xc0\x80" "b", "a\xe2\x82"}) {
+        t.feed("\x1b]9;" + text + "\x07");
+        t.feed("\x1b]777;notify;" + text + ";body\x07");
+        t.feed("\x1b]777;notify;title;" + text + "\x07");
+    }
+    EXPECT_TRUE(host.notified.empty());
+    // A line separator is allowed, as in OSC 99, and so is valid UTF-8.
+    t.feed("\x1b]9;caf\xc3\xa9\xe2\x80\xa8" "done\x07");
+    EXPECT_EQ(host.notified, "|caf\xc3\xa9\xe2\x80\xa8" "done");
+    t.feed("\x1b]777;notify;T\xe2\x80\xa9;b\xc3\xa9\x07");
+    EXPECT_EQ(host.notified, "T\xe2\x80\xa9|b\xc3\xa9");
 }
 
 TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
@@ -408,9 +449,9 @@ TEST(Extensions, DownloadsRequireCompleteValidBoundedData)
     // 8 MiB is the most a download may hold.
     const std::string limit(8u * 1024 * 1024, 'x');
     t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size() + 1) + ":"
-           + detail::base64Encode(limit + "x") + "\x07");
+           + base64Encode(limit + "x") + "\x07");
     EXPECT_EQ(host.count, 2);
-    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + detail::base64Encode(limit)
+    t.feed("\x1b]1337;File=name=dGVzdC50eHQ=;size=" + std::to_string(limit.size()) + ":" + base64Encode(limit)
            + "\x07");
     ASSERT_EQ(host.count, 3);
     EXPECT_EQ(host.data.size(), limit.size());

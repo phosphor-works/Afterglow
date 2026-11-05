@@ -31,7 +31,32 @@ BUILD_TREE = re.compile(r'^(build[^/]*|\.cache)/')
 
 # The Phosphor libraries are built from this checkout, but they belong to PlasmaZones, which changes only through
 # its own branch and pull request
-PLASMAZONES = os.path.realpath(os.path.expanduser('~/Projects/PlasmaZones')) + '/'
+def main_checkout(repo):
+    """The main working tree of the repository at REPO. A linked worktree (git worktree add, .claude/worktrees/...)
+    has a .git file that names its git directory, whose commondir file names the main .git directory. Read without
+    running git, so that every tool call stays cheap. Anything unexpected keeps REPO."""
+    try:
+        with open(os.path.join(repo, '.git')) as f:
+            line = f.readline().strip()
+        if not line.startswith('gitdir:'):
+            return repo
+        gitdir = os.path.join(repo, line[len('gitdir:') :].strip())
+        with open(os.path.join(gitdir, 'commondir')) as f:
+            common = os.path.join(gitdir, f.readline().strip())
+    except (OSError, UnicodeDecodeError):  # the main checkout's .git is a directory
+        return repo
+    common = os.path.realpath(common)
+    # A separate git directory or a bare repository has no working tree next to it
+    if os.path.basename(common) != '.git':
+        return repo
+    return os.path.dirname(common)
+
+
+# The checkout next to the main checkout of this repository, where cmake/AfterglowPhosphor.cmake looks for it by
+# default. This file is .claude/hooks/guard.py, so the repository is two directories up. From a worktree, the
+# directory next to it is not that checkout.
+REPOSITORY = main_checkout(os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')))
+PLASMAZONES = os.path.realpath(os.path.join(REPOSITORY, '..', 'PlasmaZones')) + '/'
 
 SEPARATORS = ';&|()\n`'
 # Words that run the command after them: skipped, with their options, to find the command itself

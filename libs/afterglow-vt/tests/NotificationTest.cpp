@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "TestUtil.h"
-#include "../src/Base64.h"
+
+#include <AfterglowProto/Base64.h>
 
 #include <gtest/gtest.h>
 
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
+using AfterglowProto::base64Encode;
 
 namespace {
 
@@ -140,12 +142,12 @@ TEST(Notification, IconDataMustBePngJpegOrGif)
 {
     Term t;
     // An SVG document: dropped, the notification still shows.
-    t.feed("\x1b]99;i=s:d=0:p=icon;" + detail::base64Encode("<svg xmlns=\"http://www.w3.org/2000/svg\"/>") + "\x1b\\");
+    t.feed("\x1b]99;i=s:d=0:p=icon;" + base64Encode("<svg xmlns=\"http://www.w3.org/2000/svg\"/>") + "\x1b\\");
     t.feed("\x1b]99;i=s;Title\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 1u);
     EXPECT_TRUE(t.host.requests[0].iconData.empty());
-    t.feed("\x1b]99;i=j:d=0:p=icon;" + detail::base64Encode("\xFF\xD8\xFF\xE0") + "\x1b\\\x1b]99;i=j;T\x1b\\");
-    t.feed("\x1b]99;i=g:d=0:p=icon;" + detail::base64Encode("GIF89a") + "\x1b\\\x1b]99;i=g;T\x1b\\");
+    t.feed("\x1b]99;i=j:d=0:p=icon;" + base64Encode("\xFF\xD8\xFF\xE0") + "\x1b\\\x1b]99;i=j;T\x1b\\");
+    t.feed("\x1b]99;i=g:d=0:p=icon;" + base64Encode("GIF89a") + "\x1b\\\x1b]99;i=g;T\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 3u);
     EXPECT_EQ(t.host.requests[1].iconData, "\xFF\xD8\xFF\xE0");
     EXPECT_EQ(t.host.requests[2].iconData, "GIF89a");
@@ -167,12 +169,12 @@ TEST(Notification, EncodedBodyKeepsNewlines)
 {
     Term t;
     t.feed("\x1b]99;i=1:d=0;Build\x1b\\");
-    t.feed("\x1b]99;i=1:e=1:p=body;" + detail::base64Encode("line1\nline2\tend") + "\x1b\\");
+    t.feed("\x1b]99;i=1:e=1:p=body;" + base64Encode("line1\nline2\tend") + "\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 1u);
     EXPECT_EQ(t.host.requests[0].title, "Build");
     EXPECT_EQ(t.host.requests[0].body, "line1\nline2 end");
     // A body that becomes the title is put on one line.
-    t.feed("\x1b]99;e=1:p=body;" + detail::base64Encode("a\nb") + "\x1b\\");
+    t.feed("\x1b]99;e=1:p=body;" + base64Encode("a\nb") + "\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 2u);
     EXPECT_EQ(t.host.requests[1].title, "a b");
 }
@@ -277,11 +279,11 @@ TEST(Notification, MetadataEdgeCases)
     EXPECT_EQ(t.host.requests[0].appName, "cargo");
     EXPECT_TRUE(t.host.requests[0].reportClose);
     // Long values are cut at a character boundary.
-    t.feed("\x1b]99;f=" + detail::base64Encode(std::string(255, 'a') + "\xc3\xa9") + ";T\x1b\\");
+    t.feed("\x1b]99;f=" + base64Encode(std::string(255, 'a') + "\xc3\xa9") + ";T\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 2u);
     EXPECT_EQ(t.host.requests[1].appName, std::string(255, 'a'));
     // Occasion, sound and types.
-    t.feed("\x1b]99;o=unfocused:s=" + detail::base64Encode("bell") + ":t=" + detail::base64Encode("im.received")
+    t.feed("\x1b]99;o=unfocused:s=" + base64Encode("bell") + ":t=" + base64Encode("im.received")
            + ";T\x1b\\");
     t.feed("\x1b]99;o=invisible;T\x1b\\\x1b]99;o=sometimes;T\x1b\\");
     ASSERT_EQ(t.host.requests.size(), 5u);

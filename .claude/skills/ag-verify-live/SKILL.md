@@ -70,6 +70,12 @@ This runner opens a nested KWin as a window on the host X11 or XWayland display,
 `dbus-run-session` and `kitten`. Use it for the drag-and-drop tests, or when the user asks
 for a visible run.
 
+The nested KWin is a window on the user's desktop, so the user's own pointer reaches it. A drag that gets moves
+from the real pointer as well as from the runner fails: the drop target gets a leave and an enter for each move, or
+the press never arrives. To prove such a failure, log the position of each drag event in `TerminalWindow::event`
+for a run. Moves that the runner did not send (10 steps on a line) come from the host. Ask the user to keep the
+pointer off the window, and run again.
+
 ## Add a native test
 
 Tests live in `afterglow/tests/NativeWindowTest.cpp`. Wait on a condition with a deadline, never on a fixed sleep.

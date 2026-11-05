@@ -34,7 +34,7 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
-| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer target for the terminal core. Requires clang. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core and the protocol library. Requires clang for C and C++. |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 
@@ -137,13 +137,35 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 
 ### Fuzzing
 
-The fuzz target needs clang and a separate build directory:
+The fuzz targets need clang for C and C++, and a separate build directory.
+The targets compile the terminal core, the protocol library, zlib-ng and xxHash with the sanitizers.
+Build only the fuzz targets in a fuzz build directory.
+The commands below turn off the tests and build the two targets by name.
+
+| Target | Input |
+| --- | --- |
+| `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. |
+| `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
+
+Build the targets:
 
 ```sh
-cmake -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON
-cmake --build build-fuzz --target afterglow_vtfuzz
-mkdir -p corpus
-./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 -max_len=65536 -dict=tools/fuzz/vt.dict corpus/
+cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON -DBUILD_TESTING=OFF
+cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz
+```
+
+Run the terminal core target:
+
+```sh
+mkdir -p build-fuzz/corpus
+./build-fuzz/tools/fuzz/afterglow_vtfuzz -max_total_time=300 -max_len=65536 -dict=tools/fuzz/vt.dict build-fuzz/corpus/
+```
+
+Run the protocol target with its own corpus:
+
+```sh
+mkdir -p build-fuzz/corpus-proto
+./build-fuzz/tools/fuzz/afterglow_protofuzz -max_total_time=300 -max_len=65536 build-fuzz/corpus-proto/
 ```
 
 A run passes when the fuzzer stops at the time limit without a crash report.
@@ -259,7 +281,14 @@ The compressed archive keeps all samples and environment metadata.
 Run the file-transfer and drag-and-drop service tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R 'Transfer\.|Dnd\.'
+ctest --test-dir build --output-on-failure -R '^(Transfer|Dnd|DndTree)\.'
+```
+
+Run the tests of the protocol library, which has these formats and the other wire formats.
+The names of these tests start with `Proto.`.
+
+```sh
+ctest --test-dir build --output-on-failure -R '^Proto\.'
 ```
 
 Run interoperability tests with the installed `kitten` client:

@@ -42,6 +42,8 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QThreadPool>
+#include <QImageReader>
+#include <QImageWriter>
 #include <QTimer>
 #include <QScopeGuard>
 #include <QScreen>
@@ -1333,15 +1335,26 @@ TEST_F(NativeWindow, KittyDragAndDropClient) {
     receiverOptions.cwd = directory.path();
     auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
     ASSERT_NE(receiver, nullptr);
-    window->showFullScreen();
-    QElapsedTimer timer; timer.start();
-    while (!pane->dragDrop()->offersDrags() && timer.elapsed() < 5000) drain(20);
-    ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops());
     bool complete = false; QByteArray protocol;
+    // The receiver's side from its first command, for a drop that fails after the drag completed.
+    QByteArray dropped;
     // Made after the locals that its connections write to, so that the
     // connections end before them: the window outlives the test body.
     QObject listener;
+    QObject::connect(receiver->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) { dropped += bytes; });
+    const auto receiving = QObject::connect(receiver, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray& bytes) { if (code == 72) dropped += "RECEIVER: " + bytes + "\n"; });
+    window->showFullScreen();
+    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
+    // The first drag of a process lists the image formats that Qt can
+    // convert, and that loads every image plugin: seconds with a cold page
+    // cache, on the GUI thread, while the drag runs. Load them before it.
+    QImageReader::supportedMimeTypes();
+    QImageWriter::supportedMimeTypes();
+    QElapsedTimer timer; timer.start();
+    // Both kittens start at once: wait for each one's command.
+    while (!(pane->dragDrop()->offersDrags() && receiver->dragDrop()->acceptsDrops()) && timer.elapsed() < 5000) drain(20);
+    ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops()) << dropped.toStdString();
     QObject::connect(pane->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) {
         protocol += bytes;
         if (bytes.contains("t=e") && bytes.contains("x=4")) complete = true;
@@ -1351,12 +1364,27 @@ TEST_F(NativeWindow, KittyDragAndDropClient) {
     QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
     const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
     const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y())); marker.close();
+    // The fifth token asks the runner to release only after the receiver's
+    // program has accepted the drag, as a person waits for the cursor.
+    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()) + " 1"); marker.close();
+    // A timer, because the drag runs in QDrag::exec's own event loop.
+    QTimer hover;
+    QObject::connect(&hover, &QTimer::timeout, &listener, [&] {
+        if (!receiver->dragDrop()->acceptsDrag()) return;
+        QFile accepted(ready + QStringLiteral(".hovered"));
+        if (accepted.open(QIODevice::WriteOnly)) hover.stop();
+    });
+    hover.start(5);
     timer.restart(); while (!complete && timer.elapsed() < 15000) drain(20);
+    hover.stop();
     window->removeEventFilter(&input);
     QObject::disconnect(incoming);
     EXPECT_TRUE(complete) << protocol.toStdString() << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    QFile result(destination); ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString();
+    timer.restart(); while (!QFile::exists(destination) && timer.elapsed() < 5000) drain(20);
+    QObject::disconnect(receiving);
+    QFile result(destination);
+    ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString() << "\n" << dropped.toStdString()
+        << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     EXPECT_EQ(result.readAll(), QByteArray("Native Kitty drag and drop\n"));
 }
 
@@ -1382,15 +1410,26 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
     auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
     ASSERT_NE(receiver, nullptr);
     window->showFullScreen();
+    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
+    // The first drag of a process lists the image formats that Qt can
+    // convert, and that loads every image plugin: seconds with a cold page
+    // cache, on the GUI thread, while the drag runs. Load them before it.
+    QImageReader::supportedMimeTypes();
+    QImageWriter::supportedMimeTypes();
     QElapsedTimer timer; timer.start();
-    while (!pane->dragDrop()->offersDrags() && timer.elapsed() < 5000) drain(20);
+    // Both kittens start at once: wait for each one's command.
+    while (!(pane->dragDrop()->offersDrags() && receiver->dragDrop()->acceptsDrops()) && timer.elapsed() < 5000) drain(20);
     ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops());
+    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops()) << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     pane->dragDrop()->handle("t=o:x=1;1:remote-test-machine");
     bool complete = false; QByteArray protocol;
+    QByteArray dropped;
     // Made after the locals that its connections write to, so that the
     // connections end before them: the window outlives the test body.
     QObject listener;
+    // The receiver's side, for a drop that fails after the drag completed.
+    QObject::connect(receiver->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) { dropped += bytes; });
+    const auto receiving = QObject::connect(receiver, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray& bytes) { if (code == 72) dropped += "RECEIVER: " + bytes + "\n"; });
     QObject::connect(pane->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) {
         protocol += bytes;
         if (bytes.contains("t=e") && bytes.contains("x=4")) complete = true;
@@ -1400,12 +1439,27 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
     QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
     const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
     const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y())); marker.close();
+    // The fifth token asks the runner to release only after the receiver's
+    // program has accepted the drag, as a person waits for the cursor.
+    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()) + " 1"); marker.close();
+    // A timer, because the drag runs in QDrag::exec's own event loop.
+    QTimer hover;
+    QObject::connect(&hover, &QTimer::timeout, &listener, [&] {
+        if (!receiver->dragDrop()->acceptsDrag()) return;
+        QFile accepted(ready + QStringLiteral(".hovered"));
+        if (accepted.open(QIODevice::WriteOnly)) hover.stop();
+    });
+    hover.start(5);
     timer.restart(); while (!complete && timer.elapsed() < 15000) drain(20);
+    hover.stop();
     window->removeEventFilter(&input);
     QObject::disconnect(incoming);
     EXPECT_TRUE(complete) << protocol.toStdString() << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    QFile result(destination + QStringLiteral("/remote/nested/file")); ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString();
+    timer.restart(); while (!QFile::exists(destination + QStringLiteral("/remote/nested/file")) && timer.elapsed() < 5000) drain(20);
+    QObject::disconnect(receiving);
+    QFile result(destination + QStringLiteral("/remote/nested/file"));
+    ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString() << "\n" << dropped.toStdString()
+        << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     EXPECT_EQ(result.readAll(), QByteArray("remote file data"));
     EXPECT_TRUE(QFileInfo::exists(destination + QStringLiteral("/remote/empty")));
     EXPECT_TRUE(QFileInfo(destination + QStringLiteral("/remote/link")).isSymLink());
