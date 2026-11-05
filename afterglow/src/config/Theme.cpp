@@ -208,6 +208,19 @@ QString bundledDirectory()
 #endif
 }
 
+/// @p sub in each XDG data directory, also where it does not exist yet:
+/// SettingsStore watches these paths, and a theme saved into a directory
+/// made later must still count (QStandardPaths::locateAll lists only
+/// directories that exist).
+QStringList dataDirs(const QString& sub)
+{
+    QStringList dirs;
+    for (const QString& data : QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation)) {
+        dirs << data + QLatin1Char('/') + sub;
+    }
+    return dirs;
+}
+
 } // namespace
 
 QStringList searchDirs()
@@ -221,8 +234,7 @@ QStringList searchDirs()
     if (checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
-    dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("afterglow/themes"),
-                                      QStandardPaths::LocateDirectory);
+    dirs << dataDirs(QStringLiteral("afterglow/themes"));
     if (!checkout && !bundled.isEmpty()) {
         dirs << bundled;
     }
@@ -232,11 +244,9 @@ QStringList searchDirs()
     // Konsole's colour schemes.
     const QString config = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
     dirs << config + QStringLiteral("/ghostty/themes");
-    dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("ghostty/themes"),
-                                      QStandardPaths::LocateDirectory);
+    dirs << dataDirs(QStringLiteral("ghostty/themes"));
     dirs << config + QStringLiteral("/kitty/themes");
-    dirs << QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("konsole"),
-                                      QStandardPaths::LocateDirectory);
+    dirs << dataDirs(QStringLiteral("konsole"));
     dirs.removeDuplicates();
     return dirs;
 }

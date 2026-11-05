@@ -48,6 +48,7 @@ Create `config.json` beside `package.json` to change the interval:
 
 The interval is clamped to 10–3600 seconds.
 Each interval saves up to eight windows sequentially. Larger sets rotate across intervals.
+An open restore picker does not stop the periodic saves.
 Duplicate live windows with the same project name are skipped to prevent conflicting saves.
 The package remembers enablement for up to 100 names.
 Failed saves are reported. The next interval can retry.
@@ -60,9 +61,35 @@ Recovery uses the latest completed periodic or manual save.
 Separate Afterglow processes do not synchronize live layouts.
 Use one application instance for each autosaved project.
 
-## Actions and removal
+## Commands and removal
 
-Action names are `script:project-autosave.enable`, `.disable`, `.save` and `.restore`.
+| Command | Palette title | Action |
+| --- | --- | --- |
+| `save [NAME]` | **Save project now** | Saves the window now, under its project name or under `NAME`. |
+| `enable` | **Enable autosave for this saved project** | Turns autosave on for the window's project and saves it once. |
+| `disable` | **Disable autosave for this saved project** | Turns autosave off for the window's project. |
+| `restore` | **Restore an autosaved project** | Opens the restore picker. |
+
+Bind a command as `script:project-autosave.save`, `script:project-autosave.enable` and so on.
+From a shell, run a command as `afterglow run project-autosave COMMAND`.
+The command acts on the window of the shell's pane.
+Only `save` takes an argument.
+
+`save NAME` gives the window the project name `NAME`. Autosave then uses the setting of `NAME`.
+Run `enable` to autosave `NAME`.
+`save` replaces only the window's own saved project.
+When `NAME` is the name of another saved project, `save` fails and changes nothing.
+Use **Save Project** in the command palette to replace another project.
+`disable` for a project that has autosave off changes nothing.
+
+| Exit status | Cause |
+| --- | --- |
+| 0 | The command completed. The message is on stdout. |
+| 1 | The command failed. The message is on stderr. |
+| 2 | An argument that the command does not take. |
+
+A command from the palette or a key shows its message as a notification on the pane.
+
 Remove `scripts/project-autosave/` to uninstall.
 The host removes timers and pending interfaces.
 Saved layouts remain in `projects/` beside the configuration.

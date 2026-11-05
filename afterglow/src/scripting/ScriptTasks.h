@@ -15,6 +15,10 @@ public:
     ~ScriptTasks() override;
     ScriptHost::EffectResult apply(const QString& owner, const QVariantMap&, Completion, Event);
     void clear(const QString& owner);
+    /// Stops the processes and file reads of @p owner whose request IDs
+    /// start with @p prefix, and delivers no result: what an ended command
+    /// run waited for.
+    void cancel(const QString& owner, const QString& prefix);
 private:
     struct Task;
     QHash<QString, QHash<QString, Task*>> m_tasks;

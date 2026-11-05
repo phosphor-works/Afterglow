@@ -102,7 +102,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Links open directly when their scheme is in `Links.schemes` (http, https, mailto, ftp and file by default). Other links ask first.
 - Keybindings with multi-key sequences, a leader key and named key tables.
 - Bindings that match Shift+Tab and shifted symbols, and that use the Latin layout for letters on other keyboard layouts.
-- A command palette for actions, projects and script actions.
+- A command palette for actions, projects and script commands.
 
 ### Shader effects
 
@@ -135,6 +135,13 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `new_tab(pane)` starts in the directory of that pane and opens its tab after the tab of that pane.
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
+- Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
+- `afterglow run ID COMMAND` runs a command from a shell with its arguments, output and exit status. A command that asks for standard input gets it when standard input is not a terminal. The palette, the context menu, keys and `afterglow ctl action` run commands too. The palette shows a command as `ID: TITLE`. A held key runs a command once.
+- `Scripts.commandTimeout` limits the time of a run. `Scripts.commandRunLimit` limits the runs of one script at a time, from 1 to 16. `Scripts.commandStdinLimit` and `Scripts.commandOutputLimit` limit their standard input and output, in KiB. Standard input over its limit is never cut: `afterglow run` refuses the run with exit status 2.
+- An interrupt or `SIGTERM` cancels the run, and `afterglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
+- A command that `afterglow run` starts reads pane text only when `Control.allowReadText` is on.
+- `afterglow ctl action` and `afterglow.action` are refused while a prompt or a script dialog is open.
+- Shell completion for Bash, Zsh and Fish, with the commands of the running scripts. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.
 

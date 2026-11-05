@@ -5,6 +5,7 @@ find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Concurrent Gui Wid
 find_package(KF6WindowSystem REQUIRED) # KWin blur behind
 find_package(Qt6QuickPrivate CONFIG REQUIRED) # native chrome accessibility bridge
 find_package(Qt6GuiPrivate CONFIG REQUIRED) # rhi/qrhi.h for the chrome render target
+find_package(Qt6CorePrivate CONFIG REQUIRED) # QMetaObjectBuilder: the schema entries of script commands
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 
@@ -49,6 +50,8 @@ qt_add_library(afterglow_app STATIC
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
+    src/control/CommandSocket.cpp
+    src/control/CommandSocket.h
     src/control/ControlSocket.cpp
     src/control/ControlSocket.h
     # Here, not with Ctl: the socket tests drive it too.
@@ -62,7 +65,7 @@ qt_add_library(afterglow_app STATIC
 )
 
 qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/shell/Aglow.cpp src/shell/Aglow.h)
-target_link_libraries(afterglow PRIVATE afterglow_app)
+target_link_libraries(afterglow PRIVATE afterglow_app Afterglow::Proto)
 
 # Shader pack loading, shared with the developer render tool.
 # A binary under the build directory reads the packs and themes of the source
@@ -188,7 +191,7 @@ target_compile_definitions(afterglow_app PUBLIC QT_NO_CAST_FROM_ASCII AFTERGLOW_
 add_dependencies(afterglow phosphorwayland-qpa)
 target_include_directories(afterglow_app PUBLIC src)
 target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afterglow_shaders afterglow_scripting afterglow_audio Afterglow::Render Afterglow::Pty Afterglow::Vt Qt6::Core Qt6::Gui
-    Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::GuiPrivate Qt6::QuickPrivate
+    Qt6::Concurrent Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::CorePrivate Qt6::GuiPrivate Qt6::QuickPrivate
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
@@ -254,6 +257,21 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTAL
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
 # Scripting: types for editors and examples to copy; neither loads on its own.
 install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/api)
+# Shell completion, where each shell looks for the completions of packages.
+install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.bash
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME afterglow)
+# Zsh has no one place: with the prefix /usr, Debian and Ubuntu read
+# share/zsh/vendor-completions, not share/zsh/site-functions. The default is
+# empty so that it follows CMAKE_INSTALL_DATADIR at each configure: a cached
+# path would keep the DATADIR of the first one.
+set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
+    "Directory for the zsh completion, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
+set(_zsh_completion_dir "${AFTERGLOW_ZSH_COMPLETION_DIR}")
+if(_zsh_completion_dir STREQUAL "")
+    set(_zsh_completion_dir "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
+endif()
+install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${_zsh_completion_dir})
+install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.fish DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/packages/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/packages)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/projects/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/projects)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/scripts/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/scripts)

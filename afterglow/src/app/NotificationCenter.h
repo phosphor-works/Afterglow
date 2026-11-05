@@ -36,7 +36,8 @@ public:
 
     /// Notifications that programs in one pane may show in RateWindowMs, 0
     /// for no limit (Notifications.rateLimit). Updates of a notification that
-    /// is already shown do not count, nor do afterglow's own notices.
+    /// is already shown do not count, nor do afterglow's own notices. The
+    /// notices of script commands (showLimitedNotice) count.
     void setRateLimit(int count) { m_rateLimit = count; }
     static constexpr qint64 RateWindowMs = 10000;
 
@@ -50,6 +51,10 @@ public:
     /// rejected, a command finished, ctl and script notify, project and move
     /// results. Program output cannot use up its rate limit and hide it.
     void showNotice(Pane* pane, const QString& title, const QString& body, int urgency = 1);
+    /// A notice that a script brings about, as often as it likes: the end
+    /// of a command run that has no client. It counts against the rate
+    /// limit of @p pane, or without a pane against one limit of its own.
+    void showLimitedNotice(Pane* pane, const QString& title, const QString& body);
 
 private:
     NotificationCenter();
@@ -92,6 +97,9 @@ private:
     void close(uint id);
     uint idFor(const Pane* pane, const QString& clientId) const;
     bool rateLimited(const Pane* pane);
+    /// Counts a show in @p recent, the show times of one source. True when
+    /// the source has used up the limit: the show is not counted then.
+    bool overLimit(QList<qint64>& recent);
     void track(const Pane* pane);
     void forgetServer();
     void queryCapabilities();
@@ -105,9 +113,10 @@ private:
     QHash<uint, Entry> m_entries; ///< by D-Bus notification id
     QHash<Key, InFlight> m_inFlight;
     QHash<const Pane*, QList<qint64>> m_recent; ///< recent show times, for rate limiting
+    QList<qint64> m_paneless; ///< recent shows of limited notices without a pane
     QSet<const Pane*> m_tracked; ///< panes whose destruction clears their state
     QElapsedTimer m_clock; ///< monotonic: a clock step must not silence a pane
-    int m_rateLimit = 20;
+    int m_rateLimit = 20; ///< until Application sets it from Notifications.rateLimit
     bool m_bodyMarkup = true; ///< the server reads markup in bodies (GetCapabilities)
     quint64 m_generation = 0;
     quint64 m_server = 0; ///< counts servers that went away: an id from an earlier one names nothing

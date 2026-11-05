@@ -14,6 +14,8 @@
 #include "shell/Aglow.h"
 #include "shell/Ssh.h"
 
+#include <AfterglowProto/Run.h>
+
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCommandLineParser>
@@ -122,6 +124,19 @@ int main(int argc, char** argv)
     // afterglow transfer|dnd|icat|clipboard ...: the aglow next to this executable, no GUI.
     if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
         return Afterglow::Aglow::run(argc, argv);
+    }
+    // afterglow run ...: a script command, its output and its exit status, no GUI.
+    if (argc >= 2 && std::strcmp(argv[1], "run") == 0) {
+        int signal = 0;
+        const int status = AfterglowProto::Run::main({argv + 2, argv + argc}, {}, &signal);
+        // A run that a signal ended ends by it, as the quit signals below do:
+        // a shell's loop of runs then stops at Ctrl+C. The status is for a
+        // signal that the process blocks.
+        if (signal != 0) {
+            std::signal(signal, SIG_DFL);
+            std::raise(signal);
+        }
+        return status;
     }
     // afterglow ssh ...: ssh with the remote side prepared, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {
@@ -235,7 +250,7 @@ int main(int argc, char** argv)
         Afterglow::InstanceSocket socket;
         const QString shared = Afterglow::InstanceSocket::sharedPath();
         if (shared.isEmpty()) {
-            qWarning("afterglow: XDG_RUNTIME_DIR is not set: no socket for launches and control");
+            qWarning("afterglow: XDG_RUNTIME_DIR is not set or not an absolute path: no socket for launches and control");
         } else if (!separate) {
             using Listen = Afterglow::InstanceSocket::Listen;
             // A main process that quits stops answering, then frees the path.

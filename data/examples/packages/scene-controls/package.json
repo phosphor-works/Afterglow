@@ -3,5 +3,10 @@
   "version": "1.0.0",
   "api_version": 1,
   "entry": "main",
-  "modules": {"main": "init.luau"}
+  "modules": {"main": "init.luau"},
+  "commands": {
+    "open": {"summary": "Edit the pane's shader parameters and presets", "palette": "Edit scene parameters and presets"},
+    "get": {"summary": "Print the shader parameters of the pane", "usage": "[PARAM]"},
+    "set": {"summary": "Set a shader parameter of the pane", "usage": "PARAM VALUE"}
+  }
 }

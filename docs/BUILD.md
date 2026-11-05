@@ -11,7 +11,7 @@ These instructions use the current source layout.
 - CMake 3.21 or later, pkg-config, a C compiler and a C++20 compiler.
 - Qt 6.10 or later. The Phosphor libraries need this version.
 - Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, Network, Svg, WaylandClient and ShaderTools.
-- Qt GuiPrivate, ShaderToolsPrivate, WaylandClientPrivate and QuickPrivate headers.
+- Qt CorePrivate, GuiPrivate, ShaderToolsPrivate, WaylandClientPrivate and QuickPrivate headers.
 - FreeType, HarfBuzz, FriBidi and fontconfig.
 - xkbcommon, wayland-client, `wayland-scanner` and the 32-bit PCRE2 library.
 - KF6 WindowSystem.
@@ -33,6 +33,7 @@ It does not use the copies that the system has.
 | `cava` | Supplies system audio data for shaders | Audio-reactive shaders get no audio. |
 | KF6 GlobalAccel | Registers the quick terminal shortcut with KDE global shortcuts | The desktop portal registers the shortcut. |
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
+| `bash-completion` | Loads the Bash completion of `afterglow` | Bash does not complete `afterglow` arguments. |
 
 ## Source archives
 
@@ -170,10 +171,25 @@ If you do, shell integration is off, and the executable can miss its plugin, sha
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
+It also includes the shell completions for Bash, Zsh and Fish. The Fish completion needs Fish 4 or later.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions and the stb_image license as `LICENSE.stb_image`.
 A build with sanitizers, such as the `debug` preset, links `aglow` dynamically, because a static program cannot use them.
 To build without `aglow`, add `-DAFTERGLOW_BUILD_AGLOW=OFF` to the configuration command.
 Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
+
+| Shell | Completion file |
+| --- | --- |
+| Bash | `share/bash-completion/completions/afterglow` |
+| Zsh | `share/zsh/site-functions/_afterglow` |
+| Fish | `share/fish/vendor_completions.d/afterglow.fish` |
+
+Zsh reads only the directories in its `fpath`.
+When the prefix is `/usr` on Debian or Ubuntu, `share/zsh/site-functions` is not in `fpath`.
+For this prefix on these systems, add this option to the configuration command:
+
+```sh
+-DAFTERGLOW_ZSH_COMPLETION_DIR=share/zsh/vendor-completions
+```
 
 See [testing](TESTING.md) for native desktop test commands.

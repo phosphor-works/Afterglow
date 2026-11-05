@@ -181,8 +181,12 @@ bool NotificationCenter::rateLimited(const Pane* pane)
 {
     if (!pane || m_rateLimit <= 0) return false;
     track(pane);
+    return overLimit(m_recent[pane]);
+}
+
+bool NotificationCenter::overLimit(QList<qint64>& recent)
+{
     const qint64 now = m_clock.elapsed();
-    QList<qint64>& recent = m_recent[pane];
     recent.removeIf([now](qint64 t) { return now - t > RateWindowMs; });
     if (recent.size() >= m_rateLimit) {
         return true;
@@ -337,6 +341,14 @@ void NotificationCenter::showSimple(Pane* pane, const QString& title, const QStr
         return;
     }
     showNotice(pane, title, body, urgency);
+}
+
+void NotificationCenter::showLimitedNotice(Pane* pane, const QString& title, const QString& body)
+{
+    if (pane ? rateLimited(pane) : (m_rateLimit > 0 && overLimit(m_paneless))) {
+        return;
+    }
+    showNotice(pane, title, body);
 }
 
 void NotificationCenter::showNotice(Pane* pane, const QString& title, const QString& body, int urgency)

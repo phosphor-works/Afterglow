@@ -11,6 +11,10 @@ add_executable(afterglow_proto_tests
     DragDropTest.cpp
     GraphicsTest.cpp
     HelpersTest.cpp
+    IpcTest.cpp
+    JsonTest.cpp
+    RunTest.cpp
+    SocketTest.cpp
     TextTest.cpp
     TransferTest.cpp
 )

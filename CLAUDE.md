@@ -22,8 +22,9 @@ wrong, and points to the skills that hold the procedures.
   `../PlasmaZones/phosphor-libs`. Never edit that checkout from an Afterglow session. When Afterglow needs a Phosphor
   change, say what and why, and let the user decide.
 - **Never touch the user's running Afterglow.** This session usually runs inside one of its panes
-  (`AFTERGLOW_PANE_ID` is set). `afterglow ctl` uses the pane's `AFTERGLOW_SOCKET`, else the socket of the
-  user's Wayland display, so it acts on the user's own terminal. A private D-Bus does not change that.
+  (`AFTERGLOW_PANE_ID` is set). `afterglow ctl` and `afterglow run` (also `run --complete`) use the pane's
+  `AFTERGLOW_SOCKET`, else the socket of the user's Wayland display, so they act on the user's own terminal. A
+  private D-Bus does not change that.
   `pkill afterglow` closes their windows. Test in a nested KWin with its own display (`ag-verify-live`).
 - **A build is not a test.** Check a visible change with `afterglow_renderpng` or the native window tests, at the
   edge cases (one pane, two panes, progress 0 and 1, the wrap point of a loop). The commit message says what you ran.
@@ -95,7 +96,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Area | Files |
 | --- | --- |
 | Terminal core | `libs/afterglow-vt/`: `Terminal.cpp` (parser and dispatch), `Screen.cpp` (grid, scrollback, reflow), `Input.cpp` (key and mouse encoding), `Graphics.cpp`, `Sixel.cpp`, `ITerm2.cpp` (images), `Notifications.cpp`, `ShellContext.cpp` (OSC 133 and host context), `Unicode.cpp` with the generated `UnicodeTables.inc` |
-| Protocol formats | `libs/afterglow-proto/` (no Qt; the terminal side of each format, and the client side that tests and clients of the library use): `Transfer.cpp` and `Delta.cpp` (OSC 5113 file transfer), `DragDrop.cpp` (OSC 72), `Graphics.cpp` (APC G keys and replies), `Clipboard.cpp` (OSC 5522 and OSC 52), `Base64.h`, `Hex.h`, `Text.h`, `Sha256.cpp`, `Random.cpp`, `Zlib.cpp`; zlib-ng and xxHash from the archives that `cmake/AfterglowDependencies.cmake` pins |
+| Protocol formats | `libs/afterglow-proto/` (no Qt; the terminal side of each format, and the client side that tests and clients of the library use): `Transfer.cpp` and `Delta.cpp` (OSC 5113 file transfer), `DragDrop.cpp` (OSC 72), `Graphics.cpp` (APC G keys and replies), `Clipboard.cpp` (OSC 5522 and OSC 52), `Json.cpp` (JSON for the phosphor-ipc client), `Ipc.cpp` (the wire client), `Run.cpp` (`afterglow run`), `Socket.cpp` (socket lookup), `Base64.h`, `Hex.h`, `Text.h`, `Sha256.cpp`, `Random.cpp`, `Zlib.cpp`; zlib-ng and xxHash from the archives that `cmake/AfterglowDependencies.cmake` pins |
 | PTY | `libs/afterglow-pty/src/Pty.cpp`: spawn, the reader thread, bounded input queue |
 | Renderer | `libs/afterglow-render/`: `GridRenderer.cpp` (panes, window composition, the overview and other tabs), `PostChain.cpp` (shader chains, buffers, budgets, the pane and tab images), `ShaderProgram.*` (the uniform mirrors of the GLSL contract), `GlyphCache.cpp`, `FontSet.cpp`, `Bidi.cpp`, `GpuDevice.cpp` |
 | Window | `afterglow/src/TerminalWindow.cpp` (input routing, render loop, panes and tabs), `TerminalWindowLayout.cpp`, `TerminalWindowOverview.cpp` (overview, tab transitions, pane effects), `TerminalWindowProject.cpp`, `TerminalWindowScript.cpp`, `TerminalWindowDock.cpp` (script docks: layout and hits), `DockArea.cpp` (one dock's text and snapshot), `Pane.cpp`, `SplitTree.cpp`, `KeyMapping.cpp`, `XkbKeyboard.cpp`, `animation/` |

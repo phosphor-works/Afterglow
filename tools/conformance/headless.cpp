@@ -19,6 +19,7 @@
 // Screen readback (DECRQCRA) is on, as the suites read the screen through it.
 // Exits with the command's status, or 2 when the runner itself fails.
 
+#include <AfterglowProto/Text.h>
 #include <AfterglowVt/Terminal.h>
 
 #include <poll.h>
@@ -186,24 +187,7 @@ const char* respond(const std::string& command, const std::string& path, std::st
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? nullptr : "responder failed";
 }
 
-void appendUtf8(std::string& out, char32_t c)
-{
-    if (c < 0x80) {
-        out += char(c);
-    } else if (c < 0x800) {
-        out += char(0xC0 | (c >> 6));
-        out += char(0x80 | (c & 0x3F));
-    } else if (c < 0x10000) {
-        out += char(0xE0 | (c >> 12));
-        out += char(0x80 | ((c >> 6) & 0x3F));
-        out += char(0x80 | (c & 0x3F));
-    } else {
-        out += char(0xF0 | (c >> 18));
-        out += char(0x80 | ((c >> 12) & 0x3F));
-        out += char(0x80 | ((c >> 6) & 0x3F));
-        out += char(0x80 | (c & 0x3F));
-    }
-}
+using AfterglowProto::appendUtf8;
 
 /// The screen as the user reads it, so that --reply text in CJK or with
 /// combining marks matches: wide tails are skipped, cluster marks kept.

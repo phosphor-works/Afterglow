@@ -37,6 +37,16 @@ QString noPane(quint32 id)
 {
     return QStringLiteral("no pane %1").arg(id);
 }
+
+// The text a script command reads can reach the client of its run: then
+// Control.allowReadText, which guards text for clients, applies too.
+QString scriptReadRefusal(const Settings& settings, bool clientRun)
+{
+    if (!settings.scriptsAllowReadText) return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
+    if (clientRun && !settings.control.allowReadText)
+        return QStringLiteral("reading pane text for afterglow run is off (Control.allowReadText)");
+    return {};
+}
 } // namespace
 
 void Control::attachWindow(TerminalWindow* window)
@@ -298,10 +308,9 @@ QString Control::readText(quint32 id, TextScope scope, QString& out)
     return {};
 }
 
-QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QVariantMap& result)
+QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QVariantMap& result, bool clientRun)
 {
-    if (!m_settings.settings().scriptsAllowReadText)
-        return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
+    if (const QString refusal = scriptReadRefusal(m_settings.settings(), clientRun); !refusal.isEmpty()) return refusal;
     if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
     auto* pane = find(id);
     if (!pane) return noPane(id);
@@ -319,20 +328,18 @@ QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QV
     return {};
 }
 
-QString Control::semanticRegions(quint32 id, QVariantMap& result)
+QString Control::semanticRegions(quint32 id, QVariantMap& result, bool clientRun)
 {
-    if (!m_settings.settings().scriptsAllowReadText)
-        return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
+    if (const QString refusal = scriptReadRefusal(m_settings.settings(), clientRun); !refusal.isEmpty()) return refusal;
     auto* pane = find(id);
     if (!pane) return noPane(id);
     result = pane->semanticRegions();
     return {};
 }
 
-QString Control::readRegion(quint32 id, const QString& region, int limit, QVariantMap& result)
+QString Control::readRegion(quint32 id, const QString& region, int limit, QVariantMap& result, bool clientRun)
 {
-    if (!m_settings.settings().scriptsAllowReadText)
-        return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
+    if (const QString refusal = scriptReadRefusal(m_settings.settings(), clientRun); !refusal.isEmpty()) return refusal;
     if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
     bool ok = false;
     const auto regionId = region.toULongLong(&ok);
@@ -546,6 +553,14 @@ QString Control::notify(quint32 id, const QString& title, const QString& body)
     return {};
 }
 
+void Control::notice(quint32 id, const QString& title, const QString& body)
+{
+    if (m_noticesEnded) return;
+    // A script can run a failing command again and again: the notices of
+    // its runs count as a program's notifications do.
+    NotificationCenter::instance().showLimitedNotice(find(id), textPrefix(title, 256), textPrefix(body, 2048));
+}
+
 QString Control::copy(const QString& text)
 {
     // Refused, not cut: the caller would not know the clipboard holds less.
@@ -566,14 +581,18 @@ QString Control::openUrl(const QString& url)
 
 QString Control::runAction(quint32 id, const QString& action)
 {
+    if (action.startsWith(Keybinds::ScriptPrefix)) {
+        if (!Keybinds::isScriptTarget(action)) return QStringLiteral("a script command action is script:ID.COMMAND");
+        const QString command = action.mid(Keybinds::ScriptPrefix.size());
+        if (id && !find(id)) return noPane(id);
+        // As `afterglow run` does: a command also runs with no pane.
+        const quint32 pane = id ? id : focusedPane().value_or(0);
+        return m_scriptCommands ? m_scriptCommands(command, pane, QStringLiteral("control")) : QStringLiteral("scripts are off");
+    }
     TerminalWindow* w = nullptr;
     Pane* p = find(id, &w);
     if (!p) {
         return noPane(id);
-    }
-    if (action.startsWith(QLatin1String(Keybinds::ScriptPrefix))) {
-        const QString script = action.mid(int(qstrlen(Keybinds::ScriptPrefix)));
-        return m_scriptActions && m_scriptActions(script, id) ? QString() : QStringLiteral("no script action %1").arg(script);
     }
     for (Action a : Keybinds::allActions()) {
         if (Keybinds::token(a) == action) {
@@ -585,6 +604,9 @@ QString Control::runAction(quint32 id, const QString& action)
 
 QString Control::runScriptAction(quint32 id, const QString& action)
 {
+    // ScriptHost refuses these when it checks the effect; this keeps a script
+    // from starting a run that would count as one from afterglow ctl.
+    if (action.startsWith(Keybinds::ScriptPrefix)) return QStringLiteral("scripts cannot run script commands");
     if (!m_settings.settings().scriptsAllowReadText && readsPaneText(action))
         return QStringLiteral("action %1 reads pane text, which is off (Scripts.allowReadText)").arg(action);
     return runAction(id, action);
@@ -698,6 +720,11 @@ QString Control::scriptShader(const QString& owner, quint32 id, const QVariantMa
     return pane ? window->scriptShader(owner, pane, effect, result) : noPane(id);
 }
 
+void Control::closeScriptDialogs(const QString& owner, const QString& prefix)
+{
+    for (auto window : m_windows) if (window) window->closeScriptDialog(owner, prefix);
+}
+
 void Control::clearScriptOwner(const QString& owner)
 {
     m_docks.removeIf([&owner](const DockRecord& r) { return r.owner == owner || !r.window; });
@@ -723,11 +750,11 @@ void Control::endScriptKeyMode(const QString& owner)
     for (auto window : m_windows) if (window) window->endScriptKeyMode(owner);
 }
 
-QString Control::overview(quint32 id, const QString& operation, QVariantMap& result)
+QString Control::overview(const QString& owner, quint32 id, const QString& operation, QVariantMap& result)
 {
     TerminalWindow* window = nullptr;
     Pane* pane = find(id, &window);
-    return pane ? window->scriptOverview(pane, operation, result) : noPane(id);
+    return pane ? window->scriptOverview(owner, pane, operation, result) : noPane(id);
 }
 
 QString Control::overviewMove(quint32 id, quint32 target, int step, QVariantMap& result)

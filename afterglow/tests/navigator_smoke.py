@@ -13,15 +13,17 @@ import signal
 import subprocess
 import sys
 import tempfile
-from nested_desktop import NestedDesktop, Session, check
+from nested_desktop import NestedDesktop, Session, check, exit_on_sigterm, run_on_private_bus
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("binary", type=Path)
+parser.add_argument("--timeout", type=float, default=300, help="Seconds for the whole run (default: 300)")
 parser.add_argument("--private-bus", action="store_true", help=argparse.SUPPRESS)
 options = parser.parse_args()
 binary = str(options.binary.resolve())
 if not options.private_bus:
-    sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, binary, "--private-bus"]))
+    sys.exit(run_on_private_bus([sys.executable, __file__, binary, "--private-bus"], options.timeout))
+exit_on_sigterm()
 with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
     root = Path(tmp); (root / '.bashrc').write_text("PS1='T3> '\n")
     conf = root / 'afterglow'; (conf / 'scripts').mkdir(parents=True)
@@ -31,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
     project = root / 'repository'; project.mkdir()
     (package / 'config.json').write_text(json.dumps({'roots': [str(project)], 'fd': False, 'zoxide': False}))
     state = conf / 'state/scripts'; state.mkdir(parents=True)
-    # Exercise the shipped schema-1 -> schema-2 migration before actions run.
+    # Exercise the shipped schema-1 -> schema-2 migration before commands run.
     (state / 'project-navigator.json').write_text(json.dumps({'format': 1, 'version': 1, 'revision': 1, 'value': {'favorites': [str(project)], 'recent': [str(project)]}}))
     (conf / 'config.json').write_text(json.dumps({
         'Terminal': {'shell': '/bin/bash', 'env': {'HOME': tmp}, 'confirmClose': False},
@@ -49,19 +51,26 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             first = wait(panes)[0]['id']; wait(lambda: 'T3>' in screen(first))
             wait(lambda: navigator().get('status') == 'active')
             check(saved()['version'] == 2 and saved()['revision'] == 2, saved())
-            # Actual Luau action -> native launch -> result -> durable history.
-            ctl('action', 'script:project-navigator.previous', '--pane', first)
+            listed = s.run('project-navigator', 'list').stdout
+            check(f'recent\t{project}' in listed and f'favorite\t{project}' in listed, listed)
+            # A Luau command from the shell -> native launch -> result -> durable
+            # history. The run ends once the history is saved.
+            s.run('--pane', first, 'project-navigator', 'previous')
+            check(saved()['revision'] == 3, saved())
             wait(lambda: len(panes()) == 2)
-            wait(lambda: saved()['revision'] == 3)
             launched = next(p for p in panes() if p['id'] != first)
             newpane = launched['id']; wait(lambda: 'T3>' in screen(newpane))
             pid = identity(newpane)
             reused = json.loads(ctl('open-directory', project))
             check(reused['reused'] and reused['pane_id'] == newpane and len(panes()) == 2)
             check(identity(newpane) == pid)
-            ctl('action', 'script:project-navigator.favorite', '--pane', newpane)
-            wait(lambda: saved()['revision'] == 4)
-            check(str(project) not in saved()['value']['favorites'])
+            result = s.run('--pane', newpane, 'project-navigator', 'favorite')
+            check(result.stdout == 'Favorite removed\n', result.stdout)
+            check(saved()['revision'] == 4 and str(project) not in saved()['value']['favorites'], saved())
+            # A usage error and an unknown command exit with status 2.
+            for command in ('open', 'nope'):
+                result = s.run('project-navigator', command, check_status=False)
+                check(result.returncode == 2, f'run project-navigator {command} exited {result.returncode}: {result.stderr}')
             second = int(ctl('split', '--pane', newpane, '--right'))
             wait(lambda: 'T3>' in screen(second))
             ctl('save-project', 'two-pane', '--pane', newpane)
@@ -97,7 +106,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             wait(lambda: navigator().get('status') == 'active')
             check(saved()['revision'] == 4 and saved()['version'] == 2)
             check(saved()['value']['recent'][0]['value'] == str(project))
-            print('PASS: installed package, schema migration, Luau previous-project action, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
+            print('PASS: installed package, schema migration, afterglow run list/previous/favorite with exit statuses, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
         except Exception:
             print(s.log_text(5000), file=sys.stderr)
             raise

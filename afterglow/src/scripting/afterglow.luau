@@ -12,6 +12,14 @@ local function paneId(pane)
     return pane
 end
 
+-- A command run: its ID, or the run_command event that carries it.
+local function runId(run)
+    if type(run) == "table" then
+        return run.run
+    end
+    return run
+end
+
 -- A missing value must fail the handler, not reach the shell or the clipboard as "nil".
 local function required(value, helper, what)
     if value == nil then
@@ -46,6 +54,20 @@ local waiting = 0
 local outstanding = 0
 local nextFlow = 0
 local current = nil -- the handler coroutine running now
+-- The run of each run_command coroutine. Weak: a handler that fails leaves its
+-- coroutine dead, and nothing else refers to it.
+local commandRuns = setmetatable({}, { __mode = "k" })
+
+-- A run_command handler that returned: its effects, with the run that ended,
+-- so afterglow ends the run once it has applied them.
+local function finished(co, value)
+    local run = commandRuns[co]
+    if run == nil then
+        return value
+    end
+    commandRuns[co] = nil
+    return { __run_done = run, result = value }
+end
 
 local function checkEffect(effect, caller, level)
     if type(effect) ~= "table" or type(effect.kind) ~= "string" then
@@ -53,10 +75,15 @@ local function checkEffect(effect, caller, level)
     end
 end
 
-local function suspend(effects, many)
+-- level: of the code that waits, as error() counts it from here.
+local function inHandler(level)
     if current == nil or coroutine.running() ~= current then
-        error("afterglow.await works only in a handler, not at load time or inside another coroutine", 3)
+        error("afterglow.await works only in a handler, not at load time or inside another coroutine", level)
     end
+end
+
+local function suspend(effects, many)
+    inHandler(4)
     return coroutine.yield(Yield, effects, many)
 end
 
@@ -77,7 +104,7 @@ local function drive(co, ...)
             error(r[2], 0)
         end
         if coroutine.status(co) == "dead" then
-            return r[2]
+            return finished(co, r[2])
         end
         if r[2] ~= Yield then
             error("a handler can pause only through afterglow.await", 0)
@@ -86,18 +113,19 @@ local function drive(co, ...)
         local count = #effects
         if waiting < MaxWaiting and outstanding + count <= MaxOutstanding then
             local id = tostring(nextFlow + 1)
-            local out = {}
+            local out, kinds = {}, {}
             for i, effect in ipairs(effects) do
                 local tagged = table.clone(effect)
                 tagged.request_id = AwaitPrefix .. id .. ":" .. i
                 out[i] = tagged
+                kinds[i] = effect.kind
             end
             -- Registered only once the effects are built: a time limit inside
             -- the loop must not leave a flow that no result resumes.
             nextFlow += 1
             waiting += 1
             outstanding += count
-            flows[id] = { co = co, many = many, count = count, remaining = count, results = {} }
+            flows[id] = { co = co, many = many, count = count, remaining = count, results = {}, kinds = kinds }
             return out
         end
         -- A new table for each effect, so changing one result changes no other.
@@ -123,7 +151,9 @@ local function resume(ev)
     local id, index = string.match(ev.request_id or "", "^afterglow%.await:(%d+):(%d+)$")
     local flow = id and flows[id]
     index = tonumber(index)
-    -- A request ID the script made up must not complete a flow early.
+    -- An index that the flow does not have, or has a result for already, is
+    -- not its result. Afterglow refuses a request ID with the prefix that
+    -- the runtime did not give in the same call, so a script cannot forge one.
     if not flow or index < 1 or index > flow.count or flow.results[index] ~= nil then
         return nil
     end
@@ -164,6 +194,49 @@ local function abandon(since)
     return dropped
 end
 
+-- Afterglow calls this when it ends a run whose handler may still wait (a
+-- cancel, a time limit, a client that went away). No result resumes the
+-- handler after this: it resumes once here, with a "cancelled" error for
+-- each effect it waits for that has no result yet, so that its cleanup runs.
+-- A run has one handler, which waits for one flow at most. context has the
+-- terminal and the pane that a result event has.
+local function cancelRun(run, message, context)
+    local terminal = type(context) == "table" and context.terminal or nil
+    local pane = type(context) == "table" and context.pane or nil
+    for id, flow in pairs(flows) do
+        if commandRuns[flow.co] == run then
+            flows[id] = nil
+            waiting -= 1
+            outstanding -= flow.remaining
+            local function cancelled(i)
+                return { ok = false, kind = flow.kinds[i], request_id = AwaitPrefix .. id .. ":" .. i, data = {},
+                    error = { code = "cancelled", message = message }, terminal = terminal, pane = pane }
+            end
+            if flow.many then
+                local all = {}
+                for i = 1, flow.count do
+                    all[i] = flow.results[i] or cancelled(i)
+                end
+                return drive(flow.co, all)
+            end
+            local event = cancelled(1)
+            return drive(flow.co, nil, event.error, event)
+        end
+    end
+    return nil
+end
+
+-- Afterglow starts each command run through this, as a handler of its own.
+local function runCommand(module, run, name, ev)
+    local handler = rawget(module, "run_command")
+    if type(handler) ~= "function" then
+        error("run_command is not a function", 0)
+    end
+    local co = coroutine.create(handler)
+    commandRuns[co] = run
+    return drive(co, name, ev)
+end
+
 -- Handlers that must return at once: a migration returns state, and effects
 -- returned while unloading are ignored.
 local direct = { migrate = true, on_unload = true }
@@ -185,6 +258,10 @@ local function wrap(module)
                 return abandon
             elseif key == "__flows" then
                 return nextFlow
+            elseif key == "__command" then
+                return function(run, name, ev) return runCommand(module, run, name, ev) end
+            elseif key == "__cancel_run" then
+                return cancelRun
             end
             -- rawget: the host's lookups must never run the script's own
             -- __index, which has no time limit outside a handler call.
@@ -230,6 +307,7 @@ afterglow = {
             error(usage .. ", with no holes or other keys", 2)
         end
         if count == 0 then
+            inHandler(3) -- the same rule as for a wait, also with nothing to wait for
             return {}
         end
         return suspend(effects, true)
@@ -273,7 +351,20 @@ afterglow = {
             timeout_ms=o.timeout_ms or 30000, max_bytes=o.max_bytes or 65536}
     end,
     watch_file = function(name, path) return {kind="watch_file", name=name, path=path} end,
-    set_actions = function(actions) return {kind="set_actions", actions=actions} end,
+    -- Commands that the script adds at runtime, beside those of its manifest:
+    -- a table of command names to their fields, as in the manifest.
+    set_commands = function(commands) return {kind="set_commands", commands=commands} end,
+    -- The output of a command run (ev.run, or the event itself): stdout and stderr of
+    -- `afterglow run`. Can be awaited.
+    output = function(run, text)
+        return { kind = "output", run = runId(run), text = required(text, "afterglow.output", "text") }
+    end,
+    output_error = function(run, text)
+        return { kind = "output_error", run = runId(run), text = required(text, "afterglow.output_error", "text") }
+    end,
+    -- The run's exit status, 0 to 255. A run that sets none exits with 0. The
+    -- run ends when its handler does.
+    exit = function(run, code) return { kind = "exit", run = runId(run), code = code } end,
     select = function(pane, title, items) return {kind="select", pane=paneId(pane), title=title, items=items} end,
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
     status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,

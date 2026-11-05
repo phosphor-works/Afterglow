@@ -76,8 +76,12 @@ add_library(AfterglowProto STATIC
     src/DragDrop.cpp
     src/FdDelta.cpp
     src/Graphics.cpp
+    src/Ipc.cpp
+    src/Json.cpp
     src/Random.cpp
+    src/Run.cpp
     src/Sha256.cpp
+    src/Socket.cpp
     src/Transfer.cpp
     src/TransferClient.cpp
     src/Zlib.cpp

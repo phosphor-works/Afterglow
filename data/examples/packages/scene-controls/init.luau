@@ -25,11 +25,116 @@ local function edit(p,value)
     flow.pending[p.id]=value
     return afterglow.request("applied",afterglow.shader_parameters(flow.pane,flow.shader.instance,table.clone(flow.pending),scope(),{duration_ms=350}))
 end
+local function failure(ev,message,status)
+    return {afterglow.output_error(ev,message.."\n"),afterglow.exit(ev,status or 1)}
+end
+-- The arguments of each command, for its usage line. The handler cannot read
+-- the manifest, so these repeat its usage fields.
+local Usage={open="open",get="get [PARAM]",set="set PARAM VALUE"}
+local Arguments={open={0,0},get={0,1},set={2,2}}
+-- A shell change that waits for its result.
+local busy=false
+-- A decimal number, or nil. tonumber also reads hexadecimal, inf and nan,
+-- which the host would refuse later as a failed change, not a usage error.
+local function decimal(text)
+    local mantissa=(string.gsub(text,"[eE][+-]?%d+$","",1))
+    if not (string.match(mantissa,"^[+-]?%d+%.?%d*$") or string.match(mantissa,"^[+-]?%.%d+$")) then return nil end
+    local value=tonumber(text)
+    if value==nil or value~=value or value==math.huge or value==-math.huge then return nil end
+    return value
+end
+-- The value that text gives the parameter, or nil and what the parameter takes.
+local function parse(p,text)
+    if p.type=="float" or p.type=="int" then
+        local value=decimal(text)
+        if value and p.type=="int" and value~=math.floor(value) then value=nil end
+        if value==nil then return nil,p.type=="int" and "a whole number" or "a number" end
+        return value
+    elseif p.type=="bool" then
+        if text~="true" and text~="false" then return nil,"true or false" end
+        return text=="true"
+    end
+    return text
+end
+-- A configuration change replaces the instances and drops their overrides.
+local function prune(window,shaders)
+    local present={}
+    for _,shader in ipairs(shaders) do present[shader.instance]=true end
+    for key,own in pairs(layers) do
+        if own.window==window and not present[own.instance] then layers[key]=nil end
+    end
+end
+-- The pane's shaders and the pane as it is after the wait, or nil and an error effect.
+local function shaders(ev)
+    if not ev.pane then return nil,failure(ev,"There is no pane to read.") end
+    local data,err,result=afterglow.await(afterglow.shaders(ev.pane))
+    if not data then return nil,failure(ev,err.message) end
+    for _,pane in ipairs(result.terminal.panes) do
+        if pane.id==ev.pane.id then return data.shaders,nil,pane end
+    end
+    return nil,failure(ev,"The pane has closed.")
+end
+-- get [PARAM]: INSTANCE<TAB>PARAMETER<TAB>VALUE lines for the pane's shaders.
+local function get(ev)
+    local list,problem=shaders(ev)
+    if not list then return problem end
+    local lines={}
+    for _,shader in ipairs(list) do
+        for _,p in ipairs(shader.parameters) do
+            if p.supported and (ev.args[1]==nil or ev.args[1]==p.id) then
+                table.insert(lines,shader.instance.."\t"..p.id.."\t"..format(p,shader.values[p.id]))
+            end
+        end
+    end
+    if #lines==0 then return failure(ev,ev.args[1] and ("No parameter "..ev.args[1]) or "Enable a shader pack first.") end
+    return afterglow.output(ev,table.concat(lines,"\n").."\n")
+end
+-- set PARAM VALUE: the first of the pane's shaders that has PARAM takes VALUE,
+-- in this package's layer, as the editor sets it.
+local function set(ev)
+    local list,problem,pane=shaders(ev)
+    if not list then return problem end
+    prune(pane.window,list)
+    local name,text=ev.args[1],ev.args[2]
+    for _,shader in ipairs(list) do
+        for _,p in ipairs(shader.parameters) do
+            if p.supported and p.id==name then
+                local value,takes=parse(p,text)
+                if value==nil then return failure(ev,name.." takes "..takes,2) end
+                local window=shader.layer=="window"
+                local key=shader.instance.."|"..(window and "window" or tostring(pane.tab_id))
+                local values=table.clone(layers[key] and layers[key].values or {})
+                values[p.id]=value
+                local applied,err=afterglow.await(afterglow.shader_parameters(pane.id,shader.instance,table.clone(values),
+                    window and "window" or "tab",{duration_ms=350}))
+                -- A run that ended during the wait has sent the change already.
+                -- The layer keeps it, so that the next edit does not take it back.
+                if applied or err.code=="cancelled" then layers[key]={window=pane.window,instance=shader.instance,values=values} end
+                if not applied then return failure(ev,err.message) end
+                return afterglow.output(ev,shader.instance.."\t"..p.id.."\t"..format(p,value).."\n")
+            end
+        end
+    end
+    return failure(ev,"No parameter "..name.." in the pane's shaders")
+end
 return {
- metadata={name="Scene controls",actions={{id="open",title="Edit scene parameters and presets"}}},
- run_action=function(_,ev)
-    if not ev.pane then return nil end
-    if flow then return afterglow.notify("Scene controls","Finish or cancel the open editor first.",ev.pane) end
+ metadata={name="Scene controls"},
+ run_command=function(command,ev)
+    local range=Arguments[command]
+    if not range then return nil end
+    if #ev.args<range[1] or #ev.args>range[2] then return failure(ev,"usage: afterglow run scene-controls "..Usage[command],2) end
+    if command=="get" then return get(ev) end
+    -- One change at a time: each change sends this package's whole layer, so
+    -- two at once would each drop the value of the other.
+    if busy or flow then return failure(ev,"Finish or cancel the open scene change first.") end
+    if command=="set" then
+        busy=true
+        local ok,effects=pcall(set,ev)
+        busy=false
+        if not ok then error(effects,0) end
+        return effects
+    end
+    if not ev.pane then return failure(ev,"There is no pane to edit.") end
     flow={pane=ev.pane.id,tab=ev.pane.tab_id,window=ev.pane.window}
     return afterglow.request("shaders",afterglow.shaders(flow.pane))
  end,
@@ -40,9 +145,8 @@ return {
         return finish(afterglow.notify("Scene controls",ev.error.message,flow.pane))
     end
     if ev.request_id=="shaders" then
-        flow.shaders={}; local items={}; local present={}
+        flow.shaders={}; local items={}
         for _,shader in ipairs(ev.data.shaders) do
-            present[shader.instance]=true
             local editable=false
             for _,p in ipairs(shader.parameters) do editable=editable or p.supported end
             if editable then
@@ -50,10 +154,7 @@ return {
                 table.insert(items,{id=shader.instance,title=shader.layer..": "..shader.shader})
             end
         end
-        -- A configuration change replaces the instances and drops their overrides.
-        for key,own in pairs(layers) do
-            if own.window==flow.window and not present[own.instance] then layers[key]=nil end
-        end
+        prune(flow.window,ev.data.shaders)
         if #items==0 then return finish(afterglow.notify("Scene controls","Enable a shader pack first.",flow.pane)) end
         return afterglow.request("shader",afterglow.select(flow.pane,"Select effect",items))
     elseif ev.request_id=="shader" then
@@ -95,11 +196,9 @@ return {
         local range=p.min and (" ["..format(p,p.min)..", "..(p.max and format(p,p.max) or "unbounded").."]") or ""
         return afterglow.request("value",afterglow.prompt(flow.pane,p.name..range,format(p,flow.shader.values[p.id])))
     elseif ev.request_id=="value" then
-        local p=flow.parameter; local value=ev.data.text
-        if p.type=="float" or p.type=="int" then
-            value=tonumber(value)
-            if not value then return finish(afterglow.notify("Scene controls","Enter a number.",flow.pane)) end
-        end
+        local p=flow.parameter
+        local value,takes=parse(p,ev.data.text)
+        if value==nil then return finish(afterglow.notify("Scene controls","Enter "..takes..".",flow.pane)) end
         return edit(p,value)
     elseif ev.request_id=="applied" then
         -- A preset sets every supported parameter in this layer. Its own values

@@ -13,7 +13,7 @@ The [configuration reference](CONFIGURATION.md#default-bindings) lists the defau
 | --- | --- |
 | Built-in action name | Runs a terminal action |
 | `text:<bytes>` | Sends bytes to the terminal |
-| `script:<id>.<action>` | Runs a script action |
+| `script:<id>.<command>` | Starts a script command with no arguments (see [commands](SCRIPTING.md#commands)). Afterglow reports a form without the script ID or the command as an error. |
 | `table:<name>` | Activates a key table |
 
 Text bindings support `\e`, `\r`, `\n`, `\t`, `\\`, `\xHH` and `\uHHHH`.
@@ -70,7 +70,10 @@ Afterglow reports two explicit bindings of one key as an error.
 The first binding in alphabetical order of the action names keeps the key.
 Afterglow rejects ambiguous sequences and prefixes that overlap single-key shortcuts.
 Remove the original binding before you use its key as a prefix.
-Tables and sequences accept built-in, text and script actions.
+Tables and sequences accept built-in actions, text bindings and script commands.
+A held key starts a script command once. Its repeats do not start it again.
+A table or sequence that names a command no script has shows a notification.
+A single binding to such a command sends the key to the terminal.
 
 A binding can name a symbol that needs Shift, such as `%` or `+`.
 `Ctrl++` then matches Ctrl+Shift+= on a US layout.
@@ -86,7 +89,7 @@ On a non-Latin layout, a key without Ctrl matches the key that the first Latin l
 | `resize_left`, `resize_right` | Ctrl+Shift+Alt+Left/Right | Moves a vertical divider by two cells |
 | `resize_up`, `resize_down` | Ctrl+Shift+Alt+Up/Down | Moves a horizontal divider by two cells |
 
-The command palette, `ctl action` and Luau can also run these actions.
+The command palette, `afterglow ctl action` and Luau can also run these actions.
 Zoom keeps the split ratios and pane IDs.
 Directional focus changes the pane shown in zoom mode.
 A split or resize action first restores the layout.

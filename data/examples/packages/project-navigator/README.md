@@ -32,8 +32,43 @@ Open the command palette and choose:
   (or the pane's working directory for an ordinary window).
 - **Previous project**: return to the most recent different project.
 
-The keybinding actions are `script:project-navigator.open`,
-`script:project-navigator.favorite` and `script:project-navigator.previous`.
+These are the commands `pick`, `favorite` and `previous`. Bind them as
+`script:project-navigator.pick`, `script:project-navigator.favorite` and
+`script:project-navigator.previous`.
+
+From a shell:
+
+```sh
+afterglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
+afterglow run project-navigator list                       # favorite, recent and saved projects
+find ~/src -maxdepth 1 -mindepth 1 -type d | afterglow run project-navigator import
+```
+
+| Command | Action |
+| --- | --- |
+| `open DIR [LAYOUT]` | Opens `DIR`, relative to the shell's directory. Without `LAYOUT`, it uses the last layout of the directory. |
+| `list` | Prints `KIND<TAB>VALUE` lines: `favorite`, `recent`, `recent-layout` and `layout`. |
+| `import` | Adds each directory on stdin, one on each line, to the favorites. |
+| `pick`, `favorite`, `previous` | The palette commands. |
+
+Only a `LAYOUT` that you give becomes the layout of the directory for the next time.
+When the directory is open already, Afterglow focuses its window and does not apply `LAYOUT`.
+`DIR` can start with `~` or `~/`. Give the full path for the home of another user.
+The package resolves symbolic links in directories with `realpath`, as Afterglow does.
+Thus one directory has one entry, also when the shell reached it through a link.
+Without `realpath`, a directory keeps the path that the shell gave.
+
+`list` leaves out a value that contains a tab or a line break, and says so on stderr.
+`import` skips a line that is not a path or that names a path over 256 bytes.
+
+| Exit status | Cause |
+| --- | --- |
+| 0 | The command completed. |
+| 1 | The command failed, or `import` skipped lines. The message is on stderr. |
+| 2 | Wrong arguments, or a `DIR` that cannot be a directory. |
+
+A command from the palette or a key has no shell.
+Its failure shows as a notification on the pane.
 
 Create `config.json` beside `package.json` to override the defaults:
 
@@ -68,9 +103,12 @@ A provider that is refused supplies no paths.
 | Provider run time | 5 seconds | The provider stops and supplies no paths. |
 | Provider output | 128 KiB | The provider stops. It supplies the complete paths that it printed. |
 | Choices in the picker | 400 | The picker does not show more choices. Favorites, recent projects, running projects and roots come first. |
+| Favorites | 100 | A new favorite fails. `import` skips the other lines and exits with status 1. |
+| Lines in one `import` | 61 | `import` reads the first 61 lines that are not empty. It does not read the other lines, and exits with status 1. |
 
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
+When the run of a command ends while it waits, for example at Ctrl+C on `afterglow run`, no selector opens after it.
 
 Favorites, the last 50 projects and layout choices survive reloads and restarts.
 The package keeps layout choices for favorites and recent directories only.
@@ -79,12 +117,12 @@ Storage is scoped to `project-navigator`, under
 `state/scripts/project-navigator.json` beside the active configuration. Schema 2
 includes a migration example from schema 1's arrays of favorite and recent paths.
 State conflicts preserve the newer file and report the failed save. The next
-action reads current state again. A launch can succeed even if saving its history
+command reads current state again. A launch can succeed even if saving its history
 fails. `afterglow ctl scripts` reports package load errors and retained last-good
 instances.
 
 `providers.luau` handles discovery and parsing. `history.luau` handles bounded
-state and migrations. `init.luau` coordinates actions and correlated results.
+state and migrations. `init.luau` coordinates commands and correlated results.
 The package uses only declared local imports and Afterglow effects.
 
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
@@ -130,7 +168,7 @@ An invalid edit leaves the last working version active. `afterglow ctl scripts`
 shows `last-good` and the error. Correct the edit to recover. Open dialogs and
 provider jobs from a successfully replaced version are canceled.
 
-Remove the `scripts/project-navigator/` directory to uninstall. Its actions,
+Remove the `scripts/project-navigator/` directory to uninstall. Its commands,
 open selector and jobs are removed automatically. Favorites and history stay in
 `state/scripts/project-navigator.json` beside the configuration file, so a new
 installation restores them.

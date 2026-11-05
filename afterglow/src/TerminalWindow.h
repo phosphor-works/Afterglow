@@ -60,6 +60,7 @@ class DockArea;
 class Pane;
 class ScriptHost;
 class ShaderLibrary;
+struct ScriptCommand;
 
 /// At most @p limit UTF-16 units of @p text, without splitting a surrogate pair.
 inline QString textPrefix(const QString& text, qsizetype limit)
@@ -140,7 +141,9 @@ public:
     void requestClosePane(Pane* pane) { closePane(pane); }
     /// Runs a keybind action as if it were pressed in @p pane. The tab
     /// actions of a pane in another tab (close, rename, move, detach) act on
-    /// that tab without showing it, as its tab menu does.
+    /// that tab without showing it, as its tab menu does. False, and nothing
+    /// done, while a prompt, a menu, the palette, the search or a script
+    /// dialog has the keyboard.
     bool runAction(Pane* pane, Action action);
     using ScriptReply = std::function<void(QString, QVariantMap)>;
     QString showScriptDialog(const QString& owner, Pane*, const QVariantMap&, ScriptReply);
@@ -158,6 +161,8 @@ public:
     /// The cells that fit in the window: a top or bottom dock is as wide.
     QSize gridSize() const;
     void clearScriptOwner(const QString& owner);
+    /// Cancels the owner's dialog when its request ID starts with @p prefix.
+    void closeScriptDialog(const QString& owner, const QString& prefix);
     QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
     /// A script's key mode: the window's keys go to the script's on_key until
     /// it ends the mode, fails or unloads. One script at a time.
@@ -165,8 +170,9 @@ public:
     void endScriptKeyMode(const QString& owner);
     /// Scripts drive the pane overview: "open", "close" (back to where it
     /// was) or "choose" (the highlighted pane); and move its highlight to
-    /// @p target, or by @p step cards when no target is given.
-    QString scriptOverview(Pane* pane, const QString& operation, QVariantMap& result);
+    /// @p target, or by @p step cards when no target is given. "open" is
+    /// refused while a script other than @p owner holds a key mode.
+    QString scriptOverview(const QString& owner, Pane* pane, const QString& operation, QVariantMap& result);
     QString scriptOverviewMove(Pane* pane, Pane* target, int step, QVariantMap& result);
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
@@ -193,6 +199,9 @@ public:
     bool rotatePanes(bool clockwise);
     /// The pane overview: every tab's panes as live cards, drawn by Shaders.overview.
     bool openOverview();
+    /// Whether the overview can open with @p pane highlighted, apart from
+    /// it being open already.
+    bool overviewOpensOn(const Pane* pane) const;
     /// Lists the shader settings loaded script packages suggest and writes
     /// the chosen one to the config file.
     bool usePackageShaders();
@@ -322,7 +331,7 @@ private:
     bool scriptKeyModeKey(QKeyEvent* e);
     void stopCopyMode();
     QPointer<Pane> m_copyPane;
-    struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; };
+    struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; QString request; };
     std::optional<ScriptDialog> m_scriptDialog;
     void finishScriptDialog(bool accepted, const QString& value);
     struct ScriptAppearance {
@@ -441,8 +450,9 @@ private:
     QElapsedTimer m_keyModeClock;
     /// Presses the window took, by physical key, so their releases stay
     /// here too. True when a shortcut took it: its auto-repeats run the
-    /// shortcut again. A mode or the chrome took the others, and their
-    /// auto-repeats go nowhere once the mode has closed.
+    /// shortcut again, but for a script command, which runs once for each
+    /// press. A mode or the chrome took the others, and their auto-repeats
+    /// go nowhere once the mode has closed.
     QHash<quint32, bool> m_consumedKeys;
     /// Presses that reached a pane's program, by physical key: the release
     /// goes to that pane whatever has the keyboard by then.
@@ -463,8 +473,27 @@ private:
     bool m_keepComposition = false;
     bool performAction(Action action);
     void updateChrome();
-    /// The command palette's list: every action and the scripts' actions.
+    /// The command palette's list: every action but the palette itself and
+    /// the end of a script key mode, then the script commands that have a
+    /// palette title.
     void updatePaletteActions();
+    /// Starts a script command from the palette, a key or the menu, with no
+    /// arguments. @p token by value: the list it comes from can change
+    /// while the run starts.
+    void runScriptCommand(QString token, Pane* pane, const QString& source);
+    /// The script commands with a palette title, which the palette and the
+    /// context menu list.
+    QList<ScriptCommand> listedScriptCommands() const;
+    /// The command that @p token ("<script>.<name>") names, if a script has it.
+    std::optional<ScriptCommand> scriptCommand(const QString& token) const;
+    /// The keys that run script command @p command, as the palette shows them.
+    QStringList scriptCommandShortcuts(const QString& command) const;
+    /// runAction for the window's own menu, which closed before its item
+    /// runs: no refusal for an open prompt.
+    bool actOnPane(Pane* pane, Action action);
+    /// A prompt, a menu or a script dialog waits for its answer. The
+    /// palette and the search are not prompts.
+    bool chromePromptOpen() const;
     bool chromeVisible() const;
     /// Routes a pointer event to the chrome when it is over it (or the chrome
     /// holds a press). Returns true if the chrome took it.
@@ -630,7 +659,7 @@ private:
     /// Starts or stops audio capture for the chains that show now.
     void updateAudioCapture();
     bool m_readsMouse = false; ///< a chain reads the pointer: it moving is a frame
-    QStringList m_paletteScriptActions; ///< palette id ScriptActionBase + i runs entry i
+    QStringList m_paletteCommands; ///< the token of the command that palette id ScriptCommandBase + i runs
     ChromeController* m_controller = nullptr;
     ChromeLayer* m_chrome = nullptr;
     bool m_chromeGrab = false;
@@ -879,6 +908,8 @@ private:
     // Unicode input: a codepoint typed in hex.
     std::optional<QString> m_unicodeInput;
     void showUnicodeInput();
+    /// Ends Unicode input, when it is open, without inserting anything.
+    void stopUnicodeInput();
     void unicodeInputKey(QKeyEvent* e);
 
     struct LinkHover
@@ -899,7 +930,7 @@ private:
     /// The link modifier (Links.modifier) is held, or none is needed.
     bool linkModifierHeld() const;
     QString m_menuLink; ///< the link the menu was opened on
-    QStringList m_menuScriptActions; ///< menu id MenuScriptBase + i runs entry i
+    QStringList m_menuCommands; ///< the token of the command that menu id MenuScriptBase + i runs
     /// The pane the context menu was opened on: its items act on it, even
     /// when the focus moved while the menu was open.
     QPointer<Pane> m_menuPane;

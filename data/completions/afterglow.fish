@@ -1,0 +1,237 @@
+# SPDX-FileCopyrightText: 2026 fuddlesworth
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Fish completion for afterglow, for Fish 4 or later. Script IDs and their
+# commands come from the running afterglow (afterglow run --complete).
+#
+# One function prints the candidates for the word at the cursor, so that the
+# position of a word decides what it is, as it does for afterglow.
+
+# Prints the arguments, one on each line, and nothing when there are none.
+function __afterglow_print
+    string join \n -- $argv
+end
+
+function __afterglow_window
+    set -l cur (commandline -ct)
+    set -l n (count $argv)
+    set -l i 1
+    while test $i -le $n
+        switch $argv[$i]
+            case -e --execute
+                # The rest is the program and its arguments.
+                __fish_complete_subcommand -d --working-directory -o --override --title --config --class
+                return
+            case -d --working-directory --title --config -o --override --class
+                if test $i -eq $n
+                    # The cursor is at the option's value.
+                    switch $argv[$i]
+                        case -d --working-directory
+                            __fish_complete_directories "$cur"
+                        case --config
+                            __fish_complete_path "$cur"
+                    end
+                    return
+                end
+                set i (math $i + 1)
+            case --config-reference -h --help -v --version
+                # Each of these is the whole command line.
+                return
+        end
+        set i (math $i + 1)
+    end
+    if test $n -eq 0; and not string match -q -- '-*' "$cur"
+        __afterglow_print ctl\t'Drive a running afterglow' run\t'Run a command of a script' \
+            ssh\t'ssh with the remote side prepared'
+        return
+    end
+    set -l offer
+    if test $n -eq 0
+        set -a offer --config-reference\t'Print the configuration reference as JSON' \
+            -h\t'Show the help' --help\t'Show the help' -v\t'Show the version' --version\t'Show the version'
+    end
+    contains -- -d $argv; or contains -- --working-directory $argv
+    or set -a offer -d\t'Start in the directory' --working-directory\t'Start in the directory'
+    set -a offer -e\t'Run the rest of the command line instead of the shell' \
+        --execute\t'Run the rest of the command line instead of the shell'
+    contains -- --title $argv; or set -a offer --title\t'Give the window a title'
+    contains -- --hold $argv; or set -a offer --hold\t'Keep the window open after the program exits'
+    contains -- --quick-terminal $argv; or set -a offer --quick-terminal\t'Show or hide the quick terminal'
+    contains -- --config $argv; or set -a offer --config\t'Read settings from the file'
+    set -a offer -o\t'Override a setting (Group.key=value)' --override\t'Override a setting (Group.key=value)'
+    contains -- --class $argv; or set -a offer --class\t'Wayland app id for window rules'
+    __afterglow_print $offer
+end
+
+function __afterglow_ctl
+    set -l cur (commandline -ct)
+    if not set -q argv[1]
+        if string match -q -- '-*' "$cur"
+            __afterglow_print -h\t'Show the usage' --help\t'Show the usage'
+        else
+            __afterglow_print ls\t'List panes' send-text\t'Type text into the pane' get-text\t'Print pane text' \
+                split\t'Split the pane' move-pane\t'Move the pane beside another' \
+                detach-tab\t"Move the pane's tab to a new window" new-tab\t'Open a tab' new-window\t'Open a window' \
+                focus\t'Focus the pane' close\t'Close the pane' set-title\t"Set the pane's title" \
+                signal\t'Set a shader signal' notify\t'Show a desktop notification' \
+                scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
+                projects\t'List saved projects' save-project\t'Save the window layout' \
+                open-project\t'Open a saved project' action\t'Run a keybind action or start a script command' \
+                watch\t'Print events'
+        end
+        return
+    end
+    set -l command $argv[1]
+    set -e argv[1]
+    set -l n (count $argv)
+    set -l positional 0
+    set -l i 1
+    while test $i -le $n
+        switch $argv[$i]
+            case --
+                # A command to run follows, or text, or nothing that ctl takes.
+                if contains -- $command split new-tab new-window
+                    set -l rest (string escape -- $argv[(math $i + 1)..])
+                    complete -C (string join ' ' -- $rest "$cur")
+                end
+                return
+            case --pane --cwd --layout
+                if test $i -eq $n
+                    # The cursor is at the option's value.
+                    test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                    return
+                end
+                set i (math $i + 1)
+            case '-*'
+            case '*'
+                set positional (math $positional + 1)
+        end
+        set i (math $i + 1)
+    end
+    if not string match -q -- '-*' "$cur"
+        switch $command:$positional
+            case open-directory:0
+                __fish_complete_directories "$cur"
+                return
+            case move-pane:1
+                __afterglow_print left right up down new-tab new-window
+                return
+            case action:0
+                if string match -q -- 'script:*' "$cur"; or string match -q -- "$cur*" script:
+                    set -l self (commandline -xpc)[1]
+                    for id in ($self run --complete 2>/dev/null)
+                        # printf, not string replace: a '$' in the id would be a group in the replacement.
+                        for entry in ($self run --complete $id 2>/dev/null)
+                            printf 'script:%s.%s\n' $id $entry
+                        end
+                    end
+                end
+                return
+        end
+    end
+    set -l offer
+    if not contains -- $command ls watch scripts projects open-directory open-project new-window
+        contains -- --pane $argv; or set -a offer --pane\t'The pane'
+    end
+    switch $command
+        case ls
+            contains -- --json $argv; or set -a offer --json\t'Print JSON'
+        case send-text
+            # --stdin takes no text, and the text takes no --stdin.
+            if not contains -- --stdin $argv
+                contains -- --raw $argv; or set -a offer --raw\t'Send the text as it is'
+                test $positional -eq 0; and not contains -- --raw $argv
+                and set -a offer --stdin\t'Send standard input'
+            end
+        case get-text
+            string match -q -r -- '^--(screen|scrollback|selection|last-output)$' $argv
+            or set -a offer --screen\t'The screen' --scrollback\t'The scrollback' --selection\t'The selection' \
+                --last-output\t'The output of the last command'
+        case split
+            string match -q -r -- '^--(left|right|up|down)$' $argv
+            or set -a offer --left --right --up --down
+        case new-tab new-window
+            contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+        case open-directory
+            contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
+        case save-project
+            contains -- --overwrite $argv; or set -a offer --overwrite\t'Replace a project with the name'
+        case open-project
+            contains -- --new $argv; or set -a offer --new\t'Launch the layout again'
+    end
+    __afterglow_print $offer
+end
+
+function __afterglow_run
+    set -l cur (commandline -ct)
+    set -l self (commandline -xpc)[1]
+    # The words after run up to here: options, then ID, then COMMAND.
+    set -l id
+    set -l command
+    set -l options 1
+    set -l n (count $argv)
+    set -l i 1
+    while test $i -le $n
+        set -l word $argv[$i]
+        if test -n "$options"; and not set -q id[1]
+            switch $word
+                case -n --no-stdin
+                    set i (math $i + 1)
+                    continue
+                case --pane
+                    # At the cursor: the pane number.
+                    test $i -eq $n; and return
+                    set i (math $i + 2)
+                    continue
+                case --
+                    set options
+                    set i (math $i + 1)
+                    continue
+                case '-*'
+                    # -h and --help only alone, and any other option is unknown.
+                    return
+            end
+        end
+        if not set -q id[1]
+            set id $word
+        else
+            set command $word
+            break
+        end
+        set i (math $i + 1)
+    end
+    if set -q command[1]
+        # The command's own arguments: files, most likely.
+        contains -- $command -h --help; or __fish_complete_path "$cur"
+    else if set -q id[1]
+        __afterglow_print --help\t"List the script's commands"
+        $self run --complete $id 2>/dev/null
+    else if test -n "$options"; and string match -q -- '-*' "$cur"
+        set -l offer
+        # --help only alone: after an option it would name a script.
+        test $n -eq 0; and set -a offer -h\t'Show the usage' --help\t'Show the usage'
+        contains -- -n $argv; or contains -- --no-stdin $argv
+        or set -a offer -n\t'Do not pass standard input to the command' --no-stdin\t'Do not pass standard input to the command'
+        contains -- --pane $argv; or set -a offer --pane\t'The pane that the command acts on'
+        __afterglow_print $offer
+    else
+        $self run --complete 2>/dev/null | string replace -r '$' \tScript
+    end
+end
+
+function __afterglow_complete
+    set -l words (commandline -xpc)[2..]
+    switch "$words[1]"
+        case ssh
+            # The rest is ssh's command line.
+            __fish_complete_subcommand
+        case ctl
+            __afterglow_ctl $words[2..]
+        case run
+            __afterglow_run $words[2..]
+        case '*'
+            __afterglow_window $words
+    end
+end
+
+complete -c afterglow -f -a '(__afterglow_complete)'

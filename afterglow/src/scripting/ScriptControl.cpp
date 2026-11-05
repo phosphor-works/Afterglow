@@ -39,12 +39,15 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                     {QStringLiteral("window_id"), moved.value(QStringLiteral("window"))}};
                 return error;
             }
-            if (kind == QLatin1String("semantic_regions")) return control.semanticRegions(pane, data);
+            // ScriptHost marks the reads of a run whose client, a process
+            // outside the window, can get the text.
+            const bool clientRun = e.value(QStringLiteral("client_run")).toBool();
+            if (kind == QLatin1String("semantic_regions")) return control.semanticRegions(pane, data, clientRun);
             if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
                 const double limit = e.value(QStringLiteral("max_bytes")).toDouble();
                 if (!std::isfinite(limit) || limit < 1 || limit > 1024 * 1024 || limit != std::floor(limit)) return QStringLiteral("invalid max_bytes");
-                return kind == QLatin1String("read_region") ? control.readRegion(pane, s("region"), int(limit), data)
-                    : control.readTextBounded(pane, s("scope"), int(limit), data);
+                return kind == QLatin1String("read_region") ? control.readRegion(pane, s("region"), int(limit), data, clientRun)
+                    : control.readTextBounded(pane, s("scope"), int(limit), data, clientRun);
             }
             if (kind == QLatin1String("send_text")) {
                 return control.sendText(pane, s("text"));
@@ -92,7 +95,6 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                 return control.runScriptAction(pane, s("name"));
             }
             if (kind == QLatin1String("move_tab")) return control.moveTab(pane, int(e.value(QStringLiteral("index")).toDouble()));
-            if (kind == QLatin1String("overview")) return control.overview(pane, s("operation"), data);
             if (kind == QLatin1String("overview_move")) {
                 return control.overviewMove(pane, e.value(QStringLiteral("target")).toUInt(),
                                             int(e.value(QStringLiteral("step")).toDouble()), data);
@@ -136,6 +138,12 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             });
             return {error, {}, refusal(error), error.isEmpty()};
         }
+        if (kind == QLatin1String("overview")) {
+            // The window knows which script's overview it shows.
+            QVariantMap data;
+            const auto error = control.overview(owner, pane, e.value(QStringLiteral("operation")).toString(), data);
+            return {error, data, code(error, QStringLiteral("operation_failed"))};
+        }
         if (kind == QLatin1String("key_mode")) {
             const auto error = control.scriptKeyMode(owner, pane, e.value(QStringLiteral("label")).toString());
             return {error, {}, refusal(error)};
@@ -162,6 +170,8 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         return apply(e);
     };
     c.cleanup = [&control](const QString& owner) { control.clearScriptOwner(owner); };
+    c.closeDialogs = [&control](const QString& owner, const QString& prefix) { control.closeScriptDialogs(owner, prefix); };
+    c.notice = [&control](quint32 pane, const QString& title, const QString& body) { control.notice(pane, title, body); };
     // A failing script never keeps the keyboard.
     c.failed = [&control](const QString& owner) { control.endScriptKeyMode(owner); };
     return c;
