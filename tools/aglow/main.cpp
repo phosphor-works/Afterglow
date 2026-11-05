@@ -5,6 +5,7 @@
 // and clipboard protocols from the command line, in one static binary that
 // needs neither kitty nor Afterglow on the computer where it runs.
 
+#include "Cli.h"
 #include "Commands.h"
 #include "Tty.h"
 
@@ -59,7 +60,7 @@ void report(std::string_view command, std::string_view message)
         lines += (start ? "\n  " : "") + printable(message.substr(start, end - start));
         start = end + 1;
     }
-    std::fprintf(stderr, "aglow %s: %s\n", printable(command).c_str(), lines.c_str());
+    std::fprintf(stderr, "%s %s: %s\n", Cli::program().c_str(), printable(command).c_str(), lines.c_str());
 }
 
 std::string humanSize(std::uint64_t bytes)
@@ -99,22 +100,38 @@ bool readAll(int fd, std::string& out)
 
 namespace {
 
-const char* usage = "Usage: aglow COMMAND [options] [arguments]\n"
-                    "\n"
-                    "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the other\n"
-                    "terminals that support them, also over SSH.\n"
-                    "\n"
-                    "Commands:\n"
-                    "  transfer   Copy files to and from the computer of the terminal\n"
-                    "  dnd        Drag files and data out of the terminal, and drop them in\n"
-                    "  icat       Show images in the terminal\n"
-                    "  clipboard  Read and write the clipboard, with any MIME type\n"
-                    "\n"
-                    "Run aglow COMMAND --help or aglow help COMMAND for the options of a command.\n"
-                    "\n"
-                    "Options:\n"
-                    "  -h, --help     Show this help\n"
-                    "  -v, --version  Show the version of aglow and of its protocol\n";
+// %1 stands for the program name.
+const char* usageText = "Usage: %1 COMMAND [options] [arguments]\n"
+                        "\n"
+                        "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the\n"
+                        "other terminals that support them, also over SSH.\n"
+                        "\n"
+                        "Commands:\n"
+                        "  transfer   Copy files to and from the computer of the terminal\n"
+                        "  dnd        Drag files and data out of the terminal, and drop them in\n"
+                        "  icat       Show images in the terminal\n"
+                        "  clipboard  Read and write the clipboard, with any MIME type\n"
+                        "\n"
+                        "Run %1 COMMAND --help or %1 help COMMAND for the options of a command.\n"
+                        "\n"
+                        "Options:\n"
+                        "  -h, --help     Show this help\n"
+                        "  -v, --version  Show the version of aglow and of its protocol\n";
+
+std::string usage()
+{
+    const std::string_view text = usageText;
+    std::string out;
+    for (std::size_t at = 0; at < text.size();) {
+        const auto mark = std::min(text.find("%1", at), text.size());
+        out += text.substr(at, mark - at);
+        if (mark < text.size()) {
+            out += Aglow::Cli::program();
+        }
+        at = mark + 2;
+    }
+    return out;
+}
 
 } // namespace
 
@@ -129,6 +146,7 @@ int run(int argc, char** argv);
 // end the program without unwinding, so main catches them all.
 int main(int argc, char** argv)
 {
+    Aglow::Cli::setProgram(argc > 0 && argv[0] ? argv[0] : "");
     try {
         return run(argc, argv);
     } catch (const std::exception& error) {
@@ -144,7 +162,7 @@ namespace {
 int run(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fputs(usage, stderr);
+        std::fputs(usage().c_str(), stderr);
         return 1;
     }
     const std::string_view command = argv[1];
@@ -155,7 +173,7 @@ int run(int argc, char** argv)
         return run(3, helpArgs);
     }
     if (command == "--help" || command == "-h" || command == "help") {
-        std::fputs(usage, stdout);
+        std::fputs(usage().c_str(), stdout);
         return 0;
     }
     if (command == "--version" || command == "-v" || command == "version") {
@@ -174,7 +192,8 @@ int run(int argc, char** argv)
     if (command == "clipboard") {
         return Aglow::runClipboard(argc - 2, argv + 2);
     }
-    std::fprintf(stderr, "aglow: unknown command: %s\n\n%s", Aglow::printable(argv[1]).c_str(), usage);
+    std::fprintf(stderr, "%s: unknown command: %s\n\n%s", Aglow::Cli::program().c_str(),
+                 Aglow::printable(argv[1]).c_str(), usage().c_str());
     return 1;
 }
 

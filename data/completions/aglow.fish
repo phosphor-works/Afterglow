@@ -1,39 +1,77 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Fish completion for aglow: its commands, their options and the values of the options.
+# afterglow transfer, dnd, icat and clipboard use it too (afterglow.fish).
 
-set -l commands transfer dnd icat clipboard
+# Whether the command of the line is $argv[1], or with no argument whether
+# the line has no command yet. The command is the first word after aglow
+# only: a file of the same name later on the line is not one.
+function __aglow_command
+    set -l words (commandline -xpc)
+    if not set -q argv[1]
+        test (count $words) -eq 1
+        return
+    end
+    test (count $words) -ge 2; and test "$words[2]" = $argv[1]
+end
+
+# The password of -p: a file only when the word starts with ., / or ~, as aglow
+# reads it. Any other word is the password itself.
+function __aglow_password
+    set -l cur (commandline -ct)
+    string match -q -r -- '^[./~]' "$cur"; and __fish_complete_path "$cur"
+end
+
+# The events of --exit-on, separated by commas: the ones given stay, and each
+# is offered once.
+function __aglow_events
+    set -l cur (commandline -ct | string replace -r -- '^--exit-on=' '')
+    set -l given (string split , -- $cur)
+    set -e given[-1]
+    set -l prefix (string join , -- $given)
+    test -n "$prefix"; and set prefix "$prefix,"
+    for event in drag-finish drop-finish esc-key
+        contains -- $event $given; or printf '%s%s\n' $prefix $event
+    end
+end
+
 complete -c aglow -f
-complete -c aglow -n "not __fish_seen_subcommand_from $commands" -a transfer -d 'Copy files to and from the computer of the terminal'
-complete -c aglow -n "not __fish_seen_subcommand_from $commands" -a dnd -d 'Drag files and data out of the terminal, and drop them in'
-complete -c aglow -n "not __fish_seen_subcommand_from $commands" -a icat -d 'Show images in the terminal'
-complete -c aglow -n "not __fish_seen_subcommand_from $commands" -a clipboard -d 'Read and write the clipboard, with any MIME type'
-complete -c aglow -n "not __fish_seen_subcommand_from $commands" -l version -s v -d 'Show the version'
-complete -c aglow -n "not __fish_seen_subcommand_from $commands" -l help -s h -d 'Show the help'
-complete -c aglow -n "__fish_seen_subcommand_from $commands" -l help -d 'Show the help'
+complete -c aglow -n '__aglow_command' -a transfer -d 'Copy files to and from the computer of the terminal'
+complete -c aglow -n '__aglow_command' -a dnd -d 'Drag files and data out of the terminal, and drop them in'
+complete -c aglow -n '__aglow_command' -a icat -d 'Show images in the terminal'
+complete -c aglow -n '__aglow_command' -a clipboard -d 'Read and write the clipboard, with any MIME type'
+complete -c aglow -n '__aglow_command' -a help -d 'Show the help, or the help of a command'
+complete -c aglow -n '__aglow_command' -a version -d 'Show the version'
+complete -c aglow -n '__aglow_command' -s v -l version -d 'Show the version'
+complete -c aglow -n '__aglow_command' -s h -l help -d 'Show the help'
+complete -c aglow -n '__aglow_command help; and test (count (commandline -xpc)) -eq 2' -a 'transfer dnd icat clipboard'
+for command in transfer dnd icat clipboard
+    complete -c aglow -n "__aglow_command $command" -s h -l help -d 'Show the help'
+end
 
-set -l t "__fish_seen_subcommand_from transfer"
+set -l t '__aglow_command transfer'
 complete -c aglow -n $t -F
 complete -c aglow -n $t -s d -l direction -x -a 'upload download send receive' -d 'Send or receive files'
 complete -c aglow -n $t -s m -l mode -x -a 'normal mirror' -d 'How to read the arguments'
 complete -c aglow -n $t -l compress -x -a 'auto never always' -d 'Compress the data'
-complete -c aglow -n $t -s p -l permissions-bypass -r -d 'Password that skips the prompt'
+complete -c aglow -n $t -s p -l permissions-bypass -x -a '(__aglow_password)' -d 'Password that skips the prompt'
 complete -c aglow -n $t -s c -l confirm-paths -d 'Confirm where each file goes'
 complete -c aglow -n $t -s x -l transmit-deltas -d 'Send only the changes'
 
-set -l d "__fish_seen_subcommand_from dnd"
+set -l d '__aglow_command dnd'
 complete -c aglow -n $d -F
 complete -c aglow -n $d -l drag -x -d 'Offer a file as a MIME type (MIME:PATH)'
 complete -c aglow -n $d -l drop -x -d 'Write a dropped MIME type to a file (MIME:PATH)'
 complete -c aglow -n $d -l drop-dest -x -a '(__fish_complete_directories)' -d 'Directory for dropped files'
 complete -c aglow -n $d -l copy-mode -x -a 'auto independent' -d 'How local files are copied'
 complete -c aglow -n $d -l confirm-drop-overwrite -d 'Ask before replacing files'
+complete -c aglow -n $d -l confirm-drop-timeout -x -d 'Seconds that the question waits'
 complete -c aglow -n $d -l drop-anywhere -x -a 'disallowed copy move' -d 'Accept drops anywhere'
 complete -c aglow -n $d -l drag-thumbnail -r -d 'Image under the pointer'
 complete -c aglow -n $d -l drag-thumbnail-size -x -d 'Largest side of the drag image'
-complete -c aglow -n $d -l exit-on -x -a 'drag-finish drop-finish esc-key' -d 'Events to exit on'
+complete -c aglow -n $d -l exit-on -x -a '(__aglow_events)' -d 'Events to exit on'
 
-set -l i "__fish_seen_subcommand_from icat"
+set -l i '__aglow_command icat'
 complete -c aglow -n $i -F
 complete -c aglow -n $i -l align -x -a 'center left right' -d 'Horizontal alignment'
 complete -c aglow -n $i -l place -x -d 'Where to show the image (WIDTHxHEIGHT@LEFTxTOP)'
@@ -55,9 +93,11 @@ complete -c aglow -n $i -l hold -d 'Wait for a key press'
 complete -c aglow -n $i -l unicode-placeholder -d 'Show images through placeholder characters'
 complete -c aglow -n $i -l passthrough -x -a 'detect tmux none' -d 'Pass through tmux'
 complete -c aglow -n $i -l image-id -x -d 'Graphics protocol id'
+complete -c aglow -n $i -l engine -x -a 'auto builtin' -d 'Engine that decodes images'
+complete -c aglow -n $i -l silent -d 'Not used, for compatibility'
 complete -c aglow -n $i -s n -l no-trailing-newline -d 'Leave the cursor after the image'
 
-set -l c "__fish_seen_subcommand_from clipboard"
+set -l c '__aglow_command clipboard'
 complete -c aglow -n $c -F
 complete -c aglow -n $c -s g -l get-clipboard -d 'Write the clipboard out'
 complete -c aglow -n $c -s p -l use-primary -d 'Use the primary selection'

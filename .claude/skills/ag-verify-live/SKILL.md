@@ -12,8 +12,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 `afterglow_native_tests` drives real `TerminalWindow`s through a Wayland compositor: panes, splits, tabs, the
 overview, tab transitions, script key modes, input methods and accessibility. Run it after a change to
-`afterglow/src/TerminalWindow*`, `Pane*`, `SplitTree*`, `chrome/`, `desktop/` or the scripting glue that drives
-windows. Unit tests do not cover these paths.
+`afterglow/src/TerminalWindow*`, `Pane*`, `SplitTree*`, `KeyMapping*`, `chrome/`, `desktop/`, `tools/aglow/Dnd.cpp`
+or the scripting glue that drives windows. Unit tests do not cover these paths.
 
 Never test against the user's desktop session. The user runs Afterglow as their terminal, and a test that types,
 closes windows or kills processes there damages their work.
@@ -26,38 +26,48 @@ closes windows or kills processes there damages their work.
    cmake --build build -j6 --target afterglow_native_tests
    ```
 
-2. Run it in a headless nested KWin. The runner starts itself under `dbus-run-session`, so KWin and the tests use a
-   private D-Bus:
+2. Run it in a headless nested KWin. The runner starts itself under `dbus-run-session`, so KWin gets a private
+   D-Bus. The test binary runs under a second `dbus-run-session`, with a private D-Bus of its own:
 
    ```sh
    python3 .claude/skills/ag-verify-live/headless_native.py > <scratchpad>/native.log 2>&1; echo $?
    grep -E '^\[  (FAILED|PASSED) |^\[==' <scratchpad>/native.log
    ```
 
-The default filter is `NativeWindow.*:KeyMapping.*`: every native test but `Shaders/NativeRenderer.*`. Options:
+The default filter is `NativeWindow.*:KeyMapping.*`: every native test but `Shaders/NativeRenderer.*`.
+`KeyMapping.*` runs here and not in CTest, because it maps keys through the keymap of the compositor's seat.
+Options:
 
-| Option | Effect |
-| --- | --- |
-| `--filter 'NativeWindow.PaneOverview*'` | Runs a subset (a `--gtest_filter` pattern). `'*'` also runs `Shaders/NativeRenderer.*`. |
-| `--icd PATH/lvp.json` | Uses a software Vulkan driver (lavapipe) in place of the GPU |
-| `--validation` | Enables the Vulkan validation layer and GPU logging |
-| `--size 1920x1080` | Changes the virtual output size |
-| `--timeout 400` | Stops the test binary after this many seconds (the default is 400) |
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--filter 'NativeWindow.PaneOverview*'` | `NativeWindow.*:KeyMapping.*` | Runs a subset (a `--gtest_filter` pattern). `'*'` also runs `Shaders/NativeRenderer.*`. |
+| `--binary PATH` | `build/afterglow/afterglow_native_tests` | Runs another test binary, such as one from another build directory |
+| `--icd PATH/lvp.json` | The host driver | Uses a software Vulkan driver (lavapipe) in place of the GPU |
+| `--validation` | Off | Enables the Vulkan validation layer and GPU logging |
+| `--size 1920x1080` | `1100x750` | Changes the virtual output size |
+| `--timeout 400` | 400 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
 
 The log is long. Read it with `grep`, never in full.
 
 ### Expected skips in the headless run
 
 These five tests need real compositor input, which only the acceptance runner below gives. Headless, they report
-Skipped with "Run through native_window_acceptance.py for real compositor input". The two kitten tests also skip
-when `kitten` is not installed. Their `aglow` twins use the `aglow` of the build.
+Skipped with "Run through native_window_acceptance.py for real compositor input".
 
 - `NativeWindow.NativeWaylandFileDrop`
 - `NativeWindow.KittyDragAndDropClient` and `NativeWindow.AglowDragAndDropClient`
 - `NativeWindow.KittyRemoteDragDirectory` and `NativeWindow.AglowRemoteDragDirectory`
 
+Each drag-and-drop test runs two times, with two clients. The `Kitty*` tests run `kitten dnd`, and skip when
+`kitten` is not installed. The `Aglow*` tests run the `aglow dnd` of the build, and skip in a build without `aglow`
+(`AFTERGLOW_BUILD_AGLOW=OFF`).
+
+`NativeWindow.APointerThatNeverEnteredAWindowIsOnNoItemOfItsDocks` skips when the compositor's pointer enters its
+new window, because the test needs a window that the pointer never entered.
+
 Every failure is real. Run a failed test again alone before you call it flaky, and say so in the report.
-`TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab` has failed one time and passed when run again.
+A test that failed once can race the chrome scene, which a window makes in the background. A test that sends
+pointer input to the tab bar or an overlay must first wait for `ChromeLayer::rootItem()` and one frame.
 
 ## Full acceptance run (drag and drop)
 
@@ -66,9 +76,12 @@ python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/aft
 ```
 
 This runner opens a nested KWin as a window on the host X11 or XWayland display, and sends synthetic X events
-(`XSendEvent`, not XTest) only to that window. It needs `kwin_wayland`, `DISPLAY`, libX11, `xprop`,
-`dbus-run-session`, and `kitten` for the compatibility tests. Use it for the drag-and-drop tests, or when the user asks
-for a visible run.
+(`XSendEvent`, not XTest) only to that window. Use it for the drag-and-drop tests, or when the user asks for a
+visible run. It needs this software:
+
+- `kwin_wayland` and `dbus-run-session`.
+- An X11 or XWayland display (`DISPLAY`), libX11 and `xprop`.
+- `kitten`, for the `Kitty*` drag-and-drop tests only.
 
 The nested KWin is a window on the user's desktop, so the user's own pointer reaches it. A drag that gets moves
 from the real pointer as well as from the runner fails: the drop target gets a leave and an enter for each move, or

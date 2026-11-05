@@ -66,6 +66,22 @@ To refuse Kitty transmissions from files, temporary files and shared memory (`t=
 The program then gets an `EPERM` error, and Afterglow opens no file.
 Inline transmissions (`t=d`) always work.
 
+Afterglow deletes a temporary file (`t=t`) or a shared memory object (`t=s`) only when its name holds `tty-graphics-protocol`.
+A temporary file must also be below `/tmp`, `/dev/shm` or `$TMPDIR`, and the tag must be in its path below that directory.
+Afterglow keeps every other file and object that a command names.
+
+A read from a file or shared memory that fails gives the error `EBADF:failed to read image file`.
+These cases give that error:
+
+- The file or object does not exist, or it is not a regular file.
+- The file is in `/proc`, `/sys` or `/dev`, except `/dev/shm`.
+- The name is longer than 4,096 bytes.
+- The file holds less data than `s` × `v` raw pixels.
+
+A feature query (`a=q` with `e`) gets the keys of that action that Afterglow supports.
+Afterglow does not support the indexed formats `f=8` and `f=16`, or the `N` key.
+The delete commands `d=f` and `d=F` delete the frames of an animation.
+
 Afterglow checks the size that a Kitty transmission declares before it reads or decompresses the data.
 Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel.
 
@@ -78,7 +94,7 @@ Raw pixels (`f=24` or `f=32`) use 3 or 4 bytes for each pixel.
 | Raw pixels where `s` × `v` × 4 bytes is more than `Graphics.quota` | The program gets an `ENOSPC` error. |
 | Uncompressed raw pixels from a file or shared memory | Afterglow reads `s` × `v` pixels and no more of the file. |
 | Raw pixels with `o=z` that decompress to more than `s` × `v` pixels | The program gets an `EINVAL` error. |
-| PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline or from a file or shared memory | The program gets an `EFBIG` error. |
+| PNG data (`f=100`) or `o=z` data that is longer than 320 MiB, inline | The program gets an `EFBIG` error. |
 | PNG data with `o=z` that decompresses to more than `Graphics.quota` or 320 MiB | The program gets an `EINVAL` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than 320 MiB | The program gets an `EBADPNG` error. |
 | A PNG image whose decoded pixels (width × height × 4 bytes) are more than `Graphics.quota` | The program gets an `ENOSPC` error. |
@@ -128,7 +144,8 @@ A terminal reset (RIS or the Reset command) keeps the context stack, as the [con
 ## Downloads, input methods and bidirectional text
 
 Downloads permit 8 MiB of decoded data and one pending application request.
-They do not implement the Kitty transfer protocol, resumable transfers or automatic uploads.
+OSC 1337 downloads are not resumable, and they do not upload files.
+Afterglow supports the Kitty file-transfer protocol separately. See [Kitty file transfer](DESKTOP.md#kitty-file-transfer).
 IME context does not permit arbitrary surrounding-text edits.
 Optional primary-screen bidirectional layout has application-grid exclusions and bounded paragraph processing.
 See [bidirectional text](BIDI.md).
@@ -150,25 +167,37 @@ A full stack discards its oldest entry when a new entry is pushed.
 All protocol shape names are supported, including zoom, cell and vertical-text pointers.
 A terminal reset clears both stacks and restores the default text pointer.
 
-## The aglow client
+## aglow interoperability
 
-`aglow` is the client side of the Kitty protocols that Afterglow supports. It does not need Kitty.
+`aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard. It does not need Kitty.
+[The aglow client](DESKTOP.md#the-aglow-client) tells how to use it.
 Its message formats come from `libs/afterglow-proto`, the same code that the terminal uses.
 
 | Command | Protocol | Interoperability checks |
 | --- | --- | --- |
-| `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process and through a pseudo-terminal, against Kitty 0.49.2 (`kitty_transfer_interop.py`), and against a hostile terminal (`Proto.Hostile.*`) |
-| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), and as the target of a remote drop (`AglowDrop.*`) |
-| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels with zlib, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer |
-| `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`), and the message formats in `libs/afterglow-proto/tests` |
+| `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process (`Client.*`) and through a pseudo-terminal, against Kitty 0.49.2 (`kitty_transfer_interop.py`), and against a hostile terminal (`Proto.Hostile.*`) |
+| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), and as the target or source of a remote drag (`AglowDrop.*`, `AglowDrag.*`) |
+| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images. No test covers tmux passthrough. |
+| `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
-`aglow` takes the options of the `kitten` command of the same name.
-`aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept.
-Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`, is not used.
-`aglow icat` decodes images with stb_image. It does not use ImageMagick or download images from URLs.
-Its `--engine` option takes `auto` and `builtin`, which mean the same, and refuses `magick`.
-`--silent` is accepted and does nothing, as in `kitten icat`.
-`aglow clipboard` does not convert between image formats when it reads the clipboard.
+`aglow` takes the options of the `kitten` command of the same name, with the differences below.
+
+- `aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept. It does not use Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`.
+- `aglow icat` decodes images with stb_image. It does not use ImageMagick or download images from URLs.
+- The `--engine` option of `aglow icat` takes `auto` and `builtin`, which mean the same. It refuses `magick`.
+- `aglow icat` accepts `--silent` and ignores it, as `kitten icat` does.
+- `aglow icat` compresses pixels with zlib only when it sends them through the terminal connection. A file or shared memory holds raw pixels.
+- `aglow clipboard` does not convert between image formats when it reads the clipboard.
+- `aglow dnd` has the option `--confirm-drop-timeout`, which `kitten dnd` does not have.
+
+Afterglow adds the `o` key to the end message of a drag (`t=e:x=4`). It names the action that the drop took.
+Kitty does not send it. See [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop).
+
+Run the tests of `aglow`:
+
+```sh
+ctest --test-dir build --output-on-failure -R 'aglow|Aglow|^Client\.|^Proto\.(Client|Hostile)\.'
+```
 
 ## Protocol definitions
 

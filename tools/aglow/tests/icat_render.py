@@ -6,10 +6,19 @@
 Usage: icat_render.py AGLOW AFTERGLOW_RENDERPNG
 
 The images are made here, so the test needs no image library: a still PNG
-(sent as it is), the same PNG mirrored and scaled (decoded and sent as
-pixels with zlib), Unicode placeholders, and an animated GIF whose frames
-are shown one at a time.
+(sent as it is), the same PNG mirrored (decoded and sent as pixels with
+zlib), the PNG scaled into a --place rectangle, Unicode placeholders with
+and without --place, a header too large for a terminal (refused before a
+decode), and an animated GIF whose frames are shown one at a time.
+
+afterglow_renderpng draws with Vulkan, which needs a Wayland display: Qt's
+offscreen platform has no Vulkan. Without a display or a Vulkan device the
+test exits with 77, which CTest reports as skipped. aglow runs with
+--passthrough=none and without TMUX, so that it never changes the settings
+of a tmux that runs the test.
 """
+import os
+import re
 import struct
 import subprocess
 import sys
@@ -113,25 +122,42 @@ def near(colour, want, tolerance=40):
     return all(abs(a - b) <= tolerance for a, b in zip(colour, want))
 
 
+SKIP = 77
+
+
 def main():
+    if len(sys.argv) != 3:
+        sys.exit("usage: icat_render.py AGLOW AFTERGLOW_RENDERPNG")
     aglow, renderer = sys.argv[1], sys.argv[2]
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        print("skipped: afterglow_renderpng needs a Wayland display for Vulkan, and WAYLAND_DISPLAY is not set")
+        sys.exit(SKIP)
+    environment = {key: value for key, value in os.environ.items() if key != "TMUX"}
     with tempfile.TemporaryDirectory(prefix="aglow-icat-") as temporary:
         root = Path(temporary)
 
         def render(name, stream):
             (root / (name + ".vt")).write_bytes(stream)
             screen = root / (name + "-screen.png")
-            subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), str(root / (name + ".vt")), str(screen)],
-                           check=True, stdout=subprocess.DEVNULL, timeout=120)
+            result = subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), str(root / (name + ".vt")),
+                                     str(screen)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120)
+            check(result.returncode == 0, name, result.returncode, result.stderr.decode(errors="replace"))
             return read_png(screen)
 
+        # The first render tells a missing Vulkan from a failure of the test.
+        probe = subprocess.run([renderer, "--cols", str(COLUMNS), "--rows", str(ROWS), "-", str(root / "probe.png")],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120)
+        if probe.returncode != 0 and b"Vulkan" in probe.stderr:
+            print("skipped:", probe.stderr.decode(errors="replace").strip())
+            sys.exit(SKIP)
         blank = render("blank", b"")
         cell_width, cell_height = len(blank[0]) // COLUMNS, len(blank) // ROWS
         window = f"{COLUMNS},{ROWS},{COLUMNS * cell_width},{ROWS * cell_height}"
 
         def run_icat(*arguments):
             return subprocess.run([aglow, "icat", "--use-window-size", window, "--transfer-mode=stream", "--stdin=no",
-                                   *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                                   "--passthrough=none", *arguments], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  env=environment, timeout=60)
 
         def icat(*arguments):
             result = run_icat(*arguments)
@@ -195,7 +221,10 @@ def main():
 
         (root / "anim.gif").write_bytes(gif(4 * cell_width, 2 * cell_height, [RED, GREEN, BLUE]))
         stream = icat("--image-id=7", str(root / "anim.gif"))
-        check(stream.count(b"a=f") == 2, "two frames after the first", stream.count(b"a=f"))
+        # The later chunks of a frame carry a=f too, with m= and no other key:
+        # a frame is a chunk with a=f and more keys.
+        frames = len(re.findall(rb"\x1b_Ga=f,(?!m=[01][,;])", stream))
+        check(frames == 2, "two frames after the first", frames)
         middle = (18 * cell_width + 2 * cell_width, cell_height)
         for frame, colour in ((1, RED), (2, GREEN), (3, BLUE)):
             # Stop the animation on one frame: each frame must hold its own colour.

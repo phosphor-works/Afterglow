@@ -913,6 +913,10 @@ struct AglowDrop : Dnd {
     std::unique_ptr<QSocketNotifier> notifier;
     QByteArray pending;
     QByteArrayList sent;
+    // Everything that the program wrote to the terminal, its screen among it.
+    QByteArray output;
+    // Runs after each read of what the program wrote, also while a drop waits for the program.
+    std::function<void()> onOutput;
     // Whether this computer has a machine id: a drop from a program on it is then local.
     static bool hasMachineId() { return !AfterglowProto::dndMachineId().empty(); }
     static QByteArray readFile(const QString& path)
@@ -979,6 +983,9 @@ struct AglowDrop : Dnd {
                 return;
             }
             pending.append(buffer, n);
+            output.append(buffer, n);
+            if (onOutput)
+                onOutput();
             for (qsizetype at = pending.indexOf("\x1b]72;"); at >= 0; at = pending.indexOf("\x1b]72;")) {
                 const auto end = pending.indexOf("\x1b\\", at);
                 if (end < 0) {
@@ -1020,6 +1027,18 @@ struct AglowDrop : Dnd {
     {
         return std::any_of(sent.begin(), sent.end(), [&](const QByteArray& c) { return c.contains(text); });
     }
+    qsizetype count(const QByteArray& text)
+    {
+        return std::count_if(sent.begin(), sent.end(), [&](const QByteArray& c) { return c.contains(text); });
+    }
+    // Whether the program still runs. One that ended is reaped here.
+    bool running()
+    {
+        if (child > 0 && ::waitpid(child, nullptr, WNOHANG) == 0)
+            return true;
+        child = -1;
+        return false;
+    }
     // Moves a drag of @p mime over the pane until the program accepts it.
     // The program answers each move with the action it takes.
     bool hover(QMimeData& mime, Qt::DropActions actions)
@@ -1042,6 +1061,10 @@ struct AglowDrop : Dnd {
     {
         QMimeData mime;
         mime.setUrls(urls);
+        return drop(mime, actions);
+    }
+    Qt::DropAction drop(QMimeData& mime, Qt::DropActions actions = Qt::CopyAction)
+    {
         if (!hover(mime, actions)) {
             ADD_FAILURE() << "the program accepted no move of the drag";
             return Qt::IgnoreAction;
@@ -1209,6 +1232,167 @@ TEST_F(AglowDrop, ALocalCopyIsIndependentOfItsSource)
     EXPECT_EQ(original.st_nlink, 1u);
     ASSERT_TRUE(writeFile(copy, "changed"));
     EXPECT_EQ(readFile(source + QStringLiteral("/file")), "original");
+#endif
+}
+
+// A drop of one file over a file of that name, read through the terminal,
+// with --confirm-drop-overwrite: the program asks before it replaces the file.
+// The drop event waits for the program to end the drop, so the answer goes
+// out while it waits.
+struct AglowOverwrite : AglowDrop {
+    QTemporaryDir directory;
+    QString source;
+    QString destination;
+    QString target;
+    void SetUp() override
+    {
+        AglowDrop::SetUp();
+        ASSERT_TRUE(directory.isValid());
+        source = directory.filePath(QStringLiteral("source/file"));
+        destination = directory.filePath(QStringLiteral("destination"));
+        target = destination + QStringLiteral("/file");
+        ASSERT_TRUE(QDir().mkpath(directory.filePath(QStringLiteral("source"))));
+        ASSERT_TRUE(QDir().mkpath(destination));
+        ASSERT_TRUE(writeFile(source, "new data"));
+        ASSERT_TRUE(writeFile(target, "old data"));
+    }
+    void startProgram(const QStringList& options = { })
+    {
+        const QStringList argv { QStringLiteral(AFTERGLOW_AGLOW), QStringLiteral("dnd"), QStringLiteral("--drop-anywhere=copy"),
+            QStringLiteral("--confirm-drop-overwrite") };
+        ASSERT_TRUE(start(destination, argv + options));
+        ASSERT_TRUE(waitFor([&] { return service.acceptsDrops(); }));
+        if (hasMachineId()) {
+            ASSERT_TRUE(waitFor([&] { return saw("t=a:x=1"); }));
+        }
+        // Another computer: the program reads the file through the terminal, as over SSH.
+        service.handle("t=a:x=1;1:remote-test-machine");
+    }
+    // Drops the file and runs @p answer once the question shows. Returns the action of the drop.
+    Qt::DropAction dropAnswering(const std::function<void()>& answer)
+    {
+        bool asked = false;
+        // The question of this drop, not of one before it.
+        const auto from = output.size();
+        onOutput = [&] {
+            if (!asked && output.indexOf("will overwrite existing files", from) >= 0) {
+                asked = true;
+                // The program waits for the answer: nothing was replaced yet.
+                EXPECT_EQ(readFile(target), "old data");
+                answer();
+            }
+        };
+        const auto action = drop({ QUrl::fromLocalFile(source) });
+        onOutput = nullptr;
+        EXPECT_TRUE(asked);
+        return action;
+    }
+    // Only the file is left in the destination: the program removed its staging directory.
+    bool onlyTheFile()
+    {
+        return waitFor([&] {
+            return QDir(destination).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden)
+                == QStringList { QStringLiteral("file") };
+        });
+    }
+};
+TEST_F(AglowOverwrite, EnterReplacesTheFile)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_NO_FATAL_FAILURE(startProgram());
+    EXPECT_EQ(dropAnswering([&] { write("\r"); }), Qt::CopyAction);
+    EXPECT_TRUE(onlyTheFile());
+    EXPECT_EQ(readFile(target), "new data");
+    EXPECT_TRUE(running());
+#endif
+}
+TEST_F(AglowOverwrite, EscCancelsTheDropAndNotTheProgram)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_NO_FATAL_FAILURE(startProgram());
+    // Esc also quits the program (--exit-on has esc-key), but not while it asks.
+    EXPECT_EQ(dropAnswering([&] { write("\x1b"); }), Qt::IgnoreAction);
+    EXPECT_TRUE(onlyTheFile());
+    EXPECT_EQ(readFile(target), "old data");
+    // The program still takes drops. One that quit would still be restoring
+    // the terminal for a while, so only a drop that it answers tells.
+    EXPECT_EQ(dropAnswering([&] { write("\r"); }), Qt::CopyAction);
+    EXPECT_EQ(readFile(target), "new data");
+#endif
+}
+TEST_F(AglowOverwrite, TheQuestionExpires)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_NO_FATAL_FAILURE(startProgram({ QStringLiteral("--confirm-drop-timeout=1") }));
+    // Afterglow gives up after 30 seconds without a message: the program cancels the drop before that.
+    QElapsedTimer elapsed;
+    elapsed.start();
+    EXPECT_EQ(dropAnswering([] { }), Qt::IgnoreAction);
+    EXPECT_LT(elapsed.elapsed(), 10000);
+    EXPECT_TRUE(output.contains("no answer came in time"));
+    EXPECT_TRUE(onlyTheFile());
+    // A late Enter replaces nothing.
+    write("\r");
+    settle();
+    EXPECT_EQ(readFile(target), "old data");
+    EXPECT_TRUE(running());
+#endif
+}
+TEST_F(AglowOverwrite, APasteOrTypedTextIsNoAnswer)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    ASSERT_NO_FATAL_FAILURE(startProgram());
+    bool answeredEarly = true;
+    const auto action = dropAnswering([&] {
+        // A pasted line break, in brackets, and a line typed ahead of the question.
+        write("\x1b[200~ls -l\r\x1b[201~");
+        write("yes\r");
+        QTimer::singleShot(500, &service, [&] {
+            answeredEarly = saw(":t=r;") || readFile(target) != "old data";
+            // Enter alone answers.
+            write("\r");
+        });
+    });
+    // The timer has run before the locals that it uses go.
+    settle(700);
+    EXPECT_FALSE(answeredEarly);
+    EXPECT_EQ(action, Qt::CopyAction);
+    EXPECT_EQ(readFile(target), "new data");
+#endif
+}
+// Dropped text goes to standard output when it is not a terminal, once.
+TEST_F(AglowDrop, DroppedTextGoesToStandardOutput)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString out = directory.filePath(QStringLiteral("out"));
+    ASSERT_TRUE(start(directory.path(), { QStringLiteral("sh"), QStringLiteral("-c"),
+        QStringLiteral("exec \"$0\" dnd --drop-anywhere=copy >\"$1\""), QStringLiteral(AFTERGLOW_AGLOW), out }));
+    ASSERT_TRUE(waitFor([&] { return service.acceptsDrops(); }));
+    QMimeData first;
+    first.setText(QStringLiteral("first text"));
+    EXPECT_EQ(drop(first), Qt::CopyAction);
+    ASSERT_TRUE(waitFor([&] { return count("o=1:t=r;") == 1; }));
+    EXPECT_EQ(readFile(out), "first text");
+    // A late chunk of the read, after the drop ended, belongs to no drop.
+    say("t=r:x=1;bGF0ZQ==");
+    QMimeData second;
+    second.setText(QStringLiteral(" and the second"));
+    EXPECT_EQ(drop(second), Qt::CopyAction);
+    ASSERT_TRUE(waitFor([&] { return count("o=1:t=r;") == 2; }));
+    EXPECT_EQ(readFile(out), "first text and the second");
+    EXPECT_TRUE(running());
 #endif
 }
 

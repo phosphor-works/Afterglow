@@ -519,7 +519,10 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     void queue(Meta m, QByteArray bytes)
     {
         if (readBytes + bytes.size() > MaxTotal) {
-            dropError(m, "ENOMEM");
+            // The limit ends the whole drop: the error names no entry, or
+            // the program would take it for this read alone and wait for
+            // the reads that the end of the drop drops.
+            dropError({ }, "ENOMEM");
             return;
         }
         readBytes += bytes.size();

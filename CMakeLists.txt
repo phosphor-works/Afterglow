@@ -45,11 +45,24 @@ add_compile_definitions(QT_NO_KEYWORDS)
 set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
 
+# Zsh has no one place for completions: with the prefix /usr, Debian and
+# Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
+# default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:
+# a cached path would keep the DATADIR of the first one. _afterglow and _aglow
+# both install here.
+set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
+    "Directory for the zsh completions, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
+set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${AFTERGLOW_ZSH_COMPLETION_DIR}")
+if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
+    set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
+endif()
+
 include(cmake/AfterglowPhosphor.cmake)
-# The pins of zlib-ng and xxHash (libs/afterglow-proto), after the Phosphor
-# module so that a CPM which that module loaded is used again. Like it, this
-# module is included at the top scope: CPM keeps its state in the variables of
-# the scope that loads it.
+# The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the vendored
+# stb_image (tools/aglow, checked by afterglow_vendored_file), after the
+# Phosphor module so that a CPM which that module loaded is used again. Like
+# it, this module is included at the top scope: CPM keeps its state in the
+# variables of the scope that loads it.
 include(cmake/AfterglowDependencies.cmake)
 
 add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard (no Qt)
@@ -57,7 +70,15 @@ add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, scree
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
-option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of kitty's protocols (no Qt)" ON)
+option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols (no Qt)" ON)
+option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library and the image decoders (clang for C and C++)" OFF)
+# A fuzz build instruments zlib-ng with the sanitizers (tools/fuzz), and a
+# static aglow cannot link their runtimes. This normal variable hides the
+# cached option in every directory, afterglow/ included.
+if(AFTERGLOW_BUILD_FUZZERS AND AFTERGLOW_BUILD_AGLOW)
+    message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built")
+    set(AFTERGLOW_BUILD_AGLOW OFF)
+endif()
 add_subdirectory(afterglow)             # the application
 if(AFTERGLOW_BUILD_AGLOW)
     add_subdirectory(tools/aglow)       # after the application: it goes next to its executable
@@ -68,7 +89,6 @@ if(AFTERGLOW_BUILD_TOOLS)
     add_subdirectory(tools/render)
     add_subdirectory(tools/conformance)
 endif()
-option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core and the protocol library (clang for C and C++)" OFF)
 if(AFTERGLOW_BUILD_FUZZERS)
     add_subdirectory(tools/fuzz)
 endif()

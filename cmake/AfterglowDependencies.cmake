@@ -1,10 +1,12 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# The third-party sources that Afterglow builds into its own binaries, each
-# pinned to one archive by version, URL and SHA-256. This file is the only
-# place a pin lives. It works as cmake/PhosphorDependencies.cmake in
-# PlasmaZones does, which pins the archives of the Phosphor libraries.
+# The third-party sources that Afterglow builds into its own binaries. Each
+# archive is pinned by version, URL and SHA-256. Each vendored file (a
+# single-file library kept in the repository) is pinned by its upstream commit
+# and the SHA-256 of the file. This file is the only place a pin lives. It
+# works as cmake/PhosphorDependencies.cmake in PlasmaZones does, which pins the
+# archives of the Phosphor libraries.
 #
 # The archives are built into the tree, not taken from the system, so that the
 # terminal and a static client of libs/afterglow-proto use the same code.
@@ -52,8 +54,8 @@ set(AFTERGLOW_DEP_xxhash_FILE "xxHash-0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32")
 
 # ─── Vendored files ──────────────────────────────────────────────────────────
-# A single-file library is kept in the repository, so that aglow builds with
-# no download. Its pin is the upstream commit and the SHA-256 of the file,
+# A single-file library is kept in the repository, so that it needs no archive
+# of its own. Its pin is the upstream commit and the SHA-256 of the file,
 # checked at configure time by afterglow_vendored_file(). Bumping it: copy
 # the file from the new commit and change COMMIT and SHA256 together.
 
@@ -76,8 +78,17 @@ set(AFTERGLOW_CPM_SHA256 "49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c5
 get_filename_component(_AFTERGLOW_DEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 # Downloads URL to FILE through a .part file, renamed only once its hash
-# checks, so a broken download never sits under the real name.
+# checks, so a broken download never sits under the real name. FILE can be in
+# a cache that other build directories share: a lock keeps two configures from
+# writing one .part file, and the one that waited finds the file in place.
 function(_afterglow_download url file sha256)
+    file(LOCK "${file}.lock" GUARD FUNCTION TIMEOUT 600)
+    if(EXISTS "${file}")
+        file(SHA256 "${file}" have)
+        if(have STREQUAL sha256)
+            return()
+        endif()
+    endif()
     file(DOWNLOAD "${url}" "${file}.part" EXPECTED_HASH SHA256=${sha256} STATUS status)
     list(GET status 0 code)
     if(NOT code EQUAL 0)
@@ -146,12 +157,17 @@ endif()
 # afterglow_vendored_file(<name> <variable>)
 #
 # Sets <variable> to the path of the vendored file <name>, after checking it
-# against its pin. Works in configure mode only.
+# against its pin. A change to the file runs the configure again, so that the
+# check sees it. Works in configure mode only.
 function(afterglow_vendored_file name variable)
-    set(path "${_AFTERGLOW_DEPS_ROOT}/${AFTERGLOW_VENDORED_${name}_FILE}")
-    if(NOT AFTERGLOW_VENDORED_${name}_FILE OR NOT EXISTS "${path}")
-        message(FATAL_ERROR "afterglow_vendored_file: '${name}' is not vendored")
+    if(NOT AFTERGLOW_VENDORED_${name}_FILE)
+        message(FATAL_ERROR "afterglow_vendored_file: '${name}' is not pinned in ${CMAKE_CURRENT_FUNCTION_LIST_FILE}")
     endif()
+    set(path "${_AFTERGLOW_DEPS_ROOT}/${AFTERGLOW_VENDORED_${name}_FILE}")
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR "afterglow_vendored_file: ${path}, the vendored file of '${name}', does not exist")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
     file(SHA256 "${path}" have)
     if(NOT have STREQUAL AFTERGLOW_VENDORED_${name}_SHA256)
         message(FATAL_ERROR "${path} does not match its pin (commit ${AFTERGLOW_VENDORED_${name}_COMMIT}):\n"
@@ -186,11 +202,12 @@ function(afterglow_fetch_dependency name)
         endif()
         # The hash is part of the stamp, so a re-pinned archive under the same
         # version extracts again. The stamp is written after a whole
-        # extraction, so one cut short is redone on the next configure.
+        # extraction, so one cut short is redone on the next configure, and so
+        # is a tree that was removed after it.
         set(root "${CMAKE_BINARY_DIR}/_afterglow_deps")
         set(dest "${root}/${name}-${version}")
         set(stamp "${root}/.${name}-${version}-${sha}")
-        if(NOT EXISTS "${stamp}")
+        if(NOT EXISTS "${stamp}" OR NOT IS_DIRECTORY "${dest}")
             file(REMOVE_RECURSE "${dest}" "${dest}.tmp")
             file(ARCHIVE_EXTRACT INPUT "${archive}" DESTINATION "${dest}.tmp")
             file(GLOB top LIST_DIRECTORIES true "${dest}.tmp/*")
@@ -207,9 +224,18 @@ function(afterglow_fetch_dependency name)
         return()
     endif()
 
+    # The pinned archive, never an installed package: find_package would set
+    # no source tree, and the system copy is not the pinned code. These are
+    # function variables, so the caller's CPM settings stay as they are.
+    set(CPM_USE_LOCAL_PACKAGES OFF)
+    set(CPM_LOCAL_PACKAGES_ONLY OFF)
     CPMAddPackage(NAME ${name} VERSION ${version}
                   URL "${AFTERGLOW_DEP_${name}_URL}"
                   URL_HASH SHA256=${sha}
                   DOWNLOAD_ONLY YES)
+    if(NOT IS_DIRECTORY "${${name}_SOURCE_DIR}")
+        message(FATAL_ERROR "CPM gave no source tree for ${name} ${version} (${name}_SOURCE_DIR is "
+                            "'${${name}_SOURCE_DIR}'). Check CPM_${name}_SOURCE and CPM_SOURCE_CACHE.")
+    endif()
     set(${name}_SOURCE_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()

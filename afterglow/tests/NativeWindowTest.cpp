@@ -132,12 +132,27 @@ QStringList takeQmlErrors() {
     std::lock_guard lock(qmlErrorsMutex);
     return std::exchange(qmlErrors, {});
 }
-// The drag and drop tests need real compositor input and kitten.
+// Fails the running test when it produced a QML error. Each fixture calls it
+// in its TearDown, so that the next test's SetUp does not drop the errors.
+void expectNoQmlErrors() {
+    const auto errors = takeQmlErrors();
+    EXPECT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+}
+// The drag and drop tests need real compositor input. Each one needs its
+// client too: kitten, or the aglow of the build.
 #define REQUIRE_NATIVE_DND(ready)                                                                                 \
     const QString ready = qEnvironmentVariable("AFTERGLOW_NATIVE_DND_READY");                                    \
     if (ready.isEmpty()) GTEST_SKIP() << "Run through native_window_acceptance.py for real compositor input"
 #define REQUIRE_KITTEN()                                                                                          \
     if (QStandardPaths::findExecutable(QStringLiteral("kitten")).isEmpty()) GTEST_SKIP() << "kitten is not installed"
+#ifdef AFTERGLOW_AGLOW
+#define AGLOW_BINARY QStringLiteral(AFTERGLOW_AGLOW)
+#else
+#define AGLOW_BINARY QString()
+#endif
+#define REQUIRE_AGLOW(aglow)                                                                                      \
+    const QString aglow = AGLOW_BINARY;                                                                           \
+    if (aglow.isEmpty()) GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)"
 QList<QQuickItem*> visualDescendants(QQuickItem* root) {
     QList<QQuickItem*> result;
     for (auto* child : root->childItems()) {
@@ -297,8 +312,24 @@ QJsonObject testSettings(const QJsonObject& overrides = {}) {
     }
     return settings;
 }
+// Two client panes side by side, and what each side of the protocol sent
+// through a drag from the left one to the right one.
+struct ClientDrag {
+    Pane* source = nullptr;
+    Pane* receiver = nullptr;
+    bool complete = false;
+    // The terminal's requests for the tree of a remote source.
+    int treeRequests = 0;
+    QByteArray protocol; // the source's side
+    QByteArray dropped;  // the receiver's side
+    // Made after the members that its connections write to, so that the
+    // connections end before them: the window outlives the test body.
+    QObject listener;
+};
 class NativeWindow : public ::testing::Test {
 protected:
+    void openDragClients(const QStringList& sourceCommand, const QStringList& receiverCommand, ClientDrag& drag);
+    void runClientDrag(const QString& ready, ClientDrag& drag);
     void dragAndDropClient(const QString& client, const QString& ready);
     void remoteDragDirectory(const QString& client, const QString& ready);
     QTemporaryDir directory;
@@ -331,8 +362,7 @@ protected:
     void TearDown() override {
         application.reset();
         drain();
-        const auto errors = takeQmlErrors();
-        EXPECT_TRUE(errors.isEmpty()) << errors.join(QLatin1Char('\n')).toStdString();
+        expectNoQmlErrors();
     }
 };
 TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
@@ -409,6 +439,12 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(waitFor([&] { return window->isExposed() && chrome->tabBarHeight() > 0; }));
+    // The new window's tab bar takes the drag only once its own chrome scene
+    // exists and has drawn the tab, as for the first window above.
+    layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    ASSERT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
+    ASSERT_TRUE(nextFrame(window));
     QPointer<Pane> lastPane = window->focusedPane();
     QPointer<TerminalWindow> source = window;
     pointer(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
@@ -426,7 +462,15 @@ TEST_F(NativeWindow, TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab) {
     EXPECT_FALSE(lastPane->isHeld());
 }
 
-class NativeRenderer : public ::testing::TestWithParam<bool> {};
+class NativeRenderer : public ::testing::TestWithParam<bool> {
+protected:
+    void SetUp() override { takeQmlErrors(); }
+    // The test's Application is gone by now: drain its deferred deletes.
+    void TearDown() override {
+        drain();
+        expectNoQmlErrors();
+    }
+};
 TEST_P(NativeRenderer, SurvivesWindowTransferResizeAndSourceDestruction) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
@@ -774,6 +818,7 @@ TEST_F(NativeWindow, InitialMenuUpSelectsLastItem) {
         entries.append(QVariantMap{{QStringLiteral("id"), 40000 + i}, {QStringLiteral("title"), QString::number(i)}});
     chrome->openContextMenu({10, 10}, entries);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &up);
@@ -799,6 +844,8 @@ TEST_F(NativeWindow, LazyChromeInitializesOverlayFocusAndTitle) {
         EXPECT_TRUE(fresh != nullptr);
         if (!fresh) continue;
         auto* layer = fresh->findChild<ChromeLayer*>();
+        EXPECT_NE(layer, nullptr);
+        if (!layer) continue;
         if (settled) {
             EXPECT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
         }
@@ -1576,12 +1623,9 @@ TEST_F(NativeWindow, AccessibleDockItemsAreButtonsThatSendTheirClick) {
     EXPECT_EQ(findDock(), nullptr);
 }
 TEST_F(NativeWindow, NotificationReplacementAndPaneScopedImageCache) {
-    NotificationServer server;
-    auto bus = QDBusConnection::sessionBus();
-    ASSERT_TRUE(bus.registerService(QStringLiteral("org.freedesktop.Notifications")));
-    const auto unregisterService = qScopeGuard([&bus] { bus.unregisterService(QStringLiteral("org.freedesktop.Notifications")); });
-    ASSERT_TRUE(bus.registerObject(QStringLiteral("/org/freedesktop/Notifications"), &server, QDBusConnection::ExportAllSlots));
-    const auto unregisterObject = qScopeGuard([&bus] { bus.unregisterObject(QStringLiteral("/org/freedesktop/Notifications")); });
+    RegisteredNotificationServer notices;
+    ASSERT_TRUE(notices.registered);
+    auto& server = notices.server;
     auto* first = window->focusedPane();
     AfterglowVt::NotificationRequest request;
     request.id = "replacement";
@@ -1700,33 +1744,31 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
 }
 
 // The drag and drop tests of kitten dnd and their twins with aglow dnd, which
-// takes the same options. The aglow twins always run; the kitten tests stay
-// as compatibility tests and skip without kitten.
-// A text drag from one client's pane to another client's pane.
-void NativeWindow::dragAndDropClient(const QString& client, const QString& ready) {
-    const QString source = directory.filePath(QStringLiteral("source.txt"));
-    const QString destination = directory.filePath(QStringLiteral("dropped.txt"));
-    QFile file(source); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write("Native Kitty drag and drop\n"); file.close();
+// takes the same options. All of them need the real compositor input of
+// native_window_acceptance.py. The kitten tests skip without kitten, and the
+// aglow twins skip in a build without aglow.
+
+// Opens a tab with @p sourceCommand and a split to its right with
+// @p receiverCommand, shows the window full screen and waits until each
+// client has sent its first command.
+void NativeWindow::openDragClients(const QStringList& sourceCommand, const QStringList& receiverCommand, ClientDrag& drag) {
     PaneLaunchOptions options;
-    options.command = {client, QStringLiteral("dnd"), QStringLiteral("--drag"), QStringLiteral("text/plain:") + source,
-                       QStringLiteral("--drop"), QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
-    // The client makes a temporary directory where it runs: keep it in the fixture's.
+    options.command = sourceCommand;
+    // kitten makes a temporary directory where it runs, and aglow stages a
+    // drop in its drop directory: keep both in the fixture's directory.
     options.cwd = directory.path();
-    auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
+    drag.source = window->openTab(options, nullptr);
+    ASSERT_NE(drag.source, nullptr);
     PaneLaunchOptions receiverOptions;
-    receiverOptions.command = {client, QStringLiteral("dnd"), QStringLiteral("--drop"),
-                               QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
+    receiverOptions.command = receiverCommand;
     receiverOptions.cwd = directory.path();
-    auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
-    ASSERT_NE(receiver, nullptr);
-    bool complete = false; QByteArray protocol;
+    drag.receiver = window->splitPane(drag.source, SplitTree::Direction::Right, receiverOptions, nullptr);
+    ASSERT_NE(drag.receiver, nullptr);
     // The receiver's side from its first command, for a drop that fails after the drag completed.
-    QByteArray dropped;
-    // Made after the locals that its connections write to, so that the
-    // connections end before them: the window outlives the test body.
-    QObject listener;
-    QObject::connect(receiver->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) { dropped += bytes; });
-    const auto receiving = QObject::connect(receiver, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray& bytes) { if (code == 72) dropped += "RECEIVER: " + bytes + "\n"; });
+    QObject::connect(drag.receiver->dragDrop(), &DragDrop::reply, &drag.listener, [&drag](const QByteArray& bytes) { drag.dropped += bytes; });
+    QObject::connect(drag.receiver, &Pane::terminalProtocolRequested, &drag.listener, [&drag](int code, const QByteArray& bytes) {
+        if (code == 72) drag.dropped += "RECEIVER: " + bytes + "\n";
+    });
     window->showFullScreen();
     ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
     // The first drag of a process lists the image formats that Qt can
@@ -1734,17 +1776,28 @@ void NativeWindow::dragAndDropClient(const QString& client, const QString& ready
     // cache, on the GUI thread, while the drag runs. Load them before it.
     QImageReader::supportedMimeTypes();
     QImageWriter::supportedMimeTypes();
-    QElapsedTimer timer; timer.start();
     // Both clients start at once: wait for each one's command.
-    while (!(pane->dragDrop()->offersDrags() && receiver->dragDrop()->acceptsDrops()) && timer.elapsed() < 5000) drain(20);
-    ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops()) << dropped.toStdString();
-    QObject::connect(pane->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) {
-        protocol += bytes;
-        if (bytes.contains("t=e") && bytes.contains("x=4")) complete = true;
+    waitFor([&] { return drag.source->dragDrop()->offersDrags() && drag.receiver->dragDrop()->acceptsDrops(); }, 5000);
+    ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    ASSERT_TRUE(drag.receiver->dragDrop()->acceptsDrops()) << drag.dropped.toStdString()
+        << drag.receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+}
+
+// Drags with the runner's compositor input from the left quarter of the
+// window, in the source pane, to the right quarter, in the receiver, and
+// waits until the source's drag ends.
+void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag) {
+    QObject::connect(drag.source->dragDrop(), &DragDrop::reply, &drag.listener, [&drag](const QByteArray& bytes) {
+        drag.protocol += bytes;
+        if (bytes.contains("t=e") && bytes.contains("x=4")) drag.complete = true;
+        // The metadata of the packet: ESC ] 72 ; keys ; payload.
+        if (bytes.split(';').value(1).split(':').contains("t=k")) ++drag.treeRequests;
     });
-    const auto incoming = QObject::connect(pane, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray& bytes) { if (code == 72) protocol += "CLIENT: " + bytes + "\n"; });
+    QObject::connect(drag.source, &Pane::terminalProtocolRequested, &drag.listener, [&drag](int code, const QByteArray& bytes) {
+        if (code == 72) drag.protocol += "CLIENT: " + bytes + "\n";
+    });
     PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
+    const auto removeInput = qScopeGuard([&] { window->removeEventFilter(&input); });
     QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
     const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
     const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
@@ -1753,23 +1806,44 @@ void NativeWindow::dragAndDropClient(const QString& client, const QString& ready
     marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()) + " 1"); marker.close();
     // A timer, because the drag runs in QDrag::exec's own event loop.
     QTimer hover;
-    QObject::connect(&hover, &QTimer::timeout, &listener, [&] {
-        if (!receiver->dragDrop()->acceptsDrag()) return;
+    QObject::connect(&hover, &QTimer::timeout, &drag.listener, [&] {
+        if (!drag.receiver->dragDrop()->acceptsDrag()) return;
         QFile accepted(ready + QStringLiteral(".hovered"));
         if (accepted.open(QIODevice::WriteOnly)) hover.stop();
     });
     hover.start(5);
-    timer.restart(); while (!complete && timer.elapsed() < 15000) drain(20);
+    waitFor([&] { return drag.complete; }, 15000);
     hover.stop();
-    window->removeEventFilter(&input);
-    QObject::disconnect(incoming);
-    EXPECT_TRUE(complete) << protocol.toStdString() << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    timer.restart(); while (!QFile::exists(destination) && timer.elapsed() < 5000) drain(20);
-    QObject::disconnect(receiving);
-    QFile result(destination);
-    ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString() << "\n" << dropped.toStdString()
-        << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    EXPECT_EQ(result.readAll(), QByteArray("Native Kitty drag and drop\n"));
+    EXPECT_TRUE(drag.complete) << drag.protocol.toStdString() << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+}
+
+QByteArray fileContent(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+// A text drag from one client's pane to another client's pane.
+void NativeWindow::dragAndDropClient(const QString& client, const QString& ready) {
+    const QString source = directory.filePath(QStringLiteral("source.txt"));
+    const QString destination = directory.filePath(QStringLiteral("dropped.txt"));
+    // The source takes drops too, into a file of its own: a drop that the
+    // wrong pane took writes that file.
+    const QString sourceDrop = directory.filePath(QStringLiteral("dropped-on-source.txt"));
+    const QByteArray text("Native Kitty drag and drop\n");
+    QFile file(source); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write(text); file.close();
+    ClientDrag drag;
+    openDragClients({client, QStringLiteral("dnd"), QStringLiteral("--drag"), QStringLiteral("text/plain:") + source,
+                     QStringLiteral("--drop"), QStringLiteral("text/plain:") + sourceDrop, QStringLiteral("--drop-anywhere=copy")},
+                    {client, QStringLiteral("dnd"), QStringLiteral("--drop"), QStringLiteral("text/plain:") + destination,
+                     QStringLiteral("--drop-anywhere=copy")}, drag);
+    if (HasFatalFailure()) return;
+    runClientDrag(ready, drag);
+    if (HasFatalFailure()) return;
+    // The file exists before the receiver has written all of it.
+    EXPECT_TRUE(waitFor([&] { return fileContent(destination) == text; }, 5000))
+        << drag.protocol.toStdString() << "\n" << drag.dropped.toStdString()
+        << drag.receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_FALSE(QFileInfo::exists(sourceDrop)) << "the source pane took the drop";
 }
 
 // A directory dragged from a client that the terminal takes for a remote
@@ -1779,79 +1853,33 @@ void NativeWindow::remoteDragDirectory(const QString& client, const QString& rea
     const QString destination = directory.filePath(QStringLiteral("received"));
     ASSERT_TRUE(QDir().mkpath(source + QStringLiteral("/nested")));
     ASSERT_TRUE(QDir().mkpath(destination));
-    QFile file(source + QStringLiteral("/nested/file")); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write("remote file data"); file.close();
+    const QByteArray data("remote file data");
+    QFile file(source + QStringLiteral("/nested/file")); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write(data); file.close();
     QFile empty(source + QStringLiteral("/empty")); ASSERT_TRUE(empty.open(QIODevice::WriteOnly)); empty.close();
     ASSERT_EQ(::symlink("nested/file", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
-    PaneLaunchOptions options;
-    options.command = {client, QStringLiteral("dnd"), source};
-    // The client makes a temporary directory where it runs: keep it in the fixture's.
-    options.cwd = directory.path();
-    auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
-    PaneLaunchOptions receiverOptions;
-    receiverOptions.command = {client, QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")};
-    receiverOptions.cwd = directory.path();
-    auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
-    ASSERT_NE(receiver, nullptr);
-    window->showFullScreen();
-    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
-    // The first drag of a process lists the image formats that Qt can
-    // convert, and that loads every image plugin: seconds with a cold page
-    // cache, on the GUI thread, while the drag runs. Load them before it.
-    QImageReader::supportedMimeTypes();
-    QImageWriter::supportedMimeTypes();
-    QElapsedTimer timer; timer.start();
-    // Both clients start at once: wait for each one's command.
-    while (!(pane->dragDrop()->offersDrags() && receiver->dragDrop()->acceptsDrops()) && timer.elapsed() < 5000) drain(20);
-    ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    ASSERT_TRUE(receiver->dragDrop()->acceptsDrops()) << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    pane->dragDrop()->handle("t=o:x=1;1:remote-test-machine");
-    bool complete = false; QByteArray protocol;
-    QByteArray dropped;
-    // Made after the locals that its connections write to, so that the
-    // connections end before them: the window outlives the test body.
-    QObject listener;
-    // The receiver's side, for a drop that fails after the drag completed.
-    QObject::connect(receiver->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) { dropped += bytes; });
-    const auto receiving = QObject::connect(receiver, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray& bytes) { if (code == 72) dropped += "RECEIVER: " + bytes + "\n"; });
-    QObject::connect(pane->dragDrop(), &DragDrop::reply, &listener, [&](const QByteArray& bytes) {
-        protocol += bytes;
-        if (bytes.contains("t=e") && bytes.contains("x=4")) complete = true;
-    });
-    const auto incoming = QObject::connect(pane, &Pane::terminalProtocolRequested, &listener, [&](int code, const QByteArray& bytes) { if (code == 72) protocol += "CLIENT: " + bytes + "\n"; });
-    PressMarker input; input.path = ready + QStringLiteral(".pressed"); window->installEventFilter(&input);
-    QFile marker(ready); ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
-    const QPoint from = window->mapToGlobal(QPoint(window->width() / 4, window->height() / 3));
-    const QPoint to = window->mapToGlobal(QPoint(window->width() * 3 / 4, window->height() * 2 / 3));
-    // The fifth token asks the runner to release only after the receiver's
-    // program has accepted the drag, as a person waits for the cursor.
-    marker.write(QByteArray::number(from.x()) + " " + QByteArray::number(from.y()) + " " + QByteArray::number(to.x()) + " " + QByteArray::number(to.y()) + " 1"); marker.close();
-    // A timer, because the drag runs in QDrag::exec's own event loop.
-    QTimer hover;
-    QObject::connect(&hover, &QTimer::timeout, &listener, [&] {
-        if (!receiver->dragDrop()->acceptsDrag()) return;
-        QFile accepted(ready + QStringLiteral(".hovered"));
-        if (accepted.open(QIODevice::WriteOnly)) hover.stop();
-    });
-    hover.start(5);
-    timer.restart(); while (!complete && timer.elapsed() < 15000) drain(20);
-    hover.stop();
-    window->removeEventFilter(&input);
-    QObject::disconnect(incoming);
-    EXPECT_TRUE(complete) << protocol.toStdString() << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    timer.restart(); while (!QFile::exists(destination + QStringLiteral("/remote/nested/file")) && timer.elapsed() < 5000) drain(20);
-    QObject::disconnect(receiving);
-    QFile result(destination + QStringLiteral("/remote/nested/file"));
-    ASSERT_TRUE(result.open(QIODevice::ReadOnly)) << protocol.toStdString() << "\n" << dropped.toStdString()
-        << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
-    EXPECT_EQ(result.readAll(), QByteArray("remote file data"));
-    EXPECT_TRUE(QFileInfo::exists(destination + QStringLiteral("/remote/empty")));
-    EXPECT_TRUE(QFileInfo(destination + QStringLiteral("/remote/link")).isSymLink());
+    ClientDrag drag;
+    openDragClients({client, QStringLiteral("dnd"), source},
+                    {client, QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")},
+                    drag);
+    if (HasFatalFailure()) return;
+    // A machine id that is not this computer's: the source is remote.
+    drag.source->dragDrop()->handle("t=o:x=1;1:remote-test-machine");
+    runClientDrag(ready, drag);
+    if (HasFatalFailure()) return;
+    // A source that the terminal took for a local one gives no requests,
+    // and its drop of the local path passes the checks below as well.
+    EXPECT_GT(drag.treeRequests, 0) << drag.protocol.toStdString();
+    const QString root = destination + QStringLiteral("/remote");
+    // The receiver writes the tree in steps: wait for every part of it.
+    EXPECT_TRUE(waitFor([&] {
+        return fileContent(root + QStringLiteral("/nested/file")) == data && QFileInfo::exists(root + QStringLiteral("/empty"))
+            && QFileInfo(root + QStringLiteral("/link")).isSymLink();
+    }, 5000)) << drag.protocol.toStdString() << "\n" << drag.dropped.toStdString()
+              << drag.receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_EQ(fileContent(root + QStringLiteral("/nested/file")), data);
+    EXPECT_EQ(QFileInfo(root + QStringLiteral("/empty")).size(), 0);
+    EXPECT_EQ(QFileInfo(root + QStringLiteral("/link")).readSymLink(), QStringLiteral("nested/file"));
 }
-#ifdef AFTERGLOW_AGLOW
-#define REQUIRE_AGLOW() const QString aglow = QStringLiteral(AFTERGLOW_AGLOW)
-#else
-#define REQUIRE_AGLOW() GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)"; const QString aglow
-#endif
 TEST_F(NativeWindow, KittyDragAndDropClient) {
     REQUIRE_NATIVE_DND(ready);
     REQUIRE_KITTEN();
@@ -1859,7 +1887,7 @@ TEST_F(NativeWindow, KittyDragAndDropClient) {
 }
 TEST_F(NativeWindow, AglowDragAndDropClient) {
     REQUIRE_NATIVE_DND(ready);
-    REQUIRE_AGLOW();
+    REQUIRE_AGLOW(aglow);
     dragAndDropClient(aglow, ready);
 }
 TEST_F(NativeWindow, KittyRemoteDragDirectory) {
@@ -1869,7 +1897,7 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
 }
 TEST_F(NativeWindow, AglowRemoteDragDirectory) {
     REQUIRE_NATIVE_DND(ready);
-    REQUIRE_AGLOW();
+    REQUIRE_AGLOW(aglow);
     remoteDragDirectory(aglow, ready);
 }
 
@@ -1946,20 +1974,20 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
     auto* third = window->splitPane(second, SplitTree::Direction::Down, launch, nullptr);
     ASSERT_NE(third, nullptr);
     window->revealPane(first);
-    drain();
+    ASSERT_TRUE(settleQueued());
     auto press = [&](int key, const QString& text = {}) {
         QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier, text);
         QCoreApplication::sendEvent(window, &down);
         QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier, text);
         QCoreApplication::sendEvent(window, &up);
-        drain();
+        ASSERT_TRUE(settleQueued());
     };
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->overviewOpen());
     EXPECT_EQ(window->overviewHighlight(), first);
     EXPECT_TRUE(chrome->keyMode().startsWith(QStringLiteral("Panes")));
@@ -2008,7 +2036,7 @@ TEST_F(NativeWindow, PaneOverviewChoosesWithKeysAndKeepsZoom) {
 TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
     auto* first = window->focusedPane();
     ASSERT_TRUE(window->runAction(first, Action::NewTab));
-    drain();
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
     auto* second = window->focusedPane();
     ASSERT_NE(second, first);
     PaneLaunchOptions launch;
@@ -2016,16 +2044,16 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
     auto* third = window->splitPane(second, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(third, nullptr);
     window->revealPane(second);
-    drain();
+    ASSERT_TRUE(settleQueued());
     auto press = [&](int key) {
         QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier);
         QCoreApplication::sendEvent(window, &down);
         QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier);
         QCoreApplication::sendEvent(window, &up);
-        drain();
+        ASSERT_TRUE(settleQueued());
     };
     ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
-    drain();
+    ASSERT_TRUE(settleQueued());
     EXPECT_EQ(window->overviewHighlight(), second);
     // Cards run in tab order: Left from the second tab's first pane reaches the first tab.
     press(Qt::Key_Left);
@@ -2080,7 +2108,7 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
     ASSERT_NE(second, nullptr);
     EXPECT_EQ(window->paneOrigin(second).from, first->id());
     EXPECT_EQ(window->paneOrigin(second).edge, 1);
-    drain();
+    ASSERT_TRUE(settleQueued());
     QList<QVariantMap> keys;
     QList<std::pair<quint32, quint32>> switches;
     QObject listener;
@@ -2092,7 +2120,7 @@ TEST_F(NativeWindow, ScriptKeyModeOverviewTabSwitchAndPulse) {
         QCoreApplication::sendEvent(window, &down);
         QKeyEvent up(QEvent::KeyRelease, key, mods, text);
         QCoreApplication::sendEvent(window, &up);
-        drain();
+        ASSERT_TRUE(settleQueued());
     };
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
@@ -2160,6 +2188,7 @@ TEST_F(NativeWindow, ReturnOnAFocusedButtonAnswersThatButton) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     int confirmed = -1;
     QObject listener;
     QObject::connect(chrome, &ChromeController::confirmAnswered, &listener, [&](bool accepted) { confirmed = accepted; });
@@ -2177,6 +2206,7 @@ TEST_F(NativeWindow, AnOverlayThatOpensBelowAPromptLeavesItsFocusedButton) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     QList<bool> answers;
     QObject listener;
     QObject::connect(chrome, &ChromeController::pasteAnswered, &listener, [&](bool paste) { answers << paste; });
@@ -2202,6 +2232,7 @@ TEST_F(NativeWindow, ReturnInThePastePreviewDoesNotPaste) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     chrome->askPaste(QStringLiteral("one\ntwo"), 2);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     QQuickItem* preview = nullptr;
@@ -2215,10 +2246,11 @@ TEST_F(NativeWindow, ReturnInThePastePreviewDoesNotPaste) {
     EXPECT_FALSE(chrome->pasteConfirmOpen());
 }
 
-TEST_F(NativeWindow, ClipboardPromptDeniesOnTypedReturnAndPlainA) {
+TEST_F(NativeWindow, ClipboardPromptDeniesOnTypedReturnAndAlwaysAllowsOnPlainA) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     QList<int> answers;
     QObject listener;
     QObject::connect(chrome, &ChromeController::clipboardAnswered, &listener, [&](int answer) { answers << answer; });
@@ -2243,6 +2275,7 @@ TEST_F(NativeWindow, AReopenedClipboardPromptStartsOnDeny) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     QList<int> answers;
     QObject listener;
     QObject::connect(chrome, &ChromeController::clipboardAnswered, &listener, [&](int answer) { answers << answer; });
@@ -2269,10 +2302,14 @@ TEST_F(NativeWindow, ClosingAnOverlayReturnsTheKeysToTheOneBelow) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     chrome->setSearchOpen(true);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     chrome->openContextMenu({10, 10}, {QVariantMap{{QStringLiteral("id"), 1}, {QStringLiteral("title"), QStringLiteral("Item")}}});
-    drain();
+    // The menu shows at the next frame and asks for the focus after it.
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    ASSERT_TRUE(nextFrame(window));
+    ASSERT_TRUE(settleQueued());
     chrome->closeContextMenu();
     // The search field keeps its scoped focus while the menu is open, so
     // focusedItem() finds it at once; the keys reach it only with active focus.
@@ -2291,6 +2328,7 @@ TEST_F(NativeWindow, ReopenedSearchFindsTheKeptQueryAgain) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     pane->withTerminal([](AfterglowVt::Terminal& terminal) { terminal.feed("\x1b[2J\x1b[Hneedle"); });
     chrome->setSearchOpen(true);
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
@@ -2306,6 +2344,7 @@ TEST_F(NativeWindow, TitlePromptFollowsANewRequest) {
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     chrome->askTitle(QStringLiteral("Tab title"), QStringLiteral("first"));
     ASSERT_TRUE(waitFor([&] { return chromeFocusReady(layer); }));
     EXPECT_EQ(layer->focusedItem()->property("text").toString(), QStringLiteral("first"));
@@ -2319,6 +2358,7 @@ TEST_F(NativeWindow, PaneTitleLabelsSurviveTitleChanges) {
     launch.command = {QStringLiteral("/bin/cat")};
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     const auto labels = [&] {
         QList<QQuickItem*> found;
         if (!layer->rootItem()) return found; // the scene is made in the background and may not be ready yet
@@ -2350,7 +2390,7 @@ TEST_F(NativeWindow, OverviewReopenedWhileClosingTurnsTheShortWay) {
     ASSERT_NE(second, nullptr);
     ASSERT_NE(window->splitPane(second, SplitTree::Direction::Down, launch, nullptr), nullptr);
     window->revealPane(first);
-    drain();
+    ASSERT_TRUE(settleQueued());
     auto send = [&](int key) {
         QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier);
         QCoreApplication::sendEvent(window, &down);
@@ -2358,13 +2398,17 @@ TEST_F(NativeWindow, OverviewReopenedWhileClosingTurnsTheShortWay) {
         QCoreApplication::sendEvent(window, &up);
     };
     ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
-    drain();
+    ASSERT_TRUE(settleQueued());
     // Seven steps round three cards: the position counts on past two turns.
     for (int step = 0; step < 7; ++step) {
         send(Qt::Key_Right);
         drain(20);
     }
-    drain(400);
+    // The deck reaches the seventh step before the close starts from it.
+    ASSERT_TRUE(waitFor([&] {
+        const auto [position, target] = window->overviewPosition();
+        return std::abs(target - position) < 0.01;
+    }));
     send(Qt::Key_Escape);
     ASSERT_FALSE(window->overviewOpen());
     // Reopen within the closing motion: the deck turns at most half round.
@@ -2382,10 +2426,10 @@ TEST_F(NativeWindow, OverviewRestoresTheZoomOnTheTabItCameFrom) {
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->runAction(first, Action::TogglePaneZoom));
     ASSERT_TRUE(window->runAction(first, Action::NewTab));
-    drain();
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
     auto* other = window->focusedPane();
     ASSERT_NE(other, first);
     window->revealPane(first);
@@ -2398,11 +2442,11 @@ TEST_F(NativeWindow, OverviewRestoresTheZoomOnTheTabItCameFrom) {
     // Something else switches tabs while the overview is open (a notification
     // click, afterglow ctl focus); Escape returns to the first tab.
     window->revealPane(other);
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->overviewOpen());
     QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &escape);
-    drain();
+    ASSERT_TRUE(settleQueued());
     EXPECT_FALSE(window->overviewOpen());
     // The first tab shows once the close has finished.
     EXPECT_TRUE(waitFor([&] { return window->focusedPane() == first; }));
@@ -2472,6 +2516,8 @@ TEST_F(NativeWindow, PaneCoalescesBellsAndRepeatedTitlesAndUserVars) {
     EXPECT_EQ(titles, QStringList{QStringLiteral("t999")});
 }
 
+// In this suite, not an offscreen one: the keys map through the keymap of the
+// compositor's seat. Without a seat, mapKeyEvent takes its keycode table.
 TEST(KeyMapping, KeepsKeypadAndShiftedKeysUnderCtrl) {
     QByteArray storage;
     // Ctrl turns keypad 2 into NUL: it is still keypad 2 (xkb keycode 88).
@@ -2539,7 +2585,7 @@ TEST_F(NativeWindow, KeyRepeatsOfAKeyThatClosedAModeStayOutOfTheShell) {
     auto* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(second, nullptr);
     window->revealPane(first);
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_TRUE(window->runAction(first, Action::PaneOverview));
     ASSERT_TRUE(window->overviewOpen());
     // "2" chooses the second card and closes the overview. The key stays
@@ -2599,7 +2645,7 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
     auto* right = window->splitPane(middle, SplitTree::Direction::Right, launch, nullptr);
     ASSERT_NE(right, nullptr);
     window->revealPane(middle);
-    drain();
+    ASSERT_TRUE(settleQueued());
     QKeyEvent down(QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"));
     QCoreApplication::sendEvent(window, &down);
     // The focus moves while the key is held (a click, afterglow ctl, a script).
@@ -2627,7 +2673,7 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
 TEST_F(NativeWindow, TypingWhileTheOverviewClosesReachesTheChosenTab) {
     auto* first = window->focusedPane();
     ASSERT_TRUE(window->runAction(first, Action::NewTab));
-    drain();
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
     auto* second = window->focusedPane();
     ASSERT_NE(second, first);
     ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
@@ -2684,7 +2730,7 @@ TEST_F(NativeWindow, OverviewClosingOntoAnotherTabSwitchesWithoutATransition) {
 TEST_F(NativeWindow, FocusWhileTheOverviewClosesWinsOverTheCard) {
     auto* first = window->focusedPane();
     ASSERT_TRUE(window->runAction(first, Action::NewTab));
-    drain();
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
     auto* second = window->focusedPane();
     ASSERT_NE(second, first);
     ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
@@ -2734,7 +2780,7 @@ TEST_F(NativeWindow, ClipboardReadFromABackgroundTabAsksWithoutSwitching) {
     auto* background = window->openTab(launch, nullptr);
     ASSERT_NE(background, nullptr);
     window->revealPane(first);
-    drain();
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
     const quint32 tab = window->activeTabId();
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
@@ -2772,6 +2818,7 @@ TEST_F(NativeWindow, ScriptKeyModeEndsWithItsReservedChord) {
 // 215-280 ms.
 TEST_F(NativeWindow, ChromeSceneIsMadeBeforeTheFirstFrameThatShowsIt) {
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(layer, nullptr);
     ASSERT_NE(chrome, nullptr);
@@ -2846,7 +2893,7 @@ TEST_F(NativeWindow, ATabThatClosesTakesItsTabMenuWithIt) {
     launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line")};
     auto* other = window->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_EQ(window->tabs().size(), 2);
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
@@ -2864,10 +2911,10 @@ TEST_F(NativeWindow, ATabThatClosesLeavesAPaneMenuOpen) {
     launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("read line")};
     auto* other = window->openTab(launch, nullptr);
     ASSERT_NE(other, nullptr);
-    drain();
+    ASSERT_TRUE(settleQueued());
     ASSERT_EQ(window->tabs().size(), 2);
     window->revealPane(first);
-    drain(300);
+    ASSERT_TRUE(waitFor([&] { return !window->tabSwitching(); }));
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     // The tab menu of the background tab, dismissed without a choice.
@@ -3120,6 +3167,7 @@ TEST_F(NativeWindow, DocksTellTheirScriptOfTheirCellsTheHoveredItemAndTheWheel) 
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
     ASSERT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
     move(QRectF(firstRect).center().x() / dpr);
     ASSERT_EQ(of("on_dock_hover").size(), 4);
@@ -4583,7 +4631,7 @@ TEST_F(NativeWindow, ADividerDragKeepsTheSplitCursorThroughItsFrames) {
     const int cols = first->cols();
     mouseAt(window, QEvent::MouseButtonPress, divider, Qt::LeftButton, Qt::LeftButton);
     mouseAt(window, QEvent::MouseMove, divider + QPointF(10, 0), Qt::NoButton, Qt::LeftButton);
-    drain(100);
+    ASSERT_TRUE(nextFrame(window));
     mouseAt(window, QEvent::MouseMove, divider + QPointF(30, 0), Qt::NoButton, Qt::LeftButton);
     EXPECT_TRUE(waitFor([&] { return first->cols() > cols; })) << first->cols(); // the frames laid the panes out
     EXPECT_EQ(window->cursor().shape(), Qt::SplitHCursor);
@@ -4594,7 +4642,7 @@ TEST_F(NativeWindow, ADividerDragKeepsTheSplitCursorThroughItsFrames) {
     // A tab switch from the keyboard ends the drag: its divider is the other
     // tab's.
     ASSERT_TRUE(window->runAction(first, Action::PreviousTab));
-    drain(100);
+    ASSERT_TRUE(settleQueued());
     mouseAt(window, QEvent::MouseMove, QPointF(divider.x() + 40, chrome->tabBarHeight() / 2.0), Qt::NoButton, Qt::LeftButton);
     ASSERT_TRUE(nextFrame(window));
     EXPECT_NE(window->cursor().shape(), Qt::SplitHCursor);
@@ -4781,7 +4829,7 @@ TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove) {
     PaneLaunchOptions launch;
     launch.command = {QStringLiteral("/bin/cat")};
     ASSERT_NE(window->splitPane(first, SplitTree::Direction::Right, launch, nullptr), nullptr);
-    drain();
+    ASSERT_TRUE(settleQueued());
     auto* chrome = window->findChild<ChromeController*>();
     ASSERT_NE(chrome, nullptr);
     // A key mode from before the overview stays when it closes.

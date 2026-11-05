@@ -161,6 +161,15 @@ TEST(AglowCli, NumbersAreCheckedAtParseTime)
     EXPECT_FALSE(run(command, { "--timeout=1e400" }, error));
 }
 
+TEST(AglowCli, IntegerBoundsPrintInFull)
+{
+    const Cli::Command wide { "test", "", "", "", { { "--id", Cli::Option::Kind::Int, "0", {}, "", 0, 4294967295.0 } } };
+    std::string error;
+    EXPECT_FALSE(run(wide, { "--id=-1" }, error));
+    EXPECT_EQ(error, "The value of --id must be from 0 to 4294967295, not -1");
+    EXPECT_NE(Cli::helpText(wide).find("From 0 to 4294967295."), std::string::npos);
+}
+
 TEST(AglowCli, ShortOptionsTogether)
 {
     std::string error;

@@ -58,6 +58,12 @@ private:
     const Option* find(std::string_view name) const;
 };
 
+/// The name that aglow runs under, for its usage and its messages: the last
+/// component of @p argv0, as "afterglow" when `afterglow icat` runs it.
+/// "aglow" until it is set, or when argv[0] names nothing.
+void setProgram(std::string_view argv0);
+const std::string& program();
+
 /// Reads argv after the command's name. nullopt with @p error set for a bad
 /// command line, or with @p help set for --help.
 std::optional<Parsed> parse(const Command& command, int argc, char** argv, std::string& error, bool& help);

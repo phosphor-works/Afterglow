@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "Cli.h"
+#include "Tty.h"
 
 #include <algorithm>
 #include <charconv>
@@ -102,11 +103,22 @@ double Parsed::real(std::string_view name) const { return std::strtod(value(name
 
 namespace {
 
-std::string formatNumber(double value)
+std::string& programName()
 {
-    std::ostringstream out;
-    out << value;
-    return out.str();
+    static std::string name = "aglow";
+    return name;
+}
+
+// A bound as the user types it: an Int bound in full (4294967295, not
+// 4.29497e+09), a Float one in its shortest form, with "." in any locale.
+std::string formatNumber(const Option& option, double value)
+{
+    if (option.kind == Option::Kind::Int) {
+        return std::to_string(std::llround(value));
+    }
+    char text[32];
+    const auto [end, ec] = std::to_chars(text, text + sizeof text, value);
+    return ec == std::errc() ? std::string(text, end) : std::string();
 }
 
 // Checks @p value against the kind and the range of @p option.
@@ -142,14 +154,25 @@ bool checkValue(const Option& option, const std::string& name, const std::string
         return true;
     }
     if (number < option.min || number > option.max) {
-        error = "The value of " + name + " must be from " + formatNumber(option.min) + " to " + formatNumber(option.max)
-            + ", not " + value;
+        error = "The value of " + name + " must be from " + formatNumber(option, option.min) + " to "
+            + formatNumber(option, option.max) + ", not " + value;
         return false;
     }
     return true;
 }
 
 } // namespace
+
+void setProgram(std::string_view argv0)
+{
+    const auto slash = argv0.rfind('/');
+    const auto base = slash == std::string_view::npos ? argv0 : argv0.substr(slash + 1);
+    // printable(): the name goes into the help and the messages, and a link
+    // or a script can give argv[0] any bytes.
+    programName() = base.empty() ? std::string("aglow") : printable(base);
+}
+
+const std::string& program() { return programName(); }
 
 std::optional<Parsed> parse(const Command& command, int argc, char** argv, std::string& error, bool& help)
 {
@@ -254,7 +277,7 @@ std::optional<Parsed> parse(const Command& command, int argc, char** argv, std::
 
 std::string helpText(const Command& command)
 {
-    std::string out = "Usage: aglow " + command.name + " [options] " + command.usage + "\n\n";
+    std::string out = "Usage: " + program() + " " + command.name + " [options] " + command.usage + "\n\n";
     out += wrap(command.summary, 0) + "\n";
     if (!command.help.empty()) {
         out += wrap(command.help, 0) + "\n";
@@ -281,7 +304,7 @@ std::string helpText(const Command& command)
         std::string text = option.help;
         const bool numeric = option.kind == Option::Kind::Int || option.kind == Option::Kind::Float;
         if (numeric && (option.min != Option {}.min || option.max != Option {}.max)) {
-            text += "\nFrom " + formatNumber(option.min) + " to " + formatNumber(option.max) + ".";
+            text += "\nFrom " + formatNumber(option, option.min) + " to " + formatNumber(option, option.max) + ".";
         }
         if (!option.fallback.empty() && option.kind != Option::Kind::Flag) {
             text += "\nDefault: " + option.fallback;

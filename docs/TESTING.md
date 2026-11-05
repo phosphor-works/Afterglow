@@ -33,9 +33,9 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 | --- | --- | --- |
 | `BUILD_TESTING` | `ON` | Builds the unit and renderer tests. Requires GTest. |
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test to CTest. |
-| `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
-| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core and the protocol library. Requires clang for C and C++. |
-| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Adds `aglow_version`, `afterglow_runs_aglow` and `aglow_clipboard_pty` to CTest. Adds `aglow_static` when `readelf` is installed and no sanitizer is on, and `aglow_icat_render` with `AFTERGLOW_BUILD_TOOLS`. |
+| `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite and `afterglow_transfer_kitty` to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
+| `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library and the image decoders of `aglow`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
+| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests report Skipped. |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 
@@ -52,7 +52,10 @@ They need this software:
 - An X11 or XWayland display, libX11 and `xprop`.
 - `dbus-run-session`.
 - ImageMagick `import`, for the tests that take screenshots.
-- `kitten`, for the compatibility twins of the drag-and-drop tests of the native window suite. Without it, those tests skip. The `aglow` twins do not need `kitten`.
+- `kitten`, for the `Kitty*` drag-and-drop tests of the native window suite. Without it, those tests skip.
+
+Each drag-and-drop test of the native window suite runs two times: one time with `kitten dnd` and one time with `aglow dnd`.
+The `Aglow*` tests use the `aglow` of the build. In a build without `aglow`, they skip.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.
 
@@ -76,7 +79,7 @@ It uses the Basic control style and generic Qt platform theme.
 
 | Option | Default | Function |
 | --- | --- | --- |
-| `--filter` | All tests | A GTest filter, for example `NativeWindow.KittyDragAndDropClient` |
+| `--filter` | All tests | A GTest filter, for example `NativeWindow.AglowDragAndDropClient` |
 | `--timeout` | 400 | Seconds for the whole run. The runner stops the suite at the limit and fails. |
 
 See [desktop integration](DESKTOP.md#native-acceptance-coverage) for coverage and limits.
@@ -141,18 +144,20 @@ Extra arguments go to esctest. With a filter, the script reports only unexpected
 The fuzz targets need clang for C and C++, and a separate build directory.
 The targets compile the terminal core, the protocol library, zlib-ng and xxHash with the sanitizers.
 Build only the fuzz targets in a fuzz build directory.
-The commands below turn off the tests and build the two targets by name.
+The commands below turn off the tests and build the three targets by name.
+A fuzz build does not build `aglow`, because a static program cannot use the sanitizer runtimes.
 
 | Target | Input |
 | --- | --- |
 | `afterglow_vtfuzz` | A byte stream to the terminal core, with control records between reads. |
 | `afterglow_protofuzz` | The protocol readers for remote input. The first byte selects the reader. |
+| `afterglow_imagefuzz` | An image file to the image decoders of `aglow`: the patched stb_image and the GIF reader of `aglow`. |
 
 Build the targets:
 
 ```sh
 cmake -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAFTERGLOW_BUILD_FUZZERS=ON -DBUILD_TESTING=OFF
-cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz
+cmake --build build-fuzz --target afterglow_vtfuzz afterglow_protofuzz afterglow_imagefuzz
 ```
 
 Run the terminal core target:
@@ -279,10 +284,10 @@ The compressed archive keeps all samples and environment metadata.
 
 ## Kitty desktop protocols
 
-Run the file-transfer and drag-and-drop service tests:
+Run the file-transfer and drag-and-drop tests of the service and of its clients:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndTree|AglowDrop|AglowDrag)\.'
+ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndTree|AglowDrop|AglowDrag|AglowOverwrite)\.'
 ```
 
 Run the tests of the protocol library, which has these formats and the other wire formats.
@@ -292,10 +297,19 @@ The names of these tests start with `Proto.`.
 ctest --test-dir build --output-on-failure -R '^Proto\.'
 ```
 
-The `Client.*` tests run the transfer client of the protocol library, which `aglow transfer` uses, against the service.
+Two test suites have the name `Client`:
+
+| Tests | Binary | What they run |
+| --- | --- | --- |
+| `Client.*` | `afterglow_transfer_tests` | The transfer client of the protocol library, which `aglow transfer` uses, against the service. The tests send and receive a tree with links and a delta. |
+| `Proto.Client.*` | `afterglow_proto_tests` | The parts of the transfer client, and whole sessions against a terminal that the test plays. |
+
 The `Proto.Hostile.*` tests run the client against a hostile terminal that the test plays.
 Its listings try to write through links, to replace files outside the destination, and to send more data than they announce.
-They send and receive a tree with links and a delta.
+
+CTest runs the relay tests below as `afterglow_transfer_kitten_relay` and `afterglow_transfer_aglow_relay`.
+`afterglow_transfer_kitten_relay` reports Skipped when `kitten` is not installed.
+With `AFTERGLOW_NATIVE_TESTS=ON`, CTest also runs the `--kitty` test as `afterglow_transfer_kitty`.
 
 Run interoperability tests with the installed `kitten` client:
 
@@ -316,7 +330,8 @@ python3 afterglow/tests/kitty_transfer_interop.py --relay build/afterglow/tests/
 With `--kitty`, the script runs `aglow` against Kitty itself.
 Each transfer is a Kitty window in a headless nested KWin on a private session bus.
 Kitty and the client share a password, so Kitty shows no permission prompt.
-Without Kitty or `kwin_wayland`, the script prints a message and exits with code 77.
+The script gives Kitty, KWin and the bus a temporary home directory.
+Without Kitty, `kwin_wayland`, `dbus-run-session` or `XDG_RUNTIME_DIR`, the script prints a message and exits with code 77.
 
 ```sh
 python3 afterglow/tests/kitty_transfer_interop.py --kitty --aglow build/afterglow/aglow
@@ -326,14 +341,35 @@ python3 afterglow/tests/kitty_transfer_interop.py --kitty --aglow build/afterglo
 The service reports the drop as remote, so `aglow dnd` reads the tree through directory handles.
 `AglowDrop.WithoutAMachineIdTheFilesAreReadThroughTheTerminal` hides `/etc/machine-id` from `aglow dnd` with `unshare`.
 Without `unshare` and user namespaces, it skips.
+`AglowDrop.ADirectoryThatHoldsTheDropDirectoryIsRefused` drops a directory that holds the drop directory, and checks that `aglow dnd` writes nothing.
 `AglowDrag.ACanceledMoveKeepsTheFiles` plays the terminal for a remote drag, and checks that only a finished move deletes the files.
+The `AglowOverwrite.*` tests answer the question of `--confirm-drop-overwrite`, and let it expire.
 
-The native window suite uses `aglow dnd` for text drags and remote directory drags.
-The same tests run with `kitten dnd` as compatibility tests. Without `kitten`, those tests skip.
+The native window suite uses `aglow dnd` and `kitten dnd` for text drags and remote directory drags.
+See [native test dependencies](#native-test-dependencies).
 
-The `aglow_icat_render` test draws the output of `aglow icat` with `afterglow_renderpng`, so it needs a Vulkan driver.
-It checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
-It also checks that an image larger than a terminal takes is refused before it is decoded.
-The `aglow_clipboard_pty` test plays a terminal for `aglow clipboard` in a pseudo-terminal.
-The `aglow_static` test checks that `readelf -d` lists no shared library for `aglow`.
-Without `readelf`, the configuration prints a message and leaves the test out.
+## aglow tests
+
+A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
+
+| Test | Function | Requirement |
+| --- | --- | --- |
+| `aglow_version` | Checks the output of `aglow --version` | None |
+| `afterglow_runs_aglow`, `afterglow_passes_aglow_arguments`, `afterglow_passes_aglow_status` | Run `aglow` through `afterglow icat` and `afterglow transfer`, and check its usage text and exit status | None |
+| `afterglow_without_aglow` | Runs a copy of `afterglow` that has no `aglow` next to it, and checks the error and status 127 | None |
+| `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
+| `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
+| `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
+| `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
+| `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
+| `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3 |
+| `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
+| `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
+
+Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
+The Python test scripts need Python 3.9 or later.
+Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
+
+`aglow_icat_render` checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
+It also gives `aglow icat` a PNG header of 12,000 × 12,000 pixels.
+The test checks that `aglow icat` exits with status 1, names the size, and sends no graphics command.

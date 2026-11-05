@@ -2,49 +2,69 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Zsh completion for aglow: its commands, their options and the values of the options.
+# afterglow transfer, dnd, icat and clipboard use it too (_afterglow).
+
+# The password of -p: a file only when the word starts with ., / or ~, as aglow
+# reads it. Any other word is the password itself.
+_aglow_password() {
+    [[ $PREFIX == [./~]* ]] && _files
+}
 
 _aglow() {
     local -a commands
     commands=(
-        'transfer:Copy files to and from the computer of the terminal'
-        'dnd:Drag files and data out of the terminal, and drop them in'
-        'icat:Show images in the terminal'
-        'clipboard:Read and write the clipboard, with any MIME type'
+        'transfer:copy files to and from the computer of the terminal'
+        'dnd:drag files and data out of the terminal, and drop them in'
+        'icat:show images in the terminal'
+        'clipboard:read and write the clipboard, with any MIME type'
+        'help:show the help, or the help of a command'
+        'version:show the version'
     )
+    local ret=1
     if (( CURRENT == 2 )); then
-        _describe -t commands 'aglow command' commands
-        _arguments '(- :)--help[show the help]' '(- :)--version[show the version]'
-        return
+        if [[ $PREFIX == -* ]]; then
+            _arguments '(- :)'{-h,--help}'[show the help]' '(- :)'{-v,--version}'[show the version]' && ret=0
+        else
+            _describe -t commands 'aglow command' commands && ret=0
+        fi
+        return ret
     fi
     local command=$words[2]
     shift words
     (( CURRENT-- ))
+    # -s: flags together (-cx). -S: "--" ends the options. --help only alone.
+    local -a help
+    help=('(- *)'{-h,--help}'[show the help]')
     case $command in
+        help)
+            commands=(${commands[1,4]})
+            (( CURRENT == 2 )) && _describe -t commands 'aglow command' commands && ret=0 ;;
         transfer)
-            _arguments \
-                '(-d --direction)'{-d,--direction=}'[send or receive files]:direction:(upload download send receive)' \
-                '(-m --mode)'{-m,--mode=}'[how to read the arguments]:mode:(normal mirror)' \
+            _arguments -s -S \
+                '(-d --direction)'{-d+,--direction=}'[send or receive files]:direction:(upload download send receive)' \
+                '(-m --mode)'{-m+,--mode=}'[how to read the arguments]:mode:(normal mirror)' \
                 '--compress=[compress the data]:compress:(auto never always)' \
-                '(-p --permissions-bypass)'{-p,--permissions-bypass=}'[password that skips the prompt]:password:_files' \
+                '(-p --permissions-bypass)'{-p+,--permissions-bypass=}'[password that skips the prompt]:password:_aglow_password' \
                 '(-c --confirm-paths)'{-c,--confirm-paths}'[confirm where each file goes]' \
                 '(-x --transmit-deltas)'{-x,--transmit-deltas}'[send only the changes]' \
-                '--help[show the help]' \
-                '*:file:_files' ;;
+                $help \
+                '*:file:_files' && ret=0 ;;
         dnd)
-            _arguments \
+            _arguments -s -S \
                 '*--drag=[offer a file as a MIME type]:MIME\:PATH:' \
                 '*--drop=[write a dropped MIME type to a file]:MIME\:PATH:' \
                 '--drop-dest=[directory for dropped files]:directory:_files -/' \
                 '--copy-mode=[how local files are copied]:mode:(auto independent)' \
                 '--confirm-drop-overwrite[ask before replacing files]' \
+                '--confirm-drop-timeout=[seconds that the question waits]:seconds:' \
                 '--drop-anywhere=[accept drops anywhere]:action:(disallowed copy move)' \
                 '--drag-thumbnail=[image under the pointer]:image:_files' \
                 '--drag-thumbnail-size=[largest side of the drag image]:pixels:' \
-                '--exit-on=[events to exit on]:events:(drag-finish drop-finish esc-key)' \
-                '--help[show the help]' \
-                '*:file:_files' ;;
+                '--exit-on=[events to exit on]:events:_sequence compadd - drag-finish drop-finish esc-key' \
+                $help \
+                '*:file:_files' && ret=0 ;;
         icat)
-            _arguments \
+            _arguments -s -S \
                 '--align=[horizontal alignment]:align:(center left right)' \
                 '--place=[where to show the image]:WIDTHxHEIGHT@LEFTxTOP:' \
                 '--scale-up[scale small images up]' \
@@ -59,28 +79,31 @@ _aglow() {
                 '--use-window-size=[window size]:COLUMNS,ROWS,WIDTH,HEIGHT:' \
                 '--print-window-size[print the window size in pixels]' \
                 '--stdin=[read standard input]:stdin:(detect yes no)' \
-                '(-z --z-index)'{-z,--z-index=}'[z-index of the image]:z-index:' \
-                '(-l --loop)'{-l,--loop=}'[times an animation plays]:count:' \
+                '(-z --z-index)'{-z+,--z-index=}'[z-index of the image]:z-index:' \
+                '(-l --loop)'{-l+,--loop=}'[times an animation plays]:count:' \
                 '--hold[wait for a key press]' \
                 '--unicode-placeholder[show images through placeholder characters]' \
                 '--passthrough=[pass through tmux]:passthrough:(detect tmux none)' \
                 '--image-id=[graphics protocol id]:id:' \
+                '--engine=[engine that decodes images]:engine:(auto builtin)' \
+                '--silent[not used, for compatibility]' \
                 '(-n --no-trailing-newline)'{-n,--no-trailing-newline}'[leave the cursor after the image]' \
-                '--help[show the help]' \
-                '*:image:_files' ;;
+                $help \
+                '*:image:_files' && ret=0 ;;
         clipboard)
-            _arguments \
+            _arguments -s -S \
                 '(-g --get-clipboard)'{-g,--get-clipboard}'[write the clipboard out]' \
                 '(-p --use-primary)'{-p,--use-primary}'[use the primary selection]' \
-                '*'{-m,--mime=}'[MIME type of a file]:MIME type:' \
-                '*'{-a,--alias=}'[two MIME types for the same data]:alias:' \
+                '*'{-m+,--mime=}'[MIME type of a file]:MIME type:' \
+                '*'{-a+,--alias=}'[two MIME types for the same data]:alias:' \
                 '--wait-for-completion[wait until the terminal has the data]' \
                 '--password=[password for the clipboard]:password:' \
                 '--human-name=[name shown with the permission prompt]:name:' \
                 '--detection-timeout=[seconds to wait]:seconds:' \
-                '--help[show the help]' \
-                '*:file:_files' ;;
+                $help \
+                '*:file:_files' && ret=0 ;;
     esac
+    return ret
 }
 
 _aglow "$@"

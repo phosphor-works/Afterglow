@@ -8,6 +8,7 @@
 #include "Cli.h"
 #include "Commands.h"
 #include "Image.h"
+#include "Mime.h"
 #include "Tty.h"
 
 #include <AfterglowProto/Base64.h>
@@ -185,17 +186,6 @@ std::string errorText(int error) { return std::strerror(error); }
 int metaInt(const DndMeta& meta, const char* key)
 {
     return int(std::clamp<std::int64_t>(metaNumber(meta, key), INT_MIN, INT_MAX));
-}
-
-std::string extensionFor(std::string_view mime)
-{
-    static const std::map<std::string, std::string, std::less<>> extensions {
-        { "text/plain", ".txt" }, { "text/html", ".html" }, { "image/png", ".png" }, { "image/jpeg", ".jpg" },
-        { "image/gif", ".gif" }, { "image/webp", ".webp" }, { "image/svg+xml", ".svg" }, { "application/pdf", ".pdf" },
-        { "application/json", ".json" },
-    };
-    const auto it = extensions.find(mime);
-    return it == extensions.end() ? std::string() : it->second;
 }
 
 // The shared state of one drag source: data in memory is shared by every
@@ -921,7 +911,7 @@ void Dnd::render()
         const auto seconds = std::max(0LL, (m_drop.deadline - nowMs() + 999) / 1000);
         paragraph("Some of the dropped files will overwrite existing files, listed below. Press Enter to drop anyway "
                   "or Esc to cancel the drop. The drop is canceled in "
-                      + std::to_string(seconds) + " seconds.",
+                      + std::to_string(seconds) + (seconds == 1 ? " second." : " seconds."),
                   { { "Enter", "\x1b[32m" }, { "Esc", "\x1b[31m" } });
         out += "\r\n";
         ++y;
@@ -1713,7 +1703,7 @@ void Dnd::allMimeDataDropped()
         std::string name;
         struct stat st { };
         do {
-            name = "data-uri-" + std::to_string(++m_dataCounter) + extensionFor(uri.mime);
+            name = "data-uri-" + std::to_string(++m_dataCounter) + Mime::extensionOf(uri.mime);
         } while (names.contains(name) || ::lstat((dropDir + "/" + name).c_str(), &st) == 0);
         names.insert(name);
         const auto path = m_drop.staging + "/" + name;

@@ -3,10 +3,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise OSC 5113 between a client and a terminal, with the same checks in each mode.
 
-  --relay R                  kitten transfer against Afterglow's service (R is afterglow_transfer_tests)
+  --relay R                  kitten transfer against Afterglow's service (R is afterglow_transfer_tests).
+                             Exits with 77 (skipped) when kitten is not installed.
   --relay R --aglow A        aglow transfer against Afterglow's service
-  --kitty --aglow A          aglow transfer against kitty, in a headless nested KWin with a private bus.
-                             Exits with 77 (skipped) when kitty or kwin_wayland is not installed.
+  --kitty --aglow A          aglow transfer against Kitty, in a headless nested KWin with a private bus.
+                             Exits with 77 (skipped) when kitty, kwin_wayland or dbus-run-session is not
+                             installed, or XDG_RUNTIME_DIR is not set.
+
+The relay modes check in what the client writes that the recursive transfers use zlib and the delta transfers
+rsync. In --kitty mode the bytes go between Kitty and aglow only, so that check is left out. Kitty, KWin and the
+private bus get a home and XDG directories of their own, so that they never read or write the user's.
 """
 import argparse
 import base64
@@ -26,6 +32,11 @@ import subprocess
 import tempfile
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nested_desktop import KWINRC, exit_on_sigterm, run_on_private_bus  # noqa: E402
+
+PACKET = re.compile(rb"\x1b\]5113;(.*?)(?:\x1b\\|\x07)", re.S)
+
 
 def check(condition, *detail):
     """Raises AssertionError when condition is false. Not assert: python -O must
@@ -34,63 +45,93 @@ def check(condition, *detail):
         raise AssertionError(*detail)
 
 
+def read_pty(fd):
+    """What the pseudo-terminal FD holds, b"" once its other side has closed, None when nothing is there yet."""
+    try:
+        return os.read(fd, 65536)
+    except BlockingIOError:
+        return None
+    except OSError as error:
+        if error.errno == errno.EIO:
+            return b""
+        raise
+
+
 def transfer(relay, arguments, client=("kitten", "transfer")):
+    """Runs CLIENT ARGUMENTS in a pseudo-terminal whose OSC 5113 packets go to the service in RELAY, and its
+    replies back. Returns what the client wrote. Both directions are queued, and written only when the other side
+    can take them: a blocking write could wait for a client that waits for this script to read."""
     helper = subprocess.Popen([relay, "--protocol-relay"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     pid, master = pty.fork()
     if pid == 0:
-        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 1200, 800))
-        os.environ["TERM"] = "xterm-kitty"
-        os.execvp(client[0], [*client, *arguments])
+        # The child must never return into this script, even when exec fails.
+        try:
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 1200, 800))
+            os.environ["TERM"] = "xterm-kitty"
+            os.execvp(client[0], [*client, *arguments])
+        finally:
+            os._exit(127)
+    os.set_blocking(master, False)
+    os.set_blocking(helper.stdin.fileno(), False)
     buffer = b""
     transcript = b""
-    status = None
+    to_client = bytearray()
+    to_relay = bytearray()
+    client_open = True
     reaped = False
+
+    def take_packets():
+        nonlocal buffer
+        end = 0
+        for match in PACKET.finditer(buffer):
+            to_relay.extend(base64.b64encode(match[1]) + b"\n")
+            end = match.end()
+        buffer = buffer[end:]
+
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            ready, _, _ = select.select([master, helper.stdout], [], [], 0.05)
-            for source in ready:
-                try:
-                    data = os.read(source if source == master else source.fileno(), 65536)
-                except OSError as error:
-                    if error.errno == errno.EIO:
-                        data = b""
-                    else:
-                        raise
-                if source != master:
-                    if data:
-                        os.write(master, data)
-                    continue
-                transcript += data
-                buffer += data
-                for match in re.finditer(rb"\x1b\]5113;(.*?)(?:\x1b\\|\x07)", buffer, re.S):
-                    helper.stdin.write(base64.b64encode(match[1]) + b"\n")
-                    helper.stdin.flush()
-                complete = list(re.finditer(rb"\x1b\]5113;.*?(?:\x1b\\|\x07)", buffer, re.S))
-                if complete:
-                    buffer = buffer[complete[-1].end():]
+            readers = [helper.stdout] + ([master] if client_open else [])
+            writers = ([master] if to_client and client_open else []) + ([helper.stdin] if to_relay else [])
+            readable, writable, _ = select.select(readers, writers, [], 0.05)
+            if master in readable:
+                data = read_pty(master)
+                if data == b"":
+                    client_open = False
+                elif data:
+                    transcript += data
+                    buffer += data
+                    take_packets()
+            if helper.stdout in readable:
+                data = os.read(helper.stdout.fileno(), 65536)
+                if not data:
+                    raise AssertionError(f"The relay exited with {helper.wait()} before the client ended:\n"
+                                         + transcript[-4000:].decode(errors="replace"))
+                to_client.extend(data)
+            for target, fd, queue in ((master, master, to_client), (helper.stdin, helper.stdin.fileno(), to_relay)):
+                if target in writable:
+                    try:
+                        del queue[:os.write(fd, queue)]
+                    except BlockingIOError:
+                        pass
             found, status = os.waitpid(pid, os.WNOHANG)
             if found:
                 reaped = True
                 check(os.waitstatus_to_exitcode(status) == 0, transcript[-4000:].decode(errors="replace"))
                 # The last packets (finish) can arrive after the last read. Read to EOF.
-                while True:
-                    try:
-                        data = os.read(master, 65536)
-                    except OSError as error:
-                        if error.errno != errno.EIO:
-                            raise
-                        data = b""
+                while client_open:
+                    data = read_pty(master)
                     if not data:
                         break
                     transcript += data
                     buffer += data
-                for match in re.finditer(rb"\x1b\]5113;(.*?)(?:\x1b\\|\x07)", buffer, re.S):
-                    helper.stdin.write(base64.b64encode(match[1]) + b"\n")
+                take_packets()
                 # EOF ends the relay after it handles every packet. Drain its replies meanwhile.
-                helper.communicate(timeout=10)
-                return
-        raise AssertionError("Kitten transfer timed out:\n" + transcript[-6000:].decode(errors="replace"))
+                os.set_blocking(helper.stdin.fileno(), True)
+                helper.communicate(input=bytes(to_relay), timeout=10)
+                check(helper.returncode == 0, f"the relay exited with {helper.returncode}")
+                return transcript
+        raise AssertionError("The client timed out:\n" + transcript[-6000:].decode(errors="replace"))
     finally:
         if not reaped:
             try:
@@ -113,9 +154,6 @@ class Kitty:
     window that runs aglow and closes when it ends."""
 
     def __init__(self, root):
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from nested_desktop import KWINRC  # one KWin configuration for every runner
-
         self.root = root
         config = root / "config"
         config.mkdir()
@@ -124,7 +162,11 @@ class Kitty:
         self.env = dict(os.environ, XDG_CONFIG_HOME=str(config), WAYLAND_DISPLAY="", QT_QPA_PLATFORM="offscreen")
         for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID", "KITTY_WINDOW_ID", "KITTY_PUBLIC_KEY", "DISPLAY"):
             self.env.pop(name, None)
-        self.log = (root / "kwin.log").open("w")
+        self.log = None
+        self.kwin = None
+
+    def start(self):
+        self.log = (self.root / "kwin.log").open("w")
         self.kwin = subprocess.Popen(
             ["kwin_wayland", "--virtual", "--socket", self.socket, "--width", "1200", "--height", "800",
              "--no-lockscreen", "--no-global-shortcuts", "--no-kactivities"],
@@ -137,13 +179,15 @@ class Kitty:
         self.env.update(WAYLAND_DISPLAY=self.socket)
 
     def close(self):
-        self.kwin.terminate()
-        try:
-            self.kwin.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.kwin.kill()
-            self.kwin.wait()
-        self.log.close()
+        if self.kwin:
+            self.kwin.terminate()
+            try:
+                self.kwin.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.kwin.kill()
+                self.kwin.wait()
+        if self.log:
+            self.log.close()
 
     def transfer(self, aglow, arguments):
         status = self.root / "status"
@@ -155,20 +199,24 @@ class Kitty:
                    "sh", "-c", 'status=$1 errors=$2; shift 2; "$@" 2>"$errors"; echo $? >"$status"',
                    "sh", str(status), str(errors), aglow, "transfer", "--permissions-bypass=" + BYPASS, *arguments]
         with (self.root / "kitty.log").open("a") as log:
-            terminal = subprocess.Popen(command, env=self.env, stdout=log, stderr=subprocess.STDOUT, cwd=self.root)
+            # A group of its own, so that a stall ends kitty, its shell and aglow together.
+            terminal = subprocess.Popen(command, env=self.env, stdout=log, stderr=subprocess.STDOUT, cwd=self.root,
+                                        start_new_session=True)
             try:
                 terminal.wait(timeout=60)
             except subprocess.TimeoutExpired:
-                terminal.kill()
+                os.killpg(terminal.pid, signal.SIGKILL)
                 terminal.wait()
                 raise AssertionError("kitty did not finish the transfer in 60 s:\n"
                                      + (self.root / "kitty.log").read_text()[-3000:])
         check(status.exists(), "kitty ran no transfer:\n" + (self.root / "kitty.log").read_text()[-3000:])
         check(status.read_text().strip() == "0", "aglow transfer failed:\n" + errors.read_text()[-3000:])
+        return None
 
 
 def run_checks(run, client_bugs=False, allow_empty_bug=False):
-    """Runs every transfer of the suite through run(arguments)."""
+    """Runs every transfer of the suite through run(arguments), which returns what the client wrote, or None when
+    the script cannot see it."""
     with tempfile.TemporaryDirectory(prefix="afterglow-kitty-") as temporary:
         root = Path(temporary)
         source = root / "source"
@@ -186,7 +234,8 @@ def run_checks(run, client_bugs=False, allow_empty_bug=False):
         for direction in ("send", "receive"):
             destination = root / direction
             destination.mkdir()
-            run(["--direction=" + direction, str(source), str(destination) + "/"])
+            written = run(["--direction=" + direction, str(source), str(destination) + "/"])
+            check(written is None or b"zip=zlib" in written, "the recursive transfer is not compressed")
             copied = destination / "source"
             check((copied / "file").read_bytes() == contents)
             check((copied / "symlink").is_symlink())
@@ -208,7 +257,8 @@ def run_checks(run, client_bugs=False, allow_empty_bug=False):
             destination.write_bytes(contents)
             changed = root / "changed"
             changed.write_bytes(b"inserted prefix\n" + contents + b"suffix\n")
-            run(["--direction=" + direction, "--transmit-deltas", str(changed), str(destination)])
+            written = run(["--direction=" + direction, "--transmit-deltas", str(changed), str(destination)])
+            check(written is None or b"tt=rsync" in written, "the delta transfer sends no rsync request")
             check(destination.read_bytes() == changed.read_bytes())
             print(direction + ": delta transfer passed", flush=True)
 
@@ -228,21 +278,36 @@ def main():
         if missing:
             print("Skipped: " + ", ".join(missing) + " not installed.", flush=True)
             sys.exit(77)
+        if not os.environ.get("XDG_RUNTIME_DIR"):
+            print("Skipped: XDG_RUNTIME_DIR is not set, and KWin makes its socket there.", flush=True)
+            sys.exit(77)
         aglow = str(Path(args.aglow).resolve())
         if not args.private_bus:
-            # KWin and kitty must not join the user's session bus.
-            # Four transfers of at most 60 s each, and the start of KWin.
-            sys.exit(subprocess.call(["dbus-run-session", "--", sys.executable, __file__, *sys.argv[1:],
-                                      "--private-bus"], timeout=600))
+            # KWin, kitty and the private bus must not join the user's session bus, reach the user's compositor
+            # or use the user's home: a service that the bus starts inherits this environment.
+            with tempfile.TemporaryDirectory(prefix="afterglow-kitty-home-") as home:
+                for name, sub in (("HOME", ""), ("XDG_CONFIG_HOME", ".config"), ("XDG_CACHE_HOME", ".cache"),
+                                  ("XDG_DATA_HOME", ".local/share"), ("XDG_STATE_HOME", ".local/state")):
+                    (Path(home) / sub).mkdir(parents=True, exist_ok=True)
+                    os.environ[name] = str(Path(home) / sub)
+                for name in ("WAYLAND_DISPLAY", "DISPLAY"):
+                    os.environ.pop(name, None)
+                # Four transfers of at most 60 s each, and the start of KWin.
+                sys.exit(run_on_private_bus([sys.executable, __file__, *sys.argv[1:], "--private-bus"], 600))
+        exit_on_sigterm()
         with tempfile.TemporaryDirectory(prefix="afterglow-kitty-terminal-") as temporary:
             kitty = Kitty(Path(temporary))
             try:
+                kitty.start()
                 run_checks(lambda arguments: kitty.transfer(aglow, arguments))
             finally:
                 kitty.close()
         return
     if not args.relay:
         parser.error("--relay is required without --kitty")
+    if not args.aglow and not shutil.which("kitten"):
+        print("Skipped: kitten is not installed.", flush=True)
+        sys.exit(77)
     relay = str(Path(args.relay).resolve())
     if args.aglow:
         client = (str(Path(args.aglow).resolve()), "transfer")
