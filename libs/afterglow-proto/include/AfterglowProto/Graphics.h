@@ -56,22 +56,38 @@ struct GraphicsCommand
     bool hasId = false;
     bool hasNumber = false;
 
-    /// Reads the keys before the ';'. Unknown keys and bad values are skipped.
+    /// Reads the keys before the ';'. Unknown keys, and numeric values that
+    /// do not start with a number, are skipped. A number is read up to its
+    /// first other character and clamped to its field: a negative value of
+    /// an unsigned field reads as 0. A number outside the range of a 64-bit
+    /// integer is skipped. a, t, d and o take the first character.
     static GraphicsCommand parse(std::string_view keys);
-    /// The keys that differ from the defaults, and those the command carried.
-    /// x and y are written from ux and uy when those hold a value that x and y cannot.
+    /// True when each of a, t, d and o that keys() writes is an ASCII
+    /// letter. Any other character could end the command, or the keys.
+    bool flagsAreLetters() const;
+    /// The keys that differ from the defaults, and a, i and I when the
+    /// command carried them (hasAction, hasId, hasNumber). x is written from
+    /// ux when ux is past INT_MAX or x is 0, and y from uy the same way; Y
+    /// from Yi when Y is 0. Empty when flagsAreLetters() is false: a command
+    /// without the flag would mean something else.
     std::string keys() const;
 
     bool operator==(const GraphicsCommand&) const = default;
 };
 
+// The client side of the protocol: what a program writes to the terminal,
+// and how it reads the replies. The tests use it to drive the terminal, and
+// clients of the library use it to talk to one.
+
 /// The complete command with @p payload (raw bytes, base64-encoded here).
-/// A payload over one chunk goes in chunks of GraphicsChunk base64 bytes:
-/// the first carries the keys and m=1, the others only m (and q, when set),
-/// and the last m=0.
+/// A payload of at most one chunk goes in one command, with m left out. A
+/// longer one goes in chunks of GraphicsChunk base64 bytes: the first carries
+/// the keys and m=1, the others only m (and q, when set), and the last m=0.
+/// Empty when @p command's flags are not letters (flagsAreLetters()).
 std::string writeGraphics(const GraphicsCommand& command, std::string_view payload);
 
-/// A terminal's answer to a command that names an image.
+/// A terminal's answer to a command that names an image. The terminal
+/// writes it; a client reads it.
 struct GraphicsReply
 {
     std::uint32_t id = 0;
@@ -88,7 +104,9 @@ struct GraphicsReply
     bool operator==(const GraphicsReply&) const = default;
 };
 
-/// Decompresses o=z data, which may not grow past @p limit bytes.
+/// Decompresses o=z data onto the end of @p out, as zlibInflate() does: the
+/// data appended may not pass @p limit bytes, and on failure @p out is left
+/// as it was.
 bool graphicsInflate(std::string_view compressed, std::string& out, std::size_t limit);
 
 } // namespace AfterglowProto

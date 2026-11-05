@@ -234,6 +234,9 @@ An empty setting always requires permission.
 | Receive listing size | 8 MiB encoded, less when other output is queued | The session gets `EFBIG`. |
 | Requested paths waiting for permission per pane | 4 MiB | The session gets `ENOMEM`. |
 | Delta buffers per pane | 64 MiB | The file gets `ENOMEM`. The signature of a delta that waits to be sent counts until it is sent. |
+| One delta signature or one literal block of a delta | 16 MiB | The file fails with an error status. |
+| Block size of a delta signature from the program | 1 MiB, as in Kitty | The file gets `EINVAL`. |
+| Bytes that a delta upload writes when the program gives no file size | `Terminal.fileTransferDeltaLimit`, 64 GiB | The file gets `EFBIG`. |
 
 A limit never authorizes more filesystem access.
 File I/O, compression and delta calculation run outside the GUI thread.
@@ -266,8 +269,19 @@ A program must enable the protocol before it receives drag events.
 A source offer requires a physical left-button drag gesture.
 Afterglow rejects file reads before a drop occurs.
 It also rejects file reads for a drag that starts in any Afterglow window.
-Desktop MIME type names that are not printable ASCII are not sent to the program.
+Afterglow sends a desktop MIME type name to the program only when the name obeys these rules:
+
+- It contains a `/`.
+- It has 255 bytes or fewer.
+- It contains only printable ASCII characters. A space is not permitted.
+
 Programs without protocol support retain the quoted-path paste behavior for local file drops.
+
+The desktop gets the program's answer to a drag only when the pointer enters the pane or moves.
+When a drag shows new MIME types to the program, Afterglow waits for the answer.
+The `Terminal.dragAnswerWait` setting gives the longest wait in milliseconds. The default is 100.
+The window does not draw while it waits.
+If the answer comes later, the drop target accepts the drag after the next pointer motion.
 
 A drag source is local only when its machine id matches this computer.
 Afterglow copies the files of every other source, including a source without a machine id, into a temporary directory.
@@ -297,6 +311,14 @@ A `..` component is accepted only after a real directory, not after a link.
 | Thumbnail count | 16 |
 | Decoded thumbnail data per drag | 64 MiB |
 | Thumbnail dimensions | 4,096 × 4,096 pixels |
+| Payload per packet | 4,096 bytes |
+| Command size | 8,192 bytes |
+| Chunked control message, such as a MIME list | 128 KiB |
+| Machine id | 128 bytes |
 
 An exceeded limit cancels the operation with a protocol error.
+A packet or a chunked message over its limit gets `EFBIG`. Afterglow drops the remaining chunks of that message.
+A command over 8,192 bytes also ends the protocol. The program must enable it again.
+An oversized packet or command gets no reply when the program accepts no drops, offers no drags and sends no chunked message.
+Thus Afterglow writes no errors to a program that prints a binary file.
 A stalled request expires after 30 seconds. A stalled remote source preparation expires after 120 seconds.

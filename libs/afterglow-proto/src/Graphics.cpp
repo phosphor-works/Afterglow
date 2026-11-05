@@ -68,8 +68,20 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
     return cmd;
 }
 
+bool GraphicsCommand::flagsAreLetters() const
+{
+    auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+    return (!(hasAction || action != 't') || letter(action)) && (medium == 'd' || letter(medium))
+        && (del == 'a' || letter(del)) && (!compression || letter(compression));
+}
+
 std::string GraphicsCommand::keys() const
 {
+    // Leaving the flag out would change what the command does: d=, for one,
+    // would delete every image.
+    if (!flagsAreLetters()) {
+        return {};
+    }
     std::string out;
     auto add = [&out](char key, auto value) {
         if (!out.empty()) {
@@ -105,7 +117,9 @@ std::string GraphicsCommand::keys() const
     if (w) add('w', w);
     if (h) add('h', h);
     if (X) add('X', X);
+    // Yi is Y read as an int (a=c's destination row): it stands in when Y is unset.
     if (Y) add('Y', Y);
+    else if (Yi) add('Y', Yi);
     if (c) add('c', c);
     if (r) add('r', r);
     if (C) add('C', C);
@@ -120,10 +134,17 @@ std::string GraphicsCommand::keys() const
 
 std::string writeGraphics(const GraphicsCommand& command, std::string_view payload)
 {
+    if (!command.flagsAreLetters()) {
+        return {};
+    }
     const std::string encoded = base64Encode(payload);
     std::string out = "\x1b_G";
     if (encoded.size() <= GraphicsChunk) {
-        out += command.keys();
+        // One command is the whole transmission: an m=1 from the caller
+        // would leave the terminal waiting for chunks that never come.
+        GraphicsCommand whole = command;
+        whole.more = 0;
+        out += whole.keys();
         if (!encoded.empty()) {
             out += ';';
             out += encoded;
@@ -168,15 +189,18 @@ std::optional<GraphicsReply> GraphicsReply::parse(std::string_view payload)
 std::string GraphicsReply::write() const
 {
     std::string out = "\x1b_G";
-    if (id) {
-        out += "i=" + std::to_string(id);
-    }
-    if (number) {
-        out += (id ? ",I=" : "I=") + std::to_string(number);
-    }
-    if (placement) {
-        out += ",p=" + std::to_string(placement);
-    }
+    bool first = true;
+    auto add = [&](std::string_view key, std::uint32_t value) {
+        if (!first) {
+            out += ',';
+        }
+        first = false;
+        out += key;
+        out += std::to_string(value);
+    };
+    if (id) add("i=", id);
+    if (number) add("I=", number);
+    if (placement) add("p=", placement);
     out += ';';
     out += status;
     out += "\x1b\\";

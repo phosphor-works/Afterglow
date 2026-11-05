@@ -46,8 +46,13 @@ set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
 
 include(cmake/AfterglowPhosphor.cmake)
+# The pins of zlib-ng and xxHash (libs/afterglow-proto), after the Phosphor
+# module so that a CPM which that module loaded is used again. Like it, this
+# module is included at the top scope: CPM keeps its state in the variables of
+# the scope that loads it.
+include(cmake/AfterglowDependencies.cmake)
 
-add_subdirectory(libs/afterglow-proto)  # protocol formats shared with clients: transfer, drag and drop, images, clipboard (no Qt)
+add_subdirectory(libs/afterglow-proto)  # protocol formats, terminal and client side: transfer, drag and drop, images, clipboard (no Qt)
 add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, screen, Unicode, input encoding (no Qt)
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
@@ -59,7 +64,7 @@ if(AFTERGLOW_BUILD_TOOLS)
     add_subdirectory(tools/render)
     add_subdirectory(tools/conformance)
 endif()
-option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer target for the terminal core (clang)" OFF)
+option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core and the protocol library (clang for C and C++)" OFF)
 if(AFTERGLOW_BUILD_FUZZERS)
     add_subdirectory(tools/fuzz)
 endif()

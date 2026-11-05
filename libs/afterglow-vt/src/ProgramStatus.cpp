@@ -16,6 +16,9 @@ namespace AfterglowVt {
 
 namespace {
 
+using AfterglowProto::Base64Check;
+using AfterglowProto::base64Decode;
+
 // Limits from the specification. A report over any of them is discarded.
 constexpr std::size_t MaxSequence = 4096; // the whole OSC, introducer and terminator included
 constexpr std::size_t Introducer = 7; // ESC ] 7 5 0 1 ;
@@ -165,14 +168,14 @@ ProgramStatus::Result ProgramStatus::apply(std::string_view body, std::size_t te
         r.app = std::string(*app);
     }
     if (title) {
-        const auto decoded = title->size() <= MaxTitleEncoded ? AfterglowProto::base64Decode(*title, AfterglowProto::Base64Check::PaddingOptional) : std::nullopt;
+        const auto decoded = title->size() <= MaxTitleEncoded ? base64Decode(*title, Base64Check::PaddingOptional) : std::nullopt;
         if (!decoded || decoded->size() > MaxTitleDecoded || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }
         r.title = *decoded;
     }
     if (msg) {
-        const auto decoded = msg->size() <= MaxMsgEncoded ? AfterglowProto::base64Decode(*msg, AfterglowProto::Base64Check::PaddingOptional) : std::nullopt;
+        const auto decoded = msg->size() <= MaxMsgEncoded ? base64Decode(*msg, Base64Check::PaddingOptional) : std::nullopt;
         if (!decoded || decoded->size() > MaxMsgDecoded || !detail::isCleanText(*decoded)) {
             return Result::Ignored;
         }

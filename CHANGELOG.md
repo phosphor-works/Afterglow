@@ -74,6 +74,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `Terminal.pasteReadTimeout` sets how long a paste event lets a program read the clipboard.
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
 - Kitty drag and drop, including remote directory data and thumbnails.
+- `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
 - Local file drops, quoted for the shell and sent as bracketed paste.
 
 ### Windows, tabs and panes

@@ -4,8 +4,9 @@
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Sha256.h>
 
+#include "Fields.h"
+
 #include <algorithm>
-#include <climits>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -30,24 +31,22 @@ std::string_view trimmed(std::string_view s)
     return s;
 }
 
-/// Calls @p f with each ':'-separated field of @p meta.
-template<typename F>
-void eachField(std::string_view meta, F f)
-{
-    std::size_t pos = 0;
-    while (true) {
-        const auto colon = meta.find(':', pos);
-        f(meta.substr(pos, colon == std::string_view::npos ? colon : colon - pos));
-        if (colon == std::string_view::npos) {
-            return;
-        }
-        pos = colon + 1;
-    }
-}
-
 bool inRange(std::int64_t n)
 {
     return n >= INT32_MIN && n <= std::int64_t(UINT32_MAX);
+}
+
+/// A packet with more chunks after it. kitty reads m as a number and goes on while it is not 0.
+bool hasMore(const DndMeta& packet)
+{
+    const auto more = packet.find("m");
+    return more != packet.end() && parseDndInteger(more->second).value_or(0) != 0;
+}
+
+std::string valueOf(const DndMeta& meta, const char* key)
+{
+    const auto it = meta.find(key);
+    return it == meta.end() ? std::string() : it->second;
 }
 
 } // namespace
@@ -96,7 +95,7 @@ std::optional<DndMeta> parseDndMeta(std::string_view raw)
 {
     DndMeta meta;
     bool valid = true;
-    eachField(raw, [&](std::string_view field) {
+    detail::eachField(raw, ':', [&](std::string_view field) {
         if (!valid || field.size() < 2 || field[1] != '=') {
             return;
         }
@@ -111,12 +110,16 @@ std::optional<DndMeta> parseDndMeta(std::string_view raw)
         }
         if (key == "t") {
             valid = value.size() == 1;
-        } else {
-            const auto n = parseDndInteger(value);
-            valid = n && inRange(*n);
+            if (valid) {
+                meta.emplace(key, value);
+            }
+            return;
         }
+        // Plain decimal, so that values compare as text: m=01 is m=1, i=+5 is i=5.
+        const auto n = parseDndInteger(value);
+        valid = n && inRange(*n);
         if (valid) {
-            meta.emplace(key, value);
+            meta.emplace(key, std::to_string(*n));
         }
     });
     if (!valid) {
@@ -129,13 +132,37 @@ std::string dndType(std::string_view raw)
 {
     std::string type;
     bool found = false;
-    eachField(raw, [&](std::string_view field) {
+    detail::eachField(raw, ':', [&](std::string_view field) {
         if (!found && field.starts_with("t=")) {
             type = field.substr(2);
             found = true;
         }
     });
     return type;
+}
+
+bool dndMore(std::string_view raw)
+{
+    std::optional<std::int64_t> more;
+    bool found = false;
+    detail::eachField(raw, ':', [&](std::string_view field) {
+        if (!found && field.starts_with("m=")) {
+            more = parseDndInteger(field.substr(2));
+            found = true;
+        }
+    });
+    // Like hasMore: a value that is not a number reads as 0.
+    return more.value_or(0) != 0;
+}
+
+bool dndReceiverType(std::string_view type)
+{
+    return type == "a" || type == "A" || type == "m" || type == "r";
+}
+
+bool dndDataType(std::string_view type)
+{
+    return type == "p" || type == "e" || type == "k";
 }
 
 std::vector<std::string> writeDnd(DndMeta meta, std::string_view payload)
@@ -167,27 +194,22 @@ std::vector<std::string> writeDnd(DndMeta meta, std::string_view payload)
 
 std::string dndQueryReply(std::string_view command)
 {
-    std::string_view type;
-    std::string_view id;
-    bool valid = true;
-    eachField(splitDnd(command).first, [&](std::string_view field) {
-        if (field.starts_with("t=")) {
-            type = field.substr(2);
-        }
-        if (field.starts_with("i=")) {
-            const auto n = parseDndInteger(field.substr(2));
-            valid = valid && n && inRange(*n);
-            id = field.substr(2);
-        }
-    });
-    if (!valid || (type != "q" && type != "Q")) {
+    const auto [raw, payload] = splitDnd(command);
+    if (command.size() > DndMaxCommand || payload.size() > DndMaxPacket) {
         return {};
     }
-    std::string out = "\x1b]72;t=";
-    out += type;
-    if (!id.empty()) {
+    const auto meta = parseDndMeta(raw);
+    if (!meta) {
+        return {};
+    }
+    const auto type = valueOf(*meta, "t");
+    if (type != "q" && type != "Q") {
+        return {};
+    }
+    std::string out = "\x1b]72;t=" + type;
+    if (const auto id = meta->find("i"); id != meta->end()) {
         out += ":i=";
-        out += id;
+        out += id->second;
     }
     out += ";\x1b\\";
     return out;
@@ -199,9 +221,14 @@ bool dndValidMime(std::string_view mime)
         && std::all_of(mime.begin(), mime.end(), [](unsigned char c) { return c > 32 && c < 127; });
 }
 
-std::string dndMachineId(std::string_view machineIdFile)
+std::string dndMachineId(std::string_view machineIdContents)
 {
-    return "1:" + toHex(hmacSha256("tty-dnd-protocol-machine-id", trimmed(machineIdFile)));
+    // A directory or an empty file reads as nothing. Its hash would be the same on every such computer.
+    const auto id = trimmed(machineIdContents);
+    if (id.empty()) {
+        return {};
+    }
+    return "1:" + toHex(hmacSha256("tty-dnd-protocol-machine-id", id));
 }
 
 std::string dndMachineId()
@@ -220,6 +247,11 @@ DndAssembler::DndAssembler(std::size_t maxData, std::size_t maxControl)
 {
 }
 
+std::size_t DndAssembler::limit(std::string_view type) const
+{
+    return dndDataType(type) ? m_maxData : m_maxControl;
+}
+
 std::string DndAssembler::type() const
 {
     const auto it = m_meta.find("t");
@@ -229,45 +261,74 @@ std::string DndAssembler::type() const
 void DndAssembler::reset()
 {
     m_meta.clear();
-    m_payload.clear();
+    // Frees the buffer: a dropped data message can hold tens of MiB.
+    std::string().swap(m_payload);
+    m_discarding = false;
 }
 
-DndAssembler::Result DndAssembler::feed(const DndMeta& message, std::string_view data, DndMeta& meta, std::string& payload)
+void DndAssembler::discard(bool more)
 {
-    const auto more = message.find("m");
-    const bool last = more == message.end() || more->second != "1";
+    reset();
+    m_discarding = more;
+}
+
+void DndAssembler::abandon()
+{
+    discard(active() || m_discarding);
+}
+
+DndAssembler::Result DndAssembler::feed(const DndMeta& packet, std::string_view data, Message& message)
+{
+    const bool more = hasMore(packet);
+    if (m_discarding) {
+        m_discarding = more;
+        return Result::Dropped;
+    }
     if (!active()) {
-        if (last) {
-            meta = message;
-            payload = data;
+        const auto type = valueOf(packet, "t");
+        if (data.size() > limit(type.empty() ? "a" : type)) {
+            discard(more);
+            return Result::TooLarge;
+        }
+        if (!more) {
+            message.meta = packet;
+            message.payload = data;
+            message.emptyEnd = data.empty();
             return Result::Ready;
         }
-        m_meta = message;
+        m_meta = packet;
         m_payload = data;
         return Result::Pending;
     }
-    // Chunks after the first need not repeat the id, but must not name another.
-    if (const auto id = message.find("i"); id != message.end()) {
-        const auto first = m_meta.find("i");
-        if (first == m_meta.end() || first->second != id->second) {
-            return Result::Mismatch;
-        }
-    }
+    // Chunks after the first need not repeat the type or the id, but must not
+    // name others. kitty takes any packet as the next chunk; a request read
+    // as a chunk of a MIME list is a client error that must not pass unseen.
     const auto chunkType = type();
-    const bool dataType = chunkType == "p" || chunkType == "e" || chunkType == "k";
-    if (m_payload.size() + data.size() > (dataType ? m_maxData : m_maxControl)) {
+    const auto t = packet.find("t");
+    const auto id = packet.find("i");
+    const auto firstId = m_meta.find("i");
+    if ((t != packet.end() && t->second != chunkType)
+        || (id != packet.end() && (firstId == m_meta.end() || firstId->second != id->second))) {
+        discard(more);
+        return Result::Mismatch;
+    }
+    if (m_payload.size() + data.size() > limit(chunkType)) {
+        discard(more);
         return Result::TooLarge;
     }
     m_payload += data;
-    if (!last) {
+    if (more) {
         return Result::Pending;
     }
-    meta = std::move(m_meta);
-    payload = std::move(m_payload);
-    reset();
-    if (data.empty()) {
-        meta["_end"] = "1";
+    message.meta = std::move(m_meta);
+    if (const auto last = packet.find("m"); last != packet.end()) {
+        message.meta["m"] = last->second;
+    } else {
+        message.meta.erase("m");
     }
+    message.payload = std::move(m_payload);
+    message.emptyEnd = data.empty();
+    reset();
     return Result::Ready;
 }
 

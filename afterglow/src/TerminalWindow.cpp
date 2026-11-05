@@ -587,26 +587,40 @@ void TerminalWindow::bindPane(Pane* pane)
                 }
                 NotificationCenter::instance().handle(guard, request);
             });
+    pane->setDragAnswerWait(m_settings.settings().dragAnswerWait);
     connect(pane, &Pane::terminalProtocolRequested, this, [this, guard = QPointer<Pane>(pane)](int code, const QByteArray& payload) {
         if (!guard) return;
-        // A reset or an overflow reaches only the handlers a program started.
+        // A reset reaches only the handlers a program started.
         if (code == 0) {
             if (guard->hasFileTransfers()) guard->fileTransfers()->reset();
             if (guard->hasDragDrop()) guard->dragDrop()->reset();
-        } else if (code == -1) {
-            if (guard->hasFileTransfers()) guard->fileTransfers()->abort();
-            if (guard->hasDragDrop()) guard->dragDrop()->abort();
         }
         else if (code == 72) guard->dragDrop()->handle(payload);
         else if (code == 5113) {
             // The transfer worker starts with the first OSC 5113 message, not
-            // with the pane. It gets the password once; applySettings keeps it
-            // current.
+            // with the pane. It gets the password and the delta limit once;
+            // applySettings keeps them current.
             const bool created = !guard->hasFileTransfers();
             auto* files = guard->fileTransfers();
-            if (created) files->setPassword(m_settings.settings().fileTransferPassword);
+            if (created) {
+                files->setPassword(m_settings.settings().fileTransferPassword);
+                files->setDeltaLimit(m_settings.settings().fileTransferDeltaLimit);
+            }
             files->handle(payload);
         }
+    });
+    connect(pane, &Pane::terminalProtocolLost, this, [guard = QPointer<Pane>(pane)](DragDrop::Lost lost, bool reset) {
+        if (!guard) return;
+        // As a reset, an overflow reaches only the handlers a program started.
+        // A reset in the gap ended the transfers with no reply, and the
+        // transfers that the program started after it are unknown here.
+        if (guard->hasFileTransfers()) {
+            if (reset) guard->fileTransfers()->reset();
+            else guard->fileTransfers()->abort();
+        }
+        // Lost packets can be the start of the pane's first message: the rest
+        // must not reach a new handler as a message of its own.
+        if (lost == DragDrop::Lost::Packets || guard->hasDragDrop()) guard->dragDrop()->abort(lost, reset);
     });
     connect(pane, &Pane::fileTransferPermissionRequested, this,
             [this, pane = QPointer<Pane>(pane)](const QString& token, bool writing, const QStringList& paths, int total) {
@@ -2001,6 +2015,9 @@ bool TerminalWindow::event(QEvent* e)
         }
         // A dock is its script's: the pane under it takes no drop.
         Pane* target = paneUnder(drop->position());
+        // The program's commands that wait decide whether the pane takes the
+        // drag (t=a, t=A) before the event goes to the protocol or the paste.
+        if (target) target->deliverProtocolCommands();
         // Only the handlers a program started (OSC 72): a pane that never
         // asked for drag and drop accepts and offers nothing.
         for (auto* pane : panes()) if (pane != target && pane->hasDragDrop()) pane->dragDrop()->leave();
@@ -2009,6 +2026,8 @@ bool TerminalWindow::event(QEvent* e)
             target->dragDrop()->drop(drop, e->type() == QEvent::Drop, cellAt(target, drop->position()), pixel);
             return true;
         }
+        // The pane's program does not get this event: it is not over the pane now.
+        if (target && target->hasDragDrop()) target->dragDrop()->leave();
         const QString paths = droppedFiles(drop->mimeData());
         if (!target || target->isHeld() || m_controller->wantsKeyboard() || paths.isEmpty()
             || !(drop->possibleActions() & Qt::CopyAction)) {
@@ -3615,6 +3634,14 @@ void TerminalWindow::applySettings(const Settings& previous)
     if (now.fileTransferPassword != previous.fileTransferPassword) {
         for (Pane* p : findChildren<Pane*>()) {
             if (p->hasFileTransfers()) p->fileTransfers()->setPassword(now.fileTransferPassword);
+        }
+    }
+    if (now.dragAnswerWait != previous.dragAnswerWait) {
+        for (Pane* p : findChildren<Pane*>()) p->setDragAnswerWait(now.dragAnswerWait);
+    }
+    if (now.fileTransferDeltaLimit != previous.fileTransferDeltaLimit) {
+        for (Pane* p : findChildren<Pane*>()) {
+            if (p->hasFileTransfers()) p->fileTransfers()->setDeltaLimit(now.fileTransferDeltaLimit);
         }
     }
     if (now.scrollOnOutput != previous.scrollOnOutput || now.scrollOnInput != previous.scrollOnInput) {

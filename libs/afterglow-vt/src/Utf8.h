@@ -5,7 +5,7 @@
 
 #include <AfterglowProto/Text.h>
 
-#include <cstdint>
+#include <cstddef>
 #include <string>
 #include <string_view>
 

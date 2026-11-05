@@ -89,17 +89,3 @@ SPDX-FileCopyrightText = ["2011 to Present Mark Badolato and contributors", "The
 SPDX-License-Identifier = "MIT"
 # Converted from mbadolato/iTerm2-Color-Schemes (ghostty/), which collects
 # each scheme from its upstream project.
-
-# Bundled release tarballs, built from source at configure time
-# (libs/afterglow-proto/CMakeLists.txt checks their SHA-256 first).
-[[annotations]]
-path = "extern/zlib-*.tar.gz"
-SPDX-FileCopyrightText = "1995-2026 Jean-loup Gailly and Mark Adler"
-SPDX-License-Identifier = "Zlib"
-
-# The library (xxhash.c, xxhash.h) is BSD-2-Clause. The archive also holds
-# the xxhsum command line tool, which is GPL-2.0-or-later and is not built.
-[[annotations]]
-path = "extern/xxHash-*.tar.gz"
-SPDX-FileCopyrightText = "2012-2023 Yann Collet"
-SPDX-License-Identifier = "BSD-2-Clause"

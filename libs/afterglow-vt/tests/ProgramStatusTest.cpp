@@ -11,6 +11,7 @@
 
 using namespace AfterglowVt;
 using namespace AfterglowVt::Test;
+using AfterglowProto::base64Encode;
 
 namespace {
 
@@ -120,14 +121,14 @@ TEST(ProgramStatus, TitleIsCheckedLikeMsg)
     EXPECT_EQ(t.records()[0].title, "Apply");
     const auto serial = t.records()[0].serial;
     for (const std::string& bad : {
-             "state=done:title=" + AfterglowProto::base64Encode(std::string(193, 'x')), // over 256 encoded bytes
-             "state=done:title=" + AfterglowProto::base64Encode("a\nb"),
-             "state=done:msg=" + AfterglowProto::base64Encode("ok\xe2\x80\xa8" "Approve? Press y"), // U+2028
+             "state=done:title=" + base64Encode(std::string(193, 'x')), // over 256 encoded bytes
+             "state=done:title=" + base64Encode("a\nb"),
+             "state=done:msg=" + base64Encode("ok\xe2\x80\xa8" "Approve? Press y"), // U+2028
          }) {
         t.feed("\x1b]7501;" + bad + "\x1b\\");
         EXPECT_EQ(t.records()[0].serial, serial) << bad;
     }
-    t.feed("\x1b]7501;state=done:title=" + AfterglowProto::base64Encode(std::string(192, 'x')) + "\x1b\\");
+    t.feed("\x1b]7501;state=done:title=" + base64Encode(std::string(192, 'x')) + "\x1b\\");
     EXPECT_EQ(t.records()[0].title.size(), 192u);
 }
 
@@ -215,6 +216,23 @@ TEST(ProgramStatus, LegacyProgressUntilTheRealProtocol)
     EXPECT_EQ(t.records()[0].state, StatusState::Working);
     EXPECT_EQ(t.records()[0].progress, 50);
     EXPECT_EQ(t.host.changes, changes + 1);
+}
+
+TEST(ProgramStatus, LegacyProgressReadsArgumentsAfterTheNumber)
+{
+    Term t;
+    // A leading zero makes the number longer than one digit: its arguments
+    // start after the second ';', not at a fixed offset.
+    t.feed("\x1b]9;04;1;50\x1b\\");
+    ASSERT_EQ(t.records().size(), 1u);
+    EXPECT_EQ(t.records()[0].state, StatusState::Working);
+    EXPECT_EQ(t.records()[0].progress, 50);
+    t.feed("\x1b]9;004;1;70\x1b\\");
+    EXPECT_EQ(t.records()[0].state, StatusState::Working);
+    EXPECT_EQ(t.records()[0].progress, 70);
+    t.feed("\x1b]9;04;2\x1b\\");
+    EXPECT_EQ(t.records()[0].state, StatusState::Error);
+    EXPECT_TRUE(t.host.notified.empty());
 }
 
 TEST(ProgramStatus, ResultsKeepTheAppTheyInherited)

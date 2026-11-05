@@ -6,6 +6,8 @@
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/afterglowvt_export.h>
 
+#include <AfterglowProto/Graphics.h>
+
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -234,15 +236,22 @@ private:
     class Origins;
     struct Pending
     {
-        std::string controlData; ///< the first chunk's keys
+        AfterglowProto::GraphicsCommand first; ///< the first chunk's keys, parsed once
         std::string data;
         bool active = false;
         bool failed = false;
     };
 
-    void dispatch(std::string_view payload, Context& ctx);
+    /// False when the payload only added a chunk to a pending transmission,
+    /// which leaves nothing to settle.
+    bool dispatch(std::string_view payload, Context& ctx);
     void execute(const Command& cmd, std::string data, Context& ctx);
-    bool loadPayload(const Command& cmd, std::string& data, std::string& error);
+    /// Reads the payload from its medium and inflates o=z data, which may
+    /// not grow past @p inflateLimit bytes. A file or shared memory object
+    /// gives at most @p readLimit bytes: raw pixels past it are not read,
+    /// and longer compressed or PNG data is refused.
+    bool loadPayload(const Command& cmd, std::string& data, std::size_t readLimit, std::size_t inflateLimit,
+                     std::string& error);
     bool decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out, std::string& error);
     void transmit(const Command& cmd, std::string data, Context& ctx);
     void place(const Command& cmd, Context& ctx);
@@ -272,6 +281,8 @@ private:
     /// Charges @p bytes of frame copying against a budget that refills over
     /// time. False when the budget is spent.
     bool chargeWork(std::size_t bytes);
+    /// A placement id for a command without p=, unused by image @p imageId.
+    std::uint32_t allocatePlacementId(std::uint32_t imageId);
     std::uint32_t allocateSixelId();
 
     std::map<std::uint32_t, Image> m_images;

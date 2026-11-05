@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -15,6 +16,12 @@ namespace AfterglowProto {
 
 /// A clipboard request (kitty's OSC 5522): reads and writes of any MIME type.
 /// https://sw.kovidgoyal.net/kitty/clipboard/
+///
+/// The terminal fills it from what a program sends (ClipboardAssembler, or
+/// its OSC 52 parser). A client fills kind, primary, id, password, name,
+/// mimes, data and aliases for the request writers below, which read
+/// nothing else. The osc52 fields are the terminal's own: how to answer an
+/// OSC 52 read.
 struct ClipboardRequest
 {
     enum class Kind : std::uint8_t { Read, Write };
@@ -48,7 +55,12 @@ class ClipboardAssembler
 public:
     /// Writes may carry this much in total (the protocol requires at least 64 MB).
     static constexpr std::size_t MaxWrite = 128u * 1024 * 1024;
-    static constexpr std::size_t ReadChunk = 4096;
+    /// The most data bytes, before base64, in one DATA or wdata packet (the protocol's limit).
+    static constexpr std::size_t MaxChunk = 4096;
+    /// The data bytes that the writers put in each packet of a type but the
+    /// last: whole groups of three, so that each packet decodes alone and the
+    /// packets of a type also join into one stream with padding only at its end.
+    static constexpr std::size_t DataChunk = MaxChunk / 3 * 3;
 
     enum class Result : std::uint8_t { Pending, Ready, Ignored, Error };
 
@@ -59,7 +71,7 @@ public:
 
     // Replies, as complete OSC sequences.
     static std::string readStatus(std::string_view status, const ClipboardRequest& request, std::string_view oneTimePassword = {});
-    /// The DATA packets for one MIME type, chunked.
+    /// The DATA packets for one MIME type, in chunks of DataChunk bytes.
     static std::string readData(std::string_view mime, std::string_view bytes, const ClipboardRequest& request,
                                 std::string_view oneTimePassword = {});
     static std::string writeStatus(std::string_view status, std::string_view id);
@@ -74,11 +86,17 @@ private:
     std::string m_mime; ///< the type being received
     std::string m_part; ///< its data so far, decoded as it arrives
     std::string m_carry; ///< base64 characters short of a whole group
-    bool m_padded = false; ///< its base64 ended with padding: no more data may follow
     std::size_t m_decoded = 0; ///< data of the types before it
 };
 
-// The program side.
+// The client side of the protocol: what a program writes to the terminal,
+// and how it reads the replies. The tests use it to drive the terminal, and
+// clients of the library use it to talk to one. The writers send the id as
+// sanitizeId() leaves it, and only the types and aliases that are type names
+// (printable ASCII without spaces): a data part or an alias with another name
+// is left out. They do not check that the password and the name are clean
+// text, or the limits on sizes (MaxWrite, a field of 4096 base64 characters,
+// the number of types). A terminal refuses or cuts a request that breaks them.
 
 /// A read request for @p request's mimes ("." alone asks for the list of types).
 std::string clipboardReadRequest(const ClipboardRequest& request);
@@ -90,7 +108,7 @@ struct ClipboardReply
 {
     std::string type; ///< "read" or "write"
     std::string status; ///< OK, DATA, DONE or an error such as EPERM
-    std::string id;
+    std::string id; ///< sanitized, as the request's
     std::string mime; ///< DATA: the type of the data
     bool primary = false;
     std::string password; ///< a one-time password for later reads
@@ -101,7 +119,12 @@ struct ClipboardReply
     bool operator==(const ClipboardReply&) const = default;
 };
 
-/// An OSC 52 message: a write, a read ("?"), or a terminal's answer to a read.
+/// xterm's selection letters (c, p, q, s, 0-7) among the first 16 bytes of
+/// @p selection. Only these are safe to echo in an OSC 52 sequence.
+std::string osc52Letters(std::string_view selection);
+
+/// An OSC 52 message: a write, a read ("?"), or a terminal's answer to a
+/// read. Client side: parse() and write() keep only osc52Letters().
 struct Osc52Message
 {
     std::string selection; ///< xterm's letters: c, p, q, s, 0-7

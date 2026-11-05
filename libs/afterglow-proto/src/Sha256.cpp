@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowProto/Hex.h>
 #include <AfterglowProto/Sha256.h>
 
 #include <algorithm>
@@ -59,6 +60,10 @@ void Sha256::block(const std::uint8_t* data)
 
 void Sha256::update(std::string_view bytes)
 {
+    // An empty view can hold a null pointer, and memcpy() from null is undefined even for 0 bytes.
+    if (bytes.empty()) {
+        return;
+    }
     const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.data());
     std::size_t size = bytes.size();
     m_length += size;
@@ -116,7 +121,7 @@ Sha256::Digest hmacSha256(std::string_view key, std::string_view message)
     if (key.size() > block.size()) {
         const auto digest = sha256(key);
         std::memcpy(block.data(), digest.data(), digest.size());
-    } else {
+    } else if (!key.empty()) {
         std::memcpy(block.data(), key.data(), key.size());
     }
     std::array<char, 64> inner;
@@ -132,18 +137,6 @@ Sha256::Digest hmacSha256(std::string_view key, std::string_view message)
     hash.update(std::string_view(outer.data(), outer.size()));
     hash.update(std::string_view(reinterpret_cast<const char*>(innerDigest.data()), innerDigest.size()));
     return hash.finish();
-}
-
-std::string toHex(std::string_view bytes)
-{
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(bytes.size() * 2);
-    for (const char c : bytes) {
-        out += digits[std::uint8_t(c) >> 4];
-        out += digits[std::uint8_t(c) & 15];
-    }
-    return out;
 }
 
 std::string toHex(const Sha256::Digest& digest)

@@ -5,29 +5,17 @@
 #include <AfterglowProto/Sha256.h>
 #include <AfterglowProto/Transfer.h>
 
+#include "Fields.h"
+
 #include <algorithm>
 #include <cerrno>
+#include <vector>
 
 namespace AfterglowProto {
 
 namespace {
 
 constexpr std::string_view Keys[] = {"ac", "id", "fid", "n", "st", "d", "pw", "sz", "q", "ft", "zip", "tt", "prm", "mod", "pr"};
-
-/// Calls @p f with each ';'-separated field of @p payload.
-template<typename F>
-void eachField(std::string_view payload, F f)
-{
-    std::size_t pos = 0;
-    while (true) {
-        const auto semi = payload.find(';', pos);
-        f(payload.substr(pos, semi == std::string_view::npos ? semi : semi - pos));
-        if (semi == std::string_view::npos) {
-            return;
-        }
-        pos = semi + 1;
-    }
-}
 
 } // namespace
 
@@ -51,7 +39,7 @@ std::optional<TransferFields> decodeTransfer(std::string_view payload)
     }
     TransferFields fields;
     bool valid = true;
-    eachField(payload, [&](std::string_view field) {
+    detail::eachField(payload, ';', [&](std::string_view field) {
         const auto at = field.find('=');
         if (!valid || at == 0 || at == std::string_view::npos) {
             return;
@@ -89,6 +77,16 @@ std::optional<TransferFields> decodeTransfer(std::string_view payload)
 
 std::string encodeTransfer(const TransferFields& fields)
 {
+    std::vector<std::pair<std::string_view, std::string_view>> views;
+    views.reserve(fields.size());
+    for (const auto& [key, value] : fields) {
+        views.emplace_back(key, value);
+    }
+    return encodeTransfer(views);
+}
+
+std::string encodeTransfer(std::span<const std::pair<std::string_view, std::string_view>> fields)
+{
     std::string out = "\x1b]5113;";
     bool first = true;
     for (const auto& [key, value] : fields) {
@@ -108,7 +106,7 @@ std::string transferCancelId(std::string_view payload)
 {
     std::string_view action;
     std::string_view id;
-    eachField(payload, [&](std::string_view field) {
+    detail::eachField(payload, ';', [&](std::string_view field) {
         if (action.empty() && field.starts_with("ac=")) {
             action = field.substr(3);
         } else if (id.empty() && field.starts_with("id=")) {

@@ -26,7 +26,7 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | `build` | RelWithDebInfo (`dev` preset) | ON | Day-to-day work. All the commands below use it. |
 | `build-release` | Release | ON | Performance numbers and release checks |
 | `build-prof` | RelWithDebInfo | ON | Profiling (Tracy and perf) |
-| `build-fuzz` | RelWithDebInfo, Makefiles | OFF | The libFuzzer target only. It has no tests. |
+| `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz` and `afterglow_protofuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). Make it when you fuzz, with the commands in `docs/TESTING.md`. |
 | `build-debug` | Debug with ASan and UBSan (`debug` preset) | — | Make it when you look for memory errors. |
 
 `AFTERGLOW_BUILD_TOOLS=ON` builds `afterglow_renderpng`, `afterglow_headless`, `afterglow_vtbench` and
@@ -42,6 +42,10 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 - Never edit PlasmaZones from an Afterglow session. A Phosphor change goes through a PlasmaZones branch and pull
   request. Tell the user what Phosphor needs.
 - The renderer uses Qt private APIs. After a Qt update, rebuild everything (`cmake --build build --clean-first`).
+- The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng and xxHash from
+  `cmake/AfterglowDependencies.cmake`) download into the CPM cache, by default `../PlasmaZones/.cache/cpm`, and
+  Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is set (`docs/BUILD.md` has the order). A
+  configure without network works once that cache holds them.
 
 ## Build
 

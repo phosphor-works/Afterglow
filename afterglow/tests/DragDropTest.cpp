@@ -12,6 +12,7 @@
 #include <QUrl>
 #include <gtest/gtest.h>
 #include <unistd.h>
+#include <utility>
 using namespace Afterglow;
 namespace {
 struct Dnd : testing::Test {
@@ -25,15 +26,148 @@ struct Dnd : testing::Test {
     {
         return std::any_of(replies.begin(), replies.end(), [&](auto b) { return b.contains(text); });
     }
+    // With no delivery hook, a drag event takes no answer while it runs: the
+    // enter goes out, the program answers, and the next move carries its answer.
     void enter(QMimeData& mime)
     {
         service.handle("t=a:i=42;");
-        QTimer::singleShot(0, &service, [this] { service.handle("t=m:o=1;text/plain"); });
         QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
         service.drop(&event, false, { 1, 1 }, { 4, 4 });
-        ASSERT_TRUE(event.isAccepted());
+        ASSERT_FALSE(event.isAccepted());
+        service.handle("t=m:o=1;text/plain");
+        QDropEvent move(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        service.drop(&move, false, { 1, 1 }, { 5, 4 });
+        ASSERT_TRUE(move.isAccepted());
     }
 };
+TEST_F(Dnd, KittenDropTargetIsAcceptedWithExplicitLastChunks)
+{
+    // What kitten dnd --drop writes: every message carries m=0, the machine id
+    // comes in its own t=a:x=1 message, and the reply to the drop enter names
+    // its type.
+    service.handle("t=a:m=0;text/uri-list text/plain");
+    service.handle("t=a:x=1:m=0;1:8a154d99010298a194728c7014eeaf5999124e99c90f607de9e1dc0cf4e26047");
+    ASSERT_TRUE(service.acceptsDrops());
+    QMimeData mime;
+    mime.setText(QStringLiteral("dropped"));
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, false, { 1, 1 }, { 4, 4 });
+    service.handle("t=m:o=1:m=0;text/plain");
+    QDropEvent move(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&move, false, { 1, 1 }, { 5, 4 });
+    EXPECT_TRUE(move.isAccepted());
+}
+TEST_F(Dnd, DragEventsRunNoEventLoop)
+{
+    // A drag event that ran the event loop would handle the next drag event
+    // inside it, and Qt would take the older answer last.
+    service.handle("t=a;");
+    bool ran = false;
+    QTimer::singleShot(0, &service, [&] { ran = true; });
+    QMimeData mime;
+    mime.setText(QStringLiteral("text"));
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, false, { 1, 1 }, { 4, 4 });
+    EXPECT_FALSE(ran);
+    EXPECT_FALSE(event.isAccepted());
+    EXPECT_TRUE(contains("t=m"));
+}
+TEST_F(Dnd, ADragEventTakesTheAnswersThatWaitFirst)
+{
+    // The pane delivers the program's commands that wait for the GUI thread
+    // before a drag event answers.
+    QByteArrayList waiting;
+    service.setCommandDelivery([&](int) {
+        for (const auto& command : std::exchange(waiting, {}))
+            service.handle(command);
+    });
+    service.handle("t=a;");
+    QMimeData mime;
+    mime.setText(QStringLiteral("text"));
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, false, { 1, 1 }, { 4, 4 });
+    EXPECT_FALSE(event.isAccepted());
+    waiting.append("t=m:o=1;text/plain");
+    QDropEvent move(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&move, false, { 1, 1 }, { 5, 4 });
+    EXPECT_TRUE(waiting.isEmpty());
+    EXPECT_TRUE(move.isAccepted());
+}
+TEST_F(Dnd, ADragEventWaitsForTheAnswerToNewTypes)
+{
+    // A still pointer sends no more drag events: the event that gives the
+    // program the types waits a short time for its answer, without an event loop.
+    int waits = 0;
+    bool answered = false;
+    service.setCommandDelivery([&](int waitMs) {
+        if (waitMs <= 0)
+            return;
+        ++waits;
+        EXPECT_LE(waitMs, 100);
+        if (!std::exchange(answered, true))
+            service.handle("t=m:o=1;text/plain");
+    });
+    service.handle("t=a;");
+    bool ran = false;
+    QTimer::singleShot(0, &service, [&] { ran = true; });
+    QMimeData mime;
+    mime.setText(QStringLiteral("text"));
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, false, { 1, 1 }, { 4, 4 });
+    EXPECT_EQ(waits, 1);
+    EXPECT_FALSE(ran);
+    EXPECT_TRUE(event.isAccepted());
+    EXPECT_TRUE(service.acceptsDrag());
+    // The same types again: the program has answered them, so no wait.
+    QDropEvent move(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&move, false, { 1, 1 }, { 5, 4 });
+    EXPECT_EQ(waits, 1);
+    EXPECT_TRUE(move.isAccepted());
+}
+TEST_F(Dnd, AcceptsDragTellsWhatTheLastEventAnswered)
+{
+    // The desktop learns an answer only from a drag event. An answer that
+    // arrives between events is not yet the desktop's.
+    service.handle("t=a;");
+    QMimeData mime;
+    mime.setText(QStringLiteral("text"));
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, false, { 1, 1 }, { 4, 4 });
+    EXPECT_FALSE(event.isAccepted());
+    service.handle("t=m:o=1;text/plain");
+    EXPECT_FALSE(service.acceptsDrag());
+    QDropEvent move(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&move, false, { 1, 1 }, { 5, 4 });
+    EXPECT_TRUE(service.acceptsDrag());
+    service.handle("t=m:o=0;");
+    EXPECT_TRUE(service.acceptsDrag());
+    QDropEvent refused(QPointF(6, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&refused, false, { 1, 1 }, { 6, 4 });
+    EXPECT_FALSE(refused.isAccepted());
+    EXPECT_FALSE(service.acceptsDrag());
+}
+TEST_F(Dnd, TheAnswerIsCheckedAgainstEachEventsActions)
+{
+    // A drag can offer no action at first (a source that sets its actions
+    // late). The program's answer must count against later events too.
+    service.handle("t=a;");
+    QMimeData mime;
+    mime.setText(QStringLiteral("text"));
+    QDropEvent none(QPointF(4, 4), Qt::IgnoreAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&none, false, { 1, 1 }, { 4, 4 });
+    service.handle("t=m:o=1;text/plain");
+    EXPECT_FALSE(service.acceptsDrag());
+    QDropEvent copy(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&copy, false, { 1, 1 }, { 5, 4 });
+    EXPECT_TRUE(copy.isAccepted());
+    EXPECT_TRUE(service.acceptsDrag());
+    // A type the drag stops offering is not accepted.
+    QMimeData html;
+    html.setHtml(QStringLiteral("<b>x</b>"));
+    QDropEvent other(QPointF(6, 4), Qt::CopyAction, &html, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&other, false, { 1, 1 }, { 6, 4 });
+    EXPECT_FALSE(other.isAccepted());
+}
 TEST_F(Dnd, QueryEchoAndUnsolicitedDragDenied)
 {
     service.handle("t=q:i=123;");
@@ -210,6 +344,7 @@ TEST_F(Dnd, DesktopMimeNamesAreFilteredBeforeTheyReachTheProgram)
 }
 TEST_F(Dnd, ControlPayloadsAreBoundedAndReportedToTheirRole)
 {
+    service.handle("t=a;");
     service.handle("t=a:x=1;" + QByteArray(200, 'a'));
     EXPECT_TRUE(contains("t=R"));
     EXPECT_TRUE(contains("EINVAL"));
@@ -223,6 +358,192 @@ TEST_F(Dnd, ControlPayloadsAreBoundedAndReportedToTheirRole)
         service.handle("m=1;" + QByteArray(4096, 'a'));
     EXPECT_TRUE(contains("EFBIG"));
     EXPECT_FALSE(contains("t=E"));
+}
+TEST_F(Dnd, OverlongCommandGetsEfbigAndEndsTheProtocol)
+{
+    service.handle("t=a;");
+    ASSERT_TRUE(service.acceptsDrops());
+    // A payload over one packet (4096 bytes) is an error, but the protocol goes on.
+    service.handle("t=r:x=1;" + QByteArray(4097, 'a'));
+    EXPECT_TRUE(contains("t=R"));
+    EXPECT_TRUE(contains("EFBIG"));
+    EXPECT_TRUE(service.acceptsDrops());
+    replies.clear();
+    // The terminal hands on the first 8193 bytes of a command over 8192.
+    const QByteArray command = "t=r:x=1:" + QByteArray(8193 - 8, 'z');
+    ASSERT_EQ(command.size(), 8193);
+    service.handle(command);
+    EXPECT_TRUE(contains("t=R"));
+    EXPECT_TRUE(contains("EFBIG"));
+    EXPECT_FALSE(service.acceptsDrops());
+}
+TEST_F(Dnd, OversizedCommandsGetNoReplyWithoutTheProtocol)
+{
+    // A program that uses no role, such as one that prints a binary file.
+    service.handle("t=r:x=1;" + QByteArray(4097, 'a'));
+    service.handle("t=e:y=0:" + QByteArray(8193 - 8, 'z'));
+    service.handle(QByteArray(8193, 'z'));
+    EXPECT_TRUE(replies.isEmpty());
+    // A message that is being put together is the protocol in use.
+    service.handle("t=o:x=0:m=1;text/");
+    service.handle("m=0;" + QByteArray(4097, 'a'));
+    EXPECT_TRUE(contains("t=E"));
+    EXPECT_TRUE(contains("EFBIG"));
+    replies.clear();
+    // So is a role: a drag source hears of an overlong command, and the protocol ends.
+    service.handle("t=o:x=1;");
+    ASSERT_TRUE(service.offersDrags());
+    service.handle("t=e:y=0:" + QByteArray(8193 - 8, 'z'));
+    EXPECT_TRUE(contains("t=E"));
+    EXPECT_TRUE(contains("EFBIG"));
+    EXPECT_FALSE(service.offersDrags());
+}
+TEST_F(Dnd, ChunksOfAFailedMessageStartNoNewMessage)
+{
+    // A MIME list over the 128 KiB limit of control messages.
+    service.handle("t=a:m=1;" + QByteArray(4096, 'a'));
+    for (int n = 0; n < 40 && !contains("EFBIG"); ++n)
+        service.handle("m=1;" + QByteArray(4096, 'a'));
+    ASSERT_TRUE(contains("EFBIG"));
+    replies.clear();
+    // Its tail is dropped: no second error, and its last chunk enables nothing.
+    for (int n = 0; n < 40; ++n)
+        service.handle("m=1;" + QByteArray(4096, 'a'));
+    service.handle("m=0;text/plain");
+    EXPECT_TRUE(replies.isEmpty());
+    EXPECT_FALSE(service.acceptsDrops());
+    // A chunk that names another id ends the protocol, and the rest of its message goes too.
+    service.handle("t=a:i=1:m=1;text/");
+    service.handle("i=2:m=1;x");
+    service.handle("m=0;plain");
+    EXPECT_FALSE(service.acceptsDrops());
+    // The next message is read again.
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+}
+TEST_F(Dnd, MalformedMetadataDecidesFromItsOwnMore)
+{
+    // A first packet that does not parse, with chunks after it: they start no new message.
+    service.handle("t=a:i=bad:m=1;text/");
+    service.handle("m=0;plain");
+    EXPECT_FALSE(service.acceptsDrops());
+    // The last chunk of a message does not parse: the next message is read.
+    service.handle("t=a:m=1;text/");
+    service.handle("i=bad:m=0;plain");
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+}
+TEST_F(Dnd, ARefusedReplyDropsTheRestOfTheMessage)
+{
+    // The pane ends the protocol when it cannot write a reply.
+    const auto connection = QObject::connect(&service, &DragDrop::reply, &service, [this] { service.end(); });
+    service.handle("t=a:m=1;text/");
+    service.handle("t=q;");
+    ASSERT_TRUE(contains("t=q"));
+    service.handle("m=0;plain");
+    EXPECT_FALSE(service.acceptsDrops());
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+    QObject::disconnect(connection);
+    // A terminal reset ends the message too: what follows is a new one, here an untyped t=a.
+    service.handle("t=A;");
+    service.handle("t=a:m=1;text/");
+    service.reset();
+    service.handle("m=0;plain");
+    EXPECT_TRUE(service.acceptsDrops());
+}
+TEST_F(Dnd, AnAbortDropsPacketsToTheNextLastChunk)
+{
+    service.handle("t=a;");
+    // Packets were lost in a message: its rest enables nothing.
+    service.handle("t=A:m=1;");
+    service.abort(DragDrop::Lost::Packets);
+    service.handle("m=1;text/");
+    service.handle("m=0;plain");
+    EXPECT_FALSE(service.acceptsDrops());
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+    // The lost packets held the first one of a message.
+    service.abort(DragDrop::Lost::Packets);
+    service.handle("m=0;text/plain");
+    EXPECT_FALSE(service.acceptsDrops());
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+}
+TEST_F(Dnd, AnAbortWithoutLostPacketsKeepsTheNextMessage)
+{
+    // The pane dropped only file transfer commands: the protocol is whole.
+    service.handle("t=a;");
+    service.abort(DragDrop::Lost::Nothing);
+    EXPECT_TRUE(service.acceptsDrops());
+    // A message that was being put together keeps the rest of its chunks: its last one ends it.
+    service.handle("t=A:m=1;");
+    service.abort(DragDrop::Lost::Nothing);
+    service.handle("m=0;");
+    EXPECT_FALSE(service.acceptsDrops());
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+}
+TEST_F(Dnd, AnAbortAfterALostResetSendsNoError)
+{
+    // The lost reset ended the drop; the lost packets came after it.
+    QMimeData mime;
+    mime.setText(QStringLiteral("text"));
+    enter(mime);
+    QDropEvent drop(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QTimer::singleShot(0, &service, [&] { service.abort(DragDrop::Lost::Packets, true); });
+    service.drop(&drop, true, { 1, 1 }, { 5, 4 });
+    EXPECT_FALSE(contains("ENOMEM"));
+    EXPECT_FALSE(drop.isAccepted());
+}
+TEST_F(Dnd, AnAbortThatLostAResetStartsANewMessage)
+{
+    // The reset ended the message that was being put together, and every
+    // dropped OSC 72 packet came before it.
+    service.handle("t=a;");
+    service.handle("t=A:m=1;");
+    service.abort(DragDrop::Lost::Reset);
+    EXPECT_FALSE(service.acceptsDrops());
+    service.handle("t=a;");
+    EXPECT_TRUE(service.acceptsDrops());
+}
+TEST_F(Dnd, ChunkedStatusIsReadAsOneList)
+{
+    for (const auto* last : { "plain", "html" }) {
+        service.reset();
+        service.handle("t=a:i=42;");
+        QMimeData mime;
+        mime.setText(QStringLiteral("hello"));
+        QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        service.drop(&event, false, { 1, 1 }, { 4, 4 });
+        service.handle("t=m:o=1:m=1;text/");
+        service.handle(QByteArray("m=0;") + last);
+        QDropEvent move(QPointF(5, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        service.drop(&move, false, { 1, 1 }, { 5, 4 });
+        // The source offers text/plain only.
+        EXPECT_EQ(move.isAccepted(), QByteArray(last) == "plain") << last;
+        service.leave();
+    }
+}
+TEST_F(Dnd, AResetFromOnePacketStopsTheRestOfItsMessage)
+{
+    service.handle("t=a;");
+    QMimeData mime;
+    // About 9 KB of MIME names: three packets.
+    for (int n = 0; n < 40; ++n)
+        mime.setData(QStringLiteral("application/x-long-%1-").arg(n) + QString(200, QLatin1Char('a')), "x");
+    int packets = 0;
+    QObject::connect(&service, &DragDrop::reply, &service, [&](const QByteArray& b) {
+        if (!b.contains("t=m"))
+            return;
+        ++packets;
+        // The pane ends the protocol when it cannot write a reply.
+        service.end();
+    });
+    QDropEvent event(QPointF(4, 4), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&event, false, { 1, 1 }, { 4, 4 });
+    EXPECT_EQ(packets, 1);
+    EXPECT_FALSE(event.isAccepted());
 }
 TEST_F(Dnd, FileUrlWithRemoteHostIsNotRead)
 {

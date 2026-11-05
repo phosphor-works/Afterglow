@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <limits>
 
 #include <xxhash.h>
 
@@ -23,6 +24,25 @@ std::string noise(std::size_t size, std::uint32_t seed)
     return out;
 }
 
+/// Little-endian fields, whatever the byte order of the host.
+template<typename T>
+T readLittle(std::string_view bytes, std::size_t at)
+{
+    T value = 0;
+    for (std::size_t byte = 0; byte < sizeof(T); ++byte) {
+        value |= T(std::uint8_t(bytes[at + byte])) << (8 * byte);
+    }
+    return value;
+}
+
+template<typename T>
+void writeLittle(std::string& bytes, std::size_t at, T value)
+{
+    for (std::size_t byte = 0; byte < sizeof(T); ++byte) {
+        bytes[at + byte] = char(std::uint8_t(value >> (8 * byte)));
+    }
+}
+
 /// The operations of a delta, by type, and the bytes the literals carry.
 struct Ops
 {
@@ -36,20 +56,39 @@ Ops count(std::string_view delta)
     Ops ops;
     for (std::size_t at = 0; at < delta.size();) {
         const auto type = std::uint8_t(delta[at]);
+        const std::size_t length = type == 0 ? 9 : type == 1 ? 5 : type == 2 ? 19 : type == 3 ? 13 : 0;
+        if (!length || delta.size() - at < length) {
+            ADD_FAILURE() << "malformed operation at " << at;
+            break;
+        }
         if (type == 0) {
             ++ops.blocks;
-            at += 9;
         } else if (type == 1) {
-            std::uint32_t length = 0;
-            std::memcpy(&length, delta.data() + at + 1, 4);
-            ops.literalBytes += length;
-            at += 5 + length;
-        } else {
+            const auto bytes = readLittle<std::uint32_t>(delta, at + 1);
+            if (delta.size() - at - 5 < bytes) {
+                ADD_FAILURE() << "short literal at " << at;
+                break;
+            }
+            ops.literalBytes += bytes;
+            at += bytes;
+        } else if (type == 2) {
             ++ops.hashes;
-            at += 19;
+        } else {
+            ops.blocks += int(readLittle<std::uint32_t>(delta, at + 9)) + 1;
         }
+        at += length;
     }
     return ops;
+}
+
+/// A signature of one record for @p blockSize-byte blocks.
+std::string oneRecordSignature(std::uint32_t blockSize, std::uint32_t weak, std::uint64_t strong)
+{
+    std::string signature(SignatureHeaderSize + SignatureRecordSize, '\0');
+    writeLittle(signature, 8, blockSize);
+    writeLittle(signature, SignatureHeaderSize + 8, weak);
+    writeLittle(signature, SignatureHeaderSize + 12, strong);
+    return signature;
 }
 
 /// The receiver's basis and the sender's file, through the signature, the
@@ -72,13 +111,17 @@ std::string roundTrip(std::string_view basis, std::string_view file, Ops* ops = 
 
 } // namespace
 
-TEST(Delta, BlockSizeIsTheSquareRootWithAFloor)
+TEST(Delta, BlockSizeIsTheSquareRootWithAFloorAndACeiling)
 {
     EXPECT_EQ(deltaBlockSize(0), 64u);
     EXPECT_EQ(deltaBlockSize(4096), 64u);
     EXPECT_EQ(deltaBlockSize(4097), 65u);
     EXPECT_EQ(deltaBlockSize(1000000), 1000u);
     EXPECT_EQ(deltaBlockSize(1000001), 1001u);
+    // kitty refuses blocks over 1 MiB. The root of 2^64 does not fit 32 bits.
+    EXPECT_EQ(deltaBlockSize(std::uint64_t(1) << 40), DeltaMaxBlockSize);
+    EXPECT_EQ(deltaBlockSize((std::uint64_t(1) << 40) + 1), DeltaMaxBlockSize);
+    EXPECT_EQ(deltaBlockSize(std::numeric_limits<std::uint64_t>::max()), DeltaMaxBlockSize);
 }
 
 TEST(Delta, SignatureLayout)
@@ -91,12 +134,9 @@ TEST(Delta, SignatureLayout)
     EXPECT_EQ(signatureBlockSize(signature, 1 << 24), 64u);
     const std::string last = basis.substr(192);
     const std::string record = signature.substr(SignatureHeaderSize + 3 * SignatureRecordSize);
-    std::uint64_t index = 0;
-    std::uint32_t weak = 0;
-    std::uint64_t strong = 0;
-    std::memcpy(&index, record.data(), 8);
-    std::memcpy(&weak, record.data() + 8, 4);
-    std::memcpy(&strong, record.data() + 12, 8);
+    const auto index = readLittle<std::uint64_t>(record, 0);
+    const auto weak = readLittle<std::uint32_t>(record, 8);
+    const auto strong = readLittle<std::uint64_t>(record, 12);
     EXPECT_EQ(index, 3u);
     std::uint32_t a = 0;
     std::uint32_t b = 0;
@@ -121,6 +161,86 @@ TEST(Delta, MalformedSignaturesAreRefused)
     EXPECT_FALSE(signatureBlockSize(zero, 1 << 24));
     EXPECT_FALSE(signatureBlockSize(good, 63));
     EXPECT_FALSE(makeDelta(zero, "file"));
+    // The generator itself refuses a malformed signature, also without the check.
+    DeltaGenerator generator(zero);
+    MemorySource source("file");
+    std::string out;
+    EXPECT_FALSE(generator.produce(source, out, 4096, 4096));
+    EXPECT_TRUE(out.empty());
+}
+
+TEST(Delta, ReadErrorEndsTheDelta)
+{
+    struct Failing : ByteSource
+    {
+        bool read(std::string&, std::size_t) override { return false; }
+        bool atEnd() const override { return false; }
+    } source;
+    DeltaGenerator generator(makeSignature("basis"));
+    std::string out;
+    EXPECT_FALSE(generator.produce(source, out, 4096, 4096));
+    EXPECT_FALSE(generator.done());
+}
+
+TEST(Delta, ShortLastBlockMatchesInTheShrinkingWindow)
+{
+    // Blocks of 64, 64, 64 and 8. The file is shorter than one block, so the
+    // window shrinks from its start until only the last 8 bytes are left.
+    const std::string basis = noise(200, 13);
+    const std::string file = noise(30, 14) + basis.substr(192);
+    Ops ops;
+    EXPECT_EQ(roundTrip(basis, file, &ops), file);
+    EXPECT_EQ(ops.blocks, 1);
+    EXPECT_EQ(ops.literalBytes, 30u);
+}
+
+TEST(Delta, RepeatedBlockMatchesItsFirstRecord)
+{
+    // Both records hold the same hashes. The delta names the first one.
+    const std::string block = noise(64, 15);
+    const auto delta = makeDelta(makeSignature(block + block), block);
+    ASSERT_TRUE(delta);
+    ASSERT_EQ(delta->size(), 9u + 19u);
+    EXPECT_EQ((*delta)[0], 0);
+    EXPECT_EQ(readLittle<std::uint64_t>(*delta, 1), 0u);
+}
+
+TEST(Delta, RepeatedBlockMatchesItsLowestIndexInAnyOrder)
+{
+    // The same two records, with the second listed first.
+    const std::string block = noise(64, 15);
+    const std::string signature = makeSignature(block + block);
+    ASSERT_EQ(signature.size(), SignatureHeaderSize + 2 * SignatureRecordSize);
+    const std::string reordered = signature.substr(0, SignatureHeaderSize)
+        + signature.substr(SignatureHeaderSize + SignatureRecordSize) + signature.substr(SignatureHeaderSize, SignatureRecordSize);
+    const auto delta = makeDelta(reordered, block);
+    ASSERT_TRUE(delta);
+    ASSERT_EQ(delta->size(), 9u + 19u);
+    EXPECT_EQ((*delta)[0], 0);
+    EXPECT_EQ(readLittle<std::uint64_t>(*delta, 1), 0u);
+}
+
+// A record whose weak hash matches at every position of the file, and whose
+// strong hash never does: each position costs one block of hashing. The step
+// bound counts that, so one call hashes at most a step and one block.
+TEST(Delta, WeakMatchesWithAWrongStrongHashCountAgainstTheStep)
+{
+    constexpr std::uint32_t blockSize = 4096;
+    const std::string zeros(2 * blockSize, '\0'); // every window sums to 0
+    DeltaGenerator generator(oneRecordSignature(blockSize, 0, 0x1234));
+    MemorySource source(zeros);
+    std::string all;
+    int calls = 0;
+    while (!generator.done() && calls < 100000) {
+        std::string out;
+        ASSERT_TRUE(generator.produce(source, out, SIZE_MAX, blockSize));
+        all += out;
+        ++calls;
+    }
+    ASSERT_TRUE(generator.done());
+    // A call that hashed a block for each byte would end in 2 or 3 calls.
+    EXPECT_GT(calls, int(blockSize) / 2);
+    EXPECT_EQ(applyDelta("", blockSize, all), zeros);
 }
 
 TEST(Delta, EmptyFile)
@@ -193,14 +313,19 @@ TEST(Delta, GeneratorWorksInBoundedSteps)
     MemorySource source(file);
     std::string all;
     int calls = 0;
-    while (!generator.done()) {
+    while (!generator.done() && calls < 10000) {
         std::string out;
         ASSERT_TRUE(generator.produce(source, out, 4096, 65536));
-        // One step stops after the bytes asked for, plus at most one operation.
-        EXPECT_LE(out.size(), 4096u + 5 + 65536);
+        // One step stops once it holds the bytes asked for. The last pass adds
+        // one of: a literal that reached 65,536 bytes (and its 5-byte header),
+        // or a held literal of at most 65,535 bytes (and its header) with a
+        // block operation (9 bytes) or the file hash (19 bytes). The largest
+        // is the held literal with the file hash.
+        EXPECT_LE(out.size(), 4095u + 5 + 65535 + 19);
         all += out;
         ++calls;
     }
+    ASSERT_TRUE(generator.done());
     EXPECT_GT(calls, 3);
     EXPECT_EQ(applyDelta(basis, deltaBlockSize(basis.size()), all), file);
 }
@@ -244,21 +369,21 @@ TEST(Delta, ApplierTakesOperationsInAnyPieces)
 
 TEST(Delta, InvalidOperationsAreRefused)
 {
-    const std::string basis = noise(1000, 12); // 16 blocks of 64
+    const std::string basis = noise(1000, 12); // 16 blocks: 15 of 64 and one of 40
     const auto hash = [](std::string_view bytes) {
         const auto digest = fileHash(bytes);
         return std::string("\x02\x10\x00", 3) + std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
     };
     const auto block = [](std::uint64_t index) {
         std::string op(9, '\0');
-        std::memcpy(op.data() + 1, &index, 8);
+        writeLittle(op, 1, index);
         return op;
     };
     const auto range = [](std::uint64_t first, std::uint32_t countLess1) {
         std::string op(13, '\0');
         op[0] = 3;
-        std::memcpy(op.data() + 1, &first, 8);
-        std::memcpy(op.data() + 9, &countLess1, 4);
+        writeLittle(op, 1, first);
+        writeLittle(op, 9, countLess1);
         return op;
     };
     EXPECT_EQ(applyDelta(basis, 64, block(15) + hash(basis.substr(960))), basis.substr(960));
@@ -269,6 +394,14 @@ TEST(Delta, InvalidOperationsAreRefused)
     EXPECT_FALSE(applyDelta(basis, 64, block(0) + hash("wrong")));
     EXPECT_FALSE(applyDelta(basis, 64, hash("") + block(0)));
     EXPECT_FALSE(applyDelta(basis, 64, block(0))); // no hash: incomplete
+    // A file hash must be 16 bytes long.
+    std::string longHash = hash(basis.substr(0, 64));
+    longHash[1] = 17;
+    EXPECT_FALSE(applyDelta(basis, 64, block(0) + longHash + "x"));
+    // Ranges whose end overflows 64 bits, or passes the basis.
+    EXPECT_FALSE(applyDelta(basis, 64, range(0, std::numeric_limits<std::uint32_t>::max()) + hash("")));
+    EXPECT_FALSE(applyDelta(basis, 64, range(std::numeric_limits<std::uint64_t>::max(), 0) + hash("")));
+    EXPECT_FALSE(applyDelta(basis, 64, range(15, 1) + hash("")));
     // A literal over the receiver's limit is refused before its bytes arrive.
     struct Sink : DeltaTarget
     {

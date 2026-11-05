@@ -3,17 +3,22 @@
 
 #pragma once
 
-#include <cstdint>
+#include <cstddef>
 #include <string>
 #include <string_view>
 
-// Text checks that a protocol message's fields must pass on both sides.
+// Checks for the text fields of protocol messages. The terminal runs them on
+// the fields that a program sends.
 namespace AfterglowProto {
 
-/// Decodes the code point at @p i and advances @p i past it. Returns false
-/// for a sequence that is not valid UTF-8 (overlong, surrogate, truncated).
+/// Decodes the code point at @p i and advances @p i past it. Returns false,
+/// with @p i unchanged, for a sequence that is not valid UTF-8 (overlong,
+/// surrogate, truncated) and when @p i is at or past the end of @p s.
 inline bool nextUtf8(std::string_view s, std::size_t& i, char32_t& cp)
 {
+    if (i >= s.size()) {
+        return false;
+    }
     const auto b = static_cast<unsigned char>(s[i]);
     const int extra = b < 0x80 ? 0 : (b & 0xE0) == 0xC0 ? 1 : (b & 0xF0) == 0xE0 ? 2 : (b & 0xF8) == 0xF0 ? 3 : -1;
     if (extra < 0 || s.size() - i <= std::size_t(extra)) {

@@ -37,16 +37,17 @@ wrong, and points to the skills that hold the procedures.
   and has no migration notes.
 - **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
   `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`. Tools that use only
-  `libs/afterglow-vt` (the VT benchmark, `tools/conformance`, `tools/fuzz`, `tools/gen_unicode_tables.py`) are
-  `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New shader packs are `LGPL-2.1-or-later`.
+  `libs/afterglow-vt` and `libs/afterglow-proto` (the VT benchmark, `tools/conformance`, `tools/fuzz`,
+  `tools/gen_unicode_tables.py`) are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New
+  shader packs are `LGPL-2.1-or-later`.
   Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file has, and do not
   relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON, images).
 - **Ask only about real decisions.** When the next step is clear, do it.
 
 ## Code
 
-- Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowRender`, `AfterglowPty`.
-- `libs/afterglow-vt` and `libs/afterglow-pty` use no Qt. Keep them plain C++20.
+- Namespaces: `Afterglow` (the application), `AfterglowVt`, `AfterglowProto`, `AfterglowRender`, `AfterglowPty`.
+- `libs/afterglow-vt`, `libs/afterglow-proto` and `libs/afterglow-pty` use no Qt. Keep them plain C++20.
 - `QT_NO_KEYWORDS` is on everywhere: `Q_EMIT`, `Q_SIGNALS`, `Q_SLOTS`. `QT_NO_CAST_FROM_ASCII` is on for the
   application and the renderer: `QStringLiteral` for constants, `QLatin1String` for comparisons and JSON keys.
 - Members are `m_camelCase`. Emit a signal only when the value changed.
@@ -93,7 +94,8 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 
 | Area | Files |
 | --- | --- |
-| Terminal core | `libs/afterglow-vt/`: `Terminal.cpp` (parser and dispatch), `Screen.cpp` (grid, scrollback, reflow), `Input.cpp` (key and mouse encoding), `Graphics.cpp`, `Sixel.cpp`, `ITerm2.cpp` (images), `Clipboard.cpp`, `Notifications.cpp`, `ShellContext.cpp` (OSC 133 and host context), `Unicode.cpp` with the generated `UnicodeTables.inc` |
+| Terminal core | `libs/afterglow-vt/`: `Terminal.cpp` (parser and dispatch), `Screen.cpp` (grid, scrollback, reflow), `Input.cpp` (key and mouse encoding), `Graphics.cpp`, `Sixel.cpp`, `ITerm2.cpp` (images), `Notifications.cpp`, `ShellContext.cpp` (OSC 133 and host context), `Unicode.cpp` with the generated `UnicodeTables.inc` |
+| Protocol formats | `libs/afterglow-proto/` (no Qt; the terminal side of each format, and the client side that tests and clients of the library use): `Transfer.cpp` and `Delta.cpp` (OSC 5113 file transfer), `DragDrop.cpp` (OSC 72), `Graphics.cpp` (APC G keys and replies), `Clipboard.cpp` (OSC 5522 and OSC 52), `Base64.h`, `Hex.h`, `Text.h`, `Sha256.cpp`, `Random.cpp`, `Zlib.cpp`; zlib-ng and xxHash from the archives that `cmake/AfterglowDependencies.cmake` pins |
 | PTY | `libs/afterglow-pty/src/Pty.cpp`: spawn, the reader thread, bounded input queue |
 | Renderer | `libs/afterglow-render/`: `GridRenderer.cpp` (panes, window composition, the overview and other tabs), `PostChain.cpp` (shader chains, buffers, budgets, the pane and tab images), `ShaderProgram.*` (the uniform mirrors of the GLSL contract), `GlyphCache.cpp`, `FontSet.cpp`, `Bidi.cpp`, `GpuDevice.cpp` |
 | Window | `afterglow/src/TerminalWindow.cpp` (input routing, render loop, panes and tabs), `TerminalWindowLayout.cpp`, `TerminalWindowOverview.cpp` (overview, tab transitions, pane effects), `TerminalWindowProject.cpp`, `TerminalWindowScript.cpp`, `TerminalWindowDock.cpp` (script docks: layout and hits), `DockArea.cpp` (one dock's text and snapshot), `Pane.cpp`, `SplitTree.cpp`, `KeyMapping.cpp`, `XkbKeyboard.cpp`, `animation/` |

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -13,8 +14,13 @@ namespace AfterglowProto {
 
 /// How much a decoder forgives.
 enum class Base64Check {
-    Lenient, ///< skips padding and anything outside the alphabet
-    PaddingOptional, ///< the alphabet only, trailing padding optional
+    /// Skips anything outside the alphabet. '=' ends a group: the bits of
+    /// its characters that do not make a whole byte are dropped, so data
+    /// after it starts on a byte boundary.
+    Lenient,
+    /// The alphabet only, with any run of '=' at the end ignored. A length
+    /// that leaves six bits over is refused.
+    PaddingOptional,
     Strict, ///< RFC 4648: the alphabet, length a multiple of four, correct padding
     /// Strict when padded. Unpadded input of any length is the alphabet
     /// only, and a last character that cannot end a byte is dropped. What
@@ -55,30 +61,37 @@ inline bool base64DecodeAppend(std::string& out, std::string_view in, Base64Chec
     auto* dst = reinterpret_cast<unsigned char*>(out.data() + start);
     const auto* src = reinterpret_cast<const unsigned char*>(in.data());
     const auto* end = src + in.size();
-    // Four characters at a time while they are all in the alphabet.
-    while (end - src >= 4) {
-        const std::int8_t a = table[src[0]];
-        const std::int8_t b = table[src[1]];
-        const std::int8_t c = table[src[2]];
-        const std::int8_t d = table[src[3]];
-        if ((a | b | c | d) < 0) {
-            break;
-        }
-        const std::uint32_t n = (std::uint32_t(a) << 18) | (std::uint32_t(b) << 12) | (std::uint32_t(c) << 6) | std::uint32_t(d);
-        dst[0] = static_cast<unsigned char>(n >> 16);
-        dst[1] = static_cast<unsigned char>(n >> 8);
-        dst[2] = static_cast<unsigned char>(n);
-        dst += 3;
-        src += 4;
-    }
-    // The rest a character at a time: the tail, padding, stray bytes.
     std::uint32_t acc = 0;
     int bits = 0;
-    for (; src < end; ++src) {
-        const std::int8_t v = table[*src];
+    while (src < end) {
+        // Four characters at a time while they are all in the alphabet, from
+        // each group boundary: a line break or other skipped character in
+        // lenient input slows only the group it falls in.
+        if (bits == 0) {
+            while (end - src >= 4) {
+                const std::int8_t a = table[src[0]];
+                const std::int8_t b = table[src[1]];
+                const std::int8_t c = table[src[2]];
+                const std::int8_t d = table[src[3]];
+                if ((a | b | c | d) < 0) {
+                    break;
+                }
+                const std::uint32_t n = (std::uint32_t(a) << 18) | (std::uint32_t(b) << 12) | (std::uint32_t(c) << 6) | std::uint32_t(d);
+                dst[0] = static_cast<unsigned char>(n >> 16);
+                dst[1] = static_cast<unsigned char>(n >> 8);
+                dst[2] = static_cast<unsigned char>(n);
+                dst += 3;
+                src += 4;
+            }
+            if (src == end) {
+                break;
+            }
+        }
+        // Then one character: the tail, padding, a stray byte.
+        const std::int8_t v = table[*src++];
         if (v < 0) {
             if (check == Base64Check::Lenient) {
-                if (*src == '=') {
+                if (src[-1] == '=') {
                     // Padding ends a quantum: its leftover bits are not data,
                     // so a following segment starts on a byte boundary.
                     acc = 0;
@@ -112,7 +125,7 @@ inline std::optional<std::string> base64Decode(std::string_view in, Base64Check 
     return out;
 }
 
-/// Decodes base64, skipping padding and anything outside the alphabet.
+/// Decodes base64 with Base64Check::Lenient.
 inline std::string base64Decode(std::string_view in)
 {
     return *base64Decode(in, Base64Check::Lenient);

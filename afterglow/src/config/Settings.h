@@ -202,6 +202,12 @@ struct Settings
     /// Variables added to the shell's environment.
     std::vector<std::pair<std::string, std::string>> environment;
     QString fileTransferPassword;
+    /// Bytes that a delta upload without a declared size can write (kitten
+    /// transfer declares none). 0 sets no limit.
+    qint64 fileTransferDeltaLimit = qint64(64) << 30;
+    /// Milliseconds that a drag over a pane waits for the answer of a program
+    /// that uses Kitty drag and drop, when the drag shows it new types.
+    int dragAnswerWait = 100;
     enum class Permission { Allow, Ask, Deny };
     /// Programs reading the clipboard (OSC 52, OSC 5522).
     Permission clipboardRead = Permission::Ask;

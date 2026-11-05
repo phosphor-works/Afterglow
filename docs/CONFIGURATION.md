@@ -192,7 +192,9 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `cursorBlink` | `true` |  | Make the cursor blink. |
 | `cursorBlinkInterval` | `530` | 100–5000 | Duration in milliseconds for each visible and hidden cursor phase. |
 | `cursorShape` | `"block"` | `"block"`, `"underline"`, `"bar"` | Shape of the cursor until a program sets another one with DECSCUSR. |
+| `dragAnswerWait` | `100` | 0–1000 | Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop, when a drag over its pane shows it new types. The window does not draw while it waits. A value of 0 does not wait. |
 | `env` | `{}` |  | Variables added to the shell's environment, such as { "EDITOR": "nvim" }. Each value must be a string. New panes use this value. |
+| `fileTransferDeltaLimit` | `64` | 0–1048576 | Gibibytes that a Kitty delta file transfer can write when the program does not give the file size. A larger file fails with EFBIG. A value of 0 sets no limit. |
 | `fileTransferPassword` | `""` |  | Shared secret for Kitty file-transfer approval. An empty value always asks for approval. |
 | `graphicsFileTransfer` | `"allow"` | `"allow"`, `"deny"` | Images that programs send with the Kitty graphics protocol as a file, a temporary file or shared memory. Images sent inline always work. |
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |

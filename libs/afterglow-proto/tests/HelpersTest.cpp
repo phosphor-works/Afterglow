@@ -53,6 +53,15 @@ TEST(Sha256, UpdatesOfAnySizeGiveOneDigest)
     hash.finish();
     hash.update("abc");
     EXPECT_EQ(toHex(hash.finish()), hex("abc"));
+    // An empty view holds a null pointer. It adds nothing, also into a partial block.
+    // A memcpy from the null pointer is caught only by UBSan (the debug preset),
+    // and that preset recovers: it prints a runtime error to the test log and
+    // this test still passes. Read the log for the error.
+    Sha256 partial;
+    partial.update("ab");
+    partial.update(std::string_view());
+    partial.update("c");
+    EXPECT_EQ(toHex(partial.finish()), hex("abc"));
 }
 
 // RFC 4231, test cases 1 to 7.
@@ -76,6 +85,10 @@ TEST(HmacSha256, Rfc4231Vectors)
                    "This is a test using a larger than block-size key and a larger than block-size data. The key needs to "
                    "be hashed before being used by the HMAC algorithm."),
               "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2");
+    // An empty key, also as a view with a null pointer. Only UBSan (the debug
+    // preset) reports a memcpy from that pointer.
+    EXPECT_EQ(hmac("", ""), "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad");
+    EXPECT_EQ(hmac(std::string_view(), std::string_view()), hmac("", ""));
 }
 
 TEST(Random, FillsTheBufferWithDifferentBytes)
@@ -104,7 +117,7 @@ TEST(Zlib, StreamsInSmallSteps)
     std::string compressed;
     std::size_t at = 0;
     bool end = false;
-    while (!end) {
+    for (int steps = 0; !end && steps < 100000; ++steps) {
         const bool last = at >= text.size();
         if (deflater.inputLeft() == 0 && !last) {
             deflater.setInput(std::string_view(text).substr(at, 100));
@@ -117,27 +130,42 @@ TEST(Zlib, StreamsInSmallSteps)
         compressed.append(out, produced);
         end = result == ZlibStream::Result::End;
     }
+    ASSERT_TRUE(end);
     EXPECT_LT(compressed.size(), text.size());
     std::string whole;
     ASSERT_TRUE(zlibInflate(compressed, whole, text.size()));
     EXPECT_EQ(whole, text);
 
     ZlibStream inflater(ZlibStream::Mode::Inflate);
+    ASSERT_TRUE(inflater.valid());
     std::string back;
-    for (std::size_t from = 0; from < compressed.size(); from += 7) {
+    bool ended = false;
+    for (std::size_t from = 0; from < compressed.size() && !ended; from += 7) {
         inflater.setInput(std::string_view(compressed).substr(from, 7));
-        while (inflater.inputLeft()) {
+        for (int steps = 0; inflater.inputLeft() && steps < 100000; ++steps) {
             char out[64];
             std::size_t produced = 0;
             const auto result = inflater.step(out, sizeof out, produced);
             ASSERT_NE(result, ZlibStream::Result::Error);
             back.append(out, produced);
             if (result == ZlibStream::Result::End) {
+                ended = true;
                 break;
             }
         }
     }
+    EXPECT_TRUE(ended);
     EXPECT_EQ(back, text);
+}
+
+TEST(Zlib, StreamReportsBadData)
+{
+    ZlibStream inflater(ZlibStream::Mode::Inflate);
+    ASSERT_TRUE(inflater.valid());
+    inflater.setInput("not zlib");
+    char out[64];
+    std::size_t produced = 0;
+    EXPECT_EQ(inflater.step(out, sizeof out, produced), ZlibStream::Result::Error);
 }
 
 TEST(Zlib, InflateStopsAtTheLimitAndOnBadData)

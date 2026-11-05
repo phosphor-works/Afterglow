@@ -64,7 +64,6 @@ void ClipboardAssembler::reset()
     m_mime.clear();
     m_part.clear();
     m_carry.clear();
-    m_padded = false;
     m_decoded = 0;
 }
 
@@ -95,7 +94,6 @@ bool ClipboardAssembler::flush(std::string& reply)
     m_write.data.emplace_back(std::move(m_mime), std::move(m_part));
     m_mime.clear();
     m_part.clear();
-    m_padded = false;
     return true;
 }
 
@@ -110,7 +108,9 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
         // must simply be ignored.
         const std::string_view type = metadataValue(metadata, "type");
         if (type == "write") {
+            // The reply still names the write, so the program can tell which one failed.
             reset();
+            m_write.id = sanitizeId(metadataValue(metadata, "id"));
             return fail("EFBIG", reply);
         }
         if ((type == "wdata" || type == "walias") && m_writing && !m_failed) {
@@ -286,31 +286,46 @@ ClipboardAssembler::Result ClipboardAssembler::feed(std::string_view payload, Cl
             return Result::Pending;
         }
         // Decoded as it arrives, so the encoded stream is never held whole.
-        // Only the concatenation of a type's chunks must be padded, so a
-        // chunk may end inside a group, and padding ends the stream.
-        if (m_padded) {
-            return fail("EINVAL", reply);
-        }
-        std::string joined = m_carry;
-        joined += data;
+        // The spec pads only the concatenation of a type's chunks, so a chunk
+        // may end inside a group. kitten clipboard encodes each chunk on its
+        // own, with padding, and kitty's decoder starts again after it, so
+        // padding at the end of a chunk ends one stream and the next chunk
+        // starts another. Padding inside a chunk is an error.
+        // The carried characters and the front of this chunk make one
+        // group; the rest of the chunk is decoded where it is, never copied.
+        const std::size_t take = m_carry.empty() ? 0 : std::min(data.size(), 4 - m_carry.size());
+        m_carry.append(data.substr(0, take));
+        const std::string_view rest = data.substr(take);
+        const std::string_view head = m_carry.size() == 4 ? std::string_view(m_carry) : std::string_view{};
         // Whole groups only: a stream may be cut between its two padding
         // characters. Malformed padding stays in the carry, and flush()
         // refuses it.
-        const std::size_t whole = joined.size() / 4 * 4;
+        const std::size_t whole = rest.size() / 4 * 4;
+        const std::string_view body = rest.substr(0, whole);
+        const std::string_view last = body.empty() ? head : body.substr(whole - 4);
         std::size_t padding = 0;
-        while (padding < 2 && padding < whole && joined[whole - 1 - padding] == '=') {
+        while (padding < 2 && padding < last.size() && last[last.size() - 1 - padding] == '=') {
             ++padding;
+        }
+        // Padding ends the stream, so only the last group may hold it.
+        if (!body.empty() && head.find('=') != std::string_view::npos) {
+            return fail("EINVAL", reply);
         }
         // The size is known before the decode, so one large chunk cannot
         // grow the data past the limit first.
-        if (m_part.size() + (whole / 4 * 3 - padding) > MaxWrite - m_decoded) {
+        if (m_part.size() + ((head.size() + whole) / 4 * 3 - padding) > MaxWrite - m_decoded) {
             return fail("EFBIG", reply);
         }
-        if (!base64DecodeAppend(m_part, std::string_view(joined).substr(0, whole), Base64Check::Strict)) {
+        if (!base64DecodeAppend(m_part, head, Base64Check::Strict) || !base64DecodeAppend(m_part, body, Base64Check::Strict)) {
             return fail("EINVAL", reply);
         }
-        m_padded = padding != 0;
-        m_carry = joined.substr(whole);
+        if (padding != 0 && whole < rest.size()) {
+            return fail("EINVAL", reply);
+        }
+        if (!head.empty()) {
+            m_carry.clear();
+        }
+        m_carry.append(rest.substr(whole));
         return Result::Pending;
     }
     return Result::Ignored;
@@ -338,11 +353,11 @@ std::string ClipboardAssembler::readData(std::string_view mime, std::string_view
         + (oneTimePassword.empty() ? std::string{} : ":pw=" + base64Encode(oneTimePassword)) + ';';
     std::size_t pos = 0;
     do {
-        const std::string_view chunk = bytes.substr(pos, ReadChunk);
+        const std::string_view chunk = bytes.substr(pos, DataChunk);
         out += prefix;
         out += base64Encode(chunk);
         out += "\x1b\\";
-        pos += ReadChunk;
+        pos += DataChunk;
     } while (pos < bytes.size());
     return out;
 }
@@ -372,8 +387,9 @@ std::string requestHeader(std::string_view type, const ClipboardRequest& request
     if (request.primary) {
         r += ":loc=primary";
     }
-    if (!request.id.empty()) {
-        r += ":id=" + request.id;
+    // The terminal sanitizes the id it echoes: send it as it will come back.
+    if (const std::string id = sanitizeId(request.id); !id.empty()) {
+        r += ":id=" + id;
     }
     // The terminal ignores a password that comes without a name.
     if (!request.password.empty() && !request.name.empty()) {
@@ -382,10 +398,15 @@ std::string requestHeader(std::string_view type, const ClipboardRequest& request
     return r;
 }
 
+/// The type names among @p parts, separated by spaces. Another name would
+/// make the terminal refuse the whole request, and a space would split it.
 std::string joined(const std::vector<std::string>& parts)
 {
     std::string out;
     for (const auto& part : parts) {
+        if (!isTypeName(part)) {
+            continue;
+        }
         if (!out.empty()) {
             out += ' ';
         }
@@ -403,11 +424,13 @@ std::string clipboardReadRequest(const ClipboardRequest& request)
 
 std::string clipboardWriteRequest(const ClipboardRequest& request)
 {
-    // Whole groups of three bytes in each chunk but the last, so that only
-    // the end of a type's stream is padded.
-    constexpr std::size_t Chunk = ClipboardAssembler::ReadChunk / 4 * 3;
+    // Only the end of a type's stream may be padded (the spec).
+    constexpr std::size_t Chunk = ClipboardAssembler::DataChunk;
     std::string out = requestHeader("write", request) + "\x1b\\";
     for (const auto& [mime, bytes] : request.data) {
+        if (!isTypeName(mime)) {
+            continue;
+        }
         const std::string prefix = "\x1b]5522;type=wdata:mime=" + base64Encode(mime) + ';';
         std::size_t pos = 0;
         do {
@@ -417,9 +440,13 @@ std::string clipboardWriteRequest(const ClipboardRequest& request)
             pos += Chunk;
         } while (pos < bytes.size());
     }
-    // Aliases are sent for each type they share, in the order given.
+    // One walias packet for each type, in the order each type first appears
+    // among the aliases; its aliases in the order given.
     std::vector<std::pair<std::string, std::vector<std::string>>> aliases;
     for (const auto& [alias, mime] : request.aliases) {
+        if (!isTypeName(alias) || !isTypeName(mime)) {
+            continue;
+        }
         auto it = std::find_if(aliases.begin(), aliases.end(), [&](const auto& entry) { return entry.first == mime; });
         if (it == aliases.end()) {
             aliases.emplace_back(mime, std::vector<std::string>{});
@@ -459,7 +486,7 @@ std::optional<ClipboardReply> ClipboardReply::parse(std::string_view payload)
             } else if (key == "status") {
                 reply.status = value;
             } else if (key == "id") {
-                reply.id = value;
+                reply.id = sanitizeId(value);
             } else if (key == "mime") {
                 decode(reply.mime);
             } else if (key == "pw") {
@@ -488,7 +515,7 @@ std::optional<Osc52Message> Osc52Message::parse(std::string_view payload)
         return std::nullopt;
     }
     Osc52Message message;
-    message.selection = payload.substr(0, semi);
+    message.selection = osc52Letters(payload.substr(0, semi));
     const std::string_view data = payload.substr(semi + 1);
     message.query = data == "?";
     if (!message.query) {
@@ -497,9 +524,20 @@ std::optional<Osc52Message> Osc52Message::parse(std::string_view payload)
     return message;
 }
 
+std::string osc52Letters(std::string_view selection)
+{
+    std::string out;
+    for (const char c : selection.substr(0, 16)) {
+        if (std::string_view("cpqs01234567").find(c) != std::string_view::npos) {
+            out += c;
+        }
+    }
+    return out;
+}
+
 std::string Osc52Message::write() const
 {
-    return "\x1b]52;" + selection + ';' + (query ? std::string("?") : base64Encode(text)) + "\x1b\\";
+    return "\x1b]52;" + osc52Letters(selection) + ';' + (query ? std::string("?") : base64Encode(text)) + "\x1b\\";
 }
 
 } // namespace AfterglowProto

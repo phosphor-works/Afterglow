@@ -138,6 +138,9 @@ public:
     /// OSC 52 write. @p selection is the target list ("c", "p", "s"...).
     virtual void clipboardWrite(std::string_view selection, std::string_view data) { }
     /// A desktop notification (OSC 9 or OSC 777;notify). @p title may be empty.
+    /// Both are clean text (detail::isCleanText): valid UTF-8 with no C0, DEL
+    /// or C1 control, so no line feed. U+2028 and U+2029, which Qt breaks
+    /// lines at, may occur.
     virtual void notify(std::string_view title, std::string_view body) { }
     /// The pointer shape the program asks for (OSC 22), a CSS cursor name;
     /// empty restores the default.
@@ -165,7 +168,12 @@ public:
     /// or a complete write. OSC 52 reads come here too (ClipboardRequest::osc52). Replies go through ClipboardAssembler's encoders.
     /// Returning false means the host has no such clipboard support.
     virtual bool clipboardRequest(const ClipboardRequest& request) { return false; }
-    /// Host-side file transfer and drag-and-drop commands; code 0 resets sessions.
+    /// A kitty file transfer (OSC 5113) or drag and drop (OSC 72) command,
+    /// with @p code its OSC number; code 0, with no payload, resets every
+    /// session (RIS, a new program). A command over the protocol's limit
+    /// (AfterglowProto::TransferMaxCommand, AfterglowProto::DndMaxCommand)
+    /// arrives cut to limit + 1 bytes. The host must treat a payload over the
+    /// limit as an oversized command and end it with the protocol's error.
     virtual void terminalProtocol(int code, std::string_view payload) {}
     /// A scroll moved cells of the active screen to other rows (SU, SD, IL,
     /// DL, a line feed at a scroll region's margin). The terminal has moved

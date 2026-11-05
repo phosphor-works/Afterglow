@@ -41,6 +41,10 @@ qt_add_executable(afterglow_control_tests ControlSocketTest.cpp)
 target_link_libraries(afterglow_control_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_control_tests)
 
+qt_add_executable(afterglow_pane_tests PaneProtocolTest.cpp)
+target_link_libraries(afterglow_pane_tests PRIVATE afterglow_app GTest::gtest)
+gtest_discover_tests(afterglow_pane_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 qt_add_executable(afterglow_signal_tests QuitSignalsTest.cpp)
 target_link_libraries(afterglow_signal_tests PRIVATE afterglow_app GTest::gtest)
 gtest_discover_tests(afterglow_signal_tests)

@@ -10,11 +10,14 @@ add_executable(afterglow_proto_tests
     DragDropTest.cpp
     GraphicsTest.cpp
     HelpersTest.cpp
+    TextTest.cpp
     TransferTest.cpp
 )
 # xxHash directly: the delta tests check the library against it.
 target_link_libraries(afterglow_proto_tests PRIVATE Afterglow::Proto afterglow_xxhash GTest::gtest_main)
-set_target_properties(afterglow_proto_tests PROPERTIES AUTOMOC OFF)
+set_target_properties(afterglow_proto_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF)
 
 include(GoogleTest)
-gtest_discover_tests(afterglow_proto_tests)
+# Suites such as Clipboard and Graphics have the same names in the
+# afterglow-vt tests: the prefix keeps the ctest names apart.
+gtest_discover_tests(afterglow_proto_tests TEST_PREFIX "Proto.")

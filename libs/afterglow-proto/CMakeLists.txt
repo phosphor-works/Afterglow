@@ -1,75 +1,74 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-# zlib and xxHash come from the release tarballs in extern/, so every build
-# (the application, afterglow-vt and a static client) uses the same versions
-# and no system package. The hashes are checked before anything is extracted.
-set(AFTERGLOW_ZLIB_VERSION 1.3.2)
-set(AFTERGLOW_ZLIB_SHA256 bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16)
-set(AFTERGLOW_XXHASH_VERSION 0.8.4)
-set(AFTERGLOW_XXHASH_SHA256 5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32)
+# zlib-ng and xxHash are built into the tree from the archives that
+# cmake/AfterglowDependencies.cmake pins, not taken from the system. Every
+# build (the application, afterglow-vt, the tests, the fuzz targets and a
+# static client of this library) then uses the same code. zlib-ng has the
+# SIMD paths that a distribution's zlib-ng has, chosen at run time, so the
+# terminal decodes o=z images as fast as with the system library. A zlib-ng
+# security fix arrives with a new pin. The root CMakeLists.txt includes
+# cmake/AfterglowDependencies.cmake, at the top scope where CPM must load.
 
-# Extracts extern/ARCHIVE once into the build tree and sets OUT to the
-# directory it holds. The stamp is written after a whole extraction, so an
-# interrupted configure extracts again instead of building half a tree.
-function(afterglow_extract archive sha256 directory out)
-    set(tarball "${CMAKE_CURRENT_SOURCE_DIR}/../../extern/${archive}")
-    if(NOT EXISTS "${tarball}")
-        message(FATAL_ERROR "The bundled ${archive} is missing from extern/. It is part of the repository.")
-    endif()
-    file(SHA256 "${tarball}" actual)
-    if(NOT actual STREQUAL sha256)
-        message(FATAL_ERROR "extern/${archive} has SHA-256 ${actual}, expected ${sha256}.")
-    endif()
-    set(root "${CMAKE_BINARY_DIR}/_extern")
-    set(stamp "${root}/.extracted-${archive}-${sha256}")
-    if(NOT EXISTS "${stamp}")
-        file(REMOVE_RECURSE "${root}/${directory}")
-        file(MAKE_DIRECTORY "${root}")
-        file(ARCHIVE_EXTRACT INPUT "${tarball}" DESTINATION "${root}")
-        file(TOUCH "${stamp}")
-    endif()
-    set(${out} "${root}/${directory}" PARENT_SCOPE)
+# zlib-ng with its own build, in its zlib-compatible API. Its public symbols
+# get the prefix afterglow_ (zlib.h renames the calls), so they can never
+# take the place of the zlib that other libraries in the process load (Qt,
+# libpng), or the reverse. Only the static library is built: no tests, no
+# gz* file API, no install rules. zlib-ng includes CPack, which would write
+# its own package configuration as the top-level CPackConfig.cmake: it is
+# written into zlib-ng's build directory instead.
+function(afterglow_add_zlib_ng)
+    afterglow_fetch_dependency(zlib-ng)
+    set(build "${CMAKE_BINARY_DIR}/_afterglow_deps/zlib-ng-build")
+    set(BUILD_TESTING OFF)
+    set(BUILD_SHARED_LIBS OFF)
+    set(ZLIB_COMPAT ON)
+    set(ZLIB_ALIASES OFF)
+    set(ZLIB_SYMBOL_PREFIX "afterglow_")
+    set(WITH_GZFILEOP OFF)
+    set(WITH_NATIVE_INSTRUCTIONS OFF)
+    set(SKIP_INSTALL_ALL ON)
+    set(CPACK_OUTPUT_CONFIG_FILE "${build}/CPackConfig.cmake")
+    set(CPACK_SOURCE_OUTPUT_CONFIG_FILE "${build}/CPackSourceConfig.cmake")
+    add_subdirectory("${zlib-ng_SOURCE_DIR}" "${build}" EXCLUDE_FROM_ALL)
+    set(AFTERGLOW_ZLIB_NG_SOURCE_DIR "${zlib-ng_SOURCE_DIR}" PARENT_SCOPE)
+    set(AFTERGLOW_ZLIB_NG_BINARY_DIR "${build}" PARENT_SCOPE)
 endfunction()
+afterglow_add_zlib_ng()
 
-afterglow_extract(zlib-${AFTERGLOW_ZLIB_VERSION}.tar.gz ${AFTERGLOW_ZLIB_SHA256}
-    zlib-${AFTERGLOW_ZLIB_VERSION} AFTERGLOW_ZLIB_DIR)
-afterglow_extract(xxHash-${AFTERGLOW_XXHASH_VERSION}.tar.gz ${AFTERGLOW_XXHASH_SHA256}
-    xxHash-${AFTERGLOW_XXHASH_VERSION} AFTERGLOW_XXHASH_DIR)
+afterglow_fetch_dependency(xxhash)
+add_library(afterglow_xxhash STATIC ${xxhash_SOURCE_DIR}/xxhash.c)
+target_include_directories(afterglow_xxhash SYSTEM PUBLIC ${xxhash_SOURCE_DIR})
 
-# Our own targets over the upstream sources: their build scripts never run.
-# Only the stream functions of zlib; the gz* file API is not used.
-add_library(afterglow_zlib STATIC
-    ${AFTERGLOW_ZLIB_DIR}/adler32.c
-    ${AFTERGLOW_ZLIB_DIR}/compress.c
-    ${AFTERGLOW_ZLIB_DIR}/crc32.c
-    ${AFTERGLOW_ZLIB_DIR}/deflate.c
-    ${AFTERGLOW_ZLIB_DIR}/inffast.c
-    ${AFTERGLOW_ZLIB_DIR}/inflate.c
-    ${AFTERGLOW_ZLIB_DIR}/inftrees.c
-    ${AFTERGLOW_ZLIB_DIR}/trees.c
-    ${AFTERGLOW_ZLIB_DIR}/uncompr.c
-    ${AFTERGLOW_ZLIB_DIR}/zutil.c)
-target_include_directories(afterglow_zlib SYSTEM PUBLIC ${AFTERGLOW_ZLIB_DIR})
-add_library(afterglow_xxhash STATIC ${AFTERGLOW_XXHASH_DIR}/xxhash.c)
-target_include_directories(afterglow_xxhash SYSTEM PUBLIC ${AFTERGLOW_XXHASH_DIR})
-foreach(bundled afterglow_zlib afterglow_xxhash)
+# The include directories again as SYSTEM, so that -Wpedantic and the other
+# warnings of Afterglow's code never fire in zlib-ng's headers.
+add_library(afterglow_zlib INTERFACE)
+target_link_libraries(afterglow_zlib INTERFACE zlib-ng)
+target_include_directories(afterglow_zlib SYSTEM INTERFACE ${AFTERGLOW_ZLIB_NG_BINARY_DIR} ${AFTERGLOW_ZLIB_NG_SOURCE_DIR})
+
+foreach(bundled zlib-ng afterglow_xxhash)
     # PIC: they link into the shared afterglow-vt. Hidden: a shared library
-    # must not export inflate() or XXH3_*() over the copies other libraries
-    # in the process (Qt, libpng) load. -w: upstream code is not ours to fix.
+    # must not export inflate() or XXH3_*(). -w: upstream code is not ours to
+    # fix. No LTO, even with CMAKE_INTERPROCEDURAL_OPTIMIZATION: the optimizer
+    # would work on upstream code again when afterglow-vt links, and warnings
+    # found then do not come under -w. qt_standard_project_setup() turns
+    # AUTOMOC and AUTOUIC on for every target, and these have no Qt.
     set_target_properties(${bundled} PROPERTIES
         POSITION_INDEPENDENT_CODE ON
         C_VISIBILITY_PRESET hidden
         INTERPROCEDURAL_OPTIMIZATION OFF
-        AUTOMOC OFF)
+        AUTOMOC OFF
+        AUTOUIC OFF)
     target_compile_options(${bundled} PRIVATE -w)
 endforeach()
-# Both are linked into the binaries, so their notices go with them.
-install(FILES ${AFTERGLOW_ZLIB_DIR}/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow RENAME LICENSE.zlib)
-install(FILES ${AFTERGLOW_XXHASH_DIR}/LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow RENAME LICENSE.xxHash)
+# Both are linked into the binaries, so their notices go with them. They
+# install with the other licence texts (afterglow/CMakeLists.txt).
+set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_SCOPE)
+set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 
-# Static, so that a client binary can link it with no shared library beside
-# it. Each binary that links it gets its own copy of the code.
+# Static and PIC: it links into the shared afterglow-vt and into each
+# executable that uses it directly (the application, the tests). Each of
+# them gets its own copy of the code, with hidden symbols.
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp
     src/Delta.cpp
@@ -83,7 +82,7 @@ add_library(AfterglowProto STATIC
 add_library(Afterglow::Proto ALIAS AfterglowProto)
 target_include_directories(AfterglowProto PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_link_libraries(AfterglowProto PRIVATE afterglow_zlib afterglow_xxhash)
-set_target_properties(AfterglowProto PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF)
+set_target_properties(AfterglowProto PROPERTIES POSITION_INDEPENDENT_CODE ON AUTOMOC OFF AUTOUIC OFF)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

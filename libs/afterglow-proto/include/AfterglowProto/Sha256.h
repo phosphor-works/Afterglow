@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -34,8 +35,7 @@ private:
 Sha256::Digest sha256(std::string_view bytes);
 /// HMAC (RFC 2104) with SHA-256.
 Sha256::Digest hmacSha256(std::string_view key, std::string_view message);
-/// Lowercase hexadecimal.
-std::string toHex(std::string_view bytes);
+/// Lowercase hexadecimal of a digest.
 std::string toHex(const Sha256::Digest& digest);
 
 } // namespace AfterglowProto

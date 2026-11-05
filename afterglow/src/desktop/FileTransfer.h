@@ -12,6 +12,10 @@ namespace Afterglow {
 class FileTransfer : public QObject {
     Q_OBJECT
 public:
+    /// The delta limit in bytes until setDeltaLimit() is called. It matches
+    /// the default of Terminal.fileTransferDeltaLimit.
+    static constexpr qint64 DefaultDeltaLimit = qint64(64) << 30;
+
     explicit FileTransfer(QObject* parent = nullptr);
     ~FileTransfer() override;
     void handle(const QByteArray& command);
@@ -19,6 +23,10 @@ public:
     void reset();
     void abort();
     void setPassword(const QString& password);
+    /// The most bytes that a delta upload without a declared size can write.
+    /// Copy operations let a few bytes of input write a whole old file again,
+    /// so such an upload has no other bound. 0 sets no limit.
+    void setDeltaLimit(qint64 bytes);
     /// Reports the bytes that wait in the PTY input queue. Called on the GUI thread.
     /// Outgoing data pauses while it is large.
     void setInputBacklog(std::function<std::size_t()> backlog);

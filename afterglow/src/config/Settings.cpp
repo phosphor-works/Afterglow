@@ -473,6 +473,13 @@ PhosphorConfig::Schema buildSchema()
                         "break could run a command.")},
         stringKey(QStringLiteral("fileTransferPassword"), {},
                   QStringLiteral("Shared secret for Kitty file-transfer approval. An empty value always asks for approval.")),
+        intKey(QStringLiteral("fileTransferDeltaLimit"), int(d.fileTransferDeltaLimit >> 30), 0, 1048576,
+               QStringLiteral("Gibibytes that a Kitty delta file transfer can write when the program does not give the file "
+                              "size. A larger file fails with EFBIG. A value of 0 sets no limit.")),
+        intKey(QStringLiteral("dragAnswerWait"), d.dragAnswerWait, 0, 1000,
+               QStringLiteral("Milliseconds that Afterglow waits for the answer of a program that uses Kitty drag and drop, when "
+                              "a drag over its pane shows it new types. The window does not draw while it waits. A value of 0 "
+                              "does not wait.")),
         enumKey(QStringLiteral("clipboardRead"), PermissionChoices, d.clipboardRead,
                 QStringLiteral("Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read.")),
         intKey(QStringLiteral("pasteReadTimeout"), d.pasteReadTimeout, 1, 600,
@@ -1306,6 +1313,8 @@ Settings SettingsStore::read()
         }
     }
     s.fileTransferPassword = st.read<QString>(Terminal, QStringLiteral("fileTransferPassword"));
+    s.fileTransferDeltaLimit = qint64(st.read<int>(Terminal, QStringLiteral("fileTransferDeltaLimit"))) << 30;
+    s.dragAnswerWait = st.read<int>(Terminal, QStringLiteral("dragAnswerWait"));
     s.clipboardRead = readEnum(st, Terminal, QStringLiteral("clipboardRead"), PermissionChoices, s.clipboardRead);
     s.pasteReadTimeout = st.read<int>(Terminal, QStringLiteral("pasteReadTimeout"));
     s.clipboardWrite = readEnum(st, Terminal, QStringLiteral("clipboardWrite"), PermissionChoices, s.clipboardWrite);

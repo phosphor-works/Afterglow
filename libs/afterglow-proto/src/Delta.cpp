@@ -4,8 +4,10 @@
 #include <AfterglowProto/Delta.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
+#include <tuple>
 
 #include <xxhash.h>
 
@@ -31,34 +33,34 @@ void appendLittle(std::string& out, T value)
     }
 }
 
-/// A streaming XXH3-128. A failed state allocation is reported by valid(),
-/// not thrown: the transfer service answers ENOMEM, and an exception would
-/// end the process from its worker thread.
+/// A streaming XXH3-128. XXH3_createState() returns null when it cannot
+/// allocate, and valid() reports that, so that the transfer service can
+/// answer ENOMEM.
 class StreamHash
 {
 public:
     StreamHash()
     {
-        if (state) {
-            XXH3_128bits_reset(state);
+        if (m_state) {
+            XXH3_128bits_reset(m_state);
         }
     }
-    ~StreamHash() { XXH3_freeState(state); }
-    bool valid() const { return state != nullptr; }
+    ~StreamHash() { XXH3_freeState(m_state); }
+    bool valid() const { return m_state != nullptr; }
     StreamHash(const StreamHash&) = delete;
     StreamHash& operator=(const StreamHash&) = delete;
-    void update(std::string_view bytes) { XXH3_128bits_update(state, bytes.data(), bytes.size()); }
+    void update(std::string_view bytes) { XXH3_128bits_update(m_state, bytes.data(), bytes.size()); }
     std::array<std::uint8_t, 16> digest() const
     {
         XXH128_canonical_t canonical{};
-        XXH128_canonicalFromHash(&canonical, XXH3_128bits_digest(state));
+        XXH128_canonicalFromHash(&canonical, XXH3_128bits_digest(m_state));
         std::array<std::uint8_t, 16> out;
         std::memcpy(out.data(), canonical.digest, out.size());
         return out;
     }
 
 private:
-    XXH3_state_t* state = XXH3_createState();
+    XXH3_state_t* m_state = XXH3_createState();
 };
 
 } // namespace
@@ -72,7 +74,8 @@ struct DeltaApplier::Hash : StreamHash
 
 std::uint32_t deltaBlockSize(std::uint64_t fileSize)
 {
-    return std::uint32_t(std::max(64.0, std::ceil(std::sqrt(double(fileSize)))));
+    // Clamped before the conversion: the root of a size near 2^64 does not fit 32 bits.
+    return std::uint32_t(std::clamp(std::ceil(std::sqrt(double(fileSize))), 64.0, double(DeltaMaxBlockSize)));
 }
 
 std::uint32_t rollingChecksum(std::string_view block)
@@ -168,16 +171,39 @@ bool DeltaGenerator::valid() const
 
 void DeltaGenerator::parse()
 {
-    m_blockSize = signatureBlockSize(m_signature, UINT32_MAX).value_or(0);
-    for (std::size_t at = SignatureHeaderSize; at + SignatureRecordSize <= m_signature.size(); at += SignatureRecordSize) {
-        const auto index = readLittle<std::uint64_t>(m_signature.data() + at);
-        const auto weak = readLittle<std::uint32_t>(m_signature.data() + at + 8);
-        const auto strong = readLittle<std::uint64_t>(m_signature.data() + at + 12);
-        m_weakHashes.insert(weak);
-        m_blocks.try_emplace({weak, strong}, index);
-    }
-    m_signature = std::string();
     m_parsed = true;
+    m_blockSize = signatureBlockSize(m_signature, UINT32_MAX).value_or(0);
+    if (m_blockSize) {
+        const std::size_t count = (m_signature.size() - SignatureHeaderSize) / SignatureRecordSize;
+        m_records.reserve(count);
+        for (std::size_t at = SignatureHeaderSize; at < m_signature.size(); at += SignatureRecordSize) {
+            m_records.push_back({readLittle<std::uint32_t>(m_signature.data() + at + 8),
+                                 readLittle<std::uint64_t>(m_signature.data() + at + 12),
+                                 readLittle<std::uint64_t>(m_signature.data() + at)});
+        }
+        // The index breaks ties: a block that the signature lists twice
+        // matches at its lowest index. std::sort works in place, where
+        // stable_sort allocates a buffer beside the records.
+        std::sort(m_records.begin(), m_records.end(), [](const Record& a, const Record& b) {
+            return std::tie(a.weak, a.strong, a.index) < std::tie(b.weak, b.strong, b.index);
+        });
+        // About 8 bits for each record, so that few misses pass the filter.
+        const std::size_t bits = std::min(std::bit_ceil(std::max<std::size_t>(64, count * 8)), std::size_t(1) << 32);
+        m_filterShift = 32 - unsigned(std::countr_zero(bits));
+        m_weakFilter.assign(bits / 64, 0);
+        for (const Record& record : m_records) {
+            const std::uint32_t bit = std::uint32_t(record.weak * 0x9e3779b1u) >> m_filterShift;
+            m_weakFilter[bit / 64] |= std::uint64_t(1) << (bit % 64);
+        }
+    }
+    // A swap frees the buffer. Assigning an empty string can keep it.
+    std::string().swap(m_signature);
+}
+
+bool DeltaGenerator::mayHold(std::uint32_t weak) const
+{
+    const std::uint32_t bit = std::uint32_t(weak * 0x9e3779b1u) >> m_filterShift;
+    return (m_weakFilter[bit / 64] >> (bit % 64)) & 1;
 }
 
 void DeltaGenerator::flushLiteral(std::string& out)
@@ -235,11 +261,20 @@ bool DeltaGenerator::produce(ByteSource& file, std::string& out, std::size_t wan
             m_b &= 0xffffu;
         }
         std::optional<std::uint64_t> match;
+        bool hashed = false;
         const std::uint32_t weak = m_a | (m_b << 16);
-        if (m_weakHashes.contains(weak)) {
-            const auto strong = XXH3_64bits(data + m_position, length);
-            if (const auto found = m_blocks.find({weak, strong}); found != m_blocks.end()) {
-                match = found->second;
+        if (mayHold(weak)) {
+            const auto first = std::lower_bound(m_records.begin(), m_records.end(), weak,
+                                                [](const Record& record, std::uint32_t key) { return record.weak < key; });
+            if (first != m_records.end() && first->weak == weak) {
+                hashed = true;
+                const std::uint64_t strong = XXH3_64bits(data + m_position, length);
+                const auto found = std::lower_bound(first, m_records.end(), strong, [weak](const Record& record, std::uint64_t key) {
+                    return record.weak == weak && record.strong < key;
+                });
+                if (found != m_records.end() && found->weak == weak && found->strong == strong) {
+                    match = found->index;
+                }
             }
         }
         if (match) {
@@ -267,7 +302,10 @@ bool DeltaGenerator::produce(ByteSource& file, std::string& out, std::size_t wan
                 m_fresh = true; // the next pass refills the buffer
             }
             ++m_position;
-            ++scanned;
+            // A weak hit with a wrong strong hash costs a whole block of
+            // hashing. Count it, or a signature whose weak hash matches at
+            // every position makes one call hash a block for each byte.
+            scanned += hashed ? length : 1;
             if (m_literal.size() >= 65536) {
                 flushLiteral(out);
             }
@@ -277,7 +315,7 @@ bool DeltaGenerator::produce(ByteSource& file, std::string& out, std::size_t wan
 }
 
 DeltaApplier::DeltaApplier(std::uint32_t blockSize, std::uint64_t basisSize, std::size_t maxLiteral)
-    : m_blocks(blockSize ? (basisSize + blockSize - 1) / blockSize : 0)
+    : m_blockCount(blockSize ? (basisSize + blockSize - 1) / blockSize : 0)
     , m_maxLiteral(maxLiteral)
     , m_hash(std::make_unique<Hash>())
 {
@@ -334,7 +372,7 @@ std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTa
             }
             const auto first = readLittle<std::uint64_t>(rest.data() + 1);
             const std::uint64_t count = type == 0 ? 1 : std::uint64_t(readLittle<std::uint32_t>(rest.data() + 9)) + 1;
-            if (first >= m_blocks || count > m_blocks - first) {
+            if (first >= m_blockCount || count > m_blockCount - first) {
                 return std::nullopt;
             }
             std::string block;

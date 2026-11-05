@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+/// Random values for the client side of the protocols, such as session
+/// ids. They are used by tests and by clients of the library.
 namespace AfterglowProto {
 
 /// Fills @p out with @p size bytes from the kernel's random source

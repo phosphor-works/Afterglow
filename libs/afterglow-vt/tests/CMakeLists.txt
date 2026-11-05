@@ -21,7 +21,7 @@ add_executable(afterglow_vt_tests
     TextSizingTest.cpp
     UnicodeTest.cpp
 )
-target_link_libraries(afterglow_vt_tests PRIVATE Afterglow::Vt GTest::gtest_main afterglow_zlib) # zlib to make test data
+target_link_libraries(afterglow_vt_tests PRIVATE Afterglow::Vt GTest::gtest_main)
 set_target_properties(afterglow_vt_tests PROPERTIES AUTOMOC OFF)
 
 include(GoogleTest)

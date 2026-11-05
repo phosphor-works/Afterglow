@@ -29,7 +29,11 @@ target_include_directories(AfterglowVt PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCRE2 REQUIRED IMPORTED_TARGET libpcre2-32)
-# The protocol formats (images, clipboard, base64) that clients share.
+# The wire formats of the protocols the terminal parses: images, clipboard,
+# base64, the text checks, and the command limits of drag and drop and file
+# transfer. PUBLIC, because the public headers include them: Terminal.h holds
+# a ClipboardAssembler from AfterglowProto/Clipboard.h, and Graphics.h keeps
+# the pending transmission's GraphicsCommand from AfterglowProto/Graphics.h.
 target_link_libraries(AfterglowVt PUBLIC Afterglow::Proto PRIVATE PkgConfig::PCRE2)
 # XTVERSION reports the project's version. A generated header, not a compile
 # definition, so tools/fuzz, which compiles these sources itself, has it too.

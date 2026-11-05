@@ -8,7 +8,7 @@ These instructions use the current source layout.
 
 ## Required software
 
-- CMake 3.21 or later, pkg-config and a C++20 compiler.
+- CMake 3.21 or later, pkg-config, a C compiler and a C++20 compiler.
 - Qt 6.10 or later. The Phosphor libraries need this version.
 - Qt Core, Gui, Widgets, Qml, Quick, QuickControls2, Concurrent, DBus, Network, Svg, WaylandClient and ShaderTools.
 - Qt GuiPrivate, ShaderToolsPrivate, WaylandClientPrivate and QuickPrivate headers.
@@ -18,7 +18,8 @@ These instructions use the current source layout.
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The Phosphor libraries from a PlasmaZones checkout.
 
-The build compiles zlib and xxHash from the release archives in `extern/`.
+The build compiles zlib-ng and xxHash from their [source archives](#source-archives).
+These are C sources, so the build needs the C compiler.
 It does not use the copies that the system has.
 
 | Optional software | Function | Result when it is missing |
@@ -28,6 +29,65 @@ It does not use the copies that the system has.
 | `cava` | Supplies system audio data for shaders | Audio-reactive shaders get no audio. |
 | KF6 GlobalAccel | Registers the quick terminal shortcut with KDE global shortcuts | The desktop portal registers the shortcut. |
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
+
+## Source archives
+
+The first configuration downloads source archives. It needs network access one time.
+
+| Archive | Pin file | Function |
+| --- | --- | --- |
+| CPM.cmake | Both pin files | Downloads the other archives |
+| Luau | `../PlasmaZones/cmake/PhosphorDependencies.cmake` | Runs the Luau scripts |
+| valijson | `../PlasmaZones/cmake/PhosphorDependencies.cmake` | Checks Phosphor JSON files against their schemas |
+| zlib-ng | `cmake/AfterglowDependencies.cmake` | Compresses and decompresses images and file transfers |
+| xxHash | `cmake/AfterglowDependencies.cmake` | Calculates the block hashes of delta file transfers |
+
+CMake checks each archive against the SHA-256 hash in its pin file.
+The archives go into the CPM cache.
+By default, every build directory uses the same cache.
+The first row of this table that applies selects the cache:
+
+| Condition | CPM cache |
+| --- | --- |
+| The configuration command has `-DCPM_SOURCE_CACHE=/path/to/cache` | `/path/to/cache` |
+| The `CPM_SOURCE_CACHE` environment variable is set | The directory in the variable |
+| The configuration command has `-DPHOSPHOR_DEPS_ARCHIVES` and no `-DAFTERGLOW_DEPS_ARCHIVES` | `.cache/cpm` in the Afterglow directory |
+| No other row applies | `.cache/cpm` in the PlasmaZones checkout |
+
+A build directory keeps the CPM cache of its first configuration.
+To change the cache of a build directory, give `-DCPM_SOURCE_CACHE`.
+When the cache has all archives, a configuration needs no network access.
+
+To build on a computer without network access, prepare the source on a computer with network access:
+
+1. Do steps 1 to 3 of [Build](#build).
+
+2. In the Afterglow directory, download the Phosphor archives into a directory:
+
+```sh
+cmake -DPHOSPHOR_DEPS_FETCH=/path/to/archives -P ../PlasmaZones/cmake/PhosphorDependencies.cmake
+```
+
+3. Download the Afterglow archives into the same directory:
+
+```sh
+cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
+```
+
+4. Copy the Afterglow and PlasmaZones directories into one parent directory on the build computer.
+
+5. Copy the archive directory to the build computer.
+
+6. On the build computer, configure the build as in step 4 of [Build](#build), with these options:
+
+```sh
+-DPHOSPHOR_DEPS_ARCHIVES=/path/to/archives -DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives
+```
+
+7. Do steps 5 and 6 of [Build](#build).
+
+With the two options, the configuration downloads nothing.
+If you set only one option, the configuration downloads CPM.cmake and the archives of the other pin file.
 
 ## Qt private APIs
 
@@ -54,10 +114,11 @@ git clone https://github.com/fuddlesworth/PlasmaZones ../PlasmaZones
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout b071b07ed
+git -C ../PlasmaZones checkout 4e5aca5c9
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.
+An older PlasmaZones checkout has no `cmake/PhosphorDependencies.cmake`. The configuration then stops with an error.
 
 4. Configure the build with the installation prefix:
 

@@ -14,6 +14,7 @@
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -33,6 +34,7 @@
 #include <QLoggingCategory>
 
 #include <cstring>
+#include <utility>
 
 #include <pwd.h>
 #include <unistd.h>
@@ -1321,7 +1323,8 @@ FileTransfer* Pane::fileTransfers()
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
-            reportInputFailure();
+            // A held pane's program has exited: no input failed, nothing reads it.
+            if (!isHeld()) reportInputFailure();
             m_fileTransfers->reset();
         });
     }
@@ -1338,14 +1341,32 @@ DragDrop* Pane::dragDrop()
     if (!m_dragDrop) {
         m_dragDrop = std::make_unique<DragDrop>();
         m_dragDrop->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
+        m_dragDrop->setCommandDelivery([this](int waitMs) { deliverProtocolCommands(waitMs); });
+        m_dragDrop->setAnswerWait(m_dragAnswerWait);
         connect(m_dragDrop.get(), &DragDrop::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
-            reportInputFailure();
-            m_dragDrop->reset();
+            // A held pane's program has exited: no input failed, nothing reads it.
+            if (!isHeld()) reportInputFailure();
+            // Not a terminal reset: the chunks that the program still sends are dropped.
+            m_dragDrop->end();
         });
     }
     return m_dragDrop.get();
 }
+void Pane::setDragAnswerWait(int ms)
+{
+    m_dragAnswerWait = ms;
+    if (m_dragDrop)
+        m_dragDrop->setAnswerWait(ms);
+}
+namespace {
+/// What a gap holds for drag and drop after it also took a command of
+/// protocol @p code, which the program wrote after the others.
+DragDrop::Lost lostAfter(DragDrop::Lost lost, int code)
+{
+    return code == 72 ? DragDrop::Lost::Packets : code == 0 ? DragDrop::Lost::Reset : lost;
+}
+} // namespace
 void Pane::terminalProtocol(int code, std::string_view payload)
 {
     const QByteArray bytes(payload.data(), qsizetype(payload.size()));
@@ -1354,19 +1375,75 @@ void Pane::terminalProtocol(int code, std::string_view payload)
         const auto response = DragDrop::queryReply(bytes);
         if (!response.isEmpty()) { writeToPty(std::string_view(response.constData(), std::size_t(response.size()))); return; }
     }
-    if (m_protocolBlocked.load()) return;
+    if (m_protocolBlocked) {
+        m_protocolLost = lostAfter(m_protocolLost, code);
+        m_protocolLostReset = m_protocolLostReset || code == 0;
+        return;
+    }
     const auto charge = bytes.size() + 128;
     if (m_protocolBytes.fetch_add(charge) + charge > 16 * 1024 * 1024) {
         m_protocolBytes.fetch_sub(charge);
-        if (m_protocolBlocked.exchange(true)) return;
+        m_protocolBlocked = true;
+        m_protocolLost = lostAfter(DragDrop::Lost::Nothing, code);
+        m_protocolLostReset = code == 0;
         m_protocolGeneration.fetch_add(1);
-        QMetaObject::invokeMethod(this, [this] { Q_EMIT terminalProtocolRequested(-1, {}); m_protocolBlocked.store(false); }, Qt::QueuedConnection);
+        // Queued after every stale command, so it reads the whole gap. The
+        // lock keeps a command from being dropped after the gap was read.
+        postProtocolCommand([this] {
+            DragDrop::Lost lost;
+            bool reset;
+            {
+                std::lock_guard lock(m_mutex);
+                lost = m_protocolLost == DragDrop::Lost::Nothing ? m_protocolStale : m_protocolLost;
+                reset = m_protocolLostReset || m_protocolStaleReset;
+                m_protocolLost = DragDrop::Lost::Nothing;
+                m_protocolLostReset = false;
+                m_protocolBlocked = false;
+            }
+            m_protocolStale = DragDrop::Lost::Nothing;
+            m_protocolStaleReset = false;
+            Q_EMIT terminalProtocolLost(lost, reset);
+        });
         return;
     }
     const auto generation = m_protocolGeneration.load();
-    QMetaObject::invokeMethod(this, [this, code, bytes, generation, charge] {
+    postProtocolCommand([this, code, bytes, generation, charge] {
         m_protocolBytes.fetch_sub(charge);
         if (generation == m_protocolGeneration.load()) Q_EMIT terminalProtocolRequested(code, bytes);
-    }, Qt::QueuedConnection);
+        else {
+            m_protocolStale = lostAfter(m_protocolStale, code);
+            m_protocolStaleReset = m_protocolStaleReset || code == 0;
+        }
+    });
+}
+void Pane::postProtocolCommand(std::function<void()> command)
+{
+    QMetaObject::invokeMethod(&m_protocolCommands, std::move(command), Qt::QueuedConnection);
+    {
+        std::lock_guard lock(m_postedMutex);
+        ++m_postedSerial;
+    }
+    m_posted.notify_all();
+}
+void Pane::deliverProtocolCommands(int waitMs)
+{
+    std::uint64_t seen;
+    {
+        std::lock_guard lock(m_postedMutex);
+        seen = m_postedSerial;
+    }
+    QCoreApplication::sendPostedEvents(&m_protocolCommands, QEvent::MetaCall);
+    // Commands came since the last call: the caller reads them before it waits.
+    const bool delivered = std::exchange(m_deliveredSerial, seen) != seen;
+    if (waitMs <= 0 || delivered)
+        return;
+    {
+        // A command posted after the delivery above ends the wait at once.
+        std::unique_lock lock(m_postedMutex);
+        if (!m_posted.wait_for(lock, std::chrono::milliseconds(waitMs), [&] { return m_postedSerial != seen; }))
+            return;
+        m_deliveredSerial = m_postedSerial;
+    }
+    QCoreApplication::sendPostedEvents(&m_protocolCommands, QEvent::MetaCall);
 }
 } // namespace Afterglow

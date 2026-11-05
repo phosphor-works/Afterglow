@@ -17,6 +17,19 @@ if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-rendering/CMakeLists
         "Set -DAFTERGLOW_PHOSPHOR_LIBS_DIR=/path/to/PlasmaZones/phosphor-libs.")
 endif()
 
+# The pins of the archives that the libraries fetch (Luau, valijson). The module
+# must be included at the top scope: its PHOSPHOR_DEPS list is a directory
+# variable, and a library that included it itself would hide the list from its
+# siblings. An older checkout has no such module, and include() alone would
+# then fail without saying why.
+if(NOT EXISTS "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake")
+    message(FATAL_ERROR
+        "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake not found. "
+        "This PlasmaZones checkout is too old. Check out the PlasmaZones commit that docs/BUILD.md "
+        "names in its Build steps.")
+endif()
+include("${AFTERGLOW_PHOSPHOR_LIBS_DIR}/../cmake/PhosphorDependencies.cmake")
+
 # The phosphor libraries' install rules are for a system install of phosphor
 # (headers, CMake packages, the plugin in Qt's directory). Afterglow installs
 # the parts it uses privately instead, so they are skipped here.

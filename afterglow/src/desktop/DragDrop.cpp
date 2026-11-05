@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "DragDrop.h"
 #include "FileDrop.h"
+#include "ProtoBytes.h"
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/DragDrop.h>
 #include <QBuffer>
@@ -37,7 +38,7 @@
 namespace Afterglow {
 namespace {
     using Meta = QMap<QByteArray, QByteArray>;
-    // Protocol limits. They are fixed: a client cannot negotiate them.
+    // Afterglow's limits. Only the packet size comes from the protocol, and a client cannot change any of them.
     constexpr qsizetype MaxData = 64 * 1024 * 1024; // one MIME type or one remote entry
     constexpr qsizetype MaxTotal = 256 * 1024 * 1024; // cached source data, queued drop reads
     constexpr qsizetype MaxRemoteBytes = 1024LL * 1024 * 1024;
@@ -53,18 +54,18 @@ namespace {
     constexpr std::size_t MaxPictures = 16;
     constexpr int MaxPictureSide = 4096;
     constexpr qsizetype MaxPacket = qsizetype(AfterglowProto::DndMaxPacket);
-    constexpr qsizetype MaxCommand = 8192;
+    constexpr qsizetype MaxCommand = qsizetype(AfterglowProto::DndMaxCommand);
     constexpr qsizetype MaxControlPayload = 128 * 1024; // reassembled MIME lists and ids
     constexpr qsizetype MaxMachineId = 128;
-    constexpr qsizetype ReadChunk = 3072;
+    constexpr qsizetype ReadChunk = MaxPacket / 4 * 3; // raw bytes whose base64 fills one packet
     constexpr std::size_t MaxInputBacklog = 1024 * 1024;
     constexpr int BacklogRetryMs = 5;
     constexpr int RequestTimeoutMs = 30000;
     constexpr int RemoteTimeoutMs = 120000;
     // Drop targets such as file managers copy dropped files after the drag ends.
     constexpr int FinishedTreeLifetimeMs = 10 * 60 * 1000;
-    std::string_view view(const QByteArray& bytes) { return { bytes.constData(), std::size_t(bytes.size()) }; }
-    QByteArray bytesOf(std::string_view bytes) { return { bytes.data(), qsizetype(bytes.size()) }; }
+    using ProtoBytes::bytesOf;
+    using ProtoBytes::view;
     Meta metaOf(const AfterglowProto::DndMeta& meta)
     {
         Meta m;
@@ -116,10 +117,7 @@ namespace {
         return scheme == QLatin1String("http") || scheme == QLatin1String("https") || scheme == QLatin1String("ftp")
             || scheme == QLatin1String("mailto");
     }
-    bool receiverType(const QByteArray& type)
-    {
-        return type == "a" || type == "A" || type == "m" || type == "r";
-    }
+    bool receiverType(const QByteArray& type) { return AfterglowProto::dndReceiverType(view(type)); }
     // Writes one packet without keeping a descriptor open between packets.
     bool appendFile(const QString& path, const QByteArray& bytes, bool create)
     {
@@ -180,10 +178,31 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     // The platform owns the drop data and can free it during the nested drop loop.
     QPointer<const QMimeData> incoming;
     int allowed = 0, chosen = 0, finalAction = 0, sourceActions = 0;
+    // The program's answer to the drag over its pane: the action and the
+    // types it asked for. Each drag event decides from it against what that
+    // event offers, which can change while the drag moves.
+    int requested = 0;
+    QStringList requestedMimes;
+    // Counts the program's answers, so a drag event can wait for the next one.
+    std::uint64_t answers = 0;
+    // A desktop learns the answer to a drag only when a drag event returns. A
+    // pointer that stays still sends no other event, so the event that gives
+    // the program new types waits this long for its answer.
+    int answerWait = DragDrop::DefaultAnswerWaitMs;
+    // The last drag event of this hover accepted the drag: the desktop has that answer.
+    bool answered = false;
+    void choose()
+    {
+        chosen = (requested == 1 || requested == 2) && (requested & allowed)
+                && std::all_of(requestedMimes.begin(), requestedMimes.end(), [&](const auto& mime) { return dropMimes.contains(mime); })
+            ? requested : 0;
+    }
     QPointer<QWindow> window;
     QPointer<QDrag> drag;
     // Chunked messages: payloads of data types are base64 of up to MaxData bytes.
     AfterglowProto::DndAssembler chunks { std::size_t(4 * MaxData / 3 + 4), std::size_t(MaxControlPayload) };
+    // Counts protocol resets, so that a loop that emits replies sees one that a reply caused.
+    quint64 resets = 0;
     std::map<int, QByteArray> data;
     std::set<int> complete, failed;
     std::vector<QPixmap> pictures;
@@ -211,6 +230,7 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     QTimer timer;
     QElapsedTimer dropActivity, sourceActivity;
     std::function<std::size_t()> backlog;
+    std::function<void(int)> deliver;
     std::unique_ptr<QTemporaryDir> temporary, finishedTree;
     QTimer treeExpiry;
     struct Remote {
@@ -232,12 +252,20 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         treeExpiry.setSingleShot(true);
         QObject::connect(&treeExpiry, &QTimer::timeout, owner, [this] { finishedTree.reset(); });
     }
+    static qint64 integer(const Meta& m, const char* key, qint64 fallback = 0)
+    {
+        const auto it = m.constFind(key);
+        return it == m.cend() ? fallback : AfterglowProto::parseDndInteger(view(*it)).value_or(fallback);
+    }
     static int number(const Meta& m, const char* key, int fallback = 0)
     {
-        return m.contains(key) ? int(std::min<qint64>(m.value(key).toLongLong(), INT32_MAX)) : fallback;
+        return int(std::min<qint64>(integer(m, key, fallback), INT32_MAX));
     }
     bool leftButton() const { return QGuiApplication::mouseButtons() & Qt::LeftButton; }
-    void send(Meta m, const QByteArray& payload = { }, bool source = false)
+    // The program has started a role or is sending a message.
+    bool engaged() const { return accepting || offering || started || starting || temporary || chunks.active(); }
+    void send(Meta m, const QByteArray& payload = { }, bool source = false) { sendRaw(std::move(m), view(payload), source); }
+    void sendRaw(Meta m, std::string_view payload, bool source = false)
     {
         if (!m.contains("i")) {
             const auto id = source ? sourceId : receiverId;
@@ -247,9 +275,14 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         AfterglowProto::DndMeta meta;
         for (auto it = m.begin(); it != m.end(); ++it)
             meta.emplace(it.key().toStdString(), it.value().toStdString());
-        for (const auto& packet : AfterglowProto::writeDnd(std::move(meta), view(payload)))
-            if (owner)
-                Q_EMIT owner->reply(bytesOf(packet));
+        // A refused packet resets the protocol in the reply handler. The rest
+        // of the message must not follow it to the program.
+        const auto generation = resets;
+        for (const auto& packet : AfterglowProto::writeDnd(std::move(meta), payload)) {
+            if (!owner || resets != generation)
+                return;
+            Q_EMIT owner->reply(bytesOf(packet));
+        }
     }
     void sourceError(const QByteArray& error)
     {
@@ -276,7 +309,6 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     // Reports an error on the channel of the role that sent the message.
     void reject(const QByteArray& type, const QByteArray& error)
     {
-        chunks.reset();
         if (receiverType(type))
             dropError({ }, error);
         else
@@ -294,7 +326,9 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         reads.clear();
         readBytes = 0;
         timer.stop();
-        chosen = finalAction = 0;
+        chosen = finalAction = requested = 0;
+        requestedMimes.clear();
+        answered = false;
         nextHandle = 2;
     }
     void clearSource()
@@ -319,12 +353,15 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
     }
     void reset()
     {
+        ++resets;
         if (started)
             QDrag::cancel();
         accepting = offering = pressed = false;
         clearDrop();
         clearSource();
-        chunks.reset();
+        // The rest of a message that was being put together belongs to the
+        // protocol that ended: its chunks must not start new messages.
+        chunks.abandon();
         receiverId.clear();
         sourceId.clear();
         receiverMachine.clear();
@@ -365,20 +402,23 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         if (timer.interval() != 0)
             timer.start(0);
         auto& read = reads.front();
-        QByteArray bytes;
+        QByteArray fromFile;
+        std::string_view bytes;
         if (read.file) {
-            bytes = read.file->read(ReadChunk);
+            fromFile = read.file->read(ReadChunk);
             if (read.file->error() != QFileDevice::NoError) {
                 const auto m = read.meta;
                 dropError(m, "EIO");
                 return;
             }
+            bytes = view(fromFile);
         } else {
-            bytes = read.bytes.mid(read.offset, ReadChunk);
-            read.offset += bytes.size();
+            bytes = view(read.bytes).substr(std::size_t(read.offset), std::size_t(ReadChunk));
+            read.offset += qsizetype(bytes.size());
         }
-        if (!bytes.isEmpty()) {
-            send(read.meta, bytesOf(AfterglowProto::base64Encode(view(bytes))));
+        if (!bytes.empty()) {
+            // The meta is copied before the reply handlers run: they can clear the queue.
+            sendRaw(read.meta, AfterglowProto::base64Encode(bytes));
             dropActivity.restart();
         } else {
             const auto meta = read.meta;
@@ -707,12 +747,14 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         }
         clearSource();
     }
-    void dispatch(Meta m, const QByteArray& payload);
+    // For the data types (p, e and k) the payload is decoded already. It is
+    // taken by value, so that a large one is freed when dispatch ends.
+    void dispatch(Meta m, QByteArray payload, bool end);
 };
 void DragDrop::State::remoteData(const Meta& m, const QByteArray& bytes, bool end)
 {
     const int root = number(m, "x"), child = number(m, "y");
-    const qint64 parent = m.value("Y").toLongLong(), kind = m.value("X").toLongLong();
+    const qint64 parent = integer(m, "Y"), kind = integer(m, "X");
     // A root entry has exactly one key, so every entry is announced and counted.
     if (!temporary || started || !requestedRoots.contains(root) || (parent == 0 && child != 0)) {
         sourceError("EINVAL");
@@ -900,7 +942,7 @@ bool DragDrop::State::prepareRemote()
     data[index] = replacement;
     return true;
 }
-void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
+void DragDrop::State::dispatch(Meta m, QByteArray payload, bool end)
 {
     const auto type = m.value("t", "a");
     if (type == "a") {
@@ -926,15 +968,14 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
     if (type == "m") {
         if (!hovering || dropped)
             return;
-        const int action = number(m, "o");
-        chosen = (action == 1 || action == 2) && (action & allowed) ? action : 0;
-        if (!payload.isEmpty()) {
-            const auto preferred = mimeList(payload);
-            if (preferred.isEmpty() || std::any_of(preferred.begin(), preferred.end(), [&](const auto& mime) {
-                    return !dropMimes.contains(mime);
-                }))
-                chosen = 0;
-        }
+        ++answers;
+        // An answer without types takes any of them.
+        requested = number(m, "o");
+        requestedMimes = payload.isEmpty() ? QStringList() : mimeList(payload);
+        // Types that are not valid names: the program accepts nothing.
+        if (!payload.isEmpty() && requestedMimes.isEmpty())
+            requested = 0;
+        choose();
         return;
     }
     if (type == "r") {
@@ -1023,13 +1064,8 @@ void DragDrop::State::dispatch(Meta m, const QByteArray& payload)
             sourceError("EINVAL");
             return;
         }
-        const auto decoded = AfterglowProto::base64Decode(view(payload), AfterglowProto::Base64Check::StrictOrUnpadded);
-        if (!decoded) {
-            sourceError("EINVAL");
-            return;
-        }
-        const auto bytes = bytesOf(*decoded);
-        const bool end = payload.isEmpty() || m.value("_end") == "1";
+        // handle() decoded the payload.
+        const auto& bytes = payload;
         if (type == "k") {
             remoteData(m, bytes, end);
             return;
@@ -1069,70 +1105,133 @@ DragDrop::DragDrop(QObject* parent)
 {
 }
 DragDrop::~DragDrop() { d->reset(); }
-void DragDrop::reset() { d->reset(); }
-void DragDrop::abort()
+void DragDrop::reset()
 {
+    d->reset();
+    // A terminal reset also ends a message that was being dropped: the next packet starts a new one.
+    d->chunks.reset();
+}
+void DragDrop::end() { d->reset(); }
+void DragDrop::abort(Lost lost, bool reset)
+{
+    // No OSC 72 packet and no reset was lost: the protocol is whole.
+    if (lost == Lost::Nothing)
+        return;
+    if (lost == Lost::Reset) {
+        this->reset();
+        return;
+    }
     const auto state = d;
-    if (state->dropped)
+    // A lost reset ended the drop and the drag before the lost packets came:
+    // the program waits for no answer about them.
+    if (!reset && state->dropped)
         state->dropError({ }, "ENOMEM");
-    if (state->offered || state->started)
+    if (!reset && (state->offered || state->started))
         state->sourceError("ENOMEM");
     state->reset();
+    // The pane drops commands when the program writes faster than they are
+    // handled, nearly always in the middle of a large chunked message, and
+    // the gap can hold its first packet. So the packets after the gap are
+    // taken as the rest of that message, up to the one with m=0. Read as new
+    // messages, chunks without a t would be t=a: they would enable drops, or
+    // with x=1 make base64 data the receiver's machine id. A gap that ends
+    // on a message boundary costs one message.
+    state->chunks.discard(true);
 }
 void DragDrop::setInputBacklog(std::function<std::size_t()> backlog) { d->backlog = std::move(backlog); }
+void DragDrop::setCommandDelivery(std::function<void(int)> deliver) { d->deliver = std::move(deliver); }
+void DragDrop::setAnswerWait(int ms) { d->answerWait = std::max(0, ms); }
 bool DragDrop::acceptsDrops() const { return d->accepting; }
 bool DragDrop::offersDrags() const { return d->offering; }
+bool DragDrop::acceptsDrag() const { return d->hovering && !d->dropped && d->answered; }
 QByteArray DragDrop::queryReply(const QByteArray& command) { return bytesOf(AfterglowProto::dndQueryReply(view(command))); }
 void DragDrop::handle(const QByteArray& command)
 {
     const auto state = d;
     const auto [raw, payload] = AfterglowProto::splitDnd(view(command));
-    if (command.size() > MaxCommand || qsizetype(payload.size()) > MaxPacket) {
-        auto type = bytesOf(AfterglowProto::dndType(raw));
-        if (type.isEmpty())
-            type = bytesOf(state->chunks.type());
-        state->reject(type, "EFBIG");
-        if (command.size() > MaxCommand)
+    const auto parsed = AfterglowProto::parseDndMeta(raw);
+    const bool overlong = command.size() > MaxCommand;
+    if (overlong || qsizetype(payload.size()) > MaxPacket) {
+        // A chunk of a message that failed earlier gets no second error. A
+        // program that uses no role and sends no message gets none either:
+        // the command can be part of a binary file that it prints, and kitty
+        // also drops an overlong escape code without a reply.
+        if ((overlong || !state->chunks.discarding()) && state->engaged()) {
+            auto type = bytesOf(AfterglowProto::dndType(raw));
+            if (type.isEmpty())
+                type = bytesOf(state->chunks.type());
+            state->reject(type, "EFBIG");
+        }
+        state->chunks.discard(AfterglowProto::dndMore(raw));
+        if (overlong)
             state->reset();
         return;
     }
-    const auto parsed = AfterglowProto::parseDndMeta(raw);
     if (!parsed) {
         state->reset();
+        // The packet's own m tells whether chunks follow it, also when the
+        // message it belongs to was not being put together.
+        state->chunks.discard(AfterglowProto::dndMore(raw));
         return;
     }
-    const Meta m = metaOf(*parsed);
-    if (m.value("t") == "q" || m.value("t") == "Q") {
+    const auto found = parsed->find("t");
+    const auto type = found == parsed->end() ? std::string() : found->second;
+    if (type == "q" || type == "Q") {
         // The PTY thread answers queries first. This path serves direct callers.
         const auto response = queryReply(command);
         if (!response.isEmpty())
             Q_EMIT reply(response);
         return;
     }
-    const auto chunkType = bytesOf(state->chunks.type());
-    if (m.value("t") == "e" || m.value("t") == "k" || (state->chunks.active() && !receiverType(chunkType)))
+    const bool continued = state->chunks.active();
+    // A continuation has the type of its first chunk.
+    const auto messageType = continued ? bytesOf(state->chunks.type()) : type.empty() ? QByteArray("a") : bytesOf(type);
+    if (type == "e" || type == "k" || (continued && !receiverType(messageType)))
         state->sourceActivity.restart();
-    if (state->chunks.active() && receiverType(chunkType))
+    if (continued && receiverType(messageType))
         state->dropActivity.restart();
-    AfterglowProto::DndMeta meta;
-    std::string bytes;
-    switch (state->chunks.feed(*parsed, payload, meta, bytes)) {
+    AfterglowProto::DndAssembler::Message message;
+    switch (state->chunks.feed(*parsed, payload, message)) {
     case AfterglowProto::DndAssembler::Result::Pending:
+    case AfterglowProto::DndAssembler::Result::Dropped:
         return;
     case AfterglowProto::DndAssembler::Result::Mismatch:
         state->reset();
         return;
     case AfterglowProto::DndAssembler::Result::TooLarge:
-        state->reject(chunkType, "EFBIG");
+        state->reject(messageType, "EFBIG");
         return;
-    case AfterglowProto::DndAssembler::Result::Ready:
-        state->dispatch(metaOf(meta), bytesOf(bytes));
+    case AfterglowProto::DndAssembler::Result::Ready: {
+        const auto kind = message.meta.find("t");
+        if (kind == message.meta.end() || !AfterglowProto::dndDataType(kind->second)) {
+            state->dispatch(metaOf(message.meta), bytesOf(message.payload), message.emptyEnd);
+            return;
+        }
+        // A data message holds up to 64 MiB, as about 85 MiB of base64. The
+        // base64 is decoded where the assembler put it, and freed before
+        // the decoded bytes are copied for dispatch.
+        auto decoded = AfterglowProto::base64Decode(message.payload, AfterglowProto::Base64Check::StrictOrUnpadded);
+        std::string().swap(message.payload);
+        if (!decoded) {
+            state->sourceError("EINVAL");
+            return;
+        }
+        auto bytes = bytesOf(*decoded);
+        decoded.reset();
+        state->dispatch(metaOf(message.meta), std::move(bytes), message.emptyEnd);
         return;
+    }
     }
 }
 void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
 {
     const auto state = d;
+    // An enter or move event runs no event loop: a drag event handled inside it would
+    // answer before it, and Qt takes the older answer last, so the compositor
+    // would refuse a drop that the program accepted. The answers that the
+    // program has sent already are taken first.
+    if (state->deliver)
+        state->deliver(0);
     if (!state->accepting || state->dropped) {
         event->ignore();
         return;
@@ -1150,6 +1249,7 @@ void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
     state->incoming = event->mimeData();
     state->allowed = int(event->possibleActions()) & 3;
     state->dropMimes = names;
+    state->choose();
     Meta m { { "t", final ? "M" : "m" }, { "x", QByteArray::number(std::max(0, cell.x())) },
         { "y", QByteArray::number(std::max(0, cell.y())) }, { "X", QByteArray::number(std::max(0, pixel.x())) },
         { "Y", QByteArray::number(std::max(0, pixel.y())) }, { "o", QByteArray::number(state->allowed) } };
@@ -1167,8 +1267,19 @@ void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
         state->dropActivity.start();
     }
     state->send(m, final || changed ? names.join(QLatin1Char(' ')).toUtf8() : QByteArray());
-    if (!final && changed)
-        state->spin([&] { return state->chosen || !state->accepting; }, 100);
+    if (!final && changed && state->deliver) {
+        // Only the program's commands arrive during the wait, so no other
+        // drag event is handled before this one returns.
+        const auto answers = state->answers;
+        QElapsedTimer waited;
+        waited.start();
+        while (state->answers == answers && state->accepting && state->hovering && waited.elapsed() < state->answerWait)
+            state->deliver(int(state->answerWait - waited.elapsed()));
+        if (!state->accepting || !state->hovering) {
+            event->ignore();
+            return;
+        }
+    }
     if (final) {
         state->spin(
             [&] {
@@ -1185,8 +1296,11 @@ void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
     } else if (state->chosen) {
         event->setDropAction(Qt::DropAction(state->chosen));
         event->accept();
-    } else
+        state->answered = true;
+    } else {
         event->ignore();
+        state->answered = false;
+    }
 }
 void DragDrop::leave()
 {

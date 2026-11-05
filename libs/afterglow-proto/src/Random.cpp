@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowProto/Hex.h>
 #include <AfterglowProto/Random.h>
-#include <AfterglowProto/Sha256.h>
 
 #include <cerrno>
 #include <sys/random.h>

@@ -45,6 +45,7 @@ qt_add_library(afterglow_app STATIC
     src/desktop/FileTransfer.h
     src/desktop/DragDrop.cpp
     src/desktop/DragDrop.h
+    src/desktop/ProtoBytes.h
     src/control/ControlProject.cpp
     src/control/Control.cpp
     src/control/Control.h
@@ -186,7 +187,8 @@ target_link_libraries(afterglow_app PUBLIC afterglow_shell afterglow_config afte
     PkgConfig::WAYLAND_CLIENT PkgConfig::XKBCOMMON PhosphorConfig::PhosphorConfig PhosphorShaders::PhosphorShaders
     PhosphorDBus::PhosphorDBus PhosphorIpc::PhosphorIpc PhosphorScripting::PhosphorScripting
     PhosphorAnimation::PhosphorAnimation PhosphorShortcuts::PhosphorShortcuts PhosphorWayland::PhosphorWayland
-    Qt6::DBus Qt6::Network KF6::WindowSystem Afterglow::Proto)
+    Qt6::DBus Qt6::Network KF6::WindowSystem
+    PRIVATE Afterglow::Proto)
 
 install(TARGETS afterglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Private libraries: afterglow's own and the phosphor ones it was built with.
@@ -201,17 +203,47 @@ set_target_properties(phosphorwayland-qpa PROPERTIES INSTALL_RPATH "$ORIGIN/../.
 install(TARGETS ${AFTERGLOW_PRIVATE_LIBS} LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR} NAMELINK_SKIP)
 install(TARGETS phosphorwayland-qpa
         LIBRARY DESTINATION ${AFTERGLOW_PRIVATE_LIBDIR}/plugins/wayland-shell-integration)
-# Licence texts. Luau is statically linked into PhosphorScripting, and its MIT
-# notice must go with the binaries; the phosphor rule that installs it is
-# skipped with the others (cmake/AfterglowPhosphor.cmake).
-file(GLOB AFTERGLOW_LICENSE_TEXTS "${PROJECT_SOURCE_DIR}/LICENSES/*.txt")
+# Licence texts of what is installed: the code (GPL and LGPL), the themes
+# (MIT), the icon (CC-BY-SA-4.0) and the desktop files (CC0-1.0).
+set(AFTERGLOW_LICENSE_TEXTS GPL-3.0-or-later LGPL-2.1-or-later MIT CC-BY-SA-4.0 CC0-1.0)
+list(TRANSFORM AFTERGLOW_LICENSE_TEXTS PREPEND "${PROJECT_SOURCE_DIR}/LICENSES/")
+list(TRANSFORM AFTERGLOW_LICENSE_TEXTS APPEND ".txt")
 install(FILES ${AFTERGLOW_LICENSE_TEXTS} DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
-get_directory_property(AFTERGLOW_LUAU_VERSION DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-scripting"
-    DEFINITION PHOSPHORSCRIPTING_LUAU_VERSION)
-set(AFTERGLOW_LUAU_LICENSE "${CMAKE_BINARY_DIR}/_luau/luau-${AFTERGLOW_LUAU_VERSION}/LICENSE.txt")
-if(EXISTS "${AFTERGLOW_LUAU_LICENSE}")
-    install(FILES "${AFTERGLOW_LUAU_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
+# zlib-ng and xxHash are linked into the binaries (libs/afterglow-proto), and
+# their notices go with them. So do the notices of Luau, which is statically
+# linked into PhosphorScripting, and of valijson; the phosphor rules that
+# install them are skipped with the others (cmake/AfterglowPhosphor.cmake).
+install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow RENAME LICENSE.zlib-ng)
+install(FILES "${AFTERGLOW_XXHASH_LICENSE}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
+        RENAME LICENSE.xxHash)
+# A system Luau (PLASMAZONES_SYSTEM_LUAU) is a separate package with its own
+# notices, and phosphor-scripting fetches no archive for it.
+if(NOT PLASMAZONES_SYSTEM_LUAU)
+    # phosphor_fetch_dependency(luau) sets luau_SOURCE_DIR in that library's scope.
+    get_directory_property(AFTERGLOW_LUAU_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-scripting"
+        DEFINITION luau_SOURCE_DIR)
+    if(NOT EXISTS "${AFTERGLOW_LUAU_SOURCE_DIR}/LICENSE.txt" OR NOT EXISTS "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt")
+        message(FATAL_ERROR "The Luau and Lua licences were not found in '${AFTERGLOW_LUAU_SOURCE_DIR}', and they must install with the binaries.")
+    endif()
+    install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
             RENAME LICENSE.Luau)
+    # Luau derives from Lua, whose MIT notice it carries beside its own.
+    install(FILES "${AFTERGLOW_LUAU_SOURCE_DIR}/lua_LICENSE.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
+            RENAME LICENSE.Lua)
+endif()
+# valijson (BSD-2-Clause) is header-only, and its headers are compiled into
+# PhosphorFsLoader, so its notice goes with that library. System headers
+# (PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON) are a separate package with their own
+# notice, and phosphor-fsloader fetches no archive for them.
+if(NOT PHOSPHORFSLOADER_USE_SYSTEM_VALIJSON)
+    # phosphor_fetch_dependency(valijson) sets valijson_SOURCE_DIR in that library's scope.
+    get_directory_property(AFTERGLOW_VALIJSON_SOURCE_DIR DIRECTORY "${AFTERGLOW_PHOSPHOR_LIBS_DIR}/libs/phosphor-fsloader"
+        DEFINITION valijson_SOURCE_DIR)
+    if(NOT EXISTS "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE")
+        message(FATAL_ERROR "The valijson licence was not found in '${AFTERGLOW_VALIJSON_SOURCE_DIR}', and it must install with the binaries.")
+    endif()
+    install(FILES "${AFTERGLOW_VALIJSON_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
+            RENAME LICENSE.valijson)
 endif()
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/shaders/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/shaders)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/themes/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/themes)
