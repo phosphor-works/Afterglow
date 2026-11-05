@@ -4,13 +4,19 @@
 #include "desktop/FileDrop.h"
 #include <QDir>
 #include <QDropEvent>
+#include <QElapsedTimer>
+#include <QFileInfo>
 #include <QFile>
 #include <QGuiApplication>
 #include <QMimeData>
+#include <QSocketNotifier>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
+#include <csignal>
 #include <gtest/gtest.h>
+#include <pty.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
 using namespace Afterglow;
@@ -576,6 +582,152 @@ TEST(DndTree, LinksCannotLeaveTheTreeThroughOtherLinks)
     EXPECT_FALSE(linkStaysInside(root + QStringLiteral("/1/a/b/s3"), "later/../..", root));
     EXPECT_FALSE(linkStaysInside(root + QStringLiteral("/1/s4"), "../..", root));
     EXPECT_TRUE(linkStaysInside(root + QStringLiteral("/1/a/b/s5"), "s1/a", root));
+}
+// aglow dnd as the drop target of a drag from another computer: it reads the
+// dropped tree through the terminal, one directory handle at a time (t=r with
+// X). The program runs in a pseudo-terminal that the test makes, and each
+// OSC 72 sequence goes between it and the service whole.
+struct AglowDrop : Dnd {
+    pid_t child = -1;
+    int master = -1;
+    std::unique_ptr<QSocketNotifier> notifier;
+    QByteArray pending;
+    void TearDown() override
+    {
+        notifier.reset();
+        if (child > 0) {
+            ::kill(child, SIGKILL);
+            ::waitpid(child, nullptr, 0);
+        }
+        if (master >= 0)
+            ::close(master);
+    }
+    bool start(const QString& aglow, const QString& dropDir)
+    {
+        winsize size { 30, 100, 900, 600 };
+        child = ::forkpty(&master, nullptr, nullptr, &size);
+        if (child == 0) {
+            ::chdir(QFile::encodeName(dropDir).constData());
+            ::setenv("TERM", "xterm-256color", 1);
+            const QByteArray program = QFile::encodeName(aglow);
+            ::execl(program.constData(), "aglow", "dnd", "--drop-anywhere=copy", static_cast<char*>(nullptr));
+            ::_exit(127);
+        }
+        if (child < 0)
+            return false;
+        QObject::connect(&service, &DragDrop::reply, &service, [this](const QByteArray& bytes) {
+            for (qsizetype at = 0; at < bytes.size();) {
+                const auto n = ::write(master, bytes.constData() + at, std::size_t(bytes.size() - at));
+                if (n <= 0)
+                    return;
+                at += n;
+            }
+        });
+        notifier = std::make_unique<QSocketNotifier>(master, QSocketNotifier::Read);
+        QObject::connect(notifier.get(), &QSocketNotifier::activated, &service, [this] {
+            char bytes[65536];
+            const auto n = ::read(master, bytes, sizeof bytes);
+            if (n <= 0) {
+                notifier->setEnabled(false);
+                return;
+            }
+            pending.append(bytes, n);
+            for (qsizetype at = pending.indexOf("\x1b]72;"); at >= 0; at = pending.indexOf("\x1b]72;")) {
+                const auto end = pending.indexOf("\x1b\\", at);
+                if (end < 0) {
+                    pending.remove(0, at);
+                    return;
+                }
+                service.handle(pending.mid(at + 5, end - at - 5));
+                pending.remove(0, end + 2);
+            }
+            // Text and other escape codes of the program: only a partial OSC 72 can matter.
+            const auto partial = pending.lastIndexOf('\x1b');
+            pending = partial >= 0 ? pending.mid(partial) : QByteArray();
+        });
+        return true;
+    }
+    bool waitFor(const std::function<bool()>& done)
+    {
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (!done() && elapsed.elapsed() < 10000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        return done();
+    }
+};
+TEST_F(AglowDrop, ReadsARemoteTreeThroughTheTerminal)
+{
+#ifndef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)";
+#else
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString tree = directory.filePath(QStringLiteral("tree"));
+    const QString destination = directory.filePath(QStringLiteral("destination"));
+    ASSERT_TRUE(QDir().mkpath(tree + QStringLiteral("/sub/deeper")));
+    ASSERT_TRUE(QDir().mkpath(tree + QStringLiteral("/empty")));
+    ASSERT_TRUE(QDir().mkpath(destination));
+    auto write = [](const QString& path, const QByteArray& bytes) {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    QByteArray large;
+    for (int i = 0; i < 20000; ++i)
+        large += QByteArray::number(i) + ' ';
+    ASSERT_TRUE(write(tree + QStringLiteral("/a.txt"), "first file"));
+    ASSERT_TRUE(write(tree + QStringLiteral("/sub/deeper/large"), large));
+    ASSERT_TRUE(write(tree + QStringLiteral("/sub/zero"), { }));
+    ASSERT_EQ(::symlink("a.txt", QFile::encodeName(tree + QStringLiteral("/link")).constData()), 0);
+    ASSERT_TRUE(start(QStringLiteral(AFTERGLOW_AGLOW), destination));
+    ASSERT_TRUE(waitFor([&] { return service.acceptsDrops(); }));
+    // The program sends its machine id right after t=a. Replaced after it,
+    // the id puts the program on another computer: the service reports X=1
+    // and the program reads the files through it.
+    QElapsedTimer settle;
+    settle.start();
+    while (settle.elapsed() < 300)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    service.handle("t=a:x=1;1:remote-test-machine");
+    QMimeData mime;
+    mime.setUrls({ QUrl::fromLocalFile(tree + QStringLiteral("/")) });
+    // The program answers each move with the action it takes. The drop goes once a move was accepted.
+    bool accepted = false;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    for (int x = 4; !accepted && elapsed.elapsed() < 10000; ++x) {
+        QDropEvent move(QPointF(x, 40), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        service.drop(&move, false, { 10, 2 }, { x, 40 });
+        accepted = move.isAccepted();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+    ASSERT_TRUE(accepted);
+    QDropEvent drop(QPointF(4, 40), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    service.drop(&drop, true, { 10, 2 }, { 4, 40 });
+    EXPECT_TRUE(drop.isAccepted());
+    EXPECT_EQ(drop.dropAction(), Qt::CopyAction);
+    // Directory reads went through handles (the first is 2).
+    EXPECT_TRUE(contains("X=2:"));
+    const QString copy = destination + QStringLiteral("/tree");
+    auto read = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray("missing");
+    };
+    EXPECT_EQ(read(copy + QStringLiteral("/a.txt")), "first file");
+    EXPECT_EQ(read(copy + QStringLiteral("/sub/deeper/large")), large);
+    EXPECT_EQ(read(copy + QStringLiteral("/sub/zero")), QByteArray());
+    EXPECT_TRUE(QFileInfo(copy + QStringLiteral("/empty")).isDir());
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/link")).symLinkTarget(), copy + QStringLiteral("/a.txt"));
+    // Ctrl+C ends the program, which removes its staging directory.
+    ASSERT_EQ(::write(master, "\x03", 1), 1);
+    int status = 0;
+    bool exited = false;
+    ASSERT_TRUE(waitFor([&] { return exited || (exited = ::waitpid(child, &status, WNOHANG) == child); }));
+    child = -1;
+    EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << status;
+    EXPECT_EQ(QDir(destination).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden),
+        QStringList { QStringLiteral("tree") });
+#endif
 }
 } // namespace
 int main(int argc, char** argv)

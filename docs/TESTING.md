@@ -35,6 +35,7 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core and the protocol library. Requires clang for C and C++. |
+| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Adds `aglow_static`, `aglow_version` and `afterglow_runs_aglow` to CTest, and `aglow_icat_render` with `AFTERGLOW_BUILD_TOOLS`. |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 
@@ -51,7 +52,7 @@ They need this software:
 - An X11 or XWayland display, libX11 and `xprop`.
 - `dbus-run-session`.
 - ImageMagick `import`, for the tests that take screenshots.
-- `kitten`, for the Kitty drag-and-drop tests of the native window suite. Without it, those tests skip.
+- `kitten`, for the compatibility twins of the drag-and-drop tests of the native window suite. Without it, those tests skip. The `aglow` tests need no other software.
 
 The tests send input to the nested KWin window as synthetic X events. They do not use XTest.
 
@@ -281,7 +282,7 @@ The compressed archive keeps all samples and environment metadata.
 Run the file-transfer and drag-and-drop service tests:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(Transfer|Dnd|DndTree)\.'
+ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndTree|AglowDrop)\.'
 ```
 
 Run the tests of the protocol library, which has these formats and the other wire formats.
@@ -290,6 +291,9 @@ The names of these tests start with `Proto.`.
 ```sh
 ctest --test-dir build --output-on-failure -R '^Proto\.'
 ```
+
+The `Client.*` tests run the transfer client of the protocol library, which `aglow transfer` uses, against the service.
+They send and receive a tree with links and a delta.
 
 Run interoperability tests with the installed `kitten` client:
 
@@ -301,5 +305,27 @@ Kitty 0.49.2 has a receive-side empty-file defect.
 For that version, add `--allow-client-empty-file-bug` to test the remaining transfers.
 The service tests check empty-file completion separately.
 
-The native window suite also uses `kitten dnd` for text drags and remote directory drags.
-Without `kitten`, those tests skip.
+The same script runs `aglow` in place of `kitten`, in a pseudo-terminal that it creates:
+
+```sh
+python3 afterglow/tests/kitty_transfer_interop.py --relay build/afterglow/tests/afterglow_transfer_tests --aglow build/afterglow/aglow
+```
+
+With `--kitty`, the script runs `aglow` against Kitty itself.
+Each transfer is a Kitty window in a headless nested KWin on a private session bus.
+Kitty and the client share a password, so Kitty shows no permission prompt.
+Without Kitty or `kwin_wayland`, the script prints a message and exits with code 77.
+
+```sh
+python3 afterglow/tests/kitty_transfer_interop.py --kitty --aglow build/afterglow/aglow
+```
+
+`AglowDrop.ReadsARemoteTreeThroughTheTerminal` runs `aglow dnd` in a pseudo-terminal and drops a directory tree on it.
+The service reports the drop as remote, so `aglow dnd` reads the tree through directory handles.
+
+The native window suite uses `aglow dnd` for text drags and remote directory drags.
+The same tests run with `kitten dnd` as compatibility tests. Without `kitten`, those tests skip.
+
+The `aglow_icat_render` test draws the output of `aglow icat` with `afterglow_renderpng`.
+It checks a PNG image, a mirrored image, an image placed with `--place`, Unicode placeholders and each frame of an animated GIF.
+The `aglow_static` test checks that `readelf -d` lists no shared library for `aglow`.

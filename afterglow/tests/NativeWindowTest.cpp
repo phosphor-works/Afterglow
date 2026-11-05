@@ -231,6 +231,8 @@ private:
 };
 class NativeWindow : public ::testing::Test {
 protected:
+    void dragAndDropClient(const QString& client, const QString& ready);
+    void remoteDragDirectory(const QString& client, const QString& ready);
     QTemporaryDir directory;
     std::unique_ptr<Application> application;
     TerminalWindow* window = nullptr;
@@ -1317,20 +1319,22 @@ TEST_F(NativeWindow, FileTransferPermissionFollowsMovedPane) {
     EXPECT_EQ(prompts.front()->windowHandle()->transientParent(), destination);
 }
 
-TEST_F(NativeWindow, KittyDragAndDropClient) {
-    REQUIRE_NATIVE_DND(ready);
-    REQUIRE_KITTEN();
+// The drag and drop tests of kitten dnd and their twins with aglow dnd, which
+// takes the same options. The aglow twins always run; the kitten tests stay
+// as compatibility tests and skip without kitten.
+// A text drag from one client's pane to another client's pane.
+void NativeWindow::dragAndDropClient(const QString& client, const QString& ready) {
     const QString source = directory.filePath(QStringLiteral("source.txt"));
     const QString destination = directory.filePath(QStringLiteral("dropped.txt"));
     QFile file(source); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write("Native Kitty drag and drop\n"); file.close();
     PaneLaunchOptions options;
-    options.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drag"), QStringLiteral("text/plain:") + source,
+    options.command = {client, QStringLiteral("dnd"), QStringLiteral("--drag"), QStringLiteral("text/plain:") + source,
                        QStringLiteral("--drop"), QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
-    // kitten makes a temporary directory where it runs: keep it in the fixture's.
+    // The client makes a temporary directory where it runs: keep it in the fixture's.
     options.cwd = directory.path();
     auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
     PaneLaunchOptions receiverOptions;
-    receiverOptions.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drop"),
+    receiverOptions.command = {client, QStringLiteral("dnd"), QStringLiteral("--drop"),
                                QStringLiteral("text/plain:") + destination, QStringLiteral("--drop-anywhere=copy")};
     receiverOptions.cwd = directory.path();
     auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
@@ -1351,7 +1355,7 @@ TEST_F(NativeWindow, KittyDragAndDropClient) {
     QImageReader::supportedMimeTypes();
     QImageWriter::supportedMimeTypes();
     QElapsedTimer timer; timer.start();
-    // Both kittens start at once: wait for each one's command.
+    // Both clients start at once: wait for each one's command.
     while (!(pane->dragDrop()->offersDrags() && receiver->dragDrop()->acceptsDrops()) && timer.elapsed() < 5000) drain(20);
     ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     ASSERT_TRUE(receiver->dragDrop()->acceptsDrops()) << dropped.toStdString();
@@ -1388,10 +1392,9 @@ TEST_F(NativeWindow, KittyDragAndDropClient) {
     EXPECT_EQ(result.readAll(), QByteArray("Native Kitty drag and drop\n"));
 }
 
-
-TEST_F(NativeWindow, KittyRemoteDragDirectory) {
-    REQUIRE_NATIVE_DND(ready);
-    REQUIRE_KITTEN();
+// A directory dragged from a client that the terminal takes for a remote
+// one, so that the tree crosses the protocol (t=k), to another client.
+void NativeWindow::remoteDragDirectory(const QString& client, const QString& ready) {
     const QString source = directory.filePath(QStringLiteral("remote"));
     const QString destination = directory.filePath(QStringLiteral("received"));
     ASSERT_TRUE(QDir().mkpath(source + QStringLiteral("/nested")));
@@ -1400,12 +1403,12 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
     QFile empty(source + QStringLiteral("/empty")); ASSERT_TRUE(empty.open(QIODevice::WriteOnly)); empty.close();
     ASSERT_EQ(::symlink("nested/file", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
     PaneLaunchOptions options;
-    options.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), source};
-    // kitten makes a temporary directory where it runs: keep it in the fixture's.
+    options.command = {client, QStringLiteral("dnd"), source};
+    // The client makes a temporary directory where it runs: keep it in the fixture's.
     options.cwd = directory.path();
     auto* pane = window->openTab(options, nullptr); ASSERT_NE(pane, nullptr);
     PaneLaunchOptions receiverOptions;
-    receiverOptions.command = {QStringLiteral("kitten"), QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")};
+    receiverOptions.command = {client, QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")};
     receiverOptions.cwd = directory.path();
     auto* receiver = window->splitPane(pane, SplitTree::Direction::Right, receiverOptions, nullptr);
     ASSERT_NE(receiver, nullptr);
@@ -1417,7 +1420,7 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
     QImageReader::supportedMimeTypes();
     QImageWriter::supportedMimeTypes();
     QElapsedTimer timer; timer.start();
-    // Both kittens start at once: wait for each one's command.
+    // Both clients start at once: wait for each one's command.
     while (!(pane->dragDrop()->offersDrags() && receiver->dragDrop()->acceptsDrops()) && timer.elapsed() < 5000) drain(20);
     ASSERT_TRUE(pane->dragDrop()->offersDrags()) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
     ASSERT_TRUE(receiver->dragDrop()->acceptsDrops()) << receiver->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
@@ -1463,6 +1466,31 @@ TEST_F(NativeWindow, KittyRemoteDragDirectory) {
     EXPECT_EQ(result.readAll(), QByteArray("remote file data"));
     EXPECT_TRUE(QFileInfo::exists(destination + QStringLiteral("/remote/empty")));
     EXPECT_TRUE(QFileInfo(destination + QStringLiteral("/remote/link")).isSymLink());
+}
+#ifdef AFTERGLOW_AGLOW
+#define REQUIRE_AGLOW() const QString aglow = QStringLiteral(AFTERGLOW_AGLOW)
+#else
+#define REQUIRE_AGLOW() GTEST_SKIP() << "aglow is not built (AFTERGLOW_BUILD_AGLOW=OFF)"; const QString aglow
+#endif
+TEST_F(NativeWindow, KittyDragAndDropClient) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
+    dragAndDropClient(QStringLiteral("kitten"), ready);
+}
+TEST_F(NativeWindow, AglowDragAndDropClient) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_AGLOW();
+    dragAndDropClient(aglow, ready);
+}
+TEST_F(NativeWindow, KittyRemoteDragDirectory) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
+    remoteDragDirectory(QStringLiteral("kitten"), ready);
+}
+TEST_F(NativeWindow, AglowRemoteDragDirectory) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_AGLOW();
+    remoteDragDirectory(aglow, ready);
 }
 
 

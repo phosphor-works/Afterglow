@@ -48,13 +48,13 @@ The log is long. Read it with `grep`, never in full.
 
 ### Expected skips in the headless run
 
-These three tests need real compositor input, which only the acceptance runner below gives. Headless, they report
+These five tests need real compositor input, which only the acceptance runner below gives. Headless, they report
 Skipped with "Run through native_window_acceptance.py for real compositor input". The two kitten tests also skip
-when `kitten` is not installed.
+when `kitten` is not installed. Their `aglow` twins use the `aglow` of the build.
 
 - `NativeWindow.NativeWaylandFileDrop`
-- `NativeWindow.KittyDragAndDropClient`
-- `NativeWindow.KittyRemoteDragDirectory`
+- `NativeWindow.KittyDragAndDropClient` and `NativeWindow.AglowDragAndDropClient`
+- `NativeWindow.KittyRemoteDragDirectory` and `NativeWindow.AglowRemoteDragDirectory`
 
 Every failure is real. Run a failed test again alone before you call it flaky, and say so in the report.
 `TabDragOutPreservesLiveSplitAndMenuTargetsBackgroundTab` has failed one time and passed when run again.
@@ -67,7 +67,7 @@ python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/aft
 
 This runner opens a nested KWin as a window on the host X11 or XWayland display, and sends synthetic X events
 (`XSendEvent`, not XTest) only to that window. It needs `kwin_wayland`, `DISPLAY`, libX11, `xprop`,
-`dbus-run-session` and `kitten`. Use it for the drag-and-drop tests, or when the user asks
+`dbus-run-session`, and `kitten` for the compatibility tests. Use it for the drag-and-drop tests, or when the user asks
 for a visible run.
 
 The nested KWin is a window on the user's desktop, so the user's own pointer reaches it. A drag that gets moves

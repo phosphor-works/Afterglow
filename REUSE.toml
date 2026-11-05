@@ -89,3 +89,11 @@ SPDX-FileCopyrightText = ["2011 to Present Mark Badolato and contributors", "The
 SPDX-License-Identifier = "MIT"
 # Converted from mbadolato/iTerm2-Color-Schemes (ghostty/), which collects
 # each scheme from its upstream project.
+
+[[annotations]]
+path = ["tools/aglow/stb/stb_image.h"]
+SPDX-FileCopyrightText = "2017 Sean Barrett"
+SPDX-License-Identifier = "MIT"
+# stb_image v2.30 from nothings/stb, commit d14d46f6b44456eb88beac58cba833a4135d4c89,
+# pinned in cmake/AfterglowDependencies.cmake. Upstream offers MIT or the
+# Unlicense: Afterglow takes it under MIT.

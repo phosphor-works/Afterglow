@@ -51,6 +51,20 @@ set(AFTERGLOW_DEP_xxhash_URL "https://github.com/Cyan4973/xxHash/archive/refs/ta
 set(AFTERGLOW_DEP_xxhash_FILE "xxHash-0.8.4.tar.gz")
 set(AFTERGLOW_DEP_xxhash_SHA256 "5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32")
 
+# ─── Vendored files ──────────────────────────────────────────────────────────
+# A single-file library is kept in the repository, so that aglow builds with
+# no download. Its pin is the upstream commit and the SHA-256 of the file,
+# checked at configure time by afterglow_vendored_file(). Bumping it: copy
+# the file from the new commit and change COMMIT and SHA256 together.
+
+# stb_image (MIT, Sean Barrett), v2.30: aglow icat decodes JPEG, GIF, BMP and
+# the other formats with it. REUSE.toml licenses the file.
+set(AFTERGLOW_VENDORED_stb_image_COMMIT "d14d46f6b44456eb88beac58cba833a4135d4c89")
+set(AFTERGLOW_VENDORED_stb_image_URL
+    "https://raw.githubusercontent.com/nothings/stb/${AFTERGLOW_VENDORED_stb_image_COMMIT}/stb_image.h")
+set(AFTERGLOW_VENDORED_stb_image_FILE "tools/aglow/stb/stb_image.h")
+set(AFTERGLOW_VENDORED_stb_image_SHA256 "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3")
+
 # CPM.cmake itself, the same release that PlasmaZones pins.
 set(AFTERGLOW_CPM_VERSION "0.43.2")
 set(AFTERGLOW_CPM_SHA256 "49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa")
@@ -126,6 +140,23 @@ if(NOT AFTERGLOW_DEPS_ARCHIVES AND NOT COMMAND CPMAddPackage)
     endif()
     include("${_afterglow_cpm_file}")
 endif()
+
+# afterglow_vendored_file(<name> <variable>)
+#
+# Sets <variable> to the path of the vendored file <name>, after checking it
+# against its pin. Works in configure mode only.
+function(afterglow_vendored_file name variable)
+    set(path "${_AFTERGLOW_DEPS_ROOT}/${AFTERGLOW_VENDORED_${name}_FILE}")
+    if(NOT AFTERGLOW_VENDORED_${name}_FILE OR NOT EXISTS "${path}")
+        message(FATAL_ERROR "afterglow_vendored_file: '${name}' is not vendored")
+    endif()
+    file(SHA256 "${path}" have)
+    if(NOT have STREQUAL AFTERGLOW_VENDORED_${name}_SHA256)
+        message(FATAL_ERROR "${path} does not match its pin (commit ${AFTERGLOW_VENDORED_${name}_COMMIT}):\n"
+                            "  expected ${AFTERGLOW_VENDORED_${name}_SHA256}\n  got      ${have}")
+    endif()
+    set(${variable} "${path}" PARENT_SCOPE)
+endfunction()
 
 # afterglow_fetch_dependency(<name>)
 #

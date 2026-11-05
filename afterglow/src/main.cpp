@@ -11,6 +11,7 @@
 #include "app/Startup.h"
 #include "control/Ctl.h"
 #include "control/IpcClient.h"
+#include "shell/Aglow.h"
 #include "shell/Ssh.h"
 
 #include <PhosphorIpc/IpcProtocol.h>
@@ -117,6 +118,10 @@ int main(int argc, char** argv)
     // afterglow ctl ...: a control socket client for a running afterglow, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
+    }
+    // afterglow transfer|dnd|icat|clipboard ...: the aglow next to this executable, no GUI.
+    if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
+        return Afterglow::Aglow::run(argc, argv);
     }
     // afterglow ssh ...: ssh with the remote side prepared, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {

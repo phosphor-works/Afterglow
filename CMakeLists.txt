@@ -57,7 +57,11 @@ add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, scree
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
+option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of kitty's protocols (no Qt)" ON)
 add_subdirectory(afterglow)             # the application
+if(AFTERGLOW_BUILD_AGLOW)
+    add_subdirectory(tools/aglow)       # after the application: it goes next to its executable
+endif()
 
 if(AFTERGLOW_BUILD_TOOLS)
     add_subdirectory(tools/bench)

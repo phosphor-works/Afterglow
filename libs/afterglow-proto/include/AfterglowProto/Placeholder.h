@@ -1,5 +1,20 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
+
+#pragma once
+
+#include <algorithm>
+#include <cstddef>
+#include <iterator>
+
+/// Kitty's Unicode placeholders: an image shown through cells of the
+/// character U+10EEEE, which a program writes like text. Combining
+/// diacritics on each cell give its row, its column and the high byte of the
+/// image id. The terminal reads them and a client writes them, from this one table.
+namespace AfterglowProto {
+
+inline constexpr char32_t PlaceholderChar = 0x10EEEE;
+
 // Row/column diacritics of kitty's Unicode placeholders, in order: the n-th
 // entry encodes the value n. From the kitty graphics protocol specification
 // (rowcolumn-diacritics.txt). Sorted, for binary search.
@@ -37,3 +52,16 @@ inline constexpr char32_t PlaceholderDiacritics[] = {
     0x1D1AA, 0x1D1AB, 0x1D1AC, 0x1D1AD, 0x1D242, 0x1D243, 0x1D244,
 };
 // clang-format on
+
+/// The number of values that a diacritic can encode: rows, columns and id bytes up to it.
+inline constexpr std::size_t PlaceholderDiacriticCount = std::size(PlaceholderDiacritics);
+
+/// The value that @p cp encodes, or -1 when it is not one of the diacritics.
+inline int placeholderDiacriticValue(char32_t cp)
+{
+    const auto* end = std::end(PlaceholderDiacritics);
+    const auto* it = std::lower_bound(std::begin(PlaceholderDiacritics), end, cp);
+    return (it != end && *it == cp) ? int(it - std::begin(PlaceholderDiacritics)) : -1;
+}
+
+} // namespace AfterglowProto

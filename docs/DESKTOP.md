@@ -180,10 +180,45 @@ The suite also checks these behaviors:
 - Paste confirmation ownership and keyboard acceptance.
 - Button key releases.
 - Notifications and script text permissions.
+- Kitty drag and drop with `aglow dnd`: a text drag between two panes, and a remote directory drag. The same tests run with `kitten dnd` when it is installed.
 
 Composition tests use Qt events through the window, renderer and PTY.
 They do not certify external IBus or Fcitx engines.
 The separate `desktop_acceptance.py` suite checks AT-SPI and native file-save dialogs.
+
+## The aglow client
+
+`aglow` is a client for the Kitty protocols that this document describes: file transfer, drag and drop, images and the clipboard.
+It is one static binary with no shared libraries, so it runs on any Linux computer of its architecture.
+Afterglow installs it next to `afterglow`. To use the protocols over SSH, install or copy `aglow` on the remote host.
+The `kitten` client of Kitty also works, with the same options.
+
+| Command | Function |
+| --- | --- |
+| `aglow transfer` | Copies files and directories to and from the computer that runs Afterglow |
+| `aglow dnd` | Drags files and data out of a pane, and receives drops |
+| `aglow icat` | Shows images in the pane |
+| `aglow clipboard` | Reads and writes the clipboard, with any MIME type |
+
+`afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
+`aglow --version` shows its version and the version of its protocols.
+Run `aglow COMMAND --help` for the options of a command.
+
+```sh
+# Show an image. An animated GIF plays.
+aglow icat ./picture.png
+
+# Copy a file to the clipboard as an image, then read the clipboard text.
+aglow clipboard ./picture.png
+aglow clipboard --get-clipboard
+```
+
+`aglow icat` sends a PNG image as it is.
+It decodes JPEG, GIF, BMP and other formats to pixels, and sends them compressed with zlib.
+When the terminal can read local files, `aglow icat` sends an image through shared memory or a temporary file.
+Otherwise, it sends the data through the terminal connection.
+`aglow clipboard` uses the Kitty clipboard protocol (OSC 5522).
+In a terminal without it, `aglow clipboard` uses OSC 52, which carries plain text only.
 
 ## Kitty file transfer
 
@@ -201,13 +236,13 @@ Run these commands on the computer where the terminal program runs:
 
 ```sh
 # Send a file to the computer that runs Afterglow.
-kitten transfer ./report.txt /absolute/destination/report.txt
+aglow transfer ./report.txt /absolute/destination/report.txt
 
 # Receive a file from the computer that runs Afterglow.
-kitten transfer --direction=receive /absolute/source/report.txt ./report.txt
+aglow transfer --direction=receive /absolute/source/report.txt ./report.txt
 
 # Update an existing destination with a delta transfer.
-kitten transfer --transmit-deltas ./report.txt /absolute/destination/report.txt
+aglow transfer --transmit-deltas ./report.txt /absolute/destination/report.txt
 ```
 
 The protocol supports directories, regular files, symbolic links, hard links, permissions and modification times.
@@ -217,7 +252,7 @@ After validation, Afterglow replaces the destination and reports success.
 Cancellation removes incomplete temporary files. Completed files remain in place.
 
 Set `Terminal.fileTransferPassword` only when a shared secret must replace the permission dialog.
-Pass the same secret to `kitten transfer --permissions-bypass`.
+Pass the same secret to `aglow transfer --permissions-bypass`.
 An empty setting always requires permission.
 
 | Resource | Limit | At the limit |
@@ -247,7 +282,7 @@ Afterglow sends its files one at a time, so the other files wait until the delta
 
 Kitty 0.49.2 can omit empty files when it receives a transfer.
 Afterglow sends the required end-of-data packet, including for empty files.
-Use a Kitty client with the upstream empty-file correction when empty files must be received.
+`aglow transfer` receives empty files.
 
 ## Kitty drag and drop
 
@@ -259,10 +294,10 @@ Run a client, then drag data between its terminal pane and another program:
 
 ```sh
 # Offer files and accept dropped files in the current directory.
-kitten dnd ./report.txt ./images/
+aglow dnd ./report.txt ./images/
 
 # Offer text and save dropped text.
-kitten dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
+aglow dnd --drag text/plain:./source.txt --drop text/plain:./destination.txt
 ```
 
 A program must enable the protocol before it receives drag events.

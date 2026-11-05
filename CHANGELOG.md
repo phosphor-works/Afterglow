@@ -76,6 +76,8 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty drag and drop, including remote directory data and thumbnails.
 - `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
 - Local file drops, quoted for the shell and sent as bracketed paste.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard that does not need Kitty. It is one static binary that also runs on a remote host. Its options are those of `kitten`.
+- `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 
 ### Windows, tabs and panes
 

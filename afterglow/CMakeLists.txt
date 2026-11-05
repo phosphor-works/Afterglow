@@ -61,7 +61,7 @@ qt_add_library(afterglow_app STATIC
     src/app/Services.h
 )
 
-qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h)
+qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/shell/Aglow.cpp src/shell/Aglow.h)
 target_link_libraries(afterglow PRIVATE afterglow_app)
 
 # Shader pack loading, shared with the developer render tool.
@@ -166,6 +166,11 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     qt_add_executable(afterglow_native_tests tests/NativeWindowTest.cpp)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
+    # The aglow dnd twins of the kitten dnd tests run the aglow of this build.
+    if(AFTERGLOW_BUILD_AGLOW)
+        target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
+        add_dependencies(afterglow_native_tests aglow)
+    endif()
     afterglow_add_chrome(afterglow_native_tests)
 endif()
 

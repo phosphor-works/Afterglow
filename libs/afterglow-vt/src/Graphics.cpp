@@ -5,6 +5,7 @@
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Placeholder.h>
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -23,15 +24,9 @@
 
 namespace AfterglowVt {
 
-namespace {
-#include "PlaceholderDiacritics.inc"
-} // namespace
-
 int placeholderDiacriticValue(char32_t cp)
 {
-    const auto* end = std::end(PlaceholderDiacritics);
-    const auto* it = std::lower_bound(std::begin(PlaceholderDiacritics), end, cp);
-    return (it != end && *it == cp) ? int(it - std::begin(PlaceholderDiacritics)) : -1;
+    return AfterglowProto::placeholderDiacriticValue(cp);
 }
 
 namespace {

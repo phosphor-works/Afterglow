@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "desktop/FileTransfer.h"
 #include <AfterglowProto/Transfer.h>
+#include <AfterglowProto/TransferClient.h>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QSocketNotifier>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtEndian>
+#include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -695,6 +699,170 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
     ASSERT_EQ(prompted.size(), 100);
     EXPECT_EQ(prompted.last(), dir.filePath(QStringLiteral("99")));
     EXPECT_EQ(promptedTotal, 150);
+}
+// The client of afterglow-proto (aglow transfer) against this service, as
+// they talk through a terminal: each OSC 5113 sequence of one side reaches
+// the other side whole.
+struct Client : Transfer {
+    QByteArray noise(int size, quint32 seed)
+    {
+        QByteArray out(size, '\0');
+        for (auto& c : out) {
+            seed = seed * 1664525u + 1013904223u;
+            c = char(seed >> 24);
+        }
+        return out;
+    }
+    void write(const QString& path, const QByteArray& bytes)
+    {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write(bytes);
+    }
+    static ino_t inode(const QString& path)
+    {
+        struct stat st { };
+        return ::stat(QFile::encodeName(path).constData(), &st) == 0 ? st.st_ino : 0;
+    }
+    static QByteArray read(const QString& path)
+    {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    }
+    AfterglowProto::TransferClientOptions options()
+    {
+        AfterglowProto::TransferClientOptions o;
+        o.home = QDir::homePath().toStdString();
+        o.cwd = dir.path().toStdString();
+        o.deltas = true;
+        return o;
+    }
+    // Runs @p client until its session is over. A prompt is approved.
+    bool run(AfterglowProto::TransferClient& client)
+    {
+        qsizetype seen = 0;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (!client.over() && elapsed.elapsed() < 20000) {
+            if (!token.isEmpty()) {
+                service.approve(token, true);
+                token.clear();
+            }
+            std::string out;
+            client.pull(out, 256 * 1024);
+            for (std::size_t at = 0; (at = out.find("\x1b]5113;", at)) != std::string::npos;) {
+                const auto end = out.find("\x1b\\", at);
+                service.handle(QByteArray(out.data() + at + 7, qsizetype(end - at - 7)));
+                at = end + 2;
+            }
+            QCoreApplication::processEvents();
+            if (out.empty())
+                QThread::msleep(1);
+            for (; seen < replies.size(); ++seen) {
+                const QByteArray& bytes = replies[seen];
+                for (qsizetype at = 0; (at = bytes.indexOf("\x1b]5113;", at)) >= 0;) {
+                    const auto end = bytes.indexOf("\x1b\\", at);
+                    client.receive(std::string_view(bytes.constData() + at + 7, std::size_t(end - at - 7)));
+                    at = end + 2;
+                }
+            }
+        }
+        return client.over();
+    }
+};
+TEST_F(Client, SendsATreeWithDeltasToTheTerminal)
+{
+    service.setPassword(QStringLiteral("secret"));
+    const QString source = dir.filePath(QStringLiteral("source"));
+    const QByteArray big = noise(300000, 1) + QByteArray(200000, 'x');
+    QByteArray changed = big;
+    changed.insert(1000, "inserted");
+    changed.append("tail");
+    write(source + QStringLiteral("/big"), changed);
+    write(source + QStringLiteral("/nested/small"), "small file");
+    write(source + QStringLiteral("/nested/empty"), { });
+    ASSERT_EQ(::symlink("big", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
+    ASSERT_EQ(::link(QFile::encodeName(source + QStringLiteral("/big")).constData(),
+                  QFile::encodeName(source + QStringLiteral("/hard")).constData()),
+        0);
+    ASSERT_EQ(::chmod(QFile::encodeName(source + QStringLiteral("/nested")).constData(), 0750), 0);
+    // The old copy on the terminal's side: the big file goes as a delta.
+    const QString destination = dir.filePath(QStringLiteral("destination"));
+    write(destination + QStringLiteral("/source/big"), big);
+    auto o = options();
+    o.password = "secret";
+    std::string error;
+    auto client = AfterglowProto::makeTransferSender(o, { source.toStdString(), destination.toStdString() + "/" }, error);
+    ASSERT_TRUE(client) << error;
+    ASSERT_TRUE(run(*client));
+    EXPECT_EQ(client->state(), AfterglowProto::TransferClient::State::Done) << client->error();
+    for (const auto& item : client->items())
+        EXPECT_TRUE(item.error.empty()) << item.local << ": " << item.error;
+    const QString copy = destination + QStringLiteral("/source");
+    EXPECT_EQ(read(copy + QStringLiteral("/big")), changed);
+    EXPECT_EQ(read(copy + QStringLiteral("/nested/small")), "small file");
+    EXPECT_TRUE(QFileInfo::exists(copy + QStringLiteral("/nested/empty")));
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/link")).symLinkTarget(), copy + QStringLiteral("/big"));
+    EXPECT_EQ(inode(copy + QStringLiteral("/hard")), inode(copy + QStringLiteral("/big")));
+    struct stat nested { };
+    ASSERT_EQ(::stat(QFile::encodeName(copy + QStringLiteral("/nested")).constData(), &nested), 0);
+    EXPECT_EQ(nested.st_mode & 0777, 0750u);
+    EXPECT_EQ(client->deltaFileBytes(), quint64(changed.size()));
+    EXPECT_LT(client->deltaBytes(), quint64(changed.size() / 10));
+}
+TEST_F(Client, ReceivesATreeWithDeltasFromTheTerminal)
+{
+    const QString remote = dir.filePath(QStringLiteral("remote"));
+    const QByteArray big = noise(400000, 2);
+    QByteArray changed = big;
+    changed.replace(200000, 5000, noise(5000, 3));
+    write(remote + QStringLiteral("/big"), changed);
+    write(remote + QStringLiteral("/nested/small"), "small file");
+    write(remote + QStringLiteral("/nested/empty"), { });
+    ASSERT_EQ(::symlink("nested/small", QFile::encodeName(remote + QStringLiteral("/link")).constData()), 0);
+    // The terminal sends the first name of an inode that it finds: of the
+    // big file, either could come first, and only a file goes as a delta.
+    ASSERT_EQ(::link(QFile::encodeName(remote + QStringLiteral("/nested/small")).constData(),
+                  QFile::encodeName(remote + QStringLiteral("/hard")).constData()),
+        0);
+    const qint64 modified = 1600000000;
+    const timespec times[2] { { modified, 0 }, { modified, 0 } };
+    ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(remote + QStringLiteral("/nested")).constData(), times, 0), 0);
+    const QString local = dir.filePath(QStringLiteral("local"));
+    write(local + QStringLiteral("/remote/big"), big);
+    std::string error;
+    auto client = AfterglowProto::makeTransferReceiver(options(), { remote.toStdString(), local.toStdString() + "/" }, error);
+    ASSERT_TRUE(client) << error;
+    ASSERT_TRUE(run(*client));
+    EXPECT_EQ(prompts, 1);
+    EXPECT_EQ(client->state(), AfterglowProto::TransferClient::State::Done) << client->error();
+    for (const auto& item : client->items())
+        EXPECT_TRUE(item.error.empty()) << item.local << ": " << item.error;
+    const QString copy = local + QStringLiteral("/remote");
+    EXPECT_EQ(read(copy + QStringLiteral("/big")), changed);
+    EXPECT_EQ(read(copy + QStringLiteral("/nested/small")), "small file");
+    // An empty file gets no data packet, only the end.
+    EXPECT_TRUE(QFileInfo::exists(copy + QStringLiteral("/nested/empty")));
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/link")).symLinkTarget(), copy + QStringLiteral("/nested/small"));
+    EXPECT_EQ(inode(copy + QStringLiteral("/hard")), inode(copy + QStringLiteral("/nested/small")));
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/nested")).lastModified().toSecsSinceEpoch(), modified);
+    EXPECT_EQ(client->deltaFileBytes(), quint64(changed.size()));
+    EXPECT_LT(client->deltaBytes(), quint64(changed.size() / 10));
+}
+TEST_F(Client, CancelEndsTheSessionOnBothSides)
+{
+    write(dir.filePath(QStringLiteral("source/file")), noise(2000000, 4));
+    std::string error;
+    auto o = options();
+    o.deltas = false;
+    auto client = AfterglowProto::makeTransferSender(o,
+        { dir.filePath(QStringLiteral("source/file")).toStdString(), dir.filePath(QStringLiteral("out")).toStdString() }, error);
+    ASSERT_TRUE(client) << error;
+    client->cancel("stopped");
+    ASSERT_TRUE(run(*client));
+    EXPECT_EQ(client->state(), AfterglowProto::TransferClient::State::Canceled);
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("out"))));
 }
 } // namespace
 int main(int argc, char** argv)

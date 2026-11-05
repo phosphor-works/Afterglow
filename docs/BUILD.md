@@ -42,6 +42,10 @@ The first configuration downloads source archives. It needs network access one t
 | zlib-ng | `cmake/AfterglowDependencies.cmake` | Compresses and decompresses images and file transfers |
 | xxHash | `cmake/AfterglowDependencies.cmake` | Calculates the block hashes of delta file transfers |
 
+The repository includes `tools/aglow/stb/stb_image.h`, which `aglow icat` uses to decode images.
+`cmake/AfterglowDependencies.cmake` pins the file to an upstream commit and its SHA-256 hash.
+A configuration with a changed file stops with an error.
+
 CMake checks each archive against the SHA-256 hash in its pin file.
 The archives go into the CPM cache.
 By default, every build directory uses the same cache.
@@ -162,6 +166,8 @@ If you do, shell integration is off, and the executable can miss its plugin, sha
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
+It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
+To build without `aglow`, add `-DAFTERGLOW_BUILD_AGLOW=OFF` to the configuration command.
 Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
 

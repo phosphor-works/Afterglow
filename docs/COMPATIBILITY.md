@@ -150,6 +150,24 @@ A full stack discards its oldest entry when a new entry is pushed.
 All protocol shape names are supported, including zoom, cell and vertical-text pointers.
 A terminal reset clears both stacks and restores the default text pointer.
 
+## The aglow client
+
+`aglow` is the client side of the Kitty protocols that Afterglow supports. It does not need Kitty.
+Its message formats come from `libs/afterglow-proto`, the same code that the terminal uses.
+
+| Command | Protocol | Interoperability checks |
+| --- | --- | --- |
+| `aglow transfer` | File transfer (OSC 5113): directories, links, permissions, times, zlib, deltas and the SHA-256 password form | Against the Afterglow service in process and through a pseudo-terminal, and against Kitty 0.49.2 (`kitty_transfer_interop.py`) |
+| `aglow dnd` | Drag and drop (OSC 72): MIME data, copy and move, remote directory trees in both directions | Against Afterglow in a nested KWin (`NativeWindow.Aglow*`), and as the target of a remote drop (`AglowDrop.*`) |
+| `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels with zlib, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer |
+| `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Message formats in `libs/afterglow-proto/tests` |
+
+`aglow` takes the options of the `kitten` command of the same name.
+`aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept.
+Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`, is not used.
+`aglow icat` decodes images with stb_image. It does not use ImageMagick or download images from URLs.
+`aglow clipboard` does not convert between image formats when it reads the clipboard.
+
 ## Protocol definitions
 
 - [Kitty relative graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/#relative-placements).

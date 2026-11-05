@@ -72,11 +72,14 @@ set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp
     src/Delta.cpp
+    src/DndTree.cpp
     src/DragDrop.cpp
+    src/FdDelta.cpp
     src/Graphics.cpp
     src/Random.cpp
     src/Sha256.cpp
     src/Transfer.cpp
+    src/TransferClient.cpp
     src/Zlib.cpp
 )
 add_library(Afterglow::Proto ALIAS AfterglowProto)

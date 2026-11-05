@@ -38,7 +38,7 @@ wrong, and points to the skills that hold the procedures.
 - **Licenses.** Every file that can hold a comment starts with `SPDX-FileCopyrightText: 2026 fuddlesworth` and an
   `SPDX-License-Identifier`. The application, its tests and tools are `GPL-3.0-or-later`. Tools that use only
   `libs/afterglow-vt` and `libs/afterglow-proto` (the VT benchmark, `tools/conformance`, `tools/fuzz`,
-  `tools/gen_unicode_tables.py`) are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New
+  `tools/aglow`, `tools/gen_unicode_tables.py`) are `LGPL-2.1-or-later`. `libs/**` is `LGPL-2.1-or-later`, tests included. New
   shader packs are `LGPL-2.1-or-later`.
   Feedback Glow, Depth Trails and Mesh Reactor are `GPL-3.0-or-later`: keep the header that a file has, and do not
   relicense it. `REUSE.toml` licenses files that cannot hold a header (JSON, images).
@@ -106,7 +106,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Control | `afterglow/src/control/`: `Control.cpp`, `ControlSocket.cpp` (the `control` target of the phosphor-ipc socket), `IpcClient.cpp`, `Ctl.cpp` (`afterglow ctl`); the socket and the launch handoff in `afterglow/src/app/InstanceSocket.cpp` and `main.cpp` |
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`), `data/shell-integration/`, `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `tools/conformance/`, `tools/fuzz/` |
-| Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py` |
+| Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols: no Qt, no Phosphor, only `libs/afterglow-proto` and the vendored stb_image) |
 
 ## Skills and agents
 
