@@ -758,6 +758,7 @@ struct Client : Transfer {
     // Runs @p client until its session is over. A prompt is approved.
     bool run(AfterglowProto::TransferClient& client)
     {
+        const int closedBefore = closed;
         qsizetype seen = 0;
         QElapsedTimer elapsed;
         elapsed.start();
@@ -785,6 +786,10 @@ struct Client : Transfer {
                 }
             }
         }
+        // Nothing answers ac=finish, so a client is done when it sends it. The
+        // worker then sets the directory metadata and closes the session.
+        if (client.over() && client.state() == AfterglowProto::TransferClient::State::Done)
+            return waitFor([&] { return closed > closedBefore; });
         return client.over();
     }
 };
