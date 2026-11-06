@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -365,6 +366,82 @@ TEST(Delta, ApplierTakesOperationsInAnyPieces)
     EXPECT_TRUE(pending.empty());
     EXPECT_TRUE(applier.finished());
     EXPECT_EQ(target.out, file);
+}
+
+TEST(Delta, ApplierCopiesALargeRangeInSteps)
+{
+    const std::string basis = noise(1 << 20, 13);
+    const std::string file = "head" + basis + "tail";
+    const auto blockSize = deltaBlockSize(basis.size());
+    // One range of 13 bytes copies the whole basis, as a sender that joins blocks sends it.
+    const auto literal = [](std::string_view bytes) {
+        std::string op(5, '\0');
+        op[0] = 1;
+        writeLittle(op, 1, std::uint32_t(bytes.size()));
+        return op + std::string(bytes);
+    };
+    std::string range(13, '\0');
+    range[0] = 3;
+    writeLittle(range, 9, std::uint32_t(basis.size() / blockSize - 1));
+    const auto digest = fileHash(file);
+    const std::string delta = literal("head") + range + literal("tail") + std::string("\x02\x10\x00", 3)
+        + std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+    ASSERT_EQ(basis.size() % blockSize, 0u);
+    struct Target : DeltaTarget
+    {
+        std::string_view basis;
+        std::uint32_t blockSize = 0;
+        std::string out;
+        bool readBlock(std::uint64_t index, std::string& block) override
+        {
+            block += basis.substr(std::size_t(index) * blockSize, blockSize);
+            return true;
+        }
+        bool write(std::string_view bytes) override
+        {
+            out += bytes;
+            return true;
+        }
+    } target;
+    target.basis = basis;
+    target.blockSize = blockSize;
+    DeltaApplier applier(target.blockSize, basis.size(), 1 << 24);
+    constexpr std::size_t step = 64 * 1024;
+    std::string pending = delta;
+    int calls = 0;
+    std::size_t most = 0;
+    do {
+        const auto before = target.out.size();
+        const auto used = applier.apply(pending, target, step);
+        ASSERT_TRUE(used);
+        pending.erase(0, *used);
+        most = std::max(most, target.out.size() - before);
+        ++calls;
+        // The caller has control between steps: a stop here leaves a prefix of the file.
+        // Not EXPECT_EQ: a failure would print a line diff of 1 MiB of noise.
+        EXPECT_TRUE(target.out == file.substr(0, target.out.size()));
+    } while (applier.hasWork() && calls < 1000);
+    EXPECT_GE(calls, int(basis.size() / step));
+    EXPECT_LE(most, step + target.blockSize);
+    EXPECT_TRUE(pending.empty());
+    EXPECT_TRUE(applier.finished());
+    EXPECT_TRUE(target.out == file);
+
+    // A step of 0 still makes progress: one block for each call.
+    Target small = target;
+    small.out.clear();
+    DeltaApplier stepped(target.blockSize, basis.size(), 1 << 24);
+    pending = delta;
+    calls = 0;
+    do {
+        const auto used = stepped.apply(pending, small, 0);
+        ASSERT_TRUE(used);
+        pending.erase(0, *used);
+        ++calls;
+    } while (stepped.hasWork() && calls < 10000);
+    EXPECT_TRUE(stepped.finished());
+    EXPECT_TRUE(small.out == file);
+    EXPECT_GT(calls, int(basis.size() / target.blockSize));
 }
 
 TEST(Delta, InvalidOperationsAreRefused)

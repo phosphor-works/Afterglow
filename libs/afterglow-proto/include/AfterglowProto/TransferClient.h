@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -102,7 +103,9 @@ public:
     std::uint64_t deltaFileBytes() const { return m_deltaFileBytes; }
 
     /// Reads one reply of the terminal: the text after "5113;". Replies of
-    /// other sessions are ignored.
+    /// other sessions are ignored. The work of one call is bounded: a delta
+    /// that copies much of the old file goes on in pull(), and the replies
+    /// that arrive meanwhile wait their turn.
     void receive(std::string_view payload);
     /// Appends complete OSC sequences to @p out, until it holds about
     /// @p budget more bytes or nothing is ready. File data is read here, so
@@ -110,8 +113,8 @@ public:
     /// bounded too: a delta of a file that did not change makes little
     /// output for the bytes that it reads.
     void pull(std::string& out, std::size_t budget);
-    /// The last pull() stopped at its bound with work left: call it again
-    /// without waiting for the terminal.
+    /// The last pull() or receive() stopped at its bound with work left:
+    /// call pull() again without waiting for the terminal.
     bool hasWork() const { return m_hasWork; }
     /// The answer in State::Confirm: go on, or cancel the session.
     void confirm(bool proceed);
@@ -129,6 +132,13 @@ protected:
     virtual void onReply(const TransferFields& reply) = 0;
     virtual void produce(std::string& out, std::size_t budget) = 0;
     virtual void proceed() = 0;
+    /// A reply started work that goes on in steps (a delta that copies much
+    /// of the old file). Later replies wait until it ends.
+    virtual bool busy() const { return false; }
+    /// One more step of that work.
+    virtual void resume() { }
+    /// Ends that work: the session no longer runs.
+    virtual void abandon() { }
 
     TransferClientOptions m_options;
     std::string m_id;
@@ -140,6 +150,13 @@ protected:
     std::uint64_t m_deltaBytes = 0;
     std::uint64_t m_deltaFileBytes = 0;
     bool m_hasWork = false;
+
+private:
+    void handle(std::string_view payload);
+
+    // The replies that came while busy(), in order.
+    std::deque<std::string> m_waiting;
+    std::size_t m_waitingBytes = 0;
 };
 
 /// Copies files from this computer to the terminal's computer (ac=send).

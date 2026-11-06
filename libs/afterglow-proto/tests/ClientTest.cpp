@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -721,6 +722,109 @@ TEST(Client, AReceiverSignsALargeFileInSteps)
     }
     EXPECT_TRUE(sentSince(0, "end_data"));
     EXPECT_GT(pulls, 2);
+}
+
+// A delta of a literal, one range that copies all of @p basis, a literal
+// and the hash of the file that it makes.
+std::string rangeDelta(const std::string& basis, const std::string& head, const std::string& tail)
+{
+    const auto literal = [](const std::string& bytes) {
+        std::string op(1, '\x01');
+        for (int byte = 0; byte < 4; ++byte) {
+            op += char(std::uint8_t(bytes.size() >> (8 * byte)));
+        }
+        return op + bytes;
+    };
+    const auto block = deltaBlockSize(basis.size());
+    const auto countLess1 = std::uint32_t((basis.size() + block - 1) / block - 1);
+    std::string range(13, '\0');
+    range[0] = 3;
+    for (int byte = 0; byte < 4; ++byte) {
+        range[std::size_t(9 + byte)] = char(std::uint8_t(countLess1 >> (8 * byte)));
+    }
+    const auto digest = fileHash(head + basis + tail);
+    return literal(head) + range + literal(tail) + std::string("\x02\x10\x00", 3)
+        + std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+}
+
+// A receiver whose basis is @p size bytes gets a delta that copies all of
+// it with one range: the copy goes in steps, and @p cancel stops it after
+// the first one.
+void receiveLargeDelta(TransferClientOptions::Compress compress, bool cancel)
+{
+    TempDir dir;
+    const std::size_t size = 40 << 20;
+    const auto basis = noise(size, 21);
+    const std::string changed = "head" + basis + "tail";
+    const auto path = dir.write("f", basis);
+    auto options = optionsIn(dir);
+    options.deltas = true;
+    options.compress = compress;
+    std::string error;
+    auto client = makeTransferReceiver(options, { "/r/f", path }, error);
+    ASSERT_TRUE(client) << error;
+    FakeTerminal terminal { *client, "/home/r" };
+    terminal.listing = { { { "fid", "0" }, { "n", "/r/f" }, { "st", "1" }, { "sz", std::to_string(changed.size()) } } };
+    terminal.answerRequests = false;
+    // The request, then the signature in steps.
+    std::string fid;
+    bool signatureSent = false;
+    for (int round = 0; round < 100 && !signatureSent; ++round) {
+        terminal.step();
+        for (const auto& m : terminal.sent) {
+            if (m.at("ac") == "file" && m.contains("tt") && m.at("tt") == "rsync") {
+                fid = m.at("fid");
+            }
+            signatureSent = signatureSent || (m.at("ac") == "end_data" && m.at("fid") == fid);
+        }
+    }
+    ASSERT_TRUE(signatureSent);
+    const auto delta = rangeDelta(basis, "head", "tail");
+    terminal.sendData(fid, compress == TransferClientOptions::Compress::Always ? zlibCompress(delta) : delta);
+    // One receive() copied one step, not the whole basis.
+    EXPECT_TRUE(client->hasWork());
+    ASSERT_EQ(client->items().size(), 1u);
+    EXPECT_FALSE(client->items()[0].finished);
+    EXPECT_GT(client->items()[0].done, 0u);
+    EXPECT_LT(client->items()[0].done, size / 2);
+    if (cancel) {
+        client->cancel("Canceled by an interrupt");
+        terminal.run();
+        EXPECT_EQ(client->state(), TransferClient::State::Canceled);
+        EXPECT_LT(client->items()[0].done, size / 2);
+        // Not EXPECT_EQ: gtest would print a line diff of 40 MiB of noise.
+        EXPECT_TRUE(readFile(path) == basis);
+        client.reset();
+        // No temporary file is left next to the destination.
+        EXPECT_EQ(std::distance(std::filesystem::directory_iterator(dir.path), std::filesystem::directory_iterator()), 1);
+        return;
+    }
+    int pulls = 0;
+    while (client->hasWork() && pulls < 100) {
+        terminal.step();
+        ++pulls;
+    }
+    EXPECT_GE(pulls, 2);
+    terminal.run();
+    EXPECT_EQ(client->state(), TransferClient::State::Done);
+    EXPECT_TRUE(terminal.finished);
+    EXPECT_TRUE(client->items()[0].error.empty()) << client->items()[0].error;
+    EXPECT_TRUE(readFile(path) == changed);
+}
+
+TEST(Client, AReceiverAppliesALargeDeltaInSteps)
+{
+    receiveLargeDelta(TransferClientOptions::Compress::Never, false);
+}
+
+TEST(Client, AReceiverInflatesALargeDeltaInSteps)
+{
+    receiveLargeDelta(TransferClientOptions::Compress::Always, false);
+}
+
+TEST(Client, AReceiverStopsBetweenTheStepsOfADelta)
+{
+    receiveLargeDelta(TransferClientOptions::Compress::Never, true);
 }
 
 struct Hostile : testing::Test

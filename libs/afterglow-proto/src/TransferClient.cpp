@@ -41,6 +41,9 @@ constexpr std::size_t DeltaStep = 1024 * 1024;
 // of a file that did not change makes almost no output, so the output
 // budget alone would let one call read the whole file.
 constexpr std::size_t WorkStep = 16 * 1024 * 1024;
+// Replies that may wait while a delta is applied in steps. Each step reads
+// at most one batch of the terminal's output, so the queue stays far below.
+constexpr std::size_t MaxWaiting = 64 * 1024 * 1024;
 // A signature of the largest block size for a file of 1 TiB is 20 MiB.
 constexpr std::size_t MaxSignature = 64 * 1024 * 1024;
 // One literal of a delta that the receiver buffers whole.
@@ -323,6 +326,27 @@ void TransferClient::fail(std::string error)
 
 void TransferClient::receive(std::string_view payload)
 {
+    // Work that a reply started goes first: later replies wait their turn,
+    // in order, so that each call does a bounded amount of work.
+    if (busy() || !m_waiting.empty()) {
+        if (m_waitingBytes + payload.size() > MaxWaiting) {
+            fail("The terminal sent more than " + number(std::int64_t(MaxWaiting >> 20))
+                 + " MiB while aglow applied a delta");
+            abandon();
+            m_waiting.clear();
+            m_waitingBytes = 0;
+            return;
+        }
+        m_waitingBytes += payload.size();
+        m_waiting.emplace_back(payload);
+        m_hasWork = true;
+        return;
+    }
+    handle(payload);
+}
+
+void TransferClient::handle(std::string_view payload)
+{
     const auto decoded = decodeTransfer(payload);
     if (!decoded || field(*decoded, "id") != m_id) {
         return;
@@ -348,7 +372,22 @@ void TransferClient::pull(std::string& out, std::size_t budget)
     out += m_output;
     m_output.clear();
     m_hasWork = false;
-    if (m_state == State::Running && out.size() - start < budget) {
+    if (busy()) {
+        if (m_state == State::Running) {
+            resume();
+        } else {
+            abandon();
+        }
+    }
+    while (!busy() && !m_waiting.empty()) {
+        const std::string payload = std::move(m_waiting.front());
+        m_waiting.pop_front();
+        m_waitingBytes -= payload.size();
+        handle(payload);
+    }
+    if (busy() || !m_waiting.empty()) {
+        m_hasWork = true;
+    } else if (m_state == State::Running && out.size() - start < budget) {
         produce(out, budget - (out.size() - start));
     }
     // A cancel that produce() queued goes out now, not after the next reply.
@@ -1064,6 +1103,8 @@ public:
         std::unique_ptr<DeltaApplier> applier;
         std::unique_ptr<FdDeltaTarget> deltaTarget;
         std::string pending;
+        // The packet that the inflater reads: a delta step can stop it midway.
+        std::string inflateInput;
         std::uint32_t blockSize = 0;
         std::uint64_t basisSize = 0;
 
@@ -1148,6 +1189,11 @@ private:
     int baseFd(std::size_t base);
     UniqueFd openDirectory(std::size_t index, bool create);
     void data(std::size_t index, const TransferFields& f, bool end);
+    bool inflate(std::size_t index);
+    void endData(std::size_t index, bool end, bool ok);
+    bool busy() const override { return m_busy != SIZE_MAX; }
+    void resume() override;
+    void abandon() override;
     bool write(std::size_t index, std::string_view chunk);
     void done(std::size_t index, std::string error);
     void finalize();
@@ -1189,6 +1235,9 @@ private:
     std::size_t m_outstanding = 0;
     // A delta request whose signature is being sent, from the entry's basis.
     std::size_t m_signing = SIZE_MAX;
+    // The file whose delta goes on in steps, and whether its last packet came.
+    std::size_t m_busy = SIZE_MAX;
+    bool m_busyEnd = false;
     std::unique_ptr<SignatureBuilder> m_signer;
     std::uint64_t m_signSize = 0;
     std::uint64_t m_signOffset = 0;
@@ -1788,7 +1837,7 @@ bool Receiver::write(std::size_t index, std::string_view chunk)
     remote.pending += chunk;
     // The target sets errno when it stops. An invalid operation or a wrong hash leaves it 0.
     errno = 0;
-    const auto used = remote.applier->apply(remote.pending, *remote.deltaTarget);
+    const auto used = remote.applier->apply(remote.pending, *remote.deltaTarget, WorkStep);
     if (!used) {
         if (errno == 0) {
             errno = EINVAL;
@@ -1870,40 +1919,93 @@ void Receiver::data(std::size_t index, const TransferFields& f, bool end)
             ok = false;
         }
         if (ok && !remote.streamEnded) {
-            remote.inflater->setInput(bytes);
-            char buffer[ReadStep];
-            for (;;) {
-                std::size_t produced = 0;
-                const auto result = remote.inflater->step(buffer, sizeof buffer, produced);
-                if (produced && !write(index, std::string_view(buffer, produced))) {
-                    ok = false;
-                    break;
-                }
-                if (result == ZlibStream::Result::End) {
-                    remote.streamEnded = true;
-                    if (remote.inflater->inputLeft() != 0) {
-                        errno = EINVAL;
-                        ok = false;
-                    }
-                    break;
-                }
-                // Out of input: zlib reports no progress as an error.
-                if (remote.inflater->inputLeft() == 0 && produced < sizeof buffer) {
-                    break;
-                }
-                if (result == ZlibStream::Result::Error) {
-                    errno = EINVAL;
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if (ok && end && !remote.streamEnded) {
-            errno = EINVAL;
-            ok = false;
+            // The inflater reads the packet in place, and a delta step can
+            // stop it before it took all: the bytes stay with the file.
+            remote.inflateInput.assign(bytes);
+            remote.inflater->setInput(remote.inflateInput);
+            ok = inflate(index);
         }
     } else if (!bytes.empty()) {
         ok = write(index, bytes);
+    }
+    if (ok && remote.applier && remote.applier->hasWork()) {
+        // The delta goes on in pull(), one step at a time, and the end of
+        // the file is checked once it is applied.
+        m_busy = index;
+        m_busyEnd = end;
+        m_hasWork = true;
+        return;
+    }
+    endData(index, end, ok);
+}
+
+// Inflates the input of a compressed file until it is used, or until a step
+// of its delta stops. False with errno set.
+bool Receiver::inflate(std::size_t index)
+{
+    auto& remote = m_remote[index];
+    char buffer[ReadStep];
+    for (;;) {
+        std::size_t produced = 0;
+        const auto result = remote.inflater->step(buffer, sizeof buffer, produced);
+        if (produced && !write(index, std::string_view(buffer, produced))) {
+            return false;
+        }
+        if (result == ZlibStream::Result::End) {
+            remote.streamEnded = true;
+            if (remote.inflater->inputLeft() != 0) {
+                errno = EINVAL;
+                return false;
+            }
+            return true;
+        }
+        // Out of input: zlib reports no progress as an error.
+        if (remote.inflater->inputLeft() == 0 && produced < sizeof buffer) {
+            return true;
+        }
+        if (result == ZlibStream::Result::Error) {
+            errno = EINVAL;
+            return false;
+        }
+        if (remote.applier && remote.applier->hasWork()) {
+            return true;
+        }
+    }
+}
+
+void Receiver::resume()
+{
+    const std::size_t index = m_busy;
+    auto& remote = m_remote[index];
+    errno = 0;
+    bool ok = write(index, {});
+    if (ok && !remote.applier->hasWork() && remote.compressed && !remote.streamEnded
+        && remote.inflater->inputLeft() > 0) {
+        ok = inflate(index);
+    }
+    if (ok && remote.applier->hasWork()) {
+        return;
+    }
+    m_busy = SIZE_MAX;
+    endData(index, m_busyEnd, ok);
+}
+
+void Receiver::abandon()
+{
+    if (m_busy != SIZE_MAX) {
+        done(m_busy, errnoText(ECANCELED));
+    }
+}
+
+// The rest of a data packet, once its bytes are written: the checks of the
+// last packet, and the file taking its name. @p ok: the bytes went in.
+void Receiver::endData(std::size_t index, bool end, bool ok)
+{
+    auto& remote = m_remote[index];
+    auto& item = m_items[index];
+    if (ok && end && remote.compressed && !remote.streamEnded) {
+        errno = EINVAL;
+        ok = false;
     }
     if (ok && end && remote.rsync && (!remote.applier->finished() || !remote.pending.empty())) {
         errno = EINVAL;
@@ -1947,6 +2049,9 @@ void Receiver::done(std::size_t index, std::string error)
     }
     item.finished = true;
     item.error = std::move(error);
+    if (index == m_busy) {
+        m_busy = SIZE_MAX;
+    }
     if (index == m_signing) {
         m_signer.reset();
         std::string().swap(m_signBuffer);

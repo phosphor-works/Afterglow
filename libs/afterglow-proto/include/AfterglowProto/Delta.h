@@ -188,20 +188,32 @@ public:
     /// nullopt for an invalid operation, a wrong hash, data after the
     /// hash, or a target that stopped.
     ///
-    /// One call has no step bound: a block range of 13 bytes can copy the
-    /// whole basis. The target bounds the work. It stops the delta when it
-    /// returns false.
-    std::optional<std::size_t> apply(std::string_view pending, DeltaTarget& target);
+    /// Bytes written bound the work of one call: a block range of 13 bytes
+    /// can copy the whole basis. A call stops once it wrote @p step bytes,
+    /// and hasWork() tells that it stopped. A range that it stopped in is
+    /// taken from @p pending, and the next call goes on with it. One call
+    /// can go past @p step by one block or one literal, and always makes
+    /// progress. The target can also stop the delta: it returns false.
+    std::optional<std::size_t> apply(std::string_view pending, DeltaTarget& target, std::size_t step = SIZE_MAX);
+    /// The last apply() stopped at its step with work left: call it again
+    /// with the bytes that it did not take, with or without more data.
+    bool hasWork() const { return m_hasWork; }
     /// The file hash arrived and matched.
     bool finished() const { return m_finished; }
 
 private:
-    bool output(DeltaTarget& target, std::string_view bytes);
+    bool output(DeltaTarget& target, std::string_view bytes, std::size_t& written);
+    bool copy(DeltaTarget& target, std::size_t step, std::size_t& written);
 
     std::uint64_t m_blockCount;
     std::size_t m_maxLiteral;
     struct Hash;
     std::unique_ptr<Hash> m_hash;
+    std::string m_block;
+    // The blocks of a range that a call stopped in.
+    std::uint64_t m_copyNext = 0;
+    std::uint64_t m_copyLeft = 0;
+    bool m_hasWork = false;
     bool m_finished = false;
 };
 
