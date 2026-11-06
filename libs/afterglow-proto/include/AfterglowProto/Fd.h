@@ -28,10 +28,12 @@ namespace AfterglowProto {
 /// readable before it. A signal ends it only through @p wake: its handler
 /// writes to that self-pipe, and is installed without SA_RESTART so that a
 /// blocking write(2) returns. A signal that leaves @p wake empty, or any
-/// signal without @p wake, does not end the write. Nor does a signal that
-/// comes between the check of @p wake and a write(2) that then blocks: that
-/// write returns once the reader took all of its bytes, and the caller sees
-/// the signal after it.
+/// signal without @p wake, does not end the write. On a blocking @p fd, nor
+/// does a signal that comes between the check of @p wake and a write(2) that
+/// then blocks: that write returns once the reader took all of its bytes,
+/// and the caller sees the signal after it. A non-blocking @p fd closes that
+/// gap, as the write then returns and the poll sees @p wake (aglow run gives
+/// its runs such descriptions of their own, see OwnOutput in Run.cpp).
 inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
 {
     const auto woken = [wake] {
@@ -41,8 +43,10 @@ inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
     while (!bytes.empty()) {
         // Before each write: a signal that came before a write that blocks
         // interrupts nothing, and a blocking write that a signal interrupts
-        // after some bytes returns their count, not EINTR. Only a signal
-        // between this check and the write's start goes unseen here.
+        // after some bytes returns their count, not EINTR. On a blocking
+        // descriptor a signal between this check and the write's start goes
+        // unseen until the write returns. On a non-blocking one the write
+        // returns at once, and the poll below sees the wake.
         if (woken()) {
             errno = EINTR;
             return false;

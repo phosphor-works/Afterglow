@@ -14,6 +14,8 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
@@ -403,11 +405,33 @@ TEST(RunClient, ASignalEndsAWriteThatAFullStdoutHoldsBack)
     ASSERT_TRUE(list(server, {command("tools", "talk")}));
     const auto run = expect(server, "run");
     ASSERT_TRUE(run);
-    // More than the pipe holds: once it is full, the client sleeps in its
-    // write, and only the signal can end that.
+    // More than the pipe holds: once it is full, the client waits for room,
+    // and only the signal can end that.
     const std::string text(1024 * 1024, 'x');
     ASSERT_TRUE(server.event("commands", "stdout", {runId(*run), text}));
     ASSERT_TRUE(client.outputFull());
+    // It waits on a description of its own, with O_NONBLOCK, so that no
+    // blocking write is left for the signal to miss. Descriptor 1, which the
+    // shell shares, stays as it was.
+    const auto flags = [&](const std::string& fd) {
+        std::ifstream info("/proc/" + std::to_string(client.pid()) + "/fdinfo/" + fd);
+        std::string key;
+        std::string value;
+        while (info >> key >> value) {
+            if (key == "flags:") return std::stol(value, nullptr, 8);
+        }
+        return -1L;
+    };
+    const auto target = [&](const std::string& fd) {
+        return std::filesystem::read_symlink("/proc/" + std::to_string(client.pid()) + "/fd/" + fd).string();
+    };
+    EXPECT_EQ(flags("1") & O_NONBLOCK, 0);
+    bool own = false;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/" + std::to_string(client.pid()) + "/fd")) {
+        const std::string fd = entry.path().filename().string();
+        if (fd != "1" && target(fd) == target("1") && (flags(fd) & O_NONBLOCK)) own = true;
+    }
+    EXPECT_TRUE(own);
     ::kill(client.pid(), SIGTERM);
     const auto cancel = expect(server, "cancel");
     ASSERT_TRUE(cancel);

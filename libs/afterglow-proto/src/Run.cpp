@@ -18,6 +18,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace AfterglowProto::Run {
@@ -187,20 +188,20 @@ public:
     /// comes, while the run watches for signals.
     int fail(std::string_view message, int status = 1) const
     {
-        writeAll(m_env.error, m_env.program + ": " + printable(message) + "\n", g_wake[0]);
+        writeAll(m_error, m_env.program + ": " + printable(message) + "\n", g_wake[0]);
         return status;
     }
 
     int usage(std::string_view message) const
     {
-        writeAll(m_env.error, m_env.program + ": " + printable(message) + "\n\n" + usageText(m_env.program), g_wake[0]);
+        writeAll(m_error, m_env.program + ": " + printable(message) + "\n\n" + usageText(m_env.program), g_wake[0]);
         return UsageError;
     }
 
     /// Prints @p text on standard output. 0, else 1 with the reason.
     int print(std::string_view text) const
     {
-        if (writeAll(m_env.output, text, g_wake[0])) return 0;
+        if (writeAll(m_output, text, g_wake[0])) return 0;
         const int failure = errno;
         return fail(std::string("cannot write standard output: ") + std::strerror(failure));
     }
@@ -272,6 +273,15 @@ public:
 
     IpcConnection& ipc() { return m_ipc; }
     const Environment& env() const { return m_env; }
+    /// The descriptors that the client writes standard output and error to:
+    /// those of env(), or during a run descriptions of its own (OwnOutput).
+    int output() const { return m_output; }
+    int error() const { return m_error; }
+    void writeTo(int output, int error)
+    {
+        m_output = output;
+        m_error = error;
+    }
     /// $AFTERGLOW_PANE_ID whenever $AFTERGLOW_SOCKET is set, else 0: the pane
     /// that this shell runs in when the socket is of its Afterglow.
     std::int64_t pane() const { return m_socket.pane; }
@@ -301,6 +311,8 @@ private:
     const Environment& m_env;
     SocketLookup m_socket;
     IpcConnection m_ipc;
+    int m_output = m_env.output;
+    int m_error = m_env.error;
     int m_signal = 0;
 };
 
@@ -529,7 +541,7 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
         const bool out = event == "stdout";
         if (out || event == "stderr") {
             // The wake pipe ends a write that a reader holds back when a signal comes.
-            if (!writeAll(out ? client.env().output : client.env().error, eventArgs[1].toString(), g_wake[0])) {
+            if (!writeAll(out ? client.output() : client.error(), eventArgs[1].toString(), g_wake[0])) {
                 const int failed = errno;
                 if (g_signal) {
                     cancel();
@@ -555,12 +567,61 @@ int watched(Client& client, const Signals& signals, const std::string& run, Json
     }
 }
 
+/// For a run, the client's standard output and error as open file
+/// descriptions of its own, with O_NONBLOCK, when they are a pipe or a
+/// terminal. A blocking write that a reader holds back cannot be ended by a
+/// signal that came just before it, and the wake check before a write leaves
+/// that moment open. A write that would block now returns, and writeAll then
+/// waits for room or the wake. O_NONBLOCK on descriptors 1 and 2 themselves
+/// would change the description that the shell and other processes share.
+/// A file or a socket keeps the shared one: a file does not hold a write
+/// back, and a socket cannot be opened again.
+class OwnOutput
+{
+public:
+    explicit OwnOutput(Client& client)
+        : m_client(client)
+        , m_output(open(client.env().output))
+        , m_error(client.env().error == client.env().output ? -1 : open(client.env().error))
+    {
+        const int output = m_output >= 0 ? m_output : client.env().output;
+        const int error = client.env().error == client.env().output ? output
+                          : m_error >= 0                             ? m_error
+                                                                     : client.env().error;
+        client.writeTo(output, error);
+    }
+    ~OwnOutput()
+    {
+        m_client.writeTo(m_client.env().output, m_client.env().error);
+        if (m_output >= 0) ::close(m_output);
+        if (m_error >= 0) ::close(m_error);
+    }
+    OwnOutput(const OwnOutput&) = delete;
+    OwnOutput& operator=(const OwnOutput&) = delete;
+
+private:
+    static int open(int fd)
+    {
+        struct stat info{};
+        if (::fstat(fd, &info) != 0 || !(S_ISFIFO(info.st_mode) || ::isatty(fd))) return -1;
+        // A pipe with no reader left gives ENXIO: the shared one then gets
+        // its EPIPE, as before.
+        const std::string path = "/proc/self/fd/" + std::to_string(fd);
+        return ::open(path.c_str(), O_WRONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+    }
+
+    Client& m_client;
+    int m_output;
+    int m_error;
+};
+
 /// Runs @p run, whose run call has the arguments @p request. @p sendStdin
 /// and @p unknown as in watched().
 int runCommand(Client& client, const std::string& run, Json::Array request, bool sendStdin, std::string_view unknown = {})
 {
     Signals signals;
     if (!signals.installed()) return client.fail(std::string("cannot watch for signals: ") + std::strerror(errno));
+    const OwnOutput output(client);
     const int status = watched(client, signals, run, std::move(request), sendStdin, unknown);
     // A signal that came after the last look of the run ends the process as
     // it would without the handlers: a loop of runs stops at Ctrl+C.
