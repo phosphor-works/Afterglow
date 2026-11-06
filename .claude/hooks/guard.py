@@ -9,8 +9,10 @@ A Bash command is read the way the shell reads it: split into simple commands at
 backticks outside quotes, each one tokenized with its quotes removed, and the wrappers in front of a command (then,
 do, !, env, xargs, timeout, nohup, sudo, strace...) skipped. So `then pkill x` doesn't get past a rule, and a rule's
 word inside a quoted string (grep 'a|sudo') doesn't trip it. Here-document bodies (commit messages) are text, not
-commands. The scripts of nested shells, eval and watch are read the same way, and so are the commands in another
-command's arguments (find -exec, gdb --args, systemd-run).
+commands, unless a shell reads them as its script. The $(...) and backquote commands in a body whose delimiter is
+not quoted (<<EOF, not <<'EOF') are commands, because the shell runs them to expand the body. The scripts of nested
+shells, eval, watch, script -c, tmux, ssh and a shell that reads standard input are read the same way, and so are the
+commands in another command's arguments (find -exec, gdb --args, systemd-run).
 """
 
 import json
@@ -20,8 +22,9 @@ import shlex
 import subprocess
 import sys
 
-# Local state that never goes into git: another tool's workspace, Python caches, build trees
-LOCAL_PATH = re.compile(r'(^|/)(\.Codex|__pycache__|build[^/]*|\.cache)(/|$)')
+# Local state that never goes into git: another tool's workspace, Python caches, build trees (build/, build-asan/)
+# and .cache. A file whose name starts with "build" is a source file (build-inspector.luau).
+LOCAL_PATH = re.compile(r'(^|/)(\.Codex|__pycache__|\.cache)(/|$)|(^|/)build[^/]*/|(^|/)build[^/.]*$')
 
 # Generated files: run the generator instead
 GENERATED = {
@@ -63,8 +66,9 @@ PLASMAZONES = os.path.realpath(os.path.join(REPOSITORY, '..', 'PlasmaZones')) + 
 SEPARATORS = ';&|()\n`'
 # Words that run the command after them: skipped, with their options, to find the command itself
 WRAPPERS = set(
-    'then do else elif if while until ! { } time nohup env exec command builtin xargs timeout nice ionice stdbuf setsid '
-    'unbuffer sudo doas dbus-run-session strace ltrace valgrind perf noglob nocorrect coproc'.split()
+    'then do else elif if while until ! { } time nohup env exec command builtin xargs timeout nice ionice stdbuf '
+    'setsid unbuffer sudo doas pkexec run0 busybox toybox dbus-run-session strace ltrace valgrind perf noglob '
+    'nocorrect coproc'.split()
 )
 # The perf subcommands that run the command after them
 PERF_COMMANDS = set('record stat trace ftrace c2c mem sched lock kmem kwork timechart kvm'.split())
@@ -73,11 +77,43 @@ SHELLS = set('bash sh zsh dash ash ksh mksh yash fish'.split())
 # Commands that start the command in their arguments with their own environment (find -exec, gdb --args). Any
 # other (systemd-run, ssh, flatpak-spawn) may start it in an environment that the guard cannot see.
 INHERITS = set('find gdb lldb rr flock chrt taskset catchsegv parallel'.split())
+# Commands that never run their arguments: a word of theirs is text (echo aglow run, grep -r afterglow ctl)
+TEXT_COMMANDS = set(
+    'echo printf print grep egrep fgrep rg ugrep cat head tail less more wc ls stat file which whereis type whence '
+    'man cut sort uniq tr diff cmp comm test [ [[ printenv basename dirname realpath readlink pgrep pidof ps strings '
+    'nm ldd readelf objdump jq'.split()
+)
+# The commands in LAUNCHERS start one command from their arguments: (the operands before it, whether it gets this
+# environment). Their options that take a value are in WRAPPER_VALUES. A systemd-run --scope runs in this
+# environment, and a service in the one of the user's service manager.
+LAUNCHERS = {
+    'systemd-run': (0, False),
+    'flatpak-spawn': (0, False),
+    'flock': (1, True),
+    'chrt': (1, True),
+    'taskset': (1, True),
+    'catchsegv': (0, True),
+}
+# The commands that kill processes by name
+KILL_BY_NAME = set('pkill killall killall5 skill'.split())
+# The commands that run a command as another user
+PRIVILEGED = set('sudo sudoedit doas su pkexec run0'.split())
 # gdb options that take a value, without their dashes: gdb takes -NAME and --NAME alike
 GDB_VALUES = set(
     'p pid c core x command ex eval-command iex init-eval-command ix init-command d directory s symbols e exec se '
     'cd D data-directory tty b l i interpreter'.split()
 )
+# ssh options that take a value
+SSH_VALUES = set('BbcDEeFIiJLlmOoPpQRSWw')
+# util-linux script options that take a value, besides -c
+SCRIPT_VALUES = set('EIOBTm')
+# git subcommands that change neither the working tree nor a branch (fetch updates only the remote branches)
+GIT_READS = set(
+    'status log diff show rev-parse ls-files ls-tree grep blame describe shortlog cat-file rev-list merge-base '
+    'name-rev for-each-ref show-ref whatchanged check-ignore check-attr var help version fetch ls-remote'.split()
+)
+# The install targets of the CMake generators (Ninja, Makefiles)
+INSTALL_TARGET = re.compile(r'^install(/(strip|local|fast))?$')
 
 MSG_LOCAL = (
     '.Codex/, __pycache__/, build*/ and .cache/ are local state and never go into git, and `git add -f` would '
@@ -111,45 +147,189 @@ WRAPPER_VALUES = {
              '--pid', '--tid', '--cpu', '--repeat', '--call-graph', '--freq', '--count', '--mmap-pages', '--cgroup',
              '--uid', '--field-separator', '--interval-print'},
     'watch': {'-n', '--interval', '-q', '--equexit', '-s', '--shotsdir'},
+    'pkexec': {'-u', '--user'},
+    'run0': {'-u', '--user', '-g', '--group', '-D', '--chdir', '--setenv', '--unit', '--property', '--description',
+             '--slice', '--nice', '--machine', '--background'},
+    'systemd-run': {'-p', '--property', '-E', '--setenv', '-u', '--unit', '--description', '--slice', '-M',
+                    '--machine', '-H', '--host', '--uid', '--gid', '--nice', '-s', '--service-type',
+                    '--working-directory', '--path-property', '--socket-property', '--timer-property', '--on-active',
+                    '--on-boot', '--on-startup', '--on-unit-active', '--on-unit-inactive', '--on-calendar',
+                    '--on-timezone-change', '--on-clock-change', '--expand-environment', '--json'},
+    'flock': {'-w', '--timeout', '--wait', '-E', '--conflict-exit-code'},
+    'chrt': {'-T', '--sched-runtime', '-P', '--sched-period', '-D', '--sched-deadline'},
 }
 MSG_PKILL = (
     'pkill and killall match by name, and the user runs Afterglow as their terminal: `pkill afterglow` closes the '
     "user's own windows, and possibly this session. Use `pgrep -a NAME`, then `kill PID` on a build/ process only."
 )
 MSG_PGREP_KILL = (
-    'kill with pgrep -f matches the shell that runs the command, because its command line holds the pattern, and '
-    "it can match the user's own Afterglow. List the processes with `pgrep -a NAME`. Then run `kill PID` with the "
-    'numbers in a separate command.'
+    'kill with the PIDs that pgrep or pidof found can match the user\'s own Afterglow, and pgrep -f also matches the '
+    'shell that runs the command, because its command line holds the pattern. List the processes with '
+    '`pgrep -a NAME`. Then run `kill PID` with the numbers in a separate command.'
 )
-MSG_SUDO = 'Do not use sudo. The user installs system packages. Tell the user what you need and why.'
-MSG_INSTALL = ('Never install the build (cmake --install, the install target). The user installs Afterglow. '
-               'Only `cmake --install` into a temporary directory (--prefix /tmp/... or DESTDIR=/tmp/...) is allowed.')
+MSG_SUDO = ('Do not use sudo, su, doas, pkexec or run0. The user installs system packages. Tell the user what you '
+            'need and why.')
+MSG_INSTALL = ('Never install the build (cmake --install, the install target, cmake_install.cmake). The user '
+               'installs Afterglow. Only an install into a temporary directory (--prefix /tmp/... or '
+               'DESTDIR=/tmp/... on the command itself) is allowed.')
 MSG_CTL = (
     "`afterglow ctl`, `aglow run` and `afterglow run` drive the user's running Afterglow: this session runs inside "
     "one of its panes, and they use the pane's $AFTERGLOW_SOCKET, else the socket of the user's Wayland display. A "
-    'private D-Bus does not change that. Give them the socket of a test session '
-    '(AFTERGLOW_SOCKET=/path/to/test.sock), or remove the pane variables and point them at another display '
+    'private D-Bus does not change that. Give them the socket of a test session, with the pane ID cleared '
+    '(AFTERGLOW_SOCKET=/path/to/test.sock AFTERGLOW_PANE_ID=), or remove the pane variables and point them at '
+    'another display '
     '(env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID WAYLAND_DISPLAY=...). Ask the user before you drive their '
     'instance.'
 )
+MSG_LAUNCH = (
+    "This starts Afterglow on the user's own Wayland display: it opens a window on the user's desktop, or hands the "
+    "window to the user's running Afterglow through the socket of that display. Test in a nested KWin with its own "
+    'display (the ag-verify-live skill), or name another display on the command: WAYLAND_DISPLAY=NAME or '
+    'XDG_RUNTIME_DIR=/tmp/... before the program. --help, --version and --config-reference open no window.'
+)
+MSG_HEREDOC = ("The command is in a $(...) or backquotes in a here-document whose delimiter is not quoted, so the "
+               "shell runs it. Quote the delimiter (<<'EOF') to keep the body as text.")
 
 
-def strip_heredocs(command):
-    """The command with the bodies of its here-documents left out."""
-    out, pos = [], 0
-    for m in re.finditer(r'<<-?[ \t]*([\'"]?)([A-Za-z_][A-Za-z0-9_]*)\1', command):
-        if m.start() < pos:
+def plasmazones_message(path):
+    return (f'{path} is in PlasmaZones. Afterglow builds the Phosphor libraries from that checkout, but PlasmaZones '
+            'changes only through its own branch and pull request. Tell the user what Phosphor needs and why.')
+
+
+HEREDOC = re.compile(r'<<(-?)[ \t]*((?:\'[^\']*\'|"[^"]*"|\\.|[^\s;&|<>()\'"\\])+)')
+
+
+def unquote(word):
+    """WORD with its quotes and backslashes removed, as the delimiter of a here-document is."""
+    return re.sub(r'\'([^\']*)\'|"([^"]*)"|\\(.)', lambda m: next(g for g in m.groups() if g is not None), word)
+
+
+DOUBLE_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"', re.S)
+# The rest of a backquote substitution after its opening backquote: \` is a backquote inside it
+BACKQUOTED = re.compile(r'(?:[^`\\]|\\.)*`', re.S)
+
+
+def substitution_end(text, i):
+    """The index after the ) that closes a $( whose text starts at I, or None when none does. Inside, the text is a
+    command: quotes and backslashes hide a parenthesis, and a nested ( opens one more."""
+    depth = 1
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\':
+            i += 2
             continue
-        body = command.find('\n', m.end())
-        if body < 0:
-            break
-        end = re.compile(r'^[ \t]*%s[ \t]*$' % re.escape(m.group(2)), re.M).search(command, body + 1)
-        if not end:
-            break
-        out.append(command[pos : body + 1])
-        pos = end.end()
-    out.append(command[pos:])
-    return ''.join(out)
+        if ch == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                return None
+            i = end
+        elif ch == '"':
+            m = DOUBLE_QUOTED.match(text, i)
+            if not m:
+                return None
+            i = m.end() - 1
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if not depth:
+                return i + 1
+        i += 1
+    return None
+
+
+def body_substitutions(body):
+    """The commands of the $(...) and backquote substitutions in the body of a here-document whose delimiter is not
+    quoted. The shell expands them when the command runs. Quotes are text in such a body, and a backslash hides only
+    $, ` and \\. A substitution that does not end is an error in the shell, which then runs nothing."""
+    commands, i = [], 0
+    while i < len(body):
+        ch = body[i]
+        if ch == '\\':
+            i += 2
+            continue
+        if body.startswith('$(', i):
+            end = substitution_end(body, i + 2)
+            if end is None:
+                break
+            commands.append(body[i + 2 : end - 1])
+            i = end
+            continue
+        if ch == '`':
+            m = BACKQUOTED.match(body, i + 1)
+            if not m:
+                break
+            commands.append(m.group(0)[:-1].replace('\\`', '`'))
+            i = m.end()
+            continue
+        i += 1
+    return commands
+
+
+def split_heredocs(command):
+    """(the command with the bodies of its here-documents left out, the bodies, the commands that the shell runs to
+    expand them). A << inside quotes or a comment, and a here-string (<<<), starts none. The quotes start again
+    inside $(...) and backquotes, as in the commit message of git commit -m "$(cat <<'EOF' ... EOF)". The bodies
+    follow the line of their operators, in order. A body whose delimiter has no quote or backslash expands its
+    $(...) and backquotes, so their commands run: git commit -F - <<EOF with `afterglow ctl list` in the message
+    runs that command. A body with a quoted delimiter (<<'EOF', <<"EOF", <<\\EOF) is text only."""
+    out, bodies, commands, pending, stack = [], [], [], [], ['']
+    i, start, word_start, n = 0, 0, True, len(command)
+    while i < n:
+        ch, context = command[i], stack[-1]
+        if ch == '\\':
+            i, word_start = i + 2, False
+            continue
+        if context == '"':
+            if ch == '"':
+                stack.pop()
+            elif command.startswith('$(', i):
+                stack.append(')')
+                i += 1
+            elif ch == '`':
+                stack.append('`')
+            i += 1
+            continue
+        if ch == "'":
+            end = command.find("'", i + 1)
+            i, word_start = (n if end < 0 else end + 1), False
+            continue
+        if ch == '#' and word_start:
+            end = command.find('\n', i)
+            i = n if end < 0 else end
+            continue
+        if ch == '"':
+            stack.append('"')
+        elif command.startswith('$(', i) or ch == '(':
+            stack.append(')')
+            i += ch == '$'
+        elif ch == ')' and context == ')':
+            stack.pop()
+        elif ch == '`':
+            stack.pop() if context == '`' else stack.append('`')
+        elif command.startswith('<<<', i):
+            i += 2
+        elif (m := HEREDOC.match(command, i)) is not None:
+            pending.append((unquote(m.group(2)), any(q in m.group(2) for q in '\'"\\')))
+            i, word_start = m.end(), False
+            continue
+        elif ch == '\n' and pending:
+            pos = i + 1
+            for delimiter, quoted in pending:
+                end = re.compile(r'^[ \t]*%s[ \t]*$' % re.escape(delimiter), re.M).search(command, pos)
+                if not end:  # no end: the rest stays in the command, where every rule reads it
+                    break
+                out.append(command[start:pos])
+                bodies.append(command[pos:end.start()])
+                if not quoted:
+                    commands += body_substitutions(bodies[-1])
+                start = pos = end.end()
+            pending, i, word_start = [], pos, True
+            continue
+        word_start = ch in ' \t\n;&|()<>'
+        i += 1
+    out.append(command[start:])
+    return ''.join(out), bodies, commands
 
 
 def tokens(command):
@@ -207,9 +387,9 @@ def without_substitutions(command):
 
 
 def simple_commands(command):
-    """(wrappers, command word, arguments) for every simple command in a command line, including the ones in a
-    command substitution. A substitution inside single quotes or a comment is text, as in the shell."""
-    command = strip_heredocs(command)
+    """(wrappers, command word, arguments) for every simple command in a command line whose here-documents are left
+    out, including the ones in a command substitution. A substitution inside single quotes or a comment is text, as
+    in the shell."""
     lines, pending = [], [command]
     while pending:
         line, bodies = without_substitutions(pending.pop())
@@ -289,6 +469,9 @@ def split_wrappers(words):
                         continue
                 elif name == 'strace' and flag in ('-E', '--env'):
                     wrappers.append(('set:' if '=' in value else 'unset:') + value)
+                elif name == 'command' and ('v' in before or 'V' in before):
+                    # command -v NAME looks NAME up and runs nothing
+                    return wrappers[:-1], 'command', words[i:]
                 i = after
         else:
             return wrappers, name, words[i + 1 :]
@@ -370,6 +553,24 @@ def check_git(args, places):
     return None
 
 
+def git_reads(args):
+    """Whether git ARGS only reads: a subcommand of GIT_READS, or a listing (git branch -a, stash list...)."""
+    sub, rest = git_subcommand(args)
+    if sub in GIT_READS:
+        return True
+    if sub in ('branch', 'tag'):
+        return all(a in ('-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '-l', '--list',
+                         '--show-current', '--no-color') for a in rest)
+    first = rest[:1]
+    if sub == 'remote':
+        return first in ([], ['-v'], ['--verbose'], ['show'], ['get-url'])
+    if sub in ('stash', 'worktree'):
+        return first == ['list'] or (sub == 'stash' and first == ['show'])
+    if sub == 'config':
+        return any(a in ('--get', '--get-all', '--get-regexp', '-l', '--list', 'get', 'list') for a in rest)
+    return False
+
+
 def current_branch(directory):
     try:
         out = subprocess.run(['git', 'symbolic-ref', '--short', '-q', 'HEAD'], capture_output=True, text=True,
@@ -412,36 +613,112 @@ def pushes_main(rest, directories):
     return None
 
 
+def in_plasmazones(path, places):
+    """Whether PATH, read from any of PLACES, is in the PlasmaZones checkout. A path that the shell expands is not
+    known here."""
+    if not path or '$' in path or '`' in path:
+        return False
+    path = os.path.expanduser(path)
+    bases = ['/'] if path.startswith('/') else [p for p in places if p is not UNKNOWN]
+    return any((os.path.realpath(os.path.join(base, path)) + '/').startswith(PLASMAZONES) for base in bases)
+
+
+def operands(args):
+    """The words of ARGS that are not options, and the targets of their redirections."""
+    words, targets, k, ended = [], [], 0, False
+    while k < len(args):
+        a = args[k]
+        redirect = re.match(r'^(\d*|&)(>>?\|?|<>?)(.*)$', a)
+        if redirect and not ended:
+            target = redirect.group(3) or (args[k + 1] if k + 1 < len(args) else '')
+            (targets if '>' in redirect.group(2) or '<>' == redirect.group(2) else []).append(target)
+            k += 1 if redirect.group(3) else 2
+            continue
+        if a == '--' and not ended:
+            ended = True
+        elif ended or not a.startswith('-') or a == '-':
+            words.append(a)
+        k += 1
+    return words, targets
+
+
+def edits_plasmazones(word, args, places):
+    """The path in PlasmaZones that WORD ARGS writes, or None: a redirection, sed -i, a file tool, or a git command
+    in that checkout that is not a read."""
+    words, targets = operands(args)
+    paths = list(targets)
+    if word in ('tee', 'touch', 'rm', 'rmdir', 'mkdir', 'truncate', 'chmod', 'chown', 'chgrp', 'shred', 'mv',
+                'unlink', 'patch'):
+        paths += words
+    elif word in ('cp', 'ln', 'rsync', 'install'):
+        paths += words[-1:]
+        paths += [a.split('=', 1)[1] for a in args if a.startswith('--target-directory=')]
+        paths += [args[k + 1] for k, a in enumerate(args[:-1]) if a == '-t']
+    elif word in ('sed', 'perl') and any(a.startswith(('-i', '--in-place')) or 'i' in short_flags(a) for a in args):
+        paths += words
+    for path in paths:
+        if in_plasmazones(path, places):
+            return path
+    if word == 'patch' and in_plasmazones('.', places):
+        return PLASMAZONES.rstrip('/')
+    if word == 'git' and not git_reads(args):
+        for place in places:
+            directory = git_directory(args, place)
+            if directory is not UNKNOWN and in_plasmazones(directory, ['/']):
+                return directory
+    return None
+
+
 def under_tmp(path):
     """An absolute path, written out, under /tmp. A relative path, ~ or $VAR is resolved by the shell, in a place
     the guard does not know."""
-    return path.startswith('/') and os.path.realpath(path).startswith('/tmp/')
+    return isinstance(path, str) and path.startswith('/') and os.path.realpath(path).startswith('/tmp/')
 
 
-def temp_destination(command, args):
-    """An install into a temporary directory (--prefix or DESTDIR under /tmp) is allowed: it never touches the system."""
-    prefix = None
-    for k, a in enumerate(args):
-        if a == '--prefix' and k + 1 < len(args):
-            prefix = args[k + 1]
-        elif a.startswith('--prefix='):
-            prefix = a.split('=', 1)[1]
-    if prefix is not None:
-        return under_tmp(prefix)
-    match = re.search(r'(?:^|\s)DESTDIR=(\S+)', command)
-    return bool(match) and under_tmp(match.group(1).strip('\'"'))
-
-
-def is_install(word, args, command=''):
+def is_install(wrappers, word, args):
+    """Whether WORD ARGS installs the build outside a temporary directory: cmake --install, an install target of
+    cmake --build, ninja or make, or cmake -P cmake_install.cmake. Only the DESTDIR of this command counts: its
+    VAR=value or env words, the session's environment, and make's DESTDIR= argument."""
+    temporary = under_tmp(environment(wrappers).get('DESTDIR'))
     if word == 'cmake':
         if '--install' in args:
-            return not temp_destination(command, args)
-        targets = [args[k + 1] for k, a in enumerate(args[:-1]) if a in ('--target', '-t')]
-        return 'install' in targets or any(a.startswith('--target=install') for a in args)
-    return word in ('ninja', 'make') and 'install' in args
+            prefix = None
+            for k, a in enumerate(args):
+                if a == '--prefix' and k + 1 < len(args):
+                    prefix = args[k + 1]
+                elif a.startswith('--prefix='):
+                    prefix = a.split('=', 1)[1]
+            return not (temporary or under_tmp(prefix))
+        if '-P' in args:
+            script = args[args.index('-P') + 1] if args.index('-P') + 1 < len(args) else ''
+            if os.path.basename(script) != 'cmake_install.cmake':
+                return False
+            prefix = next((m.group(2) for a in args if (m := re.match(r'^-DCMAKE_INSTALL_PREFIX(:\w+)?=(.*)$', a))),
+                          None)
+            return not (temporary or under_tmp(prefix))
+        targets, k = [], 0
+        while k < len(args):
+            a = args[k]
+            if a == '--':  # the arguments of the build tool
+                targets += args[k + 1 :]
+                break
+            if a in ('--target', '-t'):
+                k += 1
+                while k < len(args) and not args[k].startswith('-'):
+                    targets.append(args[k])
+                    k += 1
+                continue
+            if a.startswith('--target='):
+                targets.append(a.split('=', 1)[1])
+            k += 1
+        return '--build' in args and any(INSTALL_TARGET.match(t) for t in targets) and not temporary
+    if word in ('ninja', 'make', 'gmake', 'samu'):
+        temporary |= any(a.startswith('DESTDIR=') and under_tmp(a[len('DESTDIR='):]) for a in args)
+        return any(INSTALL_TARGET.match(a) for a in args) and not temporary
+    return False
 
 
-def ctl_socket_name(display, runtime):
+def display_socket_name(display, runtime):
     """The file name of a display's main socket in RUNTIME, as AfterglowProto::sharedSocketPath names it: a
     WAYLAND_DISPLAY under the runtime directory loses that directory, then one leading '/', and each byte of the
     rest that is not a letter, digit, '.', '_' or '-' becomes '_', so a character of two UTF-8 bytes becomes two.
@@ -456,27 +733,33 @@ def ctl_socket_name(display, runtime):
     return 'afterglow-%s.sock' % (re.sub(rb'[^A-Za-z0-9._-]', b'_', name).decode('ascii') or 'wayland-0')
 
 
-def isolated_ctl(wrappers):
-    """Whether one afterglow ctl, aglow run or afterglow run command reaches a socket other than the user's. Its
-    VAR=value and env -u words apply in order over this environment, and each picks its socket as
-    AfterglowProto::findSocket does: AFTERGLOW_SOCKET, else the main socket of WAYLAND_DISPLAY in XDG_RUNTIME_DIR.
-    Only literal values count: an expansion, a brace, a glob or ~ can name the user's own socket. After
-    'inherit:?' the command runs in an environment the guard cannot see, so each of those variables is unknown until
-    a later word sets or unsets it."""
+# The variables that decide where a client or a launch of Afterglow connects
+CLIENT_VARIABLES = ('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR')
+
+
+def environment(wrappers):
+    """The environment of a command: its VAR=value and env -u words apply in order over this environment. A value
+    that the shell expands (an expansion, a brace, a glob or ~) is UNKNOWN. After 'inherit:?' the command runs in an
+    environment the guard cannot see, so each of CLIENT_VARIABLES is UNKNOWN until a later word sets or unsets it."""
     env = dict(os.environ)
     for w in wrappers:
         if w == 'clear':
             env.clear()
         elif w == 'inherit:?':
-            env = dict.fromkeys(('AFTERGLOW_SOCKET', 'AFTERGLOW_PANE_ID', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR'),
-                                UNKNOWN)
+            env = dict.fromkeys(CLIENT_VARIABLES, UNKNOWN)
         elif w.startswith('set:'):
             name, value = w[len('set:'):].split('=', 1)
-            if any(mark in value for mark in '$`{*?[~'):
-                return False
-            env[name] = value
+            env[name] = UNKNOWN if any(mark in value for mark in '$`{*?[~') else value
         elif w.startswith('unset:'):
             env.pop(w[len('unset:'):], None)
+    return env
+
+
+def isolated_client(wrappers):
+    """Whether one afterglow ctl, aglow run or afterglow run command reaches a socket other than the user's. Each
+    picks its socket as AfterglowProto::findSocket does: AFTERGLOW_SOCKET, else the main socket of WAYLAND_DISPLAY
+    in XDG_RUNTIME_DIR. Only literal values count: an expansion can name the user's own socket."""
+    env = environment(wrappers)
 
     def known(name):
         if env.get(name) is UNKNOWN:
@@ -492,12 +775,12 @@ def isolated_ctl(wrappers):
         if known('AFTERGLOW_SOCKET'):
             target = env['AFTERGLOW_SOCKET']
         elif known('AFTERGLOW_PANE_ID'):
-            return True  # ctl refuses a pane ID without its socket
+            return True  # findSocket refuses a pane ID without its socket
         elif known('XDG_RUNTIME_DIR'):
             target = os.path.join(env['XDG_RUNTIME_DIR'],
-                                  ctl_socket_name(known('WAYLAND_DISPLAY'), env['XDG_RUNTIME_DIR']))
+                                  display_socket_name(known('WAYLAND_DISPLAY'), env['XDG_RUNTIME_DIR']))
         else:
-            return True  # ctl stops: no socket to find
+            return True  # findSocket finds no socket
     except LookupError:
         return False
     target = os.path.realpath(target)
@@ -506,25 +789,101 @@ def isolated_ctl(wrappers):
         return False
     if runtime and os.path.dirname(target) == os.path.realpath(runtime):
         # The main socket of the user's display, or a separate process's on it.
-        own = ctl_socket_name(os.environ.get('WAYLAND_DISPLAY'), runtime)[: -len('.sock')]
+        own = display_socket_name(os.environ.get('WAYLAND_DISPLAY'), runtime)[: -len('.sock')]
         if re.fullmatch(re.escape(own) + r'(-\d+)?\.sock', os.path.basename(target)):
             return False
     return True
 
 
-def drives_instance(args, program='afterglow'):
+def wayland_socket(runtime, display):
+    """The compositor socket that a Wayland client connects to: WAYLAND_DISPLAY ("wayland-0" when it is empty) in
+    XDG_RUNTIME_DIR, or WAYLAND_DISPLAY itself when it is absolute. None without an absolute XDG_RUNTIME_DIR."""
+    display = display or 'wayland-0'
+    if display.startswith('/'):
+        return os.path.realpath(display)
+    return os.path.realpath(os.path.join(runtime, display)) if runtime and runtime.startswith('/') else None
+
+
+def isolated_launch(wrappers):
+    """Whether a launch of afterglow reaches a display other than the user's. Its window goes to the compositor of
+    WAYLAND_DISPLAY in XDG_RUNTIME_DIR, and the launch hands it over to the main Afterglow on the socket of the same
+    display there (main.cpp). Only literal values count, as in isolated_client."""
+    env = environment(wrappers)
+    runtime, display = env.get('XDG_RUNTIME_DIR'), env.get('WAYLAND_DISPLAY')
+    if runtime is UNKNOWN or display is UNKNOWN or (runtime and not runtime.startswith('/')):
+        return False
+    target = wayland_socket(runtime, display)
+    return target is None or target != wayland_socket(os.environ.get('XDG_RUNTIME_DIR'),
+                                                      os.environ.get('WAYLAND_DISPLAY'))
+
+
+def drives_instance(args, program='afterglow', appended=False):
     """Whether PROGRAM ARGS connects to a running Afterglow: afterglow ctl, afterglow run and aglow run do, also
-    run --complete. Their help alone, as Ctl.cpp and Run.cpp read it, prints the usage and connects to nothing."""
+    run --complete. Their help, as afterglow/src/control/Ctl.cpp and libs/afterglow-proto/src/Run.cpp read it,
+    prints the usage and connects to nothing: ctl's as its first word, and run's among the options before the
+    script. So does afterglow ctl with no command, unless APPENDED: xargs and parallel add the words of their input
+    after ARGS (echo list | xargs afterglow ctl), and those words come after any help option."""
     if args[:1] not in ((['ctl'], ['run']) if program == 'afterglow' else (['run'],)):
         return False
-    return args[1:2] not in (['-h'], ['--help'])
+    if args[:1] == ['ctl']:
+        return args[1:2] not in (['-h'], ['--help']) and (len(args) > 1 or appended)
+    k = 1
+    while k < len(args) and args[k].startswith('-') and args[k] != '--':
+        if args[k] in ('-h', '--help'):
+            return False
+        k += 2 if args[k] == '--pane' else 1
+    return True
+
+
+# afterglow's options (main.cpp): the ones that take a value, and the ones that end the process before a window,
+# with the help and the version of QCommandLineParser
+LAUNCH_VALUES = {'-d', '--working-directory', '--title', '--config', '-o', '--override', '--class'}
+NO_WINDOW = {'-h', '--help', '-?', '--help-all', '-v', '--version', '--config-reference'}
+# The words after afterglow that run something else than the terminal: ctl, ssh and the aglow commands
+# (Aglow::Commands in afterglow/src/shell/Aglow.h)
+NO_TERMINAL = {'ctl', 'ssh', 'run', 'transfer', 'dnd', 'icat', 'clipboard'}
+
+
+def launches_window(args):
+    """Whether afterglow ARGS starts the terminal, as main.cpp and QCommandLineParser read the arguments: options
+    up to the first positional argument or "--", short options together (-hv), and a value as the rest of the word
+    (-dDIR, --title=T) or the next word."""
+    if args[:1] and args[0] in NO_TERMINAL:
+        return False
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if a == '--' or a == '-' or not a.startswith('-'):
+            break
+        name = a.split('=', 1)[0]
+        if name in NO_WINDOW:
+            return False
+        if a.startswith('--'):
+            k += 1 + (name in LAUNCH_VALUES and '=' not in a)
+            continue
+        for j, letter in enumerate(a[1:]):
+            if '-' + letter in NO_WINDOW:
+                return False
+            if '-' + letter in LAUNCH_VALUES:
+                k += j + 2 == len(a)  # the value is the next word
+                break
+        k += 1
+    return True
 
 
 def argument_commands(wrappers, word, args):
     """(wrappers, command word, arguments) for each command that may run from the arguments of WORD: find -exec,
-    gdb --args, systemd-run, a debugger or a tracer the guard does not list. Only afterglow, a wrapper, a shell, gdb
-    or VAR=value starts one, so that an argument such as -name stays an argument."""
+    gdb --args, systemd-run, a debugger or a tracer the guard does not list. Only afterglow, aglow, a wrapper, a
+    shell, eval, watch, gdb or VAR=value starts one, so that an argument such as -name stays an argument. A command
+    of TEXT_COMMANDS runs none, and find only after -exec, -execdir, -ok or -okdir."""
+    if word in TEXT_COMMANDS:
+        return
+    if word == 'find':
+        start = next((k for k, a in enumerate(args) if a in ('-exec', '-execdir', '-ok', '-okdir')), len(args))
+        args = args[start + 1 :]
     outer = wrappers if word in INHERITS else wrappers + ['inherit:?']
+    if word == 'parallel':  # parallel adds the words of its input, or of its ::: lists, after the command
+        outer = outer + ['append']
     k = 0
     while k < len(args):
         name = os.path.basename(args[k])
@@ -536,6 +895,41 @@ def argument_commands(wrappers, word, args):
             k = len(args) - len(rest)
         else:
             k += 1
+
+
+def launched_commands(wrappers, word, args):
+    """(wrappers, command word, arguments) of the command that WORD starts from its arguments: the one after the
+    options and operands of a command in LAUNCHERS, with the environment it gets, or each command of find -exec."""
+    if word == 'find':
+        yield from argument_commands(wrappers, word, args)
+        return
+    if word not in LAUNCHERS:
+        return
+    before, inherits = LAUNCHERS[word]
+    sets, k = [], 0
+    while k < len(args) and args[k].startswith('-') and args[k] != '-':
+        if args[k] == '--':
+            k += 1
+            break
+        a = args[k]
+        flag, letters, value, after = option_value(word, args, k)
+        if word == 'systemd-run' and a == '--scope':
+            inherits = True
+        elif word == 'systemd-run' and flag in ('-E', '--setenv'):
+            # -E NAME passes systemd-run's own value
+            sets.append('set:' + value if '=' in value else
+                        ('set:%s=%s' % (value, os.environ[value]) if value in os.environ else 'unset:' + value))
+        elif word == 'flatpak-spawn' and a.startswith('--env='):
+            sets.append('set:' + a[len('--env='):])
+        elif word == 'flatpak-spawn' and a == '--clear-env':
+            sets.insert(0, 'clear')
+        elif word == 'taskset' and ('p' in letters or a == '--pid'):
+            return  # taskset -p changes a running process
+        k = after
+    k += before
+    if k < len(args):
+        inner, name, rest = split_wrappers(args[k:])
+        yield (wrappers if inherits else wrappers + ['inherit:?']) + sets + inner, name, rest
 
 
 def gdb_inferior(args):
@@ -562,35 +956,79 @@ def gdb_inferior(args):
     return program, arguments, commands, files
 
 
-def gdb_drives(wrappers, args):
-    """Whether gdb ARGS runs an afterglow ctl, afterglow run or aglow run that reaches the user's socket. A gdb
-    command (-ex 'run ctl list', set args) gives the program its arguments, and set environment changes its
-    environment. A command file can do either."""
+def gdb_program(args):
+    """(the program of gdb ARGS without its directory, its arguments, the wrappers that its environment adds, whether
+    gdb runs it, whether a command file runs). A gdb command (-ex 'run ctl list', set args) gives the program its
+    arguments, and set environment changes its environment. A command file can do any of these."""
     program, arguments, commands, files = gdb_inferior(args)
-    if program is None or os.path.basename(program) not in ('afterglow', 'aglow'):
-        return False
-    extra = []
+    extra, runs = [], files
     for words in map(split_words, commands):
-        if words[:1] in (['r'], ['run'], ['start'], ['starti']) and len(words) > 1:
-            arguments = words[1:]
+        if words[:1] in (['r'], ['run'], ['start'], ['starti']):
+            runs = True
+            if len(words) > 1:
+                arguments = words[1:]
         elif words[:2] == ['set', 'args']:
             arguments = words[2:]
         elif words[:1] in (['set'], ['unset']) and words[1:2] and words[1].startswith('env'):
             extra = ['inherit:?']
     if files:
-        arguments, extra = ['run'], ['inherit:?']
-    return drives_instance(arguments, os.path.basename(program)) and not isolated_ctl(wrappers + extra)
+        extra = ['inherit:?']
+    return (os.path.basename(program) if program else None), arguments, extra, runs, files
+
+
+def gdb_drives(wrappers, args):
+    """Whether gdb ARGS runs an afterglow ctl, afterglow run or aglow run that reaches the user's socket."""
+    program, arguments, extra, _, files = gdb_program(args)
+    if program not in ('afterglow', 'aglow'):
+        return False
+    return (drives_instance(['run'] if files else arguments, program, appends(wrappers))
+            and not isolated_client(wrappers + extra))
+
+
+def gdb_launches(wrappers, args):
+    """Whether gdb ARGS runs afterglow as the terminal on the user's display. Reading a core (gdb afterglow core)
+    runs nothing."""
+    program, arguments, extra, runs, files = gdb_program(args)
+    return (program == 'afterglow' and runs and launches_window([] if files else arguments)
+            and not isolated_launch(wrappers + extra))
+
+
+def appends(wrappers):
+    """Whether xargs or parallel starts the command, and so adds words of its input after its arguments."""
+    return 'xargs' in wrappers or 'append' in wrappers
 
 
 def drives(wrappers, word, args):
     if word in ('afterglow', 'aglow'):
-        return drives_instance(args, word) and not isolated_ctl(wrappers)
+        return drives_instance(args, word, appends(wrappers)) and not isolated_client(wrappers)
+    if '$' in word or '`' in word:  # the shell finds the program ($(which afterglow) ctl): it can be either
+        return drives_instance(args, appended=appends(wrappers)) and not isolated_client(wrappers)
     return word == 'gdb' and gdb_drives(wrappers, args)
 
 
+def opens_window(wrappers, word, args):
+    return word == 'afterglow' and launches_window(args) and not isolated_launch(wrappers)
+
+
+def ssh_command(args):
+    """The command that ssh ARGS runs on the other computer, or None: the words after the destination."""
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if a == '--':
+            k += 1
+            break
+        if not a.startswith('-') or a == '-':
+            break
+        letter = next((ch for ch in a[1:] if ch in SSH_VALUES), None)
+        k += 2 if letter and a.endswith(letter) else 1
+    return ' '.join(args[k + 1 :]) if k + 1 < len(args) else None
+
+
 def shell_scripts(word, args):
-    """The scripts that a nested shell, eval, watch or a gdb shell command runs. Every word after a shell's -c is
-    checked: bash takes options after -c, and fish takes several -c and -C scripts."""
+    """The scripts that a nested shell, eval, watch, script -c, tmux, ssh or a gdb shell command runs. Every word
+    after a shell's -c is checked: bash takes options after -c, and fish takes several -c and -C scripts. Each word
+    of tmux can be a shell command (new-session, send-keys, run-shell). flock -c runs its command with sh -c."""
     if word in SHELLS:
         for k, a in enumerate(args):
             if a in ('-c', '--command', '-C', '--init-command') or 'c' in short_flags(a) or 'C' in short_flags(a):
@@ -605,13 +1043,90 @@ def shell_scripts(word, args):
         while k < len(args) and args[k].startswith('-'):
             k = option_value('watch', args, k)[3]
         return [' '.join(args[k:])] if k < len(args) else []
+    if word == 'script':  # script -c CMD, as -qc CMD or --command CMD
+        for k, a in enumerate(args):
+            if a.startswith('--command='):
+                return [a.split('=', 1)[1]]
+            if a == '--command' or (a.startswith('-') and not a.startswith('--')):
+                letters = a[1:] if a != '--command' else 'c'
+                for j, letter in enumerate(letters):
+                    if letter == 'c':
+                        rest = letters[j + 1 :]
+                        return [rest] if rest else args[k + 1 : k + 2]
+                    if letter in SCRIPT_VALUES:
+                        break
+        return []
+    if word == 'flock':
+        return [args[k + 1] for k, a in enumerate(args[:-1]) if a in ('-c', '--command')]
+    if word == 'tmux':
+        return list(args)
+    if word == 'ssh' or (word == 'afterglow' and args[:1] == ['ssh']):
+        remote = ssh_command(args if word == 'ssh' else args[1:])
+        return [remote] if remote else []
     if word == 'gdb':
         return [m.group(1) for c in gdb_inferior(args)[2] if (m := re.match(r'\s*(?:shell\b|!)(.*)', c, re.S))]
     return []
 
 
+def reads_stdin(word, args):
+    """Whether shell WORD ARGS reads its script from standard input: no -c script and no script file (bash, bash -s,
+    sh -)."""
+    if word not in SHELLS or shell_scripts(word, args):
+        return False
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if redirect := re.match(r'^\d*(<<<|<<-?|<>?|>>?|&>>?|[<>]&)', a):  # a redirection and its target
+            k += 1 if len(a) > redirect.end() else 2
+            continue
+        if a in ('-', '--') or 's' in short_flags(a):
+            return True
+        if a in ('-o', '+o', '-O', '+O', '--rcfile', '--init-file'):
+            k += 2
+            continue
+        if not a.startswith(('-', '+')):
+            return False
+        k += 1
+    return True
+
+
+def stdin_scripts(cmds, bodies, places):
+    """The scripts that a shell reads from standard input in this command line, when one does: the bodies of the
+    here-documents, the here-strings, a file after <, and the words of echo and printf, which a pipe can feed it."""
+    shells = [(word, args) for _, word, args in cmds if reads_stdin(word, args)]
+    if not shells:
+        return []
+    scripts = list(bodies)
+    for word, args in shells:
+        for k, a in enumerate(args):
+            if a in ('<<<', '<') and k + 1 < len(args):
+                target = args[k + 1]
+            elif a.startswith('<<<') or (a.startswith('<') and not a.startswith(('<<', '<>', '<&'))):
+                target = a.lstrip('<')
+            else:
+                continue
+            if a.startswith('<<<'):
+                scripts.append(target)
+                continue
+            for place in places:
+                path = '' if place is UNKNOWN or '$' in target else os.path.join(place, os.path.expanduser(target))
+                # A regular file only: a FIFO or a terminal (/dev/tty) would block the guard, or take its input
+                if path and os.path.isfile(path):
+                    try:
+                        with open(path, errors='replace') as f:
+                            scripts.append(f.read(1 << 20))
+                        break
+                    except OSError:
+                        pass
+    for _, word, args in cmds:
+        if word in ('echo', 'printf'):
+            scripts.append(' '.join(args).replace('\\n', '\n'))
+    return scripts
+
+
 def check_bash(command, cwd=None):
-    cmds = list(simple_commands(command))
+    text, bodies, expansions = split_heredocs(command)
+    cmds = list(simple_commands(text))
     # Every directory a later git may run in: the start, each cd, pushd and env -C target, and UNKNOWN after a
     # GIT_DIR or GIT_WORK_TREE. A cd in a subshell or a failed cd leaves the start in place, so all of them are
     # kept, not only the last. A nested shell starts from all of them.
@@ -619,8 +1134,8 @@ def check_bash(command, cwd=None):
     for wrappers, word, args in cmds:
         targets = [w[len('chdir:'):] for w in wrappers if w.startswith('chdir:')]
         if word in ('cd', 'pushd'):
-            operands = [a for a in args if not a.startswith('-') or a == '-']
-            targets += operands[:1] or ['~']
+            operands_ = [a for a in args if not a.startswith('-') or a == '-']
+            targets += operands_[:1] or ['~']
         if word == 'export' and any(a.startswith(('GIT_DIR=', 'GIT_WORK_TREE=')) for a in args):
             targets.append('$')
         places += [resolve(place, target) for target in targets for place in list(places)]
@@ -632,32 +1147,47 @@ def check_bash(command, cwd=None):
         for script in (script for _, name, rest in commands for script in shell_scripts(name, rest)):
             if message := check_bash(script, list(places)):
                 return message
-        if word in ('pkill', 'killall'):
+        if word in KILL_BY_NAME:
             return MSG_PKILL
-        if word in ('sudo', 'doas') or 'sudo' in wrappers or 'doas' in wrappers:
+        if word in PRIVILEGED or PRIVILEGED & set(wrappers):
             return MSG_SUDO
-        if is_install(word, args, command):
+        if is_install(wrappers, word, args):
             return MSG_INSTALL
         if any(drives(*c) for c in commands):
             return MSG_CTL
+        launches = [(wrappers, word, args)] + list(launched_commands(wrappers, word, args))
+        if any(opens_window(*c) for c in launches) or (word == 'gdb' and gdb_launches(wrappers, args)):
+            return MSG_LAUNCH
+        if path := edits_plasmazones(word, args, places):
+            return plasmazones_message(path)
         if word == 'git':
             msg = check_git(args, places)
             if msg:
                 return msg
-    # kill $(pgrep -f ...), pgrep -f ... | xargs kill, a loop over pgrep -f
+    # Here-document commands run where the shell is when it reaches them, after any cd before them: check
+    # them against every directory of the line, not only the start.
+    for script in expansions:
+        if message := check_bash(script, list(places)):
+            return message + ' ' + MSG_HEREDOC
+    for script in stdin_scripts(cmds, bodies, places):
+        if message := check_bash(script, list(places)):
+            return message
+    # kill $(pgrep ...), pgrep ... | xargs kill, a loop over pgrep -f: kill with PIDs that a name matched
+    finders = {w for _, w, a in cmds if w in ('pgrep', 'pidof', 'ps')}
     pgrep_f = any(w == 'pgrep' and any(a == '--full' or 'f' in short_flags(a) for a in args) for _, w, args in cmds)
-    if pgrep_f and any(w == 'kill' for _, w, _ in cmds):
-        return MSG_PGREP_KILL
+    for wrappers, word, args in cmds:
+        if word != 'kill':
+            continue
+        found = 'xargs' in wrappers and finders or any('$' in a for a in args) and finders - {'ps'}
+        if pgrep_f or found:
+            return MSG_PGREP_KILL
     return None
 
 
 def check_edit(path):
     real = os.path.realpath(path)
     if real.startswith(PLASMAZONES):
-        return (
-            f'{path} is in PlasmaZones. Afterglow builds the Phosphor libraries from that checkout, but PlasmaZones '
-            'changes only through its own branch and pull request. Tell the user what Phosphor needs and why.'
-        )
+        return plasmazones_message(path)
     project = os.path.realpath(os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())) + '/'
     if not real.startswith(project):
         return None
