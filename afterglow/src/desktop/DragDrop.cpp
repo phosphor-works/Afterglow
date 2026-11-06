@@ -213,6 +213,13 @@ namespace {
             return data;
         }
     };
+
+    // The source window of the last drag that a program in this process
+    // took. Qt answers a drop inside the process from the drop event, and a
+    // drop on another client from the compositor. KWin reports a drop that
+    // the other client refused as finished, so Qt gives the action of the
+    // hover: only a move that this process took is known to be a move.
+    QPointer<QObject> g_takenDrag;
 } // namespace
 DragTrees& DragTrees::instance()
 {
@@ -886,7 +893,16 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
                 announceDrop();
         });
         dropMonitor.start(10);
-        const auto action = operation->exec(Qt::DropActions(sourceActions), Qt::CopyAction);
+        g_takenDrag = nullptr;
+        auto action = operation->exec(Qt::DropActions(sourceActions), Qt::CopyAction);
+        // A move to another client is reported as a copy: the program keeps
+        // its files, and a target that refused the drop loses nothing.
+        if (action == Qt::MoveAction && g_takenDrag != window) {
+            action = Qt::CopyAction;
+            sourceAction = int(action);
+            if (started)
+                send({ { "t", "e" }, { "x", "2" }, { "o", QByteArray::number(int(action)) } }, { }, true);
+        }
         if (action != Qt::IgnoreAction)
             announceDrop();
         // The tree goes to the process before the last reply: a reply that
@@ -1499,6 +1515,7 @@ void DragDrop::drop(QDropEvent* event, bool final, QPoint cell, QPoint pixel)
             },
             0);
         if (state->finished && state->finalAction) {
+            g_takenDrag = event->source();
             event->setDropAction(Qt::DropAction(state->finalAction));
             event->accept();
         } else

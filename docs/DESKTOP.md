@@ -407,6 +407,11 @@ When a drag ends, Afterglow tells the source the action that the drop took (the 
 | 1 | Copy |
 | 2 | Move |
 
+A move to another application is reported as a copy, both in `o` and in the action of `t=e:x=2`.
+The source then keeps its files.
+The reason is that KWin reports a drop that the other application refused in the same way as a drop that it took.
+A move to a pane of Afterglow is reported as a move.
+
 Kitty does not send the `o` key. Clients that follow Kitty ignore it.
 `aglow dnd` deletes the files of a remote move only when the drop ended as a move.
 It keeps a file that changed after `aglow dnd` sent its data, and shows a message.

@@ -21,6 +21,10 @@
 #include <QFutureWatcher>
 #include <QInputMethodEvent>
 #include <QDrag>
+#include <QPainter>
+#include <QProcess>
+#include <QRasterWindow>
+#include <PhosphorWayland/LayerSurface.h>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QStyleHints>
@@ -337,9 +341,10 @@ struct ClientDrag {
 class NativeWindow : public ::testing::Test {
 protected:
     void openDragClients(const QStringList& sourceCommand, const QStringList& receiverCommand, ClientDrag& drag);
-    void runClientDrag(const QString& ready, ClientDrag& drag);
+    void runClientDrag(const QString& ready, ClientDrag& drag, const std::function<bool()>& accepted = {});
     void dragAndDropClient(const QString& client, const QString& ready);
-    void remoteDragDirectory(const QString& client, const QString& ready);
+    void remoteDragDirectory(const QString& client, const QString& ready, bool move = false);
+    void remoteDragToWaylandTarget(const QString& client, const QString& ready, Qt::DropAction action, bool refuse = false);
     QTemporaryDir directory;
     std::unique_ptr<Application> application;
     TerminalWindow* window = nullptr;
@@ -1793,8 +1798,9 @@ void NativeWindow::openDragClients(const QStringList& sourceCommand, const QStri
 
 // Drags with the runner's compositor input from the left quarter of the
 // window, in the source pane, to the right quarter, in the receiver, and
-// waits until the source's drag ends.
-void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag) {
+// waits until the source's drag ends. The runner releases when @p accepted
+// is true, by default when the receiver accepts the drag.
+void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag, const std::function<bool()>& accepted) {
     QObject::connect(drag.source->dragDrop(), &DragDrop::reply, &drag.listener, [&drag](const QByteArray& bytes) {
         drag.protocol += bytes;
         if (bytes.contains("t=e") && bytes.contains("x=4")) drag.complete = true;
@@ -1815,9 +1821,9 @@ void NativeWindow::runClientDrag(const QString& ready, ClientDrag& drag) {
     // A timer, because the drag runs in QDrag::exec's own event loop.
     QTimer hover;
     QObject::connect(&hover, &QTimer::timeout, &drag.listener, [&] {
-        if (!drag.receiver->dragDrop()->acceptsDrag()) return;
-        QFile accepted(ready + QStringLiteral(".hovered"));
-        if (accepted.open(QIODevice::WriteOnly)) hover.stop();
+        if (accepted ? !accepted() : !drag.receiver->dragDrop()->acceptsDrag()) return;
+        QFile hovered(ready + QStringLiteral(".hovered"));
+        if (hovered.open(QIODevice::WriteOnly)) hover.stop();
     });
     hover.start(5);
     waitFor([&] { return drag.complete; }, 15000);
@@ -1856,7 +1862,7 @@ void NativeWindow::dragAndDropClient(const QString& client, const QString& ready
 
 // A directory dragged from a client that the terminal takes for a remote
 // one, so that the tree crosses the protocol (t=k), to another client.
-void NativeWindow::remoteDragDirectory(const QString& client, const QString& ready) {
+void NativeWindow::remoteDragDirectory(const QString& client, const QString& ready, bool move) {
     const QString source = directory.filePath(QStringLiteral("remote"));
     const QString destination = directory.filePath(QStringLiteral("received"));
     ASSERT_TRUE(QDir().mkpath(source + QStringLiteral("/nested")));
@@ -1867,7 +1873,8 @@ void NativeWindow::remoteDragDirectory(const QString& client, const QString& rea
     ASSERT_EQ(::symlink("nested/file", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
     ClientDrag drag;
     openDragClients({client, QStringLiteral("dnd"), source},
-                    {client, QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination, QStringLiteral("--drop-anywhere=copy")},
+                    {client, QStringLiteral("dnd"), QStringLiteral("--drop-dest"), destination,
+                     move ? QStringLiteral("--drop-anywhere=move") : QStringLiteral("--drop-anywhere=copy")},
                     drag);
     if (HasFatalFailure()) return;
     // A machine id that is not this computer's: the source is remote.
@@ -1887,6 +1894,167 @@ void NativeWindow::remoteDragDirectory(const QString& client, const QString& rea
     EXPECT_EQ(fileContent(root + QStringLiteral("/nested/file")), data);
     EXPECT_EQ(QFileInfo(root + QStringLiteral("/empty")).size(), 0);
     EXPECT_EQ(QFileInfo(root + QStringLiteral("/link")).readSymLink(), QStringLiteral("nested/file"));
+    if (!move) return;
+    // A move between two panes stays a move: this process took the drop, so
+    // the terminal knows its action, and the source removes its files.
+    EXPECT_TRUE(drag.protocol.contains("o=2:t=e:x=4:y=0") || drag.protocol.contains("t=e:x=4:y=0:o=2")
+                || drag.protocol.contains("o=2:t=e:x=4")) << drag.protocol.toStdString();
+    EXPECT_TRUE(waitFor([&] { return !QFileInfo::exists(source + QStringLiteral("/nested/file")); }, 5000))
+        << "the client kept its files after a move between panes";
+}
+
+// A drop target in a process of its own. Qt gives a drop between two windows
+// of one process to the target inside that process, so the drag tests above
+// never see the action that the compositor negotiates. A drop on another
+// client does. The target is a layer surface on the right half of the output,
+// above the full-screen window, where runClientDrag drops. It takes every
+// drag with one action and reads no data: Qt would read text/uri-list through
+// the document portal, which the private session bus would start. With
+// @p refuse it accepts the hover with the action and refuses the drop.
+class DropTarget : public QRasterWindow {
+public:
+    DropTarget(Qt::DropAction action, bool refuse, QString report)
+        : m_action(action), m_refuse(refuse), m_report(std::move(report)) {}
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter(this).fillRect(QRect(QPoint(), size()), QColor(40, 90, 120));
+        QFile shown(m_report + QStringLiteral(".shown"));
+        if (shown.open(QIODevice::WriteOnly)) shown.close();
+    }
+    bool event(QEvent* event) override {
+        switch (event->type()) {
+        case QEvent::DragEnter:
+        case QEvent::DragMove: {
+            // The preferred action of the offer: the compositor picks it,
+            // because the source allows it.
+            auto* move = static_cast<QDragMoveEvent*>(event);
+            move->setDropAction(m_action);
+            move->accept();
+            return true;
+        }
+        case QEvent::Drop: {
+            auto* drop = static_cast<QDropEvent*>(event);
+            const Qt::DropAction taken = m_refuse ? Qt::IgnoreAction : m_action;
+            if (m_refuse) {
+                drop->ignore();
+            } else {
+                drop->setDropAction(m_action);
+                drop->accept();
+            }
+            QFile dropped(m_report + QStringLiteral(".dropped"));
+            if (dropped.open(QIODevice::WriteOnly)) dropped.write(QByteArray::number(int(taken)));
+            return true;
+        }
+        default:
+            return QRasterWindow::event(event);
+        }
+    }
+
+private:
+    Qt::DropAction m_action;
+    bool m_refuse = false;
+    QString m_report;
+};
+
+// The drop target process: --drop-target copy|move|refuse-move REPORT. It
+// writes REPORT.shown when it is on the screen, and REPORT.dropped, with the
+// action that it took (0 for a refused drop), when a drop comes.
+int runDropTarget(const QStringList& arguments) {
+    const QStringList modes {QStringLiteral("copy"), QStringLiteral("move"), QStringLiteral("refuse-move")};
+    if (arguments.size() != 4 || !modes.contains(arguments[2])) {
+        std::fprintf(stderr, "usage: --drop-target copy|move|refuse-move REPORT\n");
+        return 2;
+    }
+    using PhosphorWayland::LayerSurface;
+    const bool copy = arguments[2] == QLatin1String("copy");
+    DropTarget target(copy ? Qt::CopyAction : Qt::MoveAction, arguments[2] == QLatin1String("refuse-move"), arguments[3]);
+    const QSize output = QGuiApplication::primaryScreen()->size();
+    auto* surface = LayerSurface::get(&target);
+    surface->setLayer(LayerSurface::LayerOverlay);
+    surface->setAnchors(LayerSurface::Anchors(LayerSurface::AnchorTop | LayerSurface::AnchorBottom | LayerSurface::AnchorRight));
+    surface->setKeyboardInteractivity(LayerSurface::KeyboardInteractivityNone);
+    surface->setScope(QStringLiteral("afterglow-native-drop-target"));
+    surface->setExclusiveZone(0);
+    surface->setDesiredSize(QSize(output.width() / 2, 0));
+    target.resize(output.width() / 2, output.height());
+    target.show();
+    return QCoreApplication::exec();
+}
+
+// A directory dragged from a client that the terminal takes for a remote one
+// to the drop target of another process, which takes it with @p action. The
+// terminal reports a copy to the client, which keeps its files, whatever the
+// target did: KWin reports a drop that the target refused as finished, so a
+// move cannot be told from it. With @p refuse the target accepts the hover as
+// a move and refuses the drop.
+void NativeWindow::remoteDragToWaylandTarget(const QString& client, const QString& ready, Qt::DropAction action, bool refuse) {
+    const QString source = directory.filePath(QStringLiteral("remote"));
+    ASSERT_TRUE(QDir().mkpath(source + QStringLiteral("/nested")));
+    const QByteArray data("remote file data");
+    QFile file(source + QStringLiteral("/nested/file")); ASSERT_TRUE(file.open(QIODevice::WriteOnly)); file.write(data); file.close();
+    const QString report = directory.filePath(QStringLiteral("drop-target"));
+    QProcess target;
+    target.setProcessChannelMode(QProcess::ForwardedChannels);
+    target.start(QCoreApplication::applicationFilePath(),
+                 {QStringLiteral("--drop-target"),
+                  refuse ? QStringLiteral("refuse-move") : action == Qt::MoveAction ? QStringLiteral("move") : QStringLiteral("copy"),
+                  report});
+    const auto stopTarget = qScopeGuard([&target] {
+        target.terminate();
+        if (!target.waitForFinished(5000)) target.kill();
+    });
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(report + QStringLiteral(".shown")); }, 10000))
+        << "the drop target did not show: " << target.errorString().toStdString();
+    // The client exits after a completed drag, which is after it removed the
+    // files of a move. The marker follows its exit.
+    const QString exited = directory.filePath(QStringLiteral("client-exited"));
+    // The terminal's last x=2 action, and the keys of its x=4 reply. Made
+    // before the drag, whose listener writes them.
+    QByteArray operation;
+    QList<QByteArray> finish;
+    ClientDrag drag;
+    PaneLaunchOptions options;
+    options.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                       QStringLiteral("\"$0\" dnd --exit-on=drag-finish \"$1\"; : > \"$2\"; exec cat"), client, source, exited};
+    options.cwd = directory.path();
+    drag.source = window->openTab(options, nullptr);
+    ASSERT_NE(drag.source, nullptr);
+    window->showFullScreen();
+    ASSERT_TRUE(waitFor([&] { return window->isExposed() && window->size() == window->screen()->size(); }));
+    // See openDragClients: the image plugins load before the drag.
+    QImageReader::supportedMimeTypes();
+    QImageWriter::supportedMimeTypes();
+    waitFor([&] { return drag.source->dragDrop()->offersDrags(); }, 5000);
+    ASSERT_TRUE(drag.source->dragDrop()->offersDrags()) << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    // A machine id that is not this computer's: the source is remote.
+    drag.source->dragDrop()->handle("t=o:x=1;1:remote-test-machine");
+    QObject::connect(drag.source->dragDrop(), &DragDrop::reply, &drag.listener, [&](const QByteArray& bytes) {
+        const auto keys = bytes.split(';').value(1).split(':');
+        if (!keys.contains("t=e")) return;
+        if (keys.contains("x=2"))
+            for (const auto& key : keys)
+                if (key.startsWith("o=")) operation = key.mid(2);
+        if (keys.contains("x=4")) finish = keys;
+    });
+    const QByteArray offered = QByteArray::number(int(action));
+    // What the target did, and what the terminal reports: a move to another
+    // client is a copy for the source, because KWin reports a refused drop
+    // as finished.
+    const QByteArray taken = refuse ? QByteArray("0") : offered;
+    const QByteArray reported = QByteArray::number(int(Qt::CopyAction));
+    // Release only after the compositor gave the source the target's action.
+    runClientDrag(ready, drag, [&] { return operation == offered; });
+    if (HasFatalFailure()) return;
+    EXPECT_GT(drag.treeRequests, 0) << drag.protocol.toStdString();
+    EXPECT_TRUE(finish.contains("y=0")) << drag.protocol.toStdString();
+    EXPECT_TRUE(finish.contains("o=" + reported)) << drag.protocol.toStdString();
+    EXPECT_TRUE(waitFor([&] { return QFileInfo::exists(report + QStringLiteral(".dropped")); }, 5000))
+        << "the drop target got no drop";
+    EXPECT_EQ(fileContent(report + QStringLiteral(".dropped")), taken);
+    ASSERT_TRUE(waitFor([&] { return QFileInfo::exists(exited); }, 5000))
+        << drag.protocol.toStdString() << drag.source->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    EXPECT_EQ(fileContent(source + QStringLiteral("/nested/file")), data) << "the client removed its files";
 }
 TEST_F(NativeWindow, KittyDragAndDropClient) {
     REQUIRE_NATIVE_DND(ready);
@@ -1907,6 +2075,46 @@ TEST_F(NativeWindow, AglowRemoteDragDirectory) {
     REQUIRE_NATIVE_DND(ready);
     REQUIRE_AGLOW(aglow);
     remoteDragDirectory(aglow, ready);
+}
+TEST_F(NativeWindow, KittyRemoteDragDirectoryMovesBetweenPanes) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
+    remoteDragDirectory(QStringLiteral("kitten"), ready, true);
+}
+TEST_F(NativeWindow, AglowRemoteDragDirectoryMovesBetweenPanes) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_AGLOW(aglow);
+    remoteDragDirectory(aglow, ready, true);
+}
+TEST_F(NativeWindow, KittyRemoteDragMoveToWaylandTarget) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
+    remoteDragToWaylandTarget(QStringLiteral("kitten"), ready, Qt::MoveAction);
+}
+TEST_F(NativeWindow, KittyRemoteDragCopyToWaylandTarget) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
+    remoteDragToWaylandTarget(QStringLiteral("kitten"), ready, Qt::CopyAction);
+}
+TEST_F(NativeWindow, AglowRemoteDragMoveToWaylandTarget) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_AGLOW(aglow);
+    remoteDragToWaylandTarget(aglow, ready, Qt::MoveAction);
+}
+TEST_F(NativeWindow, AglowRemoteDragCopyToWaylandTarget) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_AGLOW(aglow);
+    remoteDragToWaylandTarget(aglow, ready, Qt::CopyAction);
+}
+TEST_F(NativeWindow, KittyRemoteDragRefusedByAWaylandTargetKeepsTheFiles) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_KITTEN();
+    remoteDragToWaylandTarget(QStringLiteral("kitten"), ready, Qt::MoveAction, true);
+}
+TEST_F(NativeWindow, AglowRemoteDragRefusedByAWaylandTargetKeepsTheFiles) {
+    REQUIRE_NATIVE_DND(ready);
+    REQUIRE_AGLOW(aglow);
+    remoteDragToWaylandTarget(aglow, ready, Qt::MoveAction, true);
 }
 
 
@@ -4886,6 +5094,7 @@ int main(int argc, char** argv)
     // The plugin paths, the layer-shell integration and the names, as afterglow sets them.
     prepareApplication();
     QApplication app(argc, argv);
+    if (argc > 1 && QByteArray(argv[1]) == "--drop-target") return runDropTarget(QCoreApplication::arguments());
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

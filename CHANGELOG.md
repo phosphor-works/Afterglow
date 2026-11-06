@@ -76,7 +76,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty drag and drop, including remote directory data and thumbnails.
 - `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
 - `Terminal.dragTreeLifetime` sets how long Afterglow keeps the files of a drag from another computer after the drop.
-- Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move.
+- Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
 - `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. It takes the options of `kitten`, with a few differences that the compatibility document lists.

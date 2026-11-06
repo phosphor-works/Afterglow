@@ -210,7 +210,8 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 - `aglow dnd` has the option `--confirm-drop-timeout`, which `kitten dnd` does not have.
 
 Afterglow adds the `o` key to the end message of a drag (`t=e:x=4`). It names the action that the drop took.
-Kitty does not send it. See [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop).
+Kitty does not send it.
+A move to another application is reported as a copy, so that the source keeps its files. See [Kitty drag and drop](DESKTOP.md#kitty-drag-and-drop).
 
 Run the tests of `aglow`:
 
