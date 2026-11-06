@@ -172,6 +172,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | --- | --- | --- | --- |
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text. |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
+| `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value switches at once. |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
 | `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
 | `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. An empty value turns it off. |

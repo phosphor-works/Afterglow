@@ -76,7 +76,7 @@ struct Builder
     {
         static const QStringList Keys{QStringLiteral("background"), QStringLiteral("text"), QStringLiteral("cursor"),
             QStringLiteral("pane"), QStringLiteral("window"), QStringLiteral("overview"), QStringLiteral("tabTransition"),
-            QStringLiteral("paneEffects")};
+            QStringLiteral("paneEffects"), QStringLiteral("overlayTransition")};
         const auto pulses = manifest.value(QStringLiteral("pulses"));
         if ((!pulses.isUndefined() && !pulses.isObject()) || pulses.toObject().size() > 32) {
             error = QStringLiteral("pulses must name at most 32 effects"); return false;

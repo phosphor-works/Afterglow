@@ -702,7 +702,9 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     const QStringList overview = refs.overview.isEmpty() ? QStringList{} : QStringList{refs.overview};
     const QStringList tabTransition = refs.tabTransition.isEmpty() ? QStringList{} : QStringList{refs.tabTransition};
     const QStringList paneEffects = refs.paneEffects.isEmpty() ? QStringList{} : QStringList{refs.paneEffects};
-    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window, overview, tabTransition, paneEffects})
+    const QStringList overlayTransition = refs.overlayTransition.isEmpty() ? QStringList{} : QStringList{refs.overlayTransition};
+    for (const auto& chain : {refs.background, refs.text, refs.cursor, refs.pane, refs.window, overview, tabTransition, paneEffects,
+                              overlayTransition})
         for (const auto& ref : chain) {
             desired.insert(cacheKey(ref, params.value(ref).toMap()));
             named.insert(ref);
@@ -769,6 +771,7 @@ AfterglowRender::ShaderChains ShaderLibrary::build(const Refs& refs, const QVari
     add(overview, chains.overview);
     add(tabTransition, chains.tabTransition);
     add(paneEffects, chains.paneEffects);
+    add(overlayTransition, chains.overlayTransition);
     refreshWatches();
     // What the user sees in a notice: each configured pack that does not
     // draw, and why, in a line. Compile logs stay in the afterglow.shaders log.

@@ -15,7 +15,8 @@
 // a script dock at a window edge, drawn after every chain as in the window;
 // --pane-dock EDGE:CELLS:TEXT adds one at that edge of every pane, drawn with
 // the pane under its chains. --overlay TEXT draws a terminal that shows TEXT
-// over the first pane, faded in by --overlay-progress. Further options set the other renderer inputs
+// over the first pane, faded in by --overlay-progress through the
+// --overlay-transition shader. Further options set the other renderer inputs
 // (pointer, selection, search, glide, scroll shift, hovered link, blink
 // phase, bidi, contrast, hinting, cell scale); --help lists them all.
 
@@ -268,6 +269,8 @@ int run(QGuiApplication& app)
                       QStringLiteral("text")});
     parser.addOption({QStringLiteral("overlay-progress"), QStringLiteral("With --overlay: how far it has faded in, 0 the pane to 1 the overlay (default 1)."),
                       QStringLiteral("f")});
+    parser.addOption({QStringLiteral("overlay-transition"), QStringLiteral("With --overlay: the overlay transition shader (default overlay-fade, \"\" for none, which switches at once)."),
+                      QStringLiteral("ref"), QStringLiteral("overlay-fade")});
     parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
                       QStringLiteral("edge:cells:text")});
     parser.addPositionalArgument(QStringLiteral("input"), QStringLiteral("Byte stream, or - for stdin."));
@@ -472,9 +475,11 @@ int run(QGuiApplication& app)
         parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
         parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
         parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview")),
-        parser.value(QStringLiteral("tab-transition")), parser.value(QStringLiteral("pane-effects"))};
+        parser.value(QStringLiteral("tab-transition")), parser.value(QStringLiteral("pane-effects")),
+        parser.isSet(QStringLiteral("overlay")) ? parser.value(QStringLiteral("overlay-transition")) : QString()};
     const auto wanted = refs.background.size() + refs.text.size() + refs.cursor.size() + refs.pane.size()
-        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1) + (refs.paneEffects.isEmpty() ? 0 : 1);
+        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1) + (refs.paneEffects.isEmpty() ? 0 : 1)
+        + (refs.overlayTransition.isEmpty() ? 0 : 1);
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;
         QMap<QString, QString> packages;
@@ -484,7 +489,8 @@ int run(QGuiApplication& app)
         library.setPackageShaders(packages);
         AfterglowRender::ShaderChains chains = library.build(refs, params);
         const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
-            + chains.window.size() + chains.overview.size() + chains.tabTransition.size() + chains.paneEffects.size();
+            + chains.window.size() + chains.overview.size() + chains.tabTransition.size() + chains.paneEffects.size()
+            + chains.overlayTransition.size();
         if (got != std::size_t(wanted)) {
             std::fprintf(stderr, "a shader failed to load\n");
             return 1;

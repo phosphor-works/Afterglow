@@ -80,7 +80,10 @@ layout(std140, binding = 0) uniform TerminalUniforms {
     vec4 uSignal[8];             // offset 960  script signals: .x value, .y seconds since set
                                  //             (1e6 when never set)
     vec4 uPalette[256];          // offset 1088 the 256-colour palette
-};                               // total 5184 bytes
+    vec4 uOverlayTransition;     // offset 5184 in an overlay transition pass (Shaders.overlayTransition):
+                                 //             .x progress: 0 the pane under the overlay, 1 the overlay
+                                 //             (clamped, never past either end), .w 1; 0 in every other pass
+};                               // total 5200 bytes
 
 // The canvas being shaded: a layer, the pane or the window, in premultiplied
 // encoded sRGB. Its texture coordinates are the canvas's `uv`.

@@ -248,7 +248,7 @@ struct Settings
     /// Shader references for each chain, applied in order: pack ids, or
     /// "<package>.<pack>" for package packs.
     ShaderRefs shaders{{}, {}, {}, {}, {}, QStringLiteral("pane-deck"), QStringLiteral("tab-switch"),
-                       QStringLiteral("pane-effects")};
+                       QStringLiteral("pane-effects"), QStringLiteral("overlay-fade")};
     /// Reference -> { parameter: value }.
     QVariantMap shaderParams;
     bool operator==(const Settings&) const = default;

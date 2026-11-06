@@ -289,7 +289,8 @@ bool TerminalWindow::usePackageShaders()
             const auto s = suggestions[index].toMap();
             const QString key = s.value(QStringLiteral("key")).toString(), ref = s.value(QStringLiteral("ref")).toString();
             // One pack keys take the pack; chains gain it at the end.
-            static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects")};
+            static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects"),
+                                            QStringLiteral("overlayTransition")};
             QVariant value = ref;
             if (!Single.contains(key)) {
                 // The chain the file holds: a command-line override must not reach it.

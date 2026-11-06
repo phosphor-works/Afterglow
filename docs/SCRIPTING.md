@@ -459,8 +459,9 @@ It also closes with `cancelled`, and its program gets `SIGHUP`, in these conditi
 - The script stops: a change, a removal or a disable.
 - The command run that waits for it ends (see [Cancel](#cancel)).
 
-The overlay fades in and out over the pane. `Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
-The pane fades to the overlay's background, then the overlay comes out of it.
+The overlay fades in and out over the pane, through the `Shaders.overlayTransition` pack.
+The default pack, Overlay Fade, blends the pane and the overlay. `Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
+With an empty `Shaders.overlayTransition`, the overlay shows and goes at once.
 When the overlay closes, the focus goes back to the pane. The pane's cursor and view stay where they were.
 
 | Situation | Behavior |
@@ -471,7 +472,7 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 | Saved projects | Overlays are not saved. |
 | Copy mode, search, hints, paste, the mouse | They act on the overlay while its pane has the focus. |
 | Assistive technology | It reads the overlay's text in place of the pane's. |
-| The pane's shaders | The pane's shader chain draws the overlay. |
+| The pane's shaders | The pane's layer and pane shaders draw the overlay. During a fade, they draw the pane and the overlay both. |
 
 An overlay is not a pane of its own. `afterglow ctl ls` and the terminal snapshot do not show it.
 `afterglow ctl overlay` opens an overlay from a shell (see [CONTROL.md](CONTROL.md#overlays)).

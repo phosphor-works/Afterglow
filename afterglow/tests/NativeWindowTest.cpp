@@ -5447,3 +5447,28 @@ return {
     ASSERT_TRUE(overlaySettled(window, pane));
     expectIdle(window);
 }
+
+TEST_F(NativeWindow, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce) {
+    // An empty Shaders.overlayTransition, and a pack that does not load, as
+    // Shaders.tabTransition: no fade, never a blank pane, and no frames after.
+    for (const QString& transition : {QString(), QStringLiteral("afterglow-test-no-such-pack")}) {
+        SCOPED_TRACE(transition.toStdString());
+        restartApplication(QStringLiteral("no-fade.conf"),
+            testSettings({{QStringLiteral("Shaders"), QJsonObject{{QStringLiteral("overlayTransition"), transition}}}}),
+            {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")});
+        if (HasFatalFailure()) return;
+        Pane* pane = window->focusedPane();
+        auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                                QStringLiteral("stty -echo; printf 'shown-at-once' > /dev/tty; read x")});
+        ASSERT_NE(pane->overlay(), nullptr);
+        EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(1), false));
+        ASSERT_TRUE(waitFor([&] { return screenOf(pane->overlay()->pane()).contains(QStringLiteral("shown-at-once")); }));
+        ASSERT_TRUE(nextFrame(window));
+        EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(1), false));
+        expectIdle(window);
+        typeText(window, QStringLiteral("\r"));
+        ASSERT_TRUE(waitFor([&] { return answer->done; }));
+        EXPECT_EQ(window->overlayFade(pane), std::make_pair(qreal(0), false));
+        expectIdle(window);
+    }
+}

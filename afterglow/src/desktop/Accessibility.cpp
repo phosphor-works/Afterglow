@@ -88,7 +88,16 @@ public:
     // A query loop asks for each character in turn. One capture serves it until the
     // content changes or the next frame refreshes it.
     TerminalText snapshot() const {
-        if (!m_cached) m_cached = shown()->accessibleText();
+        // The pane's own text changes with its contentChanged. An overlay's
+        // text has no such signal here, and an overlay coming or going
+        // changes the terminal that shows: those are told by their serial.
+        const Pane* source = shown();
+        const auto serial = source != pane() ? std::optional(source->accessibleSerial()) : std::nullopt;
+        if (!m_cached || source != m_cachedFrom || serial != m_cachedSerial) {
+            m_cached = source->accessibleText();
+            m_cachedFrom = source;
+            m_cachedSerial = serial;
+        }
         return *m_cached;
     }
     /// The pane left the tree (another tab shows, or zoom hides it). When it
@@ -202,10 +211,15 @@ public:
     }
     void notify() {
         // Nothing an assistive technology reads changed: no text to rebuild.
+        // Serials of two terminals are not comparable: an overlay that comes
+        // or goes is a change, whatever they are.
         const auto serial = shown()->accessibleSerial();
-        if (m_seeded && m_notified == serial) return;
+        if (m_seeded && m_notified == serial && m_notifiedFrom == shown()) return;
         m_notified = serial;
+        m_notifiedFrom = shown();
         m_cached = shown()->accessibleText();
+        m_cachedFrom = shown();
+        m_cachedSerial = m_cachedFrom != pane() ? std::optional(serial) : std::nullopt;
         const auto next = *m_cached;
         // The first frame after the pane joined the tree: a client reads it
         // whole, and the screen it shows is no change.
@@ -242,6 +256,10 @@ private:
         if (auto* w = owner(pane())) w->requestUpdate();
     }
     mutable std::optional<TerminalText> m_cached;
+    /// The terminal m_cached came from, and its serial when it is an overlay's.
+    mutable QPointer<const Pane> m_cachedFrom;
+    QPointer<const Pane> m_notifiedFrom; ///< the terminal of m_notified
+    mutable std::optional<std::pair<std::uint64_t, std::uint64_t>> m_cachedSerial;
     TerminalText m_previous; ///< the text as last told of
     bool m_seeded = false; ///< m_previous holds the text the pane shows in the tree
     std::optional<std::pair<std::uint64_t, std::uint64_t>> m_notified;

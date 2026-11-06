@@ -66,6 +66,9 @@ struct ShaderRegionState
     };
     std::array<Signal, 8> signals{};
     ShaderParameterMap shaderParameters;
+    /// In an overlay transition pass, how far the overlay has faded in: 0 the
+    /// pane under it, 1 the overlay (uOverlayTransition). Negative elsewhere.
+    float overlayTransition = -1.0f;
 };
 
 /// Seconds are doubles until they are written to the uniforms: a float of
@@ -96,12 +99,16 @@ struct ShaderChains
     std::vector<ShaderProgramPtr> tabTransition;
     /// Panes opening and closing, after the window chain, only while they do.
     std::vector<ShaderProgramPtr> paneEffects;
+    /// An overlay fading in or out over a pane: over that pane, after the pane
+    /// chain and before the window chain, only while it fades.
+    std::vector<ShaderProgramPtr> overlayTransition;
 
     /// Some program of any chain, event chains included, matches @p test.
     template<typename Test>
     bool any(Test test) const
     {
-        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects}) {
+        for (const auto* chain : {&background, &text, &cursor, &pane, &window, &overview, &tabTransition, &paneEffects,
+                                  &overlayTransition}) {
             if (anyIn(*chain, test)) return true;
         }
         return false;
@@ -134,7 +141,7 @@ struct ShaderChains
     }
     bool empty() const noexcept
     {
-        return alwaysOnEmpty() && overview.empty() && tabTransition.empty() && paneEffects.empty();
+        return alwaysOnEmpty() && overview.empty() && tabTransition.empty() && paneEffects.empty() && overlayTransition.empty();
     }
 };
 
@@ -162,7 +169,23 @@ public:
     /// Audio capture feeds a chain that runs this frame.
     bool audioReactive() const;
     bool readsScrollback() const { return m_chains.readsScrollback(); }
-    bool active() const noexcept { return !m_chains.alwaysOnEmpty() || eventChain() != nullptr; }
+    bool active() const noexcept { return !m_chains.alwaysOnEmpty() || eventChain() != nullptr || overlayTransitionShowing(); }
+    /// An overlay fades in or out this frame, and the overlay transition chain
+    /// is there to draw it.
+    void setOverlayTransitionShowing(bool showing) { m_overlayTransitionShowing = showing; }
+    /// Shaders.overlayTransition compiled: overlays fade through it.
+    bool hasOverlayTransition() const noexcept { return !m_chains.overlayTransition.empty(); }
+    bool overlayTransitionShowing() const noexcept { return m_overlayTransitionShowing && !m_chains.overlayTransition.empty(); }
+    /// After the grid target holds the panes under the fading overlays at
+    /// their places (with layer chains, after composite() of them): runs the
+    /// pane chain over @p hosts, and keeps the result in the tab image
+    /// (uTabImage), where the overlay transition reads it. Then the grid
+    /// target is free for the frame's own grid.
+    void captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts, const ShaderFrameTime& time);
+    /// The regions that the overlay transition chain runs over in the next
+    /// record(): the panes with their overlays, each with its progress in
+    /// ShaderRegionState::overlayTransition.
+    void setOverlayTransitions(std::vector<ShaderRegionState> regions) { m_overlayTransitions = std::move(regions); }
     /// Runs the pane effects chain after the window chain while panes open,
     /// close or are away; under the overview or a tab switch it runs first.
     void setPaneEffectsShowing(bool showing) { m_paneEffectsShowing = showing; }
@@ -214,8 +237,12 @@ public:
     /// each pane background, cursor and text, with the cursor over the text
     /// unless @p cursorBelowText says otherwise for that pane. Returns with
     /// the pass open, so the caller can draw overlays before ending it.
+    /// @p hosts: the panes under fading overlays (captureOverlayHosts), which
+    /// leave the text history alone and take the composite buffers after
+    /// @p uboBase, so that the frame's own composite keeps its values.
     void composite(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
-                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors = false);
+                   const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors = false,
+                   bool hosts = false, std::size_t uboBase = 0);
 
     /// Records the shader passes after the grid pass. Returns with the final
     /// pass on @p swapTarget begun and drawn, so the caller can add the
@@ -243,7 +270,7 @@ private:
         if (m_chains.anyAlwaysOn(test)) return true;
         for (const auto* chain : {&m_chains.overview, &m_chains.tabTransition, &m_chains.paneEffects})
             if (showing(*chain) && ShaderChains::anyIn(*chain, test)) return true;
-        return false;
+        return overlayTransitionShowing() && ShaderChains::anyIn(m_chains.overlayTransition, test);
     }
     bool showing(const std::vector<ShaderProgramPtr>& chain) const noexcept;
     bool highDynamicRange() const;
@@ -268,6 +295,10 @@ private:
         const ShaderProgram* program = nullptr, const BufferInputs* buffers = nullptr, QRhiResourceUpdateBatch* updates = nullptr,
         QRhiTexture* input = nullptr);
     QRhiTexture* localTexture(QRhiTexture* source, const QRect& rect, QRhiResourceUpdateBatch* updates);
+    /// Runs @p chain over @p regions of texture @p current, as the pane chain
+    /// runs, and returns the texture with the result. @p scope keys buffers.
+    int runRegionChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int current,
+                       const std::vector<ShaderRegionState>& regions, const ShaderFrameTime& time, int& ubo, int scope);
     QRhiTexture* parameterTexture(const QImage& image, QRhiResourceUpdateBatch* updates);
     /// Whether @p bytes more of copies and images fit the input budget, after
     /// dropping copies that this frame has not used.
@@ -312,6 +343,8 @@ private:
     bool m_overviewShowing = false;
     bool m_transitionShowing = false;
     bool m_paneEffectsShowing = false;
+    bool m_overlayTransitionShowing = false;
+    std::vector<ShaderRegionState> m_overlayTransitions; ///< for the next record()
     bool m_tabImageUsed = false; ///< tabImageTarget() was called since the last prepare()
     std::unique_ptr<QRhiBuffer> m_panesUbo;
     std::unique_ptr<QRhiTexture> m_tabImage;

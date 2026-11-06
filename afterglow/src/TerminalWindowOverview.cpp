@@ -193,7 +193,9 @@ void TerminalWindow::updateAudioCapture()
     // overview pack must not keep capture running while the overview is shut.
     m_audioCapturing = m_audioUse.alwaysOn || (m_audioUse.overview && overviewShowing())
         || (m_audioUse.tabTransition && m_tabTransition.progress.isAnimating())
-        || (m_audioUse.paneEffects && m_paneEffectsShowing);
+        || (m_audioUse.paneEffects && m_paneEffectsShowing)
+        || (m_audioUse.overlayTransition && std::any_of(m_overlayFades.begin(), m_overlayFades.end(),
+                                                         [](const auto& fade) { return fade.second.progress.isAnimating(); }));
     m_audio.setActive(this, m_audioCapturing && isExposed() && visibility() != QWindow::Minimized);
 }
 

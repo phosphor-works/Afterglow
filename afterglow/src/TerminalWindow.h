@@ -685,6 +685,7 @@ private:
         bool overview = false;
         bool tabTransition = false;
         bool paneEffects = false;
+        bool overlayTransition = false;
     } m_audioUse;
     bool m_audioCapturing = false; ///< a chain that shows now reads audio
     /// Starts or stops audio capture for the chains that show now.
@@ -839,6 +840,11 @@ private:
     } m_tabTransition;
     CurveCache m_tabCurve;
     bool m_tabTransitionAvailable = false; ///< Shaders.tabTransition compiled
+    /// Shaders.overlayTransition compiled: without it an overlay switches at once.
+    bool m_overlayTransitionAvailable = false;
+    /// Starts the fade of @p host's overlay toward @p target (1 in, 0 out),
+    /// from where a fade under way is; none without the transition.
+    void startOverlayFade(Pane* host, qreal target);
     void startTabTransition(int from, int to);
     // Panes opening and closing (Shaders.paneEffects).
     struct PaneOpening

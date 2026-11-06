@@ -173,7 +173,7 @@ A configuration that names a missing pack shows a notice, logs a warning and ski
 
 A package never changes the configuration file by itself.
 `shaders.suggests` maps `Shaders` keys to the package's packs.
-The keys are `background`, `text`, `cursor`, `pane`, `window`, `overview`, `tabTransition` and `paneEffects`.
+The keys are `background`, `text`, `cursor`, `pane`, `window`, `overview`, `tabTransition`, `paneEffects` and `overlayTransition`.
 The **Use Package Shaders…** command (`use_package_shaders`) lists the suggestions of loaded packages.
 It writes the one you select to the configuration file. A chain key gains the pack at its end.
 

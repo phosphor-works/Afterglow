@@ -709,6 +709,9 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Shader that animates switching tabs. An empty value switches at once.")),
         stringKey(QStringLiteral("paneEffects"), d.shaders.paneEffects,
                   QStringLiteral("Shader that animates panes as they split open and close. An empty value turns it off.")),
+        stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
+                  QStringLiteral("Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
+                                 "An empty value switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }.")},
     };
@@ -1543,7 +1546,8 @@ Settings SettingsStore::read()
     s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
                  shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed(),
                  st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed()};
+                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed(),
+                 st.read<QString>(Shaders, QStringLiteral("overlayTransition")).trimmed()};
     s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
 
     // Hints: checked once here, not on every show_hints, which uses only the

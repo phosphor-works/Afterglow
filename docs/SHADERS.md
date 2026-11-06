@@ -39,7 +39,7 @@ Script packages carry their own `shaders/` directory. See [packages](PACKAGES.md
 
 ## Shader chains
 
-The `Shaders` configuration group contains five chains and three event packs: the pane overview, the tab transition and the pane effects.
+The `Shaders` configuration group contains five chains and four event packs: the pane overview, the tab transition, the pane effects and the overlay transition.
 
 | Chain | Input |
 | --- | --- |
@@ -51,6 +51,7 @@ The `Shaders` configuration group contains five chains and three event packs: th
 | `overview` | The completed window, while the pane overview shows. One pack ID, not a list. |
 | `tabTransition` | The completed window, while a tab switch runs. One pack ID, not a list. |
 | `paneEffects` | The completed window, while a pane opens or closes. One pack ID, not a list. |
+| `overlayTransition` | The completed pane, while an overlay fades in or out over it. One pack ID, not a list. |
 
 The first three chains run before pane composition.
 Layer inputs use premultiplied alpha. Empty areas are transparent.
@@ -94,6 +95,12 @@ While it is away, a soft frame marks it in a palette color of the theme.
 The frame is bright cyan for a remote host, bright red for an elevated user and bright magenta for a container.
 When the pane returns, the frame fades out in its color. Between two contexts, the frame changes color.
 The `portal` and `frame` parameters set their strength.
+
+An [overlay](SCRIPTING.md#overlays), a program that a script runs over a pane, runs `Shaders.overlayTransition` when it opens and closes.
+The default pack is Overlay Fade, which blends the pane and the overlay.
+Both have the pane's layer and pane shaders while they blend, and the window shaders run over the result.
+`Animation.overlayCurve` and `Animation.overlayDuration` set the time.
+Set `Shaders.overlayTransition` to an empty string to switch at once.
 
 [The Phosphor scene](../data/examples/phosphor/README.md) combines a 3D core, text afterimages and command reactions.
 [Glasshouse](../data/examples/glasshouse/README.md) provides another complete desktop scene.

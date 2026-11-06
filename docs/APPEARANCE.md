@@ -208,7 +208,7 @@ A theme file that does not parse keeps its last colors until it parses again.
 
 `Animation.cursorCurve` and `Animation.scrollCurve` take a Phosphor curve spec, as `Animation.splitCurve` does.
 
-An [overlay](SCRIPTING.md#overlays), a program that runs over a pane, fades in and out.
+An [overlay](SCRIPTING.md#overlays), a program that runs over a pane, fades in and out through `Shaders.overlayTransition`.
 `Animation.overlayCurve` and `Animation.overlayDuration` set the fade. The fade stops at its ends, also with a spring that overshoots.
 
 See [shaders](SHADERS.md) for audio, history and visual effects.

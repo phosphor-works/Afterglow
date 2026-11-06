@@ -96,17 +96,29 @@ QString TerminalWindow::openOverlay(const QString& owner, const QString& request
     } else {
         setFocusedPane(pane);
     }
-    const AnimationSettings& anim = settings.animation;
-    OverlayFade& fade = m_overlayFades[pane];
-    fade.last.reset();
-    const qreal from = fade.progress.isAnimating() ? std::clamp(fade.progress.value(), 0.0, 1.0) : 0.0;
-    fade.progress.start(from, 1.0, motionSpec(anim.overlayCurve, anim.overlayDuration, m_overlayCurve, "Animation.overlayCurve",
-                                              AnimationSettings{}.overlayCurve));
+    startOverlayFade(pane, 1.0);
     // The overlay shows here; the window does not jump forward for it.
     if (!isActive()) alert(0);
     refreshInputMethod();
     scheduleRender();
     return {};
+}
+
+void TerminalWindow::startOverlayFade(Pane* host, qreal target)
+{
+    // The overlay transition draws the fade. Without it the overlay switches
+    // at once, and no frame waits for a fade.
+    if (!m_overlayTransitionAvailable) {
+        m_overlayFades.erase(host);
+        return;
+    }
+    const AnimationSettings& anim = m_settings.settings().animation;
+    OverlayFade& fade = m_overlayFades[host];
+    fade.last.reset();
+    const qreal from = fade.progress.isAnimating() ? std::clamp(fade.progress.value(), 0.0, 1.0) : 1.0 - target;
+    fade.progress.start(from, target, motionSpec(anim.overlayCurve, anim.overlayDuration, m_overlayCurve, "Animation.overlayCurve",
+                                                 AnimationSettings{}.overlayCurve));
+    updateAudioCapture();
 }
 
 void TerminalWindow::bindOverlay(Pane* host)
@@ -135,13 +147,9 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay)
     program->setPreedit({}, 0);
     if (focused && isActive()) QGuiApplication::inputMethod()->reset();
     // It fades out from where its fade is, on its last frame.
-    if (tabOf(host) >= 0) {
-        const AnimationSettings& anim = m_settings.settings().animation;
-        OverlayFade& fade = m_overlayFades[host];
-        const qreal from = fade.progress.isAnimating() ? std::clamp(fade.progress.value(), 0.0, 1.0) : 1.0;
-        fade.last = std::make_shared<AfterglowRender::PaneSnapshot>(program->snapshot());
-        fade.progress.start(from, 0.0, motionSpec(anim.overlayCurve, anim.overlayDuration, m_overlayCurve, "Animation.overlayCurve",
-                                                  AnimationSettings{}.overlayCurve));
+    if (tabOf(host) >= 0 && m_overlayTransitionAvailable) {
+        startOverlayFade(host, 0.0);
+        m_overlayFades[host].last = std::make_shared<AfterglowRender::PaneSnapshot>(program->snapshot());
     }
     // The host has the input again, its view and cursor where they were.
     if (focused) {

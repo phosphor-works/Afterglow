@@ -3722,11 +3722,15 @@ void TerminalWindow::applyShaders()
     const auto audio = [](const AfterglowRender::ShaderProgram& p) { return p.requiresAudio(); };
     m_audioUse = {chains.anyAlwaysOn(audio), AfterglowRender::ShaderChains::anyIn(chains.overview, audio),
                   AfterglowRender::ShaderChains::anyIn(chains.tabTransition, audio),
-                  AfterglowRender::ShaderChains::anyIn(chains.paneEffects, audio)};
+                  AfterglowRender::ShaderChains::anyIn(chains.paneEffects, audio),
+                  AfterglowRender::ShaderChains::anyIn(chains.overlayTransition, audio)};
     m_readsMouse = chains.readsMouse();
     m_overviewAvailable = !chains.overview.empty();
     m_tabTransitionAvailable = !chains.tabTransition.empty();
     m_paneEffectsAvailable = !chains.paneEffects.empty();
+    m_overlayTransitionAvailable = !chains.overlayTransition.empty();
+    // A fade under way has nothing to draw it with: the overlays show as they are.
+    if (!m_overlayTransitionAvailable) m_overlayFades.clear();
     if (!m_overviewAvailable) closeOverview(nullptr);
     m_renderer->setShaderChains(std::move(chains));
     updateAudioCapture();
