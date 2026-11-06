@@ -1367,6 +1367,10 @@ TEST(Client, DataPacketsDecodeAloneAndEndEmpty)
         EXPECT_LE(payload.size(), DndMaxPacket);
         EXPECT_EQ(meta, "m=0:t=e:y=0");
         EXPECT_EQ(payload.empty(), i == 3);
+        // One stream: padding may only end it, in the last data packet.
+        if (i < 2) {
+            EXPECT_EQ(payload.find('='), std::string_view::npos);
+        }
         ASSERT_TRUE(stream.feed(payload, joined));
     }
     ASSERT_TRUE(stream.finish(joined));
@@ -1385,6 +1389,12 @@ TEST(Client, Base64StreamJoinsGroupsAcrossPackets)
     ASSERT_TRUE(stream.finish(out));
     EXPECT_EQ(out, bytes);
     EXPECT_FALSE(stream.feed("@@@@", out));
+    // One character left at the end decodes to nothing: the data was cut.
+    DndBase64Stream cut;
+    out.clear();
+    ASSERT_TRUE(cut.feed("QUJD" "R", out));
+    EXPECT_EQ(out, "ABC");
+    EXPECT_FALSE(cut.finish(out));
 }
 
 TEST(Client, ListingsRefuseUnsafeNames)

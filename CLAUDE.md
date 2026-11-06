@@ -147,3 +147,8 @@ The reviewers in `.claude/agents/review/` report findings for one area each. The
   and made no object. A window freed while its own load ran got a late completion into freed memory. Now the
   chrome loads by URL, once for each Application. For a crash in some runs only, read the core with
   `coredumpctl` and write a test that makes it happen every time.
+- A session runs in the cgroup of the user's Afterglow. When builds and tests filled memory and swap, systemd-oomd
+  killed that whole unit four times, and every Afterglow window of the user closed. Run heavy builds and tests in
+  `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0`, with no more than one build at a time. A failed
+  `EXPECT_EQ` on two large strings makes gtest build a line diff that fills the memory: compare them with
+  `EXPECT_TRUE(a == b)`.

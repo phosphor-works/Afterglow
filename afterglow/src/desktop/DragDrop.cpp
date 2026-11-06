@@ -552,6 +552,16 @@ struct DragDrop::State : std::enable_shared_from_this<DragDrop::State> {
         std::string_view bytes;
         if (read.file) {
             fromFile = read.file->read(ReadChunk);
+            // The packets are one base64 stream, and padding may only end it.
+            // A short read before the end (FUSE may return one) would pad a
+            // packet in the middle, and Kitty's decoder refuses all after it.
+            while (fromFile.size() > 0 && fromFile.size() < ReadChunk
+                   && read.file->error() == QFileDevice::NoError) {
+                const QByteArray more = read.file->read(ReadChunk - fromFile.size());
+                if (more.isEmpty())
+                    break;
+                fromFile += more;
+            }
             if (read.file->error() != QFileDevice::NoError) {
                 // The file ends here for the program. The next read goes on.
                 const auto meta = read.meta;

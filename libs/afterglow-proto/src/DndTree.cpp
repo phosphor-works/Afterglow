@@ -106,7 +106,9 @@ bool DndBase64Stream::feed(std::string_view text, std::string& out)
 
 bool DndBase64Stream::finish(std::string& out)
 {
-    const bool ok = m_carry.empty() || base64DecodeAppend(out, m_carry, Base64Check::StrictOrUnpadded);
+    // Padding is optional at the end. One character left is six bits, which
+    // no encoder sends: the item was cut, and it fails rather than lose a byte.
+    const bool ok = m_carry.empty() || base64DecodeAppend(out, m_carry, Base64Check::PaddingOptional);
     m_carry.clear();
     return ok;
 }

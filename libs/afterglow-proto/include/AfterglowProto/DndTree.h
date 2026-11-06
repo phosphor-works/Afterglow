@@ -51,8 +51,8 @@ DndMeta dndRemoteEntry(std::int64_t root, std::int64_t parent, std::int64_t chil
 DndMeta dndReadEntry(std::int64_t mime, std::int64_t parent, std::int64_t child);
 
 /// The packets of one data item (t=p, t=e or t=k): @p bytes in messages of
-/// DndDataChunk bytes, each base64 that decodes alone, and then an empty
-/// message that ends the item.
+/// DndDataChunk bytes, and then an empty message that ends the item. The
+/// chunk is a multiple of 3, so only the last packet can have padding.
 std::vector<std::string> dndDataPackets(const DndMeta& meta, std::string_view bytes);
 
 /// A directory listing: @p names joined with NUL bytes.
@@ -66,19 +66,21 @@ bool dndValidName(std::string_view name);
 /// repeats. An empty listing has no names.
 std::optional<std::vector<std::string>> dndSplitNames(std::string_view listing);
 
-/// Decodes the base64 of one item as its packets arrive, whether each packet
-/// decodes alone (Afterglow) or a group of four characters spans two
-/// packets. A packet that decodes alone must pad its last group with '=':
-/// without the padding, its characters are read as the start of a group that
-/// the next packet ends, and no decoder can tell the two apart.
+/// Decodes the base64 of one item as its packets arrive. The packets are one
+/// stream that can split a group of four characters anywhere, and padding is
+/// optional at the end of the last one, as Kitty's protocol says. A group
+/// with padding in the middle also ends where it is. A packet that is meant
+/// to decode alone but has no padding breaks the protocol: its characters
+/// start a group that the next packet ends, as in Kitty's own decoder.
 class DndBase64Stream
 {
 public:
     /// Appends the bytes that the characters so far decode to. False for
     /// characters that are not base64.
     bool feed(std::string_view text, std::string& out);
-    /// Decodes what is left at the end of the item. False when it is not
-    /// base64 or a whole item was cut short.
+    /// Decodes what is left at the end of the item, with or without padding.
+    /// False when it is not base64, or when one character is left: the item
+    /// was cut short.
     bool finish(std::string& out);
     void reset() { m_carry.clear(); }
 
