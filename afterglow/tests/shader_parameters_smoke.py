@@ -101,7 +101,7 @@ return {
             check(count(expected, name) > matching,
                   f"The {name} write was " + ("rejected" if accepted else "accepted"))
         def inspect(pane, kind="shaders"):
-            """The shaders or the scene of a pane. afterglow run returns after the state is written."""
+            """The shaders or the scene of a pane. aglow run returns after the state is written."""
             return read_state(session.run, pane)[kind]
         def until(pane, predicate, kind="shaders", timeout=10):
             """Reads the pane until predicate(data) is true, and returns the data.

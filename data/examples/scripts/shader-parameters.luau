@@ -10,7 +10,7 @@ return {
     } },
     run_command = function(command, ev)
         if #ev.args > 0 then
-            return { afterglow.output_error(ev, "usage: afterglow run shader-parameters " .. command .. "\n"), afterglow.exit(ev, 2) }
+            return { afterglow.output_error(ev, "usage: aglow run shader-parameters " .. command .. "\n"), afterglow.exit(ev, 2) }
         end
         if not ev.pane then return fail(ev, "There is no pane to change.") end
         local active, err = afterglow.await(afterglow.shaders(ev.pane))

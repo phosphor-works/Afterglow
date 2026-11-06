@@ -371,6 +371,8 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_runs_aglow`, `afterglow_passes_aglow_arguments`, `afterglow_passes_aglow_status` | Run `aglow` through `afterglow icat` and `afterglow transfer`, and check its usage text and exit status | None |
 | `afterglow_without_aglow` | Runs a copy of `afterglow` that has no `aglow` next to it, and checks the error and status 127 | None |
 | `afterglow_aglow_not_executable` | Runs a copy of `afterglow` next to an `aglow` that it cannot execute, and checks the error and status 126 | None |
+| `aglow_run_usage`, `afterglow_runs_aglow_run` | Check the usage of `aglow run`, and of `afterglow run`, which runs it | None |
+| `RunBinaryTest.*` | Runs `aglow run` against a test socket, and once through `afterglow run`. Checks the exit status, the output, standard input, the pane, signals and the socket lookup | GTest |
 | `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |

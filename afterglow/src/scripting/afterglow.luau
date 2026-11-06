@@ -355,7 +355,7 @@ afterglow = {
     -- a table of command names to their fields, as in the manifest.
     set_commands = function(commands) return {kind="set_commands", commands=commands} end,
     -- The output of a command run (ev.run, or the event itself): stdout and stderr of
-    -- `afterglow run`. Can be awaited.
+    -- `aglow run`. Can be awaited.
     output = function(run, text)
         return { kind = "output", run = runId(run), text = required(text, "afterglow.output", "text") }
     end,

@@ -21,7 +21,7 @@ These instructions use the current source layout.
   Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
   Without them, the configuration stops with a message.
   To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
-  Then `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
+  Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
   A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
 The build compiles zlib-ng and xxHash from their [source archives](#source-archives).

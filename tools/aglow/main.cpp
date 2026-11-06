@@ -3,7 +3,8 @@
 
 // aglow: a small afterglow. Kitty's file transfer, drag and drop, graphics
 // and clipboard protocols from the command line, in one static binary that
-// needs neither kitty nor Afterglow on the computer where it runs.
+// needs neither kitty nor Afterglow on the computer where it runs, and the
+// commands of Afterglow's scripts.
 
 #include "Cli.h"
 #include "Commands.h"
@@ -105,12 +106,14 @@ const char* usageText = "Usage: %1 COMMAND [options] [arguments]\n"
                         "\n"
                         "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the\n"
                         "other terminals that support them, also over SSH.\n"
+                        "The run command talks to an Afterglow on the same computer.\n"
                         "\n"
                         "Commands:\n"
                         "  transfer   Copy files to and from the computer of the terminal\n"
                         "  dnd        Drag files and data out of the terminal, and drop them in\n"
                         "  icat       Show images in the terminal\n"
                         "  clipboard  Read and write the clipboard, with any MIME type\n"
+                        "  run        Run a command of a script in a running Afterglow\n"
                         "\n"
                         "Run %1 COMMAND --help or %1 help COMMAND for the options of a command.\n"
                         "\n"
@@ -191,6 +194,9 @@ int run(int argc, char** argv)
     }
     if (command == "clipboard") {
         return Aglow::runClipboard(argc - 2, argv + 2);
+    }
+    if (command == "run") {
+        return Aglow::runRun(argc - 2, argv + 2);
     }
     std::fprintf(stderr, "%s: unknown command: %s\n\n%s", Aglow::Cli::program().c_str(),
                  Aglow::printable(argv[1]).c_str(), usage().c_str());

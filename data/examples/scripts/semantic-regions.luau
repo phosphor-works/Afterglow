@@ -1,14 +1,14 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Select and copy a retained shell prompt, input or output region.
--- From a shell, `afterglow run semantic-regions copy` also needs Control.allowReadText.
+-- From a shell, `aglow run semantic-regions copy` also needs Control.allowReadText.
 -- A failure goes to stderr. A run from the palette shows it as a notification.
 local function fail(ev, message) return {afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1)} end
 return {
     metadata = {name="Shell regions", commands = { copy = { summary = "Copy a shell semantic region", palette = "Copy a shell semantic region" } }},
     run_command = function(_, ev)
         if #ev.args > 0 then
-            return {afterglow.output_error(ev, "usage: afterglow run semantic-regions copy\n"), afterglow.exit(ev, 2)}
+            return {afterglow.output_error(ev, "usage: aglow run semantic-regions copy\n"), afterglow.exit(ev, 2)}
         end
         if not ev.pane then return fail(ev, "There is no pane to read.") end
         local pane = ev.pane.id
@@ -17,7 +17,7 @@ return {
         local choices, regions = {}, found.regions or {}
         for i = #regions, 1, -1 do
             local region = regions[i]
-            -- From a shell, the open output region is that of `afterglow run` itself.
+            -- From a shell, the open output region is that of `aglow run` itself.
             -- A run does not tell whether --pane named another pane, so the open
             -- output region of that pane is left out too.
             local own = region.open and region.kind == "output" and ev.source == "shell"

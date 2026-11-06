@@ -8,7 +8,7 @@
 namespace Afterglow::Aglow {
 
 /// The commands that aglow runs: afterglow COMMAND runs aglow COMMAND.
-inline constexpr std::array<const char*, 4> Commands { "transfer", "dnd", "icat", "clipboard" };
+inline constexpr std::array<const char*, 5> Commands { "run", "transfer", "dnd", "icat", "clipboard" };
 /// Whether this build has aglow (AFTERGLOW_BUILD_AGLOW).
 bool built();
 /// Whether @p command is one of Commands.

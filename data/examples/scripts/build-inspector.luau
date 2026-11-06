@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Install in ~/.config/afterglow/scripts/. Run "Inspect last build output"
 -- from the command palette after a compiler command, or
--- `afterglow run build-inspector inspect` in the pane. Requires shell marks.
+-- `aglow run build-inspector inspect` in the pane. Requires shell marks.
 -- Opens selected file:line diagnostics in a new tab running vi.
 local script = {}
 -- Cuts text to at most max bytes without splitting a UTF-8 sequence.
@@ -22,7 +22,7 @@ local function fail(ev, message)
 end
 
 -- The newest output region of the pane. From a shell, the open region is the
--- output of `afterglow run` itself, so the newest finished one counts. A run
+-- output of `aglow run` itself, so the newest finished one counts. A run
 -- does not tell whether --pane named another pane, so the open region of that
 -- pane is skipped too, also when it is the output of a command that still runs.
 local function lastOutput(ev, regions)
@@ -38,7 +38,7 @@ end
 function script.run_command(command, ev)
     if command ~= "inspect" then return nil end
     if #ev.args > 0 then
-        return { afterglow.output_error(ev, "usage: afterglow run build-inspector inspect\n"), afterglow.exit(ev, 2) }
+        return { afterglow.output_error(ev, "usage: aglow run build-inspector inspect\n"), afterglow.exit(ev, 2) }
     end
     if not ev.pane then return fail(ev, "There is no pane to inspect.") end
     local pane = ev.pane

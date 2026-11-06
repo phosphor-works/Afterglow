@@ -29,7 +29,7 @@ end
 function script.run_command(command, ev)
     if command ~= "test" then return nil end
     if #ev.args > 0 then
-        return { afterglow.output_error(ev, "usage: afterglow run notify-slow-commands test\n"), afterglow.exit(ev, 2) }
+        return { afterglow.output_error(ev, "usage: aglow run notify-slow-commands test\n"), afterglow.exit(ev, 2) }
     end
     -- A notification belongs to a pane: without one, say so on stderr.
     if not ev.pane then

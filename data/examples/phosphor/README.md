@@ -152,10 +152,10 @@ The script command `cool` ends the charge. It is not in the palette.
 
 Use the palette if desktop shortcuts intercept these keys.
 The demo is a separate process with its own socket, `afterglow-DISPLAY-PID.sock`.
-`afterglow ctl` and `afterglow run` in its panes reach it.
-For example, `afterglow run phosphor strike` fractures the core.
-`afterglow run` is a shell command too, and its end cools the core of its tab.
-Thus give a pane of another tab to `afterglow run phosphor heat`, with `--pane N`.
+`afterglow ctl` and `aglow run` in its panes reach it.
+For example, `aglow run phosphor strike` fractures the core.
+`aglow run` is a shell command too, and its end cools the core of its tab.
+Thus give a pane of another tab to `aglow run phosphor heat`, with `--pane N`.
 Elsewhere, use the palette or the shortcuts.
 
 ## Layers and signals

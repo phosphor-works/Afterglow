@@ -106,7 +106,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             wait(lambda: navigator().get('status') == 'active')
             check(saved()['revision'] == 4 and saved()['version'] == 2)
             check(saved()['value']['recent'][0]['value'] == str(project))
-            print('PASS: installed package, schema migration, afterglow run list/previous/favorite with exit statuses, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
+            print('PASS: installed package, schema migration, aglow run list/previous/favorite with exit statuses, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
         except Exception:
             print(s.log_text(5000), file=sys.stderr)
             raise

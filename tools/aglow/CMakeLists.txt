@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # aglow: the Kitty file transfer, drag and drop, graphics and clipboard
-# protocols from the command line, as one static binary. It uses only
+# protocols from the command line, and the client of the commands of
+# Afterglow's scripts (aglow run), as one static binary. It uses only
 # libs/afterglow-proto (with its bundled zlib-ng and xxHash) and the vendored
 # stb_image: no Qt and no Phosphor, so that the binary runs alone on a remote
 # host.
@@ -112,6 +113,7 @@ add_executable(aglow
     Image.cpp
     Image.h
     Mime.h
+    Run.cpp
     StbImage.h
     Transfer.cpp
     Tty.cpp
@@ -139,9 +141,9 @@ if(AGLOW_STATIC)
     endif()
 endif()
 # Next to the afterglow executable in the build tree, as after install, so
-# that afterglow transfer, dnd, icat and clipboard find it in both. Building
-# afterglow builds aglow too. aglow has no library to find, so it gets no run
-# path from CMAKE_INSTALL_RPATH.
+# that afterglow run, transfer, dnd, icat and clipboard find it in both.
+# Building afterglow builds aglow too. aglow has no library to find, so it
+# gets no run path from CMAKE_INSTALL_RPATH.
 set_target_properties(aglow PROPERTIES AUTOMOC OFF AUTOUIC OFF INSTALL_RPATH ""
                       RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
 add_dependencies(afterglow aglow)
@@ -178,6 +180,9 @@ if(BUILD_TESTING)
                        $<TARGET_FILE:afterglow> transfer --help)
     aglow_add_run_test(afterglow_passes_aglow_status 1 "Unknown option: --no-such-option"
                        $<TARGET_FILE:afterglow> icat --no-such-option)
+    # The usage of run names the command that the user typed. It connects to nothing.
+    aglow_add_run_test(aglow_run_usage 0 "^usage: aglow run " $<TARGET_FILE:aglow> run --help)
+    aglow_add_run_test(afterglow_runs_aglow_run 0 "^usage: afterglow run " $<TARGET_FILE:afterglow> run --help)
     # A copy of afterglow alone in a directory has no aglow next to it.
     set(AGLOW_RUN_OPTIONS "-DCOPY_TO=${CMAKE_CURRENT_BINARY_DIR}/without-aglow")
     aglow_add_run_test(afterglow_without_aglow 127 "afterglow icat: cannot run .*/without-aglow/aglow: "

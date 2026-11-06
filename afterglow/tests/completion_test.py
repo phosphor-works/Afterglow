@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Checks the bash, fish and zsh completions in data/completions against a stub afterglow.
+"""Checks the bash, fish and zsh completions in data/completions against a stub afterglow and stub aglows.
 
-The stub answers `afterglow run --complete` and logs its calls. No real afterglow runs, and the test fails when a
-completion calls the stub for anything else. Bash runs twice: with the bash-completion package when it is installed,
-and without it. A shell that is not installed is skipped. With no shell at all, the test exits 77, which CTest reports
-as skipped. The completions of aglow are checked on their own and through afterglow, against the option tables in
-tools/aglow, and the keybind actions of ctl action against afterglow/src/config/Keybinds.cpp.
+A stub aglow answers `aglow run --complete` and logs its calls. The stub afterglow only logs its calls. No real
+afterglow or aglow runs. The test fails when a completion calls afterglow, or calls aglow for anything else: afterglow
+run completes through the aglow that afterglow runs, the one next to its executable. Bash runs twice: with the
+bash-completion package when it is installed, and without it. A shell that is not installed is skipped. With no shell
+at all, the test exits 77, which CTest reports as skipped. The completions of aglow are checked on their own and
+through afterglow, against the option tables in tools/aglow, and the keybind actions of ctl action against
+afterglow/src/config/Keybinds.cpp.
 """
 import os
 import pty
@@ -33,7 +35,7 @@ BASH_COMPLETION = [Path(p) for p in ('/usr/share/bash-completion/bash_completion
 # What readline splits words at, besides blanks. Quotes are not used in the cases.
 WORDBREAKS = '"\'><=;|&(:'
 
-# STUB_IDS and STUB_NAMES hold one name on each line.
+# The stub aglow. STUB_IDS and STUB_NAMES hold one name on each line.
 STUB = r'''#!/bin/sh
 echo "$0 $*" >> "$STUB_LOG"
 if [ "$1" = run ] && [ "$2" = --complete ]; then
@@ -50,6 +52,8 @@ if [ "$1" = run ] && [ "$2" = --complete ]; then
 fi
 exit 1
 '''
+# The stub afterglow: a completion never runs it.
+AFTERGLOW_STUB = '#!/bin/sh\necho "$0 $*" >> "$STUB_LOG"\nexit 1\n'
 
 # Zsh completes only in its line editor. The probe types each line with a TAB into an interactive zsh on a pseudo
 # terminal, and compadd logs what it adds. TAB runs a widget that completes, clears the line and then shows a
@@ -145,6 +149,9 @@ class Shells:
     def __init__(self, tmp):
         self.tmp = tmp
         self.bin = tmp / 'bin'
+        # The afterglow on PATH is a link to app/afterglow, as a link in ~/.local/bin to a build is. afterglow runs
+        # app/aglow, the aglow next to its executable, so its completion must resolve the link.
+        self.app = tmp / 'app'
         self.other = tmp / 'other'
         self.work = tmp / 'work'
         self.fish_dir = tmp / 'fish'
@@ -153,17 +160,18 @@ class Shells:
         # completion must not need one on PATH.
         self.aglow_bin = tmp / 'aglow-bin'
         self.zsh_functions = tmp / 'zsh-functions'
-        for d in (self.bin, self.other, self.work / 'adir', self.fish_dir, self.aglow_bin, self.zsh_functions):
+        for d in (self.bin, self.app, self.other, self.work / 'adir', self.fish_dir, self.aglow_bin,
+                  self.zsh_functions):
             d.mkdir(parents=True)
         (self.work / 'afile').write_text('')
-        # The afterglow outside PATH gives an id that the one on PATH never gives.
-        for d, stub in ((self.bin, STUB), (self.other, STUB.replace('$STUB_IDS', OTHER_ID))):
-            (d / 'afterglow').write_text(stub)
-            (d / 'afterglow').chmod(0o755)
-        # Fish loads the completion of a command only when the command is on PATH.
-        for d, name in ((self.aglow_bin, 'aglow'), (self.bin, 'ssh')):
-            (d / name).write_text('#!/bin/sh\nexit 1\n')
-            (d / name).chmod(0o755)
+        # The aglow next to the afterglow outside PATH gives an id that the others never give.
+        for path, stub in ((self.app / 'afterglow', AFTERGLOW_STUB), (self.app / 'aglow', STUB),
+                           (self.other / 'afterglow', AFTERGLOW_STUB),
+                           (self.other / 'aglow', STUB.replace('$STUB_IDS', OTHER_ID)),
+                           (self.aglow_bin / 'aglow', STUB), (self.bin / 'ssh', '#!/bin/sh\nexit 1\n')):
+            path.write_text(stub)
+            path.chmod(0o755)
+        (self.bin / 'afterglow').symlink_to(self.app / 'afterglow')
         shutil.copy(COMPLETIONS / 'afterglow.fish', self.fish_dir / 'afterglow.fish')
         shutil.copy(COMPLETIONS / 'aglow.fish', self.fish_dir / 'aglow.fish')
         # Where bash-completion loads the completion of aglow from, as it does for an installed one.
@@ -248,10 +256,11 @@ class Shells:
         return results
 
     def calls(self):
-        """The calls of the stubs that are not afterglow run --complete [ID]."""
+        """The calls of the stubs that are not aglow run --complete [ID]: every call of afterglow is one."""
         if not self.log.exists():
             return []
-        return [c for c in self.log.read_text().splitlines() if not re.fullmatch(r'\S+ run --complete( .*)?', c)]
+        return [c for c in self.log.read_text().splitlines()
+                if not re.fullmatch(r'\S*/aglow run --complete( .*)?', c)]
 
     def fish(self, line, env=None):
         out = self.run(['fish', '--no-config', '-c',
@@ -333,10 +342,29 @@ def bash_cases(program):
     yield f'{program} transfer -- -', set()
 
 
+def run_cases(program):
+    """(line, expected) pairs for run, as PROGRAM (aglow, or afterglow, which runs aglow)."""
+    yield f'{program} run ', {'nav', 'scene'}
+    yield f'{program} run -', {'-h', '--help', '-n', '--no-stdin', '--pane'}
+    # --help only alone, and an option once.
+    yield f'{program} run -n -', {'--pane'}
+    yield f'{program} run -n ', {'nav', 'scene'}
+    yield f'{program} run --pane ', set()
+    yield f'{program} run --pane 3 ', {'nav', 'scene'}
+    # "--" ends the options and is not the script.
+    yield f'{program} run -- ', {'nav', 'scene'}
+    yield f'{program} run -- nav ', {'--help', 'open', 'list'}
+    yield f'{program} run nav ', {'--help', 'open', 'list'}
+    yield f'{program} run nav open ', FILES
+    yield f'{program} run nav open --pane ', FILES
+    yield f'{program} run nav --help ', set()
+
+
 def aglow_cases(options):
-    yield 'aglow ', {'transfer', 'dnd', 'icat', 'clipboard', 'help', 'version'}
+    yield 'aglow ', {'transfer', 'dnd', 'icat', 'clipboard', 'run', 'help', 'version'}
     yield 'aglow -', {'-h', '--help', '-v', '--version'}
-    yield 'aglow help ', {'transfer', 'dnd', 'icat', 'clipboard'}
+    yield 'aglow help ', {'transfer', 'dnd', 'icat', 'clipboard', 'run'}
+    yield from run_cases('aglow')
     yield from command_cases('aglow', options)
 
 
@@ -358,20 +386,7 @@ def cases(ctl_commands, paneless, actions, options):
     yield 'afterglow --config-reference ', set()
     yield 'afterglow -d ', {'adir'}
     yield 'afterglow --config ', files
-    yield 'afterglow run ', {'nav', 'scene'}
-    yield 'afterglow run -', {'-h', '--help', '-n', '--no-stdin', '--pane'}
-    # --help only alone, and an option once.
-    yield 'afterglow run -n -', {'--pane'}
-    yield 'afterglow run -n ', {'nav', 'scene'}
-    yield 'afterglow run --pane ', set()
-    yield 'afterglow run --pane 3 ', {'nav', 'scene'}
-    # "--" ends the options and is not the script.
-    yield 'afterglow run -- ', {'nav', 'scene'}
-    yield 'afterglow run -- nav ', {'--help', 'open', 'list'}
-    yield 'afterglow run nav ', {'--help', 'open', 'list'}
-    yield 'afterglow run nav open ', files
-    yield 'afterglow run nav open --pane ', files
-    yield 'afterglow run nav --help ', set()
+    yield from run_cases('afterglow')
     yield 'afterglow ctl ', set(ctl_commands)
     yield 'afterglow ctl -', {'-h', '--help'}
     yield 'afterglow ctl ls ', {'--json'}
@@ -448,16 +463,17 @@ def main():
             for completion in ('afterglow.bash', 'aglow.bash'):
                 shells.run(['bash', '-n', str(COMPLETIONS / completion)])
             if helpers:
-                complete = each(lambda line: shells.bash(line, helpers))
-                check_shell('bash', complete, complete, sources, extra=bash_extra)
+                check_shell('bash', each(lambda line: shells.bash(line, helpers)),
+                            each(lambda line: shells.bash(line, helpers, shells.aglow_env)), sources, extra=bash_extra)
                 # The word at the cursor keeps its colon.
                 got = shells.bash('afterglow ctl action script:nav.o', helpers)
                 check(got == {'nav.open'}, f'bash: action script:nav.o gave {sorted(got)}')
                 tested.append('bash with bash-completion')
             else:
                 print('SKIP: bash-completion is not installed')
-            complete = each(lambda line: shells.bash(line, None))
-            check_shell('bash without bash-completion', complete, complete, sources, full=False, extra=bash_extra)
+            check_shell('bash without bash-completion', each(lambda line: shells.bash(line, None)),
+                        each(lambda line: shells.bash(line, None, shells.aglow_env)), sources, full=False,
+                        extra=bash_extra)
             tested.append('bash')
         else:
             print('SKIP: bash is not installed')
@@ -472,11 +488,12 @@ def main():
         if shutil.which('zsh'):
             for completion in ('_afterglow', '_aglow'):
                 shells.run(['zsh', '-n', str(COMPLETIONS / completion)])
-            check_shell('zsh', shells.zsh, shells.zsh, sources)
+            check_shell('zsh', shells.zsh, lambda lines: shells.zsh(lines, shells.aglow_env), sources)
             got = shells.zsh(['afterglow ctl action script:nav.o'])[0]
             check(got == {'script:nav.open'}, f'zsh: action script:nav.o gave {sorted(got)}')
             # Zsh finds the completion by the command's last part without quotes, and words[1] keeps them.
-            for line in (f'{shells.other}/afterglow run ', f"{shells.other}/'afterglow' run "):
+            for line in (f'{shells.other}/afterglow run ', f"{shells.other}/'afterglow' run ",
+                         f'{shells.other}/aglow run ', f"{shells.other}/'aglow' run "):
                 got = shells.zsh([line])[0]
                 check(got == {OTHER_ID}, f'zsh: {line!r} gave {sorted(got)}')
             got = shells.zsh(["'afterglow' run "])[0]
@@ -488,26 +505,28 @@ def main():
             print('SKIP: no shell to test')
             return 77
 
-        # The afterglow that the line names, not the one on PATH.
-        line = f'{shells.other}/afterglow run '
-        if shutil.which('bash'):
-            got = shells.bash(line, None)
-            check(got == {OTHER_ID}, f'bash: {line!r} gave {sorted(got)}')
-            if helpers:
-                # Readline keeps the quotes in the word, and bash-completion removes them.
-                quoted = [f"'{shells.other}/afterglow'", 'run', '']
-                got = shells.bash(' '.join(quoted), helpers, words=quoted)
-                check(got == {OTHER_ID}, f'bash: {quoted} gave {sorted(got)}')
-        if shutil.which('fish'):
-            for line in (line, f"'{shells.other}/afterglow' run "):
-                got = shells.fish(line)
-                check(got == {OTHER_ID}, f'fish: {line!r} gave {sorted(got)}')
+        # The afterglow or aglow that the line names, not the one on PATH: for afterglow, the aglow next to it.
+        for program in ('afterglow', 'aglow'):
+            line = f'{shells.other}/{program} run '
+            if shutil.which('bash'):
+                got = shells.bash(line, None)
+                check(got == {OTHER_ID}, f'bash: {line!r} gave {sorted(got)}')
+                if helpers:
+                    # Readline keeps the quotes in the word, and bash-completion removes them.
+                    quoted = [f"'{shells.other}/{program}'", 'run', '']
+                    got = shells.bash(' '.join(quoted), helpers, words=quoted)
+                    check(got == {OTHER_ID}, f'bash: {quoted} gave {sorted(got)}')
+            if shutil.which('fish'):
+                # Fish loads the completion of aglow only when aglow is on PATH.
+                for line in (line, f"'{shells.other}/{program}' run "):
+                    got = shells.fish(line, shells.aglow_env if program == 'aglow' else None)
+                    check(got == {OTHER_ID}, f'fish: {line!r} gave {sorted(got)}')
 
         # Names from the socket are text, never shell code.
         # Each form is a command substitution in some shell: $() and `` in all three, () in fish.
         names = '$(touch expanded)\n`touch expanded`\n(touch expanded)'
-        evil = dict(shells.env, STUB_IDS=names, STUB_NAMES=names)
-        lines = ['afterglow run ', 'afterglow run x ', 'afterglow ctl action ']
+        evil = dict(shells.aglow_env, STUB_IDS=names, STUB_NAMES=names)
+        lines = ['afterglow run ', 'afterglow run x ', 'afterglow ctl action ', 'aglow run ', 'aglow run x ']
         if shutil.which('bash'):
             for line in lines:
                 shells.bash(line, None, evil)
@@ -518,9 +537,9 @@ def main():
                 shells.fish(line, evil)
         if shutil.which('zsh'):
             shells.zsh(lines, evil)
-        check(not (shells.work / 'expanded').exists(), 'a name from afterglow run --complete was expanded')
+        check(not (shells.work / 'expanded').exists(), 'a name from aglow run --complete was expanded')
         calls = shells.calls()
-        check(not calls, f'a completion called afterglow for something else than run --complete: {calls[:3]}')
+        check(not calls, f'a completion called afterglow, or aglow for something else than run --complete: {calls[:3]}')
 
     print(f'{"FAIL" if failures else "PASS"}: {", ".join(tested)}')
     return 1 if failures else 0

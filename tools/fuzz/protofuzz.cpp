@@ -16,7 +16,7 @@
 //   6 zlib data, inflated whole with a limit and in steps
 //   7 the text checks that sanitize ids and names
 //   8 JSON for the phosphor-ipc client, written and read again, and the
-//     stdin parts of `afterglow run`
+//     stdin parts of `aglow run`
 //   9 X11 colour specs (parseColorSpec), and the colour read written again
 
 #include <AfterglowProto/Base64.h>

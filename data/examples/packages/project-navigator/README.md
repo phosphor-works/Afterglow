@@ -39,9 +39,9 @@ These are the commands `pick`, `favorite` and `previous`. Bind them as
 From a shell:
 
 ```sh
-afterglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
-afterglow run project-navigator list                       # favorite, recent and saved projects
-find ~/src -maxdepth 1 -mindepth 1 -type d | afterglow run project-navigator import
+aglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
+aglow run project-navigator list                       # favorite, recent and saved projects
+find ~/src -maxdepth 1 -mindepth 1 -type d | aglow run project-navigator import
 ```
 
 | Command | Action |
@@ -108,7 +108,7 @@ A provider that is refused supplies no paths.
 
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
-When the run of a command ends while it waits, for example at Ctrl+C on `afterglow run`, no selector opens after it.
+When the run of a command ends while it waits, for example at Ctrl+C on `aglow run`, no selector opens after it.
 
 Favorites, the last 50 projects and layout choices survive reloads and restarts.
 The package keeps layout choices for favorites and recent directories only.

@@ -3,35 +3,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Zsh completion for afterglow. Script IDs and their commands come from the
-# running afterglow (afterglow run --complete).
+# running Afterglow, through the aglow that afterglow runs (aglow run
+# --complete).
 
-_afterglow_run() {
-    local -a ids commands
-    # Options only before the script ID. --help only alone: after an option
-    # it would name a script.
-    _arguments -s -S -A '-*' \
-        '(- *)'{-h,--help}'[show the usage]' \
-        '(-h --help -n --no-stdin)'{-n,--no-stdin}'[do not pass standard input to the command]' \
-        '(-h --help)--pane[the pane that the command acts on]:pane ID:' \
-        '1:script:->id' \
-        '2:command:->command' \
-        '*::argument:->argument' && return
-    case $state in
-    id)
-        ids=(${(f)"$("$self" run --complete 2>/dev/null)"})
-        _describe -t ids 'script' ids
-        ;;
-    command)
-        # COMMAND<TAB>SUMMARY lines, as name:description pairs.
-        commands=(${${(f)"$("$self" run --complete "${line[1]}" 2>/dev/null)"}/$'\t'/:})
-        commands+=('--help:list the script'"'"'s commands')
-        _describe -t commands 'command' commands
-        ;;
-    argument)
-        # The command's own arguments: files, most likely. ID --help takes none.
-        [[ $line[2] == (-h|--help) ]] || _files
-        ;;
-    esac
+# The aglow that afterglow runs, in $aglow: the one in the directory of its
+# executable, with symbolic links resolved. aglow starts faster than
+# afterglow, which loads Qt.
+_afterglow_aglow() {
+    aglow=$self
+    [[ $aglow == */* ]] || aglow=$(whence -p -- "$aglow")
+    [[ -n $aglow ]] || return 1
+    aglow=${aglow:A:h}/aglow
 }
 
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp),
@@ -116,8 +98,10 @@ _afterglow_actions() {
         'unicode_input:insert unicode character'
     )
     _describe -t keybinds 'keybind action' keybinds && ret=0
-    for id in ${(f)"$("$self" run --complete 2>/dev/null)"}; do
-        for entry in ${(f)"$("$self" run --complete "$id" 2>/dev/null)"}; do
+    local aglow
+    _afterglow_aglow || return ret
+    for id in ${(f)"$("$aglow" run --complete 2>/dev/null)"}; do
+        for entry in ${(f)"$("$aglow" run --complete "$id" 2>/dev/null)"}; do
             actions+=("script\\:$id.${entry%%$'\t'*}:${entry#*$'\t'}")
         done
     done
@@ -223,18 +207,13 @@ _afterglow() {
             _afterglow_ctl
             return
             ;;
-        run)
-            shift words; (( CURRENT-- ))
-            _afterglow_run
-            return
-            ;;
         ssh)
             # The rest is ssh's command line.
             shift words; (( CURRENT-- ))
             _normal
             return
             ;;
-        transfer|dnd|icat|clipboard)
+        run|transfer|dnd|icat|clipboard)
             # These run aglow, whose completion reads its command at the same
             # position. Without it, the arguments are files, most likely.
             if (( $+functions[_aglow] )); then

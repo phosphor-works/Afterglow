@@ -107,7 +107,7 @@ function script.run_command(command, ev)
         return nil
     end
     if #ev.args > 0 then
-        return { afterglow.output_error(ev, "usage: afterglow run glasshouse " .. command .. "\n"), afterglow.exit(ev, 2) }
+        return { afterglow.output_error(ev, "usage: aglow run glasshouse " .. command .. "\n"), afterglow.exit(ev, 2) }
     end
     -- A failure goes to stderr. A run from the palette shows it as a notification.
     if not ev.pane then

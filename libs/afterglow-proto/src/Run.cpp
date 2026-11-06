@@ -24,11 +24,7 @@ namespace AfterglowProto::Run {
 
 namespace {
 
-const char* const Usage = R"(usage: afterglow run                          list the commands of the scripts
-       afterglow run ID --help                the commands of one script
-       afterglow run [-n] [--pane N] ID COMMAND [ARGS...]
-                                              run a command, print its output and exit with its status
-
+const char* const Description = R"(
 Runs a command of a script in a running afterglow (Control.enabled and
 Scripts.enabled in its config). The command acts on --pane N, else on the
 pane that this shell runs in, else on the focused pane.
@@ -41,9 +37,26 @@ a terminal. Input over Scripts.commandStdinLimit is refused.
 
 Exit status 2 is a usage error, an unknown command or refused input, and 124
 a command that ran out of time (Scripts.commandTimeout). SIGINT and SIGTERM
-cancel the command, and so does a closed standard output (SIGPIPE). Then
-afterglow run ends by that signal: a shell reports 130, 143 or 141.
+cancel the command, and so does a closed standard output (SIGPIPE). Then the
+client ends by that signal: a shell reports 130, 143 or 141.
 )";
+
+/// Where the descriptions of the usage lines start.
+constexpr std::size_t UsageColumn = 46;
+
+/// The usage, under the name that the user typed: "aglow run", or
+/// "afterglow run", which runs it.
+std::string usageText(const std::string& program)
+{
+    const auto line = [](std::string head, std::string_view text) {
+        head.resize(std::max(head.size() + 2, UsageColumn), ' ');
+        return head + std::string(text) + "\n";
+    };
+    return line("usage: " + program, "list the commands of the scripts")
+        + line("       " + program + " ID --help", "the commands of one script")
+        + "       " + program + " [-n] [--pane N] ID COMMAND [ARGS...]\n"
+        + line({}, "run a command, print its output and exit with its status") + Description;
+}
 
 /// Text from a script or the terminal, safe to print: no control character
 /// can reach the terminal that shows it as an escape sequence.
@@ -144,7 +157,7 @@ public:
 
     int usage(std::string_view message) const
     {
-        writeAll(m_env.error, m_env.program + ": " + printable(message) + "\n\n" + Usage);
+        writeAll(m_env.error, m_env.program + ": " + printable(message) + "\n\n" + usageText(m_env.program));
         return UsageError;
     }
 
@@ -465,7 +478,7 @@ int start(Client& client, const std::vector<std::string>& args)
 {
     const Environment& environment = client.env();
     if (!args.empty() && (args[0] == "-h" || args[0] == "--help")) {
-        writeAll(environment.output, Usage);
+        writeAll(environment.output, usageText(environment.program));
         return 0;
     }
     if (!args.empty() && args[0] == "--complete") {
@@ -534,7 +547,7 @@ int start(Client& client, const std::vector<std::string>& args)
     }
     const std::string& script = args[at];
     const bool known = std::any_of(commands->begin(), commands->end(), [&](const Command& c) { return c.script == script; });
-    if (!known) return client.fail("no script " + script + " with commands (afterglow run lists them)", UsageError);
+    if (!known) return client.fail("no script " + script + " with commands (" + environment.program + " lists them)", UsageError);
     if (!running) {
         const bool asked = at + 1 < args.size();
         writeAll(asked ? environment.output : environment.error, listing(*commands, script));
@@ -544,7 +557,8 @@ int start(Client& client, const std::vector<std::string>& args)
     const auto command = std::find_if(commands->begin(), commands->end(),
                                       [&](const Command& c) { return c.script == script && c.name == name; });
     if (command == commands->end()) {
-        return client.fail("no command " + name + " in " + script + " (afterglow run " + script + " --help lists them)", UsageError);
+        return client.fail("no command " + name + " in " + script + " (" + environment.program + " " + script + " --help lists them)",
+                           UsageError);
     }
     // Stdin only when it is not a terminal: typed at a prompt, the command
     // would wait for its input until Ctrl+D. A stdin that is no terminal and

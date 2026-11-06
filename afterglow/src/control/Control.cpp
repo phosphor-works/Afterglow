@@ -44,7 +44,7 @@ QString scriptReadRefusal(const Settings& settings, bool clientRun)
 {
     if (!settings.scriptsAllowReadText) return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
     if (clientRun && !settings.control.allowReadText)
-        return QStringLiteral("reading pane text for afterglow run is off (Control.allowReadText)");
+        return QStringLiteral("reading pane text for aglow run is off (Control.allowReadText)");
     return {};
 }
 } // namespace
@@ -585,7 +585,7 @@ QString Control::runAction(quint32 id, const QString& action)
         if (!Keybinds::isScriptTarget(action)) return QStringLiteral("a script command action is script:ID.COMMAND");
         const QString command = action.mid(Keybinds::ScriptPrefix.size());
         if (id && !find(id)) return noPane(id);
-        // As `afterglow run` does: a command also runs with no pane.
+        // As `aglow run` does: a command also runs with no pane.
         const quint32 pane = id ? id : focusedPane().value_or(0);
         return m_scriptCommands ? m_scriptCommands(command, pane, QStringLiteral("control")) : QStringLiteral("scripts are off");
     }

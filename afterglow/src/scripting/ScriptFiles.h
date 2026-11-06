@@ -19,7 +19,7 @@ inline bool validName(const QString& name)
 }
 
 /// Script and package ids, dependency names (the ids of packages) and
-/// command names: names that do not start with -, which `afterglow run`
+/// command names: names that do not start with -, which `aglow run`
 /// would read as an option.
 inline bool validScriptId(const QString& id)
 {

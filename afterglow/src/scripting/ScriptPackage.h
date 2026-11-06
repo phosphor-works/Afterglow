@@ -8,7 +8,7 @@
 #include <QStringList>
 
 namespace Afterglow {
-/// A command of a script: `afterglow run ID NAME`, a palette entry, a keybinding.
+/// A command of a script: `aglow run ID NAME`, a palette entry, a keybinding.
 struct ScriptCommand
 {
     QString script; ///< the script's id

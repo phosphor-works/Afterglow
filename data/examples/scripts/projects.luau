@@ -46,7 +46,7 @@ end
 
 function script.run_command(command, ev)
     if #ev.args > 0 then
-        return { afterglow.output_error(ev, "usage: afterglow run projects " .. command .. "\n"), afterglow.exit(ev, 2) }
+        return { afterglow.output_error(ev, "usage: aglow run projects " .. command .. "\n"), afterglow.exit(ev, 2) }
     end
     if string.sub(command, 1, #Prefix) == Prefix then
         return open(ev, string.sub(command, #Prefix + 1), {})

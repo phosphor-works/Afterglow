@@ -246,7 +246,7 @@ QString readCommand(const QString& name, const QVariantMap& fields, ScriptComman
 {
     out = {};
     out.name = name;
-    // Not from a dash: `afterglow run ID --help` must stay an option.
+    // Not from a dash: `aglow run ID --help` must stay an option.
     if (!validScriptId(name))
         return QStringLiteral("Command name %1 must be %2").arg(name.left(64), ScriptIdRule);
     for (auto it = fields.begin(); it != fields.end(); ++it) {

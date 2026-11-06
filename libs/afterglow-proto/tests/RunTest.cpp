@@ -335,7 +335,7 @@ TEST(RunClient, InputOverTheLimitIsAUsageError)
     EXPECT_FALSE(server.call());
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, Run::UsageError);
-    EXPECT_EQ(outcome.err, "afterglow run: Standard input is over 1 KiB (Scripts.commandStdinLimit)\n");
+    EXPECT_EQ(outcome.err, "aglow run: Standard input is over 1 KiB (Scripts.commandStdinLimit)\n");
 }
 
 TEST(RunClient, SendsAPartOfInputAsSoonAsItIsFull)
@@ -458,7 +458,7 @@ TEST(RunClient, PrintsTheTerminalsTextWithoutControlCharacters)
     server.error(*run, "CALL_FAILED", "bad \x1b[31mred\x07");
     const Outcome outcome = client.wait();
     EXPECT_EQ(outcome.status, 1);
-    EXPECT_EQ(outcome.err, "afterglow run: bad ?[31mred?\n");
+    EXPECT_EQ(outcome.err, "aglow run: bad ?[31mred?\n");
 }
 
 TEST(RunClient, AlignsTheListingByCharacters)

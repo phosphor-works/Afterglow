@@ -14,8 +14,6 @@
 #include "shell/Aglow.h"
 #include "shell/Ssh.h"
 
-#include <AfterglowProto/Run.h>
-
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCommandLineParser>
@@ -126,19 +124,6 @@ int main(int argc, char** argv)
     if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
         return Afterglow::Aglow::run(argc, argv);
     }
-    // afterglow run ...: a script command, its output and its exit status, no GUI.
-    if (argc >= 2 && std::strcmp(argv[1], "run") == 0) {
-        int signal = 0;
-        const int status = AfterglowProto::Run::main({argv + 2, argv + argc}, {}, &signal);
-        // A run that a signal ended ends by it, as the quit signals below do:
-        // a shell's loop of runs then stops at Ctrl+C. The status is for a
-        // signal that the process blocks.
-        if (signal != 0) {
-            std::signal(signal, SIG_DFL);
-            std::raise(signal);
-        }
-        return status;
-    }
     // afterglow ssh ...: ssh with the remote side prepared, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "ssh") == 0) {
         QByteArrayList args;
@@ -160,7 +145,6 @@ int main(int argc, char** argv)
         "A GPU accelerated terminal\n\n"
         "Commands that open no window:\n"
         "  afterglow ctl ...       Control a running Afterglow.\n"
-        "  afterglow run ...       Run a script command of a running Afterglow.\n"
         "  afterglow ssh ...       Run ssh with shell integration on the remote computer.\n");
     if (Afterglow::Aglow::built()) {
         for (const char* command : Afterglow::Aglow::Commands) {
@@ -312,7 +296,7 @@ int main(int argc, char** argv)
             QThread::msleep(10);
         }
         if (!shared.isEmpty() && !socket.listening()) {
-            qWarning("afterglow: cannot listen on a socket. afterglow ctl, afterglow run and new launches cannot reach this process");
+            qWarning("afterglow: cannot listen on a socket. afterglow ctl, aglow run and new launches cannot reach this process");
         }
 
         // From here a termination signal closes the windows and the socket,

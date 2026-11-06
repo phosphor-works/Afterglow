@@ -13,7 +13,7 @@ Installed examples are in `share/afterglow/examples/scripts`.
 Copy a `.luau` file into `scripts/` beside the active configuration file.
 The usual directory is `~/.config/afterglow/scripts/`.
 A script can handle terminal events and add [commands](#commands).
-Run a command with `afterglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
+Run a command with `aglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
 Set `Scripts.enabled=false` to disable scripting.
 See [packages](PACKAGES.md) for modules, dependencies and saved state.
 
@@ -424,7 +424,7 @@ script.metadata = {
 
 | Field | Rule |
 | --- | --- |
-| Command name | 1 to 64 characters: letters, digits, `_` and `-`. It must not start with `-`, because `afterglow run` reads that as an option |
+| Command name | 1 to 64 characters: letters, digits, `_` and `-`. It must not start with `-`, because `aglow run` reads that as an option |
 | `summary` | Required, not blank. At most 512 UTF-16 units |
 | `usage` | Optional. The arguments, for help. At most 512 UTF-16 units |
 | `palette` | Optional palette title, not blank, at most 512 UTF-16 units. Commands that have it appear in the palette and the context menu |
@@ -442,7 +442,7 @@ A script with commands must have a `run_command` function.
 
 | Source | How |
 | --- | --- |
-| `shell` | `afterglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#afterglow-run)) |
+| `shell` | `aglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#aglow-run)) |
 | `palette` | The command palette, for a command with `palette` |
 | `menu` | The Scripts submenu of the context menu, for a command with `palette` |
 | `key` | `script:<id>.<command>` in `Keybinds.bindings`, in a key table or in a key sequence (see [input](INPUT.md)) |
@@ -450,7 +450,7 @@ A script with commands must have a `run_command` function.
 
 The palette, a key, the menu and `afterglow ctl action` pass no arguments.
 The handler of a command with `palette` must work with `args` empty.
-`afterglow ctl action` starts the command and returns at once. `afterglow run` waits for the end of the run.
+`afterglow ctl action` starts the command and returns at once. `aglow run` waits for the end of the run.
 
 ### The handler
 
@@ -513,7 +513,7 @@ These notifications count against `Notifications.rateLimit` of the pane, or agai
 | Each part of the handler between waits | 100 ms. You cannot change it | The run ends with exit status 1 |
 | The total time of a run, `Scripts.commandTimeout` | Default 600,000 ms | The run ends with exit status 124 |
 | Runs of one script at once, `Scripts.commandRunLimit` | Default 16, at most 16 | A new run fails with exit status 1 and a message |
-| Stdin, `Scripts.commandStdinLimit` | Default 1,024 KiB. 0 refuses any stdin | The run does not start. `afterglow run` exits with status 2 |
+| Stdin, `Scripts.commandStdinLimit` | Default 1,024 KiB. 0 refuses any stdin | The run does not start. `aglow run` exits with status 2 |
 | UTF-8 bytes of stdout and stderr together, `Scripts.commandOutputLimit` | Default 16,384 KiB | The run ends with exit status 1 and a message |
 
 One command can have several runs at once.
@@ -524,7 +524,7 @@ A change to a limit applies to the runs that start after it.
 
 `Scripts.commandTimeout` counts all the time of a run.
 This includes a wait for a task, for a dialog, and for a client that reads its output slowly.
-It does not include the time that `afterglow run` sends stdin before the run starts.
+It does not include the time that `aglow run` sends stdin before the run starts.
 A client that reads its output slowly holds the run back.
 A wait for `afterglow.output` then takes longer. The output that waits counts toward `Scripts.commandOutputLimit`.
 
@@ -928,7 +928,7 @@ Reset does not reuse IDs. Retained positions follow text reflow.
 Set `Scripts.allowReadText=false` to deny these queries.
 While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all` and `show_last_output`.
 It controls terminal queries, not operating-system file or process access.
-A command run can have a client: `afterglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
+A command run can have a client: `aglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
 In the handler of such a run, these queries also need `Control.allowReadText`.
 The output of the command can take the text to a process outside the window (see [control](CONTROL.md)).
 Other handlers do not need `Control.allowReadText`.

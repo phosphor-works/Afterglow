@@ -15,7 +15,7 @@
 #include <vector>
 
 /// A small JSON reader and writer for the clients of the library, which have
-/// no Qt: the phosphor-ipc wire format of `afterglow run` (Ipc.h). Numbers are
+/// no Qt: the phosphor-ipc wire format of `aglow run` (Ipc.h). Numbers are
 /// doubles, as in JavaScript and QJsonValue: an integer past 2^53 loses its
 /// low bits. Objects keep their members in order.
 namespace AfterglowProto::Json {

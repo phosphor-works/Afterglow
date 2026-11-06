@@ -10,7 +10,7 @@
 #include <string_view>
 
 /// Where the afterglow socket is. The terminal listens there (InstanceSocket),
-/// and its clients (`afterglow ctl`, `afterglow run`) look it up here, so
+/// and its clients (`afterglow ctl`, `aglow run`) look it up here, so
 /// that all of them agree on the path.
 namespace AfterglowProto {
 

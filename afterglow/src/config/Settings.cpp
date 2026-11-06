@@ -575,12 +575,12 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
-         QStringLiteral("Allow other programs, such as afterglow ctl and afterglow run, to control Afterglow through its "
-                        "socket. The afterglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
+         QStringLiteral("Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its "
+                        "socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
                         "socket also when this is off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
          QStringLiteral("Allow control clients to read pane text, including scrollback, the commands that run and the "
-                        "values of user variables. A script command that runs for afterglow run reads pane text only "
+                        "values of user variables. A script command that runs for aglow run reads pane text only "
                         "when this setting and Scripts.allowReadText are both on.")},
         intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, 10000,
                QStringLiteral("Shortest time in milliseconds between two events of one kind for one pane, for titles, status, "
@@ -590,29 +590,29 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("allowReadText"), d.scriptsAllowReadText, QMetaType::Bool,
          QStringLiteral("Allow Luau scripts to read pane text, selections and semantic regions, and to run actions that "
-                        "read pane text. In a script command that runs for afterglow run, read_text, read_region and "
+                        "read pane text. In a script command that runs for aglow run, read_text, read_region and "
                         "semantic_regions also need Control.allowReadText.")},
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in "
-                        "each XDG data directory. The afterglow run command also needs Control.enabled.")},
+                        "each XDG data directory. The aglow run command also needs Control.enabled.")},
         intKey(QStringLiteral("commandTimeout"), d.scriptCommandTimeout, 1000, 3600000,
                QStringLiteral("Longest time in milliseconds that one run of a script command can take. This includes runs "
                               "from a key, a menu or the palette. The time that the run waits for a task, a dialog or a "
                               "slow reader of its output counts. The wait for standard input before the run starts does "
-                              "not count. At the limit the run ends, and afterglow run exits with status 124. A change "
+                              "not count. At the limit the run ends, and aglow run exits with status 124. A change "
                               "applies to the runs that start after it.")),
         // Kibibytes, as Terminal.lastOutputLimit: read() turns them into bytes.
         intKey(QStringLiteral("commandStdinLimit"), int(d.scriptCommandStdinLimit >> 10), 0, 4096,
-               QStringLiteral("Kibibytes of standard input that a script command can get from afterglow run. A run with "
-                              "more input fails, and afterglow run exits with status 2. A value of 0 refuses any input.")),
+               QStringLiteral("Kibibytes of standard input that a script command can get from aglow run. A run with "
+                              "more input fails, and aglow run exits with status 2. A value of 0 refuses any input.")),
         intKey(QStringLiteral("commandRunLimit"), d.scriptCommandRunLimit, 1, MaxCommandRuns,
                QStringLiteral("Runs of the commands of one script at the same time. A run over the limit fails, and "
-                              "afterglow run exits with status 1. Each run that waits uses one of the %1 waiting handlers "
+                              "aglow run exits with status 1. Each run that waits uses one of the %1 waiting handlers "
                               "of its script.")
                    .arg(MaxCommandRuns)),
         intKey(QStringLiteral("commandOutputLimit"), int(d.scriptCommandOutputLimit >> 10), 64, 262144,
                QStringLiteral("Kibibytes of UTF-8 text that one run of a script command can write to standard output and "
-                              "standard error together. A run that writes more ends, and afterglow run exits with status "
+                              "standard error together. A run that writes more ends, and aglow run exits with status "
                               "1. A run from a key, a menu or the palette counts only its standard error.")),
     };
     const AudioSettings& audio = d.audio;

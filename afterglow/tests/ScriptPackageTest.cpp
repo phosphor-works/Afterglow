@@ -45,7 +45,7 @@ TEST(ScriptPackage, BoundsSourcesAndRejectsEscapesAndIncompatibleVersions)
     PUT(dir.filePath("init.luau"), QByteArray(256 * 1024 + 1, ' '));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("byte limit"));
     PUT(dir.filePath("init.luau"), "return {}");
-    // An id that `afterglow run` would read as an option.
+    // An id that `aglow run` would read as an option.
     PUT(file, manifest({{"id", "-test"}}));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("Invalid manifest"));
     QTemporaryDir outside; PUT(outside.filePath("module.luau"), "return {}");

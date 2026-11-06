@@ -16,10 +16,10 @@ end
 function script.run_command(command, ev)
     if command ~= "split" then return nil end
     if #ev.args > 0 then
-        return { afterglow.output_error(ev, "usage: afterglow run create-and-title split\n"), afterglow.exit(ev, 2) }
+        return { afterglow.output_error(ev, "usage: aglow run create-and-title split\n"), afterglow.exit(ev, 2) }
     end
     if not ev.pane then return fail(ev, "There is no pane to split.") end
-    -- ev.cwd: the directory of `afterglow run`, or the pane's for the palette.
+    -- ev.cwd: the directory of `aglow run`, or the pane's for the palette.
     local created, err = afterglow.await(afterglow.split(ev.pane, "right", nil,
         {size=0.35, cwd=ev.cwd, env={AFTERGLOW_WORKSPACE="1"}}))
     if not created then return fail(ev, err.code .. ": " .. err.message) end

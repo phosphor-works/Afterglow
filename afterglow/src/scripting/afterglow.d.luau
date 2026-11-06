@@ -20,7 +20,7 @@
 -- Handlers run sandboxed with a short time limit and no direct access to files
 -- or processes. They return an effect, a list of effects, or nil, and can wait
 -- for an effect's result with afterglow.await. Commands run from the shell
--- (`afterglow run <id> <command>`), from the command palette and the context
+-- (`aglow run <id> <command>`), from the command palette and the context
 -- menu when they have a palette title, from a key as "script:<id>.<command>"
 -- (Keybinds.bindings, a key table or a key sequence), and from
 -- `afterglow ctl action script:<id>.<command>`.
@@ -259,7 +259,7 @@ declare afterglow: {
     -- Commands added at runtime, beside the manifest's, by name. Replaces the commands of the last set_commands.
     -- A name that the manifest has is refused.
     set_commands: (commands: {[string]: CommandSpec}) -> Effect,
-    -- To the stdout and stderr of `afterglow run`, within Scripts.commandOutputLimit. A run
+    -- To the stdout and stderr of `aglow run`, within Scripts.commandOutputLimit. A run
     -- with no client drops stdout and shows stderr in a notification.
     output: (run: string | CommandEvent, text: string) -> Effect,
     output_error: (run: string | CommandEvent, text: string) -> Effect,

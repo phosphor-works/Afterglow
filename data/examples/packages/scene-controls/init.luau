@@ -122,7 +122,7 @@ return {
  run_command=function(command,ev)
     local range=Arguments[command]
     if not range then return nil end
-    if #ev.args<range[1] or #ev.args>range[2] then return failure(ev,"usage: afterglow run scene-controls "..Usage[command],2) end
+    if #ev.args<range[1] or #ev.args>range[2] then return failure(ev,"usage: aglow run scene-controls "..Usage[command],2) end
     if command=="get" then return get(ev) end
     -- One change at a time: each change sends this package's whole layer, so
     -- two at once would each drop the value of the other.

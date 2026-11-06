@@ -27,7 +27,7 @@ class CommandSocket;
 class Control;
 class SettingsStore;
 
-/// The calls of the "commands" target: the client side is `afterglow run`
+/// The calls of the "commands" target: the client side is `aglow run`
 /// (AfterglowProto::Run). A run ID is the client's, and belongs to its
 /// connection.
 ///
@@ -118,7 +118,7 @@ public:
     /// that ends gives its share back before its client has read its lines,
     /// so the runs after it can pass 16 MiB for a client that reads slowly.
     /// The books of an ended run stay out: a client that forgot them would
-    /// stall its other runs, where now the router closes it. afterglow run
+    /// stall its other runs, where now the router closes it. aglow run
     /// has one run on its connection.
     static constexpr qint64 AckWindow = qint64(AfterglowProto::Run::AckWindowBytes);
     /// Output that waits for its clients, in all runs together: the UTF-16

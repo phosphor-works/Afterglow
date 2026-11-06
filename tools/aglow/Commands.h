@@ -14,6 +14,7 @@ int runTransfer(int argc, char** argv);
 int runDnd(int argc, char** argv);
 int runIcat(int argc, char** argv);
 int runClipboard(int argc, char** argv);
+int runRun(int argc, char** argv);
 
 /// $HOME, or "/" without it. No passwd lookup: a static binary has no NSS.
 std::string homeDirectory();

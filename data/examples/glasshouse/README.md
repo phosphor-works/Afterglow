@@ -34,15 +34,15 @@ Shell integration uses OSC 133.
 | Shell command completion after at least 20 seconds in an unfocused pane | Desktop notification. |
 
 The command palette includes the Glasshouse script commands `strike`, `glaze`, `ring` and `heat`.
-Run one with `afterglow run glasshouse strike`, or bind it with configuration such as:
+Run one with `aglow run glasshouse strike`, or bind it with configuration such as:
 
 ```json
 {"Keybinds": {"bindings": {"script:glasshouse.strike": "Ctrl+Alt+S"}}}
 ```
 
 `heat` warms the lamp until the next shell command in the pane completes.
-`afterglow run` is a shell command too, and its end cools the lamp of its own pane.
-Thus give another pane to `afterglow run glasshouse heat`, with `--pane N`.
+`aglow run` is a shell command too, and its end cools the lamp of its own pane.
+Thus give another pane to `aglow run glasshouse heat`, with `--pane N`.
 
 `afterglow ctl signal 0 1` triggers strike in the pane that runs `afterglow ctl`.
 Outside Afterglow, it triggers strike in the focused pane.

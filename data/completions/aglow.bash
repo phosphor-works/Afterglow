@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Bash completion for aglow: its commands, their options and the values of the options.
-# afterglow transfer, dnd, icat and clipboard use it too (afterglow.bash).
+# Script IDs and their commands come from the running Afterglow (aglow run --complete).
+# afterglow run, transfer, dnd, icat and clipboard use it too (afterglow.bash).
 
 # The options of a command, one entry each: the names, separated by "|",
 # then what the value is. No value: a flag. "-": text to type. "@files",
@@ -97,6 +98,83 @@ _aglow_value()
     esac
 }
 
+# The aglow whose run --complete lists the script commands, in $program: the
+# aglow that is being completed, or for afterglow run the aglow that afterglow
+# runs, in the directory of its executable with symbolic links resolved. The
+# word is as typed, quotes included: bash-completion 2.12 and later remove
+# them, without running a command substitution.
+_aglow_program()
+{
+    local REPLY
+    program=${words[0]}
+    declare -F _comp_dequote >/dev/null && _comp_dequote "$program" && program=${REPLY[0]}
+    [[ $program == "~/"* ]] && program=$HOME/${program#"~/"}
+    [[ ${program##*/} == aglow ]] && return 0
+    [[ $program == */* ]] || program=$(type -P -- "$program")
+    [[ $program ]] && program=$(readlink -f -- "$program") && [[ $program ]] || return 1
+    program=${program%/*}/aglow
+}
+
+# aglow run: options, then the script ID, then its command and the command's
+# own arguments.
+_aglow_run()
+{
+    local i word id="" command="" options=1 program
+    for ((i = 2; i < cword; i++)); do
+        word=${words[i]}
+        if [[ $options && -z $id ]]; then
+            case $word in
+            -n | --no-stdin) continue ;;
+            --pane)
+                # At the cursor: the pane number.
+                ((++i == cword)) && return
+                continue
+                ;;
+            --)
+                options=""
+                continue
+                ;;
+            # -h and --help only alone, and any other option is unknown.
+            -*) return ;;
+            esac
+        fi
+        if [[ -z $id ]]; then
+            id=$word
+        else
+            command=$word
+            break
+        fi
+    done
+    if [[ $command ]]; then
+        # The command's own arguments: files, most likely.
+        [[ $command == -h || $command == --help ]] || _aglow_files
+        return
+    fi
+    if [[ $options && -z $id && $cur == -* ]]; then
+        # --help only alone: after an option it would name a script. The
+        # other options once each.
+        ((cword == 2)) && _aglow_matching -h --help
+        local given=" ${words[*]:2:cword-2} "
+        [[ $given == *" -n "* || $given == *" --no-stdin "* ]] || _aglow_matching -n --no-stdin
+        [[ $given == *" --pane "* ]] || _aglow_matching --pane
+        return
+    fi
+    _aglow_program || return
+    # The names from Afterglow are matched as text: compgen -W would expand them.
+    if [[ $id ]]; then
+        local name
+        _aglow_matching --help
+        while IFS=$'\t' read -r name _; do
+            _aglow_matching "$name"
+        done < <("$program" run --complete "$id" 2>/dev/null)
+    else
+        local script
+        while IFS= read -r script; do
+            _aglow_matching "$script"
+        done < <("$program" run --complete 2>/dev/null)
+    fi
+}
+
 _aglow()
 {
     local cur prev words cword
@@ -115,15 +193,21 @@ _aglow()
         if [[ $cur == -* ]]; then
             _aglow_matching -h --help -v --version
         else
-            _aglow_matching transfer dnd icat clipboard help version
+            _aglow_matching transfer dnd icat clipboard run help version
         fi
         return
     fi
     local -a table
-    if [[ ${words[1]} == help ]]; then
-        ((cword == 2)) && _aglow_matching transfer dnd icat clipboard
+    case ${words[1]} in
+    help)
+        ((cword == 2)) && _aglow_matching transfer dnd icat clipboard run
         return
-    fi
+        ;;
+    run)
+        _aglow_run
+        return
+        ;;
+    esac
     _aglow_table "${words[1]}" || return
 
     # The words before the cursor: the options given, whether "--" ended them,

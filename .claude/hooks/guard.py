@@ -125,11 +125,12 @@ MSG_SUDO = 'Do not use sudo. The user installs system packages. Tell the user wh
 MSG_INSTALL = ('Never install the build (cmake --install, the install target). The user installs Afterglow. '
                'Only `cmake --install` into a temporary directory (--prefix /tmp/... or DESTDIR=/tmp/...) is allowed.')
 MSG_CTL = (
-    "`afterglow ctl` and `afterglow run` drive the user's running Afterglow: this session runs inside one of its "
-    "panes, and both use the pane's $AFTERGLOW_SOCKET, else the socket of the user's Wayland display. A private D-Bus "
-    'does not change that. Give them the socket of a test session (AFTERGLOW_SOCKET=/path/to/test.sock), or remove '
-    'the pane variables and point them at another display (env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID '
-    'WAYLAND_DISPLAY=...). Ask the user before you drive their instance.'
+    "`afterglow ctl`, `aglow run` and `afterglow run` drive the user's running Afterglow: this session runs inside "
+    "one of its panes, and they use the pane's $AFTERGLOW_SOCKET, else the socket of the user's Wayland display. A "
+    'private D-Bus does not change that. Give them the socket of a test session '
+    '(AFTERGLOW_SOCKET=/path/to/test.sock), or remove the pane variables and point them at another display '
+    '(env -u AFTERGLOW_SOCKET -u AFTERGLOW_PANE_ID WAYLAND_DISPLAY=...). Ask the user before you drive their '
+    'instance.'
 )
 
 
@@ -456,11 +457,12 @@ def ctl_socket_name(display, runtime):
 
 
 def isolated_ctl(wrappers):
-    """Whether one afterglow ctl or afterglow run command reaches a socket other than the user's. Its VAR=value and
-    env -u words apply in order over this environment, and both pick their socket as AfterglowProto::findSocket
-    does: AFTERGLOW_SOCKET, else the main socket of WAYLAND_DISPLAY in XDG_RUNTIME_DIR. Only literal values count:
-    an expansion, a brace, a glob or ~ can name the user's own socket. After 'inherit:?' the command runs in an
-    environment the guard cannot see, so each of those variables is unknown until a later word sets or unsets it."""
+    """Whether one afterglow ctl, aglow run or afterglow run command reaches a socket other than the user's. Its
+    VAR=value and env -u words apply in order over this environment, and each picks its socket as
+    AfterglowProto::findSocket does: AFTERGLOW_SOCKET, else the main socket of WAYLAND_DISPLAY in XDG_RUNTIME_DIR.
+    Only literal values count: an expansion, a brace, a glob or ~ can name the user's own socket. After
+    'inherit:?' the command runs in an environment the guard cannot see, so each of those variables is unknown until
+    a later word sets or unsets it."""
     env = dict(os.environ)
     for w in wrappers:
         if w == 'clear':
@@ -510,10 +512,10 @@ def isolated_ctl(wrappers):
     return True
 
 
-def drives_instance(args):
-    """Whether afterglow ARGS connects to a running Afterglow: ctl and run do, also run --complete. Their help
-    alone, as Ctl.cpp and Run.cpp read it, prints the usage and connects to nothing."""
-    if args[:1] not in (['ctl'], ['run']):
+def drives_instance(args, program='afterglow'):
+    """Whether PROGRAM ARGS connects to a running Afterglow: afterglow ctl, afterglow run and aglow run do, also
+    run --complete. Their help alone, as Ctl.cpp and Run.cpp read it, prints the usage and connects to nothing."""
+    if args[:1] not in ((['ctl'], ['run']) if program == 'afterglow' else (['run'],)):
         return False
     return args[1:2] not in (['-h'], ['--help'])
 
@@ -526,7 +528,8 @@ def argument_commands(wrappers, word, args):
     k = 0
     while k < len(args):
         name = os.path.basename(args[k])
-        if name in WRAPPERS or name in SHELLS or name in ('afterglow', 'eval', 'watch', 'gdb') or '=' in args[k]:
+        if (name in WRAPPERS or name in SHELLS or name in ('afterglow', 'aglow', 'eval', 'watch', 'gdb')
+                or '=' in args[k]):
             inner, name, rest = split_wrappers(args[k:])
             yield outer + inner, name, rest
             # Go on after the command word: its env and VAR=value words belong to it
@@ -560,11 +563,11 @@ def gdb_inferior(args):
 
 
 def gdb_drives(wrappers, args):
-    """Whether gdb ARGS runs an afterglow ctl or run that reaches the user's socket. A gdb command (-ex 'run ctl
-    list', set args) gives the program its arguments, and set environment changes its environment. A command file
-    can do either."""
+    """Whether gdb ARGS runs an afterglow ctl, afterglow run or aglow run that reaches the user's socket. A gdb
+    command (-ex 'run ctl list', set args) gives the program its arguments, and set environment changes its
+    environment. A command file can do either."""
     program, arguments, commands, files = gdb_inferior(args)
-    if program is None or os.path.basename(program) != 'afterglow':
+    if program is None or os.path.basename(program) not in ('afterglow', 'aglow'):
         return False
     extra = []
     for words in map(split_words, commands):
@@ -575,13 +578,13 @@ def gdb_drives(wrappers, args):
         elif words[:1] in (['set'], ['unset']) and words[1:2] and words[1].startswith('env'):
             extra = ['inherit:?']
     if files:
-        arguments, extra = ['ctl'], ['inherit:?']
-    return drives_instance(arguments) and not isolated_ctl(wrappers + extra)
+        arguments, extra = ['run'], ['inherit:?']
+    return drives_instance(arguments, os.path.basename(program)) and not isolated_ctl(wrappers + extra)
 
 
 def drives(wrappers, word, args):
-    if word == 'afterglow':
-        return drives_instance(args) and not isolated_ctl(wrappers)
+    if word in ('afterglow', 'aglow'):
+        return drives_instance(args, word) and not isolated_ctl(wrappers)
     return word == 'gdb' and gdb_drives(wrappers, args)
 
 

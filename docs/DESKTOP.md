@@ -175,6 +175,7 @@ Afterglow does not open or execute received files automatically.
 `aglow` is a client of four Kitty protocols.
 This document describes two of them, file transfer and drag and drop.
 The other two are graphics and the clipboard.
+`aglow run` also runs the commands of scripts (see [script commands](CONTROL.md#script-commands)).
 `aglow` is one static binary with no shared libraries.
 It runs on a Linux computer of its architecture whose kernel is as new as the static C library of the build host needs.
 On x86-64, the processor must also have the instruction level that the build needs.
@@ -189,8 +190,9 @@ The `kitten` client of Kitty also works with Afterglow.
 | `aglow dnd` | Drags files and data out of a pane, and receives drops |
 | `aglow icat` | Shows images in the pane |
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
+| `aglow run` | Runs a command of a script in the Afterglow on the same computer |
 
-`afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
+`afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
 When they cannot run it, they exit with one of these statuses, as a shell does:
 
 | Status | Cause |

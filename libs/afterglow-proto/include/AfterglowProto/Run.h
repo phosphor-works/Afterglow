@@ -11,10 +11,10 @@
 #include <string_view>
 #include <vector>
 
-/// The client of the "commands" socket target: `afterglow run`. It lists the
-/// commands of scripts, runs one, passes its output through and exits with
-/// its status. It finds the socket itself (findSocket), so a front end only
-/// passes its arguments on.
+/// The client of the "commands" socket target: `aglow run`, which `afterglow
+/// run` runs. It lists the commands of scripts, runs one, passes its output
+/// through and exits with its status. It finds the socket itself
+/// (findSocket), so a front end only passes its arguments on.
 namespace AfterglowProto::Run {
 
 inline constexpr const char* Target = "commands";
@@ -59,7 +59,7 @@ inline constexpr int BrokenPipe = 141; ///< stdout closed (SIGPIPE)
 /// What the client reads from its process. Tests give their own.
 struct Environment
 {
-    std::string program = "afterglow run"; ///< in messages
+    std::string program = "aglow run"; ///< in the usage and in messages
     EnvironmentLookup env = systemEnvironment; ///< for the socket and the pane
     std::string cwd; ///< empty: the working directory
     int input = 0; ///< stdin goes to a command only when this is not a terminal
@@ -67,7 +67,7 @@ struct Environment
     int error = 2;
 };
 
-/// Runs `afterglow run` with the arguments after "run". Returns the exit
+/// Runs `aglow run` with the arguments after "run". Returns the exit
 /// status. @p signal, when given, gets the signal that ended the run: SIGINT,
 /// SIGTERM, or SIGPIPE for a closed standard output, else 0. The caller then
 /// ends by that signal after its own cleanup, so that a shell sees it and a

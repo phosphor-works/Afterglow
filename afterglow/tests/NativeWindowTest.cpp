@@ -2149,7 +2149,7 @@ TEST_F(NativeWindow, ScriptQueriesAreBoundedAndRespectTextPolicy) {
     EXPECT_FALSE(blocked.readTextBounded(pane->id(),QStringLiteral("selection"),100,data,false).isEmpty());
     EXPECT_FALSE(blocked.semanticRegions(pane->id(),data,false).isEmpty());
     EXPECT_FALSE(blocked.readRegion(pane->id(),output,100,data,false).isEmpty());
-    // A run for afterglow run reads pane text only with Control.allowReadText too.
+    // A run for aglow run reads pane text only with Control.allowReadText too.
     SettingsStore local(directory.filePath(QStringLiteral("local.conf")),
         QJsonObject{{QStringLiteral("Scripts"),QJsonObject{{QStringLiteral("allowReadText"),true}}},
                     {QStringLiteral("Control"),QJsonObject{{QStringLiteral("allowReadText"),false}}}});

@@ -292,7 +292,7 @@ end
 function script.run_command(command,ev)
     if command~="toggle" then return nil end
     if #ev.args>0 then
-        return {afterglow.output_error(ev,"usage: afterglow run tab-line toggle\n"),afterglow.exit(ev,2)}
+        return {afterglow.output_error(ev,"usage: aglow run tab-line toggle\n"),afterglow.exit(ev,2)}
     end
     -- A failure goes to stderr. A run from the palette shows it as a notification.
     if toggling then return {afterglow.output_error(ev,"The tab line is changing already.\n"),afterglow.exit(ev,1)} end

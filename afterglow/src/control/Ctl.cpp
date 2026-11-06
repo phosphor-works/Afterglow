@@ -331,7 +331,7 @@ int runCtl(int argc, char** argv)
     // which a script command takes for the focused pane or none.
     auto targetPane = [&](bool focused) -> std::optional<qint64> {
         if (paneArg) {
-            // A pane ID as `afterglow run --pane` takes it: 0 names no pane.
+            // A pane ID as `aglow run --pane` takes it: 0 names no pane.
             bool ok = false;
             const uint id = paneArg->toUInt(&ok);
             if (!ok || id == 0 || paneArg->trimmed() != *paneArg) {

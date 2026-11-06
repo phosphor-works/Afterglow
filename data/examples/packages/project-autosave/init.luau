@@ -132,7 +132,7 @@ end
 function script.run_command(command,ev)
     if not Usage[command] then return nil end
     if #ev.args>(command=="save" and 1 or 0) then
-        return {afterglow.output_error(ev,"usage: afterglow run project-autosave "..Usage[command].."\n"),afterglow.exit(ev,2)}
+        return {afterglow.output_error(ev,"usage: aglow run project-autosave "..Usage[command].."\n"),afterglow.exit(ev,2)}
     end
     if command=="save" then return save(ev,ev.args[1]) end
     if command=="restore" then return restore(ev) end

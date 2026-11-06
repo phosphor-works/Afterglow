@@ -24,7 +24,7 @@ local function fail(ev, message)
     return {afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1)}
 end
 local function usage(ev, command)
-    return {afterglow.output_error(ev, "usage: afterglow run project-navigator " .. Usage[command] .. "\n"), afterglow.exit(ev, 2)}
+    return {afterglow.output_error(ev, "usage: aglow run project-navigator " .. Usage[command] .. "\n"), afterglow.exit(ev, 2)}
 end
 -- A message for the user: on stdout for a run from the shell, else a
 -- notification on the pane.
@@ -230,7 +230,7 @@ local function favorite(ev, current)
     if failed then return fail(ev, "History was not saved: " .. failed) end
     return notice(ev, message)
 end
--- A directory from the command line: relative to where afterglow run ran.
+-- A directory from the command line: relative to where aglow run ran.
 -- Returns nil and a message for a path that cannot be a directory.
 local function resolve(path, cwd)
     if path == "~" or string.sub(path, 1, 2) == "~/" then path = home .. string.sub(path, 2)

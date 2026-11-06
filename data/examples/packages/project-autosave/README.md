@@ -71,7 +71,7 @@ Use one application instance for each autosaved project.
 | `restore` | **Restore an autosaved project** | Opens the restore picker. |
 
 Bind a command as `script:project-autosave.save`, `script:project-autosave.enable` and so on.
-From a shell, run a command as `afterglow run project-autosave COMMAND`.
+From a shell, run a command as `aglow run project-autosave COMMAND`.
 The command acts on the window of the shell's pane.
 Only `save` takes an argument.
 

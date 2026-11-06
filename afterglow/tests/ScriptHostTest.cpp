@@ -255,7 +255,7 @@ TEST_F(ScriptHostTest, ManifestCommandsAreChecked)
     const QByteArray many = most + "extra = { summary = 'x' },";
     write(user, QStringLiteral("many.luau"), "return { metadata = { commands = {" + many + "} }," + handler);
     write(user, QStringLiteral("most.luau"), "return { metadata = { commands = {" + most + "} }," + handler);
-    // An id that `afterglow run` would read as an option.
+    // An id that `aglow run` would read as an option.
     write(user, QStringLiteral("-dash.luau"), "return {}");
     write(user, QStringLiteral("nohandler.luau"), "return { metadata = { commands = { go = { summary = 'x' } } } }");
     host->setEnabled(true);

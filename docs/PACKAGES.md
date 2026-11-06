@@ -68,7 +68,7 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
 ```
 
 The entry module must export `run_command(command, ev)`.
-`afterglow run <id>` lists the package's commands. `afterglow run <id> <command>` runs one.
+`aglow run <id>` lists the package's commands. `aglow run <id> <command>` runs one.
 
 ## Configuration and assets
 

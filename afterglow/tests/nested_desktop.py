@@ -82,7 +82,7 @@ def exit_on_sigterm():
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
 
 
-# A package for harnesses that read the scene and shader state of a pane. `afterglow run --pane N inspect read`
+# A package for harnesses that read the scene and shader state of a pane. `aglow run --pane N inspect read`
 # saves both in the package's state file and returns after the write.
 INSPECT_PACKAGE = {"id": "inspect", "version": "1.0.0", "api_version": 1, "state_version": 1, "entry": "main",
                    "modules": {"main": "init.luau"},
@@ -382,10 +382,12 @@ class NestedDesktop:
 
 
 class Session:
-    """One Afterglow application in a nested desktop, driven through `afterglow ctl` and `afterglow run`."""
+    """One Afterglow application in a nested desktop, driven through `afterglow ctl` and `aglow run`."""
 
     def __init__(self, binary, env, log_path):
         self.binary, self.env, self.log_path = binary, env, log_path
+        # The aglow of the same build, as `afterglow run` finds it.
+        self.aglow = str(Path(binary).resolve().parent / "aglow")
         self.log = log_path.open("w")
         self.app = None
         self.exit_code = None
@@ -440,9 +442,9 @@ class Session:
         return result.stderr
 
     def run(self, *args, check_status=True, timeout=20):
-        """Runs `afterglow run ARGS`, a script command, and returns its result.
+        """Runs `aglow run ARGS`, a script command, and returns its result.
         Its stdin is empty, so a command never waits for input."""
-        result = subprocess.run([self.binary, "run", *map(str, args)], env=self.env, input="",
+        result = subprocess.run([self.aglow, "run", *map(str, args)], env=self.env, input="",
                                 capture_output=True, text=True, timeout=timeout)
         if check_status:
             check(result.returncode == 0, f"run {args} exited {result.returncode}: {result.stderr}")
