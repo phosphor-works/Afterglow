@@ -37,7 +37,9 @@ namespace Afterglow {
 /// data directories and the bundled packs, and from loaded script packages'
 /// shaders/ directories as "<package>.<pack>". When two packs answer to one
 /// name, the user's wins over the system's, and the system's over the bundled
-/// (a build-tree binary puts the checkout's packs above the system's).
+/// (a build-tree binary puts the checkout's packs above the system's). A
+/// package pack answers only when it declares the id "<package>.<pack>", and
+/// never replaces a pack of the other directories.
 /// A pack compiles once and is cached until its files change; the config's
 /// parameter values are applied over a copy, so changing them does not
 /// compile it again.

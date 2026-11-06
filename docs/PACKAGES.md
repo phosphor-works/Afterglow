@@ -27,10 +27,23 @@ Afterglow checks the package paths against the directory that the symlink points
 }
 ```
 
-The manifest ID must equal the directory name.
-It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
-`version` uses the `X.Y.Z` format. `api_version` must be `1`.
+| Field | Rule |
+| --- | --- |
+| `id` | Required. 1 to 64 letters, digits, `_` and `-`. It must not start with `-`. The ID of an installed package must equal its directory name |
+| `version` | Required. `X.Y.Z`: three numbers of 1 to 6 digits, with no leading zero, such as `1.0.12` |
+| `api_version` | Required. `1` |
+| `state_version` | Optional. A whole number from 1 to 10,000. The default is 1 (see [state migration](#state-migration)) |
+| `entry` | Required. The name of the module that Afterglow loads first. It must be a key of `modules` |
+| `modules` | Required. Maps each module name to its file. A module name has 1 to 64 letters, digits, `_` and `-` |
+| `config` | Optional. An object of configuration values (see [configuration and assets](#configuration-and-assets)) |
+| `dependencies` | Optional. Maps each package ID to its `path` and its exact `version` |
+| `assets` | Optional. Maps each asset name to its file. An asset name has the rules of a module name |
+| `commands` | Optional. See [commands](#commands) |
+| `shaders`, `pulses` | Optional. See [shaders](#shaders) |
+
+A manifest that breaks a rule stops the package from loading. `afterglow ctl scripts` shows the error.
 Each module returns a table.
+The entry module can set `metadata.id`. It must then equal the manifest ID.
 `require("format")` loads the declared module once for each instance.
 `require("@utils")` loads the entry module of the included dependency.
 The dependency must have its own manifest, the ID `utils` and the exact declared version.
@@ -43,14 +56,17 @@ Cycles and undeclared imports cause an error.
 
 | Source limit | Value |
 | --- | --- |
-| Packages in one package tree | 16 |
-| Modules | 64 |
+| Packages in one package tree, the package itself included | 16 |
+| Modules in one package tree, the modules of dependencies included | 64 |
 | Each source file | 256 KiB |
 | Each JSON file: `package.json`, `config.json`, a pack's `metadata.json` | 64 KiB |
 | Total source, manifest and configuration data | 1 MiB |
 
 A package over a limit does not load. `afterglow ctl scripts` shows the error.
 An error in a module names the module file and its line.
+Each module must be complete Luau code by itself.
+Afterglow parses each module alone before it loads the package.
+Thus a syntax error names the module that contains it, as for a single-file script.
 
 ## Commands
 
@@ -68,7 +84,7 @@ A package declares its commands only in `package.json`. `metadata.commands` in a
 ```
 
 The entry module must export `run_command(command, ev)`.
-`aglow run <id>` lists the package's commands. `aglow run <id> <command>` runs one.
+`aglow run <id> --help` lists the package's commands. `aglow run <id> <command>` runs one.
 
 ## Configuration and assets
 
@@ -83,8 +99,11 @@ An optional `config.json` beside the manifest adds or replaces top-level `config
 Assets can be themes, shader presets or images.
 Limits are 32 local files, 4 MiB for each file and 16 MiB in total.
 Asset declarations supply paths. They do not activate a theme or shader.
-Paths and symlinks must remain inside the package root.
-This applies to modules, dependencies, assets, `config.json`, the shader directory, its `shared` directory, the pack directories and their `metadata.json` files.
+A path in a manifest is relative to the directory of that manifest.
+It cannot be absolute, and `..` cannot lead out of that directory.
+A dependency's paths thus stay inside the dependency's own directory.
+A symlink on a path must point inside the directory of the package that Afterglow loads, the top of the package tree.
+These rules apply to modules, dependencies, assets, `config.json`, the shader directory, its `shared` directory, the pack directories and their `metadata.json` files.
 Afterglow does not check the stages and includes that a shader pack reads.
 
 Afterglow monitors source files, dependency manifests and configuration together.
@@ -116,12 +135,12 @@ Read the current state before you merge changes and try again.
 | --- | --- |
 | Encoded size of the value | 255 KiB |
 | Nesting depth, the top-level object included | 16 |
-| Values, tables and the top-level object included | 8192 |
+| Values, tables and the top-level object included | 8,192 |
 | Each string | 65,536 characters |
 | Each object key | 256 characters |
 | Each number | Finite, magnitude at most 9,007,199,254,740,991 (2^53 − 1) |
 
-A `state_write` over a limit fails with `state_error` and writes nothing.
+A `state_write` over a limit fails with `invalid_effect` and writes nothing.
 The top-level value must be a JSON-compatible object table.
 Nested lists are permitted.
 Unsupported values, symlinks and corrupt files cause an error.
@@ -165,10 +184,16 @@ The name `none` is reserved.
 A pack's `metadata.json` must declare the ID `<package>.<pack>`, such as `my-extension.wall`.
 A symlinked pack must point inside the package, and passes the same checks.
 Configuration refers to the pack by that ID only.
-So a package cannot collide with another package or replace a bundled pack.
+So a package that loads cannot collide with another package or replace a bundled pack.
 
 The packs are available while the package is loaded.
 They reload when they change, and disappear when you remove or disable the package.
+Afterglow checks the pack rules again when a pack changes or a new pack directory appears.
+If a rule breaks, the package keeps its last working instance, and `afterglow ctl scripts` shows the error.
+A pack that does not declare the ID `<package>.<pack>` is then not available.
+A pack in a directory with a name that breaks the rules is also not available.
+A pack that declares the ID of a pack of another package can hide that pack until you correct the ID.
+A package pack never replaces a bundled pack, a system pack or one of your own packs, whatever ID it declares.
 A configuration that names a missing pack shows a notice, logs a warning and skips the pack, as for any pack.
 
 A package never changes the configuration file by itself.
@@ -179,7 +204,8 @@ It writes the one you select to the configuration file. A chain key gains the pa
 
 `pulses` names effect numbers from 4 to 255 that the package's packs draw.
 `afterglow.pulse(pane, "ripple")` then plays effect 4.
-A pulse name uses letters, digits, `_` and `-`. It cannot be only digits.
+A package names at most 32 pulses.
+A pulse name has 1 to 64 letters, digits, `_` and `-`. It cannot be only digits.
 The names `portal`, `flash` and `shake` are reserved.
 The [scripted overview](../data/examples/packages/scripted-overview/README.md) ships a key script and its own overview shader.
 

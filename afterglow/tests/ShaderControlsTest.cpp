@@ -827,3 +827,74 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
     library.setPackageShaders({});
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
 }
+
+// A package's packs are checked when the package loads, but the library loads
+// every pack in its shaders directory. A pack added or changed afterwards must
+// still be in a directory that the loader takes and declare its namespaced id,
+// and never shadows a bundled pack.
+TEST(ShaderLibraryPackages, APackagePackWithAnotherIdIsLeftOut)
+{
+    const QString source = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview/shaders/wall");
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString wall = tmp.filePath(QStringLiteral("shaders/wall"));
+    ASSERT_TRUE(QDir().mkpath(wall));
+    ASSERT_TRUE(QFile::copy(source + QStringLiteral("/effect.frag"), wall + QStringLiteral("/effect.frag")));
+    QFile metadata(source + QStringLiteral("/metadata.json"));
+    ASSERT_TRUE(metadata.open(QIODevice::ReadOnly));
+    const QByteArray original = metadata.readAll();
+    ASSERT_TRUE(original.contains("\"scripted-overview.wall\""));
+    const auto writeMetadata = [&](const QByteArray& bytes) {
+        QFile out(wall + QStringLiteral("/metadata.json"));
+        return out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(bytes) == bytes.size();
+    };
+    ShaderLibrary library;
+    auto build = [&](const QString& ref) {
+        ShaderLibrary::Refs refs;
+        refs.overview = ref;
+        return library.build(refs, {}).overview.size();
+    };
+    const QMap<QString, QString> packages{{QStringLiteral("scripted-overview"), tmp.filePath(QStringLiteral("shaders"))}};
+
+    // It claims the id of the bundled pane-deck pack.
+    QByteArray claimed = original;
+    claimed.replace("\"scripted-overview.wall\"", "\"pane-deck\"");
+    ASSERT_TRUE(writeMetadata(claimed));
+    library.setPackageShaders(packages);
+    EXPECT_FALSE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
+    EXPECT_EQ(build(QStringLiteral("pane-deck")), 1u);
+
+    // An id that no other pack declares: the registry keeps the pack, so only
+    // the check of the id that it declares can leave it out.
+    QByteArray unrelated = original;
+    unrelated.replace("\"scripted-overview.wall\"", "\"unrelated-id\"");
+    ASSERT_TRUE(writeMetadata(unrelated));
+    library.setPackageShaders({});
+    library.setPackageShaders(packages);
+    EXPECT_FALSE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
+    EXPECT_EQ(build(QStringLiteral("unrelated-id")), 0u);
+
+    // A directory that the package loader does not take as a pack, with the
+    // id that its name would give it.
+    const QString none = tmp.filePath(QStringLiteral("shaders/none"));
+    ASSERT_TRUE(QDir().mkpath(none));
+    ASSERT_TRUE(QFile::copy(source + QStringLiteral("/effect.frag"), none + QStringLiteral("/effect.frag")));
+    QByteArray reserved = original;
+    reserved.replace("\"scripted-overview.wall\"", "\"scripted-overview.none\"");
+    QFile noneMetadata(none + QStringLiteral("/metadata.json"));
+    ASSERT_TRUE(noneMetadata.open(QIODevice::WriteOnly) && noneMetadata.write(reserved) == reserved.size());
+    noneMetadata.close();
+    library.setPackageShaders({});
+    library.setPackageShaders(packages);
+    EXPECT_FALSE(library.packIds().contains(QStringLiteral("scripted-overview.none")));
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.none")), 0u);
+
+    // With its own id back, it answers again.
+    ASSERT_TRUE(writeMetadata(original));
+    library.setPackageShaders({});
+    library.setPackageShaders(packages);
+    EXPECT_TRUE(library.packIds().contains(QStringLiteral("scripted-overview.wall")));
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 1u);
+}

@@ -333,14 +333,18 @@ QString str(const QVariantMap& m, const char* key)
     return v.isValid() ? v.toString() : QString();
 }
 
-/// A command given as a string or a list of strings.
-QStringList command(const QVariant& v)
+/// A command given as a string or a list of strings: nothing for another
+/// value, which a conversion would turn into a program name such as "1" or "".
+std::optional<QStringList> command(const QVariant& v)
 {
     if (v.typeId() == QMetaType::QString) {
         return v.toString().isEmpty() ? QStringList{} : QStringList{v.toString()};
     }
+    const auto parts = luauArray(v);
+    if (!parts) return std::nullopt;
     QStringList out;
-    for (const QVariant& part : v.toList()) {
+    for (const QVariant& part : *parts) {
+        if (part.typeId() != QMetaType::QString) return std::nullopt;
         out.append(part.toString());
     }
     return out;
@@ -790,11 +794,26 @@ ScriptHost::ScriptPtr ScriptHost::load(const QString& path, const QByteArray& so
         return nullptr;
     }
     script->engine->sandbox();
+    // Each module of a package parses alone first. In the one chunk, a block
+    // that a module leaves open takes the end of its factory, so the parser
+    // reports it in a later module or at the end of the chunk, if at all.
+    // Alone, the error names the module's file and line, as for a single
+    // file. The prefix returns before the module's code, and shares its
+    // first line.
+    bool parsed = true;
+    for (qsizetype i = 0; package && parsed && i < package->modules.size(); ++i) {
+        const ScriptPackage::Module& module = package->modules[i];
+        const int checked = script->engine->loadModule(QStringLiteral("@") + module.file,
+                                                       "do return {} end " + package->source.mid(module.offset, module.size), &error);
+        parsed = checked >= 0;
+        script->engine->releaseModule(checked);
+    }
     // The prelude wraps the module so its handlers can await. The prefix shares
     // the first line, so error positions keep their line numbers.
-    script->module = script->engine->loadModule(chunk, "return afterglow.__wrap((function(...) " + source + "\nend)(...))", &error);
-    if (script->module < 0) {
-        if (package) error = ScriptPackage::locate(package->modules, error);
+    if (parsed)
+        script->module = script->engine->loadModule(chunk, "return afterglow.__wrap((function(...) " + source + "\nend)(...))", &error);
+    if (!parsed || script->module < 0) {
+        if (package && parsed) error = ScriptPackage::locate(package->modules, error);
         // A script's own error (its module code calls error()) can be of any length and hold anything.
         error = loggable(error, MaxLogCharacters);
         m_loadErrors[path] = error;
@@ -1014,7 +1033,7 @@ quint64 ScriptHost::startCommand(const CommandRequest& request, CommandSink sink
         ev.insert(QStringLiteral("pane"), pane);
     }
     ev.insert(QStringLiteral("cwd"), request.cwd.isEmpty() ? pane.value(QStringLiteral("cwd")).toString() : request.cwd);
-    // Whole: the client refuses a run with more than Scripts.commandStdinLimit.
+    // Whole: CommandSocket refuses a run with more than Scripts.commandStdinLimit.
     if (command->input && request.input) ev.insert(QStringLiteral("stdin"), *request.input);
     call(script, QStringLiteral("__command"), {id, request.command, ev}, CommandCallTimeoutMs, request.pane, handle);
     return handle;
@@ -1445,7 +1464,11 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
     if (forged) {
         error = QStringLiteral("Request IDs that start with %1 belong to afterglow.await").arg(AwaitPrefix);
     } else if (requestValue.isValid() && !validRequest) {
-        error = QStringLiteral("request_id must be a nonempty string of at most 64 characters");
+        // exec and read_file take their task name as the request ID: name what the script gave.
+        const bool task = (kind == QLatin1String("exec") || kind == QLatin1String("read_file"))
+            && requestValue == raw.value(QStringLiteral("name"));
+        error = task ? QStringLiteral("task name must contain 1 to 64 characters")
+                     : QStringLiteral("request_id must be a nonempty string of at most 64 characters");
     } else if (!info) {
         error = QStringLiteral("unknown effect \"%1\"").arg(kind);
     } else {
@@ -1466,7 +1489,9 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         }
         if (str(effect, "cwd").contains(QChar::Null)) error = QStringLiteral("cwd must be a string without NUL");
         if (info->command) {
-            effect.insert(QStringLiteral("command"), command(raw.value(QStringLiteral("command"))));
+            const auto argv = command(raw.value(QStringLiteral("command")));
+            if (!argv) error = QStringLiteral("command must be a string or a list of strings");
+            effect.insert(QStringLiteral("command"), argv.value_or(QStringList{}));
         }
         const bool launch = kind == QLatin1String("split") || kind == QLatin1String("new_tab")
             || kind == QLatin1String("new_window");
@@ -1523,7 +1548,8 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
         }
         if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
             const QVariant limit = raw.value(QStringLiteral("max_bytes"), 65536);
-            if (!integer(limit, 1, 1024 * 1024)) error = QStringLiteral("max_bytes must be a whole number from 1 to 1048576");
+            if (!integer(limit, 1, MaxReadTextBytes))
+                error = QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(MaxReadTextBytes);
             // The helpers' default, also for an effect built by hand.
             effect.insert(QStringLiteral("max_bytes"), limit.toDouble());
         }
