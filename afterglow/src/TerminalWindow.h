@@ -70,6 +70,11 @@ inline QString textPrefix(const QString& text, qsizetype limit)
     return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
 }
 
+/// How a popup overlay looks with @p settings: the theme's popup border
+/// colour for its border line (when @p border), the text colour for
+/// @p title, and Colors.popupDim over the pane around it.
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const QString& title);
+
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
 class TerminalWindow : public QWindow

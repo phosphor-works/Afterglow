@@ -29,6 +29,7 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
+#include <config/Theme.h>
 #include <scripting/OverlaySpec.h>
 #include <shaders/ShaderLibrary.h>
 
@@ -283,6 +284,8 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("overlay-border"), QStringLiteral("With --overlay: true or false for a border (default: one for a popup)."),
                       QStringLiteral("bool")});
     parser.addOption({QStringLiteral("overlay-title"), QStringLiteral("With --overlay: the title in a popup's border."), QStringLiteral("text")});
+    parser.addOption({QStringLiteral("popup-border"), QStringLiteral("With a popup: the color of its border (Colors.popupBorder). By default halfway from the popup's background to its text, as for a theme without one."),
+                      QStringLiteral("color")});
     parser.addOption({QStringLiteral("popup-dim"), QStringLiteral("With a popup: the opacity of the black layer over the pane around it (Colors.popupDim, default 0.35)."),
                       QStringLiteral("f"), QStringLiteral("0.35")});
     parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
@@ -808,15 +811,27 @@ int run(QGuiApplication& app)
             AfterglowRender::WindowRenderer::Pane::Overlay::Popup popup;
             popup.border = placement.border;
             popup.title = parser.value(QStringLiteral("overlay-title")).toStdString();
-            // The default divider colour and text colour of the window.
-            popup.borderColor = AfterglowRender::packRgba(0x3a, 0x3a, 0x42);
+            // A theme's fallback for the border, from the popup's own
+            // colours (OSC 10 and 11 in the text set them), and its text
+            // colour for the title.
+            auto rgbOf = [](std::uint32_t c) { return AfterglowVt::Rgb{std::uint8_t(c), std::uint8_t(c >> 8), std::uint8_t(c >> 16)}; };
+            popup.borderColor = AfterglowRender::packRgba(
+                Afterglow::Themes::derivedPopupBorder(rgbOf(overlaySnapshot.defaultBg), rgbOf(overlaySnapshot.defaultFg)));
+            if (parser.isSet(QStringLiteral("popup-border"))) {
+                const QColor border = QColor::fromString(parser.value(QStringLiteral("popup-border")));
+                if (!border.isValid()) {
+                    std::fprintf(stderr, "--popup-border must be a color\n");
+                    return 1;
+                }
+                popup.borderColor = AfterglowRender::packRgba(std::uint8_t(border.red()), std::uint8_t(border.green()), std::uint8_t(border.blue()));
+            }
             popup.titleColor = overlaySnapshot.defaultFg;
             popup.dim = dim;
             overlay.popup = std::move(popup);
         }
         panes.front().overlay = overlay;
     } else {
-        for (const char* option : {"overlay-progress", "overlay-width", "overlay-height", "overlay-position", "overlay-border", "overlay-title"}) {
+        for (const char* option : {"overlay-progress", "overlay-width", "overlay-height", "overlay-position", "overlay-border", "overlay-title", "popup-border"}) {
             if (!parser.isSet(QLatin1String(option))) continue;
             std::fprintf(stderr, "--%s needs --overlay\n", option);
             return 1;

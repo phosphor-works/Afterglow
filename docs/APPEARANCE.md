@@ -111,7 +111,9 @@ Qt Quick renders the controls separately from terminal cells.
 
 `Colors.theme` selects a theme. A theme replaces each color that it sets.
 Colors that it leaves out keep their `Colors` values.
-A theme without a divider color gets one between its background and text colors.
+A theme without a divider color gets one between its background and text colors, a fifth of the way from the background.
+A theme without a popup border color gets one halfway between its background and text colors.
+With a theme, `Colors.divider` and `Colors.popupBorder` are not used.
 
 Afterglow first searches `$XDG_CONFIG_HOME/afterglow/themes`.
 It then searches `afterglow/themes` in each XDG data directory, starting with `~/.local/share`.
@@ -151,7 +153,8 @@ Afterglow reads its `Foreground`, `Background`, `Color0` to `Color7` and `Color0
 The intense colors are palette entries 8 to 15.
 Afterglow has no counterpart for the faint and intense text colors, the wallpaper or the opacity of a Konsole color scheme.
 An Afterglow JSON theme is one object with color keys.
-The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground` and `divider`.
+The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeground`, `selectionBackground`, `divider` and `popupBorder`.
+A Ghostty or Kitty theme can also set `popup-border` or `popup_border`.
 `searchMatch`, `searchCurrentMatch`, `searchMatchText`, `visualBell`, `visualBellIntensity` and `palette` are also keys.
 Afterglow logs other keys in a JSON theme.
 A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
@@ -216,8 +219,9 @@ A [popup overlay](SCRIPTING.md#popups) takes a part of the pane, and the pane st
 | Setting | Default | Function |
 | --- | --- | --- |
 | `Colors.popupDim` | 0.35 | Opacity of a black layer over the pane around a popup, from 0 to 1. A value of 0 keeps the pane as it is. |
+| `Colors.popupBorder` | `#7a7a7a` | Color of the popup's border line. A theme replaces it, as described in [Themes](#themes). |
 
-The popup's border uses the theme's divider color, the same as `Colors.divider`. The title in the border uses the text color.
+The title in the border uses the text color.
 
 See [shaders](SHADERS.md) for audio, history and visual effects.
 See [bidirectional text](BIDI.md) for text direction settings.

@@ -433,7 +433,7 @@ end
 | `title` | Shows as the pane's title while the overlay runs, at most 512 characters. A border shows it in its top edge. |
 | `width`, `height` | Make the overlay a popup. Give a number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without both, the overlay takes the whole pane. |
 | `position` | Where a popup is in the pane: `"center"` (the default), `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"` or `"bottom-right"`. |
-| `border` | `true` puts a line one cell wide around the overlay, in the theme's divider color, with the title in its top edge. The default is `true` for a popup and `false` for a full-pane overlay. |
+| `border` | `true` puts a line one cell wide around the overlay, in the theme's popup border color (`Colors.popupBorder`), with the title in its top edge. The default is `true` for a popup and `false` for a full-pane overlay. |
 
 ### Popups
 

@@ -262,19 +262,23 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
 void TerminalWindow::preparePopup(const OverlaySpec::Placement& placement, const QString& title, QPoint origin,
                                   AfterglowRender::WindowRenderer::Pane::Overlay& shown) const
 {
-    const Settings& settings = m_settings.settings();
     const auto& m = m_renderer->fonts().fonts->metrics();
     const QRect grid = placement.grid;
     shown.params.contentOrigin = origin + QPoint(grid.x() * m.cellWidth, grid.y() * m.cellHeight);
     shown.params.rect = QRect(shown.params.contentOrigin, QSize(grid.width() * m.cellWidth, grid.height() * m.cellHeight));
+    shown.popup = popupLook(m_settings.settings(), placement.border, title);
+}
+
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const QString& title)
+{
     AfterglowRender::WindowRenderer::Pane::Overlay::Popup popup;
-    popup.border = placement.border;
+    popup.border = border;
     popup.title = title.toStdString();
-    // The theme's: the dividers' colour for the line, the text's for the title.
-    popup.borderColor = settings.window.dividerColor;
+    // The theme's: its popup border for the line, its text for the title.
+    popup.borderColor = settings.window.popupBorderColor;
     popup.titleColor = AfterglowRender::packRgba(settings.terminal.defaultForeground);
     popup.dim = float(settings.window.popupDim);
-    shown.popup = std::move(popup);
+    return popup;
 }
 
 } // namespace Afterglow
