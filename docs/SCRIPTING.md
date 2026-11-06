@@ -13,7 +13,7 @@ Installed examples are in `share/afterglow/examples/scripts`.
 Copy a `.luau` file into `scripts/` beside the active configuration file.
 The usual directory is `~/.config/afterglow/scripts/`.
 A script can handle terminal events and add [commands](#commands).
-Run a command with `afterglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
+Run a command with `aglow run <id> <command>`, from the command palette, from the context menu, with a key or with `afterglow ctl action`.
 Set `Scripts.enabled=false` to disable scripting.
 See [packages](PACKAGES.md) for modules, dependencies and saved state.
 
@@ -22,7 +22,8 @@ Files that end in `.d.luau` are type declarations. Afterglow does not load them.
 
 The script ID is `metadata.id`, or the file name without `.luau`.
 It has 1 to 64 letters, digits, `_` and `-`, and must not start with `-`.
-A script with another ID does not load. `afterglow ctl scripts` shows the error.
+A script with an ID that breaks this rule does not load. `afterglow ctl scripts` shows the error.
+`metadata.name` is the name that `afterglow ctl scripts` shows. The default is the script ID.
 Afterglow also reads `afterglow/scripts` in each system data directory, such as `/usr/share/afterglow/scripts`.
 The directories have this priority, from low to high:
 
@@ -95,7 +96,7 @@ Awaited results count toward the result limits.
 Exception: the result of an `afterglow.output` or `afterglow.output_error` with text to a run with a client is not counted each second (see [command limits](#command-limits)).
 Replacement, removal or disable discards waiting handlers. They do not continue.
 
-The [shell-region picker](../data/examples/scripts/semantic-regions.luau) waits for three results in one command.
+The [shell-region picker](../data/examples/scripts/semantic-regions.luau) waits for four results in one command.
 The [project navigator](../data/examples/packages/project-navigator/init.luau) runs its project searches together with `await_all`.
 
 ## Effects and results
@@ -184,6 +185,7 @@ An effect with a malformed request ID is refused and not applied. It receives no
 | Other event handler calls (see the notes) | 64 each second | Afterglow drops the call |
 | Effects in one returned list | 64 | No effect applies |
 | Values in a returned table, nested tables included | 262,144 | The call fails. A handler that waits for these effects stops |
+| Text in a returned table, each use of a string counted again | 64 MiB | The call fails. A handler that waits for these effects stops |
 | Applied effects | 20 each second | `rate_limited` |
 | Applied `dock` effects | 60 each second | `rate_limited` |
 | Structural effects | 3 each 10 seconds | `rate_limited` |
@@ -205,8 +207,10 @@ So the results of the effects that those two limits let through cannot disable a
 Requested `sleep`, `cancel`, `end_key_mode`, `undock`, `output`, `output_error` and `exit` effects are outside both limits, and their results add to the count.
 The result of an `output` or `output_error` with text, to a run with a client, is not counted each second. `Scripts.commandOutputLimit` and `Scripts.commandTimeout` bound it.
 An `output` with empty text writes nothing, so its result counts. A run with no client drops its stdout at once, so the result of its output counts too.
-Thus a command from the palette, a key or the menu that waits for each of more than 128 lines in a second is disabled.
-Wait for each line only when `ev.source` is `shell` or `control`.
+A run from the palette, a key, the menu or `afterglow ctl action` has no client.
+Thus such a run that waits for each of more than 128 lines in a second disables its script.
+Wait for each line only when `ev.source` is `shell`.
+Do not wait for each line when `ev.source` is `control`, because `afterglow ctl action` also starts runs with that source.
 `on_load`, `on_key`, `on_dock_click`, `on_dock_hover` and `on_dock_layout` calls do not count toward a handler call limit.
 `run_command` calls do not count either. The [command limits](#command-limits) bound them.
 The `start`, `end` and `cancel` calls of `on_dock_drag` do not count either.
@@ -269,6 +273,7 @@ Use these IDs to update surviving panes in the affected tab.
 
 `afterglow.panes(state, scope, anchor)` filters an existing snapshot.
 Scope is `all`, `pane`, `tab` or `window`. The default is `all`.
+Another scope causes an error in the handler.
 The anchor can be a pane record or ID.
 Without an anchor, the helper uses the globally active objects.
 A missing anchor ID gives no matches, in every scope.
@@ -354,6 +359,8 @@ Relative `PATH` entries start from the process working directory.
 A command that is not found gives `spawn_failed`.
 `argv` has 1 to 64 arguments of at most 4,096 characters each.
 `argv` can also be a string. The string is then the program alone, with no arguments. Afterglow does not split it at spaces and does not use a shell.
+Each entry of the `argv` list must be a string. Another value, such as a number, refuses the effect with `invalid_effect`.
+A task name that is not a string of 1 to 64 characters also refuses the effect with `invalid_effect`.
 File reads accept the timeout and byte-limit options.
 Timeout defaults to 30,000 ms and cannot exceed 600,000 ms.
 The output limit defaults to 65,536 bytes and cannot exceed 1 MiB.
@@ -375,6 +382,7 @@ Afterglow discards callbacks for retired instances.
 Wait for the result of `select(pane, title, items)` or `prompt(pane, title, initial_text?)` with `afterglow.await`.
 You can also wrap the effect with `afterglow.request`.
 Selectors accept 1 to 500 unique `{id, title}` items and provide fuzzy filtering.
+An item without a `title` shows its `id`.
 Selection results contain `id` and `title`. Prompt results contain `text`.
 Escape, pane closure or window closure cancels a dialog.
 A second dialog in the same window returns `busy`.
@@ -498,7 +506,7 @@ script.metadata = {
 
 | Field | Rule |
 | --- | --- |
-| Command name | 1 to 64 characters: letters, digits, `_` and `-`. It must not start with `-`, because `afterglow run` reads that as an option |
+| Command name | 1 to 64 characters: letters, digits, `_` and `-`. It must not start with `-`, because `aglow run` reads that as an option |
 | `summary` | Required, not blank. At most 512 UTF-16 units |
 | `usage` | Optional. The arguments, for help. At most 512 UTF-16 units |
 | `palette` | Optional palette title, not blank, at most 512 UTF-16 units. Commands that have it appear in the palette and the context menu |
@@ -506,6 +514,8 @@ script.metadata = {
 | Commands of a script | At most 64, with those of `set_commands` |
 
 `summary`, `usage` and `palette` must not contain control characters, such as a line break or a tab.
+They also must not contain the line separator (U+2028), the paragraph separator (U+2029) or a bidirectional control.
+The bidirectional controls are U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069.
 The command palette shows `<id>: <palette>`, for example `marker: Mark this pane`.
 The Scripts submenu of the context menu shows the `palette` title alone.
 
@@ -516,7 +526,7 @@ A script with commands must have a `run_command` function.
 
 | Source | How |
 | --- | --- |
-| `shell` | `afterglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#afterglow-run)) |
+| `shell` | `aglow run <id> <command> [ARGS…]` (see [control](CONTROL.md#aglow-run)) |
 | `palette` | The command palette, for a command with `palette` |
 | `menu` | The Scripts submenu of the context menu, for a command with `palette` |
 | `key` | `script:<id>.<command>` in `Keybinds.bindings`, in a key table or in a key sequence (see [input](INPUT.md)) |
@@ -524,7 +534,7 @@ A script with commands must have a `run_command` function.
 
 The palette, a key, the menu and `afterglow ctl action` pass no arguments.
 The handler of a command with `palette` must work with `args` empty.
-`afterglow ctl action` starts the command and returns at once. `afterglow run` waits for the end of the run.
+`afterglow ctl action` starts the command and returns at once. `aglow run` waits for the end of the run.
 
 ### The handler
 
@@ -535,7 +545,7 @@ The handler of a command with `palette` must work with `args` empty.
 | `args` | List of strings, at most 256, each at most 4,096 UTF-16 units |
 | `cwd` | The client's directory. Else the pane's directory. Else an empty string, for a run with neither |
 | `pane` | For a shell run: `--pane N`, else the pane that runs the shell, else the focused pane. For `control`, the pane that `afterglow ctl` names, else the focused pane. For other sources, the pane of the palette, key or menu. Only `{ id }` when the pane closed before the run started. `nil` when there is no pane |
-| `stdin` | All of the client's stdin as one string, for a command with `stdin = true` that runs from the shell. Else `nil`. A run with more stdin than `Scripts.commandStdinLimit` does not start |
+| `stdin` | All of the client's stdin as one string, for a command with `stdin = true` that runs from the shell. `nil` for another source. `nil` also when `aglow run` reads no stdin: with `-n`, or when stdin is a terminal. A run with more stdin than `Scripts.commandStdinLimit` does not start. `aglow run` refuses stdin that is not UTF-8 text and exits with status 2 |
 | `source` | `"shell"`, `"palette"`, `"key"`, `"menu"` or `"control"` |
 | `run` | The run ID, for the output effects |
 | `terminal` | The terminal snapshot |
@@ -585,10 +595,10 @@ These notifications count against `Notifications.rateLimit` of the pane, or agai
 | Limit | Value | Past the limit |
 | --- | --- | --- |
 | Each part of the handler between waits | 100 ms. You cannot change it | The run ends with exit status 1 |
-| The total time of a run, `Scripts.commandTimeout` | Default 600,000 ms | The run ends with exit status 124 |
-| Runs of one script at once, `Scripts.commandRunLimit` | Default 16, at most 16 | A new run fails with exit status 1 and a message |
-| Stdin, `Scripts.commandStdinLimit` | Default 1,024 KiB. 0 refuses any stdin | The run does not start. `afterglow run` exits with status 2 |
-| UTF-8 bytes of stdout and stderr together, `Scripts.commandOutputLimit` | Default 16,384 KiB | The run ends with exit status 1 and a message |
+| The total time of a run, `Scripts.commandTimeout` | 1,000 to 3,600,000 ms. Default 600,000 ms | The run ends with exit status 124 |
+| Runs of one script at once, `Scripts.commandRunLimit` | 1 to 16. Default 16 | A new run fails with exit status 1 and a message |
+| Stdin, `Scripts.commandStdinLimit` | 0 to 4,096 KiB. Default 1,024 KiB. 0 refuses any input that is not empty | The run does not start. `aglow run` exits with status 2 |
+| UTF-8 bytes of stdout and stderr together, `Scripts.commandOutputLimit` | 64 to 262,144 KiB. Default 16,384 KiB | The run ends with exit status 1 and a message |
 
 One command can have several runs at once.
 The runs of one script share its 16 waiting handlers, 48 awaited effects, 16 sleeps and 16 tasks (see [execution limits](#execution-limits)).
@@ -598,7 +608,7 @@ A change to a limit applies to the runs that start after it.
 
 `Scripts.commandTimeout` counts all the time of a run.
 This includes a wait for a task, for a dialog, and for a client that reads its output slowly.
-It does not include the time that `afterglow run` sends stdin before the run starts.
+It does not include the time that `aglow run` sends stdin before the run starts.
 A client that reads its output slowly holds the run back.
 A wait for `afterglow.output` then takes longer. The output that waits counts toward `Scripts.commandOutputLimit`.
 
@@ -618,6 +628,9 @@ A result that was not delivered before the run ended does not resume the handler
 
 The handler can then clean up, for example clear a busy flag after a `pcall`.
 This part has the 100 ms limit of each part of a command.
+The cleanup can wait again. Each later part also has the 100 ms limit.
+`Scripts.commandTimeout` does not stop the cleanup, because the run has ended.
+Its waits count toward the 16 waiting handlers of the script until the handler returns.
 Its `afterglow.output`, `afterglow.output_error` and `afterglow.exit` go nowhere, because the client has its exit status already. They are not errors.
 Its other effects apply as usual.
 An error in this part is not a handler failure. It ends the script's key mode, as every handler error does.
@@ -935,6 +948,7 @@ The bundled Pane Effects pack draws these effects:
 | `shake` | 3 | The pane shakes |
 
 Numbers from 4 to 255 select effects that other packs define. Give an effect as its name, or as a number or a numeric string.
+A `pulse` without an effect causes an error in the handler.
 `options.duration_ms` sets the time, from 50 to 10,000 ms. The default is 600 ms.
 `options.color` is a palette index from 0 to 255. The default is 4.
 A new pulse on the same pane replaces the old one.
@@ -944,7 +958,13 @@ The [pulse example](../data/examples/scripts/pane-pulses.luau) flashes failed co
 
 `split`, `new_tab` and `new_window` accept a final `LaunchOptions` table.
 `cwd` sets the working directory.
+`cwd` in the options takes priority over the `cwd` argument of `new_tab` and `new_window`.
+A `cwd` of `~` or one that starts with `~/` starts in your home directory.
+Another `cwd` must be an existing absolute directory.
 Without `cwd`, `split(pane)` and `new_tab(pane)` start in the directory of `pane`, as the `Window.workingDirectory` setting permits.
+The command is a program name, or a list of the program and its arguments.
+Each entry must be a string. Another value refuses the effect with `invalid_effect`.
+Without a command, or with an empty string, the pane starts the default shell.
 The tab of `new_tab(pane)` opens after the tab of `pane`.
 `env` changes inherited environment variables.
 `size` sets the new split fraction, greater than zero and less than one.
@@ -1002,7 +1022,7 @@ Reset does not reuse IDs. Retained positions follow text reflow.
 Set `Scripts.allowReadText=false` to deny these queries.
 While it is `false`, `afterglow.action` also fails for `copy`, `paste`, `select_all` and `show_last_output`.
 It controls terminal queries, not operating-system file or process access.
-A command run can have a client: `afterglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
+A command run can have a client: `aglow run`, or a `SCRIPT.COMMAND` call of the `commands` target.
 In the handler of such a run, these queries also need `Control.allowReadText`.
 The output of the command can take the text to a process outside the window (see [control](CONTROL.md)).
 Other handlers do not need `Control.allowReadText`.
@@ -1013,7 +1033,8 @@ The [creation example](../data/examples/scripts/create-and-title.luau) uses laun
 
 ## Diagnostics
 
-`afterglow ctl scripts` reports `id`, `name`, `path`, `version`, `status`, `calls`, `handler_errors`, `effect_errors` and `last_error`.
+`afterglow ctl scripts` reports `id`, `name`, `path`, `version`, `status`, `error`, `calls`, `handler_errors`, `effect_errors` and `last_error`.
+`error` is the load error of a `failed` or `last-good` script, or why a script is `superseded`. Else it is empty.
 `version` is the package version. A single-file script has none.
 `status` is `active`, `disabled`, `last-good`, `failed` or `superseded`.
 An error in a package module names the module file and its line.
@@ -1062,7 +1083,7 @@ The [typed declarations](../afterglow/src/scripting/afterglow.d.luau) give the s
 | `afterglow.output` | `(run: string \| CommandEvent, text: string) -> Effect` |
 | `afterglow.output_error` | `(run: string \| CommandEvent, text: string) -> Effect` |
 | `afterglow.exit` | `(run: string \| CommandEvent, code: number) -> Effect` |
-| `afterglow.select` | `(pane: PaneRef, title: string, items: { { id: string, title: string } }) -> Effect` |
+| `afterglow.select` | `(pane: PaneRef, title: string, items: { { id: string, title: string? } }) -> Effect` |
 | `afterglow.prompt` | `(pane: PaneRef, title: string, text: string?) -> Effect` |
 | `afterglow.overlay` | `(pane: PaneRef, command: string \| { string }, options: OverlayOptions?) -> Effect` |
 | `afterglow.status` | `(pane: PaneRef, text: string?, tab_title: string?) -> Effect` |

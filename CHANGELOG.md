@@ -79,9 +79,10 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
 - Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
-- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. It takes the options of `kitten`, with a few differences that the compatibility document lists.
-- `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. Its `transfer`, `dnd`, `icat` and `clipboard` commands take the options of `kitten`, with a few differences that the compatibility document lists. `aglow run` runs the commands of scripts in the Afterglow on the same computer.
+- `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - Shell completion of `aglow` for Bash, Zsh and Fish.
+- `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow`, its completions and its license notices.
 
 ### Windows, tabs and panes
 
@@ -140,15 +141,15 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Script control of the pane overview, pane pulses, `on_tab_switch`, and split origins in `on_pane_created`.
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
-- `afterglow run ID COMMAND` runs a command from a shell with its arguments, output and exit status. A command that asks for standard input gets it when standard input is not a terminal. The palette, the context menu, keys and `afterglow ctl action` run commands too. The palette shows a command as `ID: TITLE`. A held key runs a command once.
-- `Scripts.commandTimeout` limits the time of a run. `Scripts.commandRunLimit` limits the runs of one script at a time, from 1 to 16. `Scripts.commandStdinLimit` and `Scripts.commandOutputLimit` limit their standard input and output, in KiB. Standard input over its limit is never cut. `afterglow run` refuses the run with exit status 2.
-- An interrupt or `SIGTERM` cancels the run, and `afterglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
-- A command that `afterglow run` starts reads pane text only when `Control.allowReadText` is on.
-- `afterglow ctl action` and `afterglow.action` are refused while a prompt or a script dialog is open.
+- `aglow run ID COMMAND` runs a command from a shell with its arguments, output and exit status. A command that asks for standard input gets it when standard input is not a terminal. The palette, the context menu, keys and `afterglow ctl action` run commands too. The palette shows a command as `ID: TITLE`. A held key runs a command once.
+- `Scripts.commandTimeout` limits the time of a run. `Scripts.commandRunLimit` limits the runs of one script at a time, from 1 to 16. `Scripts.commandStdinLimit` and `Scripts.commandOutputLimit` limit their standard input and output, in KiB. Standard input over its limit is never cut. `aglow run` refuses the run with exit status 2, as it does for standard input that is not UTF-8 text.
+- An interrupt or `SIGTERM` cancels the run, and `aglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
+- A script command that runs for a client, such as `aglow run`, reads pane text only when `Control.allowReadText` and `Scripts.allowReadText` are on.
+- A keybind action from `afterglow ctl action` or `afterglow.action` is refused while a prompt or a script dialog is open.
 - Overlays: `afterglow.overlay` runs a program, such as fzf, over a pane with the input focus, and returns its exit status and its output to the script. The program can read a list on stdin, draw on the terminal and answer on stdout or in the file that `AFTERGLOW_RESULT` names. The overlay fades in and out through the `Shaders.overlayTransition` pack, Overlay Fade by default, which blends the pane and the program with the pane's shaders on both. `Animation.overlayCurve` and `Animation.overlayDuration` time it. It closes, and its program gets `SIGHUP`, when its pane closes or the command run that waits for it ends.
 - `afterglow ctl overlay -- CMD` runs a program over the pane from a shell script, with the `overlay` call of the control socket. It prints the program's output and exits with its status.
 - The fzf picker example package picks a saved project or a file with fzf in an overlay, or with the select dialog when fzf is not installed.
-- Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The Fish completion needs Fish 4 or later.
+- Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.
 
@@ -193,4 +194,5 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 - [Supported protocols and limits](docs/COMPATIBILITY.md).
 - [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
 - [Bidirectional text](docs/BIDI.md) for the application-grid policy.
+- [External control](docs/CONTROL.md) for `afterglow ctl`, the control socket and script commands from a shell.
 - [Testing](docs/TESTING.md) for regression and native desktop test procedures.

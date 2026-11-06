@@ -10,7 +10,7 @@ return {
     } },
     run_command = function(command, ev)
         if #ev.args > 0 then
-            return { afterglow.output_error(ev, "usage: afterglow run shader-parameters " .. command .. "\n"), afterglow.exit(ev, 2) }
+            return { afterglow.output_error(ev, "usage: aglow run shader-parameters " .. command .. "\n"), afterglow.exit(ev, 2) }
         end
         if not ev.pane then return fail(ev, "There is no pane to change.") end
         local active, err = afterglow.await(afterglow.shaders(ev.pane))
@@ -19,7 +19,10 @@ return {
             if shader.shader == "bloom" then
                 local scope = shader.layer == "window" and "window" or "tab"
                 local values = command == "boost" and { strength = 1.2, radius = 10 } or {}
-                return afterglow.shader_parameters(ev.pane, shader.instance, values, scope)
+                -- Waited for, so that refused values fail the run.
+                local _, changeError = afterglow.await(afterglow.shader_parameters(ev.pane, shader.instance, values, scope))
+                if changeError then return fail(ev, changeError.message) end
+                return nil
             end
         end
         return fail(ev, "Enable bloom in a shader chain first.")

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../config/Settings.h"
 #include "../scripting/ScriptHost.h"
 
 #include <AfterglowProto/Run.h>
@@ -25,9 +26,8 @@ namespace Afterglow {
 
 class CommandSocket;
 class Control;
-class SettingsStore;
 
-/// The calls of the "commands" target: the client side is `afterglow run`
+/// The calls of the "commands" target: the client side is `aglow run`
 /// (AfterglowProto::Run). A run ID is the client's, and belongs to its
 /// connection.
 ///
@@ -51,8 +51,9 @@ public:
     Q_INVOKABLE bool input(const QString& run, const QString& chunk, bool eof);
     /// Starts @p script's @p command. The reply, deferred until the run ends
     /// and its output has gone, is {exit}. A script or command that does not
-    /// exist fails with NO_SUCH_COMMAND. @p pane 0 is the focused pane, and
-    /// @p cwd is empty (the pane's directory) or absolute.
+    /// exist fails with NO_SUCH_COMMAND. @p pane 0 is the focused pane, or
+    /// no pane when none has the focus. @p cwd is empty (the pane's
+    /// directory) or absolute.
     Q_INVOKABLE void run(const QString& run, const QString& script, const QString& command, const QStringList& args,
                          const QString& cwd, double pane);
     /// The client wrote @p bytes of @p run's event lines, '\n' included:
@@ -107,9 +108,9 @@ public:
     /// never calls run() holds no more.
     static constexpr int MaxWaitingInputs = 16;
     /// Stdin that waits for run(), in all connections together, in UTF-8
-    /// bytes: MaxWaitingInputs runs at the highest Scripts.commandStdinLimit
-    /// (4 MiB). One client can fill it, and more clients cannot add to it.
-    static constexpr qint64 MaxWaitingInputBytes = 64 * 1024 * 1024;
+    /// bytes: MaxWaitingInputs runs at the highest Scripts.commandStdinLimit.
+    /// One client can fill it, and more clients cannot add to it.
+    static constexpr qint64 MaxWaitingInputBytes = MaxWaitingInputs * (qint64(MaxScriptCommandStdinLimitKiB) << 10);
     /// Event lines that can go to a connection before its client
     /// acknowledges them: a line goes while less than this waits, so at
     /// most one line more. With a line of at most 6 MiB (each of
@@ -118,7 +119,7 @@ public:
     /// that ends gives its share back before its client has read its lines,
     /// so the runs after it can pass 16 MiB for a client that reads slowly.
     /// The books of an ended run stay out: a client that forgot them would
-    /// stall its other runs, where now the router closes it. afterglow run
+    /// stall its other runs, where now the router closes it. aglow run
     /// has one run on its connection.
     static constexpr qint64 AckWindow = qint64(AfterglowProto::Run::AckWindowBytes);
     /// Output that waits for its clients, in all runs together: the UTF-16

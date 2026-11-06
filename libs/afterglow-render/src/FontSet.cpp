@@ -347,6 +347,12 @@ std::int32_t FontSet::loadFlags() const noexcept
     return FT_LOAD_DEFAULT | FT_LOAD_TARGET_LIGHT;
 }
 
+bool FontSet::isFeature(const std::string& feature)
+{
+    hb_feature_t parsed;
+    return hb_feature_from_string(feature.c_str(), int(feature.size()), &parsed) != 0;
+}
+
 int FontSet::renderMode(bool allowSubpixel) const noexcept
 {
     if (m_spec.antialiasing == Antialiasing::None) {

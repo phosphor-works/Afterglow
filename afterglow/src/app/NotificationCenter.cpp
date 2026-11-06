@@ -5,6 +5,7 @@
 
 #include "../Pane.h"
 #include "../TerminalWindow.h"
+#include "../config/Settings.h"
 
 #include <PhosphorDBus/Client.h>
 
@@ -187,7 +188,7 @@ bool NotificationCenter::rateLimited(const Pane* pane)
 bool NotificationCenter::overLimit(QList<qint64>& recent)
 {
     const qint64 now = m_clock.elapsed();
-    recent.removeIf([now](qint64 t) { return now - t > RateWindowMs; });
+    recent.removeIf([now](qint64 t) { return now - t > NotificationRateWindowMs; });
     if (recent.size() >= m_rateLimit) {
         return true;
     }

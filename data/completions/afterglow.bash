@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Bash completion for afterglow. Script IDs and their commands come from the
-# running afterglow (afterglow run --complete). It works best with the
-# bash-completion package, which keeps a word whole at = and : and completes
-# the commands of -e, ssh and ctl ... -- CMD. afterglow transfer, dnd, icat
-# and clipboard complete as aglow does: bash-completion loads the completion
-# of aglow when it is first needed. Without bash-completion, source aglow.bash
-# as well.
+# running Afterglow, through the aglow that afterglow runs (aglow run
+# --complete). It works best with the bash-completion package, which
+# completes the commands of -e, ssh and ctl ... -- CMD. afterglow run,
+# transfer, dnd, icat and clipboard complete as aglow does: bash-completion
+# loads the completion of aglow when it is first needed. Without
+# bash-completion, source aglow.bash as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
 signal notify scripts open-directory projects save-project open-project action watch overlay"
@@ -38,6 +38,18 @@ _afterglow_offset()
         done
         _command_offset "$i"
     fi
+}
+
+# The aglow that afterglow runs, in $aglow: the one in the directory of its
+# executable, with symbolic links resolved. aglow starts faster than
+# afterglow, which loads Qt. The completion of aglow uses it for afterglow
+# run.
+_afterglow_aglow()
+{
+    aglow=$self
+    [[ $aglow == */* ]] || aglow=$(type -P -- "$aglow")
+    [[ $aglow ]] && aglow=$(readlink -f -- "$aglow") && [[ $aglow ]] || return 1
+    aglow=${aglow%/*}/aglow
 }
 
 # File names, or with -d directory names.
@@ -142,17 +154,21 @@ _afterglow_ctl()
         action:0)
             # shellcheck disable=SC2086 # the list splits into its words
             _afterglow_matching $_afterglow_actions
-            if [[ script: == "$cur"* || $cur == script:* ]]; then
+            local aglow
+            if [[ script: == "$cur"* || $cur == script:* ]] && _afterglow_aglow && [[ -x $aglow ]]; then
+                # One connection: ID<TAB>COMMAND<TAB>SUMMARY lines.
                 local id name
-                while IFS= read -r id; do
-                    while IFS=$'\t' read -r name _; do
-                        _afterglow_matching "script:$id.$name"
-                    done < <("$self" run --complete "$id" 2>/dev/null)
-                done < <("$self" run --complete 2>/dev/null)
+                while IFS=$'\t' read -r id name _; do
+                    [[ $id && $name ]] && _afterglow_matching "script:$id.$name"
+                done < <("$aglow" run --complete --all 2>/dev/null)
+                # Readline replaces only the part of the word after its last colon.
                 if declare -F _comp_ltrim_colon_completions >/dev/null; then
                     _comp_ltrim_colon_completions "$cur"
                 elif declare -F __ltrim_colon_completions >/dev/null; then
                     __ltrim_colon_completions "$cur"
+                elif [[ $cur == *:* && $COMP_WORDBREAKS == *:* ]]; then
+                    local colon=${cur%"${cur##*:}"}
+                    COMPREPLY=("${COMPREPLY[@]#"$colon"}")
                 fi
             fi
             return
@@ -193,66 +209,22 @@ _afterglow_given()
     return 1
 }
 
-_afterglow_run()
-{
-    # The words after "run" up to here: options, then ID, then COMMAND.
-    local i id="" command="" options=1 start=2
-    for ((i = start; i < cword; i++)); do
-        local word=${words[i]}
-        if [[ $options && -z $id ]]; then
-            case $word in
-            -n | --no-stdin) continue ;;
-            --pane)
-                ((i++))
-                ((i == cword)) && return
-                continue
-                ;;
-            --)
-                options=""
-                continue
-                ;;
-            # -h and --help only alone, and any other option is unknown.
-            -*) return ;;
-            esac
-        fi
-        if [[ -z $id ]]; then
-            id=$word
-        else
-            command=$word
-            break
-        fi
-    done
-    if [[ -n $command ]]; then
-        # The command's own arguments: files, most likely.
-        [[ $command == -h || $command == --help ]] || _afterglow_files
-    elif [[ -n $id ]]; then
-        local name
-        _afterglow_matching --help
-        while IFS=$'\t' read -r name _; do
-            _afterglow_matching "$name"
-        done < <("$self" run --complete "$id" 2>/dev/null)
-    elif [[ $options && $cur == -* ]]; then
-        # --help only alone: after an option it would name a script.
-        ((cword == start)) && _afterglow_matching -h --help
-        _afterglow_unused "-n|--no-stdin" --pane
-    else
-        local script
-        while IFS= read -r script; do
-            _afterglow_matching "$script"
-        done < <("$self" run --complete 2>/dev/null)
-    fi
-}
-
 _afterglow()
 {
-    local cur prev words cword
+    # comp_args and split are what the initializations below set besides.
+    local cur prev words cword comp_args split
     if declare -F _comp_initialize >/dev/null; then
         _comp_initialize -n =: -- "$@" || return
     elif declare -F _init_completion >/dev/null; then
         _init_completion -n =: || return
     else
-        words=("${COMP_WORDS[@]}")
-        cword=$COMP_CWORD
+        # COMP_WORDS splits a word at = and :, as readline does. The words of
+        # the line before the cursor, split at blanks only, keep script:ID.CMD
+        # and --option=value whole, as bash-completion does.
+        local line=${COMP_LINE:0:COMP_POINT}
+        read -ra words <<<"$line"
+        [[ ! $line || $line == *[[:blank:]] ]] && words+=("")
+        cword=$((${#words[@]} - 1))
         cur=${words[cword]}
         prev=${words[cword - 1]}
     fi
@@ -274,17 +246,19 @@ _afterglow()
             _afterglow_ctl
             return
             ;;
-        run)
-            _afterglow_run
-            return
-            ;;
-        transfer | dnd | icat | clipboard)
-            # These run aglow, whose completion reads its command at the same position.
+        run | transfer | dnd | icat | clipboard)
+            # These run aglow, whose completion reads its command at the same
+            # position. Its completion is found by the path of that aglow too,
+            # as share/bash-completion/completions/aglow beside the bin
+            # directory of an afterglow outside PATH. $aglow names that aglow
+            # to the completion of aglow, for run --complete.
+            local aglow
+            _afterglow_aglow || aglow=""
             if ! declare -F _aglow >/dev/null; then
                 if declare -F _comp_load >/dev/null; then
-                    _comp_load -- aglow
+                    _comp_load -- "${aglow:-aglow}"
                 elif declare -F _completion_loader >/dev/null; then
-                    _completion_loader aglow
+                    _completion_loader "${aglow:-aglow}"
                 fi
             fi
             if declare -F _aglow >/dev/null; then
@@ -311,15 +285,11 @@ _afterglow()
         --config-reference | -h | --help | --help-all | -v | --version) return ;;
         esac
     done
-    # --option=value: the value is at the cursor. Without bash-completion,
-    # readline splits the word at the "=".
+    # --option=value: the value is at the cursor. Readline replaces only the
+    # part after the "=".
     if [[ $cur == --*=* ]]; then
         prev=${cur%%=*}
         cur=${cur#*=}
-    elif [[ $cur == = ]]; then
-        cur=""
-    elif [[ $prev == = ]]; then
-        prev=${words[cword - 2]}
     fi
     case $prev in
     -d | --working-directory)

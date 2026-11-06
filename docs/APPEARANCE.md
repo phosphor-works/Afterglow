@@ -8,8 +8,11 @@
 Afterglow reads `$XDG_CONFIG_HOME/afterglow/config.json`.
 The usual path is `~/.config/afterglow/config.json`.
 Afterglow reloads this file when it changes.
-A file that does not parse, or that does not hold a JSON object, keeps the current settings.
+A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
 A deleted file gives every setting its default.
+An empty file gives the defaults too, when it held no settings before, for example after `touch`.
+A file that held settings and becomes empty keeps them, because an editor that saves in place empties the file first.
+Delete the file to go back to the defaults.
 Afterglow shows a notice and logs a warning for unknown keys and for values that it replaces with a default.
 
 The file holds only the values that differ from the defaults.
@@ -156,6 +159,7 @@ The keys are `foreground`, `background`, `cursor`, `cursorText`, `selectionForeg
 Afterglow logs other keys in a JSON theme.
 A color in a theme or in `Colors` is a Qt color name, such as `#1e1e2e`, `#fff` or `red`.
 These colors have no alpha. Afterglow does not accept an eight-digit value such as `#1e1e2eff`.
+It also does not accept `transparent`, in any spelling.
 
 Use this value to follow the desktop preference:
 

@@ -9,6 +9,8 @@
 #include <QJsonDocument>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -54,7 +56,21 @@ bool IpcClient::connectTo(const QString& path, int timeoutMs, Error* error)
 {
     m_socket.connectToServer(path);
     if (m_socket.waitForConnected(timeoutMs)) return true;
-    set(error, {}, m_socket.errorString());
+    // A wait that ran out leaves the socket connecting, with no error of its own.
+    const QLocalSocket::LocalSocketError failure = m_socket.error();
+    const bool late = m_socket.state() == QLocalSocket::ConnectingState || failure == QLocalSocket::SocketTimeoutError;
+    if (error) {
+        const bool missing = !late && failure == QLocalSocket::ServerNotFoundError;
+        const bool refused = !late && failure == QLocalSocket::ConnectionRefusedError;
+        // No one listening reads as aglow run puts it, in the words of the
+        // system: Qt's own text for a missing socket is "Invalid name".
+        const QString message = late      ? QStringLiteral("the server accepts no connection")
+                                : missing ? QString::fromLocal8Bit(std::strerror(ENOENT))
+                                : refused ? QString::fromLocal8Bit(std::strerror(ECONNREFUSED))
+                                          : m_socket.errorString();
+        *error = {{}, message, late, false, missing || refused};
+    }
+    m_socket.abort();
     return false;
 }
 

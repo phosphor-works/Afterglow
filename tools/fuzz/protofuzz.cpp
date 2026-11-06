@@ -14,9 +14,9 @@
 //   4 graphics replies, and command keys parsed, written and parsed again
 //   5 clipboard replies, OSC 52 messages and clipboard requests
 //   6 zlib data, inflated whole with a limit and in steps
-//   7 the text checks that sanitize ids and names
+//   7 the text checks that sanitize ids and names, and printable text
 //   8 JSON for the phosphor-ipc client, written and read again, and the
-//     stdin parts of `afterglow run`
+//     stdin parts of `aglow run`
 //   9 X11 colour specs (parseColorSpec), and the colour read written again
 
 #include <AfterglowProto/Base64.h>
@@ -301,6 +301,10 @@ void text(std::string_view input)
     for (const auto message : messages(input)) {
         (void)AfterglowProto::sanitizeId(message);
         (void)AfterglowProto::isCleanText(message);
+        // What a client prints passes the check of clean text.
+        if (!AfterglowProto::isCleanText(AfterglowProto::printable(message))) {
+            __builtin_trap();
+        }
         // A code point moves past one to four bytes; a bad sequence moves
         // nothing, and the caller steps over a byte.
         std::size_t at = 0;
@@ -341,26 +345,47 @@ void json(std::string_view input)
         __builtin_trap();
     }
     // A stdin part is a start of the input, under the limit once written,
-    // and ends on a piece: never inside a UTF-8 sequence. The input repeats
-    // past the part size, which -max_len keeps far below: each byte writes
-    // as one byte at least.
+    // and ends on a piece: never inside a UTF-8 sequence. The first byte
+    // gives the limit, so that short input fills parts too.
     if (input.empty()) return;
-    std::string big;
-    while (big.size() <= AfterglowProto::Run::InputPartBytes + 4) big += input;
+    namespace Run = AfterglowProto::Run;
+    const std::size_t limit = 8 + std::uint8_t(input[0]) % 64;
+    const std::string_view data = input.substr(1);
     for (const bool eof : {false, true}) {
-        const std::size_t part = AfterglowProto::Run::inputPart(big, eof);
-        if (part == 0 || part > big.size()) {
-            __builtin_trap();
-        }
+        const std::size_t part = Run::inputPart(data, eof, limit);
         // The walk gives the written size too: two quotes and the pieces.
         std::size_t end = 0;
         std::size_t bytes = 2;
         while (end < part) {
-            const std::size_t piece = Json::nextStringPiece(big, end);
+            const std::size_t piece = Json::nextStringPiece(data, end);
             if (!piece) break;
             bytes += piece;
         }
-        if (end != part || bytes > AfterglowProto::Run::InputPartBytes) {
+        if (part > data.size() || end != part || bytes > limit) {
+            __builtin_trap();
+        }
+        // A part that ends before the data is full: its next piece does
+        // not fit. The first piece always fits, so the end of the input
+        // gives a part.
+        std::size_t after = part;
+        if ((part > 0 && part < data.size() && bytes + Json::nextStringPiece(data, after) <= limit)
+            || (eof && part == 0 && !data.empty())) {
+            __builtin_trap();
+        }
+        // No part yet: the pieces fit, but for the last three bytes, which
+        // can be a sequence that more data completes.
+        if (!eof && part == 0) {
+            std::size_t position = 0;
+            std::size_t total = 2;
+            while (data.size() - position >= 4) total += Json::nextStringPiece(data, position);
+            if (total > limit) {
+                __builtin_trap();
+            }
+        }
+        // A buffer that grows gives the part that one scan of all of it gives.
+        Run::InputParts parts(limit);
+        const std::size_t first = parts.next(data.substr(0, data.size() / 2), false);
+        if ((first ? first : parts.next(data, eof)) != part) {
             __builtin_trap();
         }
     }

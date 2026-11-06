@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ProjectStore.h"
+#include "scripting/ScriptNames.h"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLockFile>
-#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <cmath>
@@ -66,8 +66,7 @@ QString tree(const QJsonValue& value, QSet<QString>& all, QSet<QString>& local, 
 }
 bool ProjectStore::validName(const QString& name)
 {
-    static const QRegularExpression pattern(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    return pattern.match(name).hasMatch();
+    return Afterglow::validName(name);
 }
 QString ProjectStore::validate(const QJsonObject& document)
 {

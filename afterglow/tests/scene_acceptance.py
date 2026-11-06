@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Native scene acceptance using real CAVA on an isolated, silent Pulse sink.
 
-Requires the nested_desktop dependencies, dbus-run-session, pactl, paplay and
-cava. No sound is routed to speakers. The temporary sink, desktop, app and files
-are cleaned up. Logs, screenshots and results stay in the artifacts directory.
+Requires the nested_desktop dependencies, dbus-run-session, pactl, paplay,
+cava, and the aglow of the build next to afterglow. No sound is routed to
+speakers. The temporary sink, desktop, app and files are cleaned up. Logs,
+screenshots and results stay in the artifacts directory.
 """
 import argparse
 import json

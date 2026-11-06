@@ -29,7 +29,7 @@ A tab or button under the pointer shows in the `hover` colors.
 Run a command, change directory or switch tabs to see changes.
 Choose **Toggle the tab line** in the command palette to turn the line off and on.
 When the line is off, the windows show their usual tab bars.
-The choice survives restart. Bind the command as `script:tab-line.toggle`, or run `afterglow run tab-line toggle`.
+The choice survives restart. Bind the command as `script:tab-line.toggle`, or run `aglow run tab-line toggle`.
 From a shell, the command returns after the change. It prints whether the line is on or off.
 When the choice cannot be stored, or another toggle is not complete, the command fails with exit status 1.
 
@@ -110,6 +110,7 @@ The line redraws at once when a tab, title, focus, command or context changes, a
 More changes in the next 250 ms redraw together, so a title that changes quickly sends few lines.
 The line also redraws at once when the pointer moves onto a tab or a button, and when its width changes.
 After 25 of these redraws in one second, the next ones wait for the 250 ms redraw.
+All windows together get at most 29 lines in one second. The next lines wait for the next second.
 When the pointer moves off the tabs and buttons, the line redraws with the 250 ms redraw.
 The line also redraws once each second.
 An unchanged line is not sent again.

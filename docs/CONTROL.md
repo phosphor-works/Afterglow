@@ -27,7 +27,7 @@ It owns no D-Bus name.
 ## Which process and pane
 
 Every pane sets `AFTERGLOW_PANE_ID` to its pane ID and `AFTERGLOW_SOCKET` to the socket of its Afterglow process.
-In a pane, `afterglow ctl` and `afterglow run` send their requests to that process.
+In a pane, `afterglow ctl` and `aglow run` send their requests to that process.
 Outside Afterglow, they use the socket of the main process on the current Wayland display.
 
 | Process | Socket |
@@ -40,16 +40,28 @@ A `WAYLAND_DISPLAY` in `$XDG_RUNTIME_DIR` loses that directory first, so both sp
 In another absolute `WAYLAND_DISPLAY`, the first `/` is removed.
 Each byte other than a letter, a digit, `-`, `_` and `.` becomes `_`.
 `PID` is the process ID.
+The socket path has a limit of 107 bytes (see [limits](#limits)).
 
-Outside its panes, `afterglow ctl` and `afterglow run` do not find a separate process.
+Outside its panes, `afterglow ctl` and `aglow run` do not find a separate process.
 A client reaches it with its socket path, for example `AFTERGLOW_SOCKET=PATH afterglow ctl ls`.
-`afterglow run` refuses a socket of another user.
+`aglow run` refuses a socket on which a process of another user listens.
+`afterglow ctl` does not do this check.
+
+`afterglow ctl` and `aglow run` use the pane ID in `AFTERGLOW_PANE_ID` whenever `AFTERGLOW_SOCKET` is set.
+They do not check that the pane belongs to the process of that socket.
+In a pane, `AFTERGLOW_PANE_ID` names a pane of the process that runs the pane.
+When you set `AFTERGLOW_SOCKET` to another Afterglow in a pane, clear `AFTERGLOW_PANE_ID` or give `--pane`.
+If you do not, the command acts on the pane that has the same ID in the other process.
+
+```sh
+AFTERGLOW_SOCKET=PATH AFTERGLOW_PANE_ID= afterglow ctl action new_tab
+```
 
 Without `XDG_RUNTIME_DIR`, Afterglow listens on no socket.
 A relative `XDG_RUNTIME_DIR` is not used.
-Each launch then starts its own process, and `afterglow ctl` and `afterglow run` stop with an error.
+Each launch then starts its own process, and `afterglow ctl` and `aglow run` stop with an error.
 An Afterglow without a socket removes `AFTERGLOW_SOCKET` from its panes.
-In such a pane, `afterglow ctl` and `afterglow run` stop with an error, because the pane ID means nothing to another process.
+In such a pane, `afterglow ctl` and `aglow run` stop with an error, because the pane ID means nothing to another process.
 
 A process holds a lock on `PATH.lock` while it listens on the socket `PATH`.
 The system releases the lock when the process ends, also after a crash or `SIGKILL`.
@@ -63,12 +75,13 @@ A termination signal that Afterglow got as ignored, for example `SIGHUP` under `
 `afterglow ctl` selects the target pane in this order:
 
 1. The pane that `--pane N` gives. `N` is a pane ID from 1.
-2. The pane in `AFTERGLOW_PANE_ID`, when `AFTERGLOW_SOCKET` is the socket of that pane's process.
+2. The pane in `AFTERGLOW_PANE_ID`, when `AFTERGLOW_SOCKET` is set.
 3. The focused pane of the active window.
 4. The focused pane of the window that was active last.
 
-For `action script:ID.COMMAND`, Afterglow does steps 3 and 4.
-When no pane has the focus, the command runs with no pane, as with `afterglow run`.
+For `action script:ID.COMMAND`, `afterglow ctl` does steps 1 and 2.
+When they give no pane, Afterglow does steps 3 and 4.
+When no pane has the focus, the command runs with no pane, as with `aglow run`.
 
 `ls`, `watch`, `scripts`, `open-directory`, `projects`, `open-project` and `new-window` act on no pane.
 They stop with a usage error when you give `--pane`.
@@ -96,7 +109,7 @@ These settings are separate from [script text permissions](SCRIPTING.md#text-and
 | The command in `commandStarted` and `commandFinished` | Empty. |
 | The value in `userVarChanged` | Empty, also for a value that waited while the setting changed. |
 | Titles in `listPanes` and `titleChanged` | Sent. A shell can put the running command in the title. |
-| `read_text`, `read_region` and `semantic_regions` in a script command that `afterglow run` or a `SCRIPT.COMMAND` call started | Fail with an error. The output of the command would take the text to the client. They also need `Scripts.allowReadText`. |
+| `read_text`, `read_region` and `semantic_regions` in a script command that `aglow run` or a `SCRIPT.COMMAND` call started | Fail with an error. The output of the command would take the text to the client. They also need `Scripts.allowReadText`. |
 
 These settings do not apply to accessibility clients.
 See [terminal text](DESKTOP.md#terminal-text).
@@ -318,18 +331,21 @@ Set `Control.eventInterval=0` to send every event.
 
 ## Script commands
 
-`afterglow run` runs a command of a script and passes its output through.
+`aglow run` runs a command of a script and passes its output through.
 It exits with the command's exit status.
+`afterglow run` is the same command: it runs the `aglow` next to `afterglow`.
+When it cannot run that `aglow`, it exits with status 127 or 126, as [the aglow client](DESKTOP.md#the-aglow-client) tells.
 See [commands](SCRIPTING.md#commands) for the script side.
 
-### afterglow run
+### aglow run
 
 ```sh
-afterglow run                                         # list the commands
-afterglow run --help                                  # the usage
-afterglow run ID --help                               # the commands of one script
-afterglow run [-n] [--pane N] [--] ID COMMAND [ARGS…]   # run a command
-afterglow run --complete [ID]                         # the names for shell completion
+aglow run                                             # list the commands
+aglow run --help                                      # the usage
+aglow run ID --help                                   # the commands of one script
+aglow run [-n] [--pane N] [--] ID COMMAND [ARGS...]   # run a command
+aglow run --complete [ID]                             # the names for shell completion
+aglow run --complete --all                            # all the commands for shell completion
 ```
 
 | Option | Effect |
@@ -339,39 +355,65 @@ afterglow run --complete [ID]                         # the names for shell comp
 | `--` | Ends the options. The next word is the script ID. |
 
 The words after `COMMAND` go to the command, options too.
-The command acts on the pane of `--pane N`, else on `AFTERGLOW_PANE_ID`, else on the focused pane.
-`afterglow run` finds its Afterglow as `afterglow ctl` does (see [which process and pane](#which-process-and-pane)).
+The command acts on the pane of `--pane N`, else on the pane in `AFTERGLOW_PANE_ID`, else on the focused pane.
+When no pane has the focus, the command runs with no pane.
+`aglow run` finds its Afterglow and uses `AFTERGLOW_PANE_ID` as `afterglow ctl` does (see [which process and pane](#which-process-and-pane)).
 
-`afterglow run` reads standard input only for a command with `stdin`, and only when standard input is not a terminal.
+`aglow run` reads standard input only for a command with `stdin`, and only when standard input is not a terminal.
 Thus a command that you type at a prompt does not wait for input.
 When standard input is not a terminal and does not end, for example under `ssh host cmd`, use `-n`.
-`afterglow run` sends standard input before the run.
-Afterglow checks the pane, the directory and the command only after the input ends.
+`aglow run` refuses standard input that is not UTF-8 text, and exits with status 2.
+
+Before it reads standard input, `aglow run` checks that the script and the command exist.
+It sends standard input before the run.
+Afterglow checks the pane and the directory only after the input ends.
 Thus a run with a wrong `--pane` reads all its standard input before it fails.
 
 | Exit status | Cause |
 | --- | --- |
 | 0 to 255 | The exit status of the command. |
-| 1 | An error: no Afterglow, commands off, a failed handler, a run over a limit, or a working directory that is not UTF-8. |
-| 2 | A usage error, a script or command that does not exist, or arguments that do not fit in one request of 1 MiB. Also more than 256 arguments, an argument over 4096 UTF-16 units or not in UTF-8, or standard input over `Scripts.commandStdinLimit`. |
+| 1 | An error, for example no Afterglow, commands that are off or a pane that does not exist. A failed handler, a run over a limit and a working directory that is not UTF-8 also give status 1. |
+| 2 | A usage error, or a script or command that does not exist. Arguments that do not fit in one request of 1 MiB also give status 2. So do more than 256 arguments, and an argument over 4096 UTF-16 units or not in UTF-8. Standard input that is not UTF-8 text or is over `Scripts.commandStdinLimit` also gives status 2. |
 | 124 | The run took longer than `Scripts.commandTimeout`. |
-| 130 | `SIGINT`. `afterglow run` cancels the run, then ends by the signal. A shell reports 130. |
-| 141 | Standard output closed (`SIGPIPE`). `afterglow run` cancels the run, then ends by the signal. A shell reports 141. |
-| 143 | `SIGTERM`. `afterglow run` cancels the run, then ends by the signal. A shell reports 143. |
+| 126 | Only `afterglow run`: the `aglow` next to `afterglow` cannot run. |
+| 127 | Only `afterglow run`: there is no `aglow` next to `afterglow`, the build has no `aglow`, or `afterglow` cannot find its own executable. |
+| 130 | `SIGINT`. `aglow run` cancels the run, then ends by the signal. A shell reports 130. |
+| 141 | Standard output closed (`SIGPIPE`). `aglow run` cancels the run, then ends by the signal. A shell reports 141. |
+| 143 | `SIGTERM`. `aglow run` cancels the run, then ends by the signal. A shell reports 143. |
 
 A command can also exit with 1, 2, 124, 130, 141 or 143.
 The exit status alone does not tell the cause.
-Because `afterglow run` ends by the signal, a shell loop of runs stops at `Ctrl+C`.
-A `SIGINT` or `SIGTERM` that `afterglow run` got as ignored, for example under `nohup`, stays ignored.
+Because `aglow run` ends by the signal, a shell loop of runs stops at `Ctrl+C`.
+A `SIGINT` or `SIGTERM` that `aglow run` got as ignored stays ignored.
+For example, a shell script runs `aglow run ID COMMAND &` as a background job, and the job gets `SIGINT` as ignored.
+Then `Ctrl+C` does not cancel that run.
+When `aglow run` got `SIGPIPE` as ignored, a closed standard output ends it with exit status 141, not by the signal.
 
-`afterglow run --complete` prints the script IDs that have commands, one on each line.
-`afterglow run --complete ID` prints `COMMAND<TAB>SUMMARY` lines.
-It prints only names of letters, digits, `_` and `-`.
-It waits at most 1 second for Afterglow, for the connection and the list together.
-The shell completions for bash, zsh and fish use them.
-They are in `share/bash-completion/completions/afterglow`, `share/zsh/site-functions/_afterglow` and `share/fish/vendor_completions.d/afterglow.fish`.
-The fish completion needs Fish 4 or later.
-[BUILD.md](BUILD.md) gives the zsh directory for Debian and Ubuntu.
+### Shell completion
+
+`aglow run --complete` prints the script IDs that have commands, one on each line.
+`aglow run --complete ID` prints `COMMAND<TAB>SUMMARY` lines for the commands of the script `ID`.
+`aglow run --complete --all` prints `ID<TAB>COMMAND<TAB>SUMMARY` lines for the commands of all scripts, from one connection.
+The lines come in the order of the list of commands.
+The output leaves out a script or command whose name has a character other than a letter, a digit, `_` and `-`.
+A summary shows `?` in place of each control character, such as a C0, C1 or bidirectional control.
+`aglow run --complete` waits at most 1 second for Afterglow, for the connection and the list together.
+It prints no error message.
+
+| Exit status | Cause |
+| --- | --- |
+| 0 | `aglow run --complete` printed the names. When it finds no command, it prints nothing. |
+| 1 | No Afterglow, no answer in 1 second, or commands off. |
+| 2 | More than one word after `--complete`. |
+
+The shell completions for Bash, Zsh and Fish use `aglow run --complete`, for `aglow run` and for `afterglow run`.
+The completions of `afterglow ctl action` get the `script:ID.COMMAND` actions from `aglow run --complete --all`.
+The completion of `afterglow` uses the `aglow` that `afterglow run` runs.
+`aglow` starts faster than `afterglow`, because it does not load Qt.
+The completion of `afterglow` uses the completion of `aglow` for `run`, `transfer`, `dnd`, `icat` and `clipboard`.
+In a build without `aglow`, the completions offer no script commands. For these five commands, they complete file names.
+The Fish completions need Fish 4 or later.
+[Install](BUILD.md#install) gives the paths of the completion files, and the Zsh directory for Debian and Ubuntu.
 
 ### The commands target
 
@@ -402,12 +444,15 @@ A run ID is 1 to 64 letters, digits, `_` and `-`. It belongs to one connection.
 A `run` with an ID that a running run of the connection uses fails.
 
 The standard input is complete before the handler starts, because the handler gets it as one string.
-Afterglow keeps the input of a run ID until `run` comes, `cancel` drops it, or the connection closes.
+Afterglow keeps the input of a run ID until `run` starts the run, `cancel` drops it, or the connection closes.
+A `run` that fails before the run starts keeps the input. Examples are a pane that does not exist and a directory that is not absolute.
+The client can then send `run` again with the same run ID, or call `cancel`.
+A `run` that cannot start the command drops the input, for example for a command that does not exist or a script at its `Scripts.commandRunLimit`.
 Afterglow does not cut the input, because a command could not tell that it got only a part.
 An `input` that takes the input of a run over `Scripts.commandStdinLimit` fails with `INPUT_TOO_LARGE`.
 Afterglow then drops all the input of that run.
 Input of exactly the limit is accepted.
-A limit of 0 refuses any input.
+A limit of 0 refuses any input that is not empty.
 A command without `stdin` gets no input, also when the client sent some.
 
 Afterglow keeps the input as UTF-8.
@@ -463,8 +508,9 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 
 | Item | Limit | At the limit |
 | --- | --- | --- |
+| Socket path | 107 bytes | Afterglow cannot listen on a longer path. It logs a warning and runs with no socket, as without `XDG_RUNTIME_DIR`. `afterglow ctl` and `aglow run` stop with exit status 1. |
 | Request line | 1 MiB | The socket closes the connection. `afterglow ctl send-text` sends long text in parts. |
-| `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` stops with an error and sends nothing. |
+| `afterglow ctl send-text` text | 32 MiB of UTF-8 | `afterglow ctl` exits with status 2 and sends nothing. It checks the text before it connects. |
 | Text that a program has not read | 32 MiB for each pane | `sendText` fails. Parts that `afterglow ctl send-text` sent before stay typed. |
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
@@ -473,14 +519,16 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` stops with an error and opens nothing. |
 | `stdin` of the `overlay` call | 16 MiB of UTF-8, and one request line of 1 MiB | The call fails. |
 | `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
-| `afterglow run` reply time for `list` and `input` | 10 seconds | `afterglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |
-| `input` part that `afterglow run` sends | 512 KiB of JSON string | `afterglow run` sends longer input in parts. |
+| `aglow run` reply time for `list` and `input` | 10 seconds | `aglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |
+| `input` part that `aglow run` sends | 512 KiB of JSON string | `aglow run` sends longer input in parts. |
 | Runs whose input waits for `run`, on one connection | 16 | `input` fails. |
 | Input that waits for `run`, in all connections | 64 MiB of UTF-8 | `input` fails. |
-| Standard input of one run | `Scripts.commandStdinLimit` | `input` fails with `INPUT_TOO_LARGE`. `afterglow run` exits with status 2. |
+| Standard input of one run | `Scripts.commandStdinLimit` | `input` fails with `INPUT_TOO_LARGE`. `aglow run` exits with status 2. |
 | Output of the runs of one connection that the client did not acknowledge | 4 MiB of event lines, and one line more | The rest of the output waits in Afterglow. The output of a run that ended does not count. See [flow control](#flow-control). |
 | Output that waits for clients, in all runs | 256 MiB in memory | The run whose output would go past it ends with exit status 1. |
-| Arguments of `afterglow run` | One request of 1 MiB | `afterglow run` exits with status 2. |
+| Arguments of `aglow run` | One request of 1 MiB | `aglow run` exits with status 2 before it connects. |
+| Arguments of one run | 256 | `aglow run` exits with status 2 before it connects. A `run` call with more fails with `CALL_FAILED`. |
+| One argument of a run | 4096 UTF-16 units | `aglow run` exits with status 2 before it connects. A `run` call with a longer argument fails with `CALL_FAILED`. |
 | `run` calls that wait, on one connection | 256 | `run` fails with `CALL_FAILED`. |
 | `setTitle` title | 256 UTF-16 units | The title is cut. |
 | `notify` title | 256 UTF-16 units | The title is cut. |
@@ -491,6 +539,9 @@ A reply with a long scrollback can take more than the 10 seconds of `afterglow c
 
 Text that `afterglow ctl send-text` sends in parts arrives as separate inputs.
 Keys and other clients can type between two parts.
+
+`afterglow ctl send-text --stdin` types standard input as it is.
+It refuses standard input that is not UTF-8 text. It then exits with status 2 and sends nothing.
 
 ## Text escapes
 
@@ -515,6 +566,17 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 Only `send-text`, `set-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
+
+## Exit status of afterglow ctl
+
+| Exit status | Cause |
+| --- | --- |
+| 0 | The command succeeded. `afterglow ctl --help` also exits with status 0. |
+| 1 | An error, for example no Afterglow, a call that failed or no reply in 10 seconds. |
+| 2 | A usage error, for example an unknown command, a missing argument or an option that the command does not take. `afterglow ctl` with no command also gives status 2. So does refused text for `send-text`: over 32 MiB, or standard input that is not UTF-8 text. `afterglow ctl` checks the text before it connects. |
+
+`afterglow ctl watch` prints events until the connection or a subscription ends.
+Then it exits with status 1.
 
 ## References
 

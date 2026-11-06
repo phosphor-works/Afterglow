@@ -15,7 +15,7 @@ This package ships a script and the shader that it drives.
 ## Install
 
 1. Copy this folder to `~/.config/afterglow/scripts/scripted-overview`.
-2. Run **Use Package Shaders…** from the command palette, or `afterglow run scripted-overview use-shaders`.
+2. Run **Use Package Shaders…** from the command palette, or `aglow run scripted-overview use-shaders`.
 3. Select `Shaders.overview = scripted-overview.wall`.
 4. Bind `script:scripted-overview.open` to a key in `Keybinds.bindings`.
 

@@ -5,6 +5,7 @@
 
 Afterglow requires Linux, Wayland and a Vulkan driver.
 These instructions use the current source layout.
+To build `aglow` alone, without Qt and the Phosphor libraries, see [build aglow alone](#build-aglow-alone).
 
 ## Required software
 
@@ -21,7 +22,10 @@ These instructions use the current source layout.
   Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
   Without them, the configuration stops with a message.
   To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
-  Then `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
+  Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
+  A shell cannot run script commands with their arguments, standard input and exit status.
+  `afterglow ctl action script:ID.COMMAND` still starts a command, with no arguments.
+  The shell completions offer no script commands. For these five commands, they complete file names.
   A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
 The build compiles zlib-ng and xxHash from their [source archives](#source-archives).
@@ -128,7 +132,7 @@ git clone https://github.com/fuddlesworth/PlasmaZones ../PlasmaZones
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout 4e5aca5c9
+git -C ../PlasmaZones checkout 04c6295a0
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.
@@ -163,6 +167,57 @@ To use another Phosphor checkout, add this option to the configuration command:
 
 The build compiles the Phosphor libraries with Afterglow.
 
+## Build aglow alone
+
+Build `aglow` alone on a computer that does not run Afterglow, for example a remote host.
+A distribution can also package `aglow` on its own from this build.
+This build needs CMake 3.21 or later, a C compiler, a C++20 compiler and the static C and C++ runtime libraries.
+It does not need Qt, the other libraries of Afterglow or a PlasmaZones checkout.
+It compiles zlib-ng and xxHash from their [source archives](#source-archives), as the full build does.
+It downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
+By default, the CPM cache is `.cache/cpm` in the Afterglow directory.
+`-DCPM_SOURCE_CACHE` and the `CPM_SOURCE_CACHE` environment variable change it.
+To build on a computer without network access, download the archives as in step 3 of the procedure in [source archives](#source-archives).
+Copy the archive directory to the build computer.
+Then add `-DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives` to the configuration command.
+
+1. Get the Afterglow source:
+
+```sh
+git clone https://github.com/phosphor-works/Afterglow
+cd Afterglow
+```
+
+2. Configure the build with `AFTERGLOW_AGLOW_ONLY`:
+
+```sh
+cmake -B build-aglow -DAFTERGLOW_AGLOW_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+```
+
+Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
+
+3. Build `aglow`:
+
+```sh
+cmake --build build-aglow
+```
+
+4. Run the tests:
+
+```sh
+ctest --test-dir build-aglow --output-on-failure
+```
+
+5. Install `aglow`:
+
+```sh
+sudo cmake --install build-aglow
+```
+
+The installation contains `bin/aglow`, its license notices in `share/licenses/aglow`, and its Bash, Zsh and Fish completions.
+The completions go in the directories of the full build (see [install](#install)), and `AFTERGLOW_ZSH_COMPLETION_DIR` also applies.
+It contains no other part of Afterglow.
+
 ## Install
 
 Run this command to install the build:
@@ -176,18 +231,22 @@ If you do, shell integration is off, and the executable can miss its plugin, sha
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
-It also includes the shell completions for Bash, Zsh and Fish. The Fish completion needs Fish 4 or later.
+It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
-The license notices of `aglow` go in `share/licenses/afterglow`:
+The Fish completions need Fish 4 or later.
+The license notices of the code in `aglow` go in `share/licenses/afterglow`:
 
 | File | Contents | Installed |
 | --- | --- | --- |
-| `LICENSE.stb_image` | The MIT notice of stb_image | Always |
+| `LICENSE.zlib-ng` | The notice of zlib-ng, which `afterglow` also contains | Always |
+| `LICENSE.xxHash` | The notice of xxHash, which `afterglow` also contains | Always |
+| `LICENSE.stb_image` | The MIT notice of stb_image | When the build includes `aglow` |
 | `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
 | `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
 
 A static `aglow` contains parts of glibc, which is LGPL-2.1-or-later.
 To link `aglow` again with a changed C library, build the `aglow` target from the Afterglow source of the same version (`cmake --build build --target aglow`).
+A [build of aglow alone](#build-aglow-alone) also does this, without Qt and the Phosphor libraries.
 When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
 When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
 A static program cannot use the sanitizer runtimes.

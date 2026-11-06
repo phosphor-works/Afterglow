@@ -19,7 +19,7 @@ cp -r data/examples/packages/fzf-picker ~/.config/afterglow/scripts/
 
 Open the command palette and choose **Pick a project or file**.
 This is the command `pick`. Bind it as `script:fzf-picker.pick`.
-From a shell in a pane, run `afterglow run fzf-picker pick`. The overlay opens over that pane.
+From a shell in a pane, run `aglow run fzf-picker pick`. The overlay opens over that pane.
 
 | Choice | Result |
 | --- | --- |

@@ -5,7 +5,7 @@
 
 `tools/generate-reference.py` generates this document from the runtime Phosphor schema. Group and key names are case-sensitive. See [appearance](APPEARANCE.md) for configuration loading and examples.
 
-Numeric values are clamped to the listed ranges. An integer key drops the fraction of a value, and uses its default for a value outside the 32-bit range. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.
+Afterglow clamps a number to the listed range. The description of Font.size gives 0 or less a meaning of its own. An integer key drops the fraction of a value, and uses its default for a value outside the 32-bit range. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.
 
 ## Animation
 
@@ -20,13 +20,13 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `overlayDuration` | `180` | 16–5000 | Duration of the fade of an overlay in milliseconds for curves other than springs. |
 | `overviewCurve` | `"spring:12,0.82"` |  | Curve of the pane overview motion, in the splitCurve format. The default spring overshoots slightly. |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs. |
-| `paneEffectDuration` | `420` | 16–5000 | Milliseconds a pane takes to open or close in Shaders.paneEffects. |
+| `paneEffectDuration` | `420` | 16–5000 | Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane whose shell moves to another host, user or container takes the same time. |
 | `scroll` | `true` |  | Animate scrolling between rows. |
 | `scrollCurve` | `"spring:26,1"` |  | Curve of scroll motion, in the splitCurve format. |
 | `scrollDuration` | `150` | 16–5000 | Duration of scroll motion in milliseconds for curves other than springs. |
 | `splitCurve` | `"spring:22,1"` |  | Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as elastic-out. An invalid spec uses the default. |
 | `splitDuration` | `250` | 16–5000 | Duration of split animations in milliseconds for curves other than springs, which settle by themselves. |
-| `splits` | `true` |  | Animate split opening, closing and resizing. |
+| `splits` | `true` |  | Animate split opening, closing and resizing. It also controls the open and close animations, the portal and the away frame of Shaders.paneEffects. |
 | `tabCurve` | `"spring:13,0.9"` |  | Curve of tab switches (Shaders.tabTransition), in the splitCurve format. |
 | `tabDuration` | `400` | 16–5000 | Duration of tab switches in milliseconds for curves other than springs. |
 
@@ -39,7 +39,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `framerate` | `60` | 30–144 | Spectrum updates per second. |
 | `higherCutoff` | `10000` | 1000–20000 | Highest analyzed frequency in hertz. |
 | `inputMethod` | `"auto"` | `"auto"`, `"pipewire"`, `"pulse"` | Sound system that cava captures from. The auto value detects it. |
-| `inputSource` | `"auto"` |  | Playback source for capture. The auto value follows the default output. |
+| `inputSource` | `"auto"` |  | Playback source for capture. The auto value, or an empty value, follows the default output. |
 | `lowerCutoff` | `50` | 20–500 | Lowest analyzed frequency in hertz. |
 | `smoothing` | `65` | 0–100 | Noise reduction of the spectrum analyzer. A value of 0 is fast and jumpy. 100 is slow and smooth. |
 
@@ -60,7 +60,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. |
 | `selectionBackground` | `""` |  | Selection background color. An empty value reverses the cell colors. |
 | `selectionForeground` | `""` |  | Selected text color. An empty value reverses the cell colors. |
-| `theme` | `""` |  | Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative path starts at the directory of the config file. |
+| `theme` | `""` |  | Theme name or file path. An empty value uses no theme. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with a slash is a file path. A relative path starts at the directory of the config file. |
 | `unfocusedDim` | `0.19` | 0–1 | Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off. |
 | `visualBell` | `"#ffffff"` |  | Color of the visual bell flash. A color that a program sets with OSC 21 replaces it. |
 | `visualBellIntensity` | `0.18` | 0–1 | Opacity of the visual bell flash when it starts. A value of 0 hides the flash. |
@@ -69,15 +69,15 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `false` |  | Allow control clients to read pane text, including scrollback, the commands that run and the values of user variables. A script command that runs for afterglow run reads pane text only when this setting and Scripts.allowReadText are both on. |
-| `enabled` | `true` |  | Allow other programs, such as afterglow ctl and afterglow run, to control Afterglow through its socket. The afterglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. |
+| `allowReadText` | `false` |  | Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands that run and the values of user variables. A script command that runs for a client, such as aglow run or afterglow run, reads pane text only when Scripts.allowReadText is on too. |
+| `enabled` | `true` |  | Allow other programs, such as afterglow ctl and aglow run, to control Afterglow through its socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the socket also when this is off. |
 | `eventInterval` | `100` | 0–10000 | Shortest time in milliseconds between two events of one kind for one pane, for titles, status, context, bells and each user variable. A newer event replaces one that waits, and the bells in between become one. A value of 0 sends every event. |
 
 ## Font
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane effects count as shaders. They run while a pane shows a shell on another host or as another user. |
+| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders are active. Pane effects count as shaders. They run while a pane shows a shell on another host, as another user or in a container. |
 | `boldFamily` | `""` |  | Font family of bold text. An empty value uses family. |
 | `boldItalicFamily` | `""` |  | Font family of bold italic text. An empty value uses the italic family. |
 | `boldWeight` | `700` | 100–900 | Weight of bold text. It selects a static font and sets the weight axis of a variable font. |
@@ -87,10 +87,10 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `family` | `""` |  | Font family of regular text. An empty value uses the desktop's fixed-width font. |
 | `features` | `["calt", "liga"]` |  | OpenType features in HarfBuzz syntax, such as calt, liga, ss01, cv01=2 or -liga. |
 | `gamma` | `1` | 0.5–3 | Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage. |
-| `hinting` | `"light"` | `"none"`, `"light"`, `"full"` | How glyph outlines align to the pixel grid. The none mode preserves outlines. The light mode aligns vertical positions only. The full mode aligns both axes. |
+| `hinting` | `"light"` | `"none"`, `"light"`, `"full"` | How glyph outlines align to the pixel grid. The none value keeps the outlines as designed. The light value aligns vertical positions only. The full value aligns both axes. |
 | `italicFamily` | `""` |  | Font family of italic text. An empty value uses family. |
 | `italicSlant` | `-11` | -90–90 | Slant of italic text in degrees, for variable fonts with a slant axis. |
-| `size` | `0` | 0–96 | Size in points. A value of 0 or less uses the size of the desktop's fixed-width font. Afterglow clamps other values to 4–96. |
+| `size` | `0` | 4–96 | Size in points. A value of 0 or less uses the size of the desktop's fixed-width font. Afterglow clamps other values to 4–96. |
 | `sizeStep` | `1` | 0.1–12 | Points that the font_bigger and font_smaller actions add or remove. |
 | `symbolMap` | `{}` |  | Preferred families for codepoint ranges, such as { "U+E000-U+F8FF,U+F0000-U+FFFFD": "Symbols Nerd Font Mono" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators U+E0B0 to U+E0BF itself, so this setting does not change them. |
 | `weight` | `400` | 100–900 | Weight of regular text. It selects a static font and sets the weight axis of a variable font. |
@@ -107,15 +107,15 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `alphabet` | `"asdfjklghqweruiopzxcvbnmty"` |  | Letters that label hints and URL hints, the easiest to reach first. It needs two or more letters, each one time. Other values use the default. |
-| `patterns` | `[{"action": "copy", "pattern": "(?:~?/\|\\.{1,2}/)?[\\w.@+-]+(?:/[\\w.@+-]+)*(?:\\.[\\w+-]+\|:\\d+)(?::\\d+){0,2}"}]` |  | Up to 16 hints. Each is an object with a regular expression in pattern and an action: copy, open or command. A command action also needs command, a list of 1 to 32 arguments. |
+| `patterns` | `[{"action": "copy", "pattern": "(?:~?/\|\\.{1,2}/)?[\\w.@+-]+(?:/[\\w.@+-]+)*(?:\\.[\\w+-]+\|:\\d+)(?::\\d+){0,2}"}]` |  | Up to 16 hints. Each is an object with a regular expression in pattern and an action: copy, open or command. An entry without an action copies. A command action also needs command, a list of 1 to 32 arguments. The first argument names the program. |
 
 ## Keybinds
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `bindings` | [default bindings](#default-bindings) |  | Map each action to a key combination or a list of them. An empty string removes the binding. Besides actions, the map can bind script:ID.COMMAND to run a script command, text:BYTES to send text and table:NAME to open a key table. |
-| `leader` | `""` |  | Key that Leader stands for in sequences. The default is empty. With an empty value, a binding that uses Leader is an error. |
-| `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before an incomplete sequence is canceled. |
+| `leader` | `""` |  | Key that Leader stands for in sequences. With an empty value, a binding that uses Leader is an error. |
+| `sequenceTimeout` | `1000` | 100–10000 | Milliseconds before Afterglow cancels an incomplete sequence. |
 | `tableTimeout` | `5000` | 100–60000 | Idle milliseconds before leaving a key table. |
 | `tables` | `{}` |  | Named action-to-key maps, activated with table:NAME. |
 
@@ -125,7 +125,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | --- | --- | --- | --- |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
 | `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
-| `openWith` | `""` |  | Command for opening links. The URL is appended. An empty value uses the desktop browser. |
+| `openWith` | `""` |  | Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
 ## Mouse
@@ -140,7 +140,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `rateLimit` | `20` | 0–1000 | Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. Notices from Afterglow itself do not count, except those of script commands. |
+| `rateLimit` | `20` | 0–1000 | Desktop notifications that the programs of one pane can show in 10 seconds. Afterglow drops the notifications over the limit. A value of 0 removes the limit. Updates of a shown notification do not count. The notifications of Afterglow itself do not count, except the notifications of script commands. |
 | `statusInterval` | `3000` | 0–600000 | Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. A value of 0 shows each one. |
 
 ## QuickTerminal
@@ -152,19 +152,19 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `duration` | `150` | 16–5000 | Duration of the quick terminal slide in milliseconds for curves other than springs. |
 | `height` | `0.4` | 0.1–1 | Height as a fraction of the screen. |
 | `position` | `"top"` | `"top"`, `"bottom"` | Screen edge the quick terminal slides from. |
-| `screen` | `""` |  | Output that shows the quick terminal, such as DP-1. An empty or unknown name uses the primary screen. |
-| `shortcut` | `` "Meta+`" `` |  | Global shortcut to show or hide the quick terminal. An empty value disables the shortcut. |
+| `screen` | `""` |  | Screen that shows the quick terminal, by its output name such as DP-1. An empty or unknown name uses the primary screen. |
+| `shortcut` | `` "Meta+`" `` |  | Global shortcut to show or hide the quick terminal. An empty value turns the shortcut off. A value that is not a key combination uses the default. |
 
 ## Scripts
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `allowReadText` | `true` |  | Allow Luau scripts to read pane text, selections and semantic regions, and to run actions that read pane text. In a script command that runs for afterglow run, read_text, read_region and semantic_regions also need Control.allowReadText. |
-| `commandOutputLimit` | `16384` | 64–262144 | Kibibytes of UTF-8 text that one run of a script command can write to standard output and standard error together. A run that writes more ends, and afterglow run exits with status 1. A run from a key, a menu or the palette counts only its standard error. |
-| `commandRunLimit` | `16` | 1–16 | Runs of the commands of one script at the same time. A run over the limit fails, and afterglow run exits with status 1. Each run that waits uses one of the 16 waiting handlers of its script. |
-| `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from afterglow run. A run with more input fails, and afterglow run exits with status 2. A value of 0 refuses any input. |
-| `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and afterglow run exits with status 124. A change applies to the runs that start after it. |
-| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The afterglow run command also needs Control.enabled. |
+| `allowReadText` | `true` |  | Allow Luau scripts to read pane text, selections and semantic regions, and to run actions that read pane text. In a script command that runs for a client, such as aglow run or afterglow run, read_text, read_region and semantic_regions also need Control.allowReadText. |
+| `commandOutputLimit` | `16384` | 64–262144 | Kibibytes of UTF-8 text that one run of a script command can write to standard output and standard error together. A run that writes more ends, and aglow run exits with status 1. A run from a key, a menu or the palette counts only its standard error. |
+| `commandRunLimit` | `16` | 1–16 | Runs of the commands of one script at the same time. A run over the limit fails, and aglow run exits with status 1. Each run that waits uses one of the 16 waiting handlers of its script. |
+| `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from aglow run. A run with more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty. |
+| `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and aglow run exits with status 124. A change applies to the runs that start after it. |
+| `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. |
 
 ## Shaders
 
@@ -175,7 +175,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value switches at once. |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
 | `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
-| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. An empty value turns it off. |
+| `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. An empty value turns it off. |
 | `params` | `{}` |  | Parameter values for each shader reference, such as { "bloom": { "strength": 0.5 } }. |
 | `tabTransition` | `"tab-switch"` |  | Shader that animates switching tabs. An empty value switches at once. |
 | `text` | `[]` |  | Shaders run over each pane's text layer alone: glyphs, decorations and images over the text. |
@@ -188,9 +188,9 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `allowScreenReadback` | `false` |  | Answer DECRQCRA checksum requests. These let any program in the pane read the screen back. |
 | `ambiguousWide` | `false` |  | Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols. |
 | `bell` | `"attention"` | `"none"`, `"attention"`, `"visual"`, `"both"` | Response to the bell. The none value does nothing. The attention value marks the window urgent. The visual value flashes the pane. The both value does both. |
-| `bellSound` | `""` |  | Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file. |
+| `bellSound` | `""` |  | Bell sound. An empty value turns the bell sound off. The value "default" plays the bell of the desktop sound theme with canberra-gtk-play. Any other value is a sound file that pw-play plays, or paplay when pw-play is missing. Give an absolute path or a path that starts with ~/. |
 | `bellSoundInterval` | `250` | 0–10000 | Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 plays every bell. |
-| `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional paragraph layout mode. Application grids retain logical order. |
+| `bidi` | `"off"` | `"off"`, `"auto"`, `"ltr"`, `"rtl"` | Bidirectional layout of the primary screen. The off value keeps text in logical order. The auto value finds the direction of each paragraph. The ltr and rtl values set it. Application grids keep logical order. |
 | `clipboardRead` | `"ask"` | `"allow"`, `"ask"`, `"deny"` | Programs reading the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each read. |
 | `clipboardWrite` | `"allow"` | `"allow"`, `"ask"`, `"deny"` | Programs writing the clipboard (OSC 52, OSC 5522). The ask value shows a prompt for each write. |
 | `confirmClose` | `true` |  | Ask before closing a pane, tab or window where a program is running. |
@@ -208,7 +208,7 @@ Numeric values are clamped to the listed ranges. An integer key drops the fracti
 | `hideMouseWhileTyping` | `false` |  | Hide the pointer while typing. Pointer movement shows it again. |
 | `lastOutputLimit` | `1024` | 1–65536 | Kibibytes of the last command output that the pager gets. For longer output, the pager gets the start and a note. |
 | `notifications` | `true` |  | Show desktop notifications that programs send with OSC 9, OSC 99 and OSC 777, and program status notifications (OSC 7501). |
-| `pager` | `"less -R"` |  | Command for viewing the last command output. Shell expansion is disabled. An empty value turns the pager off. |
+| `pager` | `"less -R"` |  | Command for viewing the last command output. Afterglow splits it into words and runs it without a shell. An empty value turns the pager off. |
 | `pasteReadTimeout` | `10` | 1–600 | Seconds after a paste in which the program can read the clipboard with the password of the paste event (OSC 5522). |
 | `scrollLines` | `3` | 1–50 | Number of rows scrolled for each mouse-wheel notch. |
 | `scrollOnInput` | `true` |  | Scroll to the bottom on typing or paste. |

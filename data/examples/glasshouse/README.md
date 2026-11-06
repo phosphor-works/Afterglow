@@ -34,15 +34,16 @@ Shell integration uses OSC 133.
 | Shell command completion after at least 20 seconds in an unfocused pane | Desktop notification. |
 
 The command palette includes the Glasshouse script commands `strike`, `glaze`, `ring` and `heat`.
-Run one with `afterglow run glasshouse strike`, or bind it with configuration such as:
+Run one with `aglow run glasshouse strike`, or bind it with configuration such as:
 
 ```json
 {"Keybinds": {"bindings": {"script:glasshouse.strike": "Ctrl+Alt+S"}}}
 ```
 
 `heat` warms the lamp until the next shell command in the pane completes.
-`afterglow run` is a shell command too, and its end cools the lamp of its own pane.
-Thus give another pane to `afterglow run glasshouse heat`, with `--pane N`.
+`aglow run` is a shell command too, and its end cools the lamp of its own pane.
+Thus name another pane: `aglow run --pane N glasshouse heat`.
+The options of `aglow run` come before the script ID.
 
 `afterglow ctl signal 0 1` triggers strike in the pane that runs `afterglow ctl`.
 Outside Afterglow, it triggers strike in the focused pane.
@@ -114,9 +115,9 @@ Other programs use `afterglow ctl signal CHANNEL VALUE` or the `signal` call of 
 
 | Channel | Name | Value |
 | --- | --- | --- |
-| 0 | strike | Exit code. It also selects the crack pattern. |
-| 1 | glaze | Shell command duration in seconds. |
-| 2 | heat | 1 during a shell command. 0 after completion. |
+| 0 | strike | Exit code. It also selects the crack pattern. The `strike` command sends 1. |
+| 1 | glaze | Shell command duration in seconds. The `glaze` command and an OSC 7501 done status send 1. |
+| 2 | heat | 1 during a shell command, and after the `heat` command. 0 after completion. |
 | 3 | ring | Any value. |
 | 4 | status | 1 working, 2 blocked, 3 error, 0 none. |
 

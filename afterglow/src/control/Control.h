@@ -91,7 +91,7 @@ public:
     QString readText(quint32 pane, TextScope scope, QString& out);
     /// Bounded script query, subject to Scripts.allowReadText. With
     /// @p clientRun, for a command run whose output goes to a client
-    /// (`afterglow run`, a socket call), also to Control.allowReadText: the
+    /// (`aglow run`, a socket call), also to Control.allowReadText: the
     /// text would leave afterglow as control text does.
     QString readTextBounded(quint32 pane, const QString& scope, int limit, QVariantMap& result, bool clientRun);
     QString semanticRegions(quint32 pane, QVariantMap& result, bool clientRun);
@@ -130,7 +130,7 @@ public:
     /// arguments and returns before the run ends. A keybind action
     /// shows the pane's tab first, except the tab actions that act on that
     /// tab where it is (TerminalWindow::runAction). A script command, as
-    /// for `afterglow run`, takes @p pane 0 for the focused pane, and runs
+    /// for `aglow run`, takes @p pane 0 for the focused pane, and runs
     /// with no pane when none has the focus.
     QString runAction(quint32 pane, const QString& action);
     /// runAction for a script: the actions that read pane text need

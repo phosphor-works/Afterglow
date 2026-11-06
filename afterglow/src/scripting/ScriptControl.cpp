@@ -45,7 +45,8 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             if (kind == QLatin1String("semantic_regions")) return control.semanticRegions(pane, data, clientRun);
             if (kind == QLatin1String("read_text") || kind == QLatin1String("read_region")) {
                 const double limit = e.value(QStringLiteral("max_bytes")).toDouble();
-                if (!std::isfinite(limit) || limit < 1 || limit > 1024 * 1024 || limit != std::floor(limit)) return QStringLiteral("invalid max_bytes");
+                if (!std::isfinite(limit) || limit < 1 || limit > ScriptHost::MaxReadTextBytes || limit != std::floor(limit))
+                    return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(ScriptHost::MaxReadTextBytes);
                 return kind == QLatin1String("read_region") ? control.readRegion(pane, s("region"), int(limit), data, clientRun)
                     : control.readTextBounded(pane, s("scope"), int(limit), data, clientRun);
             }
