@@ -171,9 +171,15 @@ The build compiles the Phosphor libraries with Afterglow.
 
 Build `aglow` alone on a computer that does not run Afterglow, for example a remote host.
 A distribution can also package `aglow` on its own from this build.
-This build needs CMake 3.21 or later, a C compiler, a C++20 compiler, and the static C and C++ runtime libraries.
+This build needs CMake 3.21 or later, a C compiler, a C++20 compiler and the static C and C++ runtime libraries.
 It does not need Qt, the other libraries of Afterglow or a PlasmaZones checkout.
 It compiles zlib-ng and xxHash from their [source archives](#source-archives), as the full build does.
+It downloads only CPM.cmake and the archives of `cmake/AfterglowDependencies.cmake`.
+By default, the CPM cache is `.cache/cpm` in the Afterglow directory.
+`-DCPM_SOURCE_CACHE` and the `CPM_SOURCE_CACHE` environment variable change it.
+To build on a computer without network access, download the archives as in step 3 of the procedure in [source archives](#source-archives).
+Copy the archive directory to the build computer.
+Then add `-DAFTERGLOW_DEPS_ARCHIVES=/path/to/archives` to the configuration command.
 
 1. Get the Afterglow source:
 
@@ -240,6 +246,7 @@ The license notices of the code in `aglow` go in `share/licenses/afterglow`:
 
 A static `aglow` contains parts of glibc, which is LGPL-2.1-or-later.
 To link `aglow` again with a changed C library, build the `aglow` target from the Afterglow source of the same version (`cmake --build build --target aglow`).
+A [build of aglow alone](#build-aglow-alone) also does this, without Qt and the Phosphor libraries.
 When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
 When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
 A static program cannot use the sanitizer runtimes.

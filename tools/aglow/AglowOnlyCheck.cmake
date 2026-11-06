@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-# cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> [-DBUILD_TYPE=<type>]
-#       [-DC_COMPILER=<path>] [-DCXX_COMPILER=<path>] [-DCPM_CACHE=<dir>]
-#       [-DDEPS_ARCHIVES=<dir>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
+# cmake -DSOURCE=<dir> -DBINARY=<dir> -DGENERATOR=<name> [-DMAKE_PROGRAM=<path>]
+#       [-DBUILD_TYPE=<type>] [-DC_COMPILER=<path>] [-DCXX_COMPILER=<path>]
+#       [-DC_FLAGS=<flags>] [-DCXX_FLAGS=<flags>] [-DLINKER_FLAGS=<flags>]
+#       [-DCPM_CACHE=<dir>] [-DDEPS_ARCHIVES=<dir>] [-DJOBS=<n>] -P AglowOnlyCheck.cmake
 #
 # Builds aglow alone (AFTERGLOW_AGLOW_ONLY) from SOURCE in BINARY, as a remote
 # host or a distribution package does, and installs it into BINARY/prefix.
@@ -18,7 +19,9 @@
 #     and nothing else;
 #   - the installed aglow runs.
 #
-# CPM_CACHE and DEPS_ARCHIVES are those of the build that runs the test, so
+# The tools, the build type and the flags are those of the build that runs the
+# test, so that aglow alone links as its aglow does: dynamically when the flags
+# hold -fsanitize. CPM_CACHE and DEPS_ARCHIVES are those of that build too, so
 # that the pinned archives come from where that build took them.
 
 foreach(required SOURCE BINARY GENERATOR)
@@ -49,8 +52,9 @@ set(args -S "${SOURCE}" -B "${build}" -G "${GENERATOR}"
     -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=ON
     "-DAFTERGLOW_PHOSPHOR_LIBS_DIR=${BINARY}/no-phosphor-libs"
     -DBUILD_TESTING=OFF)
-foreach(pair "CMAKE_BUILD_TYPE;BUILD_TYPE" "CMAKE_C_COMPILER;C_COMPILER" "CMAKE_CXX_COMPILER;CXX_COMPILER"
-             "CPM_SOURCE_CACHE;CPM_CACHE" "AFTERGLOW_DEPS_ARCHIVES;DEPS_ARCHIVES")
+foreach(pair "CMAKE_MAKE_PROGRAM;MAKE_PROGRAM" "CMAKE_BUILD_TYPE;BUILD_TYPE" "CMAKE_C_COMPILER;C_COMPILER"
+             "CMAKE_CXX_COMPILER;CXX_COMPILER" "CMAKE_C_FLAGS;C_FLAGS" "CMAKE_CXX_FLAGS;CXX_FLAGS"
+             "CMAKE_EXE_LINKER_FLAGS;LINKER_FLAGS" "CPM_SOURCE_CACHE;CPM_CACHE" "AFTERGLOW_DEPS_ARCHIVES;DEPS_ARCHIVES")
     list(GET pair 0 name)
     list(GET pair 1 given)
     if(${given})

@@ -169,8 +169,8 @@ if(TARGET afterglow)
     add_dependencies(afterglow aglow)
 endif()
 install(TARGETS aglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-# The completions, also alone (AFTERGLOW_AGLOW_ONLY): on a remote host,
-# aglow run completes the commands of the scripts.
+# The completions, also alone (AFTERGLOW_AGLOW_ONLY): the commands and
+# options of aglow complete on a remote host too.
 install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.bash"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME aglow)
 install(FILES "${PROJECT_SOURCE_DIR}/data/completions/_aglow" DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
@@ -223,14 +223,21 @@ if(BUILD_TESTING AND TARGET afterglow)
     # aglow alone (AFTERGLOW_AGLOW_ONLY), as a remote host builds it: where
     # find_package finds no Qt and with no Phosphor checkout, installed into a
     # directory of the build tree. It compiles zlib-ng again, so it has the
-    # label slow, and ctest -LE slow leaves it out.
+    # label slow, and ctest -LE slow leaves it out. It takes the tools and the
+    # flags of this build: with the sanitizers of the debug preset, aglow
+    # alone links dynamically too, and needs no static runtime libraries.
+    # PROCESSORS tells ctest -j the jobs of its build.
+    set(AGLOW_ONLY_JOBS 2)
     add_test(NAME aglow_only_build
              COMMAND ${CMAKE_COMMAND} "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBINARY=${CMAKE_CURRENT_BINARY_DIR}/aglow-only"
-                     "-DGENERATOR=${CMAKE_GENERATOR}" "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
+                     "-DGENERATOR=${CMAKE_GENERATOR}" "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+                     "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
                      "-DC_COMPILER=${CMAKE_C_COMPILER}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                     "-DC_FLAGS=${CMAKE_C_FLAGS}" "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"
+                     "-DLINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
                      "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${AFTERGLOW_DEPS_ARCHIVES}"
-                     -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
-    set_tests_properties(aglow_only_build PROPERTIES LABELS slow TIMEOUT 1800)
+                     "-DJOBS=${AGLOW_ONLY_JOBS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
+    set_tests_properties(aglow_only_build PROPERTIES LABELS slow TIMEOUT 1800 PROCESSORS ${AGLOW_ONLY_JOBS})
 endif()
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter)

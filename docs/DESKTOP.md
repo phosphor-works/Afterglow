@@ -216,7 +216,8 @@ aglow clipboard --get-clipboard --mime image/png ./copy.png
 ### Remote hosts
 
 Afterglow does not copy `aglow` to a remote host.
-Install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
+Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
+You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
 That build does not need Qt or the Phosphor libraries.
 `kitten` also works over SSH for file transfer, drag and drop, images and the clipboard, because these are Kitty protocols.
 `aglow run` reaches only an Afterglow on the same computer.

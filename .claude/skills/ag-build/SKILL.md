@@ -59,7 +59,8 @@ file, set the new hash there and list the patch at the top of `tools/aglow/StbIm
 - The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng and xxHash from
   `cmake/AfterglowDependencies.cmake`) download into the CPM cache, by default `../PlasmaZones/.cache/cpm`, and
   Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is set (`docs/BUILD.md` has the order). A
-  configure without network works once that cache holds them.
+  configure without network works once that cache holds them. A build of `aglow` alone loads no PlasmaZones
+  module, so its default cache is Afterglow's own `.cache/cpm`.
 
 ## Build
 
