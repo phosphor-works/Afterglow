@@ -86,13 +86,13 @@ add_subdirectory(libs/afterglow-vt)     # terminal emulation core: parser, scree
 add_subdirectory(libs/afterglow-pty)    # pseudo-terminal spawn and I/O thread
 add_subdirectory(libs/afterglow-render) # Vulkan (QRhi) grid renderer, font shaping, glyph atlas
 option(AFTERGLOW_BUILD_TOOLS "Build developer tools: benchmarks, afterglow_renderpng and the headless conformance host" OFF)
-option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols (no Qt)" ON)
+option(AFTERGLOW_BUILD_AGLOW "Build aglow, the static client of the Kitty protocols and of script commands (no Qt). Without it, afterglow has no run, transfer, dnd, icat or clipboard command" ON)
 option(AFTERGLOW_BUILD_FUZZERS "Build the libFuzzer targets for the terminal core, the protocol library and the image decoders (clang for C and C++)" OFF)
 # A fuzz build instruments zlib-ng with the sanitizers (tools/fuzz), and a
 # static aglow cannot link their runtimes. This normal variable hides the
 # cached option in every directory, afterglow/ included.
 if(AFTERGLOW_BUILD_FUZZERS AND AFTERGLOW_BUILD_AGLOW)
-    message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built")
+    message(STATUS "aglow: AFTERGLOW_BUILD_FUZZERS is on, so aglow is not built, and afterglow has no run, transfer, dnd, icat or clipboard command")
     set(AFTERGLOW_BUILD_AGLOW OFF)
 endif()
 add_subdirectory(afterglow)             # the application

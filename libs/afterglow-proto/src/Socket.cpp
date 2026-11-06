@@ -74,7 +74,7 @@ SocketLookup findSocket(const EnvironmentLookup& env)
 {
     const std::string_view owner = value(env, "AFTERGLOW_SOCKET");
     const std::string_view paneText = value(env, "AFTERGLOW_PANE_ID");
-    if (owner.empty() && !paneText.empty()) return {{}, false, 0, "the afterglow that runs this pane has no socket"};
+    if (owner.empty() && !paneText.empty()) return {{}, false, 0, "the Afterglow that runs this pane has no socket"};
     const auto tooLong = [](std::string_view path) {
         return "the socket path is over " + std::to_string(MaxSocketPathBytes) + " bytes: " + std::string(path);
     };

@@ -13,6 +13,7 @@ QVariantMap Pane::readSelection(std::size_t limit) const
         && m_selection.validFor(m_terminal.screen());
     bool truncated = false;
     const auto text = available ? m_selection.text(m_terminal.screen(), m_terminal.options().wordBoundaries,
+        // ScriptHost::MaxReadTextBytes checks the effect first: this only bounds a direct caller.
         std::min(limit, std::size_t(1024 * 1024)), &truncated) : std::string{};
     return {{QStringLiteral("text"), QString::fromStdString(text)}, {QStringLiteral("available"), available},
         {QStringLiteral("truncated"), truncated}};

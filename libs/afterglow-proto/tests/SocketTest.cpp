@@ -79,7 +79,7 @@ TEST(Socket, APaneWithoutASocketIsAnError)
     // Another afterglow on the display numbers its panes from 1 too.
     const auto lookup = findSocket(environment({{"AFTERGLOW_PANE_ID", "3"}, {"XDG_RUNTIME_DIR", "/r"}}));
     EXPECT_TRUE(lookup.path.empty());
-    EXPECT_EQ(lookup.error, "the afterglow that runs this pane has no socket");
+    EXPECT_EQ(lookup.error, "the Afterglow that runs this pane has no socket");
 }
 
 TEST(Socket, ARelativeRuntimeDirectoryIsNotUsed)

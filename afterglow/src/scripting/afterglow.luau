@@ -28,8 +28,9 @@ local function required(value, helper, what)
     return tostring(value)
 end
 
+-- A command: nil or "" is the default shell, as the host reads a string.
 local function list(value)
-    if value == nil then
+    if value == nil or value == "" then
         return {}
     end
     if type(value) == "string" then
@@ -153,7 +154,8 @@ local function resume(ev)
     index = tonumber(index)
     -- An index that the flow does not have, or has a result for already, is
     -- not its result. Afterglow refuses a request ID with the prefix that
-    -- the runtime did not give in the same call, so a script cannot forge one.
+    -- the runtime did not give in the same call, and only afterglow holds the
+    -- module whose __resume calls this, so a script cannot forge a result.
     if not flow or index < 1 or index > flow.count or flow.results[index] ~= nil then
         return nil
     end
@@ -171,10 +173,9 @@ local function resume(ev)
     return drive(flow.co, if ev.ok then ev.data else nil, ev.error, ev)
 end
 
--- Afterglow calls this when a call that registered flows failed, for example
+-- Afterglow calls this when a call that registered a flow failed, for example
 -- because its effects were too large to convert: none of those effects reached
--- the host, so no result will ever resume the flows after @since. A handler
--- that calls afterglow.__wrap itself can register more than one. Returns
+-- the host, so no result will ever resume the flows after @since. Returns
 -- whether it dropped any.
 local function abandon(since)
     if type(since) ~= "number" then
@@ -195,11 +196,14 @@ local function abandon(since)
 end
 
 -- Afterglow calls this when it ends a run whose handler may still wait (a
--- cancel, a time limit, a client that went away). No result resumes the
--- handler after this: it resumes once here, with a "cancelled" error for
--- each effect it waits for that has no result yet, so that its cleanup runs.
--- A run has one handler, which waits for one flow at most. context has the
--- terminal and the pane that a result event has.
+-- cancel, a time limit, a client that went away). No result of what the
+-- handler waits for resumes it after this: it resumes once here, with a
+-- "cancelled" error for each effect it waits for that has no result yet, so
+-- that its cleanup runs. The cleanup can wait again, as any handler can. The
+-- run has ended, so Scripts.commandTimeout no longer bounds it, and its waits
+-- count toward the script's limits on waiting handlers. A run has one
+-- handler, which waits for one flow at most. context has the terminal and
+-- the pane that a result event has.
 local function cancelRun(run, message, context)
     local terminal = type(context) == "table" and context.terminal or nil
     local pane = type(context) == "table" and context.pane or nil
@@ -241,9 +245,20 @@ end
 -- returned while unloading are ignored.
 local direct = { migrate = true, on_unload = true }
 
--- Afterglow loads every script through this: the module's functions run as
--- handler coroutines, and its other fields read through unchanged.
+-- Afterglow loads every script through this, once: the module's functions run
+-- as handler coroutines, and its other fields read through unchanged. The
+-- runtime's hooks (__resume, __cancel_run...) are fields of the module that it
+-- returns, which only afterglow holds. A table that a script wrapped itself
+-- would run flows that afterglow does not know of: effects that the script
+-- drops never come back to free their waiting slots, and its hooks would
+-- resume a handler with a result that the script made up. The script's own
+-- code runs before afterglow wraps it, so a script that calls this does not load.
+local wrapped = false
 local function wrap(module)
+    if wrapped then
+        error("afterglow.__wrap belongs to afterglow, which loads each script through it once", 2)
+    end
+    wrapped = true
     if type(module) ~= "table" then
         return module -- the engine refuses such a module; nothing to wrap
     end
@@ -389,6 +404,9 @@ afterglow = {
     -- Scope is relative to the anchor, or the globally active objects when
     -- omitted. This only reads the detached snapshot provided with the event.
     panes = function(state, scope, anchor)
+        if scope ~= nil and scope ~= "all" and scope ~= "pane" and scope ~= "tab" and scope ~= "window" then
+            error("afterglow.panes scope must be all, pane, tab or window", 2)
+        end
         local out = {}
         local id = anchor == nil and state.active_pane or paneId(anchor)
         local tab, window = state.active_tab, state.active_window
@@ -410,6 +428,7 @@ afterglow = {
         return out
     end,
     request = function(id, effect)
+        checkEffect(effect, "afterglow.request expects an effect, such as afterglow.select(...)", 3)
         local out = table.clone(effect)
         out.request_id = id
         return out
@@ -484,6 +503,8 @@ afterglow = {
     -- effect: "portal", "flash", "shake", or a number a pack defines (4-255).
     pulse = function(pane, effect, options)
         local o = options or {}
-        return { kind = "pulse", pane = paneId(pane), effect = tostring(effect), duration_ms = o.duration_ms or 600, color = o.color or 4 }
+        -- nil would reach afterglow as "nil", which a package can name a pulse.
+        return { kind = "pulse", pane = paneId(pane), effect = required(effect, "afterglow.pulse", "an effect"),
+            duration_ms = o.duration_ms or 600, color = o.color or 4 }
     end,
 }

@@ -43,15 +43,18 @@ std::string ownSocketPath(std::int64_t pid, const EnvironmentLookup& env = syste
 struct SocketLookup
 {
     std::string path; ///< empty when there is none: error says why
-    /// The socket of the afterglow that runs this pane ($AFTERGLOW_SOCKET).
-    /// Its pane IDs are the ones that $AFTERGLOW_PANE_ID names.
+    /// The socket of $AFTERGLOW_SOCKET, which every pane sets to the socket
+    /// of the Afterglow that runs it.
     bool own = false;
-    /// $AFTERGLOW_PANE_ID when the socket is the pane's own afterglow, else 0.
+    /// $AFTERGLOW_PANE_ID whenever $AFTERGLOW_SOCKET is set, else 0. The
+    /// lookup cannot tell a socket of another Afterglow from the pane's own:
+    /// a user who points AFTERGLOW_SOCKET at another one clears
+    /// AFTERGLOW_PANE_ID, or gives the client a pane.
     std::int64_t pane = 0;
     std::string error;
 };
 
-/// The socket of a client: $AFTERGLOW_SOCKET, the afterglow that runs this
+/// The socket of a client: $AFTERGLOW_SOCKET, the Afterglow that runs this
 /// pane, else the shared socket of the display. A pane ID without a socket
 /// is an error: another afterglow on the display numbers its panes from 1
 /// too, and would act on a pane with the same number. So is a path over

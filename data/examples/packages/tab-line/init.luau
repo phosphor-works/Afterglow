@@ -51,6 +51,13 @@ local function key(runs)
     end
     return table.concat(parts,"\2")
 end
+-- Lines that flush sends in each refresh second, for all windows together.
+-- The dock budget counts any 1000 ms, which holds parts of two refresh
+-- seconds: twice this stays under its 60. A timer that calls up to 5% early
+-- can put parts of three in it, and a line over the budget is dropped and
+-- goes out again at the next draw.
+local TickLines=29
+local tickLines,linesTick=0,0
 -- The line that the window must show, as runs and their key. "" is no line.
 local function wanted(terminal,window,pane)
     local tabs=windowTabs(terminal,window.id)
@@ -66,19 +73,21 @@ end
 -- from the line that Afterglow accepted. Each window has one line on its way
 -- at a time. Its result moves it to shown (see on_result), so a line that
 -- Afterglow drops goes out again at the next draw. Returns the effects, and
--- whether a window still waits for its line.
+-- whether a window still waits for its line: one on its way, or past TickLines.
 local function flush(terminal)
     local effects,live,behind={}, {}, false
+    if linesTick~=tick then linesTick,tickLines=tick,0 end
     for _,window in ipairs(terminal.windows) do
         live[window.id]=true
         local pane=windowPane(terminal,window)
         local runs,line
         if pane then runs,line=wanted(terminal,window,pane) end
         if pane and line~=(shown[window.id] or "") and line~=refused[window.id] then
-            if pending[window.id] then
+            if pending[window.id] or tickLines>=TickLines then
                 behind=true
             else
                 sends+=1
+                tickLines+=1
                 pending[window.id]={id=sends,line=line,tick=tick}
                 local effect=runs and afterglow.dock(pane,{id="tabline",edge="top",tab_bar=true,lines={runs}})
                     or afterglow.undock(pane,"tabline")
@@ -113,11 +122,24 @@ local function drawLater()
     drawing=tick
     return {afterglow.cancel("draw"),afterglow.timer("draw",DrawMs,DrawMs)}
 end
+-- The effects of a flush, with the draw timer when a window still waits for
+-- its line: the timer sends it once the line on its way has its result, or in
+-- the next refresh second. While the timer runs, a change that follows waits
+-- for its next call, at most DrawMs. That is the coalescing that redraw starts,
+-- and the window that waits could not take a line before the result anyway.
+local function follow(effects,behind)
+    if not behind then return effects end
+    dirty=true
+    if not drawing then
+        drawing=tick
+        table.insert(effects,afterglow.cancel("draw"))
+        table.insert(effects,afterglow.timer("draw",DrawMs,DrawMs))
+    end
+    return effects
+end
 -- Lines that drawNow sends in each refresh second. Past them the draw timer
--- draws, so that a fast sweep of the pointer over many tabs stays inside
--- the dock budget and the result limit. The budget is any 1000 ms, so the
--- end of one refresh second and the start of the next can both fall in it:
--- twice this, the draw timer's 4 and the refresh are under 60.
+-- draws, so that a fast sweep of the pointer over many tabs leaves some of
+-- TickLines for the timer, which draws where the pointer stopped.
 local NowLines=25
 local nowLines,nowTick=0,0
 -- The pointer and the line's width draw at once, so that a hover shows
@@ -129,19 +151,12 @@ local function drawNow(ev)
     local before=sends
     local effects,behind=flush(ev.terminal)
     nowLines+=sends-before
-    if behind and drawing then
-        dirty=true
-    elseif behind then
-        drawing,dirty=tick,true
-        table.insert(effects,afterglow.cancel("draw"))
-        table.insert(effects,afterglow.timer("draw",DrawMs,DrawMs))
-    end
-    return effects
+    return follow(effects,behind)
 end
 function script.on_load(ev)
     config=ev.package.config;enabled=ev.storage.value.enabled~=false
     -- Draw now: the previous instance's line went when it unloaded.
-    local effects=flush(ev.terminal)
+    local effects=follow(flush(ev.terminal))
     table.insert(effects,afterglow.timer("refresh",1000,1000))
     return effects
 end
@@ -243,6 +258,11 @@ local function refresh(ev)
         job=nil
         table.insert(effects,afterglow.cancel("git"))
     end
+    -- No draw timer here. on_result sends nothing, so a window whose line is
+    -- on its way gets its next line at the first draw after the result: an
+    -- event, the draw timer if it runs, or the next refresh. A window past
+    -- TickLines gets its line at the next refresh. A timer would hold back
+    -- the next change's draw until it calls.
     for _,effect in ipairs((flush(ev.terminal))) do table.insert(effects,effect) end
     if not enabled or config.git==false or job then return effects end
     -- One query at a time, for the focused pane of each window in turn. The
@@ -307,8 +327,9 @@ function script.run_command(command,ev)
         if unknown then table.insert(effects,afterglow.request("state",afterglow.state_read())) end
         return effects
     end
-    -- Off, the lines go and the windows get their tab bars back.
-    local effects=flush(terminal)
+    -- Off, the lines go and the windows get their tab bars back. A window
+    -- whose line is on its way gets the draw timer.
+    local effects=follow(flush(terminal))
     table.insert(effects,afterglow.output(ev,enabled and "The tab line is on\n" or "The tab line is off\n"))
     return effects
 end
@@ -338,7 +359,7 @@ local function gitResult(ev)
         label=segments.git(output)
     end
     git[job.cwd]={label=label,tick=tick};job=nil
-    return (flush(ev.terminal))
+    return follow(flush(ev.terminal))
 end
 function script.on_result(ev)
     local window,id=string.match(ev.request_id,"^line:(%d+):(%d+)$")
@@ -362,7 +383,7 @@ function script.on_result(ev)
     if ev.request_id=="state" then
         if not ev.ok then return nil end
         enabled=ev.data.value.enabled~=false
-        return (flush(ev.terminal))
+        return follow(flush(ev.terminal))
     end
     local jobId=tonumber(string.match(ev.request_id,"^git:(%d+)$"))
     if jobId then

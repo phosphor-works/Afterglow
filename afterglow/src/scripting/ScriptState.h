@@ -7,6 +7,8 @@ namespace Afterglow {
 class ScriptState
 {
 public:
+    /// The highest state schema version: package.json's state_version and the stored file's.
+    static constexpr int MaxVersion = 10000;
     explicit ScriptState(QString directory) : m_directory(std::move(directory)) {}
     struct Snapshot { int version = 0; int revision = 0; QVariantMap value; };
     QString read(const QString& id, Snapshot& result) const;

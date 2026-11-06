@@ -172,17 +172,18 @@ Afterglow does not open or execute received files automatically.
 
 ## The aglow client
 
-`aglow` is a client of four Kitty protocols.
-This document describes two of them, file transfer and drag and drop.
-The other two are graphics and the clipboard.
-`aglow run` also runs the commands of scripts (see [script commands](CONTROL.md#script-commands)).
+`aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard.
+This document describes each of them.
+`aglow run` also runs the commands of scripts in the Afterglow on the same computer (see [script commands](CONTROL.md#script-commands)).
 `aglow` is one static binary with no shared libraries.
 It runs on a Linux computer of its architecture whose kernel is as new as the static C library of the build host needs.
 On x86-64, the processor must also have the instruction level that the build needs.
-The build prints both requirements, for example "needs Linux 6.1.0 or later".
+When `readelf` is installed, the build prints both requirements, for example "needs Linux 6.1.0 or later".
+When the compiler or linker flags contain `-fsanitize`, `aglow` links dynamically. See [build and install](BUILD.md#install).
 Afterglow installs it next to `afterglow`. To use the protocols over SSH, install `aglow` on the remote host (see [remote hosts](#remote-hosts)).
 The `kitten` client of Kitty also works with Afterglow.
-`aglow` takes the options of `kitten`, with the differences that [aglow interoperability](COMPATIBILITY.md#aglow-interoperability) lists.
+`aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name.
+The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoperability).
 
 | Command | Function |
 | --- | --- |
@@ -197,7 +198,7 @@ When they cannot run it, they exit with one of these statuses, as a shell does:
 
 | Status | Cause |
 | --- | --- |
-| 127 | There is no `aglow` next to `afterglow`, or the build has no `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`). |
+| 127 | There is no `aglow` next to `afterglow`, or the build has no `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`). `afterglow` also exits with 127 when it cannot read its own executable path from `/proc/self/exe`. |
 | 126 | There is an `aglow` next to `afterglow`, but it cannot run. For example, it is not executable. |
 
 `aglow --version` shows its version and the version of its protocol.

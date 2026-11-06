@@ -24,10 +24,13 @@ wrong, and points to the skills that hold the procedures.
 - **Never touch the user's running Afterglow.** This session usually runs inside one of its panes
   (`AFTERGLOW_PANE_ID` is set). `afterglow ctl`, `aglow run` and `afterglow run` (also `run --complete`) use the
   pane's `AFTERGLOW_SOCKET`, else the socket of the user's Wayland display, so they act on the user's own terminal.
-  A private D-Bus does not change that.
+  A private D-Bus does not change that, and neither does a pseudo-terminal. Run them only against an Afterglow of a
+  test, with `AFTERGLOW_PANE_ID` cleared: the `XDG_RUNTIME_DIR` and `AFTERGLOW_SOCKET` of a test (`RunBinaryTest` in
+  `CommandSocketTest.cpp`), or a nested KWin with its own `WAYLAND_DISPLAY` (`nested_desktop.py`).
   `pkill afterglow` closes their windows. Test in a nested KWin with its own display (`ag-verify-live`).
-  `aglow` and `afterglow transfer`, `dnd`, `icat` and `clipboard` open `/dev/tty`, which is the user's pane. Run
-  them only in a pseudo-terminal that a test makes (`clipboard_pty.py`, `DragDropTest.cpp`).
+  `aglow transfer`, `dnd`, `icat` and `clipboard`, and the `afterglow` commands of the same names, open `/dev/tty`,
+  which is the user's pane. Run them only in a pseudo-terminal that a test makes (`clipboard_pty.py`,
+  `DragDropTest.cpp`).
 - **A build is not a test.** Check a visible change with `afterglow_renderpng` or the native window tests, at the
   edge cases (one pane, two panes, progress 0 and 1, the wrap point of a loop). The commit message says what you ran.
   A green suite has missed a transparent shader, a flicker at a wrap seam and an animation that never stopped.
@@ -87,12 +90,13 @@ wrong, and points to the skills that hold the procedures.
 
 | Task | Command |
 | --- | --- |
-| Build | `cmake --build build -j6` (zero warnings is the bar) |
-| Unit and renderer tests | `ctest --test-dir build --output-on-failure -j6` (about 1,350, all pass) |
-| Native window tests | `python3 .claude/skills/ag-verify-live/headless_native.py` |
+| Build | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 cmake --build build -j6` (zero warnings is the bar) |
+| Unit and renderer tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 ctest --test-dir build --output-on-failure -j6` (about 1,450, all pass) |
+| Native window tests | `systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 python3 .claude/skills/ag-verify-live/headless_native.py` |
 | Shader preview | `build/tools/render/afterglow_renderpng --shader PACK - out.png` |
 | Configuration reference | `python3 tools/generate-reference.py build/afterglow/afterglow` |
 
+The memory cap keeps systemd-oomd from killing the user's Afterglow (see the last lesson). Run one build at a time.
 The `ag-build` skill has the details: the build directories, the Phosphor checkout, the generated files.
 
 ## Where things are
@@ -108,7 +112,7 @@ The `ag-build` skill has the details: the build directories, the Phosphor checko
 | Configuration | `afterglow/src/config/`: `Settings.*` (schema, defaults, `SettingsStore` over PhosphorConfig), `Keybinds.*`, `KeyModes.*`, `Theme.*`; `data/themes/` |
 | Shader library | `afterglow/src/shaders/`: `ShaderLibrary.*` (the pack registry, with package packs), `ShaderControls.*`; packs in `data/shaders/`, the contract in `data/shaders/shared/` |
 | Scripting | `afterglow/src/scripting/`: `ScriptHost.*` (Luau VMs, events, effect validation), `ScriptControl.cpp` (effects applied to windows), `ScriptPackage.*`, `ScriptState.*`, `ScriptTasks.*`, the prelude `afterglow.luau` and the declarations `afterglow.d.luau`; examples in `data/examples/scripts/` and `data/examples/packages/` |
-| Control | `afterglow/src/control/`: `Control.cpp`, `ControlSocket.cpp` (the `control` target of the phosphor-ipc socket), `IpcClient.cpp`, `Ctl.cpp` (`afterglow ctl`); the socket and the launch handoff in `afterglow/src/app/InstanceSocket.cpp` and `main.cpp` |
+| Control | `afterglow/src/control/`: `Control.cpp`, `ControlSocket.cpp` (the `control` target of the phosphor-ipc socket), `CommandSocket.cpp` (the `commands` target: script commands for `aglow run`), `ControlProject.cpp` (projects and directories), `IpcClient.cpp`, `Ctl.cpp` (`afterglow ctl`); the socket and the launch handoff in `afterglow/src/app/InstanceSocket.cpp` and `main.cpp` |
 | Shell and desktop | `afterglow/src/shell/` (shell integration, `afterglow ssh`, and `Aglow.cpp`, which runs `aglow` for `afterglow run`, `transfer`, `dnd`, `icat` and `clipboard`), `data/shell-integration/`, `data/completions/` (the Bash, Zsh and Fish completions of `afterglow` and `aglow`), `afterglow/src/desktop/` (accessibility, drag and drop, file transfer), `afterglow/src/audio/` |
 | Tests | `libs/*/tests/`, `afterglow/tests/` (GTest, and the Python acceptance runners), `tools/aglow/tests/` (`aglow_tests` and the Python tests of `aglow`), `tools/conformance/`, `tools/fuzz/` |
 | Tools | `tools/render/` (`afterglow_renderpng`), `tools/bench/`, `tools/generate-reference.py`, `tools/gen_unicode_tables.py`; `tools/aglow/` (`aglow`, the static client of the Kitty protocols and of script commands: no Qt, no Phosphor, only `libs/afterglow-proto` and the vendored stb_image) |

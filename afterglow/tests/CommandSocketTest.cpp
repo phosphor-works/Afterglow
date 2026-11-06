@@ -3,10 +3,11 @@
 
 // The "commands" socket target, the plain C++ run client of afterglow-proto
 // against the real phosphor-ipc router, and `aglow run` itself, also as
-// `afterglow run` runs it. Every test listens on a socket of its own, in a
-// runtime directory of its own: the session that runs the tests may run
-// inside an afterglow pane, whose AFTERGLOW_SOCKET these tests must never
-// reach.
+// `afterglow run` runs it, and the command lines of `afterglow ctl` and
+// `afterglow --help`. Every test listens on a socket of its own, in a
+// runtime directory of its own, or points AFTERGLOW_SOCKET where nothing
+// listens: the session that runs the tests may run inside an afterglow pane,
+// whose AFTERGLOW_SOCKET these tests must never reach.
 
 #include "app/InstanceSocket.h"
 #include "app/ScriptSettings.h"
@@ -15,9 +16,11 @@
 #include "control/Control.h"
 #include "scripting/ScriptControl.h"
 #include "scripting/ScriptHost.h"
+#include "shell/Aglow.h"
 
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/Json.h>
+#include <AfterglowProto/Run.h>
 
 #include <gtest/gtest.h>
 
@@ -25,11 +28,13 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QThread>
 
@@ -39,6 +44,7 @@
 #include <thread>
 
 #include <csignal>
+#include <unistd.h>
 
 using namespace Afterglow;
 using AfterglowProto::IpcConnection;
@@ -63,6 +69,13 @@ struct Saved
     bool wasSet;
     QByteArray value;
 };
+
+/// The parts of 1 MiB that the flood and spew commands write.
+constexpr qint64 Part = 1048576;
+/// The parts that fill the window of a connection: each line is a little
+/// over a part, and a line goes while less than the window waits.
+constexpr qint64 WindowParts = CommandSocket::AckWindow / Part;
+static_assert(CommandSocket::AckWindow % Part == 0);
 
 const QByteArray Script = R"(
 local flooded = 0
@@ -276,8 +289,8 @@ protected:
 
     /// Reads, from now without a limit, until the answers to @p ids came.
     /// With @p acknowledge it acknowledges the event lines as CONTROL.md
-    /// says: once the runs of the connection have 256 KiB together, each
-    /// run's count. An ack of each run on its own, at 256 KiB, would stall
+    /// says: once the runs of the connection have AckBytes together, each
+    /// run's count. An ack of each run on its own, at AckBytes, would stall
     /// many small runs that fill the window together.
     Drained drain(QLocalSocket& client, const QList<qint64>& ids, bool acknowledge, int timeoutMs = 20000)
     {
@@ -295,7 +308,7 @@ protected:
                     const QString run = args.at(0).toString();
                     unacknowledged[run] += line.size();
                     total += line.size();
-                    if (acknowledge && total >= 256 * 1024) {
+                    if (acknowledge && total >= qint64(AfterglowProto::Run::AckBytes)) {
                         for (auto count = unacknowledged.cbegin(); count != unacknowledged.cend(); ++count)
                             send(client, QStringLiteral("ack"), {count.key(), double(count.value())});
                         unacknowledged.clear();
@@ -579,13 +592,13 @@ TEST_F(CommandSocketTest, ASlowReaderHoldsTheRunBackAndKeepsItsConnection)
     client.setReadBufferSize(64 * 1024);
     const qint64 run = send(client, QStringLiteral("run"), {QStringLiteral("flood"), QStringLiteral("cmds"), QStringLiteral("flood"),
                                                           QJsonArray{QStringLiteral("20")}, QString(), 0});
-    // Four lines of 1 MiB and a little fill the window. The fifth part waits.
+    // WindowParts lines of a part and a little fill the window. The next part waits.
     ASSERT_TRUE(waitFor([this] { return m_commands->waitingOutputBytes() > 0; }));
     EXPECT_EQ(client.state(), QLocalSocket::ConnectedState);
     const int parts = output(until(other, send(other, QStringLiteral("run"), {QStringLiteral("c"), QStringLiteral("cmds"),
                                                                             QStringLiteral("count"), QJsonArray{}, QString(), 0})),
                              "stdout").toInt();
-    EXPECT_EQ(parts, 4);
+    EXPECT_EQ(parts, WindowParts);
     // Reading and acknowledging, as aglow run does, lets it go on.
     const Drained got = drain(client, {run}, true);
     EXPECT_EQ(got.out.size(), 20 * 1048576 + 5);
@@ -610,7 +623,7 @@ TEST_F(CommandSocketTest, TheRunsOfAConnectionShareItsWindow)
     const int parts = output(until(other, send(other, QStringLiteral("run"), {QStringLiteral("c"), QStringLiteral("cmds"),
                                                                             QStringLiteral("count"), QJsonArray{}, QString(), 0})),
                              "stdout").toInt();
-    EXPECT_EQ(parts, 4); // not four for each run
+    EXPECT_EQ(parts, WindowParts); // not WindowParts for each run
     const Drained got = drain(client, {a, b}, true);
     EXPECT_EQ(got.out.size(), 12 * 1048576 + 10);
     EXPECT_EQ(exitOf(got.answers.value(a)), 0);
@@ -667,7 +680,7 @@ TEST_F(CommandSocketTest, ACancelDropsTheOutputThatWaits)
     send(client, QStringLiteral("cancel"), {QStringLiteral("f")});
     Drained got = drain(client, {flood}, false);
     EXPECT_EQ(exitOf(got.answers.value(flood)), 130);
-    EXPECT_EQ(got.out.size(), 4 * 1048576);
+    EXPECT_EQ(got.out.size(), WindowParts * Part);
     EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
 
     // A run that ended, with its output waiting, keeps its own status.
@@ -678,7 +691,7 @@ TEST_F(CommandSocketTest, ACancelDropsTheOutputThatWaits)
     send(client, QStringLiteral("cancel"), {QStringLiteral("s")});
     got = drain(client, {spew}, false);
     EXPECT_EQ(exitOf(got.answers.value(spew)), 3);
-    EXPECT_EQ(got.out.size(), 4 * 1048576);
+    EXPECT_EQ(got.out.size(), WindowParts * Part);
     EXPECT_EQ(m_commands->waitingOutputBytes(), 0);
 }
 
@@ -751,18 +764,23 @@ TEST_F(CommandSocketTest, WaitingStdinHasACapForTheWholeProcess)
     QLocalSocket client, other;
     ASSERT_TRUE(connect(client));
     ASSERT_TRUE(connect(other));
-    // Each run takes its limit, in parts that fit in a request line.
+    // Each run takes its limit, in parts that fit in a request line. False
+    // after a part was refused, for the test to stop there.
     auto fill = [&](QLocalSocket& socket, const QString& run) {
         for (qint64 sent = 0; sent < Limit;) {
             const qint64 size = std::min<qint64>(1000000, Limit - sent);
             const QJsonObject reply = call(socket, QStringLiteral("input"), {run, QString(size, QLatin1Char('x')), false});
-            ASSERT_EQ(reply.value(QStringLiteral("type")), QStringLiteral("reply")) << qPrintable(run);
+            if (reply.value(QStringLiteral("type")) != QLatin1String("reply")) {
+                ADD_FAILURE() << qPrintable(run) << ": " << qPrintable(reply.value(QStringLiteral("message")).toString());
+                return false;
+            }
             sent += size;
         }
+        return true;
     };
     // Fifteen runs on one connection and one on another: exactly the cap.
-    for (int run = 0; run < 15; ++run) fill(client, QStringLiteral("a%1").arg(run));
-    fill(other, QStringLiteral("b0"));
+    for (int run = 0; run < 15; ++run) ASSERT_TRUE(fill(client, QStringLiteral("a%1").arg(run)));
+    ASSERT_TRUE(fill(other, QStringLiteral("b0")));
     EXPECT_EQ(m_commands->waitingInputBytes(), CommandSocket::MaxWaitingInputBytes);
     const QJsonObject over = call(other, QStringLiteral("input"), {QStringLiteral("b1"), QStringLiteral("x"), false});
     EXPECT_EQ(over.value(QStringLiteral("type")), QStringLiteral("error"));
@@ -877,15 +895,21 @@ protected:
 #endif
     }
 
-    /// The program and its first arguments.
-    QStringList command() const
+    /// The aglow of this build.
+    static QString aglow()
     {
 #ifdef AFTERGLOW_AGLOW
-        if (m_throughAfterglow) return {QStringLiteral(AFTERGLOW_BINARY), QStringLiteral("run")};
-        return {QStringLiteral(AFTERGLOW_AGLOW), QStringLiteral("run")};
+        return QStringLiteral(AFTERGLOW_AGLOW);
 #else
         return {};
 #endif
+    }
+
+    /// The program and its first arguments.
+    QStringList command() const
+    {
+        if (m_throughAfterglow) return {m_afterglow, QStringLiteral("run")};
+        return {aglow(), QStringLiteral("run")};
     }
 
     /// Starts @p process with @p args after the command.
@@ -938,6 +962,8 @@ protected:
     }
 
     bool m_throughAfterglow = false;
+    /// The afterglow that m_throughAfterglow runs.
+    QString m_afterglow = QStringLiteral(AFTERGLOW_BINARY);
 };
 
 TEST_F(RunBinaryTest, PassesOutputAndExitStatusThrough)
@@ -971,7 +997,7 @@ TEST_F(RunBinaryTest, ListsHelpsAndCompletes)
     EXPECT_TRUE(r.out.contains(QStringLiteral("\ngreet\tGreet\nplain\tIgnore stdin\nread\tEcho stdin\n"))) << qPrintable(r.out);
     r = run({QStringLiteral("--help")});
     EXPECT_EQ(r.status, 0);
-    EXPECT_TRUE(r.out.startsWith(QStringLiteral("usage: aglow run"))) << qPrintable(r.out);
+    EXPECT_TRUE(r.out.startsWith(QStringLiteral("Usage: aglow run"))) << qPrintable(r.out);
 }
 
 TEST_F(RunBinaryTest, UsageErrorsAndUnknownCommandsExitWithTwo)
@@ -1043,9 +1069,11 @@ TEST_F(RunBinaryTest, ASignalCancelsTheRunAndEndsTheClient)
         EXPECT_EQ(r.signal, signal);
         EXPECT_EQ(r.status, status);
         EXPECT_EQ(r.out, QStringLiteral("start\n"));
+        // The run ended in the terminal too: with a limit of one, another
+        // starts. The client sends its cancel without waiting for the
+        // terminal, so the next pass waits until the run has ended there.
+        ASSERT_TRUE(pumpUntil([&] { return run({QStringLiteral("cmds"), QStringLiteral("greet")}).status == 0; }));
     }
-    // The run ended in the terminal too: with a limit of one, another starts.
-    ASSERT_TRUE(pumpUntil([&] { return run({QStringLiteral("cmds"), QStringLiteral("greet")}).status == 0; }));
 }
 
 TEST_F(RunBinaryTest, AcknowledgesOutputPastTheWindow)
@@ -1130,12 +1158,13 @@ TEST_F(RunBinaryTest, AnInheritedIgnoredSigintStaysIgnored)
 TEST_F(RunBinaryTest, ArgumentsOverOneRequestAreAUsageError)
 {
     ASSERT_TRUE(start());
-    // 256 arguments within their length, about 2 MiB of UTF-8 together.
+    // 100 arguments within their length, about 1.2 MiB of UTF-8 together:
+    // over one request, and far below the kernel's limit on argv for exec.
     QStringList args{QStringLiteral("cmds"), QStringLiteral("greet")};
-    for (int i = 0; i < 256; ++i) args << QString(4000, QChar(0xe9));
+    for (int i = 0; i < 100; ++i) args << QString(4000, QChar(0x4e00));
     Result r = run(args);
     EXPECT_EQ(r.status, 2);
-    EXPECT_TRUE(r.err.contains(QStringLiteral("too long"))) << qPrintable(r.err);
+    EXPECT_TRUE(r.err.contains(QStringLiteral("make a request over 1 MiB"))) << qPrintable(r.err);
     // One argument more than the terminal takes.
     QStringList many{QStringLiteral("cmds"), QStringLiteral("greet")};
     for (int i = 0; i < 257; ++i) many << QStringLiteral("x");
@@ -1163,10 +1192,10 @@ TEST_F(RunBinaryTest, AfterglowRunRunsAglowRun)
     EXPECT_EQ(r.err, QStringLiteral("note\n"));
     r = run({QStringLiteral("cmds"), QStringLiteral("read")}, "abc");
     EXPECT_EQ(r.out, QStringLiteral("abc"));
-    // Usage and messages name the command that the user typed.
+    // Usage and messages name afterglow run, the command that ran aglow.
     r = run({QStringLiteral("--help")});
     EXPECT_EQ(r.status, 0);
-    EXPECT_TRUE(r.out.startsWith(QStringLiteral("usage: afterglow run "))) << qPrintable(r.out);
+    EXPECT_TRUE(r.out.startsWith(QStringLiteral("Usage: afterglow run "))) << qPrintable(r.out);
     r = run({QStringLiteral("nope"), QStringLiteral("greet")});
     EXPECT_EQ(r.status, 2);
     EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow run: no script nope with commands (afterglow run lists them)")))
@@ -1176,6 +1205,9 @@ TEST_F(RunBinaryTest, AfterglowRunRunsAglowRun)
     // The exec keeps the process: a signal reaches aglow, which cancels the run and ends by it.
     r = run({QStringLiteral("cmds"), QStringLiteral("wait"), QStringLiteral("60000")}, {}, false, {}, [&](QProcess& process) {
         ASSERT_TRUE(pumpUntil([&] { return process.canReadLine(); }));
+        // The process runs aglow itself, not a client inside afterglow.
+        EXPECT_EQ(QFileInfo(QStringLiteral("/proc/%1/exe").arg(process.processId())).canonicalFilePath(),
+                  QFileInfo(aglow()).canonicalFilePath());
         ::kill(pid_t(process.processId()), SIGINT);
     });
     EXPECT_EQ(r.signal, SIGINT);
@@ -1183,10 +1215,45 @@ TEST_F(RunBinaryTest, AfterglowRunRunsAglowRun)
     ASSERT_TRUE(pumpUntil([&] { return run({QStringLiteral("cmds"), QStringLiteral("greet")}).status == 0; }));
 }
 
+TEST_F(RunBinaryTest, AfterglowRunSaysWhenItCannotRunAglow)
+{
+    // An afterglow alone in a directory: a hard link beside the build's, or
+    // a copy on another file system. It runs the aglow beside it, never one
+    // on PATH, and ends before it looks for a socket.
+    const QFileInfo binary(QStringLiteral(AFTERGLOW_BINARY));
+    QTemporaryDir lone(binary.absolutePath() + QStringLiteral("/afterglow-exec-test-XXXXXX"));
+    ASSERT_TRUE(lone.isValid());
+    m_afterglow = lone.filePath(QStringLiteral("afterglow"));
+    if (::link(QFile::encodeName(binary.filePath()).constData(), QFile::encodeName(m_afterglow).constData()) != 0) {
+        ASSERT_TRUE(QFile::copy(binary.filePath(), m_afterglow));
+    }
+    m_throughAfterglow = true;
+    // The path in the message: beside afterglow's own executable, links resolved.
+    const QString missing = QFileInfo(lone.path()).canonicalFilePath() + QStringLiteral("/aglow");
+    Result r = run({QStringLiteral("cmds"), QStringLiteral("greet")});
+    EXPECT_EQ(r.status, 127);
+    EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow run: cannot run %1: ").arg(missing))) << qPrintable(r.err);
+    EXPECT_TRUE(r.out.isEmpty()) << qPrintable(r.out);
+    // An aglow that is there and cannot run, as it has no execute permission.
+    QFile file(lone.filePath(QStringLiteral("aglow")));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\nexit 0\n");
+    file.close();
+    ASSERT_TRUE(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    r = run({QStringLiteral("cmds"), QStringLiteral("greet")});
+    EXPECT_EQ(r.status, 126);
+    EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow run: cannot run %1: ").arg(missing))) << qPrintable(r.err);
+}
+
 TEST_F(RunBinaryTest, FindsTheSocketOfTheDisplayWithoutAfterglowSocket)
 {
-    // The main socket of a display in the test's runtime directory, never the user's.
-    m_socketName = QStringLiteral("afterglow-agtest-1.sock");
+    // The main socket of a display, where the terminal listens, in the
+    // test's runtime directory: never the user's.
+    Saved waylandDisplay("WAYLAND_DISPLAY");
+    qputenv("WAYLAND_DISPLAY", "agtest-1");
+    const QFileInfo shared(InstanceSocket::sharedPath());
+    ASSERT_EQ(shared.path(), m_runtime);
+    m_socketName = shared.fileName();
     ASSERT_TRUE(start());
     QProcessEnvironment display = environment();
     display.remove(QStringLiteral("AFTERGLOW_SOCKET"));
@@ -1202,7 +1269,7 @@ TEST_F(RunBinaryTest, FindsTheSocketOfTheDisplayWithoutAfterglowSocket)
     display.insert(QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("agtest-2"));
     r = run({QStringLiteral("cmds"), QStringLiteral("greet")}, {}, false, display);
     EXPECT_EQ(r.status, 1);
-    EXPECT_TRUE(r.err.contains(QStringLiteral("no running afterglow on this display"))) << qPrintable(r.err);
+    EXPECT_TRUE(r.err.contains(QStringLiteral("no running Afterglow on this display"))) << qPrintable(r.err);
     // $AFTERGLOW_SOCKET comes first, whatever the display.
     QProcessEnvironment own = display;
     own.insert(QStringLiteral("AFTERGLOW_SOCKET"), socketPath());
@@ -1214,6 +1281,143 @@ TEST_F(RunBinaryTest, FindsTheSocketOfTheDisplayWithoutAfterglowSocket)
     r = run({QStringLiteral("cmds"), QStringLiteral("greet")}, {}, false, display);
     EXPECT_EQ(r.status, 1);
     EXPECT_TRUE(r.err.contains(QStringLiteral("XDG_RUNTIME_DIR is not set"))) << qPrintable(r.err);
+}
+
+// A build without aglow: afterglow run says so, with the status of a
+// command that is not there.
+TEST(AfterglowRunWithoutAglowTest, SaysThatTheBuildHasNoAglow)
+{
+#ifdef AFTERGLOW_AGLOW
+    GTEST_SKIP() << "this build has aglow";
+#else
+    // A socket that no afterglow listens on, should it look for one.
+    QTemporaryDir runtime;
+    ASSERT_TRUE(runtime.isValid());
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    env.insert(QStringLiteral("AFTERGLOW_SOCKET"), runtime.filePath(QStringLiteral("none.sock")));
+    env.remove(QStringLiteral("AFTERGLOW_PANE_ID"));
+    QProcess process;
+    process.setProcessEnvironment(env);
+    process.start(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("run"), QStringLiteral("cmds"), QStringLiteral("greet")});
+    ASSERT_TRUE(process.waitForFinished(15000));
+    EXPECT_EQ(process.exitStatus(), QProcess::NormalExit);
+    EXPECT_EQ(process.exitCode(), 127);
+    const QString err = QString::fromUtf8(process.readAllStandardError());
+    EXPECT_TRUE(err.startsWith(QStringLiteral("afterglow run: this build of Afterglow has no aglow"))) << qPrintable(err);
+#endif
+}
+
+/// What a program of this build did in isolate().
+struct Isolated
+{
+    int status = -1; ///< -1 when it did not exit by itself
+    QString out;
+    QString err;
+};
+
+/// Runs @p program with @p args and @p input on stdin, in an environment
+/// that reaches no Afterglow: a runtime directory of its own, a socket there
+/// where nothing listens, no pane and no display.
+Isolated isolate(const QString& program, const QStringList& args, const QByteArray& input = {})
+{
+    // Under /tmp: TMPDIR can be too long for a socket path.
+    QTemporaryDir runtime(QStringLiteral("/tmp/afterglow-ctl-XXXXXX"));
+    if (!runtime.isValid()) {
+        ADD_FAILURE() << "no runtime directory";
+        return {};
+    }
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    env.insert(QStringLiteral("AFTERGLOW_SOCKET"), runtime.filePath(QStringLiteral("none.sock")));
+    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
+        env.remove(name);
+    QProcess process;
+    process.setProcessEnvironment(env);
+    process.start(program, args);
+    if (!process.waitForStarted()) {
+        ADD_FAILURE() << "cannot start " << qPrintable(program);
+        return {};
+    }
+    process.write(input);
+    process.closeWriteChannel();
+    if (!process.waitForFinished(15000)) {
+        process.kill();
+        process.waitForFinished();
+        ADD_FAILURE() << qPrintable(args.join(QLatin1Char(' '))) << " did not end";
+        return {};
+    }
+    return {process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1, QString::fromUtf8(process.readAllStandardOutput()),
+            QString::fromUtf8(process.readAllStandardError())};
+}
+
+// Usage errors and refused input end with status 2 before a connection: no
+// message says that no Afterglow listens.
+TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
+{
+    const QString ctl = QStringLiteral("ctl");
+    for (const auto& [args, message] :
+         {std::pair{QStringList{ctl, QStringLiteral("focus"), QStringLiteral("--pane"), QStringLiteral("0")},
+                    QStringLiteral("--pane takes a pane ID from 1")},
+          std::pair{QStringList{ctl, QStringLiteral("focus"), QStringLiteral("--pane")}, QStringLiteral("--pane needs a pane ID")},
+          std::pair{QStringList{ctl, QStringLiteral("split"), QStringLiteral("--left"), QStringLiteral("--right")},
+                    QStringLiteral("split takes one direction")},
+          std::pair{QStringList{ctl, QStringLiteral("new-tab"), QStringLiteral("--cwd")}, QStringLiteral("--cwd needs a value")},
+          std::pair{QStringList{ctl, QStringLiteral("move-pane"), QStringLiteral("+3"), QStringLiteral("right")},
+                    QStringLiteral("move-pane needs TARGET and PLACEMENT")}}) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
+        EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n\nUsage: afterglow ctl ").arg(message))) << qPrintable(r.err);
+        EXPECT_TRUE(r.out.isEmpty()) << qPrintable(r.out);
+    }
+    // Standard input is read before the pane is looked up.
+    const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), {ctl, QStringLiteral("send-text"), QStringLiteral("--stdin")}, "abc\xff");
+    EXPECT_EQ(r.status, 2) << qPrintable(r.err);
+    EXPECT_EQ(r.err, QStringLiteral("afterglow ctl: standard input is not UTF-8 text\n"));
+}
+
+TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
+{
+    // A valid command line connects, also with a pane given, and finds nobody.
+    const QString ctl = QStringLiteral("ctl");
+    for (const QStringList& args :
+         {QStringList{ctl, QStringLiteral("focus"), QStringLiteral("--pane"), QStringLiteral("3")}, QStringList{ctl, QStringLiteral("ls")}}) {
+        const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
+        EXPECT_EQ(r.status, 1) << qPrintable(args.join(QLatin1Char(' ')));
+        EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: no Afterglow at $AFTERGLOW_SOCKET ("))) << qPrintable(r.err);
+    }
+}
+
+// The help and the version need no desktop: afterglow prints them before it
+// starts Qt's GUI, without which it would abort.
+TEST(AfterglowHelpTest, HelpAndVersionNeedNoDesktop)
+{
+    Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("--help")});
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    EXPECT_TRUE(r.out.contains(QStringLiteral("afterglow ctl ..."))) << qPrintable(r.out);
+    // With the summaries of aglow's own usage, when the build has aglow.
+#ifdef AFTERGLOW_AGLOW
+    constexpr bool hasAglow = true;
+#else
+    constexpr bool hasAglow = false;
+#endif
+    for (const Aglow::Command& command : Aglow::Commands) {
+        const QRegularExpression line(QStringLiteral("\n  afterglow %1 \\.\\.\\. +%2\\.\n")
+                                          .arg(QLatin1String(command.name), QRegularExpression::escape(QLatin1String(command.summary))));
+        EXPECT_EQ(r.out.contains(line), hasAglow) << command.name << "\n" << qPrintable(r.out);
+    }
+    r = isolate(QStringLiteral(AFTERGLOW_BINARY), {QStringLiteral("--version")});
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    EXPECT_FALSE(r.out.trimmed().isEmpty());
+#ifdef AFTERGLOW_AGLOW
+    r = isolate(QStringLiteral(AFTERGLOW_AGLOW), {QStringLiteral("--help")});
+    EXPECT_EQ(r.status, 0) << qPrintable(r.err);
+    for (const Aglow::Command& command : Aglow::Commands) {
+        const QRegularExpression line(
+            QStringLiteral("\n  %1 +%2\n").arg(QLatin1String(command.name), QRegularExpression::escape(QLatin1String(command.summary))));
+        EXPECT_TRUE(r.out.contains(line)) << command.name << "\n" << qPrintable(r.out);
+    }
+#endif
 }
 
 } // namespace

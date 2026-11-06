@@ -35,7 +35,7 @@ See [compatibility](COMPATIBILITY.md) for protocol test names.
 | `AFTERGLOW_BUILD_TOOLS` | `OFF` | Builds the benchmarks, `afterglow_renderpng` and the headless conformance host. Adds the host's regression test to CTest. |
 | `AFTERGLOW_NATIVE_TESTS` | `OFF` | Adds the native window suite and `afterglow_transfer_kitty` to CTest with the label `native`. Requires Python 3 and the native test dependencies. |
 | `AFTERGLOW_BUILD_FUZZERS` | `OFF` | Builds the libFuzzer targets for the terminal core, the protocol library and the image decoders of `aglow`. Requires clang for C and C++. Turns off `AFTERGLOW_BUILD_AGLOW`. |
-| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests report Skipped. |
+| `AFTERGLOW_BUILD_AGLOW` | `ON` | Builds `aglow`. Requires the static C and C++ runtime libraries. Adds the [aglow tests](#aglow-tests) to CTest. When it is `OFF`, the `aglow dnd` tests and the `RunBinaryTest.*` tests report Skipped. |
 
 With `AFTERGLOW_NATIVE_TESTS=ON`, run only the native suite:
 
@@ -127,6 +127,10 @@ Regenerate the configuration reference after schema changes:
 python3 tools/generate-reference.py build/afterglow/afterglow
 ```
 
+CTest runs `tools/generate-reference.py --check` as `afterglow_configuration_reference`.
+The test fails when `docs/CONFIGURATION.md` is not what the schema of the build generates.
+It needs Python 3.
+
 ### Conformance with esctest
 
 The esctest runner drives the terminal core through `afterglow_headless`.
@@ -205,10 +209,17 @@ python3 afterglow/tests/scene_acceptance.py build/afterglow/afterglow
 ```
 
 These tests need the [native test dependencies](#native-test-dependencies).
+They also need the `aglow` of the build next to `afterglow`, because they read the state of a pane with `aglow run`.
+Without it, they stop with an error.
 The combined scene test also requires CAVA, pactl and paplay.
 Each test runs again on a private session bus and copies the bundled shader packs into its temporary configuration.
 It prints the directory for its log, screenshots and results.
-The default is a new temporary directory. Use `--artifacts DIR` to select another directory.
+
+| Option | Default | Function |
+| --- | --- | --- |
+| `--artifacts DIR` | A new temporary directory | The directory for the log, the screenshots and the results |
+| `--timeout` | 300 seconds, and 600 seconds for `scene_acceptance.py` | The time for the whole run. At the limit, the runner stops the test and exits with status 124. |
+
 See [Phosphor performance](../data/examples/phosphor/PERFORMANCE.md) for benchmark commands and measurement limits.
 
 ## Projects and the project navigator
@@ -227,8 +238,12 @@ python3 afterglow/tests/navigator_ui_smoke.py build/afterglow/afterglow
 ```
 
 These tests need the [native test dependencies](#native-test-dependencies) and Bash.
+`navigator_smoke.py` also needs the `aglow` of the build next to `afterglow`, because it runs the commands of the package with `aglow run`.
+Without it, the test stops with an error.
 `navigator_ui_smoke.py` also needs `git` and `fd`.
 It keeps its screenshots and log in a new temporary directory, or in the directory that `--artifacts` gives.
+`navigator_smoke.py` and `navigator_ui_smoke.py` take `--timeout`, the time for the whole run in seconds. The default is 300.
+At the limit, the runner stops the test and exits with status 124.
 See [projects](PROJECTS.md) and the [project navigator](../data/examples/packages/project-navigator/README.md) for what the tests cover.
 
 ## Native performance measurements
@@ -295,7 +310,7 @@ The compressed archive keeps all samples and environment metadata.
 Run the file-transfer and drag-and-drop tests of the service and of its clients:
 
 ```sh
-ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndTree|AglowDrop|AglowDrag|AglowOverwrite)\.'
+ctest --test-dir build --output-on-failure -R '^(Transfer|Client|Dnd|DndSource|DragTrees|RemoteTreeLinks|Answers|AglowDrop|AglowDrag|AglowOverwrite)\.'
 ```
 
 Run the tests of the protocol library, which has these formats and the other wire formats.
@@ -361,6 +376,38 @@ The `AglowOverwrite.*` tests answer the question of `--confirm-drop-overwrite`, 
 The native window suite uses `aglow dnd` and `kitten dnd` for text drags and remote directory drags.
 See [native test dependencies](#native-test-dependencies).
 
+## Script command tests
+
+Run the tests of the `commands` target and of `aglow run`:
+
+```sh
+ctest --test-dir build --output-on-failure -R '^(CommandSocketTest|RunBinaryTest|AfterglowRunWithoutAglowTest|Proto\.RunClient|Proto\.RunInput|Proto\.Socket|Proto\.Ipc)\.'
+```
+
+| Tests | Binary | What they run |
+| --- | --- | --- |
+| `CommandSocketTest.*` | `afterglow_command_tests` | The `commands` target of the socket: the list, runs, standard input, flow control, cancel and the limits |
+| `RunBinaryTest.*` | `afterglow_command_tests` | `aglow run` against a socket that the test makes. They check the exit status, the output, standard input, the pane, signals and the socket lookup. |
+| `AfterglowRunWithoutAglowTest.*` | `afterglow_command_tests` | `afterglow run` in a build without `aglow`. The test checks the error and exit status 127. |
+| `Proto.RunClient.*` and `Proto.RunInput.*` | `afterglow_proto_tests` | The client of `aglow run` against a server that the test plays, and the parts of standard input that it sends |
+| `Proto.Socket.*` | `afterglow_proto_tests` | The socket lookup of `afterglow ctl` and `aglow run` |
+| `Proto.Ipc.*` | `afterglow_proto_tests` | The phosphor-ipc client of the protocol library |
+
+`RunBinaryTest.AfterglowRunRunsAglowRun` runs `aglow run` through `afterglow run`.
+In a build without `aglow`, the `RunBinaryTest.*` tests report Skipped.
+In a build with `aglow`, `AfterglowRunWithoutAglowTest.SaysThatTheBuildHasNoAglow` reports Skipped.
+The tests give `aglow run` their own `XDG_RUNTIME_DIR` and socket. They never reach the Afterglow that runs them.
+
+## Shell completion tests
+
+CTest runs `afterglow/tests/completion_test.py` as `afterglow_shell_completion`.
+It checks the completions of `afterglow` and `aglow` in `data/completions` for Bash, Zsh and Fish.
+The test uses stub programs in place of `afterglow` and `aglow`, so no real Afterglow runs.
+It checks Bash without the `bash-completion` package.
+When that package is installed, it also checks Bash with the package.
+A shell that is not installed is left out. Without Bash, Zsh and Fish, the test reports Skipped.
+It needs Python 3.
+
 ## aglow tests
 
 A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
@@ -372,14 +419,13 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_without_aglow` | Runs a copy of `afterglow` that has no `aglow` next to it, and checks the error and status 127 | None |
 | `afterglow_aglow_not_executable` | Runs a copy of `afterglow` next to an `aglow` that it cannot execute, and checks the error and status 126 | None |
 | `aglow_run_usage`, `afterglow_runs_aglow_run` | Check the usage of `aglow run`, and of `afterglow run`, which runs it | None |
-| `RunBinaryTest.*` | Runs `aglow run` against a test socket, and once through `afterglow run`. Checks the exit status, the output, standard input, the pane, signals and the socket lookup | GTest |
 | `Aglow.*` | The input parser and the command line of `aglow`, in `aglow_tests` | GTest |
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
 | `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) with `find_package(Qt6)` disabled and no Phosphor directory, builds it, installs it into the build directory, and checks that the installation holds only `bin/aglow`, its license notices and its completions. It has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
-| `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3 |
+| `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3, and a kernel that shows a process that waits in `open()` |
 | `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
 
@@ -393,6 +439,7 @@ ctest --test-dir build --output-on-failure -LE slow
 
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
+`aglow_clipboard_cases` reports Skipped when the kernel does not show a process that waits in `open()`. It runs its other cases first.
 `aglow_icat_decode` and `aglow_icat_render` run `aglow` without `TMUX`, so the tests do not change the settings of a tmux that runs them.
 `aglow_icat_render` also runs `afterglow_renderpng` without it.
 It runs `afterglow_renderpng` with `QT_QPA_PLATFORMTHEME=generic`, so the theme plugin of the desktop does not load.

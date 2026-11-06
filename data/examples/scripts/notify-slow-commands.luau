@@ -1,7 +1,7 @@
 -- SPDX-FileCopyrightText: 2026 fuddlesworth
 -- SPDX-License-Identifier: GPL-3.0-or-later
 --
--- Notifies when a command that ran for over ten seconds finishes in a pane
+-- Notifies when a command that ran for ten seconds or more finishes in a pane
 -- you are not looking at. Copy to ~/.config/afterglow/scripts/ to use it.
 -- Needs shell integration (OSC 133), which fish and most prompts provide.
 
@@ -35,7 +35,12 @@ function script.run_command(command, ev)
     if not ev.pane then
         return { afterglow.output_error(ev, "There is no pane to show the notification on.\n"), afterglow.exit(ev, 1) }
     end
-    return afterglow.notify("Slow command", "This is what it will look like", ev.pane)
+    -- Waited for, so that a refused notification fails the run.
+    local _, err = afterglow.await(afterglow.notify("Slow command", "This is what it will look like", ev.pane))
+    if err then
+        return { afterglow.output_error(ev, err.message .. "\n"), afterglow.exit(ev, 1) }
+    end
+    return nil
 end
 
 return script

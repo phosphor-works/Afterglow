@@ -48,6 +48,9 @@ public:
         std::string message;
         bool timedOut = false;
         bool interrupted = false; ///< the wake descriptor ended the wait
+        /// connect() found no server: no socket at the path, or nobody
+        /// listens there (ENOENT, ECONNREFUSED).
+        bool noServer = false;
     };
 
     enum class Read {
@@ -67,12 +70,18 @@ public:
     /// another user is refused: it could read the calls and answer anything.
     bool connect(const std::string& path, Error* error, int timeoutMs = -1);
     bool connected() const { return m_fd >= 0; }
+    /// The socket, for a poll of the caller's own: readable when a frame
+    /// comes or the server closes the connection. -1 when not connected.
+    int fd() const { return m_fd; }
     /// Closes the connection and drops the frames that wait for next().
     void close();
     /// Why the connection closed by itself. Empty while connected, and after
     /// close() or connect().
     const std::string& closeReason() const { return m_closeReason; }
 
+    /// Whether a call of @p fn with @p args fits in one request, whatever
+    /// its id: a caller can check that before the calls that must come first.
+    static bool fits(const std::string& target, const std::string& fn, const Json::Array& args);
     /// Sends a call and returns its id, without waiting for the answer. A
     /// send blocks while the server reads nothing: @p wakeFd ends that wait
     /// (Error::interrupted). The connection closes when part of the request
@@ -95,6 +104,7 @@ public:
     static bool answers(const Json::Value& frame, std::int64_t id);
 
 private:
+    static std::string requestLine(std::int64_t id, const std::string& target, const std::string& fn, Json::Array args);
     std::optional<std::int64_t> sendCall(const std::string& target, const std::string& fn, Json::Array args,
                                          std::int64_t deadline, int wakeFd, Error* error);
     Read readFrame(Json::Value& frame, std::int64_t deadline, int wakeFd, std::size_t* bytes);

@@ -110,6 +110,7 @@ The line redraws at once when a tab, title, focus, command or context changes, a
 More changes in the next 250 ms redraw together, so a title that changes quickly sends few lines.
 The line also redraws at once when the pointer moves onto a tab or a button, and when its width changes.
 After 25 of these redraws in one second, the next ones wait for the 250 ms redraw.
+All windows together get at most 29 lines in one second. The next lines wait for the next second.
 When the pointer moves off the tabs and buttons, the line redraws with the 250 ms redraw.
 The line also redraws once each second.
 An unchanged line is not sent again.

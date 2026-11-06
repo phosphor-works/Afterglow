@@ -6,9 +6,34 @@
 # running Afterglow, through the aglow that afterglow runs (aglow run
 # --complete).
 
+# The word $1 as the shell runs it, in $REPLY: its quotes removed, and a
+# leading ~, ~USER, ~NAME, $NAME or ${NAME} expanded. Nothing else expands, so
+# no command runs.
+_afterglow_word() {
+    REPLY=${(Q)1}
+    local name
+    if [[ $REPLY == \~* ]]; then
+        name=${${REPLY%%/*}#\~}
+        if [[ -z $name ]]; then
+            REPLY=$HOME${REPLY#\~}
+        elif (( $+nameddirs[$name] )); then
+            REPLY=$nameddirs[$name]${REPLY#\~$name}
+        elif (( $+userdirs[$name] )); then
+            REPLY=$userdirs[$name]${REPLY#\~$name}
+        fi
+    elif [[ $REPLY == \$\{[A-Za-z_]*\}* ]]; then
+        name=${${REPLY#\$\{}%%\}*}
+        [[ $name == [A-Za-z_][A-Za-z0-9_]# ]] && REPLY=${(P)name}${REPLY#\$\{$name\}}
+    elif [[ $REPLY == \$[A-Za-z_]* ]]; then
+        name=${${REPLY#\$}%%[^A-Za-z0-9_]*}
+        REPLY=${(P)name}${REPLY#\$$name}
+    fi
+}
+
 # The aglow that afterglow runs, in $aglow: the one in the directory of its
 # executable, with symbolic links resolved. aglow starts faster than
-# afterglow, which loads Qt.
+# afterglow, which loads Qt. The completion of aglow uses it for afterglow
+# run.
 _afterglow_aglow() {
     aglow=$self
     [[ $aglow == */* ]] || aglow=$(whence -p -- "$aglow")
@@ -98,12 +123,19 @@ _afterglow_actions() {
         'unicode_input:insert unicode character'
     )
     _describe -t keybinds 'keybind action' keybinds && ret=0
-    local aglow
-    _afterglow_aglow || return ret
-    for id in ${(f)"$("$aglow" run --complete 2>/dev/null)"}; do
-        for entry in ${(f)"$("$aglow" run --complete "$id" 2>/dev/null)"}; do
-            actions+=("script\\:$id.${entry%%$'\t'*}:${entry#*$'\t'}")
-        done
+    # The script commands only for a word that can become script:..., as in
+    # bash and fish: each listing connects to Afterglow.
+    [[ $PREFIX == script:* || script: == ${(b)PREFIX}* ]] || return ret
+    local aglow name rest
+    _afterglow_aglow && [[ -x $aglow ]] || return ret
+    # One connection: ID<TAB>COMMAND<TAB>SUMMARY lines.
+    for entry in ${(f)"$("$aglow" run --complete --all 2>/dev/null)"}; do
+        id=${entry%%$'\t'*}
+        rest=${entry#*$'\t'}
+        name=${rest%%$'\t'*}
+        [[ $rest != $entry && -n $id && -n $name ]] || continue
+        [[ $name == $rest ]] && rest= || rest=${rest#*$'\t'}
+        actions+=("script\\:$id.$name:$rest")
     done
     _describe -t actions 'script command' actions && ret=0
     return ret
@@ -185,13 +217,13 @@ _afterglow_ctl() {
 _afterglow() {
     local curcontext=$curcontext state state_descr line
     typeset -A opt_args
-    # The afterglow that is being completed, which need not be the one on PATH. The word is as typed: (Q) removes
-    # its quotes.
-    local self=${(Q)words[1]}
-    [[ $self == '~/'* ]] && self=$HOME/${self#'~/'}
+    # The afterglow that is being completed, which need not be the one on PATH. The word is as typed.
+    local REPLY self
+    _afterglow_word $words[1]
+    self=$REPLY
     local -a subcommands
     subcommands=(
-        'ctl:drive a running afterglow'
+        'ctl:drive a running Afterglow'
         'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
         'transfer:copy files to and from the computer of the terminal'
@@ -215,7 +247,10 @@ _afterglow() {
             ;;
         run|transfer|dnd|icat|clipboard)
             # These run aglow, whose completion reads its command at the same
-            # position. Without it, the arguments are files, most likely.
+            # position, and takes the aglow that afterglow runs from $aglow.
+            # Without it, the arguments are files, most likely.
+            local aglow
+            _afterglow_aglow || aglow=
             if (( $+functions[_aglow] )); then
                 _aglow
             else

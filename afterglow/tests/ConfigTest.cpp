@@ -790,8 +790,9 @@ TEST(Config, ReferenceUsesRuntimeDefaultsAndChoices)
     const auto font = groups.value(QStringLiteral("Font")).toObject();
     EXPECT_EQ(font.value(QStringLiteral("antialiasing")).toObject().value(QStringLiteral("default")).toString(), QStringLiteral("grayscale"));
     // 0 is the desktop's size; other sizes are clamped to 4–96, the limits
-    // font_bigger keeps to. The range shows 0, so the description names 4.
-    EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 0);
+    // font_bigger keeps to. The range shows what the clamp keeps to, and the
+    // description names 0.
+    EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("minimum")).toInt(), 4);
     EXPECT_EQ(font.value(QStringLiteral("size")).toObject().value(QStringLiteral("maximum")).toInt(), 96);
     EXPECT_EQ(AfterglowRender::FontSpec::MinPoints, 4.0f);
     EXPECT_EQ(AfterglowRender::FontSpec::MaxPoints, 96.0f);
@@ -1321,6 +1322,36 @@ TEST_F(ConfigTest, WriteKeepsAFileThatDoesNotParse)
     EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not parse")));
 }
 
+// Started on a file that does not parse, every save used to be refused until
+// a restart: the backend's own load had marked the file unreadable, and a
+// reload that handed it a good document never ended that refusal.
+TEST_F(ConfigTest, AStoreThatStartedOnABrokenFileSavesOnceItIsFixed)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": )");
+    SettingsStore store(path);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("does not parse")));
+    write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    store.reload();
+    EXPECT_TRUE(store.problems().isEmpty());
+    EXPECT_EQ(store.settings().window.padding, 9);
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    const QJsonObject file = QJsonDocument::fromJson(read(path)).object();
+    EXPECT_EQ(file.value(QStringLiteral("Window")).toObject().value(QStringLiteral("padding")).toInt(), 12);
+}
+
+// An empty file (a touch) holds nothing to keep: it is every default, and a
+// save writes it.
+TEST_F(ConfigTest, AnEmptyFileIsEveryDefaultAndTakesASave)
+{
+    const QString path = write(QStringLiteral("config.json"), "\n");
+    SettingsStore store(path);
+    EXPECT_TRUE(store.problems().isEmpty());
+    EXPECT_EQ(store.settings().window.padding, WindowSettings{}.padding);
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    const QJsonObject file = QJsonDocument::fromJson(read(path)).object();
+    EXPECT_EQ(file.value(QStringLiteral("Window")).toObject().value(QStringLiteral("padding")).toInt(), 12);
+}
+
 TEST_F(ConfigTest, WriteKeepsEditsNotReloadedYetAndLeavesOverridesOut)
 {
     const QString path = write(QStringLiteral("config.json"), R"({"Font": {"size": 15}})");
@@ -1440,6 +1471,8 @@ TEST_F(ConfigTest, FirstRunWritesNoFile)
     SettingsStore store(path);
     // No file means every default; a later change of a default reaches the user.
     EXPECT_FALSE(QFile::exists(path));
+    // Nor a directory: the first write makes both.
+    EXPECT_FALSE(QFileInfo::exists(m_home.filePath(QStringLiteral("fresh"))));
     SettingsStore empty(write(QStringLiteral("empty.json"), "{}"));
     EXPECT_TRUE(store.settings() == empty.settings());
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
@@ -1475,7 +1508,7 @@ TEST_F(ConfigTest, ValuesOfTheWrongTypeAreReported)
     EXPECT_TRUE(mentions(problems, QStringLiteral("Window.blur must be true or false")));
     EXPECT_TRUE(mentions(problems, QStringLiteral("Terminal.scrollback must be a whole number")));
     EXPECT_TRUE(mentions(problems, QStringLiteral("Font.size must be a number")));
-    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.background is not a color")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("Colors.background must be a string")));
     // What PhosphorConfig reads as the type is fine.
     EXPECT_FALSE(mentions(problems, QStringLiteral("Window.paneTitles")));
     EXPECT_FALSE(mentions(problems, QStringLiteral("Terminal.scrollLines")));
@@ -1568,7 +1601,7 @@ TEST_F(ConfigTest, MalformedValuesAndUnknownKeysAreReported)
     const QStringList problems = store.problems();
     EXPECT_TRUE(mentions(problems, QStringLiteral("Mouse must be an object")));
     EXPECT_TRUE(mentions(problems, QStringLiteral("Animation.cursorCurve is not a curve")));
-    EXPECT_TRUE(mentions(problems, QStringLiteral("QuickTerminal.curve is not a curve")));
+    EXPECT_TRUE(mentions(problems, QStringLiteral("QuickTerminal.curve must be a string")));
     EXPECT_FALSE(mentions(problems, QStringLiteral("Animation.scrollCurve")));
     EXPECT_EQ(store.settings().animation.cursorCurve, AnimationSettings{}.cursorCurve);
     EXPECT_EQ(store.settings().animation.scrollCurve, QStringLiteral("spring:30,1"));
@@ -2158,6 +2191,10 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                 value = QStringLiteral("spring:30,1");
             } else if (name == QLatin1String("Hints.alphabet")) {
                 value = QStringLiteral("qwer");
+            } else if (name == QLatin1String("Font.features")) {
+                value = QJsonArray{QStringLiteral("ss01")};
+            } else if (name == QLatin1String("QuickTerminal.shortcut")) {
+                value = QStringLiteral("Meta+F12");
             } else if (name == QLatin1String("Font.symbolMap")) {
                 value = QJsonObject{{QStringLiteral("U+E000"), QStringLiteral("Afterglow Test")}};
             } else if (name == QLatin1String("Hints.patterns")) {
@@ -2181,4 +2218,209 @@ TEST_F(ConfigTest, EverySettingReachesTheSettings)
                 << name.toStdString() << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
         }
     }
+}
+
+TEST_F(ConfigTest, AStringKeyOfAnotherJsonTypeIsReportedBeforeItsOwnCheck)
+{
+    // PhosphorConfig would read true as "true", four distinct letters.
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Hints": {"alphabet": true}, "Terminal": {"bell": 1}})"));
+    EXPECT_EQ(store.settings().hintAlphabet, Settings{}.hintAlphabet);
+    EXPECT_EQ(store.settings().bell, Settings{}.bell);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.alphabet must be a string. Using the default")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.bell must be a string. Using the default")));
+}
+
+TEST_F(ConfigTest, ListsAndMapsOfAnotherJsonTypeUseTheDefault)
+{
+    // PhosphorConfig reads them as empty, or as the JSON that a string holds.
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"features": "[\"ss01\"]"},
+        "Links": {"schemes": 5}, "Hints": {"patterns": {}}, "Terminal": {"env": "{\"A\": \"1\"}"}})"));
+    const Settings defaults;
+    EXPECT_EQ(store.settings().font.features, defaults.font.features);
+    EXPECT_EQ(store.settings().links.schemes, defaults.links.schemes);
+    EXPECT_EQ(store.settings().hintPatterns, defaults.hintPatterns);
+    EXPECT_TRUE(store.settings().environment.empty());
+    for (const char* key : {"Font.features must be a list", "Links.schemes must be a list", "Hints.patterns must be a list",
+                            "Terminal.env must be an object"}) {
+        EXPECT_TRUE(mentions(store.problems(), QString::fromLatin1(key))) << key;
+    }
+    // An override of the wrong type gives way to the default too, not to the file.
+    const QString path = write(QStringLiteral("links.json"), R"({"Links": {"schemes": ["gopher"]}})");
+    QJsonObject o;
+    ASSERT_TRUE(SettingsStore::addOverride(o, QStringLiteral("Links.schemes=https")));
+    SettingsStore overridden(path, o);
+    EXPECT_EQ(overridden.settings().links.schemes, defaults.links.schemes);
+    EXPECT_TRUE(mentions(overridden.problems(), QStringLiteral("Links.schemes must be a list")));
+}
+
+TEST_F(ConfigTest, NumbersThatTheValidatorsReplaceAreReported)
+{
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              R"({"Font": {"gamma": "nan", "cellHeight": "inf"}, "Terminal": {"scrollback": "99999999999"}})"));
+    EXPECT_FLOAT_EQ(store.settings().font.gamma, Settings{}.font.gamma);
+    EXPECT_FLOAT_EQ(store.settings().font.cellHeightScale, Settings{}.font.cellHeightScale);
+    EXPECT_EQ(store.settings().terminal.maxScrollback, Settings{}.terminal.maxScrollback);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Font.gamma must be a number")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Font.cellHeight must be a number")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.scrollback is too large or too small")));
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("Terminal.scrollback must be a whole number")));
+}
+
+TEST_F(ConfigTest, ProblemsComeInTheOrderOfTheSchema)
+{
+    SettingsStore store(write(QStringLiteral("config.json"),
+                              R"({"Window": {"blur": "x"}, "Terminal": {"cursorBlink": "x"}, "Animation": {"cursor": "x"}})"));
+    const QStringList problems = store.problems();
+    ASSERT_EQ(problems.size(), 3) << problems.join(QLatin1Char('\n')).toStdString();
+    EXPECT_TRUE(problems[0].startsWith(QLatin1String("Animation.cursor")));
+    EXPECT_TRUE(problems[1].startsWith(QLatin1String("Terminal.cursorBlink")));
+    EXPECT_TRUE(problems[2].startsWith(QLatin1String("Window.blur")));
+}
+
+TEST_F(ConfigTest, EnumValuesAreTrimmed)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Terminal": {"cursorShape": " bar "}})"));
+    EXPECT_EQ(store.settings().terminal.cursorShape, AfterglowVt::CursorShape::Bar);
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, TransparentIsNotAColor)
+{
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("transparent")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("Transparent")));
+    // Qt drops the spaces and tabs of a colour name.
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral("trans parent")));
+    EXPECT_FALSE(Themes::isColorName(QStringLiteral(" Transparent\t")));
+    EXPECT_TRUE(Themes::isColorName(QStringLiteral("r e d")));
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Colors": {"background": "transparent"}})"));
+    EXPECT_TRUE(same(store.settings().terminal.defaultBackground, Settings{}.terminal.defaultBackground));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Colors.background is not a color")));
+}
+
+TEST_F(ConfigTest, FontFeaturesAndSymbolFamiliesAreChecked)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Font": {"features": ["liga", "cv01=2", "not-a-feature"],
+        "symbolMap": {"U+E000": 5, "U+E001": "Symbols"}}})"));
+    EXPECT_EQ(store.settings().font.features, (std::vector<std::string>{"liga", "cv01=2"}));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Font.features: \"not-a-feature\" is not an OpenType feature")));
+    ASSERT_EQ(store.settings().font.symbolMap.size(), 1u);
+    EXPECT_EQ(store.settings().font.symbolMap[0].family, "Symbols");
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Font.symbolMap: ignoring U+E000")));
+}
+
+TEST_F(ConfigTest, QuickTerminalShortcutIsTrimmedAndChecked)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"QuickTerminal": {"shortcut": " Meta+F12 "}})"));
+    EXPECT_EQ(store.settings().quickTerminal.shortcut, QStringLiteral("Meta+F12"));
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+    write(QStringLiteral("config.json"), R"({"QuickTerminal": {"shortcut": "Meta+Nothing"}})");
+    store.reload();
+    EXPECT_EQ(store.settings().quickTerminal.shortcut, QuickTerminalSettings{}.shortcut);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("QuickTerminal.shortcut \"Meta+Nothing\" is not a key combination")));
+    write(QStringLiteral("config.json"), R"({"QuickTerminal": {"shortcut": " "}})");
+    store.reload();
+    EXPECT_TRUE(store.settings().quickTerminal.shortcut.isEmpty());
+    EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, AHintCommandNeedsAProgram)
+{
+    SettingsStore store(write(QStringLiteral("config.json"), R"({"Hints": {"patterns": [
+        {"pattern": "a+", "action": "command", "command": [" ", "{match}"]},
+        {"pattern": "b+", "action": "command", "command": ["{match}"]},
+        {"pattern": "c+"}
+    ]}})"));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Hints.patterns[0]: the first argument of command must name a program")));
+    ASSERT_EQ(store.settings().hintPatterns.size(), 2);
+    EXPECT_EQ(store.settings().hintPatterns[0].toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("b+"));
+    // Without an action, a hint copies.
+    EXPECT_EQ(store.settings().hintPatterns[1].toMap().value(QStringLiteral("pattern")).toString(), QStringLiteral("c+"));
+}
+
+TEST_F(ConfigTest, EnvironmentWithANulIsRefused)
+{
+    // An override carries the NULs without a JSON parser in between.
+    const QJsonObject env{{QStringLiteral("CUT"), QString(QStringLiteral("a") + QChar(u'\0') + QStringLiteral("b"))},
+                          {QString(QStringLiteral("BAD") + QChar(u'\0') + QStringLiteral("NAME")), QStringLiteral("1")},
+                          {QStringLiteral("KEPT"), QStringLiteral("1")}};
+    SettingsStore store(write(QStringLiteral("config.json"), "{}"),
+                        QJsonObject{{QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("env"), env}}}});
+    ASSERT_EQ(store.settings().environment.size(), 1u);
+    EXPECT_EQ(store.settings().environment[0].first, "KEPT");
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Terminal.env.CUT must not hold a NUL character")));
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is not a variable name")));
+}
+
+TEST_F(ConfigTest, AnOverrideReplacesAMapAsAWhole)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Terminal": {"env": {"A": "1", "B": "2"}},
+        "Shaders": {"params": {"bloom": {"strength": 0.5}, "crt": {"curve": 1}}}})");
+    QJsonObject o;
+    ASSERT_TRUE(SettingsStore::addOverride(o, QStringLiteral(R"(Terminal.env={"C": "3"})")));
+    ASSERT_TRUE(SettingsStore::addOverride(o, QStringLiteral(R"(Shaders.params={"bloom": {"radius": 2}})")));
+    SettingsStore store(path, o);
+    ASSERT_EQ(store.settings().environment.size(), 1u);
+    EXPECT_EQ(store.settings().environment[0], (std::pair<std::string, std::string>{"C", "3"}));
+    const QVariantMap params = store.settings().shaderParams;
+    EXPECT_EQ(params.keys(), QStringList{QStringLiteral("bloom")});
+    EXPECT_EQ(params.value(QStringLiteral("bloom")).toMap().keys(), QStringList{QStringLiteral("radius")});
+    // The file keeps its own maps.
+    EXPECT_EQ(store.persisted(QStringLiteral("Terminal"), QStringLiteral("env")).toMap().size(), 2);
+}
+
+TEST_F(ConfigTest, PersistedReadsAnEditThatIsNotReloadedYet)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Shaders": {"window": ["bloom"]}})");
+    SettingsStore store(path);
+    // Saved within the watcher's debounce: a chain built on the old file
+    // would drop the new pack when it is written.
+    write(QStringLiteral("config.json"), R"({"Shaders": {"window": ["bloom", "crt"]}})");
+    EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(),
+              (QStringList{QStringLiteral("bloom"), QStringLiteral("crt")}));
+    // Emptied to white space after it held settings: a save in progress, as
+    // loadFile() takes it, so the last document stands.
+    write(QStringLiteral("config.json"), " \n");
+    EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(),
+              QStringList{QStringLiteral("bloom")});
+    // Deleted: the default.
+    ASSERT_TRUE(QFile::remove(path));
+    EXPECT_TRUE(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toList().isEmpty());
+}
+
+// An editor that saves in place empties the file, then writes it. The
+// settings must not flash to the defaults between the two, and a save in the
+// meantime must not replace the file that is being written.
+TEST_F(ConfigTest, AFileThatAnEditorEmptiesKeepsItsSettingsUntilItsTextComes)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    SettingsStore store(path);
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changes; });
+    write(QStringLiteral("config.json"), "");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 9);
+    EXPECT_EQ(changes, 0);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is empty")));
+    EXPECT_FALSE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    EXPECT_TRUE(read(path).isEmpty());
+    write(QStringLiteral("config.json"), R"({"Window": {"padding": 11}})");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 11);
+    EXPECT_TRUE(store.problems().isEmpty());
+    // Deleted, the file is every default.
+    ASSERT_TRUE(QFile::remove(path));
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, WindowSettings{}.padding);
+}
+
+TEST_F(ConfigTest, AWriteRemakesAConfigDirectoryThatWasRemoved)
+{
+    const QString directory = m_home.filePath(QStringLiteral("gone"));
+    ASSERT_TRUE(QDir().mkpath(directory));
+    const QString path = write(QStringLiteral("gone/config.json"), R"({"Window": {"padding": 9}})");
+    SettingsStore store(path);
+    ASSERT_TRUE(QDir(directory).removeRecursively());
+    ASSERT_TRUE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 11));
+    EXPECT_EQ(QJsonDocument::fromJson(read(path)).object().value(QStringLiteral("Window")).toObject(),
+              (QJsonObject{{QStringLiteral("padding"), 11}}));
 }

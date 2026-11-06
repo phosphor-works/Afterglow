@@ -84,13 +84,13 @@ Use **Save Project** in the command palette to replace another project.
 
 | Exit status | Cause |
 | --- | --- |
-| 0 | The command completed. The message is on stdout. |
+| 0 | The command completed. `save`, `enable` and `disable` write a message on stdout. `restore` writes nothing. |
 | 1 | The command failed. The message is on stderr. |
 | 2 | An argument that the command does not take. |
 
 A command from the palette or a key shows its message as a notification on the pane.
 
 Remove `scripts/project-autosave/` to uninstall.
-The host removes timers and pending interfaces.
+Afterglow then stops the autosave timer and closes an open restore picker.
 Saved layouts remain in `projects/` beside the configuration.
 Enablement state remains in `state/scripts/project-autosave.json` for reinstallation.

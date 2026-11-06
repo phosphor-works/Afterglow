@@ -25,7 +25,10 @@ function script.run_command(command, ev)
     if not created then return fail(ev, err.code .. ": " .. err.message) end
     -- Creation is complete. Use the returned identity instead of predicting an
     -- ID or trying to associate a global on_pane_created event with this command.
-    return afterglow.set_title(created.pane, "Workspace")
+    -- Waited for, so that a title that does not apply fails the run.
+    local _, titleError = afterglow.await(afterglow.set_title(created.pane, "Workspace"))
+    if titleError then return fail(ev, titleError.message) end
+    return nil
 end
 
 return script

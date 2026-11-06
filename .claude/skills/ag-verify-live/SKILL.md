@@ -23,14 +23,16 @@ closes windows or kills processes there damages their work.
 1. Build the test binary:
 
    ```sh
-   cmake --build build -j6 --target afterglow_native_tests
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
+       cmake --build build -j6 --target afterglow_native_tests
    ```
 
 2. Run it in a headless nested KWin. The runner starts itself under `dbus-run-session`, so KWin gets a private
    D-Bus. The test binary runs under a second `dbus-run-session`, with a private D-Bus of its own:
 
    ```sh
-   python3 .claude/skills/ag-verify-live/headless_native.py > <scratchpad>/native.log 2>&1; echo $?
+   systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
+       python3 .claude/skills/ag-verify-live/headless_native.py > <scratchpad>/native.log 2>&1; echo $?
    grep -E '^\[  (FAILED|PASSED) |^\[==' <scratchpad>/native.log
    ```
 
@@ -50,6 +52,7 @@ Options:
 | `--timeout 400` | 400 | Stops the test binary after this many seconds and 10 more, and reports status 124 |
 
 The log is long. Read it with `grep`, never in full.
+The memory cap of `systemd-run` keeps systemd-oomd from killing the user's Afterglow (see `ag-build`).
 
 ### Expected skips in the headless run
 
@@ -74,7 +77,8 @@ pointer input to the tab bar or an overlay must first wait for `ChromeLayer::roo
 ## Full acceptance run (drag and drop)
 
 ```sh
-python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/afterglow_native_tests
+systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
+    python3 afterglow/tests/native_window_acceptance.py --binary build/afterglow/afterglow_native_tests
 ```
 
 This runner opens a nested KWin as a window on the host X11 or XWayland display, and sends synthetic X events

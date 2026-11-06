@@ -102,8 +102,10 @@ bool IpcConnection::connect(const std::string& path, Error* error, int timeoutMs
         result = ::connect(m_fd, reinterpret_cast<const sockaddr*>(&address), sizeof address);
     } while (result != 0 && errno == EINTR);
     if (result != 0) {
-        const bool late = errno == EAGAIN || errno == EWOULDBLOCK;
-        set(error, {}, late ? "the server accepts no connection" : std::strerror(errno), late);
+        const int failure = errno;
+        const bool late = failure == EAGAIN || failure == EWOULDBLOCK;
+        set(error, {}, late ? "the server accepts no connection" : std::strerror(failure), late);
+        if (error) error->noServer = failure == ENOENT || failure == ECONNREFUSED;
         close();
         return false;
     }
@@ -123,6 +125,17 @@ bool IpcConnection::connect(const std::string& path, Error* error, int timeoutMs
     return true;
 }
 
+std::string IpcConnection::requestLine(std::int64_t id, const std::string& target, const std::string& fn, Json::Array args)
+{
+    return Json::write(Json::Object{{"type", "call"}, {"id", id}, {"target", target}, {"fn", fn}, {"args", std::move(args)}});
+}
+
+bool IpcConnection::fits(const std::string& target, const std::string& fn, const Json::Array& args)
+{
+    // The longest id: the largest integer that a JSON number holds exactly.
+    return requestLine(std::int64_t(Json::MaxExactInteger) - 1, target, fn, args).size() < MaxRequestBytes;
+}
+
 std::optional<std::int64_t> IpcConnection::send(const std::string& target, const std::string& fn, Json::Array args,
                                                  Error* error, int wakeFd)
 {
@@ -136,8 +149,7 @@ std::optional<std::int64_t> IpcConnection::sendCall(const std::string& target, c
         set(error, {}, m_closeReason.empty() ? "not connected" : m_closeReason);
         return std::nullopt;
     }
-    std::string line = Json::write(Json::Object{{"type", "call"}, {"id", m_nextId + 1}, {"target", target}, {"fn", fn},
-                                                {"args", std::move(args)}});
+    std::string line = requestLine(m_nextId + 1, target, fn, std::move(args));
     if (line.size() >= MaxRequestBytes) {
         set(error, RequestTooLong, "the request is over " + std::to_string(MaxRequestBytes >> 20) + " MiB");
         return std::nullopt;

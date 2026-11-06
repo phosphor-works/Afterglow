@@ -4,7 +4,6 @@
 #include "Tty.h"
 
 #include <AfterglowProto/Clipboard.h>
-#include <AfterglowProto/Text.h>
 
 #include <algorithm>
 #include <atomic>
@@ -128,50 +127,6 @@ long long nowMs()
     timespec now { };
     ::clock_gettime(CLOCK_MONOTONIC, &now);
     return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
-
-std::string printable(std::string_view text)
-{
-    auto bidi = [](char32_t cp) {
-        return cp == 0x061C || cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E)
-            || (cp >= 0x2066 && cp <= 0x2069) || cp == 0x2028 || cp == 0x2029;
-    };
-    std::string out;
-    std::size_t i = 0;
-    while (i < text.size()) {
-        char32_t cp = 0;
-        const std::size_t start = i;
-        if (!AfterglowProto::nextUtf8(text, i, cp)) {
-            out += '?';
-            ++i;
-            continue;
-        }
-        if (AfterglowProto::isControl(cp) || bidi(cp)) {
-            out += '?';
-        } else {
-            out.append(text.substr(start, i - start));
-        }
-    }
-    return out;
-}
-
-int cellWidth(char32_t cp)
-{
-    // Combining marks and zero width characters.
-    if ((cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x1AB0 && cp <= 0x1AFF) || (cp >= 0x1DC0 && cp <= 0x1DFF)
-        || (cp >= 0x20D0 && cp <= 0x20FF) || (cp >= 0xFE20 && cp <= 0xFE2F) || (cp >= 0x200B && cp <= 0x200D)
-        || (cp >= 0xFE00 && cp <= 0xFE0F)) {
-        return 0;
-    }
-    // East Asian wide and full width characters, and the emoji blocks.
-    if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0x303E) || (cp >= 0x3041 && cp <= 0x33FF)
-        || (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xA000 && cp <= 0xA4CF)
-        || (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F)
-        || (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) || (cp >= 0x1F300 && cp <= 0x1F64F)
-        || (cp >= 0x1F900 && cp <= 0x1F9FF) || (cp >= 0x20000 && cp <= 0x3FFFD)) {
-        return 2;
-    }
-    return 1;
 }
 
 void InputParser::flushText(std::vector<Input>& out)

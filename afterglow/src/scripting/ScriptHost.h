@@ -107,8 +107,8 @@ public:
         QStringList args;
         QString cwd; ///< empty: the pane's directory
         quint32 pane = 0;
-        /// The client's stdin, for a command with stdin. The client refuses
-        /// more than Scripts.commandStdinLimit: this is never cut.
+        /// The client's stdin, for a command with stdin. CommandSocket
+        /// refuses more than Scripts.commandStdinLimit: this is never cut.
         std::optional<QString> input;
         QString source; ///< shell, palette, key, menu or control
     };
@@ -160,6 +160,8 @@ public:
     static constexpr int MaxSleepMs = 600000;
     static constexpr int MaxLogCharacters = 2048;
     static constexpr qint64 MaxScriptBytes = 1024 * 1024; ///< a single-file script
+    /// The highest max_bytes of read_text and read_region, which Control also takes.
+    static constexpr int MaxReadTextBytes = 1024 * 1024;
     /// The version of the terminal snapshot in ev.terminal, not of package state.
     static constexpr int SnapshotVersion = 1;
     static constexpr std::size_t MemoryCapBytes = 16u * 1024 * 1024;

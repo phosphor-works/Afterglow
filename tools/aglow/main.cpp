@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-// aglow: a small afterglow. Kitty's file transfer, drag and drop, graphics
-// and clipboard protocols from the command line, in one static binary that
-// needs neither kitty nor Afterglow on the computer where it runs, and the
-// commands of Afterglow's scripts.
+// aglow: a small afterglow, as one static binary. From the command line it
+// speaks kitty's file transfer, drag and drop, graphics and clipboard
+// protocols, which need neither kitty nor Afterglow on the computer where it
+// runs. It also runs the commands of the scripts of an Afterglow on the same
+// computer (aglow run).
 
 #include "Cli.h"
 #include "Commands.h"
@@ -14,12 +15,10 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #ifndef AGLOW_VERSION
@@ -32,23 +31,6 @@ std::string homeDirectory()
 {
     const char* home = std::getenv("HOME");
     return home && *home == '/' ? std::string(home) : std::string("/");
-}
-
-std::string currentDirectory()
-{
-    char buffer[PATH_MAX];
-    if (::getcwd(buffer, sizeof buffer)) {
-        return buffer;
-    }
-    // $PWD only when it is the working directory: it may be stale, or set by anyone.
-    const char* pwd = std::getenv("PWD");
-    struct stat named { };
-    struct stat here { };
-    if (pwd && *pwd == '/' && ::stat(pwd, &named) == 0 && ::stat(".", &here) == 0 && named.st_dev == here.st_dev
-        && named.st_ino == here.st_ino) {
-        return pwd;
-    }
-    return {};
 }
 
 void report(std::string_view command, std::string_view message)
@@ -101,7 +83,9 @@ bool readAll(int fd, std::string& out)
 
 namespace {
 
-// %1 stands for the program name.
+// %1 stands for the program name. afterglow --help shows the summaries of
+// the commands too (Afterglow::Aglow::Commands), and a test checks that
+// they agree.
 const char* usageText = "Usage: %1 COMMAND [options] [arguments]\n"
                         "\n"
                         "Kitty's terminal protocols from the command line. They work in Afterglow, kitty and the\n"

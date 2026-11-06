@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Opt-in native UI tests in a temporary KWin desktop.
 
-Requires KWin, an X11/XWayland DISPLAY, libX11 and xprop, and ImageMagick for
-screenshots. Run the caller under dbus-run-session, so that the nested KWin does
+Requires KWin, an X11/XWayland DISPLAY, XDG_RUNTIME_DIR, libX11 and xprop,
+ImageMagick for screenshots, and the aglow of the build next to afterglow for
+aglow run. Run the caller under dbus-run-session, so that the nested KWin does
 not join the user's session bus. Pointer and key input goes to the nested KWin
 window as synthetic X events (XSendEvent), never through XTest, so it cannot
 reach another host window such as the user's terminal.
@@ -175,18 +176,28 @@ class NestedDesktop:
         self.root = root
         self.socket = f"afterglow-ui-{os.getpid()}"
         # The application environment. A private data home keeps the user's own
-        # scripts and shader packs out of the run. The generic platform theme and
-        # the Basic style keep portal activation and the desktop style out of it.
-        # Qt's default message pattern keeps log lines in the form that the
-        # harnesses match, whatever the developer's own pattern is.
+        # scripts and shader packs out of the run, and private cache and state
+        # homes keep the run's caches and state out of the user's. The runtime
+        # directory stays the user's: KWin makes its socket there, and so does
+        # Afterglow, under the name of the nested display, which no other
+        # Afterglow uses. The audio server is found there too. The generic
+        # platform theme and the Basic style keep portal activation and the
+        # desktop style out of the run. Qt's default message pattern keeps log
+        # lines in the form that the harnesses match, whatever the developer's
+        # own pattern is.
+        for name in ("DISPLAY", "XDG_RUNTIME_DIR"):
+            if not os.environ.get(name):
+                raise RuntimeError(f"{name} is not set: the nested KWin needs it")
         self.env = dict(os.environ, XDG_CONFIG_HOME=str(root), XDG_DATA_HOME=str(root / "data"),
+                        XDG_CACHE_HOME=str(root / "cache"), XDG_STATE_HOME=str(root / "state"),
                         QT_QPA_PLATFORM="wayland", WAYLAND_DISPLAY=self.socket,
                         QT_QPA_PLATFORMTHEME="generic", QT_QUICK_CONTROLS_STYLE="Basic",
                         QT_MESSAGE_PATTERN="%{if-category}%{category}: %{endif}%{message}")
         # A harness started in an Afterglow pane inherits that pane's control
-        # socket and pane ID. `afterglow ctl` would then call the user's instance
-        # instead of the nested one, and default to a pane that the nested one
-        # does not have. Without them it finds the socket of the nested display.
+        # socket and pane ID. `afterglow ctl` and `aglow run` would then call the
+        # user's instance instead of the nested one, and default to a pane that
+        # the nested one does not have. Without them they find the socket of the
+        # nested display.
         for name in ("AFTERGLOW_SOCKET", "AFTERGLOW_PANE_ID"):
             self.env.pop(name, None)
         (root / "kwinrc").write_text(KWINRC)
@@ -444,6 +455,8 @@ class Session:
     def run(self, *args, check_status=True, timeout=20):
         """Runs `aglow run ARGS`, a script command, and returns its result.
         Its stdin is empty, so a command never waits for input."""
+        if not os.access(self.aglow, os.X_OK):
+            raise RuntimeError(f"No aglow next to {self.binary}: build with AFTERGLOW_BUILD_AGLOW=ON (the default)")
         result = subprocess.run([self.aglow, "run", *map(str, args)], env=self.env, input="",
                                 capture_output=True, text=True, timeout=timeout)
         if check_status:

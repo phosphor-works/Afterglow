@@ -4,6 +4,7 @@
 #include "ShaderLibrary.h"
 
 #include "app/BuildTree.h"
+#include "scripting/ScriptNames.h"
 
 #include <PhosphorAnimation/CurveRegistry.h>
 #include <PhosphorFsLoader/ContainedFileReader.h>
@@ -344,6 +345,16 @@ QByteArray signature(const QStringList& paths)
 
 using ShaderInfo = PhosphorShaders::ShaderRegistry::ShaderInfo;
 
+/// The id that a pack's metadata.json declares, or empty. The registry keeps
+/// only a UUID made from it.
+QString declaredId(const QString& packDir)
+{
+    QByteArray bytes;
+    // The package loader's limit for a JSON file: a larger one never loaded.
+    if (!readCapped(QDir(packDir).filePath(QStringLiteral("metadata.json")), 64 * 1024, bytes)) return {};
+    return QJsonDocument::fromJson(bytes).object().value(QStringLiteral("id")).toString();
+}
+
 /// "<package>.<pack>" for a pack from a script package, else empty.
 QString packagedRef(const ShaderInfo& info, const QMap<QString, QString>& packages)
 {
@@ -449,10 +460,13 @@ void ShaderLibrary::buildRegistry()
 {
     // The registry cannot drop a search path, so a change of packages builds a new one.
     m_registry = std::make_unique<PhosphorShaders::ShaderRegistry>();
-    for (const QString& d : m_baseDirectories) {
+    // Packages first, below every base directory: the registry keeps one
+    // pack for each declared id, from the last directory that has it, so a
+    // package pack that declares a base pack's id can never replace it.
+    for (const QString& d : std::as_const(m_packageShaders)) {
         m_registry->addSearchPath(d);
     }
-    for (const QString& d : std::as_const(m_packageShaders)) {
+    for (const QString& d : m_baseDirectories) {
         m_registry->addSearchPath(d);
     }
     m_registry->refresh();
@@ -481,9 +495,19 @@ void ShaderLibrary::reindex()
                      [&](const ShaderInfo& a, const ShaderInfo& b) { return priority(a) < priority(b); });
     // Later, more important packs overwrite the names that earlier ones took.
     for (const ShaderInfo& info : std::as_const(packs)) {
+        const QString packaged = packagedRef(info, m_packageShaders);
+        // The package loader checked its packs when the package loaded, but
+        // the registry also reads a pack that was added or changed after
+        // that. Only a pack that the loader would take, by its directory and
+        // the id it declares, is there, also before the package loads again
+        // with it. The count of packs is the loader's alone: it refuses a
+        // package with too many when the new directory makes it load again.
+        if (!packaged.isEmpty()
+            && (!packageShaderPack(QDir(info.packDir).dirName()) || declaredId(info.packDir) != packaged))
+            continue;
         const qsizetype i = index->packs.size();
         index->packs << info;
-        if (const QString packaged = packagedRef(info, m_packageShaders); !packaged.isEmpty()) {
+        if (!packaged.isEmpty()) {
             index->byRef.insert(packaged, i);
             continue;
         }

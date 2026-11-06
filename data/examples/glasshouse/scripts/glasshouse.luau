@@ -51,19 +51,24 @@ local function heat(pane, value)
     }
 end
 
+-- The heat transitions of the pane's glass, from the shaders of the pane.
+local function heatParameters(pane, value, shaders)
+    local effects = {}
+    for _, shader in ipairs(shaders or {}) do
+        if shader.shader == "glasshouse-glass" then
+            table.insert(effects, afterglow.shader_parameters(pane, shader.instance, { heat = value }, "pane",
+                { duration_ms = value > 0 and WARM_MS or COOL_MS, curve = "ease-in-out" }))
+        end
+    end
+    return effects
+end
+
 function script.on_result(ev)
     if not ev.ok or string.sub(ev.request_id, 1, 5) ~= "heat:" then
         return nil
     end
     local value = tonumber(string.sub(ev.request_id, 6)) or 0
-    local effects = {}
-    for _, shader in ipairs((ev.data and ev.data.shaders) or {}) do
-        if shader.shader == "glasshouse-glass" then
-            table.insert(effects, afterglow.shader_parameters(ev.pane, shader.instance, { heat = value }, "pane",
-                { duration_ms = value > 0 and WARM_MS or COOL_MS, curve = "ease-in-out" }))
-        end
-    end
-    return effects
+    return heatParameters(ev.pane, value, ev.data and ev.data.shaders)
 end
 
 function script.on_command_started(ev)
@@ -102,6 +107,21 @@ end
 
 local SIGNALS = { strike = STRIKE, glaze = GLAZE, ring = RING }
 
+-- A failure goes to stderr. A run from the palette shows it as a notification.
+local function fail(ev, message)
+    return { afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1) }
+end
+
+-- Waits for the effects, so that one that Afterglow refuses fails the run.
+-- Returns their results, or nil and the effects that fail the run.
+local function apply(ev, effects)
+    local results = afterglow.await_all(effects)
+    for _, result in ipairs(results) do
+        if not result.ok then return nil, fail(ev, result.error.message) end
+    end
+    return results
+end
+
 function script.run_command(command, ev)
     if not SIGNALS[command] and command ~= "heat" then
         return nil
@@ -109,15 +129,16 @@ function script.run_command(command, ev)
     if #ev.args > 0 then
         return { afterglow.output_error(ev, "usage: aglow run glasshouse " .. command .. "\n"), afterglow.exit(ev, 2) }
     end
-    -- A failure goes to stderr. A run from the palette shows it as a notification.
-    if not ev.pane then
-        return { afterglow.output_error(ev, "There is no pane to light.\n"), afterglow.exit(ev, 1) }
-    end
+    if not ev.pane then return fail(ev, "There is no pane to light.") end
     if command == "heat" then
         -- Warms as if a command were running; the next command cools it.
-        return heat(ev.pane, 1)
+        local results, failure = apply(ev, { afterglow.signal(ev.pane, HEAT, 1), afterglow.shaders(ev.pane) })
+        if not results then return failure end
+        local _, problem = apply(ev, heatParameters(ev.pane, 1, (results[2].data or {}).shaders))
+        return problem
     end
-    return afterglow.signal(ev.pane, SIGNALS[command], 1)
+    local _, failure = apply(ev, { afterglow.signal(ev.pane, SIGNALS[command], 1) })
+    return failure
 end
 
 return script

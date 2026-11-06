@@ -9,6 +9,7 @@
 #include "../app/WindowStart.h"
 #include "../config/Keybinds.h"
 #include "../config/Settings.h"
+#include "../scripting/ScriptHost.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -38,13 +39,20 @@ QString noPane(quint32 id)
     return QStringLiteral("no pane %1").arg(id);
 }
 
+// ScriptHost checks the effect's max_bytes first, in the same words.
+QString maxBytesRefusal(int limit)
+{
+    if (limit >= 1 && limit <= ScriptHost::MaxReadTextBytes) return {};
+    return QStringLiteral("max_bytes must be a whole number from 1 to %1").arg(ScriptHost::MaxReadTextBytes);
+}
+
 // The text a script command reads can reach the client of its run: then
 // Control.allowReadText, which guards text for clients, applies too.
 QString scriptReadRefusal(const Settings& settings, bool clientRun)
 {
     if (!settings.scriptsAllowReadText) return QStringLiteral("reading pane text is off (Scripts.allowReadText)");
     if (clientRun && !settings.control.allowReadText)
-        return QStringLiteral("reading pane text for aglow run is off (Control.allowReadText)");
+        return QStringLiteral("reading pane text for a command run with a client is off (Control.allowReadText)");
     return {};
 }
 } // namespace
@@ -311,7 +319,7 @@ QString Control::readText(quint32 id, TextScope scope, QString& out)
 QString Control::readTextBounded(quint32 id, const QString& scope, int limit, QVariantMap& result, bool clientRun)
 {
     if (const QString refusal = scriptReadRefusal(m_settings.settings(), clientRun); !refusal.isEmpty()) return refusal;
-    if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
+    if (const QString refusal = maxBytesRefusal(limit); !refusal.isEmpty()) return refusal;
     auto* pane = find(id);
     if (!pane) return noPane(id);
     if (scope == QLatin1String("selection")) {
@@ -340,7 +348,7 @@ QString Control::semanticRegions(quint32 id, QVariantMap& result, bool clientRun
 QString Control::readRegion(quint32 id, const QString& region, int limit, QVariantMap& result, bool clientRun)
 {
     if (const QString refusal = scriptReadRefusal(m_settings.settings(), clientRun); !refusal.isEmpty()) return refusal;
-    if (limit < 1 || limit > 1024 * 1024) return QStringLiteral("max_bytes must be between 1 and 1048576");
+    if (const QString refusal = maxBytesRefusal(limit); !refusal.isEmpty()) return refusal;
     bool ok = false;
     const auto regionId = region.toULongLong(&ok);
     if (!ok || !regionId || QString::number(regionId) != region) return QStringLiteral("invalid region ID");

@@ -43,6 +43,7 @@ struct ScriptPackage
     QByteArray source;
     QStringList watched;
     /// Shader packs the package ships, each declaring the id "<package>.<pack>".
+    /// The shader library reads the directory itself, and also checks that id.
     QString shaderDirectory;
     QStringList shaderPacks;
     /// Shader settings it suggests: a Shaders key and one of its pack names.
@@ -57,6 +58,8 @@ struct ScriptPackage
         int line;
         int lines;
         QString file; ///< relative to the package directory
+        qsizetype offset; ///< the bytes of its source in source
+        qsizetype size;
     };
     QList<Module> modules;
     static QString read(const QString& manifest, ScriptPackage& result);
