@@ -423,12 +423,23 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
+| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) with `find_package(Qt6)` disabled and no Phosphor directory, builds it, installs it into the build directory, and checks that the installation holds only `bin/aglow`, its license notices and its completions. It uses the compilers, the build type and the flags of the build. It has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
 | `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3, and a kernel that shows a process that waits in `open()` |
 | `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
 | `aglow_icat_render` | Draws the output of `aglow icat` with `afterglow_renderpng` | Python 3, `AFTERGLOW_BUILD_TOOLS`, a Wayland display and a Vulkan device |
 
 Without `readelf`, the configuration prints a message and leaves out `aglow_static`.
+`aglow_only_build` compiles zlib-ng and xxHash again, which takes some minutes.
+Run the suite without it:
+
+```sh
+ctest --test-dir build --output-on-failure -LE slow
+```
+
+A [build of aglow alone](BUILD.md#build-aglow-alone) has the `Proto.*` tests and these tests of the table: `aglow_version`, `aglow_run_usage`, `Aglow.*`, `aglow_static`, `aglow_clipboard_pty`, `aglow_clipboard_cases` and `aglow_icat_decode`.
+It has no test that runs `afterglow`.
+
 The Python test scripts need Python 3.9 or later.
 Without a Wayland display or a Vulkan device, `aglow_icat_render` reports Skipped.
 `aglow_clipboard_cases` reports Skipped when the kernel does not show a process that waits in `open()`. It runs its other cases first.

@@ -180,7 +180,7 @@ It runs on a Linux computer of its architecture whose kernel is as new as the st
 On x86-64, the processor must also have the instruction level that the build needs.
 When `readelf` is installed, the build prints both requirements, for example "needs Linux 6.1.0 or later".
 When the compiler or linker flags contain `-fsanitize`, `aglow` links dynamically. See [build and install](BUILD.md#install).
-Afterglow installs it next to `afterglow`. To use the protocols over SSH, install or copy `aglow` on the remote host.
+Afterglow installs it next to `afterglow`. To use the protocols over SSH, install `aglow` on the remote host (see [remote hosts](#remote-hosts)).
 The `kitten` client of Kitty also works with Afterglow.
 `aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name.
 The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoperability).
@@ -212,6 +212,15 @@ aglow icat ./picture.png
 aglow clipboard ./picture.png
 aglow clipboard --get-clipboard --mime image/png ./copy.png
 ```
+
+### Remote hosts
+
+Afterglow does not copy `aglow` to a remote host.
+Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
+You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
+That build does not need Qt or the Phosphor libraries.
+`kitten` also works over SSH for file transfer, drag and drop, images and the clipboard, because these are Kitty protocols.
+`aglow run` reaches only an Afterglow on the same computer.
 
 ### aglow icat
 

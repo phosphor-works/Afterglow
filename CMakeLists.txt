@@ -18,6 +18,45 @@ endif()
 include(CTest)
 include(GNUInstallDirs)
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
+endif()
+
+# Zsh has no one place for completions: with the prefix /usr, Debian and
+# Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
+# default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:
+# a cached path would keep the DATADIR of the first one. _afterglow and _aglow
+# both install here, also in a build of aglow alone.
+set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
+    "Directory for the zsh completions, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
+set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${AFTERGLOW_ZSH_COMPLETION_DIR}")
+if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
+    set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
+endif()
+
+# aglow alone, for a computer that runs no Afterglow: a remote host, or a
+# package of its own. It needs CMake, the C and C++20 compilers and the static
+# C and C++ runtime libraries, but no Qt and no Phosphor checkout. zlib-ng and
+# xxHash come from their pinned archives, as in the whole build. It installs
+# aglow, its completions and its licence notices, nothing of the application.
+option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the protocol library that it uses: no Qt and no Phosphor libraries" OFF)
+if(AFTERGLOW_AGLOW_ONLY)
+    if(DEFINED AFTERGLOW_BUILD_AGLOW AND NOT AFTERGLOW_BUILD_AGLOW)
+        message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds aglow. Turn AFTERGLOW_BUILD_AGLOW on, or AFTERGLOW_AGLOW_ONLY off.")
+    endif()
+    # The tools and the fuzz targets need the application's libraries, which
+    # this build leaves out. Asked for, they would be missing without a word.
+    foreach(option AFTERGLOW_BUILD_TOOLS AFTERGLOW_BUILD_FUZZERS)
+        if(${option})
+            message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds only aglow, not ${option}. Turn one of them off.")
+        endif()
+    endforeach()
+    include(cmake/AfterglowDependencies.cmake)
+    add_subdirectory(libs/afterglow-proto)
+    add_subdirectory(tools/aglow)
+    return()
+endif()
+
 # The phosphor libraries need Qt 6.10; they read QT_MIN_VERSION, so one floor
 # applies to the whole build.
 set(AFTERGLOW_QT_MIN 6.10)
@@ -28,10 +67,6 @@ set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Gui ShaderTools)
 message(STATUS "Afterglow uses Qt ${Qt6_VERSION} private APIs; rebuild Afterglow after changing the Qt build.")
 qt_standard_project_setup()
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
-endif()
 
 # Qt's signals/slots/emit keywords collide with ordinary identifiers (the
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
@@ -44,18 +79,6 @@ add_compile_definitions(QT_NO_KEYWORDS)
 # own run paths where they are installed (afterglow/CMakeLists.txt).
 set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
-
-# Zsh has no one place for completions: with the prefix /usr, Debian and
-# Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
-# default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:
-# a cached path would keep the DATADIR of the first one. _afterglow and _aglow
-# both install here.
-set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
-    "Directory for the zsh completions, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
-set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${AFTERGLOW_ZSH_COMPLETION_DIR}")
-if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
-    set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
-endif()
 
 include(cmake/AfterglowPhosphor.cmake)
 # The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the vendored

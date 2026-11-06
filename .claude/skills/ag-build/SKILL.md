@@ -31,6 +31,9 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 
 ## aglow
 
+`AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto` and `tools/aglow`: no Qt, no Phosphor checkout, and an
+install of `bin/aglow`, its completions and its notices in `share/licenses/aglow`. `docs/BUILD.md` has the procedure.
+
 `AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
 that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
@@ -56,7 +59,8 @@ file, set the new hash there and list the patch at the top of `tools/aglow/StbIm
 - The pinned archives (Luau and valijson from `PhosphorDependencies.cmake` in PlasmaZones, zlib-ng and xxHash from
   `cmake/AfterglowDependencies.cmake`) download into the CPM cache, by default `../PlasmaZones/.cache/cpm`, and
   Afterglow's own `.cache/cpm` when only `PHOSPHOR_DEPS_ARCHIVES` is set (`docs/BUILD.md` has the order). A
-  configure without network works once that cache holds them.
+  configure without network works once that cache holds them. A build of `aglow` alone loads no PlasmaZones
+  module, so its default cache is Afterglow's own `.cache/cpm`.
 
 ## Build
 
@@ -91,6 +95,10 @@ systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
 
 The suite has about 1,450 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
+
+- `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
+  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng again and takes some
+  minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
 
 - The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.
 - The native window tests (`afterglow_native_tests`) are not in CTest by default (`AFTERGLOW_NATIVE_TESTS=OFF`).
