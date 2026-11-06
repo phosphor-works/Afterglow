@@ -2312,8 +2312,8 @@ TEST_F(NativeWindow, PaneOverviewSpansTabsAndSwitchesToTheChosenTab) {
     ASSERT_TRUE(pressKey(window, Qt::Key_Up));
     ASSERT_TRUE(pressKey(window, Qt::Key_Return));
     EXPECT_FALSE(window->overviewOpen());
-    // The chosen tab shows once the close has finished, so the cards never
-    // jump with the current tab.
+    // The chosen tab shows while the close runs: the cards close onto its
+    // layout, and the current tab never changes back first.
     EXPECT_TRUE(waitFor([&] { return window->focusedPane() == first; }));
     EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
     expectIdle(window);
@@ -2683,7 +2683,7 @@ TEST_F(NativeWindow, OverviewRestoresTheZoomOnTheTabItCameFrom) {
     QCoreApplication::sendEvent(window, &escape);
     ASSERT_TRUE(settleQueued());
     EXPECT_FALSE(window->overviewOpen());
-    // The first tab shows once the close has finished.
+    // The first tab is back, with its zoom on the chosen pane.
     EXPECT_TRUE(waitFor([&] { return window->focusedPane() == first; }));
     EXPECT_TRUE(window->accessiblePaneRect(second).isEmpty()) << "the first tab lost its zoom";
     EXPECT_FALSE(window->accessiblePaneRect(first).isEmpty());
@@ -2906,8 +2906,8 @@ TEST_F(NativeWindow, KeyRepeatsStayWithThePaneThatGotThePress) {
 }
 
 // Opens a second tab and the overview on it, and chooses the first tab's
-// card with Left and Return. The overview is closing then, still on the
-// second tab: the tab switches once the close has finished.
+// card with Left and Return. The chosen tab shows at once: the overview
+// closes onto it, so the cards never jump back to the second tab.
 void NativeWindow::closeOverviewOntoTheFirstTab(Pane*& first, Pane*& second) {
     first = window->focusedPane();
     ASSERT_TRUE(window->runAction(first, Action::NewTab));
@@ -2915,15 +2915,15 @@ void NativeWindow::closeOverviewOntoTheFirstTab(Pane*& first, Pane*& second) {
     second = window->focusedPane();
     ASSERT_NE(second, first);
     ASSERT_TRUE(window->runAction(second, Action::PaneOverview));
-    // Frames open the overview. Closed before any frame has opened it, it
-    // would switch the tab at once, with no close to wait for.
+    // Frames open the overview. Choosing before any frame has opened it would
+    // leave nothing for the close to draw.
     const auto opened = window->submittedFrames();
     ASSERT_TRUE(waitFor([&] { return window->submittedFrames() >= opened + 3; }));
     sendKey(window, Qt::Key_Left);
     ASSERT_EQ(window->overviewHighlight(), first);
     sendKey(window, Qt::Key_Return);
     ASSERT_FALSE(window->overviewOpen());
-    ASSERT_EQ(window->focusedPane(), second);
+    ASSERT_EQ(window->focusedPane(), first);
 }
 
 TEST_F(NativeWindow, TypingWhileTheOverviewClosesReachesTheChosenTab) {
@@ -2931,8 +2931,8 @@ TEST_F(NativeWindow, TypingWhileTheOverviewClosesReachesTheChosenTab) {
     Pane* second = nullptr;
     closeOverviewOntoTheFirstTab(first, second);
     if (HasFatalFailure()) return;
-    // A key typed now switches first, so it reaches the chosen pane, whose
-    // cat shows the line once it ends.
+    // The chosen tab is focused while the overview closes: a key typed now
+    // reaches its pane, whose cat shows the line once it ends.
     sendKey(window, Qt::Key_Z, Qt::NoModifier, QStringLiteral("z"));
     EXPECT_EQ(window->focusedPane(), first);
     sendKey(window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
@@ -2947,8 +2947,8 @@ TEST_F(NativeWindow, OverviewClosingOntoAnotherTabSwitchesWithoutATransition) {
     Pane* second = nullptr;
     closeOverviewOntoTheFirstTab(first, second);
     if (HasFatalFailure()) return;
-    // The close has carried the motion onto the card: the tab switch at its
-    // end must not slide the panes a second time.
+    // The switch happened while the overview was showing, so the tab
+    // transition did not run, and no slide follows the close.
     bool slid = false;
     QElapsedTimer clock;
     clock.start();
@@ -2970,7 +2970,8 @@ TEST_F(NativeWindow, FocusWhileTheOverviewClosesWinsOverTheCard) {
     Pane* second = nullptr;
     closeOverviewOntoTheFirstTab(first, second);
     if (HasFatalFailure()) return;
-    // afterglow ctl focus on the pane that already has the focus.
+    // afterglow ctl focus on another pane while the overview closes wins over
+    // the card the overview chose.
     window->revealPane(second);
     expectIdle(window);
     EXPECT_EQ(window->focusedPane(), second);
