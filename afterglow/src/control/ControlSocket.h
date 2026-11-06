@@ -57,6 +57,16 @@ public:
     Q_INVOKABLE QVariantMap saveProject(double pane, const QString& name, bool overwrite);
     Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance);
     Q_INVOKABLE QVariantList scriptDiagnostics();
+    /// Runs @p argv over @p pane (0: the focused pane) and answers once it
+    /// exits, with {exit_code, stdout, truncated}. @p options: stdin, capture
+    /// (stdout, file or none), cwd, env and title, as for the overlay effect.
+    /// A refusal or a cancel fails the call with the code busy, no_pane,
+    /// spawn_failed or cancelled. The overlay is cancelled when the caller's
+    /// connection closes.
+    Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
+
+    /// Whose overlays a connection's are, as Control knows them.
+    static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
 
 Q_SIGNALS:
     void paneCreated(uint pane);

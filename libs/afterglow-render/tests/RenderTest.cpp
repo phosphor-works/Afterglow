@@ -18,6 +18,7 @@
 #include <cmath>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <string>
 
 using namespace AfterglowRender;
@@ -3138,4 +3139,46 @@ int main(int argc, char** argv)
     const int result = RUN_ALL_TESTS();
     s_device.reset();
     return result;
+}
+
+TEST_F(Render, AnOverlayFadesThroughItsBackgroundInPlaceOfThePaneGrid)
+{
+    // The pane: a red cell. The overlay: a green cell elsewhere, on a blue background.
+    render("\x1b[?25l\x1b[48;2;220;0;0m \x1b[0m");
+    NullHost overlayHost;
+    AfterglowVt::Terminal overlayTerminal(Cols, Rows, overlayHost);
+    overlayTerminal.resize(Cols, Rows, cw, ch);
+    overlayTerminal.feed("\x1b[?25l\x1b]11;rgb:00/00/c0\x1b\\\x1b[2;3H\x1b[48;2;0;200;0m \x1b[0m");
+    PaneSnapshot overlaySnapshot;
+    overlaySnapshot.capture(overlayTerminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane;
+    pane.snapshot = &snapshot;
+    pane.params.rect = QRect(QPoint(0, 0), size);
+    pane.params.focused = true;
+    auto frame = [&](std::optional<float> progress) {
+        WindowRenderer::Pane drawn = pane;
+        if (progress) drawn.overlay = WindowRenderer::Pane::Overlay{&overlaySnapshot, pane.params, *progress};
+        return renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg);
+    };
+    const QImage plain = frame(std::nullopt);
+    const QRgb red = qRgb(220, 0, 0), green = qRgb(0, 200, 0), blue = rgb(overlaySnapshot.defaultBg);
+    ASSERT_EQ(blue, qRgb(0, 0, 0xc0));
+    // At 0 the pane alone, as with no overlay.
+    const QImage start = frame(0.0f);
+    EXPECT_TRUE(start == plain);
+    EXPECT_PIXEL(start, cellCenter(0, 0), red);
+    // Halfway the overlay's background covers the grid.
+    const QImage middle = frame(0.5f);
+    EXPECT_PIXEL(middle, cellCenter(0, 0), blue);
+    EXPECT_PIXEL(middle, cellCenter(2, 1), blue);
+    // At 1 the overlay alone: nothing of the pane shows.
+    const QImage end = frame(1.0f);
+    EXPECT_PIXEL(end, cellCenter(0, 0), blue);
+    EXPECT_PIXEL(end, cellCenter(2, 1), green);
+    EXPECT_PIXEL(end, cellCenter(Cols - 1, Rows - 1), blue);
+    // On the way in, part of each.
+    const QImage quarter = frame(0.25f);
+    EXPECT_NE(quarter.pixel(cellCenter(0, 0)), red);
+    EXPECT_NE(quarter.pixel(cellCenter(0, 0)), blue);
 }

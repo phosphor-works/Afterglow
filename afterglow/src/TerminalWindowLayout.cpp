@@ -25,6 +25,13 @@ void TerminalWindow::releasePaneUi(Pane* pane)
     dropPanePrompts(pane);
     if (m_copyPane == pane) stopCopyMode();
     if (m_hover.pane == pane) m_hover = {};
+    // Its overlay goes with it, and leaves what it had here.
+    if (Pane* overlay = inputPane(pane); overlay != pane) {
+        dropPanePrompts(overlay);
+        if (m_copyPane == overlay) stopCopyMode();
+        if (m_hover.pane == overlay) m_hover = {};
+        if (m_focused == pane) overlay->clearSearch();
+    }
     m_dividerDrag.reset(); // the layout changes under it
     if (m_menuTab && tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))]->id == m_menuTab) {
         m_controller->closeContextMenu();
@@ -64,6 +71,17 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
         destination->motion(pane).pointerShape = it->second->pointerShape;
     m_motion.erase(pane); // motion objects reference the source window's clock
     m_growFrom.erase(pane);
+    // Its overlay comes along, without its fade: the fade's clock is this window's.
+    m_overlayFades.erase(pane);
+    if (PaneOverlay* overlay = pane->overlay()) {
+        Pane* program = overlay->pane();
+        QObject::disconnect(overlay, nullptr, this, nullptr);
+        QObject::disconnect(program, nullptr, this, nullptr);
+        m_motion.erase(program);
+        m_historyRows.erase(program);
+        m_clipboardGrants.erase(program);
+        if (m_statusViews.erase(program) > 0) publishLauncherStatus();
+    }
     // Its docks go with it. Their objects for assistive technology are this
     // window's children: the destination makes new ones.
     for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());

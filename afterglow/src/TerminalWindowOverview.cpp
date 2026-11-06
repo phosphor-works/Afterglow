@@ -128,6 +128,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         wp.params.textBlinkOn = m_textBlinkOn;
         const QVariantMap overrides = applyScriptOverrides(p, wp.params, backgroundAlpha);
         const QRect shown = wp.params.rect;
+        prepareOverlay(p, r, wp, holding, animating);
         other.panes.push_back(std::move(wp));
         // The overlays the tab had while it was current, so a tab switch
         // starts from exactly what was shown.

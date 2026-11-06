@@ -16,6 +16,8 @@ qt_add_library(afterglow_app STATIC
     src/Pane.cpp
     src/PaneText.cpp
     src/Pane.h
+    src/PaneOverlay.cpp
+    src/PaneOverlay.h
     src/ProjectStore.cpp
     src/ProjectStore.h
     src/SplitTree.cpp
@@ -24,6 +26,7 @@ qt_add_library(afterglow_app STATIC
     src/TerminalWindowLayout.cpp
     src/TerminalWindowOverview.cpp
     src/TerminalWindowScript.cpp
+    src/TerminalWindowOverlay.cpp
     src/TerminalWindowDock.cpp
     src/TerminalWindow.cpp
     src/TerminalWindow.h
@@ -132,7 +135,8 @@ target_link_libraries(afterglow_audio PUBLIC PhosphorAudio::PhosphorAudio Qt6::C
 qt_add_library(afterglow_scripting STATIC src/scripting/ScriptHost.cpp src/scripting/ScriptHost.h
     src/scripting/ScriptTasks.cpp src/scripting/ScriptTasks.h
     src/scripting/ScriptPackage.cpp src/scripting/ScriptPackage.h
-    src/scripting/ScriptState.cpp src/scripting/ScriptState.h)
+    src/scripting/ScriptState.cpp src/scripting/ScriptState.h
+    src/scripting/OverlaySpec.cpp src/scripting/OverlaySpec.h)
 target_include_directories(afterglow_scripting PUBLIC src)
 target_compile_definitions(afterglow_scripting PRIVATE QT_NO_CAST_FROM_ASCII)
 target_link_libraries(afterglow_scripting PUBLIC PhosphorScripting::PhosphorScripting PhosphorFsLoader::PhosphorFsLoader Qt6::Core Qt6::Concurrent)

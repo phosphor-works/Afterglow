@@ -9,6 +9,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,6 +35,15 @@ struct SpawnOptions
     int rows = 24;
     int pixelWidth = 0;
     int pixelHeight = 0;
+    /// Standard input from a pipe that carries these bytes and then closes,
+    /// in place of the terminal. Unset: the terminal.
+    std::optional<std::string> input;
+    /// Standard output to a pipe, which IPtyListener::ptyOutput reads, in
+    /// place of the terminal. Either way the terminal stays the controlling
+    /// terminal and standard error, so the program can still draw on
+    /// /dev/tty: a list on stdin, the interface on /dev/tty, the answer on
+    /// stdout.
+    bool captureOutput = false;
 };
 
 /// Receives pty events on the pty's I/O thread.
@@ -42,6 +52,9 @@ class IPtyListener
 public:
     virtual ~IPtyListener() = default;
     virtual void ptyData(std::string_view bytes) = 0;
+    /// What the child wrote to its standard output, with
+    /// SpawnOptions::captureOutput. All of it arrives before ptyClosed.
+    virtual void ptyOutput(std::string_view bytes) { (void)bytes; }
     /// The child exited, or the terminal can no longer be read. @p status is
     /// the waitpid() status, or -1 when it is unknown: the child was reaped
     /// elsewhere, or still ran when the terminal failed.
@@ -91,11 +104,20 @@ private:
     void run();
     void wake();
     bool flushPending();
+    /// Writes what is left of m_input to the child's stdin pipe; closes the
+    /// pipe once it is all written or the child closed its end.
+    void feedInput();
+    /// Reads the child's stdout pipe until it is empty. False at its end.
+    bool readOutput(std::vector<char>& buffer);
 
     int m_master;
     int m_wakeFd;
     int m_pidFd; ///< readable when the child exits; -1 on kernels without pidfd_open
     int m_execFd = -1; ///< the exec report, when spawn() stopped waiting for it
+    int m_inputFd = -1; ///< the write end of the child's stdin pipe, until it is fed
+    std::string m_input; ///< what the stdin pipe carries
+    std::size_t m_inputOffset = 0;
+    int m_outputFd = -1; ///< the read end of the child's stdout pipe, until its end
     std::atomic<pid_t> m_pid;
     IPtyListener& m_listener;
 

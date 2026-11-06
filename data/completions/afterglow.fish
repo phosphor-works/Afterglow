@@ -104,7 +104,7 @@ function __afterglow_ctl
                 scripts\t'Show script diagnostics' open-directory\t'Open a directory' \
                 projects\t'List saved projects' save-project\t'Save the window layout' \
                 open-project\t'Open a saved project' action\t'Run a keybind action or start a script command' \
-                watch\t'Print events'
+                watch\t'Print events' overlay\t'Run a command over the pane and print its result'
         end
         return
     end
@@ -117,15 +117,16 @@ function __afterglow_ctl
         switch $argv[$i]
             case --
                 # A command to run follows, or text, or nothing that ctl takes.
-                if contains -- $command split new-tab new-window
+                if contains -- $command split new-tab new-window overlay
                     set -l rest (string escape -- $argv[(math $i + 1)..])
                     complete -C (string join ' ' -- $rest "$cur")
                 end
                 return
-            case --pane --cwd --layout
+            case --pane --cwd --layout --capture --title
                 if test $i -eq $n
                     # The cursor is at the option's value.
                     test $argv[$i] = --cwd; and __fish_complete_directories "$cur"
+                    test $argv[$i] = --capture; and __afterglow_print stdout file none
                     return
                 end
                 set i (math $i + 1)
@@ -185,6 +186,11 @@ function __afterglow_ctl
             or set -a offer --left --right --up --down
         case new-tab new-window
             contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+        case overlay
+            contains -- --capture $argv; or set -a offer --capture\t'Where the result comes from'
+            contains -- --cwd $argv; or set -a offer --cwd\t'Working directory'
+            contains -- --title $argv; or set -a offer --title\t'The pane title meanwhile'
+            contains -- -n $argv; or contains -- --no-stdin $argv; or set -a offer --no-stdin\t'Keep standard input from the command'
         case open-directory
             contains -- --layout $argv; or set -a offer --layout\t'A saved layout'
         case save-project

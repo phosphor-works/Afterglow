@@ -660,6 +660,11 @@ PhosphorConfig::Schema buildSchema()
                QStringLiteral("Duration of tab switches in milliseconds for curves other than springs.")),
         intKey(QStringLiteral("paneEffectDuration"), anim.paneEffectDuration, 16, 5000,
                QStringLiteral("Milliseconds a pane takes to open or close in Shaders.paneEffects.")),
+        curveKey(QStringLiteral("overlayCurve"), anim.overlayCurve,
+                 QStringLiteral("Curve of the fade of an overlay over its pane, in the splitCurve format. The fade stops at "
+                                "its ends, also with a spring that overshoots.")),
+        intKey(QStringLiteral("overlayDuration"), anim.overlayDuration, 16, 5000,
+               QStringLiteral("Duration of the fade of an overlay in milliseconds for curves other than springs.")),
         curveKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
                  QStringLiteral("Curve of cursor motion between cells, in the splitCurve format.")),
         intKey(QStringLiteral("cursorDuration"), anim.cursorDuration, 16, 5000,
@@ -1524,6 +1529,8 @@ Settings SettingsStore::read()
     s.animation.tabCurve = st.read<QString>(Animation, QStringLiteral("tabCurve")).trimmed();
     s.animation.tabDuration = st.read<int>(Animation, QStringLiteral("tabDuration"));
     s.animation.paneEffectDuration = st.read<int>(Animation, QStringLiteral("paneEffectDuration"));
+    s.animation.overlayCurve = st.read<QString>(Animation, QStringLiteral("overlayCurve")).trimmed();
+    s.animation.overlayDuration = st.read<int>(Animation, QStringLiteral("overlayDuration"));
     s.animation.cursorCurve = st.read<QString>(Animation, QStringLiteral("cursorCurve")).trimmed();
     s.animation.cursorDuration = st.read<int>(Animation, QStringLiteral("cursorDuration"));
     s.animation.scrollCurve = st.read<QString>(Animation, QStringLiteral("scrollCurve")).trimmed();

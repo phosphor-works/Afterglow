@@ -10,7 +10,7 @@
 # as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
-signal notify scripts open-directory projects save-project open-project action watch"
+signal notify scripts open-directory projects save-project open-project action watch overlay"
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
@@ -95,12 +95,12 @@ _afterglow_ctl()
         case ${words[i]} in
         --)
             case $command in
-            split | new-tab | new-window) _afterglow_offset $((i + 1)) ;;
+            split | new-tab | new-window | overlay) _afterglow_offset $((i + 1)) ;;
             esac
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout)
+        --pane | --cwd | --layout | --capture | --title)
             ((i++))
             ;;
         -*) ;;
@@ -111,7 +111,11 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout) return ;;
+    --pane | --layout | --title) return ;;
+    --capture)
+        _afterglow_matching stdout file none
+        return
+        ;;
     --cwd)
         _afterglow_files -d
         return
@@ -170,6 +174,7 @@ _afterglow_ctl()
     get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
     split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
     new-tab | new-window) _afterglow_unused $pane --cwd ;;
+    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
     open-project) _afterglow_unused --new ;;

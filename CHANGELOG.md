@@ -145,6 +145,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - An interrupt or `SIGTERM` cancels the run, and `afterglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
 - A command that `afterglow run` starts reads pane text only when `Control.allowReadText` is on.
 - `afterglow ctl action` and `afterglow.action` are refused while a prompt or a script dialog is open.
+- Overlays: `afterglow.overlay` runs a program, such as fzf, over a pane with the input focus, and returns its exit status and its output to the script. The program can read a list on stdin, draw on the terminal and answer on stdout or in the file that `AFTERGLOW_RESULT` names. The overlay fades in and out with `Animation.overlayCurve` and `Animation.overlayDuration`. It closes, and its program gets `SIGHUP`, when its pane closes or the command run that waits for it ends.
+- `afterglow ctl overlay -- CMD` runs a program over the pane from a shell script, with the `overlay` call of the control socket. It prints the program's output and exits with its status.
+- The fzf picker example package picks a saved project or a file with fzf in an overlay, or with the select dialog when fzf is not installed.
 - Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.

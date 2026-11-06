@@ -235,6 +235,31 @@ TEST_F(ControlSocketTest, CallsReplyWithResultsOrErrors)
     EXPECT_EQ(unknown.value(QStringLiteral("code")).toString(), QStringLiteral("NO_SUCH_FN"));
 }
 
+TEST_F(ControlSocketTest, OverlayChecksItsArgumentsAndDefersItsAnswer)
+{
+    ASSERT_TRUE(start());
+    QLocalSocket client;
+    ASSERT_TRUE(connect(client));
+    // The rules of the overlay effect: a refusal before anything runs.
+    const auto refused = [this, &client](const QJsonArray& args) {
+        const QJsonObject frame = call(client, QStringLiteral("overlay"), args);
+        EXPECT_EQ(frame.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+        EXPECT_EQ(frame.value(QStringLiteral("code")).toString(), QStringLiteral("CALL_FAILED"));
+        return frame.value(QStringLiteral("message")).toString();
+    };
+    EXPECT_TRUE(refused({7, QJsonArray{}, QJsonObject{}}).contains(QStringLiteral("argv")));
+    EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("capture"), QStringLiteral("stderr")}}})
+                    .startsWith(QStringLiteral("capture must be")));
+    EXPECT_TRUE(refused({7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{{QStringLiteral("shell"), true}}})
+                    .contains(QStringLiteral("shell")));
+    EXPECT_EQ(refused({0, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}}), QStringLiteral("no focused pane"));
+    // A valid call is deferred, and fails with a code of its own: here no pane.
+    const QJsonObject missing = call(client, QStringLiteral("overlay"), {7, QJsonArray{QStringLiteral("fzf")}, QJsonObject{}});
+    EXPECT_EQ(missing.value(QStringLiteral("type")).toString(), QStringLiteral("error"));
+    EXPECT_EQ(missing.value(QStringLiteral("code")).toString(), QStringLiteral("no_pane"));
+    EXPECT_TRUE(missing.value(QStringLiteral("message")).toString().contains(QLatin1Char('7')));
+}
+
 /// Runs @p work on a thread of its own while this thread's event loop
 /// serves the socket: the client blocks.
 template<typename Work>

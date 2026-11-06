@@ -725,6 +725,23 @@ void Control::closeScriptDialogs(const QString& owner, const QString& prefix)
     for (auto window : m_windows) if (window) window->closeScriptDialog(owner, prefix);
 }
 
+QString Control::overlay(const QString& owner, const QString& request, quint32 id, const OverlaySpec& spec, OverlayReply reply,
+                         QString& code)
+{
+    TerminalWindow* window = nullptr;
+    Pane* pane = find(id, &window);
+    if (!pane) {
+        code = QStringLiteral("no_pane");
+        return noPane(id);
+    }
+    return window->openOverlay(owner, request, pane, spec, std::move(reply), code);
+}
+
+void Control::closeOverlays(const QString& owner, const QString& message)
+{
+    for (auto window : m_windows) if (window) window->closeOverlays(owner, {}, message);
+}
+
 void Control::clearScriptOwner(const QString& owner)
 {
     m_docks.removeIf([&owner](const DockRecord& r) { return r.owner == owner || !r.window; });

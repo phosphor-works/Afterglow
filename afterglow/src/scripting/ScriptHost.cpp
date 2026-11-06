@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "ScriptHost.h"
+#include "OverlaySpec.h"
 #include "ScriptTasks.h"
 #include "ScriptFiles.h"
 #include "ScriptPackage.h"
@@ -378,6 +379,7 @@ const EffectKind Kinds[] = {
     {"exit", false, false, {"run"}, false, {"code"}},
     {"select", true, false, {"title"}, false},
     {"prompt", true, false, {"title", "text"}, false},
+    {"overlay", true, false, {"cwd", "capture", "title"}, true},
     {"status", true, false, {"text", "tab_title"}, false},
     {"dock", true, false, {"id"}, false},
     {"undock", true, false, {"id"}, false},
@@ -1488,7 +1490,7 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 } else if (it.key() != QLatin1String("env")) error = QStringLiteral("Unknown launch option %1").arg(it.key());
             }
         }
-        if (launch || kind == QLatin1String("exec")) {
+        if (launch || kind == QLatin1String("exec") || kind == QLatin1String("overlay")) {
             const auto value = (launch ? options : raw).value(QStringLiteral("env"));
             if (value.isValid() && value.typeId() != QMetaType::QVariantMap
                 && !(value.typeId() == QMetaType::QVariantList && value.toList().isEmpty()))
@@ -1577,6 +1579,17 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
                 error = QStringLiteral("placement must be left, right, up, down, new-tab or new-window");
             else if (beside == (target == 0))
                 error = QStringLiteral("left, right, up and down need a target pane. new-tab and new-window take none");
+        }
+        if (kind == QLatin1String("overlay")) {
+            // The rules of the control socket's overlay call too.
+            const QVariant input = raw.value(QStringLiteral("stdin"));
+            if (input.isValid() && !input.isNull()) effect.insert(QStringLiteral("stdin"), input);
+            QVariantMap options{{QStringLiteral("cwd"), str(effect, "cwd")}, {QStringLiteral("capture"), str(effect, "capture")},
+                                {QStringLiteral("title"), str(effect, "title")}, {QStringLiteral("env"), effect.value(QStringLiteral("env"))}};
+            if (input.isValid() && !input.isNull()) options.insert(QStringLiteral("stdin"), input);
+            QString problem;
+            if (error.isEmpty() && !OverlaySpec::read(effect.value(QStringLiteral("command")).toStringList(), options, &problem))
+                error = problem;
         }
         if (kind == QLatin1String("select")) {
             const auto entries = raw.value(QStringLiteral("items")).toList();

@@ -1016,7 +1016,45 @@ QRect dockedContent(QRect area, const std::vector<WindowRenderer::Pane::Dock>& d
     return area;
 }
 
+/// Draws each pane's overlay as it shows now: from halfway through its fade,
+/// the overlay's grid in place of the pane's. A cover in the overlay's
+/// background colour goes over the grid that shows, where the pane's docks
+/// leave room: it rises to full at halfway, then falls as the overlay comes
+/// out of it. The covers go into @p covers, under the panes' other
+/// overlays (dimming, the bell).
+void resolveOverlays(std::vector<WindowRenderer::Pane>& panes, std::vector<std::pair<QRect, std::uint32_t>>& covers)
+{
+    std::vector<std::pair<QRect, std::uint32_t>> added;
+    for (WindowRenderer::Pane& pane : panes) {
+        if (!pane.overlay) continue;
+        const WindowRenderer::Pane::Overlay overlay = *std::exchange(pane.overlay, std::nullopt);
+        if (!overlay.snapshot) continue;
+        const float progress = std::isfinite(overlay.progress) ? std::clamp(overlay.progress, 0.0f, 1.0f) : 1.0f;
+        if (progress >= 0.5f) {
+            pane.snapshot = overlay.snapshot;
+            pane.params = overlay.params;
+        }
+        const float cover = progress < 0.5f ? progress * 2 : (1 - progress) * 2;
+        if (const auto alpha = std::uint32_t(std::lround(cover * 255)); alpha > 0) {
+            added.emplace_back(dockedContent(pane.params.rect, pane.docks), (overlay.snapshot->defaultBg & 0x00FFFFFFu) | (alpha << 24));
+        }
+    }
+    covers.insert(covers.begin(), added.begin(), added.end());
+}
+
 } // namespace
+
+void WindowRenderer::setOverview(Overview overview)
+{
+    for (OverviewTab& tab : overview.otherTabs) resolveOverlays(tab.panes, tab.overlays);
+    m_overview = std::move(overview);
+}
+
+void WindowRenderer::setTabTransition(TabTransition transition)
+{
+    resolveOverlays(transition.from.panes, transition.from.overlays);
+    m_transition = std::move(transition);
+}
 
 WindowRenderer::FrameResult WindowRenderer::render(const std::vector<Pane>& panes,
                                                   const std::vector<std::pair<QRect, std::uint32_t>>& overlays,
@@ -1144,10 +1182,22 @@ QImage WindowRenderer::renderToImage(const QSize& size, const std::vector<Pane>&
         .copy();
 }
 
-void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& panes, const std::vector<Pane>& docks,
-                              const std::vector<std::pair<QRect, std::uint32_t>>& overlays, std::uint32_t clearColor,
+void WindowRenderer::renderTo(const Target& target, const std::vector<Pane>& givenPanes, const std::vector<Pane>& docks,
+                              const std::vector<std::pair<QRect, std::uint32_t>>& givenOverlays, std::uint32_t clearColor,
                               QRhiTexture* overlayTexture, std::uint64_t overlaySerial)
 {
+    // Overlays are resolved first: every pass below sees one grid per pane.
+    std::vector<Pane> resolvedPanes;
+    std::vector<std::pair<QRect, std::uint32_t>> resolvedOverlays;
+    const bool overlaid = std::any_of(givenPanes.begin(), givenPanes.end(), [](const Pane& pane) { return pane.overlay.has_value(); });
+    if (overlaid) {
+        resolvedPanes = givenPanes;
+        resolvedOverlays = givenOverlays;
+        resolveOverlays(resolvedPanes, resolvedOverlays);
+    }
+    const std::vector<Pane>& panes = overlaid ? resolvedPanes : givenPanes;
+    const std::vector<std::pair<QRect, std::uint32_t>>& overlays = overlaid ? resolvedOverlays : givenOverlays;
+
     QRhi* rhi = m_device.rhi();
     QRhiCommandBuffer* cb = target.begin();
     if (!cb) {

@@ -6,6 +6,7 @@
 #include "desktop/DragDrop.h"
 #include "desktop/Accessibility.h"
 #include "DockArea.h"
+#include "PaneOverlay.h"
 
 #include "app/InstanceSocket.h"
 #include "app/NotificationCenter.h"
@@ -75,6 +76,9 @@ Pane::Pane(const AfterglowVt::TerminalOptions& options, QObject* parent)
 
 Pane::~Pane()
 {
+    // Its overlay answers "cancelled" while this pane is whole, and its
+    // program gets SIGHUP.
+    delete m_overlay;
     if (m_searchJob) m_searchJob->cancelled = true;
     // Stop the pty thread before the terminal it feeds goes away.
     if (m_pty) m_pty->stop();
@@ -107,7 +111,8 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     // Lets `afterglow ctl` run in the pane act on that pane by default: always ours.
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_PANE_ID"; });
     std::erase(opts.unsetEnvironment, std::string("AFTERGLOW_PANE_ID"));
-    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_id));
+    // An overlay's program acts on the pane it runs over.
+    opts.environment.emplace_back("AFTERGLOW_PANE_ID", std::to_string(m_overlayHost ? m_overlayHost->id() : m_id));
     // The pane ID means something only to this process: `afterglow ctl` in a
     // second instance's pane must reach that instance, not the first.
     std::erase_if(opts.environment, [](const auto& kv) { return kv.first == "AFTERGLOW_SOCKET"; });
@@ -1276,8 +1281,25 @@ void Pane::ptyData(std::string_view bytes)
     }
 }
 
+void Pane::ptyOutput(std::string_view bytes)
+{
+    std::lock_guard lock(m_outputMutex);
+    const std::size_t room = m_outputLimit > m_output.size() ? m_outputLimit - m_output.size() : 0;
+    // Read on to the end, so the program never blocks on a full pipe.
+    if (bytes.size() > room) m_outputTruncated = true;
+    m_output.append(bytes.substr(0, room));
+}
+
+std::string Pane::takeOutput(bool* truncated)
+{
+    std::lock_guard lock(m_outputMutex);
+    if (truncated) *truncated = m_outputTruncated;
+    return std::exchange(m_output, {});
+}
+
 void Pane::ptyClosed(int status)
 {
+    m_exitCode.store(status == -1 ? -1 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status));
     if (status == -1) {
         qCInfo(lcPane) << "shell exit status unknown";
     } else if (WIFSIGNALED(status)) {

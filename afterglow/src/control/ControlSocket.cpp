@@ -5,12 +5,14 @@
 
 #include "../config/Settings.h"
 
+#include <QJsonObject>
 #include <QLoggingCategory>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 
 Q_LOGGING_CATEGORY(lcControl, "afterglow.control", QtInfoMsg)
 
@@ -208,6 +210,41 @@ QVariantList ControlApi::scriptDiagnostics()
     return m_control.scriptDiagnostics();
 }
 
+void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap& options)
+{
+    auto id = paneId(pane);
+    if (!id) return;
+    if (*id == 0) {
+        const auto focused = m_control.focusedPane();
+        if (!focused) {
+            failed(QStringLiteral("no focused pane"));
+            return;
+        }
+        id = *focused;
+    }
+    QString error;
+    const auto spec = OverlaySpec::read(argv, options, &error);
+    if (!spec) {
+        failed(error);
+        return;
+    }
+    const quint64 connection = connectionId();
+    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
+    if (!reply->isValid()) {
+        // A call from no connection has nobody to answer later; past the
+        // router's limit of waiting calls, the router fails it.
+        if (!connection) failed(QStringLiteral("an overlay needs a client connection"));
+        return;
+    }
+    QString code;
+    error = m_control.overlay(overlayOwner(connection), {}, *id, *spec,
+        [reply](const QString& error, const QString& code, const QVariantMap& result) {
+            if (error.isEmpty()) reply->finish(QJsonObject::fromVariantMap(result));
+            else reply->fail(code, error);
+        }, code);
+    if (!error.isEmpty()) reply->fail(code, error);
+}
+
 ControlSocket::ControlSocket(Control& control, SettingsStore& settings, PhosphorIpc::IpcRouter& router, QObject* parent)
     : QObject(parent)
     , m_control(control)
@@ -221,6 +258,10 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     m_due.setSingleShot(true);
     connect(&m_due, &QTimer::timeout, this, &ControlSocket::sendDue);
 
+    // A client that goes takes its overlays with it: nobody waits for them.
+    connect(&router, &PhosphorIpc::IpcRouter::connectionClosed, this, [this](quint64 connection) {
+        m_control.closeOverlays(ControlApi::overlayOwner(connection), QStringLiteral("The client went away"));
+    });
     connect(&control, &Control::paneCreated, this, [this](quint32 p) { sendNow("paneCreated", p, {paneValue(p)}); });
     connect(&control, &Control::paneMoved, this, [this](quint32 p) { sendNow("paneMoved", p, {paneValue(p)}); });
     connect(&control, &Control::paneClosed, this, [this](quint32 p) {
