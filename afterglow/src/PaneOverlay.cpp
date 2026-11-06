@@ -25,6 +25,11 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     std::unique_ptr<PaneOverlay> overlay(new PaneOverlay(host));
     overlay->m_capture = spec.capture;
     overlay->m_title = spec.title;
+    overlay->m_shape.width = spec.width;
+    overlay->m_shape.height = spec.height;
+    overlay->m_shape.position = spec.position;
+    overlay->m_shape.border = spec.border;
+    overlay->m_placement = overlay->m_shape.place(launch.cols, launch.rows);
     AfterglowPty::SpawnOptions options = launch.spawn;
     for (const QString& arg : spec.argv) options.argv.push_back(arg.toStdString());
     // A path that a remote shell reported is no directory here.
@@ -63,7 +68,8 @@ PaneOverlay* PaneOverlay::start(Pane& host, const OverlaySpec& spec, const Launc
     if (!spec.title.isEmpty()) pane->setUserTitle(spec.title);
     // Queued from the pty thread: the reply is set before it arrives.
     connect(pane, &Pane::closed, overlay.get(), &PaneOverlay::programExited);
-    if (!pane->start(options, launch.term, launch.cols, launch.rows, launch.cellWidth, launch.cellHeight, error)) return nullptr;
+    const QRect grid = overlay->m_placement.grid;
+    if (!pane->start(options, launch.term, grid.width(), grid.height(), launch.cellWidth, launch.cellHeight, error)) return nullptr;
     host.setOverlay(overlay.get());
     return overlay.release();
 }
@@ -72,6 +78,12 @@ PaneOverlay::~PaneOverlay()
 {
     // Still on its host, which deletes it first thing when it closes.
     if (!m_answered) finish(QStringLiteral("The pane under the overlay closed"), QStringLiteral("cancelled"), {});
+}
+
+void PaneOverlay::place(int cols, int rows, int cellWidth, int cellHeight)
+{
+    m_placement = m_shape.place(cols, rows);
+    m_pane->resize(m_placement.grid.width(), m_placement.grid.height(), cellWidth, cellHeight);
 }
 
 void PaneOverlay::setReply(const QString& owner, const QString& request, Reply reply)

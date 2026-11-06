@@ -144,7 +144,9 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
                                 {QStringLiteral("capture"), e.value(QStringLiteral("capture"))},
                                 {QStringLiteral("title"), e.value(QStringLiteral("title"))},
                                 {QStringLiteral("env"), e.value(QStringLiteral("env"))}};
-            if (e.contains(QStringLiteral("stdin"))) options.insert(QStringLiteral("stdin"), e.value(QStringLiteral("stdin")));
+            for (const char* key : {"stdin", "width", "height", "position", "border"}) {
+                if (e.contains(QLatin1String(key))) options.insert(QLatin1String(key), e.value(QLatin1String(key)));
+            }
             QString error;
             const auto spec = OverlaySpec::read(e.value(QStringLiteral("command")).toStringList(), options, &error);
             if (!spec) return {error, {}, QStringLiteral("operation_failed")};

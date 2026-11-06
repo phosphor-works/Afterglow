@@ -1060,6 +1060,20 @@ TEST_F(ConfigTest, AnimationCurvesAndTextBlinkDefaultAndOverride)
     EXPECT_EQ(c.textBlinkInterval, 100); // clamped
 }
 
+TEST_F(ConfigTest, PopupDimDefaultsOverridesAndClamps)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_DOUBLE_EQ(defaults.settings().window.popupDim, 0.35);
+    SettingsStore off(write(QStringLiteral("off.json"), R"({"Colors": {"popupDim": 0}})"));
+    EXPECT_DOUBLE_EQ(off.settings().window.popupDim, 0.0);
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Colors": {"popupDim": 0.6}})"));
+    EXPECT_DOUBLE_EQ(custom.settings().window.popupDim, 0.6);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Colors": {"popupDim": 3}})"));
+    EXPECT_DOUBLE_EQ(high.settings().window.popupDim, 1.0);
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Colors": {"popupDim": -1}})"));
+    EXPECT_DOUBLE_EQ(low.settings().window.popupDim, 0.0);
+}
+
 TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

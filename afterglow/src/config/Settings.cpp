@@ -401,6 +401,9 @@ PhosphorConfig::Schema buildSchema()
                                 "background and text colors.")),
         doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1,
                   QStringLiteral("Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off.")),
+        doubleKey(QStringLiteral("popupDim"), d.window.popupDim, 0, 1,
+                  QStringLiteral("Opacity of a black layer over a pane while a popup overlay runs over it. The popup and its "
+                                 "border stay as they are. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, 1.0, 21.0,
@@ -1404,6 +1407,7 @@ Settings SettingsStore::read()
     }
     s.window.dividerColor = AfterglowRender::packRgba(divider);
     s.window.unfocusedDim = st.read<double>(Colors, QStringLiteral("unfocusedDim"));
+    s.window.popupDim = st.read<double>(Colors, QStringLiteral("popupDim"));
     t.boldIsBright = st.read<bool>(Colors, QStringLiteral("boldIsBright"));
     t.minimumContrast = st.read<double>(Colors, QStringLiteral("minimumContrast"));
 

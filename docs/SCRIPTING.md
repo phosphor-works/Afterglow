@@ -430,7 +430,36 @@ end
 | `capture` | Where `stdout` of the result comes from. `"stdout"` (the default) reads the program's standard output. `"file"` sets `AFTERGLOW_RESULT` to the path of a new file that only you can read, and reads that file. `"none"` returns an empty `stdout`. |
 | `cwd` | The program's directory. When it is not a local directory, for example a path that a remote shell reported, the program starts in `$HOME`. |
 | `env` | Variables for the program, as for `exec`. `false` removes a variable. |
-| `title` | Shows as the pane's title while the overlay runs, at most 512 characters. |
+| `title` | Shows as the pane's title while the overlay runs, at most 512 characters. A border shows it in its top edge. |
+| `width`, `height` | Make the overlay a popup. Give a number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without both, the overlay takes the whole pane. |
+| `position` | Where a popup is in the pane: `"center"` (the default), `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"` or `"bottom-right"`. |
+| `border` | `true` puts a line one cell wide around the overlay, in the theme's divider color, with the title in its top edge. The default is `true` for a popup and `false` for a full-pane overlay. |
+
+### Popups
+
+A popup is an overlay that takes a part of the pane.
+The pane stays visible around it and keeps running. The pane's docks stay where they are.
+
+```lua
+local r = afterglow.await(afterglow.overlay(ev.pane, "fzf", {
+    stdin = table.concat(items, "\n"), title = "Pick", width = "80%", height = "60%",
+}))
+```
+
+| Rule | Value |
+| --- | --- |
+| Width | 1 to 10,000 cells, or `"1%"` to `"100%"` of the pane's columns |
+| Height | 1 to 10,000 cells, or `"1%"` to `"100%"` of the pane's rows |
+| Largest | The pane's grid. A larger size is cut to the grid. |
+| Smallest | 2 columns by 1 row inside the border. A smaller size grows to this. |
+| Border | One cell on each side. When the pane has no room for it, the popup has no border. |
+
+Each layout places the popup again: a resize, a zoom, a font change or a dock that comes or goes.
+The program gets `SIGWINCH` when its size changes.
+
+`Colors.popupDim` darkens the pane around the popup. The popup and its border keep their colors.
+The pane's cursor shows as unfocused, because the popup has the keyboard.
+The mouse acts in the popup, in the popup's own cells. A click, a scroll or a drop outside the popup does nothing and does not close it.
 
 The terminal stays the program's controlling terminal and its standard error, so the program can draw on `/dev/tty`.
 With `stdin` and `capture = "stdout"`, a program like fzf reads its list from stdin, draws on `/dev/tty` and writes its choice to stdout.
@@ -461,6 +490,7 @@ It also closes with `cancelled`, and its program gets `SIGHUP`, in these conditi
 
 The overlay fades in and out over the pane, through the `Shaders.overlayTransition` pack.
 The default pack, Overlay Fade, blends the pane and the overlay. `Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
+For a popup, the pack blends the pane and the pane as it shows with the popup: the darker pane, the border and the popup.
 With an empty `Shaders.overlayTransition`, the overlay shows and goes at once.
 When the overlay closes, the focus goes back to the pane. The pane's cursor and view stay where they were.
 
@@ -472,7 +502,7 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 | Saved projects | Overlays are not saved. |
 | Copy mode, search, hints, paste, the mouse | They act on the overlay while its pane has the focus. |
 | Assistive technology | It reads the overlay's text in place of the pane's. |
-| The pane's shaders | The pane's layer and pane shaders draw the overlay. During a fade, they draw the pane and the overlay both. |
+| The pane's shaders | The pane's layer and pane shaders draw the overlay, and the pane around a popup. During a fade, they draw the pane and the overlay both. |
 
 An overlay is not a pane of its own. `afterglow ctl ls` and the terminal snapshot do not show it.
 `afterglow ctl overlay` opens an overlay from a shell (see [CONTROL.md](CONTROL.md#overlays)).

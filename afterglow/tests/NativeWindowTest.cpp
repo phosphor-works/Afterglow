@@ -5472,3 +5472,135 @@ TEST_F(NativeWindow, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce) {
         expectIdle(window);
     }
 }
+
+namespace {
+// Where @p pane's grid is drawn, in @p window's logical pixels: a popup's
+// own cells for an overlay's pane.
+QRectF gridOf(TerminalWindow* window, Pane* pane) {
+    const QRect global = window->accessiblePaneRect(pane);
+    return QRectF(window->mapFromGlobal(global.topLeft()), global.size());
+}
+OverlaySpec popupSpec(const QVariantMap& options) {
+    QString error;
+    const auto spec = OverlaySpec::read({QStringLiteral("x")}, options, &error);
+    EXPECT_TRUE(spec) << error.toStdString();
+    return spec.value_or(OverlaySpec{});
+}
+} // namespace
+
+TEST_F(NativeWindow, APopupOverOnePaneTakesThePointerInItsOwnCellsOnly) {
+    Pane* pane = window->focusedPane();
+    ASSERT_NE(pane, nullptr);
+    const QString log = directory.filePath(QStringLiteral("mouse.log"));
+    // The program reports clicks (SGR) and keeps what it gets.
+    const QVariantMap options{{QStringLiteral("width"), QStringLiteral("50%")}, {QStringLiteral("height"), QStringLiteral("50%")},
+                              {QStringLiteral("title"), QStringLiteral("Popup")}, {QStringLiteral("capture"), QStringLiteral("none")}};
+    auto answer = runOverlay(window, pane, {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                                            QStringLiteral("stty raw -echo; printf '\\033[?1000h\\033[?1006hpopup-ready' > /dev/tty; exec cat > '%1'").arg(log)},
+                             options);
+    ASSERT_NE(pane->overlay(), nullptr);
+    Pane* program = pane->overlay()->pane();
+    // Half of the pane, in its middle, with a border.
+    const OverlaySpec::Placement placed = popupSpec(options).place(pane->cols(), pane->rows());
+    EXPECT_TRUE(placed.border);
+    EXPECT_TRUE(pane->overlay()->popup());
+    EXPECT_EQ(pane->overlay()->placement(), placed);
+    EXPECT_EQ(program->cols(), placed.grid.width());
+    EXPECT_EQ(program->rows(), placed.grid.height());
+    ASSERT_TRUE(waitFor([&] { return screenOf(program).contains(QStringLiteral("popup-ready")); }));
+    EXPECT_EQ(window->focusedPane(), pane);
+    EXPECT_EQ(window->title(), QStringLiteral("Popup"));
+    ASSERT_TRUE(overlaySettled(window, pane));
+    expectIdle(window);
+    const QRectF host = gridOf(window, pane), grid = gridOf(window, program);
+    const QSizeF cell(grid.width() / program->cols(), grid.height() / program->rows());
+    EXPECT_NEAR(grid.left() - host.left(), placed.grid.x() * cell.width(), 1.0);
+    EXPECT_NEAR(grid.top() - host.top(), placed.grid.y() * cell.height(), 1.0);
+    // Around it, on its border too, the pointer reaches nothing, and the
+    // popup stays open.
+    auto wheel = [&](const QPointF& at) {
+        QWheelEvent event(at, window->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &event);
+    };
+    for (const QPointF& at : {host.topLeft() + QPointF(3, 3), host.bottomRight() - QPointF(3, 3),
+                              QPointF(grid.left() - cell.width() / 2, grid.center().y()),
+                              QPointF(grid.center().x(), grid.top() - cell.height() / 2)}) {
+        clickLeft(window, at);
+        wheel(at);
+    }
+    drain(300);
+    EXPECT_FALSE(answer->done);
+    EXPECT_EQ(QFileInfo(log).size(), 0) << "the program got a report from outside the popup";
+    EXPECT_EQ(window->focusedPane(), pane);
+    // In it, its own cells: column 3, row 2 from 1.
+    clickLeft(window, grid.topLeft() + QPointF(cell.width() * 2.5, cell.height() * 1.5));
+    const QByteArray expected("\x1b[<0;3;2M\x1b[<0;3;2m");
+    auto reported = [&] {
+        QFile file(log);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    EXPECT_TRUE(waitFor([&] { return reported() == expected; })) << reported().toStdString();
+    // It closes; the pane has the keys again, and frames stop.
+    window->closeOverlays(QStringLiteral("test@1"), QString(), QStringLiteral("done"));
+    ASSERT_TRUE(answer->done);
+    EXPECT_EQ(answer->code, QStringLiteral("cancelled"));
+    EXPECT_EQ(pane->overlay(), nullptr);
+    EXPECT_EQ(window->focusedPane(), pane);
+    ASSERT_TRUE(overlaySettled(window, pane));
+    expectIdle(window);
+    typeText(window, QStringLiteral("zz\r"));
+    EXPECT_TRUE(waitFor([&] { return screenOf(pane).contains(QStringLiteral("zz")); })) << screenOf(pane).toStdString();
+}
+
+TEST_F(NativeWindow, APopupOverOneOfTwoPanesIsPlacedAgainByEachLayout) {
+    Pane* first = window->focusedPane();
+    PaneLaunchOptions launch;
+    launch.command = {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; cat")};
+    Pane* second = window->splitPane(first, SplitTree::Direction::Right, launch, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_EQ(window->focusedPane(), second);
+    const QVariantMap options{{QStringLiteral("width"), 30}, {QStringLiteral("height"), QStringLiteral("50%")},
+                              {QStringLiteral("position"), QStringLiteral("bottom-left")}};
+    auto answer = runOverlay(window, first, {QStringLiteral("/bin/sh"), QStringLiteral("-c"), QStringLiteral("stty -echo; read x; stty size")},
+                             options);
+    ASSERT_NE(first->overlay(), nullptr);
+    Pane* program = first->overlay()->pane();
+    const OverlaySpec spec = popupSpec(options);
+    EXPECT_EQ(window->focusedPane(), first);
+    EXPECT_EQ(first->overlay()->placement(), spec.place(first->cols(), first->rows()));
+    EXPECT_EQ(program->cols(), 28);
+    // A click on the other pane takes the focus there; one on the pane around
+    // the popup brings it back, and reaches nothing. The chrome scene, made
+    // in the background, takes the pointer first once it is there.
+    auto* layer = window->findChild<ChromeLayer*>();
+    ASSERT_NE(layer, nullptr);
+    ASSERT_TRUE(waitFor([&] { return layer->rootItem() != nullptr; }));
+    ASSERT_TRUE(nextFrame(window));
+    clickLeft(window, gridOf(window, second).center());
+    EXPECT_EQ(window->focusedPane(), second) << gridOf(window, second).x() << "," << gridOf(window, second).y() << " "
+                                             << gridOf(window, second).width() << "x" << gridOf(window, second).height();
+    const QRectF host = gridOf(window, first);
+    clickLeft(window, host.topRight() + QPointF(-3, 3));
+    EXPECT_EQ(window->focusedPane(), first);
+    EXPECT_FALSE(answer->done);
+    // A split of the host: the popup is placed in its new grid, and its
+    // program hears of its new size.
+    const int rows = first->rows();
+    ASSERT_NE(window->splitPane(first, SplitTree::Direction::Down, launch, nullptr), nullptr);
+    ASSERT_TRUE(waitFor([&] { return first->rows() < rows; }));
+    const OverlaySpec::Placement placed = spec.place(first->cols(), first->rows());
+    EXPECT_EQ(first->overlay()->placement(), placed);
+    EXPECT_EQ(program->cols(), placed.grid.width());
+    EXPECT_EQ(program->rows(), placed.grid.height());
+    // Bottom left: its border on the host's last row and first column.
+    EXPECT_EQ(placed.grid.bottom() + 1, first->rows() - 1);
+    EXPECT_EQ(placed.grid.left(), 1);
+    window->revealPane(first);
+    typeText(window, QStringLiteral("\r"));
+    ASSERT_TRUE(waitFor([&] { return answer->done; }));
+    EXPECT_EQ(answer->result.value(QStringLiteral("stdout")).toString(),
+              QStringLiteral("%1 %2\n").arg(placed.grid.height()).arg(placed.grid.width()));
+    EXPECT_EQ(window->focusedPane(), first);
+    ASSERT_TRUE(overlaySettled(window, first));
+    expectIdle(window);
+}

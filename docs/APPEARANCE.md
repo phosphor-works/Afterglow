@@ -211,5 +211,13 @@ A theme file that does not parse keeps its last colors until it parses again.
 An [overlay](SCRIPTING.md#overlays), a program that runs over a pane, fades in and out through `Shaders.overlayTransition`.
 `Animation.overlayCurve` and `Animation.overlayDuration` set the fade. The fade stops at its ends, also with a spring that overshoots.
 
+A [popup overlay](SCRIPTING.md#popups) takes a part of the pane, and the pane stays visible around it.
+
+| Setting | Default | Function |
+| --- | --- | --- |
+| `Colors.popupDim` | 0.35 | Opacity of a black layer over the pane around a popup, from 0 to 1. A value of 0 keeps the pane as it is. |
+
+The popup's border uses the theme's divider color, the same as `Colors.divider`. The title in the border uses the text color.
+
 See [shaders](SHADERS.md) for audio, history and visual effects.
 See [bidirectional text](BIDI.md) for text direction settings.

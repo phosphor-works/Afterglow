@@ -5211,6 +5211,144 @@ TEST(OverlaySpecTest, StdinAndArgumentsHaveTheirLimits)
     EXPECT_FALSE(none->input.has_value());
 }
 
+TEST_F(ScriptHostTest, PopupOptionsAreCheckedAndReachTheWindow)
+{
+    write(user, "popups.luau", R"(
+return { on_bell = function(ev)
+    return {
+        afterglow.overlay(ev.pane, "fzf", {width = 0}),
+        afterglow.overlay(ev.pane, "fzf", {width = 10.5}),
+        afterglow.overlay(ev.pane, "fzf", {height = "0%"}),
+        afterglow.overlay(ev.pane, "fzf", {height = "101%"}),
+        afterglow.overlay(ev.pane, "fzf", {width = "80"}),
+        afterglow.overlay(ev.pane, "fzf", {width = true}),
+        afterglow.overlay(ev.pane, "fzf", {position = "middle"}),
+        afterglow.overlay(ev.pane, "fzf", {position = 1}),
+        afterglow.overlay(ev.pane, "fzf", {border = "yes"}),
+        afterglow.overlay(ev.pane, "fzf", {width = "80%", height = 20, position = "bottom-right", border = false}),
+        afterglow.overlay(ev.pane, "fzf", {width = 60}),
+    }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.results.size(), 11);
+    for (int i = 0; i < 9; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    EXPECT_TRUE(rec.results[1].second.contains(QLatin1String("width"))) << rec.results[1].second.toStdString();
+    EXPECT_TRUE(rec.results[6].second.contains(QLatin1String("position"))) << rec.results[6].second.toStdString();
+    EXPECT_TRUE(rec.results[8].second.contains(QLatin1String("border"))) << rec.results[8].second.toStdString();
+    for (int i = 9; i < 11; ++i) EXPECT_TRUE(rec.results[i].second.isEmpty()) << rec.results[i].second.toStdString();
+    ASSERT_EQ(overlays.size(), 2);
+    // The window reads them by the same rules.
+    QString error;
+    const QVariantMap& e = overlays[0];
+    QVariantMap options;
+    for (const char* key : {"width", "height", "position", "border"}) options.insert(QLatin1String(key), e.value(QLatin1String(key)));
+    const auto spec = OverlaySpec::read({QStringLiteral("fzf")}, options, &error);
+    ASSERT_TRUE(spec) << error.toStdString();
+    EXPECT_EQ(spec->width, (OverlaySpec::Extent{80, true}));
+    EXPECT_EQ(spec->height, (OverlaySpec::Extent{20, false}));
+    EXPECT_EQ(spec->position, OverlaySpec::Position::BottomRight);
+    EXPECT_EQ(spec->border, false);
+    EXPECT_TRUE(spec->popup());
+    EXPECT_FALSE(spec->framed());
+    // Unset options stay out: the defaults apply.
+    EXPECT_FALSE(overlays[1].contains("height"));
+    EXPECT_FALSE(overlays[1].contains("position"));
+    EXPECT_FALSE(overlays[1].contains("border"));
+    EXPECT_EQ(overlays[1].value("width").toInt(), 60);
+}
+
+TEST(OverlaySpecTest, PopupOptionsTakeCellsPercentagesPositionsAndABorder)
+{
+    QString error;
+    const QStringList argv{QStringLiteral("fzf")};
+    auto read = [&](const QVariantMap& options) { return OverlaySpec::read(argv, options, &error); };
+    // The control call's JSON gives integers as qlonglong, Luau as doubles.
+    EXPECT_EQ(read({{"width", qlonglong(60)}})->width, (OverlaySpec::Extent{60, false}));
+    EXPECT_EQ(read({{"width", 60.0}})->width, (OverlaySpec::Extent{60, false}));
+    EXPECT_EQ(read({{"height", "1%"}})->height, (OverlaySpec::Extent{1, true}));
+    EXPECT_EQ(read({{"height", "100%"}})->height, (OverlaySpec::Extent{100, true}));
+    EXPECT_EQ(read({{"width", OverlaySpec::MaxCells}})->width, (OverlaySpec::Extent{OverlaySpec::MaxCells, false}));
+    for (const QVariant& bad : {QVariant(0), QVariant(-3), QVariant(2.5), QVariant(OverlaySpec::MaxCells + 1), QVariant("0%"),
+                                QVariant("101%"), QVariant("80"), QVariant(" 80%"), QVariant("80 %"), QVariant("%"), QVariant(true),
+                                QVariant(std::nan(""))}) {
+        EXPECT_FALSE(read({{"width", bad}})) << bad.toString().toStdString();
+        EXPECT_TRUE(error.startsWith(QLatin1String("width"))) << error.toStdString();
+    }
+    EXPECT_FALSE(read({{"height", "abc"}}));
+    EXPECT_TRUE(error.startsWith(QLatin1String("height"))) << error.toStdString();
+    const std::pair<const char*, OverlaySpec::Position> positions[] = {
+        {"center", OverlaySpec::Position::Center},       {"top", OverlaySpec::Position::Top},
+        {"bottom", OverlaySpec::Position::Bottom},       {"left", OverlaySpec::Position::Left},
+        {"right", OverlaySpec::Position::Right},         {"top-left", OverlaySpec::Position::TopLeft},
+        {"top-right", OverlaySpec::Position::TopRight},  {"bottom-left", OverlaySpec::Position::BottomLeft},
+        {"bottom-right", OverlaySpec::Position::BottomRight}};
+    for (const auto& [name, position] : positions) EXPECT_EQ(read({{"position", QLatin1String(name)}})->position, position) << name;
+    for (const QVariant& bad : {QVariant("Center"), QVariant("middle"), QVariant(""), QVariant(1)}) EXPECT_FALSE(read({{"position", bad}}));
+    EXPECT_FALSE(read({{"border", "true"}}));
+    EXPECT_FALSE(read({{"border", 1}}));
+    // Null is unset, as Luau's nil.
+    const auto plain = read({{"width", QVariant()}, {"border", QVariant::fromValue(nullptr)}});
+    ASSERT_TRUE(plain) << error.toStdString();
+    EXPECT_FALSE(plain->width);
+    EXPECT_FALSE(plain->border);
+    // A border by default for a popup, none for a full-pane overlay; either way when given.
+    EXPECT_FALSE(plain->popup());
+    EXPECT_FALSE(plain->framed());
+    EXPECT_TRUE(read({{"height", 10}})->framed());
+    EXPECT_FALSE(read({{"height", 10}, {"border", false}})->framed());
+    const auto boxed = read({{"border", true}});
+    EXPECT_TRUE(boxed->framed());
+    EXPECT_TRUE(boxed->popup());
+    EXPECT_FALSE(boxed->sized());
+}
+
+TEST(OverlaySpecTest, APopupIsPlacedInItsHostGrid)
+{
+    QString error;
+    auto spec = [&](const QVariantMap& options) {
+        auto read = OverlaySpec::read({QStringLiteral("fzf")}, options, &error);
+        EXPECT_TRUE(read) << error.toStdString();
+        return read.value_or(OverlaySpec{});
+    };
+    using Placement = OverlaySpec::Placement;
+    // A full-pane overlay: the whole grid, no border.
+    EXPECT_EQ(spec({}).place(100, 30), (Placement{QRect(0, 0, 100, 30), false}));
+    // With a border: the grid inside it.
+    EXPECT_EQ(spec({{"border", true}}).place(100, 30), (Placement{QRect(1, 1, 98, 28), true}));
+    // Percentages of the host grid, the border inside them, in the center.
+    EXPECT_EQ(spec({{"width", "80%"}, {"height", "60%"}}).place(100, 30), (Placement{QRect(11, 7, 78, 16), true}));
+    // Cells, with the border counted.
+    EXPECT_EQ(spec({{"width", 40}, {"height", 10}}).place(100, 30), (Placement{QRect(31, 11, 38, 8), true}));
+    EXPECT_EQ(spec({{"width", 40}, {"height", 10}, {"border", false}}).place(100, 30), (Placement{QRect(30, 10, 40, 10), false}));
+    // One side given: the other is the whole grid.
+    EXPECT_EQ(spec({{"height", 10}}).place(100, 30), (Placement{QRect(1, 11, 98, 8), true}));
+    // Each position.
+    const std::pair<const char*, QPoint> corners[] = {
+        {"center", {30, 10}},  {"top", {30, 0}},      {"bottom", {30, 20}},       {"left", {0, 10}},          {"right", {60, 10}},
+        {"top-left", {0, 0}},  {"top-right", {60, 0}}, {"bottom-left", {0, 20}}, {"bottom-right", {60, 20}},
+    };
+    for (const auto& [name, at] : corners) {
+        const Placement placed = spec({{"width", 40}, {"height", 10}, {"position", QLatin1String(name)}}).place(100, 30);
+        EXPECT_EQ(placed.grid, QRect(at + QPoint(1, 1), QSize(38, 8))) << name;
+    }
+    // Clamped to the host: never larger, and at least 2 by 1 inside the border.
+    EXPECT_EQ(spec({{"width", 500}, {"height", 500}}).place(100, 30), (Placement{QRect(1, 1, 98, 28), true}));
+    EXPECT_EQ(spec({{"width", 1}, {"height", 1}}).place(100, 30), (Placement{QRect(49, 14, 2, 1), true}));
+    EXPECT_EQ(spec({{"width", "1%"}, {"height", "1%"}}).place(100, 30), (Placement{QRect(49, 14, 2, 1), true}));
+    EXPECT_EQ(spec({{"width", 1}, {"height", 1}, {"border", false}}).place(100, 30), (Placement{QRect(49, 14, 2, 1), false}));
+    // A host with no room for the border: the popup goes without it.
+    EXPECT_EQ(spec({{"width", "50%"}, {"height", "50%"}}).place(3, 30), (Placement{QRect(0, 7, 2, 15), false}));
+    EXPECT_EQ(spec({{"width", "50%"}, {"height", "50%"}}).place(10, 2), (Placement{QRect(2, 0, 5, 1), false}));
+    EXPECT_EQ(spec({{"width", "50%"}, {"height", "50%"}}).place(4, 3), (Placement{QRect(1, 1, 2, 1), true}));
+    EXPECT_EQ(spec({{"width", "50%"}}).place(2, 1), (Placement{QRect(0, 0, 2, 1), false}));
+    // A layout places it anew: a resize moves and sizes it with the host.
+    const OverlaySpec resized = spec({{"width", "80%"}, {"height", "60%"}, {"position", "bottom"}});
+    EXPECT_EQ(resized.place(100, 30), (Placement{QRect(11, 13, 78, 16), true}));
+    EXPECT_EQ(resized.place(50, 20), (Placement{QRect(6, 9, 38, 10), true}));
+}
+
 TEST_F(ScriptHostTest, OverlayDefaultsReadTheTerminalAndCaptureStdout)
 {
     write(user, "plain.luau", R"(
@@ -5336,6 +5474,9 @@ protected:
                 EXPECT_TRUE(overlay.value("stdin").toString().contains("file: src/it's.c")) << overlay.value("stdin").toString().toStdString();
                 EXPECT_EQ(overlay.value("cwd").toString(), files.path());
                 EXPECT_EQ(overlay.value("command").toStringList().value(0), fzf);
+                // A popup over the pane, which shows around it.
+                EXPECT_EQ(overlay.value("width").toString(), QStringLiteral("80%"));
+                EXPECT_EQ(overlay.value("height").toString(), QStringLiteral("60%"));
                 std::exchange(pendingReply, {})({{}, {{"exit_code", 0}, {"stdout", "file: src/it's.c\n"}, {"truncated", false}}, {}});
             }
             return typed() != rec.applied.cend();

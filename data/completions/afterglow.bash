@@ -100,7 +100,7 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout | --capture | --title)
+        --pane | --cwd | --layout | --capture | --title | -w | --width | -h | --height | --position)
             ((i++))
             ;;
         -*) ;;
@@ -111,9 +111,13 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout | --title) return ;;
+    --pane | --layout | --title | -w | --width | -h | --height) return ;;
     --capture)
         _afterglow_matching stdout file none
+        return
+        ;;
+    --position)
+        _afterglow_matching center top bottom left right top-left top-right bottom-left bottom-right
         return
         ;;
     --cwd)
@@ -174,7 +178,7 @@ _afterglow_ctl()
     get-text) _afterglow_unused $pane "--screen|--scrollback|--selection|--last-output" ;;
     split) _afterglow_unused $pane "--left|--right|--up|--down" ;;
     new-tab | new-window) _afterglow_unused $pane --cwd ;;
-    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" ;;
+    overlay) _afterglow_unused $pane --capture --cwd --title "-n|--no-stdin" "-w|--width" "-h|--height" --position "--border|--no-border" ;;
     open-directory) _afterglow_unused --layout ;;
     save-project) _afterglow_unused $pane --overwrite ;;
     open-project) _afterglow_unused --new ;;

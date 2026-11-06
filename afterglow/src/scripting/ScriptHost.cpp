@@ -1587,6 +1587,13 @@ void ScriptHost::applyEffect(const ScriptPtr& script, const QVariantMap& raw, qu
             QVariantMap options{{QStringLiteral("cwd"), str(effect, "cwd")}, {QStringLiteral("capture"), str(effect, "capture")},
                                 {QStringLiteral("title"), str(effect, "title")}, {QStringLiteral("env"), effect.value(QStringLiteral("env"))}};
             if (input.isValid() && !input.isNull()) options.insert(QStringLiteral("stdin"), input);
+            // A popup's shape goes through as given: OverlaySpec checks it.
+            for (const char* key : {"width", "height", "position", "border"}) {
+                const QVariant value = raw.value(QLatin1String(key));
+                if (!value.isValid() || value.isNull()) continue;
+                effect.insert(QLatin1String(key), value);
+                options.insert(QLatin1String(key), value);
+            }
             QString problem;
             if (error.isEmpty() && !OverlaySpec::read(effect.value(QStringLiteral("command")).toStringList(), options, &problem))
                 error = problem;

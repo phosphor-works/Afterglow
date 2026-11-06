@@ -237,10 +237,11 @@ The program shows in the place of the pane, with the input focus.
 [SCRIPTING.md](SCRIPTING.md#overlays) describes overlays and the options.
 
 ```sh
-selected=$(git branch --format='%(refname:short)' | afterglow ctl overlay -- fzf) && git switch "$selected"
+selected=$(git branch --format='%(refname:short)' | afterglow ctl overlay -w 80% -h 60% -- fzf) && git switch "$selected"
 ```
 
-`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n] -- CMD...` opens the overlay over the [target pane](#which-process-and-pane).
+`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n] [-w N|N%] [-h N|N%] [--position POS] [--border|--no-border] -- CMD...`
+opens the overlay over the [target pane](#which-process-and-pane).
 It waits until the program exits, with no time limit.
 Then it writes the result's `stdout` to its standard output, and exits with the program's exit status.
 A result over 1 MiB is cut, and a message goes to standard error.
@@ -251,6 +252,13 @@ A result over 1 MiB is cut, and a message goes to standard error.
 | `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. |
 | `--title TEXT` | The pane's title while the overlay runs |
 | `-n`, `--no-stdin` | Standard input does not go to the program. |
+| `-w`, `--width N` | A popup N cells wide, or `N%` of the pane's columns. The border is part of the width. |
+| `-h`, `--height N` | A popup N cells high, or `N%` of the pane's rows. The border is part of the height. |
+| `--position POS` | Where the popup is: `center` (the default), `top`, `bottom`, `left`, `right`, `top-left`, `top-right`, `bottom-left` or `bottom-right` |
+| `--border`, `--no-border` | A border around the overlay, or none. A popup has a border by default, and a full-pane overlay has none. |
+
+A width or a height makes the overlay a popup: the pane stays visible around it.
+[SCRIPTING.md](SCRIPTING.md#popups) gives the limits and the layout.
 
 Without `-n`, standard input goes to the program when it is not a terminal.
 The input goes in the request, so it is at most 768 KiB. For a longer list, use a script.
@@ -258,7 +266,8 @@ When standard input is a terminal, the program reads the pane.
 When `afterglow ctl` stops before the program exits (Ctrl+C, a signal), its connection closes.
 The overlay then closes, and its program gets `SIGHUP`.
 
-The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options: `stdin`, `capture`, `cwd`, `env` and `title`.
+The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options: `stdin`, `capture`, `cwd`, `env`, `title`,
+`width`, `height`, `position` and `border`. Give `width` and `height` as a JSON integer of cells, or as a string such as `"80%"`.
 It answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
 An option that breaks a rule fails the call with `CALL_FAILED`.
 Other failures have their own error codes:

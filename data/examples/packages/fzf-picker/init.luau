@@ -67,7 +67,7 @@ function script.run_command(_, ev)
     -- fzf when it runs: its list on stdin, its screen on the pane, its choice on stdout.
     if afterglow.await(afterglow.exec("fzf", {config.fzf, "--version"})) then
         local picked = afterglow.await(afterglow.overlay(ev.pane, {config.fzf, "--layout=reverse", "--prompt=pick> "},
-            {stdin = table.concat(items, "\n"), cwd = dir, title = Title}))
+            {stdin = table.concat(items, "\n"), cwd = dir, title = Title, width = "80%", height = "60%"}))
         -- Esc (130), no match (1) and a cancelled run choose nothing.
         if not picked or picked.exit_code ~= 0 then return nil end
         return act(ev, (string.gsub(picked.stdout, "\n$", "")))
