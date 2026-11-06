@@ -99,6 +99,16 @@ def launch(binary, mode, autoplay, mesh=False):
         config_path = app_home / 'config.json'
         config_path.write_text(json.dumps(config, indent=4) + '\n')
         env = os.environ.copy()
+        # The panes find this afterglow and the aglow beside it first, also
+        # from a build directory that is not on PATH, so that `aglow run
+        # phosphor strike` reaches the demo with the same version.
+        programs = config_home / 'bin'
+        programs.mkdir()
+        (programs / 'afterglow').symlink_to(Path(executable).resolve())
+        aglow = Path(executable).resolve().parent / 'aglow'
+        if aglow.is_file():
+            (programs / 'aglow').symlink_to(aglow)
+        env['PATH'] = str(programs) + os.pathsep + env.get('PATH', '')
         env['PHOSPHOR_ORIGINAL_XDG_CONFIG_HOME'] = env.get('XDG_CONFIG_HOME', '')
         env['XDG_CONFIG_HOME'] = str(config_home)
         env['PHOSPHOR_DEMO_CONFIG'] = str(config_path)

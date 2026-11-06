@@ -152,10 +152,13 @@ The script command `cool` ends the charge. It is not in the palette.
 
 Use the palette if desktop shortcuts intercept these keys.
 The demo is a separate process with its own socket, `afterglow-DISPLAY-PID.sock`.
-`afterglow ctl` and `afterglow run` in its panes reach it.
-For example, `afterglow run phosphor strike` fractures the core.
-`afterglow run` is a shell command too, and its end cools the core of its tab.
-Thus give a pane of another tab to `afterglow run phosphor heat`, with `--pane N`.
+`afterglow ctl` and `aglow run` in its panes reach it.
+In its panes, the command `afterglow` runs the program of the demo, also from a build directory.
+So does `aglow` when it is in the same directory as that `afterglow`.
+For example, `aglow run phosphor strike` fractures the core.
+`aglow run` is a shell command too, and its end cools the core of its tab.
+Thus name a pane of another tab: `aglow run --pane N phosphor heat`.
+The options of `aglow run` come before the script ID.
 Elsewhere, use the palette or the shortcuts.
 
 ## Layers and signals
@@ -170,7 +173,9 @@ Elsewhere, use the palette or the shortcuts.
 
 The script reads `ev.terminal` snapshots and updates the event's tab with `afterglow.signals`.
 Each batch uses one timestamp across panes.
-It also works when loaded after panes exist. No separate pane registry is required.
+It also works when loaded after panes exist.
+The script keeps the tab of each pane, from its load on.
+Thus a pane that moves to another tab updates the heat of the tab that it left.
 One completed shell command does not cool the core while another pane in that tab runs a shell command.
 Background tabs and other windows retain separate state.
 Each signal stores a value and its shader update time.

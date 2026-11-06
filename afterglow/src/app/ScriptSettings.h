@@ -20,7 +20,7 @@ inline ScriptHost::CommandLimits commandLimits(const Settings& settings)
 /// Applies Scripts.enabled and the command limits to @p scripts now, and on
 /// each change of @p settings. Call it once the CommandSocket exists, which
 /// follows the same settings: its slot then runs first. So when
-/// Scripts.enabled goes off, the runs of `afterglow run` fail with that
+/// Scripts.enabled goes off, the runs of `aglow run` fail with that
 /// reason before the scripts stop, which would end them as "the script
 /// stopped".
 inline void followScriptSettings(ScriptHost& scripts, SettingsStore& settings)

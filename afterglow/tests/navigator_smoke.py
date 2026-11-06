@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Project navigator package smoke test in a nested KWin on a private D-Bus session.
 
-Requires the nested_desktop dependencies, Bash and dbus-run-session.
+Requires the nested_desktop dependencies, Bash, dbus-run-session, and the aglow
+of the build next to afterglow.
 """
 import argparse
 import json
 from pathlib import Path
 import shutil
 import signal
-import subprocess
 import sys
 import tempfile
 from nested_desktop import NestedDesktop, Session, check, exit_on_sigterm, run_on_private_bus
@@ -78,7 +78,8 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             template = json.loads(ctl('open-directory', other, '--layout', 'two-pane'))
             check(len(template['pane_ids']) == 2, template)
             for pane in template['pane_ids'].values():
-                wait(lambda: next(p['cwd'] for p in panes() if p['id'] == pane) == str(other))
+                # A pane that is not listed yet has no directory: wait, do not stop.
+                wait(lambda: next((p['cwd'] for p in panes() if p['id'] == pane), None) == str(other))
             before = len(panes())
             s.failing_ctl('open-directory', root / 'missing')
             check(len(panes()) == before)
@@ -106,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='afterglow-l3-') as tmp:
             wait(lambda: navigator().get('status') == 'active')
             check(saved()['revision'] == 4 and saved()['version'] == 2)
             check(saved()['value']['recent'][0]['value'] == str(project))
-            print('PASS: installed package, schema migration, afterglow run list/previous/favorite with exit statuses, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
+            print('PASS: installed package, schema migration, aglow run list/previous/favorite with exit statuses, launch/reuse preserves PID, persistent favorites, template directories, invalid directory isolation, module hot reload/diagnostics, restart history, launch handover, failed handover, exit by SIGTERM')
         except Exception:
             print(s.log_text(5000), file=sys.stderr)
             raise

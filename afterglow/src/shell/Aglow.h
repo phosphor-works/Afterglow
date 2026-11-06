@@ -7,11 +7,25 @@
 
 namespace Afterglow::Aglow {
 
+/// A command that aglow runs, with the summary of aglow's own usage, for
+/// afterglow --help. The usage is in tools/aglow/main.cpp, which cannot
+/// include this header: CommandSocketTest checks that the two agree.
+struct Command {
+    const char* name;
+    const char* summary;
+};
+
 /// The commands that aglow runs: afterglow COMMAND runs aglow COMMAND.
-inline constexpr std::array<const char*, 4> Commands { "transfer", "dnd", "icat", "clipboard" };
+inline constexpr std::array<Command, 5> Commands { {
+    { "run", "Run a command of a script in a running Afterglow" },
+    { "transfer", "Copy files to and from the computer of the terminal" },
+    { "dnd", "Drag files and data out of the terminal, and drop them in" },
+    { "icat", "Show images in the terminal" },
+    { "clipboard", "Read and write the clipboard, with any MIME type" },
+} };
 /// Whether this build has aglow (AFTERGLOW_BUILD_AGLOW).
 bool built();
-/// Whether @p command is one of Commands.
+/// Whether @p command is the name of one of Commands.
 bool handles(const char* command);
 /// Runs the aglow that is in the same directory as this executable, with
 /// argv[1] and the arguments after it. Returns only when it cannot start it,

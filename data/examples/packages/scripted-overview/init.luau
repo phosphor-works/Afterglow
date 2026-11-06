@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- A package that ships a script and the shader it drives. Copy this folder
 -- into ~/.config/afterglow/scripts, and run "Use Package Shaders…" (or
--- `afterglow run scripted-overview use-shaders`). The dialog lists the
+-- `aglow run scripted-overview use-shaders`). The dialog lists the
 -- package's suggestion, Shaders.overview = scripted-overview.wall, and
 -- writes it when you choose it. Then bind "script:scripted-overview.open".
 -- The script owns the keyboard: a/d, h/l or the arrow keys move, w/s jump
@@ -32,7 +32,7 @@ end
 function script.run_command(command, ev)
     if command ~= "open" and command ~= "use-shaders" then return nil end
     if #ev.args > 0 then
-        return { afterglow.output_error(ev, "usage: afterglow run scripted-overview " .. command .. "\n"), afterglow.exit(ev, 2) }
+        return { afterglow.output_error(ev, "usage: aglow run scripted-overview " .. command .. "\n"), afterglow.exit(ev, 2) }
     end
     if not ev.pane then return fail(ev, "There is no pane to act on.") end
     if command == "use-shaders" then
@@ -47,7 +47,10 @@ function script.run_command(command, ev)
     -- that started then would not end with the overview.
     local window = windowOf(result.terminal, ev.pane)
     if not window or not window.overview.open then return nil end
-    return afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close")
+    -- Waited for, so that a key mode that does not start fails the run.
+    local _, keyError = afterglow.await(afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close"))
+    if keyError then return fail(ev, keyError.message) end
+    return nil
 end
 
 -- The first card of the next (step 1) or previous (step -1) tab.

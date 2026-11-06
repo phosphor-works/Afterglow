@@ -7,7 +7,10 @@
 #include "IpcClient.h"
 #include "../config/Keybinds.h"
 
+#include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
+#include <AfterglowProto/Text.h>
+#include <AfterglowVt/Unicode.h>
 #include <PhosphorIpc/IpcProtocol.h>
 
 #include <QCoreApplication>
@@ -19,23 +22,29 @@
 #include <QMetaMethod>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <functional>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <unistd.h>
 
 namespace Afterglow {
 
 namespace {
 
-const char* const Usage = R"(usage: afterglow ctl <command> [options]
+const char* const Usage = R"(Usage: afterglow ctl <command> [options]
 
-Drives a running afterglow (Control.enabled in the config). Commands act on
+Drives a running Afterglow (Control.enabled in the config). Commands act on
 --pane N, else $AFTERGLOW_PANE_ID (set in every pane), else the focused pane
 of the active window or of the window that was active last.
 
   ls [--json]                           list panes
   send-text [--raw] TEXT...             type TEXT (\n, \r, \t, \e, \\ and \xHH for U+00HH unless --raw)
-  send-text --stdin                     type standard input
+  send-text --stdin                     type standard input (UTF-8 text)
   get-text [--screen|--scrollback|--selection|--last-output]
                                         print pane text (needs Control.allowReadText)
   split [--left|--right|--up|--down] [-- CMD...]
@@ -73,13 +82,14 @@ QStringList events()
 }
 
 // Not a setting: a call that answers in a moment, which a client can repeat.
-// Its end tells the user that afterglow hangs, not that the call failed.
-constexpr int ReplyTimeoutMs = 10000;
+// Its end tells the user that afterglow hangs, not that the call failed. The
+// clients of the socket wait as long as one another.
+constexpr int ReplyTimeoutMs = AfterglowProto::Run::ReplyTimeoutMs;
 
-int fail(const QString& message)
+int fail(const QString& message, int status = 1)
 {
     std::fprintf(stderr, "afterglow ctl: %s\n", qPrintable(message));
-    return 1;
+    return status;
 }
 
 /// The control target of the afterglow that runs this pane, else of the main
@@ -107,9 +117,11 @@ public:
 
     QString eventName(qint64 subscription) const { return m_client.eventName(subscription); }
 
-    /// $AFTERGLOW_PANE_ID, when the socket is that of the afterglow that
-    /// runs this pane (AfterglowProto::findSocket), else 0. Empty after it
-    /// reported why it cannot connect.
+    /// $AFTERGLOW_PANE_ID when $AFTERGLOW_SOCKET is set, else 0
+    /// (AfterglowProto::findSocket). The lookup cannot tell the socket of
+    /// the pane's afterglow from that of another one: a user who points
+    /// $AFTERGLOW_SOCKET elsewhere clears the pane ID or gives --pane.
+    /// Empty after it reported why it cannot connect.
     std::optional<qint64> ownPane()
     {
         if (!connected()) return std::nullopt;
@@ -126,7 +138,7 @@ public:
         // connection: only a socket that still answers had control turned off.
         IpcClient::Error closed;
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget) && !m_client.targets(ReplyTimeoutMs, &closed)) {
-            fail(QStringLiteral("afterglow quit"));
+            fail(QStringLiteral("Afterglow quit"));
         } else {
             report(error);
         }
@@ -148,9 +160,19 @@ private:
         m_pane = socket.pane;
         IpcClient::Error error;
         if (m_client.connectTo(path, ReplyTimeoutMs, &error)) return true;
-        fail(QStringLiteral("%1 (%2)")
-                 .arg(m_own ? QStringLiteral("%1 has exited").arg(owner()) : QStringLiteral("no running afterglow on this display"),
-                      error.message));
+        // In the words of aglow run. A queue of new connections that stays
+        // full: there is an Afterglow, and it does not take the connection.
+        if (error.timedOut) {
+            report(error);
+        } else if (error.noServer) {
+            const QString who = !m_own ? QStringLiteral("no running Afterglow on this display")
+                : m_pane               ? QStringLiteral("the Afterglow that runs this pane has exited")
+                                       : QStringLiteral("no Afterglow at $AFTERGLOW_SOCKET");
+            fail(QStringLiteral("%1 (%2)").arg(who, error.message));
+        } else {
+            fail(QStringLiteral("cannot connect to %1: %2")
+                     .arg(m_own ? owner() : QStringLiteral("the Afterglow of this display"), error.message));
+        }
         return false;
     }
 
@@ -158,7 +180,7 @@ private:
     /// only when $AFTERGLOW_PANE_ID names one.
     QString owner() const
     {
-        return m_pane ? QStringLiteral("the afterglow that runs this pane") : QStringLiteral("the afterglow at $AFTERGLOW_SOCKET");
+        return m_pane ? QStringLiteral("the Afterglow that runs this pane") : QStringLiteral("the Afterglow at $AFTERGLOW_SOCKET");
     }
 
     void report(const IpcClient::Error& error) const
@@ -166,12 +188,12 @@ private:
         // The socket stays open for launches: the control target is what
         // Control.enabled takes away, also from a running watch.
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
-            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running afterglow")));
+            fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running Afterglow")));
         } else if (error.timedOut) {
             // A slow afterglow may still do what was asked.
-            fail(QStringLiteral("afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
+            fail(QStringLiteral("Afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
         } else if (error.code.isEmpty()) {
-            fail(QStringLiteral("lost afterglow: %1").arg(error.message));
+            fail(QStringLiteral("lost Afterglow: %1").arg(error.message));
         } else {
             fail(error.message);
         }
@@ -221,33 +243,42 @@ int usage(const QString& message)
     return 2;
 }
 
-// Titles and directories come from programs: control characters in them
-// would reach this terminal as escape sequences.
+// Titles and directories come from programs: the characters that a
+// terminal acts on (controls, bidi controls, line separators) would reach
+// this terminal. The filter of aglow run.
 QString printable(const QString& text)
 {
-    QString out = text;
-    for (QChar& c : out) {
-        const char16_t u = c.unicode();
-        if (u < 0x20 || u == 0x7f || (u >= 0x80 && u <= 0x9f)) c = QLatin1Char('?');
-    }
-    return out;
+    return QString::fromStdString(AfterglowProto::printable(text.toStdString()));
 }
 
-// Qt's JSON writer escapes only C0 controls: DEL and the C1 controls, which
-// a terminal can also act on, are escaped here. They occur only in strings.
+// Qt's JSON writer escapes only C0 controls. The other characters that
+// printable() changes are escaped here, so that they reach the terminal as
+// text. They occur only in strings.
 QByteArray terminalSafe(const QByteArray& json)
 {
+    const std::string_view text(json.constData(), std::size_t(json.size()));
+    const auto escape = [](QByteArray& out, char32_t unit) {
+        out += "\\u" + QByteArray::number(uint(unit), 16).rightJustified(4, '0');
+    };
     QByteArray out;
     out.reserve(json.size());
-    for (qsizetype i = 0; i < json.size(); ++i) {
-        const auto byte = static_cast<unsigned char>(json[i]);
-        if (byte == 0x7f) {
-            out += "\\u007f";
-        } else if (byte == 0xc2 && i + 1 < json.size() && static_cast<unsigned char>(json[i + 1]) >= 0x80
-                   && static_cast<unsigned char>(json[i + 1]) <= 0x9f) {
-            out += "\\u00" + QByteArray::number(static_cast<unsigned char>(json[++i]), 16);
+    for (std::size_t i = 0; i < text.size();) {
+        const std::size_t at = i;
+        char32_t cp = 0;
+        // ASCII below DEL is Qt's: escaped in strings, layout outside them.
+        if (static_cast<unsigned char>(text[at]) < 0x7f || !AfterglowProto::nextUtf8(text, i, cp)) {
+            out += text[at];
+            i = at + 1;
+            continue;
+        }
+        const std::string_view character = text.substr(at, i - at);
+        if (AfterglowProto::printable(character) == character) {
+            out.append(character.data(), qsizetype(character.size()));
+        } else if (cp > 0xffff) {
+            escape(out, 0xd800 + ((cp - 0x10000) >> 10));
+            escape(out, 0xdc00 + ((cp - 0x10000) & 0x3ff));
         } else {
-            out += char(byte);
+            escape(out, cp);
         }
     }
     return out;
@@ -255,7 +286,52 @@ QByteArray terminalSafe(const QByteArray& json)
 
 void printJson(const QJsonDocument& document, QJsonDocument::JsonFormat format)
 {
-    std::printf("%s\n", terminalSafe(document.toJson(format)).constData());
+    // Indented JSON ends with a newline already, compact JSON does not.
+    QByteArray out = terminalSafe(document.toJson(format));
+    if (!out.endsWith('\n')) out += '\n';
+    std::fwrite(out.constData(), 1, std::size_t(out.size()), stdout);
+}
+
+// @p text cut and padded to @p cells terminal cells: printf pads by bytes,
+// and a cut by UTF-16 units can split a character.
+QString column(const QString& text, int cells)
+{
+    QString out;
+    int used = 0;
+    for (qsizetype i = 0; i < text.size();) {
+        char32_t cp = text[i].unicode();
+        qsizetype length = 1;
+        if (text[i].isHighSurrogate() && i + 1 < text.size() && text[i + 1].isLowSurrogate()) {
+            cp = QChar::surrogateToUcs4(text[i], text[i + 1]);
+            length = 2;
+        }
+        const int width = AfterglowVt::Unicode::props(cp).width;
+        if (used + width > cells) break;
+        out += QStringView(text).mid(i, length);
+        used += width;
+        i += length;
+    }
+    return out + QString(cells - used, QLatin1Char(' '));
+}
+
+// A pane ID as aglow run reads one: decimal digits only, no sign and no
+// space, which QString::toUInt would take.
+std::optional<quint32> paneNumber(const QString& text)
+{
+    const bool digits = std::all_of(text.cbegin(), text.cend(), [](QChar c) { return c.unicode() >= u'0' && c.unicode() <= u'9'; });
+    bool ok = false;
+    const uint id = digits && !text.isEmpty() ? text.toUInt(&ok) : 0;
+    return ok ? std::optional<quint32>(id) : std::nullopt;
+}
+
+bool isUtf8(const QByteArray& bytes)
+{
+    const std::string_view text(bytes.constData(), std::size_t(bytes.size()));
+    char32_t cp = 0;
+    for (std::size_t i = 0; i < text.size();) {
+        if (!AfterglowProto::nextUtf8(text, i, cp)) return false;
+    }
+    return true;
 }
 
 // The running afterglow resolves directories itself: send it absolute ones.
@@ -301,9 +377,15 @@ int runCtl(int argc, char** argv)
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
     auto takeFlag = [&args](const QString& flag) { return args.removeAll(flag) > 0; };
-    auto takeValue = [&args](const QString& flag) -> std::optional<QString> {
+    // An option that needs a value and came last: a usage error of its own,
+    // not an unknown option.
+    std::optional<QString> missingValue;
+    auto takeValue = [&args, &missingValue](const QString& flag) -> std::optional<QString> {
         const qsizetype i = args.indexOf(flag);
-        if (i < 0 || i + 1 >= args.size()) {
+        if (i < 0) return std::nullopt;
+        if (i + 1 >= args.size()) {
+            missingValue = flag;
+            args.removeAt(i);
             return std::nullopt;
         }
         const QString v = args[i + 1];
@@ -313,7 +395,8 @@ int runCtl(int argc, char** argv)
 
     Client client;
     // Options left after a command took its own are typing errors.
-    auto extra = [&args](qsizetype positional) -> std::optional<QString> {
+    auto extra = [&args, &missingValue](qsizetype positional) -> std::optional<QString> {
+        if (missingValue) return QStringLiteral("%1 needs a value").arg(*missingValue);
         for (const QString& arg : std::as_const(args)) {
             if (arg.startsWith(QLatin1String("--"))) return QStringLiteral("unknown option %1").arg(arg);
         }
@@ -322,25 +405,21 @@ int runCtl(int argc, char** argv)
     };
 
     const std::optional<QString> paneArg = takeValue(QStringLiteral("--pane"));
+    if (missingValue) return usage(QStringLiteral("--pane needs a pane ID"));
     // These act on no pane: a --pane given to them is a mistake.
     static const QStringList Paneless = {QStringLiteral("ls"), QStringLiteral("watch"), QStringLiteral("scripts"),
                                          QStringLiteral("open-directory"), QStringLiteral("projects"),
                                          QStringLiteral("open-project"), QStringLiteral("new-window")};
     if (paneArg && Paneless.contains(command)) return usage(QStringLiteral("%1 takes no --pane").arg(command));
+    // A pane ID as `aglow run --pane` takes it: 0 names no pane.
+    const std::optional<quint32> paneId = paneArg ? paneNumber(*paneArg) : std::nullopt;
+    if (paneArg && (!paneId || *paneId == 0)) return usage(QStringLiteral("--pane takes a pane ID from 1"));
     // @p focused: for none, ask afterglow for its focused pane. Else 0 goes,
     // which a script command takes for the focused pane or none.
     auto targetPane = [&](bool focused) -> std::optional<qint64> {
-        if (paneArg) {
-            // A pane ID as `afterglow run --pane` takes it: 0 names no pane.
-            bool ok = false;
-            const uint id = paneArg->toUInt(&ok);
-            if (!ok || id == 0 || paneArg->trimmed() != *paneArg) {
-                fail(QStringLiteral("--pane takes a pane ID from 1"));
-                return std::nullopt;
-            }
-            return id;
-        }
-        // The lookup's, which is 0 unless the socket is this pane's afterglow.
+        if (paneId) return *paneId;
+        // The lookup's: $AFTERGLOW_PANE_ID whenever $AFTERGLOW_SOCKET is
+        // set, whichever afterglow listens there, else 0.
         const auto own = client.ownPane();
         if (!own) return std::nullopt;
         if (*own || !focused) return *own;
@@ -378,9 +457,9 @@ int runCtl(int argc, char** argv)
             const QJsonObject p = value.toObject();
             const QString id = QString::number(p.value(QLatin1String("id")).toInteger())
                 + (p.value(QLatin1String("focused")).toBool() ? QStringLiteral("*") : QString());
-            std::printf("%-5s %-4lld %-4lld %-30s %s\n", qPrintable(id), p.value(QLatin1String("window")).toInteger(),
+            std::printf("%-5s %-4lld %-4lld %s %s\n", qPrintable(id), p.value(QLatin1String("window")).toInteger(),
                         p.value(QLatin1String("tab")).toInteger(),
-                        qPrintable(printable(p.value(QLatin1String("title")).toString()).left(30)),
+                        qPrintable(column(printable(p.value(QLatin1String("title")).toString()), 30)),
                         qPrintable(printable(p.value(QLatin1String("cwd")).toString())));
         }
         return 0;
@@ -430,41 +509,62 @@ int runCtl(int argc, char** argv)
         if (args.size() != 1) return usage(QStringLiteral("open-project takes NAME [--new]"));
         return printObject(QStringLiteral("openProject"), {args.first(), fresh});
     }
-    // --cwd without a value stays in args and is reported as unknown.
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
         return printPane(QStringLiteral("newWindow"), {absolute(cwd), QJsonArray::fromStringList(trailing)});
     }
 
+    // In parts, each whole: a surrogate pair never splits. Text over
+    // CtlMaxText was refused before.
+    auto sendText = [&run](qint64 pane, const QString& text) {
+        qsizetype at = 0;
+        do {
+            qsizetype size = std::min(CtlTextPart, text.size() - at);
+            if (at + size < text.size() && text[at + size - 1].isHighSurrogate()) --size;
+            if (run(QStringLiteral("sendText"), {pane, text.mid(at, size)}) != 0) return 1;
+            at += size;
+        } while (at < text.size());
+        return 0;
+    };
+
+    // The commands on a pane check their arguments before the pane is
+    // looked up, and send-text --stdin reads its input then: a usage error
+    // or refused input never waits for a connection, nor fails as one. Each
+    // leaves what it does with the pane in act.
+    std::function<int(qint64 pane)> act;
     const bool scriptAction = command == QLatin1String("action") && Keybinds::isScriptTarget(args.value(0));
-    const std::optional<qint64> pane = targetPane(!scriptAction);
-    if (!pane) {
-        return 1;
-    }
     if (command == QLatin1String("save-project")) {
         const bool overwrite = takeFlag(QStringLiteral("--overwrite"));
         if (const auto error = extra(1)) return usage(*error);
         if (args.size() != 1) return usage(QStringLiteral("save-project takes NAME [--overwrite]"));
-        return printObject(QStringLiteral("saveProject"), {*pane, args.first(), overwrite});
-    }
-    if (command == QLatin1String("send-text")) {
+        act = [&, name = args.first(), overwrite](qint64 pane) {
+            return printObject(QStringLiteral("saveProject"), {pane, name, overwrite});
+        };
+    } else if (command == QLatin1String("send-text")) {
         QString text;
+        // Refused as aglow run refuses its input, with the status of a
+        // usage error.
+        const QString tooLong = QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20);
         if (takeFlag(QStringLiteral("--stdin"))) {
             if (const auto error = extra(0)) return usage(*error);
             if (!trailing.isEmpty()) return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
-            QFile in;
-            if (!in.open(stdin, QIODevice::ReadOnly)) {
-                return fail(QStringLiteral("cannot read standard input"));
-            }
             // One byte past the limit tells that the input is over it.
+            // read() tells an error from the end, which QFile does not.
             QByteArray bytes;
+            char buffer[64 * 1024];
             while (bytes.size() <= CtlMaxText) {
-                const QByteArray part = in.read(CtlMaxText + 1 - bytes.size());
-                if (part.isEmpty()) break;
-                bytes += part;
+                const ssize_t got = ::read(STDIN_FILENO, buffer, sizeof buffer);
+                if (got < 0 && errno == EINTR) continue;
+                if (got < 0) {
+                    return fail(QStringLiteral("cannot read standard input: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
+                }
+                if (got == 0) break;
+                bytes.append(buffer, qsizetype(got));
             }
-            if (bytes.size() > CtlMaxText) return fail(QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20));
+            if (bytes.size() > CtlMaxText) return fail(tooLong, AfterglowProto::Run::UsageError);
+            // Decoding would type U+FFFD in place of the bytes.
+            if (!isUtf8(bytes)) return fail(QStringLiteral("standard input is not UTF-8 text"), AfterglowProto::Run::UsageError);
             text = QString::fromUtf8(bytes);
         } else {
             const bool raw = takeFlag(QStringLiteral("--raw"));
@@ -473,19 +573,10 @@ int runCtl(int argc, char** argv)
             if (!raw) {
                 text = unescape(text);
             }
+            if (text.toUtf8().size() > CtlMaxText) return fail(tooLong, AfterglowProto::Run::UsageError);
         }
-        if (text.toUtf8().size() > CtlMaxText) return fail(QStringLiteral("text over %1 MiB").arg(CtlMaxText >> 20));
-        // In parts, each whole: a surrogate pair never splits.
-        qsizetype at = 0;
-        do {
-            qsizetype size = std::min(CtlTextPart, text.size() - at);
-            if (at + size < text.size() && text[at + size - 1].isHighSurrogate()) --size;
-            if (run(QStringLiteral("sendText"), {*pane, text.mid(at, size)}) != 0) return 1;
-            at += size;
-        } while (at < text.size());
-        return 0;
-    }
-    if (command == QLatin1String("get-text")) {
+        act = [&sendText, text](qint64 pane) { return sendText(pane, text); };
+    } else if (command == QLatin1String("get-text")) {
         QString scope = QStringLiteral("screen");
         int scopes = 0;
         for (const char* s : {"scrollback", "selection", "last-output", "screen"}) {
@@ -496,45 +587,50 @@ int runCtl(int argc, char** argv)
         }
         if (scopes > 1) return usage(QStringLiteral("get-text takes one scope"));
         if (const auto error = extra(0)) return usage(*error);
-        const auto result = client.call(QStringLiteral("getText"), {*pane, scope});
-        if (!result) return 1;
-        const QByteArray text = result->toString().toUtf8();
-        std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
-        if (!text.endsWith('\n')) {
-            std::fputc('\n', stdout);
-        }
-        return 0;
-    }
-    if (command == QLatin1String("split")) {
+        act = [&client, scope](qint64 pane) {
+            const auto result = client.call(QStringLiteral("getText"), {pane, scope});
+            if (!result) return 1;
+            const QByteArray text = result->toString().toUtf8();
+            std::fwrite(text.constData(), 1, std::size_t(text.size()), stdout);
+            if (!text.endsWith('\n')) {
+                std::fputc('\n', stdout);
+            }
+            return 0;
+        };
+    } else if (command == QLatin1String("split")) {
         QString dir = QStringLiteral("right");
-        for (const auto* direction : {"left", "right", "up", "down"})
-            if (takeFlag(QStringLiteral("--") + QLatin1String(direction))) dir = QLatin1String(direction);
+        int directions = 0;
+        for (const char* direction : {"left", "right", "up", "down"}) {
+            if (takeFlag(QStringLiteral("--") + QLatin1String(direction))) {
+                dir = QLatin1String(direction);
+                ++directions;
+            }
+        }
+        if (directions > 1) return usage(QStringLiteral("split takes one direction"));
         if (const auto error = extra(0)) return usage(*error);
-        return printPane(QStringLiteral("split"), {*pane, dir, QJsonArray::fromStringList(trailing)});
-    }
-    if (command == QLatin1String("new-tab")) {
+        act = [&, dir](qint64 pane) { return printPane(QStringLiteral("split"), {pane, dir, QJsonArray::fromStringList(trailing)}); };
+    } else if (command == QLatin1String("new-tab")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
-        return printPane(QStringLiteral("newTab"), {*pane, absolute(cwd), QJsonArray::fromStringList(trailing)});
-    }
-    if (command == QLatin1String("move-pane")) {
-        bool valid = false;
-        const uint target = args.value(0).toUInt(&valid);
+        act = [&, cwd](qint64 pane) {
+            return printPane(QStringLiteral("newTab"), {pane, absolute(cwd), QJsonArray::fromStringList(trailing)});
+        };
+    } else if (command == QLatin1String("move-pane")) {
+        const std::optional<quint32> target = paneNumber(args.value(0));
         if (const auto error = extra(2)) return usage(*error);
-        if (!valid || args.size() != 2) return usage(QStringLiteral("move-pane needs TARGET and PLACEMENT"));
-        return run(QStringLiteral("movePane"), {*pane, qint64(target), args[1]});
-    }
-    if (command == QLatin1String("detach-tab") || command == QLatin1String("focus") || command == QLatin1String("close")) {
+        if (!target || args.size() != 2) return usage(QStringLiteral("move-pane needs TARGET and PLACEMENT"));
+        act = [&, to = *target, placement = args[1]](qint64 pane) {
+            return run(QStringLiteral("movePane"), {pane, qint64(to), placement});
+        };
+    } else if (command == QLatin1String("detach-tab") || command == QLatin1String("focus") || command == QLatin1String("close")) {
         if (const auto error = extra(0)) return usage(*error);
-    }
-    if (command == QLatin1String("detach-tab")) return run(QStringLiteral("detachTab"), {*pane});
-    if (command == QLatin1String("focus")) return run(QStringLiteral("focus"), {*pane});
-    if (command == QLatin1String("close")) return run(QStringLiteral("close"), {*pane});
-    if (command == QLatin1String("set-title")) {
+        // focus and close have the names of their calls.
+        const QString fn = command == QLatin1String("detach-tab") ? QStringLiteral("detachTab") : command;
+        act = [&, fn](qint64 pane) { return run(fn, {pane}); };
+    } else if (command == QLatin1String("set-title")) {
         if (const auto error = extra(-1)) return usage(*error);
-        return run(QStringLiteral("setTitle"), {*pane, (args + trailing).join(QLatin1Char(' '))});
-    }
-    if (command == QLatin1String("signal")) {
+        act = [&, title = (args + trailing).join(QLatin1Char(' '))](qint64 pane) { return run(QStringLiteral("setTitle"), {pane, title}); };
+    } else if (command == QLatin1String("signal")) {
         bool okChannel = false;
         bool okValue = false;
         const int channel = args.value(0).toInt(&okChannel);
@@ -543,26 +639,32 @@ int runCtl(int argc, char** argv)
         if (!okChannel || !okValue || !std::isfinite(value)) {
             return usage(QStringLiteral("signal needs a channel and a number"));
         }
-        return run(QStringLiteral("signal"), {*pane, channel, value});
-    }
-    if (command == QLatin1String("notify")) {
+        act = [&, channel, value](qint64 pane) { return run(QStringLiteral("signal"), {pane, channel, value}); };
+    } else if (command == QLatin1String("notify")) {
         if (const auto error = extra(-1)) return usage(*error);
         const QStringList words = args + trailing;
         if (words.isEmpty()) {
             return usage(QStringLiteral("notify needs a title"));
         }
-        return run(QStringLiteral("notify"), {*pane, words.value(0), words.mid(1).join(QLatin1Char(' '))});
-    }
-    if (command == QLatin1String("action")) {
+        act = [&, title = words.value(0), body = words.mid(1).join(QLatin1Char(' '))](qint64 pane) {
+            return run(QStringLiteral("notify"), {pane, title, body});
+        };
+    } else if (command == QLatin1String("action")) {
         if (const auto error = extra(1)) return usage(*error);
         if (args.isEmpty()) {
             return usage(QStringLiteral("action needs a name"));
         }
-        return run(QStringLiteral("runAction"), {*pane, args.value(0)});
+        act = [&, name = args.value(0)](qint64 pane) { return run(QStringLiteral("runAction"), {pane, name}); };
     }
-    std::fputs(Usage, stderr);
-    return 2;
+    if (!act) {
+        std::fputs(Usage, stderr);
+        return 2;
+    }
+    const std::optional<qint64> pane = targetPane(!scriptAction);
+    if (!pane) {
+        return 1;
+    }
+    return act(*pane);
 }
 
 } // namespace Afterglow
-

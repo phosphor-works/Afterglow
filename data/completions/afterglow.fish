@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Fish completion for afterglow, for Fish 4 or later. Script IDs and their
-# commands come from the running afterglow (afterglow run --complete).
+# commands come from the running Afterglow, through the aglow that afterglow
+# runs (aglow run --complete).
 #
 # One function prints the candidates for the word at the cursor, so that the
 # position of a word decides what it is, as it does for afterglow.
@@ -22,6 +23,21 @@ set -g __afterglow_actions swap_left swap_right swap_up swap_down rotate_panes_c
 # Prints the arguments, one on each line, and nothing when there are none.
 function __afterglow_print
     string join \n -- $argv
+end
+
+# Prints the aglow that afterglow runs: the one in the directory of its
+# executable, with symbolic links resolved. aglow starts faster than
+# afterglow, which loads Qt. An afterglow with no path (a function of that
+# name) gets the aglow on PATH.
+function __afterglow_aglow
+    set -l exe (commandline -xpc)[1]
+    string match -q -- '*/*' $exe; or set exe (command -s -- $exe)
+    if not set -q exe[1]
+        echo aglow
+        return
+    end
+    set exe (path resolve -- $exe)
+    printf '%s/aglow\n' (path dirname -- $exe)
 end
 
 function __afterglow_window
@@ -56,7 +72,7 @@ function __afterglow_window
         set i (math $i + 1)
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
-        __afterglow_print ctl\t'Drive a running afterglow' run\t'Run a command of a script' \
+        __afterglow_print ctl\t'Drive a running Afterglow' run\t'Run a command of a script' \
             ssh\t'ssh with the remote side prepared' \
             transfer\t'Copy files to and from the computer of the terminal' \
             dnd\t'Drag files and data out of the terminal, and drop them in' \
@@ -151,12 +167,15 @@ function __afterglow_ctl
                 # The word at the cursor is text, not a pattern: compared, not matched.
                 if string match -q -- 'script:*' "$cur"
                     or test "$cur" = "$(string sub -l (string length -- "$cur") -- script:)"
-                    set -l self (commandline -xpc)[1]
-                    for id in ($self run --complete 2>/dev/null)
+                    # Without that aglow, fish would print "Unknown command" on the line.
+                    set -l aglow (__afterglow_aglow)
+                    command -q -- $aglow; or return
+                    # One connection: ID<TAB>COMMAND<TAB>SUMMARY lines.
+                    for entry in ($aglow run --complete --all 2>/dev/null)
+                        set -l fields (string split -m 2 \t -- $entry)
+                        test -n "$fields[1]" -a -n "$fields[2]"; or continue
                         # printf, not string replace: a '$' in the id would be a group in the replacement.
-                        for entry in ($self run --complete $id 2>/dev/null)
-                            printf 'script:%s.%s\n' $id $entry
-                        end
+                        printf 'script:%s.%s\t%s\n' $fields[1] $fields[2] "$fields[3]"
                     end
                 end
                 return
@@ -195,63 +214,6 @@ function __afterglow_ctl
     __afterglow_print $offer
 end
 
-function __afterglow_run
-    set -l cur (commandline -ct)
-    set -l self (commandline -xpc)[1]
-    # The words after run up to here: options, then ID, then COMMAND.
-    set -l id
-    set -l command
-    set -l options 1
-    set -l n (count $argv)
-    set -l i 1
-    while test $i -le $n
-        set -l word $argv[$i]
-        if test -n "$options"; and not set -q id[1]
-            switch $word
-                case -n --no-stdin
-                    set i (math $i + 1)
-                    continue
-                case --pane
-                    # At the cursor: the pane number.
-                    test $i -eq $n; and return
-                    set i (math $i + 2)
-                    continue
-                case --
-                    set options
-                    set i (math $i + 1)
-                    continue
-                case '-*'
-                    # -h and --help only alone, and any other option is unknown.
-                    return
-            end
-        end
-        if not set -q id[1]
-            set id $word
-        else
-            set command $word
-            break
-        end
-        set i (math $i + 1)
-    end
-    if set -q command[1]
-        # The command's own arguments: files, most likely.
-        contains -- $command -h --help; or __fish_complete_path "$cur"
-    else if set -q id[1]
-        __afterglow_print --help\t"List the script's commands"
-        $self run --complete $id 2>/dev/null
-    else if test -n "$options"; and string match -q -- '-*' "$cur"
-        set -l offer
-        # --help only alone: after an option it would name a script.
-        test $n -eq 0; and set -a offer -h\t'Show the usage' --help\t'Show the usage'
-        contains -- -n $argv; or contains -- --no-stdin $argv
-        or set -a offer -n\t'Do not pass standard input to the command' --no-stdin\t'Do not pass standard input to the command'
-        contains -- --pane $argv; or set -a offer --pane\t'The pane that the command acts on'
-        __afterglow_print $offer
-    else
-        $self run --complete 2>/dev/null | string replace -r '$' \tScript
-    end
-end
-
 function __afterglow_complete
     set -l words (commandline -xpc)[2..]
     switch "$words[1]"
@@ -260,12 +222,12 @@ function __afterglow_complete
             __fish_complete_subcommand
         case ctl
             __afterglow_ctl $words[2..]
-        case run
-            __afterglow_run $words[2..]
-        case transfer dnd icat clipboard
+        case run transfer dnd icat clipboard
             # These run aglow, which completes the same arguments. Fish loads
             # the completion of aglow only when aglow is on PATH, and afterglow
-            # runs the one next to itself: load it here.
+            # runs the one next to itself: load it here. aglow.fish can load
+            # twice, and loads its completions once. The line names that
+            # aglow, whose run --complete lists the script commands.
             if not functions -q __aglow_command
                 for dir in $fish_complete_path
                     if test -f $dir/aglow.fish
@@ -275,7 +237,8 @@ function __afterglow_complete
                 end
             end
             if functions -q __aglow_command
-                complete -C "$(string join ' ' -- aglow (string escape -- $words)) $(commandline -ct)"
+                set -l aglow (__afterglow_aglow)
+                complete -C "$(string join ' ' -- (string escape -- $aglow $words)) $(commandline -ct)"
             else
                 # No completion of aglow: its arguments are files, most likely.
                 __fish_complete_path (commandline -ct)

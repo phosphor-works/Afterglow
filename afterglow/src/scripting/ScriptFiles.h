@@ -1,33 +1,15 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "ScriptNames.h"
 #include <QByteArray>
 #include <QFile>
 #include <QFileInfo>
-#include <QRegularExpression>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 namespace Afterglow {
-/// Module, asset, pulse, shader pack and dock names: 1 to 64 letters,
-/// digits, _ and -.
-inline bool validName(const QString& name)
-{
-    static const QRegularExpression re(QStringLiteral("\\A[A-Za-z0-9_-]{1,64}\\z"));
-    return re.match(name).hasMatch();
-}
-
-/// Script and package ids, dependency names (the ids of packages) and
-/// command names: names that do not start with -, which `afterglow run`
-/// would read as an option.
-inline bool validScriptId(const QString& id)
-{
-    return validName(id) && !id.startsWith(QLatin1Char('-'));
-}
-/// The rule of validScriptId, for error messages.
-inline constexpr QLatin1StringView ScriptIdRule{"1 to 64 letters, digits, _ and -, and must not start with -"};
-
 /// The longest prefix of @p bytes that has at most @p limit bytes and ends on
 /// a whole UTF-8 character. A character that ends exactly at the limit stays.
 inline QByteArray utf8Prefix(QByteArray bytes, qsizetype limit)

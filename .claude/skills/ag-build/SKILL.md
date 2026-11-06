@@ -34,7 +34,8 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 `AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
 that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
-the `aglow` tests are left out, and the `aglow dnd` tests of `afterglow_dnd_tests` and the native suite skip.
+the `aglow` tests are left out. The `aglow dnd` tests of `afterglow_dnd_tests` and of the native suite skip, and so
+do the `RunBinaryTest.*` tests of `afterglow_command_tests`.
 `aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
 `tools/aglow/stb/stb_image.h` is pinned by its SHA-256 in `cmake/AfterglowDependencies.cmake`: after a change to the
 file, set the new hash there and list the patch at the top of `tools/aglow/StbImage.cpp`.
@@ -60,11 +61,16 @@ file, set the new hash there and list the patch at the top of `tools/aglow/StbIm
 ## Build
 
 ```sh
-cmake --build build -j6 2>&1 | tee <scratchpad>/build.log | tail -5
+systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
+    cmake --build build -j6 2>&1 | tee <scratchpad>/build.log | tail -5
 grep -c "warning:" <scratchpad>/build.log
 ```
 
 `<scratchpad>` is the session scratchpad directory. Never write logs into the repository.
+
+- Always build and test in the capped scope above. The session runs in the cgroup of the user's Afterglow, and
+  when memory runs out, systemd-oomd kills that whole unit with every window of the user. In the scope, the
+  kernel stops the build at the cap. Run one build or test run at a time.
 
 - Use `-j6`. The machine has 8 cores, and the user works on it while you build.
 - The build uses `-Wall -Wextra -Wpedantic` with no `-Werror`. A build with warnings is not green. The user treats
@@ -79,10 +85,11 @@ grep -c "warning:" <scratchpad>/build.log
 ## Test
 
 ```sh
-ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
+systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
+    ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 1,350 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 1,450 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.
