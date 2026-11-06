@@ -1176,9 +1176,12 @@ def check_bash(command, cwd=None):
     finders = {w for _, w, a in cmds if w in ('pgrep', 'pidof', 'ps')}
     pgrep_f = any(w == 'pgrep' and any(a == '--full' or 'f' in short_flags(a) for a in args) for _, w, args in cmds)
     for wrappers, word, args in cmds:
+        # parallel kill takes its PIDs from its input, as xargs kill does
+        if word == 'parallel' and 'kill' in (os.path.basename(a) for a in args):
+            word, wrappers = 'kill', wrappers + ['append']
         if word != 'kill':
             continue
-        found = 'xargs' in wrappers and finders or any('$' in a for a in args) and finders - {'ps'}
+        found = appends(wrappers) and finders or any('$' in a for a in args) and finders - {'ps'}
         if pgrep_f or found:
             return MSG_PGREP_KILL
     return None
