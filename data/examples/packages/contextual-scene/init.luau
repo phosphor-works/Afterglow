@@ -13,7 +13,7 @@ return {
  run_command=function(command,ev)
     if command~="toggle" then return nil end
     if #ev.args>0 then
-        return {afterglow.output_error(ev,"usage: afterglow run contextual-scene toggle\n"),afterglow.exit(ev,2)}
+        return {afterglow.output_error(ev,"usage: aglow run contextual-scene toggle\n"),afterglow.exit(ev,2)}
     end
     enabled=not enabled
     generation+=1

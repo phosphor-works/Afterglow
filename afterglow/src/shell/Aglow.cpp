@@ -25,8 +25,8 @@ bool built()
 
 bool handles(const char* command)
 {
-    for (const char* name : Commands) {
-        if (std::strcmp(command, name) == 0) {
+    for (const Command& known : Commands) {
+        if (std::strcmp(command, known.name) == 0) {
             return true;
         }
     }
@@ -51,8 +51,9 @@ int run(int argc, char** argv)
         return 127;
     }
     const std::string path = (self.parent_path() / "aglow").string();
-    // argv[0] is the program that the user typed, for aglow's usage and
-    // messages: "afterglow icat", not "aglow icat".
+    // argv[0] names the program in aglow's usage and messages: "afterglow
+    // icat", not "aglow icat". It is "afterglow" whatever the name that
+    // started this executable, as the commands in afterglow --help say.
     std::vector<char*> args { const_cast<char*>("afterglow") };
     for (int i = 1; i < argc; ++i) {
         args.push_back(argv[i]);

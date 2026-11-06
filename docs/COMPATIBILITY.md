@@ -189,6 +189,7 @@ A terminal reset clears both stacks and restores the default text pointer.
 ## aglow interoperability
 
 `aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard. It does not need Kitty.
+`aglow run`, which runs the commands of scripts, uses no Kitty protocol and has no counterpart in `kitten`.
 [The aglow client](DESKTOP.md#the-aglow-client) tells how to use it.
 Its message formats come from `libs/afterglow-proto`, the same code that the terminal uses.
 
@@ -199,7 +200,7 @@ Its message formats come from `libs/afterglow-proto`, the same code that the ter
 | `aglow icat` | Graphics (APC G): PNG as it is, other formats as pixels, GIF animation frames, Unicode placeholders, tmux passthrough | `aglow_icat_render` draws its output with the Afterglow renderer. `aglow_icat_decode` checks the pixels of crafted images. No test covers tmux passthrough. |
 | `aglow clipboard` | Clipboard (OSC 5522), and OSC 52 for plain text in a terminal without OSC 5522 | Against a terminal that a test plays (`aglow_clipboard_pty`, `aglow_clipboard_cases`), and the message formats in `libs/afterglow-proto/tests` |
 
-`aglow` takes the options of the `kitten` command of the same name, with the differences below.
+`aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name, with the differences below.
 
 - `aglow transfer` sends the permission password only in the SHA-256 form, which Afterglow and Kitty accept. It does not use Kitty's own form, which encrypts the password with `KITTY_PUBLIC_KEY`.
 - `aglow icat` decodes images with stb_image. It does not use ImageMagick or download images from URLs.

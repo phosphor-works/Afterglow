@@ -33,8 +33,11 @@ public:
     {
         QString code;
         QString message;
-        bool timedOut = false; ///< connected, but no answer in time
+        bool timedOut = false; ///< no answer in time, or a connection that the server's full queue held back
         bool tooLong = false; ///< not sent: over MaxLineBytes
+        /// connectTo() found no server: no socket at the path, or nobody
+        /// listens there (ServerNotFoundError, ConnectionRefusedError).
+        bool noServer = false;
     };
 
     /// phosphor-ipc's router closes the connection on a longer request line.

@@ -39,9 +39,9 @@ These are the commands `pick`, `favorite` and `previous`. Bind them as
 From a shell:
 
 ```sh
-afterglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
-afterglow run project-navigator list                       # favorite, recent and saved projects
-find ~/src -maxdepth 1 -mindepth 1 -type d | afterglow run project-navigator import
+aglow run project-navigator open ~/Projects/site dev   # open a directory, with the layout dev
+aglow run project-navigator list                       # favorite, recent and saved projects
+find ~/src -maxdepth 1 -mindepth 1 -type d | aglow run project-navigator import
 ```
 
 | Command | Action |
@@ -55,11 +55,12 @@ Only a `LAYOUT` that you give becomes the layout of the directory for the next t
 When the directory is open already, Afterglow focuses its window and does not apply `LAYOUT`.
 `DIR` can start with `~` or `~/`. Give the full path for the home of another user.
 The package resolves symbolic links in directories with `realpath`, as Afterglow does.
+It resolves the directories that it saves, the roots and the directories that `fd` and `zoxide` find.
 Thus one directory has one entry, also when the shell reached it through a link.
-Without `realpath`, a directory keeps the path that the shell gave.
+Without `realpath`, a directory keeps the path that the shell or the provider gave.
 
 `list` leaves out a value that contains a tab or a line break, and says so on stderr.
-`import` skips a line that is not a path or that names a path over 256 bytes.
+`import` skips a line that starts with `~user`, and a line that names a path over 256 bytes.
 
 | Exit status | Cause |
 | --- | --- |
@@ -83,7 +84,7 @@ Create `config.json` beside `package.json` to override the defaults:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `roots` | `["~/Projects"]` | Directories to offer and to search for Git repositories. A root starts with `/`, `~` or `~/`. The package reads the first eight entries. |
+| `roots` | `["~/Projects"]` | Directories to offer and to search for Git repositories. A root is `~`, or starts with `/` or `~/`. The package ignores another root, such as `~user/src`. The package reads the first eight entries. |
 | `fd` | `true` | `false` turns off the search for Git repositories with `fd`. |
 | `zoxide` | `true` | `false` turns off the directories from `zoxide`. |
 | `max_depth` | `5` | How many directory levels `fd` searches below each root, from 1 to 16. A value outside this range changes to the nearest limit. |
@@ -108,7 +109,7 @@ A provider that is refused supplies no paths.
 
 Finish or cancel the current operation before starting another.
 Escape cancels a selector without starting a project.
-When the run of a command ends while it waits, for example at Ctrl+C on `afterglow run`, no selector opens after it.
+When the run of a command ends while it waits, for example at Ctrl+C on `aglow run`, no selector opens after it.
 
 Favorites, the last 50 projects and layout choices survive reloads and restarts.
 The package keeps layout choices for favorites and recent directories only.
@@ -127,7 +128,8 @@ The package uses only declared local imports and Afterglow effects.
 
 Run `python3 afterglow/tests/navigator_smoke.py build/afterglow/afterglow`
 from the repository for an isolated live check. It needs `dbus-run-session`,
-Bash and the dependencies of the nested desktop below. It runs in a nested KWin
+Bash and the dependencies of the nested desktop below. It also needs the `aglow`
+that the build puts next to `afterglow`, so keep `AFTERGLOW_BUILD_AGLOW` on. It runs in a nested KWin
 with a private D-Bus session and a temporary configuration and state, then closes its windows.
 
 ## Walkthrough: reuse a split layout across repositories

@@ -106,7 +106,9 @@ struct QuickTerminalSettings
 
 struct ControlSettings
 {
-    bool enabled = true; ///< the "control" target on the process's socket (afterglow ctl)
+    /// The "control" target on the process's socket (afterglow ctl) and,
+    /// with Scripts.enabled, the "commands" target (aglow run, afterglow run).
+    bool enabled = true;
     bool allowReadText = false; ///< let it read pane contents
     int eventInterval = 100; ///< ms between two events of one kind for one pane, 0 sends every event
     bool operator==(const ControlSettings&) const = default;
@@ -162,6 +164,11 @@ QVariantList defaultHintPatterns();
 /// The Hints.patterns entries that Afterglow uses, and the arguments of a command action.
 inline constexpr qsizetype MaxHintPatterns = 16;
 inline constexpr qsizetype MaxHintCommandArguments = 32;
+/// The time in which one pane can show Notifications.rateLimit notifications.
+inline constexpr qint64 NotificationRateWindowMs = 10000;
+/// The highest Scripts.commandStdinLimit, in KiB. CommandSocket sizes its
+/// cap on waiting stdin from it.
+inline constexpr int MaxScriptCommandStdinLimitKiB = 4096;
 
 /// Everything afterglow reads from its config file.
 struct Settings
@@ -200,8 +207,9 @@ struct Settings
     enum class Bell { None, Attention, Visual, Both };
     Bell bell = Bell::Attention;
     bool notifications = true; ///< OSC 9, 99 and 777 notifications, and OSC 7501 status notifications
-    /// Notifications one pane may show in 10 seconds; 0 for no limit.
-    /// Afterglow's own notices do not count.
+    /// Notifications one pane may show in NotificationRateWindowMs; 0 for no
+    /// limit. Afterglow's own notices do not count, except the notices of
+    /// script commands (NotificationCenter::showLimitedNotice).
     int notificationRateLimit = 20;
     /// Milliseconds between two program status notifications of one pane.
     int statusNotificationInterval = 3000;
@@ -260,7 +268,9 @@ struct Settings
 
 /// The config file (~/.config/afterglow/config.json) on phosphor-config,
 /// with live reload when the file changes. The file holds only the values
-/// that differ from the defaults; a missing file means every default, and
+/// that differ from the defaults; a missing file means every default, and so
+/// does an empty one that held no settings (an empty file that held settings
+/// is a save in progress and keeps them), and
 /// the first write() or ensureFile() creates it, readable by the owner only.
 class SettingsStore : public QObject
 {
@@ -297,8 +307,10 @@ public:
     QStringList problems() const { return m_fileProblems + m_readProblems; }
 
     /// Re-reads the file. A file that cannot be read, does not parse or does
-    /// not hold a JSON object keeps the current settings; a deleted file
-    /// means every default.
+    /// not hold a JSON object keeps the current settings; a deleted file, or
+    /// one that is empty or only white space and held no settings, means
+    /// every default. A file that held settings and is empty now keeps them,
+    /// as an editor that saves in place empties it first.
     void reload();
     /// Writes one key to the config file and reloads. A value equal to the
     /// default removes the key. Command-line overrides keep winning over the
@@ -306,15 +318,17 @@ public:
     /// back (it would lose what it holds) or written. A write that the file
     /// refuses still applies what the file holds.
     bool write(const QString& group, const QString& key, const QVariant& value);
-    /// What the file holds for one key, or its default: the value without
+    /// What the file holds now for one key, or its default: the value without
     /// command-line overrides. A write built on a current value (a shader
     /// chain that gains a pack) starts from this, so that an override never
-    /// reaches the file. An invalid QVariant for an undeclared key.
+    /// reaches the file, and an edit that is not reloaded yet is not lost.
+    /// An invalid QVariant for an undeclared key.
     QVariant persisted(const QString& group, const QString& key) const;
 
     /// "Group.key=value" as an override; the value is JSON when it parses
-    /// (14, true, ["calt"]), else a string. Returns false if malformed or if
-    /// the schema has no such key.
+    /// (14, true, ["calt"]), else a string. It replaces the file's value as a
+    /// whole, also for a map such as Terminal.env. Returns false if malformed
+    /// or if the schema has no such key.
     static bool addOverride(QJsonObject& overrides, const QString& assignment);
 
 Q_SIGNALS:
@@ -325,8 +339,9 @@ Q_SIGNALS:
     void problemsChanged(const QStringList& problems);
 
 private:
-    /// Parses the file once and hands the document to the backend. False,
-    /// with the reason in problems(), when the current settings must stay.
+    /// Has the backend read and parse the file again (JsonBackend::reload),
+    /// so that the document checked is the document used. False, with the
+    /// reason in problems(), when the current settings must stay.
     bool loadFile();
     /// Reads the backend's document, emitting changed() if that changes anything.
     void apply();

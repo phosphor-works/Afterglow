@@ -3,14 +3,16 @@
 --
 -- Type definitions for afterglow scripts, for editors with Luau support.
 --
--- A script is a .luau file in ~/.config/afterglow/scripts/ (or the system
--- scripts directory) that returns a module table:
+-- A script is a .luau file that returns a module table, in a scripts
+-- directory: scripts/ beside the configuration file (~/.config/afterglow/scripts/),
+-- ~/.local/share/afterglow/scripts/, or afterglow/scripts/ in a system data
+-- directory such as /usr/share. Of two scripts with one id, the one in the
+-- directory earlier in this list loads:
 --
 --   local script = {}
 --   script.metadata = {
 --       id = "my-script",              -- optional, defaults to the file name
---       name = "My Script",
---       description = "What it does",
+--       name = "My Script",            -- optional: the name in afterglow ctl scripts, defaults to the id
 --       commands = { hello = { summary = "Say hello", usage = "[NAME]", palette = "Say Hello" } },
 --   }
 --   function script.on_command_finished(ev: CommandFinishedEvent): Effects? ... end
@@ -20,10 +22,11 @@
 -- Handlers run sandboxed with a short time limit and no direct access to files
 -- or processes. They return an effect, a list of effects, or nil, and can wait
 -- for an effect's result with afterglow.await. Commands run from the shell
--- (`afterglow run <id> <command>`), from the command palette and the context
+-- (`aglow run <id> <command>`), from the command palette and the context
 -- menu when they have a palette title, from a key as "script:<id>.<command>"
 -- (Keybinds.bindings, a key table or a key sequence), and from
--- `afterglow ctl action script:<id>.<command>`.
+-- `afterglow ctl action script:<id>.<command>` or a SCRIPT.COMMAND call of
+-- the commands target.
 -- A package declares its commands in package.json, not in metadata.
 --
 -- A helper that takes a pane targets the event's pane when the pane is nil.
@@ -82,8 +85,10 @@ export type CommandEvent = {
     args: { string }, -- at most 256, each at most 4096 UTF-16 units
     cwd: string, -- the client's directory, else the pane's, else ""
     pane: (Pane | { id: number })?, -- only the id when the pane closed before the run started
-    -- All of the client's stdin, for a command with stdin = true run from the shell; else nil.
-    -- A client with more than Scripts.commandStdinLimit does not start the run.
+    -- All of the client's stdin, for a command with stdin = true run from the shell. nil for
+    -- another source, and when aglow run reads none: with -n, or when stdin is a terminal.
+    -- A run with more than Scripts.commandStdinLimit does not start, and aglow run refuses
+    -- stdin that is not UTF-8 text (exit status 2).
     stdin: string?,
     source: "shell" | "palette" | "key" | "menu" | "control",
     run: string, -- for afterglow.output, output_error and exit
@@ -199,7 +204,7 @@ export type ResultEvent = {
     pane: (Pane | { id: number })?,
     -- Fresh at delivery; data describes the earlier operation. Absent from the
     -- busy result that afterglow.await gives when too many handlers wait.
-    terminal: State,
+    terminal: State?,
 }
 export type SignalValue = { channel: number, value: number }
 
@@ -240,7 +245,8 @@ export type PackageLoadEvent = {
 }
 -- Package modules expose tables through local require("declared-module") or require("@dependency").
 
-type PaneRef = Pane | number
+-- A pane record or its id. nil: the event's pane (see the top of this file).
+type PaneRef = Pane | { id: number } | number | nil
 
 declare afterglow: {
     panes: (state: State, scope: ("all" | "pane" | "tab" | "window")?, anchor: PaneRef?) -> { Pane },
@@ -278,13 +284,14 @@ declare afterglow: {
     -- Commands added at runtime, beside the manifest's, by name. Replaces the commands of the last set_commands.
     -- A name that the manifest has is refused.
     set_commands: (commands: {[string]: CommandSpec}) -> Effect,
-    -- To the stdout and stderr of `afterglow run`, within Scripts.commandOutputLimit. A run
+    -- To the stdout and stderr of `aglow run`, within Scripts.commandOutputLimit. A run
     -- with no client drops stdout and shows stderr in a notification.
     output: (run: string | CommandEvent, text: string) -> Effect,
     output_error: (run: string | CommandEvent, text: string) -> Effect,
     -- The run's exit status, 0-255. A run that sets none exits with 0.
     exit: (run: string | CommandEvent, code: number) -> Effect,
-    select: (pane: PaneRef, title: string, items: { { id: string, title: string } }) -> Effect,
+    -- An item without a title shows its id.
+    select: (pane: PaneRef, title: string, items: { { id: string, title: string? } }) -> Effect,
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
     -- Runs command over the pane, in its place and with its input, until the program exits.
     -- Result data: {exit_code: number, stdout: string, truncated: boolean}; stdout at most 1 MiB.

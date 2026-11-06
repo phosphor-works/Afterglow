@@ -42,12 +42,17 @@ Presets with unknown or unsupported parameters are rejected.
 The commands `get` and `set` read and set the parameters of the pane's shaders:
 
 ```sh
-afterglow run scene-controls get              # INSTANCE<TAB>PARAMETER<TAB>VALUE lines
-afterglow run scene-controls get strength     # one parameter
-afterglow run scene-controls set strength 1.4
+aglow run scene-controls get              # INSTANCE<TAB>PARAMETER<TAB>VALUE lines
+aglow run scene-controls get strength     # one parameter
+aglow run scene-controls set strength 1.4
 ```
 
-`set` changes the first shader of the pane that has the parameter, in the same layer as the editor.
+`set` changes the first shader of the pane that has the parameter.
+The value joins the other changes of this package, as an edit in the editor does.
+
+A tab separates the fields of a line.
+In a field, a backslash shows as `\\`, a tab as `\t`, a line break as `\n` and a carriage return as `\r`.
+Another control character shows as `\xHH`, with the hexadecimal code of the character.
 
 | Parameter type | `VALUE` |
 | --- | --- |
@@ -63,6 +68,8 @@ afterglow run scene-controls set strength 1.4
 | 2 | Wrong arguments, or a `VALUE` that does not fit the parameter type. |
 
 `set` and `open` fail while the editor or another `set` is open. Thus only one change runs at a time.
+When you stop `set` with Ctrl+C, the package keeps the value only when Afterglow took it.
+Until Afterglow tells that, `set` and `open` fail with a message to try again.
 
 ## Remove the package
 

@@ -13,6 +13,8 @@ local Usage = {open="open DIR [LAYOUT]", list="list", pick="pick", favorite="fav
 local MaxFavorites = 100
 -- realpath takes the paths after its three own arguments, and a job has at most 64.
 local MaxImport = 61
+-- The most choices in the picker.
+local MaxChoices = 400
 script.migrate = history.migrate
 function script.on_load(ev)
     config, home = ev.package.config, ev.package.home
@@ -24,7 +26,7 @@ local function fail(ev, message)
     return {afterglow.output_error(ev, message .. "\n"), afterglow.exit(ev, 1)}
 end
 local function usage(ev, command)
-    return {afterglow.output_error(ev, "usage: afterglow run project-navigator " .. Usage[command] .. "\n"), afterglow.exit(ev, 2)}
+    return {afterglow.output_error(ev, "usage: aglow run project-navigator " .. Usage[command] .. "\n"), afterglow.exit(ev, 2)}
 end
 -- A message for the user: on stdout for a run from the shell, else a
 -- notification on the pane.
@@ -62,22 +64,30 @@ end
 -- project directory: a shell reports its directory through the links that it
 -- followed, so one directory could be saved under two names. realpath -m
 -- also takes a path that does not exist. Without realpath, a path stays as it
--- is. Returns nil when the run ended during the wait.
+-- is. One job takes MaxImport paths, and the jobs run together. Returns nil
+-- when the run ended during the wait.
 local function canonical(paths)
-    if #paths == 0 then return {} end
-    -- -z ends each path with a NUL, which no path holds: a line break in a
-    -- link target cannot shift the paths after it.
-    local argv = {"realpath", "-mz", "--"}
-    for _, path in ipairs(paths) do table.insert(argv, path) end
-    -- Room for every path at the 4,096-byte limit, so a long batch is not cut.
-    local resolved, err = afterglow.await(afterglow.exec("realpath", argv,
-        {timeout_ms=2000, max_bytes=MaxImport * 4097}))
-    if cancelled(err) then return nil end
-    local lines = {}
-    for line in string.gmatch(resolved and resolved.stdout or "", "(%Z*)%z") do table.insert(lines, line) end
+    local jobs = {}
+    for first = 1, #paths, MaxImport do
+        -- -z ends each path with a NUL, which no path holds: a line break in a
+        -- link target cannot shift the paths after it.
+        local argv = {"realpath", "-mz", "--"}
+        for i = first, math.min(first + MaxImport - 1, #paths) do table.insert(argv, paths[i]) end
+        -- Room for every path at the 4,096-byte limit, so a long batch is not cut.
+        table.insert(jobs, afterglow.exec("realpath-" .. #jobs + 1, argv, {timeout_ms=2000, max_bytes=MaxImport * 4097}))
+    end
+    if #jobs == 0 then return {} end
     local out = {}
-    for i, path in ipairs(paths) do
-        out[i] = #lines == #paths and providers.path(lines[i], home) or path
+    for j, result in ipairs(afterglow.await_all(jobs)) do
+        if cancelled(result.error) then return nil end
+        local first = (j - 1) * MaxImport
+        local count = math.min(MaxImport, #paths - first)
+        local lines = {}
+        for line in string.gmatch(result.ok and result.data.stdout or "", "(%Z*)%z") do table.insert(lines, line) end
+        for i = 1, count do
+            local path = paths[first + i]
+            out[first + i] = #lines == count and providers.path(lines[i], home) or path
+        end
     end
     return out
 end
@@ -111,7 +121,7 @@ local function candidates(terminal)
         local key = kind .. ":" .. value
         if entries[key] then
             if running then entries[key].running = running end
-        elseif count < 400 then
+        elseif count < MaxChoices then
             count += 1
             entries[key] = {kind=kind, value=value, running=running}
         end
@@ -122,8 +132,19 @@ local function candidates(terminal)
         if window.project_directory and window.project_directory ~= "" then add("directory", window.project_directory, true) end
         if window.project and window.project ~= "" then add("project", window.project, true) end
     end
+    -- The roots and the directories of the providers, at most as many as the
+    -- picker still takes. Their links are resolved as in the history, so that a
+    -- directory reached through a link has one choice, with its marks.
+    local found, seen = {}, {}
+    local function discover(path)
+        if #found < MaxChoices - count and not seen[path] then
+            seen[path] = true
+            table.insert(found, path)
+        end
+    end
     local jobs, roots = providers.jobs(config, home)
-    for _, root in ipairs(roots) do add("directory", root) end
+    for _, root in ipairs(roots) do discover(root) end
+    local rootCount = #found
     local effects = {afterglow.list_projects()}
     for _, job in ipairs(jobs) do
         table.insert(effects, afterglow.exec(job.id, job.command, {timeout_ms=5000, max_bytes=131072}))
@@ -133,7 +154,6 @@ local function candidates(terminal)
         if cancelled(result.error) then return nil end
     end
     local projects = results[1].ok and results[1].data.names or {}
-    for _, name in ipairs(projects) do add("project", name) end
     local failed = {}
     for i, job in ipairs(jobs) do
         local result = results[i + 1]
@@ -143,13 +163,18 @@ local function candidates(terminal)
         -- job) returns no output, so the title names it.
         local stdout = result.data and result.data.stdout
         if result.ok or stdout then
-            for _, path in ipairs(providers.parse(job.kind, stdout or "", home)) do add("directory", path) end
+            for _, path in ipairs(providers.parse(job.kind, stdout or "", home)) do discover(path) end
         else
             local code = result.error and result.error.code or ""
             local reason = code == "spawn_failed" and "not started" or code == "timeout" and "timed out" or code
             table.insert(failed, job.id .. " " .. reason)
         end
     end
+    local resolved = canonical(found)
+    if not resolved then return nil end
+    for i = 1, rootCount do add("directory", resolved[i]) end
+    for _, name in ipairs(projects) do add("project", name) end
+    for i = rootCount + 1, #resolved do add("directory", resolved[i]) end
     return entries, projects, failed
 end
 -- The chosen entry, nil when the picker is cancelled, or nil and a message.
@@ -193,12 +218,20 @@ local function layoutFor(pane, item, projects)
     if item.kind == "project" or item.running then return saved.templates[item.value] or "" end
     local layouts, names = {{id="shell", title="Start a shell"}}, {shell=""}
     local previous = saved.templates[item.value]
+    -- The last-used layout comes first, wherever it is in the list.
     for i, name in ipairs(projects) do
-        local id = "layout-" .. i
-        names[id] = name
-        local choice = {id=id, title=name .. (name == previous and " (last used)" or "")}
-        if name == previous then table.insert(layouts, 1, choice) else table.insert(layouts, choice) end
+        if name == previous then
+            names["layout-" .. i] = name
+            table.insert(layouts, 1, {id="layout-" .. i, title=name .. " (last used)"})
+            break
+        end
+    end
+    for i, name in ipairs(projects) do
         if #layouts >= 100 then break end
+        if name ~= previous then
+            names["layout-" .. i] = name
+            table.insert(layouts, {id="layout-" .. i, title=name})
+        end
     end
     if #layouts == 1 then return "" end
     local choice, problem = choose(pane, "Layout for " .. providers.label(item.value), layouts)
@@ -230,7 +263,7 @@ local function favorite(ev, current)
     if failed then return fail(ev, "History was not saved: " .. failed) end
     return notice(ev, message)
 end
--- A directory from the command line: relative to where afterglow run ran.
+-- A directory from the command line: relative to where aglow run ran.
 -- Returns nil and a message for a path that cannot be a directory.
 local function resolve(path, cwd)
     if path == "~" or string.sub(path, 1, 2) == "~/" then path = home .. string.sub(path, 2)
@@ -277,7 +310,7 @@ local function import(ev)
     local effects = {notice(ev, "Added " .. added .. (added == 1 and " favorite" or " favorites"))}
     if skipped > 0 then
         table.insert(effects, afterglow.output_error(ev, "Skipped " .. skipped .. (skipped == 1 and " line" or " lines")
-            .. ": not an absolute path, a path over 256 bytes, or over the limit of 100 favorites.\n"))
+            .. ": a path that starts with ~user, a path over 256 bytes, or over the limit of 100 favorites.\n"))
     end
     if more then
         table.insert(effects, afterglow.output_error(ev, "Read only the first " .. MaxImport .. " lines.\n"))
@@ -344,8 +377,16 @@ local function navigate(command, ev)
     end
     if command == "favorite" then return favorite(ev, current) end
     if command == "previous" then
+        -- The history holds resolved directories, and the pane can be in the
+        -- same directory through a link.
+        local here = providers.path(current, home)
+        if here then
+            local resolved = canonical({here})
+            if not resolved then return nil end
+            here = resolved[1]
+        end
         for _, item in ipairs(saved.recent) do
-            if (item.kind == "directory" and item.value ~= current)
+            if (item.kind == "directory" and item.value ~= here)
                 or (item.kind == "project" and item.value ~= currentProject) then
                 return launch(ev, item, saved.templates[item.value], nil)
             end

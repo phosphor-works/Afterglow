@@ -12,7 +12,7 @@ cp -r data/examples/packages/contextual-scene ~/.config/afterglow/scripts/
 
 Select **Toggle contextual Phosphor exposure** in the command palette.
 This is the command `toggle`. Bind it as `script:contextual-scene.toggle` in `Keybinds.bindings`.
-From a shell, `afterglow run contextual-scene toggle` prints whether the exposure is on or off.
+From a shell, `aglow run contextual-scene toggle` prints whether the exposure is on or off.
 The package samples once each second. The host changes exposure over 900 ms.
 The larger value of current-tab history intensity and overall audio level sets the target.
 Background tabs do not contribute history.

@@ -40,14 +40,14 @@ TEST(ScriptPackage, BoundsSourcesAndRejectsEscapesAndIncompatibleVersions)
         EXPECT_TRUE(ScriptPackage::read(file, p).contains("must remain inside")) << path.toStdString();
     }
     PUT(file, manifest({{"api_version",2}}));
-    EXPECT_TRUE(ScriptPackage::read(file, p).contains("incompatible API"));
+    EXPECT_EQ(ScriptPackage::read(file, p), "package.json: api_version must be 1");
     PUT(file, manifest());
     PUT(dir.filePath("init.luau"), QByteArray(256 * 1024 + 1, ' '));
     EXPECT_TRUE(ScriptPackage::read(file, p).contains("byte limit"));
     PUT(dir.filePath("init.luau"), "return {}");
-    // An id that `afterglow run` would read as an option.
+    // An id that `aglow run` would read as an option.
     PUT(file, manifest({{"id", "-test"}}));
-    EXPECT_TRUE(ScriptPackage::read(file, p).contains("Invalid manifest"));
+    EXPECT_TRUE(ScriptPackage::read(file, p).startsWith("package.json: id must be 1 to 64"));
     QTemporaryDir outside; PUT(outside.filePath("module.luau"), "return {}");
     ASSERT_TRUE(QFile::link(outside.filePath("module.luau"), dir.filePath("link.luau")));
     PUT(file, manifest({{"modules",QJsonObject{{"main","link.luau"}}}}));
@@ -93,7 +93,7 @@ TEST(ScriptPackage, ReadsAndChecksItsCommands)
     QJsonObject many;
     for (int i = 0; i <= MaxScriptCommands; ++i) many.insert(QStringLiteral("c%1").arg(i), QJsonObject{{"summary", "x"}});
     PUT(file, manifest({{"commands", many}}));
-    EXPECT_EQ(ScriptPackage::read(file, p), QStringLiteral("A script has at most %1 commands").arg(MaxScriptCommands));
+    EXPECT_EQ(ScriptPackage::read(file, p), QStringLiteral("package.json: A script has at most %1 commands").arg(MaxScriptCommands));
 }
 TEST(ScriptFiles, Utf8PrefixKeepsACharacterThatEndsAtTheLimit)
 {
@@ -287,10 +287,10 @@ TEST(ScriptPackage, RejectsBadManifestsWithTheRealError)
     PUT(dir.filePath("vendor/lib/package.json"), R"({"id":"lib","version":"2.0.0","api_version":1,"entry":"main","modules":{"main":"lib.luau"}})");
     PUT(dir.filePath("vendor/lib/lib.luau"), "return {}");
     PUT(file, manifest({{"dependencies", QJsonObject{{"lib", QJsonObject{{"path", "vendor/lib"}, {"version", "1.0.0"}}}}}}));
-    EXPECT_TRUE(ScriptPackage::read(file, p).contains("dependency version"));
+    EXPECT_EQ(ScriptPackage::read(file, p), "vendor/lib/package.json: version is 2.0.0, but the package that depends on it declares 1.0.0");
     // require("@lib") names the package with the id lib.
     PUT(dir.filePath("vendor/lib/package.json"), R"({"id":"other","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"lib.luau"}})");
-    EXPECT_EQ(ScriptPackage::read(file, p), "Dependency lib has the id other in its manifest");
+    EXPECT_EQ(ScriptPackage::read(file, p), "vendor/lib/package.json: id is other, but the package that depends on it names it lib");
     PUT(dir.filePath("vendor/lib/package.json"), R"({"id":"lib","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"lib.luau"}})");
     EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
     // A dependency with no path, or a path that is not text.
@@ -298,20 +298,27 @@ TEST(ScriptPackage, RejectsBadManifestsWithTheRealError)
         QJsonObject dependency{{"version", "1.0.0"}};
         if (!path.isUndefined() && !path.isNull()) dependency.insert("path", path);
         PUT(file, manifest({{"dependencies", QJsonObject{{"lib", dependency}}}}));
-        EXPECT_TRUE(ScriptPackage::read(file, p).contains("Dependency requires a name, local path"));
+        EXPECT_TRUE(ScriptPackage::read(file, p).contains("dependency lib needs a package id as its name, a local path"));
     }
     // An asset that is not a path.
     PUT(file, manifest({{"assets", QJsonObject{{"theme", 5}}}}));
-    EXPECT_EQ(ScriptPackage::read(file, p), "Asset theme must be a path in the package");
-    // More than 16 packages in one tree: each depends on the next.
-    for (int i = 0; i < 17; ++i) {
-        const QString next = i < 16 ? QStringLiteral(R"("dependencies":{"d":{"path":"d","version":"1.0.0"}},)") : QString();
-        PUT(dir.filePath(QStringLiteral("chain") + QString("/d").repeated(i) + "/package.json"),
-            QStringLiteral(R"({"id":"d","version":"1.0.0","api_version":1,"entry":"main",%1"modules":{"main":"m.luau"}})").arg(next).toUtf8());
-        PUT(dir.filePath(QStringLiteral("chain") + QString("/d").repeated(i) + "/m.luau"), "return {}");
-    }
-    PUT(file, manifest({{"dependencies", QJsonObject{{"d", QJsonObject{{"path", "chain"}, {"version", "1.0.0"}}}}}}));
-    EXPECT_TRUE(ScriptPackage::read(file, p).contains("Too many dependencies"));
+    EXPECT_EQ(ScriptPackage::read(file, p), "package.json: asset theme must be a path in the package");
+    // 16 packages in one tree, and no more: the package and a chain of
+    // dependencies, each depending on the next.
+    auto chain = [&](int dependencies) {
+        const QString top = QStringLiteral("chain%1").arg(dependencies);
+        for (int i = 0; i < dependencies; ++i) {
+            const QString next = i + 1 < dependencies ? QStringLiteral(R"("dependencies":{"d":{"path":"d","version":"1.0.0"}},)") : QString();
+            PUT(dir.filePath(top + QString("/d").repeated(i) + "/package.json"),
+                QStringLiteral(R"({"id":"d","version":"1.0.0","api_version":1,"entry":"main",%1"modules":{"main":"m.luau"}})").arg(next).toUtf8());
+            PUT(dir.filePath(top + QString("/d").repeated(i) + "/m.luau"), "return {}");
+        }
+        PUT(file, manifest({{"dependencies", QJsonObject{{"d", QJsonObject{{"path", top}, {"version", "1.0.0"}}}}}}));
+    };
+    ASSERT_NO_FATAL_FAILURE(chain(15));
+    EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    ASSERT_NO_FATAL_FAILURE(chain(16));
+    EXPECT_EQ(ScriptPackage::read(file, p), "A package tree has at most 16 packages");
     // Assets: a count and a size limit.
     QJsonObject assets;
     for (int i = 0; i < 33; ++i) assets.insert(QStringLiteral("a%1").arg(i), "init.luau");
@@ -349,4 +356,137 @@ TEST(ScriptPackage, ModuleErrorsNameTheirFileAndLine)
     const QString message = QStringLiteral("package.json:%1: broken").arg(util->line + 2);
     EXPECT_EQ(ScriptPackage::locate(p.modules, message), QStringLiteral("util.luau:3: broken"));
     EXPECT_EQ(ScriptPackage::locate(p.modules, "package.json:1: loader"), QStringLiteral("package.json:1: loader"));
+}
+
+TEST(ScriptPackage, EachManifestRuleHasItsOwnError)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    PUT(dir.filePath("init.luau"), "return {}");
+    ScriptPackage p;
+    const std::pair<QJsonObject, const char*> bad[] = {
+        {{{"version", "1.0"}}, "package.json: version must be X.Y.Z"},
+        {{{"version", "01.0.0"}}, "package.json: version must be X.Y.Z"},
+        {{{"modules", QJsonArray{"init.luau"}}}, "package.json: modules must map module names to files"},
+        {{{"entry", "no entry"}}, "package.json: entry must name a module"},
+        {{{"entry", "other"}}, "package.json: the entry module other is not in modules"},
+        {{{"dependencies", QJsonArray{}}}, "package.json: dependencies must map package ids"},
+        {{{"modules", QJsonObject{{"main", "init.luau"}, {"bad name", "init.luau"}}}}, "package.json: module bad name needs a name"},
+        {{{"modules", QJsonObject{{"main", "init.luau"}, {"other", 5}}}}, "package.json: module other needs a name"},
+    };
+    for (const auto& [fields, error] : bad) {
+        PUT(file, manifest(fields));
+        const QString message = ScriptPackage::read(file, p);
+        EXPECT_TRUE(message.startsWith(QLatin1String(error))) << message.toStdString();
+    }
+    // A name that was never checked is cut in the message.
+    PUT(file, manifest({{"assets", QJsonObject{{QString(300, 'a'), 5}}}}));
+    EXPECT_EQ(ScriptPackage::read(file, p), QStringLiteral("package.json: asset %1… must be a path in the package").arg(QString(64, 'a')));
+    // 64 modules in one tree, and no more.
+    QJsonObject modules{{"main", "init.luau"}};
+    for (int i = 1; i < 64; ++i) modules.insert(QStringLiteral("m%1").arg(i), "init.luau");
+    PUT(file, manifest({{"modules", modules}}));
+    EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    modules.insert("extra", "init.luau");
+    PUT(file, manifest({{"modules", modules}}));
+    EXPECT_EQ(ScriptPackage::read(file, p), "A package tree has at most 64 modules");
+    // A package directory that does not resolve has no root to hold paths in.
+    EXPECT_TRUE(ScriptPackage::read(dir.filePath("missing/package.json"), p).startsWith("Cannot resolve the package directory"));
+}
+
+TEST(ScriptPackage, ASymlinkBackIntoTheTreeIsACycle)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    PUT(dir.filePath("init.luau"), "return {}");
+    PUT(dir.filePath("a/package.json"),
+        R"({"id":"a","version":"1.0.0","api_version":1,"entry":"main","modules":{"main":"m.luau"},"dependencies":{"b":{"path":"b","version":"1.0.0"}}})");
+    PUT(dir.filePath("a/m.luau"), "return {}");
+    // a/b is a itself: by its path a new package, by where it leads the one being read.
+    ASSERT_TRUE(QFile::link(dir.filePath("a"), dir.filePath("a/b")));
+    PUT(file, manifest({{"dependencies", QJsonObject{{"a", QJsonObject{{"path", "a"}, {"version", "1.0.0"}}}}}}));
+    ScriptPackage p;
+    EXPECT_EQ(ScriptPackage::read(file, p), "Dependency cycle at a/b/package.json");
+}
+
+TEST(ScriptPackage, ADependencyErrorIsNotReplacedByALaterOne)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    PUT(dir.filePath("init.luau"), "return {}");
+    PUT(dir.filePath("vendor/lib/package.json"), R"({"id":"lib","version":"1.0.0","api_version":2,"entry":"main","modules":{"main":"lib.luau"}})");
+    // The root's own modules break a rule too: its error would come later.
+    PUT(file, manifest({{"modules", QJsonObject{{"main", "init.luau"}, {"bad name", "init.luau"}}},
+                        {"dependencies", QJsonObject{{"lib", QJsonObject{{"path", "vendor/lib"}, {"version", "1.0.0"}}}}}}));
+    ScriptPackage p;
+    EXPECT_EQ(ScriptPackage::read(file, p), "vendor/lib/package.json: api_version must be 1");
+    // So does an invalid config.json: its error stands.
+    PUT(file, manifest({{"modules", QJsonObject{{"main", "init.luau"}, {"bad name", "init.luau"}}}}));
+    PUT(dir.filePath("config.json"), "[1]");
+    EXPECT_TRUE(ScriptPackage::read(file, p).startsWith("Invalid package JSON")) << ScriptPackage::read(file, p).toStdString();
+}
+
+TEST(ScriptPackage, AnEscapingPathIsWatchedSoItsFixLoads)
+{
+    QTemporaryDir dir, outside;
+    const auto file = dir.filePath("package.json");
+    PUT(outside.filePath("module.luau"), "return {}");
+    ASSERT_TRUE(QFile::link(outside.filePath("module.luau"), dir.filePath("init.luau")));
+    PUT(file, manifest());
+    ScriptPackage p;
+    EXPECT_TRUE(ScriptPackage::read(file, p).contains("escapes its root"));
+    EXPECT_TRUE(p.watched.contains(dir.filePath("init.luau")));
+}
+
+TEST(ScriptPackage, CommandTextRefusesSeparatorsAndBidirectionalControls)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    PUT(dir.filePath("init.luau"), "return {}");
+    ScriptPackage p;
+    for (const char16_t c : {u'\u2028', u'\u2029', u'\u061c', u'\u200e', u'\u200f', u'\u202a', u'\u202e', u'\u2066', u'\u2069', u'\u0085'}) {
+        const QString summary = QStringLiteral("a") + QChar(c) + QStringLiteral("b");
+        PUT(file, manifest({{"commands", QJsonObject{{"go", QJsonObject{{"summary", summary}}}}}}));
+        EXPECT_TRUE(ScriptPackage::read(file, p).contains("bidirectional controls")) << int(c);
+    }
+    // Other formatting characters stay: a zero-width joiner is part of an emoji.
+    PUT(file, manifest({{"commands", QJsonObject{{"go", QJsonObject{{"summary", QStringLiteral("a‍b")}}}}}}));
+    EXPECT_TRUE(ScriptPackage::read(file, p).isEmpty());
+}
+
+TEST(ScriptPackage, APackDirectoryNameIsCheckedFirst)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    PUT(dir.filePath("init.luau"), "return {}");
+    // No metadata.json: only the name can refuse it.
+    QDir().mkpath(dir.filePath("shaders/bad name"));
+    PUT(file, manifest({{"shaders", QJsonObject{{"path", "shaders"}}}}));
+    ScriptPackage p;
+    EXPECT_EQ(ScriptPackage::read(file, p), "package.json: shader pack directory bad name must be 1 to 64 letters, digits, _ and -");
+}
+
+TEST(ScriptPackage, ErrorsAtTheEndOfAModuleNameTheModule)
+{
+    QTemporaryDir dir;
+    const auto file = dir.filePath("package.json");
+    PUT(dir.filePath("init.luau"), "return {}");
+    PUT(dir.filePath("util.luau"), "local x = 1\nif x then end\nreturn {}");
+    PUT(file, manifest({{"modules", QJsonObject{{"main", "init.luau"}, {"util", "util.luau"}}}}));
+    ScriptPackage p;
+    ASSERT_TRUE(ScriptPackage::read(file, p).isEmpty());
+    const auto util = std::find_if(p.modules.cbegin(), p.modules.cend(), [](const auto& m) { return m.file == "util.luau"; });
+    ASSERT_NE(util, p.modules.cend());
+    // Its byte range in the chunk is its source, which ScriptHost parses alone.
+    EXPECT_EQ(p.source.mid(util->offset, util->size), "local x = 1\nif x then end\nreturn {}");
+    // The line that closes its factory counts as its last line.
+    EXPECT_EQ(ScriptPackage::locate(p.modules, QStringLiteral("package.json:%1: closed").arg(util->line + util->lines)),
+              "util.luau:3: closed");
+    // Only the chunk's positions change. Lines named in the text, as a
+    // script's own error can have them, stay as they are.
+    const QString message = QStringLiteral("package.json:%1: could not close 'door' at line 9").arg(util->line);
+    EXPECT_EQ(ScriptPackage::locate(p.modules, message), "util.luau:1: could not close 'door' at line 9");
+    // The loader's own lines keep their positions.
+    EXPECT_EQ(ScriptPackage::locate(p.modules, "package.json:1: (to close 'function' at line 1)"),
+              QStringLiteral("package.json:1: (to close 'function' at line 1)"));
 }

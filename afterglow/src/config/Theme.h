@@ -36,6 +36,11 @@ struct Theme
     std::array<std::optional<AfterglowVt::Rgb>, 16> palette;
 };
 
+/// Whether the application is a QGuiApplication. qGuiApp is only a cast of
+/// the application, so it is set under a QCoreApplication too, which has no
+/// platform theme, palette or style hints to ask.
+bool hasGuiApplication();
+
 namespace Themes {
 /// The colour @p numerator / @p denominator of the way from @p from to @p to,
 /// for colours that a theme derives from its background and text.
@@ -81,9 +86,10 @@ QStringList candidates(const QString& name, const QStringList& dirs, const QStri
 QString locate(const QString& name, const QStringList& dirs, const QString& base = {});
 
 /// Whether @p name is a colour that a setting or theme can hold: a Qt colour
-/// name or hex form, but not eight hex digits. Qt reads those as #AARRGGBB,
-/// and these colours have no alpha, so "#1e1e2eff" would come out a
-/// different colour with no warning.
+/// name or hex form, but not eight hex digits and not "transparent" in any
+/// spelling that Qt reads ("Trans Parent"). Qt reads eight digits as
+/// #AARRGGBB, and these colours have no alpha, so "#1e1e2eff" would come out
+/// a different colour with no warning, and "transparent" opaque black.
 bool isColorName(const QString& name);
 
 /// Whether @p data is an Afterglow JSON theme rather than a Ghostty, kitty or

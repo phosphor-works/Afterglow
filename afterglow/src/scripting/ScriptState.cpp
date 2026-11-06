@@ -64,7 +64,7 @@ QString ScriptState::read(const QString& id, Snapshot& result) const
     const auto schema = object.value(QStringLiteral("version"));
     const auto revision = object.value(QStringLiteral("revision"));
     if (parse.error != QJsonParseError::NoError || object.value(QStringLiteral("format")) != QJsonValue(1)
-        || !object.value(QStringLiteral("value")).isObject() || schema.toInt() < 1 || schema.toInt() > 10000
+        || !object.value(QStringLiteral("value")).isObject() || schema.toInt() < 1 || schema.toInt() > MaxVersion
         || schema.toDouble() != schema.toInt() || revision.toInt() < 1 || revision.toDouble() != revision.toInt()
         || revision.toInt() == std::numeric_limits<int>::max()) // a write could never follow it
         return QStringLiteral("Invalid state file. Original file preserved");
@@ -75,7 +75,7 @@ QString ScriptState::read(const QString& id, Snapshot& result) const
 }
 QString ScriptState::write(const QString& id, int version, int expectedRevision, const QVariantMap& value, Snapshot& result) const
 {
-    if (!validScriptId(id) || version < 1 || version > 10000 || expectedRevision < 0 || expectedRevision == std::numeric_limits<int>::max())
+    if (!validScriptId(id) || version < 1 || version > MaxVersion || expectedRevision < 0 || expectedRevision == std::numeric_limits<int>::max())
         return QStringLiteral("Invalid state identity/version/revision");
     if (const auto error = validate(value); !error.isEmpty()) return error;
     if (!QDir().mkpath(m_directory)) return QStringLiteral("Cannot create state directory");

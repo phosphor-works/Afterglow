@@ -34,12 +34,12 @@ public:
     /// The OSC 99 capability list afterglow answers queries with.
     static std::string capabilities();
 
-    /// Notifications that programs in one pane may show in RateWindowMs, 0
-    /// for no limit (Notifications.rateLimit). Updates of a notification that
-    /// is already shown do not count, nor do afterglow's own notices. The
-    /// notices of script commands (showLimitedNotice) count.
+    /// Notifications that programs in one pane may show in
+    /// NotificationRateWindowMs (config/Settings.h), 0 for no limit
+    /// (Notifications.rateLimit). Updates of a notification that is already
+    /// shown do not count, nor do afterglow's own notices. The notices of
+    /// script commands (showLimitedNotice) count.
     void setRateLimit(int count) { m_rateLimit = count; }
-    static constexpr qint64 RateWindowMs = 10000;
 
     /// An OSC 99 request from @p pane. The window has already applied the
     /// request's occasion (always / unfocused / invisible).

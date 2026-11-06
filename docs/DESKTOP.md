@@ -172,16 +172,18 @@ Afterglow does not open or execute received files automatically.
 
 ## The aglow client
 
-`aglow` is a client of four Kitty protocols.
-This document describes two of them, file transfer and drag and drop.
-The other two are graphics and the clipboard.
+`aglow` is a client of four Kitty protocols: file transfer, drag and drop, graphics and the clipboard.
+This document describes each of them.
+`aglow run` also runs the commands of scripts in the Afterglow on the same computer (see [script commands](CONTROL.md#script-commands)).
 `aglow` is one static binary with no shared libraries.
 It runs on a Linux computer of its architecture whose kernel is as new as the static C library of the build host needs.
 On x86-64, the processor must also have the instruction level that the build needs.
-The build prints both requirements, for example "needs Linux 6.1.0 or later".
-Afterglow installs it next to `afterglow`. To use the protocols over SSH, install or copy `aglow` on the remote host.
+When `readelf` is installed, the build prints both requirements, for example "needs Linux 6.1.0 or later".
+When the compiler or linker flags contain `-fsanitize`, `aglow` links dynamically. See [build and install](BUILD.md#install).
+Afterglow installs it next to `afterglow`. To use the protocols over SSH, install `aglow` on the remote host (see [remote hosts](#remote-hosts)).
 The `kitten` client of Kitty also works with Afterglow.
-`aglow` takes the options of `kitten`, with the differences that [aglow interoperability](COMPATIBILITY.md#aglow-interoperability) lists.
+`aglow transfer`, `aglow dnd`, `aglow icat` and `aglow clipboard` take the options of the `kitten` command of the same name.
+The differences are in [aglow interoperability](COMPATIBILITY.md#aglow-interoperability).
 
 | Command | Function |
 | --- | --- |
@@ -189,13 +191,14 @@ The `kitten` client of Kitty also works with Afterglow.
 | `aglow dnd` | Drags files and data out of a pane, and receives drops |
 | `aglow icat` | Shows images in the pane |
 | `aglow clipboard` | Reads and writes the clipboard. With OSC 5522, it can use any MIME type. With OSC 52, it uses plain text only. |
+| `aglow run` | Runs a command of a script in the Afterglow on the same computer |
 
-`afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
+`afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` run the `aglow` next to `afterglow`.
 When they cannot run it, they exit with one of these statuses, as a shell does:
 
 | Status | Cause |
 | --- | --- |
-| 127 | There is no `aglow` next to `afterglow`, or the build has no `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`). |
+| 127 | There is no `aglow` next to `afterglow`, or the build has no `aglow` (`AFTERGLOW_BUILD_AGLOW=OFF`). `afterglow` also exits with 127 when it cannot read its own executable path from `/proc/self/exe`. |
 | 126 | There is an `aglow` next to `afterglow`, but it cannot run. For example, it is not executable. |
 
 `aglow --version` shows its version and the version of its protocol.
@@ -209,6 +212,15 @@ aglow icat ./picture.png
 aglow clipboard ./picture.png
 aglow clipboard --get-clipboard --mime image/png ./copy.png
 ```
+
+### Remote hosts
+
+Afterglow does not copy `aglow` to a remote host.
+Copy the static `aglow` of your build to a remote host whose kernel and processor it supports.
+You can also install `aglow` on the remote host from a package, or build it there with `AFTERGLOW_AGLOW_ONLY` (see [build aglow alone](BUILD.md#build-aglow-alone)).
+That build does not need Qt or the Phosphor libraries.
+`kitten` also works over SSH for file transfer, drag and drop, images and the clipboard, because these are Kitty protocols.
+`aglow run` reaches only an Afterglow on the same computer.
 
 ### aglow icat
 

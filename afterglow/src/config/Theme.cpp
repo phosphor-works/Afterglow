@@ -19,6 +19,15 @@
 
 #include <algorithm>
 
+namespace Afterglow {
+
+bool hasGuiApplication()
+{
+    return qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
+}
+
+} // namespace Afterglow
+
 namespace Afterglow::Themes {
 
 namespace {
@@ -162,7 +171,10 @@ std::optional<AfterglowVt::Rgb>* konsoleTarget(Theme& theme, const QString& sect
 bool isColorName(const QString& name)
 {
     static const QRegularExpression EightDigits(QStringLiteral("^#[0-9a-fA-F]{8}$"));
-    return QColor::isValidColorName(name) && !EightDigits.match(name).hasMatch();
+    // Transparent by its alpha, not by its spelling: Qt drops the spaces and
+    // tabs of a name, so "trans parent" is transparent too.
+    return QColor::isValidColorName(name) && !EightDigits.match(name).hasMatch()
+        && QColor::fromString(name).alpha() == 255;
 }
 
 QString pick(const QString& spec, bool dark)
@@ -458,9 +470,7 @@ Theme plasmaColors(const QStringList& sources)
     }
     // Without kdeglobals (another desktop, or a scheme that leaves a colour
     // out) the platform theme's palette says the same.
-    // qGuiApp is only a cast of the application: a QCoreApplication has no palette.
-    const bool gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
-    const QPalette palette = gui ? QGuiApplication::palette() : QPalette(Qt::black, Qt::white);
+    const QPalette palette = hasGuiApplication() ? QGuiApplication::palette() : QPalette(Qt::black, Qt::white);
     auto from = [&](QPalette::ColorRole role) {
         const QColor c = palette.color(QPalette::Active, role);
         return AfterglowVt::Rgb{std::uint8_t(c.red()), std::uint8_t(c.green()), std::uint8_t(c.blue())};

@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Fish completion for aglow: its commands, their options and the values of the options.
-# afterglow transfer, dnd, icat and clipboard use it too (afterglow.fish).
+# Fish completion for aglow, for Fish 4 or later: its commands, their options and the values of the options.
+# Script IDs and their commands come from the running Afterglow (aglow run --complete).
+# afterglow run, transfer, dnd, icat and clipboard use it too (afterglow.fish).
+
+# afterglow.fish sources this file, and fish can load it again when aglow is on PATH: the completions of the second
+# load replace those of the first, or each would run, and list the scripts, once more.
+complete -e -c aglow
 
 # The options of each command that take a value, as the next word or after
 # "=", from the declarations below.
@@ -90,16 +95,84 @@ function __aglow_events
     end
 end
 
+# aglow run: options, then the script ID, then its command and the
+# command's own arguments. The aglow of the line lists the script commands:
+# for afterglow run, afterglow.fish names the aglow that afterglow runs.
+function __aglow_run
+    set -l words (commandline -xpc)
+    set -l program $words[1]
+    set -l cur (commandline -ct)
+    set -l id
+    set -l command
+    set -l options 1
+    set -l n (count $words)
+    set -l i 3
+    while test $i -le $n
+        set -l word $words[$i]
+        if test -n "$options"; and not set -q id[1]
+            switch $word
+                case -n --no-stdin
+                    set i (math $i + 1)
+                    continue
+                case --pane
+                    # At the cursor: the pane number.
+                    test $i -eq $n; and return
+                    set i (math $i + 2)
+                    continue
+                case --
+                    set options
+                    set i (math $i + 1)
+                    continue
+                case '-*'
+                    # -h and --help only alone, and any other option is unknown.
+                    return
+            end
+        end
+        if not set -q id[1]
+            set id $word
+        else
+            set command $word
+            break
+        end
+        set i (math $i + 1)
+    end
+    if set -q command[1]
+        # The command's own arguments: files, most likely.
+        contains -- $command -h --help; or __fish_complete_path "$cur"
+    else if set -q id[1]
+        printf '%s\n' --help\t"List the script's commands"
+        # Without that aglow, fish would print "Unknown command" on the line.
+        command -q -- $program; and $program run --complete $id 2>/dev/null
+    else if test -n "$options"; and string match -q -- '-*' "$cur"
+        # --help is offered only first, as for the other commands.
+        test $n -eq 2; and printf '%s\n' -h\t'Show the usage' --help\t'Show the usage'
+        contains -- -n $words; or contains -- --no-stdin $words
+        or printf '%s\n' -n\t'Do not pass standard input to the command' \
+            --no-stdin\t'Do not pass standard input to the command'
+        contains -- --pane $words; or printf '%s\n' --pane\t'The pane that the command acts on'
+    else if command -q -- $program
+        $program run --complete 2>/dev/null | string replace -r '$' \tScript
+    end
+end
+
+# Whether the command of the line is run.
+function __aglow_is_run
+    set -l words (commandline -xpc)
+    test (count $words) -ge 2; and test "$words[2]" = run
+end
+
 complete -c aglow -f
 complete -c aglow -n '__aglow_command' -a transfer -d 'Copy files to and from the computer of the terminal'
 complete -c aglow -n '__aglow_command' -a dnd -d 'Drag files and data out of the terminal, and drop them in'
 complete -c aglow -n '__aglow_command' -a icat -d 'Show images in the terminal'
 complete -c aglow -n '__aglow_command' -a clipboard -d 'Read and write the clipboard, with any MIME type'
+complete -c aglow -n '__aglow_command' -a run -d 'Run a command of a script in a running Afterglow'
 complete -c aglow -n '__aglow_command' -a help -d 'Show the help, or the help of a command'
 complete -c aglow -n '__aglow_command' -a version -d 'Show the version'
 complete -c aglow -n '__aglow_command' -s v -l version -d 'Show the version'
 complete -c aglow -n '__aglow_command' -s h -l help -d 'Show the help'
-complete -c aglow -n '__aglow_command help; and test (count (commandline -xpc)) -eq 2' -a 'transfer dnd icat clipboard'
+complete -c aglow -n '__aglow_command help; and test (count (commandline -xpc)) -eq 2' -a 'transfer dnd icat clipboard run'
+complete -c aglow -n __aglow_is_run -a '(__aglow_run)'
 for command in transfer dnd icat clipboard
     complete -c aglow -n "__aglow_command $command" -s h -l help -d 'Show the help'
 end

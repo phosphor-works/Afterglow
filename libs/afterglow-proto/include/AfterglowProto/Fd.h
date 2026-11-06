@@ -5,13 +5,17 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-/// File descriptor helpers for the clients of the library.
+/// File descriptor and process helpers for the clients of the library.
 namespace AfterglowProto {
 
 /// Writes all of @p bytes to @p fd: again after EINTR and short writes, and
@@ -20,10 +24,16 @@ namespace AfterglowProto {
 /// error, with errno set: EIO when write(2) wrote nothing and gave no error.
 ///
 /// With @p wake at 0 or more, a readable @p wake ends the write: the call
-/// returns false with errno EINTR. A signal ends it only through @p wake: its
-/// handler writes to that self-pipe, and is installed without SA_RESTART so
-/// that a blocking write(2) returns. A signal that leaves @p wake empty, or
-/// any signal without @p wake, does not end the write.
+/// returns false with errno EINTR, and writes nothing when @p wake was
+/// readable before it. A signal ends it only through @p wake: its handler
+/// writes to that self-pipe, and is installed without SA_RESTART so that a
+/// blocking write(2) returns. A signal that leaves @p wake empty, or any
+/// signal without @p wake, does not end the write. On a blocking @p fd, nor
+/// does a signal that comes between the check of @p wake and a write(2) that
+/// then blocks: that write returns once the reader took all of its bytes,
+/// and the caller sees the signal after it. A non-blocking @p fd closes that
+/// gap, as the write then returns and the poll sees @p wake (aglow run gives
+/// its runs such descriptions of their own, see OwnOutput in Run.cpp).
 inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
 {
     const auto woken = [wake] {
@@ -31,16 +41,19 @@ inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
         return wake >= 0 && ::poll(&ready, 1, 0) > 0;
     };
     while (!bytes.empty()) {
+        // Before each write: a signal that came before a write that blocks
+        // interrupts nothing, and a blocking write that a signal interrupts
+        // after some bytes returns their count, not EINTR. On a blocking
+        // descriptor a signal between this check and the write's start goes
+        // unseen until the write returns. On a non-blocking one the write
+        // returns at once, and the poll below sees the wake.
+        if (woken()) {
+            errno = EINTR;
+            return false;
+        }
         const ssize_t n = ::write(fd, bytes.data(), bytes.size());
         if (n > 0) {
             bytes.remove_prefix(std::size_t(n));
-            // A blocking write that a signal interrupts after some bytes
-            // returns their count, not EINTR: the next write would block
-            // with the wake unread.
-            if (!bytes.empty() && woken()) {
-                errno = EINTR;
-                return false;
-            }
             continue;
         }
         if (n == 0) {
@@ -48,10 +61,6 @@ inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
             return false;
         }
         if (errno == EINTR) {
-            if (woken()) {
-                errno = EINTR;
-                return false;
-            }
             continue;
         }
         if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -63,12 +72,34 @@ inline bool writeAll(int fd, std::string_view bytes, int wake = -1)
         if (::poll(fds, wake >= 0 ? 2 : 1, -1) < 0 && errno != EINTR) {
             return false;
         }
-        if (woken()) {
-            errno = EINTR;
-            return false;
-        }
     }
     return true;
+}
+
+/// The working directory. When getcwd(3) gives no path, $PWD stands in if
+/// it names the working directory: it may be stale, or set by anyone. That
+/// is so for a directory above it that cannot be read (EACCES), and for a
+/// path that takes more than 1 MiB with its NUL. Empty otherwise, as for a
+/// deleted directory.
+inline std::string currentDirectory()
+{
+    std::string path(4096, '\0');
+    while (!::getcwd(path.data(), path.size())) {
+        if (errno == ERANGE && path.size() < (1u << 20)) {
+            path.resize(path.size() * 2);
+            continue;
+        }
+        const char* pwd = std::getenv("PWD");
+        struct stat named { };
+        struct stat here { };
+        if (pwd && *pwd == '/' && ::stat(pwd, &named) == 0 && ::stat(".", &here) == 0 && named.st_dev == here.st_dev
+            && named.st_ino == here.st_ino) {
+            return pwd;
+        }
+        return {};
+    }
+    path.resize(std::strlen(path.c_str()));
+    return path;
 }
 
 /// Owns one file descriptor and closes it.
