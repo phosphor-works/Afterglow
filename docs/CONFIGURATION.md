@@ -105,7 +105,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
 | `alphabet` | `"asdfjklghqweruiopzxcvbnmty"` |  | Letters that label hints and URL hints, the easiest to reach first. It needs two or more letters, each one time. Other values use the default. |
-| `patterns` | `[{"action": "copy", "pattern": "(?:~?/\|\\.{1,2}/)?[\\w.@+-]+(?:/[\\w.@+-]+)*(?:\\.[\\w+-]+\|:\\d+)(?::\\d+){0,2}"}]` |  | Up to 16 hints. Each is an object with a regular expression in pattern and an action: copy, open or command. An entry without an action copies. A command action also needs command, a list of 1 to 32 arguments. The first argument names the program. |
+| `patterns` | `[{"action": "copy", "pattern": "(?:(?:~\|\\.{1,2})?/(?:[\\w.@+-]+/)*[\\w.@+-]*[\\w@+-]/?\|(?:[\\w.@+-]+/)+(?:[\\w.@+-]*[\\w@+-]/?)?\|[\\w.@+-]*\\.(?=[\\w+-]*[^\\W\\d])[\\w+-]+\|(?=[\\w.@+-]*[^\\W\\d_])[\\w.@+-]*[\\w@+-](?=:\\d))(?::\\d+){0,2}"}]` |  | Up to 16 hints. Each is an object with a regular expression in pattern and an action: copy, open or command. An entry without an action copies. A command action also needs command, a list of 1 to 32 arguments. The first argument names the program. |
 
 ## Keybinds
 
@@ -121,8 +121,10 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
+| `detectPaths` | `true` |  | Detect file paths in the text, such as src/main.cpp:12, as links. A path is a link only when the file or directory exists. Paths in a pane whose shell runs on another host or in a container are not links. |
 | `detectUrls` | `true` |  | Detect plain-text URLs in addition to application-provided OSC 8 links. |
 | `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
+| `openFilesWith` | `[]` |  | Program and arguments that open a file link, a list of 1 to 32 strings such as ["kate", "--line", "{line}", "{file}"]. {file} is the absolute path. {line} and {column} come from a :LINE or :LINE:COLUMN after the path, and are 1 when the text has none. Directories open in the file manager. An empty list opens files as other links open, with Links.openWith or the desktop application. |
 | `openWith` | `""` |  | Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the desktop browser. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 

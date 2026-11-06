@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
+#include <QSysInfo>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -418,6 +420,28 @@ TEST(PaneAnimation, AnImageScrolledBackIntoViewShowsItsCurrentFrameAtOnce)
     EXPECT_EQ(changes, 1);
     pane.refreshSnapshot();
     EXPECT_EQ(shown(), green);
+}
+
+TEST_F(PaneProtocol, PathsStartFromTheReportedDirectoryOnlyWhileTheShellIsLocal)
+{
+    const std::string here = QSysInfo::machineHostName().toStdString();
+    feed("\x1b]7;file://" + here + "/srv/project\x1b\\");
+    EXPECT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/project")));
+    feed("\x1b]7;file://localhost/srv/other\x1b\\");
+    EXPECT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/other")));
+    // A directory on another host: its paths are that host's files.
+    feed("\x1b]7;file://far-away-host/home/someone\x1b\\");
+    EXPECT_EQ(pane.localPathDirectory(), std::nullopt);
+    feed("\x1b]7;file://" + here + "/srv/project\x1b\\");
+    ASSERT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/project")));
+    // A shell on another host (OSC 3008), whatever directory it reported.
+    feed("\x1b]3008;start=r1;type=remote;user=someone;hostname=far-away-host\x1b\\");
+    EXPECT_EQ(pane.localPathDirectory(), std::nullopt);
+    feed("\x1b]3008;end=r1;exit=success\x1b\\");
+    EXPECT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/project")));
+    // A container is another machine's files too.
+    feed("\x1b]3008;start=c1;type=container;container=box-of-tools\x1b\\");
+    EXPECT_EQ(pane.localPathDirectory(), std::nullopt);
 }
 
 } // namespace

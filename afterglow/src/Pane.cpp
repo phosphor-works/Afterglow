@@ -794,6 +794,19 @@ QString Pane::workingDirectory() const
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
 }
 
+std::optional<QString> Pane::localPathDirectory() const
+{
+    QString reported;
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_directoryElsewhere || m_contextKind == QLatin1String("remote") || m_contextKind == QLatin1String("container"))
+            return std::nullopt;
+        reported = m_reportedDirectory;
+    }
+    if (!reported.isEmpty()) return reported;
+    return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
+}
+
 void Pane::reportInputFailure()
 {
     if (m_inputFailureQueued.exchange(true)) return;
@@ -888,6 +901,7 @@ void Pane::workingDirectoryChanged(std::string_view directory)
     // encoded; the others send a plain path. A directory on another host
     // leaves /proc to answer, which knows the local end of the session.
     QByteArray path;
+    m_directoryElsewhere = false;
     if (directory.starts_with("file://")) {
         const std::string_view rest = directory.substr(7);
         const std::size_t slash = rest.find('/');
@@ -895,6 +909,7 @@ void Pane::workingDirectoryChanged(std::string_view directory)
         static const QString here = QSysInfo::machineHostName();
         const bool local = host.isEmpty() || host.compare(QLatin1String("localhost"), Qt::CaseInsensitive) == 0
             || host.compare(here, Qt::CaseInsensitive) == 0;
+        m_directoryElsewhere = !local;
         if (local && slash != std::string_view::npos) {
             const std::string_view encoded = rest.substr(slash);
             path = QByteArray::fromPercentEncoding(QByteArray(encoded.data(), qsizetype(encoded.size())));

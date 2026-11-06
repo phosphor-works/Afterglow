@@ -3,6 +3,7 @@
 
 #include "Settings.h"
 #include "Theme.h"
+#include "desktop/PathLinks.h"
 
 #include <AfterglowRender/Snapshot.h>
 #include <AfterglowVt/TextSearch.h>
@@ -553,9 +554,19 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[LinksGroup] = {
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
          QStringLiteral("Detect plain-text URLs in addition to application-provided OSC 8 links.")},
+        {QStringLiteral("detectPaths"), d.links.detectPaths, QMetaType::Bool,
+         QStringLiteral("Detect file paths in the text, such as src/main.cpp:12, as links. A path is a link only when the "
+                        "file or directory exists. Paths in a pane whose shell runs on another host or in a container are "
+                        "not links.")},
         stringKey(QStringLiteral("openWith"), {},
                   QStringLiteral("Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the "
                                  "desktop browser.")),
+        {QStringLiteral("openFilesWith"), stringList(d.links.openFilesWith), QMetaType::QVariantList,
+         QStringLiteral("Program and arguments that open a file link, a list of 1 to %1 strings such as [\"kate\", \"--line\", "
+                        "\"{line}\", \"{file}\"]. {file} is the absolute path. {line} and {column} come from a :LINE or "
+                        ":LINE:COLUMN after the path, and are 1 when the text has none. Directories open in the file manager. "
+                        "An empty list opens files as other links open, with Links.openWith or the desktop application.")
+             .arg(MaxHintCommandArguments)},
         enumKey(QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
                 QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
         {QStringLiteral("schemes"), stringList(d.links.schemes), QMetaType::QVariantList,
@@ -904,7 +915,7 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
 QVariantList defaultHintPatterns()
 {
     return {QVariantMap{
-        {QStringLiteral("pattern"), QStringLiteral(R"((?:~?/|\.{1,2}/)?[\w.@+-]+(?:/[\w.@+-]+)*(?:\.[\w+-]+|:\d+)(?::\d+){0,2})")},
+        {QStringLiteral("pattern"), PathLinks::pattern()},
         {QStringLiteral("action"), QStringLiteral("copy")}}};
 }
 
@@ -1544,7 +1555,22 @@ Settings SettingsStore::read()
     s.mouse.middleClick = readEnum(st, MouseGroup, QStringLiteral("middleClick"), MiddleClickChoices, s.mouse.middleClick);
     s.mouse.autoScrollInterval = st.read<int>(MouseGroup, QStringLiteral("autoScrollInterval"));
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
+    s.links.detectPaths = st.read<bool>(LinksGroup, QStringLiteral("detectPaths"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
+    // Each argument as it is: an empty or spaced one can be what the program wants.
+    s.links.openFilesWith.clear();
+    if (const QVariantList arguments = st.read<QVariantList>(LinksGroup, QStringLiteral("openFilesWith")); !arguments.isEmpty()) {
+        const bool allStrings = std::all_of(arguments.begin(), arguments.end(),
+                                            [](const QVariant& a) { return a.typeId() == QMetaType::QString; });
+        if (!allStrings || arguments.size() > MaxHintCommandArguments) {
+            problem(QStringLiteral("Links.openFilesWith must be a list of 1 to %1 strings. Files open as other links open")
+                        .arg(MaxHintCommandArguments));
+        } else if (arguments.first().toString().trimmed().isEmpty()) {
+            problem(QStringLiteral("The first argument of Links.openFilesWith must name a program. Files open as other links open"));
+        } else {
+            for (const QVariant& argument : arguments) s.links.openFilesWith << argument.toString();
+        }
+    }
     s.links.modifier = readEnum(st, LinksGroup, QStringLiteral("modifier"), ModifierChoices, s.links.modifier);
     s.links.schemes.clear();
     for (const QString& value : strings(LinksGroup, QStringLiteral("schemes"))) {

@@ -5088,6 +5088,214 @@ TEST_F(NativeWindow, ClosingTheOverviewEndsTheScriptKeyModeItDrove) {
     EXPECT_EQ(keys, 0);
 }
 
+// A directory with a file, src/main.cpp, and a directory, docs, for path links.
+struct PathTree {
+    QTemporaryDir root;
+    QString file() const { return root.filePath(QStringLiteral("src/main.cpp")); }
+    QString docs() const { return root.filePath(QStringLiteral("docs")); }
+    QString opened() const { return root.filePath(QStringLiteral("opened.txt")); }
+    bool make() {
+        if (!root.isValid() || !QDir(root.path()).mkpath(QStringLiteral("src")) || !QDir(root.path()).mkpath(QStringLiteral("docs")))
+            return false;
+        QFile f(file());
+        return f.open(QIODevice::WriteOnly) && f.write("int main() {}\n") > 0;
+    }
+    // Links.openFilesWith that writes its arguments to opened(), one a line.
+    QJsonArray command() const {
+        return {QStringLiteral("/bin/sh"), QStringLiteral("-c"),
+                QStringLiteral(R"(printf '%s\n' "$@" > "$0.part" && mv "$0.part" "$0")"), opened(),
+                QStringLiteral("{file}"), QStringLiteral("{line}"), QStringLiteral("{column}")};
+    }
+    // What the command got, once it ran.
+    QStringList openedWith() const {
+        QFile f(opened());
+        if (!f.open(QIODevice::ReadOnly)) return {};
+        return QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    }
+};
+// Shows @p text at the top of @p pane, after @p before (an OSC 7 or 3008).
+void showPaneText(Pane* pane, const std::string& before, const std::string& text) {
+    pane->withTerminal([&](AfterglowVt::Terminal& t) { t.feed(before + "\x1b[2J\x1b[H" + text); });
+    pane->refreshSnapshot();
+}
+std::string reportDirectory(const QString& directory) {
+    return "\x1b]7;" + QUrl::fromLocalFile(directory).toString(QUrl::FullyEncoded).toStdString() + "\x1b\\";
+}
+// The middle of cell @p col of row @p row, window logical pixels.
+QPointF cellCenter(TerminalWindow* window, Pane* pane, int col, int row = 0) {
+    return window->mapFromGlobal(QPointF(window->accessibleCellRect(pane, pane->selectionPointAt(col, row)).center()));
+}
+void pressLeftWith(QWindow* window, const QPointF& at, Qt::KeyboardModifiers modifiers) {
+    QMouseEvent press(QEvent::MouseButtonPress, at, window->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers);
+    QCoreApplication::sendEvent(window, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, at, window->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, modifiers);
+    QCoreApplication::sendEvent(window, &release);
+}
+// The id of the context menu item titled @p title, or -1.
+int menuItem(ChromeController* chrome, const QString& title) {
+    for (const QVariant& item : chrome->contextMenu().value(QStringLiteral("items")).toList()) {
+        const QVariantMap entry = item.toMap();
+        if (entry.value(QStringLiteral("title")).toString() == title) return entry.value(QStringLiteral("id")).toInt();
+    }
+    return -1;
+}
+
+TEST_F(NativeWindow, APathIsALinkOnlyWhenItExists) {
+    PathTree tree;
+    ASSERT_TRUE(tree.make());
+    // No modifier: the hover shows without a key, which a test cannot hold.
+    restartApplication(QStringLiteral("paths.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    auto* pane = window->focusedPane();
+    //            0         1         2         3         4         5
+    //            0123456789012345678901234567890123456789012345678901234567
+    showPaneText(pane, reportDirectory(tree.root.path()),
+                 "src/main.cpp:12 gone.cpp docs/ https://example.com/src/main.cpp");
+    const QString file = QUrl::fromLocalFile(tree.file()).toString();
+    hoverAt(window, cellCenter(window, pane, 4));
+    ASSERT_TRUE(waitFor([&] { return window->hoveredLink() == file; })) << window->hoveredLink().toStdString();
+    EXPECT_EQ(window->cursor().shape(), Qt::PointingHandCursor);
+    // The :12 is part of the link.
+    hoverAt(window, cellCenter(window, pane, 14));
+    EXPECT_EQ(window->hoveredLink(), file);
+    // A path that does not exist is text, also after its check.
+    hoverAt(window, cellCenter(window, pane, 18));
+    EXPECT_TRUE(window->hoveredLink().isEmpty());
+    drain(300);
+    hoverAt(window, cellCenter(window, pane, 19));
+    EXPECT_TRUE(window->hoveredLink().isEmpty());
+    EXPECT_NE(window->cursor().shape(), Qt::PointingHandCursor);
+    // A directory.
+    hoverAt(window, cellCenter(window, pane, 27));
+    EXPECT_TRUE(waitFor([&] { return window->hoveredLink() == QUrl::fromLocalFile(tree.docs()).toString(); }))
+        << window->hoveredLink().toStdString();
+    // A path in a URL is the URL's.
+    hoverAt(window, cellCenter(window, pane, 52));
+    drain(300);
+    hoverAt(window, cellCenter(window, pane, 53));
+    EXPECT_EQ(window->hoveredLink(), QStringLiteral("https://example.com/src/main.cpp"));
+    // Also when URLs are no links (Links.detectUrls off): the path in this
+    // file:// URL exists, and is still no link of its own.
+    restartApplication(QStringLiteral("nourls.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")},
+                                                             {QStringLiteral("detectUrls"), false}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    pane = window->focusedPane();
+    const std::string url = QUrl::fromLocalFile(tree.file()).toString(QUrl::FullyEncoded).toStdString();
+    ASSERT_EQ(url.find('%'), std::string::npos) << "a URL of the text as it is";
+    showPaneText(pane, reportDirectory(tree.root.path()), "src/main.cpp " + url);
+    hoverAt(window, cellCenter(window, pane, 4));
+    ASSERT_TRUE(waitFor([&] { return window->hoveredLink() == file; }));
+    hoverAt(window, cellCenter(window, pane, int(13 + url.size() - 3)));
+    drain(300);
+    hoverAt(window, cellCenter(window, pane, int(13 + url.size() - 2)));
+    EXPECT_TRUE(window->hoveredLink().isEmpty()) << window->hoveredLink().toStdString();
+    // Links.detectPaths off: no path is a link.
+    restartApplication(QStringLiteral("nopaths.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")},
+                                                             {QStringLiteral("detectPaths"), false}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    pane = window->focusedPane();
+    showPaneText(pane, reportDirectory(tree.root.path()), "src/main.cpp:12");
+    hoverAt(window, cellCenter(window, pane, 4));
+    drain(300);
+    hoverAt(window, cellCenter(window, pane, 5));
+    EXPECT_TRUE(window->hoveredLink().isEmpty());
+}
+
+TEST_F(NativeWindow, AClickWithTheLinkModifierOpensAPathWithOpenFilesWith) {
+    PathTree tree;
+    ASSERT_TRUE(tree.make());
+    restartApplication(QStringLiteral("open-paths.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("openFilesWith"), tree.command()}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    auto* pane = window->focusedPane();
+    showPaneText(pane, reportDirectory(tree.root.path()), "at src/main.cpp:12 and ./src/main.cpp");
+    // A click with the modifier (Ctrl) on a path that nobody checked yet:
+    // the check, then the command.
+    pressLeftWith(window, cellCenter(window, pane, 5), Qt::ControlModifier);
+    ASSERT_TRUE(waitFor([&] { return QFile::exists(tree.opened()); }));
+    EXPECT_EQ(tree.openedWith(), (QStringList{tree.file(), QStringLiteral("12"), QStringLiteral("1")}));
+    ASSERT_TRUE(QFile::remove(tree.opened()));
+    // Without the modifier, a click is the text's.
+    clickLeft(window, cellCenter(window, pane, 25));
+    drain(300);
+    EXPECT_FALSE(QFile::exists(tree.opened()));
+    // No line in the text: line and column 1.
+    pressLeftWith(window, cellCenter(window, pane, 25), Qt::ControlModifier);
+    ASSERT_TRUE(waitFor([&] { return QFile::exists(tree.opened()); }));
+    EXPECT_EQ(tree.openedWith(), (QStringList{tree.file(), QStringLiteral("1"), QStringLiteral("1")}));
+}
+
+TEST_F(NativeWindow, TheContextMenuOpensAndCopiesAPathLink) {
+    PathTree tree;
+    ASSERT_TRUE(tree.make());
+    restartApplication(QStringLiteral("menu-paths.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")},
+                                                             {QStringLiteral("openFilesWith"), tree.command()}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    auto* pane = window->focusedPane();
+    showPaneText(pane, reportDirectory(tree.root.path()), "src/main.cpp:7:3 plain");
+    auto* chrome = window->findChild<ChromeController*>();
+    ASSERT_NE(chrome, nullptr);
+    const QPointF at = cellCenter(window, pane, 3);
+    hoverAt(window, at);
+    ASSERT_TRUE(waitFor([&] { return !window->hoveredLink().isEmpty(); }));
+    clickRight(window, at);
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    const int copy = menuItem(chrome, QStringLiteral("Copy Link Address"));
+    ASSERT_GE(copy, 0);
+    chrome->activateMenuItem(copy);
+    // The path as a shell takes it, not a file:// URL.
+    EXPECT_TRUE(waitFor([&] { return QGuiApplication::clipboard()->text() == tree.file(); }))
+        << QGuiApplication::clipboard()->text().toStdString();
+    clickRight(window, at);
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    const int open = menuItem(chrome, QStringLiteral("Open Link"));
+    ASSERT_GE(open, 0);
+    chrome->activateMenuItem(open);
+    ASSERT_TRUE(waitFor([&] { return QFile::exists(tree.opened()); }));
+    EXPECT_EQ(tree.openedWith(), (QStringList{tree.file(), QStringLiteral("7"), QStringLiteral("3")}));
+    // Off the path, the menu has no link items.
+    chrome->closeContextMenu();
+    clickRight(window, cellCenter(window, pane, 19));
+    ASSERT_TRUE(chrome->contextMenuOpen());
+    EXPECT_EQ(menuItem(chrome, QStringLiteral("Open Link")), -1);
+    chrome->closeContextMenu();
+}
+
+TEST_F(NativeWindow, APaneOnAnotherHostHasNoPathLinks) {
+    PathTree tree;
+    ASSERT_TRUE(tree.make());
+    restartApplication(QStringLiteral("remote-paths.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")}}}}),
+        {QStringLiteral("/bin/cat")});
+    if (HasFatalFailure()) return;
+    auto* pane = window->focusedPane();
+    // An absolute path that exists here, shown by a shell over ssh.
+    const std::string text = tree.file().toStdString();
+    showPaneText(pane, reportDirectory(tree.root.path()) + "\x1b]3008;start=r1;type=remote;user=someone;hostname=far-away-host\x1b\\",
+                 text);
+    hoverAt(window, cellCenter(window, pane, 3));
+    drain(300);
+    hoverAt(window, cellCenter(window, pane, 4));
+    EXPECT_TRUE(window->hoveredLink().isEmpty()) << window->hoveredLink().toStdString();
+    // The same text when the shell is back here is a link.
+    showPaneText(pane, "\x1b]3008;end=r1;exit=success\x1b\\", text);
+    hoverAt(window, cellCenter(window, pane, 3));
+    EXPECT_TRUE(waitFor([&] { return window->hoveredLink() == QUrl::fromLocalFile(tree.file()).toString(); }));
+    // A directory that OSC 7 names on another host: that host's files.
+    showPaneText(pane, "\x1b]7;file://far-away-host/home/someone\x1b\\", text);
+    hoverAt(window, cellCenter(window, pane, 4));
+    EXPECT_TRUE(window->hoveredLink().isEmpty()) << window->hoveredLink().toStdString();
+}
+
 } // namespace
 
 int main(int argc, char** argv)
