@@ -43,8 +43,10 @@ gtest_discover_tests(afterglow_control_tests)
 
 qt_add_executable(afterglow_command_tests CommandSocketTest.cpp)
 target_link_libraries(afterglow_command_tests PRIVATE afterglow_app Afterglow::Proto GTest::gtest)
-# The tests run `aglow run` itself against their own socket, and once through
-# `afterglow run`, which runs the aglow next to it. Without aglow they skip.
+# The tests run `aglow run` itself against their own socket, and through
+# `afterglow run`, which runs the aglow next to it. Without aglow they skip,
+# and one test checks what `afterglow run` says then: it needs the afterglow
+# of every build.
 target_compile_definitions(afterglow_command_tests PRIVATE AFTERGLOW_BINARY="$<TARGET_FILE:afterglow>")
 add_dependencies(afterglow_command_tests afterglow)
 if(AFTERGLOW_BUILD_AGLOW)

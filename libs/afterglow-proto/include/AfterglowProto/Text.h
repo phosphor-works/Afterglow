@@ -7,8 +7,9 @@
 #include <string>
 #include <string_view>
 
-// Text helpers for protocol messages: UTF-8 decoding and encoding, and the
-// checks that the terminal runs on the fields that a program sends.
+// Text helpers: UTF-8 decoding and encoding, the checks that the terminal
+// runs on the fields that a program sends, and the filter and cell widths
+// of the text that the clients of the library print.
 namespace AfterglowProto {
 
 /// Decodes the code point at @p i and advances @p i past it. Returns false,
@@ -63,6 +64,61 @@ inline void appendUtf8(std::string& out, char32_t cp)
 inline constexpr bool isControl(char32_t cp)
 {
     return cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F);
+}
+
+/// The controls of bidirectional text: the marks (ALM, LRM, RLM), the
+/// embeddings and overrides (U+202A to U+202E) and the isolates (U+2066 to
+/// U+2069). Shown as they are, they reorder the text around them.
+inline constexpr bool isBidiControl(char32_t cp)
+{
+    return cp == 0x061C || cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069);
+}
+
+/// @p text, safe to print on a terminal: each byte that is not UTF-8, each
+/// C0, DEL and C1 control, each control of bidirectional text and U+2028 and
+/// U+2029 become '?'. Text from a program, a script or a file name then
+/// cannot move the cursor, change colours, break the line or reorder the
+/// text around it.
+inline std::string printable(std::string_view text)
+{
+    std::string out;
+    std::size_t i = 0;
+    while (i < text.size()) {
+        const std::size_t start = i;
+        char32_t cp = 0;
+        if (!nextUtf8(text, i, cp)) {
+            out += '?';
+            i = start + 1;
+        } else if (isControl(cp) || isBidiControl(cp) || cp == 0x2028 || cp == 0x2029) {
+            out += '?';
+        } else {
+            out.append(text.substr(start, i - start));
+        }
+    }
+    return out;
+}
+
+/// The cells that @p cp takes on a terminal: 0 for a combining mark, 2 for a
+/// wide character (East Asian, most emoji), 1 for the others. The blocks are
+/// approximate: the terminal's own tables are in libs/afterglow-vt, which a
+/// client of this library does not have.
+inline constexpr int cellWidth(char32_t cp)
+{
+    // Combining marks and zero width characters.
+    if ((cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x1AB0 && cp <= 0x1AFF) || (cp >= 0x1DC0 && cp <= 0x1DFF)
+        || (cp >= 0x20D0 && cp <= 0x20FF) || (cp >= 0xFE20 && cp <= 0xFE2F) || (cp >= 0x200B && cp <= 0x200D)
+        || (cp >= 0xFE00 && cp <= 0xFE0F)) {
+        return 0;
+    }
+    // East Asian wide and full width characters, and the emoji blocks.
+    if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0x303E) || (cp >= 0x3041 && cp <= 0x33FF)
+        || (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xA000 && cp <= 0xA4CF)
+        || (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F)
+        || (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0xFFE0 && cp <= 0xFFE6) || (cp >= 0x1F300 && cp <= 0x1F64F)
+        || (cp >= 0x1F900 && cp <= 0x1F9FF) || (cp >= 0x20000 && cp <= 0x3FFFD)) {
+        return 2;
+    }
+    return 1;
 }
 
 /// What isCleanText() lets through besides printable text.

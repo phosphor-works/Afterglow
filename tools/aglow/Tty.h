@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <AfterglowProto/Text.h>
+
 #include <cstddef>
 #include <deque>
 #include <string>
@@ -195,12 +197,9 @@ private:
 
 /// Milliseconds of a monotonic clock.
 long long nowMs();
-/// Prints @p text on the terminal as text: control characters and the
-/// controls of bidirectional text become '?', so a file name cannot move the
-/// cursor, change colours or reorder the text around it.
-std::string printable(std::string_view text);
-/// The cells that @p cp takes on a terminal: 0 for a combining mark, 2 for a
-/// wide character (East Asian, most emoji), 1 for the others.
-int cellWidth(char32_t cp);
+/// Text for the terminal, and the cells that a character takes there: the
+/// ones of `aglow run` too, which is in afterglow-proto.
+using AfterglowProto::cellWidth;
+using AfterglowProto::printable;
 
 } // namespace Aglow

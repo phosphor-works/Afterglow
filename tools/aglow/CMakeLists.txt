@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-# aglow: the Kitty file transfer, drag and drop, graphics and clipboard
-# protocols from the command line, and the client of the commands of
-# Afterglow's scripts (aglow run), as one static binary. It uses only
+# aglow, as one static binary: the Kitty file transfer, drag and drop,
+# graphics and clipboard protocols from the command line, and the client of
+# the commands of Afterglow's scripts (aglow run). It uses only
 # libs/afterglow-proto (with its bundled zlib-ng and xxHash) and the vendored
-# stb_image: no Qt and no Phosphor, so that the binary runs alone on a remote
-# host.
+# stb_image: no Qt and no Phosphor, so that the protocols run alone on a
+# remote host. aglow run talks to an Afterglow on the same host.
 
 afterglow_vendored_file(stb_image AGLOW_STB_IMAGE)
 get_filename_component(AGLOW_STB_DIR "${AGLOW_STB_IMAGE}" DIRECTORY)
@@ -47,7 +47,8 @@ if(AGLOW_SANITIZED EQUAL -1)
         unset(AGLOW_STATIC_LINK_WORKS CACHE)
         message(FATAL_ERROR "aglow links statically, and a static C++ program does not link here. "
                             "Install the static C and C++ runtime libraries (the packages glibc-static and "
-                            "libstdc++-static, as Fedora names them), or configure with -DAFTERGLOW_BUILD_AGLOW=OFF.")
+                            "libstdc++-static, as Fedora names them), or configure with -DAFTERGLOW_BUILD_AGLOW=OFF. "
+                            "That build has no aglow, and so no afterglow run, transfer, dnd, icat or clipboard.")
     endif()
 else()
     set(AGLOW_STATIC OFF)
@@ -173,16 +174,16 @@ if(BUILD_TESTING)
     endfunction()
     string(REPLACE "." "\\." AGLOW_VERSION_REGEX "${PROJECT_VERSION}")
     aglow_add_run_test(aglow_version 0 "^aglow ${AGLOW_VERSION_REGEX} \\(protocol [0-9]+\\)" $<TARGET_FILE:aglow> --version)
-    # afterglow COMMAND runs the aglow next to it, under the name that the
-    # user typed, and returns its status.
+    # afterglow COMMAND runs the aglow next to it, which then names itself
+    # afterglow COMMAND, and returns its status.
     aglow_add_run_test(afterglow_runs_aglow 0 "Usage: afterglow icat " $<TARGET_FILE:afterglow> icat --help)
     aglow_add_run_test(afterglow_passes_aglow_arguments 0 "Usage: afterglow transfer "
                        $<TARGET_FILE:afterglow> transfer --help)
     aglow_add_run_test(afterglow_passes_aglow_status 1 "Unknown option: --no-such-option"
                        $<TARGET_FILE:afterglow> icat --no-such-option)
-    # The usage of run names the command that the user typed. It connects to nothing.
-    aglow_add_run_test(aglow_run_usage 0 "^usage: aglow run " $<TARGET_FILE:aglow> run --help)
-    aglow_add_run_test(afterglow_runs_aglow_run 0 "^usage: afterglow run " $<TARGET_FILE:afterglow> run --help)
+    # The usage of run names the program: aglow run, or afterglow run when afterglow runs aglow. It connects to nothing.
+    aglow_add_run_test(aglow_run_usage 0 "^Usage: aglow run " $<TARGET_FILE:aglow> run --help)
+    aglow_add_run_test(afterglow_runs_aglow_run 0 "^Usage: afterglow run " $<TARGET_FILE:afterglow> run --help)
     # A copy of afterglow alone in a directory has no aglow next to it.
     set(AGLOW_RUN_OPTIONS "-DCOPY_TO=${CMAKE_CURRENT_BINARY_DIR}/without-aglow")
     aglow_add_run_test(afterglow_without_aglow 127 "afterglow icat: cannot run .*/without-aglow/aglow: "
