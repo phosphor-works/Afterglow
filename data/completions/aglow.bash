@@ -98,21 +98,30 @@ _aglow_value()
     esac
 }
 
+# The word $1 as the shell runs it, in $REPLY: bash-completion 2.12 and later
+# remove its quotes and expand it, without running a command substitution.
+# Without them, the quotes and backslashes go: the names that aglow lists
+# have none.
+_aglow_dequote()
+{
+    if ! declare -F _comp_dequote >/dev/null || ! _comp_dequote "$1"; then
+        REPLY=${1//[\'\"\\]/}
+        [[ $REPLY == "~/"* ]] && REPLY=$HOME/${REPLY#"~/"}
+    fi
+}
+
 # The aglow whose run --complete lists the script commands, in $program: the
 # aglow that is being completed, or for afterglow run the aglow that afterglow
-# runs, in the directory of its executable with symbolic links resolved. The
-# word is as typed, quotes included: bash-completion 2.12 and later remove
-# them, without running a command substitution.
+# runs, which afterglow.bash names in $aglow. The word is as typed, quotes
+# included.
 _aglow_program()
 {
     local REPLY
-    program=${words[0]}
-    declare -F _comp_dequote >/dev/null && _comp_dequote "$program" && program=${REPLY[0]}
-    [[ $program == "~/"* ]] && program=$HOME/${program#"~/"}
+    _aglow_dequote "${words[0]}"
+    program=${REPLY[0]}
     [[ ${program##*/} == aglow ]] && return 0
-    [[ $program == */* ]] || program=$(type -P -- "$program")
-    [[ $program ]] && program=$(readlink -f -- "$program") && [[ $program ]] || return 1
-    program=${program%/*}/aglow
+    program=${aglow-}
+    [[ $program && -x $program ]]
 }
 
 # aglow run: options, then the script ID, then its command and the command's
@@ -139,7 +148,10 @@ _aglow_run()
             esac
         fi
         if [[ -z $id ]]; then
-            id=$word
+            # As typed: run --complete takes the ID itself.
+            local REPLY
+            _aglow_dequote "$word"
+            id=${REPLY[0]}
         else
             command=$word
             break
@@ -151,19 +163,20 @@ _aglow_run()
         return
     fi
     if [[ $options && -z $id && $cur == -* ]]; then
-        # --help only alone: after an option it would name a script. The
-        # other options once each.
+        # --help is offered only first, as for the other commands. The other
+        # options once each.
         ((cword == 2)) && _aglow_matching -h --help
         local given=" ${words[*]:2:cword-2} "
         [[ $given == *" -n "* || $given == *" --no-stdin "* ]] || _aglow_matching -n --no-stdin
         [[ $given == *" --pane "* ]] || _aglow_matching --pane
         return
     fi
+    # --help needs no aglow. The names from Afterglow are matched as text:
+    # compgen -W would expand them.
+    [[ $id ]] && _aglow_matching --help
     _aglow_program || return
-    # The names from Afterglow are matched as text: compgen -W would expand them.
     if [[ $id ]]; then
         local name
-        _aglow_matching --help
         while IFS=$'\t' read -r name _; do
             _aglow_matching "$name"
         done < <("$program" run --complete "$id" 2>/dev/null)
@@ -177,7 +190,8 @@ _aglow_run()
 
 _aglow()
 {
-    local cur prev words cword
+    # comp_args, was_split and split are what the initializations below set besides.
+    local cur prev words cword comp_args was_split split
     if declare -F _comp_initialize >/dev/null; then
         _comp_initialize -s -- "$@" || return
     elif declare -F _init_completion >/dev/null; then

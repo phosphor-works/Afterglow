@@ -59,24 +59,83 @@ _aglow_arguments() {
     _arguments -s -S "$@"
 }
 
+# The word $1 as the shell runs it, in $REPLY: its quotes removed, and a
+# leading ~, ~USER, ~NAME, $NAME or ${NAME} expanded. Nothing else expands, so
+# no command runs.
+_aglow_word() {
+    REPLY=${(Q)1}
+    local name
+    if [[ $REPLY == \~* ]]; then
+        name=${${REPLY%%/*}#\~}
+        if [[ -z $name ]]; then
+            REPLY=$HOME${REPLY#\~}
+        elif (( $+nameddirs[$name] )); then
+            REPLY=$nameddirs[$name]${REPLY#\~$name}
+        elif (( $+userdirs[$name] )); then
+            REPLY=$userdirs[$name]${REPLY#\~$name}
+        fi
+    elif [[ $REPLY == \$\{[A-Za-z_]*\}* ]]; then
+        name=${${REPLY#\$\{}%%\}*}
+        [[ $name == [A-Za-z_][A-Za-z0-9_]# ]] && REPLY=${(P)name}${REPLY#\$\{$name\}}
+    elif [[ $REPLY == \$[A-Za-z_]* ]]; then
+        name=${${REPLY#\$}%%[^A-Za-z0-9_]*}
+        REPLY=${(P)name}${REPLY#\$$name}
+    fi
+}
+
 # The aglow whose run --complete lists the script commands, in $program: the
 # aglow that is being completed, or for afterglow run the aglow that afterglow
-# runs, in the directory of its executable with symbolic links resolved. The
-# word is as typed: (Q) removes its quotes. Empty when there is none.
+# runs, which _afterglow names in $aglow. The word is as typed. Empty when
+# there is none.
 _aglow_program() {
-    program=${(Q)words[1]}
-    [[ $program == '~/'* ]] && program=$HOME/${program#'~/'}
+    local REPLY
+    _aglow_word $words[1]
+    program=$REPLY
     [[ ${program:t} == aglow ]] && return 0
-    [[ $program == */* ]] || program=$(whence -p -- "$program")
-    [[ -n $program ]] && program=${program:A:h}/aglow
+    program=${aglow-}
+    [[ -n $program && -x $program ]] || program=
 }
 
 # aglow run, with $words from "run" on. Options only before the script ID.
-# --help only alone: after an option it would name a script.
+# --help is offered only first, as for the other commands.
 _aglow_run() {
     local curcontext=$curcontext state state_descr line
     typeset -A opt_args
     local -a ids names
+    # aglow takes -n and --pane more than once, and the last --pane counts.
+    # _arguments takes an option once and reads a second one as the script:
+    # only the last of each stays.
+    integer i
+    local -a seen
+    local word
+    for (( i = 2; i < CURRENT; i++ )); do
+        word=$words[i]
+        case $word in
+        --) break ;;
+        --pane) seen+=("--pane $i"); (( i++ )) ;;
+        -n|--no-stdin) seen+=("-n $i") ;;
+        -*) ;;
+        *) break ;;
+        esac
+    done
+    # The last of each kind stays. Later words go first, so that the
+    # positions of the earlier ones stay.
+    local -A kept
+    local entry kind
+    integer at
+    for entry in ${(Oa)seen}; do
+        kind=${entry% *}
+        at=${entry#* }
+        if (( ! $+kept[$kind] )); then
+            kept[$kind]=1
+        elif [[ $kind == --pane ]]; then
+            words[at,at+1]=()
+            (( CURRENT -= 2 ))
+        else
+            words[at]=()
+            (( CURRENT-- ))
+        fi
+    done
     _arguments -s -S -A '-*' \
         '(- *)'{-h,--help}'[show the usage]' \
         '(-h --help -n --no-stdin)'{-n,--no-stdin}'[do not pass standard input to the command]' \
@@ -90,8 +149,9 @@ _aglow_run() {
         _describe -t ids 'script' ids
         ;;
     command)
-        # COMMAND<TAB>SUMMARY lines, as name:description pairs.
-        [[ -n $program ]] && names=(${${(f)"$("$program" run --complete "${line[1]}" 2>/dev/null)"}/$'\t'/:})
+        # COMMAND<TAB>SUMMARY lines, as name:description pairs. The ID as
+        # typed, without its quotes: run --complete takes the ID itself.
+        [[ -n $program ]] && names=(${${(f)"$("$program" run --complete "${(Q)line[1]}" 2>/dev/null)"}/$'\t'/:})
         names+=('--help:list the script'"'"'s commands')
         _describe -t commands 'command' names
         ;;

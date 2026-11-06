@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Native Luau -> control -> shader uniform acceptance, isolated from user terminals.
 
-Requires the nested_desktop dependencies and dbus-run-session. Logs and
-screenshots stay in the artifacts directory.
+Requires the nested_desktop dependencies, dbus-run-session, and the aglow of
+the build next to afterglow. Logs and screenshots stay in the artifacts
+directory.
 """
 import argparse
 import json
@@ -112,12 +113,17 @@ return {
                 time.sleep(0.25)
             return data
         def settles(pane, index, expected):
-            """Waits until a shader value reaches the expected value."""
-            until(pane, lambda shaders: abs(shaders[index]["values"]["strength"] - expected) < 0.001)
+            """Waits until a shader value reaches the expected value. A chain that a
+            reload builds again can have fewer shaders for a moment."""
+            until(pane, lambda shaders: len(shaders) > index
+                  and abs(shaders[index]["values"]["strength"] - expected) < 0.001)
         def near(value, expected): check(abs(value - expected) < 0.001, value, expected)
         try:
-            first = wait_for(panes)[0]["id"]
-            wait_for(lambda: "PARAMS>" in ctl("get-text", "--pane", first, "--screen"))
+            # session.wait, not wait_for, for each wait on ctl: a ctl call that fails
+            # while Afterglow starts is tried again, and an Afterglow that exits
+            # ends the wait.
+            first = session.wait(panes)[0]["id"]
+            session.wait(lambda: "PARAMS>" in ctl("get-text", "--pane", first, "--screen"))
             second = int(ctl("split", "--pane", first, "--right"))
             for pane in [first, second]:
                 ctl("send-text", "--pane", pane, "printf 'PHOSPHOR LIVE PARAMETERS\\n'\\n")
@@ -153,7 +159,7 @@ return {
             settings["Shaders"]["params"]["bloom"]["strength"] = 0.2
             settings_path.write_text(json.dumps(settings))
             # The reload builds the chains again, with new instance ids.
-            until(first, lambda shaders: shaders[0]["instance"] != before[0]["instance"])
+            until(first, lambda shaders: shaders and shaders[0]["instance"] != before[0]["instance"])
             # A write to an instance id from before the reload must fail. A
             # separate script carries the old id, so a reload of the writer
             # cannot lose it.
@@ -162,7 +168,7 @@ return {
                 ' run_command=function(_,ev) return afterglow.request("done",afterglow.shader_parameters(ev.pane,'
                 + json.dumps(before[0]["instance"]) + ',{strength=1.2})) end,'
                 ' on_result=function(ev) return afterglow.log(ev.ok and "STALE_OK" or "STALE_REJECTED") end}\n')
-            wait_for(lambda: any(s["id"] == "stale" for s in json.loads(ctl("scripts"))))
+            session.wait(lambda: any(s["id"] == "stale" for s in json.loads(ctl("scripts"))))
             ctl("action", "script:stale.write", "--pane", first)
             wait_for(lambda: "STALE_REJECTED" in log_text())
             check("STALE_OK" not in log_text(), "A stale instance id was accepted")
@@ -178,7 +184,7 @@ return {
             empty = until(first, lambda scene: scene["tab_id"] != old_tab, "scene")
             ctl("send-text", "--pane", first, "seq 1 200\\n")
             # The output of the hidden tab is there, and the scene of the current tab must not count it.
-            wait_for(lambda: "200" in screen_lines(first))
+            session.wait(lambda: "200" in screen_lines(first))
             hidden = inspect(first, "scene")
             check(hidden["tab_id"] == empty["tab_id"] and hidden["history_rows"] == empty["history_rows"], hidden, empty)
             ctl("focus", "--pane", first)
@@ -208,8 +214,8 @@ return {
             desktop.screenshot(artifacts / "preset-reset.png")
             session.stop()
             session.start("Persisted preset")
-            first = wait_for(panes)[0]["id"]
-            wait_for(lambda: "PARAMS>" in ctl("get-text", "--pane", first, "--screen"))
+            first = session.wait(panes)[0]["id"]
+            session.wait(lambda: "PARAMS>" in ctl("get-text", "--pane", first, "--screen"))
             desktop.activate()
             menu("Choose preset")
             desktop.text("My scene")
@@ -218,7 +224,7 @@ return {
             print("PASS: current-tab-only history, unavailable audio, native preset picker/apply/save/reset, restart persistence")
             print("PASS: native discovery, duplicate instances, pane/tab/window updates, invalid atomic rejection, focus independence, reset, reload/stale ID rejection, script uninstall cleanup")
         except Exception:
-            print((artifacts / "application.log").read_text()[-5000:], file=sys.stderr)
+            print((artifacts / "application.log").read_text(errors="replace")[-5000:], file=sys.stderr)
             raise
         finally:
             session.close()

@@ -1,8 +1,12 @@
 # SPDX-FileCopyrightText: 2026 fuddlesworth
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Fish completion for aglow: its commands, their options and the values of the options.
+# Fish completion for aglow, for Fish 4 or later: its commands, their options and the values of the options.
 # Script IDs and their commands come from the running Afterglow (aglow run --complete).
 # afterglow run, transfer, dnd, icat and clipboard use it too (afterglow.fish).
+
+# afterglow.fish sources this file, and fish can load it again when aglow is on PATH: the completions of the second
+# load replace those of the first, or each would run, and list the scripts, once more.
+complete -e -c aglow
 
 # The options of each command that take a value, as the next word or after
 # "=", from the declarations below.
@@ -137,15 +141,16 @@ function __aglow_run
         contains -- $command -h --help; or __fish_complete_path "$cur"
     else if set -q id[1]
         printf '%s\n' --help\t"List the script's commands"
-        $program run --complete $id 2>/dev/null
+        # Without that aglow, fish would print "Unknown command" on the line.
+        command -q -- $program; and $program run --complete $id 2>/dev/null
     else if test -n "$options"; and string match -q -- '-*' "$cur"
-        # --help only alone: after an option it would name a script.
+        # --help is offered only first, as for the other commands.
         test $n -eq 2; and printf '%s\n' -h\t'Show the usage' --help\t'Show the usage'
         contains -- -n $words; or contains -- --no-stdin $words
         or printf '%s\n' -n\t'Do not pass standard input to the command' \
             --no-stdin\t'Do not pass standard input to the command'
         contains -- --pane $words; or printf '%s\n' --pane\t'The pane that the command acts on'
-    else
+    else if command -q -- $program
         $program run --complete 2>/dev/null | string replace -r '$' \tScript
     end
 end
