@@ -2377,13 +2377,40 @@ TEST_F(ConfigTest, PersistedReadsAnEditThatIsNotReloadedYet)
     write(QStringLiteral("config.json"), R"({"Shaders": {"window": ["bloom", "crt"]}})");
     EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(),
               (QStringList{QStringLiteral("bloom"), QStringLiteral("crt")}));
-    // Emptied to white space: the default, as the backend reads it, not the
-    // document of the last reload.
+    // Emptied to white space after it held settings: a save in progress, as
+    // loadFile() takes it, so the last document stands.
     write(QStringLiteral("config.json"), " \n");
-    EXPECT_TRUE(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toList().isEmpty());
+    EXPECT_EQ(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toStringList(),
+              QStringList{QStringLiteral("bloom")});
     // Deleted: the default.
     ASSERT_TRUE(QFile::remove(path));
     EXPECT_TRUE(store.persisted(QStringLiteral("Shaders"), QStringLiteral("window")).toList().isEmpty());
+}
+
+// An editor that saves in place empties the file, then writes it. The
+// settings must not flash to the defaults between the two, and a save in the
+// meantime must not replace the file that is being written.
+TEST_F(ConfigTest, AFileThatAnEditorEmptiesKeepsItsSettingsUntilItsTextComes)
+{
+    const QString path = write(QStringLiteral("config.json"), R"({"Window": {"padding": 9}})");
+    SettingsStore store(path);
+    int changes = 0;
+    QObject::connect(&store, &SettingsStore::changed, &store, [&] { ++changes; });
+    write(QStringLiteral("config.json"), "");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 9);
+    EXPECT_EQ(changes, 0);
+    EXPECT_TRUE(mentions(store.problems(), QStringLiteral("is empty")));
+    EXPECT_FALSE(store.write(QStringLiteral("Window"), QStringLiteral("padding"), 12));
+    EXPECT_TRUE(read(path).isEmpty());
+    write(QStringLiteral("config.json"), R"({"Window": {"padding": 11}})");
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, 11);
+    EXPECT_TRUE(store.problems().isEmpty());
+    // Deleted, the file is every default.
+    ASSERT_TRUE(QFile::remove(path));
+    store.reload();
+    EXPECT_EQ(store.settings().window.padding, WindowSettings{}.padding);
 }
 
 TEST_F(ConfigTest, AWriteRemakesAConfigDirectoryThatWasRemoved)

@@ -9,7 +9,10 @@ Afterglow reads `$XDG_CONFIG_HOME/afterglow/config.json`.
 The usual path is `~/.config/afterglow/config.json`.
 Afterglow reloads this file when it changes.
 A file that cannot be read, does not parse or does not hold a JSON object keeps the current settings.
-A deleted file, an empty file or a file of only white space gives every setting its default.
+A deleted file gives every setting its default.
+An empty file gives the defaults too, when it held no settings before, for example after `touch`.
+A file that held settings and becomes empty keeps them, because an editor that saves in place empties the file first.
+Delete the file to go back to the defaults.
 Afterglow shows a notice and logs a warning for unknown keys and for values that it replaces with a default.
 
 The file holds only the values that differ from the defaults.

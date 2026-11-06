@@ -260,8 +260,9 @@ struct Settings
 
 /// The config file (~/.config/afterglow/config.json) on phosphor-config,
 /// with live reload when the file changes. The file holds only the values
-/// that differ from the defaults; a missing file, or one that is empty or only white
-/// space, means every default, and
+/// that differ from the defaults; a missing file means every default, and so
+/// does an empty one that held no settings (an empty file that held settings
+/// is a save in progress and keeps them), and
 /// the first write() or ensureFile() creates it, readable by the owner only.
 class SettingsStore : public QObject
 {
@@ -299,7 +300,9 @@ public:
 
     /// Re-reads the file. A file that cannot be read, does not parse or does
     /// not hold a JSON object keeps the current settings; a deleted file, or
-    /// one that is empty or only white space, means every default.
+    /// one that is empty or only white space and held no settings, means
+    /// every default. A file that held settings and is empty now keeps them,
+    /// as an editor that saves in place empties it first.
     void reload();
     /// Writes one key to the config file and reloads. A value equal to the
     /// default removes the key. Command-line overrides keep winning over the

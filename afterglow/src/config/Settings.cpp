@@ -934,7 +934,8 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
     , m_path(path)
     , m_overrides(overrides)
 {
-    m_backend = std::make_unique<PhosphorConfig::JsonBackend>(path);
+    // Deferred: loadFile() below reads the file, once, and reports what it finds.
+    m_backend = std::make_unique<PhosphorConfig::JsonBackend>(path, PhosphorConfig::JsonBackend::Load::Deferred);
     // Command-line overrides are read over the file and never written to it.
     m_backend->setOverlay(m_overrides);
     m_store = std::make_unique<PhosphorConfig::Store>(m_backend.get(), buildSchema());
@@ -960,10 +961,21 @@ bool SettingsStore::loadFile()
     // One read and one parse: the document checked is the document used. The
     // backend reads it, so that a clean read also ends the refusal to write
     // that an earlier unreadable file set, and the next save compares the
-    // file against this read. A missing or empty file is every default.
-    const QString reason = m_backend->reload();
-    if (!reason.isEmpty()) {
-        const QString problem = reason + QStringLiteral(". Keeping the current settings");
+    // file against this read. A missing file is every default.
+    const QJsonObject before = m_backend->jsonRootSnapshot();
+    QString problem = m_backend->reload();
+    if (!problem.isEmpty()) {
+        problem += QStringLiteral(". Keeping the current settings");
+    } else if (m_backend->blankFile() && !before.isEmpty()) {
+        // An editor that saves in place empties the file before it writes
+        // it. A file that held settings and holds nothing now is such a
+        // save: keep the settings until its text comes. An empty file that
+        // held none, as after a touch, is every default.
+        m_backend->replaceRoot(before);
+        m_backend->clearDirty();
+        problem = QStringLiteral("%1 is empty. Keeping the current settings. Delete it for the defaults").arg(m_path);
+    }
+    if (!problem.isEmpty()) {
         // Logged when it starts, not again on each reload that keeps it.
         if (!m_fileProblems.contains(problem)) qCWarning(lcConfig).noquote() << problem;
         m_fileProblems = {problem};
@@ -1059,18 +1071,16 @@ QVariant SettingsStore::persisted(const QString& group, const QString& key) cons
     // The file as it is now, not as the last reload left it: a write built
     // on this value would otherwise undo an edit saved since. A file that
     // does not hold a JSON object leaves the last good document, and
-    // write() refuses to replace it anyway. An empty or white-space file is
-    // every default, as the backend reads it.
+    // write() refuses to replace it anyway. An empty or white-space file
+    // leaves it too: {} when the file held no settings, and the settings of a
+    // save in progress when it did (see loadFile).
     QJsonObject root = m_backend->jsonRootSnapshot();
     if (QFile file(m_path); !file.exists()) {
         root = {};
     } else if (file.open(QIODevice::ReadOnly)) {
         const QByteArray bytes = file.readAll();
-        if (bytes.trimmed().isEmpty()) {
-            root = {};
-        } else if (const QJsonDocument doc = QJsonDocument::fromJson(bytes); doc.isObject()) {
-            root = doc.object();
-        }
+        const QJsonDocument doc = QJsonDocument::fromJson(bytes);
+        if (!bytes.trimmed().isEmpty() && doc.isObject()) root = doc.object();
     }
     const QJsonValue raw = root.value(group).toObject().value(key);
     QVariant value = raw.isUndefined() ? def->defaultValue : raw.toVariant();
