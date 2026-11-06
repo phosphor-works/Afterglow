@@ -129,8 +129,9 @@ public:
     /// reported directory, else the foreground job's from /proc, else empty.
     /// None while the pane's paths name another machine's files: its shell
     /// runs on another host or in a container (OSC 3008, iTerm2 RemoteHost),
-    /// or its last OSC 7 named another host.
-    std::optional<QString> localPathDirectory() const;
+    /// its last OSC 7 named another host, or its foreground job is one of
+    /// @p remoteCommands (Links.remoteCommands), as foregroundJob() names it.
+    std::optional<QString> localPathDirectory(const QStringList& remoteCommands) const;
     QString text(AfterglowVt::Terminal::TextScope scope);
     /// At most `limit` bytes of text. The caller bounds the limit: scripts
     /// to their max_bytes range, show_last_output to Terminal.lastOutputLimit.

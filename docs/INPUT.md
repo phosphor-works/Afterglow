@@ -211,6 +211,7 @@ Afterglow opens OSC 8 links, plain-text URLs and file paths with a click while y
 | `Links.detectPaths` | `true` | Finds file paths in the text. A path is a link only when the file or directory exists. |
 | `Links.openWith` | empty | Command that receives the URL. Empty uses the desktop browser. |
 | `Links.openFilesWith` | empty | Program and arguments that open a file path. Empty opens the path as a `file://` URL. |
+| `Links.remoteCommands` | `ssh`, `mosh-client`, `et`, `telnet`, `rlogin` | Programs that connect to another host. While one of them runs in a pane, the pane has no path links. |
 | `Links.schemes` | `http`, `https`, `mailto`, `ftp`, `file` | Schemes that open without a prompt. Other schemes ask first. |
 | `Hints.alphabet` | `asdfjklghqweruiopzxcvbnmty` | Letters that label hints and URL hints |
 | `show_urls_open` | Ctrl+Shift+G | Labels the URLs on screen and opens the selected URL |
@@ -239,13 +240,21 @@ A click on a path before its check opens the path when the check finds it.
 
 A pane whose shell runs on another host or in a container has no path links.
 Its paths name files on that host.
-Afterglow knows this from the shell context (OSC 3008 and the iTerm2 `RemoteHost` sequence), and from an OSC 7 directory on another host.
+Afterglow knows this from these items:
+
+- The shell context (OSC 3008 and the iTerm2 `RemoteHost` sequence).
+- An OSC 7 directory on another host.
+- The foreground program of the pane, when its process name is in `Links.remoteCommands`. This includes `afterglow ssh`, which runs as `ssh`.
 
 | Limit | Value | At the limit |
 | --- | --- | --- |
 | Result of a check | 5 seconds | Afterglow checks the path again at the next hover |
 | Kept results | 1,024 paths | Afterglow removes the oldest result |
 | Checks that wait or run | 64 | Afterglow checks no new paths until a check completes |
+| Process name in `Links.remoteCommands` | 15 characters | Linux keeps the first 15 characters of a process name. Afterglow compares these characters only. |
+
+Afterglow does not find a remote program that runs inside a local program, such as `sudo ssh host`.
+The foreground program is then `sudo`, and the paths in its output can be links to local files.
 
 Set `Links.openFilesWith` to open files in an editor at the line.
 The list is the program and its arguments, without a shell.

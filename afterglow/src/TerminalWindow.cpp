@@ -3242,7 +3242,7 @@ std::optional<TerminalWindow::LinkHover> TerminalWindow::pathAt(Pane* pane, cons
                                    [&](const PathSpan& s) { return cell.x() >= s.colStart && cell.x() <= s.colEnd; });
     if (span == paths.end()) return std::nullopt;
     // Paths in a pane on another machine name its files, not ours.
-    const std::optional<QString> directory = pane->localPathDirectory();
+    const std::optional<QString> directory = pane->localPathDirectory(m_settings.settings().links.remoteCommands);
     if (!directory) return std::nullopt;
     LinkHover found;
     found.file = span->location;
@@ -3691,7 +3691,8 @@ void TerminalWindow::urlModeKey(QKeyEvent* e)
         stopUrlMode();
         if (action == QLatin1String("open")) {
             // As a click on the path: a local pane's file that exists.
-            const std::optional<QString> directory = pane ? pane->localPathDirectory() : std::nullopt;
+            const std::optional<QString> directory =
+                pane ? pane->localPathDirectory(m_settings.settings().links.remoteCommands) : std::nullopt;
             PathLinks::Location file = PathLinks::parseLocation(url);
             file.path = directory ? PathLinks::resolve(file.path, *directory, QDir::homePath()) : QString();
             if (file.path.isEmpty()) {

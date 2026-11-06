@@ -5296,6 +5296,54 @@ TEST_F(NativeWindow, APaneOnAnotherHostHasNoPathLinks) {
     EXPECT_TRUE(window->hoveredLink().isEmpty()) << window->hoveredLink().toStdString();
 }
 
+TEST_F(NativeWindow, APaneWhoseForegroundJobIsSshHasNoPathLinks) {
+    const QString bash = QStandardPaths::findExecutable(QStringLiteral("bash"));
+    if (bash.isEmpty()) GTEST_SKIP() << "bash is not installed";
+    PathTree tree;
+    ASSERT_TRUE(tree.make());
+    // A plain ssh with no shell integration on the far side: only the
+    // foreground job's name tells that its output names another host's
+    // files. This one shows a path that exists here, and waits.
+    ASSERT_TRUE(QDir(tree.root.path()).mkpath(QStringLiteral("bin")));
+    const QString ssh = tree.root.filePath(QStringLiteral("bin/ssh"));
+    {
+        QFile script(ssh);
+        ASSERT_TRUE(script.open(QIODevice::WriteOnly));
+        script.write("#!/bin/sh\nprintf 'far: %s\\n' \"$1\"\nread line\n");
+        script.close();
+        ASSERT_TRUE(script.setPermissions(script.permissions() | QFileDevice::ExeOwner));
+    }
+    // An interactive shell gives the job its own process group, as a login shell does.
+    restartApplication(QStringLiteral("ssh-paths.conf"),
+        testSettings({{QStringLiteral("Links"), QJsonObject{{QStringLiteral("modifier"), QStringLiteral("none")}}},
+                      {QStringLiteral("Terminal"), QJsonObject{{QStringLiteral("cursorBlink"), false},
+                                                               {QStringLiteral("shellIntegration"), false}}}}),
+        {bash, QStringLiteral("--norc"), QStringLiteral("--noprofile"), QStringLiteral("-i")});
+    if (HasFatalFailure()) return;
+    auto* pane = window->focusedPane();
+    ASSERT_TRUE(pane->sendInput((ssh + QLatin1Char(' ') + tree.file() + QLatin1Char('\n')).toStdString()));
+    const QString shown = QStringLiteral("far: ") + tree.file();
+    int row = -1;
+    ASSERT_TRUE(waitFor([&] {
+        const QStringList lines = pane->text(AfterglowVt::Terminal::TextScope::Screen).split(QLatin1Char('\n'));
+        row = int(lines.indexOf(shown));
+        return row >= 0 && pane->foregroundJob() == QLatin1String("ssh");
+    })) << pane->text(AfterglowVt::Terminal::TextScope::Screen).toStdString();
+    pane->refreshSnapshot();
+    hoverAt(window, cellCenter(window, pane, 10, row));
+    drain(300);
+    hoverAt(window, cellCenter(window, pane, 11, row));
+    EXPECT_TRUE(window->hoveredLink().isEmpty()) << window->hoveredLink().toStdString();
+    // Back at the local shell, the same text is a link.
+    ASSERT_TRUE(pane->sendInput("\n"));
+    // The pane was opened for bash, which foregroundJob() names when no job runs.
+    ASSERT_TRUE(waitFor([&] { return pane->foregroundJob() == QLatin1String("bash"); })) << pane->foregroundJob().toStdString();
+    pane->refreshSnapshot();
+    hoverAt(window, cellCenter(window, pane, 10, row));
+    EXPECT_TRUE(waitFor([&] { return window->hoveredLink() == QUrl::fromLocalFile(tree.file()).toString(); }))
+        << window->hoveredLink().toStdString();
+}
+
 } // namespace
 
 int main(int argc, char** argv)

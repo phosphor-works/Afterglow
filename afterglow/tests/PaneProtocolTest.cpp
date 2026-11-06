@@ -426,22 +426,46 @@ TEST_F(PaneProtocol, PathsStartFromTheReportedDirectoryOnlyWhileTheShellIsLocal)
 {
     const std::string here = QSysInfo::machineHostName().toStdString();
     feed("\x1b]7;file://" + here + "/srv/project\x1b\\");
-    EXPECT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/project")));
+    EXPECT_EQ(pane.localPathDirectory({}), std::optional<QString>(QStringLiteral("/srv/project")));
     feed("\x1b]7;file://localhost/srv/other\x1b\\");
-    EXPECT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/other")));
+    EXPECT_EQ(pane.localPathDirectory({}), std::optional<QString>(QStringLiteral("/srv/other")));
     // A directory on another host: its paths are that host's files.
     feed("\x1b]7;file://far-away-host/home/someone\x1b\\");
-    EXPECT_EQ(pane.localPathDirectory(), std::nullopt);
+    EXPECT_EQ(pane.localPathDirectory({}), std::nullopt);
     feed("\x1b]7;file://" + here + "/srv/project\x1b\\");
-    ASSERT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/project")));
+    ASSERT_EQ(pane.localPathDirectory({}), std::optional<QString>(QStringLiteral("/srv/project")));
     // A shell on another host (OSC 3008), whatever directory it reported.
     feed("\x1b]3008;start=r1;type=remote;user=someone;hostname=far-away-host\x1b\\");
-    EXPECT_EQ(pane.localPathDirectory(), std::nullopt);
+    EXPECT_EQ(pane.localPathDirectory({}), std::nullopt);
     feed("\x1b]3008;end=r1;exit=success\x1b\\");
-    EXPECT_EQ(pane.localPathDirectory(), std::optional<QString>(QStringLiteral("/srv/project")));
+    EXPECT_EQ(pane.localPathDirectory({}), std::optional<QString>(QStringLiteral("/srv/project")));
     // A container is another machine's files too.
     feed("\x1b]3008;start=c1;type=container;container=box-of-tools\x1b\\");
-    EXPECT_EQ(pane.localPathDirectory(), std::nullopt);
+    EXPECT_EQ(pane.localPathDirectory({}), std::nullopt);
+}
+
+TEST_F(PaneProtocol, APaneWhoseForegroundJobIsARemoteClientHasNoLocalPaths)
+{
+    // Opened to run ssh: its output names the far host's files, though no
+    // shell integration there says so.
+    pane.setLaunchedProgram(QStringLiteral("ssh"));
+    AfterglowPty::SpawnOptions options;
+    options.argv = { "/bin/sh", "-c", "stty -echo; exec cat" };
+    QString error;
+    ASSERT_TRUE(pane.start(options, QStringLiteral("xterm-256color"), 20, 5, 10, 20, &error)) << error.toStdString();
+    feed("\x1b]7;file://localhost/srv/project\x1b\\");
+    ASSERT_EQ(pane.foregroundJob(), QStringLiteral("ssh"));
+    const QStringList clients { QStringLiteral("ssh"), QStringLiteral("mosh-client") };
+    EXPECT_EQ(pane.localPathDirectory(clients), std::nullopt);
+    // A program that is not in the list is local.
+    EXPECT_EQ(pane.localPathDirectory({ QStringLiteral("mosh-client"), QStringLiteral("telnet") }),
+              std::optional<QString>(QStringLiteral("/srv/project")));
+    EXPECT_EQ(pane.localPathDirectory({}), std::optional<QString>(QStringLiteral("/srv/project")));
+    // The kernel keeps 15 bytes of a process name: a longer name in the list matches them.
+    pane.setLaunchedProgram(QStringLiteral("remote-client-1"));
+    EXPECT_EQ(pane.localPathDirectory({ QStringLiteral("remote-client-1234") }), std::nullopt);
+    EXPECT_EQ(pane.localPathDirectory({ QStringLiteral("remote-client") }),
+              std::optional<QString>(QStringLiteral("/srv/project")));
 }
 
 } // namespace

@@ -126,6 +126,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `modifier` | `"ctrl"` | `"ctrl"`, `"shift"`, `"alt"`, `"none"` | Modifier for link highlighting and activation. With none, a plain click opens the link. |
 | `openFilesWith` | `[]` |  | Program and arguments that open a file link, a list of 1 to 32 strings such as ["kate", "--line", "{line}", "{file}"]. {file} is the absolute path. {line} and {column} come from a :LINE or :LINE:COLUMN after the path, and are 1 when the text has none. Directories open in the file manager. An empty list opens files as other links open, with Links.openWith or the desktop application. |
 | `openWith` | `""` |  | Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the desktop browser. |
+| `remoteCommands` | `["ssh", "mosh-client", "et", "telnet", "rlogin"]` |  | Process names of programs that connect to another host. While one of them is the foreground program of a pane, paths in that pane are not links. Linux shows at most the first 15 characters of a process name. An empty list turns this check off. |
 | `schemes` | `["http", "https", "mailto", "ftp", "file"]` |  | URL schemes that open without a prompt. Links with other schemes ask first. |
 
 ## Mouse

@@ -794,7 +794,7 @@ QString Pane::workingDirectory() const
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();
 }
 
-std::optional<QString> Pane::localPathDirectory() const
+std::optional<QString> Pane::localPathDirectory(const QStringList& remoteCommands) const
 {
     QString reported;
     {
@@ -802,6 +802,15 @@ std::optional<QString> Pane::localPathDirectory() const
         if (m_directoryElsewhere || m_contextKind == QLatin1String("remote") || m_contextKind == QLatin1String("container"))
             return std::nullopt;
         reported = m_reportedDirectory;
+    }
+    // A client such as ssh without shell integration on the far side tells
+    // nothing of where its output comes from: its name does. The kernel
+    // keeps the first 15 bytes of a process name.
+    if (const QString job = foregroundJob(); !job.isEmpty()) {
+        const bool remote = std::any_of(remoteCommands.cbegin(), remoteCommands.cend(), [&](const QString& name) {
+            return job == name || job == QString::fromUtf8(name.toUtf8().left(15));
+        });
+        if (remote) return std::nullopt;
     }
     if (!reported.isEmpty()) return reported;
     return m_pty ? QFile::decodeName(QByteArray::fromStdString(m_pty->currentWorkingDirectory())) : QString();

@@ -614,6 +614,13 @@ TEST_F(ConfigTest, PathLinksDefaultOnAndOpenFilesWithIsChecked)
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
     EXPECT_TRUE(defaults.settings().links.detectPaths);
     EXPECT_TRUE(defaults.settings().links.openFilesWith.isEmpty());
+    EXPECT_EQ(defaults.settings().links.remoteCommands,
+              (QStringList{QStringLiteral("ssh"), QStringLiteral("mosh-client"), QStringLiteral("et"), QStringLiteral("telnet"),
+                           QStringLiteral("rlogin")}));
+    SettingsStore clients(write(QStringLiteral("clients.json"), R"({"Links": {"remoteCommands": [" kitten ", "", "ssh"]}})"));
+    EXPECT_EQ(clients.settings().links.remoteCommands, (QStringList{QStringLiteral("kitten"), QStringLiteral("ssh")}));
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Links": {"remoteCommands": []}})"));
+    EXPECT_TRUE(none.settings().links.remoteCommands.isEmpty());
 
     for (const char* value : {R"([" ", "{file}"])", R"(["kate", 5])", R"("kate {file}")"}) {
         const QString config = QStringLiteral(R"({"Links": {"openFilesWith": %1}})").arg(QString::fromUtf8(value));

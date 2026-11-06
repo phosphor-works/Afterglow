@@ -82,6 +82,10 @@ struct LinkSettings
     /// Program and arguments that open a file link, with {file}, {line} and
     /// {column}; empty to open its file:// URL as other links open.
     QStringList openFilesWith;
+    /// Process names of programs that connect to another host. While one is
+    /// a pane's foreground job, paths in the pane are no links.
+    QStringList remoteCommands{QStringLiteral("ssh"), QStringLiteral("mosh-client"), QStringLiteral("et"),
+                               QStringLiteral("telnet"), QStringLiteral("rlogin")};
     /// Held to hover and click links; none opens them with a plain click.
     Qt::KeyboardModifiers modifier = Qt::ControlModifier;
     /// Lower-case URL schemes that open without asking; other links ask first.

@@ -567,6 +567,10 @@ PhosphorConfig::Schema buildSchema()
                         ":LINE:COLUMN after the path, and are 1 when the text has none. Directories open in the file manager. "
                         "An empty list opens files as other links open, with Links.openWith or the desktop application.")
              .arg(MaxHintCommandArguments)},
+        {QStringLiteral("remoteCommands"), stringList(d.links.remoteCommands), QMetaType::QVariantList,
+         QStringLiteral("Process names of programs that connect to another host. While one of them is the foreground "
+                        "program of a pane, paths in that pane are not links. Linux shows at most the first 15 characters "
+                        "of a process name. An empty list turns this check off.")},
         enumKey(QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
                 QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
         {QStringLiteral("schemes"), stringList(d.links.schemes), QMetaType::QVariantList,
@@ -1557,6 +1561,7 @@ Settings SettingsStore::read()
     s.links.detectUrls = st.read<bool>(LinksGroup, QStringLiteral("detectUrls"));
     s.links.detectPaths = st.read<bool>(LinksGroup, QStringLiteral("detectPaths"));
     s.links.openWith = st.read<QString>(LinksGroup, QStringLiteral("openWith")).trimmed();
+    s.links.remoteCommands = strings(LinksGroup, QStringLiteral("remoteCommands"));
     // Each argument as it is: an empty or spaced one can be what the program wants.
     s.links.openFilesWith.clear();
     if (const QVariantList arguments = st.read<QVariantList>(LinksGroup, QStringLiteral("openFilesWith")); !arguments.isEmpty()) {
