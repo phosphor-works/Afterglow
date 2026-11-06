@@ -1571,9 +1571,16 @@ QRect TerminalWindow::contentRect(const QRect& paneRect) const
 
 QRect TerminalWindow::contentRect(const Pane* pane, const QRect& paneRect) const
 {
-    // An overlay's grid is where its host's is, inside the host's docks.
+    // An overlay's grid is in its host's, inside the host's docks: all of
+    // it, or a popup's cells.
+    const PaneOverlay* overlay = pane && pane->overlayHost() ? pane->overlayHost()->overlay() : nullptr;
     if (pane && pane->overlayHost()) pane = pane->overlayHost();
-    return contentRect(pane ? paneDockArea(pane, paneRect) : paneRect);
+    const QRect content = contentRect(pane ? paneDockArea(pane, paneRect) : paneRect);
+    if (!overlay || !overlay->popup()) return content;
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QRect grid = overlay->placement().grid;
+    return QRect(content.left() + grid.x() * m.cellWidth, content.top() + grid.y() * m.cellHeight, grid.width() * m.cellWidth,
+                 grid.height() * m.cellHeight);
 }
 
 void TerminalWindow::relayout()
@@ -2057,7 +2064,7 @@ bool TerminalWindow::event(QEvent* e)
             return true;
         }
         // A dock is its script's: the pane under it takes no drop.
-        Pane* target = inputPane(paneUnder(drop->position()));
+        Pane* target = pointerTarget(paneUnder(drop->position()), drop->position());
         // The program's commands that wait decide whether the pane takes the
         // drag (t=a, t=A) before the event goes to the protocol or the paste.
         if (target) target->deliverProtocolCommands();
@@ -3170,7 +3177,7 @@ void TerminalWindow::applyPointerShape()
         setCursor(Qt::PointingHandCursor);
         return;
     }
-    Pane* pane = m_splits ? inputPane(m_splits->paneAt(px)) : nullptr;
+    Pane* pane = m_splits ? pointerTarget(m_splits->paneAt(px), m_pointer) : nullptr;
     const QString shape = pane ? motion(pane).pointerShape : QString();
     setCursor(protocolPointer(shape, devicePixelRatio()));
 }
@@ -3333,7 +3340,7 @@ void TerminalWindow::openPaneMenu(Pane* pane)
 void TerminalWindow::updateLinkHover()
 {
     // Not over a pane's dock, where the cell would clamp to the grid's edge.
-    Pane* pane = linkModifierHeld() ? inputPane(paneUnder(m_pointer)) : nullptr;
+    Pane* pane = linkModifierHeld() ? pointerTarget(paneUnder(m_pointer), m_pointer) : nullptr;
     const LinkHover found = linkAt(pane, m_pointer);
     const bool changed = found.pane != m_hover.pane || found.link != m_hover.link || found.row != m_hover.row
         || found.colStart != m_hover.colStart || found.colEnd != m_hover.colEnd;
@@ -4501,6 +4508,8 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
             return;
         }
     }
+    // Around a popup the pane only shows: the press reaches nothing.
+    if (!pointerTarget(m_focused, e->position())) return;
     const Qt::KeyboardModifiers linkModifier = m_settings.settings().links.modifier;
     if (e->button() == Qt::LeftButton && linkModifier != Qt::NoModifier && (e->modifiers() & linkModifier)
         && !m_hover.url.isEmpty()) {
@@ -4844,9 +4853,11 @@ void TerminalWindow::mouseMoveEvent(QMouseEvent* e)
         }
         return;
     }
-    // Hover reports only over the focused pane itself, not clamped from another.
+    // Hover reports only over the focused pane itself, not clamped from
+    // another, and over a popup's own cells.
     if (paneUnder(e->position()) == m_focused) {
-        sendMouse(inputPane(m_focused), e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
+        if (Pane* target = pointerTarget(m_focused, e->position()))
+            sendMouse(target, e->position(), code, int(AfterglowVt::MouseAction::Motion), e->modifiers());
     }
 }
 
@@ -4886,8 +4897,9 @@ void TerminalWindow::wheelEvent(QWheelEvent* e)
     if (!p) {
         p = m_focused;
     }
-    // An overlay's program, or its history, while one runs over the pane.
-    p = inputPane(p);
+    // An overlay's program, or its history, while one runs over the pane:
+    // nothing around a popup.
+    p = pointerTarget(p, e->position());
     if (!p) {
         return;
     }

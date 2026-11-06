@@ -98,6 +98,8 @@ Assigned assign(Theme& theme, QString key, const QString& value)
         target = &theme.selectionBackground;
     } else if (key == QLatin1String("divider")) {
         target = &theme.divider;
+    } else if (key == QLatin1String("popupborder") || key == QLatin1String("popup_border")) {
+        target = &theme.popupBorder;
     } else if (key == QLatin1String("searchmatch") || key == QLatin1String("search_match")) {
         target = &theme.searchMatch;
     } else if (key == QLatin1String("searchcurrentmatch") || key == QLatin1String("search_current_match")) {

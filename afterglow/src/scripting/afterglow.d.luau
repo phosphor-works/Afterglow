@@ -168,8 +168,17 @@ export type OverlayOptions = {
     capture: ("stdout" | "file" | "none")?,
     cwd: string?,
     env: {[string]: string | false}?,
-    -- Shows as the pane's title while the overlay runs.
+    -- Shows as the pane's title while the overlay runs, and in the top edge of a border.
     title: string?,
+    -- A popup over the pane, which stays visible around it: cells, or a percentage of the
+    -- pane's grid such as "80%". The border counts. Unset: the whole grid.
+    width: (number | string)?,
+    height: (number | string)?,
+    -- Where a popup sits in the pane. The default is "center".
+    position: ("center" | "top" | "bottom" | "left" | "right" | "top-left" | "top-right" | "bottom-left" | "bottom-right")?,
+    -- A line around the overlay, in the theme's colors. The default is true for a popup
+    -- and false for a full-pane overlay.
+    border: boolean?,
 }
 export type OperationData = {
     regions: {SemanticRegion}?,

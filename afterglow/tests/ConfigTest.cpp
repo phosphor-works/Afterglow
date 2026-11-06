@@ -232,6 +232,27 @@ TEST(Themes, ReadsJsonThemes)
     EXPECT_TRUE(theme->palette[1] == Rgb(0xff, 0x00, 0x00));
 }
 
+TEST(Themes, ReadAPopupBorderInEachFormat)
+{
+    const auto json = Themes::parse(R"({"background": "#101010", "popupBorder": "#a0b0c0"})");
+    ASSERT_TRUE(json);
+    EXPECT_TRUE(json->popupBorder == Rgb(0xa0, 0xb0, 0xc0));
+    const auto ghostty = Themes::parse("background = #101010\npopup-border = #010203\n");
+    ASSERT_TRUE(ghostty);
+    EXPECT_TRUE(ghostty->popupBorder == Rgb(1, 2, 3));
+    const auto kitty = Themes::parse("background #101010\npopup_border #040506\n");
+    ASSERT_TRUE(kitty);
+    EXPECT_TRUE(kitty->popupBorder == Rgb(4, 5, 6));
+    // A theme without one leaves it unset, for the fallback.
+    const auto plain = Themes::parse("background = #101010\n");
+    ASSERT_TRUE(plain);
+    EXPECT_FALSE(plain->popupBorder);
+    // Halfway from the background to the text; the divider a fifth.
+    static_assert(Themes::derivedPopupBorder({0x1c, 0x1c, 0x1c}, {0xd8, 0xd8, 0xd8}) == Rgb(0x7a, 0x7a, 0x7a));
+    static_assert(Themes::derivedPopupBorder({0xf6, 0xf5, 0xf2}, {0x2b, 0x2b, 0x2f}) == Rgb(0x91, 0x90, 0x91));
+    static_assert(Themes::derivedDivider({0, 0, 0}, {0xff, 0xff, 0xff}) == Rgb(0x33, 0x33, 0x33));
+}
+
 TEST(Themes, EightDigitHexIsNotAColour)
 {
     // Qt reads eight digits as #AARRGGBB; these colours have no alpha.
@@ -303,6 +324,39 @@ TEST_F(ConfigTest, UserThemesComeFirstAndDeriveADivider)
     EXPECT_TRUE(same(s.terminal.defaultBackground, {0, 0, 0}));
     // A fifth of the way from the background to the text.
     EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(0x33, 0x33, 0x33));
+    // The popup border, halfway.
+    EXPECT_EQ(s.window.popupBorderColor, AfterglowRender::packRgba(0x7f, 0x7f, 0x7f));
+}
+
+TEST_F(ConfigTest, APopupBorderComesFromTheThemeOrItsColorsOrTheConfig)
+{
+    auto borderOf = [&](const QByteArray& json) {
+        SettingsStore store(write(QStringLiteral("config.json"), json));
+        EXPECT_TRUE(store.problems().isEmpty()) << json.toStdString() << ": " << store.problems().join(QLatin1Char('\n')).toStdString();
+        return store.settings().window.popupBorderColor;
+    };
+    // No theme: the default, or the user's own.
+    EXPECT_EQ(borderOf("{}"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    EXPECT_EQ(borderOf(R"({"Colors": {"popupBorder": "#123456"}})"), AfterglowRender::packRgba(0x12, 0x34, 0x56));
+    // The bundled themes set none: halfway from their background to their text.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-dark"}})"), AfterglowRender::packRgba(0x7a, 0x7a, 0x7a));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light"}})"), AfterglowRender::packRgba(0x91, 0x90, 0x91));
+    // A theme replaces the config's, as it does the divider.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "afterglow-light", "popupBorder": "#123456"}})"),
+              AfterglowRender::packRgba(0x91, 0x90, 0x91));
+    // A theme that sets one, and Ghostty and Kitty themes without one.
+    QDir().mkpath(m_home.filePath(QStringLiteral("afterglow/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("ghostty/themes")));
+    QDir().mkpath(m_home.filePath(QStringLiteral("kitty/themes")));
+    write(QStringLiteral("afterglow/themes/boxed.json"), R"({"background": "#000000", "foreground": "#ffffff", "popupBorder": "#ff8800"})");
+    write(QStringLiteral("ghostty/themes/Night"), "background = #000000\nforeground = #c8c8c8\n");
+    write(QStringLiteral("kitty/themes/Paper.conf"), "background #ffffff\nforeground #000000\n");
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "boxed"}})"), AfterglowRender::packRgba(0xff, 0x88, 0x00));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "Night"}})"), AfterglowRender::packRgba(0x64, 0x64, 0x64));
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "Paper"}})"), AfterglowRender::packRgba(0x80, 0x80, 0x80));
+    // light: and dark: pick a theme, and get its fallback.
+    EXPECT_EQ(borderOf(R"({"Colors": {"theme": "light:afterglow-light,dark:afterglow-light"}})"),
+              AfterglowRender::packRgba(0x91, 0x90, 0x91));
 }
 
 namespace {
@@ -374,9 +428,11 @@ TEST_F(ConfigTest, PlasmaThemeTakesTheDesktopColorsOverTheNamedTheme)
     const auto light = bundled("afterglow-light");
     ASSERT_TRUE(light && light->palette[1]);
     EXPECT_TRUE(same(s.terminal.basePalette[1], *light->palette[1]));
-    // The divider comes from the desktop's background and text.
+    // The divider and the popup border come from the desktop's background and text.
     auto mix = [](int a, int b) { return a + (b - a) / 5; };
     EXPECT_EQ(s.window.dividerColor, AfterglowRender::packRgba(mix(20, 230), mix(22, 231), mix(24, 232)));
+    auto half = [](int a, int b) { return a + (b - a) / 2; };
+    EXPECT_EQ(s.window.popupBorderColor, AfterglowRender::packRgba(half(20, 230), half(22, 231), half(24, 232)));
     EXPECT_TRUE(store.problems().isEmpty()) << store.problems().join(QLatin1Char('\n')).toStdString();
     EXPECT_TRUE(store.watchedPaths().contains(m_home.filePath(QStringLiteral("kdeglobals"))));
 }
@@ -1059,6 +1115,20 @@ TEST_F(ConfigTest, AnimationCurvesAndTextBlinkDefaultAndOverride)
     EXPECT_EQ(c.quickTerminal.curve, QStringLiteral("spring:30,1"));
     EXPECT_EQ(c.quickTerminal.duration, 300);
     EXPECT_EQ(c.textBlinkInterval, 100); // clamped
+}
+
+TEST_F(ConfigTest, PopupDimDefaultsOverridesAndClamps)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_DOUBLE_EQ(defaults.settings().window.popupDim, 0.35);
+    SettingsStore off(write(QStringLiteral("off.json"), R"({"Colors": {"popupDim": 0}})"));
+    EXPECT_DOUBLE_EQ(off.settings().window.popupDim, 0.0);
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Colors": {"popupDim": 0.6}})"));
+    EXPECT_DOUBLE_EQ(custom.settings().window.popupDim, 0.6);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Colors": {"popupDim": 3}})"));
+    EXPECT_DOUBLE_EQ(high.settings().window.popupDim, 1.0);
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Colors": {"popupDim": -1}})"));
+    EXPECT_DOUBLE_EQ(low.settings().window.popupDim, 0.0);
 }
 
 TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)

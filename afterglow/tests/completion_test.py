@@ -506,6 +506,11 @@ def cases(ctl_commands, paneless, actions, options, run):
     yield 'afterglow ctl overlay --capture ', {'stdout', 'file', 'none'}
     yield 'afterglow ctl overlay --cwd ', {'adir'}
     yield 'afterglow ctl overlay --capture file -', lacks('--capture')
+    yield 'afterglow ctl overlay -', has('--width', '--height', '--position', '--border', '--no-border')
+    yield 'afterglow ctl overlay --position ', {'center', 'top', 'bottom', 'left', 'right', 'top-left', 'top-right',
+                                                'bottom-left', 'bottom-right'}
+    yield 'afterglow ctl overlay --no-border -', lacks('--border', '--no-border')
+    yield 'afterglow ctl overlay -w 80% -', lacks('--width')
     # The commands of aglow complete as they do for aglow.
     yield 'afterglow tr', {'transfer'}
     yield from command_cases('afterglow', options)

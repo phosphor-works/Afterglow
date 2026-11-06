@@ -206,7 +206,11 @@ _afterglow_ctl() {
     overlay)
         _arguments $pane '--capture[where the result comes from]:capture:(stdout file none)' \
             '--cwd[working directory]:directory:_directories' '--title[the pane title meanwhile]:title:' \
-            '(-n --no-stdin)'{-n,--no-stdin}'[keep standard input from the command]' ;;
+            '(-n --no-stdin)'{-n,--no-stdin}'[keep standard input from the command]' \
+            '(-w --width)'{-w,--width}'[a popup this wide, in cells or N%]:width:' \
+            '(-h --height)'{-h,--height}'[a popup this tall, in cells or N%]:height:' \
+            '--position[where the popup sits]:position:(center top bottom left right top-left top-right bottom-left bottom-right)' \
+            '(--border --no-border)--border[draw a border]' '(--border --no-border)--no-border[draw no border]' ;;
     set-title) _arguments -S $pane '*:title:' ;;
     signal) _arguments $pane '1:channel:(0 1 2 3 4 5 6 7)' '2:value:' ;;
     notify) _arguments -S $pane '1:title:' '*:body:' ;;

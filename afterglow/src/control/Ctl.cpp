@@ -65,11 +65,15 @@ of the active window or of the window that was active last.
   open-project NAME [--new]             switch to a project or launch its layout
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
-  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n] -- CMD...
+  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n]
+          [-w|--width N|N%] [-h|--height N|N%] [--position POS] [--border|--no-border] -- CMD...
                                         run CMD over the pane until it exits, print its
                                         result and exit with its status. Standard input,
                                         unless it is a terminal or -n is given, goes to
-                                        CMD (at most 768 KiB)
+                                        CMD (at most 768 KiB). A width or height makes a
+                                        popup: cells or a percentage of the pane, at POS
+                                        (center, top, bottom, left, right, top-left,
+                                        top-right, bottom-left or bottom-right)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -671,12 +675,31 @@ int runCtl(int argc, char** argv)
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QDir::currentPath());
         const std::optional<QString> title = takeValue(QStringLiteral("--title"));
         const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
+        // A popup, in tmux's forms: -w 80% or -w 60.
+        const auto width = takeValue(QStringLiteral("-w")), longWidth = takeValue(QStringLiteral("--width"));
+        const auto height = takeValue(QStringLiteral("-h")), longHeight = takeValue(QStringLiteral("--height"));
+        const auto position = takeValue(QStringLiteral("--position"));
+        const bool border = takeFlag(QStringLiteral("--border"));
+        const bool noBorder = takeFlag(QStringLiteral("--no-border"));
         if (const auto error = extra(0)) return usage(*error);
         if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
         if (capture != QLatin1String("stdout") && capture != QLatin1String("file") && capture != QLatin1String("none"))
             return usage(QStringLiteral("--capture takes stdout, file or none"));
+        if ((width && longWidth) || (height && longHeight)) return usage(QStringLiteral("give each size once"));
+        if (border && noBorder) return usage(QStringLiteral("--border and --no-border exclude each other"));
         QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), absolute(cwd)}};
         if (title) options.insert(QStringLiteral("title"), *title);
+        // A count of cells goes as a number, a percentage as text: afterglow
+        // checks both by the rules of afterglow.overlay.
+        auto size = [](const QString& value) {
+            bool cells = false;
+            const int count = value.toInt(&cells);
+            return cells && value.trimmed() == value ? QJsonValue(count) : QJsonValue(value);
+        };
+        if (const auto w = width ? width : longWidth) options.insert(QStringLiteral("width"), size(*w));
+        if (const auto h = height ? height : longHeight) options.insert(QStringLiteral("height"), size(*h));
+        if (position) options.insert(QStringLiteral("position"), *position);
+        if (border || noBorder) options.insert(QStringLiteral("border"), border);
         // A list piped in, as for fzf. A terminal is no list: the program
         // reads the pane instead, and the call does not wait for an end of
         // file that never comes.

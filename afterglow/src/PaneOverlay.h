@@ -45,6 +45,7 @@ public:
         AfterglowVt::TerminalOptions terminal;
         AfterglowPty::SpawnOptions spawn; ///< the configured environment
         QString term;
+        /// The host's grid, which the overlay takes whole or in part (a popup).
         int cols = 80;
         int rows = 24;
         int cellWidth = 1;
@@ -68,6 +69,14 @@ public:
     Pane* host() const { return m_host; }
     const QString& title() const { return m_title; }
 
+    /// A box over its host, which shows around it (OverlaySpec::popup).
+    bool popup() const { return m_shape.popup(); }
+    /// Where its program's grid is in the host's grid, and its border.
+    const OverlaySpec::Placement& placement() const { return m_placement; }
+    /// Places it anew in a host grid of @p cols by @p rows and resizes its
+    /// program, which hears of a change.
+    void place(int cols, int rows, int cellWidth, int cellHeight);
+
     /// Ends it now, with "cancelled" and @p message.
     void cancel(const QString& message);
 
@@ -88,6 +97,8 @@ private:
     OverlaySpec::Capture m_capture = OverlaySpec::Capture::Stdout;
     std::unique_ptr<QTemporaryFile> m_resultFile;
     QString m_title;
+    OverlaySpec m_shape; ///< the size, position and border only
+    OverlaySpec::Placement m_placement;
     QString m_owner;
     QString m_request;
     Reply m_reply;

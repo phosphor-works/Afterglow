@@ -38,7 +38,11 @@ struct WindowSettings
     int initialRows = 30;
     static constexpr AfterglowVt::Rgb DefaultDivider{0x3a, 0x3a, 0x42};
     std::uint32_t dividerColor = AfterglowRender::packRgba(DefaultDivider); ///< RGBA8 in memory order
+    /// Halfway from the default background to the default text.
+    static constexpr AfterglowVt::Rgb DefaultPopupBorder{0x7a, 0x7a, 0x7a};
+    std::uint32_t popupBorderColor = AfterglowRender::packRgba(DefaultPopupBorder); ///< RGBA8 in memory order
     double unfocusedDim = 0.19;
+    double popupDim = 0.35; ///< over a pane behind a popup overlay
     double backgroundOpacity = 1.0; ///< of the default background
     bool blur = false; ///< blur what shows through a translucent background (KWin)
     bool paneTitles = false; ///< label each split with its title

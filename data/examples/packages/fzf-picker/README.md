@@ -5,7 +5,8 @@
 
 This Luau package picks a saved project or a file in an overlay.
 An overlay runs a program over a pane and returns its result to the script.
-When [fzf](https://github.com/junegunn/fzf) is installed, fzf runs in the overlay.
+When [fzf](https://github.com/junegunn/fzf) is installed, fzf runs in a popup overlay.
+The popup is 80% of the width and 60% of the height of the pane, in the center. The pane stays visible behind it.
 Without fzf, the package shows the select dialog.
 
 Copy this complete directory into `~/.config/afterglow/scripts/fzf-picker/`.

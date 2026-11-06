@@ -16,7 +16,9 @@
 // --pane-dock EDGE:CELLS:TEXT adds one at that edge of every pane, drawn with
 // the pane under its chains. --overlay TEXT draws a terminal that shows TEXT
 // over the first pane, faded in by --overlay-progress through the
-// --overlay-transition shader. Further options set the other renderer inputs
+// --overlay-transition shader; --overlay-width, --overlay-height,
+// --overlay-position and --overlay-border make it a popup, placed as the
+// window places one. Further options set the other renderer inputs
 // (pointer, selection, search, glide, scroll shift, hovered link, blink
 // phase, bidi, contrast, hinting, cell scale); --help lists them all.
 
@@ -27,6 +29,8 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Selection.h>
 #include <AfterglowVt/Terminal.h>
+#include <config/Theme.h>
+#include <scripting/OverlaySpec.h>
 #include <shaders/ShaderLibrary.h>
 
 #include <QCommandLineParser>
@@ -271,6 +275,19 @@ int run(QGuiApplication& app)
                       QStringLiteral("f")});
     parser.addOption({QStringLiteral("overlay-transition"), QStringLiteral("With --overlay: the overlay transition shader (default overlay-fade, \"\" for none, which switches at once)."),
                       QStringLiteral("ref"), QStringLiteral("overlay-fade")});
+    parser.addOption({QStringLiteral("overlay-width"), QStringLiteral("With --overlay: a popup this wide, in cells or as N% of the pane's grid, border included."),
+                      QStringLiteral("size")});
+    parser.addOption({QStringLiteral("overlay-height"), QStringLiteral("With --overlay: a popup this tall, in cells or as N% of the pane's grid, border included."),
+                      QStringLiteral("size")});
+    parser.addOption({QStringLiteral("overlay-position"), QStringLiteral("With --overlay: where the popup sits (center, top, bottom, left, right, top-left, top-right, bottom-left, bottom-right)."),
+                      QStringLiteral("name")});
+    parser.addOption({QStringLiteral("overlay-border"), QStringLiteral("With --overlay: true or false for a border (default: one for a popup)."),
+                      QStringLiteral("bool")});
+    parser.addOption({QStringLiteral("overlay-title"), QStringLiteral("With --overlay: the title in a popup's border."), QStringLiteral("text")});
+    parser.addOption({QStringLiteral("popup-border"), QStringLiteral("With a popup: the color of its border (Colors.popupBorder). By default halfway from the popup's background to its text, as for a theme without one."),
+                      QStringLiteral("color")});
+    parser.addOption({QStringLiteral("popup-dim"), QStringLiteral("With a popup: the opacity of the black layer over the pane around it (Colors.popupDim, default 0.35)."),
+                      QStringLiteral("f"), QStringLiteral("0.35")});
     parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
                       QStringLiteral("edge:cells:text")});
     parser.addPositionalArgument(QStringLiteral("input"), QStringLiteral("Byte stream, or - for stdin."));
@@ -749,7 +766,35 @@ int run(QGuiApplication& app)
             std::fprintf(stderr, "--overlay-progress must be from 0 to 1\n");
             return 1;
         }
-        overlayTerminal.resize(cols, rows, metrics.cellWidth, metrics.cellHeight);
+        // The options of afterglow.overlay, read by the same rules.
+        QVariantMap shape;
+        for (const char* key : {"width", "height", "position"}) {
+            const QString option = QStringLiteral("overlay-") + QLatin1String(key);
+            if (!parser.isSet(option)) continue;
+            const QString value = parser.value(option);
+            bool cells = false;
+            const int count = value.toInt(&cells);
+            shape.insert(QLatin1String(key), cells ? QVariant(count) : QVariant(value));
+        }
+        if (parser.isSet(QStringLiteral("overlay-border"))) {
+            const QString value = parser.value(QStringLiteral("overlay-border"));
+            shape.insert(QStringLiteral("border"), value == QLatin1String("true") ? QVariant(true)
+                                                   : value == QLatin1String("false") ? QVariant(false) : QVariant(value));
+        }
+        QString problem;
+        const auto spec = Afterglow::OverlaySpec::read({QStringLiteral("overlay")}, shape, &problem);
+        if (!spec) {
+            std::fprintf(stderr, "--overlay: %s\n", qPrintable(problem));
+            return 1;
+        }
+        const float dim = parser.value(QStringLiteral("popup-dim")).toFloat(&ok);
+        if (!ok || !(dim >= 0 && dim <= 1)) {
+            std::fprintf(stderr, "--popup-dim must be from 0 to 1\n");
+            return 1;
+        }
+        const Afterglow::OverlaySpec::Placement placement = spec->place(cols, rows);
+        const QRect grid = spec->popup() ? placement.grid : QRect(0, 0, cols, rows);
+        overlayTerminal.resize(grid.width(), grid.height(), metrics.cellWidth, metrics.cellHeight);
         const QByteArray text = parser.value(QStringLiteral("overlay")).toUtf8();
         overlayTerminal.feed(std::string_view(text.constData(), std::size_t(text.size())));
         overlaySnapshot.capture(overlayTerminal);
@@ -759,10 +804,38 @@ int run(QGuiApplication& app)
         overlay.params.cursorPosition.reset();
         overlay.params.scrollShift = 0;
         overlay.progress = progress;
+        if (spec->popup()) {
+            // Its own cells of the pane's grid, as the window places it.
+            overlay.params.contentOrigin += QPoint(grid.x() * metrics.cellWidth, grid.y() * metrics.cellHeight);
+            overlay.params.rect = QRect(overlay.params.contentOrigin, QSize(grid.width() * metrics.cellWidth, grid.height() * metrics.cellHeight));
+            AfterglowRender::WindowRenderer::Pane::Overlay::Popup popup;
+            popup.border = placement.border;
+            popup.title = parser.value(QStringLiteral("overlay-title")).toStdString();
+            // A theme's fallback for the border, from the popup's own
+            // colours (OSC 10 and 11 in the text set them), and its text
+            // colour for the title.
+            auto rgbOf = [](std::uint32_t c) { return AfterglowVt::Rgb{std::uint8_t(c), std::uint8_t(c >> 8), std::uint8_t(c >> 16)}; };
+            popup.borderColor = AfterglowRender::packRgba(
+                Afterglow::Themes::derivedPopupBorder(rgbOf(overlaySnapshot.defaultBg), rgbOf(overlaySnapshot.defaultFg)));
+            if (parser.isSet(QStringLiteral("popup-border"))) {
+                const QColor border = QColor::fromString(parser.value(QStringLiteral("popup-border")));
+                if (!border.isValid()) {
+                    std::fprintf(stderr, "--popup-border must be a color\n");
+                    return 1;
+                }
+                popup.borderColor = AfterglowRender::packRgba(std::uint8_t(border.red()), std::uint8_t(border.green()), std::uint8_t(border.blue()));
+            }
+            popup.titleColor = overlaySnapshot.defaultFg;
+            popup.dim = dim;
+            overlay.popup = std::move(popup);
+        }
         panes.front().overlay = overlay;
-    } else if (parser.isSet(QStringLiteral("overlay-progress"))) {
-        std::fprintf(stderr, "--overlay-progress needs --overlay\n");
-        return 1;
+    } else {
+        for (const char* option : {"overlay-progress", "overlay-width", "overlay-height", "overlay-position", "overlay-border", "overlay-title", "popup-border"}) {
+            if (!parser.isSet(QLatin1String(option))) continue;
+            std::fprintf(stderr, "--%s needs --overlay\n", option);
+            return 1;
+        }
     }
     if (parser.isSet(QStringLiteral("wake-from"))) {
         const QStringList at = parser.value(QStringLiteral("wake-from")).split(QLatin1Char(','));

@@ -22,6 +22,15 @@ Pane* TerminalWindow::inputPane(Pane* pane)
     return pane && pane->overlay() ? pane->overlay()->pane() : pane;
 }
 
+Pane* TerminalWindow::pointerTarget(Pane* pane, const QPointF& pos) const
+{
+    Pane* target = inputPane(pane);
+    if (!target || target == pane || !m_splits) return target;
+    // The program's own cells: a popup's grid, which its border is not.
+    const QRect grid = contentRect(target, m_splits->rectOf(hostOf(target)));
+    return pane->overlay()->popup() && !grid.contains((pos * devicePixelRatio()).toPoint()) ? nullptr : target;
+}
+
 QString TerminalWindow::openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
                                     PaneOverlay::Reply reply, QString& code)
 {
@@ -149,7 +158,10 @@ void TerminalWindow::overlayEnded(Pane* host, PaneOverlay* overlay)
     // It fades out from where its fade is, on its last frame.
     if (tabOf(host) >= 0 && m_overlayTransitionAvailable) {
         startOverlayFade(host, 0.0);
-        m_overlayFades[host].last = std::make_shared<AfterglowRender::PaneSnapshot>(program->snapshot());
+        OverlayFade& fade = m_overlayFades[host];
+        fade.last = std::make_shared<AfterglowRender::PaneSnapshot>(program->snapshot());
+        fade.lastPopup = overlay->popup() ? std::optional(overlay->placement()) : std::nullopt;
+        fade.lastTitle = overlay->title();
     }
     // The host has the input again, its view and cursor where they were.
     if (focused) {
@@ -197,10 +209,14 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     if (!overlay && fade == m_overlayFades.end()) return;
     float progress = 1.0f;
     std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+    std::optional<OverlaySpec::Placement> lastPopup;
+    QString lastTitle;
     if (fade != m_overlayFades.end()) {
         fade->second.progress.advance();
         progress = float(std::clamp(fade->second.progress.value(), 0.0, 1.0));
         last = fade->second.last;
+        lastPopup = fade->second.lastPopup;
+        lastTitle = fade->second.lastTitle;
         if (fade->second.progress.isAnimating()) {
             animating = true;
         } else {
@@ -213,6 +229,9 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     AfterglowRender::WindowRenderer::Pane::Overlay shown;
     shown.params = wp.params;
     shown.progress = progress;
+    // A popup's grid is its own part of the host's, wherever the host is drawn.
+    if (overlay && overlay->popup()) preparePopup(overlay->placement(), overlay->title(), wp.params.contentOrigin, shown);
+    else if (!overlay && lastPopup) preparePopup(*lastPopup, lastTitle, wp.params.contentOrigin, shown);
     if (overlay) {
         Pane* program = overlay->pane();
         AfterglowRender::FrameBuilder::PaneParams own;
@@ -238,6 +257,28 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
         shown.params.hoverRow = -1;
     }
     wp.overlay = shown;
+}
+
+void TerminalWindow::preparePopup(const OverlaySpec::Placement& placement, const QString& title, QPoint origin,
+                                  AfterglowRender::WindowRenderer::Pane::Overlay& shown) const
+{
+    const auto& m = m_renderer->fonts().fonts->metrics();
+    const QRect grid = placement.grid;
+    shown.params.contentOrigin = origin + QPoint(grid.x() * m.cellWidth, grid.y() * m.cellHeight);
+    shown.params.rect = QRect(shown.params.contentOrigin, QSize(grid.width() * m.cellWidth, grid.height() * m.cellHeight));
+    shown.popup = popupLook(m_settings.settings(), placement.border, title);
+}
+
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const QString& title)
+{
+    AfterglowRender::WindowRenderer::Pane::Overlay::Popup popup;
+    popup.border = border;
+    popup.title = title.toStdString();
+    // The theme's: its popup border for the line, its text for the title.
+    popup.borderColor = settings.window.popupBorderColor;
+    popup.titleColor = AfterglowRender::packRgba(settings.terminal.defaultForeground);
+    popup.dim = float(settings.window.popupDim);
+    return popup;
 }
 
 } // namespace Afterglow

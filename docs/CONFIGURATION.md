@@ -55,6 +55,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `foreground` | `"#d8d8d8"` |  | Default text color. |
 | `minimumContrast` | `1` | 1–21 | Minimum contrast ratio between text and its background. Afterglow changes the color of text with less contrast. A value of 1 keeps every color. A value of 4.5 is the WCAG AA level for normal text. |
 | `palette` | `["#1c1c1c", "#cc5555", "#55cc55", "#cdcd55", "#5455cb", "#cc55cc", "#7acaca", "#cccccc", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff", "#55ffff", "#ffffff"]` |  | The 16 ANSI colors, from black to bright white. |
+| `popupBorder` | `"#7a7a7a"` |  | Color of the border around a popup overlay. A theme replaces it. A theme without a popup border color gets one halfway between its background and text colors. |
+| `popupDim` | `0.35` | 0–1 | Opacity of a black layer over a pane while a popup overlay runs over it. The popup and its border stay as they are. A value of 0 turns the darkening off. |
 | `searchCurrentMatch` | `"#ff8c42"` |  | Background color of the current search match. |
 | `searchMatch` | `"#e5c07b"` |  | Background color of search matches. |
 | `searchMatchText` | `"#101010"` |  | Text color of search matches. |

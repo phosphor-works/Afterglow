@@ -398,8 +398,14 @@ PhosphorConfig::Schema buildSchema()
         colorKey(QStringLiteral("divider"), hex(WindowSettings::DefaultDivider),
                  QStringLiteral("Color of the dividers between panes. A theme replaces it. A theme without a divider color gets one between its "
                                 "background and text colors.")),
+        colorKey(QStringLiteral("popupBorder"), hex(WindowSettings::DefaultPopupBorder),
+                 QStringLiteral("Color of the border around a popup overlay. A theme replaces it. A theme without a popup border "
+                                "color gets one halfway between its background and text colors.")),
         doubleKey(QStringLiteral("unfocusedDim"), d.window.unfocusedDim, 0, 1,
                   QStringLiteral("Opacity of a black layer over unfocused panes. A value of 0 turns the darkening off.")),
+        doubleKey(QStringLiteral("popupDim"), d.window.popupDim, 0, 1,
+                  QStringLiteral("Opacity of a black layer over a pane while a popup overlay runs over it. The popup and its "
+                                 "border stay as they are. A value of 0 turns the darkening off.")),
         {QStringLiteral("boldIsBright"), term.boldIsBright, QMetaType::Bool,
          QStringLiteral("Use bright colors 8–15 for bold text with colors 0–7.")},
         doubleKey(QStringLiteral("minimumContrast"), term.minimumContrast, 1.0, 21.0,
@@ -1353,6 +1359,7 @@ Settings SettingsStore::read()
     t.selectionForeground = optionalColor("selectionForeground");
     t.selectionBackground = optionalColor("selectionBackground");
     AfterglowVt::Rgb divider = toRgb(st.read<QString>(Colors, QStringLiteral("divider")), WindowSettings::DefaultDivider);
+    AfterglowVt::Rgb popupBorder = toRgb(st.read<QString>(Colors, QStringLiteral("popupBorder")), WindowSettings::DefaultPopupBorder);
     auto& hl = s.colors;
     hl.searchMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchMatch")), hl.searchMatch);
     hl.searchCurrentMatch = toRgb(st.read<QString>(Colors, QStringLiteral("searchCurrentMatch")), hl.searchCurrentMatch);
@@ -1434,6 +1441,7 @@ Settings SettingsStore::read()
         over.cursorText = desktop->cursorText;
         // Derived from the desktop's background and text, not the theme's.
         over.divider.reset();
+        over.popupBorder.reset();
         theme = std::make_shared<const Theme>(over);
     }
     if (theme) {
@@ -1460,16 +1468,17 @@ Settings SettingsStore::read()
         hl.searchMatchText = theme->searchMatchText.value_or(hl.searchMatchText);
         hl.visualBell = theme->visualBell.value_or(hl.visualBell);
         hl.visualBellIntensity = theme->visualBellIntensity.value_or(hl.visualBellIntensity);
-        // Themes from other terminals have no divider: a fifth of the way
-        // from the background to the text suits light and dark alike. The
-        // config's divider is not used, since its default is a dark one.
-        auto mix = [](std::uint8_t a, std::uint8_t b) { return std::uint8_t(a + (b - a) / 5); };
-        const AfterglowVt::Rgb& bg = t.defaultBackground;
-        const AfterglowVt::Rgb& fg = t.defaultForeground;
-        divider = theme->divider.value_or(AfterglowVt::Rgb{mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b)});
+        // Themes from other terminals have no divider or popup border: one
+        // derived from the background and the text suits light and dark
+        // alike. The config's are not used, since their defaults suit a
+        // dark background.
+        divider = theme->divider.value_or(Themes::derivedDivider(t.defaultBackground, t.defaultForeground));
+        popupBorder = theme->popupBorder.value_or(Themes::derivedPopupBorder(t.defaultBackground, t.defaultForeground));
     }
     s.window.dividerColor = AfterglowRender::packRgba(divider);
+    s.window.popupBorderColor = AfterglowRender::packRgba(popupBorder);
     s.window.unfocusedDim = st.read<double>(Colors, QStringLiteral("unfocusedDim"));
+    s.window.popupDim = st.read<double>(Colors, QStringLiteral("popupDim"));
     t.boldIsBright = st.read<bool>(Colors, QStringLiteral("boldIsBright"));
     t.minimumContrast = st.read<double>(Colors, QStringLiteral("minimumContrast"));
 

@@ -384,11 +384,14 @@ afterglow = {
     prompt = function(pane, title, text) return {kind="prompt", pane=paneId(pane), title=title, text=text or ""} end,
     -- Runs command over the pane, in its place and with the input focus, until it exits. Await it:
     -- the result is {exit_code, stdout, truncated}. options: stdin (text for its stdin),
-    -- capture ("stdout", "file" or "none"), cwd, env, title.
+    -- capture ("stdout", "file" or "none"), cwd, env, title. width and height (cells, or "80%")
+    -- make it a popup over the pane, at position ("center" and the other anchors), with a border
+    -- unless border = false.
     overlay = function(pane, command, options)
         local o = options or {}
         return { kind = "overlay", pane = paneId(pane), command = list(command), stdin = o.stdin,
-                 capture = o.capture or "stdout", cwd = o.cwd or "", env = o.env, title = o.title or "" }
+                 capture = o.capture or "stdout", cwd = o.cwd or "", env = o.env, title = o.title or "",
+                 width = o.width, height = o.height, position = o.position, border = o.border }
     end,
     status = function(pane, text, tab_title) return {kind="status", pane=paneId(pane), text=text or "", tab_title=tab_title or ""} end,
     override = function(pane, values) return {kind="override", pane=paneId(pane), values=values} end,

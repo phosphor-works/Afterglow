@@ -216,15 +216,32 @@ public:
         std::vector<Dock> docks = {};
         /// A program run over the pane (an overlay), with a terminal of its
         /// own: its grid takes the place of the pane's, under the pane's
-        /// docks and through the pane's chains, card and tab image. It fades
-        /// in by @c progress: 0 shows the pane, 1 the overlay. The pane fades
-        /// to the overlay's background, then the overlay comes out of it.
+        /// docks and through the pane's chains, card and tab image. A popup
+        /// takes a part of the pane's grid instead, over the pane, which
+        /// still shows around it. It fades in by @c progress: 0 shows the
+        /// pane, 1 the overlay, through the overlay transition when one runs.
         struct Overlay
         {
             const PaneSnapshot* snapshot = nullptr;
-            /// As the pane's own, for the overlay's grid: the same rectangle.
+            /// As the pane's own, for the overlay's grid: the same rectangle,
+            /// or the popup's grid.
             FrameBuilder::PaneParams params;
             float progress = 1;
+            /// A box over the pane, at params.rect. The pane is drawn first,
+            /// darker and with an unfocused cursor, then the border, then
+            /// the popup's grid.
+            struct Popup
+            {
+                /// A line one cell wide around the grid, with @c title
+                /// (UTF-8) in its top edge, on the grid's default background.
+                bool border = false;
+                std::string title;
+                std::uint32_t borderColor = 0; ///< packRgba
+                std::uint32_t titleColor = 0;
+                /// The opacity of a black layer over the pane around the popup.
+                float dim = 0;
+            };
+            std::optional<Popup> popup = {};
         };
         std::optional<Overlay> overlay = {};
     };
@@ -418,8 +435,29 @@ private:
         QRect content;
         std::vector<ImageDraw> images;
         std::uint32_t overlayFirst = 0, overlayEnd = 0; ///< another tab's overlays
-        std::vector<DrawRange> docks = {}; ///< the pane's docks, drawn after it
+        /// The pane's docks, drawn after it, then a popup's border and grid.
+        std::vector<DrawRange> docks = {};
+        /// A popup over the pane, with its border: in a layer target the
+        /// pane's text and cursors keep out of it.
+        QRect popup = {};
+        /// The black layer over the pane around a popup (an instance).
+        std::optional<std::uint32_t> dim = {};
     };
+    /// A popup's border as cells, kept by the popup's snapshot identity.
+    struct PopupFrame
+    {
+        int cols = 0;
+        int rows = 0;
+        std::string title;
+        std::uint32_t borderColor = 0;
+        std::uint32_t titleColor = 0;
+        std::uint32_t background = 0;
+        std::uint64_t seenFrame = 0;
+        std::unique_ptr<PaneSnapshot> snapshot;
+    };
+    /// The border of @p popup around its grid of @p cols by @p rows.
+    const PaneSnapshot& popupFrame(const Pane::Overlay& popup, int cols, int rows);
+    std::unordered_map<std::uint64_t, PopupFrame> m_popupFrames;
     QRhiShaderResourceBindings* imageBindings(QRhiTexture* texture, std::uint64_t serial);
 
     GpuDevice& m_device;

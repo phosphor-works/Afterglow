@@ -3230,3 +3230,157 @@ TEST_F(Render, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce)
         }
     }
 }
+
+class PopupRender : public Render
+{
+protected:
+    /// The pane: red, with a white X in column 0 and in columns 4 to 11,
+    /// under the popup and its border. The popup: a 6 by 2 grid at cell
+    /// (5, 1), blue, with a green cell at its own (0, 0).
+    void SetUp() override
+    {
+        Render::SetUp();
+        if (!s_device) return;
+        std::string fill = "\x1b[?25l\x1b[48;2;220;0;0m\x1b[38;2;255;255;255m";
+        for (int row = 0; row < Rows; ++row) fill += "X   " + std::string(8, 'X') + std::string(Cols - 12, ' ');
+        render(fill);
+        popupTerminal = std::make_unique<AfterglowVt::Terminal>(6, 2, popupHost);
+        popupTerminal->resize(6, 2, cw, ch);
+        popupTerminal->feed("\x1b[?25l\x1b]11;rgb:00/00/c0\x1b\\\x1b[48;2;0;200;0m \x1b[0m");
+        popupSnapshot.capture(*popupTerminal);
+        size = QSize(Cols * cw, Rows * ch);
+        pane.snapshot = &snapshot;
+        pane.params.rect = QRect(QPoint(0, 0), size);
+        pane.params.focused = true;
+    }
+
+    WindowRenderer::Pane withPopup(bool border, float progress = 1.0f) const
+    {
+        WindowRenderer::Pane drawn = pane;
+        WindowRenderer::Pane::Overlay overlay{&popupSnapshot, pane.params, progress};
+        overlay.params.rect = QRect(5 * cw, ch, 6 * cw, 2 * ch);
+        overlay.params.contentOrigin = overlay.params.rect.topLeft();
+        WindowRenderer::Pane::Overlay::Popup popup;
+        popup.border = border;
+        popup.title = "T";
+        popup.borderColor = packRgba(0, 255, 255);
+        popup.titleColor = packRgba(255, 255, 0);
+        popup.dim = 0.5f;
+        overlay.popup = popup;
+        drawn.overlay = overlay;
+        return drawn;
+    }
+
+    QImage frame(const WindowRenderer::Pane& drawn) { return renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg); }
+
+    /// Whether every pixel of cell (x, y) is @p color.
+    static bool cellIs(const QImage& image, QRect cell, QRgb color)
+    {
+        for (int y = cell.top(); y <= cell.bottom(); ++y)
+            for (int x = cell.left(); x <= cell.right(); ++x) {
+                const QRgb got = image.pixel(x, y);
+                if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color)) + std::abs(qBlue(got) - qBlue(color)) > 6)
+                    return false;
+            }
+        return true;
+    }
+    QRect cell(int x, int y) const { return QRect(x * cw, y * ch, cw, ch); }
+    /// Whether some pixel of @p rect is near @p color.
+    static bool shows(const QImage& image, QRect rect, QRgb color)
+    {
+        for (int y = rect.top(); y <= rect.bottom(); ++y)
+            for (int x = rect.left(); x <= rect.right(); ++x) {
+                const QRgb got = image.pixel(x, y);
+                if (std::abs(qRed(got) - qRed(color)) + std::abs(qGreen(got) - qGreen(color)) + std::abs(qBlue(got) - qBlue(color)) <= 30)
+                    return true;
+            }
+        return false;
+    }
+
+    NullHost popupHost;
+    std::unique_ptr<AfterglowVt::Terminal> popupTerminal;
+    PaneSnapshot popupSnapshot;
+    QSize size;
+    WindowRenderer::Pane pane;
+};
+
+TEST_F(PopupRender, APopupDrawsOverItsPaneWhichShowsDarkerAroundIt)
+{
+    const QRgb red = qRgb(220, 0, 0), dimmed = qRgb(110, 0, 0), blue = qRgb(0, 0, 0xc0), green = qRgb(0, 200, 0);
+    // One pass, the layered path (the pane's text in a layer of its own,
+    // which a popup's background does not cover), and a pane chain.
+    for (const int path : {0, 1, 2}) {
+        ShaderChains chains;
+        if (path == 1) chains.text = {ShaderProgram::passthrough()};
+        if (path == 2) chains.pane = {layerShader("plain", "")};
+        renderer->setShaderChains(chains);
+        SCOPED_TRACE(testing::Message() << "path " << path);
+        const QImage plain = frame(pane);
+        EXPECT_PIXEL(plain, cellCenter(2, 0), red);
+        EXPECT_TRUE(shows(plain, cell(0, 0), qRgb(255, 255, 255)));
+        for (const bool border : {true, false}) {
+            SCOPED_TRACE(testing::Message() << (border ? "with" : "without") << " a border");
+            const QImage image = frame(withPopup(border));
+            // The pane around it shows, through a black layer at half.
+            EXPECT_PIXEL(image, cellCenter(2, 0), dimmed);
+            EXPECT_PIXEL(image, cellCenter(Cols - 1, Rows - 1), dimmed);
+            EXPECT_TRUE(shows(image, cell(0, 0), qRgb(128, 128, 128))) << "the pane's text, darker";
+            EXPECT_FALSE(shows(image, cell(0, 0), qRgb(255, 255, 255)));
+            // The popup's grid as it is, none of the pane's text in it.
+            EXPECT_TRUE(cellIs(image, cell(5, 1), green));
+            for (int x = 6; x < 11; ++x) EXPECT_TRUE(cellIs(image, cell(x, 1), blue)) << x;
+            for (int x = 5; x < 11; ++x) EXPECT_TRUE(cellIs(image, cell(x, 2), blue)) << x;
+            if (border) {
+                // A line in its colour on the popup's background, the title in
+                // the top edge, and nothing of the pane's text under them.
+                for (const QRect& edge : {cell(4, 1), cell(11, 2), cell(9, 0), cell(8, 3), cell(4, 0), cell(11, 3)}) {
+                    EXPECT_TRUE(shows(image, edge, qRgb(0, 255, 255))) << edge.x() / cw << "," << edge.y() / ch;
+                    EXPECT_TRUE(shows(image, edge, blue)) << edge.x() / cw << "," << edge.y() / ch;
+                    EXPECT_FALSE(shows(image, edge, red)) << edge.x() / cw << "," << edge.y() / ch;
+                    EXPECT_FALSE(shows(image, edge, qRgb(255, 255, 255))) << edge.x() / cw << "," << edge.y() / ch;
+                }
+                EXPECT_TRUE(shows(image, cell(7, 0), qRgb(255, 255, 0))) << "the title";
+                EXPECT_TRUE(cellIs(image, cell(6, 0), blue)) << "a space before the title";
+                EXPECT_TRUE(cellIs(image, cell(8, 0), blue)) << "a space after the title";
+            } else {
+                // The pane shows right up to the grid, darker.
+                for (const QRect& around : {cell(4, 1), cell(11, 2), cell(8, 0), cell(8, 3)}) {
+                    EXPECT_TRUE(shows(image, around, dimmed)) << around.x() / cw << "," << around.y() / ch;
+                    EXPECT_FALSE(shows(image, around, blue)) << around.x() / cw << "," << around.y() / ch;
+                }
+            }
+        }
+        // Without the darkening the pane around it is as it was.
+        WindowRenderer::Pane bright = withPopup(true);
+        bright.overlay->popup->dim = 0;
+        EXPECT_PIXEL(frame(bright), cellCenter(2, 0), red);
+    }
+}
+
+TEST_F(PopupRender, TheOverlayTransitionBlendsThePaneAndThePaneWithItsPopup)
+{
+    QFile file(QStringLiteral(AFTERGLOW_OVERLAY_FADE_PACK));
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    ShaderProgramSource source;
+    source.id = QStringLiteral("overlay-fade");
+    source.code = file.readAll();
+    QString error;
+    const ShaderProgramPtr fade = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(fade) << error.toStdString();
+    ShaderChains chains;
+    chains.overlayTransition = {fade};
+    renderer->setShaderChains(chains);
+    const QImage plain = frame(pane);
+    // The second image: the whole pane as it shows with the popup, as
+    // without a transition.
+    renderer->setShaderChains({});
+    const QImage shown = frame(withPopup(true));
+    renderer->setShaderChains(chains);
+    EXPECT_TRUE(frame(withPopup(true, 0.0f)) == plain);
+    EXPECT_TRUE(frame(withPopup(true, 1.0f)) == shown);
+    const QImage middle = frame(withPopup(true, 0.5f));
+    // The pane, between itself and darker; the popup, between the pane and itself.
+    EXPECT_PIXEL(middle, cellCenter(2, 0), qRgb(165, 0, 0));
+    EXPECT_PIXEL(middle, cell(6, 1).topLeft(), qRgb(110, 0, 0x60));
+    EXPECT_PIXEL(middle, cell(5, 1).topLeft(), qRgb(110, 100, 0));
+}

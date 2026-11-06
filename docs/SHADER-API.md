@@ -401,6 +401,7 @@ An [overlay](SCRIPTING.md#overlays) runs a program over a pane, in the pane's pl
 `Shaders.overlayTransition` names the pack that blends the pane and the overlay while the overlay opens and closes.
 Afterglow runs it over that pane only, after the pane chain and before the window chain, only while the fade runs.
 The pass's input is the pane with the overlay. `overlayHostTexel(uv)` reads the pane under the overlay at the pass's canvas uv.
+For a [popup](SCRIPTING.md#popups), the input is the whole pane as it shows with the popup: the darker pane, the border and the popup.
 Both images have the pane's layer and pane shaders, and both keep running. The window shaders then run over the result.
 `overlayTransitionProgress()` runs from 0, the pane under the overlay, to 1, the overlay. It is between 0 and 1 also with a curve that overshoots.
 `Animation.overlayCurve` and `Animation.overlayDuration` time it. The fade out runs the same pack from 1 back to 0.

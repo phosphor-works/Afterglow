@@ -70,6 +70,11 @@ inline QString textPrefix(const QString& text, qsizetype limit)
     return text.left(limit > 0 && text.at(limit).isLowSurrogate() ? limit - 1 : limit);
 }
 
+/// How a popup overlay looks with @p settings: the theme's popup border
+/// colour for its border line (when @p border), the text colour for
+/// @p title, and Colors.popupDim over the pane around it.
+AfterglowRender::WindowRenderer::Pane::Overlay::Popup popupLook(const Settings& settings, bool border, const QString& title);
+
 /// A top-level terminal window: a split tree of panes drawn in one render
 /// pass on the shared GpuDevice.
 class TerminalWindow : public QWindow
@@ -277,6 +282,10 @@ private:
     /// The pane whose program gets @p pane's input: its overlay's while one
     /// runs over it.
     static Pane* inputPane(Pane* pane);
+    /// The pane whose program the pointer at @p pos (logical) reaches over
+    /// @p pane: inputPane(), or none where a popup leaves the pane showing.
+    /// A click there does nothing and leaves the popup open.
+    Pane* pointerTarget(Pane* pane, const QPointF& pos) const;
     /// The pane in the tab for @p pane: the host of an overlay's pane, else
     /// @p pane itself.
     static Pane* hostOf(Pane* pane) { return pane && pane->overlayHost() ? pane->overlayHost() : pane; }
@@ -910,9 +919,16 @@ private:
     struct OverlayFade
     {
         PhosphorAnimation::AnimatedValue<qreal> progress;
-        /// The last frame of an overlay that ended, while it fades out.
+        /// The last frame of an overlay that ended, while it fades out, and
+        /// where it was when it was a popup.
         std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+        std::optional<OverlaySpec::Placement> lastPopup;
+        QString lastTitle;
     };
+    /// A popup's grid at @p placement in @p host's grid, drawn at @p origin
+    /// (the host's cell 0,0), into @p shown.
+    void preparePopup(const OverlaySpec::Placement& placement, const QString& title, QPoint origin,
+                      AfterglowRender::WindowRenderer::Pane::Overlay& shown) const;
     std::unordered_map<const Pane*, OverlayFade> m_overlayFades;
     CurveCache m_overlayCurve;
     /// The unfocused dim (when @p dim) and the dividers of a pane drawn at
