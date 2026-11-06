@@ -468,9 +468,6 @@ private:
     void syncInputMethodEnabled();
     bool m_modeHeldKeyboard = false; ///< keyboardModeActive() as the input method last heard
     bool m_inputMethodDirty = false; ///< the focused pane's text changed since the last query
-    /// A focus change made by an input method event: the composition it
-    /// carries is for the new pane, so setFocusedPane does not reset it.
-    bool m_keepComposition = false;
     bool performAction(Action action);
     void updateChrome();
     /// The command palette's list: every action but the palette itself and
@@ -771,11 +768,6 @@ private:
         qreal positionTarget = 0; ///< where it heads: equals the highlighted index modulo the cards
         std::optional<std::chrono::steady_clock::time_point> changedAt;
         std::optional<std::chrono::steady_clock::time_point> movedAt;
-        /// A card in another tab was chosen: its tab shows once the close
-        /// has finished, so the cards never move with the current tab, or at
-        /// the first input or focus change before that.
-        QPointer<Pane> reveal;
-        bool revealing = false; ///< showing the chosen card's tab, which needs no tab transition
         bool wasShowing = false; ///< showing at the last frame
     } m_overview;
     /// A curve resolved from its setting once per spec.
@@ -887,12 +879,6 @@ private:
     /// Zooms the tabs that were zoomed when the overview opened again, a
     /// tab that holds @p target on the target.
     void restoreOverviewZooms(Pane* target);
-    /// Switches to the card that a closing overview chose in another tab now,
-    /// not at the end of the close: input must reach that pane.
-    void finishOverviewReveal();
-    /// Shows @p pane, chosen in the overview, with no tab transition: the
-    /// overview's close has already carried the motion onto its card.
-    void revealOverviewChoice(Pane* pane);
     /// Highlights card @p index, the short way round, or in @p direction (1
     /// forward, -1 back) when it is given.
     void moveOverview(int index, int direction = 0);

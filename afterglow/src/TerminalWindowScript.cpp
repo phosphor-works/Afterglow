@@ -20,8 +20,8 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     // The dialog takes the keyboard: no mode is left behind it.
     stopCopyMode(); cancelKeyMode(); stopUrlMode();
-    // Onto the dialog's pane: the original card could be in another tab,
-    // and its deferred reveal would leave the dialog behind.
+    // Onto the dialog's pane, which could be in another tab: closing the
+    // overview there shows that tab; the switch below covers a closed one.
     closeOverview(pane);
     stopUnicodeInput();
     if (tabOf(pane) != m_currentTab) switchTab(tabOf(pane));
