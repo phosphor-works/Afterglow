@@ -17,6 +17,12 @@ These instructions use the current source layout.
 - KF6 WindowSystem.
 - GTest, unless you configure with `-DBUILD_TESTING=OFF`.
 - The Phosphor libraries from a PlasmaZones checkout.
+- The static C and C++ runtime libraries (`libc.a` and `libstdc++.a`), for `aglow`.
+  Fedora puts them in the packages `glibc-static` and `libstdc++-static`.
+  Without them, the configuration stops with a message.
+  To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
+  Then `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
+  A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
 The build compiles zlib-ng and xxHash from their [source archives](#source-archives).
 These are C sources, so the build needs the C compiler.
@@ -29,7 +35,7 @@ It does not use the copies that the system has.
 | `cava` | Supplies system audio data for shaders | Audio-reactive shaders get no audio. |
 | KF6 GlobalAccel | Registers the quick terminal shortcut with KDE global shortcuts | The desktop portal registers the shortcut. |
 | `qqc2-desktop-style` | Draws tabs, menus and prompts in the Plasma style | The controls use the Fusion style. |
-| `bash-completion` | Loads the Bash completion of `afterglow` | Bash does not complete `afterglow` arguments. |
+| `bash-completion` | Loads the Bash completions of `afterglow` and `aglow` | Bash does not complete `afterglow` and `aglow` arguments. |
 
 ## Source archives
 
@@ -75,6 +81,8 @@ cmake -DPHOSPHOR_DEPS_FETCH=/path/to/archives -P ../PlasmaZones/cmake/PhosphorDe
 cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cmake
 ```
 
+This command also puts an empty `.lock` file next to each Afterglow archive that it downloads. You do not need to copy these files.
+
 4. Copy the Afterglow and PlasmaZones directories into one parent directory on the build computer.
 
 5. Copy the archive directory to the build computer.
@@ -89,6 +97,11 @@ cmake -DAFTERGLOW_DEPS_FETCH=/path/to/archives -P cmake/AfterglowDependencies.cm
 
 With the two options, the configuration downloads nothing.
 If you set only one option, the configuration downloads CPM.cmake and the archives of the other pin file.
+
+The repository includes `tools/aglow/stb/stb_image.h`, which `aglow icat` uses to decode images.
+The file has patches of `aglow`, which the start of `tools/aglow/StbImage.cpp` lists.
+`cmake/AfterglowDependencies.cmake` pins the file to its upstream base commit and to the SHA-256 hash of the patched file.
+When the build includes `aglow`, or the fuzz targets (`AFTERGLOW_BUILD_FUZZERS`), a configuration with a changed file stops with an error.
 
 ## Qt private APIs
 
@@ -164,18 +177,32 @@ If you do, shell integration is off, and the executable can miss its plugin, sha
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
 It also includes the shell completions for Bash, Zsh and Fish. The Fish completion needs Fish 4 or later.
+It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
+The license notices of `aglow` go in `share/licenses/afterglow`:
+
+| File | Contents | Installed |
+| --- | --- | --- |
+| `LICENSE.stb_image` | The MIT notice of stb_image | Always |
+| `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
+| `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
+
+A static `aglow` contains parts of glibc, which is LGPL-2.1-or-later.
+To link `aglow` again with a changed C library, build the `aglow` target from the Afterglow source of the same version (`cmake --build build --target aglow`).
+When `readelf` is installed, the build of a static `aglow` prints the oldest Linux kernel that it needs, and on x86-64 the processor level.
+When the compiler or linker flags contain `-fsanitize`, such as in the `debug` preset, `aglow` links dynamically.
+A static program cannot use the sanitizer runtimes.
 Private libraries go in an `afterglow` directory in the library directory, for example `lib/afterglow/` or `lib64/afterglow/`.
 This location does not replace libraries from a system Phosphor installation.
 
-| Shell | Completion file |
-| --- | --- |
-| Bash | `share/bash-completion/completions/afterglow` |
-| Zsh | `share/zsh/site-functions/_afterglow` |
-| Fish | `share/fish/vendor_completions.d/afterglow.fish` |
+| Shell | Completion file of `afterglow` | Completion file of `aglow` |
+| --- | --- | --- |
+| Bash | `share/bash-completion/completions/afterglow` | `share/bash-completion/completions/aglow` |
+| Zsh | `share/zsh/site-functions/_afterglow` | `share/zsh/site-functions/_aglow` |
+| Fish | `share/fish/vendor_completions.d/afterglow.fish` | `share/fish/vendor_completions.d/aglow.fish` |
 
 Zsh reads only the directories in its `fpath`.
 When the prefix is `/usr` on Debian or Ubuntu, `share/zsh/site-functions` is not in `fpath`.
-For this prefix on these systems, add this option to the configuration command:
+For this prefix on these systems, add this option to the configuration command. It applies to `_afterglow` and `_aglow`:
 
 ```sh
 -DAFTERGLOW_ZSH_COMPLETION_DIR=share/zsh/vendor-completions

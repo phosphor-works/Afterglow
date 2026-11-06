@@ -4,10 +4,23 @@
 # Bash completion for afterglow. Script IDs and their commands come from the
 # running afterglow (afterglow run --complete). It works best with the
 # bash-completion package, which keeps a word whole at = and : and completes
-# the commands of -e, ssh and ctl ... -- CMD.
+# the commands of -e, ssh and ctl ... -- CMD. afterglow transfer, dnd, icat
+# and clipboard complete as aglow does: bash-completion loads the completion
+# of aglow when it is first needed. Without bash-completion, source aglow.bash
+# as well.
 
 _afterglow_ctl_commands="ls send-text get-text split move-pane detach-tab new-tab new-window focus close set-title
 signal notify scripts open-directory projects save-project open-project action watch"
+# The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
+_afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
+pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
+end_script_key_mode split_right split_down split_left split_up rename_pane close_pane new_window new_tab close_tab
+rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7
+goto_tab_8 goto_tab_9 close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output copy_mode copy
+paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up focus_down equalize_splits
+toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller font_reset scroll_page_up
+scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search command_palette reload_config
+open_config show_urls_open show_urls_copy unicode_input"
 
 # Completes the command line from words[$1] on as a command of its own.
 _afterglow_offset()
@@ -118,7 +131,13 @@ _afterglow_ctl()
             _afterglow_matching left right up down new-tab new-window
             return
             ;;
+        signal:0)
+            _afterglow_matching 0 1 2 3 4 5 6 7
+            return
+            ;;
         action:0)
+            # shellcheck disable=SC2086 # the list splits into its words
+            _afterglow_matching $_afterglow_actions
             if [[ script: == "$cur"* || $cur == script:* ]]; then
                 local id name
                 while IFS= read -r id; do
@@ -164,7 +183,7 @@ _afterglow_given()
 {
     local j
     for ((j = start; j < cword; j++)); do
-        [[ ${words[j]} == "$1" ]] && return 0
+        [[ ${words[j]%%=*} == "$1" ]] && return 0
     done
     return 1
 }
@@ -254,6 +273,23 @@ _afterglow()
             _afterglow_run
             return
             ;;
+        transfer | dnd | icat | clipboard)
+            # These run aglow, whose completion reads its command at the same position.
+            if ! declare -F _aglow >/dev/null; then
+                if declare -F _comp_load >/dev/null; then
+                    _comp_load -- aglow
+                elif declare -F _completion_loader >/dev/null; then
+                    _completion_loader aglow
+                fi
+            fi
+            if declare -F _aglow >/dev/null; then
+                _aglow
+            else
+                # No completion of aglow: its arguments are files, most likely.
+                _afterglow_files
+            fi
+            return
+            ;;
         esac
     fi
 
@@ -267,9 +303,19 @@ _afterglow()
             ;;
         -d | --working-directory | --title | --config | -o | --override | --class) ((i++)) ;;
         # Each of these is the whole command line.
-        --config-reference | -h | --help | -v | --version) return ;;
+        --config-reference | -h | --help | --help-all | -v | --version) return ;;
         esac
     done
+    # --option=value: the value is at the cursor. Without bash-completion,
+    # readline splits the word at the "=".
+    if [[ $cur == --*=* ]]; then
+        prev=${cur%%=*}
+        cur=${cur#*=}
+    elif [[ $cur == = ]]; then
+        cur=""
+    elif [[ $prev == = ]]; then
+        prev=${words[cword - 2]}
+    fi
     case $prev in
     -d | --working-directory)
         _afterglow_files -d
@@ -282,14 +328,22 @@ _afterglow()
     --title | -o | --override | --class) return ;;
     esac
     if ((cword == 1)) && [[ $cur != -* ]]; then
-        _afterglow_matching ctl run ssh
+        _afterglow_matching ctl run ssh transfer dnd icat clipboard
         return
     fi
     local start=1
     if ((cword == 1)); then
-        _afterglow_matching --config-reference -h --help -v --version
+        _afterglow_matching --config-reference -h --help --help-all -v --version
     fi
-    _afterglow_unused "-d|--working-directory" "-e|--execute" --title --hold --quick-terminal --config --class
+    # --quick-terminal takes no -e, -d, --title or --hold.
+    if _afterglow_given --quick-terminal; then
+        _afterglow_unused --config --class
+    elif _afterglow_given -d || _afterglow_given --working-directory || _afterglow_given --title \
+        || _afterglow_given --hold; then
+        _afterglow_unused "-d|--working-directory" "-e|--execute" --title --hold --config --class
+    else
+        _afterglow_unused "-d|--working-directory" "-e|--execute" --title --hold --quick-terminal --config --class
+    fi
     # Repeatable.
     _afterglow_matching -o --override
 }

@@ -80,6 +80,19 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME afterglow_configuration_reference
         COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tools/generate-reference.py --check $<TARGET_FILE:afterglow>)
     set_tests_properties(afterglow_configuration_reference PROPERTIES TIMEOUT 60)
+    # File transfer between the service (afterglow_transfer_tests --protocol-relay) and a client in a
+    # pseudo-terminal: kitten when it is installed (77: skipped), and aglow. kitten 0.49.2 leaves out an
+    # empty file that it receives, and the service tests check empty files on their own.
+    add_test(NAME afterglow_transfer_kitten_relay
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/kitty_transfer_interop.py
+                --relay $<TARGET_FILE:afterglow_transfer_tests> --allow-client-empty-file-bug)
+    set_tests_properties(afterglow_transfer_kitten_relay PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    if(AFTERGLOW_BUILD_AGLOW)
+        add_test(NAME afterglow_transfer_aglow_relay
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/kitty_transfer_interop.py
+                    --relay $<TARGET_FILE:afterglow_transfer_tests> --aglow $<TARGET_FILE:aglow>)
+        set_tests_properties(afterglow_transfer_aglow_relay PROPERTIES TIMEOUT 300)
+    endif()
 endif()
 
 option(AFTERGLOW_NATIVE_TESTS "Run integration tests in a nested KWin desktop (requires DISPLAY)" OFF)
@@ -89,6 +102,13 @@ if(AFTERGLOW_NATIVE_TESTS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/native_window_acceptance.py
                 --binary $<TARGET_FILE:afterglow_native_tests>)
     set_tests_properties(afterglow_native_window_acceptance PROPERTIES LABELS native TIMEOUT 420)
+    # aglow transfer against Kitty in a headless KWin (77: no kitty, kwin_wayland or dbus-run-session).
+    if(AFTERGLOW_BUILD_AGLOW)
+        add_test(NAME afterglow_transfer_kitty
+            COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/kitty_transfer_interop.py
+                    --kitty --aglow $<TARGET_FILE:aglow>)
+        set_tests_properties(afterglow_transfer_kitty PROPERTIES LABELS native SKIP_RETURN_CODE 77 TIMEOUT 660)
+    endif()
 endif()
 
 qt_add_executable(afterglow_transfer_tests FileTransferTest.cpp ../src/desktop/FileTransfer.cpp ../src/desktop/FileTransfer.h)
@@ -97,8 +117,20 @@ target_include_directories(afterglow_transfer_tests PRIVATE ../src)
 # against the protocol library it uses.
 target_link_libraries(afterglow_transfer_tests PRIVATE Qt6::Core Afterglow::Proto afterglow_zlib afterglow_xxhash GTest::gtest)
 gtest_discover_tests(afterglow_transfer_tests)
+# The TransferLimits tests reach the descriptor limit of transfers, half of
+# RLIMIT_NOFILE. They skip unless the soft limit is 64 or less, so in this
+# entry a skip, or no test that ran, means that the limit did not apply.
+add_test(NAME afterglow_transfer_descriptor_limits
+    COMMAND sh -c "ulimit -n 64 && exec \"$0\" --gtest_filter='TransferLimits.*'" $<TARGET_FILE:afterglow_transfer_tests>)
+set_tests_properties(afterglow_transfer_descriptor_limits PROPERTIES
+    FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\];\\[  PASSED  \\] 0 tests" TIMEOUT 60)
 
 qt_add_executable(afterglow_dnd_tests DragDropTest.cpp ../src/desktop/DragDrop.cpp ../src/desktop/DragDrop.h)
 target_include_directories(afterglow_dnd_tests PRIVATE ../src)
-target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui Afterglow::Proto GTest::gtest)
+target_link_libraries(afterglow_dnd_tests PRIVATE Qt6::Gui Qt6::GuiPrivate Afterglow::Proto GTest::gtest)
+# The tests of a drop on aglow dnd run the aglow of this build.
+if(AFTERGLOW_BUILD_AGLOW)
+    target_compile_definitions(afterglow_dnd_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
+    add_dependencies(afterglow_dnd_tests aglow)
+endif()
 gtest_discover_tests(afterglow_dnd_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

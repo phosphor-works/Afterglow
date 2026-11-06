@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Random.h>
@@ -102,33 +103,6 @@ static_assert(Interrupted == 128 + SIGINT && Terminated == 128 + SIGTERM && Brok
 // The self-pipe of the signal handler: the run loop waits on it.
 int g_wake[2] = {-1, -1};
 volatile std::sig_atomic_t g_signal = 0;
-
-/// 0, or the errno of the write that failed. EINTR: a signal came while the
-/// write waited for a reader that does not read, and the caller checks the
-/// signal first.
-int writeAll(int fd, std::string_view data)
-{
-    while (!data.empty()) {
-        const ssize_t n = ::write(fd, data.data(), data.size());
-        if (n > 0) {
-            data.remove_prefix(std::size_t(n));
-            continue;
-        }
-        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (g_signal) return EINTR;
-            // A descriptor that another process made non-blocking waits for
-            // room here. The poll ends on room, an error or a signal: the
-            // next write tells which.
-            if (errno != EINTR) {
-                pollfd fds[2] = {{fd, POLLOUT, 0}, {g_wake[0], POLLIN, 0}};
-                ::poll(fds, 2, -1);
-            }
-            continue;
-        }
-        return n < 0 ? errno : EIO;
-    }
-    return 0;
-}
 
 /// Opens /dev/null on a closed stdin, stdout or stderr. Else the socket
 /// would take that number, and the command's input or output would be the
@@ -452,8 +426,9 @@ int runCommand(Client& client, const Command& command, const std::vector<std::st
             continue;
         const bool out = event == "stdout";
         if (out || event == "stderr") {
-            if (const int failed = writeAll(out ? client.env().output : client.env().error, eventArgs[1].toString())) {
-                // A signal while a reader held the write back.
+            // The wake pipe ends a write that a reader holds back when a signal comes.
+            if (!writeAll(out ? client.env().output : client.env().error, eventArgs[1].toString(), g_wake[0])) {
+                const int failed = errno;
                 if (g_signal) {
                     cancel();
                     return client.interrupted();

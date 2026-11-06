@@ -34,16 +34,95 @@ _afterglow_run() {
     esac
 }
 
-# The script commands that ctl action starts, as script:ID.COMMAND.
+# The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp),
+# and the script commands that it starts, as script:ID.COMMAND.
 _afterglow_actions() {
-    local id entry
-    local -a actions
+    local id entry ret=1
+    local -a keybinds actions
+    keybinds=(
+        'swap_left:swap pane left'
+        'swap_right:swap pane right'
+        'swap_up:swap pane above'
+        'swap_down:swap pane below'
+        'rotate_panes_clockwise:rotate panes clockwise'
+        'rotate_panes_counterclockwise:rotate panes counterclockwise'
+        'pane_overview:pane overview'
+        'use_package_shaders:use package shaders'
+        'move_pane_to_tab:move pane to new tab'
+        'move_pane_to_window:move pane to new window'
+        'detach_tab:detach tab to new window'
+        'save_project:save project'
+        'switch_project:switch project'
+        'end_script_key_mode:end script key mode'
+        'split_right:split right'
+        'split_down:split down'
+        'split_left:split left'
+        'split_up:split up'
+        'rename_pane:change pane title'
+        'close_pane:close pane'
+        'new_window:new window'
+        'new_tab:new tab'
+        'close_tab:close tab'
+        'rename_tab:change tab title'
+        'move_tab_left:move tab left'
+        'move_tab_right:move tab right'
+        'goto_tab_1:go to tab 1'
+        'goto_tab_2:go to tab 2'
+        'goto_tab_3:go to tab 3'
+        'goto_tab_4:go to tab 4'
+        'goto_tab_5:go to tab 5'
+        'goto_tab_6:go to tab 6'
+        'goto_tab_7:go to tab 7'
+        'goto_tab_8:go to tab 8'
+        'goto_tab_9:go to the last tab'
+        'close_window:close window'
+        'toggle_fullscreen:toggle fullscreen'
+        'next_tab:next tab'
+        'previous_tab:previous tab'
+        'show_hints:select text or file reference'
+        'show_last_output:view last command output in pager'
+        'copy_mode:keyboard copy mode'
+        'copy:copy'
+        'paste:paste'
+        'select_all:select all'
+        'clear_screen:clear screen and scrollback'
+        'reset:reset terminal'
+        'notify_on_finish:notify when the next command finishes'
+        'focus_left:focus pane left'
+        'focus_right:focus pane right'
+        'focus_up:focus pane above'
+        'focus_down:focus pane below'
+        'equalize_splits:equalize splits'
+        'toggle_pane_zoom:toggle pane zoom'
+        'resize_left:resize pane left'
+        'resize_right:resize pane right'
+        'resize_up:resize pane up'
+        'resize_down:resize pane down'
+        'font_bigger:increase font size'
+        'font_smaller:decrease font size'
+        'font_reset:reset font size'
+        'scroll_page_up:scroll page up'
+        'scroll_page_down:scroll page down'
+        'scroll_top:scroll to top'
+        'scroll_bottom:scroll to bottom'
+        'jump_prompt_up:jump to previous prompt'
+        'jump_prompt_down:jump to next prompt'
+        'search:search'
+        'command_palette:command palette'
+        'reload_config:reload config'
+        'open_config:open config file'
+        'show_urls_open:open a url on screen'
+        'show_urls_copy:copy a url on screen'
+        'unicode_input:insert unicode character'
+    )
+    _describe -t keybinds 'keybind action' keybinds && ret=0
     for id in ${(f)"$("$self" run --complete 2>/dev/null)"}; do
         for entry in ${(f)"$("$self" run --complete "$id" 2>/dev/null)"}; do
             actions+=("script\\:$id.${entry%%$'\t'*}:${entry#*$'\t'}")
         done
     done
-    _describe -t actions 'script command' actions
+    _describe -t actions 'script command' actions && ret=0
+    return ret
 }
 
 _afterglow_ctl() {
@@ -131,6 +210,10 @@ _afterglow() {
         'ctl:drive a running afterglow'
         'run:run a command of a script'
         'ssh:ssh with the remote side prepared'
+        'transfer:copy files to and from the computer of the terminal'
+        'dnd:drag files and data out of the terminal, and drop them in'
+        'icat:show images in the terminal'
+        'clipboard:read and write the clipboard, with any MIME type'
     )
     # A subcommand only comes first, and the word at the cursor is not one yet.
     if (( CURRENT > 2 )); then
@@ -151,23 +234,47 @@ _afterglow() {
             _normal
             return
             ;;
+        transfer|dnd|icat|clipboard)
+            # These run aglow, whose completion reads its command at the same
+            # position. Without it, the arguments are files, most likely.
+            if (( $+functions[_aglow] )); then
+                _aglow
+            else
+                _files
+            fi
+            return
+            ;;
         esac
     elif [[ $PREFIX != -* ]]; then
         _describe -t subcommands 'subcommand' subcommands
         return
     fi
-    _arguments -s -S \
-        '(-d --working-directory)'{-d,--working-directory}'[start in the directory]:directory:_directories' \
-        '(-e --execute)'{-e,--execute}'[run the rest of the command line instead of the shell]:*::command:_normal' \
-        '--title[give the window a title]:title:' \
-        '--hold[keep the window open after the program exits]' \
-        '--quick-terminal[show or hide the quick terminal]' \
-        '--config[read settings from the file]:config file:_files' \
-        '*'{-o,--override}'[override a setting (Group.key=value)]:setting:' \
-        '--class[Wayland app id for window rules]:app id:' \
-        '(- *)--config-reference[print the configuration reference as JSON]' \
-        '(- *)'{-h,--help}'[show the help]' \
+    # --quick-terminal takes no -e, -d, --title or --hold. Each of the last
+    # options is the whole command line, so it comes only first, and nothing
+    # follows it.
+    local word
+    for word in $words[2,CURRENT-1]; do
+        # The program of -e has options of its own.
+        [[ $word == (-e|--execute) ]] && break
+        [[ $word == (--config-reference|-h|--help|--help-all|-v|--version) ]] && return 1
+    done
+    local -a alone
+    (( CURRENT == 2 )) && alone=(
+        '(- *)--config-reference[print the configuration reference as JSON]'
+        '(- *)'{-h,--help}'[show the help]'
+        '(- *)--help-all[show the help, with the options of Qt]'
         '(- *)'{-v,--version}'[show the version]'
+    )
+    _arguments -s -S \
+        '(-d --working-directory --quick-terminal)'{-d+,--working-directory=}'[start in the directory]:directory:_directories' \
+        '(-e --execute --quick-terminal)'{-e,--execute}'[run the rest of the command line instead of the shell]:*::command:_normal' \
+        '(--quick-terminal)--title=[give the window a title]:title:' \
+        '(--quick-terminal)--hold[keep the window open after the program exits]' \
+        '(-d --working-directory -e --execute --title --hold)--quick-terminal[show or hide the quick terminal]' \
+        '--config=[read settings from the file]:config file:_files' \
+        '*'{-o+,--override=}'[override a setting (Group.key=value)]:setting:' \
+        '--class=[Wayland app id for window rules]:app id:' \
+        $alone
 }
 
 _afterglow "$@"

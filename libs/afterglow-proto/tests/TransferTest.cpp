@@ -114,6 +114,8 @@ TEST(Transfer, StatusNames)
     EXPECT_EQ(transferErrorName(EEXIST), "EEXIST");
     EXPECT_EQ(transferErrorName(ENOTDIR), "ENOTDIR");
     EXPECT_EQ(transferErrorName(ELOOP), "ELOOP");
+    EXPECT_EQ(transferErrorName(EFBIG), "EFBIG");
+    EXPECT_EQ(transferErrorName(EINVAL), "EINVAL");
     EXPECT_EQ(transferErrorName(EXDEV), "EIO");
     for (std::string_view ok : {"OK", "STARTED", "PROGRESS", "CANCELED"}) {
         EXPECT_TRUE(transferSuccess(ok));

@@ -17,9 +17,11 @@
 //   7 the text checks that sanitize ids and names
 //   8 JSON for the phosphor-ipc client, written and read again, and the
 //     stdin parts of `afterglow run`
+//   9 X11 colour specs (parseColorSpec), and the colour read written again
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Clipboard.h>
+#include <AfterglowProto/Color.h>
 #include <AfterglowProto/Delta.h>
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Graphics.h>
@@ -31,6 +33,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -197,8 +200,13 @@ void checkWritten(const AfterglowProto::GraphicsCommand& command, std::string_vi
         const std::size_t semi = body.find(';');
         const GraphicsCommand read = GraphicsCommand::parse(body.substr(0, semi));
         const bool last = end + 2 == written.size();
-        // The first command carries the keys. The others carry only m and q.
+        // The first command carries the keys. The others carry only m and q,
+        // and a=f for a frame.
         GraphicsCommand expected = at == 0 ? command : GraphicsCommand{};
+        if (at != 0 && command.action == 'f') {
+            expected.action = 'f';
+            expected.hasAction = true;
+        }
         expected.more = chunked && !last ? 1 : 0;
         expected.quiet = command.quiet;
         if (read != expected) {
@@ -358,6 +366,30 @@ void json(std::string_view input)
     }
 }
 
+void color(std::string_view input)
+{
+    // A spec that fails leaves the colour as it was.
+    std::uint8_t r = 1, g = 2, b = 3;
+    if (!AfterglowProto::parseColorSpec(input, r, g, b)) {
+        if (r != 1 || g != 2 || b != 3) {
+            __builtin_trap();
+        }
+        return;
+    }
+    // One that reads gives a colour that reads back the same in the two
+    // exact forms: 8-bit "#" digits and 2-digit rgb: components.
+    char hex[8];
+    char rgb[16];
+    std::snprintf(hex, sizeof hex, "#%02x%02x%02x", r, g, b);
+    std::snprintf(rgb, sizeof rgb, "rgb:%02x/%02x/%02x", r, g, b);
+    for (const char* spec : {hex, rgb}) {
+        std::uint8_t r2 = 0, g2 = 0, b2 = 0;
+        if (!AfterglowProto::parseColorSpec(spec, r2, g2, b2) || r2 != r || g2 != g || b2 != b) {
+            __builtin_trap();
+        }
+    }
+}
+
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
@@ -366,7 +398,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         return 0;
     }
     const std::string_view input(reinterpret_cast<const char*>(data + 1), size - 1);
-    switch (data[0] % 9) {
+    switch (data[0] % 10) {
     case 0:
         transfer(input);
         break;
@@ -393,6 +425,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         break;
     case 8:
         json(input);
+        break;
+    case 9:
+        color(input);
         break;
     }
     return 0;

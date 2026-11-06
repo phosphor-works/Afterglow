@@ -218,6 +218,9 @@ struct Settings
     /// Milliseconds that a drag over a pane waits for the answer of a program
     /// that uses Kitty drag and drop, when the drag shows it new types.
     int dragAnswerWait = 100;
+    /// Minutes that the files of a remote drag remain after its drop, for a
+    /// drop target that copies them later.
+    int dragTreeLifetime = 10;
     enum class Permission { Allow, Ask, Deny };
     /// Programs reading the clipboard (OSC 52, OSC 5522).
     Permission clipboardRead = Permission::Ask;

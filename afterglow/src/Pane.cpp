@@ -11,6 +11,7 @@
 #include "app/NotificationCenter.h"
 #include "app/Startup.h"
 
+#include <AfterglowProto/Graphics.h>
 #include <AfterglowVt/Unicode.h>
 
 #include <QByteArray>
@@ -236,6 +237,13 @@ bool Pane::refreshSnapshot(int extraRows)
         }
     } else {
         m_promptTimer.invalidate();
+    }
+    // Animations run only for images the viewport draws, and only PTY output
+    // ticks them, so a viewport that moves must tick them again. Queued: the
+    // tick takes m_mutex.
+    if (const std::size_t top = m_terminal.screen().viewportTop(); top != m_animationViewportTop) {
+        m_animationViewportTop = top;
+        QMetaObject::invokeMethod(this, &Pane::tickAnimations, Qt::QueuedConnection);
     }
     if (m_terminal.generation() != m_snapshotGeneration || m_selectionSerial != m_snapshotSelectionSerial
         || extraRows != m_snapshotExtraRows) {
@@ -795,9 +803,64 @@ void Pane::reportInputFailure()
     }, Qt::QueuedConnection);
 }
 
+namespace {
+/// The bytes that the pane holds for the GUI thread: the protocol commands,
+/// and the reports that wait behind them.
+constexpr qsizetype ProtocolBudget = 16 * 1024 * 1024;
+} // namespace
+
 void Pane::writeToPty(std::string_view bytes)
 {
+    // m_mutex held, on the pty thread or the GUI thread (a resize). The
+    // replies to protocol commands are written on the GUI thread when the
+    // commands run, and for file transfer when the worker has handled them.
+    // A report that the terminal answers at once must not pass the replies to
+    // commands that the program wrote before it. What a command sends later
+    // is not ordered: file data, an answer after a permission dialog, the
+    // drag data that the pump timer sends after an "r" request. kitty sends
+    // these later too, and the client waits for them anyway. The reply to an
+    // OSC 72 command after a report can come before a report that waits for
+    // file transfer. Each aglow command uses only one of the two protocols.
+    if (m_protocolQueued.load() > 0) {
+        const auto size = qsizetype(bytes.size());
+        if (m_protocolBytes.fetch_add(size) + size > ProtocolBudget) {
+            m_protocolBytes.fetch_sub(size);
+            reportInputFailure();
+            return;
+        }
+        // One closure for each run of reports, however many the program asks for.
+        if (!m_openReports) {
+            auto batch = std::make_shared<std::string>();
+            postProtocolCommand([this, batch] {
+                std::string reports;
+                {
+                    std::lock_guard lock(m_mutex);
+                    reports = std::move(*batch);
+                    if (m_openReports == batch) m_openReports.reset();
+                }
+                // The file transfer commands before this batch have begun
+                // their holds, and no command after it has run.
+                if (m_answersEnded != m_answersBegun) {
+                    if (!m_parkedReports.empty() && m_parkedReports.back().first == m_answersBegun)
+                        m_parkedReports.back().second += reports;
+                    else
+                        m_parkedReports.emplace_back(m_answersBegun, std::move(reports));
+                    return;
+                }
+                writeReports(reports);
+            });
+            m_openReports = std::move(batch);
+        }
+        m_openReports->append(bytes);
+        return;
+    }
     if (m_pty && !m_pty->write(bytes)) reportInputFailure();
+}
+
+void Pane::writeReports(const std::string& reports)
+{
+    m_protocolBytes.fetch_sub(qsizetype(reports.size()));
+    if (m_pty && !m_pty->write(reports)) reportInputFailure();
 }
 
 bool Pane::sendReply(std::string_view bytes)
@@ -890,7 +953,8 @@ namespace {
 
 bool toRgba(QImage img, std::uint32_t& width, std::uint32_t& height, std::vector<std::uint8_t>& rgba)
 {
-    if (img.isNull() || img.width() > 10000 || img.height() > 10000
+    if (img.isNull() || std::uint32_t(img.width()) > AfterglowProto::GraphicsMaxSide
+        || std::uint32_t(img.height()) > AfterglowProto::GraphicsMaxSide
         || std::uint64_t(img.width()) * img.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
     img.convertTo(QImage::Format_RGBA8888);
     if (img.isNull()) return false;
@@ -925,7 +989,8 @@ bool decodeBoundedImage(std::string_view data, const char* format, std::uint32_t
     }
     QImageReader reader(&input, detected);
     const QSize size = reader.size();
-    if (!size.isValid() || size.isEmpty() || size.width() > 10000 || size.height() > 10000
+    if (!size.isValid() || size.isEmpty() || std::uint32_t(size.width()) > AfterglowProto::GraphicsMaxSide
+        || std::uint32_t(size.height()) > AfterglowProto::GraphicsMaxSide
         || std::uint64_t(size.width()) * size.height() * 4 > AfterglowVt::GraphicsStore::DefaultQuota) return false;
     return toRgba(reader.read(), width, height, rgba);
 }
@@ -1098,7 +1163,7 @@ QString Pane::contextKind() const
     return m_contextKind;
 }
 
-void Pane::tickAnimations()
+bool Pane::advanceAnimations()
 {
     using namespace std::chrono;
     const auto now = std::uint64_t(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
@@ -1115,7 +1180,12 @@ void Pane::tickAnimations()
     } else {
         m_animationTimer.stop();
     }
-    if (changed && sender() == &m_animationTimer) {
+    return changed;
+}
+
+void Pane::tickAnimations()
+{
+    if (advanceAnimations()) {
         Q_EMIT contentChanged();
     }
 }
@@ -1199,7 +1269,7 @@ void Pane::ptyData(std::string_view bytes)
             this,
             [this] {
                 m_notifyPending.store(false);
-                tickAnimations();
+                advanceAnimations();
                 Q_EMIT contentChanged();
             },
             Qt::QueuedConnection);
@@ -1321,6 +1391,13 @@ FileTransfer* Pane::fileTransfers()
         // input queue fills and a refused reply ends it.
         m_fileTransfers->setInputBacklog([this] { return m_pty ? m_pty->pendingInput() : std::size_t(0); });
         connect(m_fileTransfers.get(), &FileTransfer::permissionRequested, this, &Pane::fileTransferPermissionRequested);
+        // The worker writes the replies of a command after its command
+        // closure returned. Until then the reports after it wait.
+        connect(m_fileTransfers.get(), &FileTransfer::answering, this, [this] {
+            ++m_answersBegun;
+            m_protocolQueued.fetch_add(1);
+        });
+        connect(m_fileTransfers.get(), &FileTransfer::answered, this, &Pane::endAnswerHold);
         connect(m_fileTransfers.get(), &FileTransfer::reply, this, [this](const QByteArray& bytes) {
             if (sendReply(std::string_view(bytes.constData(), std::size_t(bytes.size())))) return;
             // A held pane's program has exited: no input failed, nothing reads it.
@@ -1381,7 +1458,7 @@ void Pane::terminalProtocol(int code, std::string_view payload)
         return;
     }
     const auto charge = bytes.size() + 128;
-    if (m_protocolBytes.fetch_add(charge) + charge > 16 * 1024 * 1024) {
+    if (m_protocolBytes.fetch_add(charge) + charge > ProtocolBudget) {
         m_protocolBytes.fetch_sub(charge);
         m_protocolBlocked = true;
         m_protocolLost = lostAfter(DragDrop::Lost::Nothing, code);
@@ -1418,12 +1495,30 @@ void Pane::terminalProtocol(int code, std::string_view payload)
 }
 void Pane::postProtocolCommand(std::function<void()> command)
 {
-    QMetaObject::invokeMethod(&m_protocolCommands, std::move(command), Qt::QueuedConnection);
+    m_protocolQueued.fetch_add(1);
+    // A report after this command follows its replies.
+    m_openReports.reset();
+    // The count drops after the command and the replies that it wrote.
+    QMetaObject::invokeMethod(&m_protocolCommands, [this, command = std::move(command)] {
+        command();
+        m_protocolQueued.fetch_sub(1);
+    }, Qt::QueuedConnection);
     {
         std::lock_guard lock(m_postedMutex);
         ++m_postedSerial;
     }
     m_posted.notify_all();
+}
+void Pane::endAnswerHold()
+{
+    // The worker answers the commands in order.
+    ++m_answersEnded;
+    while (!m_parkedReports.empty() && m_parkedReports.front().first <= m_answersEnded) {
+        writeReports(m_parkedReports.front().second);
+        m_parkedReports.pop_front();
+    }
+    // Last: a report that the program writes meanwhile waits for the parked ones.
+    m_protocolQueued.fetch_sub(1);
 }
 void Pane::deliverProtocolCommands(int waitMs)
 {

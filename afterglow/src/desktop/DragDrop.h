@@ -1,14 +1,58 @@
 // SPDX-FileCopyrightText: 2026 fuddlesworth
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <QByteArray>
+#include <QDeadlineTimer>
 #include <QObject>
 #include <QPoint>
+#include <QTimer>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 class QWindow;
 class QDropEvent;
+class QTemporaryDir;
 namespace Afterglow {
+/// The directories that hold the files of remote drags: what a drag source
+/// on another computer sent, for the drop target to read here. The process
+/// owns them, not the pane. A drop target such as a file manager copies the
+/// files after the drag has ended, and can still copy after the pane closed
+/// or the next drag started.
+class DragTrees : public QObject {
+public:
+    /// The default of Terminal.dragTreeLifetime.
+    static constexpr std::chrono::minutes DefaultLifetime { 10 };
+    static DragTrees& instance();
+    ~DragTrees() override;
+    /// How long the tree of a drag that ended in a drop remains. A tree keeps
+    /// the lifetime that was set when its drag ended.
+    void setLifetime(std::chrono::milliseconds lifetime);
+    /// A new directory for a drag that starts, kept until finish() or
+    /// remove(). Null when it cannot be made.
+    std::shared_ptr<QTemporaryDir> create();
+    /// The drag ended in a drop: the tree remains for the lifetime.
+    void finish(const std::shared_ptr<QTemporaryDir>& tree);
+    /// The drag was canceled or failed: nothing reads the tree, so it goes now.
+    void remove(const std::shared_ptr<QTemporaryDir>& tree);
+    /// Whether the file at @p path is inside one of the trees. Links in the
+    /// directories above it are followed, a link that it is itself is not.
+    bool holds(const QByteArray& path) const;
+    std::size_t size() const { return m_trees.size(); }
+
+private:
+    explicit DragTrees(QObject* parent);
+    void expire();
+    struct Tree {
+        std::shared_ptr<QTemporaryDir> directory;
+        QByteArray root; ///< the directory's path with no links
+        QDeadlineTimer expiry; ///< forever while the drag runs
+    };
+    std::vector<Tree> m_trees;
+    QTimer m_timer;
+    std::chrono::milliseconds m_lifetime = DefaultLifetime;
+};
 /// Kitty OSC 72 desktop bridge. Each terminal pane owns its own protocol state.
 class DragDrop : public QObject {
     Q_OBJECT

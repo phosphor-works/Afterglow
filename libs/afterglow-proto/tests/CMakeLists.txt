@@ -5,9 +5,11 @@ find_package(GTest REQUIRED)
 
 add_executable(afterglow_proto_tests
     Base64Test.cpp
+    ClientTest.cpp
     ClipboardTest.cpp
     DeltaTest.cpp
     DragDropTest.cpp
+    DndUriTest.cpp
     GraphicsTest.cpp
     HelpersTest.cpp
     IpcTest.cpp

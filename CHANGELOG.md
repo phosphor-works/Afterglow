@@ -67,7 +67,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Clipboard access through OSC 52 and the Kitty clipboard protocol (OSC 5522).
 - Clipboard reads ask first by default, and the prompt starts on Deny. `Terminal.clipboardWrite` allows, asks for or denies writes.
 - Desktop notifications from OSC 9, OSC 777 and the Kitty notification protocol (OSC 99).
-- A notification limit for each pane (`Notifications.rateLimit`, 20 in 10 seconds by default). Notices from Afterglow itself do not count.
+- A notification limit for each pane (`Notifications.rateLimit`, 20 in 10 seconds by default). Notices from Afterglow itself do not count. The notice at the end of a script command that has no client counts.
 - Settings for the shortest time between two bell sounds (`Terminal.bellSoundInterval`) and between two status notifications of a pane (`Notifications.statusInterval`).
 - `Mouse.autoScrollInterval` sets the time between the rows of a selection drag that scrolls.
 - `Control.eventInterval` sets the shortest time between two control events of one kind for a pane.
@@ -75,7 +75,13 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - Kitty file transfers (OSC 5113) with approval, directories, links, compression and delta updates.
 - Kitty drag and drop, including remote directory data and thumbnails.
 - `Terminal.dragAnswerWait` sets how long a drag waits for the answer of a program that uses Kitty drag and drop.
+- `Terminal.dragTreeLifetime` sets how long Afterglow keeps the files of a drag from another computer after the drop.
+- Afterglow tells the source of a drag the action that the drop took (the `o` key of `t=e:x=4`). `aglow dnd` uses it to delete the files of a remote drag only when the drop was a move. A move to another application is reported as a copy, so the source keeps its files.
+- Received file transfers keep the read, write and execute bits of a mode. Afterglow drops the set-user-ID, set-group-ID and sticky bits.
 - Local file drops, quoted for the shell and sent as bracketed paste.
+- `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. It takes the options of `kitten`, with a few differences that the compatibility document lists.
+- `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
+- Shell completion of `aglow` for Bash, Zsh and Fish.
 
 ### Windows, tabs and panes
 
@@ -135,11 +141,11 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - External control through `afterglow ctl` and a control socket, with access settings and merged state events.
 - Script commands. A script or package declares each command with a summary. A usage text, a palette title and standard input are optional. A script can also change its commands at run time with `afterglow.set_commands`, which takes the same map of names as the package manifest.
 - `afterglow run ID COMMAND` runs a command from a shell with its arguments, output and exit status. A command that asks for standard input gets it when standard input is not a terminal. The palette, the context menu, keys and `afterglow ctl action` run commands too. The palette shows a command as `ID: TITLE`. A held key runs a command once.
-- `Scripts.commandTimeout` limits the time of a run. `Scripts.commandRunLimit` limits the runs of one script at a time, from 1 to 16. `Scripts.commandStdinLimit` and `Scripts.commandOutputLimit` limit their standard input and output, in KiB. Standard input over its limit is never cut: `afterglow run` refuses the run with exit status 2.
+- `Scripts.commandTimeout` limits the time of a run. `Scripts.commandRunLimit` limits the runs of one script at a time, from 1 to 16. `Scripts.commandStdinLimit` and `Scripts.commandOutputLimit` limit their standard input and output, in KiB. Standard input over its limit is never cut. `afterglow run` refuses the run with exit status 2.
 - An interrupt or `SIGTERM` cancels the run, and `afterglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
 - A command that `afterglow run` starts reads pane text only when `Control.allowReadText` is on.
 - `afterglow ctl action` and `afterglow.action` are refused while a prompt or a script dialog is open.
-- Shell completion for Bash, Zsh and Fish, with the commands of the running scripts. The Fish completion needs Fish 4 or later.
+- Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.
 
@@ -182,6 +188,6 @@ See [performance measurements](docs/PERFORMANCE.md) for workloads, conditions an
 
 - [Documentation index](docs/README.md).
 - [Supported protocols and limits](docs/COMPATIBILITY.md).
-- [Desktop integration](docs/DESKTOP.md) for accessibility and input-method limits.
+- [Desktop integration](docs/DESKTOP.md) for accessibility, input methods, file drops, Kitty file transfer, Kitty drag and drop, and the `aglow` client.
 - [Bidirectional text](docs/BIDI.md) for the application-grid policy.
 - [Testing](docs/TESTING.md) for regression and native desktop test procedures.

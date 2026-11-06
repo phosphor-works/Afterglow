@@ -64,8 +64,12 @@ qt_add_library(afterglow_app STATIC
     src/app/Services.h
 )
 
-qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h)
+qt_add_executable(afterglow src/main.cpp src/control/Ctl.cpp src/control/Ctl.h src/shell/Aglow.cpp src/shell/Aglow.h)
 target_link_libraries(afterglow PRIVATE afterglow_app Afterglow::Proto)
+# Without aglow, afterglow transfer, dnd, icat and clipboard say that it is not built.
+if(AFTERGLOW_BUILD_AGLOW)
+    target_compile_definitions(afterglow PRIVATE AFTERGLOW_HAS_AGLOW)
+endif()
 
 # Shader pack loading, shared with the developer render tool.
 # A binary under the build directory reads the packs and themes of the source
@@ -169,6 +173,11 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     qt_add_executable(afterglow_native_tests tests/NativeWindowTest.cpp)
     target_link_libraries(afterglow_native_tests PRIVATE afterglow_app GTest::gtest)
+    # The aglow dnd twins of the kitten dnd tests run the aglow of this build.
+    if(AFTERGLOW_BUILD_AGLOW)
+        target_compile_definitions(afterglow_native_tests PRIVATE AFTERGLOW_AGLOW="$<TARGET_FILE:aglow>")
+        add_dependencies(afterglow_native_tests aglow)
+    endif()
     afterglow_add_chrome(afterglow_native_tests)
 endif()
 
@@ -255,17 +264,8 @@ install(FILES src/scripting/afterglow.d.luau DESTINATION ${CMAKE_INSTALL_DATADIR
 # Shell completion, where each shell looks for the completions of packages.
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.bash
         DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME afterglow)
-# Zsh has no one place: with the prefix /usr, Debian and Ubuntu read
-# share/zsh/vendor-completions, not share/zsh/site-functions. The default is
-# empty so that it follows CMAKE_INSTALL_DATADIR at each configure: a cached
-# path would keep the DATADIR of the first one.
-set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
-    "Directory for the zsh completion, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
-set(_zsh_completion_dir "${AFTERGLOW_ZSH_COMPLETION_DIR}")
-if(_zsh_completion_dir STREQUAL "")
-    set(_zsh_completion_dir "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
-endif()
-install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${_zsh_completion_dir})
+# Zsh: the directory comes from AFTERGLOW_ZSH_COMPLETION_DIR (CMakeLists.txt).
+install(FILES ${PROJECT_SOURCE_DIR}/data/completions/_afterglow DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
 install(FILES ${PROJECT_SOURCE_DIR}/data/completions/afterglow.fish DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/packages/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/packages)
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/data/examples/projects/ DESTINATION ${CMAKE_INSTALL_DATADIR}/afterglow/examples/projects)

@@ -6,6 +6,7 @@
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Placeholder.h>
 #include <AfterglowProto/Zlib.h>
 
 #include <gtest/gtest.h>
@@ -33,6 +34,38 @@ std::string rgba(int w, int h, std::uint8_t r, std::uint8_t g, std::uint8_t b, s
         px += char(a);
     }
     return px;
+}
+
+std::string utf8(char32_t cp)
+{
+    std::string out;
+    if (cp < 0x80) {
+        out += char(cp);
+    } else if (cp < 0x800) {
+        out += char(0xC0 | (cp >> 6));
+        out += char(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += char(0xE0 | (cp >> 12));
+        out += char(0x80 | ((cp >> 6) & 0x3F));
+        out += char(0x80 | (cp & 0x3F));
+    } else {
+        out += char(0xF0 | (cp >> 18));
+        out += char(0x80 | ((cp >> 12) & 0x3F));
+        out += char(0x80 | ((cp >> 6) & 0x3F));
+        out += char(0x80 | (cp & 0x3F));
+    }
+    return out;
+}
+
+/// A placeholder cell with the diacritics given; a negative value writes
+/// U+0301, a combining mark that is not one of them.
+std::string placeholder(std::initializer_list<int> values)
+{
+    std::string out = utf8(AfterglowProto::PlaceholderChar);
+    for (const int v : values) {
+        out += utf8(v < 0 ? char32_t(0x0301) : AfterglowProto::PlaceholderDiacritics[v]);
+    }
+    return out;
 }
 
 std::string apc(std::string_view keys, std::string_view payload = {})
@@ -382,12 +415,15 @@ TEST(Graphics, FramesAndAnimation)
     t.t.feed(apc("a=p,i=10,C=1,q=2")); // only an image on screen animates
     const Image& img = t.g().images().at(10);
     ASSERT_EQ(img.frames.size(), 2u);
+    EXPECT_EQ(img.gaps[0], 0u); // the root frame has no gap, as in the protocol
     // new frame: transparent canvas with the patch at x=1
     EXPECT_EQ(img.frames[1]->rgba[3], 0);
     EXPECT_EQ(img.frames[1]->rgba[5], 255);
     EXPECT_EQ(img.gaps[1], 100u);
 
-    t.t.feed(apc("a=a,i=10,s=3,v=1,q=2"));
+    t.t.feed(apc("a=a,i=10,r=1,z=40")); // the root frame has no gap until it gets one
+    t.t.feed(apc("a=a,i=10,s=3,v=1"));
+    EXPECT_TRUE(t.host.written.empty()); // a=a answers only an error, as in kitty
     std::uint64_t now = 1000;
     t.t.advanceAnimations(now); // starts the clock
     EXPECT_EQ(t.g().images().at(10).currentFrame, 0u);
@@ -402,7 +438,7 @@ TEST(Graphics, FileTransmissionRejectsDevices)
 {
     Term t(20, 10);
     t.t.feed(apc("a=t,t=f,f=32,s=1,v=1,i=11", base64Encode("/dev/zero")));
-    EXPECT_EQ(t.host.written, "\x1b_Gi=11;EBADF:not a readable regular file\x1b\\");
+    EXPECT_EQ(t.host.written, "\x1b_Gi=11;EBADF:failed to read image file\x1b\\");
 }
 
 TEST(Graphics, ImageStaysAnchoredWhenTheScreenGrows)
@@ -692,9 +728,9 @@ TEST(Graphics, UnicodePlaceholders)
     // A 40x40 image as a virtual placement of 4x2 cells (10x20 px cells).
     t.t.feed(apc("a=t,f=32,s=40,v=40,i=3,q=2", base64Encode(rgba(40, 40, 1, 2, 3))));
     t.t.feed(apc("a=p,i=3,U=1,c=4,r=2,q=2"));
-    EXPECT_EQ(placeholderDiacriticValue(0x0305), 0);
-    EXPECT_EQ(placeholderDiacriticValue(0x030D), 1);
-    EXPECT_EQ(placeholderDiacriticValue(U'a'), -1);
+    EXPECT_EQ(AfterglowProto::placeholderDiacriticValue(0x0305), 0);
+    EXPECT_EQ(AfterglowProto::placeholderDiacriticValue(0x030D), 1);
+    EXPECT_EQ(AfterglowProto::placeholderDiacriticValue(U'a'), -1);
     // Cell (row 1, col 2): 40x40 fits a 40x40 grid exactly, so the slice is
     // image pixels (20, 20)-(30, 40).
     auto slice = t.g().placeholderSlice(3, 0, 1, 2, 0, 0, 10, 20);
@@ -835,16 +871,21 @@ TEST(Graphics, FilePayloadRejectsSparseOversizeAndNonRegularFiles)
     close(fd);
     Term t(20, 10);
     // PNG data is used whole (raw pixels read only the image's bytes).
+    // Too long, a FIFO, or missing: one answer, which tells the client
+    // nothing about a file it may not be able to read itself.
     t.t.feed(apc("a=t,t=f,f=100,i=7", base64Encode(name)));
     EXPECT_TRUE(t.g().images().empty());
-    EXPECT_NE(t.host.written.find("EFBIG"), std::string::npos);
+    EXPECT_EQ(t.host.written, "\x1b_Gi=7;EBADF:failed to read image file\x1b\\");
     unlink(name);
     ASSERT_EQ(mkfifo(name, 0600), 0);
     t.host.written.clear();
     t.t.feed(apc("a=t,t=f,f=32,s=1,v=1,i=8", base64Encode(name)));
     EXPECT_TRUE(t.g().images().empty());
-    EXPECT_NE(t.host.written.find("EBADF"), std::string::npos);
+    EXPECT_EQ(t.host.written, "\x1b_Gi=8;EBADF:failed to read image file\x1b\\");
     unlink(name);
+    t.host.written.clear();
+    t.t.feed(apc("a=t,t=f,f=32,s=1,v=1,i=9", base64Encode(name)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=9;EBADF:failed to read image file\x1b\\");
 }
 
 TEST(Graphics, ExtendedViewportIncludesImageBelowVisibleRows)
@@ -867,10 +908,12 @@ TEST(Graphics, PlacementMetadataAndHostileGeometryAreBounded)
     EXPECT_EQ(t.g().placements().size(), 4096u);
     t.t.feed(apc("a=p,i=1,p=1,c=2147483647,r=2147483647,X=2147483647,Y=2147483647,C=1,q=2"));
     ASSERT_EQ(t.g().placements().size(), 4096u); // replaced, not added
-    // The huge placement's offset puts it far right of any cell: it is not
-    // drawn; the 4,095 one-cell placements are, with sane sizes.
+    // The huge offsets stay inside the first cell, and the huge size is
+    // bounded: every placement is drawn, with sane sizes.
+    EXPECT_EQ(t.g().placements()[0].offsetX, 9);
+    EXPECT_EQ(t.g().placements()[0].offsetY, 19);
     const auto vis = t.g().visible(t.t.screen(), 65535, 65535);
-    EXPECT_EQ(vis.size(), 4095u);
+    EXPECT_EQ(vis.size(), 4096u);
     for (const auto& v : vis) {
         ASSERT_GT(v.width, 0);
         ASSERT_GT(v.height, 0);
@@ -901,8 +944,9 @@ TEST(Graphics, ComposeCopiesARectangleBetweenFrames)
     t.t.feed(apc("a=f,f=32,s=2,v=1,i=1,q=2", base64Encode(rgba(2, 1, 0, 0, 255))));
     ASSERT_EQ(t.g().images().at(1).frames.size(), 2u);
     t.host.written.clear();
-    // Frame 1's pixel (0, 0) onto frame 2 at (1, 0).
-    t.t.feed(apc("a=c,i=1,r=1,c=2,w=1,h=1,X=1"));
+    // Frame 1's pixel (0, 0) onto frame 2 at (1, 0): x, y place the
+    // destination, X, Y the source.
+    t.t.feed(apc("a=c,i=1,r=1,c=2,w=1,h=1,x=1"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
     const auto& second = t.g().images().at(1).frames[1]->rgba;
     EXPECT_EQ(second[0], 0); // (0, 0) stays blue
@@ -912,6 +956,42 @@ TEST(Graphics, ComposeCopiesARectangleBetweenFrames)
     t.host.written.clear();
     t.t.feed(apc("a=c,i=1,r=3,c=1"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=1;ENOENT:no such frame\x1b\\");
+}
+
+TEST(Graphics, ComposeReadsTheSourceAtCapitalXAndY)
+{
+    Term t(20, 10);
+    std::string left = rgba(1, 1, 255, 0, 0) + rgba(1, 1, 0, 255, 0); // red, green
+    t.t.feed(apc("a=t,f=32,s=2,v=1,i=1,q=2", base64Encode(left)));
+    t.t.feed(apc("a=f,f=32,s=2,v=1,i=1,q=2", base64Encode(rgba(2, 1, 0, 0, 255))));
+    // Frame 1's pixel (1, 0), green, onto frame 2 at (0, 0).
+    t.t.feed(apc("a=c,i=1,r=1,c=2,w=1,h=1,X=1,C=1,q=2"));
+    const auto& second = t.g().images().at(1).frames[1]->rgba;
+    EXPECT_EQ(second[0], 0);
+    EXPECT_EQ(second[1], 255);
+    EXPECT_EQ(second[4], 0); // (1, 0) stays blue
+    EXPECT_EQ(second[6], 255);
+}
+
+TEST(Graphics, ComposeRefusesRectanglesOutsideTheImageOrOverlapping)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=4,v=4,i=1,q=2", base64Encode(rgba(4, 4, 255, 0, 0))));
+    t.t.feed(apc("a=f,f=32,s=4,v=4,i=1,q=2", base64Encode(rgba(4, 4, 0, 0, 255))));
+    const auto before = t.g().images().at(1).frames[1];
+    for (std::string_view keys : {"a=c,i=1,r=1,c=2,w=2,h=2,x=3",  // destination past the right edge
+                                  "a=c,i=1,r=1,c=2,w=2,h=2,Y=3",  // source past the bottom
+                                  "a=c,i=1,r=1,c=2,w=5",          // wider than the image
+                                  "a=c,i=1,r=2,c=2,w=2,h=2,x=1,y=1"}) { // one frame, overlapping
+        t.host.written.clear();
+        t.t.feed(apc(keys));
+        EXPECT_NE(t.host.written.find(";EINVAL:"), std::string::npos) << keys << ": " << t.host.written;
+    }
+    EXPECT_EQ(t.g().images().at(1).frames[1], before); // nothing was composed
+    // In one frame, rectangles side by side do not overlap.
+    t.host.written.clear();
+    t.t.feed(apc("a=c,i=1,r=2,c=2,w=2,h=2,x=2,y=2"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
 }
 
 namespace {
@@ -1028,7 +1108,7 @@ TEST(Graphics, UnsupportedDeleteKindsAreRefused)
 {
     Term t(20, 10);
     t.t.feed(apc("a=t,f=32,s=1,v=1,i=1,q=2", base64Encode(rgba(1, 1, 1, 1, 1))));
-    t.t.feed(apc("a=d,d=f,i=1"));
+    t.t.feed(apc("a=d,d=w,i=1"));
     EXPECT_EQ(t.host.written, "\x1b_Gi=1;EINVAL:unsupported delete target\x1b\\");
 }
 
@@ -1212,7 +1292,7 @@ TEST(Graphics, ClearScreenKeepsVirtualPlacementsAndDropsImagesReachingIt)
     s.apc("a=p,i=3,C=1,q=2"); // wholly in the history after the next scroll
     s.screen.scrollUp(Region{0, 4, 0, 19}, 1, StyleTable::DefaultId, true);
     ASSERT_EQ(s.g.placements().size(), 3u);
-    s.g.clearPlacements(s.screen, false, 10, 20);
+    s.g.clearPlacements(s.screen, 10, 20);
     ASSERT_EQ(s.g.placements().size(), 2u);
     EXPECT_TRUE(std::any_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.isVirtual; }));
     EXPECT_TRUE(std::none_of(s.g.placements().begin(), s.g.placements().end(), [](const Placement& p) { return p.imageId == 2; }));
@@ -1269,7 +1349,7 @@ void animated(Term& t, bool placed)
     t.t.feed(apc("a=t,f=32,s=1,v=1,i=7,q=2", base64Encode(rgba(1, 1, 255, 0, 0))));
     t.t.feed(apc("a=f,f=32,s=1,v=1,i=7,z=100,q=2", base64Encode(rgba(1, 1, 0, 255, 0))));
     if (placed) t.t.feed(apc("a=p,i=7,C=1,q=2"));
-    t.t.feed(apc("a=a,i=7,s=3,v=1,q=2"));
+    t.t.feed(apc("a=a,i=7,r=1,z=40,s=3,v=1,q=2"));
 }
 } // namespace
 
@@ -1305,7 +1385,9 @@ TEST(Graphics, FrameLimitIsCheckedBeforeDecoding)
     ASSERT_EQ(t.g().images().at(1).frames.size(), GraphicsStore::MaxFrames);
     t.host.written.clear();
     t.t.feed(apc("a=f,f=24,s=1,v=1,i=1", "AA")); // too short: decoding would say ENODATA
-    EXPECT_EQ(t.host.written, "\x1b_Gi=1;ENOSPC:too many image frames\x1b\\");
+    // r= names the frame the command would have added.
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,r=" + std::to_string(GraphicsStore::MaxFrames + 1)
+                                  + ";ENOSPC:too many image frames\x1b\\");
 }
 
 TEST(Graphics, SourceRectangleIsClippedToTheImage)
@@ -1321,13 +1403,22 @@ TEST(Graphics, SourceRectangleIsClippedToTheImage)
     EXPECT_EQ(vis[0].width, 2);
 }
 
-TEST(Graphics, VirtualGridWithOneSideFollowsTheImageShape)
+TEST(Graphics, VirtualGridSideLeftOutIsTheImageSize)
 {
     Term t(20, 10);
     t.t.feed(apc("a=t,f=32,s=200,v=200,i=1,q=2", base64Encode(rgba(200, 200, 1, 2, 3))));
-    t.t.feed(apc("a=p,U=1,i=1,c=2,q=2")); // 20 px wide, so 20 px high: one row
-    EXPECT_TRUE(t.g().placeholderSlice(1, 0, 0, 0, 0, 0, 10, 20).has_value());
-    EXPECT_FALSE(t.g().placeholderSlice(1, 0, 1, 0, 0, 0, 10, 20).has_value());
+    // Two columns, and the image's own 10 rows (200 px at 20 px), as in
+    // kitty: the 20 px square sits in the middle of a 20 x 200 px grid.
+    t.t.feed(apc("a=p,U=1,i=1,c=2,q=2"));
+    EXPECT_FALSE(t.g().placeholderSlice(1, 0, 0, 0, 0, 0, 10, 20).has_value());
+    const auto slice = t.g().placeholderSlice(1, 0, 4, 0, 0, 0, 10, 20);
+    ASSERT_TRUE(slice.has_value());
+    EXPECT_EQ(slice->y, 10); // the square starts 90 px down the grid
+    EXPECT_EQ(slice->height, 10);
+    EXPECT_EQ(slice->z, -1); // under the text and the cursor
+    EXPECT_TRUE(t.g().placeholderSlice(1, 0, 5, 1, 0, 0, 10, 20).has_value());
+    EXPECT_FALSE(t.g().placeholderSlice(1, 0, 6, 0, 0, 0, 10, 20).has_value());
+    EXPECT_FALSE(t.g().placeholderSlice(1, 0, 10, 0, 0, 0, 10, 20).has_value()); // outside the grid
 }
 
 TEST(Graphics, UndisplayedVirtualPlacementSurvivesRowDelete)
@@ -1428,7 +1519,8 @@ TEST(Graphics, CommandRefusedBeforeReadingDeletesItsTemporaryFile)
                                   "a=t,t=t,f=99,s=1,v=1,i=1", // unknown format
                                   "a=t,t=t,f=32,v=1,i=1", // no width
                                   "a=t,t=t,f=32,s=10000,v=10000,i=1", // past the payload limit
-                                  "a=t,t=t,f=32,s=40,v=40,i=1"}) { // past the quota
+                                  "a=t,t=t,f=32,s=40,v=40,i=1", // past the quota
+                                  "a=x,t=t,f=32,s=1,v=1,i=1"}) { // unknown action
         TempFile file("afterglow-tty-graphics-protocol-");
         ASSERT_TRUE(file.write("RGBA"));
         Term t(20, 10, small);
@@ -1436,6 +1528,109 @@ TEST(Graphics, CommandRefusedBeforeReadingDeletesItsTemporaryFile)
         EXPECT_NE(t.host.written.find("i=1;E"), std::string::npos) << keys << ": " << t.host.written;
         EXPECT_FALSE(std::filesystem::exists(file.path)) << keys;
     }
+}
+
+TEST(Graphics, IdWithNumberStillDeletesItsTemporaryMedium)
+{
+    // Refused before its payload is read, like the commands above: the
+    // temporary file and the tagged shared memory object still go.
+    TempFile file("afterglow-tty-graphics-protocol-");
+    ASSERT_TRUE(file.write("RGBA"));
+    const ShmName shm{"/afterglow-tty-graphics-protocol-both-" + std::to_string(getpid())};
+    const int fd = shm_open(shm.name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(write(fd, "RGBA", 4), 4);
+    close(fd);
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1,I=2", base64Encode(file.path)));
+    t.t.feed(apc("a=t,t=s,f=32,s=1,v=1,i=3,I=4", base64Encode(shm.name)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,I=2;EINVAL:both an image id and an image number\x1b\\"
+                              "\x1b_Gi=3,I=4;EINVAL:both an image id and an image number\x1b\\");
+    EXPECT_FALSE(std::filesystem::exists(file.path));
+    EXPECT_EQ(shm_open(shm.name.c_str(), O_RDONLY, 0), -1);
+    EXPECT_TRUE(t.g().images().empty());
+}
+
+TEST(Graphics, ReadOverTheWorkBudgetIsBusy)
+{
+    // A budget of one 1x1 image with no refill: the second read is refused
+    // as busy, not as a failure to read. The temporary file still goes, so
+    // the reply does not ask for a retry with it.
+    Store s(20, 5);
+    s.g.setWorkBudget(4, 0);
+    TempFile first("afterglow-tty-graphics-protocol-");
+    TempFile second("afterglow-tty-graphics-protocol-");
+    ASSERT_TRUE(first.write("RGBA"));
+    ASSERT_TRUE(second.write("RGBA"));
+    s.apc("a=t,t=t,f=32,s=1,v=1,i=1", base64Encode(first.path));
+    s.apc("a=t,t=t,f=32,s=1,v=1,i=2", base64Encode(second.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1;OK\x1b\\\x1b_Gi=2;EBUSY:too much image data read\x1b\\");
+    EXPECT_EQ(s.g.images().count(2), 0u);
+    EXPECT_FALSE(std::filesystem::exists(second.path));
+    // A t=f file stays, and a retry can read it when the budget fills again.
+    TempFile kept("afterglow-graphics-busy-");
+    ASSERT_TRUE(kept.write("RGBA"));
+    s.host.written.clear();
+    s.apc("a=t,t=f,f=32,s=1,v=1,i=4", base64Encode(kept.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=4;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_TRUE(std::filesystem::exists(kept.path));
+    // A t=t file without the tag is not the terminal's to delete: it stays,
+    // and the reply asks for a retry.
+    TempFile untagged("afterglow-graphics-busy-");
+    ASSERT_TRUE(untagged.write("RGBA"));
+    s.host.written.clear();
+    s.apc("a=t,t=t,f=32,s=1,v=1,i=5", base64Encode(untagged.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=5;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_TRUE(std::filesystem::exists(untagged.path));
+    // A file read and a shared memory read draw on the same budget. A tagged
+    // object goes with the refusal, and an untagged one stays.
+    const auto object = [](const std::string& name) {
+        const int fd = shm_open(name.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+        const bool written = fd >= 0 && write(fd, "RGBA", 4) == 4;
+        if (fd >= 0) close(fd);
+        return written;
+    };
+    const auto exists = [](const std::string& name) {
+        const int fd = shm_open(name.c_str(), O_RDONLY, 0);
+        if (fd >= 0) close(fd);
+        return fd >= 0;
+    };
+    const ShmName tagged{"/afterglow-tty-graphics-protocol-busy-" + std::to_string(getpid())};
+    ASSERT_TRUE(object(tagged.name));
+    s.host.written.clear();
+    s.apc("a=t,t=s,f=32,s=1,v=1,i=3", base64Encode(tagged.name));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=3;EBUSY:too much image data read\x1b\\");
+    EXPECT_FALSE(exists(tagged.name));
+    const ShmName plain{"/afterglow-graphics-busy-" + std::to_string(getpid())};
+    ASSERT_TRUE(object(plain.name));
+    s.host.written.clear();
+    s.apc("a=t,t=s,f=32,s=1,v=1,i=6", base64Encode(plain.name));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=6;EBUSY:too much image data read, try again later\x1b\\");
+    EXPECT_TRUE(exists(plain.name));
+}
+
+TEST(Graphics, FrameEditOverTheWorkBudgetIsBusy)
+{
+    // Frame edits draw on the work budget too. The reply asks for a retry
+    // only when the command can be sent again: a temporary file goes.
+    Store s(20, 5);
+    s.apc("a=t,f=32,s=1,v=1,i=1,q=2", base64Encode(rgba(1, 1, 255, 0, 0)));
+    s.apc("a=f,f=32,s=1,v=1,i=1,q=2", base64Encode(rgba(1, 1, 0, 0, 255)));
+    ASSERT_EQ(s.g.images().at(1).frames.size(), 2u);
+    s.g.setWorkBudget(0, 0);
+    s.host.written.clear();
+    s.apc("a=f,f=32,s=1,v=1,i=1", base64Encode(rgba(1, 1, 0, 255, 0)));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1,r=3;EBUSY:too much frame editing, try again later\x1b\\");
+    s.host.written.clear();
+    s.apc("a=c,i=1,r=1,c=2");
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1;EBUSY:too much frame editing, try again later\x1b\\");
+    TempFile file("afterglow-tty-graphics-protocol-");
+    ASSERT_TRUE(file.write("RGBA"));
+    s.host.written.clear();
+    s.apc("a=f,t=t,f=32,s=1,v=1,i=1", base64Encode(file.path));
+    EXPECT_EQ(s.host.written, "\x1b_Gi=1,r=3;EBUSY:too much frame editing\x1b\\");
+    EXPECT_FALSE(std::filesystem::exists(file.path));
+    EXPECT_EQ(s.g.images().at(1).frames.size(), 2u);
 }
 
 TEST(Graphics, RefusedCommandDeletesATemporaryFileByItsRealName)
@@ -1666,4 +1861,325 @@ TEST(Graphics, LastChunkPrunesAndSettles)
     EXPECT_TRUE(s.g.placements().empty());
     EXPECT_EQ(s.g.images().size(), 1u); // image 1 has an id and stays; the anonymous one goes
     EXPECT_EQ(s.g.images().count(1), 1u);
+}
+
+TEST(Graphics, PlaceholderContinuesOnlyWhatAgrees)
+{
+    // kitty's rule: a cell continues the run on its left only when every
+    // diacritic it has agrees with it.
+    Term t(20, 10);
+    t.t.feed("\x1b[38;2;0;0;1m");
+    // (a) A row that differs starts a new run at column 0.
+    t.t.feed(placeholder({0, 0}) + placeholder({1}) + "\r\n");
+    // (b) A high byte that differs starts a new run, whose column is 0.
+    t.t.feed(placeholder({0, 0, 1}) + placeholder({0, -1, 2}) + "\r\n");
+    // (c) A column that is not the next starts a new run at row 0; a cell
+    // that agrees takes the rest from the run.
+    t.t.feed(placeholder({3, 0}) + placeholder({-1, 5}) + placeholder({}) + "\x1b[0m");
+    const Screen& screen = t.t.screen();
+    auto decode = [&](int y) {
+        PlaceholderDecoder decoder;
+        std::vector<PlaceholderCell> cells;
+        for (int x = 0; x < screen.cols(); ++x) {
+            if (const auto cell = decoder.next(screen, screen.row(y), x)) cells.push_back(*cell);
+        }
+        return cells;
+    };
+    const auto a = decode(0);
+    ASSERT_EQ(a.size(), 2u);
+    EXPECT_EQ(a[1].row, 1);
+    EXPECT_EQ(a[1].col, 0);
+    const auto b = decode(1);
+    ASSERT_EQ(b.size(), 2u);
+    EXPECT_EQ(b[0].imageId, 0x01000001u);
+    EXPECT_EQ(b[1].imageId, 0x02000001u);
+    EXPECT_EQ(b[1].col, 0);
+    const auto c = decode(2);
+    ASSERT_EQ(c.size(), 3u);
+    EXPECT_EQ(c[1].row, 0);
+    EXPECT_EQ(c[1].col, 5);
+    EXPECT_EQ(c[2].row, 0);
+    EXPECT_EQ(c[2].col, 6);
+}
+
+TEST(Graphics, AlternateScreenClearDropsItsImagesAndUploads)
+{
+    Term t(20, 10);
+    t.t.feed("\x1b[?1049h");
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=5,q=2", base64Encode(rgba(1, 1, 1, 2, 3))));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=6,m=1,q=2", "AAAA")); // an upload left unfinished
+    ASSERT_EQ(t.g().images().count(5), 1u);
+    t.t.feed("\x1b[?1049l\x1b[?1049h");
+    EXPECT_TRUE(t.g().images().empty());
+    t.t.feed(apc("a=p,i=5"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=5;ENOENT:no such image\x1b\\");
+    // A stray last chunk does not finish the old program's upload.
+    t.t.feed(apc("m=0", "AAAA"));
+    EXPECT_EQ(t.g().images().count(6), 0u);
+}
+
+TEST(Graphics, AnimationOutOfViewAsksForNoFrames)
+{
+    Term t(20, 10);
+    animated(t, true);
+    EXPECT_NE(t.t.advanceAnimations(1000), 0u);
+    t.t.feed(std::string(30, '\n')); // the image's row goes into the scrollback
+    EXPECT_EQ(t.t.advanceAnimations(2000), 0u);
+    t.t.scrollViewport(30); // and back into view
+    EXPECT_NE(t.t.advanceAnimations(3000), 0u);
+}
+
+TEST(Graphics, VirtualAnimationRunsOnlyWhileItsPlaceholdersShow)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=7,q=2", base64Encode(rgba(1, 1, 255, 0, 0))));
+    t.t.feed(apc("a=f,f=32,s=1,v=1,i=7,z=100,q=2", base64Encode(rgba(1, 1, 0, 255, 0))));
+    t.t.feed(apc("a=p,i=7,U=1,c=1,r=1,q=2"));
+    t.t.feed(apc("a=a,i=7,r=1,z=40,s=3,v=1,q=2"));
+    EXPECT_EQ(t.t.advanceAnimations(1000), 0u);
+    t.t.feed("\x1b[38;2;0;0;7m" + placeholder({0, 0}) + "\x1b[0m");
+    EXPECT_NE(t.t.advanceAnimations(2000), 0u);
+}
+
+TEST(Graphics, AnimationStateKeepsARunningClock)
+{
+    Term t(20, 10);
+    animated(t, true);
+    t.t.advanceAnimations(1000); // starts the clock: frame 1 is due at 1040
+    t.t.advanceAnimations(1030);
+    t.t.feed(apc("a=a,i=7,s=3,q=2")); // already running
+    t.t.advanceAnimations(1041);
+    EXPECT_EQ(t.g().images().at(7).currentFrame, 1u);
+}
+
+TEST(Graphics, AnimationStateResetsTheLoopCount)
+{
+    Term t(20, 10);
+    animated(t, true);
+    t.t.feed(apc("a=a,i=7,v=3,q=2")); // two loops: 0 (40 ms), 1 (100 ms), 0, 1
+    for (std::uint64_t now = 1000; now <= 1280; now += 10) t.t.advanceAnimations(now);
+    ASSERT_EQ(t.g().images().at(7).currentFrame, 1u); // done at 1280, on the last frame
+    EXPECT_EQ(t.t.advanceAnimations(1285), 0u);
+    t.t.feed(apc("a=a,i=7,s=3,q=2"));
+    t.t.advanceAnimations(1290);
+    EXPECT_EQ(t.g().images().at(7).currentFrame, 0u); // it plays again
+}
+
+TEST(Graphics, FinishedAnimationGoesOnWithMoreLoops)
+{
+    Term t(20, 10);
+    animated(t, true);
+    t.t.feed(apc("a=a,i=7,v=2,q=2")); // plays once
+    t.t.advanceAnimations(1000);
+    t.t.advanceAnimations(1041);
+    EXPECT_EQ(t.t.advanceAnimations(1141), 0u);
+    ASSERT_EQ(t.g().images().at(7).currentFrame, 1u);
+    EXPECT_EQ(t.g().images().at(7).animation, Image::Animation::Running);
+    t.t.feed(apc("a=a,i=7,v=4,q=2")); // three loops: two more to play
+    t.t.advanceAnimations(1150);
+    EXPECT_EQ(t.g().images().at(7).currentFrame, 0u);
+}
+
+TEST(Graphics, IdWithNumberIsRefused)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=24,s=1,v=1,i=3,I=4", base64Encode("abc")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=3,I=4;EINVAL:both an image id and an image number\x1b\\");
+    EXPECT_TRUE(t.g().images().empty());
+}
+
+TEST(Graphics, AnonymousImageCannotBeNamedByItsId)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=T,f=24,s=1,v=1,C=1", base64Encode("abc")));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    const std::uint32_t id = t.g().placements()[0].imageId;
+    const std::string ids = std::to_string(id);
+    t.t.feed(apc("a=p,i=" + ids));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=" + ids + ";ENOENT:no such image\x1b\\");
+    t.t.feed(apc("a=d,d=I,i=" + ids));
+    t.t.feed(apc("a=d,d=R,x=" + ids + ",y=" + ids));
+    t.t.feed(apc("a=t,f=24,s=1,v=1,i=1,q=2", base64Encode("abc")));
+    t.host.written.clear();
+    t.t.feed(apc("a=p,i=1,P=" + ids));
+    EXPECT_NE(t.host.written.find("ENOPARENT"), std::string::npos);
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    // A client that claims the id gets its own image; the anonymous one stays.
+    t.t.feed(apc("a=t,f=24,s=1,v=1,q=2,i=" + ids, base64Encode("xyz")));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    EXPECT_NE(t.g().placements()[0].imageId, id);
+    EXPECT_EQ(t.g().images().size(), 3u); // the anonymous one, image 1 and the new one
+    EXPECT_EQ(t.g().images().at(id).frames[0]->rgba[0], 'x');
+}
+
+TEST(Graphics, DeleteByZKeepsVirtualPlacements)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=24,s=1,v=1,i=1,q=2", base64Encode("abc")));
+    t.t.feed(apc("a=p,i=1,p=1,U=1,z=5,q=2"));
+    t.t.feed(apc("a=p,i=1,p=2,C=1,z=5,q=2"));
+    t.t.feed(apc("a=d,d=z,z=5"));
+    ASSERT_EQ(t.g().placements().size(), 1u);
+    EXPECT_TRUE(t.g().placements()[0].isVirtual);
+}
+
+TEST(Graphics, LastQuietOfTheChunksDecides)
+{
+    Term t(20, 10);
+    const std::string data = base64Encode(rgba(1, 1, 1, 2, 3));
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=3,m=1", data.substr(0, 4)));
+    t.t.feed(apc("m=0,q=1", data.substr(4)));
+    EXPECT_TRUE(t.host.written.empty());
+    EXPECT_EQ(t.g().images().count(3), 1u);
+}
+
+TEST(Graphics, FrameChunksFromTheClientWriterAddAFrame)
+{
+    // The writer gives every chunk of a frame a=f, as the protocol asks.
+    std::string pixels;
+    for (int i = 0; i < 40 * 40; ++i) pixels += rgba(1, 1, std::uint8_t(i), 2, 3);
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=40,v=40,i=6,q=2", base64Encode(pixels)));
+    const auto frame = AfterglowProto::GraphicsCommand::parse("a=f,f=32,s=40,v=40,i=6");
+    const std::string stream = AfterglowProto::writeGraphics(frame, pixels);
+    ASSERT_NE(stream.find("\x1b_Ga=f,m=1;"), std::string::npos);
+    t.t.feed(stream);
+    EXPECT_EQ(t.host.written, "\x1b_Gi=6,r=2;OK\x1b\\"); // r= names the frame written
+    EXPECT_EQ(t.g().images().at(6).frames.size(), 2u);
+}
+
+TEST(Graphics, CellOffsetsStayInsideTheCell)
+{
+    // A 1 px image with huge offsets: kept inside its cell, it covers one
+    // cell and moves the cursor one column, not across screens.
+    Term t(20, 10);
+    t.t.feed(apc("a=T,f=32,s=1,v=1,i=1,X=1000000,Y=1000000,q=2", base64Encode(rgba(1, 1, 0, 0, 0))));
+    EXPECT_EQ(t.t.screen().cursor.y, 0);
+    EXPECT_EQ(t.t.screen().cursor.x, 1);
+    EXPECT_EQ(t.t.screen().historySize(), 0u);
+}
+
+TEST(Graphics, InternalImageLargerThanTheQuotaIsNotKept)
+{
+    Store s(20, 10);
+    s.g.setQuota(64);
+    s.apc("a=T,f=32,s=1,v=1,i=1,C=1,q=2", base64Encode(rgba(1, 1, 1, 2, 3)));
+    ImageFrame big;
+    big.width = 8;
+    big.height = 8;
+    big.rgba.assign(8 * 8 * 4, 255);
+    s.g.addSixel(std::move(big), s.screen, 0, 0, 10, 20);
+    EXPECT_EQ(s.g.images().size(), 1u);
+    EXPECT_EQ(s.g.images().count(1), 1u);
+    EXPECT_EQ(s.g.placements().size(), 1u);
+}
+
+TEST(Graphics, SameZDrawsInKittyOrder)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=24,s=1,v=1,i=1,q=2", base64Encode("abc")));
+    t.t.feed(apc("a=t,f=24,s=1,v=1,i=2,q=2", base64Encode("def")));
+    t.t.feed(apc("a=p,i=2,p=1,C=1,q=2"));
+    t.t.feed(apc("a=p,i=1,p=1,C=1,q=2"));
+    t.t.feed(apc("a=p,i=1,p=2,C=1,q=2"));
+    t.t.feed(apc("a=p,i=1,p=1,C=1,q=2")); // replaced: it keeps its place
+    ASSERT_EQ(t.g().placements().size(), 3u);
+    EXPECT_EQ(t.g().placements()[1].placementId, 1u);
+    // At one z, the image that got its id first is drawn first.
+    const auto vis = t.g().visible(t.t.screen(), 10, 20);
+    ASSERT_EQ(vis.size(), 3u);
+    EXPECT_EQ(vis[0].imageId, 1u);
+    EXPECT_EQ(vis[1].imageId, 1u);
+    EXPECT_EQ(vis[2].imageId, 2u);
+}
+
+TEST(Graphics, TemporaryFileTagCountsAnywhereBelowTheDirectory)
+{
+    std::string dir = (std::filesystem::temp_directory_path() / "afterglow-tty-graphics-protocol-XXXXXX").string();
+    ASSERT_NE(mkdtemp(dir.data()), nullptr);
+    const std::string file = dir + "/image";
+    {
+        const int fd = open(file.c_str(), O_CREAT | O_WRONLY | O_EXCL | O_CLOEXEC, 0600);
+        ASSERT_GE(fd, 0);
+        ASSERT_EQ(write(fd, "RGBA", 4), 4);
+        close(fd);
+    }
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=t,f=32,s=1,v=1,i=1", base64Encode(file)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;OK\x1b\\");
+    EXPECT_FALSE(std::filesystem::exists(file));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(Graphics, ShortFileGetsTheFileError)
+{
+    TempFile file("afterglow-graphics-short-");
+    ASSERT_TRUE(file.write("RG"));
+    Term t(20, 10);
+    t.t.feed(apc("a=t,t=f,f=32,s=1,v=1,i=1", base64Encode(file.path)));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1;EBADF:failed to read image file\x1b\\");
+    // Inline data that is too short says so.
+    t.host.written.clear();
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=2", base64Encode("RG")));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=2;ENODATA:insufficient image data\x1b\\");
+}
+
+TEST(Graphics, FrameNeedsDataAnExistingBaseAndToFitTheImage)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=2,v=2,i=1,q=2", base64Encode(rgba(2, 2, 1, 2, 3))));
+    t.t.feed(apc("a=f,f=32,s=1,v=1,i=1,c=5", base64Encode(rgba(1, 1, 1, 2, 3))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,r=2;EINVAL:no such base frame\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=f,f=32,s=3,v=1,i=1", base64Encode(rgba(3, 1, 1, 2, 3))));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,r=2;EINVAL:frame larger than the image\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=f,i=1"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=1,r=2;ENODATA:insufficient image data\x1b\\");
+    EXPECT_EQ(t.g().images().at(1).frames.size(), 1u);
+}
+
+TEST(Graphics, DeleteFramesAsKittyDoes)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=24,s=1,v=1,i=1,q=2", base64Encode("aaa")));
+    t.t.feed(apc("a=f,f=24,s=1,v=1,i=1,q=2", base64Encode("bbb")));
+    t.t.feed(apc("a=f,f=24,s=1,v=1,i=1,q=2", base64Encode("ccc")));
+    t.t.feed(apc("a=p,i=1,C=1,q=2"));
+    t.t.feed(apc("a=a,i=1,c=3,q=2")); // showing the last frame
+    t.t.feed(apc("a=d,d=f,i=1,r=2"));
+    const Image& img = t.g().images().at(1);
+    ASSERT_EQ(img.frames.size(), 2u);
+    EXPECT_EQ(img.frames[1]->rgba[0], 'c');
+    EXPECT_EQ(img.currentFrame, 1u); // still the same frame
+    t.t.feed(apc("a=d,d=f,i=1,r=9")); // past the last: the last
+    ASSERT_EQ(t.g().images().at(1).frames.size(), 1u);
+    EXPECT_EQ(t.g().images().at(1).currentFrame, 0u);
+    t.t.feed(apc("a=d,d=f,i=1")); // the only frame stays with d=f
+    ASSERT_EQ(t.g().images().count(1), 1u);
+    t.t.feed(apc("a=d,d=F,i=1")); // and goes with d=F, with the image
+    EXPECT_EQ(t.g().images().count(1), 0u);
+    EXPECT_TRUE(t.g().placements().empty());
+}
+
+TEST(Graphics, FeatureQueryEchoesWhatIsSupported)
+{
+    Term t(20, 10);
+    t.t.feed(apc("a=t,f=32,s=1,v=1,i=9,m=1,q=2", "AAAA")); // an upload in progress
+    t.t.feed(apc("a=q,i=31,e=T,U=1,C=1"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=31,e=T,C=1,U=1;OK\x1b\\");
+    t.host.written.clear();
+    // Indexed colour (f=8) is not supported: f is left out.
+    t.t.feed(apc("a=q,i=32,e=f,r=1,X=1,f=8"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=32,e=f,r=1,X=1;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=33,e=d,d=F"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=33,e=d,d=F;OK\x1b\\");
+    t.host.written.clear();
+    t.t.feed(apc("a=q,i=34,e=Z"));
+    EXPECT_EQ(t.host.written, "\x1b_Gi=34;OK\x1b\\"); // no such action: no e
+    // The upload goes on, untouched by the queries.
+    t.host.written.clear();
+    t.t.feed(apc("m=0,q=2", "AA=="));
+    EXPECT_EQ(t.g().images().count(9), 1u);
 }

@@ -7,6 +7,18 @@
 # One function prints the candidates for the word at the cursor, so that the
 # position of a word decides what it is, as it does for afterglow.
 
+# The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
+set -g __afterglow_actions swap_left swap_right swap_up swap_down rotate_panes_clockwise \
+    rotate_panes_counterclockwise pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab \
+    save_project switch_project end_script_key_mode split_right split_down split_left split_up rename_pane \
+    close_pane new_window new_tab close_tab rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 \
+    goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 close_window toggle_fullscreen \
+    next_tab previous_tab show_hints show_last_output copy_mode copy paste select_all clear_screen reset \
+    notify_on_finish focus_left focus_right focus_up focus_down equalize_splits toggle_pane_zoom resize_left \
+    resize_right resize_up resize_down font_bigger font_smaller font_reset scroll_page_up scroll_page_down \
+    scroll_top scroll_bottom jump_prompt_up jump_prompt_down search command_palette reload_config open_config \
+    show_urls_open show_urls_copy unicode_input
+
 # Prints the arguments, one on each line, and nothing when there are none.
 function __afterglow_print
     string join \n -- $argv
@@ -19,8 +31,11 @@ function __afterglow_window
     while test $i -le $n
         switch $argv[$i]
             case -e --execute
-                # The rest is the program and its arguments.
-                __fish_complete_subcommand -d --working-directory -o --override --title --config --class
+                # The rest is the program and its arguments. Not
+                # __fish_complete_subcommand: it would read the word after an
+                # --option=value as that option's value.
+                set -l rest (string escape -- $argv[(math $i + 1)..])
+                complete -C (string join ' ' -- $rest "$cur")
                 return
             case -d --working-directory --title --config -o --override --class
                 if test $i -eq $n
@@ -34,7 +49,7 @@ function __afterglow_window
                     return
                 end
                 set i (math $i + 1)
-            case --config-reference -h --help -v --version
+            case --config-reference -h --help --help-all -v --version
                 # Each of these is the whole command line.
                 return
         end
@@ -42,24 +57,36 @@ function __afterglow_window
     end
     if test $n -eq 0; and not string match -q -- '-*' "$cur"
         __afterglow_print ctl\t'Drive a running afterglow' run\t'Run a command of a script' \
-            ssh\t'ssh with the remote side prepared'
+            ssh\t'ssh with the remote side prepared' \
+            transfer\t'Copy files to and from the computer of the terminal' \
+            dnd\t'Drag files and data out of the terminal, and drop them in' \
+            icat\t'Show images in the terminal' \
+            clipboard\t'Read and write the clipboard, with any MIME type'
         return
     end
     set -l offer
     if test $n -eq 0
         set -a offer --config-reference\t'Print the configuration reference as JSON' \
-            -h\t'Show the help' --help\t'Show the help' -v\t'Show the version' --version\t'Show the version'
+            -h\t'Show the help' --help\t'Show the help' --help-all\t'Show the help, with the options of Qt' \
+            -v\t'Show the version' --version\t'Show the version'
     end
-    contains -- -d $argv; or contains -- --working-directory $argv
-    or set -a offer -d\t'Start in the directory' --working-directory\t'Start in the directory'
-    set -a offer -e\t'Run the rest of the command line instead of the shell' \
-        --execute\t'Run the rest of the command line instead of the shell'
-    contains -- --title $argv; or set -a offer --title\t'Give the window a title'
-    contains -- --hold $argv; or set -a offer --hold\t'Keep the window open after the program exits'
-    contains -- --quick-terminal $argv; or set -a offer --quick-terminal\t'Show or hide the quick terminal'
-    contains -- --config $argv; or set -a offer --config\t'Read settings from the file'
+    # The options without their values, for --title=x.
+    set -l given (string replace -r -- '=.*' '' $argv)
+    # --quick-terminal takes no -e, -d, --title or --hold.
+    set -l quick (contains -- --quick-terminal $given; and echo 1)
+    set -l window (string match -r -- '^(-d|--working-directory|--title|--hold)$' $given)
+    if test -z "$quick"
+        contains -- -d $given; or contains -- --working-directory $given
+        or set -a offer -d\t'Start in the directory' --working-directory\t'Start in the directory'
+        set -a offer -e\t'Run the rest of the command line instead of the shell' \
+            --execute\t'Run the rest of the command line instead of the shell'
+        contains -- --title $given; or set -a offer --title\t'Give the window a title'
+        contains -- --hold $given; or set -a offer --hold\t'Keep the window open after the program exits'
+    end
+    test -z "$quick" -a -z "$window"; and set -a offer --quick-terminal\t'Show or hide the quick terminal'
+    contains -- --config $given; or set -a offer --config\t'Read settings from the file'
     set -a offer -o\t'Override a setting (Group.key=value)' --override\t'Override a setting (Group.key=value)'
-    contains -- --class $argv; or set -a offer --class\t'Wayland app id for window rules'
+    contains -- --class $given; or set -a offer --class\t'Wayland app id for window rules'
     __afterglow_print $offer
 end
 
@@ -116,8 +143,14 @@ function __afterglow_ctl
             case move-pane:1
                 __afterglow_print left right up down new-tab new-window
                 return
+            case signal:0
+                __afterglow_print 0 1 2 3 4 5 6 7
+                return
             case action:0
-                if string match -q -- 'script:*' "$cur"; or string match -q -- "$cur*" script:
+                __afterglow_print $__afterglow_actions
+                # The word at the cursor is text, not a pattern: compared, not matched.
+                if string match -q -- 'script:*' "$cur"
+                    or test "$cur" = "$(string sub -l (string length -- "$cur") -- script:)"
                     set -l self (commandline -xpc)[1]
                     for id in ($self run --complete 2>/dev/null)
                         # printf, not string replace: a '$' in the id would be a group in the replacement.
@@ -229,6 +262,24 @@ function __afterglow_complete
             __afterglow_ctl $words[2..]
         case run
             __afterglow_run $words[2..]
+        case transfer dnd icat clipboard
+            # These run aglow, which completes the same arguments. Fish loads
+            # the completion of aglow only when aglow is on PATH, and afterglow
+            # runs the one next to itself: load it here.
+            if not functions -q __aglow_command
+                for dir in $fish_complete_path
+                    if test -f $dir/aglow.fish
+                        source $dir/aglow.fish
+                        break
+                    end
+                end
+            end
+            if functions -q __aglow_command
+                complete -C "$(string join ' ' -- aglow (string escape -- $words)) $(commandline -ct)"
+            else
+                # No completion of aglow: its arguments are files, most likely.
+                __fish_complete_path (commandline -ct)
+            end
         case '*'
             __afterglow_window $words
     end

@@ -7,6 +7,7 @@
 #include <AfterglowVt/afterglowvt_version.h>
 
 #include <AfterglowProto/Base64.h>
+#include <AfterglowProto/Color.h>
 #include <AfterglowProto/DragDrop.h>
 #include <AfterglowProto/Transfer.h>
 
@@ -108,42 +109,6 @@ std::string withoutControls(std::string text)
     return text;
 }
 
-/// Parses one hex component of 1-4 digits and scales it to 8 bits.
-bool parseHexComponent(std::string_view s, std::uint8_t& out)
-{
-    if (s.empty() || s.size() > 4) {
-        return false;
-    }
-    unsigned v = 0;
-    for (char c : s) {
-        const int d = hexDigit(c);
-        if (d < 0) {
-            return false;
-        }
-        v = v * 16 + unsigned(d);
-    }
-    const unsigned max = (1u << (4 * s.size())) - 1;
-    out = std::uint8_t((v * 255 + max / 2) / max);
-    return true;
-}
-
-/// One "#" component: per XParseColor its digits are the high-order bits,
-/// so "#fff" is f0/f0/f0, not white.
-bool parseHashComponent(std::string_view s, std::uint8_t& out)
-{
-    unsigned v = 0;
-    for (char c : s) {
-        const int d = hexDigit(c);
-        if (d < 0) {
-            return false;
-        }
-        v = v * 16 + unsigned(d);
-    }
-    const int bits = 4 * int(s.size());
-    out = std::uint8_t(bits >= 8 ? v >> (bits - 8) : v << (8 - bits));
-    return true;
-}
-
 /// A decimal number, the whole of @p s, read with a '.' whatever the locale
 /// (the application's locale may use a comma).
 bool parseNumber(std::string_view s, double& out)
@@ -152,61 +117,10 @@ bool parseNumber(std::string_view s, double& out)
     return !s.empty() && parsed.ec == std::errc{} && parsed.ptr == s.data() + s.size() && std::isfinite(out);
 }
 
-/// An "rgbi:" intensity in [0, 1].
-bool parseIntensity(std::string_view s, std::uint8_t& out)
-{
-    double v = 0;
-    if (!parseNumber(s, v)) {
-        return false;
-    }
-    out = std::uint8_t(std::lround(std::clamp(v, 0.0, 1.0) * 255.0));
-    return true;
-}
-
-/// X11 colour spec: "rgb:r/g/b", "rgbi:r/g/b" or "#rgb" / "#rrggbb" /
-/// "#rrrgggbbb" / "#rrrrggggbbbb". (The device-independent CIE and TekHVC
-/// spaces of Xcms are not supported.)
+/// X11 colour spec, as the protocol library reads it.
 bool parseColorSpec(std::string_view spec, Rgb& out)
 {
-    if (spec.starts_with("rgbi:")) {
-        spec.remove_prefix(5);
-        const auto s1 = spec.find('/');
-        const auto s2 = s1 == std::string_view::npos ? s1 : spec.find('/', s1 + 1);
-        if (s2 == std::string_view::npos) {
-            return false;
-        }
-        return parseIntensity(spec.substr(0, s1), out.r) && parseIntensity(spec.substr(s1 + 1, s2 - s1 - 1), out.g)
-            && parseIntensity(spec.substr(s2 + 1), out.b);
-    }
-    if (spec.starts_with("rgb:")) {
-        spec.remove_prefix(4);
-        const auto s1 = spec.find('/');
-        const auto s2 = s1 == std::string_view::npos ? s1 : spec.find('/', s1 + 1);
-        if (s2 == std::string_view::npos) {
-            return false;
-        }
-        return parseHexComponent(spec.substr(0, s1), out.r) && parseHexComponent(spec.substr(s1 + 1, s2 - s1 - 1), out.g)
-            && parseHexComponent(spec.substr(s2 + 1), out.b);
-    }
-    if (spec.starts_with('#')) {
-        spec.remove_prefix(1);
-        if (spec.empty() || spec.size() % 3 != 0 || spec.size() > 12) {
-            return false;
-        }
-        const std::size_t n = spec.size() / 3;
-        return parseHashComponent(spec.substr(0, n), out.r) && parseHashComponent(spec.substr(n, n), out.g)
-            && parseHashComponent(spec.substr(2 * n, n), out.b);
-    }
-    static constexpr std::pair<std::string_view, Rgb> names[] = {
-#include "ColorNames.inc"
-    };
-    std::string lower(spec);
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 32) : char(c); });
-    const auto it = std::lower_bound(std::begin(names), std::end(names), lower,
-        [](const auto& entry, std::string_view value) { return entry.first < value; });
-    if (it == std::end(names) || it->first != lower) return false;
-    out = it->second;
-    return true;
+    return AfterglowProto::parseColorSpec(spec, out.r, out.g, out.b);
 }
 
 std::string formatColorReply(std::string_view prefix, Rgb c, bool bel)
@@ -1514,7 +1428,7 @@ void Terminal::eraseDisplay(int mode, bool selective)
         for (int y = 0; y < rows(); ++y) {
             eraseWholeRow(scr.row(y), fill, selective);
         }
-        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, false, m_cellWidth, m_cellHeight);
+        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(scr, m_cellWidth, m_cellHeight);
         break;
     case 3:
         // Only the saved lines go (xterm): images on the screen stay with its text.
@@ -1967,7 +1881,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         m_alternate->cursor.y = primaryCursor.y;
         m_alternate->cursor.pendingWrap = primaryCursor.pendingWrap;
         if (clear) {
-            m_graphics[1].clearPlacements(*m_alternate, true);
+            m_graphics[1].clear(); // the images too, with their ids and any unfinished upload
             for (int y = 0; y < rows(); ++y) {
                 m_alternate->eraseRow(m_alternate->row(y), StyleTable::DefaultId);
             }
@@ -1977,7 +1891,7 @@ void Terminal::setAltScreen(bool on, bool saveRestoreCursor, bool clear)
         clampToLine();
     } else {
         if (clear) {
-            m_graphics[1].clearPlacements(*m_alternate, true);
+            m_graphics[1].clear(); // the images too, with their ids and any unfinished upload
             for (int y = 0; y < rows(); ++y) {
                 m_alternate->eraseRow(m_alternate->row(y), StyleTable::DefaultId);
             }
@@ -2825,7 +2739,7 @@ void Terminal::setColumnMode(bool wide)
         for (int y = 0; y < rows(); ++y) {
             m_active->eraseRow(m_active->row(y), StyleTable::DefaultId);
         }
-        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, false, m_cellWidth, m_cellHeight);
+        m_graphics[m_modes.altScreen ? 1 : 0].clearPlacements(*m_active, m_cellWidth, m_cellHeight);
         m_extraCursors.clear();
     }
     setCursor(0, 0);
@@ -4945,7 +4859,7 @@ void Terminal::apcDispatch(std::string_view payload)
 std::uint64_t Terminal::advanceAnimations(std::uint64_t nowMs)
 {
     std::uint64_t next = 0;
-    if (m_graphics[m_modes.altScreen ? 1 : 0].advanceAnimations(nowMs, next)) {
+    if (m_graphics[m_modes.altScreen ? 1 : 0].advanceAnimations(*m_active, m_cellWidth, m_cellHeight, nowMs, next)) {
         touch();
     }
     return next;

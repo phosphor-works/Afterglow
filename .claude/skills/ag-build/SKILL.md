@@ -26,8 +26,18 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 | `build` | RelWithDebInfo (`dev` preset) | ON | Day-to-day work. All the commands below use it. |
 | `build-release` | Release | ON | Performance numbers and release checks |
 | `build-prof` | RelWithDebInfo | ON | Profiling (Tracy and perf) |
-| `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz` and `afterglow_protofuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). Make it when you fuzz, with the commands in `docs/TESTING.md`. |
-| `build-debug` | Debug with ASan and UBSan (`debug` preset) | — | Make it when you look for memory errors. |
+| `build-fuzz` | RelWithDebInfo, clang for C and C++, `AFTERGLOW_BUILD_FUZZERS=ON`, `BUILD_TESTING=OFF` | OFF | The libFuzzer targets `afterglow_vtfuzz`, `afterglow_protofuzz` and `afterglow_imagefuzz` only. Build them by name: the other binaries are not supported there (zlib-ng is instrumented in place). The fuzz option turns `aglow` off. Make it when you fuzz, with the commands in `docs/TESTING.md`. |
+| `build-debug` | Debug with ASan and UBSan (`debug` preset) | — | Make it when you look for memory errors. `aglow` links dynamically there, and `aglow_static` is left out. |
+
+## aglow
+
+`AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
+`libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
+that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
+the `aglow` tests are left out, and the `aglow dnd` tests of `afterglow_dnd_tests` and the native suite skip.
+`aglow` builds next to `afterglow` (`build/afterglow/aglow`), and building `afterglow` builds it too.
+`tools/aglow/stb/stb_image.h` is pinned by its SHA-256 in `cmake/AfterglowDependencies.cmake`: after a change to the
+file, set the new hash there and list the patch at the top of `tools/aglow/StbImage.cpp`.
 
 `AFTERGLOW_BUILD_TOOLS=ON` builds `afterglow_renderpng`, `afterglow_headless`, `afterglow_vtbench` and
 `afterglow_native_bench`. The render tests and shader previews need it.
@@ -72,7 +82,7 @@ grep -c "warning:" <scratchpad>/build.log
 ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 ```
 
-The suite has about 900 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
+The suite has about 1,350 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
 
 - The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.

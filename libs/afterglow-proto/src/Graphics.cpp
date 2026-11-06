@@ -24,9 +24,14 @@ GraphicsCommand GraphicsCommand::parse(std::string_view keys)
         }
         const char key = kv[0];
         const std::string_view value = kv.substr(2);
-        if (key == 'a' || key == 't' || key == 'd' || key == 'o') {
+        if (key == 'a' || key == 't' || key == 'd' || key == 'o' || key == 'e') {
             const char ch = value.empty() ? 0 : value[0];
-            (key == 'a' ? cmd.action : key == 't' ? cmd.medium : key == 'd' ? cmd.del : cmd.compression) = ch;
+            char& flag = key == 'a' ? cmd.action
+                : key == 't'         ? cmd.medium
+                : key == 'd'         ? cmd.del
+                : key == 'o'         ? cmd.compression
+                                     : cmd.feature;
+            flag = ch;
             cmd.hasAction = cmd.hasAction || key == 'a';
             continue;
         }
@@ -72,7 +77,7 @@ bool GraphicsCommand::flagsAreLetters() const
 {
     auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     return (!(hasAction || action != 't') || letter(action)) && (medium == 'd' || letter(medium))
-        && (del == 'a' || letter(del)) && (!compression || letter(compression));
+        && (del == 'a' || letter(del)) && (!compression || letter(compression)) && (!feature || letter(feature));
 }
 
 std::string GraphicsCommand::keys() const
@@ -99,6 +104,7 @@ std::string GraphicsCommand::keys() const
     if (medium != 'd') add('t', medium);
     if (del != 'a') add('d', del);
     if (compression) add('o', compression);
+    if (feature) add('e', feature);
     if (format != 32) add('f', format);
     if (s) add('s', s);
     if (v) add('v', v);
@@ -117,7 +123,7 @@ std::string GraphicsCommand::keys() const
     if (w) add('w', w);
     if (h) add('h', h);
     if (X) add('X', X);
-    // Yi is Y read as an int (a=c's destination row): it stands in when Y is unset.
+    // Yi is Y read as an int (a=c's source row): it stands in when Y is unset.
     if (Y) add('Y', Y);
     else if (Yi) add('Y', Yi);
     if (c) add('c', c);
@@ -154,11 +160,15 @@ std::string writeGraphics(const GraphicsCommand& command, std::string_view paylo
     }
     GraphicsCommand first = command;
     first.more = 1;
+    // The protocol asks a frame's later chunks for a=f too: a terminal tells
+    // them from the chunks of an image by it.
+    const std::string frame = command.action == 'f' ? "a=f," : "";
     const std::string quiet = command.quiet ? ",q=" + std::to_string(command.quiet) : std::string();
     for (std::size_t at = 0; at < encoded.size(); at += GraphicsChunk) {
         const bool last = at + GraphicsChunk >= encoded.size();
         if (at) {
             out += "\x1b_G";
+            out += frame;
             out += last ? "m=0" : "m=1";
             out += quiet;
         } else {
@@ -178,11 +188,23 @@ std::optional<GraphicsReply> GraphicsReply::parse(std::string_view payload)
         return std::nullopt;
     }
     GraphicsReply reply;
-    const auto command = GraphicsCommand::parse(payload.substr(0, semi));
+    const std::string_view keys = payload.substr(0, semi);
+    const auto command = GraphicsCommand::parse(keys);
     reply.id = command.id;
     reply.number = command.number;
     reply.placement = command.placement;
     reply.status = payload.substr(semi + 1);
+    // Everything but i, I and p, as written.
+    for (std::size_t pos = 0; pos < keys.size();) {
+        const auto comma = keys.find(',', pos);
+        const std::string_view kv = keys.substr(pos, comma == std::string_view::npos ? comma : comma - pos);
+        pos = comma == std::string_view::npos ? keys.size() : comma + 1;
+        if (kv.empty() || (kv.size() >= 2 && kv[1] == '=' && (kv[0] == 'i' || kv[0] == 'I' || kv[0] == 'p'))) {
+            continue;
+        }
+        if (!reply.keys.empty()) reply.keys += ',';
+        reply.keys += kv;
+    }
     return reply;
 }
 
@@ -201,6 +223,10 @@ std::string GraphicsReply::write() const
     if (id) add("i=", id);
     if (number) add("I=", number);
     if (placement) add("p=", placement);
+    if (!keys.empty()) {
+        if (!first) out += ',';
+        out += keys;
+    }
     out += ';';
     out += status;
     out += "\x1b\\";

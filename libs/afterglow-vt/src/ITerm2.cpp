@@ -12,7 +12,7 @@ namespace AfterglowVt::detail {
 
 namespace {
 
-constexpr double MaxSide = 10000;
+constexpr double MaxSide = AfterglowProto::GraphicsMaxSide;
 constexpr double MaxPixels = 4096.0 * 4096.0;
 
 /// A size argument in pixels; negative for auto.

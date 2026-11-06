@@ -11,6 +11,7 @@
 #include "app/Startup.h"
 #include "control/Ctl.h"
 #include "control/IpcClient.h"
+#include "shell/Aglow.h"
 #include "shell/Ssh.h"
 
 #include <AfterglowProto/Run.h>
@@ -34,6 +35,7 @@
 #include <cerrno>
 #include <csignal>
 #include <exception>
+#include <optional>
 #include <sys/stat.h>
 
 namespace {
@@ -120,6 +122,10 @@ int main(int argc, char** argv)
     if (argc >= 2 && std::strcmp(argv[1], "ctl") == 0) {
         return Afterglow::runCtl(argc - 1, argv + 1);
     }
+    // afterglow COMMAND ... for each of Aglow::Commands: the aglow next to this executable, no GUI.
+    if (argc >= 2 && Afterglow::Aglow::handles(argv[1])) {
+        return Afterglow::Aglow::run(argc, argv);
+    }
     // afterglow run ...: a script command, its output and its exit status, no GUI.
     if (argc >= 2 && std::strcmp(argv[1], "run") == 0) {
         int signal = 0;
@@ -143,11 +149,26 @@ int main(int argc, char** argv)
 
     // Desktop Qt Quick styles can delegate their painting to the widget style.
     // QApplication initializes that style and follows the platform's palette.
-    QApplication app(argc, argv);
+    // It ends before a quit signal is raised again, as at a return.
+    std::optional<QApplication> app;
+    app.emplace(argc, argv);
     QGuiApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral(AFTERGLOW_APP_ID)));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("A GPU accelerated terminal"));
+    // The commands that run before Qt starts take no window and no options of their own here.
+    QString description = QStringLiteral(
+        "A GPU accelerated terminal\n\n"
+        "Commands that open no window:\n"
+        "  afterglow ctl ...       Control a running Afterglow.\n"
+        "  afterglow run ...       Run a script command of a running Afterglow.\n"
+        "  afterglow ssh ...       Run ssh with shell integration on the remote computer.\n");
+    if (Afterglow::Aglow::built()) {
+        for (const char* command : Afterglow::Aglow::Commands) {
+            description += QStringLiteral("  ") + QStringLiteral("afterglow %1 ...").arg(QLatin1String(command)).leftJustified(24)
+                + QStringLiteral("Run aglow %1.\n").arg(QLatin1String(command));
+        }
+    }
+    parser.setApplicationDescription(description);
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOption({QStringLiteral("config-reference"), QStringLiteral("Print the configuration reference as JSON. Use alone. No desktop required.")});
@@ -176,7 +197,7 @@ int main(int argc, char** argv)
     parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("With -e: the program and its arguments."),
                                  QStringLiteral("[command...]"));
-    parser.process(app);
+    parser.process(*app);
 
     // Handled before Qt starts when it is the only argument.
     if (parser.isSet(QStringLiteral("config-reference"))) {
@@ -198,7 +219,7 @@ int main(int argc, char** argv)
         return 1;
     }
     // Any QtWayland platform (wayland, wayland-egl) has the Wayland interface.
-    if (!app.nativeInterface<QNativeInterface::QWaylandApplication>()) {
+    if (!app->nativeInterface<QNativeInterface::QWaylandApplication>()) {
         qCritical("afterglow runs on Wayland only (platform is %s)", qPrintable(QGuiApplication::platformName()));
         return 1;
     }
@@ -290,6 +311,9 @@ int main(int argc, char** argv)
             if (socket.listen(Afterglow::InstanceSocket::ownPath()) != Afterglow::InstanceSocket::Listen::Held) break;
             QThread::msleep(10);
         }
+        if (!shared.isEmpty() && !socket.listening()) {
+            qWarning("afterglow: cannot listen on a socket. afterglow ctl, afterglow run and new launches cannot reach this process");
+        }
 
         // From here a termination signal closes the windows and the socket,
         // as the last window does. Before, it ends the process: a launch that
@@ -307,7 +331,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             // A signal during the start quits before the loop runs.
-            code = quitSignals.signal() != 0 ? 0 : app.exec();
+            code = quitSignals.signal() != 0 ? 0 : app->exec();
             quitSignal = quitSignals.signal();
         } catch (const std::exception& e) {
             qCritical("afterglow: %s", e.what());
@@ -315,9 +339,12 @@ int main(int argc, char** argv)
         }
     }
     // After the clean shutdown, end as the signal does: the parent (a shell,
-    // a session manager) sees that a signal ended Afterglow. What is left
-    // (QApplication, the keyboard singleton) holds nothing to save.
+    // a session manager) sees that a signal ended Afterglow. The raise skips
+    // the destructors that a return runs, so QApplication ends first: its
+    // children hold files to remove (the trees of remote drags). What is left
+    // (the keyboard singleton) holds nothing to save.
     if (quitSignal != 0) {
+        app.reset();
         std::signal(quitSignal, SIG_DFL);
         std::raise(quitSignal);
     }

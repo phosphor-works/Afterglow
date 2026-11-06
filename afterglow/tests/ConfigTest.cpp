@@ -1104,6 +1104,20 @@ TEST_F(ConfigTest, DragAnswerWaitIsMillisecondsWithAClamp)
     EXPECT_EQ(high.settings().dragAnswerWait, 1000);
 }
 
+TEST_F(ConfigTest, DragTreeLifetimeIsMinutesWithAClamp)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().dragTreeLifetime, 10);
+    // The trees keep the same default in a process that applies no setting.
+    EXPECT_EQ(Settings{}.dragTreeLifetime, DragTrees::DefaultLifetime.count());
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Terminal": {"dragTreeLifetime": 60}})"));
+    EXPECT_EQ(custom.settings().dragTreeLifetime, 60);
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Terminal": {"dragTreeLifetime": 0}})"));
+    EXPECT_EQ(low.settings().dragTreeLifetime, 1);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Terminal": {"dragTreeLifetime": 99999}})"));
+    EXPECT_EQ(high.settings().dragTreeLifetime, 1440);
+}
+
 TEST_F(ConfigTest, IntervalsOfBellsStatusPasteReadsAndAutoScrollAreSettings)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

@@ -67,12 +67,15 @@ set(AFTERGLOW_ZLIB_LICENSE "${AFTERGLOW_ZLIB_NG_SOURCE_DIR}/LICENSE.md" PARENT_S
 set(AFTERGLOW_XXHASH_LICENSE "${xxhash_SOURCE_DIR}/LICENSE" PARENT_SCOPE)
 
 # Static and PIC: it links into the shared afterglow-vt and into each
-# executable that uses it directly (the application, the tests). Each of
+# executable that uses it directly (the application, aglow, the tests). Each of
 # them gets its own copy of the code, with hidden symbols.
 add_library(AfterglowProto STATIC
     src/Clipboard.cpp
     src/Delta.cpp
+    src/DndTree.cpp
+    src/DndUri.cpp
     src/DragDrop.cpp
+    src/FdDelta.cpp
     src/Graphics.cpp
     src/Ipc.cpp
     src/Json.cpp
@@ -81,6 +84,8 @@ add_library(AfterglowProto STATIC
     src/Sha256.cpp
     src/Socket.cpp
     src/Transfer.cpp
+    src/TransferClient.cpp
+    src/TransferPath.cpp
     src/Zlib.cpp
 )
 add_library(Afterglow::Proto ALIAS AfterglowProto)

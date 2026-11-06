@@ -2,15 +2,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "desktop/FileTransfer.h"
 #include <AfterglowProto/Transfer.h>
+#include <AfterglowProto/TransferClient.h>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
+#include <QMutex>
 #include <QSocketNotifier>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtEndian>
+#include <algorithm>
+#include <fcntl.h>
+#include <functional>
+#include <optional>
 #include <gtest/gtest.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <xxhash.h>
@@ -18,6 +27,35 @@
 using namespace Afterglow;
 namespace {
 QByteArray b64(const QByteArray& s) { return s.toBase64(QByteArray::OmitTrailingEquals); }
+// The messages of the afterglow.desktop category while it lives. The worker thread writes them.
+struct DesktopLog {
+    static inline QMutex mutex;
+    static inline QStringList lines;
+    static inline QtMessageHandler previous = nullptr;
+    DesktopLog()
+    {
+        QMutexLocker lock(&mutex);
+        lines.clear();
+        previous = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& message) {
+            if (context.category && QLatin1String(context.category) == QLatin1String("afterglow.desktop")) {
+                QMutexLocker lock(&mutex);
+                lines.append(message);
+            } else if (previous)
+                previous(type, context, message);
+        });
+    }
+    ~DesktopLog() { qInstallMessageHandler(previous); }
+    bool contains(const QString& text) const
+    {
+        QMutexLocker lock(&mutex);
+        return std::any_of(lines.begin(), lines.end(), [&](const QString& line) { return line.contains(text); });
+    }
+    qsizetype count(const QString& text) const
+    {
+        QMutexLocker lock(&mutex);
+        return std::count_if(lines.begin(), lines.end(), [&](const QString& line) { return line.contains(text); });
+    }
+};
 bool waitFor(const std::function<bool()>& predicate)
 {
     QElapsedTimer elapsed;
@@ -50,6 +88,19 @@ struct Transfer : testing::Test {
         QObject::connect(&service, &FileTransfer::sessionClosed, &service, [this] { ++closed; });
     }
     void send(QByteArray command) { service.handle("id=test;" + command); }
+    // Waits until the worker has handled every command sent before: it
+    // handles them in order, and answers a command of an unknown session.
+    bool barrier()
+    {
+        static int count = 0;
+        const QByteArray id = "barrier" + QByteArray::number(++count);
+        service.handle("id=" + id + ";ac=finish");
+        return waitFor([&] { return std::any_of(replies.begin(), replies.end(), [&](const auto& b) { return b.contains("id=" + id + ";"); }); });
+    }
+    bool repliedFor(const QByteArray& id)
+    {
+        return std::any_of(replies.begin(), replies.end(), [&](const auto& b) { return b.contains("id=" + id + ";"); });
+    }
     bool status(const QByteArray& value)
     {
         return waitFor([&] {
@@ -135,6 +186,23 @@ TEST_F(Transfer, CompressedFileAndLinksCommit)
     EXPECT_EQ(contents("link"), "hello world");
     EXPECT_EQ(contents("hard"), "hello world");
 }
+TEST_F(Transfer, ModesKeepOnlyThePermissionBits)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;sz=2;prm=" + QByteArray::number(06777) + ";n=" + path("setid"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    send("ac=end_data;fid=f;d=" + b64("ok"));
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    send("ac=file;fid=d;ft=directory;prm=" + QByteArray::number(01777) + ";n=" + path("sticky"));
+    ASSERT_TRUE(fileStatus("d", "OK"));
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    struct stat st { };
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("setid"))).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0777u);
+    ASSERT_EQ(::stat(QFile::encodeName(dir.filePath(QStringLiteral("sticky"))).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0777u);
+}
 TEST_F(Transfer, CancellationPreservesExistingFileAndRemovesTemporaryFiles)
 {
     QFile original(dir.filePath("file"));
@@ -159,14 +227,9 @@ TEST_F(Transfer, ReadRequiresApprovalAndStreamsContent)
     send("ac=receive;sz=1");
     send("ac=file;fid=req;n=" + path("file"));
     ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
-    // A reply sent too early takes two queued hops and a worker tick to arrive.
-    QElapsedTimer settle;
-    settle.start();
-    while (settle.elapsed() < 50) {
-        QCoreApplication::processEvents();
-        QThread::msleep(1);
-    }
-    EXPECT_TRUE(replies.isEmpty());
+    // Every reply that the requests made is queued before the barrier's.
+    ASSERT_TRUE(barrier());
+    EXPECT_FALSE(repliedFor("test"));
     service.approve(token, true);
     ASSERT_TRUE(status("OK"));
     ASSERT_TRUE(waitFor(
@@ -448,11 +511,220 @@ TEST_F(Transfer, LinksThatNameEachOtherReportALoop)
     send("ac=end_data;fid=b;d=" + b64("fid:a"));
     send("ac=file;fid=c;ft=symlink;n=" + path("c"));
     send("ac=end_data;fid=c;d=" + b64("fid:missing"));
+    DesktopLog log;
+    ASSERT_TRUE(barrier());
+    const auto beforeFinish = replies.size();
     send("ac=finish");
     ASSERT_TRUE(waitFor([&] { return closed == 1; }));
-    EXPECT_TRUE(fileStatus("a", "ELOOP"));
-    EXPECT_TRUE(fileStatus("b", "ELOOP"));
-    EXPECT_TRUE(fileStatus("c", "ENOENT"));
+    // The client reads no more after its finish: the shell would get a
+    // status as typed input. The failures go to the log.
+    ASSERT_TRUE(barrier());
+    EXPECT_FALSE(std::any_of(replies.begin() + qsizetype(beforeFinish), replies.end(),
+        [](const auto& b) { return b.contains("fid=a;") || b.contains("fid=c;"); }));
+    EXPECT_TRUE(log.contains(QStringLiteral("ELOOP")));
+    EXPECT_TRUE(log.contains(QStringLiteral("ENOENT")));
+    EXPECT_FALSE(QFileInfo(dir.filePath(QStringLiteral("a"))).isSymLink());
+}
+TEST_F(Transfer, FailuresAtTheFinishAreLoggedInOneLine)
+{
+    ASSERT_TRUE(start());
+    for (int i = 0; i < 5; ++i) {
+        const QByteArray fid = "l" + QByteArray::number(i);
+        send("ac=file;fid=" + fid + ";ft=symlink;n=" + b64(dir.filePath(QString::fromLatin1(fid)).toUtf8()));
+        send("ac=end_data;fid=" + fid + ";d=" + b64("fid:missing"));
+    }
+    DesktopLog log;
+    ASSERT_TRUE(barrier());
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    ASSERT_TRUE(barrier());
+    EXPECT_EQ(log.count(QStringLiteral("failed at the finish")), 1);
+    EXPECT_TRUE(log.contains(QStringLiteral("ENOENT for 5 files")));
+}
+TEST_F(Transfer, AFailureAtTheFinishNamesThePathOfTheFile)
+{
+    // The fid is the client's name for the file. The log names the file.
+    ASSERT_TRUE(start());
+    send("ac=file;fid=clientfid;ft=symlink;n=" + path("dangling-link"));
+    send("ac=end_data;fid=clientfid;d=" + b64("fid:missing"));
+    DesktopLog log;
+    ASSERT_TRUE(barrier());
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    ASSERT_TRUE(barrier());
+    ASSERT_EQ(log.count(QStringLiteral("failed at the finish")), 1);
+    EXPECT_TRUE(log.contains(QStringLiteral("ENOENT for 1 file (") + dir.filePath(QStringLiteral("dangling-link")) + QLatin1Char(')')));
+    EXPECT_FALSE(log.contains(QStringLiteral("clientfid")));
+}
+TEST_F(Transfer, AnUploadIntoAnExistingDirectoryKeepsItsMode)
+{
+    // ~/.config/nvim as a link to a directory: the upload goes in it, and
+    // neither the link nor the directory takes the listed mode.
+    const QString real = dir.filePath(QStringLiteral("real"));
+    ASSERT_TRUE(QDir().mkpath(real));
+    ASSERT_EQ(::chmod(QFile::encodeName(real).constData(), 0700), 0);
+    ASSERT_EQ(::symlink("real", QFile::encodeName(dir.filePath(QStringLiteral("linked"))).constData()), 0);
+    DesktopLog log;
+    ASSERT_TRUE(start());
+    send("ac=file;fid=d;ft=directory;prm=511;n=" + path("linked"));
+    ASSERT_TRUE(fileStatus("d", "OK"));
+    send("ac=file;fid=e;ft=directory;prm=511;n=" + path("real"));
+    ASSERT_TRUE(fileStatus("e", "OK"));
+    send("ac=file;fid=f;sz=1;n=" + path("linked/f"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    send("ac=end_data;fid=f;d=" + b64("x"));
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    ASSERT_TRUE(barrier());
+    EXPECT_FALSE(log.contains(QStringLiteral("failed")));
+    EXPECT_EQ(contents("real/f"), "x");
+    struct stat st { };
+    ASSERT_EQ(::stat(QFile::encodeName(real).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0700u);
+}
+TEST_F(Transfer, MetadataNeverReachesTheTargetOfALink)
+{
+    // A file outside the destination, named by a symbolic link of the upload.
+    QTemporaryDir outsideDir;
+    const QString outside = outsideDir.filePath(QStringLiteral("outside"));
+    {
+        QFile file(outside);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(file.write("keep"), 4);
+    }
+    ASSERT_EQ(::chmod(QFile::encodeName(outside).constData(), 0600), 0);
+    const timespec old[2] { { 1000000000, 0 }, { 1000000000, 0 } };
+    ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(outside).constData(), old, 0), 0);
+    ASSERT_TRUE(start());
+    send("ac=file;fid=l;ft=symlink;prm=511;mod=1700000000000000000;n=" + path("link"));
+    send("ac=end_data;fid=l;d=" + b64("path:" + outside.toUtf8()));
+    ASSERT_TRUE(fileStatus("l", "OK"));
+    // A hard link to the link would be a second name for it, with the metadata of a file.
+    send("ac=file;fid=h;ft=link;prm=511;mod=1700000000000000000;n=" + path("hard"));
+    send("ac=end_data;fid=h;d=" + b64("l"));
+    ASSERT_TRUE(fileStatus("h", "EINVAL"));
+    send("ac=finish");
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    struct stat st { };
+    ASSERT_EQ(::stat(QFile::encodeName(outside).constData(), &st), 0);
+    EXPECT_EQ(st.st_mode & 07777, 0600u);
+    EXPECT_EQ(st.st_mtim.tv_sec, 1000000000);
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("hard"))));
+}
+TEST_F(Transfer, DataPastTheDeclaredSizeFailsWithEFBIG)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;sz=2;n=" + path("f"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    send("ac=end_data;fid=f;d=" + b64("too long"));
+    ASSERT_TRUE(fileStatus("f", "EFBIG"));
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("f"))));
+}
+TEST_F(Transfer, TildeAloneIsTheHomeDirectory)
+{
+    const QByteArray home = qgetenv("HOME");
+    qputenv("HOME", QFile::encodeName(dir.path()));
+    ASSERT_TRUE(start());
+    send("ac=file;fid=d;ft=directory;n=" + b64("~"));
+    const bool ok = fileStatus("d", "OK");
+    qputenv("HOME", home);
+    ASSERT_TRUE(ok);
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("~"))));
+}
+TEST_F(Transfer, AQuietSessionGetsNoAnswerForAnInvalidField)
+{
+    send("ac=send;q=2");
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    send("ac=file;fid=f;sz=many;n=" + path("f"));
+    ASSERT_TRUE(barrier());
+    EXPECT_FALSE(repliedFor("test"));
+}
+TEST_F(Transfer, ADenialKeepsAWaitingReceiveFromPrompting)
+{
+    // The receive session exists before the denial; its prompt comes after.
+    send("ac=receive;sz=2");
+    send("ac=file;fid=a;n=" + path("a"));
+    service.handle("id=second;ac=send");
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, false);
+    ASSERT_TRUE(waitFor([&] {
+        return std::any_of(replies.begin(), replies.end(),
+            [](const auto& b) { return b.contains("id=second;") && b.contains("st=" + b64("EPERM")); });
+    }));
+    send("ac=file;fid=b;n=" + path("b"));
+    ASSERT_TRUE(waitFor([&] {
+        return std::any_of(replies.begin(), replies.end(),
+            [](const auto& b) { return b.contains("id=test;") && b.contains("st=" + b64("EPERM")); });
+    }));
+    EXPECT_EQ(prompts, 1);
+}
+TEST_F(Transfer, PromptPathsShowHiddenCharactersAsEscapes)
+{
+    send("ac=receive;sz=1");
+    send("ac=file;fid=a;n=" + b64(dir.filePath(QStringLiteral("a\nb\u202Ec")).toUtf8()));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    ASSERT_EQ(prompted.size(), 1);
+    EXPECT_FALSE(prompted[0].contains(QLatin1Char('\n')));
+    EXPECT_FALSE(prompted[0].contains(QChar(0x202e)));
+    EXPECT_TRUE(prompted[0].endsWith(QStringLiteral("a\\u000ab\\u202ec")));
+}
+TEST_F(Transfer, AListingLeavesOutTheSpecialFilesOfADirectory)
+{
+    // A pipe in the requested directory: a status for it would name the
+    // request, and the client would fail the whole directory.
+    QDir().mkpath(dir.filePath(QStringLiteral("tree")));
+    {
+        QFile file(dir.filePath(QStringLiteral("tree/a")));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    }
+    ASSERT_EQ(::mkfifo(QFile::encodeName(dir.filePath(QStringLiteral("tree/pipe"))).constData(), 0600), 0);
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + path("tree"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    const auto oks = [&] {
+        return std::count_if(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("OK")); });
+    };
+    ASSERT_TRUE(waitFor([&] { return oks() == 2; }));
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("ac=status") && b.contains("fid=req;"); }));
+    const auto listed = [&](const char* name) {
+        return std::any_of(replies.begin(), replies.end(), [&](const auto& b) { return b.contains("ac=file") && b.contains(";n=" + path(name) + ";"); });
+    };
+    EXPECT_TRUE(listed("tree/a"));
+    EXPECT_FALSE(listed("tree/pipe"));
+}
+TEST_F(Transfer, ChildrenLeftOutOfAListingAreLoggedInOneLine)
+{
+    // A directory that can be read but not searched: the listing sees the
+    // names of its children, and lstat() of each one fails, as for children
+    // that went away since their directory was read.
+    if (::geteuid() == 0)
+        GTEST_SKIP() << "root searches any directory";
+    const QString locked = dir.filePath(QStringLiteral("tree/locked"));
+    ASSERT_TRUE(QDir().mkpath(locked));
+    for (const char* name : { "a", "b", "c" }) {
+        QFile file(locked + QLatin1Char('/') + QLatin1String(name));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    }
+    ASSERT_EQ(::chmod(QFile::encodeName(locked).constData(), 0400), 0);
+    // QTemporaryDir cannot remove the children of a directory that it cannot search.
+    struct Unlock {
+        QByteArray path;
+        ~Unlock() { ::chmod(path.constData(), 0700); }
+    } unlock { QFile::encodeName(locked) };
+    DesktopLog log;
+    send("ac=receive;sz=1");
+    send("ac=file;fid=req;n=" + path("tree"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(waitFor([&] {
+        return std::count_if(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("OK")); }) == 2;
+    }));
+    ASSERT_TRUE(barrier());
+    EXPECT_EQ(log.count(QStringLiteral("left out")), 1);
+    EXPECT_TRUE(log.contains(QStringLiteral("left out 3 entries")));
 }
 TEST_F(Transfer, RsyncCopyCannotWritePastTheDeclaredSize)
 {
@@ -468,7 +740,7 @@ TEST_F(Transfer, RsyncCopyCannotWritePastTheDeclaredSize)
     copy[0] = 3;
     copy[9] = 15;
     send("ac=data;fid=f;d=" + b64(copy));
-    EXPECT_TRUE(fileStatus("f", "EIO"));
+    EXPECT_TRUE(fileStatus("f", "EFBIG"));
 }
 TEST_F(Transfer, SmallFileWithLargeBlockSizeDeltaFinishes)
 {
@@ -695,6 +967,437 @@ TEST_F(Transfer, PromptListsAtMostOneHundredPaths)
     ASSERT_EQ(prompted.size(), 100);
     EXPECT_EQ(prompted.last(), dir.filePath(QStringLiteral("99")));
     EXPECT_EQ(promptedTotal, 150);
+}
+// answered() follows every handled command once, also when the packets
+// that it waits for are dropped. The pane holds the terminal's reports until
+// then, so one that is missing stops them for the life of the pane.
+struct Answers : Transfer {
+    int answering = 0, answered = 0;
+    // Called with the number of each answer as it comes.
+    std::function<void(int)> onAnswer;
+    void SetUp() override
+    {
+        Transfer::SetUp();
+        QObject::connect(&service, &FileTransfer::answering, &service, [this] { ++answering; });
+        QObject::connect(&service, &FileTransfer::answered, &service, [this] {
+            ++answered;
+            if (onAnswer)
+                onAnswer(answered);
+        });
+    }
+    // A command whose status waits behind the delivery window: a cancel of
+    // an unknown session. Returns its number.
+    int probe()
+    {
+        service.handle("id=probe;ac=cancel");
+        return answering;
+    }
+    // The GUI thread runs no events meanwhile: the worker fills its delivery
+    // window, and packets wait in its queue.
+    static void busy() { QThread::msleep(300); }
+    // A download of a large file whose packets wait in the queue.
+    bool download(const QByteArray& options = { })
+    {
+        QFile source(dir.filePath(QStringLiteral("large")));
+        if (!source.open(QIODevice::WriteOnly))
+            return false;
+        QByteArray data(8 * 1024 * 1024, '\0');
+        quint32 seed = 1;
+        for (auto& c : data)
+            c = char((seed = seed * 1664525u + 1013904223u) >> 24);
+        source.write(data);
+        source.close();
+        send("ac=receive;sz=1" + options);
+        send("ac=file;fid=request;n=" + path("large"));
+        if (!waitFor([&] { return !token.isEmpty(); }))
+            return false;
+        service.approve(token, true);
+        if (!waitFor([&] {
+                return std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("ac=file;"); });
+            }))
+            return false;
+        send("ac=file;fid=data;n=" + path("large"));
+        busy();
+        return true;
+    }
+    bool balanced()
+    {
+        waitFor([&] { return answered == answering; });
+        return answered == answering;
+    }
+};
+TEST_F(Answers, ACancelDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    send("ac=cancel");
+    busy();
+    ASSERT_TRUE(status("CANCELED"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AQuietCancelDuringADownloadAnswersEveryCommand)
+{
+    // The cancel of a quiet session queues no status of its own.
+    ASSERT_TRUE(download(";q=2"));
+    send("ac=cancel");
+    busy();
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AnAbortDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    service.abort();
+    busy();
+    ASSERT_TRUE(status("ENOMEM"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, ACommandOverTheLimitDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    service.handle("id=test;ac=data;x=" + QByteArray(qsizetype(AfterglowProto::TransferMaxCommand) + 1, 'a'));
+    busy();
+    ASSERT_TRUE(status("ENOMEM"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AResetDuringADownloadAnswersEveryCommand)
+{
+    ASSERT_TRUE(download());
+    probe();
+    service.reset();
+    busy();
+    // The reset answers the commands that waited for the packets it dropped.
+    // Without that, the answer waits for a later delivery, which one pass
+    // over the events posted so far does not reach.
+    QCoreApplication::sendPostedEvents(&service, QEvent::MetaCall);
+    EXPECT_EQ(answered, answering);
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AnAnswerFollowsThePacketsQueuedBeforeIt)
+{
+    ASSERT_TRUE(download());
+    const int command = probe();
+    std::optional<bool> replied;
+    onAnswer = [&](int n) {
+        if (n == command)
+            replied = repliedFor("probe");
+    };
+    busy();
+    ASSERT_TRUE(waitFor([&] { return replied.has_value(); }));
+    EXPECT_TRUE(*replied);
+    send("ac=cancel");
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, AnAnswerDoesNotWaitForTheProgressThatReplacedItsOwn)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;n=" + path("upload"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    // Fill the delivery window, so that the progress statuses wait.
+    for (int i = 0; i < 4000; ++i)
+        send("ac=data;fid=f;d=" + b64("data"));
+    send("ac=data;fid=f;d=" + b64("x"));
+    const int first = answering;
+    // Its progress status replaces that of the command before.
+    send("ac=data;fid=f;d=" + b64("y"));
+    const QByteArray last = "st=" + b64("PROGRESS") + ";sz=" + QByteArray::number(4000 * 4 + 2);
+    std::optional<bool> passed;
+    onAnswer = [&](int n) {
+        if (n == first)
+            passed = std::any_of(replies.begin(), replies.end(), [&](const auto& b) { return b.contains(last); });
+    };
+    busy();
+    ASSERT_TRUE(waitFor([&] { return passed.has_value(); }));
+    EXPECT_FALSE(*passed);
+    send("ac=end_data;fid=f");
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, ProgressThatReplacesAWaitingProgressAnswersEveryCommand)
+{
+    ASSERT_TRUE(start());
+    send("ac=file;fid=f;n=" + path("upload"));
+    ASSERT_TRUE(fileStatus("f", "STARTED"));
+    // More progress statuses than the delivery window holds: the newest
+    // replaces the one that waits.
+    for (int i = 0; i < 4000; ++i)
+        send("ac=data;fid=f;d=" + b64("data"));
+    busy();
+    send("ac=end_data;fid=f");
+    ASSERT_TRUE(fileStatus("f", "OK"));
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+TEST_F(Answers, CommandsRefusedWhileTheInputQueueIsFullAreAnswered)
+{
+    // A listing keeps the worker busy while more than its input queue of
+    // 16 MiB waits for it.
+    ASSERT_TRUE(QDir(dir.path()).mkpath(QStringLiteral("many")));
+    for (int i = 0; i < 5000; ++i) {
+        QFile entry(dir.filePath(QStringLiteral("many/%1").arg(i)));
+        ASSERT_TRUE(entry.open(QIODevice::WriteOnly));
+    }
+    send("ac=receive;sz=1");
+    send("ac=file;fid=d;n=" + path("many"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    QByteArray command = "id=other;ac=data;fid=f;x=";
+    command += QByteArray(qsizetype(AfterglowProto::TransferMaxCommand) - command.size(), 'a');
+    // 1200 commands are more than the queue holds. A worker that keeps up
+    // with them gets more, until the queue refuses one.
+    const auto refused = [&] {
+        return std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("ENOMEM")); });
+    };
+    for (int round = 0; round < 50 && !refused(); ++round) {
+        for (int i = 0; i < 1200; ++i)
+            service.handle(command);
+        QElapsedTimer settle;
+        settle.start();
+        while (!refused() && settle.elapsed() < 100)
+            QCoreApplication::processEvents();
+    }
+    ASSERT_TRUE(refused());
+    EXPECT_TRUE(balanced()) << answering << " taken, " << answered << " answered";
+}
+// The descriptor limit of every pane's transfers is half of RLIMIT_NOFILE,
+// fixed at its first use. These tests reach it, so they run in a process with
+// a soft limit of 64 (afterglow_transfer_descriptor_limits), and skip in
+// another one.
+struct TransferLimits : Transfer {
+    std::size_t limit = 0;
+    void SetUp() override
+    {
+        rlimit nofile { };
+        if (::getrlimit(RLIMIT_NOFILE, &nofile) != 0 || nofile.rlim_cur > 64)
+            GTEST_SKIP() << "Needs a soft RLIMIT_NOFILE of 64 or less (ulimit -n 64)";
+        limit = std::max<std::size_t>(nofile.rlim_cur / 2, 16);
+        Transfer::SetUp();
+    }
+};
+TEST_F(TransferLimits, ADeltaUploadWithNoDescriptorForItsSignatureIsRefusedBeforeItStarts)
+{
+    // A delta upload holds its output, its basis and the signature stream.
+    QFile basis(dir.filePath(QStringLiteral("basis")));
+    ASSERT_TRUE(basis.open(QIODevice::WriteOnly));
+    ASSERT_EQ(basis.write(QByteArray(8192, 'b')), 8192);
+    basis.close();
+    ASSERT_TRUE(start());
+    for (qsizetype i = 0; i < qsizetype(limit) - 2; ++i)
+        send("ac=file;fid=" + QByteArray::number(i) + ";n=" + b64(dir.filePath(QString::number(i)).toUtf8()));
+    ASSERT_TRUE(fileStatus(QByteArray::number(qsizetype(limit) - 3), "STARTED"));
+    send("ac=file;tt=rsync;fid=delta;n=" + path("basis"));
+    ASSERT_TRUE(fileStatus("delta", "EBUSY"));
+    ASSERT_TRUE(barrier());
+    // A refusal is the file's only status.
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(),
+        [](const auto& b) { return b.contains(";fid=delta;") && b.contains("st=" + b64("STARTED")); }));
+}
+TEST_F(TransferLimits, ADeltaReadAtTheLimitStreams)
+{
+    // The basis of a delta read becomes the descriptor of its stream.
+    QFile source(dir.filePath(QStringLiteral("source")));
+    ASSERT_TRUE(source.open(QIODevice::WriteOnly));
+    ASSERT_EQ(source.write(QByteArray(8192, 's')), 8192);
+    source.close();
+    send("ac=receive;sz=1");
+    send("ac=file;fid=request;n=" + path("source"));
+    ASSERT_TRUE(waitFor([&] { return !token.isEmpty(); }));
+    service.approve(token, true);
+    ASSERT_TRUE(status("OK"));
+    for (qsizetype i = 0; i < qsizetype(limit) - 1; ++i)
+        send("ac=file;tt=rsync;fid=r" + QByteArray::number(i) + ";n=" + path("source"));
+    send("ac=file;tt=rsync;fid=last;n=" + path("source"));
+    ASSERT_TRUE(barrier());
+    ASSERT_FALSE(std::any_of(replies.begin(), replies.end(), [](const auto& b) { return b.contains("st=" + b64("EBUSY")); }));
+    // A signature with no blocks: the delta is the whole file as literals.
+    QByteArray signature(12, '\0');
+    signature[8] = 64;
+    send("ac=end_data;fid=last;d=" + b64(signature));
+    ASSERT_TRUE(ended("last"));
+    EXPECT_FALSE(std::any_of(replies.begin(), replies.end(),
+        [](const auto& b) { return b.contains(";fid=last;") && b.contains("st=" + b64("EBUSY")); }));
+}
+// The client of afterglow-proto (aglow transfer) against this service, as
+// they talk through a terminal: each OSC 5113 sequence of one side reaches
+// the other side whole.
+struct Client : Transfer {
+    QByteArray noise(int size, quint32 seed)
+    {
+        QByteArray out(size, '\0');
+        for (auto& c : out) {
+            seed = seed * 1664525u + 1013904223u;
+            c = char(seed >> 24);
+        }
+        return out;
+    }
+    void write(const QString& path, const QByteArray& bytes)
+    {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        ASSERT_EQ(file.write(bytes), bytes.size());
+    }
+    static ino_t inode(const QString& path)
+    {
+        struct stat st { };
+        return ::stat(QFile::encodeName(path).constData(), &st) == 0 ? st.st_ino : 0;
+    }
+    static QByteArray read(const QString& path)
+    {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    }
+    AfterglowProto::TransferClientOptions options()
+    {
+        AfterglowProto::TransferClientOptions o;
+        o.home = QDir::homePath().toStdString();
+        o.cwd = dir.path().toStdString();
+        o.deltas = true;
+        return o;
+    }
+    // Runs @p client until its session is over. A prompt is approved.
+    bool run(AfterglowProto::TransferClient& client)
+    {
+        const int closedBefore = closed;
+        qsizetype seen = 0;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        while (!client.over() && elapsed.elapsed() < 20000) {
+            if (!token.isEmpty()) {
+                service.approve(token, true);
+                token.clear();
+            }
+            std::string out;
+            client.pull(out, 256 * 1024);
+            for (std::size_t at = 0; (at = out.find("\x1b]5113;", at)) != std::string::npos;) {
+                const auto end = out.find("\x1b\\", at);
+                if (end == std::string::npos)
+                    break;
+                service.handle(QByteArray(out.data() + at + 7, qsizetype(end - at - 7)));
+                at = end + 2;
+            }
+            QCoreApplication::processEvents();
+            if (out.empty())
+                QThread::msleep(1);
+            for (; seen < replies.size(); ++seen) {
+                const QByteArray& bytes = replies[seen];
+                for (qsizetype at = 0; (at = bytes.indexOf("\x1b]5113;", at)) >= 0;) {
+                    const auto end = bytes.indexOf("\x1b\\", at);
+                    if (end < 0)
+                        break;
+                    client.receive(std::string_view(bytes.constData() + at + 7, std::size_t(end - at - 7)));
+                    at = end + 2;
+                }
+            }
+        }
+        // Nothing answers ac=finish, so a client is done when it sends it. The
+        // worker then sets the directory metadata and closes the session.
+        if (client.over() && client.state() == AfterglowProto::TransferClient::State::Done)
+            return waitFor([&] { return closed > closedBefore; });
+        return client.over();
+    }
+};
+TEST_F(Client, SendsATreeWithDeltasToTheTerminal)
+{
+    service.setPassword(QStringLiteral("secret"));
+    const QString source = dir.filePath(QStringLiteral("source"));
+    const QByteArray big = noise(300000, 1) + QByteArray(200000, 'x');
+    QByteArray changed = big;
+    changed.insert(1000, "inserted");
+    changed.append("tail");
+    write(source + QStringLiteral("/big"), changed);
+    write(source + QStringLiteral("/nested/small"), "small file");
+    write(source + QStringLiteral("/nested/empty"), { });
+    ASSERT_EQ(::symlink("big", QFile::encodeName(source + QStringLiteral("/link")).constData()), 0);
+    ASSERT_EQ(::link(QFile::encodeName(source + QStringLiteral("/big")).constData(),
+                  QFile::encodeName(source + QStringLiteral("/hard")).constData()),
+        0);
+    ASSERT_EQ(::chmod(QFile::encodeName(source + QStringLiteral("/nested")).constData(), 0750), 0);
+    // The old copy on the terminal's side: the big file goes as a delta.
+    const QString destination = dir.filePath(QStringLiteral("destination"));
+    write(destination + QStringLiteral("/source/big"), big);
+    auto o = options();
+    o.password = "secret";
+    std::string error;
+    auto client = AfterglowProto::makeTransferSender(o, { source.toStdString(), destination.toStdString() + "/" }, error);
+    ASSERT_TRUE(client) << error;
+    ASSERT_TRUE(run(*client));
+    // The password replaced the dialog.
+    EXPECT_EQ(prompts, 0);
+    EXPECT_EQ(client->state(), AfterglowProto::TransferClient::State::Done) << client->error();
+    for (const auto& item : client->items())
+        EXPECT_TRUE(item.error.empty()) << item.local << ": " << item.error;
+    const QString copy = destination + QStringLiteral("/source");
+    EXPECT_EQ(read(copy + QStringLiteral("/big")), changed);
+    EXPECT_EQ(read(copy + QStringLiteral("/nested/small")), "small file");
+    EXPECT_TRUE(QFileInfo::exists(copy + QStringLiteral("/nested/empty")));
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/link")).symLinkTarget(), copy + QStringLiteral("/big"));
+    EXPECT_EQ(inode(copy + QStringLiteral("/hard")), inode(copy + QStringLiteral("/big")));
+    struct stat nested { };
+    ASSERT_EQ(::stat(QFile::encodeName(copy + QStringLiteral("/nested")).constData(), &nested), 0);
+    EXPECT_EQ(nested.st_mode & 0777, 0750u);
+    EXPECT_EQ(client->deltaFileBytes(), quint64(changed.size()));
+    EXPECT_LT(client->deltaBytes(), quint64(changed.size() / 10));
+}
+TEST_F(Client, ReceivesATreeWithDeltasFromTheTerminal)
+{
+    const QString remote = dir.filePath(QStringLiteral("remote"));
+    const QByteArray big = noise(400000, 2);
+    QByteArray changed = big;
+    changed.replace(200000, 5000, noise(5000, 3));
+    write(remote + QStringLiteral("/big"), changed);
+    write(remote + QStringLiteral("/nested/small"), "small file");
+    write(remote + QStringLiteral("/nested/empty"), { });
+    ASSERT_EQ(::symlink("nested/small", QFile::encodeName(remote + QStringLiteral("/link")).constData()), 0);
+    // The terminal lists the first name of an inode that it finds as the
+    // file and the other as a link: nested/small or hard, in either order.
+    ASSERT_EQ(::link(QFile::encodeName(remote + QStringLiteral("/nested/small")).constData(),
+                  QFile::encodeName(remote + QStringLiteral("/hard")).constData()),
+        0);
+    const qint64 modified = 1600000000;
+    const timespec times[2] { { modified, 0 }, { modified, 0 } };
+    ASSERT_EQ(::utimensat(AT_FDCWD, QFile::encodeName(remote + QStringLiteral("/nested")).constData(), times, 0), 0);
+    const QString local = dir.filePath(QStringLiteral("local"));
+    write(local + QStringLiteral("/remote/big"), big);
+    std::string error;
+    auto client = AfterglowProto::makeTransferReceiver(options(), { remote.toStdString(), local.toStdString() + "/" }, error);
+    ASSERT_TRUE(client) << error;
+    ASSERT_TRUE(run(*client));
+    EXPECT_EQ(prompts, 1);
+    EXPECT_EQ(client->state(), AfterglowProto::TransferClient::State::Done) << client->error();
+    for (const auto& item : client->items())
+        EXPECT_TRUE(item.error.empty()) << item.local << ": " << item.error;
+    const QString copy = local + QStringLiteral("/remote");
+    EXPECT_EQ(read(copy + QStringLiteral("/big")), changed);
+    EXPECT_EQ(read(copy + QStringLiteral("/nested/small")), "small file");
+    // An empty file gets no data packet, only the end.
+    EXPECT_TRUE(QFileInfo::exists(copy + QStringLiteral("/nested/empty")));
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/link")).symLinkTarget(), copy + QStringLiteral("/nested/small"));
+    EXPECT_EQ(inode(copy + QStringLiteral("/hard")), inode(copy + QStringLiteral("/nested/small")));
+    EXPECT_EQ(QFileInfo(copy + QStringLiteral("/nested")).lastModified().toSecsSinceEpoch(), modified);
+    EXPECT_EQ(client->deltaFileBytes(), quint64(changed.size()));
+    EXPECT_LT(client->deltaBytes(), quint64(changed.size() / 10));
+}
+TEST_F(Client, CancelEndsTheSessionOnBothSides)
+{
+    write(dir.filePath(QStringLiteral("source/file")), noise(2000000, 4));
+    std::string error;
+    auto o = options();
+    o.deltas = false;
+    auto client = AfterglowProto::makeTransferSender(o,
+        { dir.filePath(QStringLiteral("source/file")).toStdString(), dir.filePath(QStringLiteral("out")).toStdString() }, error);
+    ASSERT_TRUE(client) << error;
+    client->cancel("stopped");
+    ASSERT_TRUE(run(*client));
+    EXPECT_EQ(client->state(), AfterglowProto::TransferClient::State::Canceled);
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath(QStringLiteral("out"))));
+    // The service ended its side too, and takes the next session.
+    ASSERT_TRUE(waitFor([&] { return closed == 1; }));
+    auto again = AfterglowProto::makeTransferSender(o,
+        { dir.filePath(QStringLiteral("source/file")).toStdString(), dir.filePath(QStringLiteral("out")).toStdString() }, error);
+    ASSERT_TRUE(again) << error;
+    ASSERT_TRUE(run(*again));
+    EXPECT_EQ(again->state(), AfterglowProto::TransferClient::State::Done) << again->error();
+    EXPECT_EQ(read(dir.filePath(QStringLiteral("out"))), noise(2000000, 4));
 }
 } // namespace
 int main(int argc, char** argv)

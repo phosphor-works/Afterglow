@@ -328,22 +328,51 @@ bool DeltaApplier::valid() const
     return m_hash->valid();
 }
 
-bool DeltaApplier::output(DeltaTarget& target, std::string_view bytes)
+bool DeltaApplier::output(DeltaTarget& target, std::string_view bytes, std::size_t& written)
 {
     if (!target.write(bytes)) {
         return false;
     }
     m_hash->update(bytes);
+    written += bytes.size();
     return true;
 }
 
-std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTarget& target)
+// Copies blocks of the range in progress until @p step bytes were written.
+// The first block goes whatever the step, so that each call makes progress.
+bool DeltaApplier::copy(DeltaTarget& target, std::size_t step, std::size_t& written)
+{
+    while (m_copyLeft > 0) {
+        m_block.clear();
+        if (!target.readBlock(m_copyNext, m_block) || m_block.empty() || !output(target, m_block, written)) {
+            return false;
+        }
+        ++m_copyNext;
+        --m_copyLeft;
+        if (written >= step) {
+            break;
+        }
+    }
+    return true;
+}
+
+std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTarget& target, std::size_t step)
 {
     if (!valid()) {
         return std::nullopt;
     }
+    m_hasWork = false;
+    // A call that writes nothing stops at nothing: a step of 0 still makes progress.
+    step = std::max<std::size_t>(step, 1);
+    std::size_t written = 0;
+    if (!copy(target, step, written)) {
+        return std::nullopt;
+    }
     std::size_t at = 0;
     while (at < pending.size()) {
+        if (m_copyLeft > 0 || written >= step) {
+            break;
+        }
         const std::string_view rest = pending.substr(at);
         if (m_finished) {
             return std::nullopt; // nothing may follow the hash
@@ -361,7 +390,7 @@ std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTa
             if (rest.size() < 5 + std::size_t(size)) {
                 break;
             }
-            if (!output(target, rest.substr(5, size))) {
+            if (!output(target, rest.substr(5, size), written)) {
                 return std::nullopt;
             }
             used = 5 + std::size_t(size);
@@ -375,12 +404,11 @@ std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTa
             if (first >= m_blockCount || count > m_blockCount - first) {
                 return std::nullopt;
             }
-            std::string block;
-            for (std::uint64_t i = 0; i < count; ++i) {
-                block.clear();
-                if (!target.readBlock(first + i, block) || block.empty() || !output(target, block)) {
-                    return std::nullopt;
-                }
+            // The range is taken now: a call that stops in it goes on with it.
+            m_copyNext = first;
+            m_copyLeft = count;
+            if (!copy(target, step, written)) {
+                return std::nullopt;
             }
             used = length;
         } else if (type == 2) {
@@ -404,6 +432,7 @@ std::optional<std::size_t> DeltaApplier::apply(std::string_view pending, DeltaTa
         }
         at += used;
     }
+    m_hasWork = m_copyLeft > 0 || (written >= step && at < pending.size());
     return at;
 }
 

@@ -16,15 +16,10 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace AfterglowVt {
-
-/// Kitty's Unicode placeholder: text cells that show a slice of a virtual
-/// placement, so images survive multiplexers like tmux.
-inline constexpr char32_t PlaceholderCodepoint = 0x10EEEE;
-/// The number a placeholder row/column diacritic encodes, or -1.
-AFTERGLOWVT_EXPORT int placeholderDiacriticValue(char32_t cp);
 
 class ITerminalHost;
 class Screen;
@@ -40,11 +35,14 @@ struct PlaceholderCell
     int col = 0;
 };
 
-/// Decodes the Unicode placeholder cells of a row, left to right. The
-/// foreground colour carries the image id, the underline colour the
-/// placement id, and up to three diacritics the grid row, the grid column
-/// and the id's high byte. A cell that leaves them out continues the
-/// placeholder just before it.
+/// Decodes kitty's Unicode placeholder cells (AfterglowProto/Placeholder.h)
+/// of a row, left to right. The foreground colour carries the image id, the
+/// underline colour the placement id, and up to three diacritics the grid
+/// row, the grid column and the id's high byte. A cell continues the
+/// placeholder just before it when the ids match and each diacritic it has
+/// agrees (the same row, the next column, the same high byte); it then takes
+/// the ones it leaves out from there. Any other cell starts at row 0,
+/// column 0 for what it leaves out.
 class AFTERGLOWVT_EXPORT PlaceholderDecoder
 {
 public:
@@ -88,11 +86,18 @@ struct Image
     std::vector<std::uint32_t> gaps;
 
     Animation animation = Animation::Stopped;
-    /// Loops still to play; 0 loops forever.
-    std::uint32_t loopsLeft = 0;
+    /// Times the animation may wrap to the first frame before it stays on
+    /// the last; 0 loops forever. a=a v= sets it, so a finished animation
+    /// can go on.
+    std::uint32_t maxLoops = 0;
+    /// Wraps since a=a last set the state.
+    std::uint32_t loopsDone = 0;
     std::size_t currentFrame = 0;
     std::uint64_t frameShownAtMs = 0;
     std::uint64_t sequence = 0; ///< transmission order, for eviction
+    /// When an image first had this id: placements at one z draw in this
+    /// order, as in kitty. Sending the id again keeps it.
+    std::uint64_t order = 0;
 
     std::size_t byteSize() const;
 };
@@ -158,37 +163,51 @@ public:
         std::function<void()> lineFeed;
     };
 
-    static constexpr std::size_t DefaultQuota = std::size_t(320) << 20;
+    static constexpr std::size_t DefaultQuota = AfterglowProto::GraphicsDefaultQuota;
     static constexpr std::size_t MaxImages = 4096;
     static constexpr std::size_t MaxPlacements = 4096;
-    static constexpr std::size_t MaxFrames = 1024;
+    /// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of
+    /// a few bytes, and a file read costs its length for a few bytes of path.
+    /// Both run on the thread that feeds the terminal: their bytes are
+    /// limited per second, with a burst for one large edit or read.
+    static constexpr std::size_t DefaultWorkBurst = std::size_t(1) << 30;
+    static constexpr std::size_t DefaultWorkBytesPerSecond = std::size_t(1) << 30;
+    static constexpr std::size_t MaxFrames = AfterglowProto::GraphicsMaxFrames;
 
     /// Handles an APC payload that starts with 'G'.
     void handle(std::string_view payload, Context& ctx);
 
-    /// Visible placements of the viewport, sorted by z then age.
+    /// Visible placements of the viewport in kitty's order: by z, then by
+    /// when the image got its id, then by when the placement was made (a
+    /// placement that is replaced keeps its place).
     std::vector<VisiblePlacement> visible(const Screen& screen, int cellWidth, int cellHeight, int extraRows = 0) const;
 
     /// The slice of a virtual placement that the placeholder cell for grid
-    /// position (@p row, @p col) shows, drawn at (@p cellX, @p cellY).
-    /// @p placementId 0 takes any virtual placement of the image.
+    /// position (@p row, @p col) shows, drawn at (@p cellX, @p cellY) under
+    /// the text and the cursor (z -1, as in kitty). @p placementId 0 takes
+    /// any virtual placement of the image. A side of the grid that the
+    /// placement leaves out is the image's own size in cells.
     std::optional<VisiblePlacement> placeholderSlice(std::uint32_t imageId, std::uint32_t placementId, int row,
                                                      int col, int cellX, int cellY, int cellWidth,
                                                      int cellHeight) const;
 
-    /// Advances running animations of images that have a placement. Returns
+    /// Advances the running animations of images drawn in @p screen's
+    /// viewport at the cell size: a placement in the scrollback, or a virtual
+    /// one without placeholder cells in view, asks for no frames. Returns
     /// true if any frame changed. @p nextDeadlineMs receives the next time a
-    /// frame is due (0 for none). The caller's clock is the only time source:
-    /// an animation started by a command begins on the next call.
-    bool advanceAnimations(std::uint64_t nowMs, std::uint64_t& nextDeadlineMs);
+    /// frame is due (0 for none), so the caller must call again when the
+    /// viewport moves. The caller's clock is the only time source: an
+    /// animation started by a command begins on the next call.
+    bool advanceAnimations(const Screen& screen, int cellWidth, int cellHeight, std::uint64_t nowMs,
+                           std::uint64_t& nextDeadlineMs);
 
-    /// Without @p includeHistory (ED 2): drops the placements that reach into
-    /// the active area, and those whose rows have all left the scrollback.
-    /// Virtual placements and relative children stay; a child goes with its
-    /// parent. The cell size measures how many rows an image covers; 0 counts
-    /// only its top row. With @p includeHistory (the alternate screen's
-    /// lifecycle): drops every placement.
-    void clearPlacements(const Screen& screen, bool includeHistory, int cellWidth = 0, int cellHeight = 0);
+    /// A clear of the screen (ED 2, DECCOLM): drops the placements that
+    /// reach into the active area, and those whose rows have all left the
+    /// scrollback. Virtual placements and relative children stay; a child
+    /// goes with its parent. The cell size measures how many rows an image
+    /// covers; 0 counts only its top row. The alternate screen's clear
+    /// (1049, 1047) uses clear(), which drops the images too.
+    void clearPlacements(const Screen& screen, int cellWidth = 0, int cellHeight = 0);
 
     /// Reflow renumbers rows. anchorRows() and anchorColumns() give each
     /// placement's absolute row and column for Screen::resize() to track;
@@ -213,17 +232,23 @@ public:
     /// placements follow their placeholder cells, so they are not moved here.
     void scrollRegion(const RegionScroll& scroll, const Screen& screen, int cellWidth, int cellHeight);
 
+    /// Drops every image, placement and unfinished upload: a reset, or the
+    /// alternate screen's clear, after which no id names an old image.
     void clear();
     /// Sets the bytes of image data kept; a lower quota evicts at once.
     void setQuota(std::size_t bytes);
     /// Whether transmissions may read files, temporary files and shared
     /// memory (t=f, t=t, t=s). Off, they are refused and nothing is opened.
     void setFileTransfer(bool allowed) noexcept { m_fileTransfer = allowed; }
+    /// Sets the work budget (chargeWork()) and fills it: @p burst bytes at
+    /// once, refilled at @p bytesPerSecond.
+    void setWorkBudget(std::size_t burst, std::size_t bytesPerSecond);
 
     /// Stores an internal image (sixel, or an iTerm2 inline image) placed
     /// with its top-left at visible cell (@p col, @p row). Earlier internal
     /// images it covers entirely are dropped. @p displayWidth and
     /// @p displayHeight, when not 0, give the size in pixels to draw it at.
+    /// An image larger than the quota is not stored, and replaces nothing.
     void addSixel(ImageFrame frame, const Screen& screen, int row, int col, int cellWidth, int cellHeight,
                   std::uint32_t displayWidth = 0, std::uint32_t displayHeight = 0);
 
@@ -236,33 +261,49 @@ private:
     class Origins;
     struct Pending
     {
-        AfterglowProto::GraphicsCommand first; ///< the first chunk's keys, parsed once
+        /// The first chunk's keys, parsed once. A later chunk's q= replaces
+        /// its q, as in kitty.
+        AfterglowProto::GraphicsCommand first;
         std::string data;
         bool active = false;
         bool failed = false;
     };
 
-    /// False when the payload only added a chunk to a pending transmission,
-    /// which leaves nothing to settle.
+    /// False when the command changed nothing that needs settling: a chunk
+    /// that only added to a pending transmission, a feature query, or a
+    /// command refused before anything ran.
     bool dispatch(std::string_view payload, Context& ctx);
     void execute(const Command& cmd, std::string data, Context& ctx);
     /// Reads the payload from its medium and inflates o=z data, which may
     /// not grow past @p inflateLimit bytes. A file or shared memory object
     /// gives at most @p readLimit bytes: raw pixels past it are not read,
-    /// and longer compressed or PNG data is refused.
+    /// and longer compressed or PNG data is refused. Every failure to read
+    /// one gets the same error. The bytes to read count against the work
+    /// budget, and a read the budget refuses gets EBUSY.
     bool loadPayload(const Command& cmd, std::string& data, std::size_t readLimit, std::size_t inflateLimit,
                      std::string& error);
     bool decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out, std::string& error);
     void transmit(const Command& cmd, std::string data, Context& ctx);
-    void place(const Command& cmd, Context& ctx);
+    /// Places @p image, or the image the command names when it is null.
+    void place(const Command& cmd, Context& ctx, Image* image = nullptr);
     void remove(const Command& cmd, Context& ctx);
     void frame(const Command& cmd, std::string data, Context& ctx);
     void animate(const Command& cmd, Context& ctx);
     void compose(const Command& cmd, Context& ctx);
+    /// d=f and d=F: deletes frame r= (the last when past it) of an image.
+    void deleteFrame(const Command& cmd, bool freeImage);
+    /// A query with e= (a feature query): the keys of its action that the
+    /// store supports, with no other effect.
+    void featureQuery(const Command& cmd, Context& ctx);
+    /// The images that @p screen's viewport draws at the cell size.
+    std::unordered_set<std::uint32_t> shownImages(const Screen& screen, int cellWidth, int cellHeight) const;
+    /// Answers a command that names an image; an a=f or a=a reply also
+    /// names the frame (r=).
     void respond(const Command& cmd, Context& ctx, std::string_view status, bool isError);
     /// Deletes the file or shared memory a refused t=t or t=s command names,
     /// when the protocol hands it to the terminal, without reading it.
-    void releaseMedium(const Command& cmd, const std::string& data) const;
+    /// Returns whether it deleted one.
+    bool releaseMedium(const Command& cmd, const std::string& data) const;
     Image* findImage(const Command& cmd);
     /// Rows a placement covers at the given cell size (1 when unknown).
     long long rowsCovered(const Placement& p, int cellWidth, int cellHeight) const;
@@ -278,12 +319,15 @@ private:
     /// After each change: drops orphans and the images nothing can name or
     /// show any more, and rebuilds the lookups that queries use.
     void settle();
-    /// Charges @p bytes of frame copying against a budget that refills over
-    /// time. False when the budget is spent.
+    /// Charges @p bytes of frame copying, or of a file or shared memory read,
+    /// against a budget that refills over time. Both run on the thread that
+    /// feeds the terminal. False when the budget is spent.
     bool chargeWork(std::size_t bytes);
     /// A placement id for a command without p=, unused by image @p imageId.
     std::uint32_t allocatePlacementId(std::uint32_t imageId);
-    std::uint32_t allocateSixelId();
+    /// An id for an internal image, or for an anonymous one that a command
+    /// claims the id of: free, and preferably out of the way of clients.
+    std::uint32_t allocateInternalId();
 
     std::map<std::uint32_t, Image> m_images;
     std::vector<Placement> m_placements;
@@ -293,11 +337,13 @@ private:
     Pending m_pending;
     std::uint32_t m_nextAutoId = 1u << 31;
     std::uint32_t m_nextPlacementId = 1u << 31;
-    std::uint32_t m_nextSixelId = 3u << 29; ///< preferred range; occupied IDs are skipped
+    std::uint32_t m_nextInternalId = 3u << 29; ///< preferred range; occupied IDs are skipped
     std::uint64_t m_sequence = 0;
     std::size_t m_quota = DefaultQuota;
     bool m_fileTransfer = true;
-    double m_workBytes = -1; ///< frame-copy budget left; below 0 before first use
+    double m_workBytes = -1; ///< work budget left; below 0 before first use
+    double m_workBurst = double(DefaultWorkBurst);
+    double m_workRate = double(DefaultWorkBytesPerSecond);
     std::int64_t m_workStampNs = 0;
 };
 

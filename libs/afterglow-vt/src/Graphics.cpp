@@ -5,6 +5,7 @@
 
 #include <AfterglowProto/Base64.h>
 #include <AfterglowProto/Graphics.h>
+#include <AfterglowProto/Placeholder.h>
 #include <AfterglowVt/Screen.h>
 #include <AfterglowVt/Terminal.h>
 
@@ -12,8 +13,9 @@
 #include <cerrno>
 #include <chrono>
 #include <climits>
-#include <filesystem>
 #include <cmath>
+#include <filesystem>
+#include <type_traits>
 #include <unordered_set>
 
 #include <fcntl.h>
@@ -24,27 +26,29 @@
 namespace AfterglowVt {
 
 namespace {
-#include "PlaceholderDiacritics.inc"
-} // namespace
 
-int placeholderDiacriticValue(char32_t cp)
-{
-    const auto* end = std::end(PlaceholderDiacritics);
-    const auto* it = std::lower_bound(std::begin(PlaceholderDiacritics), end, cp);
-    return (it != end && *it == cp) ? int(it - std::begin(PlaceholderDiacritics)) : -1;
-}
-
-namespace {
-
-constexpr std::uint32_t MaxDimension = 10000;
+constexpr std::uint32_t MaxDimension = AfterglowProto::GraphicsMaxSide;
 constexpr std::size_t MaxPayload = GraphicsStore::DefaultQuota;
 constexpr std::size_t MaxControl = 4096;
 constexpr int MaxDepth = 32; ///< relative placement chain links
-/// Frame edits (a=f on a frame, a=c) copy a whole frame for a command of a
-/// few bytes: their copying is limited per second, with a burst for one
-/// large edit.
-constexpr double WorkBytesPerSecond = double(std::size_t(1) << 30);
-constexpr double WorkBurst = double(std::size_t(1) << 30);
+/// The gap of a new frame without z=, as in kitty. The root frame has none.
+constexpr std::uint32_t DefaultFrameGap = 40;
+/// The one answer to every failure to read a file or shared memory object.
+/// The client can be remote: the answer must not tell it whether a file it
+/// cannot read exists, what kind it is or how long it is.
+constexpr std::string_view FileError = "EBADF:failed to read image file";
+
+/// The answer to a command over the work budget. It asks for a retry only
+/// when the command can be sent again as it was: not when the refusal
+/// deleted its medium (@p released), the temporary file of a t=t command or
+/// the tagged shared memory object of a t=s command.
+std::string busyError(bool released, std::string_view what)
+{
+    std::string error = "EBUSY:too much ";
+    error += what;
+    if (!released) error += ", try again later";
+    return error;
+}
 
 void blendOver(std::uint8_t* dst, const std::uint8_t* src)
 {
@@ -65,7 +69,8 @@ void blendOver(std::uint8_t* dst, const std::uint8_t* src)
     dst[3] = std::uint8_t(outA);
 }
 
-/// Copies a rectangle of @p src into @p dst at (dx, dy), clipped.
+/// Copies a rectangle of @p src into @p dst at (dx, dy), clipped. A width or
+/// height of 0 reaches the edge of @p src.
 void blit(ImageFrame& dst, const ImageFrame& src, int sx, int sy, int w, int h, int dx, int dy, bool overwrite)
 {
     const auto width = w > 0 ? std::int64_t(w) : std::int64_t(src.width) - sx;
@@ -125,6 +130,13 @@ std::uint64_t placementKey(std::uint32_t image, std::uint32_t placement)
     return (std::uint64_t(image) << 32) | placement;
 }
 
+/// A placement's pixel offset inside its first cell. It stays below the cell
+/// size, as in kitty, also when the cell size changes after the placement.
+int cellOffset(int offset, int cell)
+{
+    return cell > 0 ? std::clamp(offset, 0, cell - 1) : std::clamp(offset, 0, 1 << 28);
+}
+
 /// The stable row of a non-virtual root placement as a signed absolute
 /// index: negative once the row has left the scrollback, while the image's
 /// lower rows can still be on screen.
@@ -132,8 +144,6 @@ long long anchorIndex(const Placement& p, const Screen& s)
 {
     return static_cast<long long>(p.row) - static_cast<long long>(s.rowsDropped());
 }
-
-constexpr std::string_view TemporaryTag = "tty-graphics-protocol";
 
 bool forbiddenFile(const std::filesystem::path& path)
 {
@@ -146,25 +156,36 @@ bool forbiddenFile(const std::filesystem::path& path)
     return false;
 }
 
+enum class ReadResult { Done, Failed, Busy };
+
 /// Reads @p size bytes (0: the rest of the file) from @p offset. Past
 /// @p limit, the read stops there when @p cut is set (raw pixels, of which
-/// no more are used) and fails otherwise.
-bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t limit, bool cut, std::string& data,
-                 std::string& error)
+/// no more are used) and fails otherwise. The length comes from fstat before
+/// anything is read, and @p charge must accept it: Busy when it does not.
+///
+/// The read runs on the thread that feeds the terminal, under the pane's
+/// lock. The budget bounds how many bytes it reads, not how long a stalled
+/// mount (a hard NFS mount, a FUSE server that does not answer) keeps that
+/// thread waiting: the pane stops until the read returns. Turning file
+/// transmission off is the remedy for a user with such mounts.
+template<typename Charge>
+ReadResult readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t limit, bool cut,
+                       std::string& data, Charge&& charge)
 {
     struct stat st{};
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0
         || std::uint64_t(offset) > std::uint64_t(st.st_size)) {
-        error = "EBADF:invalid image file extent";
-        return false;
+        return ReadResult::Failed;
     }
     const std::uint64_t remaining = std::uint64_t(st.st_size) - offset;
     std::uint64_t want = size ? std::min<std::uint64_t>(size, remaining) : remaining;
     if (cut) {
         want = std::min<std::uint64_t>(want, limit);
     } else if (want > limit || size > limit) {
-        error = "EFBIG:image payload too large";
-        return false;
+        return ReadResult::Failed;
+    }
+    if (!charge(std::size_t(want))) {
+        return ReadResult::Busy;
     }
     data.resize(std::size_t(want));
     std::size_t done = 0;
@@ -173,9 +194,9 @@ bool readPayload(int fd, std::uint32_t offset, std::uint32_t size, std::size_t l
         if (n > 0) done += std::size_t(n);
         else if (n < 0 && errno == EINTR) continue;
         else if (n == 0) { data.resize(done); break; }
-        else { error = "EBADF:cannot read image payload"; data.clear(); return false; }
+        else { data.clear(); return ReadResult::Failed; }
     }
-    return true;
+    return ReadResult::Done;
 }
 
 bool insideDirectory(const std::filesystem::path& path, const std::filesystem::path& directory)
@@ -186,10 +207,14 @@ bool insideDirectory(const std::filesystem::path& path, const std::filesystem::p
     return p != path.end();
 }
 
-/// Whether a resolved path lies in a directory where the terminal may delete
-/// a t=t file: /tmp, /dev/shm or $TMPDIR, each resolved, so a trailing slash
-/// or a symbolic link in the setting still matches.
-bool temporaryLocation(const std::filesystem::path& path)
+/// Whether the protocol hands the file at resolved @p path to the terminal to
+/// delete: it lies in /tmp, /dev/shm or $TMPDIR (each resolved, so a trailing
+/// slash or a symbolic link in the setting still matches), and its path below
+/// that directory carries the tag. This is stricter than kitty, which looks
+/// for the tag in the whole path: with a $TMPDIR whose own name holds the
+/// tag, a command could name any regular file in it for the terminal to
+/// delete.
+bool temporaryFile(const std::filesystem::path& path)
 {
     std::error_code ec;
     std::vector<std::filesystem::path> dirs{"/tmp", "/dev/shm"};
@@ -197,23 +222,27 @@ bool temporaryLocation(const std::filesystem::path& path)
     for (const auto& dir : dirs) {
         std::error_code resolved;
         const auto real = std::filesystem::canonical(dir, resolved);
-        if (!resolved && insideDirectory(path, real)) return true;
+        if (!resolved && insideDirectory(path, real)
+            && path.lexically_relative(real).string().find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) {
+            return true;
+        }
     }
     return false;
 }
 
 /// Deletes @p name in the directory @p parent, whose real path is
 /// @p parentPath, when the protocol hands it to the terminal: a regular file
-/// whose name carries the tag, in a temporary directory. With @p opened, only
-/// when it is still the file that was read.
-void deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
+/// in a temporary directory, with the tag in its path (temporaryFile()).
+/// With @p opened, only when it is still the file that was read. Returns
+/// whether it deleted the file.
+bool deleteTemporaryFile(int parent, const std::filesystem::path& parentPath, const std::filesystem::path& name,
                          const struct stat* opened)
 {
-    if (name.string().find(TemporaryTag) == std::string::npos || !temporaryLocation(parentPath / name)) return;
+    if (!temporaryFile(parentPath / name)) return false;
     struct stat current{};
-    if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return;
-    if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return;
-    unlinkat(parent, name.c_str(), 0);
+    if (fstatat(parent, name.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(current.st_mode)) return false;
+    if (opened && (current.st_dev != opened->st_dev || current.st_ino != opened->st_ino)) return false;
+    return unlinkat(parent, name.c_str(), 0) == 0;
 }
 
 } // namespace
@@ -232,7 +261,7 @@ std::size_t Image::byteSize() const
 std::optional<PlaceholderCell> PlaceholderDecoder::next(const Screen& screen, const Row& row, int x)
 {
     const Cell& cell = row.at(x);
-    if (cell.codepoint() != PlaceholderCodepoint) {
+    if (cell.codepoint() != AfterglowProto::PlaceholderChar) {
         m_previous = false;
         return std::nullopt;
     }
@@ -245,18 +274,23 @@ std::optional<PlaceholderCell> PlaceholderDecoder::next(const Screen& screen, co
     out.imageId = colorId(style.fg);
     out.placementId = colorId(style.underlineColor);
     const std::u32string_view extra = screen.graphemeExtra(row, x);
-    const int r = extra.size() > 0 ? placeholderDiacriticValue(extra[0]) : -1;
-    const int c = extra.size() > 1 ? placeholderDiacriticValue(extra[1]) : -1;
-    const int high = extra.size() > 2 ? placeholderDiacriticValue(extra[2]) : -1;
+    const int r = extra.size() > 0 ? AfterglowProto::placeholderDiacriticValue(extra[0]) : -1;
+    const int c = extra.size() > 1 ? AfterglowProto::placeholderDiacriticValue(extra[1]) : -1;
+    const int high = extra.size() > 2 ? AfterglowProto::placeholderDiacriticValue(extra[2]) : -1;
+    // kitty's rule (screen_render_line_graphics): a diacritic that is there
+    // must agree with the run, or the cell starts a new one.
     const bool continues = m_previous && (out.imageId & 0xFFFFFF) == (m_last.imageId & 0xFFFFFF)
-        && out.placementId == m_last.placementId;
-    if (high >= 0) {
-        out.imageId |= std::uint32_t(high) << 24;
-    } else if (continues) {
+        && out.placementId == m_last.placementId && (r < 0 || r == m_last.row) && (c < 0 || c == m_last.col + 1)
+        && (high < 0 || std::uint32_t(high) == m_last.imageId >> 24);
+    if (continues) {
         out.imageId = m_last.imageId;
+        out.row = m_last.row;
+        out.col = m_last.col + 1;
+    } else {
+        if (high >= 0) out.imageId |= std::uint32_t(high) << 24;
+        out.row = std::max(r, 0);
+        out.col = std::max(c, 0);
     }
-    out.row = r >= 0 ? r : continues ? m_last.row : 0;
-    out.col = c >= 0 ? c : continues ? m_last.col + 1 : 0;
     m_previous = true;
     m_last = out;
     return out;
@@ -303,8 +337,9 @@ public:
     std::optional<std::size_t> parentOf(const Placement& p) const
     {
         if (!p.parentImage) return std::nullopt;
+        // A parent is named by id: internal and anonymous images have none.
         const auto image = m_store.m_images.find(p.parentImage);
-        if (image == m_store.m_images.end() || image->second.isSixel) return std::nullopt;
+        if (image == m_store.m_images.end() || image->second.isSixel || image->second.anonymous) return std::nullopt;
         if (!p.parentPlacement) {
             const auto it = m_firstOfImage.find(p.parentImage);
             return it == m_firstOfImage.end() ? std::nullopt : std::optional(it->second);
@@ -406,17 +441,37 @@ bool GraphicsStore::dispatch(std::string_view payload, Context& ctx)
     const std::string_view data = semi == std::string_view::npos ? std::string_view{} : payload.substr(semi + 1);
     const Command cmd = Command::parse(keys);
 
+    // An id with a number is refused before anything else, as in kitty, and
+    // a feature query is answered at once: neither touches an upload in
+    // progress.
+    if (cmd.id && cmd.number) {
+        // Refused before the payload is decoded, but a t=t or t=s name is
+        // still the terminal's to delete, as for any other refusal. A name
+        // fits in a few KiB of base64: longer data names nothing.
+        if ((cmd.medium == 't' || cmd.medium == 's') && data.size() <= 8192) {
+            releaseMedium(cmd, AfterglowProto::base64Decode(data));
+        }
+        respond(cmd, ctx, "EINVAL:both an image id and an image number", true);
+        return false;
+    }
+    if (cmd.action == 'q' && cmd.feature) {
+        featureQuery(cmd, ctx);
+        return false;
+    }
+
     if (m_pending.active) {
-        // Chunks after the first carry only m= and q=. A command that names
-        // another action or image is new: the client that left this transfer
-        // unfinished is gone, and its tail must not swallow the next client's
-        // first command.
-        const Command first{m_pending.first};
-        const bool another = (cmd.hasAction && cmd.action != first.action) || (cmd.hasId && cmd.id != first.id)
-            || (cmd.hasNumber && cmd.number != first.number);
+        // Chunks after the first carry only m= and q= (and a=f for a frame).
+        // A command that names another action or image is new: the client
+        // that left this transfer unfinished is gone, and its tail must not
+        // swallow the next client's first command.
+        const bool another = (cmd.hasAction && cmd.action != m_pending.first.action)
+            || (cmd.hasId && cmd.id != m_pending.first.id) || (cmd.hasNumber && cmd.number != m_pending.first.number);
         if (another) {
             m_pending = Pending{};
         } else {
+            // The last q= a chunk gave decides the replies, as in kitty.
+            if (cmd.quiet) m_pending.first.quiet = cmd.quiet;
+            const Command first{m_pending.first};
             // Reject the entire transmission, including tails after an oversized chunk.
             if (!m_pending.failed) {
                 if (data.size() > ((MaxPayload - m_pending.data.size() + 2) / 3) * 4) {
@@ -501,6 +556,7 @@ void GraphicsStore::execute(const Command& cmd, std::string data, Context& ctx)
         compose(cmd, ctx);
         break;
     default:
+        releaseMedium(cmd, data);
         respond(cmd, ctx, "EINVAL:unknown action", true);
         break;
     }
@@ -514,7 +570,112 @@ void GraphicsStore::respond(const Command& cmd, Context& ctx, std::string_view s
     if (cmd.quiet >= 2 || (cmd.quiet == 1 && !isError)) {
         return;
     }
-    ctx.reply(AfterglowProto::GraphicsReply{cmd.id, cmd.number, cmd.placement, std::string(status)}.write());
+    AfterglowProto::GraphicsReply reply{cmd.id, cmd.number, cmd.placement, std::string(status)};
+    if ((cmd.action == 'f' || cmd.action == 'a') && cmd.r > 0) {
+        reply.keys = "r=" + std::to_string(cmd.r);
+    }
+    ctx.reply(reply.write());
+}
+
+void GraphicsStore::featureQuery(const Command& cmd, Context& ctx)
+{
+    // The keys kitty's supported_keys_for_query() lists for each action,
+    // less what this store does not do: the indexed formats f=8 and f=16 and
+    // the usage hints of N=. Keys with their default value are left out.
+    if (!cmd.id || cmd.quiet >= 1) {
+        return; // a query names its id; quiet leaves nothing to say about an OK
+    }
+    std::string keys;
+    auto add = [&keys](char key, auto value) {
+        keys += ',';
+        keys += key;
+        keys += '=';
+        if constexpr (std::is_same_v<decltype(value), char>) keys += value;
+        else keys += std::to_string(value);
+    };
+    auto placementKeys = [&] {
+        if (cmd.placement) add('p', cmd.placement);
+        if (cmd.ux) add('x', cmd.ux);
+        if (cmd.uy) add('y', cmd.uy);
+        if (cmd.w > 0) add('w', cmd.w);
+        if (cmd.h > 0) add('h', cmd.h);
+        if (cmd.X > 0) add('X', cmd.X);
+        if (cmd.Yi > 0) add('Y', cmd.Yi);
+        if (cmd.c > 0) add('c', cmd.c);
+        if (cmd.r > 0) add('r', cmd.r);
+        if (cmd.C == 1) add('C', 1);
+        if (cmd.U == 1) add('U', 1);
+        if (cmd.z) add('z', cmd.z);
+        if (cmd.P) add('P', cmd.P);
+        if (cmd.Q) add('Q', cmd.Q);
+        if (cmd.H) add('H', cmd.H);
+        if (cmd.V) add('V', cmd.V);
+    };
+    const char e = cmd.feature;
+    switch (e) {
+    case 't':
+    case 'T':
+    case 'q':
+    case 'f':
+        add('e', e);
+        if (cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's') add('t', cmd.medium);
+        if (cmd.compression == 'z') add('o', 'z');
+        if (cmd.format == 24 || cmd.format == 100) add('f', cmd.format);
+        if (cmd.s && cmd.s <= MaxDimension) add('s', cmd.s);
+        if (cmd.v && cmd.v <= MaxDimension) add('v', cmd.v);
+        if (cmd.size) add('S', cmd.size);
+        if (cmd.offset) add('O', cmd.offset);
+        if (e == 'f') {
+            if (cmd.ux) add('x', cmd.ux);
+            if (cmd.uy) add('y', cmd.uy);
+            if (cmd.c > 0) add('c', cmd.c);
+            if (cmd.r > 0) add('r', cmd.r);
+            if (cmd.z) add('z', cmd.z);
+            if (cmd.X == 1) add('X', 1);
+            if (cmd.Y > 0 && cmd.Y <= 0xFFFFFFFF) add('Y', cmd.Y);
+        }
+        if (e == 'T') placementKeys();
+        break;
+    case 'p':
+        add('e', e);
+        placementKeys();
+        break;
+    case 'd':
+        add('e', e);
+        if (cmd.del != 'a' && std::string_view("AiInNcCfFpPqQxXyYzZrR").find(cmd.del) != std::string_view::npos) {
+            add('d', cmd.del);
+        }
+        if (cmd.placement) add('p', cmd.placement);
+        if (cmd.ux) add('x', cmd.ux);
+        if (cmd.uy) add('y', cmd.uy);
+        if (cmd.z) add('z', cmd.z);
+        break;
+    case 'a':
+        add('e', e);
+        if (cmd.s >= 1 && cmd.s <= 3) add('s', cmd.s);
+        if (cmd.v) add('v', cmd.v);
+        if (cmd.r > 0) add('r', cmd.r);
+        if (cmd.c > 0) add('c', cmd.c);
+        if (cmd.z) add('z', cmd.z);
+        break;
+    case 'c':
+        add('e', e);
+        if (cmd.r > 0) add('r', cmd.r);
+        if (cmd.c > 0) add('c', cmd.c);
+        if (cmd.ux) add('x', cmd.ux);
+        if (cmd.uy) add('y', cmd.uy);
+        if (cmd.w > 0) add('w', cmd.w);
+        if (cmd.h > 0) add('h', cmd.h);
+        if (cmd.X > 0) add('X', cmd.X);
+        if (cmd.Yi > 0) add('Y', cmd.Yi);
+        if (cmd.C == 1) add('C', 1);
+        break;
+    default:
+        break; // an action this store does not know: the reply has no e=
+    }
+    AfterglowProto::GraphicsReply reply{cmd.id, 0, 0, "OK"};
+    if (!keys.empty()) reply.keys = keys.substr(1);
+    ctx.reply(reply.write());
 }
 
 // --- transmission -----------------------------------------------------------
@@ -528,55 +689,81 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
         error = "EPERM:file transmission is turned off";
         return false;
     }
+    auto fail = [&error] {
+        error = FileError;
+        return false;
+    };
+    // A refusal by the budget is not a failure to read: the file was opened
+    // and found regular, which a read that succeeds tells the client too.
+    bool released = false;
+    auto finish = [&error, &fail, &released](ReadResult result) {
+        if (result == ReadResult::Done) return true;
+        if (result == ReadResult::Busy) {
+            error = busyError(released, "image data read");
+            return false;
+        }
+        return fail();
+    };
+    auto charge = [this](std::size_t bytes) { return chargeWork(bytes); };
     switch (cmd.medium) {
     case 'd':
         break;
     case 'f':
     case 't': {
-        if (data.size() > 4096 || data.find('\0') != std::string::npos) {
-            error = "EBADF:not a readable regular file"; return false;
-        }
+        if (data.size() > 4096 || data.find('\0') != std::string::npos) return fail();
         std::error_code ec;
         const auto canonical = std::filesystem::canonical(data, ec);
-        if (ec || forbiddenFile(canonical)) { error = "EBADF:not a readable regular file"; return false; }
-        // Pin the parent directory and validate the actual opened file. O_NONBLOCK
-        // prevents a replaced FIFO from hanging before fstat can reject it.
+        if (ec || forbiddenFile(canonical)) return fail();
+        // Pin the parent directory and validate the actual opened file.
         const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (parent < 0) { error = "EBADF:cannot open file"; return false; }
+        if (parent < 0) return fail();
         const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
-        if (ec || forbiddenFile(actualParent)) { close(parent); error = "EBADF:not a readable regular file"; return false; }
+        if (ec || forbiddenFile(actualParent)) { close(parent); return fail(); }
         const auto name = canonical.filename();
+        // The type is checked before the open, which has effects of its own:
+        // opening a FIFO lets its writer go on. It is checked again on what
+        // was opened, in case the name was replaced in between, and
+        // O_NONBLOCK keeps a FIFO put there from hanging the open.
+        struct stat named{};
+        if (fstatat(parent, name.c_str(), &named, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(named.st_mode)) {
+            close(parent);
+            return fail();
+        }
         const int fd = openat(parent, name.c_str(), O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
         struct stat opened{};
         if (fd < 0 || fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode)) {
             if (fd >= 0) close(fd);
-            close(parent); error = "EBADF:not a readable regular file"; return false;
+            close(parent);
+            return fail();
         }
-        const bool success = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, error);
+        const ReadResult result = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
         // A temporary file is the terminal's to delete whether or not it
-        // could use it; only the file that was read, though.
-        if (cmd.medium == 't') deleteTemporaryFile(parent, actualParent, name, &opened);
+        // could use it, as in kitty, so that refused ones do not pile up;
+        // only the file that was opened, though.
+        if (cmd.medium == 't') released = deleteTemporaryFile(parent, actualParent, name, &opened);
         close(fd);
         close(parent);
-        if (!success) return false;
+        if (!finish(result)) return false;
         break;
     }
     case 's': {
         const std::string name = data;
-        if (name.size() > 4096 || name.find('\0') != std::string::npos) { error = "EBADF:invalid shared memory name"; return false; }
+        if (name.size() > 4096 || name.find('\0') != std::string::npos) return fail();
         // O_NONBLOCK: a FIFO planted in /dev/shm must not hang the open before
         // readPayload's fstat rejects it.
         const int fd = shm_open(name.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK, 0);
-        if (fd < 0) { error = "EBADF:cannot open shared memory"; return false; }
+        if (fd < 0) return fail();
         // pread is safe if the sender truncates the object concurrently; mmap
         // would instead deliver SIGBUS to the terminal process.
-        const bool success = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, error);
+        const ReadResult result = readPayload(fd, cmd.offset, cmd.size, readLimit, cut, data, charge);
         close(fd);
         // Only an object named for the protocol is the terminal's to delete.
         // Any other name stays: a command must not delete an unrelated object
         // by naming it, and almost any object decodes as a tiny image.
-        if (name.find(TemporaryTag) != std::string::npos) shm_unlink(name.c_str());
-        if (!success) return false;
+        if (name.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos) {
+            released = shm_unlink(name.c_str()) == 0;
+        }
+        if (!finish(result)) return false;
         break;
     }
     default:
@@ -594,26 +781,26 @@ bool GraphicsStore::loadPayload(const Command& cmd, std::string& data, std::size
     return true;
 }
 
-void GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
+bool GraphicsStore::releaseMedium(const Command& cmd, const std::string& data) const
 {
     // The same rules as loadPayload's: the name a t=s command gives, and the
-    // real name of a t=t file, must carry the tag.
+    // real path of a t=t file below its temporary directory, must carry the tag.
     if (!m_fileTransfer || data.size() > 4096 || data.find('\0') != std::string::npos) {
-        return;
+        return false;
     }
     if (cmd.medium == 's') {
-        if (data.find(TemporaryTag) != std::string::npos) shm_unlink(data.c_str());
-        return;
+        return data.find(AfterglowProto::GraphicsTemporaryTag) != std::string::npos && shm_unlink(data.c_str()) == 0;
     }
-    if (cmd.medium != 't') return;
+    if (cmd.medium != 't') return false;
     std::error_code ec;
     const auto canonical = std::filesystem::canonical(data, ec);
-    if (ec) return;
+    if (ec) return false;
     const int parent = open(canonical.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (parent < 0) return;
+    if (parent < 0) return false;
     const auto actualParent = std::filesystem::read_symlink("/proc/self/fd/" + std::to_string(parent), ec);
-    if (!ec) deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
+    const bool released = !ec && deleteTemporaryFile(parent, actualParent, canonical.filename(), nullptr);
     close(parent);
+    return released;
 }
 
 bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& ctx, ImageFrame& out,
@@ -660,7 +847,9 @@ bool GraphicsStore::decodePixels(const Command& cmd, std::string data, Context& 
     } else {
         const std::size_t expected = std::size_t(cmd.s) * cmd.v * bpp;
         if (data.size() < expected) {
-            error = "ENODATA:insufficient image data";
+            // A file shorter than the client claimed is a read failure: its
+            // length is not the client's to learn.
+            error = cmd.medium == 'd' ? std::string_view("ENODATA:insufficient image data") : FileError;
             return false;
         }
         out.width = cmd.s;
@@ -729,10 +918,12 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
             cmd.id = id;
         }
     }
-    if (auto existing = m_images.find(id); existing != m_images.end() && existing->second.isSixel) {
-        // Kitty may explicitly claim any ID, including an internal image's.
-        // Keep that image and its anchors, relocating it before replacement.
-        const auto replacement = allocateSixelId();
+    if (auto existing = m_images.find(id);
+        existing != m_images.end() && (existing->second.isSixel || existing->second.anonymous)) {
+        // Kitty may explicitly claim any ID, including that of an internal or
+        // anonymous image, which no command can name. Keep that image and its
+        // anchors, relocating it before replacement.
+        const auto replacement = allocateInternalId();
         auto node = m_images.extract(existing);
         node.key() = replacement;
         node.mapped().id = replacement;
@@ -743,6 +934,8 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     }
     std::erase_if(m_placements, [id](const Placement& p) { return p.imageId == id; });
     pruneOrphans();
+    const auto previous = m_images.find(id);
+    const std::uint64_t order = previous != m_images.end() ? previous->second.order : 0;
 
     Image img;
     img.id = id;
@@ -751,8 +944,9 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
     img.width = frame.width;
     img.height = frame.height;
     img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
-    img.gaps.push_back(40);
+    img.gaps.push_back(0); // the root frame has no gap until a=a gives it one
     img.sequence = ++m_sequence;
+    img.order = order ? order : img.sequence;
     m_images[id] = std::move(img);
     enforceQuota(id);
 
@@ -760,7 +954,8 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
         Command pc = cmd;
         pc.id = id;
         if (cmd.id == 0 && cmd.number == 0) pc.quiet = 2;
-        place(pc, ctx); // Placement errors must not be hidden by an earlier OK.
+        // The image itself: an anonymous one is not found by its id.
+        place(pc, ctx, &m_images.at(id)); // Placement errors must not be hidden by an earlier OK.
     } else {
         respond(cmd, ctx, "OK", false);
     }
@@ -769,8 +964,10 @@ void GraphicsStore::transmit(const Command& cmdIn, std::string data, Context& ct
 Image* GraphicsStore::findImage(const Command& cmd)
 {
     if (cmd.id) {
+        // An anonymous image has an id only inside the store: in kitty it has
+        // none, so no command reaches it by guessing.
         auto it = m_images.find(cmd.id);
-        return it == m_images.end() || it->second.isSixel ? nullptr : &it->second;
+        return it == m_images.end() || it->second.isSixel || it->second.anonymous ? nullptr : &it->second;
     }
     if (cmd.number) {
         Image* newest = nullptr;
@@ -802,9 +999,9 @@ void eraseFlagged(std::vector<Placement>& placements, const std::vector<char>& d
 
 } // namespace
 
-void GraphicsStore::place(const Command& cmdIn, Context& ctx)
+void GraphicsStore::place(const Command& cmdIn, Context& ctx, Image* image)
 {
-    Image* img = findImage(cmdIn);
+    Image* img = image ? image : findImage(cmdIn);
     if (!img) {
         respond(cmdIn, ctx, "ENOENT:no such image", true);
         return;
@@ -832,7 +1029,10 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx)
             if (ancestor.imageId == pl.imageId && ancestor.placementId == pl.placementId) {
                 respond(cmd, ctx, "ECYCLE:relative placement cycle", true); return;
             }
-            if (++depth > MaxDepth) { respond(cmd, ctx, "ETOODEEP:relative placement depth exceeds 32", true); return; }
+            if (++depth > MaxDepth) {
+                respond(cmd, ctx, "ETOODEEP:relative placement depth exceeds " + std::to_string(MaxDepth), true);
+                return;
+            }
         }
         // Reparenting also lengthens existing descendant chains: walk them
         // level by level from this placement, through a map of children.
@@ -842,7 +1042,10 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx)
         }
         std::vector<std::uint64_t> level{key};
         for (int below = 0; !level.empty(); ++below) {
-            if (depth + below > MaxDepth) { respond(cmd, ctx, "ETOODEEP:descendant depth exceeds 32", true); return; }
+            if (depth + below > MaxDepth) {
+                respond(cmd, ctx, "ETOODEEP:descendant depth exceeds " + std::to_string(MaxDepth), true);
+                return;
+            }
             std::vector<std::uint64_t> next;
             for (const auto k : level) {
                 if (const auto it = children.find(k); it != children.end()) next.insert(next.end(), it->second.begin(), it->second.end());
@@ -850,14 +1053,20 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx)
             level = std::move(next);
         }
     }
-    const bool replacing = std::any_of(m_placements.begin(), m_placements.end(),
+    // A placement that is replaced keeps its slot, and so its place in the
+    // drawing order among placements at its z (kitty's).
+    const auto replaced = std::find_if(m_placements.begin(), m_placements.end(),
                                        [&](const Placement& p) { return placementKey(p.imageId, p.placementId) == key; });
-    if (!replacing && m_placements.size() >= MaxPlacements) { respond(cmd, ctx, "ENOSPC:too many placements", true); return; }
-    std::erase_if(m_placements, [&](const Placement& p) { return placementKey(p.imageId, p.placementId) == key; });
+    if (replaced == m_placements.end() && m_placements.size() >= MaxPlacements) {
+        respond(cmd, ctx, "ENOSPC:too many placements", true);
+        return;
+    }
     pl.row = scr.rowsDropped() + scr.historySize() + std::size_t(scr.cursor.y);
     pl.col = scr.cursor.x;
-    pl.offsetX = std::clamp(cmd.X, 0, 1 << 28);
-    pl.offsetY = int(std::clamp<std::int64_t>(cmd.Y, 0, 1 << 28));
+    // The protocol keeps the offsets inside the cell: a larger one would move
+    // the image, and the cursor with it, by any number of rows.
+    pl.offsetX = cellOffset(cmd.X, ctx.cellWidth);
+    pl.offsetY = cellOffset(int(std::clamp<std::int64_t>(cmd.Y, 0, 1 << 28)), ctx.cellHeight);
     pl.srcX = std::max(0, cmd.x);
     pl.srcY = std::max(0, cmd.y);
     pl.srcW = std::max(0, cmd.w);
@@ -866,7 +1075,8 @@ void GraphicsStore::place(const Command& cmdIn, Context& ctx)
     pl.rows = std::max(0, cmd.r);
     pl.z = cmd.z;
     pl.isVirtual = cmd.U == 1;
-    m_placements.push_back(pl);
+    if (replaced != m_placements.end()) *replaced = pl;
+    else m_placements.push_back(pl);
 
     if (!pl.isVirtual && !pl.parentImage && cmd.C == 0 && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
         // The cursor moves past the image: down to its last row, right of its last column.
@@ -902,12 +1112,12 @@ std::uint32_t GraphicsStore::allocatePlacementId(std::uint32_t imageId)
     return id;
 }
 
-std::uint32_t GraphicsStore::allocateSixelId()
+std::uint32_t GraphicsStore::allocateInternalId()
 {
     std::uint32_t id;
     do {
-        id = m_nextSixelId++;
-        if (m_nextSixelId >= (1u << 31)) m_nextSixelId = 3u << 29;
+        id = m_nextInternalId++;
+        if (m_nextInternalId >= (1u << 31)) m_nextInternalId = 3u << 29;
     } while (m_images.contains(id));
     return id;
 }
@@ -916,6 +1126,10 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
                              std::uint32_t displayWidth, std::uint32_t displayHeight)
 {
     if (cellWidth <= 0 || cellHeight <= 0) {
+        return;
+    }
+    // Kept, it would evict every other image and still not fit.
+    if (frame.rgba.size() > m_quota) {
         return;
     }
     pruneDead(screen, cellWidth, cellHeight);
@@ -961,13 +1175,14 @@ void GraphicsStore::addSixel(ImageFrame frame, const Screen& screen, int row, in
     }
 
     Image img;
-    img.id = allocateSixelId();
+    img.id = allocateInternalId();
     img.isSixel = true;
     img.width = frame.width;
     img.height = frame.height;
     img.frames.push_back(std::make_shared<const ImageFrame>(std::move(frame)));
     img.gaps.push_back(0);
     img.sequence = ++m_sequence;
+    img.order = img.sequence;
     const std::uint32_t id = img.id;
     m_images[id] = std::move(img);
 
@@ -990,9 +1205,12 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
     const char d = cmd.del ? cmd.del : 'a';
     const bool freeImages = d >= 'A' && d <= 'Z';
     const char kind = char(d | 0x20);
-    if (std::string_view("aincpqxyzr").find(kind) == std::string_view::npos) {
-        // Includes f/F (animation frames), which are not supported.
+    if (std::string_view("aincpqxyzrf").find(kind) == std::string_view::npos) {
         respond(cmd, ctx, "EINVAL:unsupported delete target", true);
+        return;
+    }
+    if (kind == 'f') {
+        deleteFrame(cmd, freeImages);
         return;
     }
 
@@ -1012,8 +1230,9 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         const auto it = m_images.find(p.imageId);
         if (it != m_images.end() && ctx.cellWidth > 0 && ctx.cellHeight > 0) {
             const DisplaySize size = displaySize(p, it->second, ctx.cellWidth, ctx.cellHeight);
-            r.cols = std::max(1LL, (static_cast<long long>(size.width) + p.offsetX + ctx.cellWidth - 1) / ctx.cellWidth);
-            r.rows = std::max(1LL, (static_cast<long long>(size.height) + p.offsetY + ctx.cellHeight - 1) / ctx.cellHeight);
+            const long long ox = cellOffset(p.offsetX, ctx.cellWidth), oy = cellOffset(p.offsetY, ctx.cellHeight);
+            r.cols = std::max(1LL, (static_cast<long long>(size.width) + ox + ctx.cellWidth - 1) / ctx.cellWidth);
+            r.rows = std::max(1LL, (static_cast<long long>(size.height) + oy + ctx.cellHeight - 1) / ctx.cellHeight);
         }
         return r;
     };
@@ -1032,6 +1251,8 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         if (image == m_images.end() || image->second.isSixel) {
             continue;
         }
+        // Ids name only images that a client gave one (kitty's client ids).
+        const bool named = !image->second.anonymous;
         bool match = false;
         switch (kind) {
         case 'a': {
@@ -1041,7 +1262,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
             break;
         }
         case 'i':
-            match = p.imageId == cmd.id && (cmd.placement == 0 || p.placementId == cmd.placement);
+            match = named && p.imageId == cmd.id && (cmd.placement == 0 || p.placementId == cmd.placement);
             break;
         case 'n':
             match = numbered && p.imageId == numbered->id && (cmd.placement == 0 || p.placementId == cmd.placement);
@@ -1066,10 +1287,10 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
             break;
         }
         case 'z':
-            match = p.z == cmd.z;
+            match = !p.isVirtual && p.z == cmd.z; // drawn only where placeholders are, as for the others
             break;
         case 'r':
-            match = p.imageId >= cmd.ux && p.imageId <= cmd.uy;
+            match = named && p.imageId >= cmd.ux && p.imageId <= cmd.uy;
             break;
         default:
             break;
@@ -1087,7 +1308,7 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
             touched.push_back(numbered->id);
         } else if (kind == 'r') {
             for (const auto& [id, img] : m_images) {
-                if (!img.isSixel && id >= cmd.ux && id <= cmd.uy) {
+                if (!img.isSixel && !img.anonymous && id >= cmd.ux && id <= cmd.uy) {
                     touched.push_back(id);
                 }
             }
@@ -1099,6 +1320,38 @@ void GraphicsStore::remove(const Command& cmd, Context& ctx)
         for (std::uint32_t id : touched) {
             dropUnusedImage(id);
         }
+    }
+}
+
+void GraphicsStore::deleteFrame(const Command& cmd, bool freeImage)
+{
+    // kitty's handle_delete_frame_command. Frames here are whole images, so
+    // no other frame depends on the one that goes.
+    Image* img = findImage(cmd);
+    if (!img) {
+        return;
+    }
+    const std::size_t n = img->frames.size();
+    if (n <= 1) {
+        // d=F on an image of one frame deletes the image; d=f keeps it.
+        if (freeImage) {
+            const std::uint32_t id = img->id;
+            std::erase_if(m_placements, [id](const Placement& p) { return p.imageId == id; });
+            m_images.erase(id);
+            pruneOrphans();
+        }
+        return;
+    }
+    const std::size_t victim = std::clamp<std::size_t>(cmd.r > 0 ? std::size_t(cmd.r) : 1, 1, n) - 1;
+    img->frames.erase(img->frames.begin() + std::ptrdiff_t(victim));
+    img->gaps.erase(img->gaps.begin() + std::ptrdiff_t(victim));
+    if (img->currentFrame >= img->frames.size()) {
+        img->currentFrame = img->frames.size() - 1;
+        img->frameShownAtMs = 0;
+    } else if (img->currentFrame > victim) {
+        --img->currentFrame;
+    } else if (img->currentFrame == victim) {
+        img->frameShownAtMs = 0; // another frame shows from the next tick
     }
 }
 
@@ -1123,19 +1376,18 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
     }
     Command cmd = cmdIn;
     cmd.id = img->id;
-    const std::uint32_t gap = cmd.z < 0 ? 0 : cmd.z > 0 ? std::uint32_t(cmd.z) : 40;
+    const std::uint32_t gap = cmd.z < 0 ? 0 : cmd.z > 0 ? std::uint32_t(cmd.z) : DefaultFrameGap;
     const bool edits = cmd.r > 0 && std::size_t(cmd.r) <= img->frames.size();
-
-    if (data.empty() && cmd.medium == 'd') {
-        // Only frame metadata: set the gap of frame r.
-        if (edits && cmd.z != 0) {
-            img->gaps[std::size_t(cmd.r - 1)] = gap;
-        }
-        respond(cmd, ctx, "OK", false);
-        return;
-    }
+    // The reply names the frame written: r= past the last frame adds one.
+    const int base = cmd.c;
+    cmd.r = edits ? cmd.r : int(std::min<std::size_t>(img->frames.size() + 1, INT_MAX));
 
     // Limits first, so a refused frame reads and decodes nothing.
+    if (!edits && base > 0 && std::size_t(base) > img->frames.size()) {
+        releaseMedium(cmd, data);
+        respond(cmd, ctx, "EINVAL:no such base frame", true);
+        return;
+    }
     const std::size_t canvasBytes = std::size_t(img->width) * img->height * 4;
     if (!edits && img->frames.size() >= MaxFrames) {
         releaseMedium(cmd, data);
@@ -1148,8 +1400,8 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
         return;
     }
     if (!chargeWork(canvasBytes)) {
-        releaseMedium(cmd, data);
-        respond(cmd, ctx, "EBUSY:too much frame editing, try again later", true);
+        const bool released = releaseMedium(cmd, data);
+        respond(cmd, ctx, busyError(released, "frame editing"), true);
         return;
     }
     Command pix = cmd;
@@ -1163,12 +1415,16 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
         respond(cmd, ctx, error, true);
         return;
     }
+    if (patch.width > img->width || patch.height > img->height) {
+        respond(cmd, ctx, "EINVAL:frame larger than the image", true);
+        return;
+    }
 
     auto canvas = std::make_shared<ImageFrame>();
     if (edits) {
         *canvas = *img->frames[std::size_t(cmd.r - 1)];
-    } else if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size()) {
-        *canvas = *img->frames[std::size_t(cmd.c - 1)];
+    } else if (base > 0) {
+        *canvas = *img->frames[std::size_t(base - 1)];
     } else {
         canvas->width = img->width;
         canvas->height = img->height;
@@ -1184,7 +1440,7 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
 
     if (edits) {
         img->frames[std::size_t(cmd.r - 1)] = std::move(canvas);
-        // z=0 leaves an edited frame's gap alone, as for a=a and metadata.
+        // z=0 leaves an edited frame's gap alone, as for a=a.
         if (cmd.z != 0) {
             img->gaps[std::size_t(cmd.r - 1)] = gap;
         }
@@ -1196,43 +1452,39 @@ void GraphicsStore::frame(const Command& cmdIn, std::string data, Context& ctx)
     respond(cmd, ctx, "OK", false);
 }
 
-void GraphicsStore::animate(const Command& cmdIn, Context& ctx)
+void GraphicsStore::animate(const Command& cmd, Context& ctx)
 {
-    Image* img = findImage(cmdIn);
+    Image* img = findImage(cmd);
     if (!img) {
-        respond(cmdIn, ctx, "ENOENT:no such image", true);
+        respond(cmd, ctx, "ENOENT:no such image", true);
         return;
     }
-    Command cmd = cmdIn;
-    cmd.id = img->id;
-    switch (cmd.s) {
-    case 1:
-        img->animation = Image::Animation::Stopped;
-        break;
-    case 2:
-        img->animation = Image::Animation::Loading;
-        img->frameShownAtMs = 0; // the next tick starts the clock
-        break;
-    case 3:
-        img->animation = Image::Animation::Running;
-        img->frameShownAtMs = 0;
-        break;
-    default:
-        break;
-    }
-    if (cmd.v == 1) {
-        img->loopsLeft = 0;
-    } else if (cmd.v > 1) {
-        img->loopsLeft = cmd.v - 1;
-    }
-    if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size()) {
-        img->currentFrame = std::size_t(cmd.c - 1);
-        img->frameShownAtMs = 0;
-    }
+    // kitty's handle_animation_control_command, which sends no reply when
+    // the image is found: an OK would reach a shell script as stray input.
     if (cmd.r > 0 && std::size_t(cmd.r) <= img->frames.size() && cmd.z != 0) {
         img->gaps[std::size_t(cmd.r - 1)] = cmd.z < 0 ? 0 : std::uint32_t(cmd.z);
     }
-    respond(cmd, ctx, "OK", false);
+    if (cmd.c > 0 && std::size_t(cmd.c) <= img->frames.size() && std::size_t(cmd.c - 1) != img->currentFrame) {
+        img->currentFrame = std::size_t(cmd.c - 1);
+        img->frameShownAtMs = 0; // the next tick starts the clock
+    }
+    if (cmd.s != 0) {
+        const Image::Animation before = img->animation;
+        switch (cmd.s) {
+        case 1: img->animation = Image::Animation::Stopped; break;
+        case 2: img->animation = Image::Animation::Loading; break;
+        case 3: img->animation = Image::Animation::Running; break;
+        default: break;
+        }
+        // A running animation keeps its clock when only its mode changes.
+        if (img->animation != Image::Animation::Stopped && before == Image::Animation::Stopped) {
+            img->frameShownAtMs = 0;
+        }
+        img->loopsDone = 0;
+    }
+    if (cmd.v != 0) {
+        img->maxLoops = cmd.v - 1;
+    }
 }
 
 void GraphicsStore::compose(const Command& cmdIn, Context& ctx)
@@ -1249,30 +1501,57 @@ void GraphicsStore::compose(const Command& cmdIn, Context& ctx)
         respond(cmd, ctx, "ENOENT:no such frame", true);
         return;
     }
+    // x, y place the rectangle in the destination frame (c=), X, Y in the
+    // source frame (r=). The bounds are kitty's: whole rectangles, inside
+    // the image, not overlapping within one frame.
+    const std::int64_t width = cmd.w ? cmd.w : std::int64_t(img->width);
+    const std::int64_t height = cmd.h ? cmd.h : std::int64_t(img->height);
+    const std::int64_t dx = cmd.x, dy = cmd.y, sx = cmd.X, sy = cmd.Yi;
+    if (width <= 0 || height <= 0 || dx < 0 || dy < 0 || dx + width > img->width || dy + height > img->height) {
+        respond(cmd, ctx, "EINVAL:destination rectangle out of bounds", true);
+        return;
+    }
+    if (sx < 0 || sy < 0 || sx + width > img->width || sy + height > img->height) {
+        respond(cmd, ctx, "EINVAL:source rectangle out of bounds", true);
+        return;
+    }
+    if (cmd.r == cmd.c && std::max(sx, dx) < std::min(sx, dx) + width && std::max(sy, dy) < std::min(sy, dy) + height) {
+        respond(cmd, ctx, "EINVAL:source and destination overlap in one frame", true);
+        return;
+    }
     const FramePtr& target = img->frames[std::size_t(cmd.c - 1)];
     if (!chargeWork(target->rgba.size())) {
-        respond(cmd, ctx, "EBUSY:too much frame editing, try again later", true);
+        respond(cmd, ctx, busyError(false, "frame editing"), true);
         return;
     }
     auto dst = std::make_shared<ImageFrame>(*target);
-    blit(*dst, *img->frames[std::size_t(cmd.r - 1)], cmd.x, cmd.y, cmd.w, cmd.h, cmd.X, cmd.Yi, cmd.C == 1);
+    blit(*dst, *img->frames[std::size_t(cmd.r - 1)], int(sx), int(sy), int(width), int(height), int(dx), int(dy),
+         cmd.C == 1);
     img->frames[std::size_t(cmd.c - 1)] = std::move(dst);
     respond(cmd, ctx, "OK", false);
 }
 
-bool GraphicsStore::advanceAnimations(std::uint64_t nowMs, std::uint64_t& nextDeadlineMs)
+bool GraphicsStore::advanceAnimations(const Screen& screen, int cellWidth, int cellHeight, std::uint64_t nowMs,
+                                      std::uint64_t& nextDeadlineMs)
 {
     bool changed = false;
     nextDeadlineMs = 0;
-    // An image with no placement shows nothing: its animation does not run
-    // and asks for no frames until one appears.
-    std::unordered_set<std::uint32_t> placed;
-    for (const Placement& p : m_placements) {
-        placed.insert(p.imageId);
+    // kitty's image_is_animatable(): running or loading, with frames to
+    // move through and loops left.
+    auto animatable = [](const Image& img) {
+        return img.animation != Image::Animation::Stopped && img.frames.size() >= 2
+            && (img.maxLoops == 0 || img.loopsDone < img.maxLoops);
+    };
+    if (std::none_of(m_images.begin(), m_images.end(), [&](const auto& entry) { return animatable(entry.second); })) {
+        return false;
     }
+    // Only an image drawn in the viewport animates (kitty's is_drawn). One in
+    // the scrollback, or a virtual placement without placeholder cells in
+    // view, asks for no frames until it is shown again.
+    const std::unordered_set<std::uint32_t> shown = shownImages(screen, cellWidth, cellHeight);
     auto due = [&](std::uint64_t at) { nextDeadlineMs = nextDeadlineMs == 0 ? at : std::min(nextDeadlineMs, at); };
     for (auto& [id, img] : m_images) {
-        if (img.animation == Image::Animation::Stopped || img.frames.size() < 2 || !placed.contains(id)) {
+        if (!animatable(img) || !shown.contains(id)) {
             continue;
         }
         if (img.frameShownAtMs == 0) {
@@ -1293,13 +1572,11 @@ bool GraphicsStore::advanceAnimations(std::uint64_t nowMs, std::uint64_t& nextDe
                     settled = true;
                     break; // wait on the last frame until more arrive
                 }
-                if (img.loopsLeft == 1) {
-                    img.animation = Image::Animation::Stopped;
+                // The state stays: a later v= can give the animation more loops.
+                if (img.loopsDone < UINT32_MAX) ++img.loopsDone;
+                if (img.maxLoops != 0 && img.loopsDone >= img.maxLoops) {
                     settled = true;
                     break;
-                }
-                if (img.loopsLeft > 1) {
-                    --img.loopsLeft;
                 }
                 img.currentFrame = 0;
             } else {
@@ -1321,6 +1598,34 @@ bool GraphicsStore::advanceAnimations(std::uint64_t nowMs, std::uint64_t& nextDe
     return changed;
 }
 
+std::unordered_set<std::uint32_t> GraphicsStore::shownImages(const Screen& screen, int cellWidth, int cellHeight) const
+{
+    // A row more than the screen: smooth scrolling shows part of the next one.
+    constexpr int ExtraRows = 1;
+    std::unordered_set<std::uint32_t> out;
+    for (const VisiblePlacement& v : visible(screen, cellWidth, cellHeight, ExtraRows)) {
+        out.insert(v.imageId);
+    }
+    if (m_virtual.empty() || cellWidth <= 0 || cellHeight <= 0) {
+        return out;
+    }
+    const std::size_t active = screen.historySize() + std::size_t(screen.rows());
+    const std::size_t first = screen.viewportTop();
+    const std::size_t last = std::min(active, first + std::size_t(screen.rows() + ExtraRows));
+    PlaceholderDecoder decoder;
+    for (std::size_t y = first; y < last; ++y) {
+        const Row& row = screen.absoluteRow(y);
+        decoder.reset();
+        for (int x = 0; x < screen.cols(); ++x) {
+            if (const auto cell = decoder.next(screen, row, x);
+                cell && m_virtual.contains(placementKey(cell->imageId, cell->placementId))) {
+                out.insert(cell->imageId);
+            }
+        }
+    }
+    return out;
+}
+
 // --- queries and maintenance -----------------------------------------------
 
 std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int cw, int ch, int extraRows) const
@@ -1330,6 +1635,8 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         return out;
     }
     Origins origins(*this, screen, Origins::Rows::Viewport, extraRows);
+    // Each with its image's order, for kitty's drawing order.
+    std::vector<std::pair<std::uint64_t, VisiblePlacement>> drawn;
     const long long top = (long long)screen.viewportTop();
     const long long viewH = static_cast<long long>(screen.rows() + std::clamp(extraRows, 0, screen.rows())) * ch;
     for (std::size_t i = 0; i < m_placements.size(); ++i) {
@@ -1350,8 +1657,8 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         if (src.width <= 0 || src.height <= 0 || size.width <= 0 || size.height <= 0) {
             continue;
         }
-        const long long px = col * cw + p.offsetX;
-        const long long py = (abs - top) * ch + p.offsetY;
+        const long long px = col * cw + cellOffset(p.offsetX, cw);
+        const long long py = (abs - top) * ch + cellOffset(p.offsetY, ch);
         // The view can be taller than an int counts pixels: such positions
         // are off the drawn area anyway.
         if (px < -size.width || px >= static_cast<long long>(screen.cols()) * cw || py < -size.height || py >= viewH
@@ -1370,9 +1677,16 @@ std::vector<VisiblePlacement> GraphicsStore::visible(const Screen& screen, int c
         v.srcW = int(src.width);
         v.srcH = int(src.height);
         v.z = p.z;
-        out.push_back(std::move(v));
+        drawn.emplace_back(img.order, std::move(v));
     }
-    std::stable_sort(out.begin(), out.end(), [](const VisiblePlacement& a, const VisiblePlacement& b) { return a.z < b.z; });
+    // Stable: placements of one image keep the order they were made in.
+    std::stable_sort(drawn.begin(), drawn.end(), [](const auto& a, const auto& b) {
+        return a.second.z != b.second.z ? a.second.z < b.second.z : a.first < b.first;
+    });
+    out.reserve(drawn.size());
+    for (auto& entry : drawn) {
+        out.push_back(std::move(entry.second));
+    }
     return out;
 }
 
@@ -1384,7 +1698,7 @@ std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t im
         return std::nullopt;
     }
     const auto img = m_images.find(imageId);
-    if (img == m_images.end() || img->second.frames.empty()) {
+    if (img == m_images.end() || img->second.frames.empty() || img->second.anonymous) {
         return std::nullopt;
     }
     auto matches = [&](const Placement& p) {
@@ -1407,20 +1721,10 @@ std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t im
     const Image& image = img->second;
     const double imgW = std::max(1.0, double(image.width));
     const double imgH = std::max(1.0, double(image.height));
-    // The placement's grid in cells. A side left out follows from the other
-    // and the image's shape, as for a direct placement; with neither, the
-    // image's own size.
-    constexpr double limit = double(1 << 28);
-    int cols = pl->cols;
-    int rows = pl->rows;
-    if (cols <= 0 && rows <= 0) {
-        cols = int((image.width + std::uint32_t(cw) - 1) / std::uint32_t(cw));
-        rows = int((image.height + std::uint32_t(ch) - 1) / std::uint32_t(ch));
-    } else if (rows <= 0) {
-        rows = int(std::clamp(std::ceil(double(cols) * cw * imgH / imgW / ch), 1.0, limit));
-    } else if (cols <= 0) {
-        cols = int(std::clamp(std::ceil(double(rows) * ch * imgW / imgH / cw), 1.0, limit));
-    }
+    // The placement's grid in cells. A side left out is the image's own size
+    // in cells, whatever the other side is, as in kitty (grman_put_cell_image).
+    const int cols = pl->cols > 0 ? pl->cols : int((image.width + std::uint32_t(cw) - 1) / std::uint32_t(cw));
+    const int rows = pl->rows > 0 ? pl->rows : int((image.height + std::uint32_t(ch) - 1) / std::uint32_t(ch));
     if (row < 0 || col < 0 || row >= rows || col >= cols) {
         return std::nullopt;
     }
@@ -1449,7 +1753,7 @@ std::optional<VisiblePlacement> GraphicsStore::placeholderSlice(std::uint32_t im
     v.srcY = int(std::lround((gy0 - offY) / scale));
     v.srcW = std::max(1, int(std::lround((gx1 - gx0) / scale)));
     v.srcH = std::max(1, int(std::lround((gy1 - gy0) / scale)));
-    v.z = pl->z;
+    v.z = -1; // under the text and the cursor, as kitty draws placeholder images
     return v;
 }
 
@@ -1460,7 +1764,8 @@ long long GraphicsStore::rowsCovered(const Placement& p, int cellWidth, int cell
         return 1;
     }
     const DisplaySize size = displaySize(p, it->second, cellWidth, cellHeight);
-    return std::max(1LL, (static_cast<long long>(size.height) + p.offsetY + cellHeight - 1) / cellHeight);
+    return std::max(1LL, (static_cast<long long>(size.height) + cellOffset(p.offsetY, cellHeight) + cellHeight - 1)
+                             / cellHeight);
 }
 
 void GraphicsStore::pruneDead(const Screen& screen, int cellWidth, int cellHeight)
@@ -1491,7 +1796,7 @@ void GraphicsStore::pruneOrphans()
         }
         auto hasParent = [&](const Placement& p) {
             const auto image = m_images.find(p.parentImage);
-            if (image == m_images.end() || image->second.isSixel) return false;
+            if (image == m_images.end() || image->second.isSixel || image->second.anonymous) return false;
             return p.parentPlacement ? present.contains(placementKey(p.parentImage, p.parentPlacement))
                                      : imagesShown.contains(p.parentImage);
         };
@@ -1501,20 +1806,16 @@ void GraphicsStore::pruneOrphans()
     }
 }
 
-void GraphicsStore::clearPlacements(const Screen& screen, bool includeHistory, int cellWidth, int cellHeight)
+void GraphicsStore::clearPlacements(const Screen& screen, int cellWidth, int cellHeight)
 {
-    if (includeHistory) {
-        m_placements.clear();
-    } else {
-        const long long history = static_cast<long long>(screen.historySize());
-        const long long total = static_cast<long long>(screen.totalRows());
-        std::erase_if(m_placements, [&](const Placement& p) {
-            if (p.parentImage || p.isVirtual) return false;
-            const long long top = anchorIndex(p, screen);
-            const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
-            return bottom > history || bottom <= 0 || top >= total;
-        });
-    }
+    const long long history = static_cast<long long>(screen.historySize());
+    const long long total = static_cast<long long>(screen.totalRows());
+    std::erase_if(m_placements, [&](const Placement& p) {
+        if (p.parentImage || p.isVirtual) return false;
+        const long long top = anchorIndex(p, screen);
+        const long long bottom = top + rowsCovered(p, cellWidth, cellHeight);
+        return bottom > history || bottom <= 0 || top >= total;
+    });
     settle();
 }
 
@@ -1586,7 +1887,7 @@ void GraphicsStore::scrollRegion(const RegionScroll& scroll, const Screen& scree
             if (rel < 0 || rel >= regionRows) return std::nullopt;
             return rel;
         }
-        const long long y0 = rel * ch + p.offsetY;
+        const long long y0 = rel * ch + cellOffset(p.offsetY, ch);
         const long long cutTop = std::max(0LL, -y0);
         const long long cutBottom = cutBelow ? std::max(0LL, y0 + size.height - regionPixels) : 0;
         const long long kept = size.height - cutTop - cutBottom;
@@ -1793,15 +2094,22 @@ void GraphicsStore::settle()
     }
 }
 
+void GraphicsStore::setWorkBudget(std::size_t burst, std::size_t bytesPerSecond)
+{
+    m_workBurst = double(burst);
+    m_workRate = double(bytesPerSecond);
+    m_workBytes = -1;
+}
+
 bool GraphicsStore::chargeWork(std::size_t bytes)
 {
     const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())
                                  .count();
     if (m_workBytes < 0) {
-        m_workBytes = WorkBurst;
+        m_workBytes = m_workBurst;
     } else {
-        m_workBytes = std::min(WorkBurst, m_workBytes + double(now - m_workStampNs) * 1e-9 * WorkBytesPerSecond);
+        m_workBytes = std::min(m_workBurst, m_workBytes + double(now - m_workStampNs) * 1e-9 * m_workRate);
     }
     m_workStampNs = now;
     if (double(bytes) > m_workBytes) {
