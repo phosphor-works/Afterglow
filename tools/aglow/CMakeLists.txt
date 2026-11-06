@@ -160,20 +160,21 @@ endif()
 # aglow has no library to find, so it gets no run path from
 # CMAKE_INSTALL_RPATH.
 set_target_properties(aglow PROPERTIES AUTOMOC OFF AUTOUIC OFF INSTALL_RPATH "")
-install(TARGETS aglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Next to the afterglow executable in the build tree, as after install, so
 # that afterglow run, transfer, dnd, icat and clipboard find it in both.
-# Building afterglow builds aglow too. Alone (AFTERGLOW_AGLOW_ONLY), aglow
-# installs no completions.
+# Building afterglow builds aglow too.
 if(TARGET afterglow)
     set_target_properties(aglow PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
     add_dependencies(afterglow aglow)
-    install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.bash"
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME aglow)
-    install(FILES "${PROJECT_SOURCE_DIR}/data/completions/_aglow" DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
-    install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.fish"
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
 endif()
+install(TARGETS aglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+# The completions, also alone (AFTERGLOW_AGLOW_ONLY): on a remote host,
+# aglow run completes the commands of the scripts.
+install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.bash"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME aglow)
+install(FILES "${PROJECT_SOURCE_DIR}/data/completions/_aglow" DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
+install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.fish"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
 
 if(BUILD_TESTING)
     # readelf -d of a static binary lists no NEEDED library.

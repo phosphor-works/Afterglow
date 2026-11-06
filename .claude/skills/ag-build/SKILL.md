@@ -32,7 +32,7 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 ## aglow
 
 `AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto` and `tools/aglow`: no Qt, no Phosphor checkout, and an
-install of `bin/aglow` and its notices in `share/licenses/aglow`. `docs/BUILD.md` has the procedure.
+install of `bin/aglow`, its completions and its notices in `share/licenses/aglow`. `docs/BUILD.md` has the procedure.
 
 `AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message

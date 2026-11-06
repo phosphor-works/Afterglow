@@ -14,7 +14,8 @@
 #     CMake reports both variables as unused: nothing looked for Qt or read
 #     the Phosphor checkout;
 #   - the build succeeds;
-#   - the prefix holds bin/aglow and its licence notices, and nothing else;
+#   - the prefix holds bin/aglow, its completions and its licence notices,
+#     and nothing else;
 #   - the installed aglow runs.
 #
 # CPM_CACHE and DEPS_ARCHIVES are those of the build that runs the test, so
@@ -76,8 +77,9 @@ aglow_only_run(installation ${CMAKE_COMMAND} --install "${build}" --prefix "${pr
 # A static aglow also carries the notices of glibc and libstdc++, and the
 # texts of the licences that they name.
 file(STRINGS "${build}/CMakeCache.txt" static REGEX "^AGLOW_STATIC_LINK_WORKS:INTERNAL=1$")
-set(expected bin/aglow share/licenses/aglow/LGPL-2.1-or-later.txt share/licenses/aglow/LICENSE.stb_image
-    share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng)
+set(expected bin/aglow share/bash-completion/completions/aglow share/fish/vendor_completions.d/aglow.fish
+    share/zsh/site-functions/_aglow share/licenses/aglow/LGPL-2.1-or-later.txt
+    share/licenses/aglow/LICENSE.stb_image share/licenses/aglow/LICENSE.xxHash share/licenses/aglow/LICENSE.zlib-ng)
 if(static)
     list(APPEND expected share/licenses/aglow/GPL-3.0-or-later.txt share/licenses/aglow/LICENSE.glibc
          share/licenses/aglow/LICENSE.libstdc++)
@@ -92,7 +94,7 @@ if(NOT installed STREQUAL expected)
     if(installed)
         list(REMOVE_ITEM missing ${installed})
     endif()
-    message(FATAL_ERROR "The installation of aglow alone is not bin/aglow and its licence notices.\n"
+    message(FATAL_ERROR "The installation of aglow alone is not bin/aglow, its completions and its licence notices.\n"
                         "  not expected: ${extra}\n  missing: ${missing}")
 endif()
 

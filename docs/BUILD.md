@@ -205,8 +205,9 @@ ctest --test-dir build-aglow --output-on-failure
 sudo cmake --install build-aglow
 ```
 
-The installation contains only `bin/aglow` and its license notices in `share/licenses/aglow`.
-It does not contain the shell completions.
+The installation contains `bin/aglow`, its license notices in `share/licenses/aglow`, and its Bash, Zsh and Fish completions.
+The completions go in the directories of the full build (see [install](#install)), and `AFTERGLOW_ZSH_COMPLETION_DIR` also applies.
+It contains no other part of Afterglow.
 
 ## Install
 

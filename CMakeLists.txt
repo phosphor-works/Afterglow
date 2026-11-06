@@ -22,11 +22,23 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()
 
+# Zsh has no one place for completions: with the prefix /usr, Debian and
+# Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
+# default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:
+# a cached path would keep the DATADIR of the first one. _afterglow and _aglow
+# both install here, also in a build of aglow alone.
+set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
+    "Directory for the zsh completions, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
+set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${AFTERGLOW_ZSH_COMPLETION_DIR}")
+if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
+    set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
+endif()
+
 # aglow alone, for a computer that runs no Afterglow: a remote host, or a
 # package of its own. It needs only CMake and the C and C++20 compilers: no
 # Qt and no Phosphor checkout. zlib-ng and xxHash come from their pinned
-# archives, as in the whole build. It installs aglow and its licence notices,
-# nothing else.
+# archives, as in the whole build. It installs aglow, its completions and its
+# licence notices, nothing of the application.
 option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the protocol library that it uses: no Qt and no Phosphor libraries" OFF)
 if(AFTERGLOW_AGLOW_ONLY)
     if(DEFINED AFTERGLOW_BUILD_AGLOW AND NOT AFTERGLOW_BUILD_AGLOW)
@@ -60,18 +72,6 @@ add_compile_definitions(QT_NO_KEYWORDS)
 # own run paths where they are installed (afterglow/CMakeLists.txt).
 set(AFTERGLOW_PRIVATE_LIBDIR "${CMAKE_INSTALL_LIBDIR}/afterglow")
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${AFTERGLOW_PRIVATE_LIBDIR}")
-
-# Zsh has no one place for completions: with the prefix /usr, Debian and
-# Ubuntu read share/zsh/vendor-completions, not share/zsh/site-functions. The
-# default is empty so that it follows CMAKE_INSTALL_DATADIR at each configure:
-# a cached path would keep the DATADIR of the first one. _afterglow and _aglow
-# both install here.
-set(AFTERGLOW_ZSH_COMPLETION_DIR "" CACHE STRING
-    "Directory for the zsh completions, relative to the prefix or absolute (empty: DATADIR/zsh/site-functions)")
-set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${AFTERGLOW_ZSH_COMPLETION_DIR}")
-if(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR STREQUAL "")
-    set(AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
-endif()
 
 include(cmake/AfterglowPhosphor.cmake)
 # The pins of zlib-ng and xxHash (libs/afterglow-proto) and of the vendored

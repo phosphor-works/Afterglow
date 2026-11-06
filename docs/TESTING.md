@@ -377,7 +377,7 @@ A build with `AFTERGLOW_BUILD_AGLOW=ON` adds these tests to CTest:
 | `afterglow_transfer_aglow_relay` | Runs `aglow transfer` in a pseudo-terminal against the file-transfer service | Python 3 |
 | `afterglow_transfer_kitty` | Runs `aglow transfer` against Kitty | Python 3, `AFTERGLOW_NATIVE_TESTS`, Kitty and the native test dependencies |
 | `aglow_static` | Checks that `readelf -d` lists no shared library for `aglow` | `readelf`, and a static `aglow` |
-| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) with `find_package(Qt6)` disabled and no Phosphor directory, builds it, installs it into the build directory, and checks that the installation holds only `bin/aglow` and its license notices. It has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
+| `aglow_only_build` | Configures `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) with `find_package(Qt6)` disabled and no Phosphor directory, builds it, installs it into the build directory, and checks that the installation holds only `bin/aglow`, its license notices and its completions. It has the label `slow` | A full build, and the source archives of zlib-ng and xxHash or a network connection |
 | `aglow_clipboard_pty` | Plays a terminal for `aglow clipboard` in a pseudo-terminal | Python 3 |
 | `aglow_clipboard_cases` | Checks the arguments that `aglow clipboard` refuses, a new output file, and the timeout of an OSC 52 read | Python 3 |
 | `aglow_icat_decode` | Sends crafted images to `aglow icat` and checks the pixels that it sends, or its error | Python 3 |
