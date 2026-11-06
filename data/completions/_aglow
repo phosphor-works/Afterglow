@@ -10,6 +10,54 @@ _aglow_password() {
     [[ $PREFIX == [./~]* ]] && _files
 }
 
+# _arguments -s -S for the specs of a command, over $words as aglow reads them.
+# _arguments stores the word after an option that takes a value as that value,
+# and then reads the same word as an option if it names one (ca_parse_line in
+# zsh's computil.c): `-p -h` showed the help. aglow takes that word as the
+# value, -h too, but a word that starts with "--" as an option, with the value
+# left out. So a value before the cursor that starts with "-" becomes empty, and
+# an empty value goes in before a word that starts with "--". The options that
+# take a value are the specs whose names end with + or =.
+_aglow_arguments() {
+    local spec name word expect=
+    local -a values
+    for spec; do
+        name=${${spec#\(*\)}#\*}
+        name=${name%%[\[:]*}
+        [[ $name == -?*[+=] ]] && values+=(${name%?})
+    done
+    integer i j
+    for (( i = 2; i < CURRENT; i++ )); do
+        word=$words[i]
+        if [[ -n $expect ]]; then
+            expect=
+            if [[ $word != --* ]]; then
+                [[ $word == -* ]] && words[i]=
+                continue
+            fi
+            words[i,i-1]=('')
+            (( i++, CURRENT++ ))
+        fi
+        case $word in
+            --) break ;;
+            --*=*) ;;
+            --*) (( $values[(Ie)$word] )) && expect=1 ;;
+            -?*)
+                # Flags together (-cp): an option that takes a value takes the
+                # rest of the word, or the next word at its end.
+                for (( j = 2; j <= $#word; j++ )); do
+                    if (( $values[(Ie)-$word[j]] )); then
+                        (( j == $#word )) && expect=1
+                        break
+                    fi
+                done ;;
+        esac
+    done
+    [[ -n $expect && $words[CURRENT] == --* ]] && words[CURRENT,CURRENT-1]=('') && (( CURRENT++ ))
+    # -s: flags together (-cx). -S: "--" ends the options.
+    _arguments -s -S "$@"
+}
+
 _aglow() {
     local -a commands
     commands=(
@@ -32,7 +80,7 @@ _aglow() {
     local command=$words[2]
     shift words
     (( CURRENT-- ))
-    # -s: flags together (-cx). -S: "--" ends the options. --help only alone.
+    # --help only alone.
     local -a help
     help=('(- *)'{-h,--help}'[show the help]')
     case $command in
@@ -40,7 +88,7 @@ _aglow() {
             commands=(${commands[1,4]})
             (( CURRENT == 2 )) && _describe -t commands 'aglow command' commands && ret=0 ;;
         transfer)
-            _arguments -s -S \
+            _aglow_arguments \
                 '(-d --direction)'{-d+,--direction=}'[send or receive files]:direction:(upload download send receive)' \
                 '(-m --mode)'{-m+,--mode=}'[how to read the arguments]:mode:(normal mirror)' \
                 '--compress=[compress the data]:compress:(auto never always)' \
@@ -50,7 +98,7 @@ _aglow() {
                 $help \
                 '*:file:_files' && ret=0 ;;
         dnd)
-            _arguments -s -S \
+            _aglow_arguments \
                 '*--drag=[offer a file as a MIME type]:MIME\:PATH:' \
                 '*--drop=[write a dropped MIME type to a file]:MIME\:PATH:' \
                 '--drop-dest=[directory for dropped files]:directory:_files -/' \
@@ -64,7 +112,7 @@ _aglow() {
                 $help \
                 '*:file:_files' && ret=0 ;;
         icat)
-            _arguments -s -S \
+            _aglow_arguments \
                 '--align=[horizontal alignment]:align:(center left right)' \
                 '--place=[where to show the image]:WIDTHxHEIGHT@LEFTxTOP:' \
                 '--scale-up[scale small images up]' \
@@ -91,7 +139,7 @@ _aglow() {
                 $help \
                 '*:image:_files' && ret=0 ;;
         clipboard)
-            _arguments -s -S \
+            _aglow_arguments \
                 '(-g --get-clipboard)'{-g,--get-clipboard}'[write the clipboard out]' \
                 '(-p --use-primary)'{-p,--use-primary}'[use the primary selection]' \
                 '*'{-m+,--mime=}'[MIME type of a file]:MIME type:' \

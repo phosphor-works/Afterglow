@@ -129,15 +129,18 @@ _aglow()
     # The words before the cursor: the options given, whether "--" ended them,
     # whether -h or --help asked for the help, and the option whose value
     # comes next. Without bash-completion, readline splits --option=value into
-    # three words, with "=" in the middle.
+    # three words, with "=" in the middle. The word after an option is its
+    # value, -h too, but not a word that starts with "--": aglow takes that
+    # word as an option, and the value as left out.
     local i j word entry given="|" expect="" ended="" helped=""
     for ((i = 2; i < cword; i++)); do
         word=${words[i]}
         if [[ $ended ]]; then
             continue
         elif [[ $expect ]]; then
-            [[ $word == = ]] || expect=""
-            continue
+            [[ $word == = ]] && continue
+            expect=""
+            [[ $word == --* && ${words[i - 1]} != = ]] || continue
         fi
         case $word in
         --) ended=1 ;;
@@ -177,7 +180,7 @@ _aglow()
         # bash-completion split it: $cur is the value.
         _aglow_entry "${word%%=*}" && _aglow_value "$entry"
         return
-    elif [[ $expect ]]; then
+    elif [[ $expect ]] && [[ $cur != --* || ${words[cword - 1]} == = ]]; then
         [[ $cur == = ]] && cur=""
         _aglow_value "$expect"
         return
