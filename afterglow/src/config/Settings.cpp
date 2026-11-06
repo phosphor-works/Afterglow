@@ -22,7 +22,9 @@
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QKeySequence>
 #include <QLoggingCategory>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QStyleHints>
 
@@ -185,7 +187,7 @@ KeyDef stringKey(const QString& key, const QString& def, const QString& descript
 KeyDef enumKey(const QString& key, const QString& def, const QString& description, const QStringList& choices)
 {
     KeyDef k{key, def, QMetaType::QString, description, [def, choices](const QVariant& v) {
-                 const QString s = v.toString().toLower();
+                 const QString s = v.toString().trimmed().toLower();
                  return QVariant(choices.contains(s) ? s : def);
              }};
     for (const QString& c : choices) {
@@ -275,13 +277,6 @@ QVariantList stringList(const QStringList& strings)
     return out;
 }
 
-/// qGuiApp is only a cast of the application, so it is set under a
-/// QCoreApplication too, which has no platform theme to ask.
-bool hasGuiApplication()
-{
-    return qobject_cast<QGuiApplication*>(QCoreApplication::instance()) != nullptr;
-}
-
 /// The desktop's fixed-width font, for Font.family "" and Font.size 0.
 /// Without a GUI application (or a platform theme that names one), fontconfig's
 /// monospace alias at 11 points.
@@ -314,6 +309,8 @@ QVariantList defaultPalette()
 PhosphorConfig::Schema buildSchema()
 {
     // The struct defaults are the one source; the schema repeats none of them.
+    // Font.family "" and Font.size 0 are the exceptions: they stand for the
+    // desktop's fixed-width font, which read() resolves into the struct.
     const Settings d;
     const AfterglowRender::FontSpec& font = d.font;
     QVariantList features;
@@ -369,25 +366,27 @@ PhosphorConfig::Schema buildSchema()
                         "Font Mono\" }. Afterglow draws box drawing, block elements, Braille and the Powerline separators "
                         "U+E0B0 to U+E0BF itself, so this setting does not change them.")},
         enumKey(QStringLiteral("hinting"), HintingChoices, font.hinting,
-                QStringLiteral("How glyph outlines align to the pixel grid. The none mode preserves outlines. The light mode aligns vertical positions only. "
-                               "The full mode aligns both axes.")),
+                QStringLiteral("How glyph outlines align to the pixel grid. The none value keeps the outlines as designed. The light "
+                               "value aligns vertical positions only. The full value aligns both axes.")),
         enumKey(QStringLiteral("antialiasing"), AntialiasingChoices, font.antialiasing,
-                QStringLiteral("How Afterglow smooths glyph edges. Subpixel modes use grayscale when transparency or shaders are active. Pane "
-                               "effects count as shaders. They run while a pane shows a shell on another host or as another user.")),
+                QStringLiteral("How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders "
+                               "are active. Pane effects count as shaders. They run while a pane shows a shell on another host, as "
+                               "another user or in a container.")),
         doubleKey(QStringLiteral("gamma"), font.gamma, 0.5, 3.0,
                   QStringLiteral("Glyph coverage gamma. A value of 1 preserves coverage. Higher values increase edge coverage.")),
     };
     const HighlightColors& highlights = d.colors;
     schema.groups[Colors] = {
         stringKey(QStringLiteral("theme"), {},
-                  QStringLiteral("Theme name or file path. Afterglow searches ~/.config/afterglow/themes, then afterglow/themes in "
+                  QStringLiteral("Theme name or file path. An empty value uses no theme. Afterglow searches "
+                                 "~/.config/afterglow/themes, then afterglow/themes in "
                                  "each XDG data directory. Then it searches the bundled themes, such as nord and afterglow-light, "
                                  "and the themes of Ghostty, Kitty and Konsole. Use light:NAME,dark:NAME to follow the desktop. Use "
                                  "plasma:NAME for the background, text, selection and cursor colors of the desktop color scheme "
                                  "over theme NAME. Use plasma alone for these colors over afterglow-dark or afterglow-light, "
                                  "after the brightness of the color scheme. A theme replaces each color that it sets, and the divider color. Afterglow "
-                                 "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A relative "
-                                 "path starts at the directory of the config file.")),
+                                 "reads its own JSON themes, Ghostty themes, Kitty themes and Konsole color schemes. A value with "
+                                 "a slash is a file path. A relative path starts at the directory of the config file.")),
         colorKey(QStringLiteral("foreground"), hex(term.defaultForeground), QStringLiteral("Default text color.")),
         colorKey(QStringLiteral("background"), hex(term.defaultBackground), QStringLiteral("Default background color.")),
         colorKey(QStringLiteral("cursor"), {}, QStringLiteral("Cursor color. An empty value uses the foreground.")),
@@ -418,7 +417,9 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[Terminal] = {
         enumKey(QStringLiteral("bidi"), BidiChoices, term.bidi,
-                QStringLiteral("Bidirectional paragraph layout mode. Application grids retain logical order.")),
+                QStringLiteral("Bidirectional layout of the primary screen. The off value keeps text in logical order. The auto value "
+                               "finds the direction of each paragraph. The ltr and rtl values set it. Application grids keep "
+                               "logical order.")),
         intKey(QStringLiteral("scrollback"), int(term.maxScrollback), 0, 1000000,
                QStringLiteral("Lines of history that each pane keeps. A value of 0 keeps no history.")),
         {QStringLiteral("shellIntegration"), d.shellIntegration, QMetaType::Bool,
@@ -431,8 +432,8 @@ PhosphorConfig::Schema buildSchema()
                                "xterm-256color there instead. New panes use this value."),
                 {QStringLiteral("install"), QStringLiteral("fallback")}),
         stringKey(QStringLiteral("pager"), d.pager,
-                  QStringLiteral("Command for viewing the last command output. Shell expansion is disabled. An empty value turns "
-                                 "the pager off.")),
+                  QStringLiteral("Command for viewing the last command output. Afterglow splits it into words and runs it "
+                                 "without a shell. An empty value turns the pager off.")),
         intKey(QStringLiteral("lastOutputLimit"), int(d.lastOutputLimit >> 10), 1, 65536,
                QStringLiteral("Kibibytes of the last command output that the pager gets. For longer output, the pager gets the "
                               "start and a note.")),
@@ -469,7 +470,9 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("ambiguousWide"), term.ambiguousWide, QMetaType::Bool,
          QStringLiteral("Use two cells for East Asian Ambiguous characters, including Greek, Cyrillic and some symbols.")},
         stringKey(QStringLiteral("bellSound"), {},
-                  QStringLiteral("Bell sound. An empty value disables sound. Use default for the desktop bell, or specify a sound file.")),
+                  QStringLiteral("Bell sound. An empty value turns the bell sound off. The value \"default\" plays the bell of "
+                                 "the desktop sound theme with canberra-gtk-play. Any other value is a sound file that pw-play plays, "
+                                 "or paplay when pw-play is missing. Give an absolute path or a path that starts with ~/.")),
         intKey(QStringLiteral("bellSoundInterval"), d.bellSoundInterval, 0, 10000,
                QStringLiteral("Shortest time in milliseconds between two bell sounds. Bells in between make no sound. A value of 0 "
                               "plays every bell.")),
@@ -551,7 +554,8 @@ PhosphorConfig::Schema buildSchema()
         {QStringLiteral("detectUrls"), d.links.detectUrls, QMetaType::Bool,
          QStringLiteral("Detect plain-text URLs in addition to application-provided OSC 8 links.")},
         stringKey(QStringLiteral("openWith"), {},
-                  QStringLiteral("Command for opening links. The URL is appended. An empty value uses the desktop browser.")),
+                  QStringLiteral("Command for opening links. Afterglow adds the URL as the last argument. An empty value uses the "
+                                 "desktop browser.")),
         enumKey(QStringLiteral("modifier"), ModifierChoices, d.links.modifier,
                 QStringLiteral("Modifier for link highlighting and activation. With none, a plain click opens the link.")),
         {QStringLiteral("schemes"), stringList(d.links.schemes), QMetaType::QVariantList,
@@ -560,7 +564,8 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Quick] = {
         doubleKey(QStringLiteral("height"), d.quickTerminal.height, 0.1, 1.0, QStringLiteral("Height as a fraction of the screen.")),
         stringKey(QStringLiteral("shortcut"), d.quickTerminal.shortcut,
-                  QStringLiteral("Global shortcut to show or hide the quick terminal. An empty value disables the shortcut.")),
+                  QStringLiteral("Global shortcut to show or hide the quick terminal. An empty value turns the shortcut "
+                                 "off. A value that is not a key combination uses the default.")),
         {QStringLiteral("animate"), d.quickTerminal.animate, QMetaType::Bool,
          QStringLiteral("Animate quick-terminal opening and closing.")},
         curveKey(QStringLiteral("curve"), d.quickTerminal.curve,
@@ -570,8 +575,8 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("position"), QuickPositionChoices, d.quickTerminal.position,
                 QStringLiteral("Screen edge the quick terminal slides from.")),
         stringKey(QStringLiteral("screen"), {},
-                  QStringLiteral("Output that shows the quick terminal, such as DP-1. An empty or unknown name uses the primary "
-                                 "screen.")),
+                  QStringLiteral("Screen that shows the quick terminal, by its output name such as DP-1. An empty or unknown name "
+                                 "uses the primary screen.")),
     };
     schema.groups[ControlGroup] = {
         {QStringLiteral("enabled"), d.control.enabled, QMetaType::Bool,
@@ -579,9 +584,9 @@ PhosphorConfig::Schema buildSchema()
                         "socket. The aglow run command also needs Scripts.enabled. Later launches of Afterglow use the "
                         "socket also when this is off.")},
         {QStringLiteral("allowReadText"), d.control.allowReadText, QMetaType::Bool,
-         QStringLiteral("Allow control clients to read pane text, including scrollback, the commands that run and the "
-                        "values of user variables. A script command that runs for aglow run reads pane text only "
-                        "when this setting and Scripts.allowReadText are both on.")},
+         QStringLiteral("Allow control clients, such as afterglow ctl, to read pane text, including scrollback, the commands "
+                        "that run and the values of user variables. A script command that runs for a client, such as aglow "
+                        "run or afterglow run, reads pane text only when Scripts.allowReadText is on too.")},
         intKey(QStringLiteral("eventInterval"), d.control.eventInterval, 0, 10000,
                QStringLiteral("Shortest time in milliseconds between two events of one kind for one pane, for titles, status, "
                               "context, bells and each user variable. A newer event replaces one that waits, and the bells in "
@@ -590,8 +595,8 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[ScriptsGroup] = {
         {QStringLiteral("allowReadText"), d.scriptsAllowReadText, QMetaType::Bool,
          QStringLiteral("Allow Luau scripts to read pane text, selections and semantic regions, and to run actions that "
-                        "read pane text. In a script command that runs for aglow run, read_text, read_region and "
-                        "semantic_regions also need Control.allowReadText.")},
+                        "read pane text. In a script command that runs for a client, such as aglow run or afterglow run, "
+                        "read_text, read_region and semantic_regions also need Control.allowReadText.")},
         {QStringLiteral("enabled"), d.scripts, QMetaType::Bool,
          QStringLiteral("Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in "
                         "each XDG data directory. The aglow run command also needs Control.enabled.")},
@@ -602,9 +607,9 @@ PhosphorConfig::Schema buildSchema()
                               "not count. At the limit the run ends, and aglow run exits with status 124. A change "
                               "applies to the runs that start after it.")),
         // Kibibytes, as Terminal.lastOutputLimit: read() turns them into bytes.
-        intKey(QStringLiteral("commandStdinLimit"), int(d.scriptCommandStdinLimit >> 10), 0, 4096,
+        intKey(QStringLiteral("commandStdinLimit"), int(d.scriptCommandStdinLimit >> 10), 0, MaxScriptCommandStdinLimitKiB,
                QStringLiteral("Kibibytes of standard input that a script command can get from aglow run. A run with "
-                              "more input fails, and aglow run exits with status 2. A value of 0 refuses any input.")),
+                              "more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty.")),
         intKey(QStringLiteral("commandRunLimit"), d.scriptCommandRunLimit, 1, MaxCommandRuns,
                QStringLiteral("Runs of the commands of one script at the same time. A run over the limit fails, and "
                               "aglow run exits with status 1. Each run that waits uses one of the %1 waiting handlers "
@@ -622,7 +627,7 @@ PhosphorConfig::Schema buildSchema()
         enumKey(QStringLiteral("inputMethod"), d.audio.inputMethod, QStringLiteral("Sound system that cava captures from. The auto value detects it."),
                 {QStringLiteral("auto"), QStringLiteral("pipewire"), QStringLiteral("pulse")}),
         stringKey(QStringLiteral("inputSource"), d.audio.inputSource,
-                  QStringLiteral("Playback source for capture. The auto value follows the default output.")),
+                  QStringLiteral("Playback source for capture. The auto value, or an empty value, follows the default output.")),
         intKey(QStringLiteral("framerate"), audio.framerate, PhosphorAudio::Defaults::MinFramerate,
                PhosphorAudio::Defaults::MaxFramerate, QStringLiteral("Spectrum updates per second.")),
         intKey(QStringLiteral("smoothing"), audio.smoothing, PhosphorAudio::Defaults::MinNoiseReduction,
@@ -641,7 +646,9 @@ PhosphorConfig::Schema buildSchema()
     schema.groups[Animation] = {
         {QStringLiteral("cursor"), anim.cursor, QMetaType::Bool, QStringLiteral("Animate cursor movement between cells.")},
         {QStringLiteral("scroll"), anim.scroll, QMetaType::Bool, QStringLiteral("Animate scrolling between rows.")},
-        {QStringLiteral("splits"), anim.splits, QMetaType::Bool, QStringLiteral("Animate split opening, closing and resizing.")},
+        {QStringLiteral("splits"), anim.splits, QMetaType::Bool,
+         QStringLiteral("Animate split opening, closing and resizing. It also controls the open and close animations, the "
+                        "portal and the away frame of Shaders.paneEffects.")},
         curveKey(QStringLiteral("splitCurve"), anim.splitCurve,
                  QStringLiteral("Curve of split animations, as a Phosphor curve spec. Use a spring such as spring:22,1 (angular "
                                 "frequency, damping ratio), a cubic Bezier such as 0.2,0,0,1, or a named easing such as "
@@ -659,7 +666,8 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("tabDuration"), anim.tabDuration, 16, 5000,
                QStringLiteral("Duration of tab switches in milliseconds for curves other than springs.")),
         intKey(QStringLiteral("paneEffectDuration"), anim.paneEffectDuration, 16, 5000,
-               QStringLiteral("Milliseconds a pane takes to open or close in Shaders.paneEffects.")),
+               QStringLiteral("Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane "
+                              "whose shell moves to another host, user or container takes the same time.")),
         curveKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
                  QStringLiteral("Curve of cursor motion between cells, in the splitCurve format.")),
         intKey(QStringLiteral("cursorDuration"), anim.cursorDuration, 16, 5000,
@@ -680,8 +688,11 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[NotificationsGroup] = {
         intKey(QStringLiteral("rateLimit"), d.notificationRateLimit, 0, 1000,
-               QStringLiteral("Desktop notifications that one pane can show in 10 seconds. A value of 0 removes the limit. "
-                              "Notices from Afterglow itself do not count, except those of script commands.")),
+               QStringLiteral("Desktop notifications that the programs of one pane can show in %1 seconds. Afterglow drops "
+                              "the notifications over the limit. A value of 0 removes the limit. Updates of a shown "
+                              "notification do not count. The notifications of Afterglow itself do not count, except the "
+                              "notifications of script commands.")
+                   .arg(NotificationRateWindowMs / 1000)),
         intKey(QStringLiteral("statusInterval"), d.statusNotificationInterval, 0, 600000,
                QStringLiteral("Shortest time in milliseconds between two program status notifications (OSC 7501) of one pane. "
                               "A value of 0 shows each one.")),
@@ -703,14 +714,17 @@ PhosphorConfig::Schema buildSchema()
         stringKey(QStringLiteral("tabTransition"), d.shaders.tabTransition,
                   QStringLiteral("Shader that animates switching tabs. An empty value switches at once.")),
         stringKey(QStringLiteral("paneEffects"), d.shaders.paneEffects,
-                  QStringLiteral("Shader that animates panes as they split open and close. An empty value turns it off.")),
+                  QStringLiteral("Shader that animates panes as they split open and close. It draws a portal when the shell "
+                                 "of a pane moves to another host, user or container. While the shell stays there, it draws "
+                                 "the away frame around the pane. An empty value turns it off.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }.")},
     };
     schema.groups[HintsGroup] = {
         {QStringLiteral("patterns"), d.hintPatterns, QMetaType::QVariantList,
          QStringLiteral("Up to %1 hints. Each is an object with a regular expression in pattern and an action: copy, open or "
-                        "command. A command action also needs command, a list of 1 to %2 arguments.")
+                        "command. An entry without an action copies. A command action also needs command, a list of 1 to "
+                        "%2 arguments. The first argument names the program.")
              .arg(MaxHintPatterns)
              .arg(MaxHintCommandArguments)},
         {QStringLiteral("alphabet"), d.hintAlphabet, QMetaType::QString,
@@ -723,10 +737,10 @@ PhosphorConfig::Schema buildSchema()
     };
     schema.groups[Keys] = {
         stringKey(QStringLiteral("leader"), {},
-                  QStringLiteral("Key that Leader stands for in sequences. The default is empty. With an empty "
-                                 "value, a binding that uses Leader is an error.")),
+                  QStringLiteral("Key that Leader stands for in sequences. With an empty value, a binding that uses Leader is an "
+                                 "error.")),
         intKey(QStringLiteral("sequenceTimeout"), KeyModes::DefaultSequenceTimeout, 100, 10000,
-               QStringLiteral("Milliseconds before an incomplete sequence is canceled.")),
+               QStringLiteral("Milliseconds before Afterglow cancels an incomplete sequence.")),
         intKey(QStringLiteral("tableTimeout"), KeyModes::DefaultTableTimeout, 100, 60000, QStringLiteral("Idle milliseconds before leaving a key table.")),
         {QStringLiteral("tables"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Named action-to-key maps, activated with table:NAME.")},
@@ -767,18 +781,31 @@ bool isIntValue(const QJsonValue& raw)
     return ok;
 }
 
+/// A whole number that isIntValue() refuses all the same: too large or too
+/// small for an int, as a number or as text.
+bool isOutOfIntRange(const QJsonValue& raw)
+{
+    static const QRegularExpression Digits(QStringLiteral("^[+-]?[0-9]+$"));
+    return raw.isDouble() || (raw.isString() && Digits.match(raw.toString().trimmed()).hasMatch());
+}
+
+/// The validators turn NaN and the infinities into the default, and so does
+/// the text of one ("nan", "inf"), which QString::toDouble reads.
 bool isNumberValue(const QJsonValue& raw)
 {
     bool ok = raw.isDouble();
-    if (raw.isString()) raw.toString().toDouble(&ok);
-    return ok;
+    double value = raw.toDouble();
+    if (raw.isString()) value = raw.toString().toDouble(&ok);
+    return ok && std::isfinite(value);
 }
 
 /// Values the validators replaced with a default, and keys the schema does
 /// not know. The validators stay silent, since every read and the reference
 /// run them. PhosphorConfig reads any JSON value of a string key as its text
-/// ("pager": false would run false), so @p defaults gets the default of each
-/// string key whose value is not a string, for read() to lay over the file.
+/// ("pager": false would run false, "alphabet": true would label hints with
+/// t, r, u and e), and a list or map of another JSON type as empty or as the
+/// JSON that its text holds. So @p defaults gets the default of each such
+/// key, for read() to lay over the file: each "Using the default" is true.
 QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObject& file, const QJsonObject& overrides,
                             QJsonObject* defaults)
 {
@@ -802,45 +829,55 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
             groups.insert(group.key());
         }
     }
-    for (const QString& group : std::as_const(groups)) {
-        for (const KeyDef& def : schema.groups.value(group)) {
+    // In the schema's order, not the hash order of the set.
+    for (auto group = schema.groups.cbegin(); group != schema.groups.cend(); ++group) {
+        if (!groups.contains(group.key())) continue;
+        for (const KeyDef& def : group.value()) {
             // An override wins over the file, so it is the value that counts.
-            QJsonValue raw = overrides.value(group).toObject().value(def.key);
-            if (raw.isUndefined()) raw = file.value(group).toObject().value(def.key);
+            QJsonValue raw = overrides.value(group.key()).toObject().value(def.key);
+            if (raw.isUndefined()) raw = file.value(group.key()).toObject().value(def.key);
             if (raw.isUndefined()) continue;
-            const QString name = group + QLatin1Char('.') + def.key;
+            const QString name = group.key() + QLatin1Char('.') + def.key;
+            auto useDefault = [&] {
+                QJsonObject keys = defaults->value(group.key()).toObject();
+                keys.insert(def.key, QJsonValue::fromVariant(def.defaultValue));
+                defaults->insert(group.key(), keys);
+            };
             if (def.expectedType == QMetaType::Bool && !isBoolValue(raw)) {
                 out << QStringLiteral("%1 must be true or false. Using the default").arg(name);
             } else if (def.expectedType == QMetaType::Int && !isIntValue(raw)) {
-                // A number that fails is a whole number too large for the key.
-                out << (raw.isDouble() ? QStringLiteral("%1 is too large or too small. Using the default")
-                                       : QStringLiteral("%1 must be a whole number. Using the default"))
+                out << (isOutOfIntRange(raw) ? QStringLiteral("%1 is too large or too small. Using the default")
+                                             : QStringLiteral("%1 must be a whole number. Using the default"))
                            .arg(name);
             } else if (def.expectedType == QMetaType::Double && !isNumberValue(raw)) {
                 out << QStringLiteral("%1 must be a number. Using the default").arg(name);
             } else if (def.expectedType == QMetaType::QVariantList && !raw.isArray()) {
                 out << QStringLiteral("%1 must be a list. Using the default").arg(name);
+                useDefault();
             } else if (def.expectedType == QMetaType::QVariantMap && !raw.isObject()) {
                 out << QStringLiteral("%1 must be an object. Using the default").arg(name);
+                useDefault();
+            } else if (def.expectedType == QMetaType::QString && !raw.isString()) {
+                // Before the checks below, which would judge an empty text.
+                out << QStringLiteral("%1 must be a string. Using the default").arg(name);
+                useDefault();
             } else if (!def.choices.isEmpty()) {
                 QStringList names;
                 for (const auto& choice : def.choices) names << choice.value.toString();
-                if (!names.contains(raw.toString().toLower())) {
+                if (!names.contains(raw.toString().trimmed().toLower())) {
                     out << QStringLiteral("%1 must be one of %2. Using the default").arg(name, names.join(QStringLiteral(", ")));
                 }
-            } else if (group == Colors && def.expectedType == QMetaType::QString && def.key != QLatin1String("theme")) {
-                if (!raw.isString()) {
-                    out << QStringLiteral("%1 is not a color. Using the default").arg(name);
-                } else if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
+            } else if (group.key() == Colors && def.expectedType == QMetaType::QString && def.key != QLatin1String("theme")) {
+                if (const QString color = raw.toString(); !color.isEmpty() && !Themes::isColorName(color)) {
                     out << QStringLiteral("%1 is not a color. Using the default").arg(name);
                 }
-            } else if (isCurveKey(group, def.key)) {
+            } else if (isCurveKey(group.key(), def.key)) {
                 if (!isCurve(raw.toString())) out << QStringLiteral("%1 is not a curve. Using the default").arg(name);
-            } else if (group == HintsGroup && def.key == QLatin1String("alphabet")) {
+            } else if (group.key() == HintsGroup && def.key == QLatin1String("alphabet")) {
                 if (hintLetters(raw.toString()).isEmpty()) {
                     out << QStringLiteral("%1 needs two or more letters, each one time. Using the default").arg(name);
                 }
-            } else if (group == Colors && def.key == QLatin1String("palette")) {
+            } else if (group.key() == Colors && def.key == QLatin1String("palette")) {
                 const QJsonArray palette = raw.toArray();
                 if (palette.size() > PaletteSize) {
                     out << QStringLiteral("Colors.palette needs %1 colors, not %2. Afterglow uses the first %1")
@@ -856,11 +893,6 @@ QStringList malformedValues(const PhosphorConfig::Schema& schema, const QJsonObj
                         out << QStringLiteral("Colors.palette[%1] is not a color. Using the default").arg(i);
                     }
                 }
-            } else if (def.expectedType == QMetaType::QString && !raw.isString()) {
-                out << QStringLiteral("%1 must be a string. Using the default").arg(name);
-                QJsonObject keys = defaults->value(group).toObject();
-                keys.insert(def.key, QJsonValue::fromVariant(def.defaultValue));
-                defaults->insert(group, keys);
             }
         }
     }
@@ -902,7 +934,6 @@ SettingsStore::SettingsStore(const QString& path, const QJsonObject& overrides, 
     , m_path(path)
     , m_overrides(overrides)
 {
-    QDir().mkpath(QFileInfo(path).absolutePath());
     m_backend = std::make_unique<PhosphorConfig::JsonBackend>(path);
     // Command-line overrides are read over the file and never written to it.
     m_backend->setOverlay(m_overrides);
@@ -926,35 +957,18 @@ SettingsStore::~SettingsStore() = default;
 
 bool SettingsStore::loadFile()
 {
-    // One read and one parse: the document checked is the document used.
-    QFile file(m_path);
-    QString problem;
-    if (!file.exists()) {
-        // Deleted: every setting returns to its default.
-        m_backend->replaceRoot({});
-    } else if (!file.open(QIODevice::ReadOnly)) {
-        problem = QStringLiteral("%1 cannot be read: %2. Keeping the current settings").arg(m_path, file.errorString());
-    } else {
-        QJsonParseError err{};
-        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &err);
-        if (err.error != QJsonParseError::NoError) {
-            problem = QStringLiteral("%1 does not parse: %2 at offset %3. Keeping the current settings")
-                          .arg(m_path, err.errorString())
-                          .arg(err.offset);
-        } else if (!doc.isObject()) {
-            problem = QStringLiteral("%1 does not hold a JSON object. Keeping the current settings").arg(m_path);
-        } else {
-            m_backend->replaceRoot(doc.object());
-        }
-    }
-    if (!problem.isEmpty()) {
+    // One read and one parse: the document checked is the document used. The
+    // backend reads it, so that a clean read also ends the refusal to write
+    // that an earlier unreadable file set, and the next save compares the
+    // file against this read. A missing or empty file is every default.
+    const QString reason = m_backend->reload();
+    if (!reason.isEmpty()) {
+        const QString problem = reason + QStringLiteral(". Keeping the current settings");
         // Logged when it starts, not again on each reload that keeps it.
         if (!m_fileProblems.contains(problem)) qCWarning(lcConfig).noquote() << problem;
         m_fileProblems = {problem};
         return false;
     }
-    // The backend now holds what the file holds.
-    m_backend->clearDirty();
     m_fileProblems.clear();
     return true;
 }
@@ -974,16 +988,20 @@ bool SettingsStore::write(const QString& group, const QString& key, const QVaria
         qCWarning(lcConfig).noquote() << "cannot write" << group + QLatin1Char('.') + key << "- no such setting";
         return false;
     }
-    // Start from the file as it is now: edits not reloaded yet stay, and a
-    // file saved half-written is not replaced by an older copy.
     // Each refusal below still applies what the file holds now: its
     // problems are published with the read of the same document.
-    if (!loadFile()) {
-        qCWarning(lcConfig).noquote() << "not writing" << group + QLatin1Char('.') + key << "until" << m_path << "parses";
+    // The file first, then its document: a file that another process made
+    // after the last load is read below, not replaced by this one's keys.
+    if (!ensureFile()) {
+        loadFile();
         apply();
         return false;
     }
-    if (!ensureFile()) {
+    // Start from the file as it is now: edits not reloaded yet stay, and a
+    // file saved half-written is not replaced by an older copy.
+    if (!loadFile()) {
+        qCWarning(lcConfig).noquote() << "not writing" << group + QLatin1Char('.') + key << "until" << m_path
+                                      << "can be read as a JSON object";
         apply();
         return false;
     }
@@ -1008,6 +1026,11 @@ bool SettingsStore::ensureFile()
     if (QFile::exists(m_path)) {
         return true;
     }
+    // Here, not only when the store starts: the directory can be gone since.
+    if (const QString directory = QFileInfo(m_path).absolutePath(); !QDir().mkpath(directory)) {
+        qCWarning(lcConfig).noquote() << "cannot create" << directory;
+        return false;
+    }
     // The file can come to hold Terminal.fileTransferPassword. Create it
     // private before the first save, which keeps the mode it finds.
     QFile file(m_path);
@@ -1019,8 +1042,8 @@ bool SettingsStore::ensureFile()
         qCWarning(lcConfig).noquote() << "cannot create" << m_path << "-" << file.errorString();
         return false;
     }
-    // An empty file does not parse, and write() refuses to replace a file
-    // that does not parse: remove a half-made one rather than leave it.
+    // A half-written file does not parse, and write() refuses to replace a
+    // file that does not parse: remove a half-made one rather than leave it.
     if (file.write("{}\n") < 0 || !file.flush()) {
         qCWarning(lcConfig).noquote() << "cannot write" << m_path << "-" << file.errorString();
         file.remove();
@@ -1033,8 +1056,24 @@ QVariant SettingsStore::persisted(const QString& group, const QString& key) cons
 {
     const PhosphorConfig::KeyDef* def = m_store->schema().findKey(group, key);
     if (!def) return {};
-    const auto file = m_backend->persistedGroup(group);
-    QVariant value = file->hasKey(key) ? file->readJson(key).toVariant() : def->defaultValue;
+    // The file as it is now, not as the last reload left it: a write built
+    // on this value would otherwise undo an edit saved since. A file that
+    // does not hold a JSON object leaves the last good document, and
+    // write() refuses to replace it anyway. An empty or white-space file is
+    // every default, as the backend reads it.
+    QJsonObject root = m_backend->jsonRootSnapshot();
+    if (QFile file(m_path); !file.exists()) {
+        root = {};
+    } else if (file.open(QIODevice::ReadOnly)) {
+        const QByteArray bytes = file.readAll();
+        if (bytes.trimmed().isEmpty()) {
+            root = {};
+        } else if (const QJsonDocument doc = QJsonDocument::fromJson(bytes); doc.isObject()) {
+            root = doc.object();
+        }
+    }
+    const QJsonValue raw = root.value(group).toObject().value(key);
+    QVariant value = raw.isUndefined() ? def->defaultValue : raw.toVariant();
     return def->validator ? def->validator(value) : value;
 }
 
@@ -1177,7 +1216,7 @@ Settings SettingsStore::read()
     Settings s;
     QJsonObject defaults;
     QStringList problems = malformedValues(st.schema(), m_backend->jsonRootSnapshot(), m_overrides, &defaults);
-    // The defaults of string keys that hold no string, over the overrides,
+    // The defaults of keys that hold another JSON type, over the overrides,
     // which the backend lays over the file for every read below.
     QJsonObject overlay = m_overrides;
     for (auto group = defaults.begin(); group != defaults.end(); ++group) {
@@ -1187,6 +1226,13 @@ Settings SettingsStore::read()
         overlay.insert(group.key(), keys);
     }
     m_backend->setOverlay(overlay);
+    // The backend merges the overlay into the file key by key at every
+    // depth, so -o Terminal.env={...} would keep the file's variables. An
+    // override replaces a map as it replaces any other value.
+    auto mapValue = [&st, &overlay](const QString& group, const QString& key) {
+        const QJsonValue over = overlay.value(group).toObject().value(key);
+        return over.isObject() ? over.toObject().toVariantMap() : st.read<QVariantMap>(group, key);
+    };
     auto problem = [&problems](const QString& text) { problems << text; };
     // A list entry that is not a string would otherwise turn into text the
     // user did not write, or into nothing.
@@ -1233,13 +1279,22 @@ Settings SettingsStore::read()
     f.boldItalic = {boldItalic.isEmpty() ? italicFam : boldItalic.toStdString(), boldWeight, width, slant};
     f.features.clear();
     for (const QString& feature : strings(Font, QStringLiteral("features"))) {
+        if (!AfterglowRender::FontSet::isFeature(feature.toStdString())) {
+            problem(QStringLiteral("Font.features: \"%1\" is not an OpenType feature in HarfBuzz syntax").arg(feature));
+            continue;
+        }
         f.features.push_back(feature.toStdString());
     }
     for (const QString& fallback : strings(Font, QStringLiteral("fallbackFamilies"))) {
         f.fallbackFamilies.push_back(fallback.toStdString());
     }
-    const QVariantMap symbolMap = st.read<QVariantMap>(Font, QStringLiteral("symbolMap"));
+    const QVariantMap symbolMap = mapValue(Font, QStringLiteral("symbolMap"));
     for (auto it = symbolMap.cbegin(); it != symbolMap.cend(); ++it) {
+        if (it.value().typeId() != QMetaType::QString) {
+            // A number or a list would otherwise turn into a family name the user did not write.
+            problem(QStringLiteral("Font.symbolMap: ignoring %1. Its family must be a string").arg(it.key()));
+            continue;
+        }
         const QString symbolFamily = it.value().toString().trimmed();
         const auto ranges = parseCodepointRanges(it.key());
         if (!ranges || symbolFamily.isEmpty()) {
@@ -1366,7 +1421,8 @@ Settings SettingsStore::read()
     if (theme) {
         t.defaultForeground = theme->foreground.value_or(t.defaultForeground);
         t.defaultBackground = theme->background.value_or(t.defaultBackground);
-        for (std::size_t i = 0; i < 16; ++i) {
+        static_assert(std::tuple_size_v<decltype(Theme::palette)> == std::size_t(PaletteSize));
+        for (std::size_t i = 0; i < std::size_t(PaletteSize); ++i) {
             t.basePalette[i] = theme->palette[i].value_or(t.basePalette[i]);
         }
         if (theme->cursor) {
@@ -1427,13 +1483,17 @@ Settings SettingsStore::read()
     s.bellSound = st.read<QString>(Terminal, QStringLiteral("bellSound")).trimmed();
     s.bellSoundInterval = st.read<int>(Terminal, QStringLiteral("bellSoundInterval"));
     t.wordBoundaries = st.read<QString>(Terminal, QStringLiteral("wordSeparators")).toStdU32String();
-    const QVariantMap env = st.read<QVariantMap>(Terminal, QStringLiteral("env"));
+    const QVariantMap env = mapValue(Terminal, QStringLiteral("env"));
     for (auto it = env.cbegin(); it != env.cend(); ++it) {
-        if (it.key().isEmpty() || it.key().contains(QLatin1Char('='))) {
+        // The environment of a new pane is C strings: a NUL would cut the
+        // name or the value short.
+        if (it.key().isEmpty() || it.key().contains(QLatin1Char('=')) || it.key().contains(QChar(u'\0'))) {
             problem(QStringLiteral("Terminal.env: \"%1\" is not a variable name").arg(it.key()));
         } else if (it.value().typeId() != QMetaType::QString) {
             // null, a number or a list would otherwise turn into text the user did not write.
             problem(QStringLiteral("Terminal.env.%1 must be a string").arg(it.key()));
+        } else if (it.value().toString().contains(QChar(u'\0'))) {
+            problem(QStringLiteral("Terminal.env.%1 must not hold a NUL character").arg(it.key()));
         } else {
             s.environment.emplace_back(it.key().toStdString(), it.value().toString().toStdString());
         }
@@ -1488,7 +1548,20 @@ Settings SettingsStore::read()
         }
     }
     s.quickTerminal.height = st.read<double>(Quick, QStringLiteral("height"));
-    s.quickTerminal.shortcut = st.read<QString>(Quick, QStringLiteral("shortcut"));
+    // The shortcut backend gets the sequence that this text parses to: one
+    // that does not parse would bind nothing, with no word of it.
+    if (const QString shortcut = st.read<QString>(Quick, QStringLiteral("shortcut")).trimmed(); !shortcut.isEmpty()) {
+        const QKeySequence sequence = QKeySequence::fromString(shortcut, QKeySequence::PortableText);
+        bool keys = !sequence.isEmpty();
+        for (uint i = 0; i < uint(sequence.count()); ++i) keys = keys && sequence[i].key() != Qt::Key_unknown;
+        if (keys) {
+            s.quickTerminal.shortcut = shortcut;
+        } else {
+            problem(QStringLiteral("QuickTerminal.shortcut \"%1\" is not a key combination. Using the default").arg(shortcut));
+        }
+    } else {
+        s.quickTerminal.shortcut.clear();
+    }
     s.quickTerminal.animate = st.read<bool>(Quick, QStringLiteral("animate"));
     s.quickTerminal.curve = st.read<QString>(Quick, QStringLiteral("curve")).trimmed();
     s.quickTerminal.duration = st.read<int>(Quick, QStringLiteral("duration"));
@@ -1537,7 +1610,7 @@ Settings SettingsStore::read()
                  shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed(),
                  st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed(),
                  st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed()};
-    s.shaderParams = st.read<QVariantMap>(Shaders, QStringLiteral("params"));
+    s.shaderParams = mapValue(Shaders, QStringLiteral("params"));
 
     // Hints: checked once here, not on every show_hints, which uses only the
     // entries that pass.
@@ -1580,15 +1653,20 @@ Settings SettingsStore::read()
                 problem(where + QStringLiteral(": command must be a list of 1 to %1 strings").arg(MaxHintCommandArguments));
                 continue;
             }
+            // The first argument is the program, which a hint could never start.
+            if (arguments.first().toString().trimmed().isEmpty()) {
+                problem(where + QStringLiteral(": the first argument of command must name a program"));
+                continue;
+            }
         }
         s.hintPatterns << entry;
     }
 
     // Keybinds
     QStringList errors;
-    const QVariantMap bindings = st.read<QVariantMap>(Keys, QStringLiteral("bindings"));
+    const QVariantMap bindings = mapValue(Keys, QStringLiteral("bindings"));
     s.keybinds = Keybinds::fromMap(bindings, &errors);
-    s.keyModes = KeyModes::fromConfig(bindings, st.read<QVariantMap>(Keys, QStringLiteral("tables")),
+    s.keyModes = KeyModes::fromConfig(bindings, mapValue(Keys, QStringLiteral("tables")),
         st.read<QString>(Keys, QStringLiteral("leader")), st.read<int>(Keys, QStringLiteral("sequenceTimeout")),
         st.read<int>(Keys, QStringLiteral("tableTimeout")), s.keybinds, &errors);
     for (const QString& e : std::as_const(errors)) {
@@ -1619,8 +1697,17 @@ QJsonObject SettingsStore::reference()
             if (key.validator && (key.expectedType == QMetaType::Int || key.expectedType == QMetaType::Double)) {
                 const QVariant lo = key.expectedType == QMetaType::Int ? QVariant(std::numeric_limits<int>::min()) : QVariant(-1e100);
                 const QVariant hi = key.expectedType == QMetaType::Int ? QVariant(std::numeric_limits<int>::max()) : QVariant(1e100);
-                entry.insert(QStringLiteral("minimum"), QJsonValue::fromVariant(key.validator(lo)));
-                entry.insert(QStringLiteral("maximum"), QJsonValue::fromVariant(key.validator(hi)));
+                QVariant minimum = key.validator(lo);
+                const QVariant maximum = key.validator(hi);
+                if (key.expectedType == QMetaType::Double) {
+                    // A value of its own below the range (Font.size 0, the
+                    // desktop's size) is no part of it: the range is what
+                    // the values just above that one clamp to.
+                    const double above = std::nextafter(minimum.toDouble(), maximum.toDouble());
+                    if (const QVariant clamped = key.validator(above); clamped.toDouble() != above) minimum = clamped;
+                }
+                entry.insert(QStringLiteral("minimum"), QJsonValue::fromVariant(minimum));
+                entry.insert(QStringLiteral("maximum"), QJsonValue::fromVariant(maximum));
             }
             keys.insert(key.key, entry);
         }

@@ -116,6 +116,10 @@ public:
     FontSet(const FontSet&) = delete;
     FontSet& operator=(const FontSet&) = delete;
 
+    /// Whether @p feature is an OpenType feature in HarfBuzz syntax, as
+    /// FontSpec::features holds them. A FontSet skips the others.
+    static bool isFeature(const std::string& feature);
+
     const FontMetrics& metrics() const noexcept { return m_metrics; }
     const FontSpec& spec() const noexcept { return m_spec; }
     double devicePixelRatio() const noexcept { return m_dpr; }
