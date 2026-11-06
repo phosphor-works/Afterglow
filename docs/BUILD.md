@@ -22,6 +22,9 @@ These instructions use the current source layout.
   Without them, the configuration stops with a message.
   To build without `aglow`, configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`.
   Then `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard` show an error and exit with status 127.
+  A shell cannot run script commands with their arguments, standard input and exit status.
+  `afterglow ctl action script:ID.COMMAND` still starts a command, with no arguments.
+  The shell completions offer no script commands. For these five commands, they complete file names.
   A build with `-DAFTERGLOW_BUILD_FUZZERS=ON` does not build `aglow`.
 
 The build compiles zlib-ng and xxHash from their [source archives](#source-archives).
@@ -128,7 +131,7 @@ git clone https://github.com/fuddlesworth/PlasmaZones ../PlasmaZones
 3. Select the PlasmaZones commit that this Afterglow source was tested with:
 
 ```sh
-git -C ../PlasmaZones checkout 4e5aca5c9
+git -C ../PlasmaZones checkout 7fdec2fce
 ```
 
 A later PlasmaZones commit can change the Phosphor API. The build then fails.
@@ -176,13 +179,16 @@ If you do, shell integration is off, and the executable can miss its plugin, sha
 
 The installation includes the executable, desktop entry, AppStream metadata, icons, shader packs, themes and terminfo entry.
 It also includes the shell integration scripts, the API declarations, the examples and the license texts.
-It also includes the shell completions for Bash, Zsh and Fish. The Fish completion needs Fish 4 or later.
+It also includes the shell completions for Bash, Zsh and Fish.
 It installs `aglow` in the same directory as `afterglow`, with its Bash, Zsh and Fish completions.
-The license notices of `aglow` go in `share/licenses/afterglow`:
+The Fish completions need Fish 4 or later.
+The license notices of the code in `aglow` go in `share/licenses/afterglow`:
 
 | File | Contents | Installed |
 | --- | --- | --- |
-| `LICENSE.stb_image` | The MIT notice of stb_image | Always |
+| `LICENSE.zlib-ng` | The notice of zlib-ng, which `afterglow` also contains | Always |
+| `LICENSE.xxHash` | The notice of xxHash, which `afterglow` also contains | Always |
+| `LICENSE.stb_image` | The MIT notice of stb_image | When the build includes `aglow` |
 | `LICENSE.glibc` | The notice of the GNU C Library, with the steps to link `aglow` again with another C library | When `aglow` is static |
 | `LICENSE.libstdc++` | The notice of libstdc++ and libgcc, with the GCC Runtime Library Exception | When `aglow` is static |
 
