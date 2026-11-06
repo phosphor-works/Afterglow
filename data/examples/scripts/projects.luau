@@ -2,8 +2,11 @@
 -- SPDX-License-Identifier: GPL-3.0-or-later
 -- Copy to the active configuration's scripts/ directory.
 -- A minimal project launcher using awaited results and the native selector.
--- Each choice also adds an "open-NAME" command for every saved project, with
+-- It also adds an "open-NAME" command for every saved project, with
 -- afterglow.set_commands, so that a key can open one project directly.
+-- Commands added at runtime last until the script loads again, so it adds
+-- them when it loads and after each choice. A project saved later gets its
+-- command at the next choice or load.
 local script = {}
 script.metadata = {
     id = "projects",
@@ -32,16 +35,17 @@ local function projectCommands(names)
     return afterglow.set_commands(commands)
 end
 
-local function open(ev, name, effects)
+local function open(ev, name)
     local opened, openError = afterglow.await(afterglow.open_project(name))
-    if opened then
-        table.insert(effects, afterglow.output(ev, "Project " .. name .. (opened.reused and " focused" or " opened")
-            .. " in window " .. opened.window_id .. "\n"))
-    else
-        table.insert(effects, afterglow.output_error(ev, openError.message .. "\n"))
-        table.insert(effects, afterglow.exit(ev, 1))
-    end
-    return effects
+    if not opened then return fail(ev, openError.message) end
+    return { afterglow.output(ev, "Project " .. name .. (opened.reused and " focused" or " opened")
+        .. " in window " .. opened.window_id .. "\n") }
+end
+
+function script.on_load()
+    local projects = afterglow.await(afterglow.list_projects())
+    if not projects then return nil end
+    return projectCommands(projects.names)
 end
 
 function script.run_command(command, ev)
@@ -49,7 +53,7 @@ function script.run_command(command, ev)
         return { afterglow.output_error(ev, "usage: aglow run projects " .. command .. "\n"), afterglow.exit(ev, 2) }
     end
     if string.sub(command, 1, #Prefix) == Prefix then
-        return open(ev, string.sub(command, #Prefix + 1), {})
+        return open(ev, string.sub(command, #Prefix + 1))
     end
     if command ~= "open" then return nil end
     if not ev.pane then return fail(ev, "There is no pane to show the selector in.") end
@@ -67,6 +71,13 @@ function script.run_command(command, ev)
         if selectError.code == "cancelled" then return nil end -- Escape
         return fail(ev, selectError.message)
     end
-    return open(ev, choice.id, { projectCommands(projects.names) })
+    local effects = open(ev, choice.id)
+    -- Waited for, so that commands that do not change fail the run.
+    local _, commandsError = afterglow.await(projectCommands(projects.names))
+    if commandsError then
+        table.insert(effects, afterglow.output_error(ev, "The open-NAME commands did not change: " .. commandsError.message .. "\n"))
+        table.insert(effects, afterglow.exit(ev, 1))
+    end
+    return effects
 end
 return script

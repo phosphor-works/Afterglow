@@ -15,12 +15,15 @@ return {
         local found, err = afterglow.await(afterglow.semantic_regions(pane))
         if not found then return fail(ev, err.message) end
         local choices, regions = {}, found.regions or {}
+        -- A run that a program starts (`aglow run`, source "shell", or
+        -- `afterglow ctl action`, source "control") reads the regions while
+        -- that program runs: the open output region is its own. A run does not
+        -- tell whether --pane named another pane, so the open output region of
+        -- that pane is left out too.
+        local fromProcess = ev.source == "shell" or ev.source == "control"
         for i = #regions, 1, -1 do
             local region = regions[i]
-            -- From a shell, the open output region is that of `aglow run` itself.
-            -- A run does not tell whether --pane named another pane, so the open
-            -- output region of that pane is left out too.
-            local own = region.open and region.kind == "output" and ev.source == "shell"
+            local own = region.open and region.kind == "output" and fromProcess
             if region.available and not own then
                 table.insert(choices, {id=region.id, title=region.kind.." #"..region.id
                     ..(region.open and " (open)" or "")..(region.start_trimmed and " (trimmed)" or "")})
@@ -36,8 +39,11 @@ return {
         local region, readError = afterglow.await(afterglow.read_region(pane, choice.id, 262144))
         if not region then return fail(ev, readError.message) end
         if not region.available then return fail(ev, "The region expired.") end
+        -- Waited for, so that a refused copy fails the run.
+        local _, copyError = afterglow.await(afterglow.copy(region.text))
+        if copyError then return fail(ev, copyError.message) end
         -- A warning, not a failure: the copy happened, and the exit status stays 0.
-        if region.truncated then return {afterglow.copy(region.text), afterglow.output_error(ev, "Copied the first 256 KiB.\n")} end
-        return afterglow.copy(region.text)
+        if region.truncated then return afterglow.output_error(ev, "Copied the first 256 KiB.\n") end
+        return nil
     end,
 }

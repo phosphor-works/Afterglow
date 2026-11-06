@@ -47,7 +47,10 @@ function script.run_command(command, ev)
     -- that started then would not end with the overview.
     local window = windowOf(result.terminal, ev.pane)
     if not window or not window.overview.open then return nil end
-    return afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close")
+    -- Waited for, so that a key mode that does not start fails the run.
+    local _, keyError = afterglow.await(afterglow.key_mode(ev.pane, "Panes · a/d move · w/s tabs · Enter choose · q close"))
+    if keyError then return fail(ev, keyError.message) end
+    return nil
 end
 
 -- The first card of the next (step 1) or previous (step -1) tab.
