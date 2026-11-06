@@ -579,7 +579,8 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
                      "ambiguousWide": true, "bellSound": " default "},
         "Window": {"balancePadding": true},
         "Mouse": {"rightClick": "copy-or-paste", "middleClick": "clipboard"},
-        "Links": {"detectUrls": false, "openWith": "firefox --new-tab", "modifier": "none"}
+        "Links": {"detectUrls": false, "detectPaths": false, "openWith": "firefox --new-tab", "modifier": "none",
+                  "openFilesWith": ["kate", "--line", "{line}", " {file} ", ""]}
     })");
     SettingsStore store(config);
     const Settings& s = store.settings();
@@ -601,6 +602,38 @@ TEST_F(ConfigTest, ReadsSymbolMapMouseAndLinkSettings)
     EXPECT_FALSE(s.links.detectUrls);
     EXPECT_EQ(s.links.openWith, QStringLiteral("firefox --new-tab"));
     EXPECT_EQ(s.links.modifier, Qt::KeyboardModifiers(Qt::NoModifier));
+    EXPECT_FALSE(s.links.detectPaths);
+    // Each argument as written: the program gets what the list says.
+    EXPECT_EQ(s.links.openFilesWith, (QStringList{QStringLiteral("kate"), QStringLiteral("--line"), QStringLiteral("{line}"),
+                                                  QStringLiteral(" {file} "), QString()}));
+    EXPECT_FALSE(mentions(store.problems(), QStringLiteral("Links"))) << store.problems().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ConfigTest, PathLinksDefaultOnAndOpenFilesWithIsChecked)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_TRUE(defaults.settings().links.detectPaths);
+    EXPECT_TRUE(defaults.settings().links.openFilesWith.isEmpty());
+    EXPECT_EQ(defaults.settings().links.remoteCommands,
+              (QStringList{QStringLiteral("ssh"), QStringLiteral("mosh-client"), QStringLiteral("et"), QStringLiteral("telnet"),
+                           QStringLiteral("rlogin")}));
+    SettingsStore clients(write(QStringLiteral("clients.json"), R"({"Links": {"remoteCommands": [" kitten ", "", "ssh"]}})"));
+    EXPECT_EQ(clients.settings().links.remoteCommands, (QStringList{QStringLiteral("kitten"), QStringLiteral("ssh")}));
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Links": {"remoteCommands": []}})"));
+    EXPECT_TRUE(none.settings().links.remoteCommands.isEmpty());
+
+    for (const char* value : {R"([" ", "{file}"])", R"(["kate", 5])", R"("kate {file}")"}) {
+        const QString config = QStringLiteral(R"({"Links": {"openFilesWith": %1}})").arg(QString::fromUtf8(value));
+        SettingsStore store(write(QStringLiteral("config.json"), config.toUtf8()));
+        EXPECT_TRUE(store.settings().links.openFilesWith.isEmpty()) << value;
+        EXPECT_TRUE(mentions(store.problems(), QStringLiteral("Links.openFilesWith"))) << value;
+    }
+    QJsonArray many;
+    for (qsizetype i = 0; i <= MaxHintCommandArguments; ++i) many.append(QStringLiteral("a"));
+    SettingsStore capped(write(QStringLiteral("many.json"),
+                               QJsonDocument(QJsonObject{{QStringLiteral("Links"), QJsonObject{{QStringLiteral("openFilesWith"), many}}}}).toJson()));
+    EXPECT_TRUE(capped.settings().links.openFilesWith.isEmpty());
+    EXPECT_TRUE(mentions(capped.problems(), QStringLiteral("1 to %1 strings").arg(MaxHintCommandArguments)));
 }
 
 TEST(Overrides, ParseAssignments)

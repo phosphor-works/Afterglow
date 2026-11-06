@@ -93,6 +93,8 @@ pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
 qt_add_library(afterglow_config STATIC
     src/desktop/TerminalText.cpp
     src/desktop/TerminalText.h
+    src/desktop/PathLinks.cpp
+    src/desktop/PathLinks.h
     src/config/Keybinds.cpp
     src/config/Keybinds.h
     src/config/KeyModes.cpp
