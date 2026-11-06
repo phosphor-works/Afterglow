@@ -18,3 +18,7 @@ set_target_properties(AfterglowPty PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
     AUTOMOC OFF)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

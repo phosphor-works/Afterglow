@@ -1,0 +1,17 @@
+{
+  "id": "fzf-picker",
+  "version": "1.0.0",
+  "api_version": 1,
+  "entry": "main",
+  "modules": {
+    "main": "init.luau"
+  },
+  "config": {
+    "fzf": "fzf",
+    "max_depth": 4,
+    "max_files": 5000
+  },
+  "commands": {
+    "pick": {"summary": "Pick a saved project or a file, with fzf in an overlay when it is installed", "palette": "Pick a project or file"}
+  }
+}

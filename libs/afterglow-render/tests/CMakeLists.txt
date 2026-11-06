@@ -10,6 +10,9 @@ find_package(GTest REQUIRED)
 add_executable(afterglow_render_tests RenderTest.cpp BidiTest.cpp)
 target_link_libraries(afterglow_render_tests PRIVATE Afterglow::Render Qt6::Gui GTest::gtest)
 set_target_properties(afterglow_render_tests PROPERTIES AUTOMOC OFF)
+# The overlay transition pack, as it ships.
+target_compile_definitions(afterglow_render_tests PRIVATE
+    AFTERGLOW_OVERLAY_FADE_PACK="${PROJECT_SOURCE_DIR}/data/shaders/overlay-fade/effect.frag")
 
 include(GoogleTest)
 gtest_discover_tests(afterglow_render_tests DISCOVERY_MODE PRE_TEST)

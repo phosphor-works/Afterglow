@@ -195,7 +195,8 @@ bool PostChain::audioReactive() const
         const bool runs = chain == &m_chains.paneEffects ? m_paneEffectsShowing : showing(*chain);
         if (runs && ShaderChains::anyIn(*chain, [](const ShaderProgram& p) { return p.requiresAudio(); })) return true;
     }
-    return false;
+    return overlayTransitionShowing()
+        && ShaderChains::anyIn(m_chains.overlayTransition, [](const ShaderProgram& p) { return p.requiresAudio(); });
 }
 
 bool PostChain::highDynamicRange() const
@@ -1017,10 +1018,13 @@ int PostChain::runLayerChain(RenderFrame& frame, const std::vector<ShaderProgram
 }
 
 void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
-                          const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors)
+                          const std::vector<bool>& cursorBelowText, const ShaderFrameTime& time, const QColor& clear, bool otherCursors,
+                          bool hosts, std::size_t uboBase)
 {
     auto* cb = frame.commands();
-    if (m_previousText) {
+    // The text history is the frame's own panes': the panes under fading
+    // overlays leave it as it is.
+    if (m_previousText && !hosts) {
         std::vector<HistoryRegion> regions;
         for (const auto& pane : panes) {
             regions.emplace_back(pane.snapshot ? pane.snapshot->identity.value() : 0, pane.rect,
@@ -1045,17 +1049,17 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
 
     QRhiResourceUpdateBatch* updates = frame.stage(m_device.rhi()->nextResourceUpdateBatch());
     for (std::size_t i = 0; i < panes.size(); ++i) {
-        compositeBindings(int(i), background, text, cursor, other); // makes the buffer
+        compositeBindings(int(uboBase + i), background, text, cursor, other); // makes the buffer
         const CompositeUniforms u{{float(m_size.width()), float(m_size.height())},
                                   i < cursorBelowText.size() && cursorBelowText[i] ? 1 : 0, 0};
-        updates->updateDynamicBuffer(m_compositeUbos[i].get(), 0, sizeof u, &u);
+        updates->updateDynamicBuffer(m_compositeUbos[uboBase + i].get(), 0, sizeof u, &u);
     }
     frame.beginPass(m_gridTarget.get(), clear, {1.0f, 0}, updates);
     cb->setGraphicsPipeline(compositePipeline());
     cb->setViewport({0, 0, float(m_size.width()), float(m_size.height())});
     for (std::size_t i = 0; i < panes.size(); ++i) {
         cb->setScissor(scissorFor(panes[i].rect, m_size));
-        cb->setShaderResources(compositeBindings(int(i), background, text, cursor, other));
+        cb->setShaderResources(compositeBindings(int(uboBase + i), background, text, cursor, other));
         cb->draw(3);
     }
 }
@@ -1159,6 +1163,62 @@ void PostChain::fill(TerminalUniforms& u, const ShaderRegionState& s, const Shad
         terminal.uSignal[i][0] = s.signals[i].value;
         terminal.uSignal[i][1] = age(t.time, s.signals[i].at);
     }
+    if (s.overlayTransition >= 0) {
+        terminal.uOverlayTransition[0] = std::clamp(s.overlayTransition, 0.0f, 1.0f);
+        terminal.uOverlayTransition[3] = 1.0f;
+    }
+}
+
+int PostChain::runRegionChain(RenderFrame& frame, const std::vector<ShaderProgramPtr>& chain, int current,
+                              const std::vector<ShaderRegionState>& regions, const ShaderFrameTime& time, int& ubo, int scope)
+{
+    // Each step copies the input, then reshades every region.
+    auto* cb = frame.commands();
+    QRhi* rhi = m_device.rhi();
+    const QSize px = m_size;
+    int step = 0;
+    for (const ShaderProgramPtr& program : chain) {
+        auto buffers = runBuffers(frame, *program, scope, step++, current, regions, time, ubo);
+        const int out = 1 - current;
+        QRhiResourceUpdateBatch* updates = frame.stage(rhi->nextResourceUpdateBatch());
+        updates->copyTexture(m_textures[out].get(), m_textures[current].get());
+        const int firstUbo = ubo;
+        for (std::size_t i = 0; i < regions.size(); ++i) {
+            TerminalUniforms u;
+            fill(u, regions[i], time, *program, &buffers[i]);
+            updates->updateDynamicBuffer(uniformBuffer(ubo++), 0, sizeof u, &u);
+        }
+        std::vector<QRhiShaderResourceBindings*> resources;
+        for (std::size_t i = 0; i < regions.size(); ++i)
+            resources.push_back(bindings(firstUbo + int(i), current, &regions[i], program.get(), &buffers[i], updates));
+        frame.beginPass(m_targets[out].get(), Qt::black, {1.0f, 0}, updates);
+        cb->setGraphicsPipeline(pipeline(*program, m_renderPass.get()));
+        cb->setViewport({0, 0, float(px.width()), float(px.height())});
+        for (std::size_t i = 0; i < regions.size(); ++i) {
+            cb->setScissor(scissorFor(regions[i].rect, px));
+            cb->setShaderResources(resources[i]);
+            cb->draw(program->vertexCount());
+        }
+        frame.endPass();
+        current = out;
+    }
+    return current;
+}
+
+void PostChain::captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts, const ShaderFrameTime& time)
+{
+    if (hosts.empty()) return;
+    // The panes under the overlays get the pane shaders that they get with no
+    // overlay, so the transition starts on exactly what showed. Their buffers
+    // are their own, by snapshot, and go on from frame to frame.
+    int ubo = m_nextUbo;
+    const int current = runRegionChain(frame, m_chains.pane, 0, hosts, time, ubo, 3);
+    m_nextUbo = ubo;
+    tabImageTarget(); // makes the tab image for this frame
+    // Recorded now, between passes: the frame's grid pass clears the grid texture next.
+    QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
+    updates->copyTexture(m_tabImage.get(), m_textures[current].get());
+    frame.commands()->resourceUpdate(updates);
 }
 
 void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>& panes,
@@ -1182,33 +1242,12 @@ void PostChain::record(RenderFrame& frame, const std::vector<ShaderRegionState>&
     int current = 0; // texture holding the latest image
     int ubo = m_nextUbo;
 
-    // Pane chains: each step copies the input, then reshades every pane region.
-    int step = 0;
-    for (const ShaderProgramPtr& program : m_chains.pane) {
-        auto buffers = runBuffers(frame, *program, 3, step++, current, panes, time, ubo);
-        const int out = 1 - current;
-        QRhiResourceUpdateBatch* updates = frame.stage(rhi->nextResourceUpdateBatch());
-        updates->copyTexture(m_textures[out].get(), m_textures[current].get());
-        const int firstUbo = ubo;
-        for (std::size_t i = 0; i < panes.size(); ++i) {
-            TerminalUniforms u;
-            fill(u, panes[i], time, *program, &buffers[i]);
-            updates->updateDynamicBuffer(uniformBuffer(ubo++), 0, sizeof u, &u);
-        }
-        std::vector<QRhiShaderResourceBindings*> resources;
-        for (std::size_t i = 0; i < panes.size(); ++i)
-            resources.push_back(bindings(firstUbo + int(i), current, &panes[i], program.get(), &buffers[i], updates));
-        frame.beginPass(m_targets[out].get(), Qt::black, {1.0f, 0}, updates);
-        cb->setGraphicsPipeline(pipeline(*program, m_renderPass.get()));
-        cb->setViewport({0, 0, float(px.width()), float(px.height())});
-        for (std::size_t i = 0; i < panes.size(); ++i) {
-            cb->setScissor(scissorFor(panes[i].rect, px));
-            cb->setShaderResources(resources[i]);
-            cb->draw(program->vertexCount());
-        }
-        frame.endPass();
-        current = out;
-    }
+    current = runRegionChain(frame, m_chains.pane, current, panes, time, ubo, 3);
+    // An overlay fading in or out: over its pane, between the pane shaders
+    // that both images have and the window shaders over the result.
+    if (overlayTransitionShowing() && !m_overlayTransitions.empty())
+        current = runRegionChain(frame, m_chains.overlayTransition, current, m_overlayTransitions, time, ubo, 6);
+    m_overlayTransitions.clear();
 
     // Window chain; the last step (or a passthrough) writes to the swapchain.
     // Pane effects (frames of panes away from here) run whenever they are

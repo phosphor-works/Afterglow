@@ -5,6 +5,7 @@
 #include "PaneLaunchOptions.h"
 
 #include "Pane.h"
+#include "PaneOverlay.h"
 #include "SplitTree.h"
 #include "animation/FrameClock.h"
 #include "animation/PaneMotion.h"
@@ -176,6 +177,18 @@ public:
     QString scriptOverviewMove(Pane* pane, Pane* target, int step, QVariantMap& result);
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
+    /// Runs @p spec over @p pane (an overlay): it shows in the pane's place,
+    /// with the pane's tab and the focus, until the program exits. Refused
+    /// while the pane has one, or a script dialog is open in this window.
+    /// @p code tells the refusal apart: busy, no_pane or spawn_failed.
+    /// @p reply gets the result, or "cancelled" when the overlay closes first.
+    QString openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
+                        PaneOverlay::Reply reply, QString& code);
+    /// Cancels @p owner's overlays whose request IDs start with @p prefix.
+    void closeOverlays(const QString& owner, const QString& prefix, const QString& message);
+    /// How far the overlay of @p pane has faded in, 0 to 1, and whether the
+    /// fade still runs. For the tests.
+    std::pair<qreal, bool> overlayFade(const Pane* pane) const;
     /// Plays effect @p effect over the pane in Shaders.paneEffects.
     QString pulsePane(Pane* pane, int effect, int durationMs, int color);
     /// Where a pane split from, and the edge it shares with that pane
@@ -256,6 +269,24 @@ private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     void bindPane(Pane* pane);
+    /// Connects the overlay that runs over @p host (bindPane does it).
+    void bindOverlay(Pane* host);
+    /// The overlay over @p host ended: it goes off screen with a fade, and
+    /// the host takes the input again.
+    void overlayEnded(Pane* host, PaneOverlay* overlay);
+    /// The pane whose program gets @p pane's input: its overlay's while one
+    /// runs over it.
+    static Pane* inputPane(Pane* pane);
+    /// The pane in the tab for @p pane: the host of an overlay's pane, else
+    /// @p pane itself.
+    static Pane* hostOf(Pane* pane) { return pane && pane->overlayHost() ? pane->overlayHost() : pane; }
+    /// @p pane still takes the input it got before: it is in a tab, or the
+    /// overlay that still runs over a pane in a tab.
+    bool takesInput(const Pane* pane) const
+    {
+        if (pane && pane->overlayHost()) return inputPane(pane->overlayHost()) == pane && tabOf(pane->overlayHost()) >= 0;
+        return pane && tabOf(pane) >= 0;
+    }
     void releasePaneUi(Pane* pane);
     /// Closes the prompts and modes that belong to @p pane, which is going
     /// away: its clipboard and paste prompts, title prompt, menu, URL mode,
@@ -654,6 +685,7 @@ private:
         bool overview = false;
         bool tabTransition = false;
         bool paneEffects = false;
+        bool overlayTransition = false;
     } m_audioUse;
     bool m_audioCapturing = false; ///< a chain that shows now reads audio
     /// Starts or stops audio capture for the chains that show now.
@@ -808,6 +840,11 @@ private:
     } m_tabTransition;
     CurveCache m_tabCurve;
     bool m_tabTransitionAvailable = false; ///< Shaders.tabTransition compiled
+    /// Shaders.overlayTransition compiled: without it an overlay switches at once.
+    bool m_overlayTransitionAvailable = false;
+    /// Starts the fade of @p host's overlay toward @p target (1 in, 0 out),
+    /// from where a fade under way is; none without the transition.
+    void startOverlayFade(Pane* host, qreal target);
     void startTabTransition(int from, int to);
     // Panes opening and closing (Shaders.paneEffects).
     struct PaneOpening
@@ -865,6 +902,19 @@ private:
     /// Fills @p params with @p pane's context and pulse, for any pane drawn
     /// (the current tab, overview cards, the tab being left).
     void applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, bool& animating);
+    /// The overlay over @p pane as it shows now, into @p wp: its grid fading
+    /// in, or the last frame of one that ended fading out.
+    void prepareOverlay(Pane* pane, const QRect& layoutRect, AfterglowRender::WindowRenderer::Pane& wp, bool& holding,
+                        bool& animating);
+    /// An overlay's fade, by its host: in after it opens, out after it ends.
+    struct OverlayFade
+    {
+        PhosphorAnimation::AnimatedValue<qreal> progress;
+        /// The last frame of an overlay that ended, while it fades out.
+        std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+    };
+    std::unordered_map<const Pane*, OverlayFade> m_overlayFades;
+    CurveCache m_overlayCurve;
     /// The unfocused dim (when @p dim) and the dividers of a pane drawn at
     /// @p shown, as the window draws them for the current tab.
     void addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,

@@ -161,6 +161,16 @@ export type SemanticRegion = {
     id: string, kind: "prompt" | "input" | "output", start: SemanticPosition, finish: SemanticPosition,
     open: boolean, start_trimmed: boolean, available: boolean, exit_code: number?,
 }
+export type OverlayOptions = {
+    stdin: string?,
+    -- Where stdout of the result comes from: the program's stdout (the default), the
+    -- file that $AFTERGLOW_RESULT names, or nowhere.
+    capture: ("stdout" | "file" | "none")?,
+    cwd: string?,
+    env: {[string]: string | false}?,
+    -- Shows as the pane's title while the overlay runs.
+    title: string?,
+}
 export type OperationData = {
     regions: {SemanticRegion}?,
     scene: SceneState?, presets: {{id: string, name: string, read_only: boolean}}?,
@@ -274,6 +284,11 @@ declare afterglow: {
     -- An item without a title shows its id.
     select: (pane: PaneRef, title: string, items: { { id: string, title: string? } }) -> Effect,
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
+    -- Runs command over the pane, in its place and with its input, until the program exits.
+    -- Result data: {exit_code: number, stdout: string, truncated: boolean}; stdout at most 1 MiB.
+    -- Errors: no_pane, busy, spawn_failed, cancelled. stdin is at most 16 MiB; without it the
+    -- program reads the terminal. A cwd that is not a local directory starts it in $HOME.
+    overlay: (pane: PaneRef, command: string | { string }, options: OverlayOptions?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
     -- Lines of styled text at an edge of the pane's window, or of the pane (spec.scope). Sending one id again replaces it.

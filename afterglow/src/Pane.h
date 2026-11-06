@@ -49,6 +49,7 @@ struct PaneStatusRecord
 
 class FileTransfer;
 class DockArea;
+class PaneOverlay;
 
 /// One terminal: the emulator state, the child process on its pty, and the
 /// snapshot the window renders from. The pty thread feeds the terminal under
@@ -91,6 +92,25 @@ public:
     /// GUI thread, and no other events. With @p waitMs above 0 and nothing to
     /// deliver, first waits up to that long for the next one. Runs no event loop.
     void deliverProtocolCommands(int waitMs = 0);
+    /// The program that runs over this pane (an overlay), or null. It
+    /// takes the pane's place on screen and its input while it runs. The
+    /// overlay sets and clears it.
+    PaneOverlay* overlay() const noexcept { return m_overlay; }
+    void setOverlay(PaneOverlay* overlay) noexcept { m_overlay = overlay; }
+    /// For an overlay's own pane: the pane it runs over. It is no pane of
+    /// its own for scripts and afterglow ctl, and its program gets the
+    /// host's AFTERGLOW_PANE_ID. Set before start().
+    Pane* overlayHost() const noexcept { return m_overlayHost; }
+    void setOverlayHost(Pane* host) noexcept { m_overlayHost = host; }
+    /// Keeps at most @p limit bytes of what the program writes to a
+    /// captured standard output (SpawnOptions::captureOutput). Set before start().
+    void setOutputLimit(std::size_t limit) { m_outputLimit = limit; }
+    /// What the program wrote to its captured standard output, and whether
+    /// it wrote more than the limit. Complete once closed() came.
+    std::string takeOutput(bool* truncated);
+    /// The program's exit status once closed() came: its exit code, 128
+    /// plus the signal that ended it, or -1 when it is unknown.
+    int exitCode() const noexcept { return m_exitCode.load(); }
     /// The areas that scripts dock at the pane's edges. The window lays them
     /// out and draws them. They go where the pane goes, and close with it.
     std::vector<std::unique_ptr<DockArea>>& docks() noexcept { return m_docks; }
@@ -345,7 +365,16 @@ private:
 
     // IPtyListener (pty thread)
     void ptyData(std::string_view bytes) override;
+    void ptyOutput(std::string_view bytes) override;
     void ptyClosed(int status) override;
+
+    PaneOverlay* m_overlay = nullptr;
+    Pane* m_overlayHost = nullptr;
+    std::atomic<int> m_exitCode{-1};
+    std::mutex m_outputMutex;
+    std::string m_output; ///< guarded by m_outputMutex
+    bool m_outputTruncated = false; ///< guarded by m_outputMutex
+    std::size_t m_outputLimit = 0;
 
     mutable std::mutex m_mutex;
     const quint32 m_id;

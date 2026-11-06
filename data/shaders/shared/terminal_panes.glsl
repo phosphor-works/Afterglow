@@ -25,6 +25,9 @@
 // the new tab while uTabTransition.w is 1. The tab being left keeps running:
 // read it with previousTabTexel(). Animation.tabCurve eases the progress.
 //
+// An overlay fading in or out runs the overlay transition shader
+// (Shaders.overlayTransition) over its pane: see overlayTransitionActive().
+//
 // Splitting and closing panes run the pane effects shader (Shaders.paneEffects)
 // while a pane opens or closes. uPaneLife says how far each card has opened and
 // from which edge. A closed pane's last frame stays in uTabImage, at its old
@@ -149,6 +152,25 @@ float tabTransitionDirection() {
 // The tab being left, at a window uv.
 vec4 previousTabTexel(vec2 uv) {
     return texture(uTabImage, uv);
+}
+
+// An overlay transition (Shaders.overlayTransition) runs over each pane that
+// an overlay fades into or out of, after the pane shaders and before the
+// window shaders. The pass's input is the pane with the overlay. The pane
+// under it, with its own layer and pane shaders, is in uTabImage at its
+// place in the window.
+bool overlayTransitionActive() {
+    return uOverlayTransition.w != 0.0;
+}
+
+// 0 the pane under the overlay, 1 the overlay.
+float overlayTransitionProgress() {
+    return uOverlayTransition.x;
+}
+
+// The pane under the overlay, at this pass's canvas uv.
+vec4 overlayHostTexel(vec2 uv) {
+    return texture(uTabImage, (uTerminalRect.xy + uv * uTerminalRect.zw) / uWindowSize);
 }
 
 float paneOpening(int pane) {

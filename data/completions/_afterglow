@@ -164,6 +164,7 @@ _afterglow_ctl() {
         'open-project:open a saved project'
         'action:run a keybind action or start a script command'
         'watch:print events'
+        'overlay:run a command over the pane and print its result'
     )
     if (( CURRENT == 2 )); then
         if [[ $PREFIX == -* ]]; then
@@ -178,7 +179,7 @@ _afterglow_ctl() {
     shift words; (( CURRENT-- ))
     local pane='--pane[the pane]:pane ID:'
     case $words[1] in
-    split|new-tab|new-window)
+    split|new-tab|new-window|overlay)
         # A command to run follows "--", and only options come before it.
         local dash=${words[(i)--]}
         if (( dash < CURRENT )); then
@@ -202,6 +203,10 @@ _afterglow_ctl() {
             '2:placement:(left right up down new-tab new-window)' ;;
     new-tab) _arguments $pane '--cwd[working directory]:directory:_directories' ;;
     new-window) _arguments '--cwd[working directory]:directory:_directories' ;;
+    overlay)
+        _arguments $pane '--capture[where the result comes from]:capture:(stdout file none)' \
+            '--cwd[working directory]:directory:_directories' '--title[the pane title meanwhile]:title:' \
+            '(-n --no-stdin)'{-n,--no-stdin}'[keep standard input from the command]' ;;
     set-title) _arguments -S $pane '*:title:' ;;
     signal) _arguments $pane '1:channel:(0 1 2 3 4 5 6 7)' '2:value:' ;;
     notify) _arguments -S $pane '1:title:' '*:body:' ;;

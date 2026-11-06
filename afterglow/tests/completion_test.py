@@ -502,6 +502,10 @@ def cases(ctl_commands, paneless, actions, options, run):
     yield 'afterglow ctl action script:', last_part(':', {'nav.open', 'nav.list'})
     yield 'afterglow ctl signal ', {str(n) for n in range(8)}
     yield 'afterglow ctl watch ', set()
+    yield 'afterglow ctl overlay -', has('--pane', '--capture', '--cwd', '--title', '--no-stdin')
+    yield 'afterglow ctl overlay --capture ', {'stdout', 'file', 'none'}
+    yield 'afterglow ctl overlay --cwd ', {'adir'}
+    yield 'afterglow ctl overlay --capture file -', lacks('--capture')
     # The commands of aglow complete as they do for aglow.
     yield 'afterglow tr', {'transfer'}
     yield from command_cases('afterglow', options)
@@ -511,7 +515,8 @@ def cases(ctl_commands, paneless, actions, options, run):
 FULL_CASES = (('afterglow -e ech', 'echo'), ('afterglow --title x -e ech', 'echo'),
               ('afterglow --title=x -e ech', 'echo'), ('afterglow -d adir -e ech', 'echo'),
               ('afterglow -o A.b=1 -e ech', 'echo'), ('afterglow ctl split -- ech', 'echo'),
-              ('afterglow ctl new-window --cwd adir -- ech', 'echo'), ('afterglow -e ssh --help ', 'ssh-marker'),
+              ('afterglow ctl new-window --cwd adir -- ech', 'echo'),
+              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow -e ssh --help ', 'ssh-marker'),
               ('afterglow ssh ', 'ssh-marker'))
 
 

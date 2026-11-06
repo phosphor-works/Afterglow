@@ -139,6 +139,23 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             });
             return {error, {}, refusal(error), error.isEmpty()};
         }
+        if (kind == QLatin1String("overlay")) {
+            // ScriptHost checked it by the same rules.
+            QVariantMap options{{QStringLiteral("cwd"), e.value(QStringLiteral("cwd"))},
+                                {QStringLiteral("capture"), e.value(QStringLiteral("capture"))},
+                                {QStringLiteral("title"), e.value(QStringLiteral("title"))},
+                                {QStringLiteral("env"), e.value(QStringLiteral("env"))}};
+            if (e.contains(QStringLiteral("stdin"))) options.insert(QStringLiteral("stdin"), e.value(QStringLiteral("stdin")));
+            QString error;
+            const auto spec = OverlaySpec::read(e.value(QStringLiteral("command")).toStringList(), options, &error);
+            if (!spec) return {error, {}, QStringLiteral("operation_failed")};
+            QString refusal;
+            error = control.overlay(owner, e.value(QStringLiteral("request_id")).toString(), pane, *spec,
+                [complete = std::move(complete)](const QString& error, const QString& code, const QVariantMap& data) {
+                    complete({error, data, code});
+                }, refusal);
+            return {error, {}, error.isEmpty() ? QString() : refusal, error.isEmpty()};
+        }
         if (kind == QLatin1String("overview")) {
             // The window knows which script's overview it shows.
             QVariantMap data;

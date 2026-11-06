@@ -21,6 +21,7 @@ struct ShaderRefs
     QString overview; ///< the pane overview; empty for none
     QString tabTransition; ///< tab switches; empty for none
     QString paneEffects; ///< panes opening and closing; empty for none
+    QString overlayTransition; ///< overlays fading in and out over panes; empty for none
     bool operator==(const ShaderRefs&) const = default;
 };
 

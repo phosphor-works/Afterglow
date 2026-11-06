@@ -16,6 +16,9 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
 {
     if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("Another dialog is already open");
     if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
+    // An overlay that has the focus keeps it, and so does one over the
+    // dialog's pane, which the dialog would focus.
+    if (inputPane(m_focused) != m_focused || pane->overlay()) return QStringLiteral("An overlay has the keyboard");
     // Another script's key mode would take the dialog's keys from the user.
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     // The dialog takes the keyboard: no mode is left behind it.
@@ -286,7 +289,8 @@ bool TerminalWindow::usePackageShaders()
             const auto s = suggestions[index].toMap();
             const QString key = s.value(QStringLiteral("key")).toString(), ref = s.value(QStringLiteral("ref")).toString();
             // One pack keys take the pack; chains gain it at the end.
-            static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects")};
+            static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects"),
+                                            QStringLiteral("overlayTransition")};
             QVariant value = ref;
             if (!Single.contains(key)) {
                 // The chain the file holds: a command-line override must not reach it.
@@ -316,6 +320,9 @@ QString TerminalWindow::pulsePane(Pane* pane, int effect, int durationMs, int co
 void TerminalWindow::closeScriptDialog(const QString& owner, const QString& prefix)
 {
     if (m_scriptDialog && m_scriptDialog->owner == owner && m_scriptDialog->request.startsWith(prefix)) finishScriptDialog(false, {});
+    // An overlay the run waits for closes the same way: first, its program
+    // gets SIGHUP, and the handler's wait ends with "cancelled".
+    closeOverlays(owner, prefix, QStringLiteral("The run ended"));
 }
 
 void TerminalWindow::clearScriptOwner(const QString& owner)
@@ -323,6 +330,7 @@ void TerminalWindow::clearScriptOwner(const QString& owner)
     endScriptKeyMode(owner);
     m_shaderControls.clearOwner(owner);
     if (m_scriptDialog && m_scriptDialog->owner == owner) finishScriptDialog(false, {});
+    closeOverlays(owner, {}, QStringLiteral("The script stopped"));
     std::erase_if(m_scriptAppearance, [&](const auto& item) { return item.owner == owner; });
     eraseDocks(owner);
     updateChrome(); scheduleRender();

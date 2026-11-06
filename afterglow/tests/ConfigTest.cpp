@@ -1061,6 +1061,29 @@ TEST_F(ConfigTest, AnimationCurvesAndTextBlinkDefaultAndOverride)
     EXPECT_EQ(c.textBlinkInterval, 100); // clamped
 }
 
+TEST_F(ConfigTest, OverlayTransitionAndFadeDefaultsOverridesAndClamps)
+{
+    SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));
+    EXPECT_EQ(defaults.settings().shaders.overlayTransition, QStringLiteral("overlay-fade"));
+    EXPECT_EQ(defaults.settings().animation.overlayCurve, QStringLiteral("0.4,0,0.2,1"));
+    EXPECT_EQ(defaults.settings().animation.overlayDuration, 180);
+
+    SettingsStore custom(write(QStringLiteral("custom.json"), R"({"Animation": {"overlayCurve": " spring:20,1 ", "overlayDuration": 600}})"));
+    EXPECT_EQ(custom.settings().animation.overlayCurve, QStringLiteral("spring:20,1"));
+    EXPECT_EQ(custom.settings().animation.overlayDuration, 600);
+
+    // An empty pack switches at once; a package's pack is <package>.<pack>.
+    SettingsStore none(write(QStringLiteral("none.json"), R"({"Shaders": {"overlayTransition": ""}})"));
+    EXPECT_TRUE(none.settings().shaders.overlayTransition.isEmpty());
+    SettingsStore packaged(write(QStringLiteral("packaged.json"), R"({"Shaders": {"overlayTransition": " my-kit.dissolve "}})"));
+    EXPECT_EQ(packaged.settings().shaders.overlayTransition, QStringLiteral("my-kit.dissolve"));
+
+    SettingsStore low(write(QStringLiteral("low.json"), R"({"Animation": {"overlayDuration": 1}})"));
+    EXPECT_EQ(low.settings().animation.overlayDuration, 16);
+    SettingsStore high(write(QStringLiteral("high.json"), R"({"Animation": {"overlayDuration": 99999}})"));
+    EXPECT_EQ(high.settings().animation.overlayDuration, 5000);
+}
+
 TEST_F(ConfigTest, LastOutputLimitIsKibibytesWithAClamp)
 {
     SettingsStore defaults(write(QStringLiteral("default.json"), "{}"));

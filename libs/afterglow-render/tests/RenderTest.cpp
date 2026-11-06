@@ -9,6 +9,7 @@
 #include <AfterglowVt/Search.h>
 #include <AfterglowVt/Terminal.h>
 
+#include <QFile>
 #include <QGuiApplication>
 #include <QImage>
 
@@ -18,6 +19,7 @@
 #include <cmath>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <string>
 
 using namespace AfterglowRender;
@@ -3138,4 +3140,93 @@ int main(int argc, char** argv)
     const int result = RUN_ALL_TESTS();
     s_device.reset();
     return result;
+}
+
+TEST_F(Render, AnOverlayTransitionCrossFadesThePaneAndItsOverlayThroughThePaneChain)
+{
+    // The pane: a red cell. The overlay: a green cell elsewhere, on a blue background.
+    render("\x1b[?25l\x1b[48;2;220;0;0m \x1b[0m");
+    NullHost overlayHost;
+    AfterglowVt::Terminal overlayTerminal(Cols, Rows, overlayHost);
+    overlayTerminal.resize(Cols, Rows, cw, ch);
+    overlayTerminal.feed("\x1b[?25l\x1b]11;rgb:00/00/c0\x1b\\\x1b[2;3H\x1b[48;2;0;200;0m \x1b[0m");
+    PaneSnapshot overlaySnapshot;
+    overlaySnapshot.capture(overlayTerminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane;
+    pane.snapshot = &snapshot;
+    pane.params.rect = QRect(QPoint(0, 0), size);
+    pane.params.focused = true;
+    // The pack as it ships.
+    QFile file(QStringLiteral(AFTERGLOW_OVERLAY_FADE_PACK));
+    ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+    ShaderProgramSource source;
+    source.id = QStringLiteral("overlay-fade");
+    source.code = file.readAll();
+    QString error;
+    const ShaderProgramPtr fade = ShaderProgram::compile(source, &error);
+    ASSERT_TRUE(fade) << error.toStdString();
+    // A pane shader that swaps red and green: both images go through it.
+    const ShaderProgramPtr swap = layerShader("swap", "fragColor = c.grba;");
+    ASSERT_TRUE(swap);
+    ShaderChains chains;
+    chains.pane = {swap};
+    chains.overlayTransition = {fade};
+    renderer->setShaderChains(chains);
+    auto frame = [&](std::optional<float> progress, bool overlayAlone = false) {
+        WindowRenderer::Pane drawn = pane;
+        if (overlayAlone) drawn.snapshot = &overlaySnapshot;
+        else if (progress) drawn.overlay = WindowRenderer::Pane::Overlay{&overlaySnapshot, pane.params, *progress};
+        return renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg);
+    };
+    const QImage plain = frame(std::nullopt);
+    const QImage alone = frame(std::nullopt, true);
+    const QRgb raw = rgb(snapshot.defaultBg);
+    const QRgb host = qRgb(0, 220, 0), cell = qRgb(200, 0, 0), blue = qRgb(0, 0, 0xc0),
+               background = qRgb(qGreen(raw), qRed(raw), qBlue(raw));
+    EXPECT_PIXEL(plain, cellCenter(0, 0), host);
+    EXPECT_PIXEL(alone, cellCenter(2, 1), cell);
+    // At 0 the pane alone, at 1 the overlay alone, each with its pane shader.
+    EXPECT_TRUE(frame(0.0f) == plain);
+    EXPECT_TRUE(frame(1.0f) == alone);
+    // Between, both at once, in proportion.
+    const QImage middle = frame(0.5f);
+    const auto half = [](QRgb a, QRgb b) { return qRgb((qRed(a) + qRed(b)) / 2, (qGreen(a) + qGreen(b)) / 2, (qBlue(a) + qBlue(b)) / 2); };
+    EXPECT_PIXEL(middle, cellCenter(0, 0), half(host, blue));
+    EXPECT_PIXEL(middle, cellCenter(2, 1), half(background, cell));
+    const QImage quarter = frame(0.25f);
+    EXPECT_PIXEL_NEAR(quarter, cellCenter(0, 0), qRgb(0, 165, 48), 8);
+    // Once it has ended, nothing of it runs: the frame is the pane's again.
+    EXPECT_TRUE(frame(std::nullopt) == plain);
+}
+
+TEST_F(Render, WithoutAnOverlayTransitionAnOverlaySwitchesAtOnce)
+{
+    // No Shaders.overlayTransition, or a pack that did not compile: never
+    // blank, never a blend, the pane until halfway and the overlay after.
+    render("\x1b[?25l\x1b[48;2;220;0;0m \x1b[0m");
+    NullHost overlayHost;
+    AfterglowVt::Terminal overlayTerminal(Cols, Rows, overlayHost);
+    overlayTerminal.resize(Cols, Rows, cw, ch);
+    overlayTerminal.feed("\x1b[?25l\x1b[48;2;0;200;0m \x1b[0m");
+    PaneSnapshot overlaySnapshot;
+    overlaySnapshot.capture(overlayTerminal);
+    const QSize size(Cols * cw, Rows * ch);
+    WindowRenderer::Pane pane;
+    pane.snapshot = &snapshot;
+    pane.params.rect = QRect(QPoint(0, 0), size);
+    for (const bool chains : {false, true}) {
+        // With other chains, and with none at all.
+        ShaderChains set;
+        if (chains) set.pane = {layerShader("plain", "")};
+        renderer->setShaderChains(set);
+        for (const float progress : {0.0f, 0.25f, 0.49f, 0.5f, 0.75f, 1.0f}) {
+            WindowRenderer::Pane drawn = pane;
+            drawn.overlay = WindowRenderer::Pane::Overlay{&overlaySnapshot, pane.params, progress};
+            SCOPED_TRACE(testing::Message() << "progress " << progress << (chains ? " with a pane chain" : ""));
+            const QImage image = renderer->renderToImage(size, {drawn}, {}, snapshot.defaultBg);
+            EXPECT_PIXEL(image, cellCenter(0, 0), progress < 0.5f ? qRgb(220, 0, 0) : qRgb(0, 200, 0));
+            EXPECT_EQ(qAlpha(image.pixel(cellCenter(5, 2))), 255);
+        }
+    }
 }

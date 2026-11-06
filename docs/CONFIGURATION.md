@@ -16,6 +16,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `cursorCurve` | `"spring:48,1"` |  | Curve of cursor motion between cells, in the splitCurve format. |
 | `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs. |
+| `overlayCurve` | `"0.4,0,0.2,1"` |  | Curve of the fade of an overlay over its pane, in the splitCurve format. The fade stops at its ends, also with a spring that overshoots. |
+| `overlayDuration` | `180` | 16–5000 | Duration of the fade of an overlay in milliseconds for curves other than springs. |
 | `overviewCurve` | `"spring:12,0.82"` |  | Curve of the pane overview motion, in the splitCurve format. The default spring overshoots slightly. |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs. |
 | `paneEffectDuration` | `420` | 16–5000 | Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane whose shell moves to another host, user or container takes the same time. |
@@ -170,6 +172,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | --- | --- | --- | --- |
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text. |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
+| `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value switches at once. |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
 | `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
 | `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. An empty value turns it off. |

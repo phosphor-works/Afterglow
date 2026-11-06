@@ -1,0 +1,10 @@
+{
+    "id": "overlay-fade",
+    "name": "Overlay Fade",
+    "category": "Transition",
+    "description": "A program that runs over a pane fades in over it, and fades out when it ends. The pane and the program keep running while they blend.",
+    "author": "afterglow",
+    "version": "1.0",
+    "fragmentShader": "effect.frag",
+    "parameters": []
+}

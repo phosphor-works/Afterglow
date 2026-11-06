@@ -121,7 +121,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - System audio input through CAVA, with its framerate, smoothing and frequency range in `Audio` settings.
 - Scrollback-driven inputs and parameter transitions with Phosphor curves.
 - Time helpers `timeAngle` and `timeCycle` that keep full precision however long the window runs, and `timeSeconds` for the full clock.
-- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Pane Deck, Pane Effects, Phosphor Depths and Tab Switch.
+- Bundled packs: Bloom, Cursor Trail, Depth Trails, Feedback Glow, Mesh Reactor, Orrery, Overlay Fade, Pane Deck, Pane Effects, Phosphor Depths and Tab Switch.
 - Pane rectangles, every tab's pane pixels and overview state for window shaders, through `terminal_panes.glsl`.
 - The Phosphor and Glasshouse example scenes.
 
@@ -146,6 +146,9 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - An interrupt or `SIGTERM` cancels the run, and `aglow run` then ends by that signal. So does a closed standard output, with `SIGPIPE`. A canceled run also stops the tasks and the sleeps that it waits for.
 - A script command that runs for a client, such as `aglow run`, reads pane text only when `Control.allowReadText` and `Scripts.allowReadText` are on.
 - A keybind action from `afterglow ctl action` or `afterglow.action` is refused while a prompt or a script dialog is open.
+- Overlays: `afterglow.overlay` runs a program, such as fzf, over a pane with the input focus, and returns its exit status and its output to the script. The program can read a list on stdin, draw on the terminal and answer on stdout or in the file that `AFTERGLOW_RESULT` names. The overlay fades in and out through the `Shaders.overlayTransition` pack, Overlay Fade by default, which blends the pane and the program with the pane's shaders on both. `Animation.overlayCurve` and `Animation.overlayDuration` time it. It closes, and its program gets `SIGHUP`, when its pane closes or the command run that waits for it ends.
+- `afterglow ctl overlay -- CMD` runs a program over the pane from a shell script, with the `overlay` call of the control socket. It prints the program's output and exits with its status.
+- The fzf picker example package picks a saved project or a file with fzf in an overlay, or with the select dialog when fzf is not installed.
 - Shell completion for Bash, Zsh and Fish, with the commands of the running scripts and the `aglow` commands of `afterglow`. The completion reads the commands from `aglow run`, which starts faster than `afterglow`. The Fish completion needs Fish 4 or later.
 - A launch that arrives while the first Afterglow process starts waits until that process is ready, then opens its window there.
 - A different build on the same display starts on its own and does not hand its window over.

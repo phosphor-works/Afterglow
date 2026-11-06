@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "../scripting/OverlaySpec.h"
+
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -156,8 +158,19 @@ public:
     /// move_tab_right actions.
     QString moveTab(quint32 pane, int index);
     void clearScriptOwner(const QString& owner);
-    /// Cancels the owner's dialogs whose request IDs start with @p prefix.
+    /// Cancels the owner's dialogs, and the overlays it waits for, whose
+    /// request IDs start with @p prefix.
     void closeScriptDialogs(const QString& owner, const QString& prefix);
+    /// The result of an overlay: an error and its code (cancelled), or
+    /// {exit_code, stdout, truncated}.
+    using OverlayReply = std::function<void(const QString& error, const QString& code, const QVariantMap& result)>;
+    /// Runs @p spec over @p pane for @p owner (a script, or a control
+    /// client), with the script's @p request ID. @p code tells a refusal
+    /// apart: no_pane, busy or spawn_failed.
+    QString overlay(const QString& owner, const QString& request, quint32 pane, const OverlaySpec& spec, OverlayReply reply,
+                    QString& code);
+    /// Cancels every overlay of @p owner (a control client that has gone).
+    void closeOverlays(const QString& owner, const QString& message);
     QString scriptKeyMode(const QString& owner, quint32 pane, const QString& label);
     void endScriptKeyMode(const QString& owner);
     /// The overview for @p owner's script: see TerminalWindow::scriptOverview.

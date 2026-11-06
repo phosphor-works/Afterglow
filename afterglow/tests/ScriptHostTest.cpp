@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "scripting/ScriptHost.h"
+#include "scripting/OverlaySpec.h"
 #include "scripting/ScriptTasks.h"
 #include "scripting/ScriptState.h"
 #include <QDateTime>
@@ -90,7 +91,9 @@ protected:
         c.failed = [this](const QString& owner) { failedOwners << owner; };
         c.applyOwned = [this, apply = c.apply](const QString& owner, const QVariantMap& effect, std::function<void(ScriptHost::EffectResult)> complete) {
             rec.owners.append(owner);
-            if (effect.value(QStringLiteral("kind")) == QLatin1String("prompt")) {
+            if (effect.value(QStringLiteral("kind")) == QLatin1String("prompt")
+                || effect.value(QStringLiteral("kind")) == QLatin1String("overlay")) {
+                if (effect.value(QStringLiteral("kind")) == QLatin1String("overlay")) overlays.append(effect);
                 pendingOwner = owner;
                 pendingRequest = effect.value(QStringLiteral("request_id")).toString();
                 pendingReply = std::move(complete);
@@ -187,6 +190,7 @@ protected:
     QString pendingOwner; ///< of the prompt that pendingReply answers
     QString pendingRequest; ///< of the prompt that pendingReply answers
     QStringList closedDialogs; ///< request ID prefixes
+    QList<QVariantMap> overlays; ///< the overlay effects that reached the window
     struct Notice
     {
         quint32 pane;
@@ -5427,4 +5431,217 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+TEST_F(ScriptHostTest, OverlayEffectsAreCheckedBeforeTheyReachTheWindow)
+{
+    write(user, "overlays.luau", R"(
+return { on_bell = function(ev)
+    local many = {}
+    for i = 1, 65 do many[i] = "x" end
+    return {
+        afterglow.overlay(ev.pane, {}),
+        afterglow.overlay(ev.pane, many),
+        afterglow.overlay(ev.pane, {"fzf", string.rep("a", 4097)}),
+        afterglow.overlay(ev.pane, "fzf", {capture = "stderr"}),
+        { kind = "overlay", pane = ev.pane, command = {"fzf"}, stdin = 5 },
+        afterglow.overlay(ev.pane, "fzf", {env = {["A=B"] = "x"}}),
+        afterglow.overlay(ev.pane, "fzf", {env = {HOME = true}}),
+        afterglow.overlay(ev.pane, "fzf", {title = string.rep("t", 513)}),
+        afterglow.request("pick", afterglow.overlay(ev.pane, {"fzf", "--multi"},
+            {stdin = "a\nb\n", capture = "file", cwd = "/srv/remote", env = {LANG = "C", EDITOR = false}, title = "Pick"})),
+    }
+end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(rec.results.size(), 9);
+    for (int i = 0; i < 8; ++i) EXPECT_FALSE(rec.results[i].second.isEmpty()) << i;
+    EXPECT_TRUE(rec.results[8].second.isEmpty()) << rec.results[8].second.toStdString();
+    // Only the valid one reaches the window, with every field it needs.
+    ASSERT_EQ(overlays.size(), 1);
+    const QVariantMap& e = overlays[0];
+    EXPECT_EQ(e.value("pane").toUInt(), 7u);
+    EXPECT_EQ(e.value("command").toStringList(), (QStringList{"fzf", "--multi"}));
+    EXPECT_EQ(e.value("stdin").toString(), QStringLiteral("a\nb\n"));
+    EXPECT_EQ(e.value("capture").toString(), QStringLiteral("file"));
+    EXPECT_EQ(e.value("cwd").toString(), QStringLiteral("/srv/remote"));
+    EXPECT_EQ(e.value("title").toString(), QStringLiteral("Pick"));
+    EXPECT_EQ(e.value("request_id").toString(), QStringLiteral("pick"));
+    const QVariantMap env = e.value("env").toMap();
+    EXPECT_EQ(env.value("LANG").toString(), QStringLiteral("C"));
+    EXPECT_EQ(env.value("EDITOR").typeId(), QMetaType::Bool);
+}
+
+TEST(OverlaySpecTest, StdinAndArgumentsHaveTheirLimits)
+{
+    QString error;
+    const QStringList argv{QStringLiteral("fzf")};
+    const QString most(OverlaySpec::MaxInput, QLatin1Char('x'));
+    const auto spec = OverlaySpec::read(argv, {{QStringLiteral("stdin"), most}}, &error);
+    ASSERT_TRUE(spec) << error.toStdString();
+    EXPECT_EQ(spec->input->size(), OverlaySpec::MaxInput);
+    // UTF-8 bytes count, not characters.
+    EXPECT_FALSE(OverlaySpec::read(argv, {{QStringLiteral("stdin"), most + QStringLiteral("x")}}, &error));
+    EXPECT_TRUE(OverlaySpec::read(argv, {{QStringLiteral("stdin"), QString(OverlaySpec::MaxInput / 2, QChar(0xe9))}}, &error));
+    EXPECT_FALSE(OverlaySpec::read(argv, {{QStringLiteral("stdin"), QString(OverlaySpec::MaxInput / 2 + 1, QChar(0xe9))}}, &error));
+    EXPECT_FALSE(OverlaySpec::read(argv, {{QStringLiteral("shell"), QStringLiteral("sh")}}, &error));
+    EXPECT_TRUE(error.contains(QLatin1String("shell"))) << error.toStdString();
+    EXPECT_FALSE(OverlaySpec::read({QString()}, {}, &error));
+    QString withNul = QStringLiteral("ab");
+    withNul.insert(1, QChar::Null);
+    EXPECT_FALSE(OverlaySpec::read({withNul}, {}, &error));
+    const auto none = OverlaySpec::read(argv, {{QStringLiteral("capture"), QStringLiteral("none")}}, &error);
+    ASSERT_TRUE(none);
+    EXPECT_EQ(none->capture, OverlaySpec::Capture::None);
+    EXPECT_FALSE(none->input.has_value());
+}
+
+TEST_F(ScriptHostTest, OverlayDefaultsReadTheTerminalAndCaptureStdout)
+{
+    write(user, "plain.luau", R"(
+return { on_bell = function(ev) return afterglow.overlay(ev.pane, "htop") end }
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_EQ(overlays.size(), 1);
+    EXPECT_FALSE(overlays[0].contains("stdin")) << "no stdin: the program reads the terminal";
+    EXPECT_EQ(overlays[0].value("capture").toString(), QStringLiteral("stdout"));
+    EXPECT_EQ(overlays[0].value("command").toStringList(), QStringList{"htop"});
+}
+
+TEST_F(ScriptHostTest, AnAwaitedOverlayResumesWithItsResultOrItsError)
+{
+    write(user, "pick.luau", R"(
+local log = {}
+return {
+    metadata = { commands = { log = { summary = "Print what happened" } } },
+    run_command = function(_, ev) return afterglow.output(ev, table.concat(log, ",")) end,
+    on_bell = function(ev)
+        local r, err = afterglow.await(afterglow.overlay(ev.pane, {"fzf"}, {stdin = "a\nb\n"}))
+        if r then
+            table.insert(log, r.exit_code .. ":" .. r.stdout .. ":" .. tostring(r.truncated))
+        else
+            table.insert(log, err.code)
+        end
+    end,
+}
+)");
+    host->setEnabled(true);
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(bool(pendingReply));
+    std::exchange(pendingReply, {})({{}, {{"exit_code", 0}, {"stdout", "b\n"}, {"truncated", false}}, {}});
+    pump();
+    host->dispatch("on_bell", 7);
+    ASSERT_TRUE(bool(pendingReply));
+    std::exchange(pendingReply, {})({QStringLiteral("The pane has an overlay already"), {}, QStringLiteral("busy")});
+    pump();
+    Client& client = newClient();
+    start("pick", "log", client);
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }));
+    EXPECT_EQ(client.out, QStringLiteral("0:b\n:false,busy"));
+}
+
+TEST_F(ScriptHostTest, TheEndOfARunClosesTheOverlayItWaitsFor)
+{
+    // As for a dialog: the window closes the overlay that the run's flow
+    // waits for, and the handler resumes with "cancelled".
+    write(user, "picker.luau", R"(
+local got = "none"
+return {
+    metadata = { commands = { pick = { summary = "Pick" }, got = { summary = "Print the result" } } },
+    run_command = function(command, ev)
+        if command == "pick" then
+            local _, err = afterglow.await(afterglow.overlay(ev.pane, {"fzf"}))
+            got = err and err.code or "picked"
+        else
+            return afterglow.output(ev, got)
+        end
+    end,
+}
+)");
+    host->setEnabled(true);
+    Client& picker = newClient();
+    const quint64 handle = start("picker", "pick", picker);
+    pump();
+    ASSERT_TRUE(bool(pendingReply));
+    ASSERT_EQ(overlays.size(), 1);
+    const QString request = overlays[0].value("request_id").toString();
+    host->cancelCommand(handle, 130);
+    pump();
+    // Closed by the prefix of its flow, which the window matches.
+    ASSERT_FALSE(closedDialogs.isEmpty());
+    EXPECT_TRUE(request.startsWith(closedDialogs.last())) << request.toStdString() << " " << closedDialogs.last().toStdString();
+    EXPECT_FALSE(bool(pendingReply));
+    EXPECT_EQ(picker.status, 130);
+    Client& got = newClient();
+    start("picker", "got", got);
+    ASSERT_TRUE(await([&] { return got.status.has_value(); }));
+    EXPECT_EQ(got.out, QStringLiteral("cancelled"));
+}
+
+class FzfPicker : public ScriptHostTest
+{
+protected:
+    /// Installs the package with @p fzf as its program and runs pick on pane
+    /// 7, in a directory with two files. The select dialog and the overlay
+    /// both pick the file whose name has a quote. Returns the text typed.
+    QString pick(const QString& fzf, bool expectOverlay)
+    {
+        installPackage(QStringLiteral("fzf-picker"));
+        QFile manifest(user.filePath(QStringLiteral("fzf-picker/package.json")));
+        if (!manifest.open(QIODevice::ReadWrite)) return QStringLiteral("no manifest");
+        QByteArray json = manifest.readAll();
+        json.replace("\"fzf\": \"fzf\"", ("\"fzf\": \"" + fzf + "\"").toUtf8());
+        manifest.resize(0);
+        manifest.write(json);
+        manifest.close();
+        QDir().mkpath(files.filePath(QStringLiteral("src")));
+        for (const char* name : {"notes.txt", "src/it's.c"}) {
+            QFile file(files.filePath(QLatin1String(name)));
+            if (!file.open(QIODevice::WriteOnly)) return QStringLiteral("no file");
+        }
+        paneState[7].insert(QStringLiteral("cwd"), files.path());
+        bool selected = false;
+        applyHook = [&selected](const QVariantMap& e) -> ScriptHost::EffectResult {
+            if (e.value("kind") != QLatin1String("select")) return {};
+            selected = true;
+            for (const QVariant& item : e.value("items").toList())
+                if (item.toMap().value("title") == QLatin1String("file: src/it's.c")) return {{}, item.toMap(), {}};
+            return {QStringLiteral("not listed"), {}, QStringLiteral("cancelled")};
+        };
+        host->setEnabled(true);
+        if (!run(QStringLiteral("fzf-picker.pick"), 7)) return QStringLiteral("did not run");
+        auto typed = [this] {
+            return std::find_if(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) { return e.value("kind") == QLatin1String("send_text"); });
+        };
+        const bool done = await([&] {
+            if (!overlays.isEmpty() && pendingReply) {
+                // fzf's list on stdin, in the pane's directory.
+                const QVariantMap overlay = overlays.takeFirst();
+                EXPECT_TRUE(overlay.value("stdin").toString().contains("file: src/it's.c")) << overlay.value("stdin").toString().toStdString();
+                EXPECT_EQ(overlay.value("cwd").toString(), files.path());
+                EXPECT_EQ(overlay.value("command").toStringList().value(0), fzf);
+                std::exchange(pendingReply, {})({{}, {{"exit_code", 0}, {"stdout", "file: src/it's.c\n"}, {"truncated", false}}, {}});
+            }
+            return typed() != rec.applied.cend();
+        }, 10000);
+        EXPECT_EQ(selected, !expectOverlay);
+        applyHook = {};
+        if (!done) return QStringLiteral("nothing typed");
+        EXPECT_EQ(typed()->value("pane").toUInt(), 7u);
+        return typed()->value("text").toString();
+    }
+};
+
+TEST_F(FzfPicker, WithFzfThePickComesFromTheOverlay)
+{
+    const QString fzf = QStandardPaths::findExecutable(QStringLiteral("fzf"));
+    if (fzf.isEmpty()) GTEST_SKIP() << "fzf is not installed";
+    EXPECT_EQ(pick(fzf, true), QStringLiteral("'src/it'\\''s.c' "));
+}
+
+TEST_F(FzfPicker, WithoutFzfThePickComesFromTheSelectDialog)
+{
+    EXPECT_EQ(pick(QStringLiteral("/nonexistent/afterglow-test/fzf"), false), QStringLiteral("'src/it'\\''s.c' "));
 }

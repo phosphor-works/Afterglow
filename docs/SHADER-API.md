@@ -71,6 +71,7 @@ The uniform block starts with Phosphor's `BaseUniforms` and continues with the t
 | `uSelectionBackgroundColor`, `uSelectionForegroundColor` | Theme selection colors. |
 | `uPalette` | The 256-color palette. |
 | `uSignal`, `uScrollback`, `uAudioLevels` | Script signals, history counts and audio levels. See [Shaders](SHADERS.md). |
+| `uOverlayTransition` | In an [overlay transition](#overlay-transitions) pass: `.x` the progress, `.w` 1. All zeros in other passes. |
 
 Helpers in `terminal_lib.glsl` include `cursorVisible()`, `paneFocused()`, `cursorCenter()`, `cursorAge()`, `focusAge()`, `signalValue()`, `signalAge()` and `paletteColor()`.
 
@@ -339,6 +340,7 @@ Panes after the 32nd, in tab order, do not appear in the overview.
 | `highlightPosition()` | The highlight's position in cards. It is fractional while the highlight moves. It counts on past the last card when the highlight wraps around, so motion continues. Take it modulo `paneCount()`. |
 | `tabTransitionActive()`, `tabTransitionProgress()`, `tabTransitionDirection()` | The tab switch, while it runs. |
 | `previousTabTexel(uv)` | The tab being left, at a window uv, during a tab switch. |
+| `overlayTransitionActive()`, `overlayTransitionProgress()`, `overlayHostTexel(uv)` | An overlay that fades in or out: see [overlay transitions](#overlay-transitions). |
 | `paneOpening(i)`, `paneOpenEdge(i)` | How far a new pane has opened, and the edge it opened from. |
 | `paneContext(i)`, `paneContextChange(i)` | Where the pane's shell runs, and how far its last change has run. |
 | `panePreviousContext(i)` | Where the pane's shell ran before its last change. |
@@ -392,6 +394,22 @@ Scripts play pulses with `afterglow.pulse`. `panePulse(i)` runs from 0 to 1, lin
 `panePulseColor(i)` is the palette color the script chose.
 While any pane is away from here, the pack also runs on each frame Afterglow draws. Those frames come only from changes, so a static mark costs no extra frames.
 [Pane Effects](../data/shaders/pane-effects/effect.frag) shows a hinge and a picture tube.
+
+### Overlay transitions
+
+An [overlay](SCRIPTING.md#overlays) runs a program over a pane, in the pane's place.
+`Shaders.overlayTransition` names the pack that blends the pane and the overlay while the overlay opens and closes.
+Afterglow runs it over that pane only, after the pane chain and before the window chain, only while the fade runs.
+The pass's input is the pane with the overlay. `overlayHostTexel(uv)` reads the pane under the overlay at the pass's canvas uv.
+Both images have the pane's layer and pane shaders, and both keep running. The window shaders then run over the result.
+`overlayTransitionProgress()` runs from 0, the pane under the overlay, to 1, the overlay. It is between 0 and 1 also with a curve that overshoots.
+`Animation.overlayCurve` and `Animation.overlayDuration` time it. The fade out runs the same pack from 1 back to 0.
+Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends without a jump.
+`overlayTransitionActive()` is true in this pass only.
+The pane under the overlay is drawn only while a fade runs. It uses the window-sized tab image.
+While the overview, a tab switch or a closing pane uses that image, an overlay switches at once.
+Without `Shaders.overlayTransition`, or when its pack does not load, an overlay also switches at once.
+[Overlay Fade](../data/shaders/overlay-fade/effect.frag) blends the two images.
 
 Input does not reach the panes while the overview is open.
 The highlighted pane is the one the user chooses, so a pack needs no hit testing.

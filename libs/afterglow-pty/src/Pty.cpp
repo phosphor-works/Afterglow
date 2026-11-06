@@ -17,6 +17,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <pty.h>
 #include <pwd.h>
 #include <sys/eventfd.h>
@@ -277,25 +278,38 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
         close(wakeFd);
         return nullptr;
     }
-    for (int& descriptor : execPipe) {
-        if (descriptor >= 3) continue;
-        const int moved = fcntl(descriptor, F_DUPFD_CLOEXEC, 3);
+    // The child's stdin and stdout pipes, when it has them: -1 otherwise.
+    int inputPipe[2] = {-1, -1};
+    int outputPipe[2] = {-1, -1};
+    auto closeAll = [&] {
+        for (int fd : {execPipe[0], execPipe[1], inputPipe[0], inputPipe[1], outputPipe[0], outputPipe[1], wakeFd})
+            if (fd >= 0) close(fd);
+    };
+    if ((options.input && pipe2(inputPipe, O_CLOEXEC) != 0) || (options.captureOutput && pipe2(outputPipe, O_CLOEXEC) != 0)) {
+        const int code = errno;
+        closeAll();
+        if (error) *error = std::string("stdio pipe failed: ") + std::strerror(code);
+        return nullptr;
+    }
+    // Above the standard streams, which forkpty points at the terminal in
+    // the child before it takes its pipes.
+    for (int* descriptor : {&execPipe[0], &execPipe[1], &inputPipe[0], &inputPipe[1], &outputPipe[0], &outputPipe[1]}) {
+        if (*descriptor < 0 || *descriptor >= 3) continue;
+        const int moved = fcntl(*descriptor, F_DUPFD_CLOEXEC, 3);
         if (moved < 0) {
             const int code = errno;
-            close(execPipe[0]); close(execPipe[1]); close(wakeFd);
-            if (error) *error = std::string("exec pipe setup failed: ") + std::strerror(code);
+            closeAll();
+            if (error) *error = std::string("pipe setup failed: ") + std::strerror(code);
             return nullptr;
         }
-        close(descriptor);
-        descriptor = moved;
+        close(*descriptor);
+        *descriptor = moved;
     }
     int master = -1;
     const pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid < 0) {
         const int forkError = errno;
-        close(wakeFd);
-        close(execPipe[0]);
-        close(execPipe[1]);
+        closeAll();
         errno = forkError;
         if (error) {
             *error = std::string("forkpty failed: ") + std::strerror(errno);
@@ -321,6 +335,10 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
             tcsetattr(STDIN_FILENO, TCSANOW, &t);
         }
         close(execPipe[0]);
+        // The pipes take the place of the terminal; it stays the controlling
+        // terminal (/dev/tty) and standard error.
+        if (inputPipe[0] >= 0) dup2(inputPipe[0], STDIN_FILENO);
+        if (outputPipe[1] >= 0) dup2(outputPipe[1], STDOUT_FILENO);
         if (execPipe[1] > 3) close_range(3, unsigned(execPipe[1] - 1), 0);
         close_range(unsigned(execPipe[1] + 1), ~0U, 0);
         auto failed = [&](int stage) {
@@ -348,6 +366,8 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     }
 
     close(execPipe[1]);
+    for (int fd : {inputPipe[0], outputPipe[1]})
+        if (fd >= 0) close(fd);
     int pidFd = -1;
 #ifdef SYS_pidfd_open
     pidFd = int(syscall(SYS_pidfd_open, pid, 0));
@@ -369,6 +389,21 @@ std::unique_ptr<Pty> Pty::spawn(const SpawnOptions& options, IPtyListener& liste
     // Still in exec: the reader thread takes the report, and a failed child
     // reaches the owner as an exit with status 127.
     result->m_execFd = execPipe[0];
+    result->m_outputFd = outputPipe[0];
+    if (inputPipe[1] >= 0) {
+        if (options.input->empty()) {
+            close(inputPipe[1]); // at its end at once
+        } else {
+            result->m_inputFd = inputPipe[1];
+            result->m_input = *options.input;
+        }
+    }
+    for (int fd : {result->m_inputFd, result->m_outputFd}) {
+        if (fd >= 0 && fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+            if (error) *error = std::string("pipe setup failed: ") + std::strerror(errno);
+            return nullptr;
+        }
+    }
     if (received != 0) {
         if (error) {
             const std::string reason = std::strerror(received == sizeof report ? report[1] : readError);
@@ -428,6 +463,8 @@ Pty::~Pty()
     close(m_wakeFd);
     if (m_pidFd >= 0) close(m_pidFd);
     if (m_execFd >= 0) close(m_execFd);
+    if (m_inputFd >= 0) close(m_inputFd);
+    if (m_outputFd >= 0) close(m_outputFd);
     if (const pid_t child = m_pid.load(); child > 0) Reaper::instance().adopt(child);
 }
 
@@ -517,28 +554,94 @@ bool Pty::flushPending()
     return !m_pending.empty();
 }
 
+void Pty::feedInput()
+{
+    while (m_inputOffset < m_input.size()) {
+        const std::size_t amount = std::min<std::size_t>(65536, m_input.size() - m_inputOffset);
+        const ssize_t n = ::write(m_inputFd, m_input.data() + m_inputOffset, amount);
+        if (n > 0) {
+            m_inputOffset += std::size_t(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n < 0 && errno == EPIPE) {
+            // The child closed its stdin before it read everything: what is
+            // left goes nowhere. This thread blocks SIGPIPE, so the signal
+            // waits for it alone: take it.
+            sigset_t broken;
+            sigemptyset(&broken);
+            sigaddset(&broken, SIGPIPE);
+            const timespec now{0, 0};
+            while (sigtimedwait(&broken, nullptr, &now) < 0 && errno == EINTR) {}
+        }
+        break;
+    }
+    close(m_inputFd);
+    m_inputFd = -1;
+    std::string().swap(m_input);
+}
+
+bool Pty::readOutput(std::vector<char>& buffer)
+{
+    // A finite batch, as for the terminal: a child that writes without end
+    // must not starve stop().
+    for (int reads = 0; reads < 16 && !m_stop.load(); ++reads) {
+        const ssize_t n = ::read(m_outputFd, buffer.data(), buffer.size());
+        if (n > 0) {
+            m_listener.ptyOutput(std::string_view(buffer.data(), std::size_t(n)));
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return true;
+        break; // its end, or an error
+    }
+    if (m_stop.load()) return true;
+    close(m_outputFd);
+    m_outputFd = -1;
+    return false;
+}
+
 void Pty::run()
 {
+    // A child that closes its stdin pipe early makes the write fail with
+    // EPIPE: the signal must not end the process (feedInput takes it).
+    sigset_t pipeSignal;
+    sigemptyset(&pipeSignal);
+    sigaddset(&pipeSignal, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipeSignal, nullptr);
     std::vector<char> buf(std::size_t(1) << 16);
     bool wantWrite = false;
     bool closed = false; // nothing more is read from the terminal
     bool exited = false; // the child has exited (pidfd)
+    // What the child wrote to its stdout before it exited is in the pipe
+    // now, at most the pipe's capacity: a write past it would have waited
+    // for this thread. A background job that kept the pipe and writes on is
+    // not waited for: a few batches take the rest.
+    auto drainOutput = [&] {
+        for (int batches = 0; m_outputFd >= 0 && batches < 64 && !m_stop.load(); ++batches) {
+            pollfd ready{m_outputFd, POLLIN, 0};
+            if (poll(&ready, 1, 0) <= 0 || !readOutput(buf)) break;
+        }
+    };
 
     while (!m_stop.load()) {
-        pollfd fds[4] = {
+        pollfd fds[6] = {
             // A hung-up fd reports POLLHUP even with no events requested, so
             // drop it from the set once closed instead of spinning on it.
             {closed ? -1 : m_master, short(POLLIN | (wantWrite ? POLLOUT : 0)), 0},
             {m_wakeFd, POLLIN, 0},
             {exited ? -1 : m_pidFd, POLLIN, 0},
             {m_execFd, POLLIN, 0},
+            {closed ? -1 : m_inputFd, POLLOUT, 0},
+            {closed ? -1 : m_outputFd, POLLIN, 0},
         };
         // Without a pidfd, look for the child's exit every 100 ms once the
         // terminal hung up. So too once the pidfd fired but the child could not
         // be reaped yet (a tracer such as gdb or strace waits for it first):
         // the pidfd stays readable and is out of the set.
         const int timeout = closed && (m_pidFd < 0 || exited) ? 100 : -1;
-        if (poll(fds, 4, timeout) < 0) {
+        if (poll(fds, 6, timeout) < 0) {
             if (errno == EINTR) {
                 continue;
             }
@@ -549,9 +652,12 @@ void Pty::run()
             const pid_t child = m_pid.load();
             const bool reaped = waitChild(child, &status, WNOHANG) == child;
             if (reaped) m_pid = -1;
+            drainOutput();
             m_listener.ptyClosed(reaped ? status : -1);
             return;
         }
+        if (fds[4].revents) feedInput(); // POLLOUT, or POLLERR once the child closed its end
+        if (fds[5].revents) readOutput(buf);
 
         if (fds[3].revents) {
             // A late exec failure: the child exits with 127, which the reap reports.
@@ -609,6 +715,7 @@ void Pty::run()
             const pid_t reaped = waitChild(child, &status, WNOHANG);
             if (reaped == child || (reaped < 0 && errno == ECHILD)) {
                 m_pid = -1;
+                drainOutput();
                 m_listener.ptyClosed(reaped == child ? status : -1);
                 return;
             }

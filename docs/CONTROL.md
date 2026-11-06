@@ -236,11 +236,52 @@ Another number fails with `CALL_FAILED`.
 | `saveProject` | pane, name, overwrite | An object: the name and the window |
 | `openProject` | name, new instance | An object: the window and its panes |
 | `scriptDiagnostics` | None | Script and package diagnostics |
+| `overlay` | pane, argv, options | An object: `exit_code`, `stdout` and `truncated`. See [overlays](#overlays). |
 
 A command is an array of strings. An empty array runs the shell.
 A working directory must be absolute, `~`, or start with `~/`.
 For `newTab` and `newWindow`, an empty working directory uses the `Window.workingDirectory` setting.
 `afterglow ctl` changes a relative directory into an absolute one before it sends it.
+
+## Overlays
+
+An overlay runs a program over a pane until the program exits, and returns its result.
+The program shows in the place of the pane, with the input focus.
+[SCRIPTING.md](SCRIPTING.md#overlays) describes overlays and the options.
+
+```sh
+selected=$(git branch --format='%(refname:short)' | afterglow ctl overlay -- fzf) && git switch "$selected"
+```
+
+`afterglow ctl overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n] -- CMD...` opens the overlay over the [target pane](#which-process-and-pane).
+It waits until the program exits, with no time limit.
+Then it writes the result's `stdout` to its standard output, and exits with the program's exit status.
+A result over 1 MiB is cut, and a message goes to standard error.
+
+| Option | Behavior |
+| --- | --- |
+| `--capture` | `stdout` (the default), `file` or `none`, as the `capture` option |
+| `--cwd DIR` | The program's directory. The default is the directory of `afterglow ctl`. |
+| `--title TEXT` | The pane's title while the overlay runs |
+| `-n`, `--no-stdin` | Standard input does not go to the program. |
+
+Without `-n`, standard input goes to the program when it is not a terminal.
+The input goes in the request, so it is at most 768 KiB. For a longer list, use a script.
+When standard input is a terminal, the program reads the pane.
+When `afterglow ctl` stops before the program exits (Ctrl+C, a signal), its connection closes.
+The overlay then closes, and its program gets `SIGHUP`.
+
+The `overlay` call takes the pane (0 for the focused pane), the argv list and an object of options: `stdin`, `capture`, `cwd`, `env` and `title`.
+It answers when the program exits: the reply comes later, and other calls on the connection get their replies meanwhile.
+An option that breaks a rule fails the call with `CALL_FAILED`.
+Other failures have their own error codes:
+
+| Code | Cause |
+| --- | --- |
+| `no_pane` | The pane does not exist. |
+| `busy` | The pane has an overlay already, or a script dialog is open in its window. |
+| `spawn_failed` | The program cannot start. |
+| `cancelled` | The overlay closed before the program exited, for example because its pane closed. |
 
 ## Pane object
 
@@ -474,7 +515,10 @@ A call of a `SCRIPT.COMMAND` entry gets its output without flow control. Its cli
 | Lines that do not parse, one after the other | 16 | The socket closes the connection at the next one. |
 | Waiting output to one client | 16 MiB | The socket closes the connection to a client that does not read its events. |
 | Subscriptions on one connection | 256 | The subscription fails with `MALFORMED_REQUEST`. A second subscription to the same event also fails. |
-| `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. |
+| `afterglow ctl` reply time | 10 seconds | `afterglow ctl` stops with an error. A slow Afterglow can still do what it was asked. `afterglow ctl overlay` waits for the program without a limit. |
+| `afterglow ctl overlay` standard input | 768 KiB | `afterglow ctl` stops with an error and opens nothing. |
+| `stdin` of the `overlay` call | 16 MiB of UTF-8, and one request line of 1 MiB | The call fails. |
+| `stdout` of an overlay's result | 1 MiB of UTF-8 | The text is cut, and `truncated` is true. |
 | `aglow run` reply time for `list` and `input` | 10 seconds | `aglow run` stops with exit status 1. The time to connect counts toward the time of `list`. It does not wait for the reply of `cancel` or `ack`. It waits for the end of a run without a limit. |
 | `input` part that `aglow run` sends | 512 KiB of JSON string | `aglow run` sends longer input in parts. |
 | Runs whose input waits for `run`, on one connection | 16 | `input` fails. |
@@ -520,7 +564,7 @@ To send text that starts with `--`, put it after `--`: `afterglow ctl send-text 
 
 ## Words after `--`
 
-Only `send-text`, `set-title`, `notify`, `split`, `new-tab` and `new-window` read words after `--`.
+Only `send-text`, `set-title`, `notify`, `split`, `new-tab`, `new-window` and `overlay` read words after `--`.
 The other commands stop with a usage error when you give such words.
 
 ## Exit status of afterglow ctl

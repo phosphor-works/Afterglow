@@ -668,6 +668,11 @@ PhosphorConfig::Schema buildSchema()
         intKey(QStringLiteral("paneEffectDuration"), anim.paneEffectDuration, 16, 5000,
                QStringLiteral("Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane "
                               "whose shell moves to another host, user or container takes the same time.")),
+        curveKey(QStringLiteral("overlayCurve"), anim.overlayCurve,
+                 QStringLiteral("Curve of the fade of an overlay over its pane, in the splitCurve format. The fade stops at "
+                                "its ends, also with a spring that overshoots.")),
+        intKey(QStringLiteral("overlayDuration"), anim.overlayDuration, 16, 5000,
+               QStringLiteral("Duration of the fade of an overlay in milliseconds for curves other than springs.")),
         curveKey(QStringLiteral("cursorCurve"), anim.cursorCurve,
                  QStringLiteral("Curve of cursor motion between cells, in the splitCurve format.")),
         intKey(QStringLiteral("cursorDuration"), anim.cursorDuration, 16, 5000,
@@ -717,6 +722,9 @@ PhosphorConfig::Schema buildSchema()
                   QStringLiteral("Shader that animates panes as they split open and close. It draws a portal when the shell "
                                  "of a pane moves to another host, user or container. While the shell stays there, it draws "
                                  "the away frame around the pane. An empty value turns it off.")),
+        stringKey(QStringLiteral("overlayTransition"), d.shaders.overlayTransition,
+                  QStringLiteral("Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. "
+                                 "An empty value switches at once.")),
         {QStringLiteral("params"), QVariantMap{}, QMetaType::QVariantMap,
          QStringLiteral("Parameter values for each shader reference, such as { \"bloom\": { \"strength\": 0.5 } }.")},
     };
@@ -1607,6 +1615,8 @@ Settings SettingsStore::read()
     s.animation.tabCurve = st.read<QString>(Animation, QStringLiteral("tabCurve")).trimmed();
     s.animation.tabDuration = st.read<int>(Animation, QStringLiteral("tabDuration"));
     s.animation.paneEffectDuration = st.read<int>(Animation, QStringLiteral("paneEffectDuration"));
+    s.animation.overlayCurve = st.read<QString>(Animation, QStringLiteral("overlayCurve")).trimmed();
+    s.animation.overlayDuration = st.read<int>(Animation, QStringLiteral("overlayDuration"));
     s.animation.cursorCurve = st.read<QString>(Animation, QStringLiteral("cursorCurve")).trimmed();
     s.animation.cursorDuration = st.read<int>(Animation, QStringLiteral("cursorDuration"));
     s.animation.scrollCurve = st.read<QString>(Animation, QStringLiteral("scrollCurve")).trimmed();
@@ -1619,7 +1629,8 @@ Settings SettingsStore::read()
     s.shaders = {shaderList("background"), shaderList("text"), shaderList("cursor"), shaderList("pane"),
                  shaderList("window"), st.read<QString>(Shaders, QStringLiteral("overview")).trimmed(),
                  st.read<QString>(Shaders, QStringLiteral("tabTransition")).trimmed(),
-                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed()};
+                 st.read<QString>(Shaders, QStringLiteral("paneEffects")).trimmed(),
+                 st.read<QString>(Shaders, QStringLiteral("overlayTransition")).trimmed()};
     s.shaderParams = mapValue(Shaders, QStringLiteral("params"));
 
     // Hints: checked once here, not on every show_hints, which uses only the

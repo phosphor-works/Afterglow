@@ -128,6 +128,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         wp.params.textBlinkOn = m_textBlinkOn;
         const QVariantMap overrides = applyScriptOverrides(p, wp.params, backgroundAlpha);
         const QRect shown = wp.params.rect;
+        prepareOverlay(p, r, wp, holding, animating);
         other.panes.push_back(std::move(wp));
         // The overlays the tab had while it was current, so a tab switch
         // starts from exactly what was shown.
@@ -192,7 +193,9 @@ void TerminalWindow::updateAudioCapture()
     // overview pack must not keep capture running while the overview is shut.
     m_audioCapturing = m_audioUse.alwaysOn || (m_audioUse.overview && overviewShowing())
         || (m_audioUse.tabTransition && m_tabTransition.progress.isAnimating())
-        || (m_audioUse.paneEffects && m_paneEffectsShowing);
+        || (m_audioUse.paneEffects && m_paneEffectsShowing)
+        || (m_audioUse.overlayTransition && std::any_of(m_overlayFades.begin(), m_overlayFades.end(),
+                                                         [](const auto& fade) { return fade.second.progress.isAnimating(); }));
     m_audio.setActive(this, m_audioCapturing && isExposed() && visibility() != QWindow::Minimized);
 }
 

@@ -214,6 +214,19 @@ public:
         /// Part of the pane: its chains, card, tab image and closing frame
         /// show them too.
         std::vector<Dock> docks = {};
+        /// A program run over the pane (an overlay), with a terminal of its
+        /// own: its grid takes the place of the pane's, under the pane's
+        /// docks and through the pane's chains, card and tab image. It fades
+        /// in by @c progress: 0 shows the pane, 1 the overlay. The pane fades
+        /// to the overlay's background, then the overlay comes out of it.
+        struct Overlay
+        {
+            const PaneSnapshot* snapshot = nullptr;
+            /// As the pane's own, for the overlay's grid: the same rectangle.
+            FrameBuilder::PaneParams params;
+            float progress = 1;
+        };
+        std::optional<Overlay> overlay = {};
     };
 
     /// @p window may be null for a renderer that only renders to images;
@@ -274,7 +287,7 @@ public:
         /// image.
         std::vector<OverviewTab> otherTabs;
     };
-    void setOverview(Overview overview) { m_overview = std::move(overview); }
+    void setOverview(Overview overview);
     /// Areas that scripts dock at the window's edges, drawn like panes in
     /// the last pass: after every shader chain and before the chrome. No
     /// shader chain (layer, pane, window, overview, tab transition or pane
@@ -296,7 +309,7 @@ public:
         std::optional<std::chrono::steady_clock::time_point> startedAt;
         OverviewTab from;
     };
-    void setTabTransition(TabTransition transition) { m_transition = std::move(transition); }
+    void setTabTransition(TabTransition transition);
     bool transitionShowing() const { return m_transition.active && !overviewShowing(); }
     /// Panes opening and closing: the pane effects chain runs while @c active.
     /// A closed pane's last frame is drawn into uTabImage at its old place.

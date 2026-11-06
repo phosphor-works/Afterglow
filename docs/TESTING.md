@@ -27,6 +27,13 @@ Check the skipped count in the CTest summary.
 Use `ctest -R PATTERN` to select tests by name.
 See [compatibility](COMPATIBILITY.md) for protocol test names.
 
+The tests of the pseudo-terminal library start with `PtyLib.`.
+They check the spawn options that overlays use: standard input and output on pipes, apart from `/dev/tty`.
+
+```sh
+ctest --test-dir build --output-on-failure -R '^PtyLib\.'
+```
+
 ## Build options for tests and tools
 
 | Option | Default | Function |

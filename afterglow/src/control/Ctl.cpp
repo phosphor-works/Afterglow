@@ -65,6 +65,11 @@ of the active window or of the window that was active last.
   open-project NAME [--new]             switch to a project or launch its layout
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
+  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n] -- CMD...
+                                        run CMD over the pane until it exits, print its
+                                        result and exit with its status. Standard input,
+                                        unless it is a terminal or -n is given, goes to
+                                        CMD (at most 768 KiB)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -97,12 +102,15 @@ int fail(const QString& message, int status = 1)
 class Client
 {
 public:
-    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args)
+    /// @p timeoutMs: -1 waits as long as the call takes (an overlay waits for the user).
+    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, int timeoutMs = ReplyTimeoutMs,
+                                   IpcClient::Error* failure = nullptr)
     {
         if (!connected()) return std::nullopt;
         IpcClient::Error error;
-        auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, ReplyTimeoutMs, &error);
+        auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, timeoutMs, &error);
         if (!result) report(error);
+        if (!result && failure) *failure = error;
         return result;
     }
 
@@ -189,6 +197,8 @@ private:
         // Control.enabled takes away, also from a running watch.
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
             fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running Afterglow")));
+        } else if (error.tooLong) {
+            fail(QStringLiteral("the request is over what one call carries (%1 MiB)").arg(IpcClient::MaxLineBytes >> 20));
         } else if (error.timedOut) {
             // A slow afterglow may still do what was asked.
             fail(QStringLiteral("Afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
@@ -347,7 +357,13 @@ const QStringList Commands = {
     QStringLiteral("focus"), QStringLiteral("close"), QStringLiteral("set-title"), QStringLiteral("signal"),
     QStringLiteral("notify"), QStringLiteral("scripts"), QStringLiteral("open-directory"), QStringLiteral("projects"),
     QStringLiteral("save-project"), QStringLiteral("open-project"), QStringLiteral("action"), QStringLiteral("watch"),
+    QStringLiteral("overlay"),
 };
+
+// The standard input that `overlay` sends with the call, which goes in one
+// request line (IpcClient::MaxLineBytes): room for the rest of the call,
+// and for JSON escapes, which most text does not need.
+constexpr qsizetype CtlOverlayInput = 768 * 1024;
 
 } // namespace
 
@@ -372,7 +388,8 @@ int runCtl(int argc, char** argv)
     }
     // Only these read words after "--": elsewhere they would be dropped unseen.
     static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"), QStringLiteral("new-tab"),
-                                              QStringLiteral("send-text"), QStringLiteral("set-title"), QStringLiteral("notify")};
+                                              QStringLiteral("send-text"), QStringLiteral("set-title"), QStringLiteral("notify"),
+                                              QStringLiteral("overlay")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -648,6 +665,43 @@ int runCtl(int argc, char** argv)
         }
         act = [&, title = words.value(0), body = words.mid(1).join(QLatin1Char(' '))](qint64 pane) {
             return run(QStringLiteral("notify"), {pane, title, body});
+        };
+    } else if (command == QLatin1String("overlay")) {
+        const QString capture = takeValue(QStringLiteral("--capture")).value_or(QStringLiteral("stdout"));
+        const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QDir::currentPath());
+        const std::optional<QString> title = takeValue(QStringLiteral("--title"));
+        const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
+        if (const auto error = extra(0)) return usage(*error);
+        if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
+        if (capture != QLatin1String("stdout") && capture != QLatin1String("file") && capture != QLatin1String("none"))
+            return usage(QStringLiteral("--capture takes stdout, file or none"));
+        QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), absolute(cwd)}};
+        if (title) options.insert(QStringLiteral("title"), *title);
+        // A list piped in, as for fzf. A terminal is no list: the program
+        // reads the pane instead, and the call does not wait for an end of
+        // file that never comes.
+        if (!noInput && !isatty(STDIN_FILENO)) {
+            QFile in;
+            if (!in.open(stdin, QIODevice::ReadOnly)) return fail(QStringLiteral("cannot read standard input"));
+            QByteArray bytes;
+            while (bytes.size() <= CtlOverlayInput) {
+                const QByteArray part = in.read(CtlOverlayInput + 1 - bytes.size());
+                if (part.isEmpty()) break;
+                bytes += part;
+            }
+            if (bytes.size() > CtlOverlayInput)
+                return fail(QStringLiteral("standard input over %1 KiB: use a script for a longer list").arg(CtlOverlayInput >> 10));
+            options.insert(QStringLiteral("stdin"), QString::fromUtf8(bytes));
+        }
+        act = [&, options](qint64 pane) {
+            const auto result = client.call(QStringLiteral("overlay"), {pane, QJsonArray::fromStringList(trailing), options}, -1);
+            if (!result) return 1;
+            const QJsonObject done = result->toObject();
+            const QByteArray out = done.value(QLatin1String("stdout")).toString().toUtf8();
+            std::fwrite(out.constData(), 1, std::size_t(out.size()), stdout);
+            if (done.value(QLatin1String("truncated")).toBool()) std::fprintf(stderr, "afterglow ctl: the result was cut at 1 MiB\n");
+            const qint64 status = done.value(QLatin1String("exit_code")).toInteger(-1);
+            return status >= 0 && status <= 255 ? int(status) : 1;
         };
     } else if (command == QLatin1String("action")) {
         if (const auto error = extra(1)) return usage(*error);

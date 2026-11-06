@@ -33,7 +33,7 @@ stages) and an optional `README.md`.
 
 The contract headers are in `data/shaders/shared/`. Each uniform block there has a C++ mirror in
 `libs/afterglow-render/include/AfterglowRender/ShaderProgram.h`, with `static_assert`s on its size and offsets
-(`TerminalUniforms` 5184 bytes, `TerminalSceneUniforms` 8192, `TerminalPaneUniforms` 2656).
+(`TerminalUniforms` 5200 bytes, `TerminalSceneUniforms` 8192, `TerminalPaneUniforms` 2656).
 
 To change the contract:
 
