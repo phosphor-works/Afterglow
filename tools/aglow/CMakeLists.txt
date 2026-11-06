@@ -88,10 +88,27 @@ if(AGLOW_STATIC)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                  "${CMAKE_CURRENT_SOURCE_DIR}/notices/libstdc++.txt" "${AGLOW_GCC_EXCEPTION}")
     list(APPEND AGLOW_NOTICES "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.libstdc++")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/notices/glibc.txt" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow
-            RENAME LICENSE.glibc)
 endif()
-install(FILES ${AGLOW_NOTICES} DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/afterglow)
+if(AFTERGLOW_AGLOW_ONLY)
+    # Alone, aglow installs the notices that the application installs in a
+    # whole build: its own licence, those of zlib-ng and xxHash, which it
+    # links (libs/afterglow-proto), and the GPL text that the libstdc++
+    # notice names. They go in a directory named for aglow, as a package of
+    # its own has.
+    set(AGLOW_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/aglow")
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/LGPL-2.1-or-later.txt" DESTINATION ${AGLOW_LICENSE_DIR})
+    if(AGLOW_STATIC)
+        install(FILES "${PROJECT_SOURCE_DIR}/LICENSES/GPL-3.0-or-later.txt" DESTINATION ${AGLOW_LICENSE_DIR})
+    endif()
+    install(FILES "${AFTERGLOW_ZLIB_LICENSE}" DESTINATION ${AGLOW_LICENSE_DIR} RENAME LICENSE.zlib-ng)
+    install(FILES "${AFTERGLOW_XXHASH_LICENSE}" DESTINATION ${AGLOW_LICENSE_DIR} RENAME LICENSE.xxHash)
+else()
+    set(AGLOW_LICENSE_DIR "${CMAKE_INSTALL_DATADIR}/licenses/afterglow")
+endif()
+if(AGLOW_STATIC)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/notices/glibc.txt" DESTINATION ${AGLOW_LICENSE_DIR} RENAME LICENSE.glibc)
+endif()
+install(FILES ${AGLOW_NOTICES} DESTINATION ${AGLOW_LICENSE_DIR})
 
 # The implementation of stb_image, without Afterglow's warnings: upstream code
 # is not ours to fix. SYSTEM keeps its header quiet where aglow includes it.
@@ -140,19 +157,23 @@ if(AGLOW_STATIC)
                            VERBATIM)
     endif()
 endif()
+# aglow has no library to find, so it gets no run path from
+# CMAKE_INSTALL_RPATH.
+set_target_properties(aglow PROPERTIES AUTOMOC OFF AUTOUIC OFF INSTALL_RPATH "")
+install(TARGETS aglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Next to the afterglow executable in the build tree, as after install, so
 # that afterglow run, transfer, dnd, icat and clipboard find it in both.
-# Building afterglow builds aglow too. aglow has no library to find, so it
-# gets no run path from CMAKE_INSTALL_RPATH.
-set_target_properties(aglow PROPERTIES AUTOMOC OFF AUTOUIC OFF INSTALL_RPATH ""
-                      RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
-add_dependencies(afterglow aglow)
-install(TARGETS aglow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.bash"
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME aglow)
-install(FILES "${PROJECT_SOURCE_DIR}/data/completions/_aglow" DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
-install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.fish"
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
+# Building afterglow builds aglow too. Alone (AFTERGLOW_AGLOW_ONLY), aglow
+# installs no completions.
+if(TARGET afterglow)
+    set_target_properties(aglow PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:afterglow>")
+    add_dependencies(afterglow aglow)
+    install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.bash"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/bash-completion/completions RENAME aglow)
+    install(FILES "${PROJECT_SOURCE_DIR}/data/completions/_aglow" DESTINATION ${AFTERGLOW_ZSH_COMPLETION_INSTALL_DIR})
+    install(FILES "${PROJECT_SOURCE_DIR}/data/completions/aglow.fish"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/fish/vendor_completions.d)
+endif()
 
 if(BUILD_TESTING)
     # readelf -d of a static binary lists no NEEDED library.
@@ -173,6 +194,10 @@ if(BUILD_TESTING)
     endfunction()
     string(REPLACE "." "\\." AGLOW_VERSION_REGEX "${PROJECT_VERSION}")
     aglow_add_run_test(aglow_version 0 "^aglow ${AGLOW_VERSION_REGEX} \\(protocol [0-9]+\\)" $<TARGET_FILE:aglow> --version)
+    # The usage of run names the command that the user typed. It connects to nothing.
+    aglow_add_run_test(aglow_run_usage 0 "^usage: aglow run " $<TARGET_FILE:aglow> run --help)
+endif()
+if(BUILD_TESTING AND TARGET afterglow)
     # afterglow COMMAND runs the aglow next to it, under the name that the
     # user typed, and returns its status.
     aglow_add_run_test(afterglow_runs_aglow 0 "Usage: afterglow icat " $<TARGET_FILE:afterglow> icat --help)
@@ -180,8 +205,6 @@ if(BUILD_TESTING)
                        $<TARGET_FILE:afterglow> transfer --help)
     aglow_add_run_test(afterglow_passes_aglow_status 1 "Unknown option: --no-such-option"
                        $<TARGET_FILE:afterglow> icat --no-such-option)
-    # The usage of run names the command that the user typed. It connects to nothing.
-    aglow_add_run_test(aglow_run_usage 0 "^usage: aglow run " $<TARGET_FILE:aglow> run --help)
     aglow_add_run_test(afterglow_runs_aglow_run 0 "^usage: afterglow run " $<TARGET_FILE:afterglow> run --help)
     # A copy of afterglow alone in a directory has no aglow next to it.
     set(AGLOW_RUN_OPTIONS "-DCOPY_TO=${CMAKE_CURRENT_BINARY_DIR}/without-aglow")
@@ -195,6 +218,19 @@ if(BUILD_TESTING)
                        $<TARGET_FILE:afterglow> icat --help)
     unset(AGLOW_RUN_OPTIONS)
 
+    # aglow alone (AFTERGLOW_AGLOW_ONLY), as a remote host builds it: where
+    # find_package finds no Qt and with no Phosphor checkout, installed into a
+    # directory of the build tree. It compiles zlib-ng again, so it has the
+    # label slow, and ctest -LE slow leaves it out.
+    add_test(NAME aglow_only_build
+             COMMAND ${CMAKE_COMMAND} "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBINARY=${CMAKE_CURRENT_BINARY_DIR}/aglow-only"
+                     "-DGENERATOR=${CMAKE_GENERATOR}" "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
+                     "-DC_COMPILER=${CMAKE_C_COMPILER}" "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                     "-DCPM_CACHE=${CPM_SOURCE_CACHE}" "-DDEPS_ARCHIVES=${AFTERGLOW_DEPS_ARCHIVES}"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/AglowOnlyCheck.cmake")
+    set_tests_properties(aglow_only_build PROPERTIES LABELS slow TIMEOUT 1800)
+endif()
+if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
         # aglow clipboard against a terminal that the test plays in a pseudo-terminal.

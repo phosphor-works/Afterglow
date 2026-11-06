@@ -82,6 +82,7 @@ Native desktop tests use KDE Plasma and KWin. Other compositors and screen reade
 - `aglow`, a client for Kitty file transfer, drag and drop, images and the clipboard, and for the commands of scripts. It does not need Kitty. It is one static binary, which you can copy to a remote host with a kernel and processor that it supports. It takes the options of `kitten`, with a few differences that the compatibility document lists.
 - `afterglow run`, `afterglow transfer`, `afterglow dnd`, `afterglow icat` and `afterglow clipboard`, which run the `aglow` that is installed with Afterglow.
 - Shell completion of `aglow` for Bash, Zsh and Fish.
+- `AFTERGLOW_AGLOW_ONLY` builds `aglow` alone, for a remote host or a package of its own. This build needs no Qt and no Phosphor libraries, and it installs only `aglow` and its license notices.
 
 ### Windows, tabs and panes
 

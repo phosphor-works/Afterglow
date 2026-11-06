@@ -5,6 +5,7 @@
 
 Afterglow requires Linux, Wayland and a Vulkan driver.
 These instructions use the current source layout.
+To build `aglow` alone, without Qt and the Phosphor libraries, see [build aglow alone](#build-aglow-alone).
 
 ## Required software
 
@@ -162,6 +163,50 @@ To use another Phosphor checkout, add this option to the configuration command:
 ```
 
 The build compiles the Phosphor libraries with Afterglow.
+
+## Build aglow alone
+
+Build `aglow` alone on a computer that does not run Afterglow, for example a remote host.
+A distribution can also package `aglow` on its own from this build.
+This build needs CMake 3.21 or later, a C compiler, a C++20 compiler, and the static C and C++ runtime libraries.
+It does not need Qt, the other libraries of Afterglow or a PlasmaZones checkout.
+It compiles zlib-ng and xxHash from their [source archives](#source-archives), as the full build does.
+
+1. Get the Afterglow source:
+
+```sh
+git clone https://github.com/phosphor-works/Afterglow
+cd Afterglow
+```
+
+2. Configure the build with `AFTERGLOW_AGLOW_ONLY`:
+
+```sh
+cmake -B build-aglow -DAFTERGLOW_AGLOW_ONLY=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+```
+
+Without GTest, add `-DBUILD_TESTING=OFF` to the command, and skip step 4.
+
+3. Build `aglow`:
+
+```sh
+cmake --build build-aglow
+```
+
+4. Run the tests:
+
+```sh
+ctest --test-dir build-aglow --output-on-failure
+```
+
+5. Install `aglow`:
+
+```sh
+sudo cmake --install build-aglow
+```
+
+The installation contains only `bin/aglow` and its license notices in `share/licenses/aglow`.
+It does not contain the shell completions.
 
 ## Install
 

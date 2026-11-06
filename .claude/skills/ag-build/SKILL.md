@@ -31,6 +31,9 @@ grep -E "^(BUILD_TESTING|CMAKE_BUILD_TYPE|AFTERGLOW_[A-Z_]+):" build*/CMakeCache
 
 ## aglow
 
+`AFTERGLOW_AGLOW_ONLY=ON` builds only `libs/afterglow-proto` and `tools/aglow`: no Qt, no Phosphor checkout, and an
+install of `bin/aglow` and its notices in `share/licenses/aglow`. `docs/BUILD.md` has the procedure.
+
 `AFTERGLOW_BUILD_AGLOW` is on by default. `aglow` links statically, so the configuration needs `libc.a` and
 `libstdc++.a` (Fedora: `glibc-static` and `libstdc++-static`). Without them, the configuration stops with a message
 that names the packages. Do not install them: tell the user, or configure with `-DAFTERGLOW_BUILD_AGLOW=OFF`. Then
@@ -84,6 +87,10 @@ ctest --test-dir build --output-on-failure -j6 2>&1 | tail -15
 
 The suite has about 1,350 tests. All of them must pass. Use `-R PATTERN` while you work, and run the whole suite
 before a commit.
+
+- `aglow_only_build` (label `slow`) configures, builds and installs `aglow` alone (`AFTERGLOW_AGLOW_ONLY`) in
+  `build/tools/aglow/aglow-only`, with Qt hidden and no Phosphor directory. It compiles zlib-ng again and takes some
+  minutes. `-LE slow` leaves it out while you work. The whole suite before a commit includes it.
 
 - The renderer tests (`libs/afterglow-render/tests`, the `Shaders/` tests) need a working Vulkan driver.
 - The native window tests (`afterglow_native_tests`) are not in CTest by default (`AFTERGLOW_NATIVE_TESTS=OFF`).

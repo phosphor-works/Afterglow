@@ -18,6 +18,26 @@ endif()
 include(CTest)
 include(GNUInstallDirs)
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
+endif()
+
+# aglow alone, for a computer that runs no Afterglow: a remote host, or a
+# package of its own. It needs only CMake and the C and C++20 compilers: no
+# Qt and no Phosphor checkout. zlib-ng and xxHash come from their pinned
+# archives, as in the whole build. It installs aglow and its licence notices,
+# nothing else.
+option(AFTERGLOW_AGLOW_ONLY "Build only aglow and the protocol library that it uses: no Qt and no Phosphor libraries" OFF)
+if(AFTERGLOW_AGLOW_ONLY)
+    if(DEFINED AFTERGLOW_BUILD_AGLOW AND NOT AFTERGLOW_BUILD_AGLOW)
+        message(FATAL_ERROR "AFTERGLOW_AGLOW_ONLY builds aglow. Turn AFTERGLOW_BUILD_AGLOW on, or AFTERGLOW_AGLOW_ONLY off.")
+    endif()
+    include(cmake/AfterglowDependencies.cmake)
+    add_subdirectory(libs/afterglow-proto)
+    add_subdirectory(tools/aglow)
+    return()
+endif()
+
 # The phosphor libraries need Qt 6.10; they read QT_MIN_VERSION, so one floor
 # applies to the whole build.
 set(AFTERGLOW_QT_MIN 6.10)
@@ -28,10 +48,6 @@ set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 ${AFTERGLOW_QT_MIN} REQUIRED COMPONENTS Core Gui ShaderTools)
 message(STATUS "Afterglow uses Qt ${Qt6_VERSION} private APIs; rebuild Afterglow after changing the Qt build.")
 qt_standard_project_setup()
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
-endif()
 
 # Qt's signals/slots/emit keywords collide with ordinary identifiers (the
 # phosphor libraries name variables `slots`); use Q_SIGNALS / Q_EMIT instead.
