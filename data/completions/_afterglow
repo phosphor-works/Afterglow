@@ -61,6 +61,7 @@ _afterglow_actions() {
         'save_project:save project'
         'switch_project:switch project'
         'end_script_key_mode:end script key mode'
+        'cancel_overlay:cancel overlay'
         'split_right:split right'
         'split_down:split down'
         'split_left:split left'
@@ -205,7 +206,7 @@ _afterglow_ctl() {
     new-window) _arguments '--cwd[working directory]:directory:_directories' ;;
     overlay)
         _arguments $pane '--capture[where the result comes from]:capture:(stdout file none)' \
-            '--cwd[working directory]:directory:_directories' '--title[the pane title meanwhile]:title:' \
+            '--cwd[working directory]:directory:_directories' '--title[the pane title while the command runs]:title:' \
             '(-n --no-stdin)'{-n,--no-stdin}'[keep standard input from the command]' \
             '(-w --width)'{-w,--width}'[a popup this wide, in cells or N%]:width:' \
             '(-h --height)'{-h,--height}'[a popup this tall, in cells or N%]:height:' \

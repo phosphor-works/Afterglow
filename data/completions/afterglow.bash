@@ -14,13 +14,13 @@ signal notify scripts open-directory projects save-project open-project action w
 # The keybind actions that ctl action runs (afterglow/src/config/Keybinds.cpp).
 _afterglow_actions="swap_left swap_right swap_up swap_down rotate_panes_clockwise rotate_panes_counterclockwise
 pane_overview use_package_shaders move_pane_to_tab move_pane_to_window detach_tab save_project switch_project
-end_script_key_mode split_right split_down split_left split_up rename_pane close_pane new_window new_tab close_tab
-rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5 goto_tab_6 goto_tab_7
-goto_tab_8 goto_tab_9 close_window toggle_fullscreen next_tab previous_tab show_hints show_last_output copy_mode copy
-paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up focus_down equalize_splits
-toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller font_reset scroll_page_up
-scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search command_palette reload_config
-open_config show_urls_open show_urls_copy unicode_input"
+end_script_key_mode cancel_overlay split_right split_down split_left split_up rename_pane close_pane new_window
+new_tab close_tab rename_tab move_tab_left move_tab_right goto_tab_1 goto_tab_2 goto_tab_3 goto_tab_4 goto_tab_5
+goto_tab_6 goto_tab_7 goto_tab_8 goto_tab_9 close_window toggle_fullscreen next_tab previous_tab show_hints
+show_last_output copy_mode copy paste select_all clear_screen reset notify_on_finish focus_left focus_right focus_up
+focus_down equalize_splits toggle_pane_zoom resize_left resize_right resize_up resize_down font_bigger font_smaller
+font_reset scroll_page_up scroll_page_down scroll_top scroll_bottom jump_prompt_up jump_prompt_down search
+command_palette reload_config open_config show_urls_open show_urls_copy unicode_input"
 
 # Completes the command line from words[$1] on as a command of its own.
 _afterglow_offset()
@@ -112,8 +112,12 @@ _afterglow_ctl()
             # Text follows, or the command takes nothing after it.
             return
             ;;
-        --pane | --cwd | --layout | --capture | --title | -w | --width | -h | --height | --position)
+        --pane | --cwd | --layout)
             ((i++))
+            ;;
+        --capture | --title | -w | --width | -h | --height | --position)
+            # The options of overlay. Elsewhere they are no option of ctl.
+            [[ $command == overlay ]] && ((i++))
             ;;
         -*) ;;
         *)
@@ -123,20 +127,25 @@ _afterglow_ctl()
         esac
     done
     case $prev in
-    --pane | --layout | --title | -w | --width | -h | --height) return ;;
-    --capture)
-        _afterglow_matching stdout file none
-        return
-        ;;
-    --position)
-        _afterglow_matching center top bottom left right top-left top-right bottom-left bottom-right
-        return
-        ;;
+    --pane | --layout) return ;;
     --cwd)
         _afterglow_files -d
         return
         ;;
     esac
+    if [[ $command == overlay ]]; then
+        case $prev in
+        --title | -w | --width | -h | --height) return ;;
+        --capture)
+            _afterglow_matching stdout file none
+            return
+            ;;
+        --position)
+            _afterglow_matching center top bottom left right top-left top-right bottom-left bottom-right
+            return
+            ;;
+        esac
+    fi
     local pane=--pane
     case $command in
     ls | watch | scripts | projects | open-directory | open-project | new-window) pane="" ;;

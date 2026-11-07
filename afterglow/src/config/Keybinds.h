@@ -81,6 +81,7 @@ enum class Action {
     MovePaneToTab, MovePaneToWindow, DetachTab,
     SaveProject, SwitchProject,
     EndScriptKeyMode, ///< always ends a script's key mode, so a script cannot keep the keyboard
+    CancelOverlay, ///< ends the focused pane's overlay, whose result is cancelled
 };
 
 /// Key combinations bound to actions. Config form: { "split_right": "Ctrl+Shift+E",

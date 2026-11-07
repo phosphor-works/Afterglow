@@ -99,6 +99,7 @@ Subpixel modes use separate filtered coverage for each color channel.
 Active shaders or window transparency cause an automatic change to grayscale text.
 Pane effects are shaders. They run while a pane is remote (`afterglow ssh`) or in another context.
 Such a pane makes all text in its window grayscale.
+Overlay fades are also shaders. While an overlay fades in or out, all text in its window is grayscale.
 A transparent pane background also uses grayscale text.
 An opaque window without shaders can use subpixel text again.
 Grayscale can give better results when the compositor scales or rotates the output.
@@ -216,7 +217,8 @@ A theme file that does not parse keeps its last colors until it parses again.
 `Animation.cursorCurve` and `Animation.scrollCurve` take a Phosphor curve spec, as `Animation.splitCurve` does.
 
 An [overlay](SCRIPTING.md#overlays), a program that runs over a pane, fades in and out through `Shaders.overlayTransition`.
-`Animation.overlayCurve` and `Animation.overlayDuration` set the fade. The fade stops at its ends, also with a spring that overshoots.
+`Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
+The fade stops the first time that it reaches its target. A curve that overshoots, such as a spring, does not bounce back.
 
 A [popup overlay](SCRIPTING.md#popups) takes a part of the pane, and the pane stays visible around it.
 

@@ -5,7 +5,7 @@
 
 `tools/generate-reference.py` generates this document from the runtime Phosphor schema. Group and key names are case-sensitive. See [appearance](APPEARANCE.md) for configuration loading and examples.
 
-Afterglow clamps a number to the listed range. The description of Font.size gives 0 or less a meaning of its own. An integer key drops the fraction of a value, and uses its default for a value outside the 32-bit range. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.
+Afterglow clamps a number to the listed range. The description of Font.size gives 0 or less a meaning of its own. An integer key drops the fraction of a number, so 6.7 is 6. It uses its default for a value outside the 32-bit range and for text that is not a whole number. Invalid enum choices use the default. Where an empty string has a special meaning, the description says so. Omitted values use defaults.
 
 ## Animation
 
@@ -16,8 +16,8 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `cursor` | `true` |  | Animate cursor movement between cells. |
 | `cursorCurve` | `"spring:48,1"` |  | Curve of cursor motion between cells, in the splitCurve format. |
 | `cursorDuration` | `150` | 16–5000 | Duration of cursor motion in milliseconds for curves other than springs. |
-| `overlayCurve` | `"0.4,0,0.2,1"` |  | Curve of the fade of an overlay over its pane, in the splitCurve format. The fade stops at its ends, also with a spring that overshoots. |
-| `overlayDuration` | `180` | 16–5000 | Duration of the fade of an overlay in milliseconds for curves other than springs. |
+| `overlayCurve` | `"0.4,0,0.2,1"` |  | Curve of the fade of an overlay over its pane (Shaders.overlayTransition), in the splitCurve format. The fade stops the first time that it reaches its target. A curve that overshoots does not bounce back. |
+| `overlayDuration` | `180` | 16–5000 | Duration of the fade of an overlay (Shaders.overlayTransition) in milliseconds for curves other than springs. |
 | `overviewCurve` | `"spring:12,0.82"` |  | Curve of the pane overview motion, in the splitCurve format. The default spring overshoots slightly. |
 | `overviewDuration` | `450` | 16–5000 | Duration of pane overview motion in milliseconds for curves other than springs. |
 | `paneEffectDuration` | `420` | 16–5000 | Milliseconds that a pane takes to open or close in Shaders.paneEffects. The portal of a pane whose shell moves to another host, user or container takes the same time. |
@@ -79,7 +79,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Key | Default | Range or choices | Meaning |
 | --- | --- | --- | --- |
-| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders are active. Pane effects count as shaders. They run while a pane shows a shell on another host, as another user or in a container. |
+| `antialiasing` | `"grayscale"` | `"grayscale"`, `"none"`, `"rgb"`, `"bgr"` | How Afterglow smooths glyph edges. The rgb and bgr values use grayscale while transparency or shaders are active. Pane effects and overlay fades count as shaders. Pane effects also run while a pane shows a shell on another host, as another user or in a container. |
 | `boldFamily` | `""` |  | Font family of bold text. An empty value uses family. |
 | `boldItalicFamily` | `""` |  | Font family of bold italic text. An empty value uses the italic family. |
 | `boldWeight` | `700` | 100–900 | Weight of bold text. It selects a static font and sets the weight axis of a variable font. |
@@ -165,7 +165,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | `commandOutputLimit` | `16384` | 64–262144 | Kibibytes of UTF-8 text that one run of a script command can write to standard output and standard error together. A run that writes more ends, and aglow run exits with status 1. A run from a key, a menu or the palette counts only its standard error. |
 | `commandRunLimit` | `16` | 1–16 | Runs of the commands of one script at the same time. A run over the limit fails, and aglow run exits with status 1. Each run that waits uses one of the 16 waiting handlers of its script. |
 | `commandStdinLimit` | `1024` | 0–4096 | Kibibytes of standard input that a script command can get from aglow run. A run with more input fails, and aglow run exits with status 2. A value of 0 refuses any input that is not empty. |
-| `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and aglow run exits with status 124. A change applies to the runs that start after it. |
+| `commandTimeout` | `600000` | 1000–3600000 | Longest time in milliseconds that one run of a script command can take. This includes runs from a key, a menu or the palette. The time that the run waits for a task, a dialog, an overlay or a slow reader of its output counts. The wait for standard input before the run starts does not count. At the limit the run ends, and aglow run exits with status 124. A change applies to the runs that start after it. |
 | `enabled` | `true` |  | Run Luau scripts from the scripts directory beside the config file and from afterglow/scripts in each XDG data directory. The aglow run command also needs Control.enabled. |
 
 ## Shaders
@@ -174,7 +174,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 | --- | --- | --- | --- |
 | `background` | `[]` |  | Shaders run over each pane's background layer alone: cell backgrounds and images under the text. |
 | `cursor` | `[]` |  | Shaders run over each pane's cursor layer alone. |
-| `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value switches at once. |
+| `overlayTransition` | `"overlay-fade"` |  | Shader that blends a pane and the overlay that runs over it, as the overlay opens and closes. An empty value, or a pack that does not load, switches at once. |
 | `overview` | `"pane-deck"` |  | Shader that draws the pane overview (pane_overview). An empty value turns the overview off. |
 | `pane` | `[]` |  | Shaders run over each pane. Name a pack by its directory name, which is normally its id, such as cursor-trail or bloom. Name a pack of a package as <package>.<pack>, such as my-extension.wall. |
 | `paneEffects` | `"pane-effects"` |  | Shader that animates panes as they split open and close. It draws a portal when the shell of a pane moves to another host, user or container. While the shell stays there, it draws the away frame around the pane. An empty value turns it off. |
@@ -246,6 +246,7 @@ Afterglow clamps a number to the listed range. The description of Font.size give
 
 | Action | Keys |
 | --- | --- |
+| `cancel_overlay` | `"Ctrl+Shift+Alt+Escape"` |
 | `clear_screen` | `"Ctrl+Shift+K"` |
 | `close_pane` | `"Ctrl+Shift+W"` |
 | `close_tab` | `"Ctrl+Shift+Q"` |

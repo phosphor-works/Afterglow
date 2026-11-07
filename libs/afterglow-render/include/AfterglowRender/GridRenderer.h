@@ -219,19 +219,29 @@ public:
         /// docks and through the pane's chains, card and tab image. A popup
         /// takes a part of the pane's grid instead, over the pane, which
         /// still shows around it. It fades in by @c progress: 0 shows the
-        /// pane, 1 the overlay, through the overlay transition when one runs.
+        /// pane, 1 the overlay. Between, the overlay transition chain blends
+        /// the two; without that chain the overlay shows from halfway.
         struct Overlay
         {
             const PaneSnapshot* snapshot = nullptr;
-            /// As the pane's own, for the overlay's grid: the same rectangle,
-            /// or the popup's grid.
-            FrameBuilder::PaneParams params;
             float progress = 1;
-            /// A box over the pane, at params.rect. The pane is drawn first,
+            /// The overlay's own grid state, as in FrameBuilder::PaneParams.
+            /// The rest (rectangle, focus, opacity, chain inputs, effects) is
+            /// the pane's, or for a popup the pane's but its rectangle.
+            std::optional<QPointF> cursorPosition;
+            float scrollShift = 0;
+            std::uint32_t hoveredLink = 0;
+            int hoverRow = -1;
+            int hoverColStart = 0;
+            int hoverColEnd = -1; ///< inclusive
+            /// A box over the pane, at Popup::rect. The pane is drawn first,
             /// darker and with an unfocused cursor, then the border, then
             /// the popup's grid.
             struct Popup
             {
+                /// The popup's grid, in framebuffer pixels; cell (0,0) is
+                /// its top left. The border goes around it.
+                QRect rect;
                 /// A line one cell wide around the grid, with @c title
                 /// (UTF-8) in its top edge, on the grid's default background.
                 bool border = false;
@@ -278,7 +288,8 @@ public:
     void setShaderChains(ShaderChains chains);
     /// The host keeps scheduling frames while this is true: an always-on
     /// shader animates, the scrollback count eases, the overview or a tab
-    /// transition shows, or a pane effect moves.
+    /// transition shows, or a pane effect moves. An overlay's fade is the
+    /// host's own animation: it schedules those frames itself.
     bool animating() const;
     /// Another tab's panes, for the overview or the tab a switch leaves.
     struct OverviewTab
@@ -337,7 +348,7 @@ public:
         std::optional<Pane> closing;
         float closingProgress = 1; ///< 0 just closed, 1 gone
     };
-    void setPaneEffects(PaneEffects effects) { m_effects = std::move(effects); }
+    void setPaneEffects(PaneEffects effects);
     bool paneEffectsShowing() const { return m_effects.active && !overviewShowing() && !transitionShowing(); }
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
     void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }

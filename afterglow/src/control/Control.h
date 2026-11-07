@@ -160,10 +160,7 @@ public:
     void clearScriptOwner(const QString& owner);
     /// Cancels the owner's dialogs, and the overlays it waits for, whose
     /// request IDs start with @p prefix.
-    void closeScriptDialogs(const QString& owner, const QString& prefix);
-    /// The result of an overlay: an error and its code (cancelled), or
-    /// {exit_code, stdout, truncated}.
-    using OverlayReply = std::function<void(const QString& error, const QString& code, const QVariantMap& result)>;
+    void closeRunWaits(const QString& owner, const QString& prefix);
     /// Runs @p spec over @p pane for @p owner (a script, or a control
     /// client), with the script's @p request ID. @p code tells a refusal
     /// apart: no_pane, busy or spawn_failed.
@@ -181,6 +178,10 @@ public:
     QVariantMap paneOrigin(quint32 pane) const;
     QString scriptShader(const QString& owner, quint32 pane, const QVariantMap& effect, QVariantMap& result);
 
+    /// Expands a leading ~ of @p cwd. An error when it is not empty and
+    /// names no existing absolute directory then: the rule of new-tab, split
+    /// and the overlay call of the control socket.
+    static QString localDirectory(QString& cwd);
     static QString scopeName(TextScope scope);
     static std::optional<TextScope> scopeFromName(const QString& name);
 

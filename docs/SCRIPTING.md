@@ -422,22 +422,36 @@ Use an overlay for an interactive picker, such as fzf.
 
 ```lua
 local items = {"alpha", "beta", "gamma"}
-local r, err = afterglow.await(afterglow.overlay(ev.pane, {"fzf", "--multi"}, {
-    stdin = table.concat(items, "\n"), capture = "stdout", cwd = ev.pane.cwd, title = "Pick",
+local r, _, event = afterglow.await(afterglow.overlay(ev.pane, {"fzf", "--multi"}, {
+    stdin = table.concat(items, "\n"), cwd = ev.pane.cwd, title = "Pick",
 }))
 if r and r.exit_code == 0 then
-    return afterglow.send_text(ev.pane, r.stdout)
+    -- The pane as it is now: a program that started during the wait would get the keys.
+    local pane = afterglow.panes(event.terminal, "pane", ev.pane)[1]
+    if not pane or pane.command ~= "" then return nil end
+    -- One quoted word for each choice, with no line break: the user presses Enter.
+    local words = {}
+    for line in string.gmatch(r.stdout, "[^\n]+") do
+        table.insert(words, "'" .. string.gsub(line, "'", "'\\''") .. "'")
+    end
+    return afterglow.send_text(pane, table.concat(words, " "))
 end
 ```
+
+`ev.pane` is the pane at the start of the handler. Read the pane again from the `terminal` of the result event before you type.
+Do not type the output of the program as it is.
+A line break runs the command line. fzf `--multi` writes one line for each choice, so each choice would run as a command.
+A control character in a name, such as Ctrl+D, acts as a key.
+The [fzf picker package](../data/examples/packages/fzf-picker/README.md) does not list such names.
 
 `overlay(pane, command, options?)` takes the program and its arguments as `exec` does: a list of 1 to 64 strings of at most 4,096 characters each, or a string that names the program alone.
 
 | Option | Behavior |
 | --- | --- |
-| `stdin` | Text for the program's standard input, at most 16 MiB. Without it, the program reads the terminal. |
+| `stdin` | Text for the program's standard input, at most 4 MiB of UTF-8. Without it, the program reads the terminal. |
 | `capture` | Where `stdout` of the result comes from. `"stdout"` (the default) reads the program's standard output. `"file"` sets `AFTERGLOW_RESULT` to the path of a new file that only you can read, and reads that file. `"none"` returns an empty `stdout`. |
-| `cwd` | The program's directory. When it is not a local directory, for example a path that a remote shell reported, the program starts in `$HOME`. |
-| `env` | Variables for the program, as for `exec`. `false` removes a variable. |
+| `cwd` | The program's directory: an absolute path, `~`, or a path that starts with `~/`. Another value refuses the effect. When the directory does not exist on this machine, for example a path that a remote shell reported, the program starts in `$HOME`. |
+| `env` | Variables for the program, as for `exec`. `false` removes a variable. At most 256 variables and 64 KiB of names and values. |
 | `title` | Shows as the pane's title while the overlay runs, at most 512 characters. A border shows it in its top edge. |
 | `width`, `height` | Make the overlay a popup. Give a number of cells, such as `60`, or a percentage of the pane's grid as a string, such as `"80%"`. The border is part of the size. A side that you do not give takes the whole grid. Without both, the overlay takes the whole pane. |
 | `position` | Where a popup is in the pane: `"center"` (the default), `"top"`, `"bottom"`, `"left"`, `"right"`, `"top-left"`, `"top-right"`, `"bottom-left"` or `"bottom-right"`. |
@@ -469,6 +483,8 @@ The program gets `SIGWINCH` when its size changes.
 The pane's cursor shows as unfocused, because the popup has the keyboard.
 The mouse acts in the popup, in the popup's own cells. A click, a scroll or a drop outside the popup does nothing and does not close it.
 
+An option that is not in this table, or a value of the wrong type, refuses the effect with `invalid_effect`.
+
 The terminal stays the program's controlling terminal and its standard error, so the program can draw on `/dev/tty`.
 With `stdin` and `capture = "stdout"`, a program like fzf reads its list from stdin, draws on `/dev/tty` and writes its choice to stdout.
 Standard output that is not captured goes to the terminal.
@@ -476,30 +492,35 @@ The program gets the pane's `AFTERGLOW_PANE_ID`, so `afterglow ctl` in it acts o
 
 | Result field | Content |
 | --- | --- |
-| `exit_code` | The program's exit status. A program that a signal ended gives 128 plus the signal number. |
-| `stdout` | The captured output, at most 1 MiB of UTF-8 text |
+| `exit_code` | The program's exit status. A program that a signal ended gives 128 plus the signal number. It is -1 when Afterglow cannot read the status. |
+| `stdout` | The captured output: at most 1 MiB (1,048,576 bytes) of the program's output, as text. Bytes that are not UTF-8 change to U+FFFD, so the text can be longer than 1 MiB. |
 | `truncated` | `true` when the output was over 1 MiB and was cut |
 
 A non-zero exit status is a result, not an error: fzf exits with 130 at Escape and with 1 when nothing matches.
 
 | Error code | Cause |
 | --- | --- |
-| `no_pane` | The pane has closed. |
-| `busy` | The pane has an overlay already, a script dialog is open in the window, or another script's key mode holds the keyboard. |
+| `invalid_effect` | The command or an option breaks a rule above. |
+| `rate_limited` | The script has used its effect budget (see [execution limits](#execution-limits)). |
+| `no_pane` | The pane closed before the overlay opened. |
+| `busy` | Another item holds the pane or the window: an overlay of the pane, a script dialog, the key mode of another script, a prompt, a confirmation, the command palette or a context menu. |
 | `spawn_failed` | The program cannot start. |
-| `cancelled` | The overlay closed before the program exited. |
+| `cancelled` | The overlay closed before the program exited. The result has no output. |
 
 The overlay closes when its program exits.
 It also closes with `cancelled`, and its program gets `SIGHUP`, in these conditions:
 
 - The pane under it closes.
-- The script stops: a change, a removal or a disable.
+- The script stops: a change, a removal, `Scripts.enabled=false` or a disable.
 - The command run that waits for it ends (see [Cancel](#cancel)).
+- The user runs the `cancel_overlay` action while the pane has the focus. The default key is Ctrl+Shift+Alt+Escape.
 
 The overlay fades in and out over the pane, through the `Shaders.overlayTransition` pack.
 The default pack, Overlay Fade, blends the pane and the overlay. `Animation.overlayCurve` and `Animation.overlayDuration` set the fade.
 For a popup, the pack blends the pane and the pane as it shows with the popup: the darker pane, the border and the popup.
 With an empty `Shaders.overlayTransition`, the overlay shows and goes at once.
+The overlay takes the focus. When its pane is in another tab, that tab shows.
+When several overlays open at the same time, the last one has the focus.
 When the overlay closes, the focus goes back to the pane. The pane's cursor and view stay where they were.
 
 | Situation | Behavior |
@@ -513,6 +534,7 @@ When the overlay closes, the focus goes back to the pane. The pane's cursor and 
 | The pane's shaders | The pane's layer and pane shaders draw the overlay, and the pane around a popup. During a fade, they draw the pane and the overlay both. |
 
 An overlay is not a pane of its own. `afterglow ctl ls` and the terminal snapshot do not show it.
+Effects that take a pane ID, such as `send_text` and `read_text`, act on the pane under the overlay, not on its program.
 `afterglow ctl overlay` opens an overlay from a shell (see [CONTROL.md](CONTROL.md#overlays)).
 The [fzf picker package](../data/examples/packages/fzf-picker/README.md) uses fzf when it is installed, and the select dialog when it is not.
 
@@ -637,7 +659,7 @@ A run with no client drops its stdout, so its stdout does not count toward `Scri
 A change to a limit applies to the runs that start after it.
 
 `Scripts.commandTimeout` counts all the time of a run.
-This includes a wait for a task, for a dialog, and for a client that reads its output slowly.
+This includes a wait for a task, for a dialog, for an overlay, and for a client that reads its output slowly.
 It does not include the time that `aglow run` sends stdin before the run starts.
 A client that reads its output slowly holds the run back.
 A wait for `afterglow.output` then takes longer. The output that waits counts toward `Scripts.commandOutputLimit`.
@@ -926,6 +948,8 @@ The other limits of areas apply to pane areas too. Pane areas do not count towar
 The keys do not reach the shell. The window shows the label.
 A script needs an `on_key` handler to start a key mode.
 One script at a time holds a window's keyboard. Another script's request returns `busy`.
+A request also returns `busy` while an [overlay](#overlays) of another owner, such as another script or a control client, has the keyboard of the focused pane.
+In a script's own key mode, the `cancel_overlay` key still cancels the overlay of the focused pane. `on_key` does not get that key.
 
 `on_key` receives `key`, `text`, `ctrl`, `shift`, `alt`, `meta` and `repeat`.
 `key` is the typed character, such as `a` or `A`. Other keys have a name:
@@ -952,7 +976,7 @@ Key releases are not reported.
 `open` opens it from the pane. `close` closes it and keeps the focus. `choose` focuses the highlighted pane.
 `open` fails with `operation_failed` while another script holds a key mode.
 The default operation is `open`.
-When the chosen pane is in another tab, that tab shows after the overview has closed.
+When the chosen pane is in another tab, that tab shows as the overview closes.
 `overview_move(pane, step)` moves the highlight by `step` cards. `step` is a whole number from -32 to 32.
 The default `step` is 0.
 `overview_move(pane, 0, target)` highlights the pane `target`. `target` is a pane record or ID.

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //
 // Canonical uniform contract for TERMINAL shader packs, Afterglow's shader
-// family alongside Phosphor's animation, overlay, pointer and surface families.
+// family alongside Phosphor's animation, pointer and surface families and
+// Phosphor's `overlay` shader family (not the overlay that runs a program
+// over a pane, which Shaders.overlayTransition fades).
 // A terminal shader shades one canvas: a pane's background, text or cursor
 // layer, a whole pane, the whole window, or one of the pack's buffer passes.
 //
@@ -80,7 +82,8 @@ layout(std140, binding = 0) uniform TerminalUniforms {
     vec4 uSignal[8];             // offset 960  script signals: .x value, .y seconds since set
                                  //             (1e6 when never set)
     vec4 uPalette[256];          // offset 1088 the 256-colour palette
-    vec4 uOverlayTransition;     // offset 5184 in an overlay transition pass (Shaders.overlayTransition):
+    vec4 uOverlayTransition;     // offset 5184 in every pass of the overlay transition pack
+                                 //             (Shaders.overlayTransition), its buffer passes too:
                                  //             .x progress: 0 the pane under the overlay, 1 the overlay
                                  //             (clamped, never past either end), .w 1; 0 in every other pass
 };                               // total 5200 bytes

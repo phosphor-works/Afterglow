@@ -652,9 +652,6 @@ void TerminalWindow::pressDockItem(const DockArea* dock, std::size_t index)
     if (!showsDock(dock) || index >= dock->items().size()) return;
     const QPointF centre = QRectF(dock->itemRect(index)).center() / devicePixelRatio();
     if (chromeVisible() && m_chrome->wantsPointer(centre)) return;
-    // As a click does: one while the overview closes onto a card lands
-    // there, with that card's pane in the event.
-    if (!m_overview.open) finishOverviewReveal();
     // A client can press as fast as it can call: the presses count toward
     // the script's callback limit, as a pointer's clicks need not.
     emitDockClick(*dock, dock->items()[index].id, QStringLiteral("left"), true, centre);

@@ -142,8 +142,10 @@ namespace {
             path = QDir::homePath();
         else if (path.startsWith(QLatin1String("~/")))
             path = QDir::homePath() + path.mid(1);
-        if (!QDir::isAbsolutePath(path))
-            path = QDir::home().filePath(path);
+        // Not QDir::isAbsolutePath, nor QDir::filePath: both take ":name"
+        // for a Qt resource.
+        if (!path.startsWith(QLatin1Char('/')))
+            path = QDir::homePath() + QLatin1Char('/') + path;
         for (const auto& part : path.split(QLatin1Char('/')))
             if (part.toUtf8().size() > 255)
                 return { };

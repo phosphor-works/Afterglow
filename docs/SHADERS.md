@@ -51,7 +51,7 @@ The `Shaders` configuration group contains five chains and four event packs: the
 | `overview` | The completed window, while the pane overview shows. One pack ID, not a list. |
 | `tabTransition` | The completed window, while a tab switch runs. One pack ID, not a list. |
 | `paneEffects` | The completed window, while a pane opens or closes. One pack ID, not a list. |
-| `overlayTransition` | The completed pane, while an overlay fades in or out over it. One pack ID, not a list. |
+| `overlayTransition` | The overlay over its pane, after the pane chain, while the overlay fades in or out. The pack also reads the pane under the overlay. One pack ID, not a list. |
 
 The first three chains run before pane composition.
 Layer inputs use premultiplied alpha. Empty areas are transparent.
@@ -72,7 +72,7 @@ The change rebuilds the chains, so it resets buffer history and expires instance
 The pane overview (`pane_overview`, Ctrl+Shift+D) shows the panes of every tab in 3D.
 The default overview pack is Pane Deck: live cards on a carousel, reflected in a floor.
 Set `Shaders.overview` to another pack ID, or to an empty string to turn the overview off.
-When the overview closes, the chosen card stays highlighted until the close ends. A card in another tab then shows its tab.
+When the overview closes, the chosen card stays highlighted until the close ends. A card in another tab shows its tab as the overview closes.
 Script packages can ship packs of their own, such as an overview with the script that drives it. See [packages](PACKAGES.md#shaders).
 The [shader API](SHADER-API.md#panes-and-the-overview) describes how to write an overview pack.
 
@@ -96,7 +96,8 @@ The frame is bright cyan for a remote host, bright red for an elevated user and 
 When the pane returns, the frame fades out in its color. Between two contexts, the frame changes color.
 The `portal` and `frame` parameters set their strength.
 
-An [overlay](SCRIPTING.md#overlays), a program that a script runs over a pane, runs `Shaders.overlayTransition` when it opens and closes.
+An [overlay](SCRIPTING.md#overlays) is a program that a script or [`afterglow ctl overlay`](CONTROL.md#overlays) runs over a pane.
+It runs `Shaders.overlayTransition` when it opens and closes.
 The default pack is Overlay Fade, which blends the pane and the overlay.
 Both have the pane's layer and pane shaders while they blend, and the window shaders run over the result.
 `Animation.overlayCurve` and `Animation.overlayDuration` set the time.

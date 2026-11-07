@@ -161,14 +161,19 @@ export type SemanticRegion = {
     id: string, kind: "prompt" | "input" | "output", start: SemanticPosition, finish: SemanticPosition,
     open: boolean, start_trimmed: boolean, available: boolean, exit_code: number?,
 }
+-- A key that is not listed here refuses the overlay.
 export type OverlayOptions = {
+    -- At most 4 MiB of UTF-8. Without it, the program reads the terminal.
     stdin: string?,
     -- Where stdout of the result comes from: the program's stdout (the default), the
     -- file that $AFTERGLOW_RESULT names, or nowhere.
     capture: ("stdout" | "file" | "none")?,
+    -- Absolute, "~" or "~/...". A directory that does not exist here starts it in $HOME.
     cwd: string?,
+    -- At most 256 variables and 64 KiB of names and values.
     env: {[string]: string | false}?,
-    -- Shows as the pane's title while the overlay runs, and in the top edge of a border.
+    -- Shows as the pane's title while the overlay runs, and in the top edge of a border, at most
+    -- 512 characters.
     title: string?,
     -- A popup over the pane, which stays visible around it: cells, or a percentage of the
     -- pane's grid such as "80%". The border counts. Unset: the whole grid.
@@ -294,9 +299,10 @@ declare afterglow: {
     select: (pane: PaneRef, title: string, items: { { id: string, title: string? } }) -> Effect,
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
     -- Runs command over the pane, in its place and with its input, until the program exits.
-    -- Result data: {exit_code: number, stdout: string, truncated: boolean}; stdout at most 1 MiB.
-    -- Errors: no_pane, busy, spawn_failed, cancelled. stdin is at most 16 MiB; without it the
-    -- program reads the terminal. A cwd that is not a local directory starts it in $HOME.
+    -- Result data: {exit_code: number, stdout: string, truncated: boolean}. exit_code is -1
+    -- when the status is unknown. stdout holds at most 1 MiB of the program's bytes.
+    -- Errors: invalid_effect, rate_limited, no_pane, busy, spawn_failed, cancelled (no data).
+    -- The overlay takes the focus: of several at once, the last one opened has it.
     overlay: (pane: PaneRef, command: string | { string }, options: OverlayOptions?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,

@@ -76,7 +76,11 @@ public:
     explicit AccessiblePane(Pane* p) : QAccessibleObject(p) {
         m_output = QObject::connect(p, &Pane::contentChanged, p, [this] { m_cached.reset(); });
     }
-    ~AccessiblePane() override { QObject::disconnect(m_output); }
+    ~AccessiblePane() override
+    {
+        QObject::disconnect(m_output);
+        QObject::disconnect(m_overlayOutput);
+    }
     Pane* pane() const { return qobject_cast<Pane*>(object()); }
     /// The terminal that shows: an overlay's in place of the pane's, while
     /// one runs over it.
@@ -88,16 +92,8 @@ public:
     // A query loop asks for each character in turn. One capture serves it until the
     // content changes or the next frame refreshes it.
     TerminalText snapshot() const {
-        // The pane's own text changes with its contentChanged. An overlay's
-        // text has no such signal here, and an overlay coming or going
-        // changes the terminal that shows: those are told by their serial.
-        const Pane* source = shown();
-        const auto serial = source != pane() ? std::optional(source->accessibleSerial()) : std::nullopt;
-        if (!m_cached || source != m_cachedFrom || serial != m_cachedSerial) {
-            m_cached = source->accessibleText();
-            m_cachedFrom = source;
-            m_cachedSerial = serial;
-        }
+        // An overlay coming or going changes the terminal that shows.
+        if (!m_cached || shown() != m_cachedFrom) capture();
         return *m_cached;
     }
     /// The pane left the tree (another tab shows, or zoom hides it). When it
@@ -213,13 +209,12 @@ public:
         // Nothing an assistive technology reads changed: no text to rebuild.
         // Serials of two terminals are not comparable: an overlay that comes
         // or goes is a change, whatever they are.
-        const auto serial = shown()->accessibleSerial();
-        if (m_seeded && m_notified == serial && m_notifiedFrom == shown()) return;
+        const Pane* source = shown();
+        const auto serial = source->accessibleSerial();
+        if (m_seeded && m_notified == serial && m_notifiedFrom == source) return;
         m_notified = serial;
-        m_notifiedFrom = shown();
-        m_cached = shown()->accessibleText();
-        m_cachedFrom = shown();
-        m_cachedSerial = m_cachedFrom != pane() ? std::optional(serial) : std::nullopt;
+        m_notifiedFrom = source;
+        capture();
         const auto next = *m_cached;
         // The first frame after the pane joined the tree: a client reads it
         // whole, and the screen it shows is no change.
@@ -250,16 +245,27 @@ public:
         m_previous = next;
     }
 private:
+    /// Takes the text of the terminal that shows. The pane's own text drops
+    /// the capture with its contentChanged, and an overlay's with its own
+    /// while it shows: a query never takes the terminal's lock to check.
+    void capture() const {
+        const Pane* source = shown();
+        if (source != m_cachedFrom) {
+            QObject::disconnect(m_overlayOutput);
+            if (source != pane()) m_overlayOutput = QObject::connect(source, &Pane::contentChanged, source, [this] { m_cached.reset(); });
+            m_cachedFrom = source;
+        }
+        m_cached = source->accessibleText();
+    }
     // The selection is drawn, and told of, at the next frame.
     void selectionChanged() {
         m_cached.reset();
         if (auto* w = owner(pane())) w->requestUpdate();
     }
     mutable std::optional<TerminalText> m_cached;
-    /// The terminal m_cached came from, and its serial when it is an overlay's.
-    mutable QPointer<const Pane> m_cachedFrom;
+    mutable QPointer<const Pane> m_cachedFrom; ///< the terminal m_cached came from
+    mutable QMetaObject::Connection m_overlayOutput; ///< drops m_cached when m_cachedFrom is an overlay's
     QPointer<const Pane> m_notifiedFrom; ///< the terminal of m_notified
-    mutable std::optional<std::pair<std::uint64_t, std::uint64_t>> m_cachedSerial;
     TerminalText m_previous; ///< the text as last told of
     bool m_seeded = false; ///< m_previous holds the text the pane shows in the tree
     std::optional<std::pair<std::uint64_t, std::uint64_t>> m_notified;

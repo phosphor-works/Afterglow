@@ -88,7 +88,18 @@ Pane::~Pane()
     for (const auto& dock : m_docks) releaseDockAccessibility(dock.get());
 }
 
-bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term, int cols, int rows, int cellWidth,
+void applyLaunchEnvironment(AfterglowPty::SpawnOptions& options, const QVariantMap& environment)
+{
+    for (auto it = environment.cbegin(); it != environment.cend(); ++it) {
+        const std::string name = it.key().toStdString();
+        std::erase_if(options.environment, [&name](const auto& entry) { return entry.first == name; });
+        std::erase(options.unsetEnvironment, name);
+        if (it.value().metaType().id() == QMetaType::Bool) options.unsetEnvironment.push_back(name);
+        else options.environment.emplace_back(name, it.value().toString().toStdString());
+    }
+}
+
+bool Pane::start(AfterglowPty::SpawnOptions opts, const QString& term, int cols, int rows, int cellWidth,
                  int cellHeight, QString* error)
 {
     // Size the terminal before the shell starts: programs run from the shell's
@@ -98,7 +109,6 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
         std::lock_guard lock(m_mutex);
         m_terminal.resize(cols, rows, cellWidth, cellHeight);
     }
-    AfterglowPty::SpawnOptions opts = options;
     // The configured and launch values win over afterglow's own, and a name
     // they unset stays unset; each name appears once.
     const auto named = [&opts](const std::string& name) {
@@ -149,7 +159,7 @@ bool Pane::start(const AfterglowPty::SpawnOptions& options, const QString& term,
     std::string err;
     opts.deferStart = true;
     if (m_pty) m_pty->stop();
-    m_pty = AfterglowPty::Pty::spawn(opts, *this, &err);
+    m_pty = AfterglowPty::Pty::spawn(std::move(opts), *this, &err);
     if (m_pty && !m_pty->start(&err)) {
         m_pty->stop();
         m_pty.reset();
@@ -270,6 +280,14 @@ bool Pane::refreshSnapshot(int extraRows)
         m_snapshotGeneration = m_terminal.generation();
     }
     return true;
+}
+
+AfterglowRender::PaneSnapshot Pane::takeSnapshot()
+{
+    std::lock_guard lock(m_mutex);
+    m_snapshotGeneration = ~0ull;
+    // The move keeps the identity; the snapshot left here takes a new one.
+    return std::exchange(m_snapshot, {});
 }
 
 AfterglowVt::SelectionPoint Pane::selectionPointAt(int col, int row) const
@@ -1299,7 +1317,9 @@ std::string Pane::takeOutput(bool* truncated)
 
 void Pane::ptyClosed(int status)
 {
-    m_exitCode.store(status == -1 ? -1 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status));
+    // -1 when the status is unknown, which is no failure to hold for.
+    const int code = status == -1 ? -1 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
+    m_exitCode.store(code);
     if (status == -1) {
         qCInfo(lcPane) << "shell exit status unknown";
     } else if (WIFSIGNALED(status)) {
@@ -1310,9 +1330,8 @@ void Pane::ptyClosed(int status)
     {
         std::lock_guard lock(m_mutex);
         m_terminal.programExited();
-        const int code = status == -1 ? 0 : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
-        if (m_hold.load() || (m_holdOnFailure.load() && code != 0)) {
-            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(code)
+        if (m_hold.load() || (m_holdOnFailure.load() && code > 0)) {
+            const std::string note = "\r\n\x1b[0;2m[exited with status " + std::to_string(std::max(code, 0))
                 + ". Press any key to close]\x1b[0m\x1b[?25l";
             m_terminal.feed(note);
             m_held.store(true);
@@ -1381,8 +1400,10 @@ void Pane::downloadFile(std::string_view name, std::string_view data)
         dialog->setFileMode(QFileDialog::AnyFile);
         dialog->setDirectory(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         dialog->selectFile(clean);
-        // On Wayland a dialog with no transient parent is not attached to the window.
-        if (auto* window = qobject_cast<QWindow*>(parent())) {
+        // On Wayland a dialog with no transient parent is not attached to the
+        // window. An overlay's pane is its host's child, in the host's window.
+        const Pane* place = m_overlayHost ? m_overlayHost : this;
+        if (auto* window = qobject_cast<QWindow*>(place->parent())) {
             dialog->winId();
             dialog->windowHandle()->setTransientParent(window);
         }

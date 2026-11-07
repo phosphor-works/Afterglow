@@ -28,16 +28,15 @@ class Pane;
 /// takes the host's input while it runs. The host pane owns it and goes on
 /// running underneath. It ends when the program exits, or with "cancelled"
 /// when it is cancelled or deleted first (its host closes, its owner
-/// retires, the command run that opened it ends). Its program gets SIGHUP
+/// retires, the command run that opened it ends, the control client that
+/// opened it disconnects, the user cancels it). Its program gets SIGHUP
 /// when it is deleted.
 class PaneOverlay : public QObject
 {
     Q_OBJECT
 
 public:
-    /// The answer: an error and its code (cancelled), or the result
-    /// {exit_code, stdout, truncated}. Called once.
-    using Reply = std::function<void(const QString& error, const QString& code, const QVariantMap& result)>;
+    using Reply = OverlayReply;
 
     /// What the window gives the program, as for a pane of its own.
     struct Launch
@@ -66,9 +65,9 @@ public:
 
     /// The overlay's own terminal.
     Pane* pane() const { return m_pane; }
-    Pane* host() const { return m_host; }
-    const QString& title() const { return m_title; }
 
+    /// The spec's title, which a popup's border shows.
+    const QString& title() const { return m_title; }
     /// A box over its host, which shows around it (OverlaySpec::popup).
     bool popup() const { return m_shape.popup(); }
     /// Where its program's grid is in the host's grid, and its border.
@@ -89,6 +88,9 @@ private:
     PaneOverlay(Pane& host);
     /// The program exited: its answer goes out.
     void programExited();
+    /// The text of the result file, at most one byte over the limit: none
+    /// when it is no regular file.
+    static QByteArray readResult(const QString& path);
     /// Answers once, and leaves the host.
     void finish(const QString& error, const QString& code, const QVariantMap& result);
 

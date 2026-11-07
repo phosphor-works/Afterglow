@@ -140,23 +140,15 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
             return {error, {}, refusal(error), error.isEmpty()};
         }
         if (kind == QLatin1String("overlay")) {
-            // ScriptHost checked it by the same rules.
-            QVariantMap options{{QStringLiteral("cwd"), e.value(QStringLiteral("cwd"))},
-                                {QStringLiteral("capture"), e.value(QStringLiteral("capture"))},
-                                {QStringLiteral("title"), e.value(QStringLiteral("title"))},
-                                {QStringLiteral("env"), e.value(QStringLiteral("env"))}};
-            for (const char* key : {"stdin", "width", "height", "position", "border"}) {
-                if (e.contains(QLatin1String(key))) options.insert(QLatin1String(key), e.value(QLatin1String(key)));
-            }
-            QString error;
-            const auto spec = OverlaySpec::read(e.value(QStringLiteral("command")).toStringList(), options, &error);
-            if (!spec) return {error, {}, QStringLiteral("operation_failed")};
-            QString refusal;
-            error = control.overlay(owner, e.value(QStringLiteral("request_id")).toString(), pane, *spec,
-                [complete = std::move(complete)](const QString& error, const QString& code, const QVariantMap& data) {
-                    complete({error, data, code});
-                }, refusal);
-            return {error, {}, error.isEmpty() ? QString() : refusal, error.isEmpty()};
+            // ScriptHost read the spec by OverlaySpec's rules.
+            const QVariant spec = e.value(QStringLiteral("spec"));
+            if (!spec.canConvert<OverlaySpec>()) return {QStringLiteral("The overlay has no spec"), {}, QStringLiteral("operation_failed")};
+            QString refusalCode;
+            const QString error = control.overlay(owner, e.value(QStringLiteral("request_id")).toString(), pane, spec.value<OverlaySpec>(),
+                [complete = std::move(complete)](const QString& message, const QString& code, const QVariantMap& data) {
+                    complete({message, data, code});
+                }, refusalCode);
+            return {error, {}, error.isEmpty() ? QString() : refusalCode, error.isEmpty()};
         }
         if (kind == QLatin1String("overview")) {
             // The window knows which script's overview it shows.
@@ -190,7 +182,7 @@ ScriptHost::Callbacks scriptCallbacks(Control& control)
         return apply(e);
     };
     c.cleanup = [&control](const QString& owner) { control.clearScriptOwner(owner); };
-    c.closeDialogs = [&control](const QString& owner, const QString& prefix) { control.closeScriptDialogs(owner, prefix); };
+    c.closeRunWaits = [&control](const QString& owner, const QString& prefix) { control.closeRunWaits(owner, prefix); };
     c.notice = [&control](quint32 pane, const QString& title, const QString& body) { control.notice(pane, title, body); };
     // A failing script never keeps the keyboard.
     c.failed = [&control](const QString& owner) { control.endScriptKeyMode(owner); };

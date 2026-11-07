@@ -45,7 +45,8 @@ with tempfile.TemporaryDirectory(prefix="afterglow-shader-parameters-") as temp:
     source = Path(__file__).resolve().parents[2]
     shutil.copytree(source / "data/examples/packages/scene-controls", config / "scripts/scene-controls")
     # Every pack from the checkout, so an installed copy of a bundled pack
-    # (the default overview, pane effects and tab switch too) cannot answer.
+    # (the default overview, pane effects, tab switch and overlay fade too)
+    # cannot answer.
     shutil.copytree(source / "data/shaders", config / "shaders")
     writer = config / "scripts/writer.luau"
     writer.write_text('''
@@ -70,7 +71,7 @@ return {
         "Animation": {"cursor": False, "scroll": False, "splits": False},
         "Window": {"initialColumns": 90, "initialRows": 28},
         "Shaders": {"pane": ["bloom", "bloom"], "window": ["bloom"], "params": {"bloom": {"strength": 0.1}},
-                    "tabTransition": "", "paneEffects": ""}}
+                    "tabTransition": "", "paneEffects": "", "overlayTransition": ""}}
     settings_path = config / "config.json"
     settings_path.write_text(json.dumps(settings))
     with NestedDesktop(root) as desktop:
