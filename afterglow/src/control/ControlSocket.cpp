@@ -5,12 +5,16 @@
 
 #include "../config/Settings.h"
 
+#include <QJsonObject>
 #include <QLoggingCategory>
+#include <QPointer>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcControl, "afterglow.control", QtInfoMsg)
 
@@ -208,6 +212,66 @@ QVariantList ControlApi::scriptDiagnostics()
     return m_control.scriptDiagnostics();
 }
 
+void ControlApi::overlay(double pane, const QStringList& argv, const QVariantMap& options)
+{
+    const auto id = paneId(pane);
+    if (!id) return;
+    QString error;
+    auto spec = OverlaySpec::read(argv, options, &error);
+    // A client names a directory of this machine: one that is missing is
+    // its mistake, where a script's remote path starts in $HOME.
+    if (spec) error = Control::localDirectory(spec->cwd);
+    if (failed(error)) return;
+    const quint64 connection = connectionId();
+    auto reply = std::make_shared<PhosphorIpc::IpcPendingReply>(deferReply());
+    if (!reply->isValid()) {
+        // A call from no connection has nobody to answer later; past the
+        // router's limit of waiting calls, the router fails it.
+        if (!connection) failed(QStringLiteral("an overlay needs a client connection"));
+        return;
+    }
+    // From here on a failure has a code of its own, which only the pending
+    // reply sends.
+    quint32 target = *id;
+    if (target == 0) {
+        const auto focused = m_control.focusedPane();
+        if (!focused) {
+            reply->fail(QStringLiteral("no_pane"), QStringLiteral("no focused pane"));
+            return;
+        }
+        target = *focused;
+    }
+    QString code;
+    error = m_control.overlay(overlayOwner(connection), {}, target, *spec,
+        [reply, api = QPointer<ControlApi>(this)](const QString& error, const QString& code, const QVariantMap& result) {
+            if (!error.isEmpty()) {
+                reply->fail(code, error);
+                return;
+            }
+            // Gated as it goes out, as events are: read access can go while
+            // the program runs.
+            QVariantMap answer = result;
+            if (!api || !api->m_settings.settings().control.allowReadText) answer.remove(QStringLiteral("stdout"));
+            reply->finish(QJsonObject::fromVariantMap(answer));
+        }, code);
+    if (!error.isEmpty()) {
+        reply->fail(code, error);
+        return;
+    }
+    m_overlayClients.insert(connection);
+}
+
+void ControlApi::cancelOverlays(const QString& message)
+{
+    const QSet<quint64> clients = std::exchange(m_overlayClients, {});
+    for (const quint64 connection : clients) m_control.closeOverlays(overlayOwner(connection), message);
+}
+
+void ControlApi::connectionClosed(quint64 connection)
+{
+    if (m_overlayClients.remove(connection)) m_control.closeOverlays(overlayOwner(connection), QStringLiteral("The client went away"));
+}
+
 ControlSocket::ControlSocket(Control& control, SettingsStore& settings, PhosphorIpc::IpcRouter& router, QObject* parent)
     : QObject(parent)
     , m_control(control)
@@ -221,6 +285,8 @@ ControlSocket::ControlSocket(Control& control, SettingsStore& settings, Phosphor
     m_due.setSingleShot(true);
     connect(&m_due, &QTimer::timeout, this, &ControlSocket::sendDue);
 
+    // A client that goes takes its overlays with it: nobody waits for them.
+    connect(&router, &PhosphorIpc::IpcRouter::connectionClosed, this, [this](quint64 connection) { m_api.connectionClosed(connection); });
     connect(&control, &Control::paneCreated, this, [this](quint32 p) { sendNow("paneCreated", p, {paneValue(p)}); });
     connect(&control, &Control::paneMoved, this, [this](quint32 p) { sendNow("paneMoved", p, {paneValue(p)}); });
     connect(&control, &Control::paneClosed, this, [this](quint32 p) {
@@ -273,6 +339,9 @@ void ControlSocket::applySettings()
             m_enabled = false;
             m_merged.clear();
             m_due.stop();
+            // Its waiting overlay calls would still answer, and the overlays
+            // hold the keyboard for clients that control no longer serves.
+            m_api.cancelOverlays(QStringLiteral("Control.enabled is off"));
         }
     }
     if (m_merged.isEmpty()) return;

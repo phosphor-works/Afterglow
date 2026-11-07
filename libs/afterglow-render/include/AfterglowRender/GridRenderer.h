@@ -214,6 +214,27 @@ public:
         /// Part of the pane: its chains, card, tab image and closing frame
         /// show them too.
         std::vector<Dock> docks = {};
+        /// A program run over the pane (an overlay), with a terminal of its
+        /// own: its grid takes the place of the pane's, under the pane's
+        /// docks and through the pane's chains, card and tab image. It fades
+        /// in by @c progress: 0 shows the pane, 1 the overlay. Between, the
+        /// overlay transition chain blends the two; without that chain the
+        /// overlay shows from halfway.
+        struct Overlay
+        {
+            const PaneSnapshot* snapshot = nullptr;
+            float progress = 1;
+            /// The overlay's own grid state, as in FrameBuilder::PaneParams.
+            /// The rest (rectangle, focus, opacity, chain inputs, effects) is
+            /// the pane's.
+            std::optional<QPointF> cursorPosition;
+            float scrollShift = 0;
+            std::uint32_t hoveredLink = 0;
+            int hoverRow = -1;
+            int hoverColStart = 0;
+            int hoverColEnd = -1; ///< inclusive
+        };
+        std::optional<Overlay> overlay = {};
     };
 
     /// @p window may be null for a renderer that only renders to images;
@@ -248,7 +269,8 @@ public:
     void setShaderChains(ShaderChains chains);
     /// The host keeps scheduling frames while this is true: an always-on
     /// shader animates, the scrollback count eases, the overview or a tab
-    /// transition shows, or a pane effect moves.
+    /// transition shows, or a pane effect moves. An overlay's fade is the
+    /// host's own animation: it schedules those frames itself.
     bool animating() const;
     /// Another tab's panes, for the overview or the tab a switch leaves.
     struct OverviewTab
@@ -274,7 +296,7 @@ public:
         /// image.
         std::vector<OverviewTab> otherTabs;
     };
-    void setOverview(Overview overview) { m_overview = std::move(overview); }
+    void setOverview(Overview overview);
     /// Areas that scripts dock at the window's edges, drawn like panes in
     /// the last pass: after every shader chain and before the chrome. No
     /// shader chain (layer, pane, window, overview, tab transition or pane
@@ -296,7 +318,7 @@ public:
         std::optional<std::chrono::steady_clock::time_point> startedAt;
         OverviewTab from;
     };
-    void setTabTransition(TabTransition transition) { m_transition = std::move(transition); }
+    void setTabTransition(TabTransition transition);
     bool transitionShowing() const { return m_transition.active && !overviewShowing(); }
     /// Panes opening and closing: the pane effects chain runs while @c active.
     /// A closed pane's last frame is drawn into uTabImage at its old place.
@@ -307,7 +329,7 @@ public:
         std::optional<Pane> closing;
         float closingProgress = 1; ///< 0 just closed, 1 gone
     };
-    void setPaneEffects(PaneEffects effects) { m_effects = std::move(effects); }
+    void setPaneEffects(PaneEffects effects);
     bool paneEffectsShowing() const { return m_effects.active && !overviewShowing() && !transitionShowing(); }
     /// Synthetic combined rows for developer previews. Unset sums only the rendered panes.
     void setScrollbackLinesOverride(std::optional<std::uint64_t> lines) { m_scrollbackLinesOverride = lines; }

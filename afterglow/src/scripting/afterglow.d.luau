@@ -161,6 +161,20 @@ export type SemanticRegion = {
     id: string, kind: "prompt" | "input" | "output", start: SemanticPosition, finish: SemanticPosition,
     open: boolean, start_trimmed: boolean, available: boolean, exit_code: number?,
 }
+-- A key that is not listed here refuses the overlay.
+export type OverlayOptions = {
+    -- At most 4 MiB of UTF-8. Without it, the program reads the terminal.
+    stdin: string?,
+    -- Where stdout of the result comes from: the program's stdout (the default), the
+    -- file that $AFTERGLOW_RESULT names, or nowhere.
+    capture: ("stdout" | "file" | "none")?,
+    -- Absolute, "~" or "~/...". A directory that does not exist here starts it in $HOME.
+    cwd: string?,
+    -- At most 256 variables and 64 KiB of names and values.
+    env: {[string]: string | false}?,
+    -- Shows as the pane's title while the overlay runs, at most 512 characters.
+    title: string?,
+}
 export type OperationData = {
     regions: {SemanticRegion}?,
     scene: SceneState?, presets: {{id: string, name: string, read_only: boolean}}?,
@@ -274,6 +288,12 @@ declare afterglow: {
     -- An item without a title shows its id.
     select: (pane: PaneRef, title: string, items: { { id: string, title: string? } }) -> Effect,
     prompt: (pane: PaneRef, title: string, text: string?) -> Effect,
+    -- Runs command over the pane, in its place and with its input, until the program exits.
+    -- Result data: {exit_code: number, stdout: string, truncated: boolean}. exit_code is -1
+    -- when the status is unknown. stdout holds at most 1 MiB of the program's bytes.
+    -- Errors: invalid_effect, rate_limited, no_pane, busy, spawn_failed, cancelled (no data).
+    -- The overlay takes the focus: of several at once, the last one opened has it.
+    overlay: (pane: PaneRef, command: string | { string }, options: OverlayOptions?) -> Effect,
     status: (pane: PaneRef, text: string?, tab_title: string?) -> Effect,
     override: (pane: PaneRef, values: { cursorBlink: boolean?, backgroundOpacity: number?, unfocusedDim: number? }) -> Effect,
     -- Lines of styled text at an edge of the pane's window, or of the pane (spec.scope). Sending one id again replaces it.

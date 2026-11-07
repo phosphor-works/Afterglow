@@ -101,6 +101,14 @@ def string_list(source, name):
     return re.findall(r'QStringLiteral\("([^"]+)"\)', match.group(1))
 
 
+def ctl_options(source, command):
+    """The options that the COMMAND branch of runCtl in Ctl.cpp takes, besides --pane."""
+    match = re.search(r'command == QLatin1String\("%s"\)\) \{\n(.*?)\n    \}' % re.escape(command), source, re.S)
+    if not match:
+        raise SystemExit(f'FAIL: no {command} branch in {CTL}')
+    return set(re.findall(r'take(?:Value|Flag)\(QStringLiteral\("(-[^"]+)"\)\)', match.group(1)))
+
+
 def keybind_actions():
     """The config names of the keybind actions in Keybinds.cpp."""
     match = re.search(r'const ActionInfo Actions\[\] = \{(.*?)\n\};', KEYBINDS.read_text(), re.S)
@@ -454,7 +462,7 @@ def aglow_cases(options, run):
     yield from command_cases('aglow', options)
 
 
-def cases(ctl_commands, paneless, actions, options, run):
+def cases(ctl_commands, paneless, actions, options, run, overlay):
     """(line, expected) pairs. A set is the exact result, a callable checks the result."""
     files = FILES
     yield 'afterglow ', {'ctl', 'run', 'ssh', 'transfer', 'dnd', 'icat', 'clipboard'}
@@ -502,6 +510,15 @@ def cases(ctl_commands, paneless, actions, options, run):
     yield 'afterglow ctl action script:', last_part(':', {'nav.open', 'nav.list'})
     yield 'afterglow ctl signal ', {str(n) for n in range(8)}
     yield 'afterglow ctl watch ', set()
+    yield 'afterglow ctl overlay -', has('--pane', *overlay)
+    yield 'afterglow ctl overlay --capture ', {'stdout', 'file', 'none'}
+    yield 'afterglow ctl overlay --cwd ', {'adir'}
+    yield 'afterglow ctl overlay --capture file -', lacks('--capture')
+    # -n and --no-stdin are one option. A title is any text: nothing completes it, and it is no positional word.
+    yield 'afterglow ctl overlay -n -', lambda got: '--capture' in got and not {'-n', '--no-stdin'} & got
+    yield 'afterglow ctl overlay --no-stdin -', lacks('-n', '--no-stdin')
+    yield 'afterglow ctl overlay --title ', set()
+    yield 'afterglow ctl overlay --title x -', lambda got: {'--pane', '-n', '--capture'} <= got and '--title' not in got
     # The commands of aglow complete as they do for aglow.
     yield 'afterglow tr', {'transfer'}
     yield from command_cases('afterglow', options)
@@ -511,7 +528,8 @@ def cases(ctl_commands, paneless, actions, options, run):
 FULL_CASES = (('afterglow -e ech', 'echo'), ('afterglow --title x -e ech', 'echo'),
               ('afterglow --title=x -e ech', 'echo'), ('afterglow -d adir -e ech', 'echo'),
               ('afterglow -o A.b=1 -e ech', 'echo'), ('afterglow ctl split -- ech', 'echo'),
-              ('afterglow ctl new-window --cwd adir -- ech', 'echo'), ('afterglow -e ssh --help ', 'ssh-marker'),
+              ('afterglow ctl new-window --cwd adir -- ech', 'echo'),
+              ('afterglow ctl overlay --capture none -- ech', 'echo'), ('afterglow -e ssh --help ', 'ssh-marker'),
               ('afterglow ssh ', 'ssh-marker'))
 
 
@@ -550,7 +568,7 @@ def check_value_options():
 def main():
     source = CTL.read_text()
     sources = (string_list(source, 'Commands'), set(string_list(source, 'Paneless')), keybind_actions(),
-               aglow_options(), run_options())
+               aglow_options(), run_options(), ctl_options(source, 'overlay'))
     check_value_options()
     with tempfile.TemporaryDirectory(prefix='afterglow-completion-') as tmp:
         shells = Shells(Path(tmp))

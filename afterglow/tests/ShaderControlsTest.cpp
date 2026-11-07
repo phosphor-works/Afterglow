@@ -828,6 +828,32 @@ TEST(ShaderLibraryPackages, PackagePacksAnswerOnlyToTheirNamespacedId)
     EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")), 0u);
 }
 
+// Shaders.overlayTransition fills its own chain, and only that one, with a
+// bundled pack or with a package's pack by its namespaced id.
+TEST(ShaderLibraryPackages, OverlayTransitionBuildsItsChainFromABundledOrPackagePack)
+{
+    ShaderLibrary library;
+    const QString package = QStringLiteral(AFTERGLOW_SHADER_DATA_DIR) + QStringLiteral("/examples/packages/scripted-overview");
+    auto build = [&](const QString& ref) {
+        ShaderLibrary::Refs refs;
+        refs.overlayTransition = ref;
+        return library.build(refs, {});
+    };
+    const auto bundled = build(QStringLiteral("overlay-fade"));
+    ASSERT_EQ(bundled.overlayTransition.size(), 1u);
+    EXPECT_TRUE(bundled.overview.empty());
+    EXPECT_TRUE(bundled.tabTransition.empty());
+    EXPECT_TRUE(bundled.paneEffects.empty());
+    EXPECT_TRUE(build(QString()).overlayTransition.empty());
+
+    EXPECT_TRUE(build(QStringLiteral("scripted-overview.wall")).overlayTransition.empty());
+    library.setPackageShaders({{QStringLiteral("scripted-overview"), package + QStringLiteral("/shaders")}});
+    EXPECT_EQ(build(QStringLiteral("scripted-overview.wall")).overlayTransition.size(), 1u);
+    EXPECT_TRUE(build(QStringLiteral("wall")).overlayTransition.empty());
+    library.setPackageShaders({});
+    EXPECT_TRUE(build(QStringLiteral("scripted-overview.wall")).overlayTransition.empty());
+}
+
 // A package's packs are checked when the package loads, but the library loads
 // every pack in its shaders directory. A pack added or changed afterwards must
 // still be in a directory that the loader takes and declare its namespaced id,

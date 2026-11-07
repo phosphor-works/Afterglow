@@ -3,6 +3,7 @@
 #include "ScriptPackage.h"
 #include "ScriptFiles.h"
 #include "ScriptState.h"
+#include "../shaders/ShaderRefs.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -104,9 +105,7 @@ struct Builder
     /// The package's shader packs, the settings it suggests and its pulse names.
     bool shaders(const QString& base, const QString& id, const QJsonObject& manifest)
     {
-        static const QStringList Keys{QStringLiteral("background"), QStringLiteral("text"), QStringLiteral("cursor"),
-            QStringLiteral("pane"), QStringLiteral("window"), QStringLiteral("overview"), QStringLiteral("tabTransition"),
-            QStringLiteral("paneEffects")};
+        static const QStringList Keys = ShaderChainKeys + ShaderEventKeys;
         const auto pulses = manifest.value(QStringLiteral("pulses"));
         if ((!pulses.isUndefined() && !pulses.isObject()) || pulses.toObject().size() > 32) {
             refuse(QStringLiteral("pulses must name at most 32 effects")); return false;

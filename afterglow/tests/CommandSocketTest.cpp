@@ -3,8 +3,9 @@
 
 // The "commands" socket target, the plain C++ run client of afterglow-proto
 // against the real phosphor-ipc router, and `aglow run` itself, also as
-// `afterglow run` runs it, and the command lines of `afterglow ctl` and
-// `afterglow --help`. Every test listens on a socket of its own, in a
+// `afterglow run` runs it, the command lines of `afterglow ctl` and
+// `afterglow --help`, and `afterglow ctl overlay` against a target of the
+// test's own. Every test listens on a socket of its own, in a
 // runtime directory of its own, or points AFTERGLOW_SOCKET where nothing
 // listens: the session that runs the tests may run inside an afterglow pane,
 // whose AFTERGLOW_SOCKET these tests must never reach.
@@ -18,6 +19,7 @@
 #include "scripting/ScriptHost.h"
 #include "shell/Aglow.h"
 
+#include <AfterglowProto/Fd.h>
 #include <AfterglowProto/Ipc.h>
 #include <AfterglowProto/Json.h>
 #include <AfterglowProto/Run.h>
@@ -32,6 +34,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
 #include <QRegularExpression>
@@ -44,6 +47,8 @@
 #include <thread>
 
 #include <csignal>
+#include <cstdlib>
+#include <fcntl.h>
 #include <unistd.h>
 
 using namespace Afterglow;
@@ -1364,7 +1369,11 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
                     QStringLiteral("split takes one direction")},
           std::pair{QStringList{ctl, QStringLiteral("new-tab"), QStringLiteral("--cwd")}, QStringLiteral("--cwd needs a value")},
           std::pair{QStringList{ctl, QStringLiteral("move-pane"), QStringLiteral("+3"), QStringLiteral("right")},
-                    QStringLiteral("move-pane needs TARGET and PLACEMENT")}}) {
+                    QStringLiteral("move-pane needs TARGET and PLACEMENT")},
+          std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-n")}, QStringLiteral("overlay needs a command after --")},
+          std::pair{QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("--capture"), QStringLiteral("stderr"), QStringLiteral("--"),
+                                QStringLiteral("fzf")},
+                    QStringLiteral("--capture takes stdout, file or none")}}) {
         const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), args);
         EXPECT_EQ(r.status, 2) << qPrintable(args.join(QLatin1Char(' '))) << qPrintable(r.err);
         EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: %1\n\nUsage: afterglow ctl ").arg(message))) << qPrintable(r.err);
@@ -1374,6 +1383,44 @@ TEST(CtlBinaryTest, UsageErrorsExitWithTwoBeforeAnyConnection)
     const Isolated r = isolate(QStringLiteral(AFTERGLOW_BINARY), {ctl, QStringLiteral("send-text"), QStringLiteral("--stdin")}, "abc\xff");
     EXPECT_EQ(r.status, 2) << qPrintable(r.err);
     EXPECT_EQ(r.err, QStringLiteral("afterglow ctl: standard input is not UTF-8 text\n"));
+    // So is the list of overlay, with the limit of what one request carries.
+    const QStringList overlay{ctl, QStringLiteral("overlay"), QStringLiteral("--"), QStringLiteral("fzf")};
+    const Isolated bad = isolate(QStringLiteral(AFTERGLOW_BINARY), overlay, "abc\xff");
+    EXPECT_EQ(bad.status, 2) << qPrintable(bad.err);
+    EXPECT_EQ(bad.err, QStringLiteral("afterglow ctl: standard input is not UTF-8 text\n"));
+    const Isolated big = isolate(QStringLiteral(AFTERGLOW_BINARY), overlay, QByteArray(768 * 1024 + 1, 'x'));
+    EXPECT_EQ(big.status, 2) << qPrintable(big.err);
+    EXPECT_EQ(big.err, QStringLiteral("afterglow ctl: standard input over 768 KiB: use a script for a longer list\n"));
+}
+
+// A current directory that was removed has no path: a relative directory
+// cannot be made absolute, and ctl says so before it connects.
+TEST(CtlBinaryTest, ARelativeDirectoryNeedsACurrentDirectory)
+{
+    QTemporaryDir parent;
+    ASSERT_TRUE(parent.isValid());
+    const QString script = QStringLiteral("cd \"$1\" && mkdir gone && cd gone && rmdir ../gone && shift && exec \"$@\"");
+    const QString ctl = QStringLiteral("ctl");
+    for (const QStringList& command :
+         {QStringList{ctl, QStringLiteral("new-tab"), QStringLiteral("--cwd"), QStringLiteral("sub")},
+          QStringList{ctl, QStringLiteral("new-window"), QStringLiteral("--cwd"), QStringLiteral(".")},
+          QStringList{ctl, QStringLiteral("open-directory"), QStringLiteral("sub")},
+          // The overlay's default directory is the current one.
+          QStringList{ctl, QStringLiteral("overlay"), QStringLiteral("-n"), QStringLiteral("--"), QStringLiteral("true")}}) {
+        const Isolated r = isolate(QStringLiteral("/bin/sh"),
+                                   QStringList{QStringLiteral("-c"), script, QStringLiteral("sh"), parent.path(),
+                                               QStringLiteral(AFTERGLOW_BINARY)}
+                                       + command);
+        EXPECT_EQ(r.status, 1) << qPrintable(command.join(QLatin1Char(' '))) << qPrintable(r.err);
+        EXPECT_EQ(r.err, QStringLiteral("afterglow ctl: the current directory was removed, so give an absolute directory\n"))
+            << qPrintable(command.join(QLatin1Char(' ')));
+    }
+    // An absolute directory needs none.
+    const Isolated absolute = isolate(QStringLiteral("/bin/sh"),
+                                      {QStringLiteral("-c"), script, QStringLiteral("sh"), parent.path(),
+                                       QStringLiteral(AFTERGLOW_BINARY), ctl, QStringLiteral("new-window"), QStringLiteral("--cwd"),
+                                       QStringLiteral("/")});
+    EXPECT_FALSE(absolute.err.contains(QLatin1String("current directory"))) << qPrintable(absolute.err);
 }
 
 TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
@@ -1386,6 +1433,197 @@ TEST(CtlBinaryTest, SaysThatNoAfterglowListens)
         EXPECT_EQ(r.status, 1) << qPrintable(args.join(QLatin1Char(' ')));
         EXPECT_TRUE(r.err.startsWith(QStringLiteral("afterglow ctl: no Afterglow at $AFTERGLOW_SOCKET ("))) << qPrintable(r.err);
     }
+}
+
+/// What `afterglow ctl` did against a control target of the test's own,
+/// which answers each call with @p reply and the call's id, and the calls
+/// it got. Afterglow's overlay needs a window: the client needs only the
+/// reply. @p input goes to standard input, else @p inputFd is it.
+struct AgainstTarget
+{
+    Isolated outcome;
+    QList<QJsonObject> calls;
+};
+
+AgainstTarget ctlAgainst(const QJsonObject& reply, const QStringList& args, const QByteArray& input = {}, int inputFd = -1)
+{
+    AgainstTarget done;
+    // Under /tmp: TMPDIR can be too long for a socket path.
+    QTemporaryDir runtime(QStringLiteral("/tmp/afterglow-ctl-XXXXXX"));
+    if (!runtime.isValid()) {
+        ADD_FAILURE() << "no runtime directory";
+        return done;
+    }
+    QLocalServer server;
+    const QString path = runtime.filePath(QStringLiteral("control.sock"));
+    if (!server.listen(path)) {
+        ADD_FAILURE() << "cannot listen on " << qPrintable(path);
+        return done;
+    }
+    QObject::connect(&server, &QLocalServer::newConnection, &server, [&server, &done, reply] {
+        QLocalSocket* peer = server.nextPendingConnection();
+        QObject::connect(peer, &QLocalSocket::readyRead, peer, [peer, &done, reply] {
+            while (peer->canReadLine()) {
+                const QJsonObject call = QJsonDocument::fromJson(peer->readLine()).object();
+                done.calls.append(call);
+                QJsonObject answer = reply;
+                answer.insert(QStringLiteral("id"), call.value(QStringLiteral("id")));
+                peer->write(QJsonDocument(answer).toJson(QJsonDocument::Compact) + '\n');
+            }
+        });
+    });
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("XDG_RUNTIME_DIR"), runtime.path());
+    env.insert(QStringLiteral("AFTERGLOW_SOCKET"), path);
+    for (const QString& name : {QStringLiteral("AFTERGLOW_PANE_ID"), QStringLiteral("WAYLAND_DISPLAY"), QStringLiteral("DISPLAY")})
+        env.remove(name);
+    QProcess process;
+    process.setProcessEnvironment(env);
+    process.setWorkingDirectory(runtime.path());
+    // In the child, over the pipe that QProcess made: only dup2 runs there.
+    if (inputFd >= 0) process.setChildProcessModifier([inputFd] { ::dup2(inputFd, STDIN_FILENO); });
+    process.start(QStringLiteral(AFTERGLOW_BINARY), QStringList{QStringLiteral("ctl"), QStringLiteral("overlay")} + args);
+    if (!process.waitForStarted()) {
+        ADD_FAILURE() << "cannot start afterglow ctl";
+        return done;
+    }
+    process.write(input);
+    process.closeWriteChannel();
+    // The target answers on this thread.
+    if (!pumpUntil([&process] { return process.state() == QProcess::NotRunning; }, 15000)) {
+        process.kill();
+        process.waitForFinished();
+        ADD_FAILURE() << qPrintable(args.join(QLatin1Char(' '))) << " did not end";
+        return done;
+    }
+    done.outcome = {process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1,
+                    QString::fromUtf8(process.readAllStandardOutput()), QString::fromUtf8(process.readAllStandardError())};
+    return done;
+}
+
+QJsonObject overlayResult(const QJsonObject& result)
+{
+    return {{QStringLiteral("type"), QStringLiteral("reply")}, {QStringLiteral("result"), result}};
+}
+
+/// The options object of the overlay call that @p calls hold, the only call.
+QJsonObject overlayOptions(const QList<QJsonObject>& calls)
+{
+    if (calls.size() != 1) {
+        ADD_FAILURE() << calls.size() << " calls";
+        return {};
+    }
+    return calls.first().value(QStringLiteral("args")).toArray().at(2).toObject();
+}
+
+TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
+{
+    const QStringList args{QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--title"), QStringLiteral("Pick"),
+                           QStringLiteral("--"), QStringLiteral("fzf"), QStringLiteral("--multi")};
+    AgainstTarget r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 7}, {QStringLiteral("stdout"), QStringLiteral("picked\n")},
+                                                {QStringLiteral("truncated"), false}}),
+                                 args, "a\nb\n");
+    EXPECT_EQ(r.outcome.status, 7) << qPrintable(r.outcome.err);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("picked\n"));
+    EXPECT_EQ(r.outcome.err, QString());
+    ASSERT_EQ(r.calls.size(), 1);
+    const QJsonObject call = r.calls.first();
+    EXPECT_EQ(call.value(QStringLiteral("target")).toString(), QStringLiteral("control"));
+    EXPECT_EQ(call.value(QStringLiteral("fn")).toString(), QStringLiteral("overlay"));
+    const QJsonArray callArgs = call.value(QStringLiteral("args")).toArray();
+    EXPECT_EQ(callArgs.at(0).toInteger(), 3);
+    EXPECT_EQ(callArgs.at(1).toArray(), (QJsonArray{QStringLiteral("fzf"), QStringLiteral("--multi")}));
+    const QJsonObject options = callArgs.at(2).toObject();
+    EXPECT_EQ(options.value(QStringLiteral("capture")).toString(), QStringLiteral("stdout"));
+    EXPECT_EQ(options.value(QStringLiteral("title")).toString(), QStringLiteral("Pick"));
+    EXPECT_EQ(options.value(QStringLiteral("stdin")).toString(), QStringLiteral("a\nb\n"));
+    // The directory of ctl, which a relative --cwd starts from too.
+    const QString cwd = options.value(QStringLiteral("cwd")).toString();
+    EXPECT_TRUE(QDir::isAbsolutePath(cwd)) << qPrintable(cwd);
+    r = ctlAgainst(overlayResult({}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--cwd"), QStringLiteral("sub"),
+                                       QStringLiteral("--"), QStringLiteral("fzf")});
+    EXPECT_TRUE(overlayOptions(r.calls).value(QStringLiteral("cwd")).toString().endsWith(QStringLiteral("/sub")));
+    // A name that starts with ':' is relative too, not a Qt resource.
+    r = ctlAgainst(overlayResult({}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--cwd"), QStringLiteral(":sub"),
+                                       QStringLiteral("--"), QStringLiteral("fzf")});
+    const QString colon = overlayOptions(r.calls).value(QStringLiteral("cwd")).toString();
+    EXPECT_TRUE(colon.startsWith(QLatin1Char('/')) && colon.endsWith(QStringLiteral("/:sub"))) << qPrintable(colon);
+
+    // A cut result says so. One without stdout (Control.allowReadText off)
+    // prints nothing, not even that, and a status that no shell gives is 1.
+    r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 0}, {QStringLiteral("stdout"), QStringLiteral("x")},
+                                  {QStringLiteral("truncated"), true}}),
+                   args);
+    EXPECT_EQ(r.outcome.status, 0);
+    EXPECT_EQ(r.outcome.out, QStringLiteral("x"));
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: the result was cut at 1 MiB\n"));
+    r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), 3}, {QStringLiteral("truncated"), true}}), args);
+    EXPECT_EQ(r.outcome.status, 3);
+    EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
+    EXPECT_TRUE(r.outcome.err.isEmpty()) << qPrintable(r.outcome.err);
+    for (const int status : {-1, 256}) {
+        r = ctlAgainst(overlayResult({{QStringLiteral("exit_code"), status}, {QStringLiteral("stdout"), QString()}}), args);
+        EXPECT_EQ(r.outcome.status, 1) << status;
+    }
+    // A cancel is an error of the call.
+    r = ctlAgainst({{QStringLiteral("type"), QStringLiteral("error")}, {QStringLiteral("code"), QStringLiteral("cancelled")},
+                    {QStringLiteral("message"), QStringLiteral("Control.enabled is off")}},
+                   args);
+    EXPECT_EQ(r.outcome.status, 1);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: Control.enabled is off\n"));
+    EXPECT_TRUE(r.outcome.out.isEmpty()) << qPrintable(r.outcome.out);
+}
+
+TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
+{
+    const QJsonObject done = overlayResult({{QStringLiteral("exit_code"), 0}});
+    const QStringList command{QStringLiteral("--"), QStringLiteral("fzf")};
+    for (const QString& flag : {QStringLiteral("-n"), QStringLiteral("--no-stdin")}) {
+        const AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3"), flag} + command, "a\n");
+        EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+        EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin"))) << qPrintable(flag);
+    }
+    // A terminal is no list: the call goes at once, without stdin. Both
+    // ends are opened with O_NOCTTY: neither becomes the controlling
+    // terminal of the test or of afterglow.
+    const AfterglowProto::UniqueFd master(posix_openpt(O_RDWR | O_NOCTTY));
+    ASSERT_TRUE(master.valid());
+    ASSERT_EQ(grantpt(master.get()), 0);
+    ASSERT_EQ(unlockpt(master.get()), 0);
+    const char* name = ptsname(master.get());
+    ASSERT_NE(name, nullptr);
+    const AfterglowProto::UniqueFd terminal(::open(name, O_RDONLY | O_NOCTTY | O_CLOEXEC));
+    ASSERT_TRUE(terminal.valid());
+    AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, terminal.get());
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin")));
+    // A non-blocking pipe that is still empty when ctl reads it: ctl waits
+    // for the list instead of failing on EAGAIN.
+    int ends[2] = {-1, -1};
+    ASSERT_EQ(::pipe2(ends, O_CLOEXEC), 0);
+    const AfterglowProto::UniqueFd readEnd(ends[0]);
+    AfterglowProto::UniqueFd writeEnd(ends[1]);
+    ASSERT_EQ(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK), 0);
+    std::thread writer([fd = writeEnd.release()] {
+        // Late enough that ctl finds the pipe empty first.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        const char list[] = "late\n";
+        [[maybe_unused]] const auto written = ::write(fd, list, sizeof(list) - 1);
+        ::close(fd);
+    });
+    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get());
+    writer.join();
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("stdin")).toString(), QStringLiteral("late\n"));
+    // The limit itself goes. Escapes that JSON needs can take a list under
+    // it past what one request carries: nothing is sent then.
+    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, QByteArray(768 * 1024, 'x'));
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("stdin")).toString().size(), 768 * 1024);
+    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, QByteArray(256 * 1024, '\x01'));
+    EXPECT_EQ(r.outcome.status, 1);
+    EXPECT_EQ(r.outcome.err, QStringLiteral("afterglow ctl: the request is over what one call carries (1 MiB)\n"));
+    EXPECT_TRUE(r.calls.isEmpty());
 }
 
 // The help and the version need no desktop: afterglow prints them before it

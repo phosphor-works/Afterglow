@@ -5,6 +5,7 @@
 #include "PaneLaunchOptions.h"
 
 #include "Pane.h"
+#include "PaneOverlay.h"
 #include "SplitTree.h"
 #include "animation/FrameClock.h"
 #include "animation/PaneMotion.h"
@@ -161,8 +162,9 @@ public:
     /// The cells that fit in the window: a top or bottom dock is as wide.
     QSize gridSize() const;
     void clearScriptOwner(const QString& owner);
-    /// Cancels the owner's dialog when its request ID starts with @p prefix.
-    void closeScriptDialog(const QString& owner, const QString& prefix);
+    /// Cancels the owner's dialog, and the owner's overlays that a run waits
+    /// for, when their request IDs start with @p prefix.
+    void closeRunWaits(const QString& owner, const QString& prefix);
     QString scriptShader(const QString& owner, Pane*, const QVariantMap&, QVariantMap&);
     /// A script's key mode: the window's keys go to the script's on_key until
     /// it ends the mode, fails or unloads. One script at a time.
@@ -176,6 +178,20 @@ public:
     QString scriptOverviewMove(Pane* pane, Pane* target, int step, QVariantMap& result);
     /// The overview for scripts: open, highlighted and its cards, by pane ID.
     QVariantMap overviewState() const;
+    /// Runs @p spec over @p pane (an overlay): it shows in the pane's place,
+    /// with the pane's tab and the focus, until the program exits. Refused
+    /// while the pane has one, a script dialog is open in this window,
+    /// another owner's key mode holds the keyboard, or a prompt, a menu or
+    /// the command palette is open. An open search closes.
+    /// @p code tells the refusal apart: busy, no_pane or spawn_failed.
+    /// @p reply gets the result, or "cancelled" when the overlay closes first.
+    QString openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
+                        OverlayReply reply, QString& code);
+    /// Cancels @p owner's overlays whose request IDs start with @p prefix.
+    void closeOverlays(const QString& owner, const QString& prefix, const QString& message);
+    /// How far the overlay of @p pane has faded in, 0 to 1, and whether the
+    /// fade still runs. For the tests.
+    std::pair<qreal, bool> overlayFade(const Pane* pane) const;
     /// Plays effect @p effect over the pane in Shaders.paneEffects.
     QString pulsePane(Pane* pane, int effect, int durationMs, int color);
     /// Where a pane split from, and the edge it shares with that pane
@@ -256,6 +272,39 @@ private:
     /// Creates a pane and starts its shell sized for @p area (pane rect, pixels).
     Pane* createPane(const QString& workingDirectory, const QRect& area, const QStringList& command = {}, QString* failure = nullptr, const QVariantMap& environment = {}, bool fallback = false);
     void bindPane(Pane* pane);
+    /// Connects the overlay that runs over @p host (bindPane does it).
+    void bindOverlay(Pane* host);
+    /// The overlay over @p host ended: it goes off screen with a fade, and
+    /// the host takes the input again. A host that closes (@p hostCloses)
+    /// gets neither: closePane shows the overlay's last frame.
+    void overlayEnded(Pane* host, PaneOverlay* overlay, bool hostCloses = false);
+    /// Closes what the terminal of an ended or departing overlay
+    /// (@p program) had here: its prompts, copy mode, link hover, click
+    /// count, search, and, when its host has the focus, the search bar,
+    /// Unicode input and the composition.
+    void dropOverlayUi(Pane* program);
+    /// The pane whose program gets @p pane's input: its overlay's while one
+    /// runs over it.
+    static Pane* inputPane(Pane* pane);
+    /// The pane in the tab for @p pane: the host of an overlay's pane, else
+    /// @p pane itself.
+    static Pane* hostOf(Pane* pane) { return pane && pane->overlayHost() ? pane->overlayHost() : pane; }
+    /// @p pane still takes the input it got before: it is in a tab, or the
+    /// overlay that still runs over a pane in a tab.
+    bool takesInput(const Pane* pane) const
+    {
+        if (pane && pane->overlayHost()) return inputPane(pane->overlayHost()) == pane && tabOf(pane->overlayHost()) >= 0;
+        return pane && tabOf(pane) >= 0;
+    }
+    /// The title that shows for @p pane (window, tab, split label): its
+    /// overlay's while that has one, else its own.
+    static QString shownTitle(const Pane* pane);
+    /// Tells @p pane's own program that it got or lost the focus, when it
+    /// asked to hear it (mode 1004). Not its overlay's: callers choose.
+    static void reportFocus(Pane* pane, bool focused);
+    /// The panes in the tabs and the panes of the overlays over them: every
+    /// terminal of this window that a program runs in.
+    QList<Pane*> terminalPanes() const;
     void releasePaneUi(Pane* pane);
     /// Closes the prompts and modes that belong to @p pane, which is going
     /// away: its clipboard and paste prompts, title prompt, menu, URL mode,
@@ -328,7 +377,9 @@ private:
     void updateKeyMode();
     bool copyModeKey(QKeyEvent* e);
     /// Hands the key to the script holding the key mode, if one does.
-    bool scriptKeyModeKey(QKeyEvent* e);
+    /// @p shortcut is set when a binding of the user's took it instead
+    /// (cancel_overlay), so that its repeats are swallowed as a shortcut's.
+    bool scriptKeyModeKey(QKeyEvent* e, bool& shortcut);
     void stopCopyMode();
     QPointer<Pane> m_copyPane;
     struct ScriptDialog { QString owner; QPointer<Pane> pane; ScriptReply reply; QString request; };
@@ -467,7 +518,7 @@ private:
     /// Tells the input method when a mode starts or stops holding the keyboard.
     void syncInputMethodEnabled();
     bool m_modeHeldKeyboard = false; ///< keyboardModeActive() as the input method last heard
-    bool m_inputMethodDirty = false; ///< the focused pane's text changed since the last query
+    bool m_inputMethodDirty = false; ///< the focused pane's input pane's text changed since the last query
     bool performAction(Action action);
     void updateChrome();
     /// The command palette's list: every action but the palette itself and
@@ -560,7 +611,7 @@ private:
     /// (negative is off screen).
     void setQuickOffset(int offset);
     QMetaObject::Connection m_quickScreenWatch; ///< the quick terminal's screen changing size
-    /// Encodes @p e for @p pane (the focused pane when null) and sends it.
+    /// Encodes @p e for @p pane (the focused pane's input pane when null) and sends it.
     void sendKey(QKeyEvent* e, Pane* pane = nullptr);
     void paste(QClipboard::Mode mode);
 
@@ -651,6 +702,7 @@ private:
         bool overview = false;
         bool tabTransition = false;
         bool paneEffects = false;
+        bool overlayTransition = false;
     } m_audioUse;
     bool m_audioCapturing = false; ///< a chain that shows now reads audio
     /// Starts or stops audio capture for the chains that show now.
@@ -800,6 +852,11 @@ private:
     } m_tabTransition;
     CurveCache m_tabCurve;
     bool m_tabTransitionAvailable = false; ///< Shaders.tabTransition compiled
+    /// Shaders.overlayTransition compiled: without it an overlay switches at once.
+    bool m_overlayTransitionAvailable = false;
+    /// Starts the fade of @p host's overlay toward @p target (1 in, 0 out),
+    /// from where a fade under way is; none without the transition.
+    void startOverlayFade(Pane* host, qreal target);
     void startTabTransition(int from, int to);
     // Panes opening and closing (Shaders.paneEffects).
     struct PaneOpening
@@ -857,10 +914,26 @@ private:
     /// Fills @p params with @p pane's context and pulse, for any pane drawn
     /// (the current tab, overview cards, the tab being left).
     void applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuilder::PaneParams& params, bool& animating);
+    /// The overlay over @p pane as it shows now, into @p wp: its grid fading
+    /// in, or the last frame of one that ended fading out.
+    void prepareOverlay(Pane* pane, const QRect& layoutRect, AfterglowRender::WindowRenderer::Pane& wp, bool& holding,
+                        bool& animating);
+    /// An overlay's fade, by its host: in after it opens, out after it ends.
+    struct OverlayFade
+    {
+        PhosphorAnimation::AnimatedValue<qreal> progress;
+        /// The last frame of an overlay that ended, while it fades out.
+        std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+        /// prepareOverlay advanced it in the frame that is being built.
+        bool advanced = false;
+    };
+    std::unordered_map<const Pane*, OverlayFade> m_overlayFades;
+    CurveCache m_overlayCurve;
     /// The unfocused dim (when @p dim) and the dividers of a pane drawn at
-    /// @p shown, as the window draws them for the current tab.
-    void addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
-                         const QVariantMap& overrides) const;
+    /// @p shown, as the window draws them for the current tab: colour
+    /// rectangles for the renderer, not a PaneOverlay.
+    void addPaneShading(std::vector<std::pair<QRect, std::uint32_t>>& shading, const QRect& shown, bool dim,
+                        const QVariantMap& overrides) const;
     /// Advances the tab switch and hands it to the renderer.
     void advanceTabTransition(std::uint8_t backgroundAlpha, bool& holding, bool& animating);
     bool m_overviewAvailable = false; ///< Shaders.overview compiled

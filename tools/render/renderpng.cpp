@@ -14,7 +14,9 @@
 // seconds earlier, so cursor effects show a jump. --dock EDGE:CELLS:TEXT adds
 // a script dock at a window edge, drawn after every chain as in the window;
 // --pane-dock EDGE:CELLS:TEXT adds one at that edge of every pane, drawn with
-// the pane under its chains. Further options set the other renderer inputs
+// the pane under its chains. --overlay TEXT draws a terminal that shows TEXT
+// over the first pane, faded in by --overlay-progress through the
+// --overlay-transition shader. Further options set the other renderer inputs
 // (pointer, selection, search, glide, scroll shift, hovered link, blink
 // phase, bidi, contrast, hinting, cell scale); --help lists them all.
 
@@ -48,6 +50,9 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -263,6 +268,17 @@ int run(QGuiApplication& app)
     parser.addOption({QStringLiteral("blink-off"), QStringLiteral("Draw the off phase of a blinking cursor and of blinking text.")});
     parser.addOption({QStringLiteral("pane-dock"), QStringLiteral("A script dock at an edge of every pane (repeatable), as --dock: drawn in the pane, under its chains, overview and pane effects. The pane grows by the dock and its grid keeps its size."),
                       QStringLiteral("EDGE:CELLS:TEXT")});
+    parser.addOption({QStringLiteral("overlay"), QStringLiteral("An overlay over the first pane: a terminal of the same size that shows TEXT, the bytes it gets."),
+                      QStringLiteral("text")});
+    parser.addOption({QStringLiteral("overlay-progress"), QStringLiteral("With --overlay: how far it has faded in, 0 the pane to 1 the overlay (default 1)."),
+                      QStringLiteral("f")});
+    // The default of Shaders.overlayTransition (afterglow/src/config/Settings.h),
+    // which this tool cannot include: keep the two equal.
+    const QString overlayTransition = QStringLiteral("overlay-fade");
+    parser.addOption({QStringLiteral("overlay-transition"),
+                      QStringLiteral("With --overlay: the overlay transition shader (default %1, \"\" for none, which switches at once).")
+                          .arg(overlayTransition),
+                      QStringLiteral("ref"), overlayTransition});
     parser.addOption({QStringLiteral("dock"), QStringLiteral("A script dock (repeatable): EDGE top, bottom, left or right, CELLS 1..8 rows (top, bottom) or 1..80 columns (left, right) as scripts may use, TEXT the bytes it shows. The frame grows by the dock and the panes keep their size."),
                       QStringLiteral("edge:cells:text")});
     parser.addPositionalArgument(QStringLiteral("input"), QStringLiteral("Byte stream, or - for stdin."));
@@ -464,12 +480,16 @@ int run(QGuiApplication& app)
         params.insert(ref, overrides);
     }
     const Afterglow::ShaderLibrary::Refs refs{
-        parser.values(QStringLiteral("background-shader")), parser.values(QStringLiteral("text-shader")),
-        parser.values(QStringLiteral("cursor-shader")), parser.values(QStringLiteral("pane-shader")),
-        parser.values(QStringLiteral("shader")), parser.value(QStringLiteral("overview")),
-        parser.value(QStringLiteral("tab-transition")), parser.value(QStringLiteral("pane-effects"))};
-    const auto wanted = refs.background.size() + refs.text.size() + refs.cursor.size() + refs.pane.size()
-        + refs.window.size() + (refs.overview.isEmpty() ? 0 : 1) + (refs.tabTransition.isEmpty() ? 0 : 1) + (refs.paneEffects.isEmpty() ? 0 : 1);
+        .background = parser.values(QStringLiteral("background-shader")),
+        .text = parser.values(QStringLiteral("text-shader")),
+        .cursor = parser.values(QStringLiteral("cursor-shader")),
+        .pane = parser.values(QStringLiteral("pane-shader")),
+        .window = parser.values(QStringLiteral("shader")),
+        .overview = parser.value(QStringLiteral("overview")),
+        .tabTransition = parser.value(QStringLiteral("tab-transition")),
+        .paneEffects = parser.value(QStringLiteral("pane-effects")),
+        .overlayTransition = parser.isSet(QStringLiteral("overlay")) ? parser.value(QStringLiteral("overlay-transition")) : QString()};
+    const qsizetype wanted = refs.size();
     if (wanted > 0) {
         Afterglow::ShaderLibrary library;
         QMap<QString, QString> packages;
@@ -478,8 +498,7 @@ int run(QGuiApplication& app)
         }
         library.setPackageShaders(packages);
         AfterglowRender::ShaderChains chains = library.build(refs, params);
-        const auto got = chains.background.size() + chains.text.size() + chains.cursor.size() + chains.pane.size()
-            + chains.window.size() + chains.overview.size() + chains.tabTransition.size() + chains.paneEffects.size();
+        const std::size_t got = chains.size();
         if (got != std::size_t(wanted)) {
             std::fprintf(stderr, "a shader failed to load\n");
             return 1;
@@ -726,6 +745,32 @@ int run(QGuiApplication& app)
         }
     };
     for (auto& region : panes) addPaneDocks(region);
+    // An overlay: a terminal of its own over the first pane, drawn in its
+    // place with the pane's rectangle and docks, as the window does it.
+    AfterglowVt::Terminal overlayTerminal(cols, rows, host, options);
+    AfterglowRender::PaneSnapshot overlaySnapshot;
+    if (parser.isSet(QStringLiteral("overlay"))) {
+        bool ok = true;
+        const float progress = parser.isSet(QStringLiteral("overlay-progress"))
+            ? parser.value(QStringLiteral("overlay-progress")).toFloat(&ok) : 1.0f;
+        if (!ok || !(progress >= 0 && progress <= 1)) {
+            std::fprintf(stderr, "--overlay-progress must be from 0 to 1\n");
+            return 1;
+        }
+        overlayTerminal.resize(cols, rows, metrics.cellWidth, metrics.cellHeight);
+        const QByteArray text = parser.value(QStringLiteral("overlay")).toUtf8();
+        overlayTerminal.feed(std::string_view(text.constData(), std::size_t(text.size())));
+        overlaySnapshot.capture(overlayTerminal);
+        // Its own grid state is at rest: no glide, scroll shift or hovered
+        // link. The rest (and what later options set) is the pane's.
+        AfterglowRender::WindowRenderer::Pane::Overlay overlay;
+        overlay.snapshot = &overlaySnapshot;
+        overlay.progress = progress;
+        panes.front().overlay = overlay;
+    } else if (parser.isSet(QStringLiteral("overlay-progress")) || parser.isSet(QStringLiteral("overlay-transition"))) {
+        std::fprintf(stderr, "--overlay-progress and --overlay-transition need --overlay\n");
+        return 1;
+    }
     if (parser.isSet(QStringLiteral("wake-from"))) {
         const QStringList at = parser.value(QStringLiteral("wake-from")).split(QLatin1Char(','));
         bool xOk = false, yOk = false;
@@ -735,16 +780,22 @@ int run(QGuiApplication& app)
             return 1;
         }
         // One frame with the cursor at its old cell and the same panes, so
-        // the renderer's cursor history sees the jump.
-        const int x = snapshot.cursorX;
-        const int y = snapshot.cursorY;
-        snapshot.cursorX = previousX;
-        snapshot.cursorY = previousY;
+        // the renderer's cursor history sees the jump: the first pane's
+        // cursor, and its overlay's, which shows in its place.
+        std::vector<AfterglowRender::PaneSnapshot*> moved{&snapshot};
+        if (panes.front().overlay) moved.push_back(&overlaySnapshot);
+        std::vector<std::pair<int, int>> cells;
+        for (AfterglowRender::PaneSnapshot* jumped : moved) {
+            cells.emplace_back(jumped->cursorX, jumped->cursorY);
+            jumped->cursorX = previousX;
+            jumped->cursorY = previousY;
+        }
         renderer.setClockOverride(time - parser.value(QStringLiteral("wake-age")).toDouble());
         renderer.renderToImage(frameSize, panes, overlays, clear);
-        snapshot.cursorX = x;
-        snapshot.cursorY = y;
-        ++snapshot.version;
+        for (std::size_t i = 0; i < moved.size(); ++i) {
+            std::tie(moved[i]->cursorX, moved[i]->cursorY) = cells[i];
+            ++moved[i]->version;
+        }
     }
     // A closed pane: the last one, removed before anything else is set on
     // the last pane, so open, context and pulse land on a live one.
@@ -792,6 +843,7 @@ int run(QGuiApplication& app)
             for (int i = 0; i < perTab; ++i) {
                 auto copy = panes[std::size_t(i)];
                 copy.snapshot = &tabSnapshots[std::size_t(tab * perTab + i)];
+                copy.overlay.reset(); // the overlay is the current tab's
                 copy.params.focused = false;
                 copy.params.highlighted = tab * perTab + i == highlight;
                 addPaneDocks(copy);
@@ -841,6 +893,7 @@ int run(QGuiApplication& app)
         for (std::size_t i = 0; i < panes.size(); ++i) {
             auto copy = panes[i];
             copy.snapshot = &leftSnapshots[i];
+            copy.overlay.reset(); // the overlay is the current tab's
             copy.params.focused = false;
             addPaneDocks(copy);
             transition->from.panes.push_back(copy);

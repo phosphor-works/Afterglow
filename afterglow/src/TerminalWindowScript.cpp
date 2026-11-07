@@ -5,6 +5,7 @@
 #include "chrome/ChromeController.h"
 #include "app/NotificationCenter.h"
 #include "scripting/ScriptHost.h"
+#include "shaders/ShaderRefs.h"
 #include <AfterglowRender/GpuDevice.h>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -16,6 +17,9 @@ QString TerminalWindow::showScriptDialog(const QString& owner, Pane* pane, const
 {
     if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("Another dialog is already open");
     if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
+    // An overlay that has the focus keeps it, and so does one over the
+    // dialog's pane, which the dialog would focus.
+    if (inputPane(m_focused) != m_focused || pane->overlay()) return QStringLiteral("An overlay has the keyboard");
     // Another script's key mode would take the dialog's keys from the user.
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     // The dialog takes the keyboard: no mode is left behind it.
@@ -173,12 +177,19 @@ QVariantMap scriptKeyEvent(const QKeyEvent* e)
 }
 } // namespace
 
-bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e)
+bool TerminalWindow::scriptKeyModeKey(QKeyEvent* e, bool& shortcut)
 {
     if (!m_scriptKeyMode) return false;
-    // The user's way out, which no script can take.
-    if (m_settings.settings().keybinds.match(e, bindingBaseKey(e)) == Action::EndScriptKeyMode) {
-        performAction(Action::EndScriptKeyMode);
+    // The user's ways out, which no script can take. An overlay under the
+    // mode is the same script's; without one, the key is the script's.
+    const Action action = m_settings.settings().keybinds.match(e, bindingBaseKey(e));
+    if (action == Action::EndScriptKeyMode) {
+        performAction(action);
+        return true;
+    }
+    if (action == Action::CancelOverlay && performAction(action)) {
+        // Its repeats would reach on_key once the overlay is gone.
+        shortcut = true;
         return true;
     }
     // A modifier on its own is not a key for on_key: it comes with the key it changes.
@@ -198,6 +209,10 @@ QString TerminalWindow::startScriptKeyMode(const QString& owner, Pane* pane, con
 {
     if (m_scriptKeyMode && m_scriptKeyMode->owner != owner) return QStringLiteral("Another script holds the keyboard");
     if (m_scriptDialog || m_controller->wantsKeyboard()) return QStringLiteral("A dialog has the keyboard");
+    // Another owner's overlay keeps the keys it has. The owner's own one
+    // gives them to its key mode, which the script asked for.
+    if (const PaneOverlay* overlay = m_focused ? m_focused->overlay() : nullptr; overlay && overlay->owner() != owner)
+        return QStringLiteral("An overlay has the keyboard");
     stopCopyMode(); cancelKeyMode(); stopUrlMode();
     stopUnicodeInput();
     m_scriptKeyMode = ScriptKeyMode{owner, textPrefix(label, 160), pane, m_overview.open};
@@ -286,9 +301,8 @@ bool TerminalWindow::usePackageShaders()
             const auto s = suggestions[index].toMap();
             const QString key = s.value(QStringLiteral("key")).toString(), ref = s.value(QStringLiteral("ref")).toString();
             // One pack keys take the pack; chains gain it at the end.
-            static const QStringList Single{QStringLiteral("overview"), QStringLiteral("tabTransition"), QStringLiteral("paneEffects")};
             QVariant value = ref;
-            if (!Single.contains(key)) {
+            if (!ShaderEventKeys.contains(key)) {
                 // The chain the file holds: a command-line override must not reach it.
                 QStringList chain = m_settings.persisted(QStringLiteral("Shaders"), key).toStringList();
                 if (!chain.contains(ref)) chain.append(ref);
@@ -313,9 +327,12 @@ QString TerminalWindow::pulsePane(Pane* pane, int effect, int durationMs, int co
     return {};
 }
 
-void TerminalWindow::closeScriptDialog(const QString& owner, const QString& prefix)
+void TerminalWindow::closeRunWaits(const QString& owner, const QString& prefix)
 {
     if (m_scriptDialog && m_scriptDialog->owner == owner && m_scriptDialog->request.startsWith(prefix)) finishScriptDialog(false, {});
+    // An overlay the run waits for closes the same way: first, its program
+    // gets SIGHUP, and the handler's wait ends with "cancelled".
+    closeOverlays(owner, prefix, QStringLiteral("The run ended"));
 }
 
 void TerminalWindow::clearScriptOwner(const QString& owner)
@@ -323,6 +340,7 @@ void TerminalWindow::clearScriptOwner(const QString& owner)
     endScriptKeyMode(owner);
     m_shaderControls.clearOwner(owner);
     if (m_scriptDialog && m_scriptDialog->owner == owner) finishScriptDialog(false, {});
+    closeOverlays(owner, {}, QStringLiteral("The script stopped"));
     std::erase_if(m_scriptAppearance, [&](const auto& item) { return item.owner == owner; });
     eraseDocks(owner);
     updateChrome(); scheduleRender();

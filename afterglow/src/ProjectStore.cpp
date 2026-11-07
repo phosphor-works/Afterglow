@@ -40,7 +40,8 @@ QString tree(const QJsonValue& value, QSet<QString>& all, QSet<QString>& local, 
         const auto cwd = pane.value(QStringLiteral("cwd"));
         if (!string(cwd)) return ProjectStore::tr("A pane directory must be text of at most 4,096 characters");
         const auto path = cwd.toString();
-        if (!QDir::isAbsolutePath(path) && path != QLatin1String("~") && !path.startsWith(QLatin1String("~/")))
+        // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
+        if (!path.startsWith(QLatin1Char('/')) && path != QLatin1String("~") && !path.startsWith(QLatin1String("~/")))
             return ProjectStore::tr("A pane directory must be an absolute path or start with ~");
         if (!string(pane.value(QStringLiteral("title")), 256)) return ProjectStore::tr("A pane title must be text of at most 256 characters");
         const auto command = pane.value(QStringLiteral("command"));

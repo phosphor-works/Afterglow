@@ -127,6 +127,11 @@ struct AnimationSettings
     QString tabCurve = QStringLiteral("spring:13,0.9");
     int tabDuration = 400;
     int paneEffectDuration = 420; ///< panes opening and closing (Shaders.paneEffects)
+    /// An overlay's fade in and out over its pane (Shaders.overlayTransition),
+    /// as splitCurve. The fade stops the first time it reaches its target, so
+    /// a curve that overshoots never bounces back.
+    QString overlayCurve = QStringLiteral("0.4,0,0.2,1");
+    int overlayDuration = 180;
     /// The cursor's glide, the scroll easing and the visual bell's fade, as
     /// splitCurve. Other curves take the matching duration.
     QString cursorCurve = QStringLiteral("spring:48,1");
@@ -251,8 +256,10 @@ struct Settings
     Keybinds keybinds = Keybinds::defaults();
     /// Shader references for each chain, applied in order: pack ids, or
     /// "<package>.<pack>" for package packs.
-    ShaderRefs shaders{{}, {}, {}, {}, {}, QStringLiteral("pane-deck"), QStringLiteral("tab-switch"),
-                       QStringLiteral("pane-effects")};
+    ShaderRefs shaders{.overview = QStringLiteral("pane-deck"),
+                       .tabTransition = QStringLiteral("tab-switch"),
+                       .paneEffects = QStringLiteral("pane-effects"),
+                       .overlayTransition = QStringLiteral("overlay-fade")};
     /// Reference -> { parameter: value }.
     QVariantMap shaderParams;
     bool operator==(const Settings&) const = default;

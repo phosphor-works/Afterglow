@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QObject>
+#include <QSet>
 #include <QTimer>
 
 #include <optional>
@@ -22,7 +23,8 @@ class SettingsStore;
 
 /// The calls of the control socket's "control" target. A call that fails
 /// sends an error reply (CALL_FAILED) with Control's message, and its return
-/// value is dropped. The signals name the events that a client can subscribe
+/// value is dropped. The overlay call, which answers later, fails with codes
+/// of its own too. The signals name the events that a client can subscribe
 /// to. ControlSocket sends them; Qt never emits them.
 class ControlApi : public QObject, protected PhosphorIpc::IpcCallContext
 {
@@ -57,6 +59,21 @@ public:
     Q_INVOKABLE QVariantMap saveProject(double pane, const QString& name, bool overwrite);
     Q_INVOKABLE QVariantMap openProject(const QString& name, bool newInstance);
     Q_INVOKABLE QVariantList scriptDiagnostics();
+    /// Runs @p argv over @p pane (0: the focused pane) and answers once it
+    /// exits, with {exit_code, stdout, truncated}: stdout only with
+    /// Control.allowReadText. @p options: stdin, capture (stdout, file or
+    /// none), cwd, env and title, as for the overlay effect, with a cwd that
+    /// must exist. A refusal or a cancel fails the call with the code busy,
+    /// no_pane, spawn_failed or cancelled. The overlay is cancelled when the
+    /// caller's connection closes.
+    Q_INVOKABLE void overlay(double pane, const QStringList& argv, const QVariantMap& options);
+
+    /// Whose overlays a connection's are, as Control knows them.
+    static QString overlayOwner(quint64 connection) { return QStringLiteral("control:%1").arg(connection); }
+    /// Cancels the overlays of every control client with @p message.
+    void cancelOverlays(const QString& message);
+    /// The client of @p connection has gone: its overlays go with it.
+    void connectionClosed(quint64 connection);
 
 Q_SIGNALS:
     void paneCreated(uint pane);
@@ -83,6 +100,8 @@ private:
 
     Control& m_control;
     SettingsStore& m_settings;
+    /// The open connections that have opened an overlay.
+    QSet<quint64> m_overlayClients;
 };
 
 /// External control on the process's socket (InstanceSocket): the "control"

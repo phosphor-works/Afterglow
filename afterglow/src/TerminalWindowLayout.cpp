@@ -12,9 +12,11 @@ namespace Afterglow {
 void TerminalWindow::releasePaneUi(Pane* pane)
 {
     if (m_scriptDialog && m_scriptDialog->pane == pane) finishScriptDialog(false, {});
-    // The pane goes on in another window: a clipboard read it asked for is
-    // denied, as a program expects, rather than dropped.
-    if (m_pendingClipboardRead && m_pendingClipboardRead->pane == pane) m_controller->answerClipboard(0);
+    // The pane goes on in another window, with its overlay: a clipboard read
+    // either asked for is denied, as a program expects, rather than dropped.
+    Pane* const program = inputPane(pane);
+    if (m_pendingClipboardRead && (m_pendingClipboardRead->pane == pane || m_pendingClipboardRead->pane == program))
+        m_controller->answerClipboard(0);
     // A close confirmation that names it would close a pane that lives on
     // elsewhere: none of its answer holds.
     if (std::any_of(m_pendingConfirmPanes.cbegin(), m_pendingConfirmPanes.cend(), [pane](const auto& p) { return p == pane; })) {
@@ -25,6 +27,8 @@ void TerminalWindow::releasePaneUi(Pane* pane)
     dropPanePrompts(pane);
     if (m_copyPane == pane) stopCopyMode();
     if (m_hover.pane == pane) m_hover = {};
+    // Its overlay goes with it, and leaves what it had here.
+    if (program != pane) dropOverlayUi(program);
     m_dividerDrag.reset(); // the layout changes under it
     if (m_menuTab && tabOf(pane) >= 0 && m_tabs[std::size_t(tabOf(pane))]->id == m_menuTab) {
         m_controller->closeContextMenu();
@@ -64,6 +68,20 @@ void TerminalWindow::reparentPane(Pane* pane, TerminalWindow* destination)
         destination->motion(pane).pointerShape = it->second->pointerShape;
     m_motion.erase(pane); // motion objects reference the source window's clock
     m_growFrom.erase(pane);
+    // Its overlay comes along, without its fade: the fade's clock is this window's.
+    m_overlayFades.erase(pane);
+    if (PaneOverlay* overlay = pane->overlay()) {
+        Pane* program = overlay->pane();
+        QObject::disconnect(overlay, nullptr, this, nullptr);
+        QObject::disconnect(program, nullptr, this, nullptr);
+        // As for the host: what the program was given goes with it.
+        if (auto node = m_statusViews.extract(program); !node.empty()) destination->m_statusViews.insert(std::move(node));
+        if (auto node = m_clipboardGrants.extract(program); !node.empty()) destination->m_clipboardGrants.insert(std::move(node));
+        if (const auto it = m_motion.find(program); it != m_motion.end())
+            destination->motion(program).pointerShape = it->second->pointerShape;
+        m_motion.erase(program);
+        m_historyRows.erase(program);
+    }
     // Its docks go with it. Their objects for assistive technology are this
     // window's children: the destination makes new ones.
     for (const auto& dock : pane->docks()) releaseDockAccessibility(dock.get());

@@ -6,6 +6,7 @@
 #include "ControlSocket.h"
 #include "IpcClient.h"
 #include "../config/Keybinds.h"
+#include "../scripting/OverlaySpec.h"
 
 #include <AfterglowProto/Run.h>
 #include <AfterglowProto/Socket.h>
@@ -30,6 +31,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <poll.h>
 #include <unistd.h>
 
 namespace Afterglow {
@@ -65,6 +67,11 @@ of the active window or of the window that was active last.
   open-project NAME [--new]             switch to a project or launch its layout
   action NAME                           run a keybind action (split_right, new_tab...)
                                         or start a script command (script:ID.COMMAND)
+  overlay [--capture stdout|file|none] [--cwd DIR] [--title TEXT] [-n|--no-stdin] -- CMD...
+                                        run CMD over the pane until it exits, print its
+                                        result and exit with its status. Standard input,
+                                        unless it is a terminal or -n is given, goes to
+                                        CMD (at most 768 KiB)
   watch                                 print events as JSON lines until interrupted
 
 Put text that starts with -- after a "--": send-text -- --stdin.
@@ -83,7 +90,8 @@ QStringList events()
 
 // Not a setting: a call that answers in a moment, which a client can repeat.
 // Its end tells the user that afterglow hangs, not that the call failed. The
-// clients of the socket wait as long as one another.
+// clients of the socket wait as long as one another. The overlay call waits
+// for the user instead, with no limit.
 constexpr int ReplyTimeoutMs = AfterglowProto::Run::ReplyTimeoutMs;
 
 int fail(const QString& message, int status = 1)
@@ -97,11 +105,12 @@ int fail(const QString& message, int status = 1)
 class Client
 {
 public:
-    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args)
+    /// @p timeoutMs: -1 waits as long as the call takes (an overlay waits for the user).
+    std::optional<QJsonValue> call(const QString& fn, const QJsonArray& args, int timeoutMs = ReplyTimeoutMs)
     {
         if (!connected()) return std::nullopt;
         IpcClient::Error error;
-        auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, ReplyTimeoutMs, &error);
+        auto result = m_client.call(QLatin1String(ControlSocket::Target), fn, args, timeoutMs, &error);
         if (!result) report(error);
         return result;
     }
@@ -189,6 +198,8 @@ private:
         // Control.enabled takes away, also from a running watch.
         if (error.code == QLatin1String(PhosphorIpc::ErrorCode::NoSuchTarget)) {
             fail(QStringLiteral("Control.enabled is off in %1").arg(m_own ? owner() : QStringLiteral("the running Afterglow")));
+        } else if (error.tooLong) {
+            fail(QStringLiteral("the request is over what one call carries (%1 MiB)").arg(IpcClient::MaxLineBytes >> 20));
         } else if (error.timedOut) {
             // A slow afterglow may still do what was asked.
             fail(QStringLiteral("Afterglow did not answer in %1 seconds").arg(ReplyTimeoutMs / 1000));
@@ -334,12 +345,56 @@ bool isUtf8(const QByteArray& bytes)
     return true;
 }
 
-// The running afterglow resolves directories itself: send it absolute ones.
-QString absolute(const QString& path)
+/// Standard input as text, or nothing after it said why in @p status. Input
+/// over @p limit bytes or not UTF-8 is refused as aglow run refuses its
+/// input, with the status of a usage error and the message @p tooLong.
+std::optional<QString> readStdin(qsizetype limit, const QString& tooLong, int& status)
 {
-    if (path.isEmpty() || path.startsWith(QLatin1Char('~')) || QDir::isAbsolutePath(path)) return path;
-    return QDir::cleanPath(QDir::current().absoluteFilePath(path));
+    // One byte past the limit tells that the input is over it.
+    // read() tells an error from the end, which QFile does not.
+    QByteArray bytes;
+    char buffer[64 * 1024];
+    while (bytes.size() <= limit) {
+        const ssize_t got = ::read(STDIN_FILENO, buffer, sizeof buffer);
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            // A descriptor that another program left non-blocking: the input
+            // has not come yet, which is no error.
+            pollfd in{STDIN_FILENO, POLLIN, 0};
+            if (::poll(&in, 1, -1) >= 0 || errno == EINTR) continue;
+        }
+        if (got < 0) {
+            status = fail(QStringLiteral("cannot read standard input: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
+            return std::nullopt;
+        }
+        if (got == 0) break;
+        bytes.append(buffer, qsizetype(got));
+    }
+    if (bytes.size() > limit) {
+        status = fail(tooLong, AfterglowProto::Run::UsageError);
+        return std::nullopt;
+    }
+    // Decoding would put U+FFFD in place of the bytes.
+    if (!isUtf8(bytes)) {
+        status = fail(QStringLiteral("standard input is not UTF-8 text"), AfterglowProto::Run::UsageError);
+        return std::nullopt;
+    }
+    return QString::fromUtf8(bytes);
 }
+
+// The running afterglow resolves directories itself: send it absolute ones.
+// None when the path is relative and the current directory was removed:
+// it has no path then, and the directory would become /.
+std::optional<QString> absolute(const QString& path)
+{
+    // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
+    if (path.isEmpty() || path.startsWith(QLatin1Char('~')) || path.startsWith(QLatin1Char('/'))) return path;
+    const QString here = QDir::currentPath();
+    if (here.isEmpty()) return std::nullopt;
+    return QDir::cleanPath(here + QLatin1Char('/') + path);
+}
+
+const QString NoCurrentDirectory = QStringLiteral("the current directory was removed, so give an absolute directory");
 
 const QStringList Commands = {
     QStringLiteral("ls"), QStringLiteral("send-text"), QStringLiteral("get-text"), QStringLiteral("split"),
@@ -347,7 +402,13 @@ const QStringList Commands = {
     QStringLiteral("focus"), QStringLiteral("close"), QStringLiteral("set-title"), QStringLiteral("signal"),
     QStringLiteral("notify"), QStringLiteral("scripts"), QStringLiteral("open-directory"), QStringLiteral("projects"),
     QStringLiteral("save-project"), QStringLiteral("open-project"), QStringLiteral("action"), QStringLiteral("watch"),
+    QStringLiteral("overlay"),
 };
+
+// The standard input that `overlay` sends with the call, which goes in one
+// request line (IpcClient::MaxLineBytes): room for the rest of the call,
+// and for JSON escapes, which most text does not need.
+constexpr qsizetype CtlOverlayInput = 768 * 1024;
 
 } // namespace
 
@@ -372,7 +433,8 @@ int runCtl(int argc, char** argv)
     }
     // Only these read words after "--": elsewhere they would be dropped unseen.
     static const QStringList TakesTrailing = {QStringLiteral("new-window"), QStringLiteral("split"), QStringLiteral("new-tab"),
-                                              QStringLiteral("send-text"), QStringLiteral("set-title"), QStringLiteral("notify")};
+                                              QStringLiteral("send-text"), QStringLiteral("set-title"), QStringLiteral("notify"),
+                                              QStringLiteral("overlay")};
     if (!trailing.isEmpty() && !TakesTrailing.contains(command)) {
         return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
     }
@@ -492,7 +554,9 @@ int runCtl(int argc, char** argv)
         const auto layout = takeValue(QStringLiteral("--layout")).value_or(QString());
         if (const auto error = extra(1)) return usage(*error);
         if (args.size() != 1) return usage(QStringLiteral("open-directory takes PATH [--layout NAME]"));
-        return printObject(QStringLiteral("openDirectory"), {absolute(args.first()), layout});
+        const auto path = absolute(args.first());
+        if (!path) return fail(NoCurrentDirectory);
+        return printObject(QStringLiteral("openDirectory"), {*path, layout});
     }
     if (command == QLatin1String("projects")) {
         if (const auto error = extra(0)) return usage(*error);
@@ -512,7 +576,9 @@ int runCtl(int argc, char** argv)
     if (command == QLatin1String("new-window")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
-        return printPane(QStringLiteral("newWindow"), {absolute(cwd), QJsonArray::fromStringList(trailing)});
+        const auto dir = absolute(cwd);
+        if (!dir) return fail(NoCurrentDirectory);
+        return printPane(QStringLiteral("newWindow"), {*dir, QJsonArray::fromStringList(trailing)});
     }
 
     // In parts, each whole: a surrogate pair never splits. Text over
@@ -549,23 +615,10 @@ int runCtl(int argc, char** argv)
         if (takeFlag(QStringLiteral("--stdin"))) {
             if (const auto error = extra(0)) return usage(*error);
             if (!trailing.isEmpty()) return usage(QStringLiteral("unexpected argument %1").arg(trailing.first()));
-            // One byte past the limit tells that the input is over it.
-            // read() tells an error from the end, which QFile does not.
-            QByteArray bytes;
-            char buffer[64 * 1024];
-            while (bytes.size() <= CtlMaxText) {
-                const ssize_t got = ::read(STDIN_FILENO, buffer, sizeof buffer);
-                if (got < 0 && errno == EINTR) continue;
-                if (got < 0) {
-                    return fail(QStringLiteral("cannot read standard input: %1").arg(QString::fromLocal8Bit(std::strerror(errno))));
-                }
-                if (got == 0) break;
-                bytes.append(buffer, qsizetype(got));
-            }
-            if (bytes.size() > CtlMaxText) return fail(tooLong, AfterglowProto::Run::UsageError);
-            // Decoding would type U+FFFD in place of the bytes.
-            if (!isUtf8(bytes)) return fail(QStringLiteral("standard input is not UTF-8 text"), AfterglowProto::Run::UsageError);
-            text = QString::fromUtf8(bytes);
+            int status = 0;
+            const std::optional<QString> input = readStdin(CtlMaxText, tooLong, status);
+            if (!input) return status;
+            text = *input;
         } else {
             const bool raw = takeFlag(QStringLiteral("--raw"));
             if (const auto error = extra(-1)) return usage(*error);
@@ -612,8 +665,10 @@ int runCtl(int argc, char** argv)
     } else if (command == QLatin1String("new-tab")) {
         const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QString());
         if (const auto error = extra(0)) return usage(*error);
-        act = [&, cwd](qint64 pane) {
-            return printPane(QStringLiteral("newTab"), {pane, absolute(cwd), QJsonArray::fromStringList(trailing)});
+        const auto dir = absolute(cwd);
+        if (!dir) return fail(NoCurrentDirectory);
+        act = [&, dir = *dir](qint64 pane) {
+            return printPane(QStringLiteral("newTab"), {pane, dir, QJsonArray::fromStringList(trailing)});
         };
     } else if (command == QLatin1String("move-pane")) {
         const std::optional<quint32> target = paneNumber(args.value(0));
@@ -648,6 +703,43 @@ int runCtl(int argc, char** argv)
         }
         act = [&, title = words.value(0), body = words.mid(1).join(QLatin1Char(' '))](qint64 pane) {
             return run(QStringLiteral("notify"), {pane, title, body});
+        };
+    } else if (command == QLatin1String("overlay")) {
+        const QString capture = takeValue(QStringLiteral("--capture")).value_or(QStringLiteral("stdout"));
+        // By default the directory of ctl, which "." names.
+        const QString cwd = takeValue(QStringLiteral("--cwd")).value_or(QStringLiteral("."));
+        const std::optional<QString> title = takeValue(QStringLiteral("--title"));
+        const bool noInput = takeFlag(QStringLiteral("-n")) | takeFlag(QStringLiteral("--no-stdin"));
+        if (const auto error = extra(0)) return usage(*error);
+        if (trailing.isEmpty()) return usage(QStringLiteral("overlay needs a command after --"));
+        if (capture != QLatin1String("stdout") && capture != QLatin1String("file") && capture != QLatin1String("none"))
+            return usage(QStringLiteral("--capture takes stdout, file or none"));
+        const auto dir = absolute(cwd);
+        if (!dir) return fail(NoCurrentDirectory);
+        QJsonObject options{{QStringLiteral("capture"), capture}, {QStringLiteral("cwd"), *dir}};
+        if (title) options.insert(QStringLiteral("title"), *title);
+        // A list piped in, as for fzf. A terminal is no list: the program
+        // reads the pane instead, and the call does not wait for an end of
+        // file that never comes.
+        if (!noInput && !isatty(STDIN_FILENO)) {
+            int status = 0;
+            const std::optional<QString> input = readStdin(
+                CtlOverlayInput, QStringLiteral("standard input over %1 KiB: use a script for a longer list").arg(CtlOverlayInput >> 10),
+                status);
+            if (!input) return status;
+            options.insert(QStringLiteral("stdin"), *input);
+        }
+        act = [&, options](qint64 pane) {
+            const auto result = client.call(QStringLiteral("overlay"), {pane, QJsonArray::fromStringList(trailing), options}, -1);
+            if (!result) return 1;
+            const QJsonObject done = result->toObject();
+            const QByteArray out = done.value(QLatin1String("stdout")).toString().toUtf8();
+            std::fwrite(out.constData(), 1, std::size_t(out.size()), stdout);
+            // Without read access the reply has no stdout, and nothing was cut here.
+            if (done.contains(QLatin1String("stdout")) && done.value(QLatin1String("truncated")).toBool())
+                fail(QStringLiteral("the result was cut at %1 MiB").arg(OverlaySpec::MaxOutput >> 20));
+            const qint64 status = done.value(QLatin1String("exit_code")).toInteger(-1);
+            return status >= 0 && status <= 255 ? int(status) : 1;
         };
     } else if (command == QLatin1String("action")) {
         if (const auto error = extra(1)) return usage(*error);

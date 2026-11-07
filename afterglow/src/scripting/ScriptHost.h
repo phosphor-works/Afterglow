@@ -72,9 +72,10 @@ public:
         std::function<void(const QString& owner)> cleanup;
         /// A handler of the owner failed: whatever it holds must not trap the user.
         std::function<void(const QString& owner)> failed;
-        /// Closes the dialogs that the owner opened with request IDs that
-        /// start with @p prefix: the effects that an ended run waited for.
-        std::function<void(const QString& owner, const QString& prefix)> closeDialogs;
+        /// Closes the dialogs and the overlays that the owner opened with
+        /// request IDs that start with @p prefix: the effects that an ended
+        /// run waited for.
+        std::function<void(const QString& owner, const QString& prefix)> closeRunWaits;
         /// Afterglow's own notice: on @p pane, or a desktop notification that
         /// belongs to no pane when it is 0 or has closed.
         std::function<void(quint32 pane, const QString& title, const QString& body)> notice;

@@ -128,10 +128,11 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         wp.params.textBlinkOn = m_textBlinkOn;
         const QVariantMap overrides = applyScriptOverrides(p, wp.params, backgroundAlpha);
         const QRect shown = wp.params.rect;
+        prepareOverlay(p, r, wp, holding, animating);
         other.panes.push_back(std::move(wp));
-        // The overlays the tab had while it was current, so a tab switch
+        // The dim and dividers the tab had while it was current, so a tab switch
         // starts from exactly what was shown.
-        addPaneOverlays(other.overlays, shown, multiple && p != owner.focused, overrides);
+        addPaneShading(other.overlays, shown, multiple && p != owner.focused, overrides);
     });
     return other;
 }
@@ -165,8 +166,8 @@ void TerminalWindow::applyPaneEffectState(Pane* pane, AfterglowRender::FrameBuil
     animating |= params.contextProgress < 1.0f;
 }
 
-void TerminalWindow::addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>>& overlays, const QRect& shown, bool dim,
-                                     const QVariantMap& overrides) const
+void TerminalWindow::addPaneShading(std::vector<std::pair<QRect, std::uint32_t>>& shading, const QRect& shown, bool dim,
+                                    const QVariantMap& overrides) const
 {
     const WindowSettings& window = m_settings.settings().window;
     if (dim) {
@@ -175,15 +176,15 @@ void TerminalWindow::addPaneOverlays(std::vector<std::pair<QRect, std::uint32_t>
         const auto custom = overrides.constFind(QStringLiteral("unfocusedDim"));
         const double paneDim = custom != overrides.constEnd() ? custom->toDouble() : window.unfocusedDim;
         if (const auto alpha = std::uint8_t(std::lround(paneDim * (1.0 - overviewAmount) * 255)); alpha > 0)
-            overlays.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, alpha));
+            shading.emplace_back(shown, AfterglowRender::packRgba(0, 0, 0, alpha));
     }
     // Dividers follow the drawn edges, so they move with split animations.
     const QRect area = paneArea();
     const int dividerWidth = dividerPixels();
     if (shown.right() < area.right())
-        overlays.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()), window.dividerColor);
+        shading.emplace_back(QRect(shown.right() + 1, shown.top(), dividerWidth, shown.height()), window.dividerColor);
     if (shown.bottom() < area.bottom())
-        overlays.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), dividerWidth), window.dividerColor);
+        shading.emplace_back(QRect(shown.left(), shown.bottom() + 1, shown.width(), dividerWidth), window.dividerColor);
 }
 
 void TerminalWindow::updateAudioCapture()
@@ -192,7 +193,9 @@ void TerminalWindow::updateAudioCapture()
     // overview pack must not keep capture running while the overview is shut.
     m_audioCapturing = m_audioUse.alwaysOn || (m_audioUse.overview && overviewShowing())
         || (m_audioUse.tabTransition && m_tabTransition.progress.isAnimating())
-        || (m_audioUse.paneEffects && m_paneEffectsShowing);
+        || (m_audioUse.paneEffects && m_paneEffectsShowing)
+        || (m_audioUse.overlayTransition && std::any_of(m_overlayFades.begin(), m_overlayFades.end(),
+                                                         [](const auto& fade) { return fade.second.progress.isAnimating(); }));
     m_audio.setActive(this, m_audioCapturing && isExposed() && visibility() != QWindow::Minimized);
 }
 
