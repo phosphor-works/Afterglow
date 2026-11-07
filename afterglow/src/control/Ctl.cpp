@@ -385,8 +385,9 @@ std::optional<QString> readStdin(qsizetype limit, const QString& tooLong, int& s
 // The running afterglow resolves directories itself: send it absolute ones.
 QString absolute(const QString& path)
 {
-    if (path.isEmpty() || path.startsWith(QLatin1Char('~')) || QDir::isAbsolutePath(path)) return path;
-    return QDir::cleanPath(QDir::current().absoluteFilePath(path));
+    // Not QDir::isAbsolutePath: it takes ":dir" for a Qt resource.
+    if (path.isEmpty() || path.startsWith(QLatin1Char('~')) || path.startsWith(QLatin1Char('/'))) return path;
+    return QDir::cleanPath(QDir::currentPath() + QLatin1Char('/') + path);
 }
 
 const QStringList Commands = {

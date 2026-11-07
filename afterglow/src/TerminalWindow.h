@@ -186,7 +186,7 @@ public:
     /// @p code tells the refusal apart: busy, no_pane or spawn_failed.
     /// @p reply gets the result, or "cancelled" when the overlay closes first.
     QString openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
-                        PaneOverlay::Reply reply, QString& code);
+                        OverlayReply reply, QString& code);
     /// Cancels @p owner's overlays whose request IDs start with @p prefix.
     void closeOverlays(const QString& owner, const QString& prefix, const QString& message);
     /// How far the overlay of @p pane has faded in, 0 to 1, and whether the
@@ -924,6 +924,8 @@ private:
         PhosphorAnimation::AnimatedValue<qreal> progress;
         /// The last frame of an overlay that ended, while it fades out.
         std::shared_ptr<AfterglowRender::PaneSnapshot> last;
+        /// prepareOverlay advanced it in the frame that is being built.
+        bool advanced = false;
     };
     std::unordered_map<const Pane*, OverlayFade> m_overlayFades;
     CurveCache m_overlayCurve;

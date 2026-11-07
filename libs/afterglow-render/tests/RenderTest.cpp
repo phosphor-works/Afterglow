@@ -3411,38 +3411,112 @@ TEST_F(Render, AWindowBackgroundBufferStepsOncePerFrameDuringAnOverlayFade)
     EXPECT_PIXEL_NEAR(draw(0.5f, 5), cellCenter(2, 2), steps(1), 3);
 }
 
+namespace {
+
+/// A shader that keeps what the text history holds, as a trail pack does.
+/// In the text chain it keeps every trail, in the pane chain the last frame's.
+ShaderProgramPtr keepHistory()
+{
+    return layerShader("keep", "fragColor = max(c, texture(uPreviousText, uv));");
+}
+
+} // namespace
+
 TEST_F(Render, ThePaneUnderAFadingOverlayKeepsItsOwnTextHistory)
 {
-    // A text shader that keeps what the text history holds, as a trail pack
-    // does: the pane under the overlay keeps its own trails into the fade,
-    // and the overlay's text never comes out of it.
+    // The pane under the overlay keeps its own trails through the fade, and
+    // the overlay's text never comes out of it.
     const ShaderProgramPtr fade = overlayFade();
     ASSERT_TRUE(fade);
-    ShaderChains chains;
-    chains.text = {layerShader("keep", "fragColor = max(c, texture(uPreviousText, uv));")};
-    chains.overlayTransition = {fade};
-    renderer->setShaderChains(chains);
-    const QRgb red = qRgb(220, 0, 0);
-    render("\x1b[?25l\x1b[38;2;220;0;0m█");
-    // The block moves on a cell: where it was is its trail.
-    const QImage plain = render("\x1b[2J\x1b[1;2H█");
-    EXPECT_PIXEL(plain, cellCenter(0, 0), red);
-    EXPECT_PIXEL(plain, cellCenter(1, 0), red);
+    const ShaderProgramPtr keep = keepHistory();
+    ASSERT_TRUE(keep);
+    // The pane's snapshot is taken by each frame below; the first now, for its colours.
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
     OverlayTerminal overlay(Cols, Rows, cw, ch, "\x1b[?25l\x1b[2;6H\x1b[38;2;0;200;0m█");
     ASSERT_EQ(overlay.snapshot.defaultBg, snapshot.defaultBg);
+    const QRgb red = qRgb(220, 0, 0);
     WindowRenderer::Pane drawn;
     drawn.snapshot = &snapshot;
     drawn.params.rect = QRect(QPoint(0, 0), QSize(Cols * cw, Rows * ch));
     drawn.params.focused = true;
-    // The first frame of the fade, then one with the overlay's text in the frame's history.
-    for (const float progress : {0.01f, 0.02f}) {
-        SCOPED_TRACE(testing::Message() << "progress " << progress);
-        drawn.overlay = overlayOf(&overlay.snapshot, progress);
-        const QImage image = renderer->renderToImage(drawn.params.rect.size(), {drawn}, {}, snapshot.defaultBg);
-        EXPECT_PIXEL_NEAR(image, cellCenter(0, 0), red, 8);
-        EXPECT_PIXEL_NEAR(image, cellCenter(1, 0), red, 8);
+    // A red block at a cell of the top row: the same snapshot, so the same pane.
+    auto frame = [&](int col, std::optional<float> progress) {
+        terminal->feed("\x1b[2J\x1b[1;" + std::to_string(col + 1) + "H█");
+        snapshot.capture(*terminal);
+        drawn.overlay.reset();
+        if (progress) drawn.overlay = overlayOf(&overlay.snapshot, *progress);
+        return renderer->renderToImage(drawn.params.rect.size(), {drawn}, {}, snapshot.defaultBg);
+    };
+    for (const bool paneChain : {false, true}) {
+        SCOPED_TRACE(paneChain ? "pane chain" : "text chain");
+        ShaderChains chains;
+        (paneChain ? chains.pane : chains.text) = {keep};
+        chains.overlayTransition = {fade};
+        renderer->setShaderChains(chains);
+        terminal->feed("\x1b[?25l\x1b[38;2;220;0;0m");
+        // The pane chain's input has the background under the text: a trail
+        // there is the brighter of the two in each channel.
+        const QRgb background = rgb(snapshot.defaultBg);
+        const QRgb trail = paneChain ? qRgb(std::max(qRed(red), qRed(background)), std::max(qGreen(red), qGreen(background)),
+                                            std::max(qBlue(red), qBlue(background)))
+                                     : red;
+        frame(0, std::nullopt);
+        const QImage plain = frame(1, std::nullopt);
+        EXPECT_PIXEL(plain, cellCenter(0, 0), trail);
+        EXPECT_PIXEL(plain, cellCenter(1, 0), red);
+        // The first frame of the fade starts from the frame's history; the
+        // next one reads what the pane under the overlay drew in the first.
+        frame(2, 0.01f);
+        const QImage image = frame(3, 0.02f);
+        EXPECT_PIXEL_NEAR(image, cellCenter(2, 0), trail, 8);
+        EXPECT_PIXEL_NEAR(image, cellCenter(3, 0), red, 8);
+        // The text chain keeps every trail, the pane chain the last frame's.
+        if (!paneChain) EXPECT_PIXEL_NEAR(image, cellCenter(0, 0), red, 8);
+        else EXPECT_PIXEL_NEAR(image, cellCenter(1, 0), background, 8);
         EXPECT_PIXEL_NEAR(image, cellCenter(5, 1), plain.pixel(cellCenter(5, 1)), 8);
     }
+}
+
+TEST_F(Render, TheTrailsOfThePaneUnderAnOverlayOutlastItsFadeOut)
+{
+    // Once the overlay has faded out, the pane's own history goes on from
+    // what it drew under the overlay, without the overlay's text.
+    const ShaderProgramPtr fade = overlayFade();
+    ASSERT_TRUE(fade);
+    const ShaderProgramPtr keep = keepHistory();
+    ASSERT_TRUE(keep);
+    ShaderChains chains;
+    chains.text = {keep};
+    chains.overlayTransition = {fade};
+    renderer->setShaderChains(chains);
+    // The pane's snapshot is taken by each frame below; the first now, for its colours.
+    terminal->feed("\x1b[?25l");
+    snapshot.capture(*terminal);
+    OverlayTerminal overlay(Cols, Rows, cw, ch, "\x1b[?25l\x1b[2;6H\x1b[38;2;0;200;0m█");
+    ASSERT_EQ(overlay.snapshot.defaultBg, snapshot.defaultBg);
+    const QRgb red = qRgb(220, 0, 0);
+    WindowRenderer::Pane drawn;
+    drawn.snapshot = &snapshot;
+    drawn.params.rect = QRect(QPoint(0, 0), QSize(Cols * cw, Rows * ch));
+    drawn.params.focused = true;
+    auto frame = [&](int col, std::optional<float> progress) {
+        terminal->feed("\x1b[2J\x1b[1;" + std::to_string(col + 1) + "H█");
+        snapshot.capture(*terminal);
+        drawn.overlay.reset();
+        if (progress) drawn.overlay = overlayOf(&overlay.snapshot, *progress);
+        return renderer->renderToImage(drawn.params.rect.size(), {drawn}, {}, snapshot.defaultBg);
+    };
+    terminal->feed("\x1b[?25l\x1b[38;2;220;0;0m");
+    frame(0, std::nullopt);
+    frame(1, 1.0f); // the overlay alone: the pane is not drawn
+    frame(2, 0.02f);
+    frame(3, 0.01f);
+    const QImage image = frame(4, std::nullopt);
+    EXPECT_PIXEL(image, cellCenter(2, 0), red);
+    EXPECT_PIXEL(image, cellCenter(3, 0), red);
+    EXPECT_PIXEL(image, cellCenter(4, 0), red);
+    EXPECT_PIXEL(image, cellCenter(5, 1), rgb(snapshot.defaultBg));
 }
 
 TEST_F(Render, TheWindowChainSeesThePaneUntilItsOverlayIsHalfwayIn)

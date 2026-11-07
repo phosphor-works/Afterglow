@@ -238,8 +238,8 @@ TEST(Pty, ADeferredStartFeedsAndReadsThePipes)
     auto pty = Pty::spawn(std::move(options), listener, &error);
     ASSERT_TRUE(pty) << error;
     {
-        // No callback before start(): a child that ran would have echoed
-        // its input and exited by the end of this wait.
+        // No callback before start(): a reader that ran before it would have
+        // fed cat its input and read the echo by the end of this wait.
         std::unique_lock lock(listener.mutex);
         EXPECT_FALSE(listener.changed.wait_for(lock, 300ms, [&listener] { return !listener.output.empty() || listener.closed; }));
     }

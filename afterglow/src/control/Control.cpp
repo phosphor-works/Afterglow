@@ -741,7 +741,7 @@ void Control::closeRunWaits(const QString& owner, const QString& prefix)
     for (auto window : m_windows) if (window) window->closeRunWaits(owner, prefix);
 }
 
-QString Control::overlay(const QString& owner, const QString& request, quint32 id, const OverlaySpec& spec, PaneOverlay::Reply reply,
+QString Control::overlay(const QString& owner, const QString& request, quint32 id, const OverlaySpec& spec, OverlayReply reply,
                          QString& code)
 {
     TerminalWindow* window = nullptr;

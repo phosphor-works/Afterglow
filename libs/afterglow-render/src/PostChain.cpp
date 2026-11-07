@@ -1068,10 +1068,14 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
         if (!m_historyValid || regions != m_historyRegions || time.time < m_historyTime) {
             frame.beginPass(m_historyTarget.get(), Qt::transparent, {1.0f, 0});
             frame.endPass();
+            // A fade ended last frame: the panes that were under it take
+            // their trails back from the host history, which still holds them.
+            if (m_hostHistory && m_hostHistoryFrame + 1 == m_frame && time.time >= m_hostHistoryTime)
+                copyHistoryRegions(frame, m_previousText.get(), m_hostHistory.get(), regions, m_hostHistoryRegions);
         }
         m_historyRegions = std::move(regions);
         m_historyTime = time.time;
-    } else if (m_previousText) {
+    } else if (m_previousText && hostsReadHistory()) {
         std::vector<HistoryRegion> regions = historyRegions(panes);
         const bool goesOn = m_hostHistory && m_hostHistoryFrame + 1 == m_frame && regions == m_hostHistoryRegions
             && time.time >= m_hostHistoryTime;
@@ -1089,20 +1093,8 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
             frame.endPass();
             // A fade starts: each pane that showed last frame where it is now
             // takes its trails from the frame's history, which still holds them.
-            QRhiResourceUpdateBatch* seed = rhi->nextResourceUpdateBatch();
-            if (m_historyValid && time.time >= m_historyTime) {
-                for (const HistoryRegion& region : regions) {
-                    if (std::find(m_historyRegions.begin(), m_historyRegions.end(), region) == m_historyRegions.end()) continue;
-                    const QRect rect = std::get<QRect>(region).intersected(QRect(QPoint(), m_size));
-                    if (rect.isEmpty()) continue;
-                    QRhiTextureCopyDescription copy;
-                    copy.setSourceTopLeft(rect.topLeft());
-                    copy.setDestinationTopLeft(rect.topLeft());
-                    copy.setPixelSize(rect.size());
-                    seed->copyTexture(m_hostHistory.get(), m_previousText.get(), copy);
-                }
-            }
-            cb->resourceUpdate(seed);
+            if (m_historyValid && time.time >= m_historyTime)
+                copyHistoryRegions(frame, m_hostHistory.get(), m_previousText.get(), regions, m_historyRegions);
         }
         m_hostHistoryRegions = std::move(regions);
         m_hostHistoryTime = time.time;
@@ -1130,6 +1122,33 @@ void PostChain::composite(RenderFrame& frame, const std::vector<ShaderRegionStat
         cb->setShaderResources(compositeBindings(int(uboBase + i), background, text, cursor, other));
         cb->draw(3);
     }
+}
+
+void PostChain::copyHistoryRegions(RenderFrame& frame, QRhiTexture* to, QRhiTexture* from,
+                                   const std::vector<HistoryRegion>& regions, const std::vector<HistoryRegion>& held)
+{
+    QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();
+    for (const HistoryRegion& region : regions) {
+        if (std::find(held.begin(), held.end(), region) == held.end()) continue;
+        const QRect rect = std::get<QRect>(region).intersected(QRect(QPoint(), m_size));
+        if (rect.isEmpty()) continue;
+        QRhiTextureCopyDescription copy;
+        copy.setSourceTopLeft(rect.topLeft());
+        copy.setDestinationTopLeft(rect.topLeft());
+        copy.setPixelSize(rect.size());
+        updates->copyTexture(to, from, copy);
+    }
+    // Between passes: the layer chains that read @p to bind it next.
+    frame.commands()->resourceUpdate(updates);
+}
+
+bool PostChain::hostsReadHistory() const
+{
+    // The chains that run over the panes under fading overlays.
+    const auto reads = [](const ShaderProgram& p) { return p.readsPreviousText(); };
+    for (const auto* chain : {&m_chains.background, &m_chains.text, &m_chains.cursor, &m_chains.pane})
+        if (ShaderChains::anyIn(*chain, reads)) return true;
+    return false;
 }
 
 std::vector<PostChain::HistoryRegion> PostChain::historyRegions(const std::vector<ShaderRegionState>& panes)
@@ -1287,19 +1306,21 @@ int PostChain::runRegionChain(RenderFrame& frame, const std::vector<ShaderProgra
 void PostChain::captureOverlayHosts(RenderFrame& frame, const std::vector<ShaderRegionState>& hosts, const ShaderFrameTime& time)
 {
     if (hosts.empty()) return;
-    // Their text layer, as composite(hosts) left it, is their history for
-    // the next frame of the fade. The frame's own panes draw their layers next.
-    if (m_hostHistory && m_hostHistoryFrame == m_frame) {
-        QRhiResourceUpdateBatch* keep = m_device.rhi()->nextResourceUpdateBatch();
-        keep->copyTexture(m_hostHistory.get(), m_textures[m_layerTexture[int(Layer::Text)]].get());
-        frame.commands()->resourceUpdate(keep);
-    }
     // The panes under the overlays get the pane shaders that they get with no
     // overlay, so the transition starts on exactly what showed. Their buffers
     // are their own, by snapshot, and go on from frame to frame.
     int ubo = m_nextUbo;
     const int current = runRegionChain(frame, m_chains.pane, 0, hosts, time, ubo, 3);
     m_nextUbo = ubo;
+    // Their text layer, as composite(hosts) left it, is their history for
+    // the next frame of the fade: kept after their pane chain, which read
+    // last frame's. The pane chain uses the first two textures only, so the
+    // layer is still there; the frame's own panes draw their layers next.
+    if (m_hostHistory && m_hostHistoryFrame == m_frame) {
+        QRhiResourceUpdateBatch* keep = m_device.rhi()->nextResourceUpdateBatch();
+        keep->copyTexture(m_hostHistory.get(), m_textures[m_layerTexture[int(Layer::Text)]].get());
+        frame.commands()->resourceUpdate(keep);
+    }
     tabImageTarget(); // makes the tab image for this frame
     // Recorded now, between passes: the frame's grid pass clears the grid texture next.
     QRhiResourceUpdateBatch* updates = m_device.rhi()->nextResourceUpdateBatch();

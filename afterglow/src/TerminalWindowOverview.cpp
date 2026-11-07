@@ -130,7 +130,7 @@ AfterglowRender::WindowRenderer::OverviewTab TerminalWindow::prepareOtherTab(int
         const QRect shown = wp.params.rect;
         prepareOverlay(p, r, wp, holding, animating);
         other.panes.push_back(std::move(wp));
-        // The overlays the tab had while it was current, so a tab switch
+        // The dim and dividers the tab had while it was current, so a tab switch
         // starts from exactly what was shown.
         addPaneShading(other.overlays, shown, multiple && p != owner.focused, overrides);
     });

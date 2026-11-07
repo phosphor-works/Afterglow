@@ -1513,6 +1513,11 @@ TEST(CtlOverlayTest, PrintsTheResultAndExitsWithTheProgramsStatus)
     r = ctlAgainst(overlayResult({}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--cwd"), QStringLiteral("sub"),
                                        QStringLiteral("--"), QStringLiteral("fzf")});
     EXPECT_TRUE(overlayOptions(r.calls).value(QStringLiteral("cwd")).toString().endsWith(QStringLiteral("/sub")));
+    // A name that starts with ':' is relative too, not a Qt resource.
+    r = ctlAgainst(overlayResult({}), {QStringLiteral("--pane"), QStringLiteral("3"), QStringLiteral("--cwd"), QStringLiteral(":sub"),
+                                       QStringLiteral("--"), QStringLiteral("fzf")});
+    const QString colon = overlayOptions(r.calls).value(QStringLiteral("cwd")).toString();
+    EXPECT_TRUE(colon.startsWith(QLatin1Char('/')) && colon.endsWith(QStringLiteral("/:sub"))) << qPrintable(colon);
 
     // A cut result says so. One without stdout (Control.allowReadText off)
     // prints nothing, not even that, and a status that no shell gives is 1.
@@ -1562,6 +1567,24 @@ TEST(CtlOverlayTest, SendsStandardInputUnlessItIsATerminalOrNIsGiven)
     AgainstTarget r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, terminal.get());
     EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
     EXPECT_FALSE(overlayOptions(r.calls).contains(QStringLiteral("stdin")));
+    // A non-blocking pipe that is still empty when ctl reads it: ctl waits
+    // for the list instead of failing on EAGAIN.
+    int ends[2] = {-1, -1};
+    ASSERT_EQ(::pipe2(ends, O_CLOEXEC), 0);
+    const AfterglowProto::UniqueFd readEnd(ends[0]);
+    AfterglowProto::UniqueFd writeEnd(ends[1]);
+    ASSERT_EQ(::fcntl(readEnd.get(), F_SETFL, ::fcntl(readEnd.get(), F_GETFL) | O_NONBLOCK), 0);
+    std::thread writer([fd = writeEnd.release()] {
+        // Late enough that ctl finds the pipe empty first.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        const char list[] = "late\n";
+        [[maybe_unused]] const auto written = ::write(fd, list, sizeof(list) - 1);
+        ::close(fd);
+    });
+    r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, {}, readEnd.get());
+    writer.join();
+    EXPECT_EQ(r.outcome.status, 0) << qPrintable(r.outcome.err);
+    EXPECT_EQ(overlayOptions(r.calls).value(QStringLiteral("stdin")).toString(), QStringLiteral("late\n"));
     // The limit itself goes. Escapes that JSON needs can take a list under
     // it past what one request carries: nothing is sent then.
     r = ctlAgainst(done, QStringList{QStringLiteral("--pane"), QStringLiteral("3")} + command, QByteArray(768 * 1024, 'x'));

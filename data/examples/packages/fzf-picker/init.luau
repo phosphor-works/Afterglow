@@ -91,7 +91,7 @@ local function entries(ev, dir)
     return items
 end
 
--- The end of a pick with no path, after effect when there is one. From a
+-- Ends a pick that has no path. effect, when given, comes first. From a
 -- shell, a failure goes to stderr and the run exits with 1, so that
 -- `f=$(aglow run fzf-picker pick) && vim "$f"` stops. Otherwise a failure
 -- shows as a notification. A cancel has no message.
@@ -151,8 +151,12 @@ function script.run_command(_, ev)
         local picked, err, event = afterglow.await(afterglow.overlay(ev.pane, {config.fzf, "--layout=reverse", "--prompt=pick> "},
             {stdin = table.concat(items, "\n"), cwd = dir, title = Title}))
         if not picked then return failed(ev, err) end
-        -- Esc (130) and no match (1) choose nothing.
-        if picked.exit_code ~= 0 then return noPath(ev) end
+        -- No match (1) and Escape (130) choose nothing. Another status is a
+        -- failure, such as 2 for an option that an old fzf does not know.
+        if picked.exit_code == 1 or picked.exit_code == 130 then return noPath(ev) end
+        if picked.exit_code ~= 0 then
+            return noPath(ev, config.fzf .. " exited with status " .. tostring(picked.exit_code) .. ".")
+        end
         local choice = string.gsub(picked.stdout, "\n$", "")
         if not listed[choice] then return noPath(ev) end
         return act(ev, choice, dir, event)

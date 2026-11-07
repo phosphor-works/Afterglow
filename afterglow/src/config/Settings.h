@@ -128,8 +128,8 @@ struct AnimationSettings
     int tabDuration = 400;
     int paneEffectDuration = 420; ///< panes opening and closing (Shaders.paneEffects)
     /// An overlay's fade in and out over its pane (Shaders.overlayTransition),
-    /// as splitCurve. The fade ends the first time it reaches its end, so a
-    /// curve that overshoots never bounces back.
+    /// as splitCurve. The fade stops the first time it reaches its target, so
+    /// a curve that overshoots never bounces back.
     QString overlayCurve = QStringLiteral("0.4,0,0.2,1");
     int overlayDuration = 180;
     /// The cursor's glide, the scroll easing and the visual bell's fade, as

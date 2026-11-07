@@ -5833,6 +5833,51 @@ TEST_F(FzfPicker, AFailedPickFromAShellWritesItsErrorOnStderr)
                              [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); }));
 }
 
+TEST_F(FzfPicker, AnFzfErrorFromAShellWritesItsStatusOnStderr)
+{
+    // An fzf that starts, and then exits with 2 in the overlay, as an old
+    // fzf does for an option that it does not know.
+    QTemporaryDir bin;
+    ASSERT_TRUE(bin.isValid());
+    const QString fake = bin.filePath(QStringLiteral("fzf"));
+    WRITE(bin, QStringLiteral("fzf"), "#!/bin/sh\nexit 0\n");
+    ASSERT_TRUE(QFile::setPermissions(fake, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    ASSERT_TRUE(install(fake));
+    Client& client = newClient();
+    start(QStringLiteral("fzf-picker"), QStringLiteral("pick"), client, {}, 7, std::nullopt, nullptr, nullptr, files.path());
+    ASSERT_TRUE(await([&] { return !overlays.isEmpty() && bool(pendingReply); }, 10000));
+    std::exchange(pendingReply, {})({{}, {{"exit_code", 2}, {"stdout", ""}, {"truncated", false}}, {}});
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }, 10000));
+    EXPECT_EQ(client.status, 1);
+    EXPECT_TRUE(client.out.isEmpty()) << client.out.toStdString();
+    EXPECT_TRUE(client.err.contains(QLatin1String("exited with status 2"))) << client.err.toStdString();
+    EXPECT_TRUE(std::none_of(rec.applied.cbegin(), rec.applied.cend(),
+                             [](const QVariantMap& e) { return e.value("kind") == QLatin1String("notify"); }));
+}
+
+TEST_F(FzfPicker, AProjectPickedFromAShellOpensItAndPrintsNoPath)
+{
+    ASSERT_TRUE(install(QStringLiteral("/nonexistent/afterglow-test/fzf")));
+    applyHook = [](const QVariantMap& e) -> ScriptHost::EffectResult {
+        if (e.value("kind") == QLatin1String("list_projects")) return {{}, {{"names", QVariantList{QStringLiteral("dev")}}}, {}};
+        if (e.value("kind") != QLatin1String("select")) return {};
+        for (const QVariant& item : e.value("items").toList())
+            if (item.toMap().value("title") == QLatin1String("project: dev")) return {{}, item.toMap(), {}};
+        return {QStringLiteral("not listed"), {}, QStringLiteral("cancelled")};
+    };
+    Client& client = newClient();
+    start(QStringLiteral("fzf-picker"), QStringLiteral("pick"), client, {}, 7, std::nullopt, nullptr, nullptr, files.path());
+    ASSERT_TRUE(await([&] { return client.status.has_value(); }, 10000));
+    applyHook = {};
+    // Nothing for $(...) to take, so `&& vim "$f"` does not run.
+    EXPECT_EQ(client.status, 1);
+    EXPECT_TRUE(client.out.isEmpty()) << client.out.toStdString();
+    EXPECT_TRUE(client.err.isEmpty()) << client.err.toStdString();
+    EXPECT_TRUE(std::any_of(rec.applied.cbegin(), rec.applied.cend(), [](const QVariantMap& e) {
+        return e.value("kind") == QLatin1String("open_project") && e.value("name") == QLatin1String("dev");
+    }));
+}
+
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);

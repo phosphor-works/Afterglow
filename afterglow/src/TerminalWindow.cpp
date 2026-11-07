@@ -1725,12 +1725,15 @@ void TerminalWindow::renderNow()
     m_renderer->setOverview(std::move(overview));
     advanceTabTransition(backgroundAlpha, holding, animating);
     advancePaneEffects(animating);
-    // A fade whose host no frame draws from now on (another tab once a
-    // switch or the overview is over, a zoom) would not advance, and would
-    // hold audio capture: its overlay switches now. A host drawn on a card
-    // or in the tab a switch leaves keeps its fade: prepareOtherTab
-    // advances it.
-    std::erase_if(m_overlayFades, [this](const auto& fade) { return !paneDrawn(fade.first); });
+    // A fade that this frame did not advance has a host that no frame draws
+    // (another tab, a zoom, an empty pane area, no card for it): it would
+    // hold audio capture, so its overlay switches now. A host drawn on a
+    // card or in the tab a switch leaves was advanced by prepareOtherTab.
+    // Only an advanced fade handed its last frame to the renderer.
+    for (auto fade = m_overlayFades.begin(); fade != m_overlayFades.end();) {
+        if (std::exchange(fade->second.advanced, false)) ++fade;
+        else fade = m_overlayFades.erase(fade);
+    }
     // Split labels, in logical pixels for the chrome.
     QVariantList titles;
     if (multiple && m_settings.settings().window.paneTitles && !m_renderer->overviewShowing()) {
@@ -4555,8 +4558,8 @@ void TerminalWindow::mousePressEvent(QMouseEvent* e)
         return;
     }
     // Buttons another pane's program still holds (an overlay opened over it
-    // meanwhile): a press here would have its release go there. Nothing
-    // starts until they are up, so each press pairs with its release.
+    // meanwhile): a press here would have its release go there. No press
+    // reaches a program until they are up, so each press pairs with its release.
     if (m_reportedButtons != Qt::NoButton && m_reportedPane != target) {
         if (takesInput(m_reportedPane)) return;
         m_reportedButtons = Qt::NoButton; // its pane left: no release is owed

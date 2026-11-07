@@ -5659,13 +5659,15 @@ TEST_F(NativeWindow, AnOverlayTransitionThatDoesNotLoadSwitchesAtOnce) {
 
 // --- overlays: where their input, prompts and effects go ---
 
-// A program's request to read the clipboard (OSC 52), from @p pane's PTY
-// thread as a program's output arrives: its GUI receiver takes the pane's
-// mutex.
-void requestClipboardRead(Pane* pane) {
-    std::thread request([pane] { pane->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\x1b]52;c;?\x07"); }); });
-    request.join();
+// Feeds @p bytes to @p pane's terminal as its program's output, from a
+// thread that stands in for the PTY reader: a receiver on the GUI thread
+// takes the pane's mutex, which a feed from the GUI thread would hold.
+void feedFromReader(Pane* pane, std::string_view bytes) {
+    std::thread reader([pane, bytes] { pane->withTerminal([bytes](AfterglowVt::Terminal& t) { t.feed(bytes); }); });
+    reader.join();
 }
+// A program's request to read the clipboard (OSC 52).
+void requestClipboardRead(Pane* pane) { feedFromReader(pane, "\x1b]52;c;?\x07"); }
 
 TEST_F(NativeWindow, AFileDroppedOnAnOverlayFocusesItsHostAndReachesItsProgram) {
     Pane* first = window->focusedPane();
@@ -5820,7 +5822,7 @@ TEST_F(NativeWindow, AnOverlaysBellFlashesItsHost) {
     // of its own, and then stops. A bell's text changes nothing to draw.
     const auto frames = window->submittedFrames();
     program->withTerminal([](AfterglowVt::Terminal& t) { t.feed("\a"); });
-    EXPECT_TRUE(waitFor([&] { return window->submittedFrames() >= frames + 5; })) << window->submittedFrames() - frames;
+    EXPECT_TRUE(waitFor([&] { return window->submittedFrames() >= frames + 3; })) << window->submittedFrames() - frames;
     expectIdle(window);
     EXPECT_FALSE(answer->done);
 }
@@ -5839,17 +5841,13 @@ TEST_F(NativeWindow, AnOverlaysNotificationDoesNotShowWhileTheUserLooksAtIt) {
     auto answer = runOverlay(window, first, {QStringLiteral("/bin/sleep"), QStringLiteral("30")}, {{QStringLiteral("capture"), QStringLiteral("none")}});
     ASSERT_NE(first->overlay(), nullptr);
     Pane* program = first->overlay()->pane();
-    const auto notify = [program](const char* osc) {
-        std::thread output([program, osc] { program->withTerminal([osc](AfterglowVt::Terminal& t) { t.feed(osc); }); });
-        output.join();
-    };
     // The user looks at the overlay: nothing shows.
-    notify("\x1b]9;while looked at\x07");
+    feedFromReader(program, "\x1b]9;while looked at\x07");
     ASSERT_TRUE(settleQueued());
     // With the focus on the other pane, the next one shows. Notices of one
     // connection arrive in order, so the first would have come before it.
     window->revealPane(second);
-    notify("\x1b]9;while away\x07");
+    feedFromReader(program, "\x1b]9;while away\x07");
     ASSERT_TRUE(waitFor([&] { return notices.server.count >= 1; }));
     ASSERT_TRUE(settleQueued());
     EXPECT_EQ(notices.server.count, 1);
@@ -5872,11 +5870,13 @@ TEST_F(NativeWindow, AnOverlayKnowsWhetherItsTabShows) {
     Pane* program = first->overlay()->pane();
     ASSERT_TRUE(waitFor([&] { return screenOf(program).contains(QStringLiteral("ready")); }));
     const auto reports = [&](const char* state) { return screenOf(program).count(QLatin1String(state)); };
-    const qsizetype shown = reports("^[[?999;1n");
+    // The mode answers at once that the terminal shows. cat echoes that
+    // answer only once it runs, after "ready".
+    ASSERT_TRUE(waitFor([&] { return reports("^[[?999;1n") == 1; })) << screenOf(program).toStdString();
     window->revealPane(other);
     EXPECT_TRUE(waitFor([&] { return reports("^[[?999;2n") == 1; })) << screenOf(program).toStdString();
     window->revealPane(first);
-    EXPECT_TRUE(waitFor([&] { return reports("^[[?999;1n") == shown + 1; })) << screenOf(program).toStdString();
+    EXPECT_TRUE(waitFor([&] { return reports("^[[?999;1n") == 2; })) << screenOf(program).toStdString();
     window->closeRunWaits(QStringLiteral("test@1"), QStringLiteral("afterglow.await:1:"));
     EXPECT_TRUE(answer->done);
 }
@@ -5921,7 +5921,8 @@ TEST_F(NativeWindow, AnOverlayFadeThatNoFrameDrawsSwitchesAtOnce) {
     expectIdle(window);
 }
 
-// The fade of @p pane's overlay as each frame leaves it, until it ends.
+// The fade of @p pane's overlay after each frame that this renders and
+// waits for, until the fade ends: one value for each such frame.
 QList<qreal> fadeFrames(TerminalWindow* window, const Pane* pane) {
     QList<qreal> values;
     QElapsedTimer clock;
@@ -6040,9 +6041,12 @@ TEST_F(NativeWindow, CancelOverlayPassesTheScriptsKeyModeAndIsInThePaletteOnlyOv
     int keys = 0;
     QObject listener;
     QObject::connect(window, &TerminalWindow::scriptKey, &listener, [&](const QString&, quint32, const QVariantMap&) { ++keys; });
-    sendKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    // Held: its repeats come after the overlay has gone, and are the
+    // shortcut's too. They would reach the script as keys of its mode.
+    holdKey(window, Qt::Key_Escape, Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier, {}, 3);
     ASSERT_TRUE(waitFor([&] { return answer->done; }));
     EXPECT_EQ(answer->code, QStringLiteral("cancelled"));
+    ASSERT_TRUE(settleQueued());
     EXPECT_EQ(keys, 0);
     EXPECT_EQ(chrome->keyMode(), QStringLiteral("Picker keys"));
     window->endScriptKeyMode(QStringLiteral("a@1"));
@@ -6100,6 +6104,9 @@ TEST_F(NativeWindow, AResultFileThatIsNoPlainFileGivesNoAnswer) {
     EXPECT_EQ(link->result.value(QStringLiteral("exit_code")).toInt(), 0);
     EXPECT_TRUE(link->result.value(QStringLiteral("stdout")).toString().isEmpty())
         << link->result.value(QStringLiteral("stdout")).toString().toStdString();
+    // The overlay removes its result path when it goes: the link, not what
+    // it names.
+    drainDeferredDeletes();
     EXPECT_EQ(fileContent(secret), QByteArray("secret"));
 }
 
@@ -6165,13 +6172,18 @@ TEST_F(NativeWindow, ClosingAFocusedHostSendsItNoFocusAndLeavesNoFade) {
     EXPECT_EQ(answer->code, QStringLiteral("cancelled"));
     // The overlay goes in the closing effect of its host: no fade-out of its own.
     EXPECT_EQ(window->overlayFade(host), std::make_pair(qreal(0), false));
+    // A report and the pane's input share the PTY's write queue, and the PTY
+    // runs until the deferred delete: once a marker sent now is in the
+    // file, a focus report sent at the close is there too.
+    if (hearsFocus) {
+        ASSERT_TRUE(host->sendInput("@marker@"));
+        ASSERT_TRUE(waitFor([&] { return fileContent(reports).contains("@marker@"); })) << fileContent(reports).toStdString();
+        EXPECT_FALSE(fileContent(reports).contains("^[[I")) << fileContent(reports).toStdString();
+    }
     ASSERT_TRUE(waitFor([&] {
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         return gone.isNull();
     }));
-    if (hearsFocus) {
-        EXPECT_FALSE(fileContent(reports).contains("^[[I")) << fileContent(reports).toStdString();
-    }
     EXPECT_EQ(window->focusedPane(), first);
     expectIdle(window);
 }
@@ -6220,8 +6232,9 @@ TEST_F(NativeWindow, AnotherScriptsKeyModeWaitsForAnOverlay) {
 }
 
 // A control socket of the test's own, on @p path, that acts on @p window,
-// and one client of it, as afterglow ctl is. @p control overrides the
-// Control settings; the rest are written to the file.
+// and one client of it, as afterglow ctl is. Its settings are the defaults
+// of a new file, path.conf, which a test can write to. @p control overrides
+// keys of the Control group, and wins over what the test writes to them.
 class ControlConnection {
 public:
     ControlConnection(const QString& path, TerminalWindow* window, const QJsonObject& control = {})

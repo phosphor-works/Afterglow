@@ -918,8 +918,8 @@ The other limits of areas apply to pane areas too. Pane areas do not count towar
 The keys do not reach the shell. The window shows the label.
 A script needs an `on_key` handler to start a key mode.
 One script at a time holds a window's keyboard. Another script's request returns `busy`.
-A request also returns `busy` while an [overlay](#overlays) of another script has the keyboard of the focused pane.
-In a script's own key mode, the `cancel_overlay` key still cancels the overlay of that script. `on_key` does not get that key.
+A request also returns `busy` while an [overlay](#overlays) of another owner, such as another script or a control client, has the keyboard of the focused pane.
+In a script's own key mode, the `cancel_overlay` key still cancels the overlay of the focused pane. `on_key` does not get that key.
 
 `on_key` receives `key`, `text`, `ctrl`, `shift`, `alt`, `meta` and `repeat`.
 `key` is the typed character, such as `a` or `A`. Other keys have a name:

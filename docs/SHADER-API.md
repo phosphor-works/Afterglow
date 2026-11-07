@@ -414,7 +414,9 @@ Both images have the pane's layer and pane shaders. The window shaders then run 
 The pane under the overlay keeps running. While the overlay fades in, its program also runs.
 While the overlay fades out, its program has ended, and the overlay shows the program's last frame.
 The pane under the overlay keeps a text history of its own. Its `uPreviousText` holds its own text from the last frame, never the overlay's.
-A fade that starts keeps the trails that the pane had.
+A fade that starts keeps the text history that the pane had.
+When a fade out starts, the pane under the overlay has no text history yet. Its `uPreviousText` is transparent in that frame.
+When the overlay has faded out, the pane's text history goes on from what it drew under the overlay.
 A [`windowBackground`](#pass-order-and-coordinates) pack's buffers step once a frame, for the panes that show.
 The pane under the overlay reads those buffers as the last frame left them.
 When the buffers do not exist yet, the pane under the overlay makes them. They then step once in that frame.
@@ -429,9 +431,12 @@ Draw the pane at progress 0 and the overlay at 1. The fade then starts and ends 
 The pack's buffer passes can use all three helpers.
 The pane under the overlay is drawn only while a fade runs. It goes into the window-sized tab image. Its text history lives only while fades run.
 The overview, a tab switch and a closing pane also use that image.
-While one of them shows, while the pane is not on screen or while the window is hidden, an overlay opens and closes without a fade.
-A fade can already run when one of them starts. If that one takes the tab image, the fade switches at its halfway point.
+An overlay opens and closes without a fade while one of them shows.
+It also does so while the pane is not on screen or the window is hidden.
+A fade can already run when one of them starts.
+If the overview, the tab switch or the closing pane takes the tab image, the fade switches at its halfway point.
 An overview of one tab does not take the tab image, so a fade that runs in it still blends.
+A fade whose pane stops showing, for example behind a zoomed pane or in another tab, switches at once.
 Without `Shaders.overlayTransition`, or when its pack does not load, an overlay also opens and closes without a fade.
 [Overlay Fade](../data/shaders/overlay-fade/effect.frag) blends the two images.
 

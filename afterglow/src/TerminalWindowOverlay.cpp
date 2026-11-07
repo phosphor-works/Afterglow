@@ -20,7 +20,7 @@ Pane* TerminalWindow::inputPane(Pane* pane)
 }
 
 QString TerminalWindow::openOverlay(const QString& owner, const QString& request, Pane* pane, const OverlaySpec& spec,
-                                    PaneOverlay::Reply reply, QString& code)
+                                    OverlayReply reply, QString& code)
 {
     code = QStringLiteral("no_pane");
     if (!pane || tabOf(pane) < 0) return QStringLiteral("Pane closed");
@@ -229,7 +229,8 @@ void TerminalWindow::prepareOverlay(Pane* pane, const QRect& layoutRect, Aftergl
     if (fade != m_overlayFades.end()) {
         auto& value = fade->second.progress;
         value.advance();
-        // A fade ends the first time it reaches its end: a curve that
+        fade->second.advanced = true;
+        // A fade stops the first time it reaches its target: a curve that
         // overshoots (a spring) does not swing back over it.
         const bool reached = value.to() >= 0.5 ? value.value() >= 1.0 : value.value() <= 0.0;
         if (value.isAnimating() && !reached) {

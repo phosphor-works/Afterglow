@@ -406,6 +406,13 @@ private:
     bool m_historyValid = false;
     double m_historyTime = 0;
     static std::vector<HistoryRegion> historyRegions(const std::vector<ShaderRegionState>& panes);
+    /// Copies into @p to, from @p from, each of @p regions that @p held
+    /// (what @p from holds) has too, at its place.
+    void copyHistoryRegions(RenderFrame& frame, QRhiTexture* to, QRhiTexture* from,
+                            const std::vector<HistoryRegion>& regions, const std::vector<HistoryRegion>& held);
+    /// A chain that runs over the panes under fading overlays (the layer and
+    /// pane chains) reads the previous text: they keep a host history.
+    bool hostsReadHistory() const;
     /// The text history of the panes under fading overlays: the frame's own
     /// history holds the overlays' text then. It starts from that history
     /// where it held the same panes, and goes after a frame without a fade.
